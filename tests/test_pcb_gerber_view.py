@@ -111,6 +111,31 @@ def test_the_mask_opening_follows_the_models_own_expansion() -> None:
     assert mask.flashes[0].aperture.sizes[0] == pytest.approx(0.9 + 2 * 0.2)
 
 
+def test_field_wide_mask_open_region_cuts_a_real_hole_in_the_film() -> None:
+    """pcb-ewod-multitile Slice 1: a region-shaped soldermask opening
+    (``model["mask_open_regions"]``) parses onto the mask layer's
+    ``art.regions``, not ``art.flashes`` -- before ``_mask_film_els``
+    learned to read regions too, this rendered as a SOLID film with no
+    cutout at all (an absence that reads as "nothing authored", the
+    silently-wrong-render class this module's own docstring warns
+    about)."""
+    model = _model()
+    model["mask_open_regions"] = [
+        {"side": "top", "polygon": [[4.0, 4.0], [8.0, 4.0], [8.0, 8.0], [4.0, 8.0]]}
+    ]
+    files = gerber.export_fab(model, name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    layer_m = re.search(r'<g id="layer-F_Mask"[^>]*>(.*?)</g>', svg, re.DOTALL)
+    assert layer_m is not None, svg[:400]
+    body = layer_m.group(1)
+    mask_m = re.search(r"<mask\b[^>]*>(.*?)</mask>", body, re.DOTALL)
+    assert mask_m is not None, "no <mask> cutout emitted for the region opening"
+    # the per-pad flash opening (white/black pair from test_pads_reach_the_
+    # copper_and_the_mask's own fixture) PLUS the region's own black ring.
+    assert mask_m.group(1).count("<path") >= 2
+    assert "M 4.0000 4.0000" in mask_m.group(1)
+
+
 def test_a_via_is_flashed_on_both_spanned_layers() -> None:
     top = _art(_model(), "F_Cu")
     bottom = _art(_model(), "B_Cu")

@@ -260,6 +260,75 @@ def test_pour_emits_g36_g37_region():
     assert g36 < g37
 
 
+# ── pcb-ewod-multitile Slice 1: polygon pads, mask/paste intent ───────
+_POLY_MODEL: dict[str, Any] = {
+    "layers": ["F.Cu", "B.Cu"],
+    "outline": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+    "copper": [],
+    "pads": [
+        {
+            "layer": "F.Cu",
+            "net": "E1",
+            "shape": "polygon",
+            "x": 2.0,
+            "y": 2.0,
+            "w": 2.0,
+            "h": 2.0,
+            "poly": [[1.0, 1.0], [3.0, 1.0], [3.0, 3.0], [1.0, 3.0]],
+            "role": "electrode",
+            "mask": "covered",
+            "paste": "none",
+        },
+        {
+            "layer": "F.Cu",
+            "net": "3V3",
+            "shape": "circle",
+            "x": 6.0,
+            "y": 6.0,
+            "w": 0.6,
+        },
+    ],
+    "mask_open_regions": [
+        {"side": "top", "polygon": [[0.5, 0.5], [4.0, 0.5], [4.0, 4.0], [0.5, 4.0]]},
+        {"side": "bottom", "polygon": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]},
+    ],
+    "silkscreen": {"top": [], "bottom": []},
+    "drills": [],
+}
+
+
+def test_polygon_pad_emits_a_region_fill_not_an_aperture_flash():
+    top = gerber.copper_gerber(_POLY_MODEL, "F.Cu")
+    assert "G36*" in top and "G37*" in top
+    # the region ring visits the polygon's own vertices, not a flash coord
+    assert "X1000000Y1000000D02*" in top
+    # only the circle pad (3V3) gets an aperture flash on this layer
+    assert top.count("D03*") == 1
+
+
+def test_polygon_pad_soldermask_covered_gets_no_per_pad_opening():
+    mask = gerber.soldermask_gerber(_POLY_MODEL, "top")
+    # the electrode's own "covered" pad contributes no D02*/G36 ring of
+    # its own vertices (1,1)-(3,1)... -- only the field-wide region below
+    # (a DIFFERENT ring) and the circle pad's own expanded flash appear.
+    assert "X1000000Y1000000D02*" not in mask
+
+
+def test_mask_open_region_is_emitted_on_its_own_side_only():
+    top_mask = gerber.soldermask_gerber(_POLY_MODEL, "top")
+    bottom_mask = gerber.soldermask_gerber(_POLY_MODEL, "bottom")
+    assert "X500000Y500000D02*" in top_mask  # the top region's own vertex
+    assert "X500000Y500000D02*" not in bottom_mask
+    assert "X0Y0D02*" in bottom_mask  # the bottom region's own vertex
+
+
+def test_electrode_pad_gets_no_solder_paste():
+    paste = gerber.solderpaste_gerber(_POLY_MODEL, "top")
+    # only the circle (3V3) pad gets a paste aperture; the "paste": "none"
+    # electrode contributes nothing.
+    assert paste.count("D03*") == 1
+
+
 def test_via_flashes_on_every_span_layer_by_default():
     top = gerber.copper_gerber(_MODEL, "F.Cu")
     bottom = gerber.copper_gerber(_MODEL, "B.Cu")

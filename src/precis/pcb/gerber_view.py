@@ -689,23 +689,40 @@ def _edge_cuts_outline(art: LayerArt | None) -> list[tuple[float, float]] | None
     return ring if len(ring) >= 3 else None
 
 
+def _region_mask_shape(region: Region) -> str:
+    """One region-shaped soldermask opening, painted BLACK into the mask
+    film — the region-ring counterpart to :func:`_flash_mask_shape`
+    (pcb-ewod-multitile Slice 1's field-wide ``mask_open`` opening,
+    :func:`precis.pcb.gerber.soldermask_gerber`'s own ``G36``/``G37``
+    ring, is a :class:`Region` on this layer, never a :class:`Flash`)."""
+    return f'<path d="{_path_d(region.ring, close=True)}" fill="#000"/>'
+
+
 def _mask_film_els(
     art: LayerArt | None, layer: str, colour: str, film_ring: list[tuple[float, float]]
 ) -> list[str]:
     """A soldermask layer rendered as what it physically is — see the
-    module docstring's "a film with holes" note. ``art.flashes`` are the
-    openings (this project's own writer, :func:`precis.pcb.gerber
-    .soldermask_gerber`, never emits anything else on a mask layer — see
-    that function's own docstring); everything else about this render is
-    the paint-semantics mask trick :func:`_region_els` already uses."""
-    openings = art.flashes if art is not None else []
-    if not openings:
+    module docstring's "a film with holes" note. Openings come from
+    ``art.flashes`` (a per-pad swelled opening,
+    :func:`precis.pcb.gerber.soldermask_gerber`'s per-pad path) AND
+    ``art.regions`` (a field-wide ``mask_open`` region, the SAME
+    function's other path — pcb-ewod-multitile Slice 1: before this, a
+    region-shaped opening parsed correctly into ``art.regions`` but this
+    renderer read only ``art.flashes``, so the film showed solid with no
+    cutout at all — an absence that looks like "no opening authored",
+    the exact silent-wrong-render class this module's own docstring
+    warns about). Everything else about this render is the paint-
+    semantics mask trick :func:`_region_els` already uses."""
+    flash_openings = art.flashes if art is not None else []
+    region_openings = art.regions if art is not None else []
+    if not flash_openings and not region_openings:
         return [
             f'<path d="{_path_d(film_ring, close=True)}" '
             f'fill="{colour}" fill-opacity="0.55"/>'
         ]
     mask_id = f"masklayer-mask-{layer}"
-    mask_shapes = "".join(_flash_mask_shape(f) for f in openings)
+    mask_shapes = "".join(_flash_mask_shape(f) for f in flash_openings)
+    mask_shapes += "".join(_region_mask_shape(r) for r in region_openings)
     out = [
         f'<mask id="{mask_id}" maskUnits="userSpaceOnUse" '
         f'x="-1e6" y="-1e6" width="2e6" height="2e6">'
@@ -714,7 +731,7 @@ def _mask_film_els(
         f'<path d="{_path_d(film_ring, close=True)}" fill="{colour}" '
         f'fill-opacity="0.55" mask="url(#{mask_id})"/>',
     ]
-    out.extend(_flash_hit_target(f, _flash_title(layer, f)) for f in openings)
+    out.extend(_flash_hit_target(f, _flash_title(layer, f)) for f in flash_openings)
     return out
 
 

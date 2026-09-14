@@ -4570,17 +4570,26 @@ class PadGeom:
     """One pin's resolved pad SIZE — ``(w, h, shape, synthesized)``. The
     return element of :func:`pad_geometry`, this module's single answer to
     "how big is this pad" (the size counterpart to :func:`pads_for_ir`'s
-    own "where is this pad" claim)."""
+    own "where is this pad" claim).
+
+    ``poly`` (pcb-ewod-multitile Slice 1) is set only when ``shape ==
+    "polygon"`` — the pad's vertex ring, footprint-local mm, RELATIVE TO
+    THE PIN'S OWN CENTER (same convention :attr:`~precis.pcb.ir.PcbIR.
+    pin_dx`/``pin_dy`` already use for a pin's offset), unrotated by the
+    instance's pose. :func:`pads_for_ir` is what rotates+translates it
+    into board space — the one place every OTHER shape's placement
+    already happens, so a polygon pad is not a second transform path."""
 
     w_mm: float
     h_mm: float
     shape: str
     synthesized: bool
+    poly: list[tuple[float, float]] | None = None
 
 
 def _real_pad_sizes(
     ir: PcbIR, inst_id: int, fp: dict[str, Any]
-) -> dict[str, tuple[float, float, str]]:
+) -> dict[str, tuple[float, float, str, list[tuple[float, float]] | None]]:
     """This one instance's REAL per-pin pad size, keyed by NETLIST pin
     name, sourced from a cached ``part_footprints`` row (``fp`` in that
     row's own shape: ``{"pads": [...], "pin_map": {...}}``, the exact
@@ -4599,6 +4608,14 @@ def _real_pad_sizes(
     Position is irrelevant here (only size is read back), so the probe
     instance is placed at the origin regardless of where the real
     instance actually sits.
+
+    A ``shape == "polygon"`` pad's vertex ring is read straight off the
+    RAW footprint pad (never through the probe above, which — usefully
+    for w/h — pre-rotates by the instance's pose; a polygon needs the
+    UNROTATED ring instead, since :func:`pads_for_ir` rotates it itself,
+    once, at final placement) — matched to the same pin name via the same
+    ``pin_map`` indirection, offset to be relative to the pad's own
+    center.
     """
     pin_names = {
         str(ir.pin_label[p])
@@ -4616,13 +4633,55 @@ def _real_pad_sizes(
         pin_map=fp.get("pin_map"),
         pin_to_net={name: name for name in pin_names},
     )
-    out: dict[str, tuple[float, float, str]] = {}
+    pin_map = fp.get("pin_map") or {}
+    raw_poly_by_name: dict[str, list[tuple[float, float]]] = {}
+    for raw in fp.get("pads") or []:
+        if not raw.get("poly"):
+            continue
+        entry = pin_map.get(str(raw.get("number")))
+        name = (
+            str(entry.get("name"))
+            if isinstance(entry, dict) and entry.get("name") is not None
+            else str(raw.get("number") or "")
+        )
+        if name in raw_poly_by_name:
+            # FIRST poly-bearing raw pad for this pin wins — matches the
+            # `out[name]` "first wins" convention two lines below exactly,
+            # which this dict feeds. Before this guard, a pin with MORE
+            # THAN ONE polygon-shaped raw pad sharing its name (e.g.
+            # :mod:`precis.pcb.generators`' EWOD electrode: one raw pad for
+            # the electrode BODY's crenellated ring, a second for its own
+            # escape-stub taper — "nothing stops two pads sharing the same
+            # pin number", that module's own docstring) silently kept
+            # whichever one iterated LAST, overwriting the electrode's own
+            # true zigzag ring with its own tiny stub taper for every
+            # downstream consumer of this function (:func:`pads_for_ir` —
+            # DRC clearance, connectivity, the router). The stub happens to
+            # sit close to a diagonal neighbour by design (it is EN ROUTE
+            # to a shared via plaza), so this read as spurious sub-floor
+            # clearance between two electrodes whose real (electrode-body)
+            # geometry the round-2/3/4 zigzag work already proved correct
+            # (``test_zigzag_gap_between_row_neighbours_is_constant``,
+            # which never caught this because it asserts on the GENERATOR's
+            # own raw geometry directly, never through this DRC-facing
+            # reconstruction) — found round 7, stress-testing the
+            # ``ewod-dogfood-1`` vehicle's own real ``view='drc'`` output at
+            # grid sizes (7x7/8x8/9x9) no earlier round's DRC test happened
+            # to exercise.
+            continue
+        cx, cy = float(raw["x"]), float(raw["y"])
+        raw_poly_by_name[name] = [
+            (float(vx) - cx, float(vy) - cy) for vx, vy in raw["poly"]
+        ]
+    out: dict[str, tuple[float, float, str, list[tuple[float, float]] | None]] = {}
     for pad in pads:
         name = str(pad.get("net") or "")
         if not name or name in out:
             continue  # a THT pad emits one entry per target layer -- first wins
         w = float(pad["w"])
-        out[name] = (w, float(pad.get("h", w)), str(pad["shape"]))
+        shape = str(pad["shape"])
+        poly = raw_poly_by_name.get(name) if shape == "polygon" else None
+        out[name] = (w, float(pad.get("h", w)), shape, poly)
     return out
 
 
@@ -4652,7 +4711,9 @@ def pad_geometry(
     at :func:`~precis.pcb.ir.from_graph` time — with ``synthesized`` taken
     from ``ir.pin_pad_synthesized`` (always ``True`` for that path).
     """
-    real_by_inst: dict[int, dict[str, tuple[float, float, str]]] = {}
+    real_by_inst: dict[
+        int, dict[str, tuple[float, float, str, list[tuple[float, float]] | None]]
+    ] = {}
     if footprints:
         for inst_id in range(ir.n_instances):
             fp = footprints.get(str(ir.instance_refdes[inst_id]))
@@ -4663,8 +4724,8 @@ def pad_geometry(
         inst_id = int(ir.pin_instance[pid])
         real = real_by_inst.get(inst_id, {}).get(str(ir.pin_label[pid]))
         if real is not None:
-            w, h, shape = real
-            out.append(PadGeom(w, h, shape, synthesized=False))
+            w, h, shape, poly = real
+            out.append(PadGeom(w, h, shape, synthesized=False, poly=poly))
         else:
             out.append(
                 PadGeom(
@@ -4752,6 +4813,21 @@ def pads_for_ir(
         }
         if geom.shape != "circle":
             pad["h"] = geom.h_mm
+        if geom.shape == "polygon" and geom.poly:
+            # `point` is already the rotated+translated pin CENTER
+            # (`pin_point`); the ring is stored relative to that same
+            # center (`PadGeom.poly`'s own docstring), so it only needs
+            # the SAME rotation (never a second translate) before adding
+            # `point` back on -- one placement rule, reused per vertex.
+            inst_id = int(ir.pin_instance[pid])
+            inst_rot = float(ir.inst_rot[inst_id])
+            inst_rot = 0.0 if math.isnan(inst_rot) else inst_rot
+            pad["poly"] = [
+                [round(point[0] + rvx, 4), round(point[1] + rvy, 4)]
+                for rvx, rvy in (
+                    landpattern.rotate_offset(vx, vy, inst_rot) for vx, vy in geom.poly
+                )
+            ]
         out.append(pad)
     # A PLATED mounting hole's copper annulus (a solder-on nut's land) is
     # real pad copper on EVERY copper layer — emitted here because this

@@ -362,6 +362,11 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
         return Polygon([(float(p[0]), float(p[1])) for p in poly], holes)
     if ctype == "pad":
         shape = item.get("shape", "circle")
+        if shape == "polygon":
+            poly = item.get("poly") or []
+            if len(poly) < 3:
+                return None
+            return Polygon([(float(p[0]), float(p[1])) for p in poly])
         x, y = float(item["x"]), float(item["y"])
         w = float(item.get("w", 0.0))
         h = float(item.get("h", w))
@@ -834,9 +839,48 @@ def check_trace_width(
 # ── annular ring (vias) ────────────────────────────────────────────────
 
 
+def _drilled_pad_ring_items(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every drilled THT footprint pad's own physical hole, deduplicated to
+    ONE entry per hole. :func:`precis.pcb.padplace.place_footprint_pads`
+    flashes a drilled pad once PER COPPER LAYER (a real annular ring runs
+    the full stack, that module's own docstring) — the SAME hole would
+    otherwise be ring-checked once per layer here, an inflated finding
+    count for a board with >2 copper layers rather than a wrong one, but
+    inflated all the same. Deduped by ``(x, y, drill)`` — the physical
+    identity of one drilled hole, independent of which layer's flash we
+    happened to see first."""
+    seen: dict[tuple[float, float, float], dict[str, Any]] = {}
+    for pad in model.get("pads") or []:
+        drill = pad.get("drill")
+        if not drill:
+            continue
+        key = (
+            round(float(pad["x"]), 4),
+            round(float(pad["y"]), 4),
+            round(float(drill), 4),
+        )
+        seen.setdefault(key, pad)
+    return list(seen.values())
+
+
 def check_annular_ring(
     model: dict[str, Any], capability: CapabilityRow
 ) -> list[DrcFinding]:
+    """A plated hole's annular ring, checked for BOTH constructs this
+    codebase drills a hole through the board for: a router-placed
+    ``model["copper"]`` via, and an authored THT footprint pad
+    (``pad["drill"]`` set — :mod:`precis.pcb.generators`'s EWOD plaza via
+    is exactly this: a real, fabricable drilled pad, never a ``copper``
+    via row by design — see that module's docstring). Before
+    pcb-ewod-multitile Slice 2 this rule only ever saw router vias, so a
+    board's OWN drilled footprint pads (a plaza via, or any ordinary
+    catalog THT part) had their annular ring computed but never validated
+    against the fab floor — a check that could not fire on a whole class
+    of drilled hole, silently. A rect/obround THT pad's ring is measured
+    on its NARROW axis (``min(w, h)``, not the ``max`` a keepout-radius
+    check like :func:`check_via_pad_keepout` conservatively uses) — the
+    narrow axis is where an oblong pad's own ring is thinnest, and that is
+    the dimension a manufacturability floor must be checked against."""
     field = "annular_ring_mm"
     jlc_min = capability.jlc_min[field]
     house = capability.house_default.get(field)
@@ -861,6 +905,30 @@ def check_annular_ring(
                     "via annular ring", ring, capability, field, severity, margin
                 ),
                 objects=({"net": net, "x": item.get("x"), "y": item.get("y")},),
+                margin_mm=margin,
+            )
+        )
+    for pad in _drilled_pad_ring_items(model):
+        w = float(pad.get("w", 0.0))
+        h = float(pad.get("h", w))
+        dia = min(w, h)
+        drill = float(pad["drill"])
+        ring = (dia - drill) / 2.0
+        result = _two_tier(ring, jlc_min, house)
+        if result is None:
+            continue
+        severity, margin = result
+        net = pad.get("net")
+        where = f"pad[{net}] @ ({pad.get('x')}, {pad.get('y')})"
+        findings.append(
+            DrcFinding(
+                rule="annular_ring",
+                severity=severity,
+                where=where,
+                detail=_margin_detail(
+                    "THT pad annular ring", ring, capability, field, severity, margin
+                ),
+                objects=({"net": net, "x": pad.get("x"), "y": pad.get("y")},),
                 margin_mm=margin,
             )
         )

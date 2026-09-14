@@ -164,6 +164,25 @@ def test_a_pinless_instance_takes_the_callers_fallback_shape():
     assert wider == square
 
 
+def test_instance_courtyard_polygon_prefers_pin_poly_over_the_bbox():
+    """pcb-ewod-multitile Slice 1: a ``pin_poly`` pin contributes its OWN
+    outline to the hull, not the ``pin_w``/``pin_h`` bounding box (a wide
+    zigzag electrode's real extent, not its rectangular over-approximation
+    — see the field's own docstring)."""
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    u1 = list(ir.instance_refdes).index("U1")
+    pid = next(p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == u1)
+    # A huge bbox that the hull must NOT reach if pin_poly is honoured.
+    ir.pin_w[pid] = 100.0
+    ir.pin_h[pid] = 100.0
+    ir.pin_poly[pid] = [(-1.0, -1.0), (1.0, -1.0), (0.0, 1.0)]
+    poly = instance_courtyard_polygon(ir, u1, clearance_mm=0.0, pins=[pid])
+    from shapely.geometry import Polygon  # type: ignore[import-untyped]
+
+    hull = Polygon(poly)
+    assert hull.area == pytest.approx(2.0)  # the triangle's own area, not 100x100
+
+
 @pytest.mark.parametrize("seed", range(12))
 def test_instance_courtyard_polygon_never_touches_its_own_pads(seed: int):
     """**The structural property the whole hull-courtyard change exists
@@ -229,7 +248,7 @@ def test_instance_courtyard_polygon_grows_with_the_clearance_it_is_given():
     function keeps: a larger clearance must produce a strictly larger
     polygon, or the chain is being ignored and a capability change would
     move nothing."""
-    from shapely.geometry import Polygon  # type: ignore[import-untyped]
+    from shapely.geometry import Polygon
 
     from precis.pcb.ir import instance_courtyard_polygon
 

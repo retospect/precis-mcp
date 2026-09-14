@@ -178,6 +178,15 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # checks the routed copper against holes the router couldn't see
         # (the npth_clearance family, round-3 review item 4).
         mounting_holes=pcb_session.mounting_holes_from_features(features),
+        # Real per-pin positions where a footprint is cached/authored
+        # (gripe 338983). Without this the maze router is asked to connect
+        # SYNTHESIZED land-pattern coordinates while the gerber writer
+        # flashes the real ones — copper that lands nowhere near its pad on
+        # any part whose label no package family recognizes (every
+        # generator-emitted component, e.g. an `ewod_pad_array`'s escape
+        # vias).
+        footprints_by_lcsc=ctx.store.pcb_footprints_for(pcb_ref_id),
+        local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
     )
     routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
     pcb_session.apply_route_overrides(ir, routes_by_net)
@@ -320,8 +329,18 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # one whose parts are all real. The two ends of this path both
     # existed; only the join key was missing, the same shape as the
     # write-only `inst_rot` defect.
+    # Local (authored) footprints join the same dict: an instance with no
+    # LCSC part at all — every `footprints[]`-authored component and every
+    # generator-emitted one (pcb-ewod-multitile Slice 1/2) — otherwise
+    # reserves a landpattern-BOUND pad on the occupancy grid instead of its
+    # real electrode/via copper, and `export_fab` then refuses the board as
+    # synthesized. Same two-source join `handlers/pcb.py::_drc_pads` and
+    # `session.build_ir` already do; this call site was one source short.
     footprints = pcb_session.footprints_by_refdes(
-        ir, ctx.store.pcb_footprints_for(pcb_ref_id)
+        ir,
+        ctx.store.pcb_footprints_for(pcb_ref_id),
+        local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+        local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
     )
     rres = pcb_realize.realize(ir, config=realize_config, footprints=footprints)
     plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}

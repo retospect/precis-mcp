@@ -340,6 +340,19 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "while pin_offsets_synthesized never is. Reported to the caller "
         "as a real gap, not fixed here (realize.py is out of remit)"
     ),
+    "src/precis/pcb/ir.py::PcbIR.pin_poly": (
+        "pcb-ewod-multitile Slice 1: the READ side is wired "
+        "(instance_courtyard_polygon prefers it over the pin_w/pin_h bbox "
+        "when set -- same module, so this gate's cross-module scan "
+        "correctly doesn't count it) but from_graph never WRITES a "
+        "non-None value yet -- the synthesized landpattern path has no "
+        "polygon family, and threading real per-pin footprint geometry "
+        "into IR position/size (closing the SAME gap pin_dx's own "
+        "docstring already flags) is deliberately out of pcb-ewod-"
+        "multitile Slice 1's scope (courtyard reservation is moot for the "
+        "array generator's fixed-grid placement, slice 2). A future slice "
+        "wiring a producer removes this entry."
+    ),
     # ---- class methods/properties: legitimately unwired ------------------
     "src/precis/pcb/maze.py::OccupancyGrid.owner": (
         "a raw ``._owner`` occupancy-array accessor used only by "

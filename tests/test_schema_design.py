@@ -179,6 +179,14 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_features.geom",
         "pcb_features.meta",
         "pcb_instances.meta",
+        # 0160: design-local authored footprint (pcb-ewod-multitile Slice
+        # 1) — same open-ended {pads, pin_map, courtyard, centroid} shape
+        # part_footprints already carries above, just ref_id-scoped
+        # instead of C-number-keyed.
+        "pcb_local_footprints.centroid",
+        "pcb_local_footprints.courtyard",
+        "pcb_local_footprints.pads",
+        "pcb_local_footprints.pin_map",
         "pcb_measures.meta",
         "pcb_measures.operands",
         "pcb_net_classes.meta",

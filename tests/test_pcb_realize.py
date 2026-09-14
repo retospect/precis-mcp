@@ -1552,6 +1552,61 @@ def test_pad_geometry_real_override_survives_instance_rotation():
     assert geom.h_mm == pytest.approx(3.3)
 
 
+def test_pad_geometry_polygon_pin_with_two_raw_pads_keeps_the_first_one():
+    """A pin with MORE than one polygon-shaped raw pad sharing its name
+    (round-7 finding, docs/backlog/pcb-ewod-multitile.md: an EWOD
+    electrode's own footprint emits one raw pad for the electrode BODY
+    and a second for its escape STUB, both ``shape: 'polygon'``, both
+    ``pin: '1'`` — ":mod:`precis.pcb.generators`'s own docstring, 'nothing
+    stops two pads sharing the same pin number'") must resolve to the
+    FIRST one's ring, not whichever iterated last. Before this fix,
+    ``_real_pad_sizes``'s ``raw_poly_by_name`` overwrote its entry on
+    every poly-bearing raw pad, silently picking the LAST — inconsistent
+    with the very next loop's own "first wins" rule for size/shape, and
+    (for an EWOD board specifically) replacing every electrode's real
+    crenellated body with its own tiny escape-stub taper for every
+    ``pads_for_ir`` consumer (DRC, connectivity)."""
+    ir = from_graph(_multi_package_graph(), stackup=DEFAULT_STACKUP)
+    body_poly = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+    stub_poly = [(5.0, 5.0), (5.1, 5.0), (5.0, 5.1)]  # a different, tiny ring elsewhere
+    footprints = {
+        "U0": {
+            "pads": [
+                {
+                    "number": "1",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "w": 2.0,
+                    "h": 2.0,
+                    "shape": "polygon",
+                    "poly": body_poly,
+                },
+                {
+                    "number": "1",
+                    "x": 5.03,
+                    "y": 5.03,
+                    "w": 0.1,
+                    "h": 0.1,
+                    "shape": "polygon",
+                    "poly": stub_poly,
+                },
+            ],
+            "pin_map": {"1": {"name": "1"}},
+        }
+    }
+    geoms = pad_geometry(ir, footprints)
+    u0_pin = next(
+        p
+        for p in range(ir.n_pins)
+        if str(ir.instance_refdes[int(ir.pin_instance[p])]) == "U0"
+    )
+    geom = geoms[u0_pin]
+    assert geom.synthesized is False
+    assert geom.poly is not None
+    assert len(geom.poly) == len(body_poly)
+    assert set(geom.poly) == {(vx, vy) for vx, vy in body_poly}
+
+
 # ── item 2: a stitched via group must connect to its own trace ──────────
 
 

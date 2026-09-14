@@ -35,9 +35,11 @@ one instance / one net / an analysis / an export), `search` (by intent),
 Related skills: [[precis-pcb-route-help]] (place/route as enqueued jobs — the
 `op=` surface, once the netlist exists), [[precis-part-select-help]] (pick
 real parts), [[precis-net-class-help]] (name + classify nets),
-[[precis-measures-help]] (the "measuring tapes"), and the pattern playbooks
-[[precis-decoupling-help]], [[precis-i2c-help]], [[precis-spi-help]],
-[[precis-datasheet-help]].
+[[precis-measures-help]] (the "measuring tapes"), [[precis-pcb-ewod-help]]
+(computed-component **generators** — a `generators: [...]` block on `put`
+expands a whole EWOD electrode-array footprint from a few params instead of
+hand-authored pads), and the pattern playbooks [[precis-decoupling-help]],
+[[precis-i2c-help]], [[precis-spi-help]], [[precis-datasheet-help]].
 
 ## Author a design — `put(id=<slug>, args={…})`
 

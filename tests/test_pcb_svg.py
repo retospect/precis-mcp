@@ -320,3 +320,95 @@ def test_sketch_skips_unplaced_instances():
     text = svg.render_sketch(ir)
     assert "U1" in text
     assert "U2" not in text
+
+
+# ── capability map (pcb-ewod-multitile Slice 2 pt 2) ────────────────────
+def _ewod_expansion(**params):
+    from precis.pcb import generators as pcb_generators
+
+    return pcb_generators.expand("ewod_pad_array", "ARR1", params)
+
+
+def test_capability_map_is_well_formed_svg():
+    exp = _ewod_expansion(grid=[3, 3])
+    text = svg.render_capability_map(exp.ledger, exp.canonical_params, title="t")
+    root = _parse(text)
+    assert root.tag.endswith("svg")
+
+
+def test_capability_map_is_byte_identical_across_calls():
+    exp = _ewod_expansion(grid=[3, 3])
+    a = svg.render_capability_map(exp.ledger, exp.canonical_params, title="t")
+    b = svg.render_capability_map(exp.ledger, exp.canonical_params, title="t")
+    assert a == b
+
+
+def test_capability_map_shows_every_pin_and_the_one_plaza():
+    exp = _ewod_expansion(grid=[3, 3])
+    text = svg.render_capability_map(exp.ledger, exp.canonical_params)
+    for pin in ("R0C0", "R0C1", "R0C2", "R1C0", "R1C2", "R2C0", "R2C1", "R2C2"):
+        assert f">{pin}<" in text
+    assert ">P1_1<" in text
+
+
+def test_capability_map_colours_a_reserved_pad_differently_from_usable():
+    exp = _ewod_expansion(grid=[3, 3], reserve=["P1_1:N"])
+    text = svg.render_capability_map(exp.ledger, exp.canonical_params)
+    assert svg._CAP_UNUSABLE in text
+    assert svg._CAP_PLAZA_RESERVED in text
+
+
+def test_capability_map_draws_a_merged_pad_wider_than_a_single_cell_rect():
+    # pcb-ewod-multitile round 6: a pad_sizes merge gets ONE ledger entry
+    # carrying a `span`, not one entry per covered cell -- the drawn
+    # <rect> must be sized off that span (round-5 nextStep item: "extend
+    # ledger['pads'] with a cell-span so render_capability_map draws the
+    # merged rect instead of assuming one cell per pin").
+    single = _ewod_expansion(grid=[3, 3])
+    merged = _ewod_expansion(grid=[3, 3], pad_sizes=[{"cells": [[0, 0], [0, 1]]}])
+    single_text = svg.render_capability_map(single.ledger, single.canonical_params)
+    merged_text = svg.render_capability_map(merged.ledger, merged.canonical_params)
+    root_single = _parse(single_text)
+    root_merged = _parse(merged_text)
+
+    def _rect_width(root):
+        widths = [
+            float(el.attrib["width"]) for el in root.iter() if el.tag.endswith("rect")
+        ]
+        return max(widths)
+
+    assert _rect_width(root_merged) > _rect_width(root_single) * 1.5
+    assert ">R0C0<" in merged_text
+    assert ">R0C1<" not in merged_text  # absorbed into the merged pad
+
+
+def test_capability_map_no_text_element_falls_outside_the_viewbox():
+    """Round-5 stress-test finding: a small array (a 9x9 field at 2mm
+    pitch is only 18mm wide) has far more text (title/summary/sizing/
+    legend) than board -- an earlier version sized the viewBox off the
+    pad grid alone, so the summary/legend lines ran past the right edge
+    and were silently CLIPPED by the root ``<svg>``'s own default
+    viewport (never a parse error -- the text nodes are still there, they
+    just draw off-canvas). Every ``<text>`` element's own ``x`` must sit
+    inside ``[vb_x, vb_x+vb_w]`` -- a necessary (not sufficient, since
+    this doesn't account for the string's own rendered width) but cheap
+    geometric check that catches the exact defect found here (a title x
+    at ``vb_x+1`` is always inside; the point is the viewBox itself must
+    have grown wide enough that a short left-anchor start is honest about
+    what unfolds from it)."""
+    for grid, extra in (
+        ([3, 3], {}),
+        ([9, 9], {}),
+        ([4, 4], {"variant": "rim"}),
+        ([3, 3], {"pad_sizes": [{"cells": [[0, 0], [0, 1]]}]}),
+    ):
+        exp = _ewod_expansion(grid=grid, **extra)
+        text = svg.render_capability_map(
+            exp.ledger, exp.canonical_params, title="a reasonably long title here"
+        )
+        root = _parse(text)
+        vb_x, vb_y, vb_w, vb_h = (float(v) for v in root.attrib["viewBox"].split())
+        for el in root.iter():
+            if el.tag.endswith("text") and "x" in el.attrib:
+                x = float(el.attrib["x"])
+                assert vb_x - 1e-6 <= x <= vb_x + vb_w + 1e-6, (grid, el.attrib)

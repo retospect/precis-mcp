@@ -99,6 +99,16 @@ DEFAULT_INCLUDE: frozenset[str] = frozenset(
 _UNASSIGNED_STROKE = "#999999"
 _UNASSIGNED_DASH = "1,1.5"
 
+#: :func:`render_capability_map` palette — deliberately its own set, not
+#: reused from :data:`_LAYER_PALETTE` (this view has no copper layers, only
+#: usable/unusable/reserved STATUS), still Okabe-Ito colourblind-safe.
+_CAP_USABLE = "#009E73"  # bluish green -- electrode escapes fine
+_CAP_UNUSABLE = "#D55E00"  # vermillion -- no plaza / reserved-out
+_CAP_PLAZA_USED = "#0072B2"  # blue -- slot claimed by an electrode
+_CAP_PLAZA_RESERVED = "#CC79A7"  # reddish purple -- slot withheld
+_CAP_PLAZA_FREE = "#FFFFFF"  # white -- slot free
+_CAP_VIA = "#000000"
+
 
 # ─────────────────────────────────────────────────────────────────────
 # low-level formatting — deterministic, byte-stable across re-renders
@@ -199,6 +209,9 @@ def _stroke_el(
 
 def _pad_el(pad: dict[str, Any], *, fill: str) -> str:
     shape = pad.get("shape", "circle")
+    if shape == "polygon" and pad.get("poly"):
+        pts = " ".join(f"{_fmt(float(p[0]))},{_fmt(float(p[1]))}" for p in pad["poly"])
+        return f'<polygon points="{pts}" fill="{fill}"/>'
     x, y = float(pad["x"]), float(pad["y"])
     if shape == "circle":
         r = float(pad["w"]) / 2
@@ -692,4 +705,221 @@ def render_sketch(
     return _wrap_svg(vb_x, vb_y, vb_w, vb_h, "".join(p for p in body if p))
 
 
-__all__ = ["DEFAULT_INCLUDE", "render_board", "render_sketch"]
+#: ``ewod_pad_array`` slot direction -> unit vector, matching
+#: :mod:`precis.pcb.generators`'s own ``_DIRECTIONS`` naming.
+_CAP_DIR_UNIT: dict[str, tuple[float, float]] = {
+    "N": (0.0, -1.0),
+    "S": (0.0, 1.0),
+    "E": (1.0, 0.0),
+    "W": (-1.0, 0.0),
+    "NE": (1.0, -1.0),
+    "NW": (-1.0, -1.0),
+    "SE": (1.0, 1.0),
+    "SW": (-1.0, 1.0),
+}
+
+
+def render_capability_map(
+    ledger: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    title: str | None = None,
+    margin_mm: float = 8.0,
+) -> str:
+    """The ``ewod_pad_array`` capability map (pcb-ewod-multitile Slice 2):
+    usable vs unusable/reserved electrodes, per-plaza slot allocation
+    (used/free/reserved), pin names and computed sizing figures — a
+    schematic overview off the generator's own ledger + canonical params
+    (:attr:`precis.pcb.generators.GeneratorExpansion.ledger` /
+    ``.canonical_params``, the same shape :meth:`precis.store._pcb_ops.
+    PcbMixin.pcb_generators_for` round-trips), **not** the exact
+    fab-accurate zigzag geometry (:mod:`precis.pcb.generators`'s own
+    ``_electrode_polygon`` owns that — ``view='svg' args={'level':'fab'}``
+    is the render that must match the artefact bit-for-bit). This view
+    draws a plain square per grid cell so the ledger's own usable/
+    reserved/plaza-slot STATUS is legible at a glance rather than buried
+    in tooth geometry — "found by looking" per the kind's own DoD needs a
+    figure the eye doesn't have to squint through to answer "which pads
+    can I actually drive".
+
+    Every electrode's own escape via (``ledger['pads'][pin]['via']``, both
+    ``full`` and ``rim`` variants carry one) is drawn as a small dot
+    connected to the pad centre by a thin line, whether or not that pad
+    sits next to a tracked ``ledger['plazas']`` entry (``rim``'s hollow
+    interior has no plaza dict at all — see :mod:`precis.pcb.generators`'s
+    own module docstring — so the via dot is the ONLY visual confirmation
+    a rim board's escape geometry exists at all)."""
+    rows, cols = int(ledger["grid"][0]), int(ledger["grid"][1])
+    pitch = float(params.get("pitch") or 2.0)
+    half = float(params.get("half") or pitch / 2.0)
+    slot_radius = float(params.get("slot_radius") or half * 0.6)
+
+    def cx(c: float) -> float:
+        return (c - (cols - 1) / 2.0) * pitch
+
+    def cy(r: float) -> float:
+        return (r - (rows - 1) / 2.0) * pitch
+
+    pads = ledger.get("pads") or {}
+    plazas = ledger.get("plazas") or {}
+    gap_mm = float(params.get("gap") or 0.0)
+    body: list[str] = []
+    pad_extents: list[tuple[float, float, float, float]] = []
+
+    for pin, info in sorted(pads.items()):
+        r, c = float(info["row"]), float(info["col"])
+        # A ``pad_sizes``-merged pad's ledger row/col is its span's own
+        # top-left cell (precis.pcb.generators._expand_ewod_pad_array);
+        # ``span`` (``[rows, cols]``, absent/``[1, 1]`` for an ordinary
+        # single-cell pad) sizes and re-centres the drawn rect over the
+        # WHOLE span rather than assuming one grid cell per pin (a merged
+        # pad has exactly one ledger entry, not one per covered cell).
+        span_rows, span_cols = (float(v) for v in (info.get("span") or [1, 1]))
+        x, y = cx(c + (span_cols - 1) / 2.0), cy(r + (span_rows - 1) / 2.0)
+        half_x = (span_cols * pitch - gap_mm) / 2.0
+        half_y = (span_rows * pitch - gap_mm) / 2.0
+        label_half = min(half_x, half_y)
+        pad_extents.append((x - half_x, x + half_x, y - half_y, y + half_y))
+        usable = bool(info.get("usable", True))
+        fill = _CAP_USABLE if usable else _CAP_UNUSABLE
+        body.append(
+            f'<rect x="{_fmt(x - half_x)}" y="{_fmt(y - half_y)}" '
+            f'width="{_fmt(2 * half_x)}" height="{_fmt(2 * half_y)}" '
+            f'fill="{fill}" fill-opacity="0.55" stroke="#000000" stroke-width="0.03"/>'
+        )
+        body.append(
+            f'<text x="{_fmt(x)}" y="{_fmt(y)}" font-size="{_fmt(max(label_half * 0.5, 0.4))}" '
+            'font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">'
+            f"{_esc(pin)}</text>"
+        )
+        if not usable and info.get("reason"):
+            body.append(
+                f'<text x="{_fmt(x)}" y="{_fmt(y + label_half * 0.75)}" '
+                f'font-size="{_fmt(max(label_half * 0.28, 0.25))}" font-family="sans-serif" '
+                f'text-anchor="middle">{_esc(str(info["reason"]))}</text>'
+            )
+        via = info.get("via")
+        if via:
+            vx, vy = float(via["x"]), float(via["y"])
+            body.append(
+                f'<line x1="{_fmt(x)}" y1="{_fmt(y)}" x2="{_fmt(vx)}" y2="{_fmt(vy)}" '
+                'stroke="#555555" stroke-width="0.02"/>'
+            )
+            body.append(
+                f'<circle cx="{_fmt(vx)}" cy="{_fmt(vy)}" r="{_fmt(max(label_half * 0.1, 0.05))}" '
+                f'fill="{_CAP_VIA}"/>'
+            )
+
+    dot_r = max(half * 0.12, 0.05)
+    for slot_key, plaza in sorted(plazas.items()):
+        r, c = float(plaza["row"]), float(plaza["col"])
+        x, y = cx(c), cy(r)
+        body.append(
+            f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(slot_radius * 1.3)}" '
+            'fill="none" stroke="#888888" stroke-width="0.03" stroke-dasharray="0.2,0.2"/>'
+        )
+        for direction, slot in sorted((plaza.get("slots") or {}).items()):
+            status = str(slot.get("status") or "free")
+            color = {"used": _CAP_PLAZA_USED, "reserved": _CAP_PLAZA_RESERVED}.get(
+                status, _CAP_PLAZA_FREE
+            )
+            if direction == "C":
+                dx, dy = 0.0, 0.0
+            else:
+                ux, uy = _CAP_DIR_UNIT.get(direction, (0.0, 0.0))
+                n = math.hypot(ux, uy) or 1.0
+                dx, dy = ux / n * slot_radius, uy / n * slot_radius
+            body.append(
+                f'<circle cx="{_fmt(x + dx)}" cy="{_fmt(y + dy)}" r="{_fmt(dot_r)}" '
+                f'fill="{color}" stroke="#000000" stroke-width="0.02"/>'
+            )
+        body.append(
+            f'<text x="{_fmt(x)}" y="{_fmt(y - slot_radius * 1.3 - 0.3)}" '
+            f'font-size="{_fmt(max(half * 0.3, 0.3))}" font-family="sans-serif" '
+            f'text-anchor="middle">{_esc(slot_key)}</text>'
+        )
+
+    if pad_extents:
+        minx = min(e[0] for e in pad_extents)
+        maxx = max(e[1] for e in pad_extents)
+        miny = min(e[2] for e in pad_extents)
+        maxy = max(e[3] for e in pad_extents)
+    else:
+        minx = maxx = miny = maxy = 0.0
+
+    summary = ledger.get("summary") or {}
+    info_lines = [
+        title or "EWOD capability map",
+        f"grid {rows}x{cols} {ledger.get('variant', 'full')} — "
+        f"{summary.get('pads_usable', '?')}/{summary.get('pads_total', '?')} usable, "
+        f"{summary.get('plazas', '?')} plaza(s)",
+        f"pitch {_fmt(pitch)}mm  gap {_fmt(float(params.get('gap') or 0.0))}mm  "
+        f"via {_fmt(float(params.get('via_dia') or 0.0))}/"
+        f"{_fmt(float(params.get('via_drill') or 0.0))}mm  "
+        f"hv_separation {_fmt(float(params.get('hv_separation') or 0.0))}mm",
+    ]
+    legend = [
+        (_CAP_USABLE, "usable electrode"),
+        (_CAP_UNUSABLE, "unusable (no plaza / reserved)"),
+        (_CAP_PLAZA_USED, "plaza slot: used"),
+        (_CAP_PLAZA_RESERVED, "plaza slot: reserved"),
+        (_CAP_PLAZA_FREE, "plaza slot: free"),
+    ]
+
+    # crude but sufficient monospace-ish width estimate (no text-measurement
+    # library here) -- 0.55em/char is a standard sans-serif average.
+    def _text_w(s: str, font_size: float) -> float:
+        return len(s) * font_size * 0.55
+
+    # Title/summary/sizing (3 lines) + a 5-row colour legend all live in a
+    # DEDICATED top margin, stacked at a FIXED mm line-height from the
+    # viewBox's own top-left corner (the same fixed-offset-from-corner
+    # idiom :func:`render_sketch` already uses for its title) — never a
+    # side-by-side row that grows with label length (an earlier version of
+    # this function did that for the legend and ran the later swatches
+    # straight off the right edge of the viewBox on anything but the
+    # widest boards). A bottom margin gets only the scale bar. The
+    # viewBox WIDTH must be at least as wide as the longest text line
+    # (title/summary/sizing/legend), not just the pad grid + margin — a
+    # small array (a 9x9 field at 2mm pitch is only 18mm wide) has plenty
+    # of text but very little board, and text drawn past the root
+    # ``<svg>``'s own viewBox edge is CLIPPED by the default UA viewport
+    # (round-5 stress-test finding: the summary line silently vanished
+    # past "usable," on anything smaller than ~40mm wide).
+    n_legend_rows = len(legend)
+    line_h = 2.0
+    top_margin = 3.0 + (3 + n_legend_rows) * line_h
+    bottom_margin = 6.0
+    needed_text_w = max(
+        [_text_w(line, 1.8) for line in info_lines]
+        + [1.8 + _text_w(label, 1.4) for _, label in legend]
+    )
+    content_w = (maxx - minx) + 2 * margin_mm
+    vb_w = max(content_w, needed_text_w + 2 * margin_mm)
+    vb_x = minx - margin_mm - max(0.0, (vb_w - content_w) / 2.0)
+    vb_y = miny - top_margin
+    vb_h = (maxy - miny) + top_margin + bottom_margin
+
+    for i, line in enumerate(info_lines):
+        body.append(
+            f'<text x="{_fmt(vb_x + 1)}" y="{_fmt(vb_y + 3 + i * line_h)}" '
+            f'font-size="1.8" font-family="sans-serif">{_esc(line)}</text>'
+        )
+
+    legend_y0 = vb_y + 3 + len(info_lines) * line_h
+    for i, (color, label) in enumerate(legend):
+        row_y = legend_y0 + i * line_h
+        body.append(
+            f'<rect x="{_fmt(vb_x + 1)}" y="{_fmt(row_y - 1.2)}" width="1.4" height="1.4" '
+            f'fill="{color}" stroke="#000000" stroke-width="0.02"/>'
+        )
+        body.append(
+            f'<text x="{_fmt(vb_x + 2.8)}" y="{_fmt(row_y)}" font-size="1.4" '
+            f'font-family="sans-serif">{_esc(label)}</text>'
+        )
+
+    body.append(_scale_bar(vb_x, vb_y, vb_w, vb_h))
+    return _wrap_svg(vb_x, vb_y, vb_w, vb_h, "".join(body))
+
+
+__all__ = ["DEFAULT_INCLUDE", "render_board", "render_capability_map", "render_sketch"]

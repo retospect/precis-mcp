@@ -133,6 +133,8 @@ def build_ir(
     *,
     outline: list[list[float]] | None = None,
     mounting_holes: tuple[pcb_ir.MountingHole, ...] = (),
+    footprints_by_lcsc: dict[str, dict[str, Any]] | None = None,
+    local_footprints_by_name: dict[str, dict[str, Any]] | None = None,
 ) -> pcb_ir.PcbIR:
     """Build a fresh L0(+L3) IR from a :meth:`Store.pcb_graph` payload.
     ``outline`` (see :func:`outline_from_features`) is optional — a caller
@@ -150,19 +152,68 @@ def build_ir(
     :func:`precis.pcb.ir._parse_instance_groups`) into
     :attr:`~precis.pcb.ir.PcbIR.inst_group` and friends; this function has
     no group-specific logic of its own, it just forwards whatever the
-    graph rows already carry, same as every other per-instance field."""
+    graph rows already carry, same as every other per-instance field.
+
+    ``footprints_by_lcsc`` (:meth:`Store.pcb_footprints_for`) and
+    ``local_footprints_by_name`` (:meth:`Store.pcb_local_footprints_for`)
+    are both optional and both feed exactly one thing:
+    :func:`apply_real_pin_offsets`, so a pin whose part has a real
+    footprint gets its REAL position instead of the landpattern guess
+    (gripe 338983). Wired HERE rather than at each caller because every IR
+    consumer that reads a pin position — DRC, the router, ratsnest,
+    courtyards — reads it off the IR: one rule, one call site, which is
+    the discipline this package's recurring defect keeps punishing.
+    Omitting them is still valid (a unit test with no store, the same
+    behaviour as before this existed): every pin then stays synthesized,
+    which :attr:`~precis.pcb.ir.PcbIR.pin_offsets_synthesized` says out
+    loud."""
     board = graph.get("board") or {}
     stackup = board.get("stackup")
-    return pcb_ir.from_graph(
+    ir = pcb_ir.from_graph(
         sorted_graph(graph),
         stackup=stackup,
         outline=outline,
         mounting_holes=mounting_holes,
     )
+    if footprints_by_lcsc or local_footprints_by_name:
+        apply_real_pin_offsets(
+            ir,
+            footprints_by_refdes(
+                ir,
+                footprints_by_lcsc or {},
+                local_footprints_by_name=local_footprints_by_name,
+                local_names_by_refdes=local_footprint_names_by_refdes(graph),
+            ),
+        )
+    return ir
+
+
+def local_footprint_names_by_refdes(graph: dict[str, Any]) -> dict[str, str]:
+    """``{refdes: footprint name}`` for every instance in ``graph`` with NO
+    linked catalog part (``part_lcsc`` falsy) but a ``footprint`` name —
+    pcb-ewod-multitile Slice 1's authored-copper join key
+    (``pcb_components.footprint``, selected by :meth:`Store.pcb_graph`).
+    Restricted to partless instances so a catalog part's own footprint
+    LABEL (e.g. ``"SOT-23"``) is never mistaken for a
+    ``pcb_local_footprints`` name — a component picks exactly one
+    footprint origin, same rule :func:`precis.pcb.padplace.board_pads`
+    documents."""
+    out: dict[str, str] = {}
+    for inst in graph.get("instances") or []:
+        if inst.get("part_lcsc"):
+            continue
+        name = inst.get("footprint")
+        if name:
+            out[str(inst["refdes"])] = str(name)
+    return out
 
 
 def footprints_by_refdes(
-    ir: pcb_ir.PcbIR, footprints_by_lcsc: dict[str, dict[str, Any]]
+    ir: pcb_ir.PcbIR,
+    footprints_by_lcsc: dict[str, dict[str, Any]],
+    *,
+    local_footprints_by_name: dict[str, dict[str, Any]] | None = None,
+    local_names_by_refdes: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Remap :meth:`~precis.store.Store.pcb_footprints_for`'s C-number-keyed
     cache onto the refdes-keyed shape :func:`precis.pcb.realize.pad_geometry`
@@ -184,16 +235,112 @@ def footprints_by_refdes(
     pad_geometry`'s own per-pin fallback to synthesized geometry already
     handles "no real data for this instance" correctly; this function
     doesn't need a second way to say the same thing.
+
+    ``local_footprints_by_name``/``local_names_by_refdes`` (pcb-ewod-
+    multitile Slice 1, both optional) are the design-local counterpart:
+    :meth:`~precis.store.Store.pcb_local_footprints_for`'s cache and
+    :func:`local_footprint_names_by_refdes`'s join, checked only for an
+    instance with no catalog-part match above — a component never has
+    both.
     """
     out: dict[str, dict[str, Any]] = {}
+    local_footprints_by_name = local_footprints_by_name or {}
+    local_names_by_refdes = local_names_by_refdes or {}
     for inst_id in range(ir.n_instances):
+        refdes = str(ir.instance_refdes[inst_id])
         lcsc = ir.instance_part_lcsc[inst_id]
-        if not lcsc:
-            continue
-        fp = footprints_by_lcsc.get(str(lcsc))
+        fp = footprints_by_lcsc.get(str(lcsc)) if lcsc else None
+        if fp is None:
+            name = local_names_by_refdes.get(refdes)
+            if name:
+                fp = local_footprints_by_name.get(name)
         if fp:
-            out[str(ir.instance_refdes[inst_id])] = fp
+            out[refdes] = fp
     return out
+
+
+def _real_pin_offsets(fp: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """One footprint's REAL per-pin pad CENTER, keyed by netlist pin name —
+    footprint-local mm, unrotated and unmirrored, which is exactly
+    :attr:`~precis.pcb.ir.PcbIR.pin_dx`'s own frame (:func:`~precis.pcb.ir.
+    pin_point` applies the instance pose itself).
+
+    ``fp`` is a ``part_footprints``/``pcb_local_footprints`` row
+    (``{"pads": [...], "pin_map": {...}}``) — every pad in either carries
+    ``x``/``y``, including a ``shape: 'polygon'`` one, whose x/y is its
+    vertex ring's bbox center (``precis.store._pcb_ops.
+    _normalize_local_footprint_pad`` puts it there for exactly this class
+    of reader). No transform is needed or wanted here, so this does NOT go
+    through :func:`precis.pcb.padplace.place_footprint_pads` the way
+    :func:`precis.pcb.realize._real_pad_sizes` must for w/h.
+
+    **FIRST pad wins per pin**, the same rule ``_real_pad_sizes`` uses for
+    size/shape/poly — and deliberately the same ORDER, so a pin with
+    several pads (an EWOD electrode emits body + escape stub + via, all
+    one pin) gets its position from the same pad that supplied its
+    outline. Picking a different one would put a real polygon at another
+    pad's center, which is worse than the synthesized guess this replaces.
+    """
+    pin_map = fp.get("pin_map") or {}
+    out: dict[str, tuple[float, float]] = {}
+    for pad in fp.get("pads") or []:
+        entry = pin_map.get(str(pad.get("number")))
+        name = (
+            str(entry.get("name"))
+            if isinstance(entry, dict) and entry.get("name") is not None
+            else str(pad.get("number") or "")
+        )
+        if not name or name in out:
+            continue
+        try:
+            out[name] = (float(pad["x"]), float(pad["y"]))
+        except (KeyError, TypeError, ValueError):
+            continue  # a malformed pad is an absent one, never a guess at 0,0
+    return out
+
+
+def apply_real_pin_offsets(
+    ir: pcb_ir.PcbIR, footprints: dict[str, dict[str, Any]]
+) -> int:
+    """Overwrite every pin's synthesized land-pattern offset with its REAL
+    footprint coordinate where one exists; returns how many pins changed.
+
+    The POSITION half of the same join :func:`footprints_by_refdes` already
+    serves for pad SIZE (:func:`precis.pcb.realize.pad_geometry`) — same
+    refdes-keyed dict in, per-pin override out, same "no match ⇒ keep the
+    synthesized bound" fallback for a part with no cached/authored
+    footprint or a pin its ``pin_map`` doesn't cover. gripe 338983: pad
+    size was real while pad position stayed a guess, so DRC clearance, the
+    maze router's pad claims, connectivity and courtyard hulls all measured
+    correctly-sized polygons anchored at the wrong places — harmless-looking
+    for a catalog part whose label names a package family the synthesis
+    approximates, meaningless for an authored custom footprint (an
+    ``ewod_pad_array`` electrode sat ~10mm from its real position).
+
+    Mutates through :meth:`~precis.pcb.ir.PcbIR.set_pin_offset` (the
+    sanctioned mutator, which owns the dirty-mask cascade) rather than
+    assigning into the arrays, and is idempotent: re-running with the same
+    footprints writes the same coordinates.
+    """
+    if not footprints:
+        return 0
+    real_by_inst: dict[int, dict[str, tuple[float, float]]] = {}
+    for inst_id in range(ir.n_instances):
+        fp = footprints.get(str(ir.instance_refdes[inst_id]))
+        if fp and fp.get("pads"):
+            real_by_inst[inst_id] = _real_pin_offsets(fp)
+    if not real_by_inst:
+        return 0
+    changed = 0
+    for pid in range(ir.n_pins):
+        offset = real_by_inst.get(int(ir.pin_instance[pid]), {}).get(
+            str(ir.pin_label[pid])
+        )
+        if offset is None:
+            continue
+        ir.set_pin_offset(pid, offset[0], offset[1])
+        changed += 1
+    return changed
 
 
 def signal_layers(ir: pcb_ir.PcbIR) -> list[int]:
@@ -408,11 +555,13 @@ def content_hash(graph: dict[str, Any], params: dict[str, Any]) -> str:
 
 __all__ = [
     "apply_pin_swap_overrides",
+    "apply_real_pin_offsets",
     "apply_route_overrides",
     "build_ir",
     "content_hash",
     "extract_sketch",
     "footprints_by_refdes",
+    "local_footprint_names_by_refdes",
     "mounting_holes_from_features",
     "outline_from_features",
     "pin_swap_diff",

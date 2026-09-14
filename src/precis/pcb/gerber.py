@@ -34,12 +34,37 @@ output largely as-is once it exists::
          "polygon": [[x, y], ...]},
       ],
       "pads": [
-        {"layer": "F.Cu", "net": "3V3", "shape": "circle"|"rect"|"obround",
-         "x": .., "y": .., "w": .., "h": ..,   # h ignored for "circle"
+        {"layer": "F.Cu", "net": "3V3",
+         "shape": "circle"|"rect"|"obround"|"polygon",
+         "x": .., "y": .., "w": .., "h": ..,   # h ignored for "circle";
+         # w/h are an informational bbox only for "polygon" (the real
+         # shape is "poly" below) -- kept so a courtyard/DRC bbox
+         # fallback still has something to read.
+         "poly": [[x, y], ...],   # REQUIRED when shape == "polygon" (a
+         # closed-or-open vertex ring, board mm) -- rendered as a
+         # G36/G37 region fill, never an aperture flash
+         # (pcb-ewod-multitile Slice 1: `gerber._emit_pad`).
+         "role": "solderable"|"electrode"|"probe",   # optional, default
+         # "solderable" when omitted -- carried straight through from an
+         # authored local footprint (precis.pcb.padplace), absent on an
+         # EasyEDA-parsed catalog pad.
+         "mask": "open"|"covered", "paste": "none"|"full",   # optional
+         # per-pad intent (same Slice 1); a "covered" pad gets NO
+         # per-pad soldermask opening (see `mask_open_regions` below),
+         # "none" paste gets no stencil aperture.
          "refdes": "U1", "pin": "3"},   # OPTIONAL — see the X2 identity
          # note below; today's realizer-built pad dicts (realize.pads_for_ir)
          # do not carry these two, so component-pin identity is written
          # only when a caller supplies it.
+      ],
+      "mask_open_regions": [   # optional (Slice 1) -- one soldermask
+        {"side": "top"|"bottom", "polygon": [[x, y], ...]},   # opening
+        # PER REGION rather than per pad: an EWOD electrode field is
+        # opened as one region covering pads AND the gaps between them
+        # (a ~100um gap can't hold a mask dam, and mask edges are
+        # topography the droplet pins on) -- pads under it are normally
+        # authored "mask": "covered" so they get no competing per-pad
+        # opening. `soldermask_gerber` emits this as its own region fill.
       ],
       "silkscreen": {"top": [<draw>, ...], "bottom": [<draw>, ...]},  # <draw>
       # is normally the same {"width_mm", "segments"} shape as a track,
@@ -70,6 +95,8 @@ from __future__ import annotations
 import io
 import zipfile
 from typing import Any
+
+from shapely.geometry import Polygon as _ShapelyPolygon  # type: ignore[import-untyped]
 
 # RS-274X format spec: 4 integer digits, 6 decimal digits, leading zeros
 # omitted, absolute coordinates — %FSLAX46Y46*%. Every coordinate is an
@@ -136,6 +163,10 @@ def _aperture_for_pad(pad: dict[str, Any], apertures: _ApertureTable) -> int:
     raise ValueError(f"unknown pad shape {shape!r}")
 
 
+def _is_polygon_pad(pad: dict[str, Any]) -> bool:
+    return pad.get("shape") == "polygon" and bool(pad.get("poly"))
+
+
 # ─────────────────────────────────────────────────────────────────────
 # X2 object attributes — %TO.N (net) / %TO.P (component pin), %TD (clear)
 # ─────────────────────────────────────────────────────────────────────
@@ -186,6 +217,19 @@ def _emit_flash(
     aid = _aperture_for_pad(pad, apertures)
     body.append(f"D{aid}*")
     body.append(f"{_coord(float(pad['x']), float(pad['y']))}D03*")
+
+
+def _emit_pad(pad: dict[str, Any], apertures: _ApertureTable, body: list[str]) -> None:
+    """One pad, either an aperture flash (circle/rect/obround,
+    :func:`_emit_flash`) or, for a ``shape: "polygon"`` pad (authored
+    copper — pcb-ewod-multitile Slice 1), a ``G36``/``G37`` region fill
+    off its ``poly`` vertex ring — region fill over an aperture macro
+    per the backlog's own open-questions call (simplest, and the writer
+    already owns this primitive for pours/silk regions)."""
+    if _is_polygon_pad(pad):
+        _emit_region_ring([(float(p[0]), float(p[1])) for p in pad["poly"]], body)
+        return
+    _emit_flash(pad, apertures, body)
 
 
 def _emit_stroke(
@@ -282,6 +326,15 @@ def _outline_draw(outline: Any) -> dict[str, Any]:
 
 def _expand_pad(pad: dict[str, Any], margin_mm: float) -> dict[str, Any]:
     out = dict(pad)
+    if _is_polygon_pad(pad):
+        # Grow the ring itself (shapely buffer, mitred like every other
+        # outward offset this package computes — `ir.py`'s courtyard
+        # offset is the same join style) rather than the w/h it has no
+        # meaningful use for.
+        ring = _ShapelyPolygon([(float(p[0]), float(p[1])) for p in pad["poly"]])
+        grown = ring.buffer(margin_mm, join_style=2)
+        out["poly"] = [[float(x), float(y)] for x, y in grown.exterior.coords]
+        return out
     out["w"] = float(pad["w"]) + 2 * margin_mm
     if pad.get("shape", "circle") != "circle":
         out["h"] = float(pad.get("h", pad["w"])) + 2 * margin_mm
@@ -362,7 +415,7 @@ def copper_gerber(model: dict[str, Any], layer: str) -> str:
         if pad.get("layer") == layer:
             _emit_with_attrs(
                 body,
-                lambda pad=pad: _emit_flash(pad, apertures, body),
+                lambda pad=pad: _emit_pad(pad, apertures, body),
                 net=pad.get("net"),
                 refdes=pad.get("refdes"),
                 pin=pad.get("pin"),
@@ -382,15 +435,29 @@ def soldermask_gerber(model: dict[str, Any], side: str) -> str:
     :func:`precis.pcb.silk.silk_clearance_mm` derives every courtyard's
     size by starting from this same swell, so a mask film drawn with one
     expansion while silk was placed against another is two numbers for one
-    physical edge — the drift this key exists to prevent."""
+    physical edge — the drift this key exists to prevent.
+
+    A pad carrying ``mask: "covered"`` (pcb-ewod-multitile Slice 1) gets
+    NO per-pad opening here — soldermask stays over it, either because it
+    is genuinely meant to stay covered, or because a field-wide
+    ``model["mask_open_regions"]`` entry opens it instead (an electrode
+    field: "one region covering pads AND gaps", not per-pad swollen
+    openings with a mask dam between every neighbour — see that key's own
+    handling below)."""
     layers: list[str] = model["layers"]
     layer = layers[0] if side == "top" else layers[-1]
     expansion = float(model.get("soldermask_expansion_mm", SOLDERMASK_EXPANSION_MM))
     apertures = _ApertureTable()
     body: list[str] = []
     for pad in model.get("pads", []):
-        if pad.get("layer") == layer:
-            _emit_flash(_expand_pad(pad, expansion), apertures, body)
+        if pad.get("layer") == layer and pad.get("mask") != "covered":
+            _emit_pad(_expand_pad(pad, expansion), apertures, body)
+    for region in model.get("mask_open_regions") or []:
+        if region.get("side") != side:
+            continue
+        poly = [(float(p[0]), float(p[1])) for p in region.get("polygon") or []]
+        if len(poly) >= 3:
+            _emit_region_ring(poly, body)
     return _assemble(f"Soldermask,{'Top' if side == 'top' else 'Bot'}", apertures, body)
 
 
@@ -407,6 +474,10 @@ def solderpaste_gerber(model: dict[str, Any], side: str) -> str:
       carrying a ``drill`` is skipped.
     - **Vias get no aperture either** — same reason, and they are tented
       anyway (see :func:`soldermask_gerber`).
+    - **A pad carrying ``paste: "none"``** (pcb-ewod-multitile Slice 1) is
+      likewise skipped — an EWOD electrode is bare ENIG under a
+      parylene/oil dielectric, never stencil-printed; no per-shape special
+      case, the same explicit intent as ``mask``.
 
     Apertures are 1:1 with the pad. Real stencil houses shrink fine-pitch
     apertures (typically 5-15% area reduction) to control solder volume,
@@ -425,7 +496,9 @@ def solderpaste_gerber(model: dict[str, Any], side: str) -> str:
             continue
         if pad.get("drill"):
             continue
-        _emit_flash(pad, apertures, body)
+        if pad.get("paste") == "none":
+            continue
+        _emit_pad(pad, apertures, body)
     return _assemble(
         f"SolderPaste,{'Top' if side == 'top' else 'Bot'}", apertures, body
     )

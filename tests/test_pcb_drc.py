@@ -328,6 +328,66 @@ def test_check_annular_ring_none_field_never_crashes():
     assert drc.check_annular_ring(model, aluminum) == []
 
 
+def test_check_annular_ring_fires_on_a_drilled_pad_hole():
+    """pcb-ewod-multitile Slice 2 round 3: a plaza via is, BY DESIGN, a
+    drilled THT footprint pad, never a ``model["copper"]`` via row (see
+    ``precis.pcb.generators``'s own module docstring) -- so a pad with
+    ``drill`` set is the ONLY representation its annular ring ever gets.
+    Before this fix ``check_annular_ring`` iterated ``model["copper"]``
+    vias exclusively, so a too-small plaza-via ring was a check that could
+    never fire; a real ordinary catalog THT pad (e.g. a connector) with
+    a marginal ring was equally invisible to it."""
+    jlc_min = _CAP4.jlc_min["annular_ring_mm"]
+    assert jlc_min is not None
+    bad = _pad("E1", "F.Cu", 0.0, 0.0, w=0.30, drill=0.30 - jlc_min * 0.4)
+    good = _pad("E2", "F.Cu", 5.0, 5.0, w=1.2, drill=0.3)
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [bad, good]}
+    findings = drc.check_annular_ring(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert findings[0].where.startswith("pad[E1]")
+
+
+def test_check_annular_ring_dedupes_a_drilled_pad_flashed_on_every_layer():
+    """:mod:`precis.pcb.padplace`'s own ``place_footprint_pads`` flashes a
+    THT pad once PER COPPER LAYER -- the SAME physical hole must be
+    ring-checked once, not once per layer."""
+    jlc_min = _CAP4.jlc_min["annular_ring_mm"]
+    assert jlc_min is not None
+    bad_dia, bad_drill = 0.30, 0.30 - jlc_min * 0.4
+    pads = [
+        _pad("E1", layer, 0.0, 0.0, w=bad_dia, drill=bad_drill)
+        for layer in ("F.Cu", "In1.Cu", "In2.Cu", "B.Cu")
+    ]
+    model = {"layers": ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"], "copper": [], "pads": pads}
+    findings = drc.check_annular_ring(model, _CAP4)
+    assert len(findings) == 1
+
+
+def test_check_annular_ring_pad_ring_uses_the_narrow_axis():
+    """A rect/obround THT pad's ring is thinnest on its NARROW dimension --
+    checked against ``min(w, h)``, the conservative direction (unlike
+    :func:`drc.check_via_pad_keepout`'s deliberately-opposite ``max(w, h)``
+    keep-out-radius convention, which over-states the pad on purpose)."""
+    jlc_min = _CAP4.jlc_min["annular_ring_mm"]
+    assert jlc_min is not None
+    drill = 0.5
+    # w alone would clear the floor; h alone would not.
+    good_w = drill + 2.0 * jlc_min + 0.05
+    bad_h = drill + 2.0 * (jlc_min * 0.4)
+    pad = {**_pad("E1", "F.Cu", 0.0, 0.0, w=good_w, h=bad_h), "drill": drill}
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [pad]}
+    findings = drc.check_annular_ring(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+
+
+def test_check_annular_ring_quiet_on_an_undrilled_pad():
+    pad = _pad("E1", "F.Cu", 0.0, 0.0, w=1.0)
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [pad]}
+    assert drc.check_annular_ring(model, _CAP4) == []
+
+
 # ── NPTH clearance ────────────────────────────────────────────────────
 
 
@@ -365,8 +425,9 @@ def _pad(
     w: float,
     h: float | None = None,
     shape: str = "rect",
+    drill: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    pad: dict[str, Any] = {
         "layer": layer,
         "net": net,
         "shape": shape,
@@ -375,6 +436,9 @@ def _pad(
         "w": w,
         "h": w if h is None else h,
     }
+    if drill is not None:
+        pad["drill"] = drill
+    return pad
 
 
 # ── pads as clearance-checked copper (the user's shorted board: a pad is a
@@ -510,6 +574,78 @@ def test_copper_item_polygon_pad_shapes_are_geometrically_correct():
         )
 
 
+def test_copper_item_polygon_pad_uses_the_authored_ring_not_the_bbox():
+    """pcb-ewod-multitile Slice 1: a polygon pad's real outline, not its
+    w/h bound (which may be zero/stale/unset for a freeform shape)."""
+    triangle = drc._copper_item_polygon(
+        {
+            "ctype": "pad",
+            "shape": "polygon",
+            "w": 0.0,  # deliberately unusable as a bbox
+            "h": 0.0,
+            "poly": [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]],
+        }
+    )
+    assert triangle is not None
+    assert triangle.area == pytest.approx(2.0)
+
+
+def test_copper_item_polygon_pad_degenerate_ring_is_none():
+    assert (
+        drc._copper_item_polygon({"ctype": "pad", "shape": "polygon", "poly": []})
+        is None
+    )
+    assert (
+        drc._copper_item_polygon(
+            {"ctype": "pad", "shape": "polygon", "poly": [[0.0, 0.0], [1.0, 0.0]]}
+        )
+        is None
+    )
+
+
+def test_check_clearance_fires_for_two_overlapping_foreign_net_polygon_pads():
+    """Slice 1 acceptance criterion 5's mechanism: an electrode gap
+    narrower than the fab floor is a clearance error like any other pad
+    pair, DRC never needing to know the shape is a zigzag."""
+    a = {
+        "ctype": "pad",
+        "layer": "F.Cu",
+        "net": "E1",
+        "shape": "polygon",
+        "poly": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    }
+    b = {
+        "ctype": "pad",
+        "layer": "F.Cu",
+        "net": "E2",
+        "shape": "polygon",
+        "poly": [[1.05, 0.0], [2.05, 0.0], [2.05, 1.0], [1.05, 1.0]],
+    }
+    model: dict[str, Any] = {"layers": ["F.Cu"], "copper": [], "pads": [a, b]}
+    findings = drc.check_clearance(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].rule == "clearance" and findings[0].severity == "error"
+
+
+def test_check_clearance_quiet_for_polygon_pads_with_enough_gap():
+    a = {
+        "ctype": "pad",
+        "layer": "F.Cu",
+        "net": "E1",
+        "shape": "polygon",
+        "poly": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    }
+    b = {
+        "ctype": "pad",
+        "layer": "F.Cu",
+        "net": "E2",
+        "shape": "polygon",
+        "poly": [[2.0, 0.0], [3.0, 0.0], [3.0, 1.0], [2.0, 1.0]],
+    }
+    model: dict[str, Any] = {"layers": ["F.Cu"], "copper": [], "pads": [a, b]}
+    assert drc.check_clearance(model, _CAP4) == []
+
+
 # ── via-to-pad keep-out ─────────────────────────────────────────────────
 
 
@@ -569,6 +705,25 @@ def test_check_via_pad_keepout_ignores_a_pad_outside_the_vias_span():
     }
     model = {"layers": ["F.Cu", "B.Cu"], "copper": [via], "pads": [pad]}
     assert drc.check_via_pad_keepout(model, _CAP4) == []
+
+
+def test_check_via_pad_keepout_fires_on_a_polygon_electrode_pad():
+    """pcb-ewod-multitile Slice 2: an EWOD electrode is a ``shape:
+    polygon`` pad. This rule reads a pad's bbox (``w``/``h``), which
+    :meth:`precis.store._pcb_ops.PcbMixin` already fills from the
+    polygon's own vertex extent -- a router-placed via must still be kept
+    off an electrode exactly like any rect/obround pad, no waiver, no
+    special case (round-3 verification that the ``one component, many
+    polygon pads`` architecture didn't quietly drop this protection)."""
+    pad = {
+        **_pad("E1", "F.Cu", 0.0, 0.0, w=1.0, h=1.0, shape="polygon"),
+        "poly": [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]],
+    }
+    via = _via("OTHER", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].rule == "via_pad_keepout"
 
 
 def test_check_via_pad_keepout_none_field_never_crashes():

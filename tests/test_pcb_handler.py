@@ -401,14 +401,64 @@ def test_ratsnest_view_stable_despite_unsorted_store_member_order(
     assert pcb.get(id="mst-line", view="ratsnest").body == reversed_body
 
 
-def test_drc_view_before_any_route_run(pcb):
+def test_drc_view_before_any_route_run_and_with_no_cached_footprint_bails(pcb):
     # Geometric DRC (pcb-guided-place-route Slice 8) checks REALIZED copper
-    # (pcb_copper) — before op='route' has ever run there is none, and the
-    # view says so rather than reporting a false "clean" or crashing. See
-    # tests/test_pcb_drc.py for the engine's own rule/oracle coverage.
+    # (pcb_copper) — before op='route' has ever run there is none. Round 4
+    # (docs/backlog/pcb-ewod-multitile.md's decisions log) widened this
+    # view to still run a pads-only pass whenever REAL (non-synthesized)
+    # pad geometry exists (see the next test) — but _DESIGN's parts are
+    # real LCSC numbers with NO `part_footprints` row seeded in this
+    # store, so every pad here is a synthesized BOUND, and the old bail
+    # is still exactly correct: DRC over a dimensionally-plausible guess
+    # is meaningless. See tests/test_pcb_drc.py for the engine's own
+    # rule/oracle coverage.
     pcb.put(id="sensor-node", args=_DESIGN)
     drc = pcb.get(id="sensor-node", view="drc")
     assert "no realized copper yet" in drc.body
+
+
+def test_drc_view_runs_pads_only_before_any_route_when_pads_are_real(pcb):
+    """Round-4 contract (docs/backlog/pcb-ewod-multitile.md's decisions
+    log): a board with REAL (authored-local or cached) pad geometry but
+    no realized copper yet — every net here is fanout-1, so a router
+    would never touch it either way, exactly the ``ewod_pad_array``
+    motivating case — now gets a full pads-only DRC pass instead of "no
+    realized copper yet". The response states the reduced scope
+    explicitly so a clean pads-only pass is never mistaken for a full
+    one."""
+    design = {
+        "footprints": [
+            {
+                "name": "pad1",
+                "pads": [
+                    {
+                        "pin": "1",
+                        "shape": "rect",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "w": 1.0,
+                        "h": 1.0,
+                    }
+                ],
+            }
+        ],
+        "components": [
+            {
+                "refdes": "E1",
+                "label": "electrode",
+                "footprint": "pad1",
+                "x": 0.0,
+                "y": 0.0,
+                "pins": [{"name": "1"}],
+            }
+        ],
+        "nets": [{"name": "N1"}],
+        "connections": [{"net": "N1", "refdes": "E1", "pin": "1"}],
+    }
+    pcb.put(id="real-pads-no-route", args=design)
+    drc = pcb.get(id="real-pads-no-route", view="drc")
+    assert "no realized copper yet" not in drc.body
+    assert "pads-only DRC" in drc.body
 
 
 def test_drc_view_via_caveat_shown_even_on_a_clean_board(pcb):

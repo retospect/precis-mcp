@@ -252,7 +252,7 @@ def _parse_pad(
     rotation = _num(fields[11]) if len(fields) > 11 and fields[11] else 0.0
     drill = round(_to_mm(hole_radius) * 2, 4) if hole_radius > 0 else None
 
-    return {
+    pad: dict[str, Any] = {
         "number": number,
         "shape": shape,
         "x": round(x, 4),
@@ -265,6 +265,36 @@ def _parse_pad(
         "layer": "B.Cu" if layer_id == 2 else "F.Cu",
         "drill": drill,
     }
+    if shape == "POLYGON" and len(fields) > 10 and fields[10]:
+        # field 10 ("points") is the same flat "x1 y1 x2 y2 ..." alphabet
+        # TRACK's own points field uses (:func:`_parse_track`) — a
+        # free-form pad's outline, in the SAME absolute-then-origin-
+        # shifted mm frame as the pad's own x/y above (pcb-ewod-multitile
+        # Slice 1: previously dropped entirely, so a real EasyEDA polygon
+        # pad down-approximated to its w/h RECT bound with no way to tell
+        # the difference between a bound and the fabricated shape).
+        poly = _parse_points_field(fields[10], origin_x, origin_y)
+        if len(poly) >= 3:
+            pad["poly"] = [[round(px, 4), round(py, 4)] for px, py in poly]
+    return pad
+
+
+def _parse_points_field(
+    raw: str, origin_x: float, origin_y: float
+) -> list[tuple[float, float]]:
+    """Decode a flat ``"x1 y1 x2 y2 ..."`` EasyEDA points field into
+    origin-shifted mm pairs — the shared parser :func:`_parse_track` and
+    :func:`_parse_pad` (a ``POLYGON`` pad's outline) both need."""
+    parts = raw.split()
+    pts: list[tuple[float, float]] = []
+    for i in range(0, len(parts) - 1, 2):
+        try:
+            x = _to_mm(_num(parts[i])) - origin_x
+            y = -(_to_mm(_num(parts[i + 1])) - origin_y)
+        except ValueError:
+            continue
+        pts.append((x, y))
+    return pts
 
 
 def _parse_track(
@@ -275,16 +305,7 @@ def _parse_track(
     flat ``x1 y1 x2 y2 ...`` list."""
     if len(fields) < 5 or not fields[4]:
         return []
-    raw = fields[4].split()
-    pts: list[tuple[float, float]] = []
-    for i in range(0, len(raw) - 1, 2):
-        try:
-            x = _to_mm(_num(raw[i])) - origin_x
-            y = -(_to_mm(_num(raw[i + 1])) - origin_y)
-        except ValueError:
-            continue
-        pts.append((x, y))
-    return pts
+    return _parse_points_field(fields[4], origin_x, origin_y)
 
 
 def _courtyard(
@@ -295,8 +316,16 @@ def _courtyard(
     xs: list[float] = []
     ys: list[float] = []
     for pad in pads:
-        xs += [pad["x"] - pad["w"] / 2, pad["x"] + pad["w"] / 2]
-        ys += [pad["y"] - pad["h"] / 2, pad["y"] + pad["h"] / 2]
+        if pad.get("poly"):
+            # A POLYGON pad's own vertex ring is the real extent — its
+            # w/h are whatever bbox EasyEDA happened to also carry, not
+            # necessarily this pad's true bound (an oblong/zigzag outline
+            # can run past a stale or zero w/h).
+            xs += [p[0] for p in pad["poly"]]
+            ys += [p[1] for p in pad["poly"]]
+        else:
+            xs += [pad["x"] - pad["w"] / 2, pad["x"] + pad["w"] / 2]
+            ys += [pad["y"] - pad["h"] / 2, pad["y"] + pad["h"] / 2]
     for x, y in outline:
         xs.append(x)
         ys.append(y)

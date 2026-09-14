@@ -6,7 +6,17 @@ A ``pcb`` design is a slug-addressed ref whose graph lives in the dedicated
 pixels. The verbs map onto the seven-verb surface:
 
 - ``put``    — create / extend a design (``id=`` slug; ``args={components,
-  nets, connections, net_classes}`` — see :meth:`PcbHandler.put`).
+  nets, connections, net_classes, footprints, generators}`` — see
+  :meth:`PcbHandler.put`).
+  ``footprints`` (pcb-ewod-multitile Slice 1) authors named, design-local
+  pad geometry — real copper for a part with no LCSC catalog C-number —
+  referenced by a component's own ``footprint`` field, the same join key
+  a catalog part's own snapshot label already occupies. ``generators``
+  (pcb-ewod-multitile Slice 2) names a COMPUTED component
+  (``{name, generator, params}``, e.g. ``generator='ewod_pad_array'``) —
+  expanded deterministically into components/nets/connections/footprints/
+  features (:mod:`precis.pcb.generators`); re-applying the SAME params is
+  a no-op, changed params retire-and-reinsert the previous expansion.
   Re-runnable. Every design gets a default board (``pcb-guided-place-route``
   Slice 1 — one 4-layer FR-4 board, ``pcb_boards``) on first write; nets are
   electrical-only in v1 (``domain`` != ``'electrical'`` is rejected).
@@ -23,7 +33,10 @@ pixels. The verbs map onto the seven-verb surface:
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
   'feasibility'|'route-status'|'congestion'|'planes'``); ``view='svg'`` — a
   publication-quality vector figure (``args={'level':'board'|'sketch'|'fab'}``,
-  see :mod:`precis.pcb.svg`); or an *export*
+  see :mod:`precis.pcb.svg`); ``view='capability'`` — a generator's
+  capability map (usable/reserved pads, plaza slots, pin names, computed
+  sizing; ``args={'name'?,'format':'svg'|'ledger'}``, pcb-ewod-multitile
+  Slice 2); or an *export*
   (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'|'gerber'`` writes a
   JLCPCB fab artifact — ``'gerber'`` is the full manufacturable bundle
   (gerbers + Excellon, zipped) off our own realizer/pads, never
@@ -128,8 +141,12 @@ _SESSION_VIEWS = ("congestion", "planes")
 #: rubber-band sketch off the IR. See :meth:`PcbHandler._render_svg`.
 #: ``schematic`` is the placement-free sibling: the netlist as a
 #: net-label schematic (:mod:`precis.pcb.schematic`) — renders before the
-#: first ``op='place'`` because it reads intent, not copper.
-_RENDER_VIEWS = ("svg", "schematic")
+#: first ``op='place'`` because it reads intent, not copper. ``capability``
+#: (pcb-ewod-multitile Slice 2) is a generator's own capability map — usable
+#: vs reserved/suppressed pads, plaza slot allocation, pin naming and
+#: computed sizing — off the ``pcb_generators`` ledger, SVG or a
+#: machine-readable table (:meth:`PcbHandler._render_capability`).
+_RENDER_VIEWS = ("svg", "schematic", "capability")
 _OTHER_VIEWS = ("links",)
 _VIEWS = (
     *_PROBE_VIEWS,
@@ -164,9 +181,22 @@ class PcbHandler(Handler):
             "Electronics/PCB design — a netlist + placement graph "
             "the LLM authors in batch and reads as a traversable graph, never "
             "pixels. put creates/extends a design (id=slug, args={components:"
-            "[{refdes,label,part?,pins:[{name,pad?,tags?}],x?,y?,layer?,roles?}],"
-            " nets:[{name,class?,current?,domain?}], connections:[{net,refdes,"
-            "pin}], net_classes:{name:rules}}); nets default domain='electrical' "
+            "[{refdes,label,part?,footprint?,pins:[{name,pad?,tags?}],x?,y?,"
+            "layer?,roles?}], nets:[{name,class?,current?,domain?}], "
+            "connections:[{net,refdes,pin}], net_classes:{name:rules}, "
+            "footprints:[{name,pads:[{pin,shape:'circle'|'rect'|'obround'|"
+            "'polygon',x?,y?,w?,h?,poly?,role?,mask?,paste?}]}]}); a component "
+            "with no part/part_lcsc names a footprints[] entry via its own "
+            "'footprint' field (authored copper for a part with no LCSC "
+            "C-number — pcb-ewod-multitile Slice 1); generators:[{name,"
+            "generator:'ewod_pad_array',params:{grid?:[rows,cols],pads?,"
+            "variant?:'full'|'rim',pitch?,gap?,via?:{dia,drill},"
+            "hv_separation?,drive_voltage_v?,edge?:{tooth_depth,tooth_pitch},"
+            "external_edge?,reserve?,x?,y?}}] authors a COMPUTED component — "
+            "one component whose pins are the electrode nets, expanded "
+            "deterministically (pcb-ewod-multitile Slice 2; idempotent — "
+            "same params is a no-op, changed params retire+reinsert); nets "
+            "default domain='electrical' "
             "(v1 rejects fluidic/thermal — schema-reserved). Every design gets "
             "a default 4-layer board (pcb_boards) on first write. "
             "get lists designs, a design's netlist TOC (id=slug, incl. board/"
@@ -178,6 +208,10 @@ class PcbHandler(Handler):
             "args={'level':'board'|'sketch'|'fab','layers':[...],'include':[...]}), "
             "a net-label schematic SVG off the netlist alone "
             "(view='schematic', works before any placement), "
+            "a generator's capability map -- usable/reserved pads, plaza "
+            "slot allocation, pin naming, computed sizing "
+            "(view='capability', args={'name'?,'format':'svg'|'ledger'}, "
+            "pcb-ewod-multitile Slice 2), "
             "or an export (view='bom'|'cpl'|'netlist'|"
             "'dsn'|'mechanical'|'gerber' writes a JLCPCB fab artifact -- "
             "'gerber' is the full manufacturable bundle (gerbers+Excellon, "
@@ -244,6 +278,8 @@ class PcbHandler(Handler):
         connections = list(args.get("connections") or [])
         measures = list(args.get("measures") or [])
         features = list(args.get("features") or [])
+        footprints = list(args.get("footprints") or [])
+        generators = list(args.get("generators") or [])
         autoplace = args.get("autoplace")
         meta = args.get("meta") if isinstance(args.get("meta"), dict) else None
         net_classes = args.get("net_classes")
@@ -266,6 +302,8 @@ class PcbHandler(Handler):
                     connections=connections,
                     measures=measures,
                     features=features,
+                    footprints=footprints,
+                    generators=generators,
                     meta=meta,
                     conn=conn,
                 )
@@ -300,6 +338,10 @@ class PcbHandler(Handler):
         extra = f", +{counts['measures']} measure(s)" if counts["measures"] else ""
         if counts["features"]:
             extra += f", +{counts['features']} feature(s)"
+        if counts.get("footprints"):
+            extra += f", +{counts['footprints']} footprint(s)"
+        if counts.get("generators"):
+            extra += f", {counts['generators']} generator(s) applied"
         if n_classes:
             extra += f", +{n_classes} net_class(es)"
         head = (
@@ -594,6 +636,8 @@ class PcbHandler(Handler):
             return self._render_drc(ref_id)
         if view == "svg":
             return self._render_svg(ref_id, args)
+        if view == "capability":
+            return self._render_capability(ref_id, args)
         if view == "schematic":
             from precis.pcb import schematic
 
@@ -779,12 +823,22 @@ class PcbHandler(Handler):
         the IR is invisible to the router's occupancy grid
         (:func:`precis.pcb.realize._claim_mounting_holes`), which is the
         ``npth_clearance`` finding family: measured 2026-09-01 as all
-        four nano-fixture corner holes violated, every seed."""
+        four nano-fixture corner holes violated, every seed.
+
+        Both footprint caches ride along for the same "no view may build a
+        forgetful IR" reason: they are what turn every pin's position from
+        a landpattern GUESS into the real footprint's own coordinate
+        (:func:`precis.pcb.session.apply_real_pin_offsets`, gripe 338983).
+        Threading them here rather than at each view means ``view='drc'``,
+        the ratsnest, the SVG previews and the place/route ops all measure
+        the same board the gerber writer exports."""
         return pcb_session.build_ir(
             graph,
             mounting_holes=pcb_session.mounting_holes_from_features(
                 self.store.pcb_features_list(ref_id)
             ),
+            footprints_by_lcsc=self.store.pcb_footprints_for(ref_id),
+            local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
         )
 
     def _furniture_clearance_mm(self, stackup: list[dict[str, Any]]) -> float | None:
@@ -1210,7 +1264,10 @@ class PcbHandler(Handler):
             return []
         ir = self._build_ir(ref_id, graph)
         footprints = pcb_session.footprints_by_refdes(
-            ir, self.store.pcb_footprints_for(ref_id)
+            ir,
+            self.store.pcb_footprints_for(ref_id),
+            local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
+            local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
         )
         return pcb_realize.pads_for_ir(ir, layers, footprints)
 
@@ -1251,7 +1308,10 @@ class PcbHandler(Handler):
         graph = self.store.pcb_graph(ref_id)
         ir = self._build_ir(ref_id, graph)
         footprints = pcb_session.footprints_by_refdes(
-            ir, self.store.pcb_footprints_for(ref_id)
+            ir,
+            self.store.pcb_footprints_for(ref_id),
+            local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
+            local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
         )
         pads = (
             pcb_realize.pads_for_ir(ir, layers, footprints) if graph.get("nets") else []
@@ -1314,6 +1374,37 @@ class PcbHandler(Handler):
                     "y": float(y),
                     "dia_mm": float(dia),
                     "plated": bool(geom.get("plated")),
+                }
+            )
+        return out
+
+    def _mask_open_regions(self, ref_id: int) -> list[dict[str, Any]]:
+        """``ftype='mask_open'`` features -> :mod:`precis.pcb.gerber`'s
+        ``model["mask_open_regions"]`` shape (pcb-ewod-multitile Slice 1):
+        one field-wide soldermask opening covering pads AND gaps, instead
+        of a per-pad swelled opening with a mask dam between every
+        neighbour — the shape a tight electrode field cannot fab any other
+        way. ``layer`` doubles as the region's SIDE ('top'/'bottom') —
+        the same free-text column an ``outline``/``mounting_hole`` feature
+        already carries a purpose-specific meaning in, not a new column.
+        A feature missing a usable ``geom.polygon`` (or a ``layer`` other
+        than top/bottom) is skipped, not fatal — a malformed one region
+        should not blank a whole gerber export."""
+        out: list[dict[str, Any]] = []
+        for f in self.store.pcb_features_list(ref_id):
+            if str(f.get("ftype") or "") != "mask_open":
+                continue
+            side = str(f.get("layer") or "").strip().lower()
+            if side not in ("top", "bottom"):
+                continue
+            geom = f.get("geom") or {}
+            poly = geom.get("polygon")
+            if not isinstance(poly, list) or len(poly) < 3:
+                continue
+            out.append(
+                {
+                    "side": side,
+                    "polygon": [[float(p[0]), float(p[1])] for p in poly],
                 }
             )
         return out
@@ -1433,6 +1524,7 @@ class PcbHandler(Handler):
             )
 
         footprints = self.store.pcb_footprints_for(ref_id)
+        local_footprints = self.store.pcb_local_footprints_for(ref_id)
         graph = self.store.pcb_graph(ref_id)
         ir = self._build_ir(ref_id, graph)
         pin_to_net = {
@@ -1441,7 +1533,11 @@ class PcbHandler(Handler):
             for m in net["members"]
         }
         pads, drills = padplace.board_pads(
-            design["instances"], footprints, layers=layer_names, pin_to_net=pin_to_net
+            design["instances"],
+            footprints,
+            layers=layer_names,
+            pin_to_net=pin_to_net,
+            local_footprints=local_footprints,
         )
         # Mounting-hole drills belong in the SAME Excellon set as the
         # component drills — without these the fab bundle carried a
@@ -1461,6 +1557,12 @@ class PcbHandler(Handler):
             i["refdes"]
             for i in placed
             if (footprints.get(str(i.get("part_lcsc") or "")) or {}).get("pads")
+            or (
+                not i.get("part_lcsc")
+                and (local_footprints.get(str(i.get("footprint") or "")) or {}).get(
+                    "pads"
+                )
+            )
         }
         missing = sorted({i["refdes"] for i in placed} - has_pads)
         if missing:
@@ -1485,7 +1587,14 @@ class PcbHandler(Handler):
             # refusal actually fires. `placed_pin_ids` replays
             # `pads_for_ir`'s own "skip an unplaced pin" filter so the
             # zip stays index-aligned without a second geometry pass.
-            footprints_by_refdes = pcb_session.footprints_by_refdes(ir, footprints)
+            footprints_by_refdes = pcb_session.footprints_by_refdes(
+                ir,
+                footprints,
+                local_footprints_by_name=local_footprints,
+                local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(
+                    graph
+                ),
+            )
             ir_pads = pcb_realize.pads_for_ir(ir, layer_names, footprints_by_refdes)
             placed_pin_ids = [
                 pid for pid in range(ir.n_pins) if pcb_ir.pin_point(ir, pid) is not None
@@ -1541,6 +1650,7 @@ class PcbHandler(Handler):
             # drawn with one expansion under silk cleared for another is two
             # numbers for one physical edge (`soldermask_gerber`).
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
+            "mask_open_regions": self._mask_open_regions(ref_id),
         }
         try:
             files = pcb_gerber.export_fab(model, name=slug)
@@ -1728,15 +1838,35 @@ class PcbHandler(Handler):
         )
 
     def _render_drc(self, ref_id: int) -> Response:
-        """Geometric DRC on REALIZED copper (pcb-guided-place-route Slice
-        8, :mod:`precis.pcb.drc`) — the L5 check, re-backing this view now
-        that a ``pcb_route`` run leaves real copper in ``pcb_copper`` to
-        check. Superseded ``eyes.drc_lite`` (graph-shape sanity only, no
-        geometry); the graph-feasibility half of DRC (``ir.py``, L0-L4)
-        stays inside the optimizer, not this view. Every call is itself a
-        DRC "run" — findings are persisted to ``pcb_drc_findings`` under a
-        fresh ``run_id`` so ``netlist_drc_clean`` and a human reviewer can
-        both read the same durable record afterward.
+        """Geometric DRC (pcb-guided-place-route Slice 8, :mod:`precis.pcb.
+        drc`) — the L5 check. Superseded ``eyes.drc_lite`` (graph-shape
+        sanity only, no geometry); the graph-feasibility half of DRC
+        (``ir.py``, L0-L4) stays inside the optimizer, not this view.
+        Every call is itself a DRC "run" — findings are persisted to
+        ``pcb_drc_findings`` under a fresh ``run_id`` so
+        ``netlist_drc_clean`` and a human reviewer can both read the same
+        durable record afterward.
+
+        **Runs whenever there is REAL pad geometry, not only after a
+        route (round 4, docs/backlog/pcb-ewod-multitile.md's decisions
+        log).** Realized copper (``pcb_copper``, once ``op='route'`` has
+        run) is checked when present; a board with real (non-synthesized)
+        pads but no realized copper yet still gets a full pads-only pass
+        (courtyard, clearance, keep-outs, annular ring, unrouted-net
+        status — everything that doesn't need router output) rather than
+        the old blanket "no realized copper yet" bail, which made
+        ``view='drc'`` structurally unable to ever check a board whose
+        every net is fanout-1 (an ``ewod_pad_array`` standalone board is
+        the motivating case: its escape geometry is footprint-pad copper,
+        never something a router touches, so it NEVER got a
+        ``pcb_copper`` row regardless of whether ``op='route'`` ran). The
+        response states the reduced scope explicitly
+        (``(pads-only DRC — no routed copper yet)``) so a clean pads-only
+        pass is never misread as a full one. The bail stays ONLY when
+        every placed pad is a synthesized BOUND (or there are no pads at
+        all) — DRC over a dimensionally-plausible guess is meaningless,
+        the same reasoning ``gerber.export_fab``'s ``SynthesizedPadError``
+        already applies at export time.
 
         **Now builds board furniture (fiducials/title block/silkscreen)
         too**, via the SAME :meth:`_board_furniture` :meth:`_render_gerber`
@@ -1758,13 +1888,6 @@ class PcbHandler(Handler):
                 body="no board yet\n\nNext: put(kind='pcb', id='slug', "
                 "args={'components':[...],'nets':[...]}) to create the design."
             )
-        copper = self.store.pcb_copper_list(int(board["board_id"]))
-        if not copper:
-            return Response(
-                body="no realized copper yet\n\nNext: put(kind='pcb', "
-                "id='slug', args={'op':'route'}) to realize copper, then "
-                "re-check this view."
-            )
         stackup = board["stackup"]
         try:
             capability = capability_for(pcb_drc.process_for_stackup(stackup))
@@ -1777,6 +1900,37 @@ class PcbHandler(Handler):
         # two call sites, drifted — and connectivity is precisely the check
         # that would be fooled by pads in the wrong place.
         pads, courtyard_local = self._drc_geometry(ref_id, layer_names)
+
+        copper = self.store.pcb_copper_list(int(board["board_id"]))
+        # Round-4 contract change (docs/backlog/pcb-ewod-multitile.md's
+        # decisions log): this used to bail whenever `copper` (router
+        # output) was empty, full stop — but a board whose every net is
+        # fanout-1 (an `ewod_pad_array` standalone board is the motivating
+        # case: the array's escape geometry is footprint-PAD copper, never
+        # something a router touches) then NEVER gets a single
+        # `pcb_copper` row, `op='route'` or not, so `view='drc'` could
+        # never actually run one rule against it — "a check you did not
+        # run is not a check that passed" (repo doctrine). The new rule:
+        # run geometric DRC whenever ANY placed pad is REAL (authored or
+        # cached, `synthesized=False`), even with zero realized copper —
+        # the response says so explicitly (`_pads_only` below) so a
+        # partial (pads-only) pass is never mistaken for a full one. The
+        # bail stays ONLY when every placed pad is a synthesized BOUND
+        # (or there are no pads at all): DRC over a dimensionally-plausible
+        # guess, not real geometry, is meaningless (same reasoning
+        # `gerber.export_fab`'s `SynthesizedPadError` already applies at
+        # export time). This reaches every board in the kind, not just
+        # EWOD ones — an ordinary placed-but-unrouted board with cached
+        # real footprints (e.g. `esp32c3_reference`) now gets pads-only
+        # findings here too, instead of "not yet".
+        has_real_pads = any(not p.get("synthesized") for p in pads)
+        if not copper and not has_real_pads:
+            return Response(
+                body="no realized copper yet\n\nNext: put(kind='pcb', "
+                "id='slug', args={'op':'route'}) to realize copper, then "
+                "re-check this view."
+            )
+        pads_only = not copper
 
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
@@ -1892,6 +2046,12 @@ class PcbHandler(Handler):
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
         head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
+        if pads_only:
+            # State the scope EXPLICITLY (round-4 contract) so a clean
+            # pads-only pass — pad geometry only, no router output yet
+            # (e.g. every net is unrouted by construction) — is never
+            # mistaken for a full pass over realized copper.
+            head += "\n(pads-only DRC — no routed copper yet)"
         if not findings:
             return Response(body=head + "\n— no findings ✓")
         rows = [
@@ -1984,6 +2144,96 @@ class PcbHandler(Handler):
         )
         return Response(body=svg_text)
 
+    def _render_capability(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """A generator's capability map (pcb-ewod-multitile Slice 2 pt 2):
+        usable vs unusable/reserved pads, plaza slot allocation, pin
+        naming and computed sizing — read straight off the
+        ``pcb_generators`` ledger a ``generators:[...]`` apply already
+        stored (:meth:`Store.pcb_generators_for`), no re-expansion.
+        ``args.format='svg'`` (default) renders
+        :func:`precis.pcb.svg.render_capability_map`; ``args.format=
+        'ledger'`` renders the same data as agent-facing tables (pads +
+        plaza slots) — "the same as a machine-readable ledger" the spec
+        asks for, without inventing a second on-disk shape: the ledger
+        dict IS already machine-readable, this just tabulates it.
+        ``args.name`` selects which generator when a design authors more
+        than one; a lone generator is the default so the common case
+        needs no extra arg."""
+        gens = self.store.pcb_generators_for(ref_id)
+        if not gens:
+            raise BadInput(
+                "pcb: no generators on this design — view='capability' needs "
+                "a generators:[...] call (e.g. 'ewod_pad_array') applied first",
+                next="put(kind='pcb', id='slug', args={'generators':[{'name':"
+                "'ARR1','generator':'ewod_pad_array','params':{'grid':[9,9]}}]})",
+            )
+        name = str(args.get("name") or "").strip()
+        if not name:
+            if len(gens) > 1:
+                raise BadInput(
+                    f"pcb: {len(gens)} generators on this design — pass "
+                    f"args={{'name': ...}}, one of {sorted(gens)}",
+                )
+            name = next(iter(gens))
+        elif name not in gens:
+            raise BadInput(f"pcb: no generator named {name!r} — known: {sorted(gens)}")
+        row = gens[name]
+        fmt = str(args.get("format") or "svg").strip().lower()
+        if fmt not in ("svg", "ledger"):
+            raise BadInput(
+                f"view='capability' args.format={fmt!r} not recognized",
+                options=["svg", "ledger"],
+            )
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        ledger = row["ledger"] or {}
+        if fmt == "svg":
+            return Response(
+                body=pcb_svg.render_capability_map(
+                    ledger, row["params"] or {}, title=f"{slug}#{name} — capability map"
+                )
+            )
+        pad_rows = [
+            {
+                "pin": pin,
+                "row": info.get("row"),
+                "col": info.get("col"),
+                "usable": info.get("usable", True),
+                "reason": info.get("reason", ""),
+                "plaza": info.get("plaza", ""),
+            }
+            for pin, info in sorted((ledger.get("pads") or {}).items())
+        ]
+        slot_rows = [
+            {
+                "plaza": slot_key,
+                "direction": direction,
+                "status": slot.get("status"),
+                "pin": slot.get("pin", ""),
+            }
+            for slot_key, plaza in sorted((ledger.get("plazas") or {}).items())
+            for direction, slot in sorted((plaza.get("slots") or {}).items())
+        ]
+        summary = ledger.get("summary") or {}
+        head = (
+            f"# {slug}#{name} — capability map ({row['generator']}, "
+            f"grid {ledger.get('grid')}, variant {ledger.get('variant')})\n"
+            f"{summary.get('pads_usable', 0)}/{summary.get('pads_total', 0)} pads "
+            f"usable, {summary.get('plazas', 0)} plaza(s)"
+        )
+        body = (
+            head
+            + "\n\n## pads\n"
+            + render_agent_table(
+                pad_rows, schema=["pin", "row", "col", "usable", "reason", "plaza"]
+            )
+        )
+        if slot_rows:
+            body += "\n\n## plaza slots\n" + render_agent_table(
+                slot_rows, schema=["plaza", "direction", "status", "pin"]
+            )
+        return Response(body=body)
+
     def _render_fab_svg(self, ref_id: int, slug: str) -> Response:
         """``level='fab'`` — the board rendered FROM ITS GERBERS, with a
         layer selector.
@@ -2055,6 +2305,7 @@ class PcbHandler(Handler):
             ],
             "silkscreen": silk_draws,
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
+            "mask_open_regions": self._mask_open_regions(ref_id),
         }
         # allow_synthesized, because this is a picture and not an order.
         # export_fab's refusal exists to stop a land-pattern BOUND reaching

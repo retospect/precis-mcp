@@ -28,11 +28,165 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.pcb import DEFAULT_STACKUP
+from precis.pcb import generators as pcb_generators
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
     """psycopg Jsonb for a nullable JSONB column."""
     return Jsonb(value) if value is not None else None
+
+
+#: pcb-ewod-multitile Slice 1's per-pad authoring vocabulary — the SAME
+#: three questions ``docs/backlog/pcb-component-model.md`` §Features
+#: drafted (role/mask/paste), kept as a flat allowlist here rather than a
+#: DB CHECK constraint so a bad value fails at `put` time with the
+#: offending pad's own pin name in the message, not a bare constraint
+#: name from Postgres.
+_LOCAL_PAD_ROLES = ("solderable", "electrode", "probe")
+_LOCAL_PAD_MASKS = ("open", "covered")
+_LOCAL_PAD_PASTES = ("none", "full")
+_LOCAL_PAD_SHAPES = ("circle", "rect", "obround", "polygon")
+
+
+def _normalize_local_footprint_pad(p: dict[str, Any]) -> dict[str, Any]:
+    """One authored footprint pad -> the exact dict
+    :func:`precis.pcb.padplace.place_footprint_pads` already consumes for
+    an EasyEDA-cached one (``number``/``shape``/``x``/``y``/``w``/``h``/
+    ``rot``/``layer``/``drill``), plus this slice's ``role``/``mask``/
+    ``paste`` intent and, for ``shape: "polygon"``, the vertex ``poly``
+    ring (footprint-local mm — same frame as ``x``/``y`` on every other
+    shape).
+
+    ``paste`` defaults to ``"none"`` for an ``electrode`` pad and
+    ``"full"`` otherwise when the author omits it — resolved HERE, once,
+    so every downstream reader (:mod:`precis.pcb.padplace`,
+    :mod:`precis.pcb.gerber`) can treat the field as always-explicit
+    rather than re-deriving the same default (acceptance criterion 3: "no
+    paste on any role: electrode pad").
+    """
+    pin_name = str(p.get("pin") or p.get("number") or "").strip()
+    if not pin_name:
+        raise ValueError("pcb footprint pad needs a 'pin' name")
+    shape = str(p.get("shape") or "rect").strip().lower()
+    if shape not in _LOCAL_PAD_SHAPES:
+        raise ValueError(
+            f"pcb footprint pad {pin_name!r}: shape must be one of "
+            f"{_LOCAL_PAD_SHAPES}, got {shape!r}"
+        )
+    role = str(p.get("role") or "solderable").strip().lower()
+    if role not in _LOCAL_PAD_ROLES:
+        raise ValueError(
+            f"pcb footprint pad {pin_name!r}: role must be one of "
+            f"{_LOCAL_PAD_ROLES}, got {role!r}"
+        )
+    mask = str(p.get("mask") or "open").strip().lower()
+    if mask not in _LOCAL_PAD_MASKS:
+        raise ValueError(
+            f"pcb footprint pad {pin_name!r}: mask must be one of "
+            f"{_LOCAL_PAD_MASKS}, got {mask!r}"
+        )
+    paste_raw = p.get("paste")
+    paste = (
+        str(paste_raw).strip().lower()
+        if paste_raw is not None
+        else ("none" if role == "electrode" else "full")
+    )
+    if paste not in _LOCAL_PAD_PASTES:
+        raise ValueError(
+            f"pcb footprint pad {pin_name!r}: paste must be one of "
+            f"{_LOCAL_PAD_PASTES}, got {paste!r}"
+        )
+
+    pad: dict[str, Any] = {
+        "number": pin_name,
+        "shape": shape,
+        "layer": str(p.get("layer") or "F.Cu"),
+        "rot": float(p.get("rot") or 0.0),
+        "role": role,
+        "mask": mask,
+        "paste": paste,
+    }
+    if p.get("drill") is not None:
+        pad["drill"] = float(p["drill"])
+    if shape == "polygon":
+        poly = p.get("poly") or []
+        if len(poly) < 3:
+            raise ValueError(
+                f"pcb footprint pad {pin_name!r}: shape='polygon' needs "
+                ">=3 'poly' vertices"
+            )
+        verts = [(float(v[0]), float(v[1])) for v in poly]
+        xs, ys = [v[0] for v in verts], [v[1] for v in verts]
+        # x/y still carry the bbox CENTER (not a spare field): every
+        # downstream reader that only knows circle/rect pads — the
+        # courtyard/DRC bbox fallback, an SVG viewBox scan — reads
+        # `pad["x"]`/`["y"]` unconditionally, so a polygon pad answers
+        # that question too, even though `poly` is its real shape.
+        pad["x"] = round((min(xs) + max(xs)) / 2.0, 4)
+        pad["y"] = round((min(ys) + max(ys)) / 2.0, 4)
+        pad["w"] = round(max(xs) - min(xs), 4) or 0.01
+        pad["h"] = round(max(ys) - min(ys), 4) or 0.01
+        pad["poly"] = [[round(vx, 4), round(vy, 4)] for vx, vy in verts]
+    else:
+        if p.get("x") is None or p.get("y") is None:
+            raise ValueError(f"pcb footprint pad {pin_name!r} needs x/y")
+        w = float(p.get("w") or 0.0)
+        if w <= 0:
+            raise ValueError(f"pcb footprint pad {pin_name!r} needs a positive w")
+        pad["x"] = round(float(p["x"]), 4)
+        pad["y"] = round(float(p["y"]), 4)
+        pad["w"] = round(w, 4)
+        pad["h"] = round(float(p.get("h") or w), 4)
+    return pad
+
+
+def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """One ``footprints[]`` batch entry -> ``(name, data)`` where ``data``
+    is the same ``{pads, pin_map, courtyard, centroid}`` row shape
+    ``part_footprints`` uses (:meth:`PcbMixin.pcb_footprints_for`'s own
+    return shape) — so every reader downstream of either source (padplace/
+    realize/gerber) takes one dict shape, not two. ``pin_map`` is built
+    identity (pad number == pin name — :func:`_normalize_local_footprint_pad`
+    already made ``number`` the pin name), matching
+    :mod:`precis.pcb.easyeda`'s own ``pin_map`` construction."""
+    name = str(f.get("name") or "").strip()
+    if not name:
+        raise ValueError("pcb footprint needs a name")
+    raw_pads = f.get("pads") or []
+    if not raw_pads:
+        raise ValueError(f"pcb footprint {name!r} needs at least one pad")
+    pads = [_normalize_local_footprint_pad(p) for p in raw_pads]
+    pin_map = {pad["number"]: {"name": pad["number"], "tags": []} for pad in pads}
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for pad in pads:
+        if pad.get("poly"):
+            xs += [v[0] for v in pad["poly"]]
+            ys += [v[1] for v in pad["poly"]]
+        else:
+            xs += [pad["x"] - pad["w"] / 2.0, pad["x"] + pad["w"] / 2.0]
+            ys += [pad["y"] - pad["h"] / 2.0, pad["y"] + pad["h"] / 2.0]
+    courtyard = f.get("courtyard") or {
+        "bbox": [
+            round(min(xs), 4),
+            round(min(ys), 4),
+            round(max(xs), 4),
+            round(max(ys), 4),
+        ]
+    }
+    centroid = f.get("centroid") or {
+        "x": round(sum(pad["x"] for pad in pads) / len(pads), 4),
+        "y": round(sum(pad["y"] for pad in pads) / len(pads), 4),
+    }
+    data = {
+        "pads": pads,
+        "pin_map": pin_map,
+        "courtyard": courtyard,
+        "centroid": centroid,
+        "note": f.get("note"),
+    }
+    return name, data
 
 
 #: Sentinel default for :meth:`PcbMixin.pcb_move_instance`'s ``fixed=``
@@ -60,6 +214,8 @@ class PcbMixin:
         connections: list[dict[str, Any]],
         measures: list[dict[str, Any]] | None = None,
         features: list[dict[str, Any]] | None = None,
+        footprints: list[dict[str, Any]] | None = None,
+        generators: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
         conn: Connection | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
@@ -74,8 +230,30 @@ class PcbMixin:
         description?, note?}]``). A *net* dict: ``name`` (req),
         ``net_class``/``class``, ``est_current_a``/``current``,
         ``width_mm``/``width``, ``note``. A *connection* dict: ``net``
-        (req), ``refdes`` (req), ``pin`` (req), ``note``. Re-runnable:
-        existing refdes/net names reused.
+        (req), ``refdes`` (req), ``pin`` (req), ``note``. A *footprint*
+        dict (pcb-ewod-multitile Slice 1 — authored copper with no LCSC
+        part): ``name`` (req, the join key a component's own
+        ``footprint`` field then names), ``pads`` (req, ``[{pin, shape:
+        'circle'|'rect'|'obround'|'polygon', x, y, w?, h?, poly?, role?,
+        mask?, paste?, drill?}]`` — see :func:`_normalize_local_footprint`
+        for the full per-field contract), optional ``courtyard``/
+        ``centroid``/``note``. Applied BEFORE components, so a component
+        in the same batch may reference a footprint just authored.
+        Re-runnable: existing refdes/net names reused; an existing
+        footprint NAME is upserted (an author fixing a pad's geometry
+        re-authors under the same name rather than orphaning it). A
+        *generator* dict (pcb-ewod-multitile Slice 2 — a computed
+        component): ``name`` (req, the design-local identity AND the
+        emitted component's refdes), ``generator`` (req, e.g.
+        ``'ewod_pad_array'``), ``params`` — expanded via
+        :func:`precis.pcb.generators.expand` into components/nets/
+        connections/footprints/features BEFORE any of the batch's own
+        (so a generator's output threads through the exact same
+        insert/dedup logic below). Idempotent: unchanged params (compared
+        against the previous apply's stored row) is a no-op; changed
+        params retires the previous expansion (component/instance/pins/
+        nets/connections/its mask_open feature) and re-inserts fresh —
+        see :meth:`_pcb_generator_retire_expansion`.
 
         Reuses ``conn`` inside an existing transaction (e.g. bundling
         the ``net_classes`` upsert so both commit/rollback as one unit);
@@ -90,6 +268,8 @@ class PcbMixin:
                 connections=connections,
                 measures=measures,
                 features=features,
+                footprints=footprints,
+                generators=generators,
                 meta=meta,
             )
         with self.tx() as c:
@@ -102,6 +282,8 @@ class PcbMixin:
                 connections=connections,
                 measures=measures,
                 features=features,
+                footprints=footprints,
+                generators=generators,
                 meta=meta,
             )
 
@@ -116,7 +298,9 @@ class PcbMixin:
         connections: list[dict[str, Any]],
         measures: list[dict[str, Any]] | None,
         features: list[dict[str, Any]] | None,
-        meta: dict[str, Any] | None,
+        footprints: list[dict[str, Any]] | None = None,
+        generators: list[dict[str, Any]] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """The body of :meth:`pcb_apply`, given an already-open ``conn``."""
         existing = self.get_ref(kind="pcb", id=slug)
@@ -129,6 +313,8 @@ class PcbMixin:
             "conns": 0,
             "measures": 0,
             "features": 0,
+            "footprints": 0,
+            "generators": 0,
         }
         if created:
             ref = self.insert_ref(
@@ -151,6 +337,68 @@ class PcbMixin:
                 )
 
         board_id = self.pcb_ensure_board(ref.id, conn=conn)
+
+        # Generators land BEFORE footprints/components/nets/connections/
+        # features: an unchanged-params generator is a no-op (nothing
+        # merged into the batch below -- `features` in particular has no
+        # dedup key of its own, so merging an unchanged generator's
+        # mask_open feature every re-apply would duplicate it); a new-or-
+        # changed one retires its previous expansion, then its emitted
+        # components/nets/connections/footprints/features are merged into
+        # THIS batch's own lists so every existing insert/dedup path
+        # below (refdes-exists skip, net-name-exists skip, footprint
+        # upsert) handles them identically to hand-authored rows.
+        components = list(components)
+        nets = list(nets)
+        connections = list(connections)
+        footprints = list(footprints or [])
+        features = list(features or [])
+        net_classes: dict[str, dict[str, Any]] = {}
+        for g in generators or []:
+            gname = str(g.get("name") or "").strip()
+            if not gname:
+                raise ValueError("pcb generator needs a name")
+            gtype = str(g.get("generator") or "").strip()
+            if not gtype:
+                raise ValueError(f"pcb generator {gname!r} needs a 'generator' type")
+            expansion = pcb_generators.expand(gtype, gname, dict(g.get("params") or {}))
+            existing_gen = self._pcb_generator_row(conn, ref.id, gname)
+            if (
+                existing_gen is not None
+                and existing_gen["generator"] == expansion.generator
+                and existing_gen["version"] == expansion.version
+                and existing_gen["params"] == expansion.canonical_params
+            ):
+                continue  # unchanged -- no-op, nothing to merge/re-insert
+            if existing_gen is not None:
+                self._pcb_generator_retire_expansion(
+                    conn, ref.id, existing_gen["refdes"], existing_gen["name"]
+                )
+            components += expansion.components
+            nets += expansion.nets
+            connections += expansion.connections
+            footprints += expansion.footprints
+            features += expansion.features
+            net_classes.update(expansion.net_classes)
+            self._pcb_generator_upsert(
+                conn,
+                ref.id,
+                gname,
+                expansion.generator,
+                expansion.version,
+                expansion.canonical_params,
+                expansion.refdes,
+                expansion.ledger,
+            )
+            counts["generators"] += 1
+
+        # Footprints land BEFORE components: a component's own
+        # `footprint` field (below) is the join key an instance authored
+        # in the SAME batch may already want to reference.
+        for f in footprints or []:
+            name, data = _normalize_local_footprint(f)
+            self._pcb_local_footprint_upsert(conn, ref.id, name, data)
+            counts["footprints"] += 1
 
         # refdes -> (instance_id, component_id); net name -> net_id
         inst_by_refdes = self._pcb_instance_map(conn, ref.id)
@@ -205,6 +453,18 @@ class PcbMixin:
         for ft in features or []:
             self._pcb_insert_feature(conn, ref.id, board_id, ft)
             counts["features"] += 1
+
+        if net_classes:
+            # A generator's own net-class rules (e.g. ewod_pad_array's
+            # dedicated electrode-gap clearance floor) -- upserted in the
+            # SAME transaction as the rest of this apply, not a second
+            # round-trip the caller has to remember to make. Idempotent
+            # (`_pcb_upsert_net_classes` is an upsert keyed by name), so a
+            # no-op generator re-apply (which never reaches this point --
+            # see the `continue` above) simply leaves the previous row in
+            # place, and a changed-params re-apply overwrites it with the
+            # new gap.
+            self._pcb_upsert_net_classes(conn, ref.id, net_classes)
 
         self.chunks._replace_card_combined(
             conn,
@@ -788,6 +1048,17 @@ class PcbMixin:
                     # refdes-keyed `footprints` arg all along; this is the
                     # missing join that reaches it.
                     "part_lcsc": r[10],
+                    # The design-local footprint NAME (pcb-ewod-multitile
+                    # Slice 1) — `c.footprint`, the SAME free-text snapshot
+                    # column a catalog part's label already rides on
+                    # (0047), doubling as the join key into
+                    # `pcb_local_footprints` for an instance with no
+                    # `part_lcsc` at all. `ir.py::from_graph` only treats
+                    # it as that join key when `part_lcsc` is falsy — a
+                    # catalog part's OWN footprint label (e.g. "SOT-23")
+                    # is not a `pcb_local_footprints` name and is simply
+                    # never looked up there.
+                    "footprint": r[13],
                     # `extended_part` is the THIRD instance of this same
                     # gap: `PcbIR.inst_extended_part` (cost.py's
                     # `_extended_part_fees`) has always come back all-False
@@ -837,7 +1108,7 @@ class PcbMixin:
                     # multiply instance rows; a non-catalog part yields NULL
                     # -> false, matching `extended_part`'s documented
                     # "unknown is never silently promoted to a fee".
-                    "       COALESCE(NOT pt.basic, false), i.meta "
+                    "       COALESCE(NOT pt.basic, false), i.meta, c.footprint "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "  LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "
@@ -1688,6 +1959,207 @@ class PcbMixin:
                 "pin_map": r[2],
                 "courtyard": r[3],
                 "centroid": r[4],
+            }
+            for r in rows
+        }
+
+    def _pcb_local_footprint_upsert(
+        self, conn: Connection, ref_id: int, name: str, data: dict[str, Any]
+    ) -> None:
+        """The write half of a design-local footprint (pcb-ewod-multitile
+        Slice 1) — an upsert by ``(ref_id, name)``, given an already-open
+        ``conn`` (shared by :meth:`pcb_local_footprint_put`'s own-tx
+        wrapper and :meth:`_pcb_apply`'s batch)."""
+        conn.execute(
+            """
+            INSERT INTO pcb_local_footprints
+                (ref_id, name, pads, pin_map, courtyard, centroid, note)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ref_id, name) DO UPDATE SET
+                pads=EXCLUDED.pads, pin_map=EXCLUDED.pin_map,
+                courtyard=EXCLUDED.courtyard, centroid=EXCLUDED.centroid,
+                note=EXCLUDED.note
+            """,
+            (
+                ref_id,
+                name,
+                Jsonb(data["pads"]),
+                _jsonb_or_none(data.get("pin_map")),
+                _jsonb_or_none(data.get("courtyard")),
+                _jsonb_or_none(data.get("centroid")),
+                data.get("note"),
+            ),
+        )
+
+    def pcb_local_footprint_put(
+        self, ref_id: int, name: str, data: dict[str, Any]
+    ) -> None:
+        """Upsert one design-local footprint outside a batch ``put`` — same
+        row shape :meth:`pcb_local_footprints_for` reads back, own
+        transaction. :meth:`_pcb_apply`'s ``footprints`` block is the
+        normal authoring path; this is here for a caller that already has
+        a normalized ``{pads, pin_map, courtyard, centroid}`` dict (a
+        generator, in a later slice)."""
+        with self.tx() as conn:
+            self._pcb_local_footprint_upsert(conn, ref_id, name, data)
+
+    def pcb_local_footprints_for(self, ref_id: int) -> dict[str, dict[str, Any]]:
+        """Every design-local footprint (pcb-ewod-multitile Slice 1),
+        keyed by name — the local-authoring counterpart to
+        :meth:`pcb_footprints_for`'s C-number-keyed catalog cache. Not
+        filtered to footprints an instance currently references (unlike
+        that method): this table is already ref_id-scoped and small, and
+        an unreferenced-but-authored footprint should still show up for
+        inspection."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT name, pads, pin_map, courtyard, centroid "
+                "FROM pcb_local_footprints WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchall()
+        return {
+            str(r[0]): {
+                "pads": r[1],
+                "pin_map": r[2],
+                "courtyard": r[3],
+                "centroid": r[4],
+            }
+            for r in rows
+        }
+
+    # -- generators (pcb-ewod-multitile Slice 2) -------------------------
+    def _pcb_generator_row(
+        self, conn: Connection, ref_id: int, name: str
+    ) -> dict[str, Any] | None:
+        """The stored identity of generator ``name`` (design-local), if
+        any — what :meth:`_pcb_apply` diffs a fresh
+        :class:`precis.pcb.generators.GeneratorExpansion` against to
+        decide no-op vs. retire-and-reinsert."""
+        row = conn.execute(
+            "SELECT name, generator, version, params, refdes, ledger "
+            "FROM pcb_generators WHERE ref_id = %s AND name = %s",
+            (ref_id, name),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "name": row[0],
+            "generator": row[1],
+            "version": int(row[2]),
+            "params": row[3],
+            "refdes": row[4],
+            "ledger": row[5],
+        }
+
+    def _pcb_generator_upsert(
+        self,
+        conn: Connection,
+        ref_id: int,
+        name: str,
+        generator: str,
+        version: int,
+        params: dict[str, Any],
+        refdes: str,
+        ledger: dict[str, Any],
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO pcb_generators
+                (ref_id, name, generator, version, params, refdes, ledger,
+                 updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+            ON CONFLICT (ref_id, name) DO UPDATE SET
+                generator=EXCLUDED.generator, version=EXCLUDED.version,
+                params=EXCLUDED.params, refdes=EXCLUDED.refdes,
+                ledger=EXCLUDED.ledger, updated_at=now()
+            """,
+            (ref_id, name, generator, version, Jsonb(params), refdes, Jsonb(ledger)),
+        )
+
+    def _pcb_generator_retire_expansion(
+        self, conn: Connection, ref_id: int, refdes: str, generator_name: str
+    ) -> None:
+        """Undo a PREVIOUS apply of generator ``generator_name`` before
+        its changed-params re-expansion is inserted: retires the
+        component/instance/pins it owns (freeing ``refdes`` — both carry
+        a partial-unique index ``WHERE retired_at IS NULL``), hard-deletes
+        its netconns (``pcb_netconns`` has no ``retired_at`` — "re-wire =
+        delete+insert" is its own table comment), retires its nets (named
+        ``f"{name}_..."`` — see :func:`precis.pcb.generators.
+        _expand_ewod_pad_array`'s net-naming, unique to this generator so
+        no foreign net can collide with the LIKE match), and retires its
+        mask_open feature (tagged ``note='generator:{name}'`` at emission
+        time, the same free-text-column-doubles-as-a-tag convention
+        ``layer`` already uses for a mask_open region's side).
+
+        Retires every instance whose refdes is EITHER the generator's own
+        (exact match, e.g. the ``ewod_pad_array`` component itself) OR
+        prefixed ``f"{generator_name}_"`` — the same LIKE convention the
+        net-retirement query below already uses, generalised to
+        instances/components/pins too (round 7, ``sink_grid``): a
+        generator that emits SECONDARY components under its own name
+        (``ewod_pad_array``'s ``{name}_SINK_{r}_{c}`` bottom-side sink
+        instances) would otherwise orphan them on a changed-params
+        re-apply — the exact-refdes-only query above only ever retired
+        the array's own single component, never the sinks it also
+        created, so a sink whose channel wiring changed (e.g. a
+        different ``per_tiles``) would keep its STALE pins/netconns
+        forever while its own escape nets got silently retired out from
+        under it by the net-LIKE query below."""
+        rows = conn.execute(
+            "SELECT instance_id, component_id FROM pcb_instances "
+            "WHERE ref_id = %s AND retired_at IS NULL "
+            "AND (refdes = %s OR refdes LIKE %s)",
+            (ref_id, refdes, generator_name + "\\_%"),
+        ).fetchall()
+        for row in rows:
+            instance_id, component_id = int(row[0]), int(row[1])
+            conn.execute(
+                "DELETE FROM pcb_netconns WHERE instance_id = %s", (instance_id,)
+            )
+            conn.execute(
+                "UPDATE pcb_pins SET retired_at = now() "
+                "WHERE component_id = %s AND retired_at IS NULL",
+                (component_id,),
+            )
+            conn.execute(
+                "UPDATE pcb_instances SET retired_at = now() WHERE instance_id = %s",
+                (instance_id,),
+            )
+            conn.execute(
+                "UPDATE pcb_components SET retired_at = now() WHERE component_id = %s",
+                (component_id,),
+            )
+        conn.execute(
+            "UPDATE pcb_nets SET retired_at = now() "
+            "WHERE ref_id = %s AND name LIKE %s AND retired_at IS NULL",
+            (ref_id, generator_name + "\\_%"),
+        )
+        conn.execute(
+            "UPDATE pcb_features SET retired_at = now() "
+            "WHERE ref_id = %s AND note = %s AND retired_at IS NULL",
+            (ref_id, f"generator:{generator_name}"),
+        )
+
+    def pcb_generators_for(self, ref_id: int) -> dict[str, dict[str, Any]]:
+        """Every generator call authored on this design, keyed by its
+        design-local ``name`` — ``{generator, version, params, refdes,
+        ledger}`` each, the same shape :meth:`_pcb_generator_row` reads
+        inside a transaction (this is the outside-a-batch read-back,
+        e.g. for a capability-map view)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT name, generator, version, params, refdes, ledger "
+                "FROM pcb_generators WHERE ref_id = %s ORDER BY name",
+                (ref_id,),
+            ).fetchall()
+        return {
+            str(r[0]): {
+                "generator": r[1],
+                "version": int(r[2]),
+                "params": r[3],
+                "refdes": r[4],
+                "ledger": r[5],
             }
             for r in rows
         }

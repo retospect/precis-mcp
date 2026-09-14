@@ -159,25 +159,24 @@ class PcbIR:
     #: to place one in board space; do not add these to ``inst_x``/``inst_y``
     #: directly or you silently drop rotation and side.
     #:
-    #: **ALWAYS SYNTHESIZED today** by :mod:`precis.pcb.landpattern` —
+    #: **SYNTHESIZED at build time** by :mod:`precis.pcb.landpattern` —
     #: dimensionally sane for the pin count, but not the real part.
-    #: :func:`from_graph` takes no ``footprints`` argument, so there is no
-    #: path by which a cached pad's real offset can reach this array.
-    #: Without it every pin of an instance resolves to the instance
-    #: centroid: coincident tracks (spurious 0mm ``clearance`` errors no
-    #: router can fix), ``crossings`` computed on a degenerate graph, and
-    #: ROTATE/SIDE_FLIP/PIN_SWAP all provably cost-neutral for want of
-    #: sub-instance geometry.
+    #: :func:`from_graph` still takes no ``footprints`` argument (this
+    #: module sits below footprint resolution by design), so the synthesis
+    #: is what every pin starts at; a caller holding a footprint cache
+    #: overwrites it per pin afterwards via :meth:`PcbIR.set_pin_offset`
+    #: (:func:`precis.pcb.session.apply_real_pin_offsets`, wired into
+    #: :func:`precis.pcb.session.build_ir`). ``pin_offsets_synthesized``
+    #: records which pins are still the guess.
     #:
-    #: Pad SIZE (``pin_w``/``pin_h`` below) IS taken from the real
-    #: footprint when cached (:func:`precis.pcb.realize.pad_geometry`) —
-    #: this OFFSET is not; ``pin_offsets_synthesized`` records which is
-    #: which and must never be lost on the way to fabrication. Fab export
-    #: is unaffected (:func:`precis.pcb.padplace.board_pads` sources
-    #: position+size together, bypassing the IR) but the router, DRC and
-    #: the ``level='fab'`` preview all read this array. Closing the gap
-    #: means reconciling per-pin real offsets with netlist pin identity
-    #: through the L0 pin model.
+    #: Pad SIZE (``pin_w``/``pin_h`` below) takes the same real-when-cached
+    #: route through :func:`precis.pcb.realize.pad_geometry` — the two
+    #: overrides ride the SAME refdes-keyed ``footprints`` dict
+    #: (:func:`precis.pcb.session.footprints_by_refdes`), which is what
+    #: keeps "where is this pad" and "how big is it" from drifting again
+    #: (gripe 338983: they had, for POSITION, invisibly — fab export reads
+    #: real coordinates through :func:`precis.pcb.padplace.board_pads`
+    #: while the router, DRC, ratsnest and courtyards read this array).
     pin_dx: np.ndarray
     pin_dy: np.ndarray
     #: bool[n_pins] — True where the offset above is a synthesized estimate
@@ -210,6 +209,18 @@ class PcbIR:
     #: design — see that module's docstring), so one flag cannot honestly
     #: describe both.
     pin_pad_synthesized: np.ndarray
+    #: object[n_pins] -> list[(x, y)] | None — a ``pin_shape == 'polygon'``
+    #: pin's vertex ring, footprint-local mm, RELATIVE TO THE PIN'S OWN
+    #: CENTER (``pin_dx``/``pin_dy`` — the same convention
+    #: :class:`~precis.pcb.realize.PadGeom`'s own ``poly`` uses), unrotated
+    #: by the instance's pose. ``None`` for every non-polygon pin
+    #: (:func:`from_graph` never populates this from the always-bbox
+    #: landpattern synthesis, only a caller wiring in real per-pin
+    #: geometry would). :func:`instance_courtyard_polygon` reads it
+    #: instead of the bbox corners when set — pcb-ewod-multitile Slice 1
+    #: (an authored electrode's real outline, not its bounding square,
+    #: is what a courtyard reservation should hug).
+    pin_poly: np.ndarray
     net_name: np.ndarray  # object[n_nets] -> str
     net_domain: np.ndarray  # object[n_nets] -> str ('electrical'|'fluidic'|'thermal')
     net_class: np.ndarray  # object[n_nets] -> str
@@ -564,6 +575,43 @@ class PcbIR:
             self.dirty_l4[seg_id] = True
             self.dirty_l5[seg_id] = True
 
+    def set_pin_offset(self, pin_id: int, dx: float, dy: float) -> None:
+        """L3 mutator: replace one pin's SYNTHESIZED land-pattern offset
+        with the REAL footprint's own per-pin coordinate (footprint-local
+        mm, pre-rotation — :attr:`pin_dx`'s own frame), clearing
+        :attr:`pin_offsets_synthesized` for it.
+
+        The sanctioned way real per-pin geometry reaches ``pin_dx``/
+        ``pin_dy``: :func:`from_graph` still takes no footprint argument
+        (this module sits below footprint resolution by design), so the
+        caller that HAS both an IR and a footprint cache —
+        :func:`precis.pcb.session.apply_real_pin_offsets`, the same join
+        that already feeds real pad SIZE to
+        :func:`precis.pcb.realize.pad_geometry` — writes them in
+        afterwards. gripe 338983: before this existed every position-
+        reading consumer (DRC clearance, the maze router's pad claims,
+        ratsnest length, courtyard hulls) measured a generic label-keyed
+        guess, which is invisible for a catalog part whose label names a
+        real package family and wildly wrong for an authored custom
+        footprint (an ``ewod_pad_array`` electrode measured ~10mm from its
+        own real position) — while gerber/SVG export read the real
+        coordinates through :func:`precis.pcb.padplace.board_pads` and
+        rendered correctly, so the two halves of the pipeline described
+        different boards.
+
+        Dirties L3 for the owning instance and L4/L5 for its segments —
+        the same footprint :meth:`move_instance` owns, and for the same
+        reason: a pin that moved within its part changes every incident
+        segment's geometry without touching L0/L1/L2."""
+        self.pin_dx[pin_id] = dx
+        self.pin_dy[pin_id] = dy
+        self.pin_offsets_synthesized[pin_id] = False
+        inst_id = int(self.pin_instance[pin_id])
+        self.dirty_l3[inst_id] = True
+        for seg_id in self._segs_of_instance.get(inst_id, []):
+            self.dirty_l4[seg_id] = True
+            self.dirty_l5[seg_id] = True
+
     def add_via(self, *, layer_span: int, net_id: int = NO_NET) -> int:
         """Append a new via/keepout (:attr:`via_layer_span` bitmask,
         :attr:`via_net`). ``net_id=NO_NET`` (the default) is a pure
@@ -816,6 +864,10 @@ def from_graph(
     pin_h = np.zeros(n_pins, dtype=np.float64)
     pin_shape = _obj_array([""] * n_pins)
     pin_pad_synth = np.zeros(n_pins, dtype=bool)
+    # Never populated by the synthesized landpattern path below (it has no
+    # polygon family) -- stays all-None until a caller with real per-pin
+    # footprint geometry wires one in (see the field's own docstring).
+    pin_poly = _obj_array([None] * n_pins)
     _pins_of_inst: dict[int, list[int]] = {}
     for pid, inst_id in enumerate(pin_instance):
         _pins_of_inst.setdefault(int(inst_id), []).append(pid)
@@ -890,6 +942,7 @@ def from_graph(
         pin_h=pin_h,
         pin_shape=pin_shape,
         pin_pad_synthesized=pin_pad_synth,
+        pin_poly=pin_poly,
         net_name=_obj_array(net_name),
         net_domain=_obj_array(net_domain),
         net_class=_obj_array(net_class),
@@ -1533,6 +1586,14 @@ def instance_courtyard_polygon(
     corners: list[tuple[float, float]] = []
     for pid in pins:
         dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
+        poly = ir.pin_poly[pid]
+        if poly:
+            # The pin's OWN outline, not its bounding square — an
+            # authored electrode's hull should hug its real shape (a
+            # zigzag/crenellated edge is the whole point of one), not a
+            # rectangle that over-reserves past every tooth.
+            corners += [(dx + float(vx), dy + float(vy)) for vx, vy in poly]
+            continue
         hw, hh = float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0
         corners += [
             (dx - hw, dy - hh),

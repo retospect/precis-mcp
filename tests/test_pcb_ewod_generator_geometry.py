@@ -1,0 +1,289 @@
+"""precis.pcb.generators -- pure geometry, no DB (same style
+tests/test_pcb_planes.py already uses for this subsystem).
+
+Covers the load-bearing claims the store/handler-level
+``test_pcb_ewod_generator.py`` can't cheaply assert: every electrode
+polygon is a valid simple ring, the zigzag gap between same-row/same-col
+neighbours is a CONSTANT ``gap`` (acceptance criterion 2's geometric
+assertion), and no two DIFFERENT electrodes' copper (electrode body, neck
+stub, or via) ever overlaps -- a short-circuit in this kind, found the
+hard way while building this slice (round-2 stress test: the naive "3x3
+via sub-grid" and "uniform-width diagonal stub" both clipped a
+neighbour; :func:`precis.pcb.generators._plaza_capacity` and the tapered
+:func:`precis.pcb.generators._stub_polygon` are the fixes).
+"""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+from shapely.geometry import Point as SPoint  # type: ignore[import-untyped]
+from shapely.geometry import Polygon
+from shapely.validation import explain_validity  # type: ignore[import-untyped]
+
+from precis.pcb import generators as G
+
+_PIN_RE = re.compile(r"R(\d+)C(\d+)")
+
+
+def _pads_by_pin(exp: G.GeneratorExpansion) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for p in exp.footprints[0]["pads"]:
+        out.setdefault(p["pin"], []).append(p)
+    return out
+
+
+def _shape(p: dict) -> Polygon:
+    if p["shape"] == "polygon":
+        return Polygon(p["poly"]).buffer(0)
+    return SPoint(p["x"], p["y"]).buffer(p["w"] / 2.0)
+
+
+@pytest.mark.parametrize("grid", [[3, 3], [8, 8], [9, 9], [3, 8]])
+def test_every_electrode_polygon_is_a_valid_simple_ring(grid):
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": grid})
+    for p in exp.footprints[0]["pads"]:
+        if p["shape"] != "polygon":
+            continue
+        poly = Polygon(p["poly"])
+        assert poly.is_valid, explain_validity(poly)
+
+
+@pytest.mark.parametrize("grid", [[3, 3], [8, 8], [9, 9], [3, 8]])
+def test_zigzag_gap_between_row_neighbours_is_constant(grid):
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": grid})
+    gap = exp.canonical_params["gap"]
+    by_pin = _pads_by_pin(exp)
+    electrodes = {
+        pin: Polygon(
+            next(
+                p["poly"]
+                for p in pads
+                if p["shape"] == "polygon" and len(p["poly"]) > 4
+            )
+        )
+        for pin, pads in by_pin.items()
+    }
+    checked = 0
+    for pin, poly in electrodes.items():
+        m = _PIN_RE.match(pin)
+        assert m is not None
+        r, c = int(m.group(1)), int(m.group(2))
+        east = f"R{r}C{c + 1}"
+        if east in electrodes:
+            d = poly.distance(electrodes[east])
+            assert d == pytest.approx(gap, abs=1e-6)
+            checked += 1
+        south = f"R{r + 1}C{c}"
+        if south in electrodes:
+            d = poly.distance(electrodes[south])
+            assert d == pytest.approx(gap, abs=1e-6)
+            checked += 1
+    assert checked > 0
+
+
+@pytest.mark.parametrize(
+    ("variant", "grid"),
+    [
+        ("full", [9, 9]),
+        ("full", [8, 8]),
+        ("full", [3, 8]),
+        ("rim", [4, 4]),
+        ("rim", [8, 8]),
+    ],
+)
+def test_no_cross_net_copper_overlap(variant, grid):
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": grid, "variant": variant})
+    shapes = [(p["pin"], _shape(p)) for p in exp.footprints[0]["pads"]]
+    n = len(shapes)
+    for i in range(n):
+        pin_i, gi = shapes[i]
+        for j in range(i + 1, n):
+            pin_j, gj = shapes[j]
+            if pin_i == pin_j:
+                continue  # same net -- redundant overlap is fine by design
+            assert gi.intersection(gj).area < 1e-9, (
+                f"{pin_i} and {pin_j} pads overlap -- would short two different nets"
+            )
+
+
+def test_pads_1024_generates_in_seconds_and_is_closed_form():
+    import time
+
+    start = time.monotonic()
+    exp = G.expand("ewod_pad_array", "ARR", {"pads": 1024})
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0
+    assert exp.ledger["summary"]["pads_total"] > 900
+
+
+def test_9x9_full_matches_the_acceptance_criterion_counts():
+    # docs/backlog/pcb-ewod-multitile.md acceptance criterion 1: "9x9 full
+    # = 72 electrodes + 9 via plazas".
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": [9, 9]})
+    assert exp.ledger["summary"]["pads_total"] == 72
+    assert exp.ledger["summary"]["plazas"] == 9
+    assert exp.ledger["summary"]["pads_unusable"] == 0
+
+
+def test_pad_sizes_merges_a_1x2_span_into_one_pad():
+    # docs/backlog/pcb-ewod-multitile.md Slice 2: "a pad may span m x n
+    # grid cells -- merged outline, one net" (round 6). A plain 3x3 field
+    # has 8 electrodes (R1C1 is the auto-placed plaza); merging R0C0+R0C1
+    # drops the count by one (two cells -> one pad) and the merged pad's
+    # own ledger entry carries a span.
+    exp = G.expand(
+        "ewod_pad_array",
+        "ARR",
+        {"grid": [3, 3], "pad_sizes": [{"cells": [[0, 0], [0, 1]]}]},
+    )
+    assert exp.ledger["summary"]["pads_total"] == 7
+    merged = exp.ledger["pads"]["R0C0"]
+    assert merged["span"] == [1, 2]
+    assert merged["cells"] == [[0, 0], [0, 1]]
+    by_pin = _pads_by_pin(exp)
+    assert "R0C0" in by_pin
+    assert "R0C1" not in by_pin
+    # exactly one via for the merged pad, same "one via suffices" rule as
+    # any ordinary single-cell electrode.
+    vias = [p for p in by_pin["R0C0"] if p.get("drill")]
+    assert len(vias) == 1
+
+
+def test_pad_sizes_merged_electrode_body_is_a_valid_simple_ring_and_wider_than_one_cell():
+    exp = G.expand(
+        "ewod_pad_array",
+        "ARR",
+        {"grid": [3, 3], "pad_sizes": [{"cells": [[0, 0], [0, 1]]}]},
+    )
+    by_pin = _pads_by_pin(exp)
+    body = next(
+        p for p in by_pin["R0C0"] if p["shape"] == "polygon" and len(p["poly"]) > 4
+    )
+    poly = Polygon(body["poly"])
+    assert poly.is_valid, explain_validity(poly)
+    pitch = exp.canonical_params["pitch"]
+    gap = exp.canonical_params["gap"]
+    single_width = pitch - gap
+    minx, _miny, maxx, _maxy = poly.bounds
+    assert (maxx - minx) > single_width * 1.5
+
+
+def test_pad_sizes_merged_pad_keeps_constant_gap_against_its_neighbours():
+    # Same geometric assertion as test_zigzag_gap_between_row_neighbours_is_
+    # constant, but the merged pad's own neighbours (R0C0+R0C1 merged,
+    # neighbouring R0C2 to the east and R1C0/R1C1 to the south).
+    exp = G.expand(
+        "ewod_pad_array",
+        "ARR",
+        {"grid": [3, 3], "pad_sizes": [{"cells": [[0, 0], [0, 1]]}]},
+    )
+    gap = exp.canonical_params["gap"]
+    by_pin = _pads_by_pin(exp)
+    merged_body = Polygon(
+        next(
+            p["poly"]
+            for p in by_pin["R0C0"]
+            if p["shape"] == "polygon" and len(p["poly"]) > 4
+        )
+    )
+    for neighbour_pin in ("R0C2", "R1C0", "R1C1"):
+        if neighbour_pin not in by_pin:
+            continue
+        neighbour_body = Polygon(
+            next(
+                p["poly"]
+                for p in by_pin[neighbour_pin]
+                if p["shape"] == "polygon" and len(p["poly"]) > 4
+            )
+        )
+        d = merged_body.distance(neighbour_body)
+        assert d == pytest.approx(gap, abs=1e-6), f"{neighbour_pin}: gap={d}"
+
+
+def test_pad_sizes_rejects_a_span_covering_a_plaza_cell():
+    # docs/backlog/pcb-ewod-multitile.md decisions log: "merged pads never
+    # cover a plaza (would short the 8 escape nets)" -- P1_1 is the
+    # auto-placed plaza in a 3x3 grid.
+    with pytest.raises(ValueError, match="plaza"):
+        G.expand(
+            "ewod_pad_array",
+            "ARR",
+            {"grid": [3, 3], "pad_sizes": [{"cells": [[1, 1], [1, 2]]}]},
+        )
+
+
+def test_pad_sizes_rejects_a_non_rectangular_cell_set():
+    with pytest.raises(ValueError, match="solid rectangle"):
+        G.expand(
+            "ewod_pad_array",
+            "ARR",
+            {"grid": [4, 4], "pad_sizes": [{"cells": [[0, 0], [0, 1], [1, 1]]}]},
+        )
+
+
+def test_pad_sizes_rejects_double_claimed_cells():
+    with pytest.raises(ValueError, match="more than one"):
+        G.expand(
+            "ewod_pad_array",
+            "ARR",
+            {
+                "grid": [4, 4],
+                "pad_sizes": [
+                    {"cells": [[0, 0], [0, 1]]},
+                    {"cells": [[0, 1], [1, 1]]},
+                ],
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("variant", "grid", "cells"),
+    [
+        ("full", [9, 9], [[0, 0], [0, 1]]),
+        ("full", [9, 9], [[5, 5], [5, 6], [6, 5], [6, 6]]),
+        ("rim", [4, 4], [[0, 0], [0, 1]]),
+        ("rim", [4, 4], [[0, 3], [1, 3]]),
+    ],
+)
+def test_no_cross_net_copper_overlap_with_a_merged_pad(variant, grid, cells):
+    exp = G.expand(
+        "ewod_pad_array",
+        "ARR",
+        {"grid": grid, "variant": variant, "pad_sizes": [{"cells": cells}]},
+    )
+    shapes = [(p["pin"], _shape(p)) for p in exp.footprints[0]["pads"]]
+    n = len(shapes)
+    for i in range(n):
+        pin_i, gi = shapes[i]
+        for j in range(i + 1, n):
+            pin_j, gj = shapes[j]
+            if pin_i == pin_j:
+                continue
+            assert gi.intersection(gj).area < 1e-9, (
+                f"{pin_i} and {pin_j} pads overlap -- would short two different nets"
+            )
+
+
+def test_pad_sizes_merge_idempotent_canonical_params():
+    params = {"grid": [3, 3], "pad_sizes": [{"cells": [[0, 0], [0, 1]]}]}
+    exp1 = G.expand("ewod_pad_array", "ARR", params)
+    exp2 = G.expand("ewod_pad_array", "ARR", params)
+    assert exp1.canonical_params == exp2.canonical_params
+
+
+def test_one_via_per_usable_electrode():
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": [3, 3]})
+    by_pin = _pads_by_pin(exp)
+    for pin, pads in by_pin.items():
+        vias = [p for p in pads if p.get("drill")]
+        assert len(vias) == 1, f"{pin} has {len(vias)} vias, expected exactly 1"
+
+
+def test_reserved_slot_gets_no_via_and_no_stub():
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": [3, 3], "reserve": ["P1_1:N"]})
+    by_pin = _pads_by_pin(exp)
+    r0c1_pads = by_pin["R0C1"]
+    assert len(r0c1_pads) == 1  # electrode body only -- no stub, no via
+    assert not any(p.get("drill") for p in r0c1_pads)

@@ -99,6 +99,13 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # itself, but the realize probe this job's auto-checks run does,
         # and an IR without them under-reports congestion near a corner.
         mounting_holes=pcb_session.mounting_holes_from_features(features),
+        # Real per-pin positions where a footprint is cached/authored
+        # (gripe 338983) — the anneal's cost terms (ratsnest length,
+        # crossings, courtyard hulls) are all sub-instance geometry, so a
+        # part placed against synthesized pin offsets is optimized against
+        # a land pattern the board does not have.
+        footprints_by_lcsc=ctx.store.pcb_footprints_for(pcb_ref_id),
+        local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
     )
 
     # Re-apply persisted plane assignments (authored `op='plane_net'` AND a

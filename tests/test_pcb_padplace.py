@@ -237,6 +237,104 @@ def test_board_pads_places_two_instances_independently():
     assert xs == [0.0, 10.0]
 
 
+# ── pcb-ewod-multitile Slice 1: polygon pads + role/mask/paste ───────────
+def test_polygon_pad_maps_to_gerber_vocabulary_not_a_rect_downgrade():
+    inst = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "top"}
+    pads, _ = padplace.place_footprint_pads(
+        [_pad(shape="POLYGON", poly=[[-0.5, -0.5], [0.5, -0.5], [0.0, 0.5]])],
+        inst,
+        layers=_LAYERS,
+    )
+    assert pads[0]["shape"] == "polygon"
+
+
+def test_polygon_pad_vertices_translate_with_the_instance():
+    inst = {"x": 10.0, "y": 20.0, "rot": 0.0, "layer": "top"}
+    pads, _ = padplace.place_footprint_pads(
+        [_pad(shape="POLYGON", poly=[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])],
+        inst,
+        layers=_LAYERS,
+    )
+    assert pads[0]["poly"] == [[10.0, 20.0], [11.0, 20.0], [10.0, 21.0]]
+
+
+def test_polygon_pad_vertices_rotate_clockwise_from_north():
+    # Same convention `place_pad_point` pins: a vertex 1mm local "east",
+    # rotated 90 CW, ends up 1mm "south".
+    inst = {"x": 0.0, "y": 0.0, "rot": 90.0, "layer": "top"}
+    pads, _ = padplace.place_footprint_pads(
+        [_pad(shape="POLYGON", poly=[[1.0, 0.0]])], inst, layers=_LAYERS
+    )
+    (vx, vy) = pads[0]["poly"][0]
+    assert vx == pytest.approx(0.0, abs=1e-9)
+    assert vy == pytest.approx(-1.0)
+
+
+def test_polygon_pad_mirrors_on_a_bottom_side_instance():
+    inst = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "bottom"}
+    pads, _ = padplace.place_footprint_pads(
+        [_pad(shape="POLYGON", poly=[[1.0, 2.0]])], inst, layers=_LAYERS
+    )
+    assert pads[0]["poly"] == [[-1.0, 2.0]]
+
+
+def test_polygon_pad_with_no_poly_data_falls_back_to_rect_downgrade():
+    # An authored-but-empty poly should never crash the transform; the
+    # shape maps through but carries no "poly" key, same as a shapeless
+    # pad would.
+    inst = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "top"}
+    pads, _ = padplace.place_footprint_pads(
+        [_pad(shape="POLYGON", poly=None)], inst, layers=_LAYERS
+    )
+    assert pads[0]["shape"] == "polygon"
+    assert "poly" not in pads[0]
+
+
+def test_role_mask_paste_ride_through_when_the_source_pad_carries_them():
+    inst = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "top"}
+    pads, _ = padplace.place_footprint_pads(
+        [_pad(role="electrode", mask="covered", paste="none")], inst, layers=_LAYERS
+    )
+    assert pads[0]["role"] == "electrode"
+    assert pads[0]["mask"] == "covered"
+    assert pads[0]["paste"] == "none"
+
+
+def test_role_mask_paste_absent_on_a_pad_that_never_carried_them():
+    # An EasyEDA-parsed catalog pad never sets these -- confirms no
+    # default-key injection changes a catalog pad's dict shape.
+    inst = {"x": 0.0, "y": 0.0, "rot": 0.0, "layer": "top"}
+    pads, _ = padplace.place_footprint_pads([_pad()], inst, layers=_LAYERS)
+    assert "role" not in pads[0]
+    assert "mask" not in pads[0]
+    assert "paste" not in pads[0]
+
+
+def test_board_pads_falls_back_to_a_named_local_footprint_when_partless():
+    instances = [
+        {
+            "refdes": "E1",
+            "x": 0.0,
+            "y": 0.0,
+            "rot": 0.0,
+            "layer": "top",
+            "part_lcsc": None,
+            "footprint": "ewod_pad",
+        }
+    ]
+    local_footprints = {
+        "ewod_pad": {
+            "pads": [_pad(shape="POLYGON", poly=[[0.0, 0.0]])],
+            "pin_map": {},
+        }
+    }
+    pads, _ = padplace.board_pads(
+        instances, {}, layers=_LAYERS, local_footprints=local_footprints
+    )
+    assert len(pads) == 1
+    assert pads[0]["shape"] == "polygon"
+
+
 def test_board_pads_wires_pin_to_net_per_refdes():
     instances = [
         {

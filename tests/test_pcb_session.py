@@ -111,6 +111,128 @@ def test_pin_swap_diff_reports_empty_net_not_a_wrapped_last_net_name():
     assert by_pin["B"]["net"] == "NET_A"
 
 
+# ── real per-pin POSITIONS (gripe 338983) ────────────────────────────────
+# The position counterpart of the size join above: `pad_geometry` took pad
+# SIZE from a real footprint while every consumer still read the pin's
+# POSITION off `landpattern.offsets_for`'s synthesized guess.
+
+
+_WIDE_FP = {
+    # Two pads 20mm apart — far enough that no plausible landpattern
+    # synthesis for a 2-pin part could accidentally land on them, so a
+    # test asserting the real coordinates cannot pass by coincidence
+    # (the trivial-symmetry-group rule: y differs too, so a swapped or
+    # mirrored read is visible).
+    "pads": [
+        {"number": "1", "x": -10.0, "y": 2.5, "w": 1.0, "shape": "RECT"},
+        {"number": "2", "x": 10.0, "y": -2.5, "w": 1.0, "shape": "RECT"},
+    ],
+    "pin_map": {"1": {"name": "A"}, "2": {"name": "B"}},
+}
+
+
+def _two_pin_graph():
+    return {
+        "instances": [{"refdes": "U1", "part_lcsc": "C1", "x": 5.0, "y": 5.0}],
+        "nets": [
+            {"name": "N1", "members": [{"refdes": "U1", "pin": "A"}]},
+            {"name": "N2", "members": [{"refdes": "U1", "pin": "B"}]},
+        ],
+    }
+
+
+def test_apply_real_pin_offsets_replaces_the_synthesized_guess():
+    from precis.pcb.session import apply_real_pin_offsets
+
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    assert bool(ir.pin_offsets_synthesized.all())
+
+    changed = apply_real_pin_offsets(ir, {"U1": _WIDE_FP})
+
+    assert changed == 2
+    by_label = {str(ir.pin_label[p]): p for p in range(ir.n_pins)}
+    assert (ir.pin_dx[by_label["A"]], ir.pin_dy[by_label["A"]]) == (-10.0, 2.5)
+    assert (ir.pin_dx[by_label["B"]], ir.pin_dy[by_label["B"]]) == (10.0, -2.5)
+    assert not bool(ir.pin_offsets_synthesized.any())
+
+
+def test_apply_real_pin_offsets_keeps_the_bound_where_there_is_no_footprint():
+    """Same "absent means fall back, never invent" contract
+    :func:`~precis.pcb.realize.pad_geometry` already honours for size — a
+    part with no cached/authored footprint keeps its landpattern offsets
+    AND keeps saying so (``pin_offsets_synthesized``)."""
+    from precis.pcb.session import apply_real_pin_offsets
+
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    before = (ir.pin_dx.copy(), ir.pin_dy.copy())
+
+    assert apply_real_pin_offsets(ir, {}) == 0
+    assert apply_real_pin_offsets(ir, {"U2": _WIDE_FP}) == 0
+
+    assert (ir.pin_dx == before[0]).all() and (ir.pin_dy == before[1]).all()
+    assert bool(ir.pin_offsets_synthesized.all())
+
+
+def test_apply_real_pin_offsets_takes_the_first_pad_of_a_multi_pad_pin():
+    """One pin, several pads — an EWOD electrode emits its crenellated
+    BODY, then a neck stub, then a drilled via, all on one pin name
+    (:mod:`precis.pcb.generators`). Position must come from the SAME pad
+    that supplies the outline downstream (``realize._real_pad_sizes``'s
+    own first-wins rule), or a real polygon gets anchored at another
+    pad's centre — worse than the guess this replaces."""
+    from precis.pcb.session import apply_real_pin_offsets
+
+    fp = {
+        "pads": [
+            {"number": "1", "x": -10.0, "y": 2.5, "w": 2.0, "shape": "RECT"},
+            {"number": "1", "x": -8.4, "y": 2.5, "w": 0.2, "shape": "RECT"},
+            {"number": "1", "x": -8.0, "y": 2.5, "w": 0.45, "shape": "ELLIPSE"},
+            {"number": "2", "x": 10.0, "y": -2.5, "w": 1.0, "shape": "RECT"},
+        ],
+        "pin_map": {"1": {"name": "A"}, "2": {"name": "B"}},
+    }
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    apply_real_pin_offsets(ir, {"U1": fp})
+
+    pin_a = next(p for p in range(ir.n_pins) if str(ir.pin_label[p]) == "A")
+    assert (ir.pin_dx[pin_a], ir.pin_dy[pin_a]) == (-10.0, 2.5)
+
+
+def test_build_ir_wires_real_pin_offsets_from_both_footprint_sources():
+    """``build_ir`` is where the rule lives (one call site) — a caller
+    passing either cache gets real positions on the IR every consumer
+    reads, and a caller passing neither gets exactly today's synthesized
+    behaviour."""
+    graph = {
+        "instances": [
+            {"refdes": "U1", "part_lcsc": "C1", "x": 0.0, "y": 0.0},
+            {"refdes": "E1", "footprint": "electrode-pair", "x": 0.0, "y": 0.0},
+        ],
+        "nets": [
+            {"name": "N1", "members": [{"refdes": "U1", "pin": "A"}]},
+            {"name": "N2", "members": [{"refdes": "E1", "pin": "A"}]},
+        ],
+    }
+    ir = build_ir(
+        graph,
+        footprints_by_lcsc={"C1": _WIDE_FP},
+        local_footprints_by_name={"electrode-pair": _WIDE_FP},
+    )
+    by_key = {
+        (str(ir.instance_refdes[int(ir.pin_instance[p])]), str(ir.pin_label[p])): p
+        for p in range(ir.n_pins)
+    }
+    assert (ir.pin_dx[by_key[("U1", "A")]], ir.pin_dy[by_key[("U1", "A")]]) == (
+        -10.0,
+        2.5,
+    )
+    assert (ir.pin_dx[by_key[("E1", "A")]], ir.pin_dy[by_key[("E1", "A")]]) == (
+        -10.0,
+        2.5,
+    )
+    assert bool(build_ir(graph).pin_offsets_synthesized.all())
+
+
 # ── mounting-hole hydration (round-3 review item 4) ──────────────────────
 
 

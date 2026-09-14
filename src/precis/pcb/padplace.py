@@ -72,17 +72,24 @@ from __future__ import annotations
 import math
 from typing import Any
 
-#: EasyEDA's raw ``PAD~shape~...`` token -> the shape vocabulary
-#: :func:`precis.pcb.gerber._aperture_for_pad` accepts. ``POLYGON`` (a
-#: free-form pad shape) has no equivalent aperture in that writer — it is
-#: approximated as its own authored w/h rectangle, a deliberate
-#: approximation (not attempted freeform tracing), same spirit as the
-#: oblique-rotation approximation above.
+#: EasyEDA's raw ``PAD~shape~...`` token (or an authored local footprint's
+#: own lowercase shape word, upper-cased the same way) -> the shape
+#: vocabulary :mod:`precis.pcb.gerber` accepts. ``POLYGON`` used to
+#: down-approximate to ``rect`` (a free-form pad shape has no aperture in
+#: that writer) — now carried through as its own ``"polygon"`` shape,
+#: which :func:`precis.pcb.gerber._emit_pad` renders as a region fill
+#: (G36/G37) off the pad's ``poly`` vertex ring instead of an aperture
+#: flash (pcb-ewod-multitile Slice 1). ``CIRCLE``/``OBROUND`` are the
+#: authoring-side spellings of ``ELLIPSE``/``OVAL`` — a local footprint
+#: never speaks EasyEDA's token dialect, so both alphabets map onto the
+#: same three-or-four-shape output vocabulary here.
 _SHAPE_MAP = {
     "ELLIPSE": "circle",
+    "CIRCLE": "circle",
     "OVAL": "obround",
+    "OBROUND": "obround",
     "RECT": "rect",
-    "POLYGON": "rect",
+    "POLYGON": "polygon",
 }
 
 
@@ -119,15 +126,29 @@ def _effective_layer(pad_layer: str, *, bottom: bool) -> str:
     return pad_layer  # already a named inner/other layer -- leave alone
 
 
+def _transform_local_point(
+    lx: float, ly: float, inst: dict[str, Any]
+) -> tuple[float, float]:
+    """Mirror -> rotate (module docstring's exact order), LEAVING OFF the
+    final translate — the shared half of :func:`place_pad_point` a polygon
+    pad's vertex ring also needs: mirroring and rotation are both linear
+    (no translate term), so applying this to a vertex expressed relative
+    to its own pad's center and adding that center's OWN transformed
+    position afterwards gives the same answer as transforming the
+    absolute vertex directly — one transform, reused per-point instead of
+    re-derived for the polygon case."""
+    if _is_bottom(inst):
+        lx = -lx
+    return _rotate_cw(lx, ly, float(inst.get("rot") or 0.0))
+
+
 def place_pad_point(pad: dict[str, Any], inst: dict[str, Any]) -> tuple[float, float]:
     """The one pad-center coordinate transform (mirror -> rotate ->
     translate, module docstring's exact order). Exposed standalone because
     it is the load-bearing piece the round-trip/rotation tests pin
     directly, independent of shape/layer bookkeeping."""
     lx, ly = float(pad["x"]), float(pad["y"])
-    if _is_bottom(inst):
-        lx = -lx
-    rx, ry = _rotate_cw(lx, ly, float(inst.get("rot") or 0.0))
+    rx, ry = _transform_local_point(lx, ly, inst)
     return float(inst["x"]) + rx, float(inst["y"]) + ry
 
 
@@ -153,6 +174,19 @@ def place_footprint_pads(
     pad's ``net`` field is decorative only (:mod:`precis.pcb.gerber` never
     reads it, see its module docstring's model shape comment); missing
     net-name data degrades to an empty string, never a skipped pad.
+
+    ``role``/``mask``/``paste`` (pcb-ewod-multitile Slice 1's authoring
+    surface, ``docs/backlog/pcb-component-model.md`` §Features' minimum
+    viable slice) ride straight through onto the placed pad dict when the
+    source pad carries them — an EasyEDA-parsed catalog footprint never
+    does, so those pads are silently untouched (``.get`` with the same
+    default :mod:`precis.pcb.gerber` already assumed). A ``shape:
+    "polygon"`` pad's ``poly`` vertex ring is transformed per-vertex by
+    the SAME mirror/rotate :func:`place_pad_point` uses for the center
+    (:func:`_transform_local_point`) — the center is still emitted too
+    (as the ring's own bbox center) so a consumer that only reads
+    ``x``/``y``/``w``/``h`` (the courtyard/DRC bbox fallback) keeps
+    working.
     """
     bottom = _is_bottom(inst)
     inst_rot = float(inst.get("rot") or 0.0)
@@ -168,7 +202,7 @@ def place_footprint_pads(
         w = float(pad["w"])
         h = float(pad.get("h", pad["w"]))
         total_rot = inst_rot + float(pad.get("rot") or 0.0)
-        if shape != "circle" and _swap_wh(total_rot):
+        if shape in ("rect", "obround") and _swap_wh(total_rot):
             w, h = h, w
 
         entry_dict = pin_map.get(str(pad.get("number")))
@@ -180,7 +214,7 @@ def place_footprint_pads(
         net = pin_to_net.get(pin_name, "")
 
         drill = pad.get("drill")
-        base = {
+        base: dict[str, Any] = {
             "net": net,
             "shape": shape,
             "x": round(bx, 4),
@@ -189,6 +223,23 @@ def place_footprint_pads(
         }
         if shape != "circle":
             base["h"] = round(h, 4)
+        if shape == "polygon" and pad.get("poly"):
+            base["poly"] = [
+                [
+                    round(float(inst["x"]) + rx, 4),
+                    round(float(inst["y"]) + ry, 4),
+                ]
+                for rx, ry in (
+                    _transform_local_point(float(vx), float(vy), inst)
+                    for vx, vy in pad["poly"]
+                )
+            ]
+        if pad.get("role") is not None:
+            base["role"] = str(pad["role"])
+        if pad.get("mask") is not None:
+            base["mask"] = str(pad["mask"])
+        if pad.get("paste") is not None:
+            base["paste"] = str(pad["paste"])
         if drill:
             # Carry the drill ON the pad, not only in ``out_drills``. The
             # pad rows already encode the CONSEQUENCE of being through-hole
@@ -227,6 +278,7 @@ def board_pads(
     *,
     layers: list[str],
     pin_to_net: dict[tuple[str, str], str] | None = None,
+    local_footprints: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Every placed instance's pads, transformed into board coordinates —
     the whole design's ``(model["pads"], model["drills"])``.
@@ -238,8 +290,17 @@ def board_pads(
     brief: "if the pad data ... turns out insufficient ... say so
     precisely rather than inventing geometry"). ``pin_to_net`` is keyed
     ``(refdes, pin_name) -> net_name`` (:meth:`precis.store.pcb_graph`'s
-    own membership shape, flattened by the caller)."""
+    own membership shape, flattened by the caller).
+
+    ``local_footprints`` (pcb-ewod-multitile Slice 1, optional) is the
+    SAME shape as ``footprints`` but keyed by name instead of C-number —
+    :meth:`~precis.store.Store.pcb_local_footprints_for`'s cache for an
+    instance authored with no LCSC part at all
+    (``pcb_components.footprint`` names it). Checked only when the
+    instance has no ``part_lcsc`` match, never as a second source for a
+    catalog part — a component picks exactly one footprint origin."""
     pin_to_net = pin_to_net or {}
+    local_footprints = local_footprints or {}
     all_pads: list[dict[str, Any]] = []
     all_drills: list[dict[str, Any]] = []
     for inst in instances:
@@ -247,6 +308,9 @@ def board_pads(
             continue
         lcsc = str(inst.get("part_lcsc") or "")
         fp = footprints.get(lcsc) if lcsc else None
+        if fp is None:
+            name = str(inst.get("footprint") or "")
+            fp = local_footprints.get(name) if name else None
         if not fp or not fp.get("pads"):
             continue
         refdes = str(inst.get("refdes") or "")
