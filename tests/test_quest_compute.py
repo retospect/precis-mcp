@@ -6035,6 +6035,25 @@ class TestEnergyTwinFlag:
 
 
 class TestFrontierTreeDossierChunk:
+    def test_seed_text_distinct_from_rendered_empty_frontier(self, store: Any) -> None:
+        """The unwritten seed (``_ensure_frontier_tree_chunk_for_ref``, before
+        any tick has run ``update_frontier_tree``) must not be byte-identical to
+        ``render_frontier_tree``'s own no-candidates output — otherwise a
+        pinned chunk still holding the seed is indistinguishable from one that
+        was correctly regenerated on a genuinely candidate-less quest
+        (docs/backlog/quest-frontier-tree-seed-indistinguishable-from-empty.md)."""
+        from precis.quest import dossier as dossier_mod
+
+        qid = _mk_quest(store, "A striving")
+        assert render_frontier_tree(store, qid) != dossier_mod._FRONTIER_TREE_SEED
+
+        did = dossier_mod.ensure_dossier(store, qid)
+        handle = dossier_mod._ensure_frontier_tree_chunk_for_ref(store, did)
+        chunks = store.drafts.reading_order(did)
+        seeded = next(c for c in chunks if c.handle == handle)
+        assert seeded.text == dossier_mod._FRONTIER_TREE_SEED
+        assert seeded.text != render_frontier_tree(store, qid)
+
     def test_creates_pinned_chunk_with_lineage_and_measure(self, store: Any) -> None:
         from precis.quest import dossier as dossier_mod
 

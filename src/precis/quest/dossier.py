@@ -731,7 +731,14 @@ def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
 #: regenerated in place every tick via :func:`update_frontier_tree` — see
 #: that function's docstring.
 _FRONTIER_TREE_PINNED = "frontier-tree"
-_FRONTIER_TREE_SEED = "_(No candidates yet.)_\n"
+#: Deliberately distinct from :func:`precis.quest.frontier.render_frontier_tree`'s
+#: own no-candidates text (``"_(No candidates yet.)_\n"``) — the two used to be
+#: byte-identical, making a pinned chunk still holding the seed indistinguishable
+#: from one regenerated every tick on a genuinely candidate-less quest
+#: (docs/backlog/quest-frontier-tree-seed-indistinguishable-from-empty.md).
+#: :func:`update_frontier_tree` always overwrites this on its first call, so
+#: seeing this text after a tick has run is itself the bug signal.
+_FRONTIER_TREE_SEED = "_(Frontier not yet generated.)_\n"
 
 
 def dossier_ref_id(store: Store, owner_id: int) -> int | None:
