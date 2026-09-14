@@ -24,6 +24,7 @@ self-service at ``/account`` — falling back to the deployment-wide
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,14 @@ _PARAMS_SCHEMA: dict[str, Any] = {
     "required": ["draft"],
     "additionalProperties": False,
 }
+
+
+def _compile_timeout_s() -> int:
+    """Compile deadline for a send. Book-scale sends (nano-computer: ~460
+    pages, a 737-entry biber run) legitimately need minutes — the shared
+    ``PRECIS_LATEXMK_TIMEOUT_S`` default (120s, sized for compile_guard's
+    lock-holding inline compile) times them out. Own knob, still bounded."""
+    return int(os.environ.get("PRECIS_RM_COMPILE_TIMEOUT_S", "600"))
 
 
 def _target_folder(ctx: Any, params: dict[str, Any]) -> str:
@@ -148,7 +157,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.append_chunk(
             "job_event", f"{len(result.cited_slugs)} citation(s) → footnotes; compiling"
         )
-        cres = compile_pdf(out_dir)
+        cres = compile_pdf(out_dir, timeout_s=_compile_timeout_s())
         ctx.append_chunk("job_event", f"latexmk rc={cres.returncode}")
         if not (cres.ok and cres.pdf is not None):
             ctx.append_chunk("job_event", cres.log_tail)

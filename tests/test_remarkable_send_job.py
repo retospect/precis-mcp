@@ -13,6 +13,15 @@ from precis.workers.job_types import get_job_type, known_job_types
 from precis.workers.job_types import remarkable_send as rs
 
 
+def test_compile_timeout_default_and_override(monkeypatch: Any) -> None:
+    # Book-scale sends need minutes; the shared 120s latexmk default timed
+    # out nano-computer's ~460-page + 737-entry-biber compile (job 339649).
+    monkeypatch.delenv("PRECIS_RM_COMPILE_TIMEOUT_S", raising=False)
+    assert rs._compile_timeout_s() == 600
+    monkeypatch.setenv("PRECIS_RM_COMPILE_TIMEOUT_S", "45")
+    assert rs._compile_timeout_s() == 45
+
+
 def test_remarkable_send_registered() -> None:
     spec = get_job_type("remarkable_send")
     assert spec is not None
@@ -92,6 +101,31 @@ def test_dispatch_fails_without_latexmk(hub: Hub, monkeypatch: Any) -> None:
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("latexmk" in f for f in ctx.failures), ctx.failures
+
+
+def test_dispatch_compiles_with_send_scoped_timeout(hub: Hub, monkeypatch: Any) -> None:
+    # The compile call must carry _compile_timeout_s(), not the shared
+    # 120s default that timed out nano-computer's book-scale send.
+    import precis.export.compile as compile_mod
+    from precis.export.compile import CompileResult
+
+    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    monkeypatch.setenv("PRECIS_RM_COMPILE_TIMEOUT_S", "777")
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+    seen: dict[str, Any] = {}
+
+    def _fake_compile(out_dir: Any, *, timeout_s: int | None = None) -> CompileResult:
+        seen["timeout_s"] = timeout_s
+        return CompileResult(ok=False, pdf=None, returncode=1, log_tail="stub")
+
+    monkeypatch.setattr(compile_mod, "compile_pdf", _fake_compile)
+    slug = _project_and_draft(hub)
+    spec = get_job_type("remarkable_send")
+    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+    assert seen["timeout_s"] == 777
+    assert any("latexmk failed" in f for f in ctx.failures), ctx.failures
 
 
 def test_placeholder_figures_waives_imageless_gate(hub: Hub, monkeypatch: Any) -> None:
