@@ -89,6 +89,17 @@ _REMARKABLE_GEOMETRY = (
     "\\linespread{1.08}"
 )
 
+#: Cyrillic → Latin homoglyphs (pixel-identical glyphs only): PDF extraction
+#: sometimes drops a Cyrillic Т/О/С into English prose. The identical-looking
+#: Latin letter renders perfectly — strictly better than the raw-glyph
+#: missing-glyph degrade below, which the REST of each script block rides.
+_CYRILLIC_HOMOGLYPHS = {
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "Х": "X",
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "і": "i", "ѕ": "s", "ј": "j",
+}  # fmt: skip
+
 #: Script blocks whose pylatexenc translations are font-encoding commands
 #: (Cyrillic Т → ``\CYRT`` …) UNDEFINED in this LuaLaTeX preamble — an
 #: undefined control sequence is a fatal compile error, while the raw glyph
@@ -108,6 +119,9 @@ def _keep_raw_scripts(u: str, pos: int) -> tuple[int, str] | None:
     """RULE_CALLABLE: pass glyphs from ``_RAW_SCRIPT_RANGES`` through raw;
     ``None`` defers every other char to the default rules."""
     ch = u[pos]
+    latin = _CYRILLIC_HOMOGLYPHS.get(ch)
+    if latin is not None:
+        return (1, latin)
     for lo, hi in _RAW_SCRIPT_RANGES:
         if lo <= ch <= hi:
             return (1, ch)
@@ -177,7 +191,12 @@ _MD_CODE = re.compile(r"`([^`]+)`")
 _HTML_SUB = re.compile(r"<sub>(.+?)</sub>")
 _HTML_SUP = re.compile(r"<sup>(.+?)</sup>")
 #: ``$$…$$`` (display) before ``$…$`` (inline); both stashed verbatim.
-_MATH = re.compile(r"\$\$.+?\$\$|\$[^$]+\$", re.DOTALL)
+#: A ``\$`` is an author-escaped literal dollar, never a math delimiter —
+#: pairing two of them (``Scaffold \$300 … staples \$200``) used to steal
+#: the span as "math" and strand a bare ``$`` that opened math mode for the
+#: rest of the document ("Missing $ inserted" far downstream). The body
+#: admits escaped chars (``$a\$b$`` stays one span).
+_MATH = re.compile(r"(?<!\\)\$\$.+?\$\$|(?<!\\)\$(?:\\.|[^$\\])+\$", re.DOTALL)
 
 
 def _math_braces_balanced(span: str) -> bool:
@@ -203,12 +222,47 @@ def _math_braces_balanced(span: str) -> bool:
     return depth == 0
 
 
+def _math_plausible(span: str) -> bool:
+    """Is a ``$…$`` candidate actually math — or a mispairing of two
+    currency/stray dollars? LLM-authored prose mixes ``$10–50 per
+    oligomer`` money-dollars with real math, and pairing two money-dollars
+    swallows a half-sentence as "math" (nano-computer's DNA-linker chunk):
+    the verbatim passthrough then emits live ``$``s that cascade into
+    "Display math should end with $$" fatals downstream. A span that is
+    long, or wordy without a single mathy character, is not math — its
+    dollars fall through to the escaper and render as the literal ``$``
+    the author meant."""
+    body = span.strip("$")
+    if len(body) > 120:
+        return False
+    if re.search(r"(?<!\\)\$", body):
+        # A live $ INSIDE the body only happens when the $$…$$ display
+        # alternation glues two stray author dollars around real spans
+        # ($$2^30$ ($∼$$) — verbatim passthrough would emit an unpaired $.
+        return False
+    return not (body.count(" ") >= 2 and not re.search(r"[\\^_={}<>≈±×·]", body))
+
+
 def _math_comment_safe(span: str) -> str:
     """Escape unescaped ``%`` and ``#`` inside a verbatim math span. A raw
     ``%`` starts a LaTeX comment mid-math — it eats the closing ``$`` and the
     rest of the source line ("Missing $ inserted" on the next line; prod
     chunk 1507177's ``CV $<20%$``) — and a raw ``#`` is a macro-parameter
-    error. ``\\%``/``\\#`` render as the literal glyphs, preserving intent."""
+    error. ``\\%``/``\\#`` render as the literal glyphs, preserving intent.
+
+    Also splits a ``\\command`` from an immediately following non-ASCII
+    letter: under LuaTeX Unicode letters are catcode-letter, so
+    ``$\\Deltaδ$`` parses as ONE undefined control sequence (fatal;
+    nano-computer's ``$\\Deltaδ ≈0.5$``). ``\\Delta{}δ`` is what the
+    author meant and renders identically.
+
+    A raw ``&`` outside an alignment environment is equally fatal
+    ("Misplaced alignment tab"; nano-computer's pseudocode
+    ``$f = `faceID` & `0b11`$``) — escaped unless the span carries a real
+    ``\\begin{matrix/align/…}`` where ``&`` is structural."""
+    span = re.sub(r"(\\[A-Za-z]+)(?=[^\x00-\x7f])", r"\1{}", span)
+    if "\\begin" not in span:
+        span = re.sub(r"(?<!\\)&", r"\\&", span)
     return re.sub(r"(?<!\\)([%#])", r"\\\1", span)
 
 
@@ -512,13 +566,17 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
     s = _MATH.sub(
         lambda m: (
             _stash(_math_comment_safe(m.group(0)))
-            if _math_braces_balanced(m.group(0))
+            if _math_braces_balanced(m.group(0)) and _math_plausible(m.group(0))
             else m.group(0)
         ),
         text,
     )
     # 2. Inline code → \texttt with its content escaped.
     s = _MD_CODE.sub(lambda m: _stash(f"\\texttt{{{_latex_escape(m.group(1))}}}"), s)
+    # 2b. An author-escaped ``\$`` means a literal dollar — stash it as the
+    #     LaTeX ``\$`` (renders "$") instead of letting step 4 escape the
+    #     backslash separately into a visible ``\textbackslash{}\$``.
+    s = re.sub(r"\\\$", lambda m: _stash(r"\$"), s)
     # 3. sub/sup BEFORE escaping (the angle brackets must not be escaped).
     s = _HTML_SUB.sub(
         lambda m: _stash(f"\\textsubscript{{{_latex_escape(m.group(1))}}}"), s
@@ -534,6 +592,19 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
     s = _MD_ITALIC.sub(r"\\emph{\1}", s)
     # 6. Abbreviations → \gls (first use) / \glstip tooltip (later uses).
     s = _glsify(s, ctx.keymap, ctx.seen_acr)
+
+    # 6b. Two math spans restored back-to-back would abut as ``…$$…`` — TeX
+    #     reads that as a display-math opener ("Display math should end with
+    #     $$"; nano-computer's authored ``$∼$$2^30$``). Separate adjacent
+    #     placeholders with ``{}`` when the left one ends and the right one
+    #     begins with a live ``$``.
+    def _sep_adjacent_math(m: re.Match[str]) -> str:
+        left, right = stash[int(m.group(1))], stash[int(m.group(2))]
+        if left.endswith("$") and right.startswith("$"):
+            return f"\x00{m.group(1)}\x00{{}}"
+        return m.group(0)
+
+    s = re.sub(r"\x00(\d+)\x00(?=\x00(\d+)\x00)", _sep_adjacent_math, s)
     # 7. Restore the stashed verbatim spans — iteratively: a span stashed in
     #    an earlier step can sit INSIDE a later-stashed span (math inside
     #    inline code, e.g. `` `…[PEG$_{7nm}$]…` ``), so a single pass leaves
@@ -1143,7 +1214,14 @@ def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
     out.append("\\bottomrule\\endlastfoot")
     for row in rows:
         cells = [_render_inline(row[j], ctx) if j < len(row) else "" for j in range(n)]
-        out.append(" & ".join(cells) + r" \\")
+        line = " & ".join(cells)
+        if line.startswith("["):
+            # A leading literal ``[`` would parse as the PREVIOUS row's
+            # ``\\[…]`` optional vertical-space argument ("Illegal unit of
+            # measure" — nano-computer's ``[2] Rotaxane…`` citation-marker
+            # cell). Brace-protect it.
+            line = "{[}" + line[1:]
+        out.append(line + r" \\")
     out.append("\\end{longtable}")
     out.append(label)
     return out

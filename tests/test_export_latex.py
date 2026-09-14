@@ -152,6 +152,100 @@ def test_unbalanced_math_escaped_not_passed_through() -> None:
     assert r"$a \{ b$" in out3
 
 
+def test_cyrillic_homoglyphs_map_to_latin_never_cyr_commands() -> None:
+    # PDF extraction drops Cyrillic lookalikes into English prose; pylatexenc's
+    # default \CYRT-style commands need T2A fontenc the preamble doesn't load —
+    # a fatal "Undefined control sequence" (prod job 338757). Homoglyphs map to
+    # the identical Latin letter; other Cyrillic stays verbatim (recoverable).
+    out, _ = _inline("wick-vapor interface Т temperature, СО2 uptake")
+    assert "\\CYR" not in out and "\\cyr" not in out
+    assert "interface T temperature" in out
+    assert "CO2 uptake" in out
+    out2, _ = _inline("genuine Cyrillic я stays verbatim")
+    assert "я" in out2 and "\\cyr" not in out2
+
+
+def test_math_command_split_from_following_unicode_letter() -> None:
+    # Under LuaTeX a Unicode letter extends a control-sequence name, so
+    # $\Deltaδ$ parses as ONE undefined command (fatal). A {} separator
+    # preserves the rendering the author meant.
+    out, _ = _inline("shift changes of $\\Deltaδ ≈0.5$ ppm")
+    assert "\\Delta{}δ" in out
+
+
+def test_ampersand_inside_math_escaped_outside_alignments() -> None:
+    # Pseudocode bitwise & inside math ("$f = a & b$") is a "Misplaced
+    # alignment tab" fatal outside a real alignment environment.
+    out, _ = _inline("mask $f = a & b$ done")
+    assert r"$f = a \& b$" in out
+    # …but a genuine \begin{matrix} keeps its structural tabs.
+    out2, _ = _inline(r"$\begin{matrix} a & b \end{matrix}$")
+    assert r"a & b" in out2
+
+
+def test_escaped_dollar_is_a_literal_never_a_math_delimiter() -> None:
+    # Author-escaped \$ is a money dollar: two of them must not pair into a
+    # "math" span (that stranded a bare $ that opened math for the rest of
+    # the document), and the rendering is \$ (a plain $), not
+    # \textbackslash{}\$.
+    out, _ = _inline(r"Scaffold \$300 + 200 staples \$200; done")
+    assert r"\$300" in out and r"\$200" in out
+    assert "textbackslash" not in out
+    assert "$" not in out.replace(r"\$", "")
+
+
+def test_implausible_wordy_math_span_is_escaped() -> None:
+    # Two stray money-dollars pairing across half a sentence is not math —
+    # the span falls through to the escaper (literal dollars) instead of
+    # emitting live $s that break the compile downstream.
+    out, _ = _inline("run $30 cycles then produces more copies $ ok")
+    assert "$" not in out.replace(r"\$", "")
+
+
+def test_adjacent_math_spans_do_not_glue_into_display_math() -> None:
+    # $∼$$2^30$ (authored) restores as two adjacent spans — a bare $$ is a
+    # display-math opener fatal; a {} separator keeps both inline.
+    out, _ = _inline("produces $∼$$2^{30}$ copies")
+    assert "$$" not in out
+    # adjacent non-math stashes (two code spans) need no separator
+    out2, _ = _inline("`a``b`")
+    assert r"\texttt{a}\texttt{b}" in out2
+
+
+def test_overlong_math_span_is_escaped() -> None:
+    # >120-char "math" is a currency-dollar mispairing, not a formula.
+    out, _ = _inline("$x_{1} " + "word " * 30 + "$ end")
+    assert "$" not in out.replace(r"\$", "")
+
+
+def test_display_glue_with_live_dollar_in_body_is_escaped() -> None:
+    # $$…$$ gluing stray author dollars around real spans carries a live $
+    # in its body — rejected wholesale, everything renders as literal $.
+    out, _ = _inline("a $$2^{30}$ ($∼$$ b")
+    assert "$" not in out.replace(r"\$", "")
+
+
+def test_table_row_leading_bracket_brace_protected() -> None:
+    # A row starting with a literal "[2]" would parse as the previous row's
+    # \\[…] optional vertical-space argument ("Illegal unit of measure").
+    from types import SimpleNamespace
+
+    chunk = SimpleNamespace(
+        meta={
+            "table": {
+                "header": ["Ref", "System"],
+                "rows": [["[1] Rothemund", "2D origami"], ["[2] Douglas", "3D"]],
+                "caption": "",
+            }
+        },
+        text="| Ref | System |",
+    )
+    ctx = _ctx("", None, None, None, None)
+    lines = latex._render_table(chunk, ctx, "")
+    row_lines = [ln for ln in lines if ln.startswith("{[}")]
+    assert len(row_lines) == 2, lines
+
+
 def test_raw_percent_and_hash_inside_math_are_escaped() -> None:
     # A raw % inside a passed-through math span starts a LaTeX comment
     # mid-math — it eats the closing $ and the rest of the source line
@@ -222,7 +316,9 @@ def test_latex_empty_base_math_gets_a_base() -> None:
     out, _ = _inline(r"the Zr$_6$ node and UO$_2^{2+}$ ion and $W_{18}$O$_{49}$.")
     assert "$Zr_6$" in out
     assert "$UO_2^{2+}$" in out
-    assert "$W_{18}$$O_{49}$" in out
+    # adjacent repaired fragments get a {} separator — bare $$ would be a
+    # display-math opener (see test_adjacent_math_spans_do_not_glue…).
+    assert "$W_{18}${}$O_{49}$" in out
 
 
 def test_paper_handle_renders_citation() -> None:
@@ -283,11 +379,14 @@ def test_authoring_link_renders_nothing() -> None:
 def test_cyrillic_homoglyph_kept_raw_not_cyrt() -> None:
     # A Cyrillic Т (extraction homoglyph) must NOT become \CYRT — that
     # command is undefined in the LuaLaTeX preamble and fatals the compile
-    # (killed the nano-computer send). The raw glyph at worst renders as a
-    # missing-glyph rule.
+    # (killed the nano-computer send). A pixel-identical homoglyph maps to
+    # its Latin twin (renders perfectly); a non-homoglyph Cyrillic letter
+    # stays raw (at worst a missing-glyph rule).
     out, _ = _inline("wick-vapor interface Т temperature")
     assert "CYRT" not in out
-    assert "Т" in out
+    assert "interface T temperature" in out
+    out2, _ = _inline("shape ж stays raw")
+    assert "ж" in out2 and "cyr" not in out2.lower()
 
 
 def test_unicode_translated_to_latex() -> None:
