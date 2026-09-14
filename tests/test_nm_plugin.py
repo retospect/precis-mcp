@@ -2261,7 +2261,8 @@ def test_link_two_state_designs_related(handler: NmHandler) -> None:
     handler.put(id="azo_l_trans", text=_TREE)
     handler.put(id="azo_l_cis", text=_TREE)
     ack = handler.link(id="azo_l_cis", target="nm:azo_l_trans")
-    assert "link" in ack.body.lower()
+    # exact ack: a pure link add must not claim tag changes
+    assert ack.body == "updated nm azo_l_cis: +1 link"
     cis = handler.store.get_ref(kind="nm", id="azo_l_cis")
     trans = handler.store.get_ref(kind="nm", id="azo_l_trans")
     assert cis is not None and trans is not None

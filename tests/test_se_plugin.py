@@ -2269,7 +2269,8 @@ def test_link_design_serves_todo_both_directions(handler: SeHandler) -> None:
     handler.put(id="caster_l1", text=_CASTER)
     todo = handler.store.insert_ref(kind="todo", slug=None, title="build the cart")
     ack = handler.link(id="caster_l1", target=f"todo:{todo.id}", rel="serves")
-    assert "link" in ack.body.lower()
+    # exact ack: a pure link add must not claim tag changes
+    assert ack.body == "updated se caster_l1: +1 link"
     ref = handler.store.get_ref(kind="se", id="caster_l1")
     assert ref is not None
     out = handler.store.links_for(ref.id, direction="out", relation="serves")
@@ -2283,7 +2284,10 @@ def test_link_remove_deletes_the_edge(handler: SeHandler) -> None:
     handler.put(id="caster_l2", text=_CASTER)
     todo = handler.store.insert_ref(kind="todo", slug=None, title="a target")
     handler.link(id="caster_l2", target=f"todo:{todo.id}", rel="serves")
-    handler.link(id="caster_l2", target=f"todo:{todo.id}", rel="serves", mode="remove")
+    ack = handler.link(
+        id="caster_l2", target=f"todo:{todo.id}", rel="serves", mode="remove"
+    )
+    assert ack.body == "updated se caster_l2: -1 link"
     ref = handler.store.get_ref(kind="se", id="caster_l2")
     assert ref is not None
     assert handler.store.links_for(ref.id, direction="out", relation="serves") == []
