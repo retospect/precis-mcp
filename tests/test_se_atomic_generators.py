@@ -31,7 +31,7 @@ from precis.structure.scene import Scene as StructScene
 from precis_se.atomic import validate as atomic_validate
 from precis_se.atomic.generate import generated_cell, ingest_envelope
 from precis_se.atomic.generators import GENERATORS, GeneratedBlock, GeneratorError
-from precis_se.atomic.generators._types import ENVELOPE_UNIT
+from precis_se.atomic.generators._types import ENVELOPE_UNIT, fmt_length_A
 from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
 from precis_se.atomic.generators.sugars import build_cyclodextrin
 
@@ -118,6 +118,12 @@ def _ring_census(
                 cu, cv = cv, nxt
             faces.append(face)
     return Counter(len(f) for f in faces)
+
+
+def test_fmt_length_A_rounds_to_exactly_4_decimals() -> None:
+    """0.1 pm precision (module docstring) — a 5th-decimal digit must be
+    dropped, not carried into the rendered token."""
+    assert fmt_length_A(1.234567) == "1.2346Å"
 
 
 # ── cnt geometry ─────────────────────────────────────────────────────────
@@ -210,6 +216,20 @@ def test_fullerene_60_atom_and_bond_counts() -> None:
     assert len(block.bonds) == 90
     assert block.ports == []
     assert block.topology == {"pentagons": 12, "hexagons": 20}
+
+
+def test_fullerene_60_envelope_radius_is_shell_radius_plus_vdw_margin() -> None:
+    """The declared sphere ADDS the vdW margin onto the realized shell
+    radius (containment, module intent) — subtracting it would declare an
+    envelope smaller than the atoms it must hold, failing
+    ``envelope_fit`` outright."""
+    from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
+
+    block = build_fullerene({"atoms": 60})
+    shell_radius = float(np.max(np.linalg.norm(block.coords, axis=1)))
+    spec = _spec_A(block.envelope)
+    assert spec.alias == "sphere"
+    assert spec.params["r"] == pytest.approx(shell_radius + VDW_MARGIN_A, abs=1e-3)
 
 
 def test_fullerene_60_every_atom_3_coordinate() -> None:
@@ -542,6 +562,18 @@ def test_registry_has_round_1_and_round_2_generators() -> None:
     assert set(GENERATORS) == {"cnt", "fullerene", "cone", "cyclodextrin"}
     for builder in GENERATORS.values():
         assert callable(builder)
+
+
+def test_generated_cell_size_is_double_the_extent_plus_fixed_margin() -> None:
+    """A comfortably-containing, non-periodic cube (module docstring):
+    ``size = 2*extent + 20`` — a plain doubling with no margin would clip
+    atoms sitting near the extent, and a *subtracted* margin would produce
+    a cell smaller than the atoms it must hold."""
+    coords = np.array([[7.5, 0.0, 0.0], [-3.0, 2.0, 0.0]])
+    cell = generated_cell(coords)
+    assert cell.lattice[0, 0] == pytest.approx(2.0 * 7.5 + 20.0)
+    assert cell.lattice[1, 1] == pytest.approx(2.0 * 7.5 + 20.0)
+    assert cell.lattice[2, 2] == pytest.approx(2.0 * 7.5 + 20.0)
 
 
 def test_generate_block_is_a_generated_block_type() -> None:

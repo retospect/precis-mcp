@@ -31,7 +31,7 @@ from precis_se import persist
 from precis_se import validate as se_validate
 from precis_se.bom import BomLine
 from precis_se.handler import SeHandler
-from precis_se.ops import OpError, SeTree, apply_ops
+from precis_se.ops import OpError, SeBlock, SeTree, apply_ops
 
 _MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
@@ -633,6 +633,20 @@ def test_an_atomistic_binding_with_no_mode_at_all_is_only_a_warning() -> None:
 
 def test_atomic_mode_with_an_atomistic_binding_is_silent() -> None:
     assert not _mismatch(_bound("atomic", "structure", "arm-axle-frag"))
+
+
+def test_mode_binding_coupling_is_silent_on_a_half_set_binding() -> None:
+    """gripe 334767's own early-return guard: ``bound_kind``/``bound`` are
+    always written together via ``set_binding`` (never reachable through
+    the ops layer alone), so this pins the invariant directly against a
+    hand-built block — a binding pair with only ONE half set is not yet a
+    real binding, and must stay silent rather than crash on
+    ``bound_kind not in kinds`` with a ``None`` kind."""
+    tree = SeTree()
+    tree.blocks["wheel"] = SeBlock(
+        name="wheel", mode="atomic", bound_kind=None, bound="some-design"
+    )
+    assert not _mismatch(tree)
 
 
 def test_a_cad_binding_needs_no_mode_and_stays_silent() -> None:

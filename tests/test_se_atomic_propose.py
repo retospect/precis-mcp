@@ -26,12 +26,15 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 import precis.workers.job_types as jt
 import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
+from precis.structure.cell import Cell
+from precis.structure.scene import Atom, Scene as StructScene
 from precis.utils.claude_agent import AgentResult
 from precis.utils.llm.router import Tier, resolve_model
 from precis.workers.job_types import get_job_type
@@ -378,6 +381,33 @@ def test_dry_run_envelope_fit_warning_does_not_fail(se_handler: SeHandler) -> No
     err, warnings = sej.dry_run(tree, "hub", ops, {"cap": "aC1"})
     assert err is None
     assert any("envelope_fit" in w for w in warnings)
+
+
+def test_envelope_fit_warning_reports_protrusion_not_sdf_plus_margin(
+    se_handler: SeHandler,
+) -> None:
+    """The reported figure is the PROTRUSION past the vdW allowance (worst
+    SDF minus margin) — the same quantity :func:`precis_se.atomic.validate.
+    envelope_fit` reports at bind time (module docstring: "the propose-time
+    warning and the later bind-time finding ... agree instead of differing
+    by exactly one margin"), never worst-SDF-PLUS-margin, which would
+    silently inflate the number."""
+    tree = _seeded_tree(se_handler)
+    node = tree.blocks["hub"]  # sphere:r3e-10 — a 3 Å envelope radius
+    cell = Cell.from_lengths_angles(30.0, 30.0, 30.0, pbc=(False, False, False))
+    scene = StructScene(cell=cell)
+    scene.atoms["a"] = Atom(
+        label="a", element="C", frac=cell.cart_to_frac(np.array([0.0, 0.0, 0.0]))
+    )
+    scene.atoms["b"] = Atom(
+        label="b", element="C", frac=cell.cart_to_frac(np.array([16.0, 0.0, 0.0]))
+    )
+    # centroid recentres to (8,0,0) Å, so both atoms sit 8 Å from center:
+    # SDF against the 3 Å sphere is 5 Å, 3.3 Å past the 1.7 Å vdW margin.
+    warning = sej._envelope_fit_warnings(tree, node, scene)
+    assert warning is not None
+    assert "3.30 Å" in warning
+    assert "6.70 Å" not in warning  # the (sdf + margin) mutant's figure
 
 
 def test_dry_run_unbounded_envelope_skips_fit_check(se_handler: SeHandler) -> None:

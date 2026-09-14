@@ -192,6 +192,20 @@ def test_unknown_op_roster_includes_every_registered_op(handler: SeHandler) -> N
         assert name in msg, f"{name!r} missing from unknown-op roster: {msg}"
 
 
+def test_an_op_dict_with_no_op_key_is_rejected_before_dispatch(
+    handler: SeHandler,
+) -> None:
+    """``apply_ops_with_atomic`` vets every op dict against the FULL roster
+    up front (gripe 334767's own guard, module docstring) — an op missing
+    its ``'op'`` key entirely must be rejected by name, not silently pass
+    through to a KeyError on ``op["op"]``."""
+    handler.put(
+        id="noopkey1", text=json.dumps({"ops": [{"op": "add_block", "name": "a"}]})
+    )
+    with pytest.raises(BadInput, match="op missing 'op' key"):
+        handler.edit(id="noopkey1", ops=[{"name": "b"}])
+
+
 # ── gripe 334766: unknown args= keys are a loud reject, per view ─────────
 
 
@@ -399,6 +413,15 @@ def test_bind_structure_expected_element_mismatch_rejected(
     ]
     with pytest.raises(BadInput, match="expects element"):
         handler.put(id="bind3", text=json.dumps({"ops": ops}))
+
+
+def test_bind_structure_missing_block_key_raises(handler: SeHandler) -> None:
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2e-10"},
+        {"op": "bind_structure", "design": "no-such-design"},
+    ]
+    with pytest.raises(BadInput, match="bind_structure needs 'block'"):
+        handler.put(id="bindnoblock", text=json.dumps({"ops": ops}))
 
 
 def test_bind_structure_unknown_design_raises(handler: SeHandler) -> None:
