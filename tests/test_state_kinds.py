@@ -152,14 +152,19 @@ class TestGripe:
     def test_put_mode_create_with_id_is_a_mismatch(self, gripe: GripeHandler) -> None:
         gripe.put(text="a gripe to comment on")
         gid = int(gripe.store.list_refs(kind="gripe", limit=1)[0].id)
-        with pytest.raises(BadInput, match="id-presence selects the branch"):
+        with pytest.raises(BadInput, match="id-presence selects the branch") as ei:
             gripe.put(id=gid, text="oops", mode="create")
+        # The next= hint must name the branch id= actually selected —
+        # the comment form, carrying the caller's id.
+        assert f"id={gid}" in (ei.value.next or "")
 
     def test_put_mode_comment_without_id_is_a_mismatch(
         self, gripe: GripeHandler
     ) -> None:
-        with pytest.raises(BadInput, match="id-presence selects the branch"):
+        with pytest.raises(BadInput, match="id-presence selects the branch") as ei:
             gripe.put(text="oops", mode="comment")
+        # No id= given, so the hint must show the create form (no id=).
+        assert "id=" not in (ei.value.next or "")
 
     def test_search_status_star_widens(self, gripe: GripeHandler) -> None:
         """status='*' drops the implicit STATUS filter — every status."""

@@ -1137,24 +1137,33 @@ def test_clearance_digest_lists_pairs_worst_first(handler: SeHandler) -> None:
                     {"op": "add_port", "block": "hub", "name": "shaft"},
                     {"op": "add_port", "block": "wheel", "name": "bore"},
                     {"op": "add_port", "block": "axle", "name": "end"},
+                    # The joint-declaring connect is deliberately the
+                    # SECOND edge, and only the hub—axle pair has one:
+                    # _joint_class_for must attribute the class to the
+                    # right pair even when the matching edge isn't first.
                     {"op": "connect", "a": "hub.shaft", "b": "wheel.bore"},
+                    {"op": "connect", "a": "hub.shaft", "b": "axle.end"},
                     {
                         "op": "set_joint",
                         "a": "hub.shaft",
-                        "b": "wheel.bore",
+                        "b": "axle.end",
                         "joint": {"class": "revolute"},
                     },
-                    {"op": "connect", "a": "hub.shaft", "b": "axle.end"},
                 ]
             }
         ),
     )
     resp = handler.get(id="cart2", view="clearance")
     assert "clearance digest" in resp.body
-    assert "revolute" in resp.body
     axle_pos = resp.body.index("axle")
     wheel_pos = resp.body.index("wheel")
     assert axle_pos < wheel_pos  # interference (axle) sorts before clear (wheel)
+    # Per-row attribution: revolute belongs to the axle row, not wheel's.
+    for line in resp.body.splitlines():
+        if "axle" in line and "hub" in line:
+            assert "revolute" in line
+        if "wheel" in line:
+            assert "revolute" not in line
 
 
 def test_clearance_digest_skips_envelope_less_pair_with_note(

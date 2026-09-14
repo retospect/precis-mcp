@@ -30,6 +30,26 @@ def test_get_existing_skill(skill: SkillHandler) -> None:
     assert len(out.body) > 100  # not empty
 
 
+def test_get_bare_kind_aliases_to_help_skill(skill: SkillHandler) -> None:
+    """gr338442: ``id='se'`` serves ``precis-se-help`` with a banner
+    naming the redirect instead of NotFound."""
+    out = skill.get(id="se")
+    assert "(aliased from 'se' → precis-se-help)" in out.body
+    assert len(out.body) > 100
+
+
+def test_get_bare_verb_aliases_to_help_skill(skill: SkillHandler) -> None:
+    out = skill.get(id="search")
+    assert "(aliased from 'search' → precis-search-help)" in out.body
+
+
+def test_get_unknown_id_without_help_alias_still_not_found(
+    skill: SkillHandler,
+) -> None:
+    with pytest.raises(NotFound):
+        skill.get(id="zz-no-such-skill")
+
+
 def test_get_skill_body_sets_pagination_alt_hint(skill: SkillHandler) -> None:
     """A whole-skill-body ``get`` names the concrete slug in the
     footer alt_hint so a paginated read is pointed at the cheaper
