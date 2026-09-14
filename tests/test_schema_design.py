@@ -166,6 +166,17 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # 0139: the untouched EasyEDA component JSON, kept so a future
         # parser improvement can reparse from cache without re-fetching.
         "part_footprints.raw",
+        # 0161 (pcb generators). Both genuinely open-ended, per that
+        # migration's own table comment:
+        #   * params — "fully-defaulted, canonical params" whose key set is
+        #     defined by the generator TYPE, so no fixed column set spans
+        #     ewod_pad_array and the next generator added.
+        #   * ledger — the last expansion's capability summary, cached for
+        #     read-back and "always re-derivable from params alone since
+        #     expansion is a pure function"; a cache of a pure function's
+        #     output, never queried by key.
+        "pcb_generators.ledger",
+        "pcb_generators.params",
         "parts.params",
         "parts.price",
         "pcb_boards.fold_lines",
@@ -192,8 +203,6 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # ledger the expansion's report; both shapes are owned by the
         # generator type + version, read back whole for idempotency
         # comparison and capability rendering, never queried by key.
-        "pcb_generators.ledger",
-        "pcb_generators.params",
         "pcb_measures.meta",
         "pcb_measures.operands",
         "pcb_net_classes.meta",

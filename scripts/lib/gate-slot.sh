@@ -12,10 +12,13 @@
 # Mechanics mirror the ship lock (scripts/ship §3): all worktrees share one
 # .git, so mkdir-mutexes on the git common dir are host-global; macOS has no
 # flock(1), so atomic mkdir is the lock. This is the counting variant — N
-# slot dirs, take any one. Two independent steals for abandoned slots, same
-# as the ship lock: holder pid dead on this host → immediate; held >45 min →
-# assume crashed/foreign-host (a gate normally finishes well inside that;
-# the age is hold time, not queue time). gate_slot_release is ownership-
+# slot dirs, take any one. Reclaim of an abandoned slot is the shared rule in
+# lock-holder.sh: on this host the holder pid decides (dead → steal at once,
+# alive → wait however long its gate runs), and the 45-minute timer applies
+# only where the pid cannot decide — a foreign host's slot, or a holder file
+# that was never written. The timer used to fire on live local holders too,
+# which let a third gate into a 2-slot semaphore and caused the very OOM
+# churn this guard exists to stop. gate_slot_release is ownership-
 # checked (holder pid == $$) before it rm -rf's, same fix as the ship lock
 # (gr202363) — otherwise a release firing after a sibling steals our slot
 # (>45-min hold, or a late EXIT trap) deletes THEIR fresh slot instead.
@@ -26,25 +29,24 @@
 
 GATE_SLOT_DIR=""
 
+# shellcheck source=scripts/lib/lock-holder.sh
+source "${BASH_SOURCE[0]%/*}/lock-holder.sh"
+
 gate_slot_acquire() {
     local slots="${PRECIS_GATE_SLOTS:-2}"
-    local common i d holder holder_pid waited=0
+    local common i d holder reason waited=0
     common="$(git rev-parse --git-common-dir)"
     while :; do
         for ((i = 0; i < slots; i++)); do
             d="${common}/precis-gate-slot-${i}.lock.d"
             if mkdir "$d" 2>/dev/null; then
                 GATE_SLOT_DIR="$d"
-                printf '%s pid=%s\n' "$PWD" "$$" >"$d/holder" 2>/dev/null || true
+                lock_holder_write "$d"
                 return 0
             fi
             holder="$(cat "$d/holder" 2>/dev/null || true)"
-            holder_pid="$(printf '%s' "$holder" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
-            if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
-                echo "stealing gate slot ${i} — holder is dead: ${holder:-<no holder file>}" >&2
-                rm -rf "$d" 2>/dev/null || true
-            elif find "$d" -maxdepth 0 -mmin +45 2>/dev/null | grep -q .; then
-                echo "stealing gate slot ${i} — held over 45 min by: ${holder:-<no holder file>}" >&2
+            if reason="$(lock_holder_reclaim_reason "$d" 45)"; then
+                echo "stealing gate slot ${i} — ${reason}: ${holder:-<no holder file>}" >&2
                 rm -rf "$d" 2>/dev/null || true
             else
                 continue
@@ -53,13 +55,13 @@ gate_slot_acquire() {
             # mkdir race — that's fine, keep scanning).
             if mkdir "$d" 2>/dev/null; then
                 GATE_SLOT_DIR="$d"
-                printf '%s pid=%s\n' "$PWD" "$$" >"$d/holder" 2>/dev/null || true
+                lock_holder_write "$d"
                 return 0
             fi
         done
         if [[ "$waited" == 0 ]]; then
             echo "waiting for a gate slot (${slots} concurrent gate containers max — shared-VM OOM guard, gr202193)" >&2
-            echo "(steals a slot immediately if its holder dies, or after 45 min regardless)" >&2
+            echo "(steals a slot immediately if its holder dies; a live holder on this host is waited out however long its gate takes)" >&2
         fi
         waited=1
         sleep 3
@@ -68,9 +70,8 @@ gate_slot_acquire() {
 
 gate_slot_release() {
     if [[ -n "${GATE_SLOT_DIR:-}" ]]; then
-        local holder holder_pid
-        holder="$(cat "$GATE_SLOT_DIR/holder" 2>/dev/null || true)"
-        holder_pid="$(printf '%s' "$holder" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')"
+        local holder_pid
+        holder_pid="$(lock_holder_pid "$GATE_SLOT_DIR")"
         # Remove ONLY on a positive ownership match (holder pid == $$). A
         # missing/unparseable holder is ambiguous — ours with a failed
         # best-effort write, or a sibling mid-steal that hasn't written its
