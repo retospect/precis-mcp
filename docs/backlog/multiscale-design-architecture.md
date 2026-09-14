@@ -335,6 +335,19 @@ render ISO units with scale-appropriate prefixes.**
   is never routed through the unit-defaulting ladder: cost terms *over*
   the geometry, not lengths *in* it.
 
+- **Boundary: pcb is a mm enclave** (Reto 2026-09-14). The rule is not
+  "everything stores metres" — it is "the *shared design space* stores
+  metres, and every enclave crosses into it through one declared
+  boundary." pcb's interchange ecosystem (Gerber, Specctra DSN, KiCad,
+  JLC CPL/BOM, EasyEDA, IPC footprints) is mm/mil-native and
+  fabrication-facing: metres-internal would relocate one conversion
+  into seven-plus exporter/ingester sites where a scale error costs
+  real boards. pcb therefore keeps mm internally, like `structure`
+  keeps Å; its sole geometry crossing is
+  `precis.pcb.export.mechanical_profile` (×1e-3, once) — consumer side
+  specced in `pcb-se-binding.md`. Any future pcb geometry export routes
+  through that funnel rather than growing its own conversion.
+
 Shipped (`units-policy-cutover.md`, 2026-09-12 window): `precis/utils/
 units.py` is the one shared parser/formatter; `cad`'s DSL/scene grammar,
 `se`/`nm`'s handlers and ops, and their display sites all route through
@@ -391,7 +404,21 @@ geometries and crowded sites, evaluate barriers only on finalists. The
 switching-pathway sweep requirement landed in `structural-solution-space.md`
 slice 5.
 
-## Build order (decided with Reto, 2026-09-12)
+## Build order (decided with Reto, 2026-09-12; amended 2026-09-14)
+
+**2026-09-14 amendment (Reto): the nm kind merges into se before
+step 2.** The units cutover left both kinds storing SI metres on the
+same six-level IR — the split's remaining content is duplicated
+scaffold and a per-agent which-kind decision. Merging first means
+design-state-core and blocktree land once, with one renter
+(`nm-se-merge.md`, its own exclusive window across
+precis_se + precis_nm, prod nm designs deleted as dogfood). Step 2's
+"blocktree slice 2 = nm adoption" retargets to **se atomic mode**, and
+the parallel-lane list loses the blocktree-nm/precis_se distinction
+once merged. pcb joins the shared space by *binding*, not merging
+(`pcb-se-binding.md`, after the window) — merge criterion: shares the
+six-level IR (nm yes, pcb no). cad-the-kind fold-in deferred pending a
+consumer survey; the cad kernel stays a library regardless.
 
 The whole programme runs as carved slices (spec → `ready` vet → sonnet
 coder → qland bursts + periodic /go), many worktrees in parallel but
@@ -408,13 +435,17 @@ CUDA path only if a real workload ever forces it.
 
 1. **Units cutover — exclusive window** (`units-policy-cutover.md`).
    Cross-cuts se+nm+cad, so nothing else lands on those packages while
-   it's in flight.
+   it's in flight. *(Shipped, 2026-09-12 window.)*
+1b. **nm→se merge — exclusive window** (`nm-se-merge.md`, added
+   2026-09-14). Across precis_se + precis_nm; opens once in-flight
+   se/nm sibling trees land; must complete before step 2 dispatches.
 2. **Foundations, 4 parallel tracks**: shared design-state core
    (`design-state-core.md` — scenarios, provenance, revisions, branches
    naive-copy-first, checkpoints, **and the discrete-states + stimulus
    machinery**; se deltas ride along) · blocktree slices 1–3 (slice 2
-   becomes the nm *adoption* of the shared states schema, co-designed
-   with the core track) · viewer round 1 (gr335242 items 1–3) ·
+   becomes **se atomic mode's** adoption of the shared states schema —
+   retargeted from nm by the 2026-09-14 amendment — co-designed with
+   the core track) · viewer round 1 (gr335242 items 1–3) ·
    inspection toolkit v1
    (cast_ray/describe/neighbours/max_stress/under_utilised/digest).
 

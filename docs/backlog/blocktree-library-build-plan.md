@@ -3,6 +3,7 @@ status: ready
 title: build plan — cross-design instancing, block states, complementary ports, ranked library search
 prio: high
 model: opus
+blocked-by: nm-se-merge
 ---
 
 # Build plan
@@ -18,6 +19,12 @@ below). Physics stays in `photoswitch-states-and-spectral-dof.md`.
 in prod (measured 2026-09-07), Reto has lifted backward compatibility, and the
 shared spine `precis.blocktree` already exists (commits `28877919`,
 `96690d37`) so each change below lands **once** and serves both kinds.
+
+**2026-09-14 (map amendment):** `nm-se-merge.md` folds the nm kind into
+se's atomic mode *before* this plan dispatches — "both kinds" above
+becomes "se's two modes", and every `nm`-facing hook in these slices
+targets se atomic mode. The blocktree spine is kind-agnostic already,
+so the slices' content is unchanged; only the adopter's name is.
 
 ## Why — the three-level chain and the library query
 
