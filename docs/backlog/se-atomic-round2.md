@@ -54,6 +54,15 @@ in `git log` / the merge doc, not here.
    objectives (e.g. `low_rotational_barrier`, which needs the mechanism
    analysis phase below) should render as `deferred`, not silently pass.
 
+## Cross-items (2026-09-14 design session)
+
+- Apply's auto-relax gains the `geo` rung (angle-aware, promoted from
+  `sugars._relax`) — `se-nanobud-graph.md` owns that promotion.
+- Apply's proposal payload must become se-mediated (today: raw
+  `structure` op scripts) — the blocker named in
+  `structure-kind-demotion.md`; resolve as part of Apply's design,
+  not after.
+
 ## Open question carried from the merge
 
 - **`can_own_jobs`.** `SeHandler.spec.can_own_jobs` stayed `False`
