@@ -1028,7 +1028,7 @@ def build_scene(
         "parts": parts,
     }
     offsets = explode_offsets(tree, lines, assembly.primary_path, magnitude=0.3 * diag)
-    mermaid = mermaid_topology(plan, id_by_name, lines)
+    mermaid = mermaid_topology(plan, id_by_name, lines, kids)
     return Scene3D(shapes=shapes, connections=lines, explode=offsets, mermaid=mermaid)
 
 
@@ -1036,18 +1036,48 @@ def mermaid_topology(
     plan: VisiblePlan,
     id_by_name: dict[str, int],
     lines: list[ConnLine],
+    kids: dict[str, list[str]],
 ) -> str:
     """``graph LR`` source for the visible blocks + their drawn connects,
     edges labelled by joint/bond kind (spec §5.8 comment 5(c)). Node ids
     are ``B<block_id>`` — the SAME DB id the 3D leaf paths end in, so the
     client's mermaid<->3D selection link needs no separate lookup table
-    either."""
+    either.
+
+    Hierarchical (Reto 2026-09-14): a shown block whose children are also
+    shown (an *opened* interior block — ``plan_visibility`` walks children
+    only for non-collapsed parents) renders as a nested ``subgraph``
+    rather than a plain node, so the diagram mirrors the block tree.
+    Collapsed parents keep their box semantics: their children are not in
+    ``plan.shown``, so they stay ordinary nodes, and a flat design is
+    byte-identical to the pre-hierarchy output. Edges may target a
+    subgraph id — mermaid allows that, and it keeps the ``B<id>`` scheme
+    uniform."""
+    shown = plan.shown
     lines_out = ["graph LR"]
-    for name in sorted(plan.shown):
+
+    def emit(name: str, depth: int) -> None:
         bid = id_by_name.get(name)
+        pad = "  " * depth
+        shown_kids = [k for k in sorted(kids.get(name, [])) if k in shown]
         if bid is None:
-            continue
-        lines_out.append(f'  B{bid}["{_mermaid_escape(name)}"]')
+            # No DB id for the wrapper (mirrors the old per-node skip) —
+            # its shown children must still appear, one level up.
+            for k in shown_kids:
+                emit(k, depth)
+            return
+        if shown_kids:
+            lines_out.append(f'{pad}subgraph B{bid}["{_mermaid_escape(name)}"]')
+            for k in shown_kids:
+                emit(k, depth + 1)
+            lines_out.append(f"{pad}end")
+        else:
+            lines_out.append(f'{pad}B{bid}["{_mermaid_escape(name)}"]')
+
+    parent_of = {k: p for p, ks in kids.items() for k in ks}
+    for name in sorted(shown):
+        if parent_of.get(name) not in shown:
+            emit(name, 1)
     for conn in lines:
         a_id = id_by_name.get(conn.a_name)
         b_id = id_by_name.get(conn.b_name)

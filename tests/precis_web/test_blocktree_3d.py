@@ -676,11 +676,53 @@ def test_mermaid_topology_labels_edges_with_joint_kind() -> None:
     lines = connectivity_lines(
         tree, plan, assembly.primary_path, lambda c: "axial", lambda c: "#16a34a", "/g"
     )
-    graph = mermaid_topology(plan, _IDS, lines)
+    graph = mermaid_topology(plan, _IDS, lines, kids)
     assert graph.startswith("graph LR")
     assert 'B1["hub"]' in graph
     assert 'B2["rim"]' in graph
     assert "axial" in graph and "B1 --" in graph and "--- B2" in graph
+    # flat design (no parent links) — no subgraph wrapper appears
+    assert "subgraph" not in graph
+
+
+def test_mermaid_topology_nests_opened_parents_as_subgraphs() -> None:
+    tree = _fork_tree()
+    tree.connects = [
+        Connect(a_block="hub", a_port="pin", b_block="fork_tip", b_port="pin")
+    ]
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    assembly = Assembly3D()
+    for r in plan.render_roots:
+        build_shapes_node(
+            tree, _effective_envelope, kids, plan, _IDS, r, "/se-x", assembly
+        )
+    lines = connectivity_lines(
+        tree, plan, assembly.primary_path, lambda c: "tie", lambda c: "#16a34a", "/g"
+    )
+    graph = mermaid_topology(plan, _IDS, lines, kids)
+    rows = graph.splitlines()
+    # fork (opened, has shown children) wraps fork_arm wraps fork_tip
+    i_fork = rows.index('  subgraph B3["fork"]')
+    i_arm = rows.index('    subgraph B4["fork_arm"]')
+    i_tip = rows.index('      B5["fork_tip"]')
+    assert i_fork < i_arm < i_tip
+    assert rows.count("    end") == 1 and rows.count("  end") == 1
+    # leaves outside the subtree stay plain nodes; the edge still targets
+    # the B<id> node scheme
+    assert '  B1["hub"]' in rows
+    assert any(r.startswith('  B1 -- "') and r.endswith("--- B5") for r in rows)
+
+
+def test_mermaid_topology_collapsed_parent_stays_a_plain_node() -> None:
+    tree = _fork_tree()
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="envelope", isolate=None)
+    graph = mermaid_topology(plan, _IDS, [], kids)
+    # 'fork' collapses to a box at envelope level -> its children are not
+    # shown, so it renders as an ordinary node, not an empty subgraph
+    assert 'B3["fork"]' in graph
+    assert "subgraph" not in graph
 
 
 # ── build_scene end to end ─────────────────────────────────────────────────

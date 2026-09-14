@@ -149,6 +149,18 @@ export async function blocktreeViewer3D({
   connectionsToggle,
   sceneUrl,
 }) {
+  // gr338976 — disable mermaid's startOnLoad auto-run BEFORE the first
+  // await: the vendored bundle defaults startOnLoad:true and runs on the
+  // window 'load' event, which fires while the (slow) scene fetch is in
+  // flight, renders the placeholder, and stamps data-processed — turning
+  // the post-fetch run() below into a silent skip.
+  if (window.mermaid) {
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: "default",
+    });
+  }
   let data;
   try {
     const resp = await fetch(sceneUrl);
@@ -168,11 +180,10 @@ export async function blocktreeViewer3D({
     mermaidEl.textContent = data.mermaid || "graph LR";
     if (window.mermaid) {
       try {
-        window.mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          theme: "default",
-        });
+        // gr338976 — if the auto-run still won a race (initialize above
+        // came too late for this load), run() would skip a stamped
+        // element; clearing the stamp makes this render unconditional.
+        mermaidEl.removeAttribute("data-processed");
         await window.mermaid.run({ nodes: [mermaidEl] });
       } catch (err) {
         // A bad mermaid render must never take down the 3D panel next
