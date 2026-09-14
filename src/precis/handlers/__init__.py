@@ -67,8 +67,7 @@ phase-machine gates).
 (``level:recurring`` retired, §M). The schedule worker
 (``workers/schedule/worker.py``) mints one worker-mintable subtask per due
 tick; ``meta.deliver={'target': ...}`` fires ``pg_notify('precis.cron',
-...)`` for asa_bot instead (the retired ``kind='cron'`` mechanism, folded
-into recurring). ``prio`` is an int column on refs (1..10); ``PRIO:*`` is
+...)`` for asa_bot instead. ``prio`` is an int column on refs (1..10); ``PRIO:*`` is
 a back-compat tag alias.
 
 **Jobs — two lanes by parent kind.** ``JobHandler.put`` requires a

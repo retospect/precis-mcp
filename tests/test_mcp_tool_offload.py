@@ -217,6 +217,49 @@ def test_offload_sync_semaphore_bounds_concurrency() -> None:
     assert peak == limit, peak
 
 
+# ── cancellation frees the awaiting task (gr337045 symptom 2) ───────
+
+
+def test_offload_sync_cancel_returns_promptly_and_frees_semaphore() -> None:
+    """gr337045: with ``abandon_on_cancel`` left at its ``False`` default,
+    a cancelled MCP request stayed pinned to its worker thread until the
+    sync body finished on its own — a long CPU-bound tool call was
+    architecturally unstoppable short of killing the server process.
+    Pin the fix: cancelling the awaiting task returns promptly (not
+    after the sync body's full duration) and releases the tool
+    semaphore, even while the abandoned thread is still running."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def stuck() -> str:
+        started.set()
+        release.wait(timeout=10)
+        return "done"
+
+    sem = anyio.Semaphore(1)
+    wrapped = server._offload_sync(stuck, semaphore=sem)
+
+    async def _run() -> tuple[bool, float, int]:
+        t0 = time.monotonic()
+        with anyio.move_on_after(0.5) as scope:
+            await wrapped()
+        # semaphore back to full capacity even though ``stuck`` is
+        # still blocked on ``release`` inside the abandoned thread
+        return scope.cancelled_caught, time.monotonic() - t0, sem.value
+
+    try:
+        cancelled, elapsed, sem_value = asyncio.run(_run())
+    finally:
+        release.set()  # unstick the abandoned thread
+
+    assert started.is_set()
+    assert cancelled
+    # the regression (abandon_on_cancel=False) holds the await for the
+    # sync body's full ~10s wait; the fix returns at the 0.5s deadline
+    assert elapsed < 5.0, elapsed
+    assert sem_value == 1
+
+
 # ── concurrency audit: HintBus request-scoping ──────────────────────
 
 

@@ -173,7 +173,18 @@ def _offload_sync(
     async def wrapper(**kwargs: Any) -> Any:
         sem = semaphore if semaphore is not None else _get_tool_semaphore()
         async with sem:
-            return await anyio.to_thread.run_sync(functools.partial(fn, **kwargs))
+            # abandon_on_cancel=True: a cancelled/dropped MCP request must
+            # not pin its awaiting task (and the whole session's recovery)
+            # to the worker thread's completion — gr337045's server death:
+            # with the default False, one long CPU-bound tool call was
+            # architecturally unstoppable short of killing the process.
+            # The OS thread still runs to completion in the background
+            # (anyio can't kill it), releasing this semaphore early — the
+            # residual thread count stays bounded by anyio's default
+            # thread limiter.
+            return await anyio.to_thread.run_sync(
+                functools.partial(fn, **kwargs), abandon_on_cancel=True
+            )
 
     wrapper.__signature__ = sig  # type: ignore[attr-defined]
     return wrapper
