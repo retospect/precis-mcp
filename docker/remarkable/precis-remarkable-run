@@ -99,6 +99,20 @@ def main() -> int:
             for i in range(len(parts)):
                 _run([rmapi, "mkdir", "/" + "/".join(parts[: i + 1])], env, timeout_s)
         proc = _run([rmapi, "put", str(staged), folder], env, timeout_s)
+        if (
+            proc is not None
+            and proc.returncode != 0
+            and "entry already exists"
+            in ((proc.stdout or "") + (proc.stderr or ""))
+        ):
+            # A previous send already staged this document — replace its
+            # content in place (keeps the tablet entry and any annotations)
+            # instead of failing the re-send.
+            proc = _run(
+                [rmapi, "put", "--content-only", str(staged), folder],
+                env,
+                timeout_s,
+            )
 
     if proc is None:
         return fail(f"rmapi timed out after {timeout_s}s")
