@@ -481,6 +481,19 @@ def test_bind_structure_unknown_block_raises(
     assert "hub" in str(exc.value)  # the roster names what DOES exist
 
 
+def test_bind_structure_whitespace_block_is_a_missing_arg(
+    handler: SeHandler,
+) -> None:
+    """A blank 'block' is a missing argument, not a lookup miss — the
+    agent is told to supply the arg, never shown a roster for ''."""
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2e-10"},
+        {"op": "bind_structure", "block": "   ", "design": "whatever"},
+    ]
+    with pytest.raises(BadInput, match="needs 'block'"):
+        handler.put(id="bind6w", text=json.dumps({"ops": ops}))
+
+
 def test_bind_structure_on_an_instance_points_at_its_template(
     handler: SeHandler, structure: StructureHandler
 ) -> None:

@@ -154,6 +154,15 @@ def test_provenance_entry_normalizes(store: Store) -> None:
     assert provenance.entry(source="user_stated")["assumptions"] == []
 
 
+def test_entry_keyword_path_carries_library_version() -> None:
+    # source='library' REQUIRES library_version, so entry() dropping the
+    # keyword would raise below — pin the keyword front door round-trip.
+    made = provenance.entry(
+        source="library", fidelity="template", library_version="skf-2026.1"
+    )
+    assert made["library_version"] == "skf-2026.1"
+
+
 @pytest.mark.parametrize(
     "bad",
     [

@@ -229,6 +229,18 @@ def test_unknown_parent_rejected(handler: SeHandler) -> None:
         )
 
 
+def test_instance_block_unknown_template_rejected(handler: SeHandler) -> None:
+    """A template that resolves to nothing is an OpError with the roster,
+    never a bare KeyError out of the tree mapping."""
+    with pytest.raises(BadInput, match="no such block"):
+        handler.put(
+            id="ghosttpl1",
+            text=json.dumps(
+                {"ops": [{"op": "instance_block", "name": "w1", "template": "ghost"}]}
+            ),
+        )
+
+
 def test_envelope_bad_config_rejected_via_real_dsl(handler: SeHandler) -> None:
     with pytest.raises(BadInput, match="bad envelope"):
         handler.put(

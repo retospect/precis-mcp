@@ -419,6 +419,17 @@ def test_a_digit_label_is_a_label_first() -> None:
     assert _resolved(tree, "#12").name == "rim"
 
 
+def test_resolve_key_on_a_diverged_tree_returns_the_holding_key() -> None:
+    """A paste or branch merge can leave a node under a mapping key that
+    is not its name. Identity is the NODE: resolving its label must hand
+    back the key actually holding it, and the stray key itself still
+    resolves via the dict fallback."""
+    tree = SeTree()
+    tree.blocks["strut-2"] = SeBlock(name="zed", uid=9)
+    assert tree.resolve_key("zed") == "strut-2"
+    assert _resolved(tree, "strut-2").uid == 9
+
+
 def test_ambiguous_label_lists_the_matching_uids() -> None:
     """Label uniqueness still holds in the DB, so two blocks under one
     label is an in-memory state (a paste, a branch merge) — the path that
@@ -431,6 +442,8 @@ def test_ambiguous_label_lists_the_matching_uids() -> None:
         resolve_block(tree, "strut")
     assert exc.value.uids == [7, 9]
     assert "#7" in str(exc.value) and "#9" in str(exc.value)
+    # The by-uid example the message teaches with is the SMALLEST uid.
+    assert "e.g. '#7'" in str(exc.value)
     # By uid it is never ambiguous — that is the whole point.
     assert _resolved(tree, "#9").uid == 9
 
