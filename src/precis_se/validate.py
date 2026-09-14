@@ -27,11 +27,16 @@ checked at its own pose — a later increment poses members).
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
+import numpy as np
+
+from precis.cad import bulk as cad_bulk
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
+from precis.cad.vec import Vec3
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis_se import bom as se_bom
@@ -175,20 +180,63 @@ def _posed_component(
     return design.components[name]
 
 
+#: Wall-clock budget for the O(n²) pair scan below, in seconds (gr337045).
+#: Measured cost of the narrow-phase SDF minimisation is a flat ~2.3s/pair
+#: regardless of overlap (``clearance`` → ``_min_max_sdf``'s 2744 grid seeds
+#: + 4×80-iteration descents, none of it bounded) — an unfiltered 29-block
+#: design (~400 pairs) projects to ~15 minutes inside one synchronous MCP
+#: call. The AABB broad phase below (:func:`_aabb_clear`) removes every
+#: pair that cannot possibly interpenetrate before it ever reaches
+#: ``clearance``, so in practice this budget only throttles genuinely close
+#: pairs; ~13 of those (30s / 2.3s) is generous for the size of assembly
+#: se-kind targets. Exceeding it does not truncate silently — the
+#: remaining pairs are reported as unchecked (validate()'s
+#: ``overlap_budget_exceeded`` finding), mirroring the existing
+#: ``cross_scale_unverifiable`` honesty pattern below.
+_OVERLAP_BUDGET_S = 30.0
+
+
+def _aabb_clear(
+    box_a: tuple[Vec3, Vec3], box_b: tuple[Vec3, Vec3], margin: float
+) -> bool:
+    """True when the two AABBs are separated by more than ``margin`` along
+    at least one axis — the same per-axis fast-reject
+    :func:`~precis.cad.relate.translational_dof`'s ``contact_at`` already
+    uses, reused here as the broad-phase filter (gr337045). A block's
+    posed envelope is a subset of its own AABB, so an axis-separated pair
+    of boxes can never yield an overlapping pair of bodies — this proves
+    "not overlapping" without ever running the SDF minimisation that costs
+    ~2.3s/pair. ``margin`` should be the pair's own contact resolution
+    (:data:`~precis.cad.relate.CONTACT_TOL_REL` × governing length) so a
+    pair close enough to matter still falls through to the real check."""
+    lo_a, hi_a = box_a
+    lo_b, hi_b = box_b
+    return bool(np.any(lo_a - hi_b > margin) or np.any(lo_b - hi_a > margin))
+
+
+def _aabb_diag(box: tuple[Vec3, Vec3]) -> float:
+    lo, hi = box
+    return float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
+
+
 def envelope_overlaps(
-    tree: SeTree,
-) -> tuple[list[tuple[str, str, float]], list[tuple[str, str]]]:
-    """``(overlaps, cross_scale)`` over every unordered pair of blocks —
-    excluding ancestor/descendant pairs (a child inside its parent
-    module's envelope is containment, not interference). Pure geometry;
-    the caller decides which overlaps a connect sanctions.
+    tree: SeTree, *, budget_s: float | None = _OVERLAP_BUDGET_S
+) -> tuple[list[tuple[str, str, float]], list[tuple[str, str]], list[tuple[str, str]]]:
+    """``(overlaps, cross_scale, unchecked_budget)`` over every unordered
+    pair of blocks — excluding ancestor/descendant pairs (a child inside
+    its parent module's envelope is containment, not interference). Pure
+    geometry; the caller decides which overlaps a connect sanctions.
 
     ``overlaps`` holds pairs whose posed effective envelopes interpenetrate
     (signed gap < −contact tolerance), gap in metres. ``cross_scale``
     holds pairs the check could NOT run on — sizes too far apart for one
     SDF query (:func:`kernel_scale` → ``None``) — reported rather than
     silently dropped, so a nano bolt inside a macro housing reads as
-    *unverifiable*, never as *fine*."""
+    *unverifiable*, never as *fine*. ``unchecked_budget`` holds pairs an
+    AABB broad phase could not clear cheaply and the ``budget_s`` wall-clock
+    cap (``None`` = unbounded — tests only) ran out before reaching —
+    reported the same honest way, never silently dropped either
+    (gr337045)."""
     posed: list[tuple[str, SeBlock, str]] = []
     for name in sorted(tree.blocks):
         node = tree.blocks[name]
@@ -197,6 +245,8 @@ def envelope_overlaps(
             posed.append((name, node, env))
     out: list[tuple[str, str, float]] = []
     cross: list[tuple[str, str]] = []
+    unchecked: list[tuple[str, str]] = []
+    deadline = time.monotonic() + budget_s if budget_s is not None else None
     for i, (a_name, a_node, a_env) in enumerate(posed):
         for b_name, b_node, b_env in posed[i + 1 :]:
             if _is_ancestor(tree, a_name, b_name) or _is_ancestor(tree, b_name, a_name):
@@ -210,6 +260,18 @@ def envelope_overlaps(
             b_expr = _posed_component(design, b_name, b_env, b_node, scale)
             if a_expr is None or b_expr is None:
                 continue
+            # Broad phase: a bare AABB test, no SDF work — clears the vast
+            # majority of pairs in any spread-out real design for the cost
+            # of two bounding-box lookups (gr337045).
+            box_a = cad_bulk.expr_aabb(design, a_expr)
+            box_b = cad_bulk.expr_aabb(design, b_expr)
+            diags = [d for d in (_aabb_diag(box_a), _aabb_diag(box_b)) if d > 0.0]
+            margin = cad_relate.CONTACT_TOL_REL * (min(diags) if diags else 0.0)
+            if _aabb_clear(box_a, box_b, margin):
+                continue
+            if deadline is not None and time.monotonic() > deadline:
+                unchecked.append((a_name, b_name))
+                continue
             result = cad_relate.clearance(design, a_name, b_name)
             # Compared in kernel units against the query's OWN resolution
             # (a fraction of the smaller block's size, gr334763) rather
@@ -218,13 +280,20 @@ def envelope_overlaps(
             # after normalization, could never reach.
             if result.gap < -result.resolution:
                 out.append((a_name, b_name, float(result.gap) / scale))
-    return out, cross
+    return out, cross, unchecked
 
 
-def validate(tree: SeTree) -> list[ValidationIssue]:
+def validate(
+    tree: SeTree, *, budget_s: float | None = _OVERLAP_BUDGET_S
+) -> list[ValidationIssue]:
     """Return all findings (empty = clean — but see the handler's
     filled-fraction header: clean-and-empty must render as *unfilled*,
-    never as done). Pure over ``tree``; no store access."""
+    never as done). Pure over ``tree``; no store access.
+
+    ``budget_s`` bounds the undeclared-interpenetration check's narrow-phase
+    SDF work (:func:`envelope_overlaps`) — the default is generous for
+    real designs; callers normally leave it alone (tests use a small value
+    to exercise the partial-result path, gr337045)."""
     findings: list[ValidationIssue] = []
 
     # 1. dangling_connect (error) — an endpoint that no longer resolves
@@ -297,7 +366,7 @@ def validate(tree: SeTree) -> list[ValidationIssue]:
     # connect sanctions (module docstring). A connect between the two
     # blocks — any ports, stored names — declares the contact intended.
     connected_pairs = {frozenset({c.a_block, c.b_block}) for c in tree.connects}
-    overlaps, cross_scale = envelope_overlaps(tree)
+    overlaps, cross_scale, unchecked_budget = envelope_overlaps(tree, budget_s=budget_s)
     for a_name, b_name, gap in overlaps:
         if frozenset({a_name, b_name}) in connected_pairs:
             continue
@@ -329,6 +398,32 @@ def validate(tree: SeTree) -> list[ValidationIssue]:
                     "one interpenetration check (SDF grid can't resolve "
                     "both) — these pairs are UNCHECKED, not clear; verify "
                     "cross-scale seating at L3/binding level"
+                ),
+                severity="warn",
+            )
+        )
+    if unchecked_budget:
+        # Same aggregate-not-per-pair shape as cross_scale_unverifiable —
+        # and the same honesty rule: a pair the budget didn't reach is
+        # UNCHECKED, never silently reported as clear (gr337045).
+        shown = ", ".join(f"{a}—{b}" for a, b in unchecked_budget[:5])
+        more = (
+            f" (+{len(unchecked_budget) - 5} more)" if len(unchecked_budget) > 5 else ""
+        )
+        # budget_s is None only means "unbounded" (envelope_overlaps never
+        # populates unchecked_budget in that case), but format defensively
+        # rather than assume the invariant holds forever.
+        budget_desc = f"{budget_s:g}s" if budget_s is not None else "unbounded"
+        findings.append(
+            ValidationIssue(
+                rule="overlap_budget_exceeded",
+                subject=f"{len(unchecked_budget)} pair(s)",
+                detail=(
+                    f"{shown}{more}: the interpenetration check's "
+                    f"{budget_desc} time budget ran out before reaching "
+                    "these pairs — they are UNCHECKED, not clear; re-run "
+                    "(a narrower design or a larger budget_s may finish) "
+                    "to verify"
                 ),
                 severity="warn",
             )

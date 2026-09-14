@@ -133,6 +133,18 @@ def test_run_raising_is_recorded_as_a_job_event_and_failed(store: Store) -> None
             (job_id,),
         ).fetchall()
     assert any("boom" in r[0] for r in rows)
+    # gr338602 item 3c: this except-Exception arm is the third
+    # ``meta.error``-stamping site (alongside ``_run_plan_tick``'s
+    # exception branch and ``_run_doctor_tick``'s non-zero-exit branch)
+    # and used to be the odd one out — it recorded the failure in the
+    # job_event chunk but never mirrored it into ``refs.meta.error``,
+    # so an ops digest reading only ``meta`` saw a blank error field.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'error' FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] is not None and "boom" in row[0]
 
 
 def test_registry_dispatches_to_run_doctor_tick(

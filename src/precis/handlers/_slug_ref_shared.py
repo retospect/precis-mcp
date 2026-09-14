@@ -286,8 +286,20 @@ def resolve_live_slug_ref(
             if handle is not None and ref.slug != slug:
                 store.emit_hint(bare_numeric_hint(kind, slug, handle))
     if ref is None:
+        cause = f"{kind} slug {slug!r} not found"
+        if slug.isdigit():
+            # The digits were already tried as a ref_id fallback (the A1
+            # branch above) and that also missed — say so, or the bare
+            # "not found" reads like a slug typo and invites another
+            # numeric-id retry. Kinds reaching this helper are
+            # slug-addressed; numeric ref ids are only that one
+            # best-effort fallback, not a first-class address form.
+            cause += (
+                f" ({kind} is slug-addressed; the digits were also tried "
+                "as a ref_id, which missed too)"
+            )
         raise NotFound(
-            f"{kind} slug {slug!r} not found",
+            cause,
             next=next_hint or f"search(kind={kind!r}, q='...') to find existing",
             options=list(options) if options else None,
         )

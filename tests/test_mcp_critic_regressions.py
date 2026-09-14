@@ -651,6 +651,47 @@ def test_status_vocabulary_matches_todo_handler() -> None:
             assert default[len("STATUS:") :] in _CLOSED_VOCAB["STATUS"]
 
 
+def test_precis_tags_skill_status_count_matches_closed_vocab() -> None:
+    """gr338602 item 3a: ``precis-tags`` claimed the STATUS union was 20
+    values; the real ``_CLOSED_VOCAB['STATUS']`` had already grown to 32
+    (quest/todo-tree/coordinator-yield/refuted/canonical additions never
+    updated the doc's prose count). Pin the doc to the live count so the
+    two can't silently drift apart again — and require the quest lifecycle
+    (STATUS active/dormant/abandoned, kind='quest') to be documented,
+    since it was the specific missing axis row."""
+    from importlib import resources
+
+    from precis.store.types import _CLOSED_VOCAB
+
+    text = (
+        resources.files("precis.data.skills")
+        .joinpath("precis-tags.md")
+        .read_text(encoding="utf-8")
+    )
+    n = len(_CLOSED_VOCAB["STATUS"])
+    assert f"the union ({n} values)" in text, (
+        f"precis-tags.md's STATUS union count has drifted from the real "
+        f"_CLOSED_VOCAB['STATUS'] count ({n})"
+    )
+    assert "kind='quest'" in text or "`quest`" in text
+    assert "abandoned" in text and "dormant" in text
+
+
+def test_handlers_docstring_lists_every_auto_check_evaluator() -> None:
+    """gr338602 item 3b: ``precis.handlers``' module docstring named 7
+    auto_check evaluators; ``REGISTRY`` had already grown to 10
+    (placement_legal/route_complete/netlist_drc_clean, the
+    pcb-guided-place-route phase gates, were added without updating the
+    docstring). Every registered evaluator name must appear in the
+    docstring so the two can't silently drift apart again."""
+    import precis.handlers as handlers_pkg
+    from precis.workers.auto_check_evaluators import REGISTRY
+
+    doc = handlers_pkg.__doc__ or ""
+    for name in REGISTRY:
+        assert f"``{name}``" in doc, f"{name!r} missing from handlers docstring"
+
+
 # ── MINOR: precis-overview no longer cites dead kinds ───────────────
 
 

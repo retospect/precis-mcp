@@ -435,6 +435,13 @@ def test_chunk_view_fisheye_routes_to_render_eye_not_silent_degrade(
     lone = draft.get(id=mid).body
     assert "Second paragraph" in lone
     assert "First paragraph" not in lone
+    # The unprompted-discovery fisheye promo on a bare
+    # single-chunk read must scope itself to the kinds that actually
+    # support the view — an agent read this footer on a draft chunk and
+    # then tried view='fisheye' on an unrelated paper chunk, hitting
+    # Unsupported.
+    assert "view='fisheye'" in lone
+    assert "kind='draft' and kind='finding' support this view" in lone
 
     fisheye = draft.get(id=mid, view="fisheye").body
     assert "Second paragraph" in fisheye  # the focal chunk

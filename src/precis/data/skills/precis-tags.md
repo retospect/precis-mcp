@@ -173,7 +173,7 @@ as lowercase tags (`density:dense`, `confidence:strong`) instead.
 ### `STATUS:` value subsets per lifecycle
 
 `STATUS:` is the one axis that hosts multiple lifecycles on the same
-prefix. The runtime accepts the union (20 values); each handler enforces
+prefix. The runtime accepts the union (32 values); each handler enforces
 a sane subset for its kind. Pick the row that matches the ref you're
 tagging:
 
@@ -181,8 +181,12 @@ tagging:
 |---|---|---|
 | Workflow (original) | `todo`, `gripe` | `open`, `doing`, `blocked`, `done`, `won't-do` |
 | Gripe-specific | `gripe` | also: `triaged`, `ready_for_fix`, `in_review`, `wontfix` |
-| Citation chase | `finding` | `tracing`, `established`, `multi_candidate`, `dead_chain` |
+| Citation chase | `finding` | `tracing`, `established`, `multi_candidate`, `dead_chain`, `refuted`, `acquiring` |
+| Taproot claim hub | `finding` | `canonical` |
 | Job queue | `job` | `queued`, `submitted`, `running`, `succeeded`, `failed`, `cancelled`, `cancel_requested` |
+| Todo-tree | `todo` | also: `paused`, `auto-timeout` |
+| Coordinator yield/resume | `job` | also: `waiting_children`, `waiting_time`, `waiting_ask_user`, `waiting_manual_kick` |
+| Quest (perpetual striving — no `done`) | `quest` | `active`, `dormant`, `abandoned` |
 
 The runtime rejects unknown values at write time with the full options
 list. To see the live set without triggering a write, `get(kind='tag',
@@ -202,6 +206,7 @@ axes and suggests the lowercase rewrite.
 |---|---|
 | `todo` | `STATUS`, `PRIO`, `AUDIT` (content-QA category) — the dispatch tier is `meta.llm_tier`, not a closed axis (§M facet normalization) |
 | `gripe` | `STATUS`, `PRIO` |
+| `quest` | `STATUS` (perpetual lifecycle — `active`/`dormant`/`abandoned`, never `done`), `PRIO` (striving weight) |
 | `finding` | unrestricted — in practice `STATUS` (lifecycle subsets — see table above), `AUDIT` (content-QA category), `TAPROOT` (claim-hub discriminator) |
 | `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` |
@@ -229,11 +234,13 @@ put(kind='todo', text='...', tags=['urgent'])
 
 tag(kind='todo', id=40, add=['STATUS:bogus'])
 [error:BadInput] invalid STATUS value: 'bogus'
-  options: ['blocked', 'cancel_requested', 'cancelled', 'dead_chain',
-            'doing', 'done', 'established', 'failed', 'in_review',
-            'multi_candidate', 'open', 'queued', 'ready_for_fix',
-            'running', 'submitted', 'succeeded', 'tracing', 'triaged',
-            'won't-do', 'wontfix']
+  options: ['abandoned', 'acquiring', 'active', 'auto-timeout', 'blocked',
+            'cancel_requested', 'cancelled', 'canonical', 'dead_chain',
+            'doing', 'done', 'dormant', 'established', 'failed',
+            'in_review', 'multi_candidate', 'open', 'paused', 'queued',
+            'ready_for_fix', 'refuted', 'running', 'submitted', 'succeeded',
+            'tracing', 'triaged', 'waiting_ask_user', 'waiting_children',
+            'waiting_manual_kick', 'waiting_time', 'won't-do', 'wontfix']
 ```
 
 ## Tag a ref at creation time

@@ -3076,7 +3076,8 @@ class DraftHandler(Handler):
         return (
             "\n\n→ view='fisheye' renders this node with its neighbourhood "
             "(nearby chunks + section path); view='fisheye+1hop' also shows what "
-            "it references. skill: precis-fisheye-help"
+            "it references. Only kind='draft' and kind='finding' support this "
+            "view. skill: precis-fisheye-help"
         )
 
     # ``_dangling_*_tokens``/``_newly_dangling`` proxy ``_draft_lint`` (the

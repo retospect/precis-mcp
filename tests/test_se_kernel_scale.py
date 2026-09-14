@@ -161,7 +161,7 @@ def test_mixed_scale_pair_is_refused_not_wrong() -> None:
     assert scale is None
     # …and envelope_overlaps reports the pair as cross-scale rather than
     # silently dropping it.
-    overlaps, cross = envelope_overlaps(tree)
+    overlaps, cross, _unchecked = envelope_overlaps(tree)
     assert ("bolt", "housing") in cross or ("housing", "bolt") in cross
     assert not any({a, b} == {"bolt", "housing"} for a, b, _ in overlaps)
 
@@ -214,7 +214,7 @@ def test_clearance_view_refuses_cross_scale_pair(handler: SeHandler) -> None:
 
 def test_envelope_overlaps_gap_is_in_metres() -> None:
     tree = _nano_tree()
-    overlaps, _cross = envelope_overlaps(tree)
+    overlaps, _cross, _unchecked = envelope_overlaps(tree)
     pairs = {frozenset((a, b)): gap for a, b, gap in overlaps}
     gap = pairs.get(frozenset(("panel", "vtx")))
     assert gap is not None, overlaps

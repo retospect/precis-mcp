@@ -129,7 +129,7 @@ def parse_command(
         if "text" in kwargs:
             raise CommandParseError(
                 "text= given both as the text= parameter and inside command "
-                "— pass it once"
+                "— use only the separate text= parameter"
             )
         kwargs["text"] = text
 

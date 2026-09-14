@@ -58,7 +58,9 @@ strategic roots drives 7-day picks. Reparenting goes through the reserved
 live under ``workers/auto_check_evaluators/``: ``paper_ingested``,
 ``discord_reply_received``, ``time_past``, ``tag_present``,
 ``child_job_succeeded``, ``derived_job_succeeded``,
-``all_child_findings_resolved``.
+``all_child_findings_resolved``, ``placement_legal``, ``route_complete``,
+``netlist_drc_clean`` (the last three are the pcb-guided-place-route
+phase-machine gates).
 
 **Recurring (Watches).** ``meta.schedule`` presence *is* recurring — cron
 / ``every:`` shorthand, or a one-shot ``at``; no separate tag

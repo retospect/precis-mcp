@@ -89,13 +89,15 @@ _EXECUTOR_NAME = "claude_inproc"
 # Chunk kind specific to this executor's gripe-comment timeline.
 _GRIPE_COMMENT_KIND = "gripe_comment"
 
-# Cap on the error text mirrored into ``refs.meta.error`` for the two
+# Cap on the error text mirrored into ``refs.meta.error`` for the
 # hand-rolled dispatch arms below (``_run_plan_tick``'s exception branch,
-# ``_run_doctor_tick``'s non-zero-exit branch) — mirrors
-# ``_common.record_failure``'s ``_ERROR_META_CAP`` breadcrumb convention.
-# The full text always lands in the ``job_event``/``job_result`` chunk
-# either way; this is just a bounded copy so ops digests that only read
-# ``meta`` aren't left with an empty error field (gr338335).
+# ``_run_doctor_tick``'s exception branch, and its non-zero-exit branch
+# — gr338602 item 3c: the exception branch didn't stamp this until it
+# was found to be the odd one out — mirrors ``_common.record_failure``'s
+# ``_ERROR_META_CAP`` breadcrumb convention). The full text always lands
+# in the ``job_event``/``job_result`` chunk either way; this is just a
+# bounded copy so ops digests that only read ``meta`` aren't left with
+# an empty error field (gr338335).
 _ERROR_META_CAP = 500
 
 
@@ -1372,7 +1374,12 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
                 conn=conn,
             )
             _set_status(store, ref_id, _FAILED, conn=conn)
-            _set_meta(conn, ref_id, wall_seconds=wall)
+            _set_meta(
+                conn,
+                ref_id,
+                wall_seconds=wall,
+                error=repr(exc)[:_ERROR_META_CAP],
+            )
             from precis.handlers._job_bubble import bubble_job_failure
 
             bubble_job_failure(store, ref_id, conn=conn)

@@ -18,6 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
+from precis.errors import NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.hints import Hint
 
@@ -76,3 +79,40 @@ def test_hint_still_fires_for_a_genuine_ref_id_guess() -> None:
     hint = store.hints[0]
     assert "168773" in hint.text
     assert "po168773" in hint.text
+
+
+# ── gr338602 item 6: draft numeric-id addressing ─────────────────────
+
+
+def test_draft_numeric_id_falls_back_to_ref_id_when_no_slug_matches() -> None:
+    """``get(kind='draft', id=3467177)`` (2 prod jobs): drafts are
+    slug-addressed, but a purely-numeric id= with no matching slug must
+    still resolve via the ref_id fallback, same as any other
+    slug-addressed kind reaching this shared helper."""
+    store = _FakeStore(
+        string_ref=None,  # no draft slug literally equal to '3467177'
+        int_ref=_FakeRef(id=3467177, slug="rotax-writeup"),
+    )
+    ref = resolve_live_slug_ref(store, kind="draft", id="3467177")  # type: ignore[arg-type]
+    assert ref.id == 3467177
+
+
+def test_draft_numeric_id_slug_match_wins_over_ref_id_fallback() -> None:
+    """A draft whose own slug happens to BE a bare numeral must resolve
+    via that slug match — the ref_id fallback only fires when the slug
+    lookup misses, never overriding a real slug hit."""
+    store = _FakeStore(
+        string_ref=_FakeRef(id=99, slug="42"),  # the real slug match
+        int_ref=_FakeRef(id=42, slug="unrelated-draft"),  # a different ref
+    )
+    ref = resolve_live_slug_ref(store, kind="draft", id="42")  # type: ignore[arg-type]
+    assert ref.id == 99
+
+
+def test_draft_numeric_id_miss_names_slug_addressing() -> None:
+    """When neither the slug lookup nor the ref_id fallback finds a
+    match, the NotFound message says drafts are slug-addressed instead
+    of a bare 'not found' that invites another numeric-id retry."""
+    store = _FakeStore(string_ref=None, int_ref=None)
+    with pytest.raises(NotFound, match="slug-addressed"):
+        resolve_live_slug_ref(store, kind="draft", id="3467177")  # type: ignore[arg-type]

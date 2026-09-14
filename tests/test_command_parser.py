@@ -128,6 +128,14 @@ def test_text_param_and_inline_text_is_ambiguous() -> None:
         parse_command("put(kind='memory', text='inline')", text="separate")
 
 
+def test_text_param_and_inline_text_message_says_use_only_the_separate_param() -> None:
+    """gr338670 item 2b: the duplicate-text= error used to say "pass it
+    once" — actionable but ambiguous about *which* channel to keep. Name
+    the separate text= parameter as the one to use."""
+    with pytest.raises(CommandParseError, match="use only the separate text="):
+        parse_command("put(kind='memory', text='inline')", text="separate")
+
+
 # ---------------------------------------------------------------------------
 # Rejections
 # ---------------------------------------------------------------------------
