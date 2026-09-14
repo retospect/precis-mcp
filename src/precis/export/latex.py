@@ -1388,9 +1388,27 @@ def build_acronyms(
     return "\n".join(lines)
 
 
+#: Unicode space separators (Zs) → plain space, zero-widths → dropped, in
+#: BibTeX author names. A thin space in a corpus name ("Ryder, Matthew R.")
+#: otherwise reaches ``_encode_unicode`` and becomes ``\,`` — biber's NAME
+#: parser (unlike an ordinary field) mangles ``Matthew\,R.`` into
+#: ``suffix={Matthew\}``, whose trailing backslash escapes the ``.bbl``'s
+#: closing brace and runaways the whole compile ("Paragraph ended before
+#: \name was complete" — the nano-computer send).
+_NAME_UNISPACE = re.compile("[   -   　]")
+_NAME_ZEROWIDTH = re.compile("[​-‍⁠﻿]")
+
+
 def _bibtex_authors(authors: list[dict[str, Any]] | None) -> str:
     """A BibTeX ``author = {A and B and …}`` value from the ref's authors
-    list (each ``{name|family|given}``). Empty when unknown."""
+    list (each ``{name|family|given}``). Empty when unknown.
+
+    Each name is space-normalized (see ``_NAME_UNISPACE``) and
+    LaTeX-escaped: corpus metadata carries extraction garbage (a trailing
+    ``\\`` on ref 258's "DIFFUSION MODELS\\", ``&``/``#`` in others) that
+    biber copies verbatim into the ``.bbl``, where a stray backslash eats a
+    closing brace and the unclosed ``\\name`` group runaways. Titles were
+    already escaped; authors were the one raw path into the ``.bib``."""
     if not authors:
         return ""
     names = []
@@ -1399,7 +1417,8 @@ def _bibtex_authors(authors: list[dict[str, Any]] | None) -> str:
             x for x in (a.get("given"), a.get("family")) if x
         )
         if name:
-            names.append(name)
+            name = _NAME_ZEROWIDTH.sub("", _NAME_UNISPACE.sub(" ", name))
+            names.append(_latex_escape(name))
     return " and ".join(names)
 
 

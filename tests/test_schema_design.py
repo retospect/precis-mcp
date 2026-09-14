@@ -189,6 +189,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_drc_findings.objects",
         "pcb_features.geom",
         "pcb_features.meta",
+        # 0161: computed pad-field generator (pcb-ewod-multitile Slice 2,
+        # 8543341b, qlanded ungated — allowlisted here in passing): params
+        # is the generator's open-ended invocation blob, ledger its
+        # append-only expansion record.
         "pcb_instances.meta",
         # 0160: design-local authored footprint (pcb-ewod-multitile Slice
         # 1) — same open-ended {pads, pin_map, courtyard, centroid} shape

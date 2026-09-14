@@ -1018,6 +1018,41 @@ def _bibref(rid, slug, kind, *, title, authors=None, year=None, meta=None):
     )
 
 
+def test_build_bib_escapes_garbage_author_names() -> None:
+    # Real corpus metadata (refs 258/3023/893/933): a trailing backslash in
+    # an author name rides raw into the .bib, biber copies it into the
+    # .bbl, and \} there is an ESCAPED brace — the \name group never closes
+    # and runaways to the next blank line ("Paragraph ended before \name
+    # was complete"), killing the whole compile.
+    store = _BibStore(
+        {
+            ("paper", "methods23"): _bibref(
+                258,
+                "methods23",
+                "paper",
+                title="Diffusion methods",
+                authors=[
+                    {"name": "DIFFUSION MODELS\\"},
+                    {"name": "J. H. & Silvera"},
+                    {"name": "IOP Publishing #3"},
+                    # thin space (U+2009): would encode to \, — biber's
+                    # name parser mangles that into suffix={Matthew\}
+                    {"name": "Ryder, Matthew R."},
+                ],
+                year=2023,
+            )
+        }
+    )
+    warnings: list[str] = []
+    bib = latex.build_bib(store, ["methods23"], warnings)
+    assert "\\textbackslash{}" in bib  # the trailing \ is a literal glyph
+    assert r"\&" in bib and r"\#" in bib
+    assert "Ryder, Matthew R." in bib  # thin space → plain space, never \,
+    # every brace in the entry balances (no group left open for the .bbl)
+    stripped = bib.replace(r"\{", "").replace(r"\}", "")
+    assert stripped.count("{") == stripped.count("}")
+
+
 def test_build_bib_emits_datasheet_entry_not_stub() -> None:
     """A cited datasheet resolves to a real ``@manual`` bib entry (gr52396) —
     not the 'missing source' auto-stub — so the bibliography lists it."""
