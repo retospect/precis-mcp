@@ -1002,6 +1002,12 @@ def main(
         stream=sys.stderr,
     )
     _log_version_banner()
+    # Exit cleanly if a deploy swaps our venv underneath us — the client
+    # restarts a fresh server; staying up wedges the connection for the
+    # full idle timeout (gr338977).
+    from precis.install_watchdog import start_install_watchdog
+
+    start_install_watchdog()
     runtime = _init_runtime()
     _warm_embedder_background(runtime)
     _warm_md_index_background(runtime)
