@@ -24,13 +24,41 @@ hard-coded here.
 from __future__ import annotations
 
 import ast
+import re
 from typing import Any
 
 _EXAMPLE = "get(kind='skill', id='toc')"
 
+#: Python's tokenizer names a stray non-ASCII punctuation character
+#: (em-dash, curly quotes, ...) this way — the shape an agent hits when
+#: it pastes prose straight into ``command=`` instead of routing it
+#: through ``text=`` (gr338670). Matched against the ``SyntaxError``
+#: text, not the raw command, since only Python's own message reliably
+#: identifies *this* failure mode among all the ways a command can fail
+#: to parse.
+_INVALID_CHAR_RE = re.compile(r"invalid character")
+
+#: "Long or punctuation-rich" heuristic for
+#: :func:`_looks_like_misplaced_text` — cheap string checks, not a
+#: real prose detector. A command this long, or one that already names
+#: a ``text=``/``body=`` param, is the profile the gripe surfaced:
+#: someone tried to inline a paragraph instead of using the escape
+#: hatch. Not fired on short commands with a stray odd character (a
+#: typo'd quote mark, say) — there the generic parse-error message is
+#: enough.
+_LONG_COMMAND_CHARS = 120
+
 
 class CommandParseError(ValueError):
     """``command`` isn't a single ``verb(kw=literal, ...)`` call."""
+
+
+def _looks_like_misplaced_text(command: str) -> bool:
+    """True when ``command`` is long or names a text-ish param —
+    the shape of "pasted prose into command= instead of text="."""
+    if len(command) > _LONG_COMMAND_CHARS:
+        return True
+    return any(marker in command for marker in ("text=", "body=", "content="))
 
 
 def parse_command(
@@ -54,9 +82,13 @@ def parse_command(
     try:
         tree = ast.parse(command, mode="eval")
     except SyntaxError as e:
-        raise CommandParseError(
-            f"command must be a single call like {_EXAMPLE} ({e})"
-        ) from e
+        msg = f"command must be a single call like {_EXAMPLE} ({e})"
+        if _INVALID_CHAR_RE.search(str(e)) and _looks_like_misplaced_text(command):
+            msg += (
+                ". Long or punctuation-rich text belongs in the separate "
+                "text= parameter, not inline in command"
+            )
+        raise CommandParseError(msg) from e
 
     call = tree.body
     if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):

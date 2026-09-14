@@ -48,6 +48,7 @@ import functools
 import inspect
 import logging
 import os
+import re
 import secrets
 import sys
 from collections.abc import Callable
@@ -525,6 +526,37 @@ mcp: FastMCP = FastMCP("precis-mcp", instructions=_INSTRUCTIONS)
 _MCP_PROFILE_ENV = "PRECIS_MCP_PROFILE"
 _COMMAND_EXAMPLE = "get(kind='skill', id='toc')"
 
+#: Per-verb kwarg alias hints (gr338670). ``TOOL_REGISTRY[verb]["func"]``
+#: is a plain Python function with a fixed signature, so an unaccepted
+#: kwarg (e.g. ``link(to=...)``) fails at the ``**kwargs`` call below
+#: with Python's own "unexpected keyword argument" ``TypeError`` — which
+#: names only the *wrong* spelling, sending the caller to the skill to
+#: guess the right one. When the wrong name is a common synonym for a
+#: real kwarg, name it directly instead. ``link``'s ``to``→``target`` is
+#: the case that surfaced the gripe; ``search``'s ``k``/``limit``→
+#: ``page_size`` piggybacks on the same map since it's the identical
+#: shape (gr338443 tracks a different fix for that pair — accepting and
+#: normalizing them — so don't duplicate that ask here, just the hint).
+_KWARG_ALIAS_HINTS: dict[str, dict[str, str]] = {
+    "link": {"to": "target"},
+    "search": {"k": "page_size", "limit": "page_size"},
+}
+
+_UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '(\w+)'")
+
+
+def _kwarg_alias_hint(verb: str, exc: TypeError) -> str | None:
+    """A "did you mean ...=?" hint when ``exc``'s bad kwarg is a known
+    alias for one ``verb`` actually accepts (gr338670), else ``None``."""
+    m = _UNEXPECTED_KWARG_RE.search(str(exc))
+    if m is None:
+        return None
+    alias = _KWARG_ALIAS_HINTS.get(verb, {}).get(m.group(1))
+    if alias is None:
+        return None
+    return f"did you mean {alias}=? {verb}() has no {m.group(1)!r} kwarg"
+
+
 # Kept terse (~150-200 tokens): the whole point of the command profile
 # is a frozen, tiny standing schema. Teaches the call syntax, the
 # text= escape hatch for large bodies, and the two discovery
@@ -600,10 +632,11 @@ def precis(
     try:
         return TOOL_REGISTRY[verb]["func"](**kwargs)
     except TypeError as e:
-        return _bad_input(
-            f"{verb}(...): {e}",
-            hint=f"see get(kind='skill', id='precis-{verb}-help') for valid args",
-        )
+        hint = f"see get(kind='skill', id='precis-{verb}-help') for valid args"
+        alias_hint = _kwarg_alias_hint(verb, e)
+        if alias_hint is not None:
+            hint = f"{alias_hint}; {hint}"
+        return _bad_input(f"{verb}(...): {e}", hint=hint)
 
 
 def _install_command_profile() -> None:

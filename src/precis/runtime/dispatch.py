@@ -118,6 +118,17 @@ _VERB_REDIRECTS: dict[tuple[str, str], str] = {
         "drafts have no whole-ref tag axis; tag the owning project todo "
         "instead, or use a glossary term / inline markup inside the prose."
     ),
+    # gr338669: an agent generalizing from todo's supports_edit reaches
+    # for edit(kind='gripe', ...) and gets a bare "does not support"
+    # with no idiom to fall back to. Gripe (like every numeric-ref kind,
+    # see KindSpec.supports_edit) has no region-edit verb by design —
+    # its only text mutation is the put-with-id append-comment idiom
+    # (GripeHandler.put), so name that directly rather than a generic
+    # "try get(kind=...)".
+    ("gripe", "edit"): (
+        "gripe has no edit(); append a comment with "
+        "put(kind='gripe', id=N, text='...')"
+    ),
 }
 
 
