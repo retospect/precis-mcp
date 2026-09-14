@@ -53,6 +53,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._skill_common import (
+    VALID_TAGS,
     WIKILINK_RE,
     SkillFrontmatter,
     kind_label,
@@ -70,6 +71,7 @@ from precis.skill_index import (
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+from precis.utils.handle_registry import is_known_kind, kind_for_code
 from precis.utils.next_block import render_next_section
 from precis.utils.rake import keyword_summary
 from precis.utils.search_header import format_search_headline
@@ -2523,6 +2525,29 @@ def _axis_filter_set(*, tag: str | None, kinds: str | None) -> frozenset[str] | 
     """
     if tag is None and kinds is None:
         return None
+    # Unknown filter values are rejected, not swallowed (gr338978): a
+    # typo'd tag/kind returning "0 skills" reads as "nothing matches",
+    # which is indistinguishable from a valid-but-empty slice. A *known*
+    # value with no skills still returns the honest empty set below.
+    if tag is not None and tag not in VALID_TAGS:
+        raise BadInput(
+            f"unknown tag {tag!r} — valid tags: {', '.join(VALID_TAGS)}",
+            next="get(kind='skill', id='toc', tag='workflow')",
+        )
+    if kinds is not None and not is_known_kind(kinds):
+        try:
+            long_kind, _is_chunk = kind_for_code(kinds)
+        except KeyError:
+            raise BadInput(
+                f"unknown kind {kinds!r} for kinds=",
+                next="get(kind='skill', id='toc') — each row's kinds are"
+                " listed in the skill itself",
+            ) from None
+        raise BadInput(
+            f"kinds= takes the long kind name, not the short handle code"
+            f" — {kinds!r} is the code for {long_kind!r}",
+            next=f"get(kind='skill', id='toc', kinds='{long_kind}')",
+        )
     graph = _get_skill_graph()
     sets: list[frozenset[str]] = []
     if tag is not None:

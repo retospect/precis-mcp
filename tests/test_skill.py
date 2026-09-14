@@ -1523,6 +1523,52 @@ def test_toc_filter_by_kinds_actually_filters(
     assert "zzq-paper" not in out2.body
 
 
+def test_toc_filter_rejects_unknown_tag(skill: SkillHandler) -> None:
+    """An unknown ``tag=`` raises listing the valid vocabulary instead
+    of returning a silent "0 skills" toc (gr338978) — a typo'd tag must
+    be distinguishable from a valid-but-empty slice."""
+    with pytest.raises(BadInput) as excinfo:
+        skill.get(id="toc", tag="bogus-tag")
+    msg = str(excinfo.value)
+    assert "unknown tag 'bogus-tag'" in msg
+    assert "orientation" in msg and "workflow" in msg
+
+
+def test_toc_filter_rejects_unknown_kind(skill: SkillHandler) -> None:
+    with pytest.raises(BadInput) as excinfo:
+        skill.get(id="toc", kinds="nonexistent-kind")
+    assert "unknown kind 'nonexistent-kind'" in str(excinfo.value)
+
+
+def test_toc_filter_short_code_redirects_to_long_name(
+    skill: SkillHandler,
+) -> None:
+    """``kinds='me'`` (a handle code) names the long kind it stands for
+    rather than a bare rejection — the footer prints ``memory (me)``, so
+    the code is a predictable wrong guess."""
+    with pytest.raises(BadInput) as excinfo:
+        skill.get(id="toc", kinds="me")
+    assert "'me' is the code for 'memory'" in str(excinfo.value)
+    assert "kinds='memory'" in str(excinfo.value.next)
+
+
+def test_toc_filter_known_tag_with_no_skills_is_empty_not_error(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A *known* tag whose slice is empty still renders the honest
+    0-skill toc — only out-of-vocabulary values are rejected."""
+    _install_corpus(
+        monkeypatch,
+        {
+            "zzq-orient": _md(
+                front="flavor: reference\ntags:\n  - orientation", body="b"
+            )
+        },
+    )
+    out = skill.get(id="toc", tag="design")
+    assert "0 skills" in out.body
+
+
 def test_index_filter_by_tag_actually_filters(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
