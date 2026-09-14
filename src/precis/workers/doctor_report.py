@@ -24,12 +24,20 @@ tagged ``meta.author='doctor'``. Two halves:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+log = logging.getLogger(__name__)
+
+#: Drive folder title the dated reports are filed under, so a daily
+#: artifact does not accumulate loose at the Drive root (same reason
+#: ``cast_common.CastProfile.folder`` exists for the casts).
+FOLDER: str = "Doctor report"
 
 #: ``meta.author`` stamp on the doctor's report draft — the whole of
 #: "latest report"'s selection predicate, per the spec's literal SQL.
@@ -101,7 +109,41 @@ def find_or_create_report(
     canonical = store.get_ref(kind="draft", id=slug)
     if canonical is not None and int(canonical.id) != int(ref.id):
         return canonical, False
+    _file_under_folder(store, int(ref.id))
     return ref, True
+
+
+def ensure_report_folder(store: Store) -> int | None:
+    """Find (or create) the Drive folder the dated reports are filed under.
+
+    Idempotent on the folder title. Best-effort — a failure logs and
+    returns ``None`` so placement never blocks a report the doctor is
+    about to write into.
+    """
+    try:
+        existing = store.folder_ref_ids_by_title(FOLDER)
+        if existing:
+            return int(existing[0])
+        return int(store.insert_ref(kind="folder", slug=None, title=FOLDER).id)
+    except Exception:  # pragma: no cover - placement is a nicety, never fatal
+        log.warning("doctor_report: could not ensure folder %r", FOLDER, exc_info=True)
+        return None
+
+
+def _file_under_folder(store: Store, ref_id: int) -> None:
+    """Place a fresh report draft under :data:`FOLDER`. Never raises."""
+    folder_id = ensure_report_folder(store)
+    if folder_id is None:
+        return
+    try:
+        store.set_parent(ref_id, folder_id)
+    except Exception:  # pragma: no cover - placement is a nicety, never fatal
+        log.warning(
+            "doctor_report: could not file draft %s under folder %s",
+            ref_id,
+            folder_id,
+            exc_info=True,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,8 +239,10 @@ def latest_report(
 
 __all__ = [
     "AUTHOR",
+    "FOLDER",
     "FRESH_WINDOW",
     "DoctorReport",
+    "ensure_report_folder",
     "find_or_create_report",
     "find_report",
     "latest_report",

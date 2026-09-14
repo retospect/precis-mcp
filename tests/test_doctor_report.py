@@ -110,6 +110,16 @@ def test_latest_report_stale_when_no_recent_append(store: Store) -> None:
     assert doctor_report.latest_report(store, max_age=timedelta(hours=12)) is None
 
 
+def test_reports_are_filed_under_one_shared_folder(store: Store) -> None:
+    ref1, _ = doctor_report.find_or_create_report(store, "2026-08-23")
+    ref2, _ = doctor_report.find_or_create_report(store, "2026-08-24")
+
+    folder_ids = store.folder_ref_ids_by_title(doctor_report.FOLDER)
+    assert len(folder_ids) == 1, "the folder is created once, then reused"
+    children = store.folder_subtree_ids(folder_ids[0])
+    assert {int(ref1.id), int(ref2.id)} <= children
+
+
 def test_report_slug_and_date_tag() -> None:
     assert doctor_report.report_slug("2026-08-23") == "doctor-2026-08-23"
     tag = doctor_report.utc_date_tag(datetime(2026, 8, 23, 5, tzinfo=UTC))
