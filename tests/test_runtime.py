@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from precis.hints import Hint, HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Store
@@ -182,6 +184,99 @@ def test_kind_help_read_degrades_silently_on_graph_failure(
     monkeypatch.setattr(kind_skills, "kind_skill_hint", _boom)
     out = runtime_with_store.dispatch("get", {"kind": "memory"})
     assert "[error:" not in out
+
+
+def test_search_never_appends_kind_skill_footer(
+    runtime_with_store: PrecisRuntime, monkeypatch
+) -> None:
+    """The footer is a ``get()``-with-no-``id=`` affordance only — a
+    ``search()`` call (which also has no ``id=`` in its args) must never
+    pick up the breadcrumb. Kills the ``verb == "get" and ...`` → ``or``
+    survivor: under ``or`` this fires on any no-id verb, including
+    ``search``."""
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills,
+        "kind_skill_hint",
+        lambda kind, **kw: f"skills for kind={kind!r}: ...",
+    )
+    out = runtime_with_store.dispatch("search", {"kind": "memory", "q": "anything"})
+    assert "[error:" not in out
+    assert "skills for kind=" not in out
+
+
+def test_get_with_real_id_never_appends_kind_skill_footer(
+    runtime: PrecisRuntime, monkeypatch
+) -> None:
+    """A ``get()`` that names a real, non-empty ``id=`` must never pick
+    up the kind-skill footer — only the no-``id=`` landing surface does.
+    Kills the ``verb == "get" and ...`` → ``or`` survivor: under ``or``
+    this fires unconditionally for every ``get()``, id= or not."""
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills,
+        "kind_skill_hint",
+        lambda kind, **kw: f"skills for kind={kind!r}: ...",
+    )
+    out = runtime.dispatch("get", {"kind": "calc", "id": "2+3*4"})
+    assert "[error:" not in out
+    assert "skills for kind=" not in out
+
+
+# ── _maybe_append_kind_skill_footer at the method level (dispatch.py:1315) ──
+# The dispatch-level tests above cover the "hint is None" branch only via a
+# substring absence check, which a `is` → `is not` mutant on the early
+# return would survive (the mutant appends "\n\nNone" to the body instead
+# of the real hint text — no "skills for kind=" substring either way).
+# These pin the exact body shape on both branches.
+
+
+def test_footer_leaves_body_untouched_when_hint_is_none(monkeypatch) -> None:
+    from precis.response import Response
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(kind_skills, "kind_skill_hint", lambda kind, **kw: None)
+    response = Response(body="original body")
+    out = PrecisRuntime._maybe_append_kind_skill_footer(
+        object.__new__(PrecisRuntime), response, "memory"
+    )
+    # Not just "no hint text" — the body must be byte-for-byte unchanged.
+    # A `is` → `is not` mutant instead appends "\n\nNone".
+    assert out.body == "original body"
+
+
+def test_footer_appends_hint_when_present(monkeypatch) -> None:
+    from precis.response import Response
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(kind_skills, "kind_skill_hint", lambda kind, **kw: "SENTINEL")
+    response = Response(body="original body")
+    out = PrecisRuntime._maybe_append_kind_skill_footer(
+        object.__new__(PrecisRuntime), response, "memory"
+    )
+    assert out.body == "original body\n\nSENTINEL"
+
+
+# ── _is_id_empty (dispatch.py:1292-1293) ─────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "id_val, expected",
+    [
+        (None, True),
+        ("", True),
+        ("  ", True),
+        ("/", True),
+        ("abc", False),
+        (5, False),
+    ],
+    ids=["none", "empty-str", "whitespace-str", "slash", "real-id", "non-str-int"],
+)
+def test_is_id_empty(id_val: object, expected: bool) -> None:
+
+    assert PrecisRuntime._is_id_empty(id_val) is expected
 
 
 def test_search_without_kind_in_stateless_runtime_errors_with_hint(

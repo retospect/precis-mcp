@@ -220,3 +220,83 @@ def test_kind_skills_hint_degrades_silently_on_graph_failure(
     monkeypatch.setattr(kind_skills, "kind_skill_hint", _boom)
     err = BadInput("bad payload")
     assert _kind_skills_hint(err, "se") is None
+
+
+# ── dedup against pre-existing err.next (dispatch.py:1292-1293 mirror,
+# hints.py:210/213) ────────────────────────────────────────────────────
+
+
+def test_kind_skills_hint_added_alongside_existing_str_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``err.next`` already a string that does NOT contain the hint —
+    the hint is appended as a second list entry, not dropped. Kills the
+    ``hint not in existing`` → ``hint in existing`` survivor at line 210:
+    inverted, a genuinely new hint would be silently swallowed."""
+    from precis.errors import BadInput
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills, "kind_skill_hint", lambda kind, **kw: "skills for kind='se': ..."
+    )
+    err = BadInput("bad payload")
+    err.next = "some other recovery pointer"
+    result = _kind_skills_hint(err, "se")
+    assert result == ["some other recovery pointer", "skills for kind='se': ..."]
+
+
+def test_kind_skills_hint_not_duplicated_against_existing_str_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``err.next`` already a string that already contains the hint —
+    left untouched, no duplicate. Kills the ``hint not in existing`` →
+    ``hint in existing`` survivor at line 210: inverted, an already-
+    present hint would get re-appended into a list."""
+    from precis.errors import BadInput
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills, "kind_skill_hint", lambda kind, **kw: "skills for kind='se': ..."
+    )
+    err = BadInput("bad payload")
+    err.next = "skills for kind='se': ..."
+    result = _kind_skills_hint(err, "se")
+    assert result == "skills for kind='se': ..."
+
+
+def test_kind_skills_hint_added_alongside_existing_list_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``err.next`` already a list without the hint — the hint is
+    appended. Kills the ``hint not in existing`` → ``hint in existing``
+    survivor at line 213: inverted, a genuinely new hint would be
+    silently swallowed."""
+    from precis.errors import BadInput
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills, "kind_skill_hint", lambda kind, **kw: "skills for kind='se': ..."
+    )
+    err = BadInput("bad payload")
+    err.next = ["some other recovery pointer"]
+    result = _kind_skills_hint(err, "se")
+    assert result == ["some other recovery pointer", "skills for kind='se': ..."]
+
+
+def test_kind_skills_hint_not_duplicated_against_existing_list_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``err.next`` already a list that already contains the hint —
+    left untouched, no duplicate. Kills the ``hint not in existing`` →
+    ``hint in existing`` survivor at line 213: inverted, an already-
+    present hint would get re-appended."""
+    from precis.errors import BadInput
+    from precis.skill_index import kind_skills
+
+    monkeypatch.setattr(
+        kind_skills, "kind_skill_hint", lambda kind, **kw: "skills for kind='se': ..."
+    )
+    err = BadInput("bad payload")
+    err.next = ["skills for kind='se': ..."]
+    result = _kind_skills_hint(err, "se")
+    assert result == ["skills for kind='se': ..."]

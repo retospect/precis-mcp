@@ -126,8 +126,7 @@ _VERB_REDIRECTS: dict[tuple[str, str], str] = {
     # (GripeHandler.put), so name that directly rather than a generic
     # "try get(kind=...)".
     ("gripe", "edit"): (
-        "gripe has no edit(); append a comment with "
-        "put(kind='gripe', id=N, text='...')"
+        "gripe has no edit(); append a comment with put(kind='gripe', id=N, text='...')"
     ),
 }
 
