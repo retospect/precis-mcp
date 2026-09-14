@@ -26,7 +26,8 @@ remarkable_container_cmd: "{{ precis_worker_agent_container_bin | default('/opt/
 # The image's base + the pinned ddvk/rmapi release (keep in sync with the FROM
 # and ARG in docker/remarkable/Dockerfile).
 remarkable_base_image: "debian:bookworm-slim"
-remarkable_rmapi_version: "v0.0.34"
+# v0.0.35+: v0.0.34 gets HTTP 400 on mkdir/put (docs/backlog/remarkable-pairing.md).
+remarkable_rmapi_version: "v0.0.35"
 
 # The worker runs as this user; it owns the colima docker socket.
 remarkable_worker_user: deploy
@@ -38,5 +39,6 @@ remarkable_build_image: true
 
 # The build context (docker/remarkable) on the ansible controller, copied to
 # the node under the worker user's home (colima shares $HOME into the VM).
-remarkable_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-mcp/docker/remarkable"
+# Resolved from the playbook's own checkout — deploy/playbooks/ → repo root.
+remarkable_src_dir: "{{ playbook_dir }}/../../docker/remarkable"
 remarkable_build_dir: "/Users/{{ remarkable_worker_user }}/.cache/precis-remarkable-build"

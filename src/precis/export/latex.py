@@ -144,6 +144,29 @@ _HTML_SUP = re.compile(r"<sup>(.+?)</sup>")
 _MATH = re.compile(r"\$\$.+?\$\$|\$[^$]+\$", re.DOTALL)
 
 
+def _math_braces_balanced(span: str) -> bool:
+    """True when a math span's unescaped ``{``/``}`` balance. Corpus text
+    can carry garbled PDF-extracted math (e.g. seven ``\\sqrt{`` closed six
+    times); passed through verbatim inside a ``\\footnote{…}`` the stray
+    brace swallows the rest of the document ("Runaway argument … File ended
+    while scanning \\@footnotetext") and kills the whole compile. Such a
+    span is escaped as literal prose instead."""
+    depth = 0
+    escaped = False
+    for ch in span:
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
 # ── shared draft-text normalisation (both exporters) ──────────────────
 # Drafts may carry verbatim LaTeX a precis author wouldn't write — most
 # often when an LLM drafts in LaTeX rather than precis markup. These two
@@ -438,7 +461,14 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
         return f"\x00{len(stash) - 1}\x00"
 
     # 1. Math verbatim (keeps _ ^ \ and unicode intact for KaTeX/LaTeX).
-    s = _MATH.sub(lambda m: _stash(m.group(0)), text)
+    #    Brace-unbalanced spans fall through to step 4's escaping — literal
+    #    text beats a runaway argument (see _math_braces_balanced).
+    s = _MATH.sub(
+        lambda m: (
+            _stash(m.group(0)) if _math_braces_balanced(m.group(0)) else m.group(0)
+        ),
+        text,
+    )
     # 2. Inline code → \texttt with its content escaped.
     s = _MD_CODE.sub(lambda m: _stash(f"\\texttt{{{_latex_escape(m.group(1))}}}"), s)
     # 3. sub/sup BEFORE escaping (the angle brackets must not be escaped).

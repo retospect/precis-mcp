@@ -1361,7 +1361,9 @@ def run_llm_summarize_pass(
                     client, claim, messages
                 )
                 if retry_summary is not None:
-                    return _Outcome(claim, prompt_hash, retry_summary, retry_tokens, None)
+                    return _Outcome(
+                        claim, prompt_hash, retry_summary, retry_tokens, None
+                    )
                 fallback = _fallback_summary(claim.text)
                 log.warning(
                     "llm_summarize: chunk_id=%s output contract failed twice; "

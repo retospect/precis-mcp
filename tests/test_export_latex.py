@@ -132,6 +132,22 @@ def test_bold_code_sub_sup() -> None:
     assert r"\textsubscript{2}" in out and r"\textsuperscript{-1}" in out
 
 
+def test_unbalanced_math_escaped_not_passed_through() -> None:
+    # Garbled PDF-extracted math (seven \sqrt{ closed six times, prod chunk
+    # 194080) must NOT pass through verbatim — inside a \footnote{…} the
+    # stray brace swallows the rest of the document and kills the compile.
+    garbled = r"ratios $q_x/q_1 = \sqrt{1:\sqrt{2:\sqrt{3:\sqrt{4}}}$ here"
+    out, _ = _inline(garbled)
+    assert "\\sqrt{" not in out  # not passed through verbatim
+    assert "$" not in out.replace(r"\$", "")  # no live math delimiter survived
+    # grouping braces balance once escaped \{ \} glyphs are set aside
+    stripped = out.replace(r"\{", "").replace(r"\}", "")
+    assert stripped.count("{") == stripped.count("}")
+    # balanced math in the same run still passes through untouched
+    out2, _ = _inline(r"fine $\sqrt{2}$ and $x_{1}$")
+    assert r"$\sqrt{2}$" in out2 and "$x_{1}$" in out2
+
+
 def test_math_inside_inline_code_restores_no_nul_placeholder() -> None:
     # Math stashed in step 1 lands INSIDE the later-stashed \texttt span; the
     # restore must run until no \x00i\x00 placeholder remains — a leftover is

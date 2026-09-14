@@ -42,9 +42,16 @@
         mode: preserve
 
     - name: Ensure the base image is present (pull only if missing)
+      # mirror.gcr.io fallback: Docker Hub from colima intermittently blackholes
+      # (TLS handshake timeout — gr307314's outage modes; playbook 33 carries
+      # the same fallback). A Hub-official image gains the implicit library/
+      # prefix on the mirror; the tag restores the canonical name the build's
+      # FROM expects.
       ansible.builtin.shell: >-
         {{ remarkable_container_cmd }} image inspect {{ remarkable_base_image }} >/dev/null 2>&1
         || {{ remarkable_container_cmd }} pull {{ remarkable_base_image }}
+        || { {{ remarkable_container_cmd }} pull mirror.gcr.io/library/{{ remarkable_base_image }}
+        && {{ remarkable_container_cmd }} tag mirror.gcr.io/library/{{ remarkable_base_image }} {{ remarkable_base_image }}; }
       register: remarkable_basepull
       retries: 5
       delay: 15

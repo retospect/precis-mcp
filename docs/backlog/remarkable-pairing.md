@@ -14,14 +14,14 @@ that credential wins over the deployment-wide one. This item stays open
 for the global/deployment device + the container-image rollout above,
 which individual pairing doesn't replace.
 
-**rmapi version constraint** (verified 2026-08-31): v0.0.34 (currently
-pinned in deploy/roles/remarkable/docker/remarkable/Dockerfile) fails with
+**rmapi version constraint** (verified 2026-08-31): v0.0.34 fails with
 HTTP 400 from the reMarkable cloud on `mkdir` and `put` (auth and `ls` work).
-v0.0.35+ fixes all verbs. The container-image and binary rollout to worker
-hosts must pin v0.0.35 or later. Related prod failure: remarkable_papers_send
-and remarkable_reading_send jobs on melchior failed with "rmapi binary not
-installed" (jobs 273957/273958/274777, 2026-08-30/31); when the worker-host
-binary rollout lands, it must use v0.0.35+.
+v0.0.35+ fixes all verbs. DONE 2026-09-14: Dockerfile + role defaults pin
+v0.0.35 (the x86 asset name also changed to `rmapi-linux-amd64.tar.gz`), the
+`remarkable_send` capability (melchior) is in the overlay topology,
+`PRECIS_REMARKABLE_IMAGE` rides `precis_shared_env`, and the image is built
+via playbook 47 (base pull carries the gr307314 mirror.gcr.io fallback).
+What remains open here is the token-exchange pacing below.
 
 **Token-exchange rate limit — send_pdf discards the cached user token**
 (observed 2026-08-31, local 94-paper push with a real credential):

@@ -17,12 +17,14 @@
 #   out: /work/out/result.json    {"ok","returncode","output","name","folder"}
 #
 # Build:  docker build -t precis-remarkable:<sha> \
-#           --build-arg RMAPI_VERSION=v0.0.34 docker/remarkable
+#           --build-arg RMAPI_VERSION=v0.0.35 docker/remarkable
 # Run  :  see precis.export.remarkable.send_via_container (the driver composes
 #         the argv + stages in/out).
 FROM debian:bookworm-slim
 
-ARG RMAPI_VERSION=v0.0.34
+# v0.0.35+: v0.0.34 gets HTTP 400 from the reMarkable cloud on mkdir/put
+# (docs/backlog/remarkable-pairing.md, verified 2026-08-31).
+ARG RMAPI_VERSION=v0.0.35
 
 # ca-certificates: rmapi's TLS to the reMarkable cloud; tini: reap the child;
 # curl: fetch the release binary at build time; python3(-stdlib): the
@@ -40,7 +42,7 @@ RUN set -eux; \
     arch="$(uname -m)"; \
     case "$arch" in \
       aarch64|arm64) asset="rmapi-linux-arm64.tar.gz" ;; \
-      x86_64|amd64)  asset="rmapi-linuxx86-64.tar.gz" ;; \
+      x86_64|amd64)  asset="rmapi-linux-amd64.tar.gz" ;; \
       *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
     curl -fsSL --connect-timeout 30 --retry 5 --retry-delay 5 --retry-connrefused \
