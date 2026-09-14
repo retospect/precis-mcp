@@ -56,8 +56,11 @@ def _seed_degree_block(store: Store, *, name: str, pose_rot: list[float]) -> int
         assert ref_row is not None
         ref_id = int(ref_row[0])
         block_row = c.execute(
-            "INSERT INTO se_blocks (ref_id, name, pose_xyz, pose_rot) "
-            "VALUES (%s, %s, '{0,0,0}', %s) RETURNING id",
+            # ``uid`` is NOT NULL since 0009 (the identity cutover) — a
+            # hand-seeded row mints one the same way persist does.
+            "INSERT INTO se_blocks (ref_id, uid, name, pose_xyz, pose_rot) "
+            "VALUES (%s, nextval('design_block_uid_seq'), %s, '{0,0,0}', %s) "
+            "RETURNING id",
             (ref_id, name, pose_rot),
         ).fetchone()
         assert block_row is not None
@@ -105,7 +108,8 @@ def test_pose_rot_rewrite_preserves_default_zero_pose(store: Store) -> None:
         assert ref_row is not None
         ref_id = int(ref_row[0])
         block_row = c.execute(
-            "INSERT INTO se_blocks (ref_id, name) VALUES (%s, 'body') RETURNING id",
+            "INSERT INTO se_blocks (ref_id, uid, name) "
+            "VALUES (%s, nextval('design_block_uid_seq'), 'body') RETURNING id",
             (ref_id,),
         ).fetchone()
         assert block_row is not None

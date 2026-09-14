@@ -198,6 +198,7 @@ from precis_se.atomic.vocab import (
     vet_dof_shape,
 )
 from precis_se.bom import BomError, BomLine, vet_bom_fields
+from precis_se.identity import resolve_block
 from precis_se.measures import (
     ORIGINS,
     UNITS,
@@ -304,6 +305,15 @@ class SeBlock(BlockNode):
     # leaves se as the one domain with its own port fields), so this is the
     # narrowest fix available without widening that core class.
     ports: dict[str, PortSpec] = field(default_factory=dict)  # type: ignore[assignment]
+    #: Stable identity (``se_blocks.uid``, migration ``0009_se_block_uid``,
+    #: minted from core's ``design_block_uid_seq`` —
+    #: docs/backlog/design-state-core.md item 2). ``None`` on a block this
+    #: session just added: :func:`precis_se.persist.save_tree` mints it (or
+    #: adopts the live row's, when the label matches) and stamps it back
+    #: here, so a saved tree always carries one. Ops never set it —
+    #: ``name`` remains the key the in-memory tree is addressed by, now as
+    #: a display *label*, and the uid is what survives the save.
+    uid: int | None = None
     array: dict[str, Any] | None = None
     #: loads on the block — the registered objectives vocabulary
     #: (:func:`precis_se.joints.validate_objectives`), real units.
@@ -363,6 +373,24 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
 
+    def resolve_key(self, token: Any) -> str | None:
+        """se's identity rule, wired into every op at once: a block token
+        is a uid (``'#41'``, ``'uid:41'``, ``41``) or a label
+        (:func:`precis_se.identity.resolve_block`), and what comes back is
+        the key it lives under in :attr:`blocks`. Raises
+        :class:`~precis_se.identity.AmbiguousLabel` — an :class:`OpError`
+        — when two blocks answer to one label, listing both uids rather
+        than picking one."""
+        node = resolve_block(self, token)
+        if node is None:
+            return None
+        label = str(node.name)
+        if self.blocks.get(label) is node:
+            return label
+        # A tree whose keys and names diverged (a paste, a branch merge):
+        # identity is the NODE, so hand back the key actually holding it.
+        return next((k for k, v in self.blocks.items() if v is node), None)
+
 
 def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
     """Apply a list of typed ops to ``tree`` in order, mutating it —
@@ -383,6 +411,16 @@ _no_block_msg = blocktree._no_block_msg
 _validate_envelope = blocktree._validate_envelope
 _descendants = blocktree._descendants
 _split_endpoint = blocktree._split_endpoint
+#: "Which block did the caller mean" — the core helpers that run a block
+#: token through :meth:`SeTree.resolve_key`, so every se op that addresses
+#: an existing block takes a uid (``'#41'``) as readily as a label
+#: (docs/backlog/design-state-core.md item 2, "ops accept uid always").
+#: ``_require_block`` = require the op key + resolve; ``_block_key`` =
+#: resolve a bare token; ``_block_key_or_raw`` = the lenient form for ops
+#: that MATCH a stored row rather than address a block.
+_require_block = blocktree._require_block
+_block_key = blocktree._block_key
+_block_key_or_raw = blocktree._block_key_or_raw
 _connects_endpoint_pair = blocktree._connects_endpoint_pair
 _instance_shared = blocktree._instance_shared
 _commit_instance = blocktree._commit_instance
@@ -459,6 +497,12 @@ def effective_dof(tree: SeTree, node: SeBlock) -> dict[str, Any] | None:
     return node.dof
 
 
+#: se's catalog-aware :func:`effective_ports` in the shape the core's
+#: endpoint resolvers take it — the dict-invariance cast
+#: :func:`_resolve_connect_port` documents, named once.
+_PORTS_FN = cast("Callable[[Any, Any], dict[str, Port]]", effective_ports)
+
+
 def _resolve_connect_port(
     tree: SeTree, block_name: str, port_name: str, *, what: str
 ) -> PortSpec:
@@ -475,9 +519,32 @@ def _resolve_connect_port(
             block_name,
             port_name,
             what=what,
-            ports_fn=cast("Callable[[Any, Any], dict[str, Port]]", effective_ports),
+            ports_fn=_PORTS_FN,
         ),
     )
+
+
+def _resolve_endpoint(
+    tree: SeTree, raw: Any, *, what: str, side: str
+) -> tuple[str, str, PortSpec]:
+    """A whole ``'block.port'`` endpoint → ``(block label, port name,
+    port)`` through se's own ports (the core's :func:`~precis.blocktree.
+    ops._resolve_endpoint`): the block half is an ordinary block token, so
+    ``'#41.bore'`` addresses uid 41's port, and what comes back — and gets
+    stored on the connect — is that block's current LABEL."""
+    block, port_name, port = blocktree._resolve_endpoint(
+        tree, raw, what=what, side=side, ports_fn=_PORTS_FN
+    )
+    return block, port_name, cast("PortSpec", port)
+
+
+def _match_endpoint(tree: SeTree, raw: Any, *, what: str, side: str) -> tuple[str, str]:
+    """:func:`_resolve_endpoint`'s lenient sibling for the ops that look up
+    an existing connect by endpoint pair — the core's
+    :func:`~precis.blocktree.ops._match_endpoint`: resolve the block half
+    when something answers to it, else leave the text alone so the
+    caller's "no such connect; here's what IS live" message survives."""
+    return blocktree._match_endpoint(tree, raw, what=what, side=side)
 
 
 # ── op implementations ───────────────────────────────────────────────────
@@ -612,10 +679,8 @@ def _op_array_block(tree: SeTree, op: dict[str, Any]) -> None:
 
 
 def _op_set_envelope(tree: SeTree, op: dict[str, Any]) -> None:
-    name = _require_name(op, "block", "set_envelope")
-    node = tree.blocks.get(name)
-    if node is None:
-        raise OpError(_no_block_msg(tree, name, what="block"))
+    name = _require_block(tree, op, "block", "set_envelope")
+    node = tree.blocks[name]
     if node.template is not None:
         raise OpError(
             f"block {name!r} is an instance (of {node.template!r}) — the "
@@ -659,16 +724,18 @@ def _op_set_pose(tree: SeTree, op: dict[str, Any]) -> None:
     """The core ``set_pose`` plus the facet-origin stamp (an instance's
     pose is its own, so the stamp lands on the posed node itself)."""
     blocktree.op_set_pose(tree, op)
-    node = tree.blocks[str(op["block"]).strip()]
+    node = tree.blocks[_require_block(tree, op, "block", "set_pose")]
     _stamp_origin(node, op, facet="pose", opname="set_pose")
 
 
 def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
     name = _require_name(op, "block", "remove_block")
-    # Computed before delegating to the core op (which raises if ``name``
-    # doesn't exist or is used as a template — atomically, before any
-    # mutation) so the measures/BOM cascade below acts on exactly the
-    # subtree the core just removed.
+    # Resolved leniently: a token naming nothing is the core op's error to
+    # raise (below), with its roster of what IS there. Computed before
+    # delegating (the core op raises for an unknown block or one used as a
+    # template — atomically, before any mutation) so the measures/BOM
+    # cascade acts on exactly the subtree the core just removed.
+    name = _block_key_or_raw(tree, name)
     subtree = (_descendants(tree, name) | {name}) if name in tree.blocks else set()
     blocktree.op_remove_block(tree, op)
     # Measures owned by a removed block go with it (same vacancy rule). A
@@ -704,7 +771,7 @@ def _op_add_port(tree: SeTree, op: dict[str, Any]) -> None:
     slot as the richer spec, so there is one add_port grammar for an agent
     to learn whatever mode the block is in."""
     blocktree.op_add_port(tree, op)
-    node = tree.blocks[str(op["block"]).strip()]
+    node = tree.blocks[_require_block(tree, op, "block", "add_port")]
     name = str(op["name"]).strip()
     base = node.ports[name]
     node.ports[name] = PortSpec(
@@ -725,7 +792,7 @@ def _op_remove_port(tree: SeTree, op: dict[str, Any]) -> None:
     ``clear_dof`` as the fix. Checked *before* delegating, since the core
     op deletes the port as its last act and the dof reference has to be
     read while it still exists."""
-    block = _require_name(op, "block", "remove_port")
+    block = _block_key_or_raw(tree, _require_name(op, "block", "remove_port"))
     name = _require_name(op, "name", "remove_port")
     node = tree.blocks.get(block)
     if node is not None and name in node.ports and node.dof:
@@ -741,15 +808,19 @@ def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise OpError("connect needs 'a' and 'b' (each 'block.port')")
-    a_block, a_port = _split_endpoint(a_raw, "connect 'a'")
-    b_block, b_port = _split_endpoint(b_raw, "connect 'b'")
-    if (a_block, a_port) == (b_block, b_port):
+    # Shape first (both endpoints are 'block.port', and not the same one
+    # twice) — the token-level rejections, before anything is looked up.
+    if _split_endpoint(a_raw, "connect 'a'") == _split_endpoint(b_raw, "connect 'b'"):
         raise OpError(f"connect: cannot connect {a_raw!r} to itself")
     joint = _vet_joint(op.get("joint"), opname="connect")
     kind = _vet_connect_kind(op.get("kind"), joint=joint)
     objectives = _vet_objectives(op.get("objectives"), opname="connect", edge=True)
-    a_spec = _resolve_connect_port(tree, a_block, a_port, what="connect")
-    b_spec = _resolve_connect_port(tree, b_block, b_port, what="connect")
+    a_block, a_port, a_spec = _resolve_endpoint(tree, a_raw, what="connect", side="'a'")
+    b_block, b_port, b_spec = _resolve_endpoint(tree, b_raw, what="connect", side="'b'")
+    if (a_block, a_port) == (b_block, b_port):
+        # Reachable a second way once uids resolve: '#41.bore' and
+        # 'wheel.bore' are the same endpoint written two ways.
+        raise OpError(f"connect: cannot connect {a_raw!r} to itself")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
     for c in tree.connects:
         if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:
@@ -803,8 +874,8 @@ def _op_disconnect(tree: SeTree, op: dict[str, Any]) -> None:
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise OpError("disconnect needs 'a' and 'b' (each 'block.port')")
-    a_block, a_port = _split_endpoint(a_raw, "disconnect 'a'")
-    b_block, b_port = _split_endpoint(b_raw, "disconnect 'b'")
+    a_block, a_port = _match_endpoint(tree, a_raw, what="disconnect", side="'a'")
+    b_block, b_port = _match_endpoint(tree, b_raw, what="disconnect", side="'b'")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
     blocktree.op_disconnect(tree, op)
     # BOM lines hung off this connect go with it (same vacancy rule as
@@ -865,8 +936,8 @@ def _find_connect(tree: SeTree, op: dict[str, Any], *, opname: str) -> ConnectSp
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise OpError(f"{opname} needs 'a' and 'b' (each 'block.port')")
-    a_block, a_port = _split_endpoint(a_raw, f"{opname} 'a'")
-    b_block, b_port = _split_endpoint(b_raw, f"{opname} 'b'")
+    a_block, a_port = _match_endpoint(tree, a_raw, what=opname, side="'a'")
+    b_block, b_port = _match_endpoint(tree, b_raw, what=opname, side="'b'")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
     for c in tree.connects:
         if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:
@@ -942,11 +1013,9 @@ def _op_set_load(tree: SeTree, op: dict[str, Any]) -> None:
         vetted = _vet_objectives(given, opname="set_load", edge=not has_block)
         objectives = vetted or {}
     if has_block:
-        name = _require_name(op, "block", "set_load")
-        node = tree.blocks.get(name)
-        if node is None:
-            raise OpError(_no_block_msg(tree, name, what="block"))
-        node.objectives = objectives
+        tree.blocks[
+            _require_block(tree, op, "block", "set_load")
+        ].objectives = objectives
     else:
         c = _find_connect(tree, op, opname="set_load")
         c.objectives = objectives
@@ -963,10 +1032,8 @@ def _measure_shared(
     the template — an instance's measures resolve through it); the measure
     name may not contain ``'.'`` (the ``'block.measure'`` relation-source
     syntax reserves it)."""
-    block = _require_name(op, "block", opname)
-    node = tree.blocks.get(block)
-    if node is None:
-        raise OpError(_no_block_msg(tree, block, what="block"))
+    block = _require_block(tree, op, "block", opname)
+    node = tree.blocks[block]
     if node.template is not None:
         raise OpError(
             f"block {block!r} is an instance (of {node.template!r}) — "
@@ -1187,13 +1254,12 @@ def _op_remove_measure(tree: SeTree, op: dict[str, Any]) -> None:
 
 
 def _template_owned(tree: SeTree, name: str, *, opname: str, what: str) -> SeBlock:
-    """Resolve ``name`` to an *ordinary* block, rejecting an instance/array
-    node — realization facets (envelope, mode, binding) live on the
-    template and resolve from it at read time, so setting one on an
-    instance would be a silently ignored write."""
-    node = tree.blocks.get(name)
-    if node is None:
-        raise OpError(_no_block_msg(tree, name, what="block"))
+    """Resolve ``name`` — a block token, label or uid — to an *ordinary*
+    block, rejecting an instance/array node: realization facets (envelope,
+    mode, binding) live on the template and resolve from it at read time,
+    so setting one on an instance would be a silently ignored write."""
+    name = _block_key(tree, name, what="block")
+    node = tree.blocks[name]
     if node.template is not None:
         raise OpError(
             f"block {name!r} is an instance (of {node.template!r}) — the "
@@ -1285,9 +1351,7 @@ def _bom_target(tree: SeTree, op: dict[str, Any], *, opname: str) -> BomLine:
             "(a= and b=, each 'block.port')"
         )
     if has_block:
-        name = _require_name(op, "block", opname)
-        if name not in tree.blocks:
-            raise OpError(_no_block_msg(tree, name, what="block"))
+        name = _require_block(tree, op, "block", opname)
         return BomLine(item_kind="component", item="", block=name)
     c = _find_connect(tree, op, opname=opname)
     return BomLine(
@@ -1473,14 +1537,10 @@ def _op_declare_threading(tree: SeTree, op: dict[str, Any]) -> None:
     """Declare that block ``a`` is threaded through block ``b`` (a
     macrocycle on an axle) — the L2 mechanical-interlocking fact, stored,
     never re-derived from coordinates."""
-    a = _require_name(op, "a", "declare_threading")
-    b = _require_name(op, "b", "declare_threading")
+    a = _require_block(tree, op, "a", "declare_threading", what="a")
+    b = _require_block(tree, op, "b", "declare_threading", what="b")
     if a == b:
         raise OpError(f"declare_threading: 'a' and 'b' must differ, got {a!r} twice")
-    if a not in tree.blocks:
-        raise OpError(_no_block_msg(tree, a, what="a"))
-    if b not in tree.blocks:
-        raise OpError(_no_block_msg(tree, b, what="b"))
     for t in tree.threading:
         if t.a == a and t.b == b:
             raise OpError(
@@ -1500,8 +1560,11 @@ def _op_declare_threading(tree: SeTree, op: dict[str, Any]) -> None:
 
 
 def _op_remove_threading(tree: SeTree, op: dict[str, Any]) -> None:
-    a = _require_name(op, "a", "remove_threading")
-    b = _require_name(op, "b", "remove_threading")
+    # Lenient: threading may legitimately dangle (its block was removed by
+    # hand-corrupted data — DRC's ``dangling_threading``), so a token that
+    # resolves to nothing still gets to match a stored row by its text.
+    a = _block_key_or_raw(tree, _require_name(op, "a", "remove_threading"))
+    b = _block_key_or_raw(tree, _require_name(op, "b", "remove_threading"))
     for i, t in enumerate(tree.threading):
         if t.a == a and t.b == b:
             del tree.threading[i]
@@ -1522,7 +1585,7 @@ def _op_declare_dof(tree: SeTree, op: dict[str, Any]) -> None:
     # (gripe 334765's reported states=/driver=), never a silent drop.
     payload = {k: v for k, v in op.items() if k not in ("op", "block")}
     dof = vet_dof_shape(payload, what="declare_dof")
-    check_dof_axis_ports(node, dof, block, what="declare_dof")
+    check_dof_axis_ports(node, dof, node.name, what="declare_dof")
     node.dof = dof
 
 

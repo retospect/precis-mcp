@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from precis.blocktree.types import OpError
 from precis.errors import BadInput, NotFound
 from precis_se.atomic.validate import envelope_fit
 from precis_se.ops import SeTree, effective_envelope
@@ -41,6 +42,25 @@ def _block_not_found(tree: SeTree, name: str) -> str:
     module doesn't import the handler it is called from."""
     roster = ", ".join(sorted(tree.blocks)) or "(none)"
     return f"no such block: {name!r}. Blocks in this design: {roster}"
+
+
+def _block_named(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[str, Any]:
+    """``op['block']`` → ``(label, node)``. These two ops are dispatched by
+    the HANDLER (they need the store), not by ``apply_ops``, so they
+    resolve the block token themselves rather than through the ops layer —
+    but by the same rule, uid included (:meth:`precis_se.ops.SeTree.
+    resolve_key`), and reporting in this layer's error vocabulary."""
+    block = op.get("block")
+    if not block or not str(block).strip():
+        raise BadInput(f"{opname} needs 'block'")
+    token = str(block).strip()
+    try:
+        key = tree.resolve_key(token)
+    except OpError as exc:  # an ambiguous label, with its uid list
+        raise BadInput(str(exc)) from exc
+    if key is None:
+        raise NotFound(_block_not_found(tree, token))
+    return key, tree.blocks[key]
 
 
 def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
@@ -79,13 +99,7 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     protrusion only appends a warning line to the returned echo, and the
     same check runs again, every future read, as ``view='validate'``'s
     ``envelope_fit`` warn-tier finding."""
-    block = op.get("block")
-    if not block or not str(block).strip():
-        raise BadInput("bind_structure needs 'block'")
-    block_name = str(block).strip()
-    node = tree.blocks.get(block_name)
-    if node is None:
-        raise NotFound(_block_not_found(tree, block_name))
+    block_name, node = _block_named(tree, op, opname="bind_structure")
     if node.template is not None:
         raise BadInput(
             f"block {block_name!r} is an instance (of {node.template!r}) "
@@ -191,13 +205,7 @@ def unbind_structure(tree: SeTree, op: dict[str, Any]) -> str:
     something that isn't chemistry: ``set_binding`` is the op for those,
     and silently clearing a ``component`` binding through the atomic verb
     would be a surprising write."""
-    block = op.get("block")
-    if not block or not str(block).strip():
-        raise BadInput("unbind_structure needs 'block'")
-    block_name = str(block).strip()
-    node = tree.blocks.get(block_name)
-    if node is None:
-        raise NotFound(_block_not_found(tree, block_name))
+    block_name, node = _block_named(tree, op, opname="unbind_structure")
     if node.bound_kind is not None and node.bound_kind != "structure":
         raise BadInput(
             f"block {block_name!r} is bound to a {node.bound_kind!r}, not a "

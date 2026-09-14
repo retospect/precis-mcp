@@ -185,20 +185,23 @@ _ADAPTERS: dict[str, _Adapter] = {
     ),
 }
 
-#: One SQL statement per kind's own block table — DB-minted ids, keyed by
-#: name, for the 3D route's leaf-id/mermaid-node-id scheme (module
-#: docstring; :mod:`precis_web.blocktree_3d`'s "no lookup table" pick
-#: convention still needs THIS one server-side mapping once per render,
-#: since ``Tree.blocks`` itself is keyed by name, never a row id — see
-#: ``precis.blocktree.types.BlockNode``'s own docstring).
-_ID_SQL = {
-    "se": "SELECT id, name FROM se_blocks WHERE ref_id = %s AND retired_at IS NULL",
+#: One SQL statement per kind's own block table — the blocks' stable
+#: ``uid``s, keyed by name, for the 3D route's leaf-id/mermaid-node-id
+#: scheme (module docstring; :mod:`precis_web.blocktree_3d`'s "no lookup
+#: table" pick convention still needs THIS one server-side mapping once
+#: per render, since ``Tree.blocks`` itself is keyed by name — see
+#: ``precis.blocktree.types.BlockNode``'s own docstring). The uid, not
+#: ``se_blocks.id``: a row id is rebuilt by every save, so a viewer path
+#: built from one would churn under an unrelated edit
+#: (docs/backlog/design-state-core.md item 2).
+_UID_SQL = {
+    "se": "SELECT uid, name FROM se_blocks WHERE ref_id = %s AND retired_at IS NULL",
 }
 
 
-def _id_by_name(store: Store, kind: str, ref_id: int) -> dict[str, int]:
+def _uid_by_name(store: Store, kind: str, ref_id: int) -> dict[str, int]:
     with store.pool.connection() as conn:
-        rows = conn.execute(_ID_SQL[kind], (ref_id,)).fetchall()
+        rows = conn.execute(_UID_SQL[kind], (ref_id,)).fetchall()
     return {r[1]: int(r[0]) for r in rows}
 
 
@@ -600,13 +603,13 @@ def _build_scene3d(
     )
     if plan is None:
         return None, err
-    id_by_name = _id_by_name(store, kind, ref_id)
+    uid_by_name = _uid_by_name(store, kind, ref_id)
     scene = build_scene(
         tree,
         adapter.effective_envelope,
         kids,
         plan,
-        id_by_name,
+        uid_by_name,
         # gr338445: the slug, not the numeric ref id — a viewer path like
         # ``/se-337761/_connections`` is opaque; ``/se-<slug>/_connections``
         # tells the reader what they're looking at.

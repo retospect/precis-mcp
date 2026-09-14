@@ -14,9 +14,14 @@ tree (``static/three-cad-viewer/``, ``Data Format.md`` upstream) — is a
 tree of ``group`` (has ``parts``) / ``leaf`` (has ``shape``) nodes
 addressed by a slash path. Per the spec's "DB-minted block ids as leaf
 names... a pick returns the id with no lookup table": every LEAF's path
-ends in the block's own DB row id (``se_blocks``/``nm_blocks``.``id`` —
-the caller passes ``id_by_name``, since that mapping needs a store round
-trip this module never makes). A block that has both its own geometry
+ends in the block's own stable ``uid`` (``se_blocks.uid`` — the caller
+passes ``uid_by_name``, since that mapping needs a store round trip this
+module never makes). The uid, not the row id: ``persist.save_tree``
+rebuilds every block ROW on every save, so a path built from row ids
+would change under an unrelated edit, while the uid is carried forward
+(docs/backlog/design-state-core.md item 2, "uids are the viewer path
+leaf names"). The ``name`` beside it stays the block's LABEL — the
+viewer shows that, and only the path is identity. A block that has both its own geometry
 AND visible children (a real assembly node, not just a container) can't
 be represented by one ``Shapes`` node (group XOR leaf) — it becomes a
 GROUP at ``.../<id>`` whose own shape lives one level deeper at
@@ -392,7 +397,7 @@ def build_shapes_node(
     effective_envelope: EffectiveEnvelopeFn,
     kids: dict[str, list[str]],
     plan: VisiblePlan,
-    id_by_name: dict[str, int],
+    uid_by_name: dict[str, int],
     name: str,
     path_prefix: str,
     assembly: Assembly3D,
@@ -400,7 +405,7 @@ def build_shapes_node(
     scale: float = 1.0,
 ) -> dict[str, Any] | None:
     """Recursively build the ``Shapes`` node for ``name`` (module
-    docstring: leaf id ends in the DB block id; a node with both its own
+    docstring: leaf id ends in the block's uid; a node with both its own
     geometry and visible children doubles its last segment). Records
     ``name``'s own primary path into ``assembly.primary_path`` as a side
     effect. Returns ``None`` when there is nothing to draw (bad/absent
@@ -430,11 +435,11 @@ def build_shapes_node(
     kind = plan.shown.get(name)
     if kind is None:
         return None
-    block_id = id_by_name.get(name)
-    if block_id is None:
+    block_uid = uid_by_name.get(name)
+    if block_uid is None:
         return None
     node = tree.blocks[name]
-    own_path = f"{path_prefix}/{block_id}"
+    own_path = f"{path_prefix}/{block_uid}"
 
     if kind == "box":
         pts: list[NDArray[np.float64]] = []
@@ -469,14 +474,14 @@ def build_shapes_node(
 
     parts: list[dict[str, Any]] = []
     if mesh is not None:
-        parts.append(_shape_leaf(f"{own_path}/{block_id}", name, mesh, _SHAPE_COLOUR))
+        parts.append(_shape_leaf(f"{own_path}/{block_uid}", name, mesh, _SHAPE_COLOUR))
     for k in visible_kids:
         child = build_shapes_node(
             tree,
             effective_envelope,
             kids,
             plan,
-            id_by_name,
+            uid_by_name,
             k,
             own_path,
             assembly,
@@ -944,7 +949,7 @@ def build_scene(
     effective_envelope: EffectiveEnvelopeFn,
     kids: dict[str, list[str]],
     plan: VisiblePlan,
-    id_by_name: dict[str, int],
+    uid_by_name: dict[str, int],
     *,
     root_id: str,
     root_name: str,
@@ -970,7 +975,7 @@ def build_scene(
             effective_envelope,
             kids,
             plan,
-            id_by_name,
+            uid_by_name,
             r,
             root_id,
             assembly,
@@ -1028,19 +1033,19 @@ def build_scene(
         "parts": parts,
     }
     offsets = explode_offsets(tree, lines, assembly.primary_path, magnitude=0.3 * diag)
-    mermaid = mermaid_topology(plan, id_by_name, lines, kids)
+    mermaid = mermaid_topology(plan, uid_by_name, lines, kids)
     return Scene3D(shapes=shapes, connections=lines, explode=offsets, mermaid=mermaid)
 
 
 def mermaid_topology(
     plan: VisiblePlan,
-    id_by_name: dict[str, int],
+    uid_by_name: dict[str, int],
     lines: list[ConnLine],
     kids: dict[str, list[str]],
 ) -> str:
     """``graph LR`` source for the visible blocks + their drawn connects,
     edges labelled by joint/bond kind (spec §5.8 comment 5(c)). Node ids
-    are ``B<block_id>`` — the SAME DB id the 3D leaf paths end in, so the
+    are ``B<block_uid>`` — the SAME uid the 3D leaf paths end in, so the
     client's mermaid<->3D selection link needs no separate lookup table
     either.
 
@@ -1057,11 +1062,11 @@ def mermaid_topology(
     lines_out = ["graph LR"]
 
     def emit(name: str, depth: int) -> None:
-        bid = id_by_name.get(name)
+        bid = uid_by_name.get(name)
         pad = "  " * depth
         shown_kids = [k for k in sorted(kids.get(name, [])) if k in shown]
         if bid is None:
-            # No DB id for the wrapper (mirrors the old per-node skip) —
+            # No uid for the wrapper (mirrors the old per-node skip) —
             # its shown children must still appear, one level up.
             for k in shown_kids:
                 emit(k, depth)
@@ -1079,8 +1084,8 @@ def mermaid_topology(
         if parent_of.get(name) not in shown:
             emit(name, 1)
     for conn in lines:
-        a_id = id_by_name.get(conn.a_name)
-        b_id = id_by_name.get(conn.b_name)
+        a_id = uid_by_name.get(conn.a_name)
+        b_id = uid_by_name.get(conn.b_name)
         if a_id is None or b_id is None:
             continue
         lines_out.append(f'  B{a_id} -- "{_mermaid_escape(conn.label)}" --- B{b_id}')

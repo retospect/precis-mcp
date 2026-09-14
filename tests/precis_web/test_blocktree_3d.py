@@ -63,7 +63,9 @@ def _fork_tree() -> Tree[BlockNode, Connect]:
     )
 
 
-_IDS = {"hub": 1, "rim": 2, "fork": 3, "fork_arm": 4, "fork_tip": 5}
+#: name -> stable block uid, the mapping the route reads off
+#: ``se_blocks.uid`` (never the row id — design-state-core.md item 2).
+_UIDS = {"hub": 1, "rim": 2, "fork": 3, "fork_arm": 4, "fork_tip": 5}
 
 
 # ── mesh geometry ────────────────────────────────────────────────────────
@@ -110,16 +112,16 @@ def test_shape_json_arrays_are_internally_consistent() -> None:
 # ── shapes tree construction ─────────────────────────────────────────────
 
 
-def test_build_shapes_node_leaf_path_ends_in_the_db_block_id() -> None:
+def test_build_shapes_node_leaf_path_ends_in_the_block_uid() -> None:
     tree = _fork_tree()
     kids = children_map(tree)
     plan = plan_visibility(tree, kids, level="refined", isolate=None)
     assembly = Assembly3D()
     node = build_shapes_node(
-        tree, _effective_envelope, kids, plan, _IDS, "hub", "/se-x", assembly
+        tree, _effective_envelope, kids, plan, _UIDS, "hub", "/se-x", assembly
     )
     assert node is not None
-    assert node["id"] == "/se-x/1"  # hub's own db id, no lookup table needed
+    assert node["id"] == "/se-x/1"  # hub's own uid, no lookup table needed
     assert node["type"] == "shapes" and node["subtype"] == "solid"
 
 
@@ -129,7 +131,7 @@ def test_build_shapes_node_doubles_id_when_a_block_has_geometry_and_children() -
     plan = plan_visibility(tree, kids, level="refined", isolate=None)
     assembly = Assembly3D()
     node = build_shapes_node(
-        tree, _effective_envelope, kids, plan, _IDS, "fork", "/se-x", assembly
+        tree, _effective_envelope, kids, plan, _UIDS, "fork", "/se-x", assembly
     )
     assert node is not None
     assert node["id"] == "/se-x/3"  # the group
@@ -149,7 +151,7 @@ def test_build_shapes_node_envelope_level_collapses_fork_to_a_box_leaf() -> None
     plan = plan_visibility(tree, kids, level="envelope", isolate=None)
     assembly = Assembly3D()
     node = build_shapes_node(
-        tree, _effective_envelope, kids, plan, _IDS, "fork", "/se-x", assembly
+        tree, _effective_envelope, kids, plan, _UIDS, "fork", "/se-x", assembly
     )
     assert node is not None
     assert node["id"] == "/se-x/3"
@@ -244,7 +246,7 @@ def test_connectivity_lines_resolves_through_a_collapsed_box() -> None:
     assembly = Assembly3D()
     for r in plan.render_roots:
         build_shapes_node(
-            tree, _effective_envelope, kids, plan, _IDS, r, "/se-x", assembly
+            tree, _effective_envelope, kids, plan, _UIDS, r, "/se-x", assembly
         )
     lines = connectivity_lines(
         tree, plan, assembly.primary_path, lambda c: "tie", lambda c: "#16a34a", "/g"
@@ -265,7 +267,7 @@ def test_connectivity_lines_dedupes_and_drops_self_loops() -> None:
     assembly = Assembly3D()
     for r in plan.render_roots:
         build_shapes_node(
-            tree, _effective_envelope, kids, plan, _IDS, r, "/se-x", assembly
+            tree, _effective_envelope, kids, plan, _UIDS, r, "/se-x", assembly
         )
     lines = connectivity_lines(
         tree, plan, assembly.primary_path, lambda c: "tie", lambda c: "#16a34a", "/g"
@@ -591,14 +593,14 @@ def test_connectivity_lines_witness_budget_caps_computations_per_scene(
     kids = children_map(tree)
     plan = plan_visibility(tree, kids, level="refined", isolate=None)
     assembly = Assembly3D()
-    id_by_name = {name: idx + 1 for idx, name in enumerate(sorted(blocks))}
+    uid_by_name = {name: idx + 1 for idx, name in enumerate(sorted(blocks))}
     for r in plan.render_roots:
         build_shapes_node(
             tree,
             _effective_envelope,
             kids,
             plan,
-            id_by_name,
+            uid_by_name,
             r,
             "/se-x",
             assembly,
@@ -625,7 +627,7 @@ def test_explode_offsets_pull_connected_blocks_apart() -> None:
     assembly = Assembly3D()
     for r in plan.render_roots:
         build_shapes_node(
-            tree, _effective_envelope, kids, plan, _IDS, r, "/se-x", assembly
+            tree, _effective_envelope, kids, plan, _UIDS, r, "/se-x", assembly
         )
     lines = connectivity_lines(
         tree, plan, assembly.primary_path, lambda c: "tie", lambda c: "#16a34a", "/g"
@@ -671,12 +673,12 @@ def test_mermaid_topology_labels_edges_with_joint_kind() -> None:
     assembly = Assembly3D()
     for r in plan.render_roots:
         build_shapes_node(
-            tree, _effective_envelope, kids, plan, _IDS, r, "/se-x", assembly
+            tree, _effective_envelope, kids, plan, _UIDS, r, "/se-x", assembly
         )
     lines = connectivity_lines(
         tree, plan, assembly.primary_path, lambda c: "axial", lambda c: "#16a34a", "/g"
     )
-    graph = mermaid_topology(plan, _IDS, lines, kids)
+    graph = mermaid_topology(plan, _UIDS, lines, kids)
     assert graph.startswith("graph LR")
     assert 'B1["hub"]' in graph
     assert 'B2["rim"]' in graph
@@ -695,12 +697,12 @@ def test_mermaid_topology_nests_opened_parents_as_subgraphs() -> None:
     assembly = Assembly3D()
     for r in plan.render_roots:
         build_shapes_node(
-            tree, _effective_envelope, kids, plan, _IDS, r, "/se-x", assembly
+            tree, _effective_envelope, kids, plan, _UIDS, r, "/se-x", assembly
         )
     lines = connectivity_lines(
         tree, plan, assembly.primary_path, lambda c: "tie", lambda c: "#16a34a", "/g"
     )
-    graph = mermaid_topology(plan, _IDS, lines, kids)
+    graph = mermaid_topology(plan, _UIDS, lines, kids)
     rows = graph.splitlines()
     # fork (opened, has shown children) wraps fork_arm wraps fork_tip
     i_fork = rows.index('  subgraph B3["fork"]')
@@ -718,7 +720,7 @@ def test_mermaid_topology_collapsed_parent_stays_a_plain_node() -> None:
     tree = _fork_tree()
     kids = children_map(tree)
     plan = plan_visibility(tree, kids, level="envelope", isolate=None)
-    graph = mermaid_topology(plan, _IDS, [], kids)
+    graph = mermaid_topology(plan, _UIDS, [], kids)
     # 'fork' collapses to a box at envelope level -> its children are not
     # shown, so it renders as an ordinary node, not an empty subgraph
     assert 'B3["fork"]' in graph
@@ -869,7 +871,7 @@ def test_build_scene_bundles_shapes_connections_explode_and_mermaid() -> None:
         _effective_envelope,
         kids,
         plan,
-        _IDS,
+        _UIDS,
         root_id="/se-x",
         root_name="x",
         label_fn=lambda c: "tie",

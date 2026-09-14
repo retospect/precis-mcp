@@ -26,6 +26,31 @@ scenario/service-environment + presets, provenance sidecar helpers,
 design history (revisions/checkpoints/branches), discrete states +
 transitions (closed driver enum incl. `mechanical`, per-block state,
 A9 cache rule), `design_block_uid_seq` mint, situation stub.
+**Round 2 (se plugin migration 0009 + `precis_se.persist`/`identity` +
+the thin rental proof) landed 2026-09-14**: every `se_blocks` row
+carries a carried-forward `uid`; `se_connects`/`se_measures`/`se_bom`/
+`se_topology` and LOCAL `template_ref` store it beside the name, and a
+load follows the uid (name = display label, and the fallback for a
+dangling reference); blocks address by label or `'#41'` with the
+structured ambiguity error; `put` takes `scenario=` and
+validate/DRC print which scenario governed. **Round 3 landed
+2026-09-14**: every op that addresses an existing block routes its
+token through one resolver (`Tree.resolve_key`, overridden by `SeTree`
+— block halves of `'block.port'` endpoints included), so `'#41'` works
+wherever a label does and the ambiguity error arrives as an ordinary
+`OpError`→`BadInput` with its uid list; block names are reserved
+against a leading `'uid:'` at mint time; viewer 3D leaf paths and
+mermaid node ids are the uid, not `se_blocks.id` (a row id is rebuilt
+by every save); and adoption-by-label on save is restricted to a tree
+that arrived wholly uid-less (a full `put`) — on the `edit` path a
+uid-less node is NEW and always mints, so `remove_block('wheel')` +
+`add_block('wheel')` in one call can no longer inherit the dead
+block's identity (gr339743). Branch copies **preserve uids** — the
+mechanism is verified by test (`test_branch_style_copy_preserves_uids`),
+while the `pin`→`branch` verb itself lands with the design-history
+wiring (item 5). **Still open**: cross-design `template_ref` → uid
+(needs a uid→design resolver in `precis.blocktree.ops.resolve_template`)
+and item 7a.
 
 ## Motivation / why
 

@@ -74,6 +74,7 @@ from psycopg.types.json import Jsonb
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
+from precis.design import scenarios as design_scenarios
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -95,6 +96,7 @@ from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.atomic.apply import apply_ops_with_atomic
+from precis_se.identity import AmbiguousLabel, resolve_block
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
     PortSpec,
@@ -328,6 +330,7 @@ class SeHandler(Handler):
         if not isinstance(ops, list):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
         description = str(payload.get("description") or "").strip()
+        scenario_id = _vet_scenario(self.store, payload.get("scenario"))
         tree = SeTree()
         # own_slug is known from id= before the ref row even exists — needed
         # for a foreign design's template to recognise a hop back into THIS
@@ -358,6 +361,16 @@ class SeHandler(Handler):
                 card_text=_card_text(ttl, description, tree),
                 conn=conn,
             )
+            if scenario_id is not None:
+                # Same transaction as the tree: a design and the production
+                # context that decides which physics runs on it are one
+                # fact. An ABSENT key leaves the existing choice standing —
+                # put replaces the block tree, and the scenario is not part
+                # of it (design-state-core.md item 3: a design references
+                # one scenario).
+                design_scenarios.set_design_scenario(
+                    self.store, ref.id, scenario_id, set_by="se.put", conn=conn
+                )
         # After the tx, not inside it: the projection is derived, and a
         # link-sync hiccup must not roll back a saved design (cad's sync
         # sits outside its write for the same reason).
@@ -445,7 +458,12 @@ class SeHandler(Handler):
                     "get(kind='se', view='block') requires args={'name': ...}"
                 )
             block_name = str(name).strip()
-            node = tree.blocks.get(block_name)
+            # A label OR a uid ('#41') — :mod:`precis_se.identity`, the
+            # agent-facing half of the uid cutover.
+            try:
+                node = resolve_block(tree, block_name)
+            except AmbiguousLabel as exc:
+                raise BadInput(str(exc)) from exc
             if node is None:
                 raise NotFound(_block_not_found(tree, block_name))
             return Response(body=_render_block(tree, node))
@@ -456,7 +474,7 @@ class SeHandler(Handler):
         if v == "measures":
             return Response(body=_render_measures(tree))
         if v == "validate":
-            return Response(body=self._render_validate(tree))
+            return Response(body=self._render_validate(tree, ref.id))
         if v == "mechanics":
             return Response(body=se_atomic_render.render_mechanics(self.store, tree))
         if v == "literature":
@@ -470,7 +488,7 @@ class SeHandler(Handler):
         if v == "clearance":
             return Response(body=_render_clearance(tree, args))
         if v == "drc":
-            return Response(body=_render_drc(tree))
+            return Response(body=_render_drc(tree, _scenario_line(self.store, ref.id)))
         if v == "bom":
             return Response(body=self._render_bom(tree))
         if v == "fasten":
@@ -507,7 +525,7 @@ class SeHandler(Handler):
             "| view='links' (the design's link graph, both directions)",
         )
 
-    def _render_validate(self, tree: SeTree) -> str:
+    def _render_validate(self, tree: SeTree, ref_id: int) -> str:
         """``view='validate'`` — :mod:`precis_se.validate`'s findings plus
         :func:`precis_se.atomic.validate.validate_atomic`'s, under the
         filled-fraction honesty header, on BOTH the clean and the findings
@@ -519,7 +537,11 @@ class SeHandler(Handler):
         (:func:`precis_se.atomic.render.hydrate_bound_scenes` — the
         "assemble in the view path, keep the checker pure" split), and a
         design with no ``structure`` binding anywhere hydrates nothing, so
-        a plain se design pays one set-comprehension for the atomic tier."""
+        a plain se design pays one set-comprehension for the atomic tier.
+
+        The header also records **which scenario governed** these checks
+        (:func:`_scenario_line`) — a verdict whose production context isn't
+        stated can't be re-read later."""
         findings = list(se_validate.validate(tree))
         bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
             self.store, tree
@@ -531,7 +553,7 @@ class SeHandler(Handler):
                 bound_full_scenes=bound_full_scenes,
             )
         )
-        header_lines = [_fill_fraction_line(tree)]
+        header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]
         atomic_line = se_atomic_render.atomic_fill_line(tree)
         if atomic_line:
             header_lines.append(atomic_line)
@@ -860,7 +882,66 @@ def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
 
 
 #: The only top-level keys ``put`` consumes.
-_PUT_PAYLOAD_KEYS = frozenset({"description", "ops"})
+_PUT_PAYLOAD_KEYS = frozenset({"description", "ops", "scenario"})
+
+
+def _vet_scenario(store: Any, raw: Any) -> str | None:
+    """``put``'s ``scenario`` key → a scenario id that exists, or ``None``
+    when the caller didn't name one.
+
+    se's first rental of the shared design core
+    (:mod:`precis.design.scenarios`, docs/backlog/design-state-core.md —
+    rented exactly as the cad kernel is, no new kind and no verb of its
+    own). Checked here, before anything is written, because an unknown
+    scenario id would otherwise land as a silent no-governance design: the
+    whole point of the scenario is that validate can say which production
+    context its verdict assumed."""
+    if raw is None:
+        return None
+    scenario_id = str(raw).strip()
+    if not scenario_id:
+        return None
+    if design_scenarios.get_scenario(store, scenario_id) is None:
+        known = " | ".join(
+            s.scenario_id for s in design_scenarios.list_scenarios(store)
+        )
+        raise BadInput(
+            f"unknown scenario {scenario_id!r} — known: {known}",
+            next="put(kind='se', id='caster1', text='{\"scenario\": "
+            '"prototype", "ops": [...]}\')',
+        )
+    return scenario_id
+
+
+def _scenario_line(store: Any, ref_id: int) -> str:
+    """The one-line "which production context governed this verdict"
+    header carried by ``view='validate'`` and ``view='drc'``.
+
+    No scenario is a real answer, not a gap to paper over (design-state-
+    core.md item 3): a design sketched before anyone decided how many to
+    build has none, and the honest line says so rather than implying a
+    default governed the run."""
+    scenario = design_scenarios.design_scenario(store, ref_id)
+    if scenario is None:
+        return (
+            "scenario: none chosen — no production context governed these "
+            "checks (set one with put's scenario= key)"
+        )
+    bits = [f"scenario: {scenario.scenario_id}"]
+    if scenario.quantity is not None:
+        bits.append(f"{scenario.quantity} off")
+    env = scenario.service_environment
+    if env is not None:
+        bits.append(
+            f"lifetime checks {'ON' if scenario.lifetime_checks else 'off'} "
+            f"({env.env_id})"
+        )
+    if scenario.objective_weights:
+        weights = ", ".join(
+            f"{k} {v:g}" for k, v in sorted(scenario.objective_weights.items())
+        )
+        bits.append(f"weights: {weights}")
+    return " · ".join(bits)
 
 
 def _vet_put_payload(payload: dict[str, Any]) -> None:
@@ -1049,7 +1130,11 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
 
 
 def _render_block(tree: SeTree, node: SeBlock) -> str:
-    lines = [f"# block '{node.name}'"]
+    # The uid is shown because it is the ADDRESS that survives a relabel —
+    # args={'name': '#41'} reaches this block whatever it is called
+    # (precis_se.identity). A block added but not yet saved has none.
+    uid = f"  (uid #{node.uid})" if node.uid is not None else ""
+    lines = [f"# block '{node.name}'{uid}"]
     if node.template and node.array:
         lines.append(f"array of: {node.template}  ({_array_label(node.array)})")
     elif node.template:
@@ -1547,14 +1632,18 @@ def _render_freedom(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
-def _render_drc(tree: SeTree) -> str:
+def _render_drc(tree: SeTree, scenario_line: str = "") -> str:
     """``view='drc'`` — the graph-tier report (:mod:`precis_se.drc`):
     findings under the filled-fraction header (same honesty rule as
-    validate — a clean empty design is unfilled, not done), then the DOF
-    probe outcomes (including honest skips) and any stack-up problems'
-    full rows."""
+    validate — a clean empty design is unfilled, not done) and the
+    governing-scenario line (``scenario_line``, the design core rental —
+    the handler resolves it; this stays store-free), then the DOF probe
+    outcomes (including honest skips) and any stack-up problems' full
+    rows."""
     report = se_drc.drc(tree)
     fill_line = _fill_fraction_line(tree)
+    if scenario_line:
+        fill_line = f"{fill_line}\n{scenario_line}"
     lines: list[str] = []
     if not report.findings:
         lines.append(f"✓ no DRC findings\n{fill_line}")

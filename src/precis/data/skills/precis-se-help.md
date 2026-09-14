@@ -53,10 +53,33 @@ refine, tradeoffs) see `precis-se-design-help`.
 ## put vs edit — put is a full REPLACE
 
 `put(kind='se', id=…, text=<json>)` **replaces the whole design**. The
-payload's only top-level keys are `description` and `ops` (anything else
-is rejected — an unrecognised shape used to silently empty the design).
-Incremental changes go through `edit(kind='se', id=…, ops=[…])`. Op
-batches are **atomic**: one bad op rolls the whole batch back.
+payload's only top-level keys are `description`, `ops` and `scenario`
+(anything else is rejected — an unrecognised shape used to silently empty
+the design). Incremental changes go through `edit(kind='se', id=…,
+ops=[…])`. Op batches are **atomic**: one bad op rolls the whole batch
+back.
+
+`scenario` names the **production context** that governs the design —
+`prototype` (one off, lifetime physics OFF) · `small_batch` (100, indoor
+five-year service) · `mass_production` (100 000, full lifetime physics).
+It decides which checks are meaningful, so `view='validate'` and
+`view='drc'` both print which scenario governed the run — or say
+`scenario: none chosen` rather than assume a default. An unknown name is
+rejected; an *absent* key leaves an earlier choice standing (the scenario
+is design-level context, not part of the block tree `put` replaces).
+
+**Blocks are addressed by label or by uid.** A label (the block `name`)
+is unique within a design and is the usual way to say which block you
+mean. A block also carries a stable **uid** — shown as `(uid #41)` in
+`view='block'` — that survives edits and re-`put`s and is what every
+stored cross-reference actually points at. **Anywhere an op or a view
+takes an existing block**, `'#41'`/`'uid:41'` addresses it by uid
+instead — including the block half of a `'block.port'` endpoint
+(`connect a='#41.bore'`). Use it when a label is ambiguous; the error
+then lists every matching uid. What gets *stored* is the block's label
+either way, so a design written by uid reads back the same as one
+written by name. (A block may not be *named* `'uid:…'` — that would be
+unaddressable — nor contain `'#'`.)
 
 ## Ops (exact parameter lists)
 

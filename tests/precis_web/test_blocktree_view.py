@@ -320,8 +320,9 @@ def test_se_view_svg_isolate_narrows_to_one_subtree(
 def test_se_detail_and_view_svg_url_encode_metacharacter_block_names(
     blocktree_client, runtime_with_store
 ) -> None:
-    """A block name isn't URL-safe by construction (only ``#`` is reserved,
-    ``add_block``'s ``_reject_hash``) — ``&``/space in an isolate name must
+    """A block name isn't URL-safe by construction (only ``#`` and a
+    leading ``uid:`` are reserved, ``add_block``'s
+    ``_reject_reserved_name``) — ``&``/space in an isolate name must
     not corrupt or truncate the query string the detail page builds, and
     the view.svg route must accept the same encoded name back."""
     slug = "unicycle_meta"
@@ -453,7 +454,7 @@ def test_view3d_url_permanently_redirects_to_the_new_default(client) -> None:
 
 
 def test_se_scene3d_json_shapes_tree_and_connections(
-    blocktree_client, runtime_with_store
+    blocktree_client, runtime_with_store, store
 ) -> None:
     _seed_se(runtime_with_store)
     r = blocktree_client.get("/se/unicycle_web/scene3d.json")
@@ -463,23 +464,34 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     # gr338445: the root id is the design's SLUG, not its opaque numeric
     # ref id — a viewer path like ``/se-337761`` told the reader nothing.
     assert body["shapes"]["id"] == "/se-unicycle_web"
-    # every SOLID leaf path ends in a plain integer (the DB-minted block
-    # id) — no lookup table needed on the client to interpret a pick.
-    # The sibling ``_connections`` group's own ``edges``-type leaves are
-    # NOT block leaves (their id is a synthetic ``c<i>`` per drawn link)
-    # and are excluded from this check on purpose.
-    leaf_ids: list[str] = []
+    # every SOLID leaf path ends in the block's stable ``uid`` — no lookup
+    # table needed on the client to interpret a pick, and (design-state-
+    # core.md item 2) a path that survives the next save, unlike the row
+    # id this used to use. The sibling ``_connections`` group's own
+    # ``edges``-type leaves are NOT block leaves (their id is a synthetic
+    # ``c<i>`` per drawn link) and are excluded from this check on purpose.
+    leaves: dict[str, str] = {}
 
     def _walk(node: Any) -> None:
         if "parts" in node:
             for p in node["parts"]:
                 _walk(p)
         elif node.get("type") == "shapes":
-            leaf_ids.append(node["id"].rsplit("/", 1)[-1])
+            leaves[node["name"]] = node["id"].rsplit("/", 1)[-1]
 
     _walk(body["shapes"])
-    assert leaf_ids  # at least one leaf rendered
-    assert all(seg.isdigit() for seg in leaf_ids)
+    assert leaves  # at least one leaf rendered
+    assert all(seg.isdigit() for seg in leaves.values())
+    ref = store.get_ref(kind="se", id="unicycle_web")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT name, uid FROM se_blocks WHERE ref_id = %s AND retired_at IS NULL",
+            (ref.id,),
+        ).fetchall()
+    uid_by_name = {str(row[0]): str(int(row[1])) for row in rows}
+    # The path is the uid; the LABEL is what the viewer shows beside it.
+    assert leaves == {name: uid_by_name[name] for name in leaves}
     # the hub—rim axial tie is drawn as a connection, labelled by its
     # kinematic class/mechanism (round 2a spec §5.8 comment 5(c)).
     assert len(body["connections"]) == 1

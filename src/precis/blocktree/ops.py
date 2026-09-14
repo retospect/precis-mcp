@@ -77,6 +77,7 @@ from typing import Any
 
 from precis.blocktree.types import (
     TEMPLATE_SEP,
+    UID_PREFIX,
     BlockNode,
     OpError,
     Port,
@@ -124,22 +125,76 @@ def _require_name(op: dict[str, Any], key: str, opname: str) -> str:
     return str(raw).strip()
 
 
-def _reject_hash(name: str, *, opname: str, what: str) -> None:
+def _reject_reserved_name(name: str, *, opname: str, what: str) -> None:
     """A block ``name`` may not contain :data:`~precis.blocktree.types.
     TEMPLATE_SEP` (``'#'``) — reserved by the cross-design ``template``
     syntax (``'design-slug#block-name'``, :func:`~precis.blocktree.types.
     parse_template_ref`), the same reservation ``add_port`` already makes
     for ``'.'`` in a PORT name so the ``'block.port'`` connect syntax stays
-    unambiguous. Applied at both places a block name is minted
-    (``op_add_block``'s ``name``, an instance's own ``name`` in
-    :func:`_instance_shared`) — splitting a qualified template on the FIRST
-    ``'#'`` only stays unambiguous if a block name can never contain one."""
+    unambiguous — nor start with :data:`~precis.blocktree.types.
+    UID_PREFIX`, for the same reason
+    one letter further on: both uid token forms (``'#41'``, ``'uid:41'``)
+    are read as a uid before anything looks for a label, so a block called
+    ``'uid:41'`` could be created and then never addressed again. Applied
+    at both places a block name is minted (``op_add_block``'s ``name``, an
+    instance's own ``name`` in :func:`_instance_shared`) — splitting a
+    qualified template on the FIRST ``'#'`` only stays unambiguous if a
+    block name can never contain one."""
     if TEMPLATE_SEP in name:
         raise OpError(
             f"{opname} {what} must not contain {TEMPLATE_SEP!r}: {name!r} "
             "— the cross-design template syntax ('design-slug#block-name') "
             "reserves it"
         )
+    if name.lower().startswith(UID_PREFIX):  # any case — reserve the word
+        raise OpError(
+            f"{opname} {what} must not start with {UID_PREFIX!r}: {name!r} "
+            "— the uid addressing syntax ('uid:41', '#41') reserves it, and "
+            "a block named this way could never be addressed"
+        )
+
+
+def _block_key(tree: Tree[Any, Any], token: Any, *, what: str) -> str:
+    """``token`` → the key of the block it addresses in ``tree.blocks``,
+    or a legible :class:`OpError` naming what *is* there.
+
+    THE op-side entry point for "which block did the caller mean": every op
+    that addresses an EXISTING block resolves through here (and through
+    :func:`_require_block`, which requires the op key first), so uid
+    addressing arrives everywhere at once rather than op by op — the rule
+    itself is the tree's (:meth:`~precis.blocktree.types.Tree.resolve_key`),
+    since only the domain knows whether it has an identity beyond the
+    label. Ops that MINT a name (``add_block``, an instance's own ``name``)
+    deliberately do not go through here — a name being minted answers to
+    nothing yet."""
+    key = tree.resolve_key(token)
+    if key is None:
+        raise OpError(_no_block_msg(tree, str(token).strip(), what=what))
+    return key
+
+
+def _block_key_or_raw(tree: Tree[Any, Any], token: Any) -> str:
+    """:func:`_block_key`'s lenient sibling for the ops that MATCH a stored
+    row (``disconnect``, ``remove_threading``, the BOM/joint/load edge
+    lookups) rather than address a block directly: resolve the token when
+    something answers to it, else hand back the text unchanged so the
+    caller's own "no such connect/threading — here's what IS live" message
+    stays the one the agent sees. An ambiguous label still raises."""
+    return tree.resolve_key(token) or str(token).strip()
+
+
+def _require_block(
+    tree: Tree[Any, Any],
+    op: dict[str, Any],
+    key: str,
+    opname: str,
+    *,
+    what: str = "block",
+) -> str:
+    """``op[key]`` required (:func:`_require_name`) and resolved
+    (:func:`_block_key`) in one step — the two lines every block-addressing
+    op opened with, so that adding an op can't forget the second."""
+    return _block_key(tree, _require_name(op, key, opname), what=what)
 
 
 def _opt_str(v: Any) -> str | None:
@@ -384,10 +439,11 @@ def _resolve_connect_port(
     handler's validate re-check (never trusts stored data). ``ports_fn``
     defaults to the core :func:`effective_ports`; a domain whose own
     ``effective_ports`` adds another source (e.g. ``se``'s catalog
-    fallback) passes its own in."""
-    node = tree.blocks.get(block_name)
-    if node is None:
-        raise OpError(_no_block_msg(tree, block_name, what=f"{what} block"))
+    fallback) passes its own in. ``block_name`` is a block TOKEN like every
+    other op argument (:func:`_block_key`) — a stored name when validate
+    re-checks, possibly a uid when an agent wrote it."""
+    block_name = _block_key(tree, block_name, what=f"{what} block")
+    node = tree.blocks[block_name]
     ports = ports_fn(tree, node)
     port = ports.get(port_name)
     if port is None:
@@ -398,6 +454,39 @@ def _resolve_connect_port(
             f"Available ports: {roster}"
         )
     return port
+
+
+def _resolve_endpoint(
+    tree: Tree[Any, Any],
+    raw: Any,
+    *,
+    what: str,
+    side: str,
+    ports_fn: Callable[[Any, Any], dict[str, Port]] = effective_ports,
+) -> tuple[str, str, Port]:
+    """A whole ``'block.port'`` endpoint → ``(block key, port name,
+    Port)``: split (:func:`_split_endpoint`), resolve the BLOCK half like
+    any other block token (:func:`_block_key` — so ``'#41.bore'`` works),
+    then the port on it. The returned block key is what a connect row
+    stores, so an endpoint written by uid is persisted under the block's
+    current LABEL, exactly as if it had been typed."""
+    block_token, port_name = _split_endpoint(raw, f"{what} {side}")
+    block = _block_key(tree, block_token, what=f"{what} block")
+    port = _resolve_connect_port(tree, block, port_name, what=what, ports_fn=ports_fn)
+    return block, port_name, port
+
+
+def _match_endpoint(
+    tree: Tree[Any, Any], raw: Any, *, what: str, side: str
+) -> tuple[str, str]:
+    """:func:`_resolve_endpoint`'s lenient sibling for the ops that look up
+    an existing CONNECT by its endpoint pair (``disconnect``, ``set_joint``,
+    ``set_load``, the BOM edge target): split and resolve the block half
+    when something answers to it (:func:`_block_key_or_raw`), but never
+    raise for an unknown block — the caller's own "no such connect; here's
+    what IS live" message is the better one, and it is still reachable."""
+    block_token, port_name = _split_endpoint(raw, f"{what} {side}")
+    return _block_key_or_raw(tree, block_token), port_name
 
 
 def _connects_endpoint_pair(
@@ -452,17 +541,28 @@ def _instance_shared(
     nest the template inside its own instance — LOCAL only, since a
     cross-design template's subtree lives in a different design's
     namespace and can never collide with a local ``parent`` chain). Returns
-    ``(template, name, parent)`` — ``template`` is the raw string as given
-    (bare or qualified), stored on the node as-is so every existing reader
-    of ``node.template`` (render, ``effective_*``) keeps working unchanged.
+    ``(template, name, parent)`` — ``template`` is the label a LOCAL
+    reference resolved to (so a uid token is stored as the name every
+    existing reader of ``node.template`` expects — render, ``effective_*``),
+    or a cross-design reference unchanged, qualifier and all.
     A domain with a *patterned* instance op (``se``'s ``array_block``)
     calls this directly rather than going through the plain
     :func:`op_instance_block`."""
     template = _require_name(op, "template", opname)
-    design_slug, block_name = parse_template_ref(template)
+    # A LOCAL template is an ordinary block token, uid included — asked
+    # BEFORE :func:`parse_template_ref`, because the two syntaxes share the
+    # ``'#'``: ``'#41'`` is a uid, while ``'lib#wheel'`` is cross-design,
+    # and only the tree can tell them apart (a uid token that answers to
+    # nothing falls through to the qualified-reference reading, which is
+    # where its syntax error belongs). The canonical label is what gets
+    # stored: ``node.template`` is read back by name everywhere
+    # (:func:`resolve_template`).
+    local = tree.resolve_key(template)
+    design_slug, block_name = (
+        (None, template) if local else parse_template_ref(template)
+    )
     if design_slug is None:
-        if template not in tree.blocks:
-            raise OpError(_no_block_msg(tree, template, what="template"))
+        template = local or _block_key(tree, template, what="template")
         if tree.blocks[template].template is not None:
             raise OpError(
                 f"block {template!r} is itself an instance — {opname} the "
@@ -479,7 +579,7 @@ def _instance_shared(
                 "not another instance"
             )
     name = _require_name(op, "name", opname)
-    _reject_hash(name, opname=opname, what="'name'")
+    _reject_reserved_name(name, opname=opname, what="'name'")
     if name in tree.blocks:
         raise OpError(f"duplicate block name: {name!r} (names are unique per design)")
     for key in ("envelope", "desc", "use"):
@@ -491,9 +591,7 @@ def _instance_shared(
             )
     parent = op.get("parent")
     if parent is not None:
-        parent = str(parent).strip()
-        if parent not in tree.blocks:
-            raise OpError(_no_block_msg(tree, parent, what="parent"))
+        parent = _block_key(tree, parent, what="parent")
         if parent == template or parent in _descendants(tree, template):
             raise OpError(
                 f"{opname}: parent {parent!r} is {template!r} or one of "
@@ -538,14 +636,12 @@ def _commit_instance(
 
 def op_add_block(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     name = _require_name(op, "name", "add_block")
-    _reject_hash(name, opname="add_block", what="'name'")
+    _reject_reserved_name(name, opname="add_block", what="'name'")
     if name in tree.blocks:
         raise OpError(f"duplicate block name: {name!r} (names are unique per design)")
     parent = op.get("parent")
     if parent is not None:
-        parent = str(parent).strip()
-        if parent not in tree.blocks:
-            raise OpError(_no_block_msg(tree, parent, what="parent"))
+        parent = _block_key(tree, parent, what="parent")
     envelope = op.get("envelope")
     if envelope is not None:
         envelope = str(envelope).strip()
@@ -568,10 +664,7 @@ def op_instance_block(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
 
 
 def op_set_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
-    name = _require_name(op, "block", "set_pose")
-    node = tree.blocks.get(name)
-    if node is None:
-        raise OpError(_no_block_msg(tree, name, what="block"))
+    node = tree.blocks[_require_block(tree, op, "block", "set_pose")]
     if "pose" not in op and "rot" not in op:
         raise OpError("set_pose needs 'pose' and/or 'rot'")
     if "pose" in op:
@@ -581,9 +674,7 @@ def op_set_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
 
 
 def op_remove_block(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
-    name = _require_name(op, "block", "remove_block")
-    if name not in tree.blocks:
-        raise OpError(_no_block_msg(tree, name, what="block"))
+    name = _require_block(tree, op, "block", "remove_block")
     subtree = _descendants(tree, name) | {name}
     users = sorted(
         n for n, b in tree.blocks.items() if b.template in subtree and n not in subtree
@@ -608,10 +699,8 @@ def op_remove_block(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
 
 
 def op_add_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
-    block = _require_name(op, "block", "add_port")
-    node = tree.blocks.get(block)
-    if node is None:
-        raise OpError(_no_block_msg(tree, block, what="block"))
+    block = _require_block(tree, op, "block", "add_port")
+    node = tree.blocks[block]
     if node.template is not None:
         raise OpError(
             f"block {block!r} is an instance (of {node.template!r}) — an "
@@ -659,10 +748,8 @@ def op_add_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
 
 
 def op_remove_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
-    block = _require_name(op, "block", "remove_port")
-    node = tree.blocks.get(block)
-    if node is None:
-        raise OpError(_no_block_msg(tree, block, what="block"))
+    block = _require_block(tree, op, "block", "remove_port")
+    node = tree.blocks[block]
     name = _require_name(op, "name", "remove_port")
     if name not in node.ports:
         roster = ", ".join(sorted(node.ports)) if node.ports else "(none)"
@@ -696,12 +783,16 @@ def op_connect(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise OpError("connect needs 'a' and 'b' (each 'block.port')")
-    a_block, a_port = _split_endpoint(a_raw, "connect 'a'")
-    b_block, b_port = _split_endpoint(b_raw, "connect 'b'")
-    if (a_block, a_port) == (b_block, b_port):
+    # Shape first (both endpoints are 'block.port', and not the same one
+    # twice) — the token-level rejections, before anything is looked up.
+    if _split_endpoint(a_raw, "connect 'a'") == _split_endpoint(b_raw, "connect 'b'"):
         raise OpError(f"connect: cannot connect {a_raw!r} to itself")
-    _resolve_connect_port(tree, a_block, a_port, what="connect")
-    _resolve_connect_port(tree, b_block, b_port, what="connect")
+    a_block, a_port, _ = _resolve_endpoint(tree, a_raw, what="connect", side="'a'")
+    b_block, b_port, _ = _resolve_endpoint(tree, b_raw, what="connect", side="'b'")
+    if (a_block, a_port) == (b_block, b_port):
+        # Reachable a second way once a domain resolves uids: '#41.p' and
+        # 'wheel.p' are the same endpoint written two ways.
+        raise OpError(f"connect: cannot connect {a_raw!r} to itself")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
     for c in tree.connects:
         if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:
@@ -723,8 +814,8 @@ def op_disconnect(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise OpError("disconnect needs 'a' and 'b' (each 'block.port')")
-    a_block, a_port = _split_endpoint(a_raw, "disconnect 'a'")
-    b_block, b_port = _split_endpoint(b_raw, "disconnect 'b'")
+    a_block, a_port = _match_endpoint(tree, a_raw, what="disconnect", side="'a'")
+    b_block, b_port = _match_endpoint(tree, b_raw, what="disconnect", side="'b'")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
     for i, c in enumerate(tree.connects):
         if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:

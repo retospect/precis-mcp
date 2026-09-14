@@ -41,6 +41,17 @@ class OpError(ValueError):
 #: *slug* half free to contain whatever a slug may otherwise contain.
 TEMPLATE_SEP = "#"
 
+#: The other prefix a block token may open with, and so the other one block
+#: NAMES are reserved against (:func:`~precis.blocktree.ops.
+#: _reject_reserved_name`): a domain with a stable per-block uid reads
+#: ``'uid:41'`` — and ``'#41'``, covered by :data:`TEMPLATE_SEP` already —
+#: as that uid before it looks for any label (``precis_se.identity``), so a
+#: block allowed to wear one as its name could never be addressed again.
+#: Declared here beside the separator it mirrors rather than in the domain,
+#: because the reservation has to hold at the two places this package mints
+#: a name.
+UID_PREFIX = "uid:"
+
 
 def parse_template_ref(raw: str) -> tuple[str | None, str]:
     """``'<design-slug>#<block-name>'`` → ``(design_slug, block_name)``; a
@@ -163,6 +174,34 @@ class Tree[TBlock: BlockNode, TConnect: Connect]:
     #: or printing two trees should never depend on which handler call
     #: built them.
     foreign: ForeignResolver | None = field(default=None, repr=False, compare=False)
+    #: ``True`` iff this tree was reconstructed from stored rows (set by
+    #: the persist loader, nowhere else). Identity assignment keys off the
+    #: tree's ORIGIN, never its shape: a persisted-origin tree mints for
+    #: every uid-less node (it can only be newly added — gr339743), while
+    #: a caller-built tree (full ``put``) may adopt identity by label.
+    #: Deriving this from "does any node carry a uid" is wrong the moment
+    #: an edit removes every uid-carrying block before re-adding
+    #: same-named ones. Not design data: excluded from repr/compare.
+    from_persistence: bool = field(default=False, repr=False, compare=False)
+
+    def resolve_key(self, token: Any) -> str | None:
+        """A caller-supplied block token → the key it addresses in
+        :attr:`blocks`, or ``None`` when nothing answers to it.
+
+        The identity hook every op goes through to turn what the agent
+        *wrote* into the block it *means* (:func:`~precis.blocktree.ops.
+        _require_block`). The base implementation is the only rule this
+        package knows: the token IS the key. A domain that mints a stable
+        per-block identity overrides it to accept that too —
+        ``precis_se``'s ``SeTree`` reads ``'#41'``/``'uid:41'``/``41`` as a
+        uid (:mod:`precis_se.identity`) and falls back to the label.
+
+        May raise :class:`OpError` — a label two blocks answer to is
+        neither a hit nor a miss, and an override says so with a
+        structured subclass rather than silently picking one.
+        """
+        key = str(token).strip()
+        return key if key in self.blocks else None
 
     def make_block(self, **kwargs: Any) -> TBlock:
         """Construct a new block row for this tree. The base
