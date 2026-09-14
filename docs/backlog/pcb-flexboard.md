@@ -22,9 +22,19 @@ states machinery.
 
 - `board_type` ∈ rigid | flex | rigid-flex on `pcb_boards`; flex
   stackup entries (polyimide, coverlay) in the existing `stackup[]`.
-- Fold-line feature (`ftype='fold'`): line segment on the outline
-  domain + bend radius + direction (+ allowed angle range). Segments
-  the outline into the rigid/stiffened regions `pcb-se-binding.md`'s
+- **Slice 0 — honor `keepout` features** (found 2026-09-14, Reto's
+  "fold zone layer" question): migration `0047_pcb_kind.sql` already
+  reserves `ftype='keepout'` but ZERO code consumes it — placer,
+  router, and DRC know only NO_NET via keepouts and courtyard
+  polygons. Implement region-keepout consumption first; it pays off
+  on rigid boards too (antenna zones, connector clearance), and a
+  fold zone is then a keepout subtype rather than new machinery.
+- Fold-line feature (`ftype='fold'`, a keepout subtype after slice 0):
+  line segment on the outline domain + bend radius + direction
+  (+ allowed angle range), zone widened by the bend allowance;
+  carries the height *threshold* (tiny components allowed, tall ones
+  not), via ban, and copper-direction preference. Segments the
+  outline into the rigid/stiffened regions `pcb-se-binding.md`'s
   derivation returns.
 - Stiffener regions (a feature): where components are allowed on an
   otherwise bendable area.
