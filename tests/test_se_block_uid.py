@@ -343,9 +343,7 @@ def test_edit_remove_then_re_add_mints_a_new_uid(
     assert before not in after.values()
 
 
-def test_clear_and_rebuild_edit_still_mints(
-    handler: SeHandler, store: Store
-) -> None:
+def test_clear_and_rebuild_edit_still_mints(handler: SeHandler, store: Store) -> None:
     """The mint-vs-adopt decision keys off the tree's ORIGIN
     (``from_persistence``), never its shape: an edit that removes EVERY
     uid-carrying block before re-adding a same-named one leaves the tree

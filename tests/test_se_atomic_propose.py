@@ -34,7 +34,8 @@ import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
 from precis.structure.cell import Cell
-from precis.structure.scene import Atom, Scene as StructScene
+from precis.structure.scene import Atom
+from precis.structure.scene import Scene as StructScene
 from precis.utils.claude_agent import AgentResult
 from precis.utils.llm.router import Tier, resolve_model
 from precis.workers.job_types import get_job_type
