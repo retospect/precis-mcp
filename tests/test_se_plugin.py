@@ -2260,3 +2260,58 @@ def test_measures_view_glosses_millimetres() -> None:
     from precis_se.handler import _render_measures
 
     assert "16 mm" in _render_measures(tree)
+
+
+# ── link verb + view='links' (gr332020 item 1) ──────────────────────────
+
+
+def test_link_design_serves_todo_both_directions(handler: SeHandler) -> None:
+    handler.put(id="caster_l1", text=_CASTER)
+    todo = handler.store.insert_ref(kind="todo", slug=None, title="build the cart")
+    ack = handler.link(id="caster_l1", target=f"todo:{todo.id}", rel="serves")
+    assert "link" in ack.body.lower()
+    ref = handler.store.get_ref(kind="se", id="caster_l1")
+    assert ref is not None
+    out = handler.store.links_for(ref.id, direction="out", relation="serves")
+    assert [lnk.dst_ref_id for lnk in out] == [todo.id]
+    # the design's own side renders the edge — the gripe's headline gap
+    view = handler.get(id="caster_l1", view="links")
+    assert "serves" in view.body and "build the cart" in view.body
+
+
+def test_link_remove_deletes_the_edge(handler: SeHandler) -> None:
+    handler.put(id="caster_l2", text=_CASTER)
+    todo = handler.store.insert_ref(kind="todo", slug=None, title="a target")
+    handler.link(id="caster_l2", target=f"todo:{todo.id}", rel="serves")
+    handler.link(id="caster_l2", target=f"todo:{todo.id}", rel="serves", mode="remove")
+    ref = handler.store.get_ref(kind="se", id="caster_l2")
+    assert ref is not None
+    assert handler.store.links_for(ref.id, direction="out", relation="serves") == []
+
+
+def test_link_requires_target(handler: SeHandler) -> None:
+    handler.put(id="caster_l3", text=_CASTER)
+    with pytest.raises(BadInput):
+        handler.link(id="caster_l3", rel="serves")
+
+
+def test_link_unknown_design_not_found(handler: SeHandler) -> None:
+    with pytest.raises(NotFound):
+        handler.link(id="no_such_design", target="todo:1", rel="serves")
+
+
+def test_link_parent_places_into_folder_and_unfiles(handler: SeHandler) -> None:
+    handler.put(id="caster_l4", text=_CASTER)
+    folder = handler.store.insert_ref(kind="folder", slug=None, title="cart designs")
+    handler.link(id="caster_l4", target=f"folder:{folder.id}", rel="parent")
+    ref = handler.store.get_ref(kind="se", id="caster_l4")
+    assert ref is not None and ref.parent_id == folder.id
+    handler.link(id="caster_l4", rel="parent", mode="remove")
+    ref = handler.store.get_ref(kind="se", id="caster_l4")
+    assert ref is not None and ref.parent_id is None
+
+
+def test_links_view_empty_shows_add_hint(handler: SeHandler) -> None:
+    handler.put(id="caster_l5", text=_CASTER)
+    view = handler.get(id="caster_l5", view="links")
+    assert "no links" in view.body and "related-to" in view.body

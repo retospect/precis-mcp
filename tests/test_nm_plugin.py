@@ -2249,3 +2249,46 @@ def test_validate_dangling_binding_when_structure_deleted(
     structure.delete(id="frag9")
     dirty = handler.get(id="bind9", view="validate")
     assert "dangling_binding" in dirty.body
+
+
+# ── link verb + view='links' (gr332020 item 1) ──────────────────────────
+
+
+def test_link_two_state_designs_related(handler: NmHandler) -> None:
+    # One photomechanical machine in two isomer states, forced into two
+    # designs until block states land — the link is the interim
+    # declaration that they are the same machine (gr332020 comment 4).
+    handler.put(id="azo_l_trans", text=_TREE)
+    handler.put(id="azo_l_cis", text=_TREE)
+    ack = handler.link(id="azo_l_cis", target="nm:azo_l_trans")
+    assert "link" in ack.body.lower()
+    cis = handler.store.get_ref(kind="nm", id="azo_l_cis")
+    trans = handler.store.get_ref(kind="nm", id="azo_l_trans")
+    assert cis is not None and trans is not None
+    out = handler.store.links_for(cis.id, direction="out", relation="related-to")
+    assert [lnk.dst_ref_id for lnk in out] == [trans.id]
+    # both sides render the edge in their own view
+    assert "azo_l_trans" in handler.get(id="azo_l_cis", view="links").body
+    assert "azo_l_cis" in handler.get(id="azo_l_trans", view="links").body
+
+
+def test_link_serves_quest_target(handler: NmHandler) -> None:
+    handler.put(id="arm_l1", text=_TREE)
+    quest = handler.store.insert_ref(kind="quest", slug=None, title="photonic arm")
+    handler.link(id="arm_l1", target=f"quest:{quest.id}", rel="serves")
+    ref = handler.store.get_ref(kind="nm", id="arm_l1")
+    assert ref is not None
+    out = handler.store.links_for(ref.id, direction="out", relation="serves")
+    assert [lnk.dst_ref_id for lnk in out] == [quest.id]
+
+
+def test_link_unknown_relation_rejected(handler: NmHandler) -> None:
+    handler.put(id="arm_l2", text=_TREE)
+    handler.put(id="arm_l3", text=_TREE)
+    with pytest.raises(BadInput):
+        handler.link(id="arm_l2", target="nm:arm_l3", rel="hugs")
+
+
+def test_link_unknown_design_not_found(handler: NmHandler) -> None:
+    with pytest.raises(NotFound):
+        handler.link(id="no_such_design", target="quest:1", rel="serves")

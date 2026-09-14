@@ -160,7 +160,13 @@ class NmHandler(Handler):
             "block's desc/use/name + connect objective vocabulary (or the "
             "whole design's, with no block named) and runs it against the "
             "paper corpus. The LLM traverses a block tree, "
-            "never atoms directly."
+            "never atoms directly. link records typed relations from "
+            "the design (target='kind:identifier', rel= default "
+            "related-to; rel='parent' places it into a folder) and "
+            "view='links' shows the graph both directions — e.g. link "
+            "the two isomer-state designs of one photoswitch machine "
+            "(rel='related-to') until block states land, or a design "
+            "to the quest it serves (rel='serves')."
         ),
         supports_get=True,
         supports_put=True,
@@ -168,6 +174,7 @@ class NmHandler(Handler):
         supports_delete=True,
         supports_search=True,
         supports_search_hits=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         placement="artifact",
@@ -1194,13 +1201,18 @@ class NmHandler(Handler):
             if lit_block and lit_block not in tree.blocks:
                 raise NotFound(_block_not_found(tree, lit_block))
             return self._render_literature(tree, ref, block_name=lit_block)
+        if v == "links":
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense="nm")
         raise BadInput(
             f"unknown nm view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='ports' | view='validate' | "
             "view='clearance' (args={'a':...,'b':...}) | view='topology' | "
             "view='mechanics' | view='literature' (optional "
-            "args={'block':...})",
+            "args={'block':...}) | view='links' (the design's link "
+            "graph, both directions)",
         )
 
     # ── delete ───────────────────────────────────────────────────────
@@ -1212,6 +1224,57 @@ class NmHandler(Handler):
             raise NotFound(f"nm design {id!r} not found")
         n = persist.retire_design(self.store, ref.id)
         return Response(body=f"retired nm design '{ref.slug}' ({n} block(s))")
+
+    # ── link ─────────────────────────────────────────────────────────
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove a typed relation from this design to another ref —
+        two isomer-state designs of one machine (``rel='related-to'``,
+        the interim path until block states land), the quest/todo it
+        serves (``rel='serves'``), a motivating paper (``rel='cites'``);
+        any registered relation works (gr332020: designs must not live
+        outside the ref graph). The reserved virtual ``rel='parent'`` is
+        folder placement — a ``refs.parent_id`` write, never a stored
+        link. ``view='links'`` renders the graph both directions."""
+        from precis.handlers._link_tag_ops import (
+            apply_link_ops,
+            format_link_tag_ack,
+            require_link_target,
+            validate_link_mode,
+        )
+        from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
+        from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+
+        if rel == RESERVED_PARENT_REL:
+            ref = resolve_live_slug_ref(self.store, kind="nm", id=str(id).strip())
+            return place_ref(self.store, kind="nm", ref=ref, target=target, mode=mode)
+        target = require_link_target("nm", target)
+        validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="nm", id=str(id).strip())
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref.id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=str(ref.slug),
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
 
     # ── search ───────────────────────────────────────────────────────
     def search(
@@ -1329,6 +1392,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "topology": frozenset(),
     "mechanics": frozenset(),
     "literature": frozenset({"block"}),
+    "links": frozenset(),
 }
 
 

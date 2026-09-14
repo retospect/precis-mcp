@@ -1,7 +1,7 @@
 ---
 id: precis-nm-help
 title: precis — the nm kind (nanomachine block trees over atoms)
-summary: hierarchical building-block design for molecular machines — nested blocks with envelopes/poses/ports/connects/L2 threading/DOF and an L5 binding into a real structure design for the filled chemistry; typed ops via put/edit, views tree/block/ports/validate/clearance/topology/mechanics/literature; always on
+summary: hierarchical building-block design for molecular machines — nested blocks with envelopes/poses/ports/connects/L2 threading/DOF and an L5 binding into a real structure design for the filled chemistry; typed ops via put/edit, views tree/block/ports/validate/clearance/topology/mechanics/literature/links; always on
 answers:
   - how do I design a molecular machine as nested blocks before filling in real chemistry?
   - how do I declare a port and connect two blocks with a capability gate?
@@ -12,7 +12,7 @@ answers:
   - how do I check whether a bound block's atoms actually fit its declared envelope?
   - how do I tell whether a design is validate-clean because it's done, or because it's unfilled?
   - what are the pose/envelope geometry conventions (units, centring, rotation order)?
-applies-to: get/search/put/edit/delete (kind='nm')
+applies-to: get/search/put/edit/delete/link (kind='nm')
 status: active
 tags: [design]
 kinds: [nm]
@@ -279,7 +279,15 @@ get(kind="nm", id="rotax1", view="validate")                         # feasibili
 get(kind="nm", id="rotax1", view="clearance", args={"a": "axle", "b": "hub"})  # signed envelope gap
 get(kind="nm", id="rotax1", view="mechanics")                        # advisory L4 ceilings, never a gate
 get(kind="nm", id="rotax1", view="literature", args={"block": "hub"})  # lit-search query for one block
+get(kind="nm", id="rotax1", view="links")                            # the design's link graph, both directions
 ```
+
+Write link edges with the `link` verb: `link(kind='nm', id='<slug>',
+target='kind:identifier', rel=…)` — default `related-to` ties the two
+isomer-state designs of one machine together (the interim path until
+block states land), `rel='serves'` names the quest/todo it serves,
+`rel='parent'` (with `target='folder:N'`) files it into a folder;
+`mode='remove'` deletes the edge.
 
 The tree view marks each line with an inherited-envelope note (`(from
 tmpl)`) on an instance, a `[N port(s)]` suffix, a `[rot]`/`[trans]` dof

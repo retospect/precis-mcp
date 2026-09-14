@@ -8,7 +8,7 @@ answers:
   - how do I check whether my structure is rigid or a mechanism (stability)?
   - how do I declare loads, supports, measures, manufacturing mode, BOM?
   - what units does se use, and what do envelope w/d/h mean?
-applies-to: get/search/put/edit/delete (kind='se')
+applies-to: get/search/put/edit/delete/link (kind='se')
 status: active
 tags: verbs, design
 kinds: se
@@ -124,8 +124,16 @@ batches are **atomic**: one bad op rolls the whole batch back.
 ## Views (`get(kind='se', id=…, view=…)`)
 
 `tree · block · ports · measures · validate · clearance · drc · bom ·
-fasten · interview · freedom · stability`. There is **no `mass` view**
-(mass goes via `bom`). `interview` elicits what's missing — lead with it.
+fasten · interview · freedom · stability · links`. There is **no `mass`
+view** (mass goes via `bom`). `interview` elicits what's missing — lead
+with it.
+
+`view='links'` renders the design's link graph both directions. Write
+edges with the `link` verb: `link(kind='se', id='<slug>',
+target='kind:identifier', rel=…)` — `rel='serves'` for the quest/todo
+the design serves, default `related-to` for a sibling variant,
+`rel='parent'` (with `target='folder:N'`) files it into a folder;
+`mode='remove'` deletes the edge.
 
 `view='stability'` (Maxwell/Calladine m−s on the axial subgraph):
 

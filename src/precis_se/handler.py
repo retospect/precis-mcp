@@ -172,7 +172,12 @@ class SeHandler(Handler):
             "block tree stays canonical, members are derived. The "
             "se_propose job, realization and manufacturing modes land in "
             "later slices. The LLM traverses a block tree, never raw "
-            "geometry."
+            "geometry. link records typed relations from the design "
+            "(target='kind:identifier', rel= default related-to; "
+            "rel='parent' places it into a folder) and view='links' "
+            "shows the graph both directions — e.g. link a design to "
+            "the quest it serves (rel='serves') or to its sibling "
+            "variant."
         ),
         supports_get=True,
         supports_put=True,
@@ -180,6 +185,7 @@ class SeHandler(Handler):
         supports_delete=True,
         supports_search=True,
         supports_search_hits=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         placement="artifact",
@@ -399,6 +405,10 @@ class SeHandler(Handler):
             return Response(body=_render_freedom(tree))
         if v == "stability":
             return Response(body=_render_stability(tree))
+        if v == "links":
+            from precis.handlers._links_render import render_links_view
+
+            return render_links_view(self.store, ref, sense="se")
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
@@ -411,7 +421,8 @@ class SeHandler(Handler):
             "(the question/answer/decision ledger, open questions first) "
             "| view='freedom' (what is still undecided, and by whom) "
             "| view='stability' (Maxwell/Calladine rigid / mechanism / "
-            "prestress-stabilized over the axial members)",
+            "prestress-stabilized over the axial members) "
+            "| view='links' (the design's link graph, both directions)",
         )
 
     def _render_bom(self, tree: SeTree) -> str:
@@ -550,6 +561,56 @@ class SeHandler(Handler):
             raise NotFound(f"se design {id!r} not found")
         n = persist.retire_design(self.store, ref.id)
         return Response(body=f"retired se design '{ref.slug}' ({n} block(s))")
+
+    # ── link ─────────────────────────────────────────────────────────
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove a typed relation from this design to another ref —
+        the quest/todo it serves (``rel='serves'``), a sibling variant
+        (``rel='related-to'``), a motivating paper (``rel='cites'``); any
+        registered relation works (gr332020: designs must not live outside
+        the ref graph). The reserved virtual ``rel='parent'`` is folder
+        placement — a ``refs.parent_id`` write, never a stored link.
+        ``view='links'`` renders the graph both directions."""
+        from precis.handlers._link_tag_ops import (
+            apply_link_ops,
+            format_link_tag_ack,
+            require_link_target,
+            validate_link_mode,
+        )
+        from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
+        from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+
+        if rel == RESERVED_PARENT_REL:
+            ref = resolve_live_slug_ref(self.store, kind="se", id=str(id).strip())
+            return place_ref(self.store, kind="se", ref=ref, target=target, mode=mode)
+        target = require_link_target("se", target)
+        validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="se", id=str(id).strip())
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref.id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=str(ref.slug),
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
 
     # ── search ───────────────────────────────────────────────────────
     def search(
