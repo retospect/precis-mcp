@@ -146,6 +146,10 @@ def test_unbalanced_math_escaped_not_passed_through() -> None:
     # balanced math in the same run still passes through untouched
     out2, _ = _inline(r"fine $\sqrt{2}$ and $x_{1}$")
     assert r"$\sqrt{2}$" in out2 and "$x_{1}$" in out2
+    # an escaped \{ is a glyph, not grouping — the span counts as balanced
+    # and passes through verbatim (kills the escape-tracking mutants)
+    out3, _ = _inline(r"interval $a \{ b$ end")
+    assert r"$a \{ b$" in out3
 
 
 def test_raw_percent_and_hash_inside_math_are_escaped() -> None:
@@ -274,6 +278,16 @@ def test_authoring_link_renders_nothing() -> None:
     out, ctx = _inline("provenance [[memory:6184]] here")
     assert "memory" not in out and "6184" not in out
     assert ctx.cited == []
+
+
+def test_cyrillic_homoglyph_kept_raw_not_cyrt() -> None:
+    # A Cyrillic Т (extraction homoglyph) must NOT become \CYRT — that
+    # command is undefined in the LuaLaTeX preamble and fatals the compile
+    # (killed the nano-computer send). The raw glyph at worst renders as a
+    # missing-glyph rule.
+    out, _ = _inline("wick-vapor interface Т temperature")
+    assert "CYRT" not in out
+    assert "Т" in out
 
 
 def test_unicode_translated_to_latex() -> None:

@@ -29,7 +29,11 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pylatexenc.latexencode import UnicodeToLatexEncoder
+from pylatexenc.latexencode import (
+    RULE_CALLABLE,
+    UnicodeToLatexConversionRule,
+    UnicodeToLatexEncoder,
+)
 
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
@@ -85,11 +89,43 @@ _REMARKABLE_GEOMETRY = (
     "\\linespread{1.08}"
 )
 
+#: Script blocks whose pylatexenc translations are font-encoding commands
+#: (Cyrillic Т → ``\CYRT`` …) UNDEFINED in this LuaLaTeX preamble — an
+#: undefined control sequence is a fatal compile error, while the raw glyph
+#: at worst renders as a missing-glyph rule (the same degrade the CJK path
+#: rides). Corpus text carries such glyphs as extraction homoglyphs (a
+#: Cyrillic Т in an English passage killed the nano-computer send).
+#: Cyrillic (+supplement), Armenian, Hebrew, Arabic.
+_RAW_SCRIPT_RANGES = (
+    ("Ѐ", "ԯ"),  # Cyrillic + supplement
+    ("԰", "֏"),  # Armenian
+    ("֐", "׿"),  # Hebrew
+    ("؀", "ۿ"),  # Arabic
+)
+
+
+def _keep_raw_scripts(u: str, pos: int) -> tuple[int, str] | None:
+    """RULE_CALLABLE: pass glyphs from ``_RAW_SCRIPT_RANGES`` through raw;
+    ``None`` defers every other char to the default rules."""
+    ch = u[pos]
+    for lo, hi in _RAW_SCRIPT_RANGES:
+        if lo <= ch <= hi:
+            return (1, ch)
+    return None
+
+
 #: Translate non-ASCII glyphs to LaTeX commands. ``non_ascii_only`` leaves
 #: ASCII (including the backslash escapes we emit) untouched, so it's safe
 #: to run over already-escaped prose; ``keep`` leaves the rare glyph with
 #: no known representation verbatim rather than raising.
-_U2L = UnicodeToLatexEncoder(non_ascii_only=True, unknown_char_policy="keep")
+_U2L = UnicodeToLatexEncoder(
+    conversion_rules=[
+        UnicodeToLatexConversionRule(RULE_CALLABLE, _keep_raw_scripts),
+        "defaults",
+    ],
+    non_ascii_only=True,
+    unknown_char_policy="keep",
+)
 
 # ── inline grammar (shared atoms; mirrors precis_web.linkify) ──────────
 # The same superset the reader highlights: bracket/sigil forms ∪ bare
