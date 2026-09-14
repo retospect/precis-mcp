@@ -112,6 +112,27 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "checklist_verdicts.evidence",
         "component_spec_values.conditions",
         "component_specs.allowed_values",
+        # 0162 (design core). Each is genuinely open-ended at this layer:
+        #   * objective_weights — the optimiser's objective vocabulary is
+        #     build-order step 4 and does not exist yet; closing it here
+        #     would be a guess, and the presets only seed starting points.
+        #   * vibration_spectrum / spec — per-family shapes (a PSD table, a
+        #     half-sine pulse, an off-axis cone); no fixed column set covers
+        #     shock AND vibration AND off-axis.
+        #   * headline — whatever the owning kind computes (mass, worst
+        #     utilisation, cost); core never reads a key, it only diffs bags.
+        #   * payload — the plugin's OWN serialised tree, opaque here by
+        #     design (core must not learn se's/nm's block shape).
+        #   * port_pose_overrides / params — keyed by the block's own port
+        #     names, resp. shaped per driver_kind.
+        "design_scenarios.objective_weights",
+        "design_service_environments.vibration_spectrum",
+        "design_load_cases.spec",
+        "design_checkpoints.headline",
+        "design_checkpoints.payload",
+        "design_branches.headline",
+        "design_states.port_pose_overrides",
+        "design_transitions.params",
         "dream_log.seed_clusters",
         "dream_log.summary",
         "dream_transcripts.transcript",

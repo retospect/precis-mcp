@@ -510,6 +510,7 @@ def _initialise_test_db() -> Iterator[None]:
             _ensure_material_seed(PG_TEST_DSN)
             _ensure_component_seed(PG_TEST_DSN)
             _ensure_rxn_seed(PG_TEST_DSN)
+            _ensure_design_core_seed(PG_TEST_DSN)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)
@@ -798,6 +799,14 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "component_categories",  # seeded category registry, 0093 (core + proposed)
         "component_specs",  # seeded spec registry, 0093 (core + proposed)
         "rxn_properties",  # seeded property registry, 0157 (core + proposed)
+        # Design-core vocabulary, seeded by 0162: the scenario presets
+        # (prototype / small_batch / mass_production), their service
+        # environments, and the standard load-case library. Per-design rows
+        # (design_scenario_link, exemptions, history, states) are DATA and
+        # are truncated like everything else.
+        "design_scenarios",
+        "design_service_environments",
+        "design_load_cases",
         "external_rate_limits",  # seeded provider rate/quota limits, 0121
     }
 )
@@ -971,6 +980,43 @@ def _ensure_rxn_seed(dsn: str) -> None:
         log.warning(
             "conftest: rxn_properties core seed missing on %r — re-applying "
             "0157's seed directly (see _ensure_rxn_seed)",
+            dsn,
+        )
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))
+
+
+def _ensure_design_core_seed(dsn: str) -> None:
+    """Defensive reseed of the design-core presets — the scenario/
+    service-environment/load-case analogue of :func:`_ensure_material_seed`.
+    Same rationale: the seed lives only in tail migration
+    ``0162_design_core.sql``'s ``INSERT ... ON CONFLICT DO NOTHING``
+    statements, which ``Migrator.apply_all`` skips once recorded, so a
+    table emptied by an out-of-sync sibling worktree never refills.
+
+    Probed on ``design_scenarios``'s ``core`` tier (the three presets);
+    re-executes 0162's own idempotent SQL when it is missing.
+    """
+    seed_file = MIGRATIONS_DIR / "0162_design_core.sql"
+    if not seed_file.exists():
+        return  # this checkout predates the design core; nothing to seed
+    from precis.store.migrate import _execute_dump_sql
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        exists = conn.execute(
+            "SELECT to_regclass('public.design_scenarios') IS NOT NULL"
+        ).fetchone()
+        if not (exists and exists[0]):
+            return  # 0162 hasn't applied yet; apply_all's own run will seed it
+        core_count = conn.execute(
+            "SELECT count(*) FROM design_scenarios WHERE status = 'core'"
+        ).fetchone()
+        if core_count and core_count[0] > 0:
+            return  # seed intact — nothing to repair
+        log.warning(
+            "conftest: design_scenarios core seed missing on %r — re-applying "
+            "0162's seed directly (see _ensure_design_core_seed)",
             dsn,
         )
         with conn.transaction():

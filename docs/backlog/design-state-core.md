@@ -9,10 +9,23 @@ model: opus
 
 The shared substrate the multiscale spec's new subsystems stand on
 (multiscale-design-system-spec.md §1.3–1.6, §5.6; map §Build order
-step 2). One internal core package rented by both `se` and `nm` exactly
-as both rent the cad kernel — **not a new kind, no user-visible surface
-of its own** (Reto 2026-09-12); its capabilities appear only through
-the se/nm ops and views.
+step 2). One internal core package rented by `se` (including its
+post-merge atomic mode) exactly as se rents the cad kernel — **not a
+new kind, no user-visible surface of its own** (Reto 2026-09-12); its
+capabilities appear only through the se ops and views.
+
+**2026-09-14 resequence (map §Build order amendment): the nm kind
+merges into se (window 1b, `nm-se-merge.md`) BEFORE this item's
+plugin-side slices.** Single renter: every "se/nm", "both scales",
+"nm adoption" reading below collapses to the merged se. Item 7b and
+the nm persist rewrite in item 2 are CANCELLED (the merge deletes
+their target); the se persist uid-rewrite runs AFTER the merge window
+closes, against the merged tree. **Progress: round 1 (core package
+`src/precis/design/` + migration 0162 + tests) landed 2026-09-14** —
+scenario/service-environment + presets, provenance sidecar helpers,
+design history (revisions/checkpoints/branches), discrete states +
+transitions (closed driver enum incl. `mechanical`, per-block state,
+A9 cache rule), `design_block_uid_seq` mint, situation stub.
 
 ## Motivation / why
 
@@ -92,13 +105,13 @@ enters via the pseudo-rigid-body route on the existing member machinery.
    keys for anything evaluated over a state-carrying block MUST include
    the block's current discrete state. Ratchets are asymmetric per-edge
    barriers on this same transition graph — no extra machinery.
-7. **se/nm adoption — SEPARATELY SHIPPABLE sub-slices** (vet advisory
-   accepted): (7a) se adoption — scenario_id, six-component contract
-   storage with absent = unknown never zero (Rejection names the
-   missing component), insertion-direction cones, provenance on
-   params/loads; (7b) nm adoption — scenario_id + provenance. The core
-   item itself (1–6) ships with one thin se rental proof, 7a/7b follow
-   as their own lands.
+7. **se adoption — SEPARATELY SHIPPABLE sub-slice** (vet advisory
+   accepted; 7b CANCELLED by the 2026-09-14 merge — one renter): (7a)
+   se adoption — scenario_id, six-component contract storage with
+   absent = unknown never zero (Rejection names the missing
+   component), insertion-direction cones, provenance on params/loads.
+   The core item itself (1–6) ships with one thin se rental proof;
+   7a follows as its own land, after the merge window.
 
 ## Explicitly NOT in scope
 
@@ -134,15 +147,14 @@ enters via the pseudo-rigid-body route on the existing member machinery.
 
 ## Target + blast radius
 
-New `precis/design/` package + core migrations · `precis_se`
-persist.py REWRITE (uid-keyed load/save) + handler/validate + plugin
-migration converting se_connects/se_ports/notes name-refs to uid ·
-`precis_nm` persist.py REWRITE + plugin migration converting
-nm_topology/template_ref name-refs to uid · `precis.blocktree`
-template_ref resolution · viewer path scheme (uids as leaves) · skills
-precis-se-design-help/precis-nm-help. Post-deploy check: live unicycle
-+ photonic-arm designs load, revalidate, and accept a checkpoint; all
-cross-references resolve post uid-migration.
+New `precis/design/` package + core migrations *(landed, round 1)* ·
+**post-merge-window**: merged `precis_se` persist.py REWRITE
+(uid-keyed load/save) + handler/validate + plugin migration converting
+se_connects/se_ports/notes/template_ref name-refs to uid ·
+`precis.blocktree` template_ref resolution · viewer path scheme (uids
+as leaves) · skill precis-se-help. Post-deploy check: live unicycle
+(+ the regenerated atomic-mode designs) load, revalidate, and accept
+a checkpoint; all cross-references resolve post uid-migration.
 
 ## Open questions / decisions log
 
