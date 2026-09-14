@@ -187,6 +187,13 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_local_footprints.courtyard",
         "pcb_local_footprints.pads",
         "pcb_local_footprints.pin_map",
+        # 0161: generator identity/idempotency rows (pcb-ewod-multitile
+        # Slice 2) — params is the caller's canonicalized kwargs and
+        # ledger the expansion's report; both shapes are owned by the
+        # generator type + version, read back whole for idempotency
+        # comparison and capability rendering, never queried by key.
+        "pcb_generators.ledger",
+        "pcb_generators.params",
         "pcb_measures.meta",
         "pcb_measures.operands",
         "pcb_net_classes.meta",

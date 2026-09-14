@@ -109,13 +109,29 @@ def test_no_cross_net_copper_overlap(variant, grid):
 
 
 def test_pads_1024_generates_in_seconds_and_is_closed_form():
+    # Closed-form means LINEAR in pad count, so assert the scaling ratio
+    # between two sizes measured back-to-back (robust to shared-VM load,
+    # which inflates both alike — a flat 5s wall-clock budget flaked at 8s
+    # under sibling gate load while a quiet box measures ~1.1s/1024).
     import time
 
     start = time.monotonic()
+    small = G.expand("ewod_pad_array", "ARR", {"pads": 256})
+    t_small = time.monotonic() - start
+
+    start = time.monotonic()
     exp = G.expand("ewod_pad_array", "ARR", {"pads": 1024})
-    elapsed = time.monotonic() - start
-    assert elapsed < 5.0
+    t_big = time.monotonic() - start
+
+    assert small.ledger["summary"]["pads_total"] > 200
     assert exp.ledger["summary"]["pads_total"] > 900
+    per_pad_small = t_small / small.ledger["summary"]["pads_total"]
+    per_pad_big = t_big / exp.ledger["summary"]["pads_total"]
+    assert per_pad_big < 4 * per_pad_small, (
+        f"superlinear expansion: {per_pad_small * 1000:.2f}ms/pad @256 -> "
+        f"{per_pad_big * 1000:.2f}ms/pad @1024"
+    )
+    assert t_big < 60.0, f"pathologically slow even for a loaded box: {t_big:.1f}s"
 
 
 def test_9x9_full_matches_the_acceptance_criterion_counts():
