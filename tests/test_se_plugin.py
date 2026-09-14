@@ -1113,6 +1113,84 @@ def test_clearance_requires_both_args(handler: SeHandler) -> None:
         handler.get(id="cart1", view="clearance", args={"a": "hub"})
 
 
+def test_clearance_digest_lists_pairs_worst_first(handler: SeHandler) -> None:
+    # hub vs axle overlap at the origin (interference); hub vs wheel are
+    # 0.2 m apart (clear) — the digest must list the interference first.
+    handler.put(
+        id="cart2",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "hub", "envelope": "cyl:r0.008h0.03"},
+                    {
+                        "op": "add_block",
+                        "name": "wheel",
+                        "envelope": "cyl:r0.04h0.02",
+                        "pose": [0.2, 0, 0],
+                    },
+                    {
+                        "op": "add_block",
+                        "name": "axle",
+                        "envelope": "cyl:r0.005h0.05",
+                        "pose": [0.01, 0, 0],
+                    },
+                    {"op": "add_port", "block": "hub", "name": "shaft"},
+                    {"op": "add_port", "block": "wheel", "name": "bore"},
+                    {"op": "add_port", "block": "axle", "name": "end"},
+                    {"op": "connect", "a": "hub.shaft", "b": "wheel.bore"},
+                    {
+                        "op": "set_joint",
+                        "a": "hub.shaft",
+                        "b": "wheel.bore",
+                        "joint": {"class": "revolute"},
+                    },
+                    {"op": "connect", "a": "hub.shaft", "b": "axle.end"},
+                ]
+            }
+        ),
+    )
+    resp = handler.get(id="cart2", view="clearance")
+    assert "clearance digest" in resp.body
+    assert "revolute" in resp.body
+    axle_pos = resp.body.index("axle")
+    wheel_pos = resp.body.index("wheel")
+    assert axle_pos < wheel_pos  # interference (axle) sorts before clear (wheel)
+
+
+def test_clearance_digest_skips_envelope_less_pair_with_note(
+    handler: SeHandler,
+) -> None:
+    handler.put(
+        id="bare3",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "a", "envelope": "sphere:r0.01"},
+                    {"op": "add_block", "name": "b"},
+                    {"op": "add_port", "block": "a", "name": "p"},
+                    {"op": "add_port", "block": "b", "name": "q"},
+                    {"op": "connect", "a": "a.p", "b": "b.q"},
+                ]
+            }
+        ),
+    )
+    resp = handler.get(id="bare3", view="clearance")
+    assert "clearance digest" in resp.body
+    assert "skipped" in resp.body
+    assert "no effective envelope" in resp.body
+
+
+def test_clearance_digest_empty_when_no_connects(handler: SeHandler) -> None:
+    handler.put(
+        id="lonely1",
+        text=json.dumps(
+            {"ops": [{"op": "add_block", "name": "a", "envelope": "sphere:r0.01"}]}
+        ),
+    )
+    resp = handler.get(id="lonely1", view="clearance")
+    assert "no CONNECTS" in resp.body
+
+
 # ── search ───────────────────────────────────────────────────────────────
 
 

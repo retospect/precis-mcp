@@ -569,7 +569,7 @@ _COMMAND_TOOL_DESCRIPTION = (
     "delete/tag/link/more; kind= is the discriminator. Put a large "
     "body in the separate `text=` param instead of quoting it inside "
     "`command` (avoids escaping): "
-    "command=\"put(kind='memory', mode='create')\", text='...'. "
+    "command=\"put(kind='memory', title='...')\", text='...'. "
     "Discover: search(kind='skill', q='<goal>') | "
     "get(kind='skill', id='toc'). Build/sha/DB: "
     "get(kind='skill', id='precis-status')."

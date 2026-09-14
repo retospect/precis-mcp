@@ -27,7 +27,9 @@ order"):
   filled-fraction honesty header (``view='validate'`` —
   :mod:`precis_se.validate`), the signed envelope gap between two blocks
   (``view='clearance'``, ``args={'a': ..., 'b': ...}``, the cad kernel
-  at metres — the nm clearance view's design, transferred), or the
+  at metres — the nm clearance view's design, transferred; omit ``args``
+  for an all-pairs digest over the design's CONNECTS, worst gap first),
+  or the
   graph-tier DRC report (``view='drc'`` — :mod:`precis_se.drc`: joint
   contradictions, mechanism-implied demands, unresolvable relations,
   the declared-vs-derived axis-travel probe), the bought-item rollup
@@ -56,6 +58,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from psycopg.types.json import Jsonb
@@ -112,7 +115,9 @@ class SeHandler(Handler):
             "'interview'|'freedom'|'stability'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
-            "blocks' posed envelopes); delete soft-retires; search finds "
+            "blocks' posed envelopes, or omit args for an all-pairs "
+            "clearance digest over the design's CONNECTS, worst gap "
+            "first); delete soft-retires; search finds "
             "by intent. connect wires two 'block.port' endpoints; a "
             "joint= is {'class': rigid|revolute|prismatic|cylindrical|"
             "planar|ball|compliant|captive|axial, 'axis'?, 'mechanism'?: "
@@ -414,7 +419,8 @@ class SeHandler(Handler):
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='ports' | view='measures' "
             "(+ stack-up) | view='validate' | view='clearance' "
-            "(args={'a':...,'b':...}) | view='drc' (graph tier + DOF "
+            "(args={'a':...,'b':...}, or omit args for an all-pairs "
+            "CONNECTS digest) | view='drc' (graph tier + DOF "
             "probe) | view='bom' (bought items, multiplied through the "
             "arrays, with cost/mass) | view='fasten' (screw joints: grip "
             "stack-up, clearance holes, thread lead) | view='interview' "
@@ -1599,25 +1605,49 @@ def _clearance_verdict(gap: float, resolution: float) -> str:
     return "clear"
 
 
-def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
-    """``view='clearance'`` — the signed minimum envelope gap between two
-    blocks (:func:`precis.cad.relate.clearance`, the exact-sign CSG SDF at
+#: Cap on the number of unique CONNECTS pairs the no-args clearance digest
+#: (gr338444) will actually query — a survey, not an unbounded fan-out of
+#: SDF solves. Pairs beyond this many are simply not computed; the digest
+#: says so ("showing first N of M") rather than silently truncating.
+_CLEARANCE_DIGEST_BUDGET = 64
+
+
+@dataclass
+class _PairClearance:
+    """One pairwise clearance query's result, already reduced to display
+    units (metres) — the shared payload both the targeted ``view='clearance'``
+    render and the no-args all-pairs digest build their output from."""
+
+    a_name: str
+    b_name: str
+    gap_m: float
+    resolution_m: float
+    verdict: str
+    witness_m: list[float]
+
+
+class _ClearanceUnavailable(Exception):
+    """A clearance query between two named blocks could not run — no
+    effective envelope on one side, incompatible scales, or a corrupt
+    stored envelope. Raised by :func:`_pair_clearance` only; the targeted
+    ``view='clearance'`` (explicit ``a=``/``b=``) re-raises this as
+    ``BadInput`` since the caller asked about that one pair specifically,
+    while the no-args all-pairs digest catches it and renders a one-line
+    skip note instead — a survey shouldn't abort on one bad pair."""
+
+
+def _pair_clearance(tree: SeTree, a_name: str, b_name: str) -> _PairClearance:
+    """Signed minimum envelope gap between two named blocks
+    (:func:`precis.cad.relate.clearance`, the exact-sign CSG SDF at
     metres — nm's ``_render_clearance`` transferred; its shaft-in-bored-hub
     case is literally se's hub-through-wheel interface). **Nested blocks
     v1**: a block's envelope is its own only — a child's envelope is never
-    unioned into its parent's (noted when a queried block has enveloped
-    children); array members are not expanded (the array node is posed
-    once, at its own pose)."""
-    a_name = (args or {}).get("a")
-    b_name = (args or {}).get("b")
-    if not a_name or not b_name:
-        raise BadInput(
-            "get(kind='se', view='clearance') requires "
-            "args={'a': <block>, 'b': <block>}"
-        )
-    a_name, b_name = str(a_name).strip(), str(b_name).strip()
-    if a_name == b_name:
-        raise BadInput("get(kind='se', view='clearance'): 'a' and 'b' must differ")
+    unioned into its parent's; array members are not expanded (the array
+    node is posed once, at its own pose).
+
+    Raises ``NotFound`` for an unknown block name, and
+    :class:`_ClearanceUnavailable` for any condition that keeps the query
+    from running at all (see that class's docstring)."""
     a_node = tree.blocks.get(a_name)
     if a_node is None:
         raise NotFound(_block_not_found(tree, a_name))
@@ -1629,7 +1659,7 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
     for name, node in ((a_name, a_node), (b_name, b_node)):
         env = effective_envelope(tree, node)
         if not env:
-            raise BadInput(
+            raise _ClearanceUnavailable(
                 f"block {name!r} has no effective envelope — set one "
                 "(set_envelope, or instance a block that has one) before "
                 "requesting clearance"
@@ -1645,7 +1675,7 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
         (envelopes[a_name], a_node), (envelopes[b_name], b_node)
     )
     if scale is None:
-        raise BadInput(
+        raise _ClearanceUnavailable(
             f"blocks {a_name!r} and {b_name!r} differ too much in size to "
             "share one clearance query (the SDF grid cannot resolve both "
             "bodies at once) — cross-scale seating is a v1 limit; check "
@@ -1657,7 +1687,7 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
             is None
         ):
             # A stored-but-now-invalid envelope (hand-corrupted data) must
-            # surface as a legible BadInput, not a raw traceback — the
+            # surface as a legible message, not a raw traceback — the
             # write path validates via the same parser, but this is a
             # read-time re-check over whatever is actually stored. Re-run
             # the parse/build here purely to name the cause (the seam's
@@ -1667,7 +1697,7 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
                 cause = "parsed, but its solid is degenerate at this scale"
             except (cad_dsl.DslError, ValueError) as exc:
                 cause = str(exc)
-            raise BadInput(
+            raise _ClearanceUnavailable(
                 f"block {name!r} has an invalid envelope {envelopes[name]!r}: {cause}"
             )
     result = cad_relate.clearance(design, a_name, b_name)
@@ -1675,17 +1705,63 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
     # the RAW resolution; dividing first would re-break nanoscale. Display
     # converts both back to metres below.
     verdict = _clearance_verdict(result.gap, result.resolution)
+    return _PairClearance(
+        a_name=a_name,
+        b_name=b_name,
+        gap_m=result.gap / scale,
+        resolution_m=result.resolution / scale,
+        verdict=verdict,
+        witness_m=[float(x) / scale for x in result.point],
+    )
 
-    lines = [f"# clearance: {a_name!r} vs {b_name!r}"]
-    lines.append(f"gap: {format_quantity(result.gap / scale, 'length')}  ({verdict})")
+
+def _joint_class_for(tree: SeTree, a_name: str, b_name: str) -> str | None:
+    """The declared ``joint`` class (``rigid``/``revolute``/...) of the
+    CONNECTS edge between ``a_name`` and ``b_name``, order-independent, or
+    ``None`` when no connect names that pair or it declares no joint."""
+    pair = frozenset((a_name, b_name))
+    for conn in tree.connects:
+        if frozenset((conn.a_block, conn.b_block)) != pair:
+            continue
+        joint = getattr(conn, "joint", None)
+        if joint and joint.get("class"):
+            return str(joint["class"])
+    return None
+
+
+def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
+    """``view='clearance'`` — with ``args={'a': ..., 'b': ...}``, one
+    targeted signed envelope gap between two named blocks. With no args
+    (or an empty dict), an all-pairs digest instead: every unique block
+    pair named by the design's CONNECTS, worst gap first — a design-wide
+    interference/contact survey rather than a single probe (gr338444)."""
+    a_name = (args or {}).get("a")
+    b_name = (args or {}).get("b")
+    if not a_name and not b_name:
+        return _render_clearance_digest(tree)
+    if not a_name or not b_name:
+        raise BadInput(
+            "get(kind='se', view='clearance') requires "
+            "args={'a': <block>, 'b': <block>}"
+        )
+    a_name, b_name = str(a_name).strip(), str(b_name).strip()
+    if a_name == b_name:
+        raise BadInput("get(kind='se', view='clearance'): 'a' and 'b' must differ")
+    try:
+        pc = _pair_clearance(tree, a_name, b_name)
+    except _ClearanceUnavailable as exc:
+        raise BadInput(str(exc)) from None
+    return _render_pair_clearance(tree, pc)
+
+
+def _render_pair_clearance(tree: SeTree, pc: _PairClearance) -> str:
+    lines = [f"# clearance: {pc.a_name!r} vs {pc.b_name!r}"]
+    lines.append(f"gap: {format_quantity(pc.gap_m, 'length')}  ({pc.verdict})")
     lines.append(
-        f"resolution: ±{format_quantity(result.resolution / scale, 'length')} "
-        "(scale-relative)"
+        f"resolution: ±{format_quantity(pc.resolution_m, 'length')} (scale-relative)"
     )
-    lines.append(
-        f"witness point: [{_fmt3([float(x) / scale for x in result.point])}] m"
-    )
-    for name in (a_name, b_name):
+    lines.append(f"witness point: [{_fmt3(pc.witness_m)}] m")
+    for name in (pc.a_name, pc.b_name):
         kids_with_env = [
             c.name
             for c in tree.blocks.values()
@@ -1699,6 +1775,66 @@ def _render_clearance(tree: SeTree, args: dict[str, Any] | None) -> str:
                 "subtree union (a later increment)"
             )
     return "\n".join(lines)
+
+
+def _render_clearance_digest(tree: SeTree) -> str:
+    """All-pairs clearance survey: every unique block pair named by a
+    CONNECTS edge (self-connects excluded), worst gap first. A pair that
+    can't be queried (missing/invalid envelope, incompatible scales) is
+    skipped with a one-line note rather than aborting the whole survey."""
+    seen: set[frozenset[str]] = set()
+    pairs: list[tuple[str, str]] = []
+    for conn in tree.connects:
+        if conn.a_block == conn.b_block:
+            continue
+        key = frozenset((conn.a_block, conn.b_block))
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((conn.a_block, conn.b_block))
+
+    if not pairs:
+        return (
+            "# clearance digest\n"
+            "no CONNECTS in this design yet — nothing to survey. connect "
+            "two block.port endpoints, or query a pair directly: "
+            "view='clearance', args={'a': ..., 'b': ...}"
+        )
+
+    total_pairs = len(pairs)
+    truncated = total_pairs > _CLEARANCE_DIGEST_BUDGET
+    if truncated:
+        pairs = pairs[:_CLEARANCE_DIGEST_BUDGET]
+
+    computed: list[_PairClearance] = []
+    notes: list[str] = []
+    for a_name, b_name in pairs:
+        try:
+            computed.append(_pair_clearance(tree, a_name, b_name))
+        except (_ClearanceUnavailable, NotFound) as exc:
+            notes.append(f"- {a_name!r} vs {b_name!r}: skipped — {exc}")
+
+    # Worst (most negative = deepest interference) gap first.
+    computed.sort(key=lambda pc: pc.gap_m)
+
+    rows = [
+        {
+            "a": pc.a_name,
+            "b": pc.b_name,
+            "joint": _joint_class_for(tree, pc.a_name, pc.b_name) or "—",
+            "gap": format_quantity(pc.gap_m, "length"),
+            "tag": pc.verdict,
+        }
+        for pc in computed
+    ]
+    header = f"# clearance digest — {len(computed)} pair(s) from CONNECTS"
+    if truncated:
+        header += f" (showing first {_CLEARANCE_DIGEST_BUDGET} of {total_pairs})"
+    table = render_agent_table(rows, schema=["a", "b", "joint", "gap", "tag"])
+    body = f"{header}\n\n{table}"
+    if notes:
+        body += "\n\n" + "\n".join(notes)
+    return body
 
 
 def _block_not_found(tree: SeTree, name: str) -> str:

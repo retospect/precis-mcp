@@ -261,6 +261,30 @@ def test_fixed_objective_normalizes_and_rejects_junk() -> None:
             se_joints.validate_objectives({"fixed": bad})
 
 
+def test_bare_number_force_gets_a_concrete_vector_hint() -> None:
+    """gr332020: the common slip is passing the load's magnitude instead
+    of a 3-vector along an axis — the error should hand back a
+    copy-pasteable example, not just name the wrong shape."""
+    with pytest.raises(
+        se_joints.JointError,
+        match=r"a downward 800 N load is \[0, 0, -800\]",
+    ):
+        se_joints.validate_objectives({"force": 800})
+    with pytest.raises(
+        se_joints.JointError,
+        match=r"an 800 N·m moment about z is \[0, 0, 800\]",
+    ):
+        se_joints.validate_objectives({"torque": 800})
+
+
+def test_non_numeric_force_keeps_the_plain_message() -> None:
+    """A non-numeric offender (wrong-length list, string, …) gets no
+    vector-magnitude hint — there's no single number to build one from."""
+    with pytest.raises(se_joints.JointError, match="must be a 3-vector") as exc_info:
+        se_joints.validate_objectives({"force": [1, 2]})
+    assert "downward" not in str(exc_info.value)
+
+
 def test_fixed_on_a_connect_is_rejected_on_both_write_paths() -> None:
     tree = _pin_structure(
         {"a": [0.0, 0.0, 0.0], "b": [1.0, 0.0, 0.0]},

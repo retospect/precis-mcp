@@ -625,6 +625,7 @@ def _build_scene3d(
     kind: str,
     ref_id: int,
     *,
+    slug: str,
     level: str,
     isolate: str | None,
     level_overrides: dict[str, str],
@@ -647,7 +648,10 @@ def _build_scene3d(
         kids,
         plan,
         id_by_name,
-        root_id=f"/{kind}-{ref_id}",
+        # gr338445: the slug, not the numeric ref id — a viewer path like
+        # ``/se-337761/_connections`` is opaque; ``/se-<slug>/_connections``
+        # tells the reader what they're looking at.
+        root_id=f"/{kind}-{slug}",
         root_name=adapter.label,
         label_fn=adapter.connect_label,
         colour_fn=adapter.connect_colour,
@@ -680,6 +684,12 @@ async def _scene3d_response(
             store,
             kind,
             ref.id,
+            # ref.slug (not the raw path param) — the canonical slug even
+            # if the URL was addressed by some other resolvable id; a
+            # blocktree kind is always slug-addressed in practice, but
+            # ``Ref.slug`` types as Optional, so fall back to the path
+            # param on the defensive ``None`` case.
+            slug=ref.slug or slug,
             level=level,
             isolate=isolate,
             level_overrides=level_overrides,

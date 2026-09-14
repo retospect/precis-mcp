@@ -215,7 +215,8 @@ search(kind="paper", q="photocatalysis", page=3, page_size=20)
 
 `page=1` is the default. Bump `page=` to walk results. `page_size=`
 sets the page size (default 10, max 100) — *not* a quality cutoff
-despite the name.
+despite the name. `k=` and `limit=` are accepted aliases for
+`page_size=`; `page_size=` is the canonical spelling.
 
 Broad-retrieval searches paginate the same way, but the `page=N+1`
 call must repeat the same `queries=`/`answers=`/`per_paper=` arguments

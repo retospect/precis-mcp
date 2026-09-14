@@ -65,11 +65,12 @@ class GripeHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
-        # put() rejects any explicit mode= outright — id-presence alone
-        # dispatches create-vs-comment. Declared explicitly (rather than
-        # left at the `()` default) so it reads as a deliberate "none
-        # accepted" rather than "not applicable" (gr292913).
-        modes=(),
+        # id-presence alone dispatches create-vs-comment; mode= is never
+        # required. gr338441/gr292913: an explicit mode= is accepted only
+        # as a redundant-but-unambiguous confirmation of what id= already
+        # selected — 'create' with no id=, 'comment' with id=<n> — and
+        # rejected otherwise (see put()'s mode validation).
+        modes=("create", "comment"),
     )
 
     kind: ClassVar[str] = "gripe"
@@ -123,6 +124,14 @@ class GripeHandler(NumericRefHandler):
         prio: int | None = None,
         **_kw: Any,
     ) -> Response:
+        # id-presence is what actually dispatches create-vs-comment; an
+        # explicit mode= is accepted only as a redundant-but-unambiguous
+        # confirmation of that ('create' <-> no id=, 'comment' <-> id=<n>)
+        # and rejected as a mismatch otherwise (gr338441). Validated once,
+        # up front, so both branches below can treat mode= as already
+        # settled and never forward it past this point.
+        if mode is not None:
+            self._validate_put_mode(id=id, mode=mode)
         # ``put(id=N, text='...')`` appends a gripe_comment chunk —
         # the comment-append idiom for this kind. The base
         # NumericRefHandler.put rejects id-presence unconditionally
@@ -140,9 +149,8 @@ class GripeHandler(NumericRefHandler):
                     f"appending a comment to {self._sense()} id={id!r} requires text=",
                     next=(f"put(kind={self.kind!r}, id={id}, text='your comment')"),
                 )
-            # Tags / links / mode are not accepted on the append
-            # path — they belong on tag() / link() against the
-            # existing ref.
+            # Tags / links are not accepted on the append path — they
+            # belong on tag() / link() against the existing ref.
             if tags is not None or untags is not None:
                 raise BadInput(
                     "tags=/untags= are not accepted when appending a "
@@ -160,8 +168,6 @@ class GripeHandler(NumericRefHandler):
                         "target=..., mode='add'|'remove')"
                     ),
                 )
-            if mode is not None:
-                require_mode(spec=self.spec, verb="put", mode=mode)
             return self._append_comment(id=id, text=text)
         # Create path: plumb a create-time ``prio=`` into ``_create`` via a
         # per-call slot (the todo pending-slot pattern — the base put's
@@ -172,7 +178,10 @@ class GripeHandler(NumericRefHandler):
             return super().put(
                 id=id,
                 text=text,
-                mode=mode,
+                # Already validated above (mode='create' or None here — a
+                # mismatch raised before we got this far); the base put()
+                # rejects any non-None mode= outright, so don't forward it.
+                mode=None,
                 tags=tags,
                 untags=untags,
                 link=link,
@@ -181,6 +190,31 @@ class GripeHandler(NumericRefHandler):
             )
         finally:
             self._pending_prio = None
+
+    def _validate_put_mode(self, *, id: str | int | None, mode: str) -> None:
+        """Check an explicit ``put`` ``mode=`` against reality.
+
+        ``mode=`` is never required — id-presence alone dispatches
+        create-vs-comment. When a caller passes it anyway, it must agree
+        with what id= already selected: ``'create'`` pairs with no id=,
+        ``'comment'`` pairs with id=<n>. Anything else (an unknown value,
+        or a value that names the wrong branch) is ``BadInput`` naming
+        both accepted forms and the real dispatch rule.
+        """
+        require_mode(spec=self.spec, verb="put", mode=mode)
+        expected = "create" if id is None else "comment"
+        if mode != expected:
+            raise BadInput(
+                f"put(kind={self.kind!r}, mode={mode!r}) does not match "
+                f"id={id!r} — id-presence selects the branch, not mode=: "
+                "mode='create' pairs with no id= (files a new gripe), "
+                "mode='comment' pairs with id=<n> (appends a comment to it)",
+                next=(
+                    f"put(kind={self.kind!r}, text='...')"
+                    if id is None
+                    else f"put(kind={self.kind!r}, id={id}, text='...')"
+                ),
+            )
 
     #: Per-call slot plumbing a create-time ``prio=`` from ``put`` into
     #: ``_create`` (which the base class calls with a fixed arg set).

@@ -510,9 +510,10 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     r = blocktree_client.get("/se/unicycle_web/scene3d.json")
     assert r.status_code == 200
     body = r.json()
-    import re
 
-    assert re.fullmatch(r"/se-\d+", body["shapes"]["id"])
+    # gr338445: the root id is the design's SLUG, not its opaque numeric
+    # ref id — a viewer path like ``/se-337761`` told the reader nothing.
+    assert body["shapes"]["id"] == "/se-unicycle_web"
     # every SOLID leaf path ends in a plain integer (the DB-minted block
     # id) — no lookup table needed on the client to interpret a pick.
     # The sibling ``_connections`` group's own ``edges``-type leaves are

@@ -155,6 +155,13 @@ against a Y N buckling/crush ceiling"), mechanism-implied BOM demands,
 undeclared interpenetration, dof_disagreement, unconnected ports.
 `view='fasten'` refuses a stack-up with no screw-form component bound.
 
+`view='clearance'`: with `args={'a': <block>, 'b': <block>}`, the signed
+envelope gap between those two blocks (interference/touching/clear).
+Omit `args` (or pass `{}`) for an all-pairs digest instead — every unique
+block pair named by the design's CONNECTS, worst gap first, capped at 64
+pairs; a block missing an effective envelope is skipped with a note
+rather than failing the whole survey.
+
 ## Known sharp edges
 
 - Ports are mandatory for `connect` but stability discards their

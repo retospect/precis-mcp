@@ -610,6 +610,18 @@ class SkillHandler(Handler):
 
         text = _load_skill(slug)
         if text is None:
+            # gr338442: a caller often reasons "there's a `se` kind, so
+            # there's a `precis-se-help`" and passes the bare kind/verb
+            # name. Before giving up, check the one-hop alias — if it
+            # exists, serve it (with a banner naming the redirect) rather
+            # than making the caller retry with the fuller slug.
+            alias_target = f"precis-{slug}-help"
+            if skill_exists(alias_target):
+                text = _load_skill(alias_target)
+                assert text is not None  # skill_exists just confirmed it
+                text = f"(aliased from {slug!r} → {alias_target})\n\n" + text
+                slug = alias_target
+        if text is None:
             available = sorted(_list_skills())
             available.extend(self._SYNTHESIZED_SKILLS)
             # A guessed slug is the common case here (an agent reasons

@@ -341,6 +341,12 @@ def _check_reserved_args(
 # Hard cap on page_size for search tool
 _SEARCH_PAGE_SIZE_MAX: int = 100
 
+# search()'s effective page_size default, applied after the k=/limit=
+# alias normalisation (gr338443). The parameter itself defaults to None
+# so "explicitly passed" is detectable even when the caller passes the
+# default value — page_size=10 alongside k=5 must still conflict.
+_SEARCH_PAGE_SIZE_DEFAULT: int = 10
+
 # Hard cap on ``text=`` payloads to put / edit. The embedder
 # (BGE-M3 / 1024-d) tokenises and forwards the payload in worker
 # passes; an uncapped multi-MB write OOMs the model. 2 MiB is well
@@ -519,7 +525,14 @@ def search(
     q: str | None = None,
     kind: str | None = None,
     scope: str | None = None,
-    page_size: int = 10,
+    page_size: int | None = None,
+    # ``k=`` / ``limit=`` are the two spellings agents reach for out of
+    # habit (top-k retrieval, SQL LIMIT) — declared here rather than left
+    # to gr334695's strict unknown-kwarg rejection, and normalised to
+    # ``page_size`` (the canonical name) just below. Real parameters, not
+    # ``**kw`` tolerance, so the wire schema advertises them too.
+    k: int | None = None,
+    limit: int | None = None,
     page: int = 1,
     tags: list[str] | None = None,
     reach: str | None = None,
@@ -629,9 +642,9 @@ def search(
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
-    `page_size` ≤ 100; `page=N` paginates. Omit `kind` (or `'*'`) for
-    cross-kind fan-out; `exclude=` skips slugs; `reach=`
-    ('local'|'remote'|'both'; patent/edgar) picks the search leg;
+    `page_size` ≤ 100 (aliases: `k=`/`limit=`); `page=N` paginates.
+    Omit `kind` (or `'*'`) for cross-kind fan-out; `exclude=` skips
+    slugs; `reach=` ('local'|'remote'|'both'; patent/edgar);
     `folder=` scopes to a subtree.
 
     `mode=` `'hybrid'` (default) / `'lexical'` (exact string) /
@@ -644,8 +657,8 @@ def search(
     search; `title=`/`author=` look up by byline.
 
     Claims (finding): `trust='verified'` = evidence-backed + unopposed;
-    `'signed'` = provenance (separate axis, not a higher bar);
-    also `'disputed'`/`'any'`. `status=`: chase lifecycle.
+    `'signed'` = provenance (a separate axis); also
+    `'disputed'`/`'any'`. `status=`: chase lifecycle.
 
     `uncited=<draft>` drops sources it already cites.
 
@@ -654,6 +667,32 @@ def search(
     # Validate page_size at the boundary. Errors round-trip via
     # ``_validation_error`` so the MCP ``isError`` flag survives.
     from precis.errors import BadInput
+
+    # k=/limit= are aliases for page_size= (gr338443). Collect whichever
+    # of {page_size, k, limit} were actually given a value (all three
+    # default to None, so an explicit page_size=10 still counts as
+    # given). Agreeing values (including a caller passing the same
+    # number twice under different names) are fine; disagreeing ones
+    # are BadInput naming page_size as the one true spelling.
+    _psize_given: list[tuple[str, int]] = []
+    if page_size is not None:
+        _psize_given.append(("page_size", page_size))
+    if k is not None:
+        _psize_given.append(("k", k))
+    if limit is not None:
+        _psize_given.append(("limit", limit))
+    if len({v for _, v in _psize_given}) > 1:
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    "search() got conflicting page_size/k/limit values: "
+                    + ", ".join(f"{name}={value}" for name, value in _psize_given),
+                    next="pass one — page_size= is the canonical name",
+                )
+            )
+        )
+    page_size = _psize_given[0][1] if _psize_given else _SEARCH_PAGE_SIZE_DEFAULT
 
     if not isinstance(page_size, int) or page_size <= 0:
         runtime = _get_runtime()

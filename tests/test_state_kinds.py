@@ -129,6 +129,38 @@ class TestGripe:
         assert "default status='open'" in body
         assert "status='*'" in body  # the widen hint
 
+    # ── mode= on put: redundant-but-unambiguous confirmation (gr338441) ──
+
+    def test_put_mode_create_is_a_noop_on_the_create_branch(
+        self, gripe: GripeHandler
+    ) -> None:
+        r = gripe.put(text="mode='create' with no id= should just work", mode="create")
+        assert "id=" in r.body
+        refs = gripe.store.list_refs(kind="gripe", limit=10)
+        assert any("mode='create'" in ref.title for ref in refs)
+
+    def test_put_mode_comment_is_a_noop_on_the_append_branch(
+        self, gripe: GripeHandler
+    ) -> None:
+        gripe.put(text="a gripe to comment on")
+        gid = int(gripe.store.list_refs(kind="gripe", limit=1)[0].id)
+        gripe.put(id=gid, text="confirmed via mode='comment'", mode="comment")
+        blocks = gripe.store.chunks.list_chunks_for_ref(gid)
+        assert blocks[1].chunk_kind == "gripe_comment"
+        assert "confirmed via mode='comment'" in blocks[1].text
+
+    def test_put_mode_create_with_id_is_a_mismatch(self, gripe: GripeHandler) -> None:
+        gripe.put(text="a gripe to comment on")
+        gid = int(gripe.store.list_refs(kind="gripe", limit=1)[0].id)
+        with pytest.raises(BadInput, match="id-presence selects the branch"):
+            gripe.put(id=gid, text="oops", mode="create")
+
+    def test_put_mode_comment_without_id_is_a_mismatch(
+        self, gripe: GripeHandler
+    ) -> None:
+        with pytest.raises(BadInput, match="id-presence selects the branch"):
+            gripe.put(text="oops", mode="comment")
+
     def test_search_status_star_widens(self, gripe: GripeHandler) -> None:
         """status='*' drops the implicit STATUS filter — every status."""
         gripe.put(text="alpha fluxcap misfires on cold boot")

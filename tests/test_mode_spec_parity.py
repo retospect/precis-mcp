@@ -41,9 +41,10 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...]] = {
     ("websearch", "put"): ("import",),
     ("perplexity-reasoning", "put"): ("import",),
     ("perplexity-research", "put"): ("import",),
-    # -- put: gripe explicitly rejects any mode= (id= dispatches
-    #    create-vs-comment instead) -------------------------------------
-    ("gripe", "put"): (),
+    # -- put: gripe's mode= is a redundant-but-unambiguous confirmation of
+    #    what id= already selects — 'create' (no id=) or 'comment' (id=<n>);
+    #    a mismatch is BadInput (gr338441) -----------------------------
+    ("gripe", "put"): ("create", "comment"),
     # -- put: pathway frames the reaction network without ML compute ----
     ("pathway", "put"): ("preview",),
     # -- edit: file kinds, the region-rewrite grammar -------------------
@@ -112,17 +113,22 @@ def test_declared_set_nonempty_only_for_branching_handlers(full_hub: Hub) -> Non
     )
 
 
-def test_todo_memory_declare_replace_only_and_gripe_declares_none(
+def test_todo_memory_edit_replace_only_and_gripe_put_create_comment(
     full_hub: Hub,
 ) -> None:
     """The three kinds gr292913 named explicitly, pinned individually so a
-    regression here fails with a sharp, single-kind message."""
+    regression here fails with a sharp, single-kind message.
+
+    gripe's row changed under gr338441: it used to declare no accepted
+    put mode= at all; now 'create'/'comment' are accepted as an
+    optional, id-presence-must-agree confirmation (see
+    ``GripeHandler._validate_put_mode``)."""
     todo = full_hub.handlers["todo"].spec
     memory = full_hub.handlers["memory"].spec
     gripe = full_hub.handlers["gripe"].spec
     assert todo.edit_modes == ("replace",)
     assert memory.edit_modes == ("replace",)
-    assert gripe.modes == ()
+    assert gripe.modes == ("create", "comment")
     # gripe doesn't support edit at all — edit_modes stays the empty default.
     assert gripe.supports_edit is False
     assert gripe.edit_modes == ()

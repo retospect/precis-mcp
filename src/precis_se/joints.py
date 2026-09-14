@@ -276,6 +276,23 @@ OBJECTIVE_KEYS: dict[str, str] = {
 }
 
 
+def _vector_hint(key: str, value: Any) -> str:
+    """A copy-pasteable example, appended to the ``must be a 3-vector``
+    error, when the offending value is a bare number (gr332020) — the
+    common slip is passing the load's magnitude instead of a vector along
+    an axis. Empty for anything else; a non-numeric offender's type is
+    already named by the surrounding message."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    mag = abs(value)
+    mag_str = str(int(mag)) if float(mag).is_integer() else str(mag)
+    if key == "force":
+        return f" — a downward {mag_str} N load is [0, 0, -{mag_str}]"
+    if key == "torque":
+        return f" — an {mag_str} N·m moment about z is [0, 0, {mag_str}]"
+    return ""
+
+
 def validate_objectives(raw: dict[str, Any]) -> dict[str, Any]:
     """Vet a loads/objectives dict into its stored shape. Unknown keys are
     rejected loudly (write time); stored strays surface via DRC instead."""
@@ -294,10 +311,12 @@ def validate_objectives(raw: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError) as exc:
                 raise JointError(
                     f"objective {key!r} must be a 3-vector, got {raw[key]!r}"
+                    f"{_vector_hint(key, raw[key])}"
                 ) from exc
             if len(vec) != 3:
                 raise JointError(
                     f"objective {key!r} must be a 3-vector, got {raw[key]!r}"
+                    f"{_vector_hint(key, raw[key])}"
                 )
             out[key] = vec
     if raw.get("duty") is not None:
