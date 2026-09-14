@@ -63,7 +63,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | molecular fragment library, states, joining chemistry | `blocktree-library-build-plan.md` + star-schema facts | open (plan `ready`) |
 | interaction-aware module placement (graded π-stack, kT thresholds, pose solve, fisheye read) | `nm-stick-placement.md` | spec ready 2026-09-11 |
 | photoswitch physics, channel budget, photo-charge | `photoswitch-states-and-spectral-dof.md` | evidence gathered |
-| toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11) |
+| toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11); rung 4 nonplanar member sweeps added 2026-09-14 |
 | scenarios + three-verdict rule table | **here, §Scenarios** | new |
 | complementarity solver | **here, §Complementarity** | core BUILT 2026-09-12 (`structsolve/complementarity.py`: active-set solve e49fb80a + bistability probe; se bridge/validate wiring waits on the units window — `complementarity-solver.md`) |
 | optimisation stack (surrogates, BO, annealing) | **here, §Optimisation** | new |
@@ -134,11 +134,64 @@ ones —
    G-code ownership only if a real design demands end-to-end
    verifiability (owning every move is also what makes "printed without
    support" checkable rather than trusted).
+4. **Nonplanar member sweeps (Reto 2026-09-14).** Drop the
+   layer-after-layer constraint entirely for the organic branch tier: once
+   a segment's support exists, the toolhead sweeps the member in xyz —
+   the branch tree (system spec §4.2: control points + radius profile +
+   parent link per segment) *is* the toolpath, no slicing at all for
+   swept members. Overhangs become sweeps instead of layered
+   stair-steps + support, and the anisotropy argument peaks here:
+   filament axis = member axis = the load path the tips-down traversal
+   computed, so the strong direction lands exactly where the force runs.
+   The teardrop cross-section (spec §4.1) stops being necessary wherever
+   a sweep replaces a layered overhang. Rung 3's planar-contour claim
+   does not carry — this rung owns full moves.
+   - **Print order comes free.** The per-segment parent link is a DAG;
+     "supported" = parent (or plate) printed. Topological order is the
+     baseline; *which* topological order is an optimiser variable,
+     because reachability shrinks as neighbours land (same class as the
+     spec's build-orientation row).
+   - **Toolhead model is printer-local data, not the general machine
+     spec.** This printer's head: nozzle cone r = 2 mm, then a 2 mm
+     tube, then a wide flat printhead — a three-primitive SDF union
+     living as constants beside the emitter (per-printer, alongside the
+     fdm capability row; deliberately *not* `cad-machine-spec.md`, which
+     stays process-generic). Reachability = swept interference of that
+     union along the candidate path against printed-so-far ∪ plate —
+     the existing swept-volume machinery (`cad` `view='sweep'`,
+     `component_sdf`), pointed at the printer. The wide flat head is
+     the binding constraint: it forbids diving between tall printed
+     features, so each path point carries an approach-angle cone.
+     A member the head cannot reach in any admissible order is a DRC
+     refusal, not a build-plate discovery.
+   - **Variable radius under a fixed bead.** One pass ≈ one nozzle
+     width; the size-changing drop profile is realised by flow
+     modulation inside its small window, then multi-pass/helical wrap
+     for fatter sections. Nodes and drops past a radius threshold fall
+     back to local planar fill (rung 3's exact per-z-plane SDF slicing,
+     scoped to the blob) — one hybrid program: planar regions + swept
+     members, interleaved under the same order DAG.
 
-Rung 3 lands at se's L5 (fabrication plan: mode + build frame + process
+   Build slices, in order: (a) emitter module (`precis_se/toolpath.py`)
+   — sample the segment spline, emit G1 with per-point E from bead
+   cross-section × arc length, `pcb/gerber.py` posture for quantized
+   emission; toolhead constants beside it. (b) order pass — topological
+   sort over parent links + anchored-start check per segment.
+   (c) reachability DRC — toolhead-union sweep vs printed-so-far,
+   accumulated as segments are scheduled; refuses, never repairs.
+   (d) hybrid fallback — blob regions over the radius threshold sliced
+   planar and merged into the program. (e) dry-run verifier —
+   accumulate the deposited-bead SDF move by move, check self-support
+   angle + bridge length against the load-traversal outputs; this is
+   where "printed without support" becomes checked rather than trusted.
+   Slices (a)–(b) already print a wireframe; (c) is what makes it safe.
+
+Rungs 3–4 land at se's L5 (fabrication plan: mode + build frame + process
 DRC already own that tier); the per-material flow/temperature empiricism
 stays capability-row data, never code. Do not start rung 3 before a
-design measurably needs stress-aligned strength — rung 2 is the default.
+design measurably needs stress-aligned strength, and rung 4 only for a
+design whose organic branch tier a planar slicer demonstrably ruins —
+rung 2 is the default.
 
 ## Scenarios and the three-verdict rule table (new)
 
