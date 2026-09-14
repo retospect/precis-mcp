@@ -19,12 +19,40 @@ MARK='(DONE|RESOLVED|RETIRED|✅|\[x\]|SHIPPED \+|— *SHIPPED)'
 OPEN='(still (open|unverified|pending)|remain|NEXT =|Phase-2|un(shipped|deployed)|not deployed|NOT deployed|slices? .*remain|round-trip|\*\* *→)'
 
 hits="$(grep -rnE "^(#{1,6} .*${MARK}|- .*${MARK})" "$D" --include='*.md' 2>/dev/null | grep -v "$D/README.md" | grep -viE "$OPEN" || true)"
-n="$(printf '%s' "$hits" | grep -c . || true)"
+
+# Two buckets. The OPEN regex above only sees ONE line, so it cannot catch the
+# commonest shape by far: a full spec — still open by construction — whose
+# decisions log reports a RESOLVED sub-part. Those tripped the headline count
+# every session and cost a re-verification each time. A file carrying
+# "## Acceptance criteria" IS a full spec, so only a done-marker on its H1
+# title claims the whole item is done; inner markers are sub-part reports.
+# Nothing is dropped — sub-part hits still print, they just don't drive the
+# count (an all-done spec whose H1 was never annotated lands there too).
+loud=''
+quiet=''
+while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    file="${line%%:*}"
+    text="${line#*:*:}"
+    if grep -qE '^## Acceptance criteria' "$file" 2>/dev/null \
+       && [[ "$text" != '# '* ]]; then
+        quiet+="$line"$'\n'
+    else
+        loud+="$line"$'\n'
+    fi
+done <<< "$hits"
+
+fmt() { printf '%s' "$1" | sed -E 's/^([^:]+):([0-9]+):(.{0,72}).*/  \1:\2  \3/'; }
+n="$(printf '%s' "$loud" | grep -c . || true)"
+q="$(printf '%s' "$quiet" | grep -c . || true)"
 
 if [[ "$n" -eq 0 ]]; then
     echo "backlog-lint: ✓ no done-marked gunk in $D"
-    exit 0
+else
+    echo "backlog-lint: $n item(s) marked done but still in $D — verify shipped, then DELETE (git log keeps it):"
+    fmt "$loud"
 fi
-echo "backlog-lint: $n item(s) marked done but still in $D — verify shipped, then DELETE (git log keeps it):"
-printf '%s\n' "$hits" | sed -E 's/^([^:]+):([0-9]+):(.{0,72}).*/  \1:\2  \3/'
+if [[ "$q" -ne 0 ]]; then
+    echo "  ($q done-marked sub-part(s) inside still-open specs — normal, not gunk)"
+fi
 exit 0
