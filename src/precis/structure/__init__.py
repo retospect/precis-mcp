@@ -49,8 +49,8 @@ conversion at every ASE call rather than removing one. Every public
 self-naming at the import site; bare (un-suffixed) names stay for backward
 compatibility. Dataclass fields (`Atom.frac`, `Cell.lattice`, `Measure.reach`,
 ...) are NOT renamed — their docstrings/inline comments declare the unit.
-Conversion to SI happens only at design-side seams (`precis_nm`'s
-design↔atomistic boundary, owned by the units-policy-cutover chain) and
+Conversion to SI happens only at design-side seams (`precis_se`'s atomic
+mode design↔atomistic boundary, owned by the units-policy-cutover chain) and
 file serializers (`export.py`'s POSCAR/XYZ/CIF) — never inside this
 package.
 """

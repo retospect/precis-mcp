@@ -1,15 +1,19 @@
 """SVG projection over a :mod:`precis.blocktree` design — the shared
-render core behind the ``se``/``nm`` web readers (docs backing gripe
-gr335242, items 1-3: envelope-union projection, part isolation,
-stepped abstraction levels).
+render core behind the ``se`` web reader (docs backing gripe gr335242,
+items 1-3: envelope-union projection, part isolation, stepped
+abstraction levels).
 
-Kind-agnostic on purpose: both ``se`` and ``nm`` blocks are
-:class:`~precis.blocktree.types.BlockNode` subclasses carrying the same
-L1 triple (``envelope`` — the ``cad`` mini-DSL config string, ``pose``,
-``rot``, world-frame per each kind's own ``validate.py`` v1 convention),
-so one projector serves both; a caller supplies the domain's own
-``effective_envelope`` (instance/array/catalog fallback already lives
-there — this module never reaches for the DB or re-derives it).
+Kind-agnostic on purpose: built when ``se`` and the (since retired,
+nm-se-merge.md) ``nm`` kind were both :class:`~precis.blocktree.types.
+BlockNode` subclasses carrying the same L1 triple (``envelope`` — the
+``cad`` mini-DSL config string, ``pose``, ``rot``, world-frame per the
+domain's own ``validate.py`` v1 convention), so one projector served
+both. ``se``'s atomic mode is the sole surviving block-tree domain today
+(:mod:`precis_web.routes.blocktree_view`'s module docstring), but a
+caller still supplies the domain's own ``effective_envelope`` (instance/
+array/catalog fallback already lives there — this module never reaches
+for the DB or re-derives it) — the shape stays the seam a second
+block-tree kind would plug into.
 
 **Projection.** Each block's envelope is built via the same
 ``cad.dsl``/``cad.tessellate`` pipeline the glTF viewer and STL/3MF
@@ -176,7 +180,7 @@ def envelope_polygon(
 ) -> list[Point2] | None:
     """The block's own posed envelope, projected + hulled — ``None`` on
     any failure to parse/tessellate (a chamfer-only or malformed stored
-    envelope; honest absence, never a raised error, matching se/nm's own
+    envelope; honest absence, never a raised error, matching se's own
     read-path convention of reporting absence rather than failing)."""
     try:
         verts, _tris = mesh_config(envelope)
@@ -488,7 +492,7 @@ Tier = Literal["ok", "warn", "error"]
 def fill_fraction_line(
     tree: Tree[BlockNode, Connect], effective_envelope: EffectiveEnvelopeFn
 ) -> str:
-    """The filled-fraction honesty line (mirrors se/nm handler's own
+    """The filled-fraction honesty line (mirrors ``se``'s own
     ``_fill_fraction_line`` wording — kept as a small local copy rather
     than importing a handler-private helper across the package boundary;
     see the module docstring)."""
@@ -504,8 +508,9 @@ def fill_fraction_line(
 
 def validator_summary(findings: Sequence[object]) -> tuple[str, Tier]:
     """``(line, tier)`` from a list of ``ValidationIssue``-shaped findings
-    (duck-typed on ``.severity`` — se's and nm's ``validate()`` both
-    return the same rule/subject/detail/severity shape independently)."""
+    (duck-typed on ``.severity`` — kept generic since ``se``'s block-tier
+    and atomic-mode findings already share one shape, and the type stays
+    the seam a second block-tree kind would plug into)."""
     if not findings:
         return "no validator findings", "ok"
     n_error = sum(1 for f in findings if getattr(f, "severity", None) == "error")

@@ -3,7 +3,6 @@ status: ready
 title: build plan — cross-design instancing, block states, complementary ports, ranked library search
 prio: high
 model: opus
-blocked-by: nm-se-merge
 ---
 
 # Build plan
@@ -20,11 +19,16 @@ in prod (measured 2026-09-07), Reto has lifted backward compatibility, and the
 shared spine `precis.blocktree` already exists (commits `28877919`,
 `96690d37`) so each change below lands **once** and serves both kinds.
 
-**2026-09-14 (map amendment):** `nm-se-merge.md` folds the nm kind into
-se's atomic mode *before* this plan dispatches — "both kinds" above
-becomes "se's two modes", and every `nm`-facing hook in these slices
-targets se atomic mode. The blocktree spine is kind-agnostic already,
-so the slices' content is unchanged; only the adopter's name is.
+**2026-09-14 (map amendment, window ran same day):** `nm-se-merge.md`
+folded the `nm` kind into `se`'s atomic mode *before* this plan
+dispatches, as planned — "both kinds" below is now "se's two modes"
+(non-atomic and atomic), and every `nm`-facing hook in these slices
+targets se atomic mode. The blocktree spine was already kind-agnostic,
+so the slices' content is unchanged; only the adopter's name is. The
+"Why" table's `nm` column and the "Settled" section's "two kinds" framing
+below are left as the historical record of when the spine was built
+(2026-09-07, predates the merge) — read `nm` there as "what became se
+atomic mode."
 
 ## Why — the three-level chain and the library query
 
@@ -151,11 +155,11 @@ state, so **nothing existing changes shape**.
 bistability is true macro AND nano (Howell-style compliant latches, hard
 stops · photoswitches, conformers), so this slice's state/transition
 tables land in the SHARED design-core home (`src/precis/design/`), not
-nm-locally — this track builds them there as first consumer, schema
+se-atomic-locally — this track builds them there as first consumer, schema
 exactly as above plus `mechanical` added to `driver_kind` by migration
 for the macro adopters. Per-block current state, no design-level
 pointer. `design-state-core.md` verifies the macro rental fits; do not
-add nm-specific columns. Slice-level ordering: slice 1 (instancing) is
+add se-atomic-specific columns. Slice-level ordering: slice 1 (instancing) is
 free to go once units lands; THIS slice waits for design-core's package
 scaffold (`src/precis/design/` + its core-migration chain) so the
 states tables have their home — don't create the package from here.
@@ -204,7 +208,7 @@ and the existing `covalent`+`covalent` symmetric case still works.
 **per-attribute match/miss with the actual value** in the response. A bare
 score is unusable — the judgement is *which compromise can I live with*.
 
-    search(kind='nm', stimulus='light', bistable=True,
+    search(kind='se', stimulus='light', bistable=True,
            delta_length_nm=1.0, joining='CuAAC')
 
 **Where the attributes live.** A part's functional properties are *sourced

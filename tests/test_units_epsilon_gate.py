@@ -57,7 +57,6 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 _POLICED_PACKAGES = (
     _SRC / "precis" / "cad",
     _SRC / "precis_se",
-    _SRC / "precis_nm",
     _SRC / "precis" / "structsolve",
 )
 
@@ -65,16 +64,18 @@ _POLICED_PACKAGES = (
 #: units-policy-cutover.md's decisions log:
 #: - ``precis/pcb`` — mm-native enclave (self-naming ``_mm`` identifiers;
 #:   every cross-package API converts to SI).
-#: - ``precis_nm/generators`` — atomistic-internal (bond lengths, VDW
-#:   margins, cavity radii): physics constants that get an explicit unit
-#:   in the name, per the nm round's "physical Å constants STAY" ruling.
+#: - ``precis_se/atomic/generators`` — atomistic-internal (bond lengths,
+#:   VDW margins, cavity radii): physics constants that get an explicit
+#:   unit in the name, per the nm round's "physical Å constants STAY"
+#:   ruling. (Lived under ``precis_nm/generators`` until the nm→se merge,
+#:   nm-se-merge.md; the enclave is the module, not the package.)
 #: - ``precis/structure`` — the Å-native atomistic unit enclave
 #:   (structure-unit-enclave.md): ASE's Å/eV-native Atoms/calculators
 #:   thread through it, so forcing SI would add a conversion per ASE
 #:   call for no payoff.
 _ENCLAVE_PARTS = (
     ("precis", "pcb"),
-    ("precis_nm", "generators"),
+    ("precis_se", "atomic", "generators"),
     ("precis", "structure"),
 )
 

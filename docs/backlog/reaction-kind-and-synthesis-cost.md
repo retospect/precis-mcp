@@ -808,8 +808,9 @@ is the barrier to its lowest-energy decomposition channel. That is the
 screen, and `pathway`-style barrier work for the decomposition channel.
 
 **The experimental half is instrumentation we do not have** — but AFM data as
-*evidence* already has precedent in the tree: `nm-kind.md` cites AFM-measured
-C–C rupture force (~4–6 nN) and runs a min-cut bond analysis against it.
+*evidence* already has precedent in the tree: `se` atomic mode (the merged
+`nm` kind, `precis_se/atomic/mechanics.py`) cites AFM-measured C–C rupture
+force (~4–6 nN) and runs a min-cut bond analysis against it.
 
 **The real insight is that this is a _different_ criterion, and it is the one
 that separates the two make-orders.** In solution you never isolate an

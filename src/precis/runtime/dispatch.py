@@ -130,6 +130,28 @@ _VERB_REDIRECTS: dict[tuple[str, str], str] = {
     ),
 }
 
+#: Kinds that USED to exist, mapped to where their work moved. An agent
+#: (or a stale prompt, or an old note) reaching for a retired kind gets
+#: ``NotFound: unknown kind`` plus a generic "pick from the options" —
+#: true, but it doesn't say that the capability still exists under a
+#: different name. Registered here, the unknown-kind error leads with the
+#: successor so the retry is one call away rather than a re-discovery.
+#: Deliberately a small hand-curated map, not an alias that still
+#: dispatches: the kind is *gone* (no handler, no tables), and silently
+#: rerouting ``put(kind='nm', …)`` into another kind's op vocabulary
+#: would write something the caller didn't ask for.
+_RETIRED_KINDS: dict[str, str] = {
+    # nm→se merge (docs/backlog/nm-se-merge.md): the nanomachine kind is
+    # se's `atomic` manufacturing mode now — same six-level block tree,
+    # same generators/bindings/views, one kind.
+    "nm": (
+        "kind 'nm' was merged into 'se' as its ATOMIC mode "
+        "(docs/backlog/nm-se-merge.md): use kind='se' — set_mode "
+        "mode='atomic', bind_structure/generate, view='mechanics'/"
+        "'literature'. get(kind='skill', id='precis-se-help')"
+    ),
+}
+
 
 def _explicit_param_names(func: Any) -> frozenset[str]:
     """Keyword-accessible, non-catch-all parameter names of ``func``.
@@ -1114,10 +1136,15 @@ class DispatchMixin(RuntimeShape):
                     )
             if route_hint is not None:
                 next_hint = f"{route_hint}; {next_hint}"
+            # A RETIRED kind leads with its successor (:data:`_RETIRED_KINDS`)
+            # — "unknown kind" is true but unhelpful when the capability
+            # simply moved. The generic breadcrumb still trails it, so the
+            # caller keeps the full kind table one call away.
+            retired = _RETIRED_KINDS.get(kind)
             raise NotFound(
                 f"unknown kind: {kind}",
                 options=verb_kinds,
-                next=next_hint,
+                next=[retired, next_hint] if retired is not None else next_hint,
             )
 
         if not handler.spec.supports(verb):

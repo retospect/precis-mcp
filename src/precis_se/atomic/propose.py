@@ -1,24 +1,31 @@
-"""``nm_propose`` job_type — an LLM fills ONE target block of an ``nm`` design
-with a **proposed chemical fragment**, without applying it (slice 4b "LLM fill
-loop", ``docs/backlog/nm-kind.md`` "4b — LLM fill loop"). This is the L3→L5
-bridge from :mod:`precis_nm`'s six-level IR (see this package's
-``__init__.py`` docstring): the fragment is chosen and realized here, but
-nothing is minted or bound — that is a separate Apply step (unshipped this
-round; the backlog names it "mint the structure design, ``derived-from``
-lineage, then ``bind_structure``").
+"""``se_propose_atomic`` job_type — an LLM fills ONE target block of an
+``se`` design in **atomic mode** with a **proposed chemical fragment**,
+without applying it.
+
+Transferred from ``precis_nm.job`` (``nm_propose``) by the nm→se merge
+(docs/backlog/nm-se-merge.md "Job/service rename"): the one job type the
+retiring ``nm`` kind owned, retargeted onto se's tree/persist/validate and
+renamed for its se home. ``se_propose`` is NOT this job — that name is
+reserved for the whole-design se proposer se-kind.md still has unshipped
+(round 2 of its notes/freedom slice); this one is the atomic-mode fragment
+fill, hence the mode in its name. This is the L3→L5 bridge of the six-level
+IR (:mod:`precis_se`'s ``__init__.py`` docstring): the fragment is chosen
+and realized here, but nothing is minted or bound — that is a separate
+Apply step (unshipped; docs/backlog/se-atomic-round2.md names it
+"mint the structure design, ``derived-from`` lineage, then
+``bind_structure``").
 
 Mirrors the ``cad_propose``/``structure_propose`` propose-only pattern
 exactly: a **tool-less** ``claude -p`` call (``mcp_config=None`` — the agent
 physically cannot mutate anything, it can only return text) whose whole
 deliverable is a ``job_result`` chunk holding a JSON proposal, *dry-run
 validated before anyone sees it*. Unlike those two — which edit a design
-that already exists — ``nm_propose`` targets exactly ONE block (per-block
-proposals, small blast radius, never whole-design, per the backlog bullet)
-and its output is a NEW fragment: a candidate identity (SMILES, or an
-existing ``structure`` slug + provenance note), a ``structure``-kind op
-script (``from_smiles``/``ring``/``attach``/…) that realizes it from
-scratch, and a port→atom map wiring the block's declared ports to atoms the
-ops create.
+that already exists — this one targets exactly ONE block (per-block
+proposals, small blast radius, never whole-design) and its output is a NEW
+fragment: a candidate identity (SMILES, or an existing ``structure`` slug +
+provenance note), a ``structure``-kind op script
+(``from_smiles``/``ring``/``attach``/…) that realizes it from scratch, and a
+port→atom map wiring the block's declared ports to atoms the ops create.
 
 **Dry run is the load-bearing safety step**: the proposed ops are applied to
 a *scratch* (never-persisted) :class:`~precis.structure.scene.Scene`, then
@@ -30,17 +37,17 @@ hybridization findings — never fail the proposal, only annotate it), the
 port→atom map itself (every mapped port must resolve on the target block,
 every mapped atom must exist in the just-built scratch scene, and a port's
 declared ``expected_element`` must match — the exact gate
-``NmHandler._bind_structure`` runs at real bind time, run early here for the
-same reason ``cad_propose``/``structure_propose`` dry-run before a human
-sees anything), and a best-effort **envelope fit-check** (warn-tier — see
-:func:`_envelope_fit_warnings`'s docstring for why it can only be
-best-effort at propose time, unlike the backlog's separately-scoped
-``envelope_fit`` bind-preflight check, which has a real placement to check
-against). Like ``structure_propose``, a proposed ``relax`` op is rejected
-outright — a proposal is a from-scratch geometry build, never a fidelity-
-ladder dispatch (that's compute-heavy and belongs to Apply, not Propose, the
-same "propose stays synchronous and cheap" reasoning ``structure_propose``
-documents for its own rejection).
+:func:`precis_se.atomic.bind.bind_structure` runs at real bind time, run
+early here for the same reason ``cad_propose``/``structure_propose`` dry-run
+before a human sees anything), and a best-effort **envelope fit-check**
+(warn-tier — see :func:`_envelope_fit_warnings`'s docstring for why it can
+only be best-effort at propose time, unlike
+:func:`precis_se.atomic.validate.envelope_fit`'s bind-preflight check, which
+has a real placement to check against). Like ``structure_propose``, a
+proposed ``relax`` op is rejected outright — a proposal is a from-scratch
+geometry build, never a fidelity-ladder dispatch (that's compute-heavy and
+belongs to Apply, not Propose, the same "propose stays synchronous and
+cheap" reasoning ``structure_propose`` documents for its own rejection).
 
 **Tier: FRONTIER** (opus-class), unlike ``structure_propose``'s BIG
 (sonnet) pin. ``structure_propose``'s round-trip eval showed sonnet ties
@@ -49,8 +56,8 @@ ops — but here the model itself has to *choose* real chemistry (which
 fragment, which SMILES, which atoms bind which ports) from a target block's
 envelope/ports/objectives alone, a judgment call closer to ``cad_propose``'s
 whole-design authoring than to a mechanical translation step. Override via
-``PRECIS_NM_PROPOSE_MODEL`` (the same revert knob the other two proposers
-expose).
+``PRECIS_SE_PROPOSE_ATOMIC_MODEL`` (the same revert knob the other two
+proposers expose).
 """
 
 from __future__ import annotations
@@ -75,12 +82,14 @@ from precis.structure.vsepr import advisories as structure_advisories
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.units import format_quantity
 from precis.workers.job_types import JobTypeSpec
-from precis_nm import persist
-from precis_nm import validate as nm_validate
-from precis_nm.generators.sp2 import VDW_MARGIN_A
-from precis_nm.ops import (
-    BlockTree,
-    NmBlock,
+from precis_se import persist
+from precis_se import validate as se_validate
+from precis_se.atomic import render as atomic_render
+from precis_se.atomic import validate as atomic_validate
+from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
+from precis_se.ops import (
+    SeBlock,
+    SeTree,
     effective_dof,
     effective_envelope,
     effective_ports,
@@ -91,12 +100,12 @@ log = logging.getLogger(__name__)
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "nm_ref_id": {"type": "integer"},
+        "se_ref_id": {"type": "integer"},
         "slug": {"type": ["string", "null"]},
         "block": {"type": "string", "minLength": 1},
         "steer": {"type": ["string", "null"]},
     },
-    "required": ["nm_ref_id", "block"],
+    "required": ["se_ref_id", "block"],
     "additionalProperties": True,
 }
 COMPATIBLE_EXECUTORS = frozenset({"claude_inproc"})
@@ -105,16 +114,17 @@ COMPATIBLE_EXECUTORS = frozenset({"claude_inproc"})
 REQUIRES = frozenset({"claude_bin"})
 DESCRIPTION = (
     "Propose a chemical fragment (SMILES/structure-slug identity + a "
-    "structure-kind op script + port->atom map) filling one nm block "
-    "(tool-less claude -p; dry-run validated; the human/a later Apply "
-    "step mints and binds it separately)."
+    "structure-kind op script + port->atom map) filling one atomic-mode "
+    "se block (tool-less claude -p; dry-run validated; the human/a later "
+    "Apply step mints and binds it separately)."
 )
 
 #: A non-periodic scratch cell for the dry-run scene. Generous and fixed
-#: (unlike ``NmHandler._generated_cell``, this runs BEFORE any atom exists,
-#: so there is no coordinate extent to size it from) — non-periodic axes
-#: never wrap (``Cell.wrap``'s docstring), so the only real constraint is
-#: avoiding a degenerate lattice, not fitting the eventual fragment inside.
+#: (unlike ``precis_se.atomic.generate``'s generated cell, this runs BEFORE
+#: any atom exists, so there is no coordinate extent to size it from) —
+#: non-periodic axes never wrap (``Cell.wrap``'s docstring), so the only
+#: real constraint is avoiding a degenerate lattice, not fitting the
+#: eventual fragment inside.
 _SCRATCH_CELL_A = 100.0
 
 #: Op vocabulary shown to the model — the fragment-realization subset of
@@ -129,17 +139,17 @@ _OP_VOCAB = (
 )
 
 #: Fit-check tolerance (Å). Deliberately the SAME constant
-#: :func:`precis_nm.validate.envelope_fit` defaults to, imported rather than
-#: restated: propose time and bind time answer the same question ("do these
-#: atoms fit this envelope") at different moments, so two independently
-#: maintained margins would drift and hand the caller two irreconcilable
-#: numbers for one fragment. What legitimately differs between the two is the
-#: POSE (propose time has none — see :func:`_envelope_fit_warnings`), not the
-#: allowance.
+#: :func:`precis_se.atomic.validate.envelope_fit` defaults to, imported
+#: rather than restated: propose time and bind time answer the same question
+#: ("do these atoms fit this envelope") at different moments, so two
+#: independently maintained margins would drift and hand the caller two
+#: irreconcilable numbers for one fragment. What legitimately differs
+#: between the two is the POSE (propose time has none — see
+#: :func:`_envelope_fit_warnings`), not the allowance.
 _ENVELOPE_FIT_MARGIN_A = VDW_MARGIN_A
 
 
-def _block_not_found(tree: BlockTree, name: str) -> str:
+def _block_not_found(tree: SeTree, name: str) -> str:
     base = f"no such block: {name!r}"
     if not tree.blocks:
         return f"{base} — the design has no blocks yet"
@@ -158,7 +168,7 @@ def _fmt_rot(v: list[float]) -> str:
     return ", ".join(format_quantity(float(x), "angle") for x in v)
 
 
-def _tree_summary(tree: BlockTree) -> str:
+def _tree_summary(tree: SeTree) -> str:
     if not tree.blocks:
         return "  (no blocks)"
     lines = []
@@ -171,7 +181,7 @@ def _tree_summary(tree: BlockTree) -> str:
     return "\n".join(lines)
 
 
-def _ports_summary(tree: BlockTree, node: NmBlock) -> str:
+def _ports_summary(tree: SeTree, node: SeBlock) -> str:
     ports = effective_ports(tree, node)
     if not ports:
         return "  (no ports declared)"
@@ -187,9 +197,9 @@ def _ports_summary(tree: BlockTree, node: NmBlock) -> str:
     return "\n".join(lines)
 
 
-def _connects_for_block(tree: BlockTree, block_name: str) -> str:
+def _connects_for_block(tree: SeTree, block_name: str) -> str:
     lines = [
-        f"  {c.a_block}.{c.a_port} — {c.b_block}.{c.b_port} [{c.kind}] "
+        f"  {c.a_block}.{c.a_port} — {c.b_block}.{c.b_port} [{c.kind or 'structural'}] "
         f"objectives={json.dumps(c.objectives) if c.objectives else '{}'}"
         for c in tree.connects
         if block_name in (c.a_block, c.b_block)
@@ -197,7 +207,7 @@ def _connects_for_block(tree: BlockTree, block_name: str) -> str:
     return "\n".join(lines) or "  (none)"
 
 
-def _threading_for_block(tree: BlockTree, block_name: str) -> str:
+def _threading_for_block(tree: SeTree, block_name: str) -> str:
     lines = [
         f"  {t.a} threaded through {t.b}"
         for t in tree.threading
@@ -219,24 +229,25 @@ def _validate_summary(findings: list[Any]) -> str:
 
 def build_prompt(
     slug: str,
-    tree: BlockTree,
+    tree: SeTree,
     block_name: str,
-    node: NmBlock,
+    node: SeBlock,
     findings: list[Any],
     steer: str | None,
 ) -> str:
     """Assemble the propose-only directive prompt (no tools, JSON-only
     reply) for filling ``block_name`` — the design's tree/ports/topology/
     validate views plus the target block's own detail and its connects'
-    objective vectors (the backlog bullet's input list)."""
+    objective vectors."""
     dof = effective_dof(tree, node)
     return (
         "You are filling ONE block of a nanomachine (molecular-machine) "
-        "design with real chemistry. You will PROPOSE a chemical fragment "
-        "and a structure-kind op script that realizes it from scratch, "
-        "plus a port-to-atom map wiring the block's declared ports to "
-        "atoms your ops create. You are NOT applying anything — output a "
-        "proposal only; nothing you say is executed with tools.\n\n"
+        "design with real chemistry — an `se` design in ATOMIC mode. You "
+        "will PROPOSE a chemical fragment and a structure-kind op script "
+        "that realizes it from scratch, plus a port-to-atom map wiring the "
+        "block's declared ports to atoms your ops create. You are NOT "
+        "applying anything — output a proposal only; nothing you say is "
+        "executed with tools.\n\n"
         f"# Design {slug!r} — block tree\n{_tree_summary(tree)}\n\n"
         f"# Target block {block_name!r}\n"
         f"envelope: {effective_envelope(tree, node) or '(none)'} "
@@ -316,28 +327,28 @@ def parse_proposal(text: str) -> dict[str, Any]:
 
 
 def _envelope_fit_warnings(
-    tree: BlockTree, node: NmBlock, scene: StructScene
+    tree: SeTree, node: SeBlock, scene: StructScene
 ) -> str | None:
     """Best-effort envelope-vs-fragment size check via the ``cad`` SDF —
     warn-tier only, never a dry-run failure.
 
-    **Why this can only be best-effort, unlike the backlog's separately
-    scoped ``envelope_fit`` bind-preflight check** (``docs/backlog/
-    nm-kind.md`` "4b" — "bound scene's atoms vs the block's envelope +
-    margin ... the L1↔L5 agreement check"): that check runs against a
-    *bound* scene at a real, chosen placement (the block's own pose/rot, or
-    a bind-time transform), so there is a real world frame to test atoms
-    against. At propose time there is no such placement yet — Apply hasn't
-    run, nothing is bound — so the only thing this can honestly do is
-    recentre the envelope's own local bounding-box centre
+    **Why this can only be best-effort, unlike
+    :func:`precis_se.atomic.validate.envelope_fit`'s bind-preflight check**
+    ("bound scene's atoms vs the block's envelope + margin … the L1↔L5
+    agreement check"): that check runs against a *bound* scene at a real,
+    chosen placement (the block's own local frame, or a bind-time
+    transform), so there is a real frame to test atoms against. At propose
+    time there is no such placement yet — Apply hasn't run, nothing is
+    bound — so the only thing this can honestly do is recentre the
+    envelope's own local bounding-box centre
     (:meth:`~precis.cad.primitives.Primitive.aabb_local`) onto the
     fragment's centroid and check the SDF from there: "is this fragment
     roughly the right SIZE for the envelope", not "does this fragment sit
     where it's supposed to" (a question propose time cannot even ask yet).
     Skips silently when the block has no envelope (nothing to check
-    against — ``validate``'s ``blocks_without_envelope`` warn already
-    covers that separately) or when the scratch scene has no atoms yet.
-    Returns a single warning string, or ``None`` when everything is within
+    against — ``validate``'s ``block_without_envelope`` warn already covers
+    that separately) or when the scratch scene has no atoms yet. Returns a
+    single warning string, or ``None`` when everything is within
     :data:`_ENVELOPE_FIT_MARGIN_A`."""
     env = effective_envelope(tree, node)
     if not env or not scene.atoms:
@@ -356,14 +367,16 @@ def _envelope_fit_warnings(
         # posture as the bad-config branch above. (Before chamfer became
         # buildable this case arrived as a DslError; now it builds.)
         return None
-    # The same design↔atomistic seam validate.envelope_fit converts at
-    # (units-policy-cutover.md, structure-unit-enclave.md): `prim` is
+    # The same design↔atomistic seam atomic.validate.envelope_fit converts
+    # at (units-policy-cutover.md, structure-unit-enclave.md): `prim` is
     # metres (design-space canonical), `scene`'s atoms are Å (the
-    # atomistic enclave) — both sides compared in metres here, reusing
-    # nm_validate's own conversion constants rather than restating them.
+    # atomistic enclave) — both sides compared in metres here, reusing that
+    # module's own conversion constants rather than restating them (the
+    # Å-seam allowlist, tests/test_se_atomic_angstrom_seam.py, keeps the
+    # factor itself in exactly two modules).
     env_center = (np.asarray(lo, dtype=float) + np.asarray(hi, dtype=float)) / 2.0
     carts_A = [scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()]
-    carts_m = [np.asarray(c, dtype=float) * nm_validate._A_TO_M for c in carts_A]
+    carts_m = [np.asarray(c, dtype=float) * atomic_validate._A_TO_M for c in carts_A]
     centroid_m = np.mean(np.asarray(carts_m), axis=0)
     delta_m = centroid_m - env_center
 
@@ -372,7 +385,7 @@ def _envelope_fit_warnings(
     design.add_component("envelope", leaf)
     component = design.components["envelope"]
 
-    margin_m = _ENVELOPE_FIT_MARGIN_A * nm_validate._A_TO_M
+    margin_m = _ENVELOPE_FIT_MARGIN_A * atomic_validate._A_TO_M
     outside = [
         (label, d)
         for label, cart_m in zip(scene.atoms, carts_m, strict=True)
@@ -381,12 +394,11 @@ def _envelope_fit_warnings(
     if not outside:
         return None
     # Report the PROTRUSION (distance past the allowance), not the raw SDF —
-    # the same quantity validate.envelope_fit reports, so the propose-time
-    # warning and the later bind-time finding for the same fragment agree
-    # instead of differing by exactly one margin. Reported back in Å (the
-    # atomistic scale this finding is about), the same round-trip
-    # validate.envelope_fit does.
-    worst_A = (max(d for _label, d in outside) - margin_m) * nm_validate._M_TO_A
+    # the same quantity envelope_fit reports, so the propose-time warning
+    # and the later bind-time finding for the same fragment agree instead of
+    # differing by exactly one margin. Reported back in Å (the atomistic
+    # scale this finding is about), the same round-trip envelope_fit does.
+    worst_A = (max(d for _label, d in outside) - margin_m) * atomic_validate._M_TO_A
     return (
         f"envelope_fit: {len(outside)} atom(s) up to {worst_A:.2f} Å outside "
         f"envelope {env!r} (best-effort centroid-recentred check — no real "
@@ -396,7 +408,7 @@ def _envelope_fit_warnings(
 
 
 def dry_run(
-    tree: BlockTree,
+    tree: SeTree,
     block_name: str,
     ops: list[dict[str, Any]],
     port_atom_map: dict[str, str],
@@ -488,33 +500,21 @@ def dry_run(
     return None, warnings
 
 
-def _hydrate_bound_scenes(
-    store: Any, tree: BlockTree
-) -> dict[str, dict[str, str] | None]:
-    """The same "assemble in the view path" hydration
-    ``NmHandler._render_validate`` runs — duplicated here (rather than
-    imported) because this module owns no coupling to ``handler.py``'s
-    private renderers: every block/port ``bound_design`` slug referenced
-    anywhere in the tree, mapped to ``{atom label: element}`` (or ``None``
-    when the slug no longer resolves), feeding :func:`precis_nm.validate.
-    validate`'s ``dangling_binding``/``binding_element_mismatch`` checks for
-    the design-wide context shown in the prompt."""
-    slugs = {n.bound_design for n in tree.blocks.values() if n.bound_design}
-    slugs |= {
-        p.bound_design
-        for n in tree.blocks.values()
-        for p in n.ports.values()
-        if p.bound_design
-    }
-    out: dict[str, dict[str, str] | None] = {}
-    for slug in slugs:
-        ref = store.get_ref(kind="structure", id=slug)
-        if ref is None:
-            out[slug] = None
-            continue
-        scene, _handles = store.structure_load(ref.id)
-        out[slug] = {label: atom.element for label, atom in scene.atoms.items()}
-    return out
+def design_findings(store: Any, tree: SeTree) -> list[Any]:
+    """The design-wide finding list shown to the model as context — se's
+    own checks plus the atomic-mode chemistry ones, the same concatenation
+    ``view='validate'`` renders (:meth:`precis_se.handler.SeHandler.
+    _render_validate`). Hydration of the bound ``structure`` scenes is the
+    store-aware part and reuses the view path's own helper
+    (:func:`precis_se.atomic.render.hydrate_bound_scenes`) rather than
+    duplicating it."""
+    bound_scenes, bound_full_scenes = atomic_render.hydrate_bound_scenes(store, tree)
+    return [
+        *se_validate.validate(tree),
+        *atomic_validate.validate_atomic(
+            tree, bound_scenes=bound_scenes, bound_full_scenes=bound_full_scenes
+        ),
+    ]
 
 
 def _dispatch(ctx: Any, spec: Any) -> None:
@@ -523,51 +523,50 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     and write it as a ``job_result`` chunk."""
     params = (ctx.meta or {}).get("params") or {}
     try:
-        nm_ref_id = int(params["nm_ref_id"])
+        se_ref_id = int(params["se_ref_id"])
         block_name = str(params["block"]).strip()
     except (KeyError, TypeError, ValueError) as exc:
-        ctx.record_failure(f"nm_propose: malformed params ({exc})")
+        ctx.record_failure(f"se_propose_atomic: malformed params ({exc})")
         return
     if not block_name:
-        ctx.record_failure("nm_propose: empty 'block'")
+        ctx.record_failure("se_propose_atomic: empty 'block'")
         return
     steer = params.get("steer")
     steer = str(steer).strip() if steer else None
 
     try:
-        tree = persist.load_tree(ctx.store, nm_ref_id)
+        tree = persist.load_tree(ctx.store, se_ref_id)
     except Exception as exc:  # design vanished / bad id
-        ctx.record_failure(f"nm_propose: cannot load design: {exc}")
+        ctx.record_failure(f"se_propose_atomic: cannot load design: {exc}")
         return
     node = tree.blocks.get(block_name)
     if node is None:
-        ctx.record_failure(f"nm_propose: {_block_not_found(tree, block_name)}")
+        ctx.record_failure(f"se_propose_atomic: {_block_not_found(tree, block_name)}")
         return
     if node.template is not None:
         ctx.record_failure(
-            f"nm_propose: block {block_name!r} is an instance (of "
+            f"se_propose_atomic: block {block_name!r} is an instance (of "
             f"{node.template!r}) — propose against the template instead"
         )
         return
-    slug = str(params.get("slug") or nm_ref_id)
+    slug = str(params.get("slug") or se_ref_id)
 
-    bound_scenes = _hydrate_bound_scenes(ctx.store, tree)
-    findings = nm_validate.validate(tree, bound_scenes=bound_scenes)
+    findings = design_findings(ctx.store, tree)
 
     prompt = build_prompt(slug, tree, block_name, node, findings, steer)
-    model = os.environ.get("PRECIS_NM_PROPOSE_MODEL")
+    model = os.environ.get("PRECIS_SE_PROPOSE_ATOMIC_MODEL")
     ctx.append_chunk("job_event", f"propose: block={block_name!r}")
     # Routed through the LLM seam: tool-less agent call on FRONTIER (module
     # docstring — chemistry fragment CHOICE is a judgment call, closer to
     # cad_propose's whole-design authoring than structure_propose's
     # mechanical op translation). PRECIS_LLM_BACKEND still switches
-    # transport; PRECIS_NM_PROPOSE_MODEL overrides the model id.
+    # transport; PRECIS_SE_PROPOSE_ATOMIC_MODEL overrides the model id.
     try:
         res = route(
             LlmRequest(
                 tier=Tier.FRONTIER,
-                source="nm_propose",
-                ref_id=nm_ref_id,  # attribute spend to the nm design (gr162130)
+                source="se_propose_atomic",
+                ref_id=se_ref_id,  # attribute spend to the se design (gr162130)
                 prompt=prompt,
                 tools_needed=True,  # the agent wrapper; no MCP tools wired
                 model=model,
@@ -575,21 +574,21 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 disallowed_tools=("WebFetch", "WebSearch"),
                 output_format="stream-json",
                 extra_args=("--verbose",),
-                log_event=(ctx.store, ctx.ref_id, "nm_propose"),
+                log_event=(ctx.store, ctx.ref_id, "se_propose_atomic"),
             )
         )
     except Exception as exc:
-        ctx.record_failure(f"nm_propose: agent failed: {exc}")
+        ctx.record_failure(f"se_propose_atomic: agent failed: {exc}")
         return
     if res.error:
-        ctx.record_failure(f"nm_propose: agent failed: {res.error}")
+        ctx.record_failure(f"se_propose_atomic: agent failed: {res.error}")
         return
 
     try:
         proposal = parse_proposal(res.text)
     except ValueError as exc:
         ctx.append_chunk("job_event", f"unparseable reply:\n{res.text[:2000]}")
-        ctx.record_failure(f"nm_propose: {exc}")
+        ctx.record_failure(f"se_propose_atomic: {exc}")
         return
 
     err, warnings = dry_run(
@@ -601,7 +600,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if warnings:
         proposal["warnings"] = warnings
     proposal["block"] = block_name
-    proposal["nm_ref_id"] = nm_ref_id
+    proposal["se_ref_id"] = se_ref_id
 
     ctx.append_chunk("job_result", json.dumps(proposal))
     n = len(proposal["ops"])
@@ -618,7 +617,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
 
 SPEC = JobTypeSpec(
-    name="nm_propose",
+    name="se_propose_atomic",
     params_schema=PARAMS_SCHEMA,
     compatible_executors=COMPATIBLE_EXECUTORS,
     requires=REQUIRES,
@@ -627,4 +626,4 @@ SPEC = JobTypeSpec(
 )
 
 
-__all__ = ["SPEC", "build_prompt", "dry_run", "parse_proposal"]
+__all__ = ["SPEC", "build_prompt", "design_findings", "dry_run", "parse_proposal"]

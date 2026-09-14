@@ -26,6 +26,7 @@ from precis.handlers.component import ComponentHandler
 from precis.store import Store
 from precis_se import bom as se_bom
 from precis_se import drc as se_drc
+from precis_se import modes as se_modes
 from precis_se import persist
 from precis_se import validate as se_validate
 from precis_se.bom import BomLine
@@ -568,6 +569,84 @@ def test_purchase_mode_satisfied_by_a_binding() -> None:
             },
         ]
     )
+    assert not [f for f in se_drc.drc(tree).findings if f.rule == "mode_without_item"]
+
+
+# ── the mode↔binding coupling (nm-se-merge.md) ──────────────────────────
+#
+# Before the merge these two were wired independently: `set_mode('atomic')`
+# and the atomistic `set_binding` each landed without the other and nothing
+# related them. Pinned BOTH ways here, per that item's acceptance criterion.
+# (The atomistic binding kind was `nm` while that kind existed; retiring it
+# left `structure` as the only one — `precis_se.modes.
+# ATOMIC_ONLY_BINDING_KINDS`.)
+
+
+def _bound(mode: str | None, kind: str, design: str) -> SeTree:
+    ops: list[Any] = [*_WHEELS]
+    if mode is not None:
+        ops.append({"op": "set_mode", "block": "wheel", "mode": mode})
+    ops.append({"op": "set_binding", "block": "wheel", "kind": kind, "design": design})
+    return _tree(ops)
+
+
+def _mismatch(tree: SeTree) -> list[Any]:
+    return [f for f in se_drc.drc(tree).findings if f.rule == "mode_binding_mismatch"]
+
+
+def test_the_atomic_mode_family_reports_implemented() -> None:
+    """nm-se-merge.md: the merge marks `atomic` implemented — before it,
+    only `purchase` was, so an atomic block read back as bare intent."""
+    assert se_modes.MODE_FAMILIES["atomic"].implemented
+    assert se_modes.MODE_FAMILIES["atomic"].realization_kinds
+
+
+def test_atomic_mode_bound_to_a_bought_component_is_a_mismatch() -> None:
+    findings = _mismatch(_bound("atomic", "component", "caster-wheel-100"))
+    assert len(findings) == 1
+    assert findings[0].subject == "wheel"
+    assert findings[0].severity == "error"
+    assert "component:caster-wheel-100" in findings[0].detail
+
+
+def test_an_atomistic_binding_under_a_non_atomic_mode_is_a_mismatch() -> None:
+    findings = _mismatch(_bound("purchase", "structure", "arm-axle-frag"))
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+
+
+def test_an_atomistic_binding_under_a_claimless_mode_is_a_mismatch() -> None:
+    """`fdm` declares no realization kinds, so nothing contradicts it by
+    the first rule — but atoms are still not something you 3D-print."""
+    findings = _mismatch(_bound("fdm/asa", "structure", "arm-axle-frag"))
+    assert len(findings) == 1
+    assert "not atomic" in findings[0].detail
+
+
+def test_an_atomistic_binding_with_no_mode_at_all_is_only_a_warning() -> None:
+    """Absence, not contradiction — se never fails on absence."""
+    findings = _mismatch(_bound(None, "structure", "arm-axle-frag"))
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert "set_mode" in findings[0].detail
+
+
+def test_atomic_mode_with_an_atomistic_binding_is_silent() -> None:
+    assert not _mismatch(_bound("atomic", "structure", "arm-axle-frag"))
+
+
+def test_a_cad_binding_needs_no_mode_and_stays_silent() -> None:
+    """The coupling only speaks where a family (or an atomistic binding)
+    makes a claim — a cad solid under fdm, or under no mode, is normal."""
+    assert not _mismatch(_bound("fdm/asa", "cad", "wheel-v3"))
+    assert not _mismatch(_bound(None, "cad", "wheel-v3"))
+
+
+def test_atomic_mode_on_an_unbound_block_is_silent() -> None:
+    """An envelope-only atomic block is the normal mid-thought state; only
+    the families that demand an item report a bare block."""
+    tree = _tree([*_WHEELS, {"op": "set_mode", "block": "wheel", "mode": "atomic"}])
+    assert not _mismatch(tree)
     assert not [f for f in se_drc.drc(tree).findings if f.rule == "mode_without_item"]
 
 

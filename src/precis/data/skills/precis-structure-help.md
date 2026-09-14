@@ -30,7 +30,7 @@ are **ångström**, positions are **fractional** (cell coordinates).
 
 **Unit enclave.** `structure` is Å/eV-native by design, not by omission — it
 sits on ASE (`Atoms`, EMT, FIRE), whose own convention is Å/eV, and every
-other kind that talks to it (`precis_nm`'s design↔atomistic boundary,
+other kind that talks to it (`se`'s atomic-mode design↔atomistic boundary,
 `precis_bio`'s fold-to-Scene projection) converts at *its own* seam, never
 inside `structure`. Every length here — op args, `frac`/Cartesian
 coordinates, `radius`/`reach`/`thickness`, `add_atom_site`'s `height` — is Å

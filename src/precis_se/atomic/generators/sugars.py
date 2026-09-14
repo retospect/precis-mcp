@@ -1,7 +1,7 @@
 """Cyclodextrin macrocycles — slice 4a's second "first" family
 (docs/backlog/nm-kind.md "Generators", family roster: "cyclodextrins (α/β/γ-
 CD, cavity ⌀ 4.7–8.3 Å — real rotaxane macrocycles")). Unlike the sp² carbon
-family (:mod:`precis_nm.generators.sp2`), a cyclodextrin's atoms are NOT
+family (:mod:`precis_se.atomic.generators.sp2`), a cyclodextrin's atoms are NOT
 fixed by a closed-form lattice construction — real cyclopyranose ring
 geometry only comes from either a genuine force-field conformer or a hand-
 built idealized template — so this generator, uniquely among round-1/2's
@@ -78,7 +78,7 @@ Both paths converge on the same shape: real elements (C/H/O), every bond
 declared ``order=1.0`` (a cyclodextrin is fully saturated sp³ — no
 delocalization to Pauling-estimate, unlike the sp² carbon family), every
 atom's hybridization stamped ``"sp3"``
-(:attr:`~precis_nm.generators._types.GeneratedBlock.hybridization`,
+(:attr:`~precis_se.atomic.generators._types.GeneratedBlock.hybridization`,
 extended this round for the first sp³ family), one port per primary-rim
 (C6-OH) hydroxyl oxygen and one per secondary-rim (arbitrarily the first of
 C2-OH/C3-OH found per unit — the two are chemically equivalent as an
@@ -103,7 +103,7 @@ no-op on the fallback path, which is already built axis-aligned by
 construction; not a no-op on the rdkit path, whose raw ETKDG conformer has
 an arbitrary orientation). The torus then pins its **hole** at the derived
 vdW cavity radius and its outer edge at the radially-farthest atom plus
-:data:`~precis_nm.generators.sp2.VDW_MARGIN_A` (:func:`_torus_envelope`).
+:data:`~precis_se.atomic.generators.sp2.VDW_MARGIN_A` (:func:`_torus_envelope`).
 Full atom containment is deliberately NOT the contract (gr332019): a real
 conformer folds rim substituents toward the axis, and a torus containing
 all of them has no bore at all — which makes every threaded-axle clearance
@@ -122,8 +122,13 @@ import numpy as np
 
 from precis.structure.elements import covalent_radius
 from precis.structure.vsepr import ideal_angle as vsepr_ideal_angle
-from precis_nm.generators._types import GeneratedBlock, GeneratedPort, GeneratorError
-from precis_nm.generators.sp2 import VDW_MARGIN_A
+from precis_se.atomic.generators._types import (
+    GeneratedBlock,
+    GeneratedPort,
+    GeneratorError,
+    fmt_length_A,
+)
+from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
 
 #: variant -> (glucose unit count, literature O4-ring diameter, Å).
 #: nm-kind.md's Generators section / Round (iii) decisions.
@@ -379,11 +384,7 @@ def _torus_envelope(coords: np.ndarray, bore_radius: float) -> str:
     inner = max(0.1, float(bore_radius))
     major = (outer + inner) / 2.0
     minor = (outer - inner) / 2.0
-    return f"torus:R{_fmt(major)}r{_fmt(minor)}"
-
-
-def _fmt(x: float) -> str:
-    return f"{round(float(x), 4):g}"
+    return f"torus:R{fmt_length_A(major)}r{fmt_length_A(minor)}"
 
 
 # ── rdkit path ───────────────────────────────────────────────────────────

@@ -36,8 +36,11 @@ assembly — is a field or a cost term over that shared geometry.
 
 This is the shipped house architecture: the analytic-SDF cad kernel is the
 currency (booleans are min/max, tolerance envelopes are level-set offsets,
-gradients exist a.e.), rented by `se` as metres and `nm` as Å
-(`se : cad :: nm : structure`); the abstraction ladder is se's L0–L5 IR
+gradients exist a.e.), rented by `se` as metres in its ordinary blocks and
+as an Å-native atomistic enclave in its **atomic mode** (`se : cad ::
+se-atomic : structure` — the `nm-se-merge.md` window folded the sibling
+`nm` kind into that mode, so the symmetry is now internal to `se` rather
+than across two kinds); the abstraction ladder is se's L0–L5 IR
 (interface contract preserved, interior replaced — a coarse clash check
 stays valid after refinement); interface contracts are ports + joints +
 measures, and they are the boundary conditions for every later solver.
@@ -489,9 +492,11 @@ CUDA path only if a real workload ever forces it.
 1. **Units cutover — exclusive window** (`units-policy-cutover.md`).
    Cross-cuts se+nm+cad, so nothing else lands on those packages while
    it's in flight. *(Shipped, 2026-09-12 window.)*
-1b. **nm→se merge — exclusive window** (`nm-se-merge.md`, added
-   2026-09-14). Across precis_se + precis_nm; opens once in-flight
-   se/nm sibling trees land; must complete before step 2 dispatches.
+1b. **nm→se merge — exclusive window, RAN 2026-09-14** (`nm-se-merge.md`,
+   added same day). Across precis_se + precis_nm; `nm` retired (its
+   domain layer folded into `se`'s atomic mode, its unshipped round-2
+   content trails as `se-atomic-round2.md`), clearing step 2 to
+   dispatch against `se` alone.
 2. **Foundations, 4 parallel tracks**: shared design-state core
    (`design-state-core.md` — scenarios, provenance, revisions, branches
    naive-copy-first, checkpoints, **and the discrete-states + stimulus
@@ -526,8 +531,8 @@ CUDA path only if a real workload ever forces it.
 5. **Coupling + adjacents**: cross-domain coupling screen · catalogue
    ingestion layers + availability preference · radiometric transport +
    irradiance contract (microfluidics PARKED) · bookmarks + digest
-   sensitivity + requirements-level scenario comparison · se_propose /
-   nm 4b verdicts+apply.
+   sensitivity + requirements-level scenario comparison ·
+   se-atomic-round2.md's apply+verdicts.
 
 ## Open questions
 

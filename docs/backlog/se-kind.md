@@ -115,8 +115,9 @@ shared placement.
   KIND_CODES and CHUNK_CODES.
 - **Units: metres, float64, everywhere.** CONFIRMED by Reto 2026-09-02
   ("64-bit floats") after he offered int64 attometres and asked whether
-  the nm-kind fixed-point rejection (`nm-kind.md` Decisions, 2026-08-31)
-  holds; the agent holds it valid. The reasoning, so it isn't
+  the nm-kind fixed-point rejection (originally `nm-kind.md`'s Decisions,
+  2026-08-31; `nm` has since merged into `se` as atomic mode,
+  `nm-se-merge.md`) holds; the agent holds it valid. The reasoning, so it isn't
   re-litigated:
   - **Range kills attometre outright**: 2⁶³ am = 9.2 m — an int64-am
     world is ±9.2 m across, dead for a space planner (femtometre buys

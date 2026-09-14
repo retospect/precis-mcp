@@ -3,8 +3,10 @@ instanced, port-connected spatial tree over the cad DSL.
 
 Extracted from ``precis_se.ops`` (phase 1;
 docs/backlog/blocktree-library-build-plan.md §Settled) — ``precis_nm``
-migrated onto the same spine in phase 2. This package owns exactly the part
-that agreed between the two: the recursive tree (``parent``/``template``),
+migrated onto the same spine in phase 2, then merged back into
+``precis_se`` as its atomic mode (docs/backlog/nm-se-merge.md). This
+package owns exactly the part that agreed between the two kinds: the
+recursive tree (``parent``/``template``),
 instancing with cycle guards, ports with ``roles``/``direction``/an open
 ``annotations`` dict, port-to-port connects, and envelope validation over
 the ``precis.cad`` SDF kernel.
@@ -26,8 +28,8 @@ Two submodules:
   ``connect``, ``disconnect``), dispatched through :func:`~precis.blocktree.
   ops.apply_ops` over a domain-supplied (and domain-extendable) ops table.
 
-This package imports nothing from ``precis_se``/``precis_nm`` — dependency
-flows one way, core to plugin, never back.
+This package imports nothing from ``precis_se`` — dependency flows one
+way, core to plugin, never back.
 """
 
 from __future__ import annotations

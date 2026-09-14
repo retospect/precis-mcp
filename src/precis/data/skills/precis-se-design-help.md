@@ -69,7 +69,7 @@ human-set values**:
 ## 5 — realize leaves
 
 Every leaf gets a `set_mode` (`purchase`, `fdm/asa`, …) or a
-`set_binding` to a `component`/`part`/`cad`/`nm` design, plus BOM lines
+`set_binding` to a `component`/`part`/`cad`/`structure` design, plus BOM lines
 (`add_bom`) for what mechanisms demand. Dangling component slugs are
 expected until the component is minted — `view='bom'` lists them.
 Process DRC is unshipped: mode is intent, not yet checked.

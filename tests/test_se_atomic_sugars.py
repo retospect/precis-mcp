@@ -1,15 +1,18 @@
-"""precis_nm cyclodextrin generator — slice 4a round 3
-(docs/backlog/nm-kind.md "Generators", Round (iii) decisions):
-:mod:`precis_nm.generators.sugars`'s two-path construction (rdkit
+"""The cyclodextrin generator —
+:mod:`precis_se.atomic.generators.sugars`'s two-path construction (rdkit
 conformer + cavity check, falling back to a Cn-symmetric idealized
-template) and the handler-intercepted ``generate`` op for
-``generator="cyclodextrin"``.
+template) and the ``generate`` op for ``generator="cyclodextrin"``.
+
+nm's ``tests/test_nm_sugars.py``, ported onto
+:class:`~precis_se.handler.SeHandler` by the nm→se merge
+(docs/backlog/nm-se-merge.md) — the geometry half unchanged (it never
+needed a kind), the two store-level cases retargeted at se's ``generate``.
 
 Geometry assertions are re-derived from ``coords``/``bonds`` (never trusted
 from the generator's own ``topology`` dict alone), the same discipline
-``test_nm_generators.py``'s module docstring establishes. rdkit's ETKDGv3
-macrocycle embed is not bit-reproducible across environments in every
-particular, so every numeric check here is tolerance-based.
+``test_se_atomic_generators.py``'s module docstring establishes. rdkit's
+ETKDGv3 macrocycle embed is not bit-reproducible across environments in
+every particular, so every numeric check here is tolerance-based.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import precis_nm
+import precis_se
 from precis.cad import dsl as cad_dsl
 from precis.cad.primitives import Torus
 from precis.dispatch import Hub
@@ -33,11 +36,22 @@ from precis.structure import vsepr as struct_vsepr
 from precis.structure.cell import Cell
 from precis.structure.elements import covalent_radius, max_valence
 from precis.structure.scene import Atom, Bond, Scene
-from precis_nm.generators import GENERATORS, GeneratorError, sugars
-from precis_nm.generators.sugars import build_cyclodextrin
-from precis_nm.handler import NmHandler
+from precis_se.atomic.generators import GENERATORS, GeneratorError, sugars
+from precis_se.atomic.generators._types import ENVELOPE_UNIT
+from precis_se.atomic.generators.sugars import build_cyclodextrin
+from precis_se.handler import SeHandler
 
-_MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
+_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
+
+
+def _spec_A(envelope: str) -> cad_dsl.ShapeSpec:
+    """A generator's own Å figures out of its **Å-suffixed** envelope text
+    (nm-se-merge.md: the generators write their unit into the DSL so the
+    design side's ×1e-10 happens once, at the ``add_block`` ingest
+    boundary). Drop the unit and parse as bare numbers — the geometry
+    checks here live in the same Å space ``block.coords`` does."""
+    return cad_dsl.parse(envelope.replace(ENVELOPE_UNIT, ""))
+
 
 #: unit count / literature inner-cavity diameter (Å) per variant —
 #: nm-kind.md's Generators section.
@@ -45,13 +59,13 @@ _VARIANTS = {"alpha": 6, "beta": 7, "gamma": 8}
 
 
 @pytest.fixture
-def handler(hub: Hub, store: Store) -> NmHandler:
+def handler(hub: Hub, store: Store) -> SeHandler:
     with store.pool.connection() as c:
         for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
             body = sql.read_text(encoding="utf-8")
             body = body.replace("BEGIN;", "").replace("COMMIT;", "")
             c.execute(body)
-    return NmHandler(hub=hub)
+    return SeHandler(hub=hub)
 
 
 @pytest.fixture
@@ -68,9 +82,9 @@ def _formula(elements: list[str]) -> Counter[str]:
 
 
 def _to_scene(block: object) -> Scene:
-    """Realize a :class:`~precis_nm.generators.GeneratedBlock` into a real
+    """Realize a :class:`~precis_se.atomic.generators.GeneratedBlock` into a real
     ``structure`` Scene (sp3-hybridization-stamped, matching what the
-    handler's ``generate`` op actually stores) so
+    ``generate`` op actually stores) so
     :func:`precis.structure.vsepr`'s real machinery can be run over it
     directly — the round-3 review "angle-blind tests" fix."""
     scene = Scene(
@@ -291,7 +305,7 @@ def test_cyclodextrin_torus_envelope_is_bore_preserving(variant: str) -> None:
     job — but never by more than the ring's own physical half-thickness,
     and every atom must stay radially inside the outer edge."""
     block = build_cyclodextrin({"variant": variant})
-    spec = cad_dsl.parse(block.envelope)
+    spec = _spec_A(block.envelope)
     assert spec.alias == "torus"
     major, minor = spec.params["R"], spec.params["r"]
     hole_radius = major - minor
@@ -323,7 +337,8 @@ def test_cyclodextrin_bore_clears_a_threaded_axle() -> None:
 
     zero = as_vec3([0, 0, 0])
     block = build_cyclodextrin({"variant": "alpha"})
-    ring_prim = cad_dsl.build_config(block.envelope)
+    # Å space throughout (the axle below is Å too) — see `_spec_A`.
+    ring_prim = cad_dsl.build_config(block.envelope.replace(ENVELOPE_UNIT, ""))
     design = CadDesign()
     design.add_component("ring", design.prim("ring", ring_prim, pose(zero, zero)))
     axle_prim = cad_dsl.build_config("cyl:r1.5h40")
@@ -400,7 +415,7 @@ def test_registry_has_cyclodextrin() -> None:
 
 @pytest.mark.parametrize("variant", sorted(_VARIANTS))
 def test_generate_cyclodextrin_end_to_end(
-    handler: NmHandler, structure: StructureHandler, store: Store, variant: str
+    handler: SeHandler, structure: StructureHandler, store: Store, variant: str
 ) -> None:
     n = _VARIANTS[variant]
     ops = [
@@ -422,7 +437,7 @@ def test_generate_cyclodextrin_end_to_end(
     assert Counter(a.element for a in scene.atoms.values())["C"] == 6 * n
 
     block = handler.get(id=f"gencd-{variant}", view="block", args={"name": "ring"})
-    assert "bound_design" in block.body
+    assert f"realization: structure:gencd-{variant}-ring" in block.body
     assert "cd-primary-rim" in block.body or "cd-secondary-rim" in block.body
 
     validate = handler.get(id=f"gencd-{variant}", view="validate")
@@ -433,7 +448,7 @@ def test_generate_cyclodextrin_end_to_end(
 
 
 def test_generate_cyclodextrin_bad_variant_rejected_via_handler(
-    handler: NmHandler,
+    handler: SeHandler,
 ) -> None:
     ops = [
         {

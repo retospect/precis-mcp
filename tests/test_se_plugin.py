@@ -134,8 +134,10 @@ def test_get_block_view_unknown_name_raises(handler: SeHandler) -> None:
 
 def test_unknown_view_names_the_valid_ones(handler: SeHandler) -> None:
     handler.put(id="caster1", text=_CASTER)
+    # 'mechanics' used to be the stand-in unknown view here; the nm→se
+    # merge made it real (atomic mode), so this needs a name no view has.
     with pytest.raises(BadInput, match="unknown se view"):
-        handler.get(id="caster1", view="mechanics")
+        handler.get(id="caster1", view="wiring")
 
 
 # ── put: unrecognised payload rejected, never silently discarded ─────────

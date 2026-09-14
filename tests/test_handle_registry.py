@@ -383,7 +383,6 @@ def test_codeless_kinds_are_recognised() -> None:
 _PLUGIN_MODULE_PREFIXES = (
     "precis_bio.",
     "precis_chem.",
-    "precis_nm.",
     "precis_se.",
     "precis_pathway.",
     "precis_estimate.",
@@ -412,14 +411,12 @@ def test_all_four_plugin_codes_plus_new_kinds_are_pairwise_distinct() -> None:
     from precis_bio import handles as bio_handles
     from precis_chem import handles as chem_handles
     from precis_estimate import handles as estimate_handles
-    from precis_nm import handles as nm_handles
     from precis_pathway import handles as pathway_handles
     from precis_se import handles as se_handles
 
     plugin_modules = (
         pathway_handles,
         estimate_handles,
-        nm_handles,
         se_handles,
         chem_handles,
         bio_handles,

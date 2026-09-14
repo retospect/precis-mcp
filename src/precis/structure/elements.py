@@ -13,8 +13,8 @@ valence-bounded.
 
 Unit enclave (package docstring): Å-native. ``covalent_radius``/
 ``DEFAULT_RADIUS``/``bond_cutoff`` are cross-package Å surfaces — imported
-bare by ``precis_nm`` and ``precis_web``; ``covalent_radius_A`` is the
-self-naming alias for new/non-frozen imports.
+bare by ``precis_se`` (atomic mode) and ``precis_web``; ``covalent_radius_A``
+is the self-naming alias for new/non-frozen imports.
 """
 
 from __future__ import annotations
@@ -73,8 +73,9 @@ def covalent_radius(element: str) -> float:
 
 #: Self-naming alias (units-policy-cutover unit-enclave rule) — same function,
 #: Å-suffixed name for cross-package call sites. The bare ``covalent_radius``
-#: stays importable (``precis_nm`` is frozen under the units window); new
-#: non-frozen imports should prefer this name.
+#: stays importable (``precis_se`` atomic mode imports it bare, transferred
+#: verbatim from the retired ``nm`` kind); new non-frozen imports should
+#: prefer this name.
 covalent_radius_A = covalent_radius
 
 

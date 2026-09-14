@@ -1,4 +1,4 @@
-"""The ``se``/``nm`` web reader routes (gr335242 round 1, items 1-3):
+"""The ``se`` web reader routes (gr335242 round 1, items 1-3):
 envelope-union SVG projection, part isolation, and the stepped
 abstraction ladder. Two layers, matching ``test_cad.py``'s own split:
 fast FakeStore-backed degradation checks, and a real-store integration
@@ -18,15 +18,12 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-import precis_nm
 import precis_se
-from precis_nm.handler import NmHandler
 from precis_se.handler import SeHandler
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 
 _SE_MIGRATIONS = Path(precis_se.__file__).parent / "migrations"
-_NM_MIGRATIONS = Path(precis_nm.__file__).parent / "migrations"
 
 
 def _apply_migrations(store: Any, directory: Path) -> None:
@@ -43,12 +40,6 @@ def test_se_list_empty(client: TestClient) -> None:
     r = client.get("/se")
     assert r.status_code == 200
     assert "No se designs yet" in r.text
-
-
-def test_nm_list_empty(client: TestClient) -> None:
-    r = client.get("/nm")
-    assert r.status_code == 200
-    assert "No nm designs yet" in r.text
 
 
 def test_se_detail_404(client: TestClient) -> None:
@@ -112,7 +103,6 @@ _UNICYCLE_OPS: list[dict[str, Any]] = [
 @pytest.fixture
 def blocktree_client(store, runtime_with_store, tmp_path) -> TestClient:
     _apply_migrations(store, _SE_MIGRATIONS)
-    _apply_migrations(store, _NM_MIGRATIONS)
     return TestClient(
         create_app(
             runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
@@ -124,27 +114,6 @@ def _seed_se(runtime_with_store, slug: str = "unicycle_web") -> None:
     SeHandler(hub=runtime_with_store.hub).put(
         id=slug, text=json.dumps({"ops": _UNICYCLE_OPS})
     )
-
-
-def _seed_nm(runtime_with_store, slug: str = "rotaxane_web") -> None:
-    # nm's add_block envelope is unit-required boundary text (unlike se's
-    # bare-metre envelope above) — precis_nm/ops.py::_ingest_envelope.
-    ops = [
-        {
-            "op": "add_block",
-            "name": "axle",
-            "pose": [0, 0, 0],
-            "envelope": "cyl:r2nmh20nm",
-        },
-        {
-            "op": "add_block",
-            "name": "ring",
-            "parent": "axle",
-            "pose": [0, 0, 5],
-            "envelope": "torus:R5nmr1nm",
-        },
-    ]
-    NmHandler(hub=runtime_with_store.hub).put(id=slug, text=json.dumps({"ops": ops}))
 
 
 # ── stability verdict -> header tier ─────────────────────────────────────
@@ -411,23 +380,6 @@ def test_se_view_svg_part_colour_groups_by_render_root(
     assert len(fills) >= 2
 
 
-def test_nm_detail_and_view_svg(blocktree_client, runtime_with_store) -> None:
-    # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
-    _seed_nm(runtime_with_store)
-    r = blocktree_client.get("/nm/rotaxane_web/2d")
-    assert r.status_code == 200
-    assert "/nm/rotaxane_web/view.svg" in r.text
-
-    r2 = blocktree_client.get("/nm/rotaxane_web/view.svg")
-    assert r2.status_code == 200
-    assert r2.headers["content-type"].startswith("image/svg+xml")
-    assert "<title>axle</title>" in r2.text
-    assert "<title>ring</title>" in r2.text
-    # nm has no whole-structure stability verdict — only validate + fill.
-    assert "stability:" not in r2.text
-    assert "validate:" in r2.text
-
-
 # ── round 2a: per-subtree level override (SVG route) ─────────────────────
 
 
@@ -491,16 +443,13 @@ def test_se_view3d_page_renders(blocktree_client, runtime_with_store) -> None:
     assert "three-cad-viewer" in r.text
 
 
-@pytest.mark.parametrize("kind", ["se", "nm"])
-def test_view3d_url_permanently_redirects_to_the_new_default(client, kind: str) -> None:
-    """gr337745 moved the 3D view off ``/{kind}/{slug}/view3d`` onto the
+def test_view3d_url_permanently_redirects_to_the_new_default(client) -> None:
+    """gr337745 moved the 3D view off ``/se/{slug}/view3d`` onto the
     bare slug URL — the old URL must still resolve via a permanent
     redirect (never a bare 404), query string forwarded unchanged."""
-    r = client.get(
-        f"/{kind}/unicycle_web/view3d?level=envelope", follow_redirects=False
-    )
+    r = client.get("/se/unicycle_web/view3d?level=envelope", follow_redirects=False)
     assert r.status_code == 308
-    assert r.headers["location"] == f"/{kind}/unicycle_web?level=envelope"
+    assert r.headers["location"] == "/se/unicycle_web?level=envelope"
 
 
 def test_se_scene3d_json_shapes_tree_and_connections(
@@ -590,13 +539,3 @@ def test_se_view3d_hostile_overrides_excluded_from_scene_url(
     assert "alert" not in scene_url_line
     assert "overrides=" not in scene_url_line  # the whole invalid pair was dropped
     assert "scene3d.json" in scene_url_line  # sanity: the right line
-
-
-def test_nm_view3d_and_scene3d(blocktree_client, runtime_with_store) -> None:
-    _seed_nm(runtime_with_store)
-    r = blocktree_client.get("/nm/rotaxane_web")
-    assert r.status_code == 200
-    r2 = blocktree_client.get("/nm/rotaxane_web/scene3d.json")
-    assert r2.status_code == 200
-    body = r2.json()
-    assert body["shapes"]["parts"]  # axle + ring rendered

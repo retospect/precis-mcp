@@ -16,7 +16,11 @@ order"):
 - ``put``    — create/replace a design from a JSON payload
   ``{description?, ops: [...]}`` (``id=`` the design slug). A re-put
   soft-retires the prior blocks and reinserts the new tree (the
-  ``nm``/``structure`` re-put shape).
+  ``structure`` re-put shape). The atomic mode's 3 store-aware ops
+  (``bind_structure``/``unbind_structure``/``generate``) are intercepted
+  before the pure ops table sees them —
+  :func:`precis_se.atomic.apply.apply_ops_with_atomic`, the
+  ``import_fragment`` precedent.
 - ``edit``   — apply more ops (``ops=`` or ``text=`` JSON) to an existing
   design's live tree.
 - ``get``    — list designs (no ``id``), a design's nested tree TOC
@@ -38,7 +42,11 @@ order"):
   ``component`` kind's own spec values), the interrogation ledger with
   open questions first (``view='interview'`` — :mod:`precis_se.notes`),
   or the what-is-still-undecided report (``view='freedom'`` —
-  :mod:`precis_se.freedom`, DRC's honest counterpart).
+  :mod:`precis_se.freedom`, DRC's honest counterpart). The atomic mode
+  adds two (:mod:`precis_se.atomic.render`): advisory L4 mechanics
+  ceilings (``view='mechanics'``) and a deterministic paper query over the
+  design's own vocabulary (``view='literature'``, optional
+  ``args={'block': ...}``).
 - ``delete`` — soft-retire a whole design.
 - ``search`` — find designs by intent over each design's one
   ``card_combined`` chunk; ``search_hits`` opts into the cross-kind
@@ -57,7 +65,7 @@ describing target state misdirects agents).
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -84,12 +92,15 @@ from precis_se import notes as se_notes
 from precis_se import persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
+from precis_se.atomic import render as se_atomic_render
+from precis_se.atomic import validate as se_atomic_validate
+from precis_se.atomic.apply import apply_ops_with_atomic
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
-    OpError,
+    PortSpec,
     SeBlock,
     SeTree,
-    apply_ops,
+    effective_dof,
     effective_envelope,
     effective_ports,
     resolve_template,
@@ -102,17 +113,20 @@ class SeHandler(Handler):
         title="Structural envelope",
         description=(
             "A scale-agnostic structural/space-planner design (precis-se "
-            "plugin, sibling of nm at macro scale): nested blocks with "
+            "plugin — the one design kind from nano to macro): nested blocks with "
             "cad-DSL envelopes in METRES, poses, read-time template "
             "instancing, and first-class arrays. put/edit take typed ops "
             "(add_block/instance_block/array_block/set_pose/set_envelope/"
             "remove_block/add_port/remove_port/connect/disconnect/"
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
-            "remove_note/formfind); "
+            "remove_note/formfind/declare_threading/remove_threading/"
+            "declare_dof/clear_dof/bind_structure/unbind_structure/"
+            "generate); "
             "get lists designs or renders one (view='tree'|'block'|"
-            "'ports'|'measures'|'validate'|'clearance'|'drc'|'bom'|"
-            "'interview'|'freedom'|'stability'; block takes "
+            "'ports'|'topology'|'measures'|'validate'|'clearance'|'drc'|"
+            "'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
+            "'literature'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes, or omit args for an all-pairs "
@@ -167,10 +181,40 @@ class SeHandler(Handler):
             "component/part on a block (block=) or a connect (a=/b=) with "
             "a per-occurrence qty, and view='bom' rolls it up through the "
             "array multiplicities with cost/mass from the component kind. "
-            "set_mode assigns how a block gets made ('purchase' today; "
-            "fdm/laser/stock-cut/cnc-2.5ax/sla/atomic are recordable "
-            "intent until their implementers ship); set_binding points a "
-            "block's realization at a cad|nm|component|part row. "
+            "set_mode assigns how a block gets made ('purchase' and "
+            "'atomic' today; fdm/laser/stock-cut/cnc-2.5ax/sla are "
+            "recordable intent until their implementers ship); "
+            "set_binding points a "
+            "block's realization at a cad|structure|component|part "
+            "row — a mode and a binding that contradict each other are a "
+            "view='drc' finding, never a rejected write. "
+            "ATOMIC MODE (the merged nm kind): a block whose realization "
+            "is chemistry binds a structure design and states its L2 "
+            "explicitly — declare_threading a through b (a macrocycle on "
+            "an axle), declare_dof block= kind=rotational|translational "
+            "axis_ports=[p,q] (two of the block's own ports), add_port "
+            "expected_element=/expected_hybridization= for the atom a "
+            "stub will attach to, and connect kind='bond'|'interaction' "
+            "(a bond needs both ports to afford the role — 'covalent' by "
+            "default, or objectives={'role':...}); view='topology' shows "
+            "the threading pairs and declared dof together. "
+            "bind_structure block= design= ports={port: atom} maps a "
+            "block's ports onto atoms of a real structure design, gated "
+            "by each port's expected_element (unbind_structure clears "
+            "it); generate runs a parametric block factory "
+            "(generator='cnt'|'fullerene'|'cone'|'cyclodextrin', "
+            "params={...}, name=<new block>) — deterministic geometry, no "
+            "LLM guessing: it mints and binds the structure design "
+            "itself. view='mechanics' renders advisory (never-gating) L4 "
+            "ceilings: min-cut tensile between bond-connected blocks, "
+            "Euler buckling for tube-shaped generated blocks, harmonic "
+            "strain energy vs VSEPR ideal angles — defect-free continuum "
+            "estimates, never validate findings. view='literature' builds "
+            "a deterministic (no-LLM) paper-search query from a block's "
+            "desc/use/name + connect objective vocabulary (or the whole "
+            "design's, with no block named) and runs it against the paper "
+            "corpus. The LLM traverses a block tree, never atoms "
+            "directly. "
             "array_block patterns a template block N times "
             "(linear={'count','pitch','axis'} in metres, or "
             "polar={'count','radius','axis'}, axis default +z) — the "
@@ -200,6 +244,7 @@ class SeHandler(Handler):
             "tree",
             "block",
             "ports",
+            "topology",
             "measures",
             "validate",
             "clearance",
@@ -209,6 +254,8 @@ class SeHandler(Handler):
             "interview",
             "freedom",
             "stability",
+            "mechanics",
+            "literature",
         ),
     )
 
@@ -219,11 +266,18 @@ class SeHandler(Handler):
         self.store = hub.store
         self.embedder = hub.embedder
 
-    def _apply(self, tree: SeTree, ops: list[dict[str, Any]]) -> None:
-        try:
-            apply_ops(tree, ops)
-        except OpError as exc:
-            raise BadInput(str(exc)) from exc
+    def _apply(
+        self, tree: SeTree, ops: list[dict[str, Any]], *, slug: str
+    ) -> str | None:
+        """Walk one ``put``/``edit``'s ops list. Delegates to
+        :func:`~precis_se.atomic.apply.apply_ops_with_atomic` rather than
+        calling :func:`~precis_se.ops.apply_ops` directly: the 3 atomic
+        store-aware ops (``bind_structure``/``unbind_structure``/
+        ``generate``) are intercepted before the pure table ever sees them,
+        and ``add_block``'s deferred ``dof`` axis-port check runs once the
+        whole list has been walked (that function's docstring for both).
+        Returns the atomic ops' echo, or ``None``."""
+        return apply_ops_with_atomic(self.store, tree, ops, design_slug=slug)
 
     def _foreign_resolver(self) -> Callable[[str], SeTree | None]:
         """Builds the cross-design ``template`` resolver
@@ -280,7 +334,7 @@ class SeHandler(Handler):
         # design (cross-design cycle detection, ops._find_instance_cycle).
         tree.own_slug = slug
         tree.foreign = self._foreign_resolver()
-        self._apply(tree, ops)
+        echo = self._apply(tree, ops, slug=slug)
         ttl = (title or slug).strip() or slug
         existing = self.store.get_ref(kind="se", id=slug)
         meta = {"description": description}
@@ -310,6 +364,8 @@ class SeHandler(Handler):
         persist.sync_realized_by(self.store, ref.id, tree)
         verb = "created" if created else "replaced"
         body = f"# se design '{slug}' {verb}\n\n" + _render_tree(tree, ttl, description)
+        if echo:
+            body += f"\n\n{echo}"
         return Response(body=body)
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -341,7 +397,7 @@ class SeHandler(Handler):
         tree = persist.load_tree(self.store, ref.id)
         tree.own_slug = str(ref.slug)
         tree.foreign = self._foreign_resolver()
-        self._apply(tree, op_list)
+        echo = self._apply(tree, op_list, slug=str(ref.slug))
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
         persist.save_tree(
@@ -354,6 +410,8 @@ class SeHandler(Handler):
         body = f"# se design '{ref.slug}' edited\n\n" + _render_tree(
             tree, ttl, description
         )
+        if echo:
+            body += f"\n\n{echo}"
         return Response(body=body)
 
     # ── get ──────────────────────────────────────────────────────────
@@ -374,6 +432,7 @@ class SeHandler(Handler):
         tree.own_slug = str(ref.slug)
         tree.foreign = self._foreign_resolver()
         v = (view or "").strip().lower()
+        _vet_view_args(v, args)
         if v in ("", "tree"):
             description = str((ref.meta or {}).get("description") or "").strip()
             return Response(
@@ -392,10 +451,22 @@ class SeHandler(Handler):
             return Response(body=_render_block(tree, node))
         if v == "ports":
             return Response(body=_render_ports(tree))
+        if v == "topology":
+            return Response(body=_render_topology(tree))
         if v == "measures":
             return Response(body=_render_measures(tree))
         if v == "validate":
-            return Response(body=_render_validate(tree))
+            return Response(body=self._render_validate(tree))
+        if v == "mechanics":
+            return Response(body=se_atomic_render.render_mechanics(self.store, tree))
+        if v == "literature":
+            block_arg = (args or {}).get("block")
+            lit_block: str | None = str(block_arg).strip() if block_arg else None
+            if lit_block and lit_block not in tree.blocks:
+                raise NotFound(_block_not_found(tree, lit_block))
+            return se_atomic_render.render_literature(
+                self.hub, self.store, tree, ref, block_name=lit_block
+            )
         if v == "clearance":
             return Response(body=_render_clearance(tree, args))
         if v == "drc":
@@ -417,7 +488,8 @@ class SeHandler(Handler):
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
-            "(args={'name':...}) | view='ports' | view='measures' "
+            "(args={'name':...}) | view='ports' | view='topology' "
+            "(atomic mode: threading + declared dof) | view='measures' "
             "(+ stack-up) | view='validate' | view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
             "CONNECTS digest) | view='drc' (graph tier + DOF "
@@ -428,7 +500,61 @@ class SeHandler(Handler):
             "| view='freedom' (what is still undecided, and by whom) "
             "| view='stability' (Maxwell/Calladine rigid / mechanism / "
             "prestress-stabilized over the axial members) "
+            "| view='mechanics' (atomic mode: advisory L4 ceilings — "
+            "buckling, strain energy, min-cut tensile) | view='literature' "
+            "(atomic mode: a deterministic paper query, optional "
+            "args={'block':...}) "
             "| view='links' (the design's link graph, both directions)",
+        )
+
+    def _render_validate(self, tree: SeTree) -> str:
+        """``view='validate'`` — :mod:`precis_se.validate`'s findings plus
+        :func:`precis_se.atomic.validate.validate_atomic`'s, under the
+        filled-fraction honesty header, on BOTH the clean and the findings
+        branch (a fresh scaffold trivially has no findings, and a bare
+        check-mark would misread as done).
+
+        Store-aware for the atomic half only: the chemistry checks need
+        every bound ``structure`` design hydrated
+        (:func:`precis_se.atomic.render.hydrate_bound_scenes` — the
+        "assemble in the view path, keep the checker pure" split), and a
+        design with no ``structure`` binding anywhere hydrates nothing, so
+        a plain se design pays one set-comprehension for the atomic tier."""
+        findings = list(se_validate.validate(tree))
+        bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
+            self.store, tree
+        )
+        findings.extend(
+            se_atomic_validate.validate_atomic(
+                tree,
+                bound_scenes=bound_scenes,
+                bound_full_scenes=bound_full_scenes,
+            )
+        )
+        header_lines = [_fill_fraction_line(tree)]
+        atomic_line = se_atomic_render.atomic_fill_line(tree)
+        if atomic_line:
+            header_lines.append(atomic_line)
+        fill_block = "\n".join(header_lines)
+        if not findings:
+            return f"✓ no validator findings\n{fill_block}"
+        n_error = sum(1 for f in findings if f.severity == "error")
+        n_warn = sum(1 for f in findings if f.severity == "warn")
+        n_info = sum(1 for f in findings if f.severity == "info")
+        rows = [
+            {
+                "severity": f.severity,
+                "rule": f.rule,
+                "subject": f.subject,
+                "detail": f.detail,
+            }
+            for f in findings
+        ]
+        info_suffix = f", {n_info} info" if n_info else ""
+        return (
+            f"# {n_error} error(s), {n_warn} warning(s){info_suffix}\n"
+            f"{fill_block}\n\n"
+            + render_agent_table(rows, schema=["severity", "rule", "subject", "detail"])
         )
 
     def _render_bom(self, tree: SeTree) -> str:
@@ -799,6 +925,66 @@ def _array_label(spec: dict[str, Any]) -> str:
     return f"×{spec.get('count')} polar r={spec.get('radius'):g} axis=[{_fmt3(axis)}]"
 
 
+#: Atomic-mode dof kinds, abbreviated for the one-line tree marker.
+_DOF_ABBR = {"rotational": "rot", "translational": "trans"}
+
+
+def _dof_marker(dof: dict[str, Any] | None) -> str:
+    if not dof:
+        return ""
+    kind = str(dof.get("kind") or "?")
+    return f"[{_DOF_ABBR.get(kind, kind)}]"
+
+
+def _fmt_expected(element: str | None, hybridization: str | None) -> str:
+    """The ``expected`` cell of a ports table — the chemistry an atomic
+    port demands of the atom it will attach to."""
+    bits = [b for b in (element, hybridization) if b]
+    return " ".join(bits) if bits else "—"
+
+
+def _fmt_bound(port: PortSpec) -> str:
+    """The port→atom map cell (:class:`~precis_se.ops.PortSpec`'s
+    ``bound_design``/``bound_atom`` — the "one fact, two projections"
+    port's atom-side half, set by ``bind_structure``)."""
+    if port.bound_design and port.bound_atom:
+        return f"{port.bound_design}:{port.bound_atom}"
+    return "—"
+
+
+#: The atomic mode's own port columns, appended to a ports table only
+#: when :func:`_shows_atomic_ports` says something fills them.
+_ATOMIC_PORT_SCHEMA = ("expected", "bound")
+
+
+def _shows_atomic_ports(ports: Iterable[PortSpec]) -> bool:
+    """Whether a ports table should carry the two atomic columns —
+    mode-scoped help (nm-se-merge.md): a frame of bolted extrusions must
+    not grow ``expected``/``bound`` columns of dashes, and an atomic
+    design must not hide its chemistry."""
+    return any(
+        p.expected_element or p.expected_hybridization or p.bound_design for p in ports
+    )
+
+
+def _port_cells(port: PortSpec, *, atomic: bool) -> dict[str, str]:
+    """One ports-table row's cells for ``port``. The atomic two ride along
+    only when the table declares them — a row key outside the schema would
+    still reach the JSON backend, which ignores ``schema``."""
+    cells = {
+        "port": port.name,
+        "roles": ", ".join(port.roles) or "—",
+        "direction": f"[{_fmt3(port.direction)}]" if port.direction else "—",
+        "annotations": json.dumps(port.annotations) if port.annotations else "—",
+    }
+    if atomic:
+        cells["expected"] = _fmt_expected(
+            port.expected_element, port.expected_hybridization
+        )
+        cells["bound"] = _fmt_bound(port)
+    return cells
+
+
 def _block_line(tree: SeTree, node: SeBlock) -> str:
     parts = [node.name]
     if node.template and node.array:
@@ -812,6 +998,10 @@ def _block_line(tree: SeTree, node: SeBlock) -> str:
     parts.append(f"pose=[{_fmt3(node.pose)}]")
     if any(node.rot):
         parts.append(f"rot=[{_fmt_rot3(node.rot)}]")
+    dof = effective_dof(tree, node)
+    if dof:
+        marker = f" (from {node.template})" if node.template else ""
+        parts.append(f"{_dof_marker(dof)}{marker}")
     n_ports = len(effective_ports(tree, node))
     if n_ports:
         parts.append(f"[{n_ports} port{'s' if n_ports != 1 else ''}]")
@@ -880,6 +1070,13 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
     lines.append(f"use: {node.use or '—'}")
     if node.objectives:
         lines.append(f"loads: {json.dumps(node.objectives)}")
+    dof = effective_dof(tree, node)
+    if dof:
+        # Atomic mode only, and shown only when declared — a bolted
+        # bracket's record must not carry a 'dof: —' line it can never
+        # fill (mode-scoped help, nm-se-merge.md).
+        via = f" (from {node.template})" if node.template else ""
+        lines.append(f"dof: {json.dumps(dof)}{via}")
     lines.append(_mode_line(tree, node))
     lines.append(_binding_line(tree, node))
     occurrences = se_bom.design_occurrences(tree).get(node.name, 0)
@@ -904,18 +1101,12 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
     if ports:
         via = f" (resolved via template {node.template!r})" if node.template else ""
         lines.append(f"## ports{via}")
-        rows = [
-            {
-                "port": p.name,
-                "roles": ", ".join(p.roles) or "—",
-                "direction": f"[{_fmt3(p.direction)}]" if p.direction else "—",
-                "annotations": json.dumps(p.annotations) if p.annotations else "—",
-            }
-            for p in ports.values()
-        ]
+        atomic = _shows_atomic_ports(ports.values())
+        extra = _ATOMIC_PORT_SCHEMA if atomic else ()
         lines.append(
             render_agent_table(
-                rows, schema=["port", "roles", "direction", "annotations"]
+                [_port_cells(p, atomic=atomic) for p in ports.values()],
+                schema=["port", "roles", "direction", "annotations", *extra],
             )
         )
     else:
@@ -925,18 +1116,37 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
     lines.append("")
     if touching:
         lines.append("## connects")
+        # The atomic ``kind`` column appears only when an edge carries one
+        # — the same mode-scoped rule as the ports table's two.
+        kind_schema = ["kind"] if any(c.kind for c in touching) else []
         rows = [
             {
                 "a": f"{c.a_block}.{c.a_port}",
                 "b": f"{c.b_block}.{c.b_port}",
                 "joint": json.dumps(c.joint) if c.joint else "—",
                 "objectives": json.dumps(c.objectives) if c.objectives else "—",
+                **({"kind": c.kind or "—"} if kind_schema else {}),
             }
             for c in touching
         ]
-        lines.append(render_agent_table(rows, schema=["a", "b", "joint", "objectives"]))
+        lines.append(
+            render_agent_table(
+                rows, schema=["a", "b", "joint", *kind_schema, "objectives"]
+            )
+        )
     else:
         lines.append("## connects\n(none)")
+
+    threaded = [t for t in tree.threading if node.name in (t.a, t.b)]
+    if threaded:
+        lines.append("")
+        lines.append("## threading")
+        lines.append(
+            render_agent_table(
+                [{"relation": f"{t.a} threaded through {t.b}"} for t in threaded],
+                schema=["relation"],
+            )
+        )
 
     bought = [
         line
@@ -999,26 +1209,72 @@ def _binding_line(tree: SeTree, node: SeBlock) -> str:
 def _render_ports(tree: SeTree) -> str:
     """``view='ports'`` — every block's live ports; an instance's/array's
     row resolves from its template (:func:`effective_ports`), marked."""
+    by_block = {
+        name: effective_ports(tree, tree.blocks[name]) for name in sorted(tree.blocks)
+    }
+    # One design-wide decision, not one per block: a table whose rows had
+    # different column sets would be unreadable (and the JSON backend
+    # ignores ``schema``, so a stray key would simply appear).
+    atomic = _shows_atomic_ports(
+        p for ports in by_block.values() for p in ports.values()
+    )
+    extra = _ATOMIC_PORT_SCHEMA if atomic else ()
     rows = []
-    for name in sorted(tree.blocks):
+    for name, ports in by_block.items():
         node = tree.blocks[name]
-        ports = effective_ports(tree, node)
         block_label = f"{name} (via {node.template})" if node.template else name
         for p in ports.values():
-            rows.append(
-                {
-                    "block": block_label,
-                    "port": p.name,
-                    "roles": ", ".join(p.roles) or "—",
-                    "direction": f"[{_fmt3(p.direction)}]" if p.direction else "—",
-                    "annotations": json.dumps(p.annotations) if p.annotations else "—",
-                }
-            )
+            rows.append({"block": block_label, **_port_cells(p, atomic=atomic)})
     if not rows:
         return "# se ports\n\n(no ports declared yet)"
     return f"# {len(rows)} port(s)\n" + render_agent_table(
-        rows, schema=["block", "port", "roles", "direction", "annotations"]
+        rows,
+        schema=["block", "port", "roles", "direction", "annotations", *extra],
     )
+
+
+def _render_topology(tree: SeTree) -> str:
+    """``view='topology'`` — the atomic mode's L2 statements in one table:
+    every live threading pair, plus every block's declared dof. Pure over
+    ``tree`` (no store access — unlike ``validate``/``clearance``, a
+    topology fact never depends on hydrated structure/cad data)."""
+    lines = ["# se topology (atomic mode: L2 threading + declared dof)", ""]
+    lines.append("## threading")
+    if tree.threading:
+        lines.append(
+            render_agent_table(
+                [
+                    {"a": t.a, "b": t.b, "relation": f"{t.a} threaded through {t.b}"}
+                    for t in tree.threading
+                ],
+                schema=["a", "b", "relation"],
+            )
+        )
+    else:
+        lines.append("(none)")
+    lines.append("")
+    lines.append("## dof")
+    dof_rows = []
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        dof = effective_dof(tree, node)
+        if not dof:
+            continue
+        via = f" (via {node.template})" if node.template else ""
+        dof_rows.append(
+            {
+                "block": f"{name}{via}",
+                "kind": dof.get("kind", "—"),
+                "axis_ports": ", ".join(dof.get("axis_ports") or []),
+            }
+        )
+    if dof_rows:
+        lines.append(
+            render_agent_table(dof_rows, schema=["block", "kind", "axis_ports"])
+        )
+    else:
+        lines.append("(none)")
+    return "\n".join(lines)
 
 
 def _fmt_num(v: Any) -> str:
@@ -1563,29 +1819,61 @@ def _fill_fraction_line(tree: SeTree) -> str:
     return line
 
 
-def _render_validate(tree: SeTree) -> str:
-    """``view='validate'`` — :mod:`precis_se.validate`'s findings under
-    the filled-fraction honesty header, on BOTH the clean and the findings
-    branch (nm's ``_render_validate`` rule: a fresh scaffold trivially has
-    no findings, and a bare check-mark would misread as done)."""
-    findings = se_validate.validate(tree)
-    fill_line = _fill_fraction_line(tree)
-    if not findings:
-        return f"✓ no validator findings\n{fill_line}"
-    n_error = sum(1 for f in findings if f.severity == "error")
-    n_warn = sum(1 for f in findings if f.severity == "warn")
-    rows = [
-        {
-            "severity": f.severity,
-            "rule": f.rule,
-            "subject": f.subject,
-            "detail": f.detail,
-        }
-        for f in findings
-    ]
-    return (
-        f"# {n_error} error(s), {n_warn} warning(s)\n{fill_line}\n\n"
-        + render_agent_table(rows, schema=["severity", "rule", "subject", "detail"])
+#: Every ``get(kind='se')`` view's accepted ``args=`` keys — the single
+#: source :func:`_vet_view_args` checks a caller's ``args`` dict against
+#: (nm's ``_VIEW_ARGS`` transferred by the merge, extended to se's views).
+#: Only a view listed here gets checked at all; an unrecognized ``view=``
+#: falls through to the plain "unknown se view" error unchanged, from
+#: :meth:`SeHandler.get`.
+_VIEW_ARGS: dict[str, frozenset[str]] = {
+    "": frozenset(),
+    "tree": frozenset(),
+    "block": frozenset({"name"}),
+    "ports": frozenset(),
+    "topology": frozenset(),
+    "measures": frozenset(),
+    "validate": frozenset(),
+    "clearance": frozenset({"a", "b"}),
+    "drc": frozenset(),
+    "bom": frozenset(),
+    "fasten": frozenset(),
+    "interview": frozenset(),
+    "freedom": frozenset(),
+    "stability": frozenset(),
+    "mechanics": frozenset(),
+    "literature": frozenset({"block"}),
+    "links": frozenset(),
+}
+
+
+def _vet_view_args(view: str, args: dict[str, Any] | None) -> None:
+    """Reject any ``args=`` key a view doesn't accept — loudly, rather
+    than silently ignoring it (gripe 334766: ``args={'state': ...}`` used
+    to be accepted and dropped on every view, returning a confident answer
+    over the wrong (or just the default) geometry with no error at all; se
+    has no block-state concept yet — blocktree slice 2 — so 'state' in
+    particular gets its own pointed message rather than a generic "unknown
+    key"). Checked against :data:`_VIEW_ARGS` — the same table both this
+    function and every ``view=`` branch above implicitly agree on, so an
+    accepted key can never silently drift out of sync with what a view
+    actually reads."""
+    if not args:
+        return
+    allowed = _VIEW_ARGS.get(view)
+    if allowed is None:
+        return  # unrecognized view — the dispatch above raises its own error
+    unknown = sorted(set(args) - allowed)
+    if not unknown:
+        return
+    accepted = ", ".join(sorted(allowed)) if allowed else "(none)"
+    if "state" in unknown:
+        raise BadInput(
+            "state is not supported on se yet (block states are unshipped)",
+            next=f"accepted args for view={view or 'tree'!r}: {accepted}",
+        )
+    raise BadInput(
+        f"unknown args key(s) {unknown} for view={view or 'tree'!r}; "
+        f"accepted: {accepted}"
     )
 
 

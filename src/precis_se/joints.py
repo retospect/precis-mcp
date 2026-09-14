@@ -271,6 +271,9 @@ OBJECTIVE_KEYS: dict[str, str] = {
     "torque": "torque vector [x, y, z], newton-metres",
     "duty": "prose duty description ('pushed around a workshop daily')",
     "cycles": "expected load cycles (number ≥ 0)",
+    "role": "atomic mode: the capability both ports of a kind='bond' "
+    "connect must afford, overriding the default 'covalent' (connects "
+    "only)",
     "fixed": "support: grounded translations — true (all three) or a "
     "subset list from 'x'|'y'|'z' (blocks only; read by view='stability')",
 }
@@ -337,6 +340,14 @@ def validate_objectives(raw: dict[str, Any]) -> dict[str, Any]:
         out["cycles"] = cycles
     if raw.get("fixed") is not None:
         out["fixed"] = _vet_fixed(raw["fixed"])
+    if raw.get("role") is not None:
+        role = str(raw["role"]).strip()
+        if not role:
+            raise JointError(
+                "objective 'role' must name a non-empty capability both "
+                "ports afford (omit the key for the default 'covalent')"
+            )
+        out["role"] = role
     return out
 
 

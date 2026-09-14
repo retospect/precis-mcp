@@ -17,8 +17,9 @@ fractional coordinates. :func:`_resolve_site` turns the name into exact
 coordinates and delegates to :func:`_op_add_atom` — one label-minting/
 validation path for both raw and site-symbolic placement.
 
-**Fragment-building ops** (``docs/backlog/nm-kind.md`` slice 2 — molecule-mode
-fragment library): ``ring`` mints a regular n-gon of one element (the aromatic
+**Fragment-building ops** (built for the molecule-mode fragment library the
+retired ``nm`` kind — now ``se`` atomic mode, docs/backlog/nm-se-merge.md —
+consumes): ``ring`` mints a regular n-gon of one element (the aromatic
 6-ring template most callers reach for); ``attach`` rigidly bonds two
 fragments together, moving the entire fragment containing ``from`` so it
 bonds to ``to``; ``from_smiles`` mints a whole organic fragment from a SMILES
@@ -510,7 +511,7 @@ def _plane_basis_uv(normal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def _op_ring(scene: Scene, op: dict[str, Any]) -> None:
     """Mint a regular n-gon ring of one element (§ molecule-mode fragment
-    library, nm-kind.md slice 2 — the aromatic 6-ring template).
+    library — the aromatic 6-ring template).
 
     ``{"op": "ring", "element": "C", "n": 6, "aromatic": true, "center":
     [x,y,z], "normal": [nx,ny,nz], "bond_length": <Å, optional>}``.
@@ -702,7 +703,7 @@ def _rotation_aligning(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def _op_attach(scene: Scene, op: dict[str, Any]) -> None:
     """Rigidly attach one fragment to another by bonding ``from`` to ``to``
-    (§ molecule-mode fragment library, nm-kind.md slice 2).
+    (§ molecule-mode fragment library).
 
     ``{"op": "attach", "from": "aC7", "to": "aC1", "order": 1, "distance":
     <Å, optional>, "direction": [x,y,z] (optional, 'to' fallback),
@@ -820,8 +821,8 @@ def _op_attach(scene: Scene, op: dict[str, Any]) -> None:
 
 def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
     """Mint a whole organic fragment from a SMILES string (§ molecule-mode
-    fragment library, nm-kind.md slice 2 — the rdkit-embedded complement to
-    the hand-built ``ring``/``attach`` primitives).
+    fragment library — the rdkit-embedded complement to the hand-built
+    ``ring``/``attach`` primitives).
 
     ``{"op": "from_smiles", "smiles": "c1ccccc1O", "offset": [x,y,z]
     (Cartesian Å, optional, default origin), "seed": <int, optional,

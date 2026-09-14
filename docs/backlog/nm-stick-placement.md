@@ -435,7 +435,8 @@ New code, in build order (each slice lands green and is useful alone):
 local minima; mitigated by the FDM seed, multistart, and the fact
 that the loop is *interactive* (the LLM steers between solves; this
 is a design assistant, not a black-box global optimizer). (b) tree
-collision — this touches `precis_nm`/`precis.blocktree` while the
+collision — this touches `precis_se.atomic` (was `precis_nm` before
+the 2026-09-14 nm→se merge)/`precis.blocktree` while the
 module fitter (`snug-mapping-giraffe`) and the library build plan are
 in flight in siblings: sequence after the fitter lands, or slice 1
 first (new module, no file overlap). (c) threshold defaults inside
@@ -445,7 +446,8 @@ being trusted.
 
 ## Open questions
 
-- Feature schema home: `nm_ports.roles` already names `π-stack` —
+- Feature schema home: `se_ports` roles (post-merge home of nm's port
+  vocabulary) already name `π-stack` —
   are features fat ports (role + geometry params) or a fourth table?
   Leaning fat ports: one attachment/interaction vocabulary, no new
   persistence shape.

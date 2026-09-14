@@ -8,8 +8,10 @@ model: opus
 # Face codes, fit/reject, and scale
 
 Design session 2026-09-01 (Reto + agent), nano3d worktree. Sequenced
-**after** slice 4b (LLM fill). Companion to `nm-kind.md` — that doc stays
-canonical for the kind; this one holds the boxel-alignment slice.
+**after** slice 4b (LLM fill). Companion to the retired `nm` kind's design
+doc — `nm` merged into `se` as its atomic mode (`nm-se-merge.md`; unshipped
+round-2 content trails as `se-atomic-round2.md`) — this one still holds the
+boxel-alignment slice, unaffected by the merge.
 
 Motivating consumer: the **boxel** programme (`draft:nano-computer`, quest
 `qu161909`). A boxel is a purpose-designed cage implementing one primitive

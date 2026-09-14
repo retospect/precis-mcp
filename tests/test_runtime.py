@@ -724,6 +724,37 @@ def test_dispatch_chunk_code_rejected_as_kind(runtime: PrecisRuntime) -> None:
     assert "[error:NotFound]" in out
 
 
+# ── retired kinds name their successor (dispatch._RETIRED_KINDS) ──────
+
+
+def test_retired_kind_error_leads_with_where_the_work_moved(
+    runtime: PrecisRuntime,
+) -> None:
+    """``nm`` merged into ``se`` as its atomic mode
+    (docs/backlog/nm-se-merge.md's acceptance criterion: "``get(kind='nm',
+    ...)`` fails with a kind-shaped hint pointing at se atomic mode"). The
+    bare "unknown kind — pick from the options" is true but sends the
+    caller re-discovering a capability that still exists."""
+    out = runtime.dispatch("get", {"kind": "nm"})
+    assert "[error:NotFound]" in out
+    assert "unknown kind: nm" in out
+    assert "merged into 'se'" in out
+    assert "mode='atomic'" in out
+    # the generic breadcrumb still trails it — the full kind table stays
+    # one call away.
+    assert "precis-help" in out
+
+
+def test_an_ordinary_unknown_kind_gets_no_retired_pointer(
+    runtime: PrecisRuntime,
+) -> None:
+    """The map is hand-curated, not a fallback: a typo must not be told
+    it was retired into something."""
+    out = runtime.dispatch("get", {"kind": "nanomachine"})
+    assert "[error:NotFound]" in out
+    assert "merged into" not in out
+
+
 # ── pagination footer is lifetime-aware (gr267466) ────────────────────
 #
 # A ``PrecisRuntime.pagination`` cursor lives only as long as the

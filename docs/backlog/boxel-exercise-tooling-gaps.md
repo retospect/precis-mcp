@@ -165,17 +165,18 @@ A steel beam is stiff enough that rigid-body is a fine approximation, and
 `se-feasibility-and-cost.md` already handles the residue as tolerance.
 Molecules are not. Bond stretching, angle bending, entropic elasticity of a
 chain, allosteric flex — these are not corrections to a rigid model, they are
-often the mechanism itself. `nm-kind.md` names **"length-changing
-structures"** among its goals; a telescoping prismatic DOF covers the
-rigid-parts reading of that, but not a member that is genuinely elastic.
+often the mechanism itself. The `nm` kind's design doc (now merged into `se`
+atomic mode, `nm-se-merge.md`) named **"length-changing structures"** among
+its goals; a telescoping prismatic DOF covers the rigid-parts reading of
+that, but not a member that is genuinely elastic.
 
 The sharp version: **rigidity is an assumption of the envelope layer (L0–L4),
 and `structure` (L5) does not share it.** Atoms relax; deformation is native
 and physical down there. So a compliant block is representable only *after*
 fill — the envelope will claim a shape the relaxed atoms do not have, and
 nothing currently reconciles the two. That is the same "envelope↔fill drift"
-failure `nm-kind.md` warns about, arriving through a door the doc does not
-name.
+failure atomic mode's `envelope_fit` finding (`precis_se/atomic/validate.py`)
+warns about, arriving through a door it does not name.
 
 ### Not proposing a fix here
 

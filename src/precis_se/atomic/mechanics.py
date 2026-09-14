@@ -12,20 +12,21 @@ Literature constants (``RUPTURE_FORCE_N``, ``K_THETA_J_PER_RAD2``) convert
 once, at their own definition, from the unit the literature actually
 states them in (nN / eV) to SI — the value never round-trips through a
 unit string.)
-(docs/backlog/nm-kind.md "Generators — parametric block factories",
-"Mechanics ceilings" section): closed-form, defect-free continuum estimates
-over a design's bound ``structure`` scenes. **Every number here is
-advisory** — it never gates a ``validate`` finding, never blocks a write,
-and is always rendered with the honesty caveat this module's own
-:data:`HONESTY_NOTE` states once per view (:meth:`precis_nm.handler.
-NmHandler._render_mechanics`): these are *pristine-lattice ceilings*, not
-predictions of real strength — real materials fail at defects (grain
-boundaries, vacancies, kinks) far below a defect-free continuum estimate
-(the Griffith-crack gap); the literature/measurement layer, not this
-module, supplies real-world numbers.
+(originally the retired ``nm`` kind's "Generators — parametric block
+factories", "Mechanics ceilings" section, folded into ``se`` atomic mode
+by the nm→se merge, docs/backlog/nm-se-merge.md): closed-form,
+defect-free continuum estimates over a design's bound ``structure``
+scenes. **Every number here is advisory** — it never gates a ``validate``
+finding, never blocks a write, and is always rendered with the honesty
+caveat this module's own :data:`HONESTY_NOTE` states once per view
+(:func:`precis_se.atomic.render.render_mechanics`): these are
+*pristine-lattice ceilings*, not predictions of real strength — real
+materials fail at defects (grain boundaries, vacancies, kinks) far below
+a defect-free continuum estimate (the Griffith-crack gap); the
+literature/measurement layer, not this module, supplies real-world
+numbers.
 
-Three closed-form estimates, matching nm-kind.md's "Mechanics ceilings"
-section:
+Three closed-form estimates:
 
 1. **Min-cut tensile ceiling** (:func:`min_cut`) — "many bonds tougher than
    few" is literally graph theory: the maximum tensile force two points of
@@ -55,14 +56,14 @@ section:
    in for a single-atom-thick sp² sheet, since a true zero-thickness shell
    has no bending stiffness). **Schema-limitation workaround, documented
    honestly**: a generated block's ``chiral_index``/``radius_A`` topology
-   facts are NOT persisted anywhere (``precis_nm.generators``'s module
+   facts are NOT persisted anywhere (``precis_se.atomic.generators``'s module
    docstring: "persisting it onto ``nm_topology`` is a later round" — that
    table has no slot for a scalar-valued invariant yet) — so this module
    re-derives ``(radius, length)`` from the block's stored **envelope**
    instead (:func:`tube_geometry_from_envelope`): a ``cyl:r<>h<>``
    envelope (what the CNT/fullerene-family generators emit) is treated
    as a tube candidate, radius corrected by subtracting the generators'
-   own :data:`~precis_nm.generators.sp2.VDW_MARGIN_A` (the margin every
+   own :data:`~precis_se.atomic.generators.sp2.VDW_MARGIN_A` (the margin every
    sp² generator's envelope already adds around the realized shell) to
    recover the physical shell radius. A cone's ``tcone:rb<>rt<>h<>``
    envelope is NOT treated as a tube (a cone's wall isn't a constant-radius
@@ -91,16 +92,15 @@ from precis.cad import dsl as cad_dsl
 from precis.structure import probe
 from precis.structure import vsepr as struct_vsepr
 from precis.structure.scene import Scene
-from precis_nm.generators.sp2 import VDW_MARGIN_A
+from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
 
 #: Single-bond C-C rupture force under axial pulling, AFM single-molecule
-#: force-spectroscopy range ~4-6 nN (nm-kind.md's "Mechanics ceilings"
-#: section cites this range) — the midpoint (5 nN) converted to SI (N) at
-#: definition, once, per the all-SI ruling.
+#: force-spectroscopy range ~4-6 nN — the midpoint (5 nN) converted to SI
+#: (N) at definition, once, per the all-SI ruling.
 RUPTURE_FORCE_N = 5.0e-9
 
 #: In-plane sp² Young's modulus order of magnitude (Pa) — the standard
-#: ~1 TPa figure for graphene/CNT walls (nm-kind.md's "Mechanics ceilings").
+#: ~1 TPa figure for graphene/CNT walls.
 E_MODULUS_PA = 1.0e12
 
 #: Conventional "wall thickness" (Å) for a single-atom-thick sp² shell —

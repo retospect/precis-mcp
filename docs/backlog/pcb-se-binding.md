@@ -2,15 +2,13 @@
 status: draft
 title: pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
 prio: high
-blocked-by: nm-se-merge
 ---
 
 # pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
 
 Design session 2026-09-14 (Reto + agent, glowing-zooming-glade
-worktree). `blocked-by: nm-se-merge` is sequencing, not dependency —
-this touches `precis_se`, which is frozen during the merge's exclusive
-window.
+worktree). Was `blocked-by: nm-se-merge` (window sequencing); that
+window ran and shipped the same day — this item is now dispatchable.
 
 ## Motivation / why
 
@@ -23,8 +21,8 @@ height prisms, self-declared `"units": "mm"`, docstring calling itself
 own `view='mechanical'` export builder (`handlers/pcb.py`), which
 writes a JSON file for a human to read — **no cad/se code consumes the
 output**; the bridge's consumer side was never built. Meanwhile se's
-`set_binding` enumerates `cad|nm|component|part` and cannot name a
-board.
+`set_binding` enumerates `cad|structure|component|part` (post-merge
+roster) and cannot name a board.
 
 Units ruling (map §Units policy, decided Reto 2026-09-14): pcb is a
 **mm enclave**. Its interchange ecosystem — Gerber, Specctra DSN, KiCad,

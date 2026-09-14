@@ -8,10 +8,11 @@ ref gets the record code ``pi`` (``pi12``) — first+later-letter, the
 obvious ``p`` + {``r``,``o``,``t``,``n``} combos are all already taken
 (``pr`` is ``pres``, ``po`` is ``plan``, ``pt`` is ``patent``, ``pn`` is
 ``part``); ``pi`` was verified free against ``KIND_CODES``, ``CHUNK_CODES``,
-and the four registered plugin codes (``pw``/``es``/``nm``/``se``) before
-claiming it (gr329871). Residues are addressed by position within a
+and the plugin codes registered at the time (``pw``/``es``/``nm``/``se`` —
+``nm`` has since merged into ``se``, gr329871's check predates that)
+before claiming it. Residues are addressed by position within a
 sequence, never per-row, so ``CHUNK_CODES`` stays empty — mirrors
-``precis_nm/handles.py``.
+``precis_se/handles.py``.
 """
 
 from __future__ import annotations

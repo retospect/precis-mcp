@@ -1,7 +1,14 @@
 """L0/L1 feasibility findings over a loaded :class:`~precis_se.ops.SeTree`
-— the ``structure.validate``/:mod:`precis_nm.validate` shape (error/warn
-tiers, a rule/subject/detail finding per row), applied to the se
-block/port/connect graph and its envelopes.
+— the ``structure.validate`` shape (error/warn/info tiers, a
+rule/subject/detail finding per row), applied to the se block/port/connect
+graph and its envelopes.
+
+The findings that are about *chemistry* rather than structure live in
+:mod:`precis_se.atomic.validate` (the atomic mode, docs/backlog/
+nm-se-merge.md) and reuse this module's :class:`ValidationIssue`; the
+handler's ``view='validate'`` concatenates the two under one
+filled-fraction header. The split is by subject matter, never by
+duplication: every rule below runs for an atomic design too.
 
 This is a **read-time re-check over stored data**, not the op-time gate
 restated: op-time validation only protects data that went through
@@ -51,9 +58,12 @@ class ValidationIssue:
     rule: str
     subject: str
     detail: str
-    #: 'error' (structurally broken — a dangling reference) or 'warn'
+    #: 'error' (structurally broken — a dangling reference), 'warn'
     #: (advisory — scaffolding-in-progress is normal; so is contact the
-    #: designer may simply not have declared yet).
+    #: designer may simply not have declared yet), or 'info' (a finding
+    #: that names something worth knowing but never signals a problem —
+    #: today only ``unconnected_port``'s "external by design" line for a
+    #: port annotated ``external=true``).
     severity: str = "error"
 
 
@@ -331,19 +341,50 @@ def validate(
             referenced.add((source, prt))
     for node in tree.blocks.values():
         for port in node.ports.values():
-            if (node.name, port.name) not in referenced:
+            if (node.name, port.name) in referenced:
+                continue
+            # gripe 334769 (transferred from nm by the merge): before this,
+            # the ONLY way to silence the warn was to author a connect —
+            # even a fake one, which the nm dogfood proved an LLM will
+            # happily do (a 48.5 Å "covalent bond" existed for no reason
+            # but to quiet this line). ``add_port(annotations={'external':
+            # True})`` marks a port as intentionally open (an antenna, a
+            # future attachment point) — ``annotations``, not ``roles``,
+            # because "deliberately left open" is design *intent* about the
+            # port, which is exactly what the shared core's open,
+            # merely-descriptive annotations dict is for.
+            #
+            # ``is True`` on purpose, not a truthy check: an LLM-authored
+            # ``{"external": "false"}`` (a JSON string, not a boolean) must
+            # NOT silently read as external — only the literal JSON boolean
+            # ``true`` gets the info-tier treatment.
+            if port.annotations.get("external") is True:
                 findings.append(
                     ValidationIssue(
                         rule="unconnected_port",
                         subject=f"{node.name}.{port.name}",
                         detail=(
-                            "no live connect references this port — fine "
-                            "mid-design, but a scaffold that never gets "
-                            "wired never becomes a real assembly"
+                            "external by design — annotated "
+                            "external=true, no live connect required"
                         ),
-                        severity="warn",
+                        severity="info",
                     )
                 )
+                continue
+            findings.append(
+                ValidationIssue(
+                    rule="unconnected_port",
+                    subject=f"{node.name}.{port.name}",
+                    detail=(
+                        "no live connect references this port — fine "
+                        "mid-design, but a scaffold that never gets "
+                        "wired never becomes a real assembly (or mark it "
+                        "add_port(annotations={'external': True}) if it's "
+                        "intentionally left open)"
+                    ),
+                    severity="warn",
+                )
+            )
 
     # 3. block_without_envelope (warn) — ports declared but no envelope: a
     # port needs geometry eventually to mean anything at L1.

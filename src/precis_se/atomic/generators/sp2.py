@@ -170,7 +170,12 @@ from typing import Any
 
 import numpy as np
 
-from precis_nm.generators._types import GeneratedBlock, GeneratedPort, GeneratorError
+from precis_se.atomic.generators._types import (
+    GeneratedBlock,
+    GeneratedPort,
+    GeneratorError,
+    fmt_length_A,
+)
 
 #: Graphene lattice constant / C-C bond length (Å) — nm-kind.md "Generators".
 GRAPHENE_A = 2.461
@@ -231,12 +236,6 @@ CONE_MAX_PENTAGONS = 5
 #: ``~1.5%`` at this module's chosen tolerance — comfortably inside the
 #: bond-length test range ``[1.38, 1.47]`` Å around the true ``1.421`` Å.
 _CONE_CHORD_TOL = 0.3
-
-
-def _fmt_len(x: float) -> str:
-    """Render a positive length for a cad-DSL token (``<key><number>``,
-    plain decimal — the DSL's tokenizer has no exponent syntax)."""
-    return f"{round(float(x), 4):g}"
 
 
 def _bonds_by_cutoff(coords: np.ndarray, cutoff: float) -> list[tuple[int, int, float]]:
@@ -421,7 +420,9 @@ def build_cnt(raw: dict[str, Any]) -> GeneratedBlock:
 
     bonds = [(i, j, _CNT_BOND_ORDER, "aromatic") for i, j, _d in raw_bonds]
 
-    envelope = f"cyl:r{_fmt_len(radius + VDW_MARGIN_A)}h{_fmt_len(actual_length)}"
+    envelope = (
+        f"cyl:r{fmt_length_A(radius + VDW_MARGIN_A)}h{fmt_length_A(actual_length)}"
+    )
     provenance = (
         f"SWCNT (n={n}, m={m}) — chiral rolling construction, graphene "
         f"a={GRAPHENE_A:g} Å (a_cc={GRAPHENE_A_CC:.4g} Å); "
@@ -558,7 +559,7 @@ def build_fullerene(raw: dict[str, Any]) -> GeneratedBlock:
         )
 
     shell_radius = float(np.max(np.linalg.norm(coords, axis=1)))
-    envelope = f"sphere:r{_fmt_len(shell_radius + VDW_MARGIN_A)}"
+    envelope = f"sphere:r{fmt_length_A(shell_radius + VDW_MARGIN_A)}"
     provenance = (
         "C60 buckminsterfullerene — truncated icosahedron (icosahedron "
         f"vertices from φ=(1+√5)/2, truncation parameter t={t:.6g} solved "
@@ -790,9 +791,9 @@ def build_cone(raw: dict[str, Any]) -> GeneratedBlock:
     cone_height = rho_max * math.cos(half_angle)
     cone_radius = rho_max * math.sin(half_angle)
     envelope = (
-        f"tcone:rb{_fmt_len(VDW_MARGIN_A)}"
-        f"rt{_fmt_len(cone_radius + VDW_MARGIN_A)}"
-        f"h{_fmt_len(cone_height)}"
+        f"tcone:rb{fmt_length_A(VDW_MARGIN_A)}"
+        f"rt{fmt_length_A(cone_radius + VDW_MARGIN_A)}"
+        f"h{fmt_length_A(cone_height)}"
     )
     half_angle_deg = math.degrees(half_angle)
     provenance = (

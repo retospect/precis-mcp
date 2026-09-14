@@ -73,19 +73,21 @@ UNINDEXED_FKS: frozenset[str] = frozenset(
     }
 )
 
-#: Tables owned by PLUGIN migrations (precis_nm / precis_se — the only
-#: plugins that create tables; the others are kinds-row/refs.meta-only).
-#: Plugin test fixtures apply their migrations directly into the shared
-#: test DB, so whether these tables exist when this module's DB-tier
-#: tests run is pure test *ordering* (single-process full runs see them,
-#: the invariants-only run doesn't) — they can be neither required nor
-#: forbidden by the core ledgers below without going order-flaky in one
-#: direction or the other. Each plugin's schema discipline is reviewed
-#: with its own migration instead. (Known accepted nit behind this veil:
-#: nm/se FK-adjacent indexes are partial on ``retired_at IS NULL``, which
-#: doesn't cover FK-cascade scans — fine while those design tables stay
-#: small and soft-deleted.)
-PLUGIN_TABLE_PREFIXES: tuple[str, ...] = ("nm_", "se_")
+#: Tables owned by PLUGIN migrations (``precis_se`` — the only plugin
+#: that creates tables; the others are kinds-row/refs.meta-only.
+#: ``nm_`` stayed in this tuple until the nm→se merge dropped those
+#: tables, ``precis_se/migrations/0008``). Plugin test fixtures apply
+#: their migrations directly into the shared test DB, so whether these
+#: tables exist when this module's DB-tier tests run is pure test
+#: *ordering* (single-process full runs see them, the invariants-only run
+#: doesn't) — they can be neither required nor forbidden by the core
+#: ledgers below without going order-flaky in one direction or the other.
+#: The plugin's schema discipline is reviewed with its own migration
+#: instead. (Known accepted nit behind this veil: se's FK-adjacent
+#: indexes are partial on ``retired_at IS NULL``, which doesn't cover
+#: FK-cascade scans — fine while those design tables stay small and
+#: soft-deleted.)
+PLUGIN_TABLE_PREFIXES: tuple[str, ...] = ("se_",)
 
 #: Every json/jsonb column on a base table, as ``"table.column"``.
 #: Allowlisted wholesale 2026-08-24 (60 columns) — the per-column
@@ -384,7 +386,7 @@ def test_fk_columns_have_covering_index(store: Store) -> None:
         if not tbl.startswith(PLUGIN_TABLE_PREFIXES)
     }
     new = found - UNINDEXED_FKS
-    # Plugin tables (precis_nm) only exist once that plugin's migrations
+    # Plugin tables (precis_se) only exist once that plugin's migrations
     # ran in this DB — a partial-suite run may not have them. Only call a
     # grandfathered entry stale when its table is actually present.
     present = _existing_tables(store)

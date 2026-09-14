@@ -1,7 +1,13 @@
-"""precis_nm generators — slice 4a (docs/backlog/nm-kind.md "Generators —
-parametric block factories"): the pure ``cnt``/``fullerene``/``cone``
-builders (:mod:`precis_nm.generators.sp2`) and the handler-intercepted
-``generate`` op (:meth:`precis_nm.handler.NmHandler._generate`).
+"""Atomic-mode generators — the pure ``cnt``/``fullerene``/``cone``
+builders (:mod:`precis_se.atomic.generators.sp2`) and the geometry their
+declared envelopes promise.
+
+nm's ``tests/test_nm_generators.py`` minus its handler half, ported by the
+nm→se merge (docs/backlog/nm-se-merge.md): the ``generate`` op's
+end-to-end/duplicate-name/orphan/slug-collision cases now live on
+:class:`~precis_se.handler.SeHandler` in ``tests/test_se_atomic_bind.py``,
+so what remains here is the store-free geometry — the half that never
+needed a kind at all.
 
 Geometry assertions are independent of the generators' own internal
 bookkeeping wherever practical — bond lengths and the fullerene ring
@@ -12,56 +18,32 @@ back off ``topology``, so a bug that only shows up in the *realized atoms*
 
 from __future__ import annotations
 
-import json
 import math
 from collections import Counter
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-import precis_nm
-import precis_nm.validate as nm_validate
 from precis.cad import dsl as cad_dsl
-from precis.dispatch import Hub
-from precis.errors import BadInput
-from precis.handlers.structure import StructureHandler
-from precis.store import Store
 from precis.structure.scene import Atom as StructAtom
 from precis.structure.scene import Bond as StructBond
 from precis.structure.scene import Scene as StructScene
-from precis_nm.generators import GENERATORS, GeneratedBlock, GeneratorError
-from precis_nm.generators.sp2 import build_cnt, build_cone, build_fullerene
-from precis_nm.generators.sugars import build_cyclodextrin
-from precis_nm.handler import NmHandler, _envelope_A_to_m, _generated_cell
-from precis_nm.ops import _ingest_envelope
-
-_MIGRATIONS_DIR = Path(precis_nm.__file__).parent / "migrations"
-
-
-@pytest.fixture
-def handler(hub: Hub, store: Store) -> NmHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-    return NmHandler(hub=hub)
+from precis_se.atomic import validate as atomic_validate
+from precis_se.atomic.generate import generated_cell, ingest_envelope
+from precis_se.atomic.generators import GENERATORS, GeneratedBlock, GeneratorError
+from precis_se.atomic.generators._types import ENVELOPE_UNIT
+from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
+from precis_se.atomic.generators.sugars import build_cyclodextrin
 
 
-@pytest.fixture
-def structure(store: Store) -> StructureHandler:
-    return StructureHandler(hub=Hub(store=store))
-
-
-def _assert_no_error_findings(validate_body: str) -> None:
-    """``view='validate'`` renders "✓ no validator findings" when the
-    finding list is empty outright, or a "# N error(s), M warning(s)"
-    header otherwise (:meth:`precis_nm.handler.NmHandler._render_validate`)
-    — both are "clean" as long as N is 0; a generated+bound block is
-    expected to carry warn-tier findings (e.g. ``unconnected_port`` on an
-    as-yet-unwired rim port), never error-tier ones."""
-    assert "✓ no validator findings" in validate_body or "# 0 error(s)" in validate_body
+def _spec_A(envelope: str) -> cad_dsl.ShapeSpec:
+    """A generator's own Å figures, read back out of its **Å-suffixed**
+    envelope text (nm-se-merge.md: generators write their unit into the
+    DSL so the design side's ×1e-10 happens once, at the ``add_block``
+    ingest boundary). Drop the unit and parse as bare numbers — the
+    containment checks below live in the same Å space ``block.coords``
+    does, not in stored metres."""
+    return cad_dsl.parse(envelope.replace(ENVELOPE_UNIT, ""))
 
 
 # ── shared geometry helpers (recompute from coords/bonds, no trust in the
@@ -191,7 +173,7 @@ def test_cnt_10_10_interior_atom_order_sums_to_4() -> None:
 
 def test_cnt_10_10_atoms_inside_envelope() -> None:
     block = build_cnt({"n": 10, "m": 10, "length_A": 20.0})
-    spec = cad_dsl.parse(block.envelope)
+    spec = _spec_A(block.envelope)
     assert spec.alias == "cyl"
     r, h = spec.params["r"], spec.params["h"]
     radial = np.linalg.norm(block.coords[:, :2], axis=1)
@@ -295,7 +277,7 @@ def test_fullerene_70_unsupported() -> None:
 
 
 def _cone_rho_bounds(pentagons: int, length_A: float) -> tuple[float, float]:
-    from precis_nm.generators.sp2 import _cone_rho_min
+    from precis_se.atomic.generators.sp2 import _cone_rho_min
 
     k = 6.0 / (6.0 - pentagons)
     rho_min = _cone_rho_min(k)
@@ -379,7 +361,7 @@ def _cone_omega_zero_reference_positions(
     y-coordinate of ``site - apex`` is proportional to ``p1 - p2 - 1``,
     zero exactly when ``p1 = p2 + 1``, and its x-coordinate is positive
     for every ``t >= 0``, i.e. angle 0 rather than 180°)."""
-    from precis_nm.generators.sp2 import GRAPHENE_A, _cone_rho_min
+    from precis_se.atomic.generators.sp2 import GRAPHENE_A, _cone_rho_min
 
     a1 = GRAPHENE_A * np.array([math.sqrt(3) / 2, 0.5])
     a2 = GRAPHENE_A * np.array([math.sqrt(3) / 2, -0.5])
@@ -441,7 +423,7 @@ def test_cone_envelope_is_a_tcone_primitive_containing_the_atoms() -> None:
     the original bug: a declared solid with its large end at z=0 tapering
     to a point at z=h, while the atoms run small-end-first)."""
     block = build_cone({"pentagons": 2, "length_A": 15.0})
-    spec = cad_dsl.parse(block.envelope)
+    spec = _spec_A(block.envelope)
     assert spec.alias == "tcone"
     rb, rt, h = spec.params["rb"], spec.params["rt"], spec.params["h"]
     assert rb < rt  # small end (apex-ward, low z) narrower than the large end
@@ -457,11 +439,11 @@ def test_cone_envelope_is_a_tcone_primitive_containing_the_atoms() -> None:
 
 def _scene_from_block(block: GeneratedBlock) -> StructScene:
     """The same GeneratedBlock->Scene conversion
-    :meth:`precis_nm.handler.NmHandler._prepare_generate` uses (module
-    docstring's "generator geometry, exactly as realized" standard) — atoms
+    :func:`precis_se.atomic.generate.prepare_generate` uses (its
+    "generator geometry, exactly as realized" standard) — atoms
     unshifted into the block's own local frame, the exact frame
     ``envelope_fit`` compares the declared envelope against."""
-    scene = StructScene(cell=_generated_cell(block.coords))
+    scene = StructScene(cell=generated_cell(block.coords))
     labels: list[str] = []
     for element, cart in zip(block.elements, block.coords, strict=True):
         label = scene.next_label(element)
@@ -498,10 +480,11 @@ def test_generator_envelope_fit_reports_nothing(block: GeneratedBlock) -> None:
     scene = _scene_from_block(block)
     # envelope_fit's `envelope` arg is STORED (design-space canonical)
     # text — bare metres — while a generator's own `block.envelope` is
-    # Å-valued raw output; round-trip through the same seam `generate`
-    # uses in production (units-policy-cutover.md).
-    stored_env = _ingest_envelope(_envelope_A_to_m(block.envelope))
-    assert nm_validate.envelope_fit(stored_env, scene) is None
+    # Å-SUFFIXED raw output; round-trip through the same single ingest
+    # boundary `generate` uses in production (units-policy-cutover.md,
+    # nm-se-merge.md: no handler-side pre-conversion any more).
+    stored_env = ingest_envelope(block.envelope)
+    assert atomic_validate.envelope_fit(stored_env, scene) is None
 
 
 def test_cyclodextrin_envelope_fit_protrusion_is_bounded() -> None:
@@ -512,8 +495,8 @@ def test_cyclodextrin_envelope_fit_protrusion_is_bounded() -> None:
     protrusion is a rim fold (small), never a cone-style gross mismatch."""
     block = build_cyclodextrin({"variant": "beta"})
     scene = _scene_from_block(block)
-    stored_env = _ingest_envelope(_envelope_A_to_m(block.envelope))
-    fit = nm_validate.envelope_fit(stored_env, scene)
+    stored_env = ingest_envelope(block.envelope)
+    fit = atomic_validate.envelope_fit(stored_env, scene)
     if fit is not None:
         _worst_atom, depth = fit
         assert depth < 2.0, f"gross envelope mismatch, not a rim fold: {fit}"
@@ -561,208 +544,8 @@ def test_registry_has_round_1_and_round_2_generators() -> None:
         assert callable(builder)
 
 
-def test_unknown_generator_op_raises(handler: NmHandler) -> None:
-    ops = json.dumps(
-        {
-            "ops": [
-                {
-                    "op": "generate",
-                    "generator": "nanohorn",
-                    "params": {},
-                    "name": "axle",
-                }
-            ]
-        }
-    )
-    with pytest.raises(BadInput, match="unknown generator") as exc_info:
-        handler.put(id="gen-unknown", text=ops)
-    assert "cnt" in str(exc_info.value)
-    assert "fullerene" in str(exc_info.value)
-
-
-# ── generate op end-to-end ────────────────────────────────────────────
-
-
-def test_generate_cnt_end_to_end(
-    handler: NmHandler, structure: StructureHandler, store: Store
-) -> None:
-    ops = [
-        {
-            "op": "generate",
-            "generator": "cnt",
-            "params": {"n": 6, "m": 6, "length_A": 10.0},
-            "name": "axle",
-        }
-    ]
-    resp = handler.put(id="gentube", text=json.dumps({"ops": ops}))
-    assert "gentube-axle" in resp.body
-    assert "chiral_index" in resp.body
-
-    block = handler.get(id="gentube", view="block", args={"name": "axle"})
-    assert "bound_design: gentube-axle" in block.body
-    assert "sp2-rim" in block.body
-
-    struct_ref = store.get_ref(kind="structure", id="gentube-axle")
-    assert struct_ref is not None
-
-    validate = handler.get(id="gentube", view="validate")
-    _assert_no_error_findings(validate.body)
-
-    # gripe 279306: the round-1 gap was asserting only the NM view clean,
-    # never the minted STRUCTURE design's own validate view — that's
-    # exactly where an all-aromatic order=1.5 assignment previously
-    # tripped valence_budget_exceeded on every interior atom.
-    struct_validate = structure.get(id="gentube-axle", view="validate")
-    _assert_no_error_findings(struct_validate.body)
-
-
-def test_generate_fullerene_end_to_end(
-    handler: NmHandler, structure: StructureHandler, store: Store
-) -> None:
-    ops = [
-        {
-            "op": "generate",
-            "generator": "fullerene",
-            "params": {"atoms": 60},
-            "name": "cage",
-        }
-    ]
-    resp = handler.put(id="genball", text=json.dumps({"ops": ops}))
-    assert "genball-cage" in resp.body
-    assert "pentagons=12" in resp.body
-    assert "hexagons=20" in resp.body
-
-    struct_ref = store.get_ref(kind="structure", id="genball-cage")
-    assert struct_ref is not None
-    scene, _handles = store.structure_load(struct_ref.id)
-    assert len(scene.atoms) == 60
-    assert len(scene.bonds) == 90
-
-    block = handler.get(id="genball", view="block", args={"name": "cage"})
-    assert "bound_design: genball-cage" in block.body
-
-    validate = handler.get(id="genball", view="validate")
-    _assert_no_error_findings(validate.body)
-
-    # gripe 279306, see the CNT e2e test's comment for the "why".
-    struct_validate = structure.get(id="genball-cage", view="validate")
-    _assert_no_error_findings(struct_validate.body)
-
-
-def test_generate_cone_end_to_end(
-    handler: NmHandler, structure: StructureHandler, store: Store
-) -> None:
-    ops = [
-        {
-            "op": "generate",
-            "generator": "cone",
-            "params": {"pentagons": 3, "length_A": 20.0},
-            "name": "horn",
-        }
-    ]
-    resp = handler.put(id="gencone", text=json.dumps({"ops": ops}))
-    assert "gencone-horn" in resp.body
-    assert "cone_half_angle_deg" in resp.body
-
-    block = handler.get(id="gencone", view="block", args={"name": "horn"})
-    assert "bound_design: gencone-horn" in block.body
-    assert "sp2-rim" in block.body
-
-    struct_ref = store.get_ref(kind="structure", id="gencone-horn")
-    assert struct_ref is not None
-
-    validate = handler.get(id="gencone", view="validate")
-    _assert_no_error_findings(validate.body)
-
-    # gripe 279306, see the CNT e2e test's comment for the "why".
-    struct_validate = structure.get(id="gencone-horn", view="validate")
-    _assert_no_error_findings(struct_validate.body)
-
-
-def test_generate_duplicate_block_name_rejected(handler: NmHandler) -> None:
-    ops = [
-        {"op": "add_block", "name": "axle", "envelope": "sphere:r2Å"},
-        {
-            "op": "generate",
-            "generator": "fullerene",
-            "params": {"atoms": 60},
-            "name": "axle",
-        },
-    ]
-    with pytest.raises(BadInput, match="duplicate"):
-        handler.put(id="gendup", text=json.dumps({"ops": ops}))
-
-
-# ── generate defers its store write past the whole ops list (no orphan on
-#    a later op's failure — reviewer round-1 finding) ───────────────────
-
-
-def test_generate_followed_by_failing_op_creates_no_orphan(
-    handler: NmHandler, store: Store
-) -> None:
-    ops = [
-        {
-            "op": "generate",
-            "generator": "fullerene",
-            "params": {"atoms": 60},
-            "name": "cage",
-        },
-        # deliberately invalid — 'ghost'/'ghost2' were never added, so this
-        # op fails validation AFTER the generate op already ran its
-        # (pure, in-memory) half; the mint must never have happened.
-        {"op": "connect", "a": "ghost.p1", "b": "ghost2.p2"},
-    ]
-    with pytest.raises(BadInput):
-        handler.put(id="genfail", text=json.dumps({"ops": ops}))
-    assert store.get_ref(kind="structure", id="genfail-cage") is None
-    # the whole put failed before the ref-insert transaction ever opened —
-    # the nm design itself was never persisted either.
-    assert store.get_ref(kind="nm", id="genfail") is None
-
-
-def test_generate_collides_with_existing_structure_design_rejected(
-    handler: NmHandler, structure: StructureHandler, store: Store
-) -> None:
-    # A hand-authored structure design already lives at the exact slug
-    # generate would compute for block 'axle' under nm design 'gencollide'
-    # ('{design}-{block name}') — generate must reject loudly rather than
-    # silently retiring this design's atoms via structure_save's
-    # create-or-replace semantics.
-    structure.put(
-        id="gencollide-axle",
-        text=json.dumps(
-            {
-                "cell": {
-                    "a": 20.0,
-                    "b": 20.0,
-                    "c": 20.0,
-                    "pbc": [False, False, False],
-                },
-                "ops": [{"op": "add_atom", "element": "N", "cart": [0.0, 0.0, 0.0]}],
-            }
-        ),
-    )
-    ops = [
-        {
-            "op": "generate",
-            "generator": "cnt",
-            "params": {"n": 4, "m": 4, "length_A": 8.0},
-            "name": "axle",
-        }
-    ]
-    with pytest.raises(BadInput, match="gencollide-axle"):
-        handler.put(id="gencollide", text=json.dumps({"ops": ops}))
-
-    struct_ref = store.get_ref(kind="structure", id="gencollide-axle")
-    assert struct_ref is not None
-    scene, _handles = store.structure_load(struct_ref.id)
-    assert len(scene.atoms) == 1
-    (only_atom,) = scene.atoms.values()
-    assert only_atom.element == "N"
-
-
 def test_generate_block_is_a_generated_block_type() -> None:
-    # sanity: the dataclass shape the handler relies on stays as documented
+    # sanity: the dataclass shape `generate` relies on stays as documented
     block = build_fullerene({"atoms": 60})
     assert isinstance(block, GeneratedBlock)
     assert block.provenance

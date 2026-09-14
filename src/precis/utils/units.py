@@ -28,9 +28,9 @@ ever escapes this module; every public function takes/returns plain
 
 Explicitly out of scope (map boundary, `units-policy-cutover.md`
 "Explicitly NOT in scope"): interaction physics, `structure`'s
-Å-native crystallography path, and `precis_nm/mechanics.py`'s Å/nN/eV
-signatures — those never route through this module; the nm handler
-converts m↔Å explicitly at its own seams.
+Å-native crystallography path, and `precis_se/atomic/mechanics.py`'s
+Å/nN/eV signatures — those never route through this module; `se`'s
+atomic mode converts m↔Å explicitly at its own seams.
 
 **Angles** (the decisions log's angle ruling) are a fifth dimension,
 ``"angle"``, canonical unit radian — everywhere `pint` treats an angle

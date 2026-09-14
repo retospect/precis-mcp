@@ -11,7 +11,7 @@ invent.
 
 Every generator here is **pure** — no store access, the ``ops.py``
 discipline — taking a JSON-shaped ``params`` dict and returning a
-:class:`GeneratedBlock` (:mod:`precis_nm.generators._types`) carrying
+:class:`GeneratedBlock` (:mod:`precis_se.atomic.generators._types`) carrying
 everything the handler-level ``generate`` op
 (:meth:`precis_nm.handler.NmHandler._generate`, the same
 ``import_fragment``/``bind_structure`` store-aware-interception pattern
@@ -21,10 +21,10 @@ block with the generated envelope, (2) add its ports, (3) mint a
 never touching the store itself.
 
 **Param validation is theorems failing loudly** (nm-kind.md): a rejected
-parameter set raises :class:`~precis_nm.generators._types.GeneratorError`
+parameter set raises :class:`~precis_se.atomic.generators._types.GeneratorError`
 naming the violated constraint and its valid range/formula, before any
 geometry runs — never a silent clamp or a NaN downstream (see
-:mod:`precis_nm.generators.sp2`'s module docstring for both families'
+:mod:`precis_se.atomic.generators.sp2`'s module docstring for both families'
 derivations). Every generator's build function also carries a provenance
 note (the formula/construction used) into the returned block's
 ``provenance`` field, which the handler stores as the minted block's
@@ -33,16 +33,16 @@ note (the formula/construction used) into the returned block's
 :data:`GENERATORS` is the name → builder registry the ``generate`` op
 looks up. Round 1 (slice 4a, build order (i)): ``cnt`` (single-wall carbon
 nanotube, chiral rolling) and ``fullerene`` (C60, truncated icosahedron) —
-both in :mod:`precis_nm.generators.sp2`. Round 2 (build order (ii)):
+both in :mod:`precis_se.atomic.generators.sp2`. Round 2 (build order (ii)):
 ``cone`` (nanohorn, wrapped-sheet disclination — also
-:mod:`precis_nm.generators.sp2`); nanobud fusion scope-checked and skipped
+:mod:`precis_se.atomic.generators.sp2`); nanobud fusion scope-checked and skipped
 (design note at the end of that module). Round 3 (build order (ii)
 continued): ``cyclodextrin`` (alpha/beta/gamma-CD,
-:mod:`precis_nm.generators.sugars`) — a two-path generator (rdkit conformer
+:mod:`precis_se.atomic.generators.sugars`) — a two-path generator (rdkit conformer
 + a loud cavity-diameter check, falling back to a Cn-symmetric idealized
 template) rather than the closed-form-only construction the sp² family
 uses; L4 mechanics-ceiling metrics (build order (iii)) live in
-:mod:`precis_nm.mechanics`, not this registry.
+:mod:`precis_se.atomic.mechanics`, not this registry.
 """
 
 from __future__ import annotations
@@ -50,9 +50,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from precis_nm.generators._types import GeneratedBlock, GeneratedPort, GeneratorError
-from precis_nm.generators.sp2 import build_cnt, build_cone, build_fullerene
-from precis_nm.generators.sugars import build_cyclodextrin
+from precis_se.atomic.generators._types import (
+    GeneratedBlock,
+    GeneratedPort,
+    GeneratorError,
+)
+from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
+from precis_se.atomic.generators.sugars import build_cyclodextrin
 
 Generator = Callable[[dict[str, Any]], GeneratedBlock]
 

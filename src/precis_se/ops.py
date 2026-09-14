@@ -148,16 +148,55 @@ solver-backed op:
   explicit: by default only poses already stamped ``proposed``;
   ``move=[...]``/``move='all'`` authorizes more — a user-origin pose is
   contract and never moves silently.
+
+**Atomic mode** (docs/backlog/nm-se-merge.md — the merged ``nm`` kind; the
+vetting lives in :mod:`precis_se.atomic.vocab`) adds the L2 vocabulary a
+block whose realization is *chemistry* states. It is the same op table,
+not a second one: an atomic design is an se design whose blocks carry
+``mode='atomic'`` and bind a ``structure`` realization, so these ops sit
+beside the others and each one's *scope* is the block it names.
+
+- ``declare_threading`` / ``remove_threading`` — block ``a`` is threaded
+  through block ``b`` (a macrocycle on an axle): mechanical interlocking
+  as an explicit, directional, name-keyed fact, never re-derived from L3
+  coordinates. Mutual threading is refused (each would be inside the
+  other); a pair whose block is removed goes with it, the same vacancy
+  rule connects/measures/BOM follow.
+- ``declare_dof`` / ``clear_dof`` — a block's declared degree of freedom:
+  ``kind`` (rotational | translational) about the axis through two of the
+  block's OWN ports (``axis_ports``). Ordinary blocks only — an instance
+  resolves dof from its template at read time (:func:`effective_dof`),
+  like envelope/ports. ``add_block`` accepts the same payload nested as
+  ``dof={...}``; ``remove_port`` refuses a port the dof axis names.
+- ``add_port`` grows ``expected_element``/``expected_hybridization`` — the
+  chemistry a scaffold-side stub demands of the atom it will attach to
+  (the gate the store-aware ``bind_structure`` checks).
+- ``connect`` grows ``kind`` ∈ ``bond | interaction``. Omitted (the
+  default) is se's ordinary structural edge, whose L2 statement is its
+  ``joint`` — the two are mutually exclusive on one edge. A ``bond``
+  additionally runs the **capability gate**: both ports must afford the
+  role (``'covalent'`` by default, or ``objectives={'role': ...}``),
+  derived at connect time from the ports' ``roles`` sets and never stored
+  as a second relation.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
 from precis_se import joints as se_joints
+from precis_se.atomic.vocab import (
+    CONNECT_KINDS,
+    ThreadingSpec,
+    check_bond_capability,
+    check_dof_axis_ports,
+    connect_role,
+    vet_dof_shape,
+)
 from precis_se.bom import BomError, BomLine, vet_bom_fields
 from precis_se.measures import (
     ORIGINS,
@@ -169,16 +208,41 @@ from precis_se.measures import (
 from precis_se.modes import ModeError, parse_mode
 from precis_se.notes import NOTE_KINDS, NoteError, NoteSpec, validate_about
 
-#: What an L3 realization binding may point at — the two *designed*
-#: realizations (a cad node set, an nm design) and the two *bought* ones
-#: (an engineering-store component, a catalog part). Mirrors migration
-#: 0003's ``se_blocks_bound_kind_check``.
-_BINDING_KINDS: tuple[str, ...] = ("cad", "nm", "component", "part")
+#: What an L3 realization binding may point at — the *designed*
+#: realizations (a cad node set, an atomistic ``structure`` scene) and the
+#: two *bought* ones (an engineering-store component, a catalog part).
+#: Mirrors migration 0008's ``se_blocks_bound_kind_check``. ``structure``
+#: arrived with the atomic mode (docs/backlog/nm-se-merge.md): an atomic
+#: block's realization IS chemistry, so the thing it binds is an atomistic
+#: design. ``nm`` was legal here while that kind existed; the merge retired
+#: the kind and 0008 dropped it from the CHECK constraint too.
+_BINDING_KINDS: tuple[str, ...] = ("cad", "structure", "component", "part")
 
-#: Re-exported from the core — ``PortSpec`` has no se-specific fields
-#: (``annotations`` is already the open dict on the shared :class:`Port`),
-#: so this is a plain alias, not a subclass.
-PortSpec = Port
+
+@dataclass
+class PortSpec(Port):
+    """A named attachment point on a block — the capability-set half of the
+    "one fact, two projections" port (pcb-component-model.md). ``roles``/
+    ``direction``/``annotations`` are the shared core's
+    (:class:`~precis.blocktree.types.Port`); the fields below are se's own,
+    and today only the **atomic mode** fills them (the nm→se merge): the
+    chemistry a scaffold-side stub demands of the atom it will attach to,
+    and — once ``bind_structure`` has run — the atom it actually got.
+
+    ``expected_element``/``expected_hybridization`` stay their own typed
+    fields rather than moving into the inherited ``annotations`` open dict
+    (docs/backlog/blocktree-library-build-plan.md §Settled, "What this is
+    NOT — a kind merge"): they are *checked* capabilities, and
+    ``annotations`` is for what is merely descriptive."""
+
+    expected_element: str | None = None
+    expected_hybridization: str | None = None
+    #: The atom-side projection of this one port fact (``structure`` design
+    #: slug + atom label within it), set by the store-aware
+    #: ``bind_structure`` op. NULL until filled; always both or neither.
+    bound_design: str | None = None
+    bound_atom: str | None = None
+
 
 # ``OpError`` too is reused directly — there is nothing domain-specific
 # about "the op was bad". Imported above; re-exported by being a top-level
@@ -194,9 +258,20 @@ class ConnectSpec(Connect):
     :class:`~precis.blocktree.types.Connect`; ``objectives`` the
     registered loads vocabulary (:func:`precis_se.joints.
     validate_objectives`, real units), the shared field. Both are vetted
-    at write time; stored strays are DRC findings."""
+    at write time; stored strays are DRC findings.
+
+    ``kind`` is the **atomic mode**'s own statement about the same edge
+    (the nm→se merge): ``'bond'`` or ``'interaction'`` between two blocks
+    whose realization is chemistry. ``None`` — the default — is se's
+    ordinary structural connect, whose L2 statement is ``joint`` instead;
+    it is not "unknown", and the bond capability gate
+    (:func:`precis_se.atomic.vocab.connect_role`) reads ``'bond'``
+    exactly. The two slots are deliberately not unified: a bolted revolute
+    joint and a covalent bond are different claims about different
+    physics, and one column holding either would have to be read twice."""
 
     joint: dict[str, Any] | None = None
+    kind: str | None = None
 
 
 @dataclass
@@ -217,10 +292,29 @@ class SeBlock(BlockNode):
     fields below this line are se's own extension over the shared
     ``Block``."""
 
+    #: Re-declared (not new) — narrows the inherited ``dict[str, Port]`` to
+    #: se's own :class:`PortSpec`; every port this module's ``add_port``
+    #: ever stores is one.
+    # mypy flags this as an unsafe narrowing (dict is invariant — a caller
+    # holding this as a plain BlockNode could in principle assign a bare
+    # Port in). ``BlockNode`` isn't generic over its port type the way
+    # ``Tree`` is over block/connect (docs/backlog/
+    # blocktree-library-build-plan.md §Settled known wart: a real gap, not
+    # papered over — worth a ``BlockNode[TPort: Port]`` now that the merge
+    # leaves se as the one domain with its own port fields), so this is the
+    # narrowest fix available without widening that core class.
+    ports: dict[str, PortSpec] = field(default_factory=dict)  # type: ignore[assignment]
     array: dict[str, Any] | None = None
     #: loads on the block — the registered objectives vocabulary
     #: (:func:`precis_se.joints.validate_objectives`), real units.
     objectives: dict[str, Any] = field(default_factory=dict)
+    #: Atomic-mode L2 declared degree of freedom
+    #: (``{'kind', 'axis_ports'}`` — :func:`precis_se.atomic.vocab.
+    #: vet_dof_shape`), stored explicitly and never re-derived from L3
+    #: coordinates. Always ``None`` on an instance — an instance resolves
+    #: dof from its template at read time (:func:`effective_dof`), the same
+    #: rule as envelope/ports/desc/use.
+    dof: dict[str, Any] | None = None
     #: L5 manufacturing mode (:mod:`precis_se.modes`) — ``None`` is
     #: honest: unassigned, not "assume it's printed".
     mode: str | None = None
@@ -262,6 +356,9 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: the interrogation ledger (:mod:`precis_se.notes`), created order —
     #: identity is the note ``name``.
     notes: list[NoteSpec] = field(default_factory=list)
+    #: atomic-mode L2 threading invariants (:class:`~precis_se.atomic.
+    #: vocab.ThreadingSpec`), unordered — identity is the ``(a, b)`` pair.
+    threading: list[ThreadingSpec] = field(default_factory=list)
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
@@ -269,8 +366,9 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
 
 def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
     """Apply a list of typed ops to ``tree`` in order, mutating it —
-    dispatches through :data:`_OPS` (the core's 8 shared ops plus se's own
-    13), via the core's generic :func:`~precis.blocktree.ops.apply_ops`."""
+    dispatches through :data:`_OPS` (the core's 8 shared ops, 6 of them
+    overridden here, plus se's own — :func:`known_ops` is the roster), via
+    the core's generic :func:`~precis.blocktree.ops.apply_ops`."""
     return blocktree.apply_ops(tree, ops, _OPS)
 
 
@@ -331,9 +429,13 @@ def effective_ports(tree: SeTree, node: SeBlock) -> dict[str, PortSpec]:
     none of its own — without them ``connect`` cannot attach to a bought
     part at all. Own ports still win, and they win *per name*, so a
     designer can rename or re-role one port of a bought part without
-    losing the rest."""
+    losing the rest.
+
+    Retyped (not just re-exported) for se's own :class:`PortSpec`: every
+    port ``add_port`` stores is one, so the dict the core returns always is
+    too — mypy's dict-is-invariant check just can't see that."""
     if node.template is not None:
-        return blocktree.effective_ports(tree, node)
+        return cast("dict[str, PortSpec]", blocktree.effective_ports(tree, node))
     derived = getattr(node.derived, "ports", None)
     if derived:
         merged = dict(derived)
@@ -342,17 +444,64 @@ def effective_ports(tree: SeTree, node: SeBlock) -> dict[str, PortSpec]:
     return node.ports
 
 
+def effective_dof(tree: SeTree, node: SeBlock) -> dict[str, Any] | None:
+    """The atomic-mode dof "seen" at ``node`` for render purposes — its
+    own, or — when ``node`` is an instance/array — its template's, LOCAL or
+    cross-design (:func:`resolve_template`; an instance's own ``dof`` field
+    is always ``None``, and ``declare_dof`` only ever writes to an ordinary
+    block). A physically real degree of freedom on a template block
+    genuinely applies to every instance of it, so this mirrors
+    :func:`effective_envelope`'s instance→template resolution. Has no
+    shared-core analogue — the core knows nothing about dof."""
+    if node.template is not None:
+        template_node = resolve_template(tree, node.template)
+        return getattr(template_node, "dof", None)
+    return node.dof
+
+
 def _resolve_connect_port(
     tree: SeTree, block_name: str, port_name: str, *, what: str
 ) -> PortSpec:
     """se's own :func:`effective_ports` (the catalog-aware one) plugged
-    into the core's endpoint resolver."""
-    return blocktree._resolve_connect_port(
-        tree, block_name, port_name, what=what, ports_fn=effective_ports
+    into the core's endpoint resolver. Both casts are the same
+    dict-invariance wart :func:`effective_ports` documents: the core's
+    ``ports_fn`` hook is typed over the base :class:`~precis.blocktree.
+    types.Port`, and a ``dict[str, PortSpec]`` is not a ``dict[str,
+    Port]`` to mypy even though every value in it is one."""
+    return cast(
+        "PortSpec",
+        blocktree._resolve_connect_port(
+            tree,
+            block_name,
+            port_name,
+            what=what,
+            ports_fn=cast("Callable[[Any, Any], dict[str, Port]]", effective_ports),
+        ),
     )
 
 
 # ── op implementations ───────────────────────────────────────────────────
+
+
+def _op_add_block(tree: SeTree, op: dict[str, Any]) -> None:
+    """The core's ``add_block`` plus se's optional ``dof={...}`` — the
+    atomic-mode L2 slot, vetted for shape here and for *port existence*
+    only at the end of the whole ops list (:func:`~precis_se.atomic.vocab.
+    check_dof_axis_ports`'s docstring: a block minted by ``add_block``
+    owns no ports yet at this instant, so any ``add_port`` naming its axis
+    necessarily comes later in the same call). A bad shape rolls the block
+    back out rather than leaving a half-declared node behind."""
+    blocktree.op_add_block(tree, op)
+    dof_raw = op.get("dof")
+    if dof_raw is None:
+        return
+    name = str(op["name"]).strip()
+    try:
+        dof = vet_dof_shape(dof_raw, what="add_block 'dof'")
+    except OpError:
+        del tree.blocks[name]
+        raise
+    tree.blocks[name].dof = dof
 
 
 def _op_instance_block(tree: SeTree, op: dict[str, Any]) -> None:
@@ -362,7 +511,24 @@ def _op_instance_block(tree: SeTree, op: dict[str, Any]) -> None:
                 f"instance_block does not take {key!r} — use array_block "
                 "for a patterned instance"
             )
+    _reject_instance_dof(tree, op, opname="instance_block")
     blocktree.op_instance_block(tree, op)
+
+
+def _reject_instance_dof(tree: SeTree, op: dict[str, Any], *, opname: str) -> None:
+    """``dof`` on an instance/array node is refused, not dropped — an
+    instance resolves dof from its template at read time
+    (:func:`effective_dof`), exactly as it does envelope/ports/desc/use,
+    so accepting the key would store a fact nothing ever reads (the
+    swallowed-facet rule)."""
+    if op.get("dof") is None:
+        return
+    template = str(op.get("template") or "").strip()
+    raise OpError(
+        f"{opname} does not take 'dof' — an instance resolves dof from its "
+        f"template ({template!r}) at read time; set it on the template "
+        "block instead"
+    )
 
 
 def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
@@ -438,6 +604,7 @@ def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
 
 def _op_array_block(tree: SeTree, op: dict[str, Any]) -> None:
     template, name, parent = _instance_shared(tree, op, opname="array_block")
+    _reject_instance_dof(tree, op, opname="array_block")
     spec = _parse_array_spec(op)
     _commit_instance(
         tree, op, name=name, template=template, parent=parent, extra={"array": spec}
@@ -520,6 +687,54 @@ def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
             line.is_connect and (line.a_block in subtree or line.b_block in subtree)
         )
     ]
+    # Threading is name-keyed the same way connects are, so the same
+    # vacancy rule drops any pair touching the removed subtree — DRC's
+    # ``dangling_threading`` exists to catch the cases where this *didn't*
+    # run (hand-corrupted data).
+    tree.threading = [
+        t for t in tree.threading if t.a not in subtree and t.b not in subtree
+    ]
+
+
+def _op_add_port(tree: SeTree, op: dict[str, Any]) -> None:
+    """The core's ``add_port`` (which owns every check and the
+    roles/direction/annotations vetting) plus the atomic mode's two
+    *expected chemistry* fields — se's own :class:`PortSpec`. The core
+    mints a bare :class:`~precis.blocktree.types.Port`; this rewrites that
+    slot as the richer spec, so there is one add_port grammar for an agent
+    to learn whatever mode the block is in."""
+    blocktree.op_add_port(tree, op)
+    node = tree.blocks[str(op["block"]).strip()]
+    name = str(op["name"]).strip()
+    base = node.ports[name]
+    node.ports[name] = PortSpec(
+        name=base.name,
+        roles=base.roles,
+        direction=base.direction,
+        annotations=base.annotations,
+        expected_element=_opt_str(op.get("expected_element")),
+        expected_hybridization=_opt_str(op.get("expected_hybridization")),
+    )
+
+
+def _op_remove_port(tree: SeTree, op: dict[str, Any]) -> None:
+    """The core's ``remove_port`` (which refuses a port a live connect
+    still uses) plus se's dof guard: a port named in the block's own
+    declared ``axis_ports`` would otherwise leave dof pointing at a
+    vanished port name — a dangling reference, so refuse up front and name
+    ``clear_dof`` as the fix. Checked *before* delegating, since the core
+    op deletes the port as its last act and the dof reference has to be
+    read while it still exists."""
+    block = _require_name(op, "block", "remove_port")
+    name = _require_name(op, "name", "remove_port")
+    node = tree.blocks.get(block)
+    if node is not None and name in node.ports and node.dof:
+        if name in (node.dof.get("axis_ports") or ()):
+            raise OpError(
+                f"port {block}.{name} is used by declared dof (axis_ports) — "
+                "clear_dof first"
+            )
+    blocktree.op_remove_port(tree, op)
 
 
 def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
@@ -531,15 +746,21 @@ def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
     if (a_block, a_port) == (b_block, b_port):
         raise OpError(f"connect: cannot connect {a_raw!r} to itself")
     joint = _vet_joint(op.get("joint"), opname="connect")
+    kind = _vet_connect_kind(op.get("kind"), joint=joint)
     objectives = _vet_objectives(op.get("objectives"), opname="connect", edge=True)
-    _resolve_connect_port(tree, a_block, a_port, what="connect")
-    _resolve_connect_port(tree, b_block, b_port, what="connect")
+    a_spec = _resolve_connect_port(tree, a_block, a_port, what="connect")
+    b_spec = _resolve_connect_port(tree, b_block, b_port, what="connect")
     pair = _connects_endpoint_pair(a_block, a_port, b_block, b_port)
     for c in tree.connects:
         if _connects_endpoint_pair(c.a_block, c.a_port, c.b_block, c.b_port) == pair:
             raise OpError(
                 f"connect: {a_block}.{a_port}—{b_block}.{b_port} already exists"
             )
+    # The atomic mode's capability gate — only a ``kind='bond'`` edge has a
+    # role to afford (:func:`~precis_se.atomic.vocab.connect_role`).
+    role = connect_role(kind, objectives or {})
+    if role is not None:
+        check_bond_capability(a_block, a_port, a_spec, b_block, b_port, b_spec, role)
     tree.connects.append(
         ConnectSpec(
             a_block=a_block,
@@ -547,9 +768,35 @@ def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
             b_block=b_block,
             b_port=b_port,
             joint=joint,
+            kind=kind,
             objectives=objectives or {},
         )
     )
+
+
+def _vet_connect_kind(raw: Any, *, joint: dict[str, Any] | None) -> str | None:
+    """Vet a connect's optional atomic-mode ``kind``
+    (:data:`~precis_se.atomic.vocab.CONNECT_KINDS`). Absent is the ordinary
+    structural edge (``None``, whose L2 statement is ``joint``); present
+    means the edge is chemistry, so a ``joint`` on the same edge is refused
+    rather than stored unread — a kinematic class and a bond are two
+    different claims about the same pair, and nothing reads both."""
+    if raw is None:
+        return None
+    kind = str(raw).strip().lower()
+    if kind not in CONNECT_KINDS:
+        known = " | ".join(CONNECT_KINDS)
+        raise OpError(
+            f"connect 'kind' must be {known} (or omitted, for an ordinary "
+            f"structural connect whose L2 statement is its joint); got {raw!r}"
+        )
+    if joint is not None:
+        raise OpError(
+            f"connect: 'kind' ({kind}) and 'joint' are mutually exclusive — "
+            "an atomic bond/interaction and a kinematic joint are different "
+            "claims about the same pair; declare one"
+        )
+    return kind
 
 
 def _op_disconnect(tree: SeTree, op: dict[str, Any]) -> None:
@@ -597,6 +844,14 @@ def _vet_objectives(
             f"{opname}: 'fixed' grounds a BLOCK's translations (stability "
             "supports) — it has no meaning on a connect"
         )
+    if not edge and raw.get("role") is not None:
+        # The mirror of the rejection above: 'role' is the atomic bond
+        # capability gate's override and is read on connects only (a block
+        # affords roles through its PORTS, never as a load objective).
+        raise OpError(
+            f"{opname}: 'role' gates a kind='bond' CONNECT's ports — it has "
+            "no meaning on a block; a block's affordances are its ports' roles"
+        )
     try:
         return se_joints.validate_objectives(raw)
     except se_joints.JointError as exc:
@@ -637,7 +892,17 @@ def _op_set_joint(tree: SeTree, op: dict[str, Any]) -> None:
     c = _find_connect(tree, op, opname="set_joint")
     if "joint" not in op:
         raise OpError("set_joint needs 'joint' (the joint object, or null to clear)")
-    c.joint = _vet_joint(op.get("joint"), opname="set_joint")
+    joint = _vet_joint(op.get("joint"), opname="set_joint")
+    if joint is not None and c.kind is not None:
+        # Mirrors ``connect``'s own mutual exclusion (:func:`_vet_connect_kind`)
+        # — reachable the long way round otherwise.
+        raise OpError(
+            f"set_joint: {c.a_block}.{c.a_port}—{c.b_block}.{c.b_port} is an "
+            f"atomic {c.kind} connect — a kinematic joint and a bond are "
+            "different claims about the same pair; disconnect and re-connect "
+            "without 'kind' if the edge is structural"
+        )
+    c.joint = joint
 
 
 def _op_set_load(tree: SeTree, op: dict[str, Any]) -> None:
@@ -963,8 +1228,8 @@ def _op_set_mode(tree: SeTree, op: dict[str, Any]) -> None:
 
 def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
     """Bind a block's L3 realization to a design or catalog row:
-    ``kind`` ∈ ``cad|nm|component|part`` + ``design`` (slug / C-number),
-    or ``clear=true``. Slug-keyed text resolved at read time — binding a
+    ``kind`` ∈ :data:`_BINDING_KINDS` + ``design`` (slug / C-number), or
+    ``clear=true``. Slug-keyed text resolved at read time — binding a
     component that doesn't exist yet is a legal, honest state (and a DRC
     finding), never a write-time rejection: the design language must let
     you name what you intend to buy before it's in the store."""
@@ -1198,8 +1463,80 @@ def _op_remove_note(tree: SeTree, op: dict[str, Any]) -> None:
     tree.notes.remove(n)
 
 
+# ── atomic mode (docs/backlog/nm-se-merge.md) ───────────────────────────
+# The L2 vocabulary only a chemistry-realized block states. Structurally
+# identical to the ops above — vet, then mutate the in-memory tree — with
+# the vetting itself in :mod:`precis_se.atomic.vocab`.
+
+
+def _op_declare_threading(tree: SeTree, op: dict[str, Any]) -> None:
+    """Declare that block ``a`` is threaded through block ``b`` (a
+    macrocycle on an axle) — the L2 mechanical-interlocking fact, stored,
+    never re-derived from coordinates."""
+    a = _require_name(op, "a", "declare_threading")
+    b = _require_name(op, "b", "declare_threading")
+    if a == b:
+        raise OpError(f"declare_threading: 'a' and 'b' must differ, got {a!r} twice")
+    if a not in tree.blocks:
+        raise OpError(_no_block_msg(tree, a, what="a"))
+    if b not in tree.blocks:
+        raise OpError(_no_block_msg(tree, b, what="b"))
+    for t in tree.threading:
+        if t.a == a and t.b == b:
+            raise OpError(
+                f"declare_threading: {a!r} is already declared threaded through {b!r}"
+            )
+        # Mutual threading is physically impossible: a threaded through b
+        # and b threaded through a at once would mean each is inside the
+        # other. Reject the opposite-direction row too, naming
+        # remove_threading as the fix for a wrong-direction declaration.
+        if t.a == b and t.b == a:
+            raise OpError(
+                f"declare_threading: {b!r} is already threaded through {a!r} "
+                "— mutual threading is physically impossible; "
+                "remove_threading first if the direction was wrong"
+            )
+    tree.threading.append(ThreadingSpec(a=a, b=b))
+
+
+def _op_remove_threading(tree: SeTree, op: dict[str, Any]) -> None:
+    a = _require_name(op, "a", "remove_threading")
+    b = _require_name(op, "b", "remove_threading")
+    for i, t in enumerate(tree.threading):
+        if t.a == a and t.b == b:
+            del tree.threading[i]
+            return
+    live = ", ".join(f"{t.a}→{t.b}" for t in tree.threading) or "(none)"
+    raise OpError(f"no such threading {a!r} through {b!r}. Live threading: {live}")
+
+
+def _op_declare_dof(tree: SeTree, op: dict[str, Any]) -> None:
+    """Declare a block's degree of freedom — ``kind`` (rotational |
+    translational) about the axis through its own two ``axis_ports``."""
+    block = _require_name(op, "block", "declare_dof")
+    node = _template_owned(tree, block, opname="declare_dof", what="dof")
+    # Every op-dict key besides 'op'/'block' is dof payload — declare_dof's
+    # own kind=/axis_ports= live as direct op fields (unlike add_block's
+    # nested dof={...}), so this is the equivalent dict to hand
+    # vet_dof_shape. Anything beyond kind/axis_ports is a loud reject
+    # (gripe 334765's reported states=/driver=), never a silent drop.
+    payload = {k: v for k, v in op.items() if k not in ("op", "block")}
+    dof = vet_dof_shape(payload, what="declare_dof")
+    check_dof_axis_ports(node, dof, block, what="declare_dof")
+    node.dof = dof
+
+
+def _op_clear_dof(tree: SeTree, op: dict[str, Any]) -> None:
+    block = _require_name(op, "block", "clear_dof")
+    node = _template_owned(tree, block, opname="clear_dof", what="dof")
+    node.dof = None
+
+
 _OPS = {
     **blocktree.CORE_OPS,
+    "add_block": _op_add_block,
+    "add_port": _op_add_port,
+    "remove_port": _op_remove_port,
     "set_pose": _op_set_pose,
     "instance_block": _op_instance_block,
     "array_block": _op_array_block,
@@ -1219,4 +1556,17 @@ _OPS = {
     "add_note": _op_add_note,
     "remove_note": _op_remove_note,
     "formfind": _op_formfind,
+    "declare_threading": _op_declare_threading,
+    "remove_threading": _op_remove_threading,
+    "declare_dof": _op_declare_dof,
+    "clear_dof": _op_clear_dof,
 }
+
+
+def known_ops() -> frozenset[str]:
+    """Every op name :func:`apply_ops` recognizes on its own
+    (:data:`_OPS`'s keys) — the single source the handler's unknown-op
+    error reads for its roster, so the message and the dispatch can't
+    drift apart. Does NOT include the store-aware ops the handler
+    intercepts before ``apply_ops`` ever sees them."""
+    return frozenset(_OPS)

@@ -25,6 +25,11 @@ when the declared axis aligns with a principal axis (±x/y/z —
 reported as skipped, honestly, rather than approximated). Advisory
 warn-tier throughout: envelope geometry legitimately understates a joint
 (circlips, shoulders and threads live at L3).
+
+The **atomic mode** (docs/backlog/nm-se-merge.md) adds two rules in the
+same posture — the L2 threading graph re-checked over stored data
+(``dangling_threading`` error, ``threaded_without_envelope`` warn) — plus
+the mode↔binding coupling in :func:`_mode_binding_findings`.
 """
 
 from __future__ import annotations
@@ -173,6 +178,73 @@ def _design_extent(tree: SeTree) -> float:
     )
 
 
+def _mode_binding_findings(
+    name: str, block: SeBlock, family: se_modes.ModeFamily | None
+) -> list[ValidationIssue]:
+    """The **mode↔binding coupling** (nm-se-merge.md's in-scope build
+    item), checked both ways for one block.
+
+    A mode is a claim about how the block gets made; its binding is what
+    the block's solid actually *is*. Before the merge these two were wired
+    independently — ``set_mode('atomic')`` and ``set_binding(kind='nm')``
+    each landed without the other, so a design could say "assembled atom
+    by atom" about a block realized as a bought bearing and nothing
+    noticed. Both directions are findings now:
+
+    * **mode says, binding contradicts** — the family declares
+      :attr:`~precis_se.modes.ModeFamily.realization_kinds` and the block
+      binds something else. Two explicit declarations that can't both be
+      true → error tier (this module's docstring: error is for the
+      self-contradictory).
+    * **binding says, mode doesn't** — the block binds an atomistic
+      design (:data:`~precis_se.modes.ATOMIC_ONLY_BINDING_KINDS`) under a
+      non-atomic mode (error, same contradiction) or under *no* mode
+      (warn: absence, and se never fails on absence).
+
+    A family with no ``realization_kinds`` (fdm, laser, cnc…) makes no
+    claim, so nothing here fires for it — and an *unbound* block is always
+    silent: an envelope-only block is the normal mid-thought state, which
+    is ``mode_without_item``'s business for the families that demand one,
+    not this rule's."""
+    bound_kind = block.bound_kind
+    if not bound_kind or not block.bound:
+        return []
+    kinds = family.realization_kinds if family else ()
+    mismatched = bool(kinds) and bound_kind not in kinds
+    atomistic_orphan = (
+        bound_kind in se_modes.ATOMIC_ONLY_BINDING_KINDS and bound_kind not in kinds
+    )
+    if not mismatched and not atomistic_orphan:
+        return []
+    severity = "error"
+    if family is None:
+        severity = "warn"
+        detail = (
+            f"binds {bound_kind}:{block.bound} — an atomistic realization, "
+            "which is atomic mode's (set_mode 'atomic'); no mode is assigned"
+        )
+    elif mismatched:
+        detail = (
+            f"mode {block.mode!r} realizes as {' | '.join(kinds)}, but this "
+            f"block binds {bound_kind}:{block.bound} — one of the two is "
+            "wrong (set_mode, or set_binding)"
+        )
+    else:
+        detail = (
+            f"binds {bound_kind}:{block.bound} — an atomistic realization, "
+            f"but mode {block.mode!r} is not atomic (set_mode 'atomic', or "
+            "bind what this mode actually makes)"
+        )
+    return [
+        ValidationIssue(
+            rule="mode_binding_mismatch",
+            subject=name,
+            detail=detail,
+            severity=severity,
+        )
+    ]
+
+
 def drc(tree: SeTree) -> DrcReport:
     """Run every graph-tier check + stack-up + the DOF probe. Pure over
     ``tree`` (plus its loaded measures); no store access."""
@@ -308,12 +380,13 @@ def drc(tree: SeTree) -> DrcReport:
                 )
             )
             continue
+        findings.extend(_mode_binding_findings(name, block, family))
         if family is None or not family.demands_item:
             continue
         # Only a line hung on the block *itself* counts here: a bearing
         # bought for a joint this block happens to sit on says nothing
         # about what the block itself is.
-        bound = block.bound_kind in ("component", "part") and bool(block.bound)
+        bound = block.bound_kind in family.realization_kinds and bool(block.bound)
         if bound or name in block_bom_targets:
             continue
         findings.append(
@@ -664,5 +737,50 @@ def drc(tree: SeTree) -> DrcReport:
     # a screw that cannot reach alongside a joint that contradicts
     # itself.
     findings.extend(se_fasten.findings(se_fasten.fasten(tree)))
+
+    # 8. atomic mode's L2 topology (nm-se-merge.md — the rules transferred
+    # from ``precis_nm.validate``, names unchanged):
+    #
+    # * ``dangling_threading`` (error) — a threading pair naming a block
+    #   that no longer exists. ``remove_block`` already drops threading
+    #   touching the removed subtree (ops.py's vacancy extension), so a
+    #   live finding here means the row arrived some other way (a hand
+    #   correction, a future bug) — the same defense-in-depth shape as the
+    #   measures graph above.
+    # * ``threaded_without_envelope`` (warn) — either endpoint has no
+    #   effective envelope, so the interlock the pair asserts can never be
+    #   checked geometrically (``view='clearance'`` needs both).
+    for t in tree.threading:
+        subject = f"{t.a}→{t.b}"
+        missing = [n for n in (t.a, t.b) if n not in tree.blocks]
+        if missing:
+            findings.append(
+                ValidationIssue(
+                    rule="dangling_threading",
+                    subject=subject,
+                    detail=(
+                        f"block(s) {', '.join(missing)} no longer exist — "
+                        "remove_threading it, or restore the block"
+                    ),
+                    severity="error",
+                )
+            )
+            continue
+        missing_env = [
+            n for n in (t.a, t.b) if not effective_envelope(tree, tree.blocks[n])
+        ]
+        if missing_env:
+            findings.append(
+                ValidationIssue(
+                    rule="threaded_without_envelope",
+                    subject=subject,
+                    detail=(
+                        f"block(s) {', '.join(missing_env)} have no envelope "
+                        "— the interlock can never be verified geometrically "
+                        "until one is set"
+                    ),
+                    severity="warn",
+                )
+            )
 
     return DrcReport(findings=findings, stackup=stack, dof_probes=probes)

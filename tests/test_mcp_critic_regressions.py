@@ -718,9 +718,11 @@ def test_precis_overview_skill_no_dead_kinds() -> None:
     for dead in ("`clock`", "`rng`", "`plot`", "`ask`"):
         assert dead not in text, f"precis-overview still references dead kind {dead!r}"
     # Reserved-but-unwired kinds (stripped under the May 2026
-    # policy). If one of these lands, wire the handler AND re-add
-    # the kind mention in the same commit.
-    for reserved in ("`book`", "`docx`", "`rmk`"):
+    # policy) plus RETIRED ones — ``nm`` merged into ``se``'s atomic
+    # mode (docs/backlog/nm-se-merge.md) and no longer dispatches. If
+    # one of these lands, wire the handler AND re-add the kind mention
+    # in the same commit.
+    for reserved in ("`book`", "`docx`", "`rmk`", "`nm`"):
         assert reserved not in text, (
             f"precis-overview reintroduces unwired kind {reserved!r}"
         )

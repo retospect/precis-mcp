@@ -552,7 +552,6 @@ def test_shipped_skill_corpus_has_zero_gate_findings(
     from precis_bio import handles as bio_handles
     from precis_chem import handles as chem_handles
     from precis_estimate import handles as estimate_handles
-    from precis_nm import handles as nm_handles
     from precis_pathway import handles as pathway_handles
     from precis_se import handles as se_handles
 
@@ -561,7 +560,6 @@ def test_shipped_skill_corpus_has_zero_gate_findings(
     for mod in (
         pathway_handles,
         estimate_handles,
-        nm_handles,
         se_handles,
         chem_handles,
         bio_handles,

@@ -446,21 +446,19 @@ asa-slack = "asa_slack.__main__:main"
 # the `autocatpath` namespace (matches the value already applied in prod from
 # when the glue lived in the external autocatpath package), dark behind
 # PRECIS_AUTOCATPATH_ENABLED.
-# `precis_nm` is the fourth keystone kind (docs/backlog/nm-kind.md): the
-# `nm` (nanomachine) kind — hierarchical building blocks with spatial
-# envelopes, dark behind PRECIS_NM_ENABLED. Slice 3 round 1 ships the
-# plugin skeleton + block tree only; no job_type yet.
-# `precis_se` is nm's scale-agnostic sibling (docs/backlog/se-kind.md,
-# se : cad :: nm : structure): the `se` (structural envelope) kind —
-# metre-scale block trees with cad-DSL envelopes and first-class arrays,
-# dark behind PRECIS_SE_ENABLED. Slices 1-2 ship the scaffold + L0/L1
-# block-tree core; no job_type yet.
+# `precis_se` is the fourth keystone kind (docs/backlog/se-kind.md): the
+# `se` (structural envelope) kind — scale-agnostic block trees with
+# cad-DSL envelopes in metres, first-class arrays, manufacturing modes,
+# and the `se_propose_atomic` job_type. It absorbed the retired `nm`
+# (nanomachine) kind as its `atomic` mode (docs/backlog/nm-se-merge.md):
+# `precis_nm`'s handler/ops/persist/migrations and its one `nm_propose`
+# job type are gone — the domain layer lives in `precis_se.atomic`, and
+# nm's tables are dropped by `precis_se/migrations/0008`.
 [project.entry-points."precis.handlers"]
 route = "precis_chem.route:RouteHandler"
 protein = "precis_bio.protein:ProteinHandler"
 pathway = "precis_pathway.handler:PathwayHandler"
 estimate = "precis_estimate.handler:EstimateHandler"
-nm = "precis_nm.handler:NmHandler"
 se = "precis_se.handler:SeHandler"
 
 [project.entry-points."precis.job_types"]
@@ -473,20 +471,18 @@ fold = "precis_bio.jobs:FOLD_SPEC"
 autocatpath_explore = "precis_pathway.job:SPEC"
 autocatpath_seed = "precis_pathway.seed_job:SPEC"
 autocatpath_aggregate = "precis_pathway.aggregate_job:SPEC"
-nm_propose = "precis_nm.job:SPEC"
+se_propose_atomic = "precis_se.atomic.propose:SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"
 precis_bio = "precis_bio.migrations"
 autocatpath = "precis_pathway.migrations"
 precis_estimate = "precis_estimate.migrations"
-precis_nm = "precis_nm.migrations"
 precis_se = "precis_se.migrations"
 
 [project.entry-points."precis.handle_codes"]
 pathway = "precis_pathway.handles"
 estimate = "precis_estimate.handles"
-nm = "precis_nm.handles"
 se = "precis_se.handles"
 route = "precis_chem.handles"
 protein = "precis_bio.handles"
@@ -547,7 +543,7 @@ dev = [
 autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_nm", "src/precis_se"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_se"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under

@@ -241,8 +241,8 @@ def resolve_template(tree: Tree[Any, Any], template: str) -> BlockNode | None:
     at *write* time instead — ``instance_block``'s own validation
     (:func:`_instance_shared`) rejects a template that doesn't resolve
     when the instance is FIRST minted, the same "loud at bind time, not a
-    silent drift" split ``precis_nm.handler``'s ``bind_structure`` already
-    uses for its own store-backed reference."""
+    silent drift" split ``precis_se.atomic.bind``'s ``bind_structure``
+    already uses for its own store-backed reference."""
     design_slug, block_name = parse_template_ref(template)
     if design_slug is None:
         return tree.blocks.get(block_name)
@@ -417,8 +417,8 @@ def _foreign_template_node(
     instance (:func:`_instance_shared`). A qualified ``template`` that
     can't be resolved is a named :class:`OpError` here, never a silent
     empty/None: the "loud at bind time, not a silent drift" split
-    ``precis_nm.handler``'s ``bind_structure`` already applies to its own
-    store-backed reference, applied here to the design half (does
+    ``precis_se.atomic.bind``'s ``bind_structure`` already applies to its
+    own store-backed reference, applied here to the design half (does
     ``design_slug`` even resolve — not found, or soft-retired, both read
     the same way through :attr:`~precis.blocktree.types.Tree.foreign`,
     mirroring ``store.get_ref``'s "retired reads as absent" default) and

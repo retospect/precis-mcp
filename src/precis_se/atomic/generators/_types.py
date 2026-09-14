@@ -1,7 +1,7 @@
 """Shared shapes for the generator framework — split out from
-``generators/__init__.py`` so :mod:`precis_nm.generators.sp2` can import
+``generators/__init__.py`` so :mod:`precis_se.atomic.generators.sp2` can import
 them at module load time without a circular import (``__init__.py``
-imports ``sp2`` itself, for the :data:`~precis_nm.generators.GENERATORS`
+imports ``sp2`` itself, for the :data:`~precis_se.atomic.generators.GENERATORS`
 registry).
 """
 
@@ -11,6 +11,25 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+
+#: The length unit every generator's envelope carries, **written into the
+#: emitted DSL text**. Generator math is Å (the atomistic enclave —
+#: bond lengths, vdW margins, cavity radii), the design side is SI metres,
+#: and that crossing happens exactly once: the generator says ``Å``, and
+#: :func:`precis.cad.dsl.parse`'s ``require_units=True`` grammar does the
+#: multiply at the SAME ``add_block`` ingest boundary a hand-authored
+#: envelope goes through (nm-se-merge.md: this replaced a handler-side
+#: ``_envelope_A_to_m`` that re-parsed bare-number Å text and re-emitted
+#: it in metres — a second conversion seam guarding nothing).
+ENVELOPE_UNIT = "Å"
+
+
+def fmt_length_A(x: float) -> str:
+    """Render an ångström length as one unit-suffixed cad-DSL token value
+    (``<key><number>Å``). Rounded to 4 decimals — 0.1 pm, well below any
+    chemistry this side of the machine represents, and short enough that
+    an envelope string stays readable in a view."""
+    return f"{round(float(x), 4):g}{ENVELOPE_UNIT}"
 
 
 class GeneratorError(ValueError):
@@ -55,7 +74,9 @@ class GeneratedBlock:
 
     ``envelope`` is a ``precis.cad.dsl`` config string (the same
     vocabulary hand-built blocks already use — ``add_block``'s
-    ``envelope`` reused verbatim, never a second grammar).  ``topology``
+    ``envelope`` reused verbatim, never a second grammar), with every
+    length **unit-suffixed in Å** (:func:`fmt_length_A`) so the design side's
+    one ingest boundary converts it.  ``topology``
     is the family's declared L2 invariant(s) (e.g. ``{"chiral_index":
     [n, m], "radius_A": ..., "pentagons": 0}`` for a nanotube,
     ``{"pentagons": 12, "hexagons": 20}`` for C60) — folded into the
@@ -73,7 +94,7 @@ class GeneratedBlock:
     minted :class:`~precis.structure.scene.Bond` rather than hardcoding a
     single aromatic order for every family. Each generator picks the
     chemically honest assignment for its own bond topology — see
-    :mod:`precis_nm.generators.sp2`'s module docstring for the fullerene
+    :mod:`precis_se.atomic.generators.sp2`'s module docstring for the fullerene
     Kekule split and the CNT Pauling-order derivation — never a single
     "aromatic 1.5" guess that silently over-sums an all-sp² atom's valence
     budget (3 bonds × 1.5 = 4.5 > carbon's max valence of 4).
@@ -90,6 +111,6 @@ class GeneratedBlock:
     #: realized atom (:meth:`precis_nm.handler.NmHandler._prepare_generate`)
     #: — round 1/2's sp² carbon families all hardcoded ``"sp2"`` before this
     #: field existed, so that stays the default; the sugars family
-    #: (:mod:`precis_nm.generators.sugars`) is the first sp³ family and
+    #: (:mod:`precis_se.atomic.generators.sugars`) is the first sp³ family and
     #: sets ``"sp3"``.
     hybridization: str = "sp2"

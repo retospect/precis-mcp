@@ -5,7 +5,8 @@ module's docstring for the full reasoning — the "Round-2 landmine" there is
 designed out here from day one): a design's blocks live in dedicated tables
 (``se_blocks``/``se_ports``/``se_connects``, migration ``0001_se_kind.sql``;
 ``se_measures`` from ``0002``, ``se_bom`` from ``0003``, ``se_notes``
-from ``0005``)
+from ``0005``, ``se_topology`` — the atomic mode's L2 threading — from
+``0007``)
 reached over the store's public connection surface (``store.tx()`` /
 ``store.pool.connection()``) — a plugin never joins core's mixin list.
 
@@ -15,8 +16,8 @@ reached over the store's public connection surface (``store.tx()`` /
 every live row for the ref and reinserts the whole tree afresh in
 parent/template-respecting order. Row ids are rebuilt on every save, which
 is exactly why everything cross-referencing (connect endpoints, measure
-blocks + relation sources, note ``re``/``about`` anchors) is **name-keyed
-text, never an FK to a block row id** —
+blocks + relation sources, note ``re``/``about`` anchors, threading
+subject/object) is **name-keyed text, never an FK to a block row id** —
 the one exception is ``se_ports.block_id``, written **in lockstep** with
 the freshly minted block ids, inside the same transaction (nm's port
 pattern — a port row is always written against the block id that save
@@ -41,6 +42,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from precis_se import catalog
+from precis_se.atomic.vocab import ThreadingSpec
 from precis_se.bom import BomLine
 from precis_se.catalog import Derived
 from precis_se.measures import MeasureSpec
@@ -61,15 +63,22 @@ _SE_MANAGED = "se_binding"
 _BLOCK_COLS = (
     "id, parent_block_id, template_ref, name, pose_xyz, pose_rot, "
     "envelope, array_spec, descr, use_, objectives, mode, bound_kind, "
-    "bound_design, origins"
+    "bound_design, origins, dof"
 )
-_PORT_COLS = "block_id, name, roles, direction, annotations"
-_CONNECT_COLS = "a_block, a_port, b_block, b_port, joint, objectives"
+_PORT_COLS = (
+    "block_id, name, roles, direction, annotations, expected_element, "
+    "expected_hybridization, bound_design, bound_atom"
+)
+_CONNECT_COLS = "a_block, a_port, b_block, b_port, joint, kind, objectives"
 _MEASURE_COLS = (
     "block, name, value, relation, strength, reason, min_value, max_value, origin, unit"
 )
 _BOM_COLS = "block, a_block, a_port, b_block, b_port, item_kind, item, qty, uom, reason"
 _NOTE_COLS = "name, kind, body, re, about, origin, created_at"
+#: ``se_topology`` (migration 0007) is name-keyed from the start, exactly
+#: like ``se_connects`` — see the module docstring's lockstep rule for why
+#: a block-row FK there would strand on the very next save.
+_THREADING_COLS = "subject_name, object_name"
 
 
 def load_tree(store: Any, ref_id: int) -> SeTree:
@@ -122,6 +131,13 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 (ref_id,),
             )
             note_rows = cur.fetchall()
+            cur.execute(
+                f"SELECT {_THREADING_COLS} FROM se_topology "
+                "WHERE ref_id = %s AND retired_at IS NULL AND kind = 'threading' "
+                "ORDER BY id ASC",
+                (ref_id,),
+            )
+            threading_rows = cur.fetchall()
     by_id = {r["id"]: r for r in rows}
     tree = SeTree()
     for r in rows:
@@ -142,6 +158,7 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             bound_kind=r["bound_kind"],
             bound=r["bound_design"],
             origins=dict(r["origins"] or {}),
+            dof=dict(r["dof"]) if r["dof"] is not None else None,
         )
     for p in port_rows:
         block_row = by_id.get(p["block_id"])
@@ -153,6 +170,10 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             roles=list(p["roles"] or []),
             direction=list(p["direction"]) if p["direction"] is not None else None,
             annotations=dict(p["annotations"] or {}),
+            expected_element=p["expected_element"],
+            expected_hybridization=p["expected_hybridization"],
+            bound_design=p["bound_design"],
+            bound_atom=p["bound_atom"],
         )
     for c in connect_rows:
         tree.connects.append(
@@ -162,6 +183,7 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 b_block=c["b_block"],
                 b_port=c["b_port"],
                 joint=dict(c["joint"]) if c["joint"] is not None else None,
+                kind=c["kind"],
                 objectives=dict(c["objectives"] or {}),
             )
         )
@@ -207,6 +229,8 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 created_at=n["created_at"],
             )
         )
+    for t in threading_rows:
+        tree.threading.append(ThreadingSpec(a=t["subject_name"], b=t["object_name"]))
     attach_catalog(store, tree)
     return tree
 
@@ -421,6 +445,11 @@ def save_tree(
             (ref_id,),
         )
         c.execute(
+            "UPDATE se_topology SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        c.execute(
             "UPDATE se_blocks SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
@@ -433,8 +462,8 @@ def save_tree(
                 "INSERT INTO se_blocks "
                 "(ref_id, parent_block_id, template_ref, name, "
                 " pose_xyz, pose_rot, envelope, array_spec, descr, use_, "
-                " objectives, mode, bound_kind, bound_design, origins) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                " objectives, mode, bound_kind, bound_design, origins, dof) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "RETURNING id",
                 (
                     ref_id,
@@ -453,6 +482,7 @@ def save_tree(
                     node.bound_kind,
                     node.bound,
                     Jsonb(node.origins) if node.origins else None,
+                    Jsonb(node.dof) if node.dof is not None else None,
                 ),
             ).fetchone()
             assert row is not None
@@ -463,14 +493,20 @@ def save_tree(
             for port in node.ports.values():
                 c.execute(
                     "INSERT INTO se_ports "
-                    "(block_id, name, roles, direction, annotations) "
-                    "VALUES (%s,%s,%s,%s,%s)",
+                    "(block_id, name, roles, direction, annotations, "
+                    " expected_element, expected_hybridization, "
+                    " bound_design, bound_atom) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         name_to_id[name],
                         port.name,
                         port.roles,
                         port.direction,
                         Jsonb(port.annotations) if port.annotations else None,
+                        port.expected_element,
+                        port.expected_hybridization,
+                        port.bound_design,
+                        port.bound_atom,
                     ),
                 )
         for conn_spec in tree.connects:
@@ -485,8 +521,9 @@ def save_tree(
             )
             c.execute(
                 "INSERT INTO se_connects "
-                "(ref_id, a_block, a_port, b_block, b_port, joint, objectives) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                "(ref_id, a_block, a_port, b_block, b_port, joint, kind, "
+                " objectives) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     a[0],
@@ -494,6 +531,7 @@ def save_tree(
                     b[0],
                     b[1],
                     Jsonb(conn_spec.joint) if conn_spec.joint is not None else None,
+                    conn_spec.kind,
                     Jsonb(conn_spec.objectives) if conn_spec.objectives else None,
                 ),
             )
@@ -569,6 +607,16 @@ def save_tree(
                     line.reason,
                 ),
             )
+        for thread in tree.threading:
+            # Directional — ``a`` threaded through ``b`` — so the endpoint
+            # pair is NOT canonicalized the way a connect's is: the two
+            # orders mean different (and mutually impossible) things.
+            c.execute(
+                "INSERT INTO se_topology "
+                "(ref_id, kind, subject_name, object_name) "
+                "VALUES (%s,'threading',%s,%s)",
+                (ref_id, thread.a, thread.b),
+            )
         store.chunks.upsert_card_combined(ref_id, card_text, conn=c)
 
     if conn is not None:
@@ -606,6 +654,11 @@ def retire_design(store: Any, ref_id: int) -> int:
         )
         conn.execute(
             "UPDATE se_notes SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE se_topology SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         )

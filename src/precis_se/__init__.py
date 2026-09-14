@@ -1,18 +1,25 @@
 """precis-se — the ``se`` (structural envelope) kind.
 
 A first-party **plugin** on the precis substrate (Route B: entry points,
-own migration namespace — the ``precis_nm`` scaffold verbatim), so core
-dispatch stays untouched.
+own migration namespace), so core dispatch stays untouched.
 
-``se`` is the scale-agnostic sibling of ``nm`` — the symmetry that locates
-it: **se : cad :: nm : structure** (docs/backlog/se-kind.md). nm is
-intent-over-atoms renting the cad kernel as Å; se is intent-over-solids
-renting the same kernel as **metres** (float64 everywhere — see
-se-kind.md "Decisions": within ±10⁶ m of origin float64 metres resolves
-below 10⁻⁴ Å, atoms-to-buildings in one unit; the single declared
-*unit* conversion anywhere is the Å↔m multiply where an atomic-mode
-block binds an nm design). One caveat the metres decision earned before
-the units-policy-cutover relative-tolerance audit: the cad kernel's
+``se`` is the one scale-agnostic design kind, with a mode split standing
+in for what used to be a kind split: **se : cad :: atomic mode :
+structure** (docs/backlog/se-kind.md; the ``nm`` kind used to be the
+right-hand side of that symmetry as a sibling kind — the nm→se merge,
+docs/backlog/nm-se-merge.md, folded it in as ``se``'s **atomic mode**
+rather than promoting the symmetry across two kinds). Atomic mode is
+intent-over-atoms renting the cad kernel as Å; non-atomic ``se`` is
+intent-over-solids renting the same kernel as **metres** (float64
+everywhere — see se-kind.md "Decisions": within ±10⁶ m of origin
+float64 metres resolves below 10⁻⁴ Å, atoms-to-buildings in one unit;
+the single declared *unit* conversion anywhere is the Å↔m multiply
+where an atomic-mode block binds a ``structure`` design). ``structure``
+itself stays the permanent Å-native crystallography enclave regardless
+(docs/backlog/structure-unit-enclave.md) — the merge changed which kind
+crosses into it, never the enclave rule itself. One caveat the metres
+decision earned before the units-policy-cutover relative-tolerance
+audit: the cad kernel's
 tolerances used to be absolute in whatever numbers it was handed
 (``LINEAR_EPS = 1e-6``, fine for Å and mm callers, fatal for a
 nanometre-scale box whose every face it culled). Its tolerances are now
@@ -30,8 +37,9 @@ the wheel can rotate") that hardens monotonically as answers arrive —
 every field beyond a block's name is optional; validation reports absence
 (filled-fraction honesty) but never fails on it.
 
-**The IR — six levels** (same invariant as pcb/nm: dropping everything
-above level *k* leaves a valid level-*k* object):
+**The IR — six levels** (same invariant as ``pcb`` and the merged ``nm``
+kind before it: dropping everything above level *k* leaves a valid
+level-*k* object):
 
 - **L0 — block graph.** Blocks + ports + intent connections, hierarchical
   (module trees, template refs, array nodes). No geometry.
@@ -42,7 +50,8 @@ above level *k* leaves a valid level-*k* object):
   vectors — stored explicitly, never derived from L3 geometry.
 - **L3 — realized solids.** Per block: cad node sets, instanced
   templates, ``component``/``part`` bindings (``set_binding``), or
-  (atomic mode) a bound ``nm`` design.
+  (atomic mode) a bound ``structure`` design — real atoms, via
+  ``bind_structure``/``generate``.
 - **L4 — metrics/agreement.** ``envelope_fit``, interface fit, stack-up,
   design DRC — the realized solid checked against the spec, never stored
   twice.
@@ -58,8 +67,9 @@ application over an in-memory tree — no store access: ``add_block``/
 ``instance_block``/``array_block``/``set_pose``/``set_envelope``/
 ``remove_block``/``add_port``/``remove_port``/``connect``/
 ``disconnect``/``set_joint``/``set_load``/``add_measure``/
-``set_measure``/``remove_measure``, with nm's instancing cycle guards
-and se's first-class **arrays**: an array node carries template name +
+``set_measure``/``remove_measure``, with instancing cycle guards (the
+shared :mod:`precis.blocktree` spine) and se's first-class **arrays**:
+an array node carries template name +
 ``linear`` (count/pitch/axis) or ``polar`` (count/radius/axis), members
 derived at read time — realization never flattens the tree),
 :mod:`precis_se.joints` (the joint vocabulary: kinematic class ×
@@ -137,6 +147,35 @@ user-origin pose is contract and moves only under an explicit
 completed by least squares, implied forces vetted against role sign and
 capacity pair — as a prestress section in ``view='stability'`` and the
 warn-tier ``prestress_state`` DRC rule.
+
+**Atomic mode** (docs/backlog/nm-se-merge.md) is the merged ``nm`` kind:
+a block whose realization is *chemistry* rather than solids, carried by
+the :mod:`precis_se.atomic` subpackage (migration ``0007_se_atomic.sql``).
+Its L2 is stated explicitly, never derived from coordinates
+(:mod:`precis_se.atomic.vocab` — declared dof, threading, and the
+``kind='bond'`` capability gate, applied by the ops in
+:mod:`precis_se.ops`); its L3 is a bound ``structure`` design, reached by
+the three store-aware ops :mod:`precis_se.atomic.bind` and
+:mod:`precis_se.atomic.generate` implement (``bind_structure``,
+``unbind_structure``, and ``generate``, which runs a parametric block
+factory from :mod:`precis_se.atomic.generators` and mints the structure
+design itself — deterministic geometry, no LLM guessing);
+:mod:`precis_se.atomic.apply` intercepts those three before the pure op
+table. Its L4 is :mod:`precis_se.atomic.validate` (the bond capability
+re-check, the binding checks, bond-geometry sanity, and ``envelope_fit``
+— the design(m)↔atomistic(Å) agreement check, whose conversion is the
+one permanent unit crossing, test-pinned) plus
+:mod:`precis_se.atomic.mechanics`'s advisory ceilings, rendered as
+``view='mechanics'``/``view='literature'``
+(:mod:`precis_se.atomic.render`). A mode and a binding that contradict
+each other are a ``view='drc'`` finding (``mode_binding_mismatch``),
+never a rejected write. Its one job type is
+``se_propose_atomic`` (:mod:`precis_se.atomic.propose`, nm's
+``nm_propose`` renamed with the merge): a tool-less LLM call proposing —
+never applying — one block's chemistry, dry-run validated. The retired
+kind's storage is dropped by migration ``0008_se_drop_nm_tables.sql``;
+``nm`` itself now answers with a retired-kind pointer at this one
+(``precis.runtime.dispatch``'s ``_RETIRED_KINDS``).
 
 A `component` binding additionally **projects onto a ``realized-by``
 link** on every save (``persist.sync_realized_by``, migration 0156's

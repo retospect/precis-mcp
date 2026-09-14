@@ -1,18 +1,18 @@
-"""The ``se``/``nm`` web reader — round 1 (docs/backlog thread pending
+"""The ``se`` web reader — round 1 (docs/backlog thread pending
 its own transcription pass; the spec of record is prod gripe gr335242,
 items 1-3): project a design's posed envelope union to SVG, isolate a
-named subtree, and step through a discrete abstraction ladder. One
-router serves both kinds off the shared projector
-(:mod:`precis_web.blocktree_svg`) — ``se``'s and ``nm``'s block trees
-are both :mod:`precis.blocktree` subclasses carrying the same L1
-envelope/pose triple (module docstring there); only se additionally
-carries the axial-member stability overlay (:mod:`precis_se.stability`)
-— nm's header stops at validate + fill-fraction, honestly, since nm has
-no whole-structure verdict concept.
+named subtree, and step through a discrete abstraction ladder. Built as
+a kind-keyed adapter table over the shared projector
+(:mod:`precis_web.blocktree_svg`) because it served ``se`` *and* ``nm``
+— both :mod:`precis.blocktree` subclasses carrying the same L1
+envelope/pose triple (module docstring there). The nm→se merge
+(docs/backlog/nm-se-merge.md) retired that kind, so ``se`` is the only
+adapter today; the table stays because the shape is the seam a second
+block-tree kind would plug into, and se's own atomic mode arrived
+through it.
 
-* ``GET  /se``, ``GET  /nm`` — the design list (mirrors
-  ``routes/cad.py``'s ``/cad``).
-* ``GET  /se/{slug}``, ``GET  /nm/{slug}`` — the reader page, landing on
+* ``GET  /se`` — the design list (mirrors ``routes/cad.py``'s ``/cad``).
+* ``GET  /se/{slug}`` — the reader page, landing on
   the three-cad-viewer 3D view by default (gr337745 — the 2D SVG
   projection is depthless/overlap-heavy for a real multi-block design
   and no longer earns the default slot). Query params: ``level`` (the
@@ -20,15 +20,15 @@ no whole-structure verdict concept.
   name — render only its subtree, recentred), ``overrides`` (round 2a —
   ``"name:level, name2:level2"``, per-subtree level override; see
   :mod:`precis_web.blocktree_svg`'s ``plan_visibility`` docstring).
-* ``GET  /se/{slug}/scene3d.json``, ``GET  /nm/{slug}/scene3d.json`` —
+* ``GET  /se/{slug}/scene3d.json`` —
   the data the 3D page fetches: the viewer's own ``Shapes`` tree plus
   the connectivity/explode/mermaid side data
   (:class:`~precis_web.blocktree_3d.Scene3D`).
-* ``GET  /se/{slug}/2d``, ``GET  /nm/{slug}/2d`` — the 2D SVG reader
+* ``GET  /se/{slug}/2d`` — the 2D SVG reader
   page, still reachable via a link off the 3D page: axis/level/colour/
   isolate selectors (a plain GET form — no client JS needed) over an
   ``<img>`` of the SVG endpoint below. Each page links the other.
-* ``GET  /se/{slug}/view.svg``, ``GET  /nm/{slug}/view.svg`` — the SVG
+* ``GET  /se/{slug}/view.svg`` — the SVG
   render itself. Same params as ``/2d`` plus ``axis`` (x|y|z, default z
   — top view) and ``colour`` (the fill channel, default 'part') — both
   SVG-projection-only, so absent from the 3D/``/2d`` page URLs above.
@@ -39,7 +39,7 @@ SEPARATE from the SVG projection math but sharing
 ``plan_visibility``/``children_map`` so the level ladder, isolation, and
 override behave identically in both readers) — gr337745 later promoted
 it to the ``/{slug}`` default above. Its old
-``GET /se/{slug}/view3d``/``GET /nm/{slug}/view3d`` URL still resolves —
+``GET /se/{slug}/view3d`` URL still resolves —
 a permanent (308) redirect to the new bare-slug URL, query string
 forwarded unchanged (``_view3d_redirect``), so an old bookmark/link
 never just 404s.
@@ -61,9 +61,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from precis.blocktree.types import BlockNode, Tree
 from precis.errors import NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis_nm import persist as nm_persist
-from precis_nm import validate as nm_validate
-from precis_nm.ops import effective_envelope as nm_effective_envelope
 from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
@@ -143,20 +140,16 @@ class _Adapter:
     is_realized: Any  # Callable[[BlockNode], bool]
     has_stability: bool
     #: round 2a — the 3D/mermaid connectivity overlay's per-connect label
-    #: (se's ``joint`` dict vs nm's ``kind`` str, spec §5.8 comment 5(c))
-    #: and colour (se reuses the SVG force-colour vocabulary for its
-    #: kinematic connects; nm has no tension/compression concept, so it's
-    #: a flat neutral).
+    #: (spec §5.8 comment 5(c)) and colour: se reads its ``joint`` dict
+    #: and reuses the SVG force-colour vocabulary for kinematic connects.
+    #: Per-adapter because a connect's L2 statement is domain vocabulary,
+    #: not a shared-core field.
     connect_label: Any  # Callable[[Connect], str]
     connect_colour: Any  # Callable[[Connect], str]
 
 
 def _se_is_realized(node: Any) -> bool:
     return bool(getattr(node, "mode", None)) or bool(getattr(node, "bound_kind", None))
-
-
-def _nm_is_realized(node: Any) -> bool:
-    return bool(getattr(node, "bound_design", None))
 
 
 def _se_connect_label(c: Any) -> str:
@@ -167,14 +160,6 @@ def _se_connect_label(c: Any) -> str:
 def _se_connect_colour(c: Any) -> str:
     joint = getattr(c, "joint", None) or {}
     return _ROLE_NEUTRAL if joint.get("class") != "axial" else _ROLE_TIE
-
-
-def _nm_connect_label(c: Any) -> str:
-    return str(getattr(c, "kind", None) or "bond")
-
-
-def _nm_connect_colour(_c: Any) -> str:
-    return _ROLE_NEUTRAL
 
 
 #: The 3D/mermaid connectivity overlay's own small colour vocabulary —
@@ -198,17 +183,6 @@ _ADAPTERS: dict[str, _Adapter] = {
         connect_label=_se_connect_label,
         connect_colour=_se_connect_colour,
     ),
-    "nm": _Adapter(
-        kind="nm",
-        label="Molecular machines",
-        load_tree=nm_persist.load_tree,
-        effective_envelope=nm_effective_envelope,
-        validate=nm_validate.validate,
-        is_realized=_nm_is_realized,
-        has_stability=False,
-        connect_label=_nm_connect_label,
-        connect_colour=_nm_connect_colour,
-    ),
 }
 
 #: One SQL statement per kind's own block table — DB-minted ids, keyed by
@@ -219,7 +193,6 @@ _ADAPTERS: dict[str, _Adapter] = {
 #: ``precis.blocktree.types.BlockNode``'s own docstring).
 _ID_SQL = {
     "se": "SELECT id, name FROM se_blocks WHERE ref_id = %s AND retired_at IS NULL",
-    "nm": "SELECT id, name FROM nm_blocks WHERE ref_id = %s AND retired_at IS NULL",
 }
 
 
@@ -230,8 +203,8 @@ def _id_by_name(store: Store, kind: str, ref_id: int) -> dict[str, int]:
 
 
 #: One SQL statement per kind's own block table — table names are never
-#: interpolated from a request, so this stays two plain literals rather
-#: than a dynamic-identifier query.
+#: interpolated from a request, so this stays a plain literal rather than
+#: a dynamic-identifier query.
 _LIST_SQL = {
     "se": """
         SELECT r.ref_id,
@@ -244,20 +217,6 @@ _LIST_SQL = {
                r.updated_at
           FROM refs r
          WHERE r.kind = 'se' AND r.retired_at IS NULL
-         ORDER BY r.ref_id DESC
-         LIMIT %s
-    """,
-    "nm": """
-        SELECT r.ref_id,
-               (SELECT id_value FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
-                 ORDER BY created_at DESC LIMIT 1)             AS slug,
-               r.title,
-               (SELECT count(*) FROM nm_blocks b
-                 WHERE b.ref_id = r.ref_id AND b.retired_at IS NULL) AS n_blocks,
-               r.updated_at
-          FROM refs r
-         WHERE r.kind = 'nm' AND r.retired_at IS NULL
          ORDER BY r.ref_id DESC
          LIMIT %s
     """,
@@ -813,88 +772,4 @@ async def se_scene3d(
 ) -> Response:
     return await _scene3d_response(
         request, "se", slug, level=level, isolate=isolate, overrides=overrides
-    )
-
-
-# ── nm routes ────────────────────────────────────────────────────────────
-
-
-@router.get("/nm", response_class=HTMLResponse)
-async def nm_list(request: Request) -> HTMLResponse:
-    return await _list_page(request, "nm")
-
-
-@router.get("/nm/{slug}")
-async def nm_detail(
-    request: Request,
-    slug: str,
-    level: str = "refined",
-    isolate: str | None = None,
-    overrides: str = "",
-) -> Any:
-    # gr337745: the 3D view is the default landing page now.
-    return await _view3d_page(
-        request, "nm", slug, level=level, isolate=isolate, overrides=overrides
-    )
-
-
-@router.get("/nm/{slug}/view3d")
-async def nm_view3d_redirect(request: Request, slug: str) -> Response:
-    return await _view3d_redirect(request, "nm", slug)
-
-
-@router.get("/nm/{slug}/2d")
-async def nm_detail_2d(
-    request: Request,
-    slug: str,
-    axis: str = "z",
-    level: str = "refined",
-    colour: str = "part",
-    isolate: str | None = None,
-    overrides: str = "",
-) -> Any:
-    return await _detail_page(
-        request,
-        "nm",
-        slug,
-        axis=axis,
-        level=level,
-        colour=colour,
-        isolate=isolate,
-        overrides=overrides,
-    )
-
-
-@router.get("/nm/{slug}/view.svg")
-async def nm_view_svg(
-    request: Request,
-    slug: str,
-    axis: str = "z",
-    level: str = "refined",
-    colour: str = "part",
-    isolate: str | None = None,
-    overrides: str = "",
-) -> Response:
-    return await _svg_response(
-        request,
-        "nm",
-        slug,
-        axis=axis,
-        level=level,
-        colour=colour,
-        isolate=isolate,
-        overrides=overrides,
-    )
-
-
-@router.get("/nm/{slug}/scene3d.json")
-async def nm_scene3d(
-    request: Request,
-    slug: str,
-    level: str = "refined",
-    isolate: str | None = None,
-    overrides: str = "",
-) -> Response:
-    return await _scene3d_response(
-        request, "nm", slug, level=level, isolate=isolate, overrides=overrides
     )
