@@ -167,6 +167,15 @@ def _math_braces_balanced(span: str) -> bool:
     return depth == 0
 
 
+def _math_comment_safe(span: str) -> str:
+    """Escape unescaped ``%`` and ``#`` inside a verbatim math span. A raw
+    ``%`` starts a LaTeX comment mid-math — it eats the closing ``$`` and the
+    rest of the source line ("Missing $ inserted" on the next line; prod
+    chunk 1507177's ``CV $<20%$``) — and a raw ``#`` is a macro-parameter
+    error. ``\\%``/``\\#`` render as the literal glyphs, preserving intent."""
+    return re.sub(r"(?<!\\)([%#])", r"\\\1", span)
+
+
 # ── shared draft-text normalisation (both exporters) ──────────────────
 # Drafts may carry verbatim LaTeX a precis author wouldn't write — most
 # often when an LLM drafts in LaTeX rather than precis markup. These two
@@ -462,10 +471,13 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
 
     # 1. Math verbatim (keeps _ ^ \ and unicode intact for KaTeX/LaTeX).
     #    Brace-unbalanced spans fall through to step 4's escaping — literal
-    #    text beats a runaway argument (see _math_braces_balanced).
+    #    text beats a runaway argument (see _math_braces_balanced) — and a
+    #    passed-through span gets its raw %/# escaped (_math_comment_safe).
     s = _MATH.sub(
         lambda m: (
-            _stash(m.group(0)) if _math_braces_balanced(m.group(0)) else m.group(0)
+            _stash(_math_comment_safe(m.group(0)))
+            if _math_braces_balanced(m.group(0))
+            else m.group(0)
         ),
         text,
     )

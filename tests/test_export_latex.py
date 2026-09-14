@@ -148,6 +148,20 @@ def test_unbalanced_math_escaped_not_passed_through() -> None:
     assert r"$\sqrt{2}$" in out2 and "$x_{1}$" in out2
 
 
+def test_raw_percent_and_hash_inside_math_are_escaped() -> None:
+    # A raw % inside a passed-through math span starts a LaTeX comment
+    # mid-math — it eats the closing $ and the rest of the source line
+    # ("Missing $ inserted"; prod chunk 1507177's ``CV $<20%$``). A raw #
+    # is a macro-parameter error. Both must ride escaped, math intact.
+    out, _ = _inline("monodisperse (CV $<20%$) and grid $a#1$ end")
+    assert r"$<20\%$" in out
+    assert r"$a\#1$" in out
+    assert "%" not in out.replace(r"\%", "")
+    # an already-escaped \% inside math is left alone (no double escape)
+    out2, _ = _inline(r"target $<5\%$ done")
+    assert r"$<5\%$" in out2 and r"\\%" not in out2
+
+
 def test_math_inside_inline_code_restores_no_nul_placeholder() -> None:
     # Math stashed in step 1 lands INSIDE the later-stashed \texttt span; the
     # restore must run until no \x00i\x00 placeholder remains — a leftover is

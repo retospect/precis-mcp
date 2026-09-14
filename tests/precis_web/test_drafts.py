@@ -1458,6 +1458,32 @@ def test_remarkable_send_omits_user_param_when_signed_out(
     assert args["idem_key"] == "remarkable_send:nt:shared"
 
 
+def test_remarkable_send_threads_the_placeholder_figures_checkbox(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """The "allow placeholder figures" checkbox rides the job as
+    ``params.placeholder_figures`` when checked ("1"), and is ABSENT — not
+    False — when the hidden input posts empty (unchecked)."""
+    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    r = draft_client.post(
+        "/drafts/nt/remarkable",
+        data={"placeholder_figures": "1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "remarkable_send"
+    assert args["params"]["placeholder_figures"] is True
+    r = draft_client.post(
+        "/drafts/nt/remarkable",
+        data={"placeholder_figures": ""},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    _verb, args = draft_runtime.calls[-1]
+    assert "placeholder_figures" not in args["params"]
+
+
 def test_remarkable_papers_send_enqueues_the_right_job(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
