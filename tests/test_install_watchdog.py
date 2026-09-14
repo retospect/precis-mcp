@@ -116,6 +116,51 @@ def test_start_arms_thread_for_real_install(
     assert thread.is_alive()
 
 
+def test_install_fingerprint_reads_the_precis_module_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The public entry resolves through ``precis.__file__`` — pin that a
+    watchable module file yields its fingerprint (kills the ``__file__ is
+    None`` guard inverting into "never watchable")."""
+    import precis
+
+    init = _fake_install(tmp_path)
+    monkeypatch.setattr(precis, "__file__", str(init))
+    fp = install_watchdog.install_fingerprint()
+    assert fp is not None
+    assert fp[0] == str(init.resolve())
+
+
+def test_watch_loop_exits_zero_on_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run the real thread loop against a fake install and capture the
+    exit: replacement must produce exactly ``_exit(0)`` — the clean-exit
+    code is what makes the client restart instead of back off."""
+    init = _fake_install(tmp_path)
+    codes: list[int] = []
+    fired = threading.Event()
+
+    def _fake_exit(code: int) -> None:
+        codes.append(code)
+        fired.set()
+        raise SystemExit  # end the watch thread in place of the process
+
+    monkeypatch.setattr(install_watchdog.os, "_exit", _fake_exit)
+    monkeypatch.setattr(
+        install_watchdog, "install_fingerprint", lambda: _fingerprint_for(init)
+    )
+    monkeypatch.delenv("PRECIS_INSTALL_WATCHDOG", raising=False)
+    thread = start_install_watchdog(interval_s=0.05)
+    assert thread is not None
+
+    init.unlink()
+    init.write_text("# v2 — replaced by a deploy\n", encoding="utf-8")
+    assert fired.wait(10.0), "watchdog never reacted to the replaced install"
+    assert codes == [0]
+    thread.join(5.0)
+
+
 def test_exit_zero_is_the_contract() -> None:
     """The recoverable path the client log demonstrated is exit code 0
     ("MCP server process exited cleanly" → restart). Pin that the
