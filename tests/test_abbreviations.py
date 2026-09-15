@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.utils.abbreviations import find, substitute
+from precis.utils.abbreviations import find, strip_trailing_aside, substitute
 
 # ── find: positive cases ────────────────────────────────────────────
 
@@ -152,6 +152,51 @@ def test_find_then_substitute_full_round_trip() -> None:
     # Defining parentheticals collapsed — no orphan "(FTIR)" or "(DFT)".
     assert "(FTIR)" not in out
     assert "(DFT)" not in out
+
+
+# ── strip_trailing_aside ─────────────────────────────────────────────
+
+
+class TestStripTrailingAside:
+    def test_strips_the_dr173020_case(self) -> None:
+        # gr: exported PDF showed "... density functional theory
+        # (Grimme D3) (DFT-D3) calculations ..." — a hand-authored term
+        # chunk's definition text embedded its own trailing aside, which
+        # then doubled up with the exporter's own "(SHORT)".
+        long_form = "dispersion-corrected density functional theory (Grimme D3)"
+        assert (
+            strip_trailing_aside(long_form)
+            == "dispersion-corrected density functional theory"
+        )
+
+    def test_noop_when_no_trailing_parenthetical(self) -> None:
+        assert strip_trailing_aside("Fourier Transform Infrared") == (
+            "Fourier Transform Infrared"
+        )
+
+    def test_noop_when_stripping_would_empty_the_string(self) -> None:
+        # Degenerate input: the whole value is one parenthetical. Keep it
+        # rather than discard the only content we have.
+        assert strip_trailing_aside("(Grimme D3)") == "(Grimme D3)"
+
+    def test_only_strips_the_trailing_aside(self) -> None:
+        # An earlier, non-trailing parenthetical is left alone — only the
+        # outermost trailing one is dropped.
+        long_form = "density functional theory (DFT) (Grimme D3)"
+        assert strip_trailing_aside(long_form) == "density functional theory (DFT)"
+
+    def test_idempotent(self) -> None:
+        long_form = "dispersion-corrected density functional theory (Grimme D3)"
+        once = strip_trailing_aside(long_form)
+        assert strip_trailing_aside(once) == once
+
+    def test_regex_derived_long_forms_are_never_affected(self) -> None:
+        # find()'s token pattern excludes parens, so its long-form values
+        # never need this — confirms the helper is a true no-op on the
+        # inline-detection path's own output.
+        text = "Fourier Transform Infrared (FTIR) spectroscopy was performed"
+        (long_form,) = find(text).values()
+        assert strip_trailing_aside(long_form) == long_form
 
 
 def test_short_form_propagates_to_keyword_summary(

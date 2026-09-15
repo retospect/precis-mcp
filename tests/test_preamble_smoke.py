@@ -87,6 +87,68 @@ def test_preamble_compiles_with_tooltip_macros(tmp_path: Path) -> None:
     )
 
 
+#: gr339: raw Unicode inside a ``$…$`` span rode verbatim past pylatexenc
+#: (which only ever ran on prose) straight to LuaLaTeX's math font table,
+#: which has no glyph for most of these — "Missing character" (silently
+#: dropped) or a wrong-glyph substitution, never a fatal, so a TeX-free
+#: gate can't catch it. Every span :func:`test_export_latex
+#: .test_unicode_inside_math_span_gets_math_mode_macros` asserts a string
+#: transformation for, rendered through the real export pipeline and
+#: compiled for real — this is the test that actually proves the bug is
+#: dead, not just that the string transform looks right.
+_MATH_UNICODE_SPANS = [
+    r"$K ≠0$",
+    r"$K ≠ 0$",
+    r"$3 \times 120° = 360°$",
+    r"$5 Å$",
+    r"$a ≤ b$",
+    r"$a × b$",
+    r"$a ± b$",
+    r"$90^°$",
+    r"$μ$",
+    r"$α + β$",
+    r"$Δx$",
+    r"$−5$",  # U+2212 MINUS SIGN, deliberately not a hyphen
+    r"$∼0.9$",
+    r"$x′$",
+]
+
+
+def _math_smoke_project(target: Path) -> None:
+    """main.tex built by running the real inline renderer
+    (:func:`precis.export.latex._render_inline`) over every span in
+    :data:`_MATH_UNICODE_SPANS` — the exact code path a corpus chunk's
+    text goes through on export — then assembled + compiled like any
+    other draft."""
+    from precis.export.latex import _Ctx, _render_inline
+
+    ctx = _Ctx(keymap={}, known_handles=set())
+    body = "\n\n".join(_render_inline(span, ctx) for span in _MATH_UNICODE_SPANS)
+    main = assemble_document(
+        title="Math-unicode gate smoke",
+        author_block="\\author{precis}",
+        body=body,
+        acronyms="",
+    )
+    from precis.export.latex import _template_text
+
+    (target / "main.tex").write_text(main, encoding="utf-8")
+    (target / "refs.bib").write_text(_BIB, encoding="utf-8")
+    (target / ".latexmkrc").write_text(_template_text("latexmkrc"), encoding="utf-8")
+
+
+def test_math_unicode_compiles_without_missing_character(tmp_path: Path) -> None:
+    _math_smoke_project(tmp_path)
+    res = compile_pdf(tmp_path, timeout_s=300)
+    assert not res.skipped
+    assert res.ok, f"math-unicode smoke compile failed:\n{res.log_tail}"
+    assert res.pdf is not None and res.pdf.stat().st_size > 1024
+
+    log_text = (tmp_path / "main.log").read_text(errors="replace", encoding="utf-8")
+    missing = re.findall(r"Missing character:.*", log_text)
+    assert not missing, f"Missing character warning(s) in log: {missing}"
+
+
 def _inflated(pdf: bytes) -> bytes:
     """The raw PDF plus every FlateDecode stream inflated — lualatex packs
     annotation dicts into compressed object streams, so the tooltip string

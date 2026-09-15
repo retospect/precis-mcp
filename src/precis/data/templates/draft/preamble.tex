@@ -56,6 +56,15 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{cleveref}
 
+% Numbered display equations (export/latex.py's standalone-equation
+% detection wraps a display-math-only paragraph in \begin{equation}, label
+% inside). Cleveref infers a label's TYPE from the counter active at
+% \label-time, so a bare [dc<id>] cross-ref to that chunk auto-resolves
+% through the existing \cref{chunk:<handle>} mechanism to "Eq. (N)" — no
+% separate \eqref wiring needed.
+\crefname{equation}{Eq.}{Eqs.}
+\Crefname{equation}{Equation}{Equations}
+
 % Author byline + affiliations (export/latex.py build_author_block).
 % authblk turns multiple \author + \affil lines into a numbered
 % author↔affiliation block under \maketitle; a single shared

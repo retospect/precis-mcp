@@ -173,6 +173,32 @@ def _matches(long_form: str, short: str) -> bool:
     return s_idx < 0
 
 
+#: A single trailing ``(...)`` aside, with its leading whitespace.
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def strip_trailing_aside(long_form: str) -> str:
+    """Drop one trailing ``(...)`` aside from a free-form long-form string.
+
+    A hand-authored glossary ``term`` chunk's definition text is free-form
+    prose and may itself end in a clarifying parenthetical — e.g.
+    ``"dispersion-corrected density functional theory (Grimme D3)"`` as the
+    long form for short ``DFT-D3``. Every consumer of an abbreviation's long
+    form (LaTeX's ``\\gls`` first-use expansion, the docx exporter's own
+    ``f"{long} ({short})"``) unconditionally appends ``"(SHORT)"`` right
+    after it, with no awareness that the string might already end in
+    parentheses — so an embedded trailing aside renders as two stacked
+    parentheticals: ``"... theory (Grimme D3) (DFT-D3)"`` (dr173020,
+    reported in the exported PDF).
+
+    A long form produced by :func:`find`'s regex can never contain one (its
+    token pattern excludes ``(``/``)``), so this only ever fires on
+    free-form ``term`` chunk text. Idempotent, and a no-op when there is no
+    trailing parenthetical or when stripping one would leave nothing."""
+    stripped = _TRAILING_PAREN_RE.sub("", long_form).strip()
+    return stripped or long_form
+
+
 # Acronym-shaped tokens: an upper-case letter then 1–7 more caps/digits
 # (≥2 chars total), plus optional hyphenated all-caps tails so a compound
 # like ``GNR-FET`` is flagged whole — and the leading ``GNR`` still matches
@@ -198,4 +224,4 @@ def find_acronyms(text: str) -> set[str]:
     return out
 
 
-__all__ = ["find", "find_acronyms", "substitute"]
+__all__ = ["find", "find_acronyms", "strip_trailing_aside", "substitute"]

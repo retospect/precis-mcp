@@ -376,8 +376,19 @@ class _AbbrevMixin:
         """``{short: long}`` for every abbreviation **defined** in this
         draft — explicit ``term`` chunks (``meta.short`` → text) plus inline
         ``Long Form (ABBR)`` first-uses (Schwartz-Hearst). Explicit terms
-        win on a clash. Drives the reader's hover-definition highlight."""
+        win on a clash. Drives the reader's hover-definition highlight.
+
+        Both exporters (LaTeX ``\\gls``, docx's own ``f"{long} ({short})"``)
+        unconditionally append ``"(SHORT)"`` after the long form on first
+        use. A regex-derived inline pair can never contain a trailing
+        parenthetical (:func:`~precis.utils.abbreviations.find`'s token
+        pattern excludes ``(``/``)``), but an explicit ``term`` chunk's
+        text is free-form and may itself end in a clarifying aside — so
+        that trailing aside is stripped here, not left to double up with
+        the exporter's own ``(SHORT)`` (dr173020, reported in the
+        exported PDF)."""
         from precis.utils.abbreviations import find as _sh_find
+        from precis.utils.abbreviations import strip_trailing_aside
 
         out: dict[str, str] = {}
         with self.pool.connection() as conn:
@@ -399,7 +410,7 @@ class _AbbrevMixin:
                 (ref_id,),
             ).fetchall():
                 if short and (long or "").strip():
-                    out[str(short)] = str(long).strip()
+                    out[str(short)] = strip_trailing_aside(str(long).strip())
         return out
 
     def defined_terms(self, ref_id: int) -> dict[str, Any]:

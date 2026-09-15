@@ -12,7 +12,15 @@ defined abbreviation becomes a ``\\newacronym`` with each surface
 occurrence a glossary call (first use expands, later uses abbreviate,
 with a page-number "where it occurs" list) — later uses also wrapped
 in a non-printing ``\\pdftooltip`` so hovering reveals the full term
-(the PDF analogue of the web reader's popup).
+(the PDF analogue of the web reader's popup). A paragraph chunk whose
+ENTIRE text is one ``$$…$$`` span is a **standalone display equation**
+(:func:`_standalone_equation`): it exports as a numbered ``equation``
+environment, and an existing ``[dc<id>]`` cross-ref to that chunk
+auto-resolves — via the SAME :func:`_draft_xref`/cleveref machinery
+every other chunk cross-ref already uses — to "Eq. (N)"
+(``preamble.tex``'s ``\\crefname`` for ``equation``); no new authoring
+syntax. A trailing ``*`` right after the closing ``$$`` opts a chunk
+out of numbering (the LaTeX ``equation``/``equation*`` convention).
 
 Produces the *project files* (``main.tex``+``refs.bib``+copied
 ``preamble.tex``). Compiling them (latexmk+biber+makeglossaries) and
@@ -33,6 +41,7 @@ from pylatexenc.latexencode import (
     RULE_CALLABLE,
     UnicodeToLatexConversionRule,
     UnicodeToLatexEncoder,
+    get_builtin_uni2latex_dict,
 )
 
 from precis.export._data_package import (
@@ -243,6 +252,153 @@ def _math_plausible(span: str) -> bool:
     return not (body.count(" ") >= 2 and not re.search(r"[\\^_={}<>≈±×·]", body))
 
 
+#: The complete set of ``\text<suffix>`` command names pylatexenc's OWN
+#: character table can emit (``textdegree``, ``textmu`` is never one of
+#: these — μ is ``\ensuremath{\mu}`` — but ``textonehalf`` is …), derived
+#: from the table itself rather than hand-listed: this is what makes the
+#: generic fallback in :func:`_math_encode_unicode` safe to apply — it
+#: only ever rewrites a command *pylatexenc just emitted*, never an
+#: author-written ``\textbf``/``\textit`` that happens to also start with
+#: ``\text`` and appear (unusually) inside a math span.
+_PYLATEXENC_TEXT_CMD_SUFFIXES = frozenset(
+    m.group(1)
+    for _v in get_builtin_uni2latex_dict().values()
+    for m in re.finditer(r"\\text([A-Za-z]+)", _v)
+)
+
+
+def _unwrap_ensuremath(s: str) -> str:
+    """Un-wrap every ``\\ensuremath{…}`` in *s*. pylatexenc emits this
+    prose-mode wrapper ("switch into math mode for one symbol") for every
+    glyph that already has a correct MATH command — Greek letters, ``≠``,
+    ``≤``, ``±`` … — so inside a ``$…$`` span (already math mode) the
+    wrapper is redundant; only its argument is wanted, re-wrapped in a
+    plain ``{…}`` group so the unwrapped command can never merge with
+    whatever text follows it (the same "Missing $\\Deltaδ$" mechanism
+    :func:`_math_comment_safe` already guards for backslash-adjacent
+    Unicode, generalised to backslash-adjacent ASCII too — a bare
+    ``\\Delta`` immediately followed by ``x`` would otherwise parse as one
+    undefined command ``\\Deltax``). Depth-aware, so it survives nested
+    groups (``\\ensuremath{\\acute{\\ddot{\\upsilon}}}``) and repeats for
+    every occurrence in *s*, not just the first."""
+    out: list[str] = []
+    i, n = 0, len(s)
+    marker = "\\ensuremath{"
+    while i < n:
+        if not s.startswith(marker, i):
+            out.append(s[i])
+            i += 1
+            continue
+        depth = 1
+        j = i + len(marker)
+        while j < n and depth:
+            if s[j] == "{":
+                depth += 1
+            elif s[j] == "}":
+                depth -= 1
+            j += 1
+        out.append("{" + s[i + len(marker) : j - 1] + "}")
+        i = j
+    return "".join(out)
+
+
+#: pylatexenc's remaining non-``\ensuremath`` translations for symbols
+#: common in this corpus are PROSE-only commands — illegal (undefined
+#: control sequence, or a mode error) inside ``$…$``. Each has a standard
+#: MATH equivalent already available from the LaTeX kernel/``amsmath``
+#: (both loaded by ``preamble.tex``; no new package). Every value is
+#: brace-wrapped for the same anti-merge reason as ``_unwrap_ensuremath``.
+#: ``\textdegree`` maps to bare ``\circ`` — the degree sign needs to be an
+#: EXPONENT, not just present, so :data:`_MATH_DEGREE_CARET` inserts the
+#: ``^`` a character earlier (``120°`` → ``120^°`` → ``120^{\circ}``;
+#: ``90^°`` — the author already wrote the caret — is left alone).
+_MATH_TEXT_TO_MATH_CMD = {
+    r"\textdegree": r"{\circ}",
+    r"\textrightarrow": r"{\rightarrow}",
+    r"\texttimes": r"{\times}",
+    r"\textperiodcentered": r"{\cdot}",
+}
+_MATH_DEGREE_CARET = re.compile(r"(?<!\^)°")
+
+#: pylatexenc's *accent* macros for precomposed Latin letters (Å →
+#: ``\r{A}``, é → ``\'e`` …) are equally prose-only. Every classic LaTeX
+#: accent name has a same-argument MATH accent (kernel, no package) — a
+#: mechanical command-name swap, not a new character table. ``r``/``v``
+#: are the only letter-named accents (ring, caron) with a clean math
+#: equivalent; the rest (cedilla, breve, tie, dot-under, bar-under,
+#: Hungarian umlaut) have none and fall to the generic ``\text{…}``
+#: fallback below rather than an undefined-in-math command.
+_MATH_ACCENT_CMD = {
+    "'": "acute", "`": "grave", "^": "hat", "~": "tilde",
+    '"': "ddot", "=": "bar", ".": "dot", "r": "mathring", "v": "check",
+}  # fmt: skip
+#: Symbol-named accents (``\'a``, optionally brace-protected as pylatexenc
+#: emits for the dotless-i forms, ``{\'\i}``) — argument is the very next
+#: token, ``\i``/``\j`` (dotless i/j) or a single character.
+_MATH_SYMBOL_ACCENT_RE = re.compile(r"\{?\\([`'^~\"=.])(\\[ij]|[^\\{}])\}?")
+#: Letter-named accents (``\r{A}``, ``\c{c}`` …) — always brace-delimited.
+_MATH_LETTER_ACCENT_RE = re.compile(r"\\([rcuvHtdb])\{([^{}]*)\}")
+#: ``\i``/``\j`` (text-mode dotless i/j) inside a math accent argument
+#: must be the MATH dotless forms instead — ``\imath``/``\jmath``.
+_MATH_DOTLESS = {"\\i": "\\imath", "\\j": "\\jmath"}
+
+
+def _mathify_accent(m: re.Match[str]) -> str:
+    letter, arg = m.group(1), m.group(2)
+    math_accent = _MATH_ACCENT_CMD.get(letter)
+    if math_accent is None:
+        # No clean math accent (cedilla, breve, Hungarian umlaut, tie,
+        # dot-/bar-under) — \text{…} beats an undefined-in-math command.
+        return f"\\text{{{m.group(0)}}}"
+    return f"\\{math_accent}{{{_MATH_DOTLESS.get(arg, arg)}}}"
+
+
+_MATH_TEXT_CMD_RE = re.compile(r"\\text([A-Za-z]+)")
+
+
+def _math_text_fallback(m: re.Match[str]) -> str:
+    """Any other pylatexenc-emitted ``\\text<suffix>`` command with no math
+    equivalent above (``\\textonehalf``, ``\\textcelsius`` …) — genuinely
+    unknown suffixes (i.e. this isn't pylatexenc's output at all, most
+    likely author-written ``\\textbf``/``\\textit`` inside a math span)
+    are left completely alone."""
+    if m.group(1) not in _PYLATEXENC_TEXT_CMD_SUFFIXES:
+        return m.group(0)
+    return f"\\text{{{m.group(0)}}}"
+
+
+def _math_encode_unicode(span: str) -> str:
+    """Translate non-ASCII characters inside a verbatim math span to
+    MATH-mode LaTeX commands — the math-context analogue of
+    :func:`_encode_unicode`, which never runs on math content (stashed
+    verbatim past it — see :func:`_render_gap`). This is *why* prod's
+    38k+ chunks with a Unicode character inside ``$…$`` degrade: LuaLaTeX
+    hits ``≠``/``°``/``α``… raw against a math font table with no such
+    glyph ("Missing character").
+
+    Reuses ``_U2L`` — the SAME table, including the raw-script/homoglyph
+    rules (Cyrillic/Armenian/Hebrew/Arabic stay verbatim per 2628caa2;
+    Cyrillic-Latin homoglyphs still normalise). No hand-written character
+    table: coverage is exactly ``_U2L``'s. What's hand-written here is
+    small and closed — pylatexenc's PROSE-mode *output forms* (a
+    ``\\ensuremath{…}`` wrapper, a couple of bare prose commands, a
+    handful of named accent commands) adapted to their MATH-mode
+    equivalents, which is a different problem than character coverage.
+    Left deliberately unmapped: Unicode sub/superscript digits (``⁻``,
+    ``₂`` …, handled in prose by ``_normalize_subsup``) and CJK — both
+    already-existing prose-only escape hatches (``\\textsuperscript``,
+    ``\\cjktext``) whose behaviour inside math mode is unverified; neither
+    was in the diagnosis's required scope."""
+    span = _MATH_DEGREE_CARET.sub("^°", span)
+    encoded = _U2L.unicode_to_latex(span)
+    encoded = _unwrap_ensuremath(encoded)
+    for cmd, math_cmd in _MATH_TEXT_TO_MATH_CMD.items():
+        encoded = encoded.replace("{" + cmd + "}", math_cmd).replace(cmd, math_cmd)
+    encoded = _MATH_SYMBOL_ACCENT_RE.sub(_mathify_accent, encoded)
+    encoded = _MATH_LETTER_ACCENT_RE.sub(_mathify_accent, encoded)
+    return _MATH_TEXT_CMD_RE.sub(_math_text_fallback, encoded)
+
+
 def _math_comment_safe(span: str) -> str:
     """Escape unescaped ``%`` and ``#`` inside a verbatim math span. A raw
     ``%`` starts a LaTeX comment mid-math — it eats the closing ``$`` and the
@@ -259,11 +415,65 @@ def _math_comment_safe(span: str) -> str:
     A raw ``&`` outside an alignment environment is equally fatal
     ("Misplaced alignment tab"; nano-computer's pseudocode
     ``$f = `faceID` & `0b11`$``) — escaped unless the span carries a real
-    ``\\begin{matrix/align/…}`` where ``&`` is structural."""
+    ``\\begin{matrix/align/…}`` where ``&`` is structural.
+
+    Also runs :func:`_math_encode_unicode` — the math-mode analogue of
+    the Unicode→LaTeX translation prose gets from :func:`_encode_unicode`,
+    which this verbatim path otherwise never reaches (gr339 blast radius:
+    38k+ live chunks with a Unicode char inside ``$…$``, silently dropped
+    or mis-rendered by LuaLaTeX's math font). Runs AFTER the backslash
+    split above (which needs to see the original Unicode letters to
+    detect the ``\\cmd``-adjacency it guards)."""
     span = re.sub(r"(\\[A-Za-z]+)(?=[^\x00-\x7f])", r"\1{}", span)
+    span = _math_encode_unicode(span)
     if "\\begin" not in span:
         span = re.sub(r"(?<!\\)&", r"\\&", span)
     return re.sub(r"(?<!\\)([%#])", r"\\\1", span)
+
+
+#: A paragraph chunk whose ENTIRE (stripped) text is one ``$$…$$`` span is
+#: "a display equation", not just math *inside* a paragraph — the shape
+#: :func:`_standalone_equation` numbers. An optional ``*`` immediately
+#: after the closing ``$$`` is the author's escape hatch (mirrors LaTeX's
+#: own ``equation``/``equation*`` convention): it is stripped and the span
+#: renders through the ordinary math path, unnumbered.
+_STANDALONE_EQ = re.compile(
+    r"\A\$\$(?P<body>(?:(?!\$\$).)+)\$\$(?P<star>\*)?\Z", re.DOTALL
+)
+
+
+def _standalone_equation(text: str | None) -> tuple[str, bool] | None:
+    """``(math_body, starred)`` when ``text`` (a chunk's full text) is
+    exactly one ``$$…$$`` span, optionally star-suffixed, and nothing
+    else. ``None`` for anything else (mixed prose, an empty/unbalanced
+    body) — that falls through to the ordinary inline render, byte-
+    identical to before this feature existed. Shared by both exporters
+    (``export/docx.py`` imports this) so they number identically."""
+    if not text:
+        return None
+    m = _STANDALONE_EQ.match(text.strip())
+    if m is None:
+        return None
+    body = m.group("body")
+    if not body.strip() or not _math_braces_balanced(body):
+        return None
+    return body, bool(m.group("star"))
+
+
+def _render_equation(body: str, dc: str) -> list[str]:
+    """A standalone display equation → a numbered LaTeX ``equation``
+    environment, labeled ``chunk:<dc>`` *inside* the environment — so
+    cleveref records the label's type as ``equation`` (a label placed
+    after ``\\end{equation}`` would instead inherit whatever counter was
+    last stepped, not necessarily this one). An existing ``[dc<id>]``
+    cross-ref elsewhere then resolves through the unchanged
+    :func:`_draft_xref` path to "Eq. (N)", no new authoring syntax."""
+    return [
+        "\\begin{equation}",
+        f"\\label{{chunk:{dc}}}",
+        _math_comment_safe(body.strip()),
+        "\\end{equation}",
+    ]
 
 
 # ── shared draft-text normalisation (both exporters) ──────────────────
@@ -1304,8 +1514,18 @@ def render_body(
             body = _render_inline(c.text or "", ctx)
             lines.append(f"\\begin{{precisaside}}{label}{body}\\end{{precisaside}}")
         else:  # paragraph and friends
-            body = _render_inline(c.text or "", ctx)
-            lines.append(f"{body}{label}")
+            eq = _standalone_equation(c.text)
+            if eq is not None and not eq[1]:
+                lines.extend(_render_equation(eq[0], c.dc))
+            elif eq is not None:
+                # starred escape hatch: strip the marker, render unnumbered
+                # through the ordinary math path (byte-identical to a plain
+                # $$…$$ paragraph today).
+                body = _render_inline(f"$${eq[0]}$$", ctx)
+                lines.append(f"{body}{label}")
+            else:
+                body = _render_inline(c.text or "", ctx)
+                lines.append(f"{body}{label}")
         lines.append("")  # blank line → paragraph break
     while list_stack:  # close any lists still open at the document end
         lines.append(f"\\end{{{list_stack.pop()[0]}}}")

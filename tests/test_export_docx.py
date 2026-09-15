@@ -318,6 +318,84 @@ def test_empty_base_math_gets_a_base(
     docx.Document(str(out))
 
 
+def test_standalone_equation_numbered_and_cross_referenced(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A paragraph chunk whose ENTIRE text is one ``$$…$$`` span numbers
+    "(N)" next to the native OMML math, and a bare ``[dc<id>]`` cross-ref
+    to that chunk auto-resolves to "Eq. (N)" — no new authoring syntax.
+    docx has no live cross-reference field (unlike the PDF path's
+    cleveref), so the number is a static count resolved at export time."""
+    pytest.importorskip("latex2mathml")
+    import re
+
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="eqd", title="T", project=pid)
+    eq1 = draft.put(
+        id="eqd", chunk_kind="paragraph", text="$$E = mc^2$$", at={"last": True}
+    )
+    dc1 = re.search(r"dc\d+", eq1.body).group(0)  # type: ignore[union-attr]
+    draft.put(
+        id="eqd",
+        chunk_kind="paragraph",
+        text=f"As shown in [{dc1}], mass and energy relate.",
+        at={"last": True},
+    )
+    draft.put(id="eqd", chunk_kind="paragraph", text="$$F = ma$$", at={"last": True})
+
+    ref = hub.live_store.get_ref(kind="draft", id="eqd")
+    out = tmp_path / "eqd.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "(1)" in text and "(2)" in text  # the two equations, numbered in order
+    assert "Eq. (1)" in text  # the bare [dc<id>] cross-ref auto-resolved
+    import zipfile
+
+    with zipfile.ZipFile(out) as z:
+        doc_xml = z.read("word/document.xml").decode("utf-8")
+    assert doc_xml.count("oMath") >= 4  # two equations, each open+close tag
+
+
+def test_starred_equation_is_unnumbered_in_docx(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A trailing ``*`` right after the closing ``$$`` opts a display
+    equation out of numbering — no "(N)" label, and the marker itself
+    never leaks into the rendered text."""
+    pytest.importorskip("latex2mathml")
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="eqs", title="T", project=pid)
+    draft.put(
+        id="eqs",
+        chunk_kind="paragraph",
+        text="$$a^2 + b^2 = c^2$$*",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="eqs")
+    out = tmp_path / "eqs.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "(1)" not in text
+    assert "*" not in text  # the star marker itself never leaks into output
+    import zipfile
+
+    with zipfile.ZipFile(out) as z:
+        doc_xml = z.read("word/document.xml").decode("utf-8")
+    assert "oMath" in doc_xml
+
+
 def test_latex_cite_command_is_folded(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:

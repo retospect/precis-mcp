@@ -115,6 +115,51 @@ def test_defined_terms_plain_glossary_has_no_bag(draft: DraftHandler, hub: Hub) 
     assert "url" not in terms["MOF"]
 
 
+def test_defined_abbrevs_strips_embedded_trailing_aside(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Reproduces the dr173020 export bug: a hand-authored glossary term's
+    definition ending in its own ``(...)`` aside must not survive into
+    ``defined_abbrevs`` unchanged — both exporters (LaTeX ``\\gls``,
+    docx's ``f"{long} ({short})"``) append ``"(SHORT)"`` unconditionally,
+    so an untouched value renders as two stacked parentheticals:
+    ``"dispersion-corrected density functional theory (Grimme D3) (DFT-D3)"``.
+    ``defined_terms`` (the reader-hover surface) is deliberately NOT
+    touched — the embedded aside is legitimate context there."""
+    ref_id = _mk(hub, draft)
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="dispersion-corrected density functional theory (Grimme D3)",
+        meta={"short": "DFT-D3"},
+    )
+    abbrevs = hub.live_store.drafts.defined_abbrevs(ref_id)
+    assert abbrevs["DFT-D3"] == "dispersion-corrected density functional theory"
+    # The reader-hover surface keeps the full, richer text unchanged.
+    terms = hub.live_store.drafts.defined_terms(ref_id)
+    assert terms["DFT-D3"]["definition"] == (
+        "dispersion-corrected density functional theory (Grimme D3)"
+    )
+
+
+def test_defined_abbrevs_inline_pair_unaffected_by_stripping(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """An inline Schwartz-Hearst first-use pair (no explicit term chunk)
+    can never have an embedded trailing aside — its long form is
+    unaffected by the new stripping step."""
+    ref_id = _mk(hub, draft)
+    title_h = hub.live_store.drafts.reading_order(ref_id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="We use Fourier Transform Infrared (FTIR) here.",
+        at={"after": "¶" + title_h},
+    )
+    abbrevs = hub.live_store.drafts.defined_abbrevs(ref_id)
+    assert abbrevs["FTIR"] == "Fourier Transform Infrared"
+
+
 def test_defined_terms_explicit_wins_over_inline(draft: DraftHandler, hub: Hub) -> None:
     ref_id = _mk(hub, draft)
     title_h = hub.live_store.drafts.reading_order(ref_id)[0].handle

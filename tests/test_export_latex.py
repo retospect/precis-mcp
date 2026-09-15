@@ -168,9 +168,126 @@ def test_cyrillic_homoglyphs_map_to_latin_never_cyr_commands() -> None:
 def test_math_command_split_from_following_unicode_letter() -> None:
     # Under LuaTeX a Unicode letter extends a control-sequence name, so
     # $\Deltaδ$ parses as ONE undefined command (fatal). A {} separator
-    # preserves the rendering the author meant.
+    # preserves the rendering the author meant. δ itself is now ALSO
+    # translated to its math command (gr339 Unicode-in-math fix) rather
+    # than riding verbatim — raw δ against LuaLaTeX's math font is exactly
+    # the missing-character degrade this fix closes.
     out, _ = _inline("shift changes of $\\Deltaδ ≈0.5$ ppm")
-    assert "\\Delta{}δ" in out
+    assert "\\Delta{}{\\delta}" in out
+    assert "δ" not in out
+
+
+def _no_raw_math_unicode(out: str, chars: str) -> None:
+    """None of *chars* survived as a raw glyph anywhere in *out* — the
+    "Missing character" signature this whole fix exists to kill."""
+    for ch in chars:
+        assert ch not in out, f"{ch!r} rode through raw: {out!r}"
+
+
+def test_unicode_inside_math_span_gets_math_mode_macros() -> None:
+    # gr339: pylatexenc's Unicode→LaTeX table only ever ran on PROSE —
+    # math spans are stashed verbatim past it. Raw ≠/°/α/Å/… inside $…$
+    # hits LuaLaTeX's math font table with no such glyph (real compile:
+    # "Missing character: There is no ≠ (U+2260) in font rm-lmr10!",
+    # "$3 \times 120° = 360°$" → "3 × 120ř = 360ř"). Each case here is
+    # _math_plausible-TRUE (goes through the verbatim math-stash path,
+    # the one that was silently dropping Unicode) — see the decoupled
+    # variants below for the equally-required FALSE-classifier cases.
+    out, _ = _inline("$K ≠0$")
+    _no_raw_math_unicode(out, "≠")
+    assert r"\neq" in out
+
+    out, _ = _inline("$3 \\times 120° = 360°$")
+    _no_raw_math_unicode(out, "°")
+    assert out.count("^{\\circ}") == 2  # exponent form, both occurrences
+
+    out, _ = _inline("$5 Å$")
+    _no_raw_math_unicode(out, "Å")
+    assert r"\mathring{A}" in out
+
+    out, _ = _inline("$a × b$")
+    _no_raw_math_unicode(out, "×")
+    assert r"\times" in out
+
+    out, _ = _inline("$a ± b$")
+    _no_raw_math_unicode(out, "±")
+    assert r"\pm" in out
+
+    out, _ = _inline("$90^°$")
+    _no_raw_math_unicode(out, "°")
+    assert "90^{\\circ}" in out  # author's own caret, not doubled
+
+    out, _ = _inline("$μ$")
+    _no_raw_math_unicode(out, "μ")
+    assert r"\mu" in out
+
+    out, _ = _inline("$Δx$")
+    _no_raw_math_unicode(out, "Δ")
+    assert "{\\Delta}x" in out  # brace-terminated: doesn't merge into \Deltax
+
+    out, _ = _inline("$−5$")  # U+2212 MINUS SIGN, not a hyphen
+    _no_raw_math_unicode(out, "−")
+    assert "{-}5" in out
+
+    out, _ = _inline("$∼0.9$")
+    _no_raw_math_unicode(out, "∼")
+    assert r"\sim" in out
+
+    out, _ = _inline("$x′$")
+    _no_raw_math_unicode(out, "′")
+    assert "x'" in out
+
+
+def test_unicode_inside_math_decoupled_from_math_plausible_verdict() -> None:
+    # Both spacings of the SAME symbol must render correctly — proving the
+    # fix doesn't depend on which side of _math_plausible's heuristic the
+    # span lands on. "$K ≠ 0$"/"$a ≤ b$"/"$α + β$" (2+ spaces, no char in
+    # _math_plausible's mathy-char set) are classifier-FALSE today and fall
+    # through to the ordinary prose escape — which already correctly
+    # Unicode-encodes (this was never broken); the no-space/1-space
+    # siblings are classifier-TRUE and hit the new math-mode path. Neither
+    # \_math_plausible itself is touched or asserted on here.
+    for spaced, tight in [
+        ("$K ≠ 0$", "$K ≠0$"),
+        ("$a ≤ b$", "$a≤b$"),
+        ("$α + β$", "$α+β$"),
+    ]:
+        out_spaced, _ = _inline(spaced)
+        out_tight, _ = _inline(tight)
+        for out, src in [(out_spaced, spaced), (out_tight, tight)]:
+            for ch in "≠≤αβ":
+                assert ch not in out, f"{ch!r} raw in {src!r} -> {out!r}"
+    out, _ = _inline("$K ≠ 0$")
+    assert r"\neq" in out
+    out, _ = _inline("$a ≤ b$")
+    assert r"\leq" in out
+    out, _ = _inline("$α + β$")
+    assert r"\alpha" in out and r"\beta" in out
+
+
+def test_unicode_inside_math_negative_controls() -> None:
+    # Currency $ untouched — not remotely math, no unicode involved, must
+    # not be mangled by this change.
+    out, _ = _inline(r"Scaffold \$300 + 200 staples \$200; done")
+    assert r"\$300" in out and r"\$200" in out
+
+    # Cyrillic/Hebrew inside math: 2628caa2's raw-script exception must
+    # still hold — a homoglyph (this Cyrillic К is pixel-identical to
+    # Latin K) normalises, a non-homoglyph Cyrillic/Hebrew letter stays
+    # raw rather than emitting an undefined \CYR.../font-encoding command.
+    out, _ = _inline("$К ≠ 0$")
+    assert "K" in out and "\\CYR" not in out and "\\cyr" not in out
+    out, _ = _inline("$Ж ≠ 0$")
+    assert "Ж" in out and "\\CYR" not in out and "\\cyr" not in out
+    out, _ = _inline("$שלום ≠ 0$")
+    assert "שלום" in out and "\\hebrew" not in out.lower()
+
+    # Prose-mode degree signs OUTSIDE math are untouched by this change —
+    # still the existing \textdegree (bare-degree, not the math \circ
+    # exponent form only valid inside $…$).
+    out, _ = _inline("it was 90° outside")
+    assert r"\textdegree" in out
+    assert "\\circ" not in out
 
 
 def test_ampersand_inside_math_escaped_outside_alignments() -> None:
@@ -223,6 +340,21 @@ def test_display_glue_with_live_dollar_in_body_is_escaped() -> None:
     # in its body — rejected wholesale, everything renders as literal $.
     out, _ = _inline("a $$2^{30}$ ($∼$$ b")
     assert "$" not in out.replace(r"\$", "")
+
+
+def test_standalone_equation_detection() -> None:
+    # Exactly one $$…$$ span filling the whole (stripped) chunk text.
+    assert latex._standalone_equation("$$E = mc^2$$") == ("E = mc^2", False)
+    # a trailing * is the starred/unnumbered escape hatch.
+    assert latex._standalone_equation("  $$E = mc^2$$*  ") == ("E = mc^2", True)
+    # any other text around the math disqualifies it (ordinary paragraph).
+    assert latex._standalone_equation("see $$E = mc^2$$ above") is None
+    assert latex._standalone_equation("$$E = mc^2$$ and $$F=ma$$") is None
+    # unbalanced braces / an empty body never render as an equation env.
+    assert latex._standalone_equation("$$\\sqrt{2$$") is None
+    assert latex._standalone_equation("$$   $$") is None
+    assert latex._standalone_equation("") is None
+    assert latex._standalone_equation(None) is None
 
 
 def test_table_row_leading_bracket_brace_protected() -> None:
@@ -1398,6 +1530,59 @@ def test_export_renders_table_as_longtable(hub, tmp_path) -> None:
     assert "\\textbf{Issue register}" in body
     # the derived pipe markdown is NOT dumped as prose
     assert "| ID | Title |" not in body
+
+
+def test_standalone_equation_numbers_and_cross_refs(hub, tmp_path) -> None:
+    """A paragraph chunk whose ENTIRE text is one ``$$…$$`` span exports as
+    a numbered ``equation`` environment, labeled INSIDE it — and an
+    existing ``[dc<id>]`` cross-ref to that chunk auto-resolves through the
+    unchanged ``\\cref``/``_draft_xref`` machinery, no new authoring syntax."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="eq", title="T", project=proj)
+    eq1 = d.put(id="eq", chunk_kind="paragraph", text="$$E = mc^2$$", at={"last": True})
+    dc1 = re.search(r"dc\d+", eq1.body).group(0)  # type: ignore[union-attr]
+    d.put(
+        id="eq",
+        chunk_kind="paragraph",
+        text=f"As shown in [{dc1}], mass and energy relate.",
+        at={"last": True},
+    )
+    d.put(id="eq", chunk_kind="paragraph", text="$$F = ma$$", at={"last": True})
+
+    ref = store.get_ref(kind="draft", id="eq")
+    body = latex.render_body(store, ref).body
+    assert f"\\begin{{equation}}\n\\label{{chunk:{dc1}}}" in body
+    assert body.count("\\begin{equation}") == 2 and body.count("\\end{equation}") == 2
+    assert f"\\cref{{chunk:{dc1}}}" in body  # auto-resolves via existing xref machinery
+
+
+def test_starred_equation_is_unnumbered(hub, tmp_path) -> None:
+    """A trailing ``*`` right after the closing ``$$`` opts a display
+    equation out of numbering (the LaTeX ``equation``/``equation*``
+    convention) — renders through the ordinary math path, no ``equation``
+    environment at all."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="eqs", title="T", project=proj)
+    d.put(
+        id="eqs",
+        chunk_kind="paragraph",
+        text="$$a^2 + b^2 = c^2$$*",
+        at={"last": True},
+    )
+
+    ref = store.get_ref(kind="draft", id="eqs")
+    body = latex.render_body(store, ref).body
+    assert "\\begin{equation}" not in body
+    assert "$$a^2 + b^2 = c^2$$" in body
+    assert "$$*" not in body  # the star marker itself never leaks into output
 
 
 # ── author byline + affiliations (authblk; no DB) ─────────────────────

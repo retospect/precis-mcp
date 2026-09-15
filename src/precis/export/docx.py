@@ -17,6 +17,14 @@ DOI/arXiv). The marker is a plain run, so a paper cited many times reuses
 its number at every site — deliberately *not* a native Word endnote field,
 which must be referenced exactly once (reusing one makes Word declare the
 file's content unreadable). Math is native OMML (see ``_render_math``).
+
+A paragraph whose entire text is one ``$$…$$`` span (the SAME standalone-
+equation shape ``export/latex.py`` detects) numbers "(N)" right-aligned
+next to the equation; a bare ``[dc<id>]`` cross-ref to that chunk resolves
+to "Eq. (N)". Unlike the PDF path's cleveref, docx has no live cross-
+reference field for this — the number is a STATIC value computed once at
+export time from document order (:func:`_standalone_equation_numbers`),
+correct as of this export; re-export after an edit, don't hand-renumber.
 """
 
 from __future__ import annotations
@@ -59,6 +67,7 @@ from precis.export.latex import (
     _COMBINED,
     _PATENT_DOC_TYPE,
     _bibtex_authors,
+    _standalone_equation,
     datasheet_pub_label,
     preprocess_draft_inline,
 )
@@ -88,6 +97,12 @@ _INK = "000000"  # everything black — no grey, no accent colour
 _LINK_INK = "000000"
 #: page margins, inches — the standard 1 in on all four sides.
 _MARGIN_IN = 1.0
+#: Standalone-equation numbering layout: the conventional manuscript tab
+#: pattern — a CENTER tab (the equation sits mid-line) then a RIGHT tab at
+#: the text-body's right edge (the "(N)" label), on an assumed default
+#: 8.5in page width matching python-docx's built-in template.
+_EQ_CENTER_TAB_IN = (8.5 - 2 * _MARGIN_IN) / 2
+_EQ_NUMBER_TAB_IN = 8.5 - 2 * _MARGIN_IN
 
 
 def _apply_paper_theme(doc: Any) -> None:
@@ -159,6 +174,12 @@ class _Ctx:
     #: figures whose ``meta["figure"]["data_package"]`` snapshot was present,
     #: mirrors ``export/latex.py``'s ``_Ctx.data_package``.
     data_package: list[DataPackageFigure] = field(default_factory=list)
+    #: dc handle → 1-based equation number, precomputed over the WHOLE
+    #: draft before rendering starts (a cross-ref can precede its
+    #: equation) by :func:`_standalone_equation_numbers`. docx has no live
+    #: cross-reference field (unlike LaTeX's cleveref), so the number is a
+    #: static string resolved once at export time from document order.
+    eq_numbers: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.trust is None and self.store is not None:
@@ -188,6 +209,35 @@ class _Ctx:
                 r"\b(" + "|".join(re.escape(s) for s in shorts) + r")(s?)\b"
             )
         return self._short_re
+
+
+#: Chunk kinds the main render loop dispatches on their own branch — a
+#: standalone-equation paragraph can only occur in whatever's left over
+#: (the "paragraph (default)" branch), mirroring the kinds
+#: ``export/latex.py::render_body`` diverts before its own final ``else``.
+_EQ_SKIP_KINDS = frozenset(
+    {"ulist", "olist", "item", "term", "heading", "code", "listing", "table", "figure"}
+)
+
+
+def _standalone_equation_numbers(chunks: list[Any]) -> dict[str, int]:
+    """dc handle → 1-based equation number, walked over the WHOLE draft in
+    reading order before any rendering starts — a ``[dc<id>]`` cross-ref
+    can appear *before* the equation it points at, so the count has to be
+    known up front. Mirrors ``export/latex.py::_standalone_equation``'s
+    detection exactly (same shared function), so the two exporters number
+    identically; a starred (unnumbered) equation is skipped."""
+    numbers: dict[str, int] = {}
+    n = 0
+    for c in chunks:
+        if c.chunk_kind in _EQ_SKIP_KINDS:
+            continue
+        eq = _standalone_equation(c.text)
+        if eq is None or eq[1]:  # not standalone, or the starred escape hatch
+            continue
+        n += 1
+        numbers[c.dc] = n
+    return numbers
 
 
 def _add_hyperlink(paragraph: Any, url: str, text: str) -> None:
@@ -284,6 +334,7 @@ def export_docx(
         abbrevs=store.drafts.defined_abbrevs(ref.id),
         endnote=(citations == "endnote"),
         doc_type=doc_type,
+        eq_numbers=_standalone_equation_numbers(chunks),
     )
 
     doc = Document()
@@ -350,6 +401,11 @@ def export_docx(
             _render_figure(doc, store, c, ctx)
             continue
         # paragraph (default)
+        eq = _standalone_equation(c.text)
+        if eq is not None:
+            math_body, starred = eq
+            _render_equation(doc, math_body, ctx.eq_numbers.get(c.dc), starred)
+            continue
         p = doc.add_paragraph()
         _render_inline(c.text, ctx, p)
 
@@ -579,6 +635,35 @@ def _render_math(span: str, paragraph: Any) -> None:
     paragraph._p.append(omath)
 
 
+def _render_equation(doc: Any, body: str, number: int | None, starred: bool) -> None:
+    """A standalone ``$$…$$`` paragraph → native OMML math on its own
+    line, numbered ``(N)`` right-aligned (the conventional manuscript
+    layout: a CENTER tab for the equation, a RIGHT tab at the margin for
+    the number) — mirrors the LaTeX exporter's numbered ``equation``
+    environment. docx has no live cross-reference field for this (unlike
+    LaTeX's cleveref), so ``number`` is a STATIC value already resolved
+    once at export time from document order (:func:`_standalone_equation_
+    numbers`); a re-export (not manual renumbering) is what keeps it
+    correct after an edit. Unnumbered (``starred`` or ``number is None``,
+    the escape hatch) renders the equation alone, no tab/number."""
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from docx.shared import Inches
+
+    p = doc.add_paragraph()
+    if starred or number is None:
+        _render_math(f"$${body}$$", p)
+        return
+    p.paragraph_format.tab_stops.add_tab_stop(
+        Inches(_EQ_CENTER_TAB_IN), WD_TAB_ALIGNMENT.CENTER
+    )
+    p.paragraph_format.tab_stops.add_tab_stop(
+        Inches(_EQ_NUMBER_TAB_IN), WD_TAB_ALIGNMENT.RIGHT
+    )
+    p.add_run("\t")
+    _render_math(f"$${body}$$", p)
+    p.add_run(f"\t({number})")
+
+
 def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
     """One matched inline reference. Citations → a numbered ``[n]``
     superscript marker (and register the slug). Cross-refs render their
@@ -753,8 +838,18 @@ def _render_target(
             return
         # draft cross-ref / other record handle → not a citation.
         ctx.last_cite = None
-        if kind == "draft" and is_chunk and surface:
-            paragraph.add_run(surface)  # no Word cross-ref field yet — text only
+        if kind == "draft" and is_chunk:
+            if surface:
+                paragraph.add_run(surface)  # no Word cross-ref field — text only
+            else:
+                # Bare [dc<id>] with no authored surface: a numbered
+                # equation auto-resolves to "Eq. (N)" (the static count
+                # from _standalone_equation_numbers) — every other chunk
+                # kind still has no Word cross-ref field, so still renders
+                # nothing (unchanged pre-existing gap).
+                num = ctx.eq_numbers.get(tgt)
+                if num is not None:
+                    paragraph.add_run(f"Eq. ({num})")
         return
     # Any non-citation content breaks a run of consecutive citations.
     ctx.last_cite = None
