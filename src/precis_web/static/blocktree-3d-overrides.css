@@ -3,13 +3,22 @@
  * three-cad-viewer.css (templates/blocktree/detail3d.html.j2) and
  * scoped under #bt3d-viewer so nothing else on the page is touched.
  * gr337753/gr337747/gr337752 — the viewer-2b embed-layout bundle.
+ * gr340029 fixed the follow-on bugs that first bundle's own OWN sizing
+ * math missed (the shell never tracked the browser viewport, and the
+ * overflow check that's supposed to shrink the Display to fit compared
+ * plain widths/heights — blind to the vendored outer element's own CSS
+ * margin, which offsets its edges without ever changing its width).
+ * gr340030 adds the scale-bar overlay's own rules at the bottom of this
+ * file (a NEW element we own, not a vendored-chrome override).
  *
- * blocktree-3d.js does the primary sizing fix (gr337753): it hands the
- * vendored Display a cadWidth/height/treeHeight budgeted to fit inside
- * the #bt3d-viewer shell, then measures the REAL outer footprint after
- * construction and shrinks it further via the viewer's own
- * resizeCadView() if the vendored chrome still overflows. This file is
- * the CSS-only backstop for what that JS-side budgeting can't reach.
+ * blocktree-3d.js does the primary sizing fix (gr337753/gr340029): it
+ * fits the #bt3d-viewer shell itself to the live browser viewport, hands
+ * the vendored Display a cadWidth/height/treeHeight budgeted to fit
+ * inside that shell, then measures the REAL outer footprint after
+ * construction (by RIGHT/BOTTOM EDGE, not raw width/height) and shrinks
+ * it further via the viewer's own resizeCadView() if the vendored chrome
+ * still overflows — re-run on every window resize. This file is the
+ * CSS-only backstop for what that JS-side budgeting can't reach.
  */
 
 /* gr337753 backstop: the vendored widget's own chrome (toolbar row,
@@ -45,4 +54,40 @@
  * BOTH axes to true visible here so the tooltip is never cut off. */
 #bt3d-viewer .tcv_cad_toolbar {
   overflow: visible;
+}
+
+/* gr340030 — the scale-bar overlay (blocktree-3d.js's _startScaleBar):
+ * pinned to the shell's own bottom-right corner, which sits inside the
+ * CANVAS half of the widget (the tree/info column occupies the left
+ * half — see detail3d.html.j2/blocktree-3d.js's own treeWidth budget),
+ * so a fixed corner offset never overlaps the vendored tree/info chrome
+ * without needing any JS-computed position. z-index kept below the
+ * vendored chrome's own 100 so it can never paint over a genuine control.
+ */
+#bt3d-viewer .bt3d-scale-bar {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  pointer-events: none;
+  font: 11px/1.2 sans-serif;
+  color: #334155;
+}
+
+#bt3d-viewer .bt3d-scale-bar-line {
+  height: 4px;
+  border-left: 2px solid #334155;
+  border-right: 2px solid #334155;
+  border-bottom: 2px solid #334155;
+  box-sizing: content-box;
+}
+
+#bt3d-viewer .bt3d-scale-bar-label {
+  background: rgba(255, 255, 255, 0.75);
+  padding: 0 3px;
+  border-radius: 2px;
 }

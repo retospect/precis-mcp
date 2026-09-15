@@ -499,6 +499,11 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     assert {conn["a_name"], conn["b_name"]} == {"hub", "rim"}
     assert "B" in body["mermaid"] and "graph LR" in body["mermaid"]
     assert isinstance(body["explode"], dict) and body["explode"]
+    # gr340030 — the scale-bar overlay's own conversion factor; this
+    # fixture's metre-scale design is already inside the working range, so
+    # scene_scale is a near-noop (never a flat 1.0-only assertion — a
+    # regression that hardcoded 1.0 would slip past that).
+    assert isinstance(body["scale"], (int, float)) and body["scale"] > 0
 
 
 def test_se_scene3d_json_unknown_isolate_is_400(

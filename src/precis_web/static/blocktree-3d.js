@@ -14,9 +14,22 @@
 // own page chrome driving the viewer's public setState() API instead).
 //
 // This file also budgets/measures the Display's own footprint against
-// its shell (gr337753/gr337747 — see _fitViewerToShell below): the
+// its shell (gr337753/gr337747, sizing bugs fixed gr340029 — see
+// _fitViewerToShell/_fitShellHeight/_applyTreeHeightCap below): the
 // vendored chrome (toolbar row, tree panel) is added AROUND the
-// cadWidth/height canvas, not accounted for by it.
+// cadWidth/height canvas, not accounted for by it, AND the shell itself
+// is now sized to the live browser viewport (gr340029 — a fixed 520px
+// shell could put the vendored "Ready" status box and the tree panel's
+// own picking-filter dropdown below/past the fold, with page scroll
+// trapped by the canvas's own wheel-zoom whenever the pointer sits over
+// it).
+//
+// gr340030 adds a scale-bar overlay (see the "display scale" section
+// near the bottom): the server's own display-scale multiplier
+// (``scene.scale`` — precis_web.blocktree_3d.scene_scale) means an
+// on-screen length carries no real-world meaning by itself; the overlay
+// reads the vendored camera's live zoom to convert a screen-pixel
+// length back to real SI metres.
 //
 // KNOWN SIMPLIFICATION (documented, not silently assumed): the
 // vendored viewer's single-click "select" tool only fires a
@@ -113,25 +126,65 @@ const _INFO_PANEL_HEIGHT = 146;
 const _TOOLBAR_HEIGHT_GUESS = 40;
 const _MIN_CAD_WIDTH = 200;
 const _MIN_CAD_HEIGHT = 200;
+//: The vendored ``.tcv_cad_viewer`` rule ships ``margin: 4px`` (all four
+//: sides, three-cad-viewer.css) — a real CSS margin sits OUTSIDE the
+//: element's own border-box, so it's invisible to a width/height
+//: comparison between that box and the shell (gr340029: that's exactly
+//: why the old :func:`_fitViewerToShell` below never caught this case —
+//: both boxes measured the SAME width, yet the margin still pushed the
+//: outer element's right/bottom edge past the shell's). Baked into the
+//: FIRST-paint budget here so the initial render already accounts for
+//: it, on top of the edge-based backstop below for anything else the
+//: vendored chrome adds that isn't captured by a fixed constant.
+const _OUTER_MARGIN = 4;
+//: Small breathing room below the fitted shell (gr340029) — a shell
+//: sized to EXACTLY ``window.innerHeight`` would still put its very
+//: last pixel flush against the viewport edge, easy to misread as "still
+//: clipped" on a device with e.g. a bottom scrollbar or browser chrome
+//: sliver.
+const _SHELL_VIEWPORT_MARGIN = 24;
+const _SHELL_MAX_HEIGHT = 520;
+//: Floor so a very short window still leaves the vendored toolbar row +
+//: a usable sliver of tree/canvas — below this the widget's own chrome
+//: (toolbar + tree + info box) wouldn't fit at all regardless of shell
+//: sizing.
+const _SHELL_MIN_HEIGHT = 320;
 
-// gr337753: the vendored Display ADDS its own toolbar row + tree panel
-// AROUND the cadWidth/height canvas we hand it — its outer element's
-// real footprint can end up bigger than the shell we gave it in either
-// axis, and its z-index:100 chrome then paints OVER whatever sits next
-// to it (the "Assembly"/"Topology" headings) instead of clipping.
-// Rather than hard-code the toolbar/tree chrome's own pixel sizes
-// (version-fragile — they live in the vendored, never-edited, minified
-// bundle), measure the REAL outer element's bounding box after
-// construction and shrink cadWidth/height by the actual overflow via
-// the viewer's own public resizeCadView() API until it fits the shell.
+// gr337753/gr340029: the vendored Display ADDS its own toolbar row +
+// tree panel AROUND the cadWidth/height canvas we hand it — its outer
+// element's real footprint can end up bigger than the shell we gave it
+// in either axis (the CSS margin above is one source; a future vendored-
+// layout change could add another), and its z-index:100 chrome then
+// paints OVER whatever sits next to it (the "Assembly"/"Topology"
+// headings), or gets clipped mid-control by the shell's own
+// ``overflow: hidden`` backstop (the tree panel's picking-filter
+// dropdown, gr340029), instead of fitting inside it. Rather than
+// hard-code the toolbar/tree chrome's own pixel sizes (version-fragile —
+// they live in the vendored, never-edited, minified bundle), measure the
+// REAL outer element's bounding box after construction and shrink
+// cadWidth/height by the actual overflow via the viewer's own public
+// resizeCadView() API until it fits the shell.
+//
+// gr340029: overflow is measured by comparing RIGHT/BOTTOM EDGES
+// (``outerRect.right``/``bottom`` vs the shell's), not by diffing plain
+// widths/heights — the old width-diff check silently missed any
+// overflow caused by an offset between the two boxes' own top-left
+// corners (exactly what the vendored margin above produces: same
+// width, but the outer box's left edge already sits a few px inside the
+// shell's, so its right edge pokes out an equal few px on the other
+// side without the WIDTHS ever differing).
+// Returns the height actually in effect afterwards, so the caller can
+// re-stamp the tree-height cap against the POST-backstop budget — a cap
+// stamped from the pre-shrink height would let the tree/info column poke
+// past the widget's corrected bottom edge by exactly the backstop delta.
 function _fitViewerToShell(viewer, shellEl, treeWidth, cadWidth, height) {
   const outer = shellEl.querySelector(".tcv_cad_viewer");
-  if (!outer) return;
+  if (!outer) return height;
   const shellRect = shellEl.getBoundingClientRect();
   const outerRect = outer.getBoundingClientRect();
-  const overW = outerRect.width - shellRect.width;
-  const overH = outerRect.height - shellRect.height;
-  if (overW <= 0 && overH <= 0) return;
+  const overW = outerRect.right - shellRect.right;
+  const overH = outerRect.bottom - shellRect.bottom;
+  if (overW <= 0 && overH <= 0) return height;
   const nextCadWidth = Math.max(_MIN_CAD_WIDTH, cadWidth - Math.max(0, overW));
   const nextHeight = Math.max(_MIN_CAD_HEIGHT, height - Math.max(0, overH));
   try {
@@ -139,7 +192,214 @@ function _fitViewerToShell(viewer, shellEl, treeWidth, cadWidth, height) {
   } catch (err) {
     // Best-effort — see recolour's own try/catch for the convention.
     console.error("blocktree-3d: resizeCadView failed", err);
+    return height;
   }
+  return nextHeight;
+}
+
+//: gr340029 — a SECOND, independent overflow source the vendored
+//: ``resizeCadView``/``treeHeight`` display option can't reach: the
+//: currently-bundled three-cad-viewer version's own tree/info column
+//: (``.tcv_cad_tree``/``.tcv_cad_info_wrapper``) stamps itself a FIXED
+//: inline height (the vendored ``DISPLAY_DEFAULTS.treeHeight`` of
+//: ``400``px for the tree, its own natural content height for the info
+//: box below it) regardless of the ``treeHeight`` we hand the Display at
+//: construction — KNOWN SIMPLIFICATION, not chased further into the
+//: vendored bundle (never edited) since a CSS backstop covers it
+//: cleanly: an ``!important`` rule in an EXTERNAL stylesheet beats ANY
+//: plain (non-``!important``) inline style on the cascade regardless of
+//: which one was WRITTEN most recently, so a dynamically-updated
+//: ``<style>`` tag reliably caps these two elements' real height and
+//: gives them their own internal scrollbar, however the vendored inline
+//: style keeps re-asserting itself. Without this, a shell shorter than
+//: the vendored tree column's own forced ~400px+ natural height (routine
+//: once the shell tracks a short browser viewport, gr340029) pushes the
+//: tree/info column's content past the shell's bottom edge, past even
+//: what :func:`_fitViewerToShell` above can reach (that one can only
+//: shrink the CANVAS side of the widget, not this left-hand column).
+function _applyTreeHeightCap(styleEl, treeMaxPx, infoMaxPx) {
+  styleEl.textContent =
+    `#bt3d-viewer .tcv_cad_tree { max-height: ${treeMaxPx}px !important; ` +
+    "overflow-y: auto !important; }\n" +
+    `#bt3d-viewer .tcv_cad_info_wrapper { max-height: ${infoMaxPx}px !important; ` +
+    "overflow-y: auto !important; }";
+}
+
+//: gr340029 — the shell's own height, fit to whatever of the browser
+//: viewport is left below it (a fixed 520px shell could put the
+//: vendored "Ready" status box below the fold, with page scroll trapped
+//: by the canvas's own wheel-zoom whenever the pointer sits over it).
+//: ``shellEl.getBoundingClientRect().top`` is viewport-relative, so this
+//: is only exactly right at the scroll position the page loads at
+//: (top) — same convention as every other "fit to what's visible now"
+//: computation in this file, re-run on resize below rather than tracked
+//: continuously against scroll.
+function _fitShellHeight(shellEl) {
+  // Clamp to >= 0: on a RESIZE while the page is scrolled down, the
+  // shell's viewport-relative top can be negative, which would size the
+  // shell for a viewport it isn't actually constrained by.
+  const top = Math.max(0, shellEl.getBoundingClientRect().top);
+  const avail = window.innerHeight - top - _SHELL_VIEWPORT_MARGIN;
+  return Math.max(_SHELL_MIN_HEIGHT, Math.min(_SHELL_MAX_HEIGHT, avail));
+}
+
+// ── scale bar overlay (gr340030) ────────────────────────────────────────
+//
+// precis_web.blocktree_3d.scene_scale multiplies every emitted coordinate
+// by a power-of-ten display-only factor (a nanometre-scale design would
+// otherwise sit outside three.js's comfortable camera range) — so an
+// on-screen length carries no real-world meaning by itself once that's
+// applied. This overlay reads the vendored camera's OWN live zoom state
+// to turn a screen-pixel length back into world (display) units, then
+// divides out ``scene.scale`` to recover real SI metres.
+//
+// There is no public "camera changed" notification on the vendored
+// Viewer to hook (the ``notify`` callback threaded through its
+// constructor only ever fires on a PICK — see this file's own module
+// docstring on that). A throttled requestAnimationFrame poll is the
+// documented fallback for exactly this case; :data:`_SCALE_BAR_MIN_MS`
+// caps it at a few reads per second, cheap enough to run for the page's
+// whole lifetime (this reader has no explicit teardown path either, same
+// as the mermaid/explode/connections wiring above).
+const _SCALE_BAR_MIN_MS = 150;
+//: Aim for a bar this many CSS pixels wide before snapping its world
+//: length to a round 1/2/5×10^n value — purely a "looks reasonable"
+//: target, not a hard constraint (the actual bar can land anywhere in
+//: roughly the 40-160px range once snapped).
+const _SCALE_BAR_TARGET_PX = 90;
+//: SI-prefix ladder for the real-metres label — picometres up through
+//: kilometres covers every scale this reader plausibly shows (se
+//: designs run from atomic-ish envelopes up to architectural ones).
+const _SI_LADDER = [
+  { exp: -12, suffix: "pm" },
+  { exp: -9, suffix: "nm" },
+  { exp: -6, suffix: "µm" },
+  { exp: -3, suffix: "mm" },
+  { exp: 0, suffix: "m" },
+  { exp: 3, suffix: "km" },
+];
+
+function _formatRealLength(metres) {
+  if (!(metres > 0) || !Number.isFinite(metres)) return null;
+  let chosen = _SI_LADDER[0];
+  for (const step of _SI_LADDER) {
+    if (metres >= 10 ** step.exp) chosen = step;
+  }
+  const value = metres / 10 ** chosen.exp;
+  // The value going in is already a snapped 1/2/5×10^n multiple of a
+  // power of ten, so this is at most one decimal place (e.g. a snapped
+  // "0.5 nm" bar) — never an ugly float tail.
+  const rounded = Math.round(value * 10) / 10;
+  return `${rounded} ${chosen.suffix}`;
+}
+
+//: The nearest 1/2/5×10^n multiple to ``raw`` (a "round real-world
+//: length", per the round-2b spec) — compared in LOG space so e.g. a
+//: ``raw`` of 3 picks 2 or 5 (whichever is proportionally closer), not
+//: whichever happens to be numerically closer.
+function _snapToNiceLength(raw) {
+  if (!(raw > 0) || !Number.isFinite(raw)) return null;
+  const exp = Math.floor(Math.log10(raw));
+  const base = 10 ** exp;
+  let best = base;
+  let bestDist = Infinity;
+  for (const mult of [1, 2, 5, 10]) {
+    const candidate = mult * base;
+    const dist = Math.abs(Math.log(candidate / raw));
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+//: World (display) units per screen pixel, read off the vendored
+//: viewer's OWN live camera state. KNOWN SIMPLIFICATION: there is no
+//: public accessor for the raw three.js camera (``getCameraPosition``/
+//: ``getCameraTarget``/``getCameraType``/``getCameraZoom`` cover the
+//: pick/selection use cases the vendored API was designed for, not this
+//: one) — this reaches into the Viewer's own ``_rendered.camera``
+//: instead, a private field, guarded end-to-end by the try/catch below
+//: so a vendored-internals change degrades to "no scale bar this
+//: render" rather than breaking the primary display. three-cad-viewer
+//: defaults to an ORTHOGRAPHIC camera (this reader never overrides
+//: that), so that's the primary, tested path: an orthographic camera's
+//: visible world height is fixed at construction (``top``/``bottom``)
+//: and only its ``zoom`` changes on scroll, so
+//: ``(top - bottom) / zoom / canvasHeightPx`` is exact and needs no
+//: distance term. The perspective branch (untested here — kept for
+//: robustness against a future ``ortho: false`` override) follows the
+//: round-2b spec's own formula instead:
+//: ``2 · distance · tan(fov / 2) / canvasHeightPx``.
+function _worldPerPixel(viewer, viewerEl) {
+  try {
+    const cc = viewer && viewer._rendered && viewer._rendered.camera;
+    const canvas = viewerEl.querySelector("canvas");
+    const canvasH = canvas && canvas.clientHeight;
+    if (!cc || !canvasH) return null;
+    if (cc.ortho) {
+      const oc = cc.oCamera;
+      if (!oc || !oc.zoom) return null;
+      return (oc.top - oc.bottom) / oc.zoom / canvasH;
+    }
+    const pc = cc.pCamera;
+    if (!pc || typeof pc.fov !== "number") return null;
+    const pos = viewer.getCameraPosition();
+    const tgt = viewer.getCameraTarget();
+    const dx = pos[0] - tgt[0];
+    const dy = pos[1] - tgt[1];
+    const dz = pos[2] - tgt[2];
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const fovRad = (pc.fov * Math.PI) / 180;
+    return (2 * distance * Math.tan(fovRad / 2)) / (pc.zoom || 1) / canvasH;
+  } catch (err) {
+    console.error("blocktree-3d: scale bar camera read failed", err);
+    return null;
+  }
+}
+
+//: Starts the scale-bar overlay's own rAF poll loop (module docstring
+//: above) — a no-op, honest-absence overlay (hidden, never an error)
+//: whenever ``sceneScale`` is missing/non-positive (an older cached
+//: ``scene3d.json`` response, or a degenerate scene) or the camera read
+//: fails, rather than ever showing a length that isn't real.
+function _startScaleBar(viewer, viewerEl, sceneScale) {
+  if (!(sceneScale > 0)) return;
+  const bar = document.createElement("div");
+  bar.className = "bt3d-scale-bar";
+  bar.innerHTML =
+    '<div class="bt3d-scale-bar-line"></div>' +
+    '<div class="bt3d-scale-bar-label"></div>';
+  viewerEl.appendChild(bar);
+  const line = bar.querySelector(".bt3d-scale-bar-line");
+  const label = bar.querySelector(".bt3d-scale-bar-label");
+
+  let lastUpdate = 0;
+
+  function update() {
+    const wpp = _worldPerPixel(viewer, viewerEl);
+    const niceWorld = wpp !== null ? _snapToNiceLength(wpp * _SCALE_BAR_TARGET_PX) : null;
+    const text = niceWorld !== null ? _formatRealLength(niceWorld / sceneScale) : null;
+    if (wpp === null || niceWorld === null || text === null) {
+      bar.style.display = "none";
+      return;
+    }
+    bar.style.display = "";
+    line.style.width = `${niceWorld / wpp}px`;
+    label.textContent = text;
+  }
+
+  // No explicit teardown — this reader has no lifecycle beyond the page
+  // itself (same as the mermaid/explode/connections wiring above), so the
+  // loop just runs for as long as the page does.
+  function tick(now) {
+    requestAnimationFrame(tick);
+    if (now - lastUpdate < _SCALE_BAR_MIN_MS) return;
+    lastUpdate = now;
+    update();
+  }
+  requestAnimationFrame(tick);
 }
 
 export async function blocktreeViewer3D({
@@ -215,26 +475,42 @@ export async function blocktreeViewer3D({
   }
 
   // ── 3D viewer ────────────────────────────────────────────────────────
+  // gr340029: fit the SHELL itself to whatever of the viewport is left
+  // below it BEFORE budgeting the vendored Display's own cadWidth/height
+  // off its clientWidth/clientHeight — done here, synchronously, before
+  // the Display ever paints, so there's no visible jump.
+  viewerEl.style.height = `${_fitShellHeight(viewerEl)}px`;
   // gr337753: budget cadWidth/height so the toolbar row + tree panel the
   // vendored Display ADDS around them still fit inside our own shell,
   // rather than handing it the shell's own full clientWidth/clientHeight
-  // (which is what used to overflow the shell on every axis).
+  // (which is what used to overflow the shell on every axis). gr340029:
+  // also reserve the vendored outer element's own CSS margin (see
+  // _OUTER_MARGIN above) so the FIRST paint already accounts for it,
+  // rather than relying solely on the post-construction backstop below.
   const treeWidth = 220;
   const shellWidth = viewerEl.clientWidth || 600;
   const shellHeight = viewerEl.clientHeight || 500;
-  const initialCadWidth = Math.max(_MIN_CAD_WIDTH, shellWidth - treeWidth);
+  const initialCadWidth = Math.max(
+    _MIN_CAD_WIDTH,
+    shellWidth - treeWidth - 2 * _OUTER_MARGIN
+  );
   const initialHeight = Math.max(
     _MIN_CAD_HEIGHT,
-    shellHeight - _TOOLBAR_HEIGHT_GUESS
+    shellHeight - _TOOLBAR_HEIGHT_GUESS - 2 * _OUTER_MARGIN
   );
+  // gr337747: give the tree panel real vertical room proportional to OUR
+  // shell instead of the vendored default's flat 250px — the info panel
+  // below it keeps its own natural size. gr340029: the vendored Display
+  // doesn't actually honour this option in the currently-bundled version
+  // (see _applyTreeHeightCap's own docstring) — kept anyway (harmless,
+  // and correct if a future vendor bump starts respecting it again), with
+  // the CSS cap below as the backstop that actually works today.
+  const initialTreeHeight = Math.max(80, initialHeight - _INFO_PANEL_HEIGHT);
   const displayOptions = {
     cadWidth: initialCadWidth,
     height: initialHeight,
     treeWidth,
-    // gr337747: give the tree panel real vertical room proportional to
-    // OUR shell instead of the vendored default's flat 250px — the info
-    // panel below it keeps its own natural size.
-    treeHeight: Math.max(80, initialHeight - _INFO_PANEL_HEIGHT),
+    treeHeight: initialTreeHeight,
     theme: "browser",
     pinning: false,
   };
@@ -296,16 +572,66 @@ export async function blocktreeViewer3D({
     selectPath(primaryPathOf(`${pick.path}/${pick.name}`));
   }
 
+  const treeHeightCapEl = document.createElement("style");
+  document.head.appendChild(treeHeightCapEl);
+  _applyTreeHeightCap(treeHeightCapEl, initialTreeHeight, _INFO_PANEL_HEIGHT);
+
   try {
     const display = new Display(viewerEl, displayOptions);
     viewer = new Viewer(display, viewerOptions, notify);
     viewer.render(data.shapes, renderOptions, viewerOptions);
-    _fitViewerToShell(viewer, viewerEl, treeWidth, initialCadWidth, initialHeight);
+    const fittedHeight = _fitViewerToShell(
+      viewer, viewerEl, treeWidth, initialCadWidth, initialHeight
+    );
+    if (fittedHeight !== initialHeight) {
+      _applyTreeHeightCap(
+        treeHeightCapEl,
+        Math.max(80, fittedHeight - _INFO_PANEL_HEIGHT),
+        _INFO_PANEL_HEIGHT
+      );
+    }
   } catch (err) {
     showError(viewerEl, "3D viewer failed to start: " + String(err));
     console.error("blocktree-3d: viewer init failed", err);
     return;
   }
+
+  // gr340029 — re-fit the shell (and re-budget/re-measure the Display
+  // against it) on every window resize, not just at init: a shell sized
+  // once at load time would drift back out of the viewport the moment
+  // the window itself is resized shorter.
+  let resizeRAF = null;
+  window.addEventListener("resize", () => {
+    if (resizeRAF) return;
+    resizeRAF = requestAnimationFrame(() => {
+      resizeRAF = null;
+      viewerEl.style.height = `${_fitShellHeight(viewerEl)}px`;
+      const nextShellWidth = viewerEl.clientWidth || shellWidth;
+      const nextShellHeight = viewerEl.clientHeight || shellHeight;
+      const nextCadWidth = Math.max(
+        _MIN_CAD_WIDTH,
+        nextShellWidth - treeWidth - 2 * _OUTER_MARGIN
+      );
+      const nextHeight = Math.max(
+        _MIN_CAD_HEIGHT,
+        nextShellHeight - _TOOLBAR_HEIGHT_GUESS - 2 * _OUTER_MARGIN
+      );
+      try {
+        viewer.resizeCadView(nextCadWidth, treeWidth, nextHeight);
+      } catch (err) {
+        // Best-effort — see recolour's own try/catch for the convention.
+        console.error("blocktree-3d: resizeCadView on resize failed", err);
+      }
+      const fittedH = _fitViewerToShell(
+        viewer, viewerEl, treeWidth, nextCadWidth, nextHeight
+      );
+      _applyTreeHeightCap(
+        treeHeightCapEl,
+        Math.max(80, fittedH - _INFO_PANEL_HEIGHT),
+        _INFO_PANEL_HEIGHT
+      );
+    });
+  });
 
   // mermaid -> 3D linked selection (the other direction).
   if (mermaidEl) {
@@ -377,4 +703,7 @@ export async function blocktreeViewer3D({
       }
     });
   }
+
+  // ── scale bar overlay (gr340030) ─────────────────────────────────────
+  _startScaleBar(viewer, viewerEl, data.scale);
 }

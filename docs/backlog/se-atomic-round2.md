@@ -54,6 +54,23 @@ in `git log` / the merge doc, not here.
    objectives (e.g. `low_rotational_barrier`, which needs the mechanism
    analysis phase below) should render as `deferred`, not silently pass.
 
+3. **Interpenetration graduates to a hard error — RULED (Reto,
+   2026-09-14).** The merge downgraded nm's interpenetration ERROR to
+   se's warn-tier `undeclared_interpenetration`
+   (`precis_se/validate.py`, posed-envelope overlap with no connect).
+   Reto's ruling: matter overlap is physically impossible — warn is
+   acceptable *during assembly* (envelopes are rough guesses,
+   mid-edit overlap is workflow), but it must graduate to a hard
+   error at the gate. Mechanics to settle at build, two axes:
+   (a) check tier — op-time echoes stay warn, `view='drc'` (the gate
+   view) reports the finding error-tier; (b) binding state — once
+   BOTH blocks are bound structures, overlap of the actual bound
+   scenes (atoms, not envelopes) is error-tier unconditionally.
+   Declared interference via a connect (e.g. unicycle-mk2's housed
+   bearings, −12 mm declared) stays sanctioned at envelope level —
+   the ruling is about *undeclared* overlap and about realized
+   matter, not about declared press/housed fits.
+
 ## Cross-items (2026-09-14 design session)
 
 - Apply's auto-relax gains the `geo` rung (angle-aware, promoted from

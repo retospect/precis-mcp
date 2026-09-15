@@ -677,6 +677,9 @@ async def _scene3d_response(
             ],
             "explode": scene.explode,
             "mermaid": scene.mermaid,
+            # gr340030 — the scale-bar overlay's own conversion factor:
+            # real SI metres = a displayed coordinate / scale.
+            "scale": scene.scale,
         },
         headers={"Cache-Control": "no-store"},
     )

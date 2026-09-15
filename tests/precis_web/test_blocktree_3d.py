@@ -888,3 +888,6 @@ def test_build_scene_bundles_shapes_connections_explode_and_mermaid() -> None:
     assert len(scene.connections) == 1
     assert set(scene.explode) == {"/se-x/1", "/se-x/2"}
     assert "graph LR" in scene.mermaid
+    # gr340030 — the scale-bar overlay's own conversion factor, the SAME
+    # multiplier already baked into every emitted coordinate above.
+    assert scene.scale == scene_scale(tree, _effective_envelope)

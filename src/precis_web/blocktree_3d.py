@@ -936,12 +936,20 @@ class Scene3D:
     vendored viewer's own ``shapes`` tree, plus the side data (module
     docstring) the client's own JS glue needs — connectivity metadata for
     the linked-selection recolour and the mermaid<->3D id correspondence,
-    per-path explode offsets, and the mermaid source itself."""
+    per-path explode offsets, the mermaid source itself, and (gr340030)
+    the display ``scale`` factor the client's scale-bar overlay divides
+    back out to recover real SI metres."""
 
     shapes: dict[str, Any]
     connections: list[ConnLine]
     explode: dict[str, Vec3f]
     mermaid: str
+    #: gr340030 — the SAME :func:`scene_scale` multiplier already baked
+    #: into every emitted coordinate above, carried through so the client
+    #: can invert it: real SI metres = a displayed length / ``scale``. The
+    #: scale-bar overlay (``blocktree-3d.js``) is the only current reader;
+    #: nothing server-side needs it back.
+    scale: float
 
 
 def build_scene(
@@ -1034,7 +1042,9 @@ def build_scene(
     }
     offsets = explode_offsets(tree, lines, assembly.primary_path, magnitude=0.3 * diag)
     mermaid = mermaid_topology(plan, uid_by_name, lines, kids)
-    return Scene3D(shapes=shapes, connections=lines, explode=offsets, mermaid=mermaid)
+    return Scene3D(
+        shapes=shapes, connections=lines, explode=offsets, mermaid=mermaid, scale=scale
+    )
 
 
 def mermaid_topology(
