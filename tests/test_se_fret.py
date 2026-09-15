@@ -120,7 +120,9 @@ def test_two_identical_acceptors_split_the_excitation_and_conserve_it() -> None:
     acceptor = _flat_chromophore("A", absorption_peak=50000.0)
     overlap = fret.overlap_integral(donor.emission, acceptor.absorption)
     r0 = fret.forster_radius(
-        overlap=overlap, quantum_yield=donor.quantum_yield, kappa_sq=1.0,
+        overlap=overlap,
+        quantum_yield=donor.quantum_yield,
+        kappa_sq=1.0,
         refractive_index=1.4,
     )
     # Deep inside R0 (isolated efficiency ≈ 1) but still OUTSIDE the Dexter
@@ -217,7 +219,9 @@ _DONOR_ABSORPTION = [[400.0, 0.0], [450.0, 1.0], [500.0, 0.0]]
 _ACCEPTOR_ABSORPTION = [[500.0, 0.0], [550.0, 50000.0], [600.0, 0.0]]
 
 
-def _chromophore_op(block: str, *, dipole: list[float], acceptor: bool) -> dict[str, Any]:
+def _chromophore_op(
+    block: str, *, dipole: list[float], acceptor: bool
+) -> dict[str, Any]:
     return {
         "op": "set_chromophore",
         "block": block,
@@ -239,12 +243,16 @@ def _donor_acceptor_r0() -> float:
         fret.Spectrum.of(_EMISSION), fret.Spectrum.of(_ACCEPTOR_ABSORPTION)
     )
     return fret.forster_radius(
-        overlap=overlap, quantum_yield=1.0, kappa_sq=1.0,
+        overlap=overlap,
+        quantum_yield=1.0,
+        kappa_sq=1.0,
         refractive_index=fret.DEFAULT_MEDIUM_INDEX,
     )
 
 
-def _base_ops(separation_m: float, *, acceptor_dipole: list[float]) -> list[dict[str, Any]]:
+def _base_ops(
+    separation_m: float, *, acceptor_dipole: list[float]
+) -> list[dict[str, Any]]:
     return [
         {"op": "add_block", "name": "donor"},
         {"op": "add_block", "name": "acceptor"},
@@ -254,7 +262,12 @@ def _base_ops(separation_m: float, *, acceptor_dipole: list[float]) -> list[dict
         _chromophore_op("donor", dipole=[1, 0, 0], acceptor=False),
         _chromophore_op("acceptor", dipole=acceptor_dipole, acceptor=True),
         {"op": "set_pose", "block": "acceptor", "pose": [0, 0, separation_m]},
-        {"op": "set_optical_link", "a": "donor.p", "b": "acceptor.p", "min_efficiency": 0.5},
+        {
+            "op": "set_optical_link",
+            "a": "donor.p",
+            "b": "acceptor.p",
+            "min_efficiency": 0.5,
+        },
     ]
 
 

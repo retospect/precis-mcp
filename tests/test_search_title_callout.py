@@ -15,12 +15,27 @@ The fix is a ``Title match —`` callout above the table naming the paper
 opening it. These tests pin the callout on both the has-hits and the
 no-hits branch, and pin the tight gating — an ordinary keyword query
 must not grow a callout.
+
+gr244679 (fresh 2026-09-14 user report) sharpened the bar: the callout
+alone made the *answer* legible but left the promoted row itself
+unreadable. Two follow-on fixes, both pinned here:
+
+1. Representative-block selection (``_representative_block_for_ref``)
+   prefers the paper's ``card_combined`` card (title+authors+abstract,
+   ``ord=-1``) over the ``pos=0`` chunk, since publisher PDFs routinely
+   put copyright/permissions boilerplate first.
+2. The promoted row itself now renders the paper's own (``pa``) handle
+   plus a one-line citation — not a chunk handle (``pc<id>``) plus that
+   chunk's keywords — so a title-shaped query returns the paper as a
+   legible row, not chunk soup, regardless of what the representative
+   block's raw text happens to be.
 """
 
 from __future__ import annotations
 
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
+from precis.handlers._paper_search import _representative_block_for_ref
 from precis.handlers.paper import PaperHandler
 from precis.ingest.cards import combined_card_text
 from precis.store import ChunkInsert, Store
@@ -122,12 +137,11 @@ def test_retracted_title_match_keeps_its_notice(store: Store) -> None:
     assert "RETRACTED" in callout[0]
 
 
-def test_title_match_row_renders_card_over_boilerplate(store: Store) -> None:
-    """gr244679: the promoted row itself, not just the callout, must be
-    legible. ``pos=0`` is publisher boilerplate; the paper's
-    ``card_combined`` card (title + authors + abstract, ord=-1) is the
-    representative block a promoted row renders, so its keywords name
-    the paper's actual content instead of the copyright notice."""
+def test_representative_block_prefers_card_over_boilerplate(store: Store) -> None:
+    """gr244679: representative-block selection prefers the paper's
+    ``card_combined`` card (title + authors + abstract, ord=-1) over a
+    boilerplate ``pos=0`` chunk — the copyright/permissions block
+    publisher PDFs routinely put first."""
     e = MockEmbedder(dim=1024)
     rid = _seed(
         store,
@@ -149,17 +163,16 @@ def test_title_match_row_renders_card_over_boilerplate(store: Store) -> None:
     )
     store.chunks.upsert_card_combined(rid, card_text)
 
-    resp = _handler(store, e).search(q="attention is all you need", page_size=5)
-    assert "Title match" in resp.body
-    assert handle_registry.format_handle("paper", rid) in resp.body
-    # The row's chunk_keywords cell reflects the card, not pos=0.
-    assert "convolutions" in resp.body.lower()
-    assert "grants permission" not in resp.body.lower()
+    block = _representative_block_for_ref(store, rid)
+    assert block is not None
+    assert block.chunk_kind == "card_combined"
+    assert "convolutions" in block.text.lower()
+    assert "grants permission" not in block.text.lower()
 
 
-def test_title_match_row_falls_back_to_pos0_without_card(store: Store) -> None:
-    """No regression: a paper with no card variant still renders its
-    ``pos=0`` block as the representative row (pre-existing behavior)."""
+def test_representative_block_falls_back_to_pos0_without_card(store: Store) -> None:
+    """No regression: a paper with no card variant still selects its
+    ``pos=0`` block as the representative (pre-existing behavior)."""
     e = MockEmbedder(dim=1024)
     rid = _seed(
         store,
@@ -173,10 +186,44 @@ def test_title_match_row_falls_back_to_pos0_without_card(store: Store) -> None:
         embedder=e,
     )
 
+    block = _representative_block_for_ref(store, rid)
+    assert block is not None
+    assert block.ord == 0
+    assert "convolutions entirely" in block.text.lower()
+
+
+def test_title_match_row_renders_paper_record_not_chunk_soup(store: Store) -> None:
+    """gr244679 fix bar item 2: the promoted row itself — not just the
+    callout above it — must be legible. A row injected by the title
+    introducer now renders the paper's own (``pa``) handle and a
+    one-line citation, rather than a chunk handle (``pc<id>``) plus
+    that chunk's keywords — even when the representative block is the
+    paper's boilerplate ``pos=0`` permissions chunk (no card seeded), a
+    title-shaped query must still return something recognisable as the
+    paper, as a row."""
+    e = MockEmbedder(dim=1024)
+    rid = _seed(
+        store,
+        slug="vaswani17e",
+        title=_TITLE,
+        text=(
+            "Google hereby grants permission to reproduce the tables "
+            "and figures for personal use only"
+        ),
+        embedder=e,
+    )
+
     resp = _handler(store, e).search(q="attention is all you need", page_size=5)
     assert "Title match" in resp.body
-    assert handle_registry.format_handle("paper", rid) in resp.body
-    assert "convolutions entirely" in resp.body.lower()
+    pa_handle = handle_registry.format_handle("paper", rid)
+    assert pa_handle in resp.body
+    # No chunk handle for this ref's boilerplate block leaked into the
+    # response — the row addresses the paper record, not one of its
+    # chunks.
+    assert "google hereby grants permission" not in resp.body.lower()
+    # The row reads as a citation, not raw block text.
+    assert "Vaswani" in resp.body
+    assert _TITLE in resp.body
 
 
 def test_title_match_survives_unrelated_body(store: Store) -> None:

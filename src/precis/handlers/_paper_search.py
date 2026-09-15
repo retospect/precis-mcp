@@ -581,17 +581,20 @@ class FusedBlockSearch:
         than duplicated. Best-effort: any lookup hiccup returns
         ``hits`` unchanged.
 
-        Returns ``(hits, callout_lines)``. Promotion alone isn't legible:
-        the promoted row still renders as a *chunk* handle plus that
-        chunk's keywords, and — before gr244679 preferred the card —
-        the representative block was often the paper's boilerplate
-        first chunk ("google hereby grants permission…" for the
-        Transformer paper), so a caller who typed an exact title saw a
-        table of unrelated-looking keywords and concluded the paper
-        wasn't held. The callout lines name the paper *record* (``pa``
-        handle + one-line citation) above the table regardless, so the
-        answer to a title query is readable without decoding the block
-        rows even on the rare ref with no card.
+        Returns ``(hits, callout_lines)``. The caller stamps every
+        newly-promoted triple's score as ``float('inf')`` — the sentinel
+        the renderer (:class:`PaperSearchResultRenderer`) uses to render
+        the row as the paper *record* (``pa`` handle + one-line
+        citation) rather than a *chunk* handle plus that chunk's
+        keywords (gr244679 fix bar item 2): before that, a caller who
+        typed an exact title saw a table of unrelated-looking keywords
+        — often literally the paper's boilerplate first chunk ("google
+        hereby grants permission…" for the Transformer paper, before
+        gr244679 item 1 also taught representative-block selection to
+        prefer the card) — and concluded the paper wasn't held. The
+        callout lines name the paper record above the table too, so the
+        answer to a title query is readable even in the zero-hits
+        branch (no promotable block at all).
         """
         import logging
 
@@ -1321,21 +1324,48 @@ class PaperSearchResultRenderer:
         # earlier segment-level excerpt sub-line had to go via a
         # central-sentence picker that produced too much noise.
         table_rows: list[dict[str, str]] = []
-        for block, ref, _score in hits:
+        for block, ref, score in hits:
             slug = ref.slug or "???"
-            # the computed chunk handle (``pc<chunk_id>``) is the
-            # one address form; fall back to the legacy ``slug~pos`` only for
-            # a kind with no chunk code.
-            handle = (
-                handle_registry.try_format(ref.kind, block.id, chunk=True)
-                or f"{slug}~{block.ord}"
-            )
-            kw_list = block.keywords or []
-            if kw_list:
-                kw_display = ", ".join(kw_list[:5])
+            if score == float("inf"):
+                # gr244679 fix bar item 2: a row injected by the title/DOI
+                # record introducer (``_inject_title_matches`` / the
+                # bare-DOI short-circuit — both stamp this exact sentinel,
+                # see the module-level ``float('inf')`` grep) is the PAPER
+                # record itself, not an ordinary body-chunk hit — a
+                # reordered *pre-existing* hit keeps its real score, so
+                # this branch only ever fires for a genuinely-promoted
+                # match. Render the paper's own (``pa``) handle and a
+                # one-line citation instead of a chunk handle plus that
+                # chunk's keywords: even with gr244679's card preference
+                # making the representative block legible, a "handle +
+                # keyword soup" row still reads as a body hit rather than
+                # the record the callout above already named — this makes
+                # the row itself recognizably the paper.
+                handle = (
+                    handle_registry.try_format(ref.kind, ref.id)
+                    or ref.slug
+                    or f"{ref.kind}:{ref.id}"
+                )
+                authors = _format_authors(ref.authors) or "(authors unknown)"
+                year = ref.year if ref.year is not None else "n.d."
+                title_disp = (
+                    _clean_inline_text(ref.title) if ref.title else "(untitled)"
+                )
+                kw_display = f"{authors} ({year}). {title_disp}"
             else:
-                chunk_text = _scrub_block_text(block.text)
-                kw_display = _chunk_keywords_or_caption(chunk_text)
+                # the computed chunk handle (``pc<chunk_id>``) is the
+                # one address form; fall back to the legacy ``slug~pos``
+                # only for a kind with no chunk code.
+                handle = (
+                    handle_registry.try_format(ref.kind, block.id, chunk=True)
+                    or f"{slug}~{block.ord}"
+                )
+                kw_list = block.keywords or []
+                if kw_list:
+                    kw_display = ", ".join(kw_list[:5])
+                else:
+                    chunk_text = _scrub_block_text(block.text)
+                    kw_display = _chunk_keywords_or_caption(chunk_text)
             # Prefix, not a third column: the flag is rare (most
             # papers are unchecked) so a dedicated column would render
             # an empty cell on ~every row for no benefit — pure token

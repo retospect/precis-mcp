@@ -244,7 +244,9 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             bound=r["bound_design"],
             origins=dict(r["origins"] or {}),
             dof=dict(r["dof"]) if r["dof"] is not None else None,
-            chromophore=dict(r["chromophore"]) if r["chromophore"] is not None else None,
+            chromophore=dict(r["chromophore"])
+            if r["chromophore"] is not None
+            else None,
         )
     for p in port_rows:
         block_row = by_id.get(p["block_id"])
