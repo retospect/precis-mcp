@@ -236,24 +236,43 @@ def _proj(hub: Hub) -> int:
 
 
 def _seed_draft_para(
-    draft: DraftHandler, hub: Hub, text: str, *, draft_id: str = "nt"
+    draft: DraftHandler,
+    hub: Hub,
+    text: str,
+    *,
+    draft_id: str = "nt",
+    dead_refs: bool = False,
 ) -> int:
     """Seed a one-paragraph draft ``draft_id`` (default ``nt``) with ``text``;
     return its body chunk_id. Pass a distinct ``draft_id`` for a second,
     independent draft — appending a second paragraph to the SAME draft would
     land it right after the title (before the first, already-rewritten
-    paragraph), so ``order[-1]`` would resolve to the wrong chunk."""
+    paragraph), so ``order[-1]`` would resolve to the wrong chunk.
+
+    ``dead_refs=True`` writes the paragraph through the store instead of the
+    ``put`` verb: the handler hard-refuses text that *introduces* a
+    handle-shaped reference resolving to nothing, so a test exercising the
+    backfill's unresolved-supporter path has to seed that content the way
+    legacy rows acquired it."""
     proj = _proj(hub)
     draft.put(id=draft_id, title="T", project=proj)
     ref = hub.live_store.get_ref(kind="draft", id=draft_id)
     assert ref is not None
     title_handle = hub.live_store.drafts.reading_order(ref.id)[0].handle
-    draft.put(
-        id=draft_id,
-        chunk_kind="paragraph",
-        text=text,
-        at={"after": "¶" + title_handle},
-    )
+    if dead_refs:
+        hub.live_store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text=text,
+            at={"after": "¶" + title_handle},
+        )
+    else:
+        draft.put(
+            id=draft_id,
+            chunk_kind="paragraph",
+            text=text,
+            at={"after": "¶" + title_handle},
+        )
     order = hub.live_store.drafts.reading_order(ref.id)
     return int(order[-1].chunk_id)
 
@@ -641,7 +660,9 @@ def test_apply_leaves_no_claim_span_untouched(draft: DraftHandler, hub: Hub) -> 
 
 
 def test_apply_skips_unresolvable_pc(draft: DraftHandler, hub: Hub) -> None:
-    dc = _seed_draft_para(draft, hub, "Claim with a dangling cite [pc999999999].")
+    dc = _seed_draft_para(
+        draft, hub, "Claim with a dangling cite [pc999999999].", dead_refs=True
+    )
 
     result = apply_chunk(
         hub.live_store,
@@ -1238,7 +1259,9 @@ def test_apply_reground_partial_unresolved_handle_skips_whole_run(
     # slice-1 erasure class, reached via an unresolved handle rather than a stub.
     _, good, _gc = _fetched_pa_c(hub.live_store, paper_title="good")
     bad = "pa999999999"  # no such ref → resolve_paper_ref_id raises BadInput
-    dc = _seed_draft_para(draft, hub, f"A jointly-cited claim [{good}][{bad}].")
+    dc = _seed_draft_para(
+        draft, hub, f"A jointly-cited claim [{good}][{bad}].", dead_refs=True
+    )
     links_before = _links_count(hub.live_store)
 
     result = apply_chunk(

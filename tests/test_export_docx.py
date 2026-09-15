@@ -285,6 +285,46 @@ def test_math_renders_as_omml(draft: DraftHandler, hub: Hub, tmp_path: Path) -> 
     docx.Document(str(out))
 
 
+def test_garbled_and_money_math_demoted_to_literal_text(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    r"""Parity with the LaTeX exporter's demotion predicates
+    (``_math_braces_balanced`` / ``_math_plausible``, shared via import):
+    an unbalanced-brace span and a money-dollar mispairing render as
+    literal prose runs, never OMML; an author-escaped ``\$`` renders as
+    the bare ``$`` (Word has no escape syntax)."""
+    pytest.importorskip("latex2mathml")
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="dg", title="T", project=pid)
+    draft.put(
+        id="dg",
+        chunk_kind="paragraph",
+        text=(
+            r"The ratio $\sqrt{2/\sqrt{3}$ holds. Oligomers cost "
+            r"$10-50 each, versus $200 for staples, plus \$99 fees."
+        ),
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dg")
+    out = tmp_path / "dg.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    import zipfile
+
+    with zipfile.ZipFile(out) as z:
+        doc_xml = z.read("word/document.xml").decode("utf-8")
+    assert "oMath" not in doc_xml  # nothing here is math
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert r"$\sqrt{2/\sqrt{3}$" in text  # demoted verbatim, not OMML
+    assert "$10-50 each, versus $200 for staples" in text
+    assert "$99 fees" in text and r"\$" not in text  # \$ → bare $
+
+
 def test_empty_base_math_gets_a_base(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:

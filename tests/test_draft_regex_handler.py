@@ -153,6 +153,61 @@ def test_sub_sed_string_form(draft: DraftHandler, seeded: dict[str, str]) -> Non
     assert "em-dash, here" in draft.get(id=seeded["p1"]).body
 
 
+def test_sub_refuses_to_break_a_reference(
+    draft: DraftHandler, seeded: dict[str, str]
+) -> None:
+    """The regex-substitute path carries the same hard dangling-ref gate as
+    `put`/`edit(text=)`/`edit(find=)`: a substitution that mangles a handle
+    inside a `[…]` cite is refused. The check runs over every scoped chunk
+    BEFORE the first write, so a scope where one chunk would break is
+    all-or-nothing — no half-applied substitution."""
+    cite = draft.put(
+        id=seeded["slug"],
+        chunk_kind="paragraph",
+        text=f"Context lives at [{seeded['s1']}] above.",
+        at={"last": True},
+    )
+    cite_h = _h(cite.body)
+    # A second chunk the same regex hits, where the rewrite is harmless —
+    # it must stay unwritten when the other chunk's rewrite is refused.
+    plain = draft.put(
+        id=seeded["slug"],
+        chunk_kind="paragraph",
+        text=f"The handle {seeded['s1']} in plain prose, no brackets.",
+        at={"last": True},
+    )
+    plain_h = _h(plain.body)
+
+    with pytest.raises(BadInput, match="dc999999"):
+        draft.edit(
+            id=seeded["slug"],
+            sub={"find": seeded["s1"], "replace": "dc999999"},
+            apply=True,
+        )
+    assert f"[{seeded['s1']}]" in draft.get(id=cite_h).body
+    assert seeded["s1"] in draft.get(id=plain_h).body  # not half-applied
+
+
+def test_sub_dryrun_previews_a_breaking_substitution(
+    draft: DraftHandler, seeded: dict[str, str]
+) -> None:
+    """The gate sits on the apply path only — a dry run still previews a
+    substitution that would break a reference (seeing the damage is the
+    point of a preview), and writes nothing."""
+    cite = draft.put(
+        id=seeded["slug"],
+        chunk_kind="paragraph",
+        text=f"Context lives at [{seeded['s1']}] above.",
+        at={"last": True},
+    )
+    cite_h = _h(cite.body)
+    out = draft.edit(
+        id=seeded["slug"], sub={"find": seeded["s1"], "replace": "dc999999"}
+    )
+    assert "DRY RUN" in out.body
+    assert f"[{seeded['s1']}]" in draft.get(id=cite_h).body
+
+
 def test_sub_requires_scope(draft: DraftHandler, seeded: dict[str, str]) -> None:
     with pytest.raises(BadInput):
         draft.edit(id=None, sub={"find": "a", "replace": "b"})

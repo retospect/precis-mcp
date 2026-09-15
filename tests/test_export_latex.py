@@ -342,6 +342,28 @@ def test_display_glue_with_live_dollar_in_body_is_escaped() -> None:
     assert "$" not in out.replace(r"\$", "")
 
 
+def test_lint_math_spans_mirrors_the_demotion_predicates() -> None:
+    # One complaint per distinct span the exporter would demote — the
+    # write-path lint (`_draft_lint.math_form_hint`) delegates here so the
+    # two surfaces can never disagree.
+    bad_braces = latex.lint_math_spans(r"ratio $\sqrt{2/\sqrt{3}$ holds")
+    assert len(bad_braces) == 1 and "unbalanced" in bad_braces[0]
+    money = latex.lint_math_spans("costs $10-50 per oligomer, versus $200")
+    assert len(money) == 1 and "prose/currency" in money[0]
+    stray = latex.lint_math_spans("a single $ sign here")
+    assert len(stray) == 1 and "stray unpaired" in stray[0]
+    # clean math + escaped literal dollars: silent
+    assert latex.lint_math_spans(r"Euler: $e^{i\pi} = -1$.") == []
+    assert latex.lint_math_spans(r"Scaffold \$300 and staples \$200.") == []
+    # the same offending span twice → one complaint (deduped)
+    twice = latex.lint_math_spans(r"$\sqrt{2$ and again $\sqrt{2$")
+    assert len(twice) == 1
+    # a long span is truncated in the complaint, not quoted wholesale
+    long_span = "$x_{1} " + "word " * 30 + "$ end"
+    (c,) = latex.lint_math_spans(long_span)
+    assert "…" in c and len(c) < 200
+
+
 def test_standalone_equation_detection() -> None:
     # Exactly one $$…$$ span filling the whole (stripped) chunk text.
     assert latex._standalone_equation("$$E = mc^2$$") == ("E = mc^2", False)

@@ -2080,6 +2080,27 @@ class ChunkStore:
 
     # ── angle spray (diverse-cone semantic neighbours) ─────────────
 
+    def chunk_owner_kind(self, chunk_id: int) -> str | None:
+        """The owning ref's ``kind`` for one ``chunk_id``, **including
+        retired refs** — or ``None`` when no such chunk row exists at all.
+
+        The deliberate counterpart to
+        :meth:`~precis.store._refs_ops.RefsOps.resolve_handle`, which
+        drops a chunk whose owning ref was soft-deleted: this tells a
+        caller *why* the handle failed to resolve — a typo naming nothing
+        (``None``) versus a real chunk whose source has since been retired
+        (a tombstone). The draft write-path gate
+        (``handlers/_draft_lint.newly_unresolvable_tokens``) uses exactly
+        that split to hard-refuse the former while leaving the latter
+        advisory."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT r.kind FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+                "WHERE c.chunk_id = %s",
+                (chunk_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
     def chunk_text_by_id(self, chunk_id: int) -> str | None:
         """The body text of one chunk by ``chunk_id`` (live ref, body chunk
         ``ord >= 0``), or ``None`` if absent. Used by the docx→EndNote export

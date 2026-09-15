@@ -65,8 +65,11 @@ from precis.export._trust_marks import (
 )
 from precis.export.latex import (
     _COMBINED,
+    _MATH,
     _PATENT_DOC_TYPE,
     _bibtex_authors,
+    _math_braces_balanced,
+    _math_plausible,
     _standalone_equation,
     datasheet_pub_label,
     preprocess_draft_inline,
@@ -549,9 +552,12 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
 
 # Tokeniser for a non-reference gap: math / code / bold / italic / sub /
 # sup become typed spans; everything else is plain text. Ordered so the
-# verbatim spans (math, code) are carved out before emphasis.
+# verbatim spans (math, code) are carved out before emphasis. The math
+# alternation is the LaTeX exporter's `_MATH` verbatim (an author-escaped
+# ``\$`` is a literal dollar, never a delimiter) so the two exporters
+# carve out the same spans and the write-path lint speaks for both.
 _SPAN = re.compile(
-    r"(?P<math>\$\$.+?\$\$|\$[^$]+\$)"
+    rf"(?P<math>{_MATH.pattern})"
     r"|(?P<code>`[^`]+`)"
     r"|(?P<sub><sub>.+?</sub>)"
     r"|(?P<sup><sup>.+?</sup>)"
@@ -573,7 +579,14 @@ def _render_gap(text: str, ctx: _Ctx, paragraph: Any) -> None:
         if m.start() > last:
             _emit_text(text[last : m.start()], ctx, paragraph)
         if m.group("math") is not None:
-            _render_math(m.group("math"), paragraph)
+            span = m.group("math")
+            if _math_braces_balanced(span) and _math_plausible(span):
+                _render_math(span, paragraph)
+            else:
+                # Same demotion as the LaTeX exporter: a garbled or
+                # money-dollar-mispaired span is prose, not math — emit
+                # it literally instead of feeding broken OMML.
+                _emit_text(span, ctx, paragraph)
         elif m.group("code") is not None:
             r = paragraph.add_run(m.group("code")[1:-1])
             r.font.name = "Consolas"
@@ -598,7 +611,11 @@ def _emit_text(text: str, ctx: _Ctx, paragraph: Any) -> None:
     defined short becomes ``Long Form (SHORT)``; later ones stay ``SHORT``.
     No authoring markup — this mirrors what the LaTeX ``\\gls`` path does,
     and survives chunk reordering because it's computed here at export.
-    A trailing ``s`` (plural) is preserved on the short."""
+    A trailing ``s`` (plural) is preserved on the short.
+
+    An author-escaped ``\\$`` (the lint's advice for literal money
+    dollars) renders as the bare ``$`` — Word has no escape syntax."""
+    text = text.replace("\\$", "$")
     pat = ctx.short_pattern()
     if pat is None:
         paragraph.add_run(text)

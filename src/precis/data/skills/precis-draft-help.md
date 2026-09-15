@@ -565,17 +565,25 @@ meta={'executor': 'claude_inproc', 'job_type': 'taproot_backfill',
 cites to `[fi<id>]` claim-hub cites on the cluster worker; poll
 `get(kind='job', id='jo<id>')`. See `precis-taproot-backfill-help`.
 
-**Never fabricate a handle** — including `[finding #amine-uptake]`-style
-markers. Resolves to nothing: never autolinks, never exports, flagged
-**⚠ unresolved** on a verbatim read. Mean a finding? Use its real
-`[fi<id>]`; doesn't exist yet? `put(kind='finding', …)` it first.
+**Never fabricate a handle** — a `put`/`edit` that *introduces* a
+handle-shaped `[…]` reference resolving to nothing (a numeric id like
+`[45650]`, a typo'd `[dc…]`) is **refused** (`BadInput`, nothing
+written): copy the handle from search/get output and retry. A
+deliberate forward reference uses a `finding #<slug>` marker instead —
+that lands, but is flagged **⚠ unresolved** on a verbatim read (never
+autolinks, never exports). Mean a finding? Use its real `[fi<id>]`;
+doesn't exist yet? `put(kind='finding', …)` it first.
 
 **Formatting.** `` `code` ``, `$…$`/`$$…$$` math (KaTeX), `<sub>`/`<sup>`
 for chemistry/units (`NH<sub>2</sub>`, `g<sup>-1</sup>`); no emphasis
 markup (see *Add prose*, above). Citations/cross-refs render as a
 compact superscript, so handles don't clutter the sentence. A chunk
 cross-ref uses the target's `dc<id>` handle, never a numeric id like
-`[45650]` (resolves to nothing).
+`[45650]` (refused on write). Math must actually be math: a `$…$` span
+with unbalanced `{ }`, or two money-dollars accidentally pairing across
+prose (`$10-50 …, versus $200`), is demoted to escaped literal text by
+both exporters and trips a `⚠ math that won't render` hint on write —
+escape a literal dollar as `\$`.
 
 ## Define an abbreviation — hover-resolve, no inline spellout
 

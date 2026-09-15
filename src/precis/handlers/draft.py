@@ -837,6 +837,12 @@ class DraftHandler(Handler):
                 find, replace, flags, where, changes, skipped, total_subs
             )
 
+        # Hard dangling-ref gate over EVERY chunk before the first write —
+        # a regex that mangles a handle inside a `[…]` cite must not land,
+        # and must never land half-applied across the scope.
+        for _slug, c, new_text, _n in changes:
+            self._raise_on_new_dangling_refs(new_text, c.text or "")
+
         written = 0
         for _slug, c, new_text, _n in changes:
             # base_sha = the sha of the text this chunk was scoped against
@@ -1039,6 +1045,7 @@ class DraftHandler(Handler):
                             ref.id, term_role
                         )
                     }
+            self._raise_on_new_dangling_refs(str(text))
             chunks = self.store.drafts.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=kind,
@@ -1063,6 +1070,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
                 body += _draft_lint.literal_cite_hint(str(text))
                 body += _draft_lint.temperature_form_hint(str(text))
+                body += _draft_lint.math_form_hint(str(text))
             return Response(body=body)
 
         # else: create the draft
@@ -1772,6 +1780,7 @@ class DraftHandler(Handler):
                 return self._render_draft_dry_run(
                     _base.dc, old_text, new_text, mode=dry_mode, note=note
                 )
+            self._raise_on_new_dangling_refs(new_text, old_text)
             c = self.store.drafts.edit_text(
                 handle, new_text, base_sha=base_sha, source=source
             )
@@ -1799,6 +1808,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
                 body += _draft_lint.literal_cite_hint(new_text)
                 body += _draft_lint.temperature_form_hint(new_text)
+                body += _draft_lint.math_form_hint(new_text, old_text)
                 body += _draft_lint.dangling_edit_hint(self.store, new_text, old_text)
             return Response(body=body)
         if text is not None:
@@ -1811,6 +1821,7 @@ class DraftHandler(Handler):
                 return self._render_draft_dry_run(
                     _base.dc, old_text, str(text), mode=dry_mode
                 )
+            self._raise_on_new_dangling_refs(str(text), old_text)
             c = self.store.drafts.edit_text(
                 handle, str(text), base_sha=base_sha, source=source
             )
@@ -1828,6 +1839,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
                 body += _draft_lint.literal_cite_hint(str(text))
                 body += _draft_lint.temperature_form_hint(str(text))
+                body += _draft_lint.math_form_hint(str(text), old_text)
                 body += _draft_lint.dangling_edit_hint(self.store, str(text), old_text)
             return Response(body=body)
         raise BadInput(
@@ -3112,6 +3124,29 @@ class DraftHandler(Handler):
         shared core of the inline-editor validation gate
         (``docs/backlog/draft-inline-editor.md``)."""
         return _draft_lint.newly_dangling(self.store, new_text, old_text)
+
+    def _raise_on_new_dangling_refs(self, new_text: str, old_text: str = "") -> None:
+        """Hard gate on the ``put``/``edit`` text paths, BEFORE the write
+        lands: ``BadInput`` when this write *introduces* a handle-shaped
+        ``[…]`` reference that resolves to nothing at all (a numeric id or
+        typo'd handle — a dead link the moment it's written). The MCP twin
+        of the web inline editor's 422 save-gate. Everything softer stays
+        an advisory hint: tombstones (gr265228), ``finding #slug``
+        placeholders, and dead refs already present in ``old_text``."""
+        bad = _draft_lint.newly_unresolvable_tokens(self.store, new_text, old_text)
+        if not bad:
+            return
+        toks = ", ".join(f"[{h}]" for h in bad)
+        raise BadInput(
+            f"unresolved reference(s): {toks} — each is handle-shaped but "
+            "resolves to nothing, so it would be a dead link from the moment "
+            "it lands. Nothing was written. Use a handle that resolves (a "
+            "chunk `dc<id>`, memory `me<id>`, paper chunk `pc<id>`, … — copy "
+            "it from search/get output), or drop the reference. For a "
+            "deliberate forward reference, write `finding #<slug>` instead "
+            "(advisory placeholder, never a block).",
+            next="copy the handle from search/get output, then retry the write",
+        )
 
     def _render_toc(
         self, *, ref: Any = None, root_handle: str | None = None

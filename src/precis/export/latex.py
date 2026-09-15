@@ -431,6 +431,43 @@ def _math_comment_safe(span: str) -> str:
     return re.sub(r"(?<!\\)([%#])", r"\\\1", span)
 
 
+def lint_math_spans(text: str) -> list[str]:
+    """Advisory complaints about the ``$…$`` spans in ``text`` that this
+    exporter would DEMOTE to escaped literal prose rather than render as
+    math, plus any stray unpaired ``$``. Shared with the draft write-path
+    lint (``handlers/_draft_lint.math_form_hint``) so an authoring agent
+    hears about a broken span in the ``put``/``edit`` response instead of
+    from a failed export hours later — and so the lint and the exporter's
+    own demotion predicates (:func:`_math_braces_balanced`,
+    :func:`_math_plausible`) can never disagree. One complaint per
+    distinct offending span; empty when clean."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _MATH.finditer(text):
+        span = m.group(0)
+        if span in seen:
+            continue
+        seen.add(span)
+        shown = span if len(span) <= 60 else span[:57] + "…"
+        if not _math_braces_balanced(span):
+            out.append(
+                f"`{shown}` — unbalanced {{ }} braces; exports as escaped "
+                "literal text, not math"
+            )
+        elif not _math_plausible(span):
+            out.append(
+                f"`{shown}` — reads as prose/currency accidentally paired "
+                "between two $s, not math; exports literally (escape money "
+                "as \\$, or fix the formula)"
+            )
+    # Paired spans are consumed above — any unescaped $ left over is a
+    # stray half of a pair (opens math mode for the rest of the document
+    # if it ever reaches TeX raw).
+    if re.search(r"(?<!\\)\$", _MATH.sub("", text)):
+        out.append("a stray unpaired `$` — escape currency/literals as \\$")
+    return out
+
+
 #: A paragraph chunk whose ENTIRE (stripped) text is one ``$$…$$`` span is
 #: "a display equation", not just math *inside* a paragraph — the shape
 #: :func:`_standalone_equation` numbers. An optional ``*`` immediately

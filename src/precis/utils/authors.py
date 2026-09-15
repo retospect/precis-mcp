@@ -129,6 +129,29 @@ def is_junk_author_name(name: str) -> bool:
     return False
 
 
+# Zero-width characters (ZWSP/ZWNJ/ZWJ, word joiner, BOM). Invisible —
+# and NOT whitespace to Python's ``str.split``, so they survive the
+# spacing repair and ride into rendered names untouched.
+_ZERO_WIDTH_RE = re.compile("[​-‍⁠﻿]")
+
+
+def _scrub_name(s: str) -> str:
+    """Character-level hygiene for one name string — applied at the write
+    chokepoint (:func:`normalize_authors`) *and* the read funnel
+    (:func:`author_display`), so legacy garbage rows render clean without
+    a prod sweep. Deletes zero-widths, collapses every Unicode space to a
+    plain one (a thin space U+2009 inside a bib author name became
+    ``\\,``, which biber's name parser read as a suffix and emitted a
+    runaway ``.bbl`` — the ryder14 fatal), and strips *trailing*
+    backslashes (PDF-extraction debris, e.g. ``DIFFUSION MODELS\\``; an
+    interior backslash is left for the junk guard / export escaping).
+    Purely subtractive and idempotent — never reorders or splits name
+    parts. Pure — never raises."""
+    s = _ZERO_WIDTH_RE.sub("", s)
+    s = " ".join(s.split())
+    return s.rstrip("\\").strip()
+
+
 def _tidy_initials(s: str) -> str:
     """Deterministic spacing repair on a name string.
 
@@ -155,16 +178,16 @@ def author_display(entry: Any, *, order: str = "natural") -> str:
     Pure — never raises.
     """
     if isinstance(entry, dict):
-        family = (entry.get("family") or "").strip()
-        given = (entry.get("given") or "").strip()
+        family = _scrub_name(entry.get("family") or "")
+        given = _scrub_name(entry.get("given") or "")
         if family and given:
             return f"{family}, {given}" if order == "sortable" else f"{given} {family}"
         if family:
             return family
         if given:
             return given
-        return (entry.get("name") or "").strip()
-    return str(entry or "").strip()
+        return _scrub_name(entry.get("name") or "")
+    return _scrub_name(str(entry or ""))
 
 
 def author_names(raw: Any, *, order: str = "natural") -> list[str]:
@@ -177,7 +200,7 @@ def author_names(raw: Any, *, order: str = "natural") -> list[str]:
     if isinstance(raw, list):
         return [n for n in (author_display(a, order=order) for a in raw) if n]
     if isinstance(raw, str) and raw.strip():
-        return [a.strip() for a in raw.split(";") if a.strip()]
+        return [n for n in (_scrub_name(a) for a in raw.split(";")) if n]
     return []
 
 
@@ -238,8 +261,8 @@ def normalize_authors(raw: Any) -> list[dict[str, Any]]:
 def _normalize_one_author(a: Any) -> dict[str, Any] | None:
     """Normalize a single raw author entry — see :func:`normalize_authors`."""
     if isinstance(a, dict):
-        family = (a.get("family") or "").strip()
-        given = _tidy_initials((a.get("given") or "").strip())
+        family = _scrub_name(a.get("family") or "")
+        given = _tidy_initials(_scrub_name(a.get("given") or ""))
         if family or given:
             display = f"{given} {family}".strip()
             if is_junk_author_name(display):
@@ -251,13 +274,13 @@ def _normalize_one_author(a: Any) -> dict[str, Any] | None:
                 entry["family"] = family
             _carry_optional_author_keys(a, entry)
             return entry
-        name = _tidy_initials((a.get("name") or "").strip())
+        name = _tidy_initials(_scrub_name(a.get("name") or ""))
         if not name or is_junk_author_name(name):
             return None
         entry = _split_author_name(name)
         _carry_optional_author_keys(a, entry)
         return entry
-    name = _tidy_initials(str(a or "").strip())
+    name = _tidy_initials(_scrub_name(str(a or "")))
     if not name or is_junk_author_name(name):
         return None
     return _split_author_name(name)

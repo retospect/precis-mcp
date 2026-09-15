@@ -10,6 +10,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.handlers import _draft_lint
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
 
@@ -34,6 +35,18 @@ def _order(hub: Hub, slug: str) -> list:
     ref = hub.live_store.get_ref(kind="draft", id=slug)
     assert ref is not None
     return hub.live_store.drafts.reading_order(ref.id)
+
+
+def _paper_chunk_handle(hub: Hub, paper_id: int) -> str:
+    """A real, resolvable ``pc<id>`` handle — the write path hard-rejects
+    handle-shaped references that resolve to nothing, so tests wanting an
+    incidental clean citation must cite something real."""
+    from precis.store.types import ChunkInsert
+
+    row = hub.live_store.chunks.insert_chunks(
+        paper_id, [ChunkInsert(ord=0, text="supporting passage")]
+    )[0]
+    return f"pc{row.id}"
 
 
 def _chunk_text(hub: Hub, handle: str) -> str | None:
@@ -228,13 +241,13 @@ def test_add_read_edit_move_delete(draft: DraftHandler, hub: Hub) -> None:
     assert intro_h not in [c.handle for c in _order(hub, "nt")]
 
 
-def test_edit_flags_newly_introduced_dangling_ref(
+def test_edit_introducing_dangling_ref_raises_before_write(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """An edit that introduces a `[handle]` resolving to nothing is flagged
-    with a ⚠ scoped to *this edit* — the advisory half of the inline-editor
-    validation gate (docs/backlog/draft-inline-editor.md). A dead ref already
-    present in the chunk is NOT re-nagged: it isn't this edit's regression."""
+    """A write that introduces a `[handle]` resolving to nothing at all is a
+    hard BadInput BEFORE it lands — the MCP twin of the web inline editor's
+    422 save-gate. A dead ref already present in the chunk does NOT block an
+    unrelated rewrite: it is standing debt, not this edit's regression."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].handle
@@ -246,12 +259,28 @@ def test_edit_flags_newly_introduced_dangling_ref(
     )
     para_h = _order(hub, "nt")[1].handle
 
-    # introducing a dead ref → flagged, naming the offending token
-    r = draft.edit(id=f"¶{para_h}", text="Now cites [dc999999].")
-    assert "this edit introduced unresolved reference(s)" in r.body
-    assert "[dc999999]" in r.body
+    # introducing a dead ref → refused, naming the offending token…
+    with pytest.raises(BadInput, match=r"dc999999"):
+        draft.edit(id=f"¶{para_h}", text="Now cites [dc999999].")
+    # …and the chunk is untouched (the raise happened before the write)
+    assert _chunk_text(hub, para_h) == "A clean paragraph."
 
-    # re-editing OTHER text while the dead ref stays put → not re-nagged
+    # a put introducing one is refused the same way
+    with pytest.raises(BadInput, match=r"45650"):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text="As shown in [45650], the effect holds.",
+            at={"after": "¶" + title_h},
+        )
+
+    # the find-replace path is gated too
+    with pytest.raises(BadInput, match=r"dc999999"):
+        draft.edit(id=f"¶{para_h}", find="clean", text="clean [dc999999]")
+
+    # a dead ref seeded by a legacy path (direct store write) doesn't block
+    # a later rewrite that merely keeps it — and isn't re-nagged either
+    hub.live_store.drafts.edit_text(para_h, "Legacy dead ref [dc999999] here.")
     r2 = draft.edit(id=f"¶{para_h}", text="Reworded, still cites [dc999999].")
     assert "this edit introduced unresolved reference(s)" not in r2.body
 
@@ -476,7 +505,7 @@ def test_numeric_paper_ref_hints_chunk_handle_form(
     r2 = draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text="A second mechanism is plausible [pc999].",
+        text=f"A second mechanism is plausible [{_paper_chunk_handle(hub, paper.id)}].",
         at={"after": "¶" + th},
     )
     assert "paper: mention" not in r2.body  # a bare [pc<id>] handle is fine
@@ -503,7 +532,7 @@ def test_whole_paper_citation_hints_toward_chunk(draft: DraftHandler, hub: Hub) 
     r2 = draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text="A second mechanism is plausible [pc999].",
+        text=f"A second mechanism is plausible [{_paper_chunk_handle(hub, paper.id)}].",
         at={"after": "¶" + th},
     )
     assert "whole-paper citation" not in r2.body
@@ -535,6 +564,7 @@ def test_literal_cite_in_draft_is_flagged(draft: DraftHandler, hub: Hub) -> None
     flagged — in a draft you cite by the ``[pc<id>]`` handle and the
     export engine writes the ``\cite``. A bare handle does not trip it."""
     proj = _proj(hub)
+    paper = hub.live_store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
     draft.put(id="nt", title="T", project=proj)
     th = _order(hub, "nt")[0].handle
 
@@ -549,7 +579,7 @@ def test_literal_cite_in_draft_is_flagged(draft: DraftHandler, hub: Hub) -> None
     r2 = draft.put(
         id="nt",
         chunk_kind="paragraph",
-        text="The rate rises further [pc999].",
+        text=f"The rate rises further [{_paper_chunk_handle(hub, paper.id)}].",
         at={"after": "¶" + th},
     )
     assert "literal \\cite" not in r2.body  # a bare [pc<id>] handle is clean
@@ -860,6 +890,50 @@ def test_temperature_form_hint(draft: DraftHandler, hub: Hub) -> None:
             id="nt", chunk_kind="paragraph", text=ok, at={"after": "¶" + title_h}
         )
         assert "temperature/unit formatting" not in r.body, ok
+
+
+def test_math_form_hint(draft: DraftHandler, hub: Hub) -> None:
+    r"""A ``$…$`` span the LaTeX exporter would demote to literal text trips
+    the ``math that won't render`` hint on the write path (delegating to
+    ``export/latex.py::lint_math_spans`` — the exporter's own predicates);
+    clean math is silent; an edit that merely keeps a pre-existing broken
+    span is not re-nagged — only what the write introduced fires."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=r"The ratio $\sqrt{2/\sqrt{3}$ holds.",
+        at={"after": "¶" + title_h},
+    )
+    assert "math that won't render" in r.body and "unbalanced" in r.body
+    para_h = next(c.dc for c in _order(hub, "nt") if c.text.startswith("The ratio"))
+
+    # clean math is silent
+    r2 = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=r"Euler: $e^{i\pi} = -1$.",
+        at={"after": "¶" + title_h},
+    )
+    assert "math that won't render" not in r2.body
+
+    # an unrelated rewrite that keeps the pre-existing broken span: no re-nag
+    r3 = draft.edit(id=para_h, text=r"The ratio $\sqrt{2/\sqrt{3}$ still holds.")
+    assert "math that won't render" not in r3.body
+
+    # …but a NEW money-dollar mispairing introduced by the edit fires
+    r4 = draft.edit(
+        id=para_h,
+        text=r"The ratio $\sqrt{2/\sqrt{3}$ holds; costs $5 per two units $.",
+    )
+    assert "math that won't render" in r4.body and "prose/currency" in r4.body
+
+    # the find= replace path carries the hint too (the touched span changed)
+    r5 = draft.edit(id=para_h, find="two units", text="three units")
+    assert "math that won't render" in r5.body
 
 
 def test_defined_abbrevs_collects_terms_and_inline(
@@ -1523,13 +1597,17 @@ def test_clean_chunk_has_no_finding_warning(draft: DraftHandler, hub: Hub) -> No
 
 
 def test_numeric_chunk_ref_flagged(draft: DraftHandler, hub: Hub) -> None:
-    # An LLM that writes a numeric id ([[45650]]) where a handle belongs
-    # gets warned on read.
+    # A numeric id ([45650]) where a handle belongs is warned about on
+    # read. The handler put/edit paths now REFUSE to introduce one
+    # (test_edit_introducing_dangling_ref_raises_before_write), so the
+    # read hint covers legacy content — seeded via the store directly.
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].dc
-    draft.put(
-        id="nt",
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    hub.live_store.drafts.add_chunks(
+        ref_id=ref.id,
         chunk_kind="paragraph",
         text="As shown in [45650], the effect holds.",
         at={"after": title_h},
@@ -1624,8 +1702,12 @@ def test_tombstone_cite_distinct_from_plain_dangling(
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].dc
-    draft.put(
-        id="nt",
+    # The bogus handle would be refused by the handler write-gate; seed via
+    # the store directly, as legacy content would have entered.
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    hub.live_store.drafts.add_chunks(
+        ref_id=ref.id,
         chunk_kind="paragraph",
         text=f"Cites a dead hub [fi{fid}] and a bogus handle [dc999999].",
         at={"after": title_h},
@@ -1636,6 +1718,43 @@ def test_tombstone_cite_distinct_from_plain_dangling(
     # Exactly [dc999999] on the plain-dangling line — the tombstone
     # handle is reported separately, not folded into this list.
     assert "unresolved reference(s): [dc999999]." in out
+
+
+def test_chunk_cite_of_retired_source_is_a_tombstone_not_a_hard_block(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A `[pc<id>]` whose paper was soft-deleted stops resolving exactly
+    like a `[fi<id>]` whose finding was — so the write-path hard gate must
+    treat it the same way: advisory, never a refusal. Blocking it would
+    make a structural edit (pasting the prose that carries the cite into a
+    new chunk) impossible without deleting a citation. A handle naming no
+    chunk row at all is still a typo, and still blocks."""
+    from precis.store.types import ChunkInsert
+
+    store = hub.live_store
+    paper = store.insert_ref(kind="paper", slug="gone24", title="Gone 2024")
+    row = store.chunks.insert_chunks(paper.id, [ChunkInsert(ord=0, text="passage")])[0]
+    cite = f"pc{row.id}"
+    store.retire_ref(paper.id)
+
+    # the resolver can no longer see it — this IS the dangling bucket…
+    assert cite in _draft_lint.dangling_chunk_tokens(store, f"[{cite}]")
+    # …but the hard gate carves it out as a tombstone
+    assert _draft_lint.newly_unresolvable_tokens(store, f"[{cite}]") == []
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"Carried over from a retired source [{cite}].",
+        at={"after": "¶" + title_h},
+    )
+    assert "dc" in r.body  # the write landed
+
+    # a chunk handle backed by no row at all stays a hard refusal
+    assert _draft_lint.newly_unresolvable_tokens(store, "[pc999999]") == ["pc999999"]
 
 
 def test_uncited_pinned_finding_tombstone_not_flagged(

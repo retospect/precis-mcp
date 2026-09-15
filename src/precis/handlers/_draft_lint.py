@@ -1,6 +1,11 @@
 """Draft-write-path lint — advisory hints appended to a `draft` `put`/`edit`
 `Response`, never a refusal (the write always lands; these are nudges an
-authoring agent can act on or ignore). Each ``*_hint`` function inspects the
+authoring agent can act on or ignore). ONE exception: a write that
+*introduces* a handle-shaped ``[…]`` reference resolving to nothing at all
+is a hard ``BadInput`` (:func:`newly_unresolvable_tokens`, raised by the
+handler before the write lands) — matching the web inline editor's 422
+save-gate; tombstones and ``finding #slug`` placeholders stay advisory.
+Each ``*_hint`` function inspects the
 touched text (and, for the abbreviation/citation/dangling-reference checks,
 what the write *changed* vs. what was already there — so re-reading a chunk
 doesn't re-nag about a problem it didn't introduce) and returns either ``""``
@@ -9,7 +14,9 @@ doesn't re-nag about a problem it didn't introduce) and returns either ``""``
 Covers: undefined/inline-only abbreviations, non-canonical citation forms
 (bare ``paper:`` mentions, whole-paper vs. chunk cites, literal
 ``\\cite{...}``), a Taproot claim-hub cite nudge, malformed temperature/unit
-notation, dangling ``[...]``/``finding #slug`` references, and — reported
+notation, ``$…$`` math spans the exporters would demote to literal text
+(:func:`math_form_hint`), dangling ``[...]``/``finding #slug`` references,
+and — reported
 distinctly from a plain dangling reference — a ``[...]`` cite whose target
 is a real ref that has since been soft-deleted (a tombstone, gr265228).
 Pure functions over an explicit :class:`~precis.store.store.Store` (no
@@ -415,6 +422,29 @@ def temperature_form_hint(text: str) -> str:
     )
 
 
+def math_form_hint(new_text: str, old_text: str = "") -> str:
+    r"""Advisory ⚠ for ``$…$`` math spans the LaTeX exporter would DEMOTE
+    to escaped literal prose — unbalanced ``{ }`` braces, or prose/currency
+    accidentally paired between two ``$`` — plus a stray unpaired ``$``.
+    The judgment is delegated to ``export/latex.py::lint_math_spans``, the
+    exporter's own demotion predicates, so this warning and the export
+    behaviour can never disagree. Scoped to what this write *introduced*
+    (a complaint already present in ``old_text`` is not re-nagged),
+    mirroring the abbrev hint. A hint, never a refusal."""
+    from precis.export.latex import lint_math_spans
+
+    old = set(lint_math_spans(old_text)) if old_text else set()
+    complaints = [c for c in lint_math_spans(new_text) if c not in old]
+    if not complaints:
+        return ""
+    shown = "; ".join(complaints[:5])
+    return (
+        f"\n\n⚠ math that won't render: {shown}. The LaTeX/docx exporters "
+        "demote such spans to escaped literal text instead of math — fix "
+        "the span, or escape a literal dollar as \\$."
+    )
+
+
 def dangling_finding_tokens(store: Store, text: str) -> list[str]:
     """The ``finding #slug`` markers in ``text`` that resolve to no live
     finding ref — the placeholder slugs a reader could mistake for a real
@@ -616,6 +646,53 @@ def newly_dangling(
     old_find = set(dangling_finding_tokens(store, old_text))
     find = [s for s in dangling_finding_tokens(store, new_text) if s not in old_find]
     return chunk, find
+
+
+def newly_unresolvable_tokens(
+    store: Store, new_text: str, old_text: str = ""
+) -> list[str]:
+    """The handle-shaped ``[…]`` references this write *introduces* that
+    resolve to **nothing at all** — the hard-``BadInput`` subset of the
+    reference lints (``DraftHandler._raise_on_new_dangling_refs``), the
+    MCP-side twin of the web inline editor's 422 save-gate. Deliberately
+    narrower than :func:`newly_dangling`'s chunk leg: a **tombstone** (a
+    real ref soft-deleted underneath the cite, gr265228) stays an advisory
+    hint — the reference was valid when written and blocking the edit
+    would trap the author — and ``finding #slug`` placeholders stay
+    advisory too (they are deliberate forward references). Pre-existing
+    dead refs in ``old_text`` never block: they are standing debt, not
+    this write's regression.
+
+    The tombstone carve-out extends to **chunk-level** handles, which
+    :func:`_classify_chunk_ref_tokens` leaves in the plain dangling
+    bucket (its own split is ref-level only). A ``[pc<id>]`` whose paper
+    was soft-deleted stops resolving exactly like a ``[fi<id>]`` whose
+    finding was — same "valid when written" rationale, so it must get the
+    same advisory treatment, or a structural edit (splitting a chunk,
+    pasting the prose that carries the cite into a new one) would be
+    unable to land without deleting a citation.
+    :meth:`~precis.store._chunks_ops.ChunksOps.chunk_owner_kind` supplies
+    the split the resolver can't: a chunk row that exists under a
+    kind-matching (if retired) ref is a tombstone; a handle naming no
+    chunk row at all is a typo, and still blocks."""
+    old_dangling, _ = _classify_chunk_ref_tokens(store, old_text)
+    new_dangling, _ = _classify_chunk_ref_tokens(store, new_text)
+    old_bad = set(old_dangling)
+    out: list[str] = []
+    for h in new_dangling:
+        if h in old_bad:
+            continue
+        parsed = handle_registry.parse(h) if not h.isdigit() else None
+        if parsed is not None and parsed[1]:
+            kind, _is_chunk, chunk_id = parsed
+            try:
+                owner = store.chunks.chunk_owner_kind(chunk_id)
+            except Exception:  # pragma: no cover — store hiccup, don't block
+                owner = None
+            if owner == kind:
+                continue  # real chunk, retired source — a tombstone
+        out.append(h)
+    return out
 
 
 # ── [fi] cite-fit audit — does the cited hub's claim support the prose? ──

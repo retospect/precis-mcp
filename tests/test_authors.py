@@ -43,6 +43,45 @@ class TestAuthorDisplay:
         assert author_display(None) == ""
 
 
+class TestScrubName:
+    """Character-level hygiene at both funnels — write (normalize_authors)
+    and read (author_display) — so known-garbage legacy rows (refs 258,
+    3023, ryder14's thin space) render clean without a prod sweep."""
+
+    def test_exotic_spaces_collapse_to_plain(self) -> None:
+        # ryder14: a thin space (U+2009) in "Matthew R." became `\,`
+        # in the .bib, which biber's name parser read as a suffix →
+        # runaway .bbl. NBSP gets the same treatment.
+        assert author_display({"name": "Ryder, Matthew R."}) == "Ryder, Matthew R."
+        assert author_display({"family": "Doe", "given": "A. B."}) == "A. B. Doe"
+
+    def test_zero_widths_deleted(self) -> None:
+        assert author_display({"name": "Jane​Smith﻿"}) == "JaneSmith"
+
+    def test_trailing_backslash_stripped_at_write(self) -> None:
+        # refs 258: PDF-extraction debris "DIFFUSION MODELS\" — the
+        # trailing backslash goes; the junk guard then judges the rest.
+        out = normalize_authors(["Weber, Max\\"])
+        assert out == [{"given": "Max", "family": "Weber"}]
+
+    def test_write_path_scrubs_every_leg(self) -> None:
+        out = normalize_authors(
+            [
+                {"family": "Ryder", "given": "Matthew R."},
+                {"name": "Nellia​ Dzhubaeva"},
+                "Plato\\",
+            ]
+        )
+        assert out == [
+            {"given": "Matthew R.", "family": "Ryder"},
+            {"name": "Nellia Dzhubaeva"},
+            {"name": "Plato"},
+        ]
+
+    def test_packed_string_scrubbed(self) -> None:
+        assert author_names("Smith, J.; Doe, A.\\") == ["Smith, J.", "Doe, A."]
+
+
 class TestAuthorNames:
     def test_mixed_shapes_in_one_list(self) -> None:
         raw = [

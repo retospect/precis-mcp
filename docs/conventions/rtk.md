@@ -69,6 +69,29 @@ when the silence is *control-flow logic* rather than noise reduction — e.g. a
 quiet probe like `command -v foo 2>/dev/null || echo missing`, where you want
 silence regardless of outcome and branch on the exit code.
 
+## Long-running commands (`scripts/test`, `scripts/ship`, `scripts/deploy`)
+
+rtk can't digest what never reaches the Bash tool: a command that outlives
+the foreground timeout must run backgrounded with output redirected to a
+log, and a backgrounded task's stdout goes to that file, not through the
+digester. The one-layer pattern (an agent that stacks a waiter loop or a
+blocking TaskOutput on top is doing it wrong):
+
+1. Launch ONCE: `scripts/test … > /tmp/<name>.log 2>&1` with the Bash
+   tool's `run_in_background` — the harness notifies on exit; no polling,
+   no waiter loop, no blocking TaskOutput.
+2. Keep working. When the completion notification lands, read the log
+   **tail** (or `rtk read <log>`), never the whole file.
+3. Want live progress (a gate queueing on a slot, a long deploy)? Arm a
+   Monitor on the log with a tight per-line filter — e.g.
+   `tail -F <log> | grep -E --line-buffered 'FAILED|ERROR|✖|= .* (passed|failed)'`
+   — events only, not the stream.
+
+Why the redirect is mandatory, not stylistic: the harness caps a
+background task's captured stdout (~22K) and **kills the task at the
+cap** — a gate that chats too much dies mid-run and the `[killed]` looks
+like a gate failure (auto-memory `background-task-output-cap-kills-gates`).
+
 ## No hook outside Reto's dev Mac
 
 CI and cluster `claude -p` invocations don't have the PreToolUse hook
