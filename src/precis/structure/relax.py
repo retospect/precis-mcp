@@ -3,8 +3,15 @@
 `relax` is one verb with a ``fidelity`` rung: ``clean`` (rung 0) is **ours and
 always available** — a pure geometric repair that pushes sub-covalent / overlapping
 atoms apart toward their equilibrium bond length ("fix the stupid bonds", the
-"put bonds in, relax, it fixes itself" of §8.1). ``emt`` (rung 1) is
-also **ours** — a torch-free ASE-EMT relax, always available (ASE is a core
+"put bonds in, relax, it fixes itself" of §8.1). ``geo`` sits BESIDE ``clean``
+(also ours, always available, no energy of its own) — the graph-first
+hybridization-aware relax (bond springs + non-bond repulsion + a VSEPR
+angle-restoring term keyed on each atom's own hybridization,
+:mod:`precis.structure.georelax`, promoted out of the cyclodextrin generator's
+original cleanup pass, docs/backlog/se-nanobud-graph.md §1) — the capability
+``clean``'s pairwise-only repair never had: it restores bond ANGLES too (an
+sp2 vertex toward 120°, not just sp3's 109.47°), not only lengths. ``emt``
+(rung 1) is also **ours** — a torch-free ASE-EMT relax, always available (ASE is a core
 dependency, no MLIP needed), whose closed element coverage happens
 to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. Every rung
 above that is a **rented backend** (``ff``/``xtb``/``ml``/``dft-fast``/
@@ -14,7 +21,10 @@ surfaced as ``Unsupported`` at the handler, never a crash.
 
 Rung 0 honours the ``fixed`` constraint (a fixed axis never moves) and returns a
 structured convergence envelope (converged + steps + max displacement + the
-per-step curve), the §9/§22-D contract. It mutates the Scene in place.
+per-step curve), the §9/§22-D contract. It mutates the Scene in place. Rung
+``geo`` honours ``fixed`` too, but only whole-atom (any fixed axis pins the
+whole atom — the shared graph-relax core has no per-axis freedom); a caller
+needing genuine per-axis pinning wants ``clean`` or an energy rung.
 
 Unit enclave (package docstring): Å/eV-native throughout, following ASE
 (``Atoms``, EMT, FIRE/BFGS) — energies in eV, forces in eV/Å, displacements
@@ -27,7 +37,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import elements, export
+from . import elements, export, georelax
 from .scene import Scene
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
@@ -186,10 +196,11 @@ def relax(
             f"unknown cell relax mode {cell!r} (use 'inplane', 'full', or omit)"
         )
     cell_mode = None if cell == "fixed" else cell
-    if cell_mode is not None and fidelity in ("clean", "0"):
+    if cell_mode is not None and fidelity in ("clean", "0", "geo"):
         raise RelaxUnsupported(
             "variable-cell relax needs an energy rung (fidelity='ml'); the "
-            "'clean' geometry repair has no stress to relax the cell against"
+            "'clean'/'geo' geometry rungs have no stress to relax the cell "
+            "against"
         )
     if cell_mode is not None and fidelity == "emt":
         raise RelaxUnsupported(
@@ -202,6 +213,8 @@ def relax(
         )
     if fidelity in ("clean", "0"):
         return _relax_clean(scene, steps=steps, tol=tol)
+    if fidelity == "geo":
+        return _relax_geo(scene, steps=steps, tol=tol)
     if fidelity == "emt":
         return _relax_emt(scene, steps=steps, tol=tol)
     if fidelity == "ml":
@@ -273,6 +286,81 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
         n_steps=n,
         max_disp=max_disp,
         curve=curve,
+        forces=approx_forces,
+        forces_approx=approx_forces is not None,
+        forces_source="emt" if approx_forces is not None else None,
+    )
+
+
+def _relax_geo(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
+    """Rung ``geo``, beside ``clean``: the graph-first hybridization-aware
+    relax (:mod:`precis.structure.georelax`, docs/backlog/se-nanobud-graph.md
+    §1) — bond springs + non-bond repulsion + a VSEPR angle-restoring term
+    keyed on each atom's own declared/default hybridization. Like ``clean``,
+    it has no potential energy of its own (``energy``/``max_force`` stay
+    ``None``); unlike ``clean``, it restores bond ANGLES too (an sp2 vertex
+    toward 120°, an sp3 one toward 109.47°/its lone-pair-adjusted variant —
+    :func:`precis.structure.vsepr.ideal_angle`), not just bond lengths.
+
+    Scene atoms translate to :func:`~precis.structure.georelax.relax_graph`'s
+    plain-array inputs: Cartesian coordinates (``frac`` through the cell),
+    a bond graph over atom INDICES (``scene.bonds``, both endpoints
+    resolved through this scene's own label set — a bond into an unrelated
+    scene, never possible here, would simply be skipped), each atom's own
+    ``hybridization`` (declared intent, defaulting to ``"sp3"`` when unset —
+    the same default :func:`precis.structure.vsepr.infer_hybridization`
+    falls back to for an undeclared atom with no bond-order signal to
+    guess from), and ``fixed`` as a whole-atom pin (any fixed axis pins the
+    whole atom — the shared core has no per-axis freedom, see the module
+    docstring).
+
+    Coordinates come from ``frac_to_cart`` directly, per atom, with NO
+    minimum-image unwrapping across a bond (unlike ``clean``, which walks
+    every pair through ``cell.mic``) — a bond that crosses a periodic wall
+    reads its wrapped, not true, separation. This rung's intended input is
+    the graph-surgery/generator molecular scene (like
+    :func:`~precis.structure.georelax.register`, "molecular scenes only" —
+    docs/backlog/se-nanobud-graph.md §1 item 4), which is non-periodic or
+    sits in a large vacuum box with every atom already unwrapped; a genuine
+    periodic-slab use of this rung is future work, not this slice.
+    """
+    labels = list(scene.atoms)
+    if not labels:
+        return RelaxResult(rung="geo", converged=True, n_steps=0, max_disp=0.0)
+    elements_list = [scene.atoms[la].element for la in labels]
+    label_index = {la: idx for idx, la in enumerate(labels)}
+    before = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
+    coords = before.copy()
+    bonds = [
+        (label_index[b.i], label_index[b.j])
+        for b in scene.bonds
+        if b.i in label_index and b.j in label_index
+    ]
+    pinned = {idx for idx, la in enumerate(labels) if scene.atoms[la].fixed}
+    hybridizations = [scene.atoms[la].hybridization or "sp3" for la in labels]
+
+    trace = georelax.relax_graph(
+        elements_list,
+        coords,
+        bonds,
+        pinned,
+        hybridizations=hybridizations,
+        iters=steps,
+        tol=tol,
+    )
+
+    for idx, la in enumerate(labels):
+        scene.atoms[la].frac = scene.cell.wrap(scene.cell.cart_to_frac(coords[idx]))
+    max_disp = float(np.linalg.norm(coords - before, axis=1).max())
+    # Same qualitative-forces estimate as ``clean`` (gripe 161576) — ``geo``
+    # has no calculator of its own either.
+    approx_forces = estimate_forces_emt(scene)
+    return RelaxResult(
+        rung="geo",
+        converged=trace.converged,
+        n_steps=trace.n_steps,
+        max_disp=round(max_disp, 4),
+        curve=trace.curve,
         forces=approx_forces,
         forces_approx=approx_forces is not None,
         forces_source="emt" if approx_forces is not None else None,

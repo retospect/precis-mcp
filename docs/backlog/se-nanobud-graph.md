@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: graph-first sp2 construction — geo rung, spectral embed, nanobud generator, nomenclature
 prio: high
 model: opus
@@ -191,5 +191,5 @@ rung), `precis_se/atomic/generate.py` (op wiring). Migration only if
 - Decided: registration is post-relax, molecular-only, parity-fixed.
 - Open: exact fused-neck stitching menu — reconstruct Cases A–D from
   the primary papers before freezing names.
-- Open: does `geo` replace `clean` or sit beside it (leaning beside:
-  `clean` stays the cheap overlap-only sanitiser).
+- Decided (2026-09-14, build start): `geo` sits BESIDE `clean` —
+  `clean` stays the cheap overlap-only sanitiser.

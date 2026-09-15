@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: viz3d engine + view figures — cached stick/envelope renders of design objects in drafts
 prio: high
 model: opus
@@ -147,6 +147,17 @@ New `src/precis/viz3d/`. Touches `utils/figure_source.py`,
 - Decided: refine = render quality only.
 - Decided: live-slug source + deliberate refresh.
 - Open: draft handler op name/shape (`add_view_figure` vs a mode on
-  `_add_figure`).
-- Open: does `envelope` land in this item or as follow-on once stick
-  ships (leaning follow-on).
+  `_add_figure`) — decide at the wiring slice.
+- Residual (slice 1, cosmetic): the two half-sticks of a bond meet
+  round-cap-to-round-cap at the midpoint, leaving a faint hairline
+  visible only at ~3x magnification (sub-pixel at natural scale, and
+  at the 3x export raster it sits at the resolution floor). Butt caps
+  at the seam end would remove it; not worth a round until someone
+  sees it in a printed figure.
+- Residual (slice 1): `ball_scale` default 0.25 makes atom balls
+  barely distinguishable from bond caps in all-carbon structures
+  (covalent radius 0.76 A x 0.25 = 0.19 A vs 0.12 A stick radius).
+  Correct for "small balls" stick-figure intent; revisit if a figure
+  needs atoms to read as distinct.
+- Decided (2026-09-14, build start): `envelope` view is a follow-on
+  once stick ships.

@@ -25,6 +25,11 @@ Compute-adjacent seams, each with its own module docstring:
   faults, never physical verdicts.
 - `cache` — content-addressed relax memoisation; forces are stored
   label-paired, never canonical-rank-indexed (see ``serialize_forces``).
+- `georelax` — the shared graph-first geometry core behind the `geo` rung
+  (`relax.py`, hybridization-aware VSEPR-angle relax) plus
+  `embed_from_graph` (spectral coordinate seeding from a bond graph alone)
+  and `register` (canonical post-relax rigid framing); promoted out of
+  `precis_se.atomic.generators.sugars`'s original cyclodextrin relax pass.
 - `importers` — pure per-source adapters for external DFT DBs;
   the one write path is ``store.structure_import``, keyed on
   ``(dataset, config_id)``; an external run never serves a compute cache hit

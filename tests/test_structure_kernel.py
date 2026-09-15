@@ -894,6 +894,121 @@ def test_relax_cell_mode_needs_an_energy_rung() -> None:
         relax(scene, fidelity="clean", cell="inplane")
 
 
+# -- relax (rung 'geo', graph-first hybridization-aware, beside 'clean') -----
+
+
+def _distorted_sp2_scene() -> Scene:
+    """A trigonal-planar carbon centre, bond lengths/angles deliberately off
+    both the covalent-radii-sum target and the sp2 120° ideal — the ``geo``
+    rung's motivating case (docs/backlog/se-nanobud-graph.md §1): ``clean``
+    only fixes lengths, ``geo`` restores angles too, and 120° is a capability
+    the shared relax core never had before this move (`sugars.py`'s original
+    always restored toward sp3's 109.47°). Non-periodic (``pbc=False``): the
+    ``geo`` rung reads each atom's Cartesian position straight off its own
+    ``frac`` (no minimum-image unwrapping across bonds, unlike ``clean`` —
+    see ``_relax_geo``'s docstring), so a molecular scene with negative
+    coordinates needs a non-periodic cell or a wrap-safe offset, exactly the
+    same discipline `test_se_atomic_sugars.py`'s ``_to_scene`` helper
+    already follows for this generator family."""
+    scene = Scene(cell=Cell.from_lengths_angles(60, 60, 60, pbc=(False, False, False)))
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom",
+                "element": "C",
+                "cart": [0.0, 0.0, 0.0],
+                "hybridization": "sp2",
+            },
+            {
+                "op": "add_atom",
+                "element": "C",
+                "cart": [1.9, 0.4, 0.05],
+                "hybridization": "sp2",
+            },
+            {
+                "op": "add_atom",
+                "element": "C",
+                "cart": [-0.8, 1.7, -0.1],
+                "hybridization": "sp2",
+            },
+            {
+                "op": "add_atom",
+                "element": "C",
+                "cart": [-0.7, -1.5, 0.05],
+                "hybridization": "sp2",
+            },
+            {"op": "add_bond", "i": "aC1", "j": "aC2"},
+            {"op": "add_bond", "i": "aC1", "j": "aC3"},
+            {"op": "add_bond", "i": "aC1", "j": "aC4"},
+        ],
+    )
+    return scene
+
+
+def test_relax_geo_restores_bond_lengths_and_sp2_angles() -> None:
+    scene = _distorted_sp2_scene()
+    res = relax(scene, fidelity="geo", steps=400, tol=1e-6)
+    assert res.rung == "geo"
+    assert res.converged
+    assert res.energy is None and res.max_force is None  # no potential, like clean
+    for j in ("aC2", "aC3", "aC4"):
+        length = probe.distance(scene, "aC1", j)
+        assert 1.4 < length < 1.65  # C-C covalent-radii-sum target, not 1.9/etc
+    for a, c in (("aC2", "aC3"), ("aC2", "aC4"), ("aC3", "aC4")):
+        angle = probe.angle(scene, a, "aC1", c)
+        assert angle == pytest.approx(120.0, abs=3.0)  # sp2, not sp3's 109.47
+
+
+def test_relax_geo_respects_fixed() -> None:
+    scene = _distorted_sp2_scene()
+    apply_ops(scene, [{"op": "constrain", "atoms": ["aC1"], "kind": "fixed-all"}])
+    before = scene.atoms["aC1"].frac.copy()
+    relax(scene, fidelity="geo", steps=100)
+    assert np.allclose(scene.atoms["aC1"].frac, before)
+
+
+def test_relax_geo_defaults_undeclared_atoms_to_sp3() -> None:
+    """No declared ``hybridization`` on an atom falls back to sp3 (the same
+    default :func:`precis.structure.vsepr.infer_hybridization` uses) —
+    `sugars.py`'s exact original behavior, now reachable through the
+    shared ``geo`` rung too."""
+    scene = Scene(cell=Cell.from_lengths_angles(60, 60, 60, pbc=(False, False, False)))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "C", "cart": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "C", "cart": [1.6, 0.2, 0.1]},
+            {"op": "add_atom", "element": "C", "cart": [-0.5, 1.5, 0.3]},
+            {"op": "add_atom", "element": "C", "cart": [-0.5, -1.4, 0.2]},
+            {"op": "add_atom", "element": "C", "cart": [0.1, -0.2, 1.6]},
+            {"op": "add_bond", "i": "aC1", "j": "aC2"},
+            {"op": "add_bond", "i": "aC1", "j": "aC3"},
+            {"op": "add_bond", "i": "aC1", "j": "aC4"},
+            {"op": "add_bond", "i": "aC1", "j": "aC5"},
+        ],
+    )
+    relax(scene, fidelity="geo", steps=400, tol=1e-6)
+    pairs = [
+        ("aC2", "aC3"),
+        ("aC2", "aC4"),
+        ("aC2", "aC5"),
+        ("aC3", "aC4"),
+        ("aC3", "aC5"),
+        ("aC4", "aC5"),
+    ]
+    for a, c in pairs:
+        angle = probe.angle(scene, a, "aC1", c)
+        assert angle == pytest.approx(109.47, abs=6.0)
+
+
+def test_relax_geo_cell_mode_needs_an_energy_rung() -> None:
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "C", "frac": [0, 0, 0]}])
+    with pytest.raises(RelaxUnsupported):  # 'geo' has no stress either
+        relax(scene, fidelity="geo", cell="inplane")
+
+
 # -- relax (rung 1, ASE-EMT) -------------------------------------
 
 

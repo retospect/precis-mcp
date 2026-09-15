@@ -70,7 +70,13 @@ entry, main loop 2026-08-31):
    construction bakes in badly acute/obtuse angles at C1/C4/O5 that the
    bond-length-only relax pass (round 3's first cut) never touched,
    measured by a reviewer at 149-201 ``angle_strain`` findings (mean
-   ~34°, worst 72.8° — ``vsepr.ANGLE_TOL`` is 15°) before this fix.
+   ~34°, worst 72.8° — ``vsepr.ANGLE_TOL`` is 15°) before this fix. **This
+   relax pass now lives in** :mod:`precis.structure.georelax`
+   (:func:`~precis.structure.georelax.relax_graph`, imported here as
+   ``_relax``) — promoted to the core relax ladder's ``geo`` rung
+   (docs/backlog/se-nanobud-graph.md §1) and generalized from a hard-coded
+   sp³ angle target to a per-atom hybridization-aware one; this module's
+   own call site (always sp³) is byte-identical to before the move.
    **Either path stamps which one ran into the returned block's
    ``provenance``** — the honesty note the task spec asks for.
 
@@ -120,8 +126,7 @@ from typing import Any
 
 import numpy as np
 
-from precis.structure.elements import covalent_radius
-from precis.structure.vsepr import ideal_angle as vsepr_ideal_angle
+from precis.structure.georelax import relax_graph as _relax
 from precis_se.atomic.generators._types import (
     GeneratedBlock,
     GeneratedPort,
@@ -201,28 +206,21 @@ _C1_C4_PUCKER_Z = 1.0
 #: covalent-radii-sum target; non-bond repulsion pushes every OTHER pair
 #: outside its own auto-bond-detection cutoff (+5% safety margin); an
 #: angle-restoring term pulls every ≥2-neighbor vertex's bond angles
-#: toward the VSEPR sp³ ideal — :func:`_relax`'s docstring (round-3 review
-#: addition, the angle term).
-_RELAX_ITERS = 800
-_RELAX_STEP = 0.25
-_RELAX_REPULSION_MARGIN = 1.05
-#: Angle-term force constant / step size — a plain steepest-descent
-#: gradient step (:func:`_relax`'s docstring derives the analytic
-#: gradient), tuned empirically during development: a SMALL step
-#: (bigger steps oscillate and diverge rather than converging faster —
-#: verified empirically, larger step/K values measured WORSE final
-#: deviations, not better) over enough iterations converges every
-#: declared-bond angle triple well inside ``vsepr.ANGLE_TOL`` (15°) of the
-#: sp³ ideal for all three round-1 variants (measured: mean ~3.5°, worst
-#: ~15° across all three, zero ``angle_strain`` findings — comfortably
-#: inside the round-3 review acceptance bar of mean <8°/max <20°) — most
-#: of the improvement actually came from replacing the substituent
-#: placements that had a well-determined analytic answer
+#: toward the VSEPR sp³ ideal — see :mod:`precis.structure.georelax`
+#: (``relax_graph``, imported above as ``_relax``) for the pass itself and
+#: its tuned iteration count/step-size defaults (unchanged by the move: a
+#: SMALL step over many iterations converges reliably, verified empirically
+#: during this generator's original development — bigger steps oscillate
+#: and diverge rather than converging faster). Converges every declared-
+#: bond angle triple well inside ``vsepr.ANGLE_TOL`` (15°) of the sp³ ideal
+#: for all three round-1 variants (measured: mean ~3.5°, worst ~15° across
+#: all three, zero ``angle_strain`` findings — comfortably inside the
+#: round-3 review acceptance bar of mean <8°/max <20°) — most of the
+#: improvement actually came from replacing the substituent placements
+#: that had a well-determined analytic answer
 #: (:func:`_place_tetrahedral_single`/:func:`_place_tetrahedral_pair`/
 #: :func:`_place_tetrahedral_trio`) rather than from this term alone; see
 #: those functions' docstrings.
-_RELAX_ANGLE_K = 2.0
-_RELAX_ANGLE_STEP = 0.02
 
 
 def _validate_cd_params(raw: dict[str, Any]) -> tuple[str, int, float, int]:
@@ -779,132 +777,6 @@ def _place_tetrahedral_pair(
         return min(float(np.linalg.norm(obstacles - p, axis=1).min()) for p in opt)
 
     return option1 if score(option1) >= score(option2) else option2
-
-
-def _angle_theta_gradients(
-    p_i: np.ndarray, p_k: np.ndarray, p_j: np.ndarray
-) -> tuple[float, np.ndarray, np.ndarray, np.ndarray]:
-    """The angle i-k-j (radians) and its gradient w.r.t. each of the three
-    positions — the standard molecular-mechanics angle-bending gradient
-    (``d(theta)/d(pos) = -1/sin(theta) · d(cos(theta))/d(pos)``, itself from
-    the law-of-cosines derivative). Verified against a finite-difference
-    check across several random configurations during this function's
-    development (never re-derived carelessly — a sign error here would
-    silently push angles the WRONG way). ``sin(theta)`` is floored away
-    from zero to avoid a blow-up at the (chemically meaningless, shouldn't
-    occur) degenerate collinear/coincident case."""
-    r_ki = p_i - p_k
-    r_kj = p_j - p_k
-    d_ki = float(np.linalg.norm(r_ki))
-    d_kj = float(np.linalg.norm(r_kj))
-    cos_t = float(np.clip(np.dot(r_ki, r_kj) / (d_ki * d_kj), -1.0, 1.0))
-    theta = float(np.arccos(cos_t))
-    sin_t = max(math.sin(theta), 1e-3)
-    grad_i_cos = r_kj / (d_ki * d_kj) - cos_t * r_ki / (d_ki**2)
-    grad_j_cos = r_ki / (d_ki * d_kj) - cos_t * r_kj / (d_kj**2)
-    grad_k_cos = -(grad_i_cos + grad_j_cos)
-    return theta, -grad_i_cos / sin_t, -grad_j_cos / sin_t, -grad_k_cos / sin_t
-
-
-def _angle_triples(
-    elements: list[str], bonds: list[tuple[int, int]]
-) -> list[tuple[int, int, int, float]]:
-    """Every ``(i, k, j, theta0_rad)`` bond-angle triple ``_relax``'s angle
-    term restores toward — EVERY vertex with ≥2 bonded neighbours and a
-    VSEPR-applicable element, every neighbour pair at that vertex (matching
-    exactly what :func:`precis.structure.vsepr.advisories`'s
-    ``angle_strain`` rule would later measure on the realized ``structure``
-    Scene — "the same neighbor triples vsepr would see", per the round-3
-    review instruction), target = :func:`precis.structure.vsepr.ideal_angle`
-    at ``"sp3"`` (every atom in this generator's output is stamped sp³)."""
-    n = len(elements)
-    adj: dict[int, list[int]] = {i: [] for i in range(n)}
-    for i, j in bonds:
-        adj[i].append(j)
-        adj[j].append(i)
-    triples: list[tuple[int, int, int, float]] = []
-    for k in range(n):
-        neighbors = adj[k]
-        if len(neighbors) < 2:
-            continue
-        ideal_deg = vsepr_ideal_angle(elements[k], "sp3")
-        if ideal_deg is None:
-            continue
-        theta0 = math.radians(ideal_deg)
-        for a in range(len(neighbors)):
-            for b in range(a + 1, len(neighbors)):
-                triples.append((neighbors[a], k, neighbors[b], theta0))
-    return triples
-
-
-def _relax(
-    elements: list[str],
-    coords: np.ndarray,
-    bonds: list[tuple[int, int]],
-    pinned: set[int],
-) -> None:
-    """In-place bond-spring + non-bond-repulsion + angle-restoring cleanup
-    (module docstring, fallback path point 3). Every declared bond is
-    pulled toward its covalent-radii-sum target length; every NON-bonded
-    pair inside its own auto-bond-detection cutoff (:func:`precis.
-    structure.elements.covalent_radius`-derived, +5% safety margin — the
-    exact quantity ``structure.validate``'s over-valence rule and
-    ``probe.covalent_coordination`` check, via :func:`precis.structure.
-    elements.bond_cutoff`'s ``1.2×`` convention) is pushed apart; every
-    declared-bond angle triple (:func:`_angle_triples`) is pulled toward
-    its VSEPR sp³ ideal via the analytic angle-bending gradient
-    (:func:`_angle_theta_gradients`) — **round-3 review addition**: the
-    isosceles zigzag/O4-anchored construction bakes in badly acute/obtuse
-    angles at C1/C4/O5 the earlier bond-length-only relax never touched
-    (a reviewer measured 149-201 ``vsepr.angle_strain`` findings, mean
-    deviation ~34°, before this term existed). ``pinned`` atoms (the
-    glycosidic bridging oxygens) never move — they define the O4-ring-
-    diameter metric exactly, by construction, and must stay put through
-    this cleanup (an angle triple centered on a pinned atom still nudges
-    its two — movable — neighbours; only the pinned vertex's own position
-    is held). Not a physics engine: a fixed, small number of plain
-    gradient-descent-style passes, deterministic given deterministic input
-    coordinates (no randomness anywhere in this module)."""
-    n = len(elements)
-    bonded = {frozenset(b) for b in bonds}
-    movable = np.array([0.0 if i in pinned else 1.0 for i in range(n)])
-    triples = _angle_triples(elements, bonds)
-    for _ in range(_RELAX_ITERS):
-        disp = np.zeros_like(coords)
-        for i, j in bonds:
-            target = covalent_radius(elements[i]) + covalent_radius(elements[j])
-            d = coords[j] - coords[i]
-            dist = float(np.linalg.norm(d))
-            if dist < 1e-9:
-                continue
-            f = _RELAX_STEP * (dist - target) * (d / dist)
-            disp[i] += f * movable[i]
-            disp[j] -= f * movable[j]
-        for i in range(n):
-            for j in range(i + 1, n):
-                if frozenset((i, j)) in bonded:
-                    continue
-                cutoff = (
-                    1.2
-                    * (covalent_radius(elements[i]) + covalent_radius(elements[j]))
-                    * _RELAX_REPULSION_MARGIN
-                )
-                d = coords[j] - coords[i]
-                dist = float(np.linalg.norm(d))
-                if dist >= cutoff or dist < 1e-9:
-                    continue
-                f = _RELAX_STEP * (cutoff - dist) * (d / dist)
-                disp[i] -= f * movable[i]
-                disp[j] += f * movable[j]
-        for i, k, j, theta0 in triples:
-            theta, grad_i, grad_j, grad_k = _angle_theta_gradients(
-                coords[i], coords[k], coords[j]
-            )
-            f = _RELAX_ANGLE_STEP * _RELAX_ANGLE_K * (theta - theta0)
-            disp[i] -= f * grad_i * movable[i]
-            disp[j] -= f * grad_j * movable[j]
-            disp[k] -= f * grad_k * movable[k]
-        coords += disp
 
 
 def _zigzag_pair(
