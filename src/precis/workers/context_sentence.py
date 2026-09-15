@@ -21,6 +21,20 @@ the pass regenerates ONCE; a second violation drops the sentence entirely
 ``refs.meta['context_sentence_failed']`` so the paper converges rather
 than being re-billed every sweep.
 
+**The input can be the wrong paper.** Few held papers have a
+``card_abstract``, so the usual input is the first body chunk — and in a
+scanned journal PDF that is often a NEIGHBOURING article's reference list
+or front matter, not this paper's prose. Prod's first run wrote
+"a review of literature regarding atmospheric chemistry and planetary
+science" onto *Solid C60: a new form of carbon*, because ord 0..2 of that
+ref are an ozone-chemistry bibliography. The model was not hallucinating;
+it described what it was handed. So the prompt makes the TITLE
+authoritative and gives the model :data:`NO_CONTEXT` to decline with when
+the text can't belong to a paper of that title — a decline is terminal
+(:func:`is_decline`), never retried, since a retry that invents a sentence
+is the exact failure the hatch exists to stop. A wrong context line is
+worse than none: it rides along with someone's literal quote as fact.
+
 Self-contained ref-pass (shaped like ``paper_glossary``/``hub_tagline`` —
 DB reads + one outbound LLM call per paper, not a pure ``WorkerHandler``).
 
@@ -60,7 +74,9 @@ __all__ = [
     "MAX_WORDS",
     "META_FAILED_KEY",
     "META_KEY",
+    "NO_CONTEXT",
     "backfill_candidate_ref_ids",
+    "is_decline",
     "lint_violation",
     "propose_context_sentence",
     "run_context_sentence_pass",
@@ -101,6 +117,10 @@ _BLOCKLIST_RE = re.compile(
 
 _QUOTE_CHARS = "\"'`“”‘’"
 
+#: Exact token the model must return when the supplied text can't ground a
+#: sentence. Treated as a drop, not a sentence — see :data:`_SYS`.
+NO_CONTEXT = "NO_CONTEXT"
+
 _SYS = (
     "You write ONE neutral, descriptive sentence characterizing a scientific "
     "paper's methodology or evidence type -- context a reader needs before "
@@ -110,7 +130,15 @@ _SYS = (
     "the method/evidence type only, in a neutral register. Never use words "
     "like proof, definitive, confirms, demonstrates, proves, or establishes. "
     "At most 35 words, ONE sentence, no preamble, no markdown. Reply with "
-    "ONLY the sentence and nothing else."
+    "ONLY the sentence and nothing else.\n\n"
+    "The TITLE is authoritative about what the paper is; the supplied text is "
+    "machine-extracted and is sometimes NOT this paper's own prose -- a "
+    "neighbouring article's reference list, front matter, or an unrelated "
+    "column can bleed in. If the text does not plausibly belong to a paper "
+    f"with that title, or is too thin to characterize it, reply with exactly "
+    f"{NO_CONTEXT} and nothing else. Never infer the subject matter from "
+    "text that contradicts the title -- a wrong context line is worse than "
+    "none, because it is attached to someone's quote as fact."
 )
 
 
@@ -175,14 +203,27 @@ def propose_context_sentence(client: Any, title: str, abstract: str) -> str | No
     return sentence or None
 
 
+def is_decline(sentence: str) -> bool:
+    """True when the model used its :data:`NO_CONTEXT` escape hatch — the
+    supplied text didn't plausibly belong to a paper with that title (a
+    neighbouring article's reference list bleeding into a scan is the
+    common shape). Terminal: never retried, because a retry that invents
+    a sentence anyway is exactly the outcome the escape hatch prevents."""
+    return sentence.strip().rstrip(".").upper() == NO_CONTEXT
+
+
 def _generate_with_lint(client: Any, title: str, abstract: str) -> str | None:
     """Propose + lint; on a violation, regenerate ONCE; a second violation
     drops the sentence ("no sentence beats a bad one" — spec). Never
     raises."""
     sentence = propose_context_sentence(client, title, abstract)
+    if sentence is not None and is_decline(sentence):
+        return None
     if sentence is not None and lint_violation(sentence) is None:
         return sentence
     retry = propose_context_sentence(client, title, abstract)
+    if retry is not None and is_decline(retry):
+        return None
     if retry is not None and lint_violation(retry) is None:
         return retry
     return None

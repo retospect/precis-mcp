@@ -17,8 +17,10 @@ from precis.taproot.hub import mint_hub
 from precis.workers.context_sentence import (
     META_FAILED_KEY,
     META_KEY,
+    NO_CONTEXT,
     _generate_with_lint,
     backfill_candidate_ref_ids,
+    is_decline,
     lint_violation,
     propose_context_sentence,
     run_context_sentence_pass,
@@ -139,6 +141,32 @@ class TestGenerateWithLint:
         )
         assert _generate_with_lint(client, "T", "A") is None
         assert len(client.calls) == 2
+
+    def test_decline_drops_the_paper_without_a_retry(self) -> None:
+        """A decline means the supplied text wasn't this paper (prod wrote an
+        atmospheric-chemistry sentence onto a C60 paper off a neighbouring
+        article's reference list). Retrying would invite the model to invent
+        one instead — the exact outcome the escape hatch exists to stop."""
+        client = _FakeClient([NO_CONTEXT, "Computational study; DFT-only."])
+        assert _generate_with_lint(client, "T", "A") is None
+        assert len(client.calls) == 1
+
+    def test_violation_then_decline_drops_the_paper(self) -> None:
+        """The regenerate-once path can itself land on a decline: the first
+        attempt trips the blocklist, and the retry — looking again at text
+        that isn't this paper — declines instead. That must drop, not fall
+        through to some third attempt or write the token."""
+        client = _FakeClient(["This proves the mechanism beyond doubt.", NO_CONTEXT])
+        assert _generate_with_lint(client, "T", "A") is None
+        assert len(client.calls) == 2
+
+    def test_a_decline_is_never_written_as_the_sentence(self) -> None:
+        # NO_CONTEXT is short and carries no blocklisted word, so the lint
+        # alone would happily pass it straight through into refs.meta.
+        assert lint_violation(NO_CONTEXT) is None
+        assert is_decline(NO_CONTEXT)
+        assert is_decline("no_context.")
+        assert not is_decline("Computational study; DFT-only.")
 
 
 # ── backfill selection (real PG) ───────────────────────────────────────
