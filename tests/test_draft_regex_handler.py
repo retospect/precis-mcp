@@ -188,6 +188,24 @@ def test_sub_refuses_to_break_a_reference(
     assert seeded["s1"] in draft.get(id=plain_h).body  # not half-applied
 
 
+def test_sub_leaves_a_preexisting_dead_ref_alone(
+    draft: DraftHandler, seeded: dict[str, str], hub: Hub
+) -> None:
+    """The `sub=` gate is diff-scoped like the others: a chunk that ALREADY
+    carries a dead reference (standing debt, seeded the way legacy rows
+    acquired it) must still accept a substitution that doesn't touch it."""
+    ref = hub.live_store.get_ref(kind="draft", id=seeded["slug"])
+    assert ref is not None
+    hub.live_store.drafts.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="Legacy prose citing [dc999999] with an em-dash—here.",
+        at={"last": True},
+    )
+    out = draft.edit(id=seeded["slug"], sub={"find": "—", "replace": ", "}, apply=True)
+    assert "replacement(s)" in out.body
+
+
 def test_sub_dryrun_previews_a_breaking_substitution(
     draft: DraftHandler, seeded: dict[str, str]
 ) -> None:

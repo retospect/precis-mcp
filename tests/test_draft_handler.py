@@ -1755,6 +1755,23 @@ def test_chunk_cite_of_retired_source_is_a_tombstone_not_a_hard_block(
 
     # a chunk handle backed by no row at all stays a hard refusal
     assert _draft_lint.newly_unresolvable_tokens(store, "[pc999999]") == ["pc999999"]
+    # …and a tombstone earlier in the text must not stop the scan: a NEW
+    # broken ref after one still blocks.
+    assert _draft_lint.newly_unresolvable_tokens(
+        store, f"[{cite}] then [pc999999]"
+    ) == ["pc999999"]
+
+
+def test_preexisting_dead_ref_does_not_mask_a_newly_introduced_one(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The gate's diff scope SKIPS a ref that was already dead — it must not
+    stop scanning at one. A chunk carrying standing debt is still protected
+    from acquiring a second dead reference."""
+    store = hub.live_store
+    assert _draft_lint.newly_unresolvable_tokens(
+        store, "[dc999999] and [dc888888]", "[dc999999]"
+    ) == ["dc888888"]
 
 
 def test_uncited_pinned_finding_tombstone_not_flagged(

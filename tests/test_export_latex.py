@@ -355,9 +355,13 @@ def test_lint_math_spans_mirrors_the_demotion_predicates() -> None:
     # clean math + escaped literal dollars: silent
     assert latex.lint_math_spans(r"Euler: $e^{i\pi} = -1$.") == []
     assert latex.lint_math_spans(r"Scaffold \$300 and staples \$200.") == []
-    # the same offending span twice → one complaint (deduped)
+    # the same offending span twice → one complaint (deduped)…
     twice = latex.lint_math_spans(r"$\sqrt{2$ and again $\sqrt{2$")
     assert len(twice) == 1
+    # …and the dedup SKIPS the repeat rather than stopping the scan — a
+    # later, distinct offender still gets its own complaint.
+    mixed = latex.lint_math_spans(r"$\sqrt{2$ x $\sqrt{2$ y $\sqrt{3$")
+    assert len(mixed) == 2
     # a long span is truncated in the complaint, not quoted wholesale
     long_span = "$x_{1} " + "word " * 30 + "$ end"
     (c,) = latex.lint_math_spans(long_span)
