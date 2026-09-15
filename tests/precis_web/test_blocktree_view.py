@@ -558,6 +558,122 @@ def test_se_view3d_hostile_overrides_excluded_from_scene_url(
     assert "scene3d.json" in scene_url_line  # sanity: the right line
 
 
+# ── topology cloud payload (slice 1 of
+#    docs/backlog/se-topology-cloud-and-surface-notes.md) ────────────────
+
+
+def test_scene3d_carries_topology_nodes(blocktree_client, runtime_with_store) -> None:
+    """The cloud replaces the mermaid panel, so ``scene3d.json`` must
+    carry the nodes as DATA (ids, parents, detail), not only as a
+    ``graph LR`` string."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json")
+    assert r.status_code == 200
+    body = r.json()
+    nodes = {n["name"]: n for n in body["nodes"]}
+    assert {"hub", "rim", "fork", "fork_arm", "fork_tip"} <= set(nodes)
+    # ids use the SAME B<uid> scheme the mermaid source uses, so the
+    # client's id<->3D-path correspondence is unchanged.
+    for n in nodes.values():
+        assert n["id"].startswith("B")
+        assert f"{n['id']}[" in body["mermaid"] or f'{n["id"]}["' in body["mermaid"]
+    # containment is carried, so the cloud can draw an opened parent's hull
+    assert nodes["fork_arm"]["parent"] == nodes["fork"]["id"]
+    assert nodes["fork"]["parent"] is None
+    # declared detail rides along; nothing is synthesized for a bare block
+    assert "envelope: cyl:r0.02h0.05" in nodes["hub"]["detail"]
+
+
+def test_scene3d_nodes_follow_the_abstraction_ladder(
+    blocktree_client, runtime_with_store
+) -> None:
+    """A collapsed parent is one ``box`` node standing for its subtree —
+    the same plan the 3D view renders, not a second visibility rule."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json?level=envelope")
+    assert r.status_code == 200
+    nodes = {n["name"]: n for n in r.json()["nodes"]}
+    assert "fork_arm" not in nodes
+    assert nodes["fork"]["kind"] == "box"
+
+
+def test_scene3d_connections_carry_subject_and_gap(
+    blocktree_client, runtime_with_store
+) -> None:
+    """``subject`` is the join key into ``forces`` — without it the client
+    would have to re-parse the human label."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json")
+    conn = r.json()["connections"][0]
+    assert conn["subject"] == "hub.pin—rim.pin"
+    assert conn["subject"] in conn["label"]
+    assert isinstance(conn["witness_gap"], (int, float))
+
+
+def test_scene3d_forces_report_role_without_inventing_numbers(
+    blocktree_client, runtime_with_store
+) -> None:
+    """The seeded design declares no preload, so there is no solved force
+    to show: the entry carries the member's role and NO newton figure.
+    Honesty rule from the spec — an absent number is reported as absent,
+    never as zero."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json")
+    forces = r.json()["forces"]
+    entry = forces["hub.pin—rim.pin"]
+    assert entry["role"] == "tie"
+    assert "declared_n" not in entry
+    assert "implied_n" not in entry
+
+
+def test_scene3d_forces_carry_declared_preload_when_solved(
+    blocktree_client, runtime_with_store
+) -> None:
+    """With a declared preload the prestress solve has real newtons to
+    report, and they reach the hover payload."""
+    ops = [
+        {"op": "add_block", "name": "a", "pose": [0, 0, 0]},
+        {"op": "add_block", "name": "b", "pose": [1, 0, 0]},
+        {"op": "add_port", "block": "a", "name": "pin"},
+        {"op": "add_port", "block": "b", "name": "pin"},
+        {
+            "op": "connect",
+            "a": "a.pin",
+            "b": "b.pin",
+            "joint": {
+                "class": "axial",
+                "params": {
+                    "tension_capacity": 500.0,
+                    "compression_capacity": 0.0,
+                    "preload": 120.0,
+                },
+            },
+        },
+    ]
+    SeHandler(hub=runtime_with_store.hub).put(
+        id="preloaded_web", text=json.dumps({"ops": ops})
+    )
+    r = blocktree_client.get("/se/preloaded_web/scene3d.json")
+    assert r.status_code == 200
+    entry = r.json()["forces"]["a.pin—b.pin"]
+    assert entry["declared_n"] == pytest.approx(120.0)
+
+
+def test_view3d_page_mounts_the_cloud_with_mermaid_as_fallback(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    assert 'id="bt3d-topology"' in r.text
+    assert 'topologyEl: document.getElementById("bt3d-topology")' in r.text
+    # the mermaid pre survives one release as the fallback, but starts hidden
+    wrap = next(
+        line for line in r.text.splitlines() if 'id="bt3d-mermaid-wrap"' in line
+    )
+    assert "hidden" in wrap
+
+
 # ── comment-on-selection → interview note (slice 2 of
 #    docs/backlog/se-topology-cloud-and-surface-notes.md) ────────────────
 

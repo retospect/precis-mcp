@@ -180,6 +180,42 @@ def _se_connect_colour(c: Any) -> str:
     return _ROLE_NEUTRAL if joint.get("class") != "axial" else _ROLE_TIE
 
 
+def _se_member_facts(tree: Any) -> dict[str, dict[str, Any]]:
+    """Per-member facts for the topology panel's hover, keyed by the
+    stability report's ``subject`` (``a.port—b.port`` — the same key
+    :attr:`~precis_web.blocktree_3d.ConnLine.subject` carries, so the
+    client joins rather than parses).
+
+    ONLY what a solve actually produced (spec slice 1's honesty rule —
+    never invent a number): ``role`` and, when present, the skip reason,
+    the normalized ``self_stress`` coefficient from
+    :func:`~precis_se.stability.classify`, and the real newton figures
+    (``declared_n``/``implied_n``) from
+    :func:`~precis_se.stability.prestress_report` — which returns ``None``
+    outright when no member declares a preload, so an un-prestressed
+    design simply has no force numbers to show. A member with no entry at
+    all (a non-axial connect) makes the client say so rather than print a
+    zero."""
+    facts: dict[str, dict[str, Any]] = {}
+    report = se_stability.classify(tree)
+    for row in report.members:
+        entry: dict[str, Any] = {"role": row.role}
+        if row.skipped is not None:
+            entry["skipped"] = row.skipped
+        elif row.self_stress is not None:
+            entry["self_stress"] = float(row.self_stress)
+        facts[row.subject] = entry
+    prestress = se_stability.prestress_report(tree)
+    if prestress is not None:
+        for prow in prestress.rows:
+            entry = facts.setdefault(prow.subject, {"role": prow.role})
+            if prow.declared is not None:
+                entry["declared_n"] = float(prow.declared)
+            if prow.implied is not None:
+                entry["implied_n"] = float(prow.implied)
+    return facts
+
+
 #: The 3D/mermaid connectivity overlay's own small colour vocabulary —
 #: distinct from :func:`~precis_web.blocktree_svg.force_colour`'s tie/
 #: strut/neutral triple (that one needs a computed self-stress sign this
@@ -616,10 +652,17 @@ def _build_scene3d(
     level: str,
     isolate: str | None,
     level_overrides: dict[str, str],
-) -> tuple[Scene3D | None, str | None]:
+) -> tuple[Scene3D | None, dict[str, dict[str, Any]], str | None]:
     """Off the event loop, mirroring :func:`_build_svg`'s shape: the
     round-2a analogue building a :class:`~precis_web.blocktree_3d.Scene3D`
-    off the SAME plan instead of an SVG string."""
+    off the SAME plan instead of an SVG string.
+
+    Returns ``(scene, member facts, error)`` — the facts
+    (:func:`_se_member_facts`) are the topology panel's hover numbers,
+    computed here rather than in the kind-agnostic scene builder because
+    they are domain vocabulary (the same reason ``_build_svg`` calls
+    ``se_stability`` directly). ``{}`` for a kind without a stability
+    solve, or when the solve itself fails."""
     adapter = _ADAPTERS[kind]
     tree: Tree[BlockNode, Any] = adapter.load_tree(store, ref_id)
     kids = children_map(tree)
@@ -627,7 +670,7 @@ def _build_scene3d(
         tree, kids, level=level, isolate=isolate, level_overrides=level_overrides
     )
     if plan is None:
-        return None, err
+        return None, {}, err
     uid_by_name = _uid_by_name(store, kind, ref_id)
     scene = build_scene(
         tree,
@@ -643,7 +686,16 @@ def _build_scene3d(
         label_fn=adapter.connect_label,
         colour_fn=adapter.connect_colour,
     )
-    return scene, None
+    facts: dict[str, dict[str, Any]] = {}
+    if adapter.has_stability:
+        try:
+            facts = _se_member_facts(tree)
+        except Exception:
+            # Hover enrichment must never 500 the scene: no numbers is an
+            # honest degrade (the tooltip then says there is no solve),
+            # a broken topology panel is not.
+            log.exception("member facts failed for %s %s", kind, slug)
+    return scene, facts, None
 
 
 async def _scene3d_response(
@@ -666,7 +718,7 @@ async def _scene3d_response(
         )
     level_overrides = _parse_overrides(overrides)
 
-    def _build() -> tuple[Scene3D | None, str | None]:
+    def _build() -> tuple[Scene3D | None, dict[str, dict[str, Any]], str | None]:
         return _build_scene3d(
             store,
             kind,
@@ -682,7 +734,7 @@ async def _scene3d_response(
             level_overrides=level_overrides,
         )
 
-    scene, err = await asyncio.to_thread(_build)
+    scene, facts, err = await asyncio.to_thread(_build)
     if scene is None:
         return JSONResponse({"error": err}, status_code=400)
     return JSONResponse(
@@ -697,10 +749,30 @@ async def _scene3d_response(
                     "b_path": c.b_path,
                     "label": c.label,
                     "colour": c.colour,
+                    # The topology cloud's join key into ``forces`` below,
+                    # and its hover "gap" line.
+                    "subject": c.subject,
+                    "witness_gap": c.witness_gap,
                 }
                 for c in scene.connections
             ],
             "explode": scene.explode,
+            # The topology cloud's own input (slice 1): the visible blocks,
+            # parent-linked, with whatever detail the tree declared.
+            "nodes": [
+                {
+                    "id": n.id,
+                    "name": n.name,
+                    "path": n.path,
+                    "parent": n.parent,
+                    "kind": n.kind,
+                    "detail": n.detail,
+                }
+                for n in scene.nodes
+            ],
+            #: Per-member force facts keyed by connect ``subject`` — empty
+            #: when no solve produced any (never a fabricated zero).
+            "forces": facts,
             "mermaid": scene.mermaid,
             # gr340030 — the scale-bar overlay's own conversion factor:
             # real SI metres = a displayed coordinate / scale.

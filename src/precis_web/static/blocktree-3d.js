@@ -44,6 +44,7 @@ import {
   Display,
   Viewer,
 } from "/static/three-cad-viewer/three-cad-viewer.esm.min.js";
+import { renderTopologyCloud } from "/static/topology-cloud.js";
 
 const HIGHLIGHT_COLOUR = "#f59e0b";
 const EXPLODE_DURATION = 1.5;
@@ -405,6 +406,7 @@ function _startScaleBar(viewer, viewerEl, sceneScale) {
 export async function blocktreeViewer3D({
   viewerEl,
   mermaidEl,
+  topologyEl,
   explodeButton,
   connectionsToggle,
   sceneUrl,
@@ -437,8 +439,36 @@ export async function blocktreeViewer3D({
     return;
   }
 
-  // ── mermaid topology panel ──────────────────────────────────────────
-  if (mermaidEl) {
+  // ── topology panel ──────────────────────────────────────────────────
+  // The force-directed cloud is the panel (spec slice 1 —
+  // docs/backlog/se-topology-cloud-and-surface-notes.md); the mermaid
+  // `graph LR` remains ONLY as the fallback when the cloud can't run or
+  // the server sent no node list (an older/partial scene payload), and
+  // dies a release after the cloud proves out.
+  let cloud = null;
+  if (topologyEl && Array.isArray(data.nodes) && data.nodes.length) {
+    try {
+      cloud = renderTopologyCloud({
+        container: topologyEl,
+        nodes: data.nodes,
+        connections: data.connections || [],
+        forces: data.forces || {},
+        onSelect: (nodeId) => {
+          const path = findPathEndingInId(data.shapes, nodeId.replace(/^B/, ""));
+          if (path) selectPath(path);
+        },
+      });
+      if (mermaidEl && mermaidEl.parentElement) {
+        mermaidEl.parentElement.classList.add("hidden");
+      }
+    } catch (err) {
+      console.error("blocktree-3d: topology cloud failed", err);
+      cloud = null;
+    }
+  }
+  if (!cloud && topologyEl) topologyEl.classList.add("hidden");
+  if (!cloud && mermaidEl) {
+    if (mermaidEl.parentElement) mermaidEl.parentElement.classList.remove("hidden");
     mermaidEl.textContent = data.mermaid || "graph LR";
     if (window.mermaid) {
       try {
@@ -456,7 +486,11 @@ export async function blocktreeViewer3D({
   }
 
   let lastMermaidNode = null;
-  function highlightMermaidNode(blockId) {
+  function highlightTopologyNode(blockId) {
+    if (cloud) {
+      cloud.highlight(`B${blockId}`);
+      return;
+    }
     if (!mermaidEl) return;
     if (lastMermaidNode) {
       lastMermaidNode
@@ -565,7 +599,7 @@ export async function blocktreeViewer3D({
       }
     }
     const blockId = primaryPath.split("/").pop();
-    highlightMermaidNode(blockId);
+    highlightTopologyNode(blockId);
     showNotePanel(primaryPath);
   }
 

@@ -557,6 +557,11 @@ class ConnLine:
     #: pose-to-pose segment.
     witness: Vec3f | None = None
     witness_gap: float = 0.0
+    #: The stability report's own member key (``a.port—b.port``) for this
+    #: connect — already embedded in ``label``, carried separately so a
+    #: consumer joins on it instead of re-parsing the label. Empty for a
+    #: line built by an older caller/fixture.
+    subject: str = ""
 
 
 #: DSL param keys that are not lengths (counts/angles) — mirrors
@@ -755,6 +760,7 @@ def connectivity_lines(
                 colour=colour_fn(c),
                 witness=witness,
                 witness_gap=witness_gap,
+                subject=subject,
             )
         )
         i += 1
@@ -931,6 +937,86 @@ def _mermaid_escape(text: str) -> str:
 
 
 @dataclass
+class TopoNode:
+    """One block as the topology panel draws it — the force-directed
+    cloud's node payload (docs/backlog/se-topology-cloud-and-surface-
+    notes.md slice 1).
+
+    The cloud replaces the ``graph LR`` mermaid panel, so it needs the
+    same three things mermaid got from the source string, as data rather
+    than as a diagram language: the node's identity (``id``, the SAME
+    ``B<uid>`` scheme mermaid used, so the client's existing id↔3D-path
+    correspondence is unchanged), its containment (``parent`` — the cloud
+    draws an opened parent as a hull behind its children where mermaid
+    drew a subgraph box), and what to say about it on hover (``detail``).
+
+    ``kind`` is ``plan.shown``'s own vocabulary (``"shape"`` | ``"box"``):
+    a collapsed parent is a ``box``, which the cloud renders as one node
+    with its subtree folded in, exactly as the 3D view does."""
+
+    id: str
+    name: str
+    path: str
+    parent: str | None
+    kind: str
+    #: Short hover lines about THIS block (envelope DSL, description,
+    #: use) — only what the tree actually carries; a block with nothing
+    #: declared gets an empty list rather than invented filler.
+    detail: list[str] = field(default_factory=list)
+
+
+def topology_nodes(
+    tree: Tree[BlockNode, Connect],
+    plan: VisiblePlan,
+    uid_by_name: dict[str, int],
+    kids: dict[str, list[str]],
+    primary_path: dict[str, str],
+) -> list[TopoNode]:
+    """The visible blocks as :class:`TopoNode` rows, parent-linked.
+
+    ``parent`` is the nearest ancestor that is ITSELF shown (not merely
+    the stored parent): a block whose parent is collapsed out of the plan
+    is a root of the drawn cloud, matching what
+    :func:`mermaid_topology`'s subgraph nesting shows and what the 3D
+    assembly tree renders. Blocks with no uid, or with no rendered
+    geometry (absent from ``primary_path`` — :func:`build_shapes_node`
+    dropped them as undrawable), are omitted: the panel shows what the
+    viewer actually drew, never a node the user cannot select."""
+    parent_of = {k: p for p, ks in kids.items() for k in ks}
+    out: list[TopoNode] = []
+    for name in sorted(plan.shown):
+        uid = uid_by_name.get(name)
+        path = primary_path.get(name)
+        if uid is None or path is None:
+            continue
+        parent = parent_of.get(name)
+        parent_uid = uid_by_name.get(parent) if parent in plan.shown else None
+        node = tree.blocks.get(name)
+        detail: list[str] = []
+        if node is not None:
+            if node.envelope:
+                detail.append(f"envelope: {node.envelope}")
+            if node.descr:
+                detail.append(str(node.descr))
+            if node.use:
+                detail.append(f"use: {node.use}")
+            mode = getattr(node, "mode", None)
+            if mode:
+                detail.append(f"mode: {mode}")
+        out.append(
+            TopoNode(
+                id=f"B{uid}",
+                name=name,
+                path=path,
+                parent=f"B{parent_uid}" if parent_uid is not None else None,
+                kind=plan.shown[name],
+                detail=detail,
+            )
+        )
+    return out
+
+
+@dataclass
 class Scene3D:
     """The full bundle a ``scene3d.json`` response hands the client: the
     vendored viewer's own ``shapes`` tree, plus the side data (module
@@ -950,6 +1036,10 @@ class Scene3D:
     #: scale-bar overlay (``blocktree-3d.js``) is the only current reader;
     #: nothing server-side needs it back.
     scale: float
+    #: The topology panel's own node list (:func:`topology_nodes`) — the
+    #: force-directed cloud's input. ``mermaid`` above stays for one
+    #: release as the no-JS/render-failure fallback.
+    nodes: list[TopoNode] = field(default_factory=list)
 
 
 def build_scene(
@@ -1042,8 +1132,14 @@ def build_scene(
     }
     offsets = explode_offsets(tree, lines, assembly.primary_path, magnitude=0.3 * diag)
     mermaid = mermaid_topology(plan, uid_by_name, lines, kids)
+    nodes = topology_nodes(tree, plan, uid_by_name, kids, assembly.primary_path)
     return Scene3D(
-        shapes=shapes, connections=lines, explode=offsets, mermaid=mermaid, scale=scale
+        shapes=shapes,
+        connections=lines,
+        explode=offsets,
+        mermaid=mermaid,
+        scale=scale,
+        nodes=nodes,
     )
 
 
