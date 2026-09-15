@@ -33,20 +33,41 @@ follows). Nothing here writes.
 **What is a hole and what isn't.** A member that is *bought* — a nut, a
 washer, anything ``component``-bound — already has whatever hole it has;
 you do not drill a nut. Only designed members get stamped, and the last
-one in a nutless stack gets a **tapped** hole rather than a clearance
-one, because that is what a screw with no nut means.
+one in a nutless stack gets whatever its **thread strategy** says.
 
-Deferred, named so they are not re-derived: tool access (a swept driver
-envelope per drive type × size — rung 3b, it needs capability data);
-assembly-order existence; edge distance (needs hole positions in a
-member's outline, which arrives with the profile tier); counterbores and
-countersinks (a head-form question, and the head forms are one flat
-`fastener` category today); washers as load-spreaders in the stack-up
+**The far end is a declared choice, not a default** (rung 3c). Rung 3a
+gave the terminal member a cut thread (``d − P``) whatever it was made
+of, which is right in aluminium and wrong in a printed boss — a tapped
+thread in plastic strips after a few assemblies. So the terminal member's
+*mode* now decides what may be stamped: metal still takes a cut thread,
+and a printed member takes what ``params.thread_strategy`` names — a nut,
+a nut trap, a heat-set insert or a thread-forming core hole
+(:mod:`precis.thread_forming`). Undeclared on a printed member, **nothing
+is stamped** and the finding lists the four: a plausible-looking hole is
+worse than no hole, because it prints.
+
+**The head now stamps too** (rung 3c): a countersunk head cuts a 90° cone
+in the near member and a cap/pan/button head gets an optional counterbore,
+which the flat `fastener` category could not express until migration 0163
+gave a row its ``head_form``.
+
+**And the tool has to reach** (rung 3b): a hex key turning an M3 sweeps a
+66 mm circle, so :mod:`precis_se.toolaccess` stands each candidate driver
+on the drive face and asks whether it clears the assembly. The answer is
+*which* tool, not whether — "long-arm hex key only" is an instruction.
+
+Deferred, named so they are not re-derived:
+assembly-order existence — including whether a nut trap can be *reached*;
+edge distance (needs hole positions in a member's outline, which arrives
+with the profile tier); washers as load-spreaders in the stack-up
 (they are members here, which is geometrically right and mechanically
-silent); **a screw bottoming out in a blind hole** — the checks below are
-all "is it long enough", never "is it too long", because nothing in the
-tree says whether a tapped hole is blind or through, and warning on every
-through-hole would train designers to ignore the finding; and the
+silent); **a screw bottoming out** — still deferred, for rung 3a's
+reason: a stamped depth says how far the feature goes, never whether the
+material under it ends. What *is* now checked is the other half, a pocket
+deeper than the member it sits in (``pocket_too_deep``);
+the printed **boss** as geometry rather than prose — this pass only ever
+subtracts, and adding material to a member someone else authored is the
+hand-edit collision the derived-feature rule exists to avoid; and the
 **position-tolerance relation** each stamped hole should carry
 (``se-feasibility-and-cost.md``: a joint stamps features *and the
 relations that make them meaningful*) — blocked on the measure layer
@@ -62,14 +83,19 @@ from typing import Any
 
 import numpy as np
 
+from precis import component_series
 from precis import fit_classes as core_fit
+from precis import thread_forming as core_tf
 from precis.cad import probe as cad_probe
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.utils.units import format_quantity
+from precis_se import capabilities as se_caps
 from precis_se import catalog as se_catalog
 from precis_se import joints as se_joints
+from precis_se import modes as se_modes
+from precis_se import toolaccess as se_toolaccess
 from precis_se.ops import SeTree, effective_envelope
 from precis_se.validate import ValidationIssue, _posed_component
 
@@ -112,6 +138,13 @@ _MIN_ENGAGEMENT_D = 1.0
 #: nut is fully engaged, expressed in pitches.
 _PROTRUSION_PITCHES = 2.0
 
+#: Drives this shop builds with (Reto, 2026-09-15): the two internal
+#: drives that take real torque. ``'socket'`` is `component`'s spelling of
+#: hexagon socket (a hex key) and ``'torx'`` of hexalobular — migration
+#: 0093's `drive_type` vocabulary, used verbatim so the check compares
+#: stored values rather than a second spelling of them.
+_PREFERRED_DRIVES: frozenset[str] = frozenset({"socket", "torx", "allen"})
+
 #: Relative disagreement tolerated between a declared ``params.lead`` and
 #: the catalog pitch before it is a finding (1%: a declared 1.0 mm lead
 #: against a 1.0 mm pitch must not fire on float noise, a declared 2 mm
@@ -135,14 +168,33 @@ class Member:
     #: True when the member is `component`/`part`-bound: bought, so it
     #: comes with its own holes and must not be stamped.
     bought: bool = False
+    #: The member's manufacturing mode (``'fdm/asa'``), verbatim. Carried
+    #: because *what a member is made of* decides what the far end of the
+    #: stack may be given: a cut thread is right in aluminium and wrong in
+    #: a printed boss, and rung 3a stamped one without ever asking.
+    mode: str | None = None
 
 
 @dataclass(frozen=True)
 class Hole:
     """A feature this joint stamps into one member. **Derived**: named
     after the connect that made it, recomputed on every read, stored
-    nowhere. ``kind`` is ``'clearance'`` (the screw passes through) or
-    ``'tapped'`` (the screw threads into it)."""
+    nowhere.
+
+    ``kind`` is one of:
+
+    - ``'clearance'`` — the screw passes through (rung 3a).
+    - ``'tapped'`` — a cut thread, ``d − P``.
+    - ``'core'`` — a thread-*forming* hole a pointy screw deforms.
+    - ``'insert-pocket'`` — the stepped bore a heat-set insert melts into.
+    - ``'nut-pocket'`` — a hex pocket holding a nut captive.
+    - ``'counterbore'`` / ``'countersink'`` — head clearance in the near
+      member, from the head form (rung 3c).
+
+    ``across_flats_m`` is set only for a hex pocket, where a diameter
+    alone would describe a hole the nut spins in. ``source`` is the
+    provenance sentence of the *number* — a shop rule and a published
+    table must not read the same."""
 
     name: str
     block: str
@@ -151,6 +203,9 @@ class Hole:
     depth_m: float
     origin: list[float]
     axis: list[float]
+    across_flats_m: float | None = None
+    chamfer_m: float | None = None
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +252,17 @@ class FastenResult:
     #: 'nut' (a nut terminates the stack) | 'tapped' (the last member is
     #: threaded) | None (no stack walked).
     termination: str | None = None
+    #: ``params.thread_strategy`` as declared, or None. What the screw
+    #: threads into at the far end (`precis.thread_forming`).
+    thread_strategy: str | None = None
+    #: The terminal member's material class, derived from its mode. None
+    #: means the block never said what it is made of — which is a finding,
+    #: not a default.
+    material_class: str | None = None
+    #: The best driver that clears the assembly (rung 3b), or None when
+    #: none does / the drive has no tool listed. Prose, because what a
+    #: builder needs is the tool's name, not its envelope.
+    tool: str | None = None
     members: list[Member] = field(default_factory=list)
     #: clamped material — everything before the terminating member.
     grip_m: float | None = None
@@ -297,6 +363,7 @@ def _walk_axis(
                     form=_form(tree, name),
                     bought=node.bound_kind in ("component", "part")
                     and bool(node.bound),
+                    mode=getattr(node, "mode", None),
                 )
             )
     members.sort(key=lambda m: (m.t_in, m.block))
@@ -335,8 +402,32 @@ def _hole_for(
     depth_m: float,
     origin: list[float],
     axis: list[float],
+    at_t: float | None = None,
+    across_flats_m: float | None = None,
+    chamfer_m: float | None = None,
+    source: str | None = None,
 ) -> Hole:
-    start = [o + member.t_in * a for o, a in zip(origin, axis, strict=True)]
+    # A printed hole comes out undersize, so the *modelled* diameter is
+    # the wanted one plus the process's compensation. Applied here, at the
+    # one place every feature is built, and said out loud in `source` —
+    # a silently enlarged hole is indistinguishable from a wrong table.
+    bump, cap = se_caps.hole_compensation_m(member.mode)
+    if bump and not member.bought:
+        diameter_m += bump
+        across_flats_m = None if across_flats_m is None else across_flats_m + bump
+        note = (
+            f"+{bump * 1000:.2f} mm printed-hole compensation "
+            f"({cap.mode}, confidence {cap.confidence})"
+            if cap is not None
+            else ""
+        )
+        source = f"{source}; {note}" if source else note
+    # A feature normally starts where the member does; ``at_t`` is for the
+    # ones that don't — a counterbore starts at the member's near face,
+    # which is the same thing, but an insert pocket bored from the FAR
+    # face starts at t_out.
+    t = member.t_in if at_t is None else at_t
+    start = [o + t * a for o, a in zip(origin, axis, strict=True)]
     return Hole(
         name=f"{subject}#{member.block}.{kind}",
         block=member.block,
@@ -345,6 +436,204 @@ def _hole_for(
         depth_m=depth_m,
         origin=[float(v) for v in start],
         axis=[float(v) for v in axis],
+        across_flats_m=across_flats_m,
+        chamfer_m=chamfer_m,
+        source=source,
+    )
+
+
+def _engagement_d(res: FastenResult) -> float:
+    """How many nominal diameters of thread this material wants.
+
+    Falls back to the steel 1×D when the material is unknown — which is
+    the *old* behaviour, kept deliberately: the honest complaint about an
+    undeclared material is :func:`_resolve_strategy`'s finding, not a
+    silently inflated length requirement that nobody can trace."""
+    rule = core_tf.material(res.material_class) if res.material_class else None
+    return rule.min_engagement_d if rule is not None else _MIN_ENGAGEMENT_D
+
+
+def _resolve_strategy(res: FastenResult, *, subject: str, last: Member) -> None:
+    """Decide what the far end of the stack *is*, and say so when it
+    cannot be decided.
+
+    Rung 3a had one answer — a cut thread — and applied it to whatever the
+    last member happened to be. The rule now:
+
+    - a **nut** in the stack settles it (the geometry already says so);
+      a `thread_strategy` that contradicts a present nut is a finding,
+      because two declarations disagree and neither is obviously stale;
+    - otherwise the **declared** strategy wins;
+    - otherwise **metal** takes a cut thread, which is the one material
+      where that is the obvious default;
+    - a member with **no mode at all** also takes a cut thread — rung
+      3a's behaviour, unchanged, because refusing there would break every
+      design that predates modes — but with an `info` finding saying it
+      was an assumption;
+    - a member that **says it is printed**, with no strategy, gets
+      **nothing stamped** and a finding naming the four options. That is
+      the whole point of the rung: where the tree knows the member is
+      plastic, a plausible hole is worse than no hole, because it prints.
+    """
+    res.material_class = se_modes.thread_material_class(last.mode)
+    declared = res.thread_strategy
+    if last.form == "nut":
+        if declared is not None and declared not in ("nut", "nut-trap"):
+            res.findings.append(
+                ValidationIssue(
+                    rule="thread_strategy_conflict",
+                    subject=subject,
+                    detail=(
+                        f"the stack ends in the nut {last.block!r} but the "
+                        f"joint declares thread_strategy={declared!r} — the "
+                        "nut is where the thread is; drop the param or "
+                        "remove the nut from the axis"
+                    ),
+                    severity="warn",
+                )
+            )
+        res.thread_strategy = "nut"
+        return
+    if declared is not None:
+        if (
+            declared == "tapped"
+            and res.material_class
+            and res.material_class.startswith("thermoplastic")
+        ):
+            res.findings.append(
+                ValidationIssue(
+                    rule="tapped_plastic",
+                    subject=subject,
+                    detail=(
+                        f"{last.block!r} is {last.mode} and the joint asks "
+                        "for a cut thread — it will hold, but a tapped "
+                        "thread in plastic strips after a few assemblies; "
+                        "'insert' or 'nut-trap' is the durable version and "
+                        "'thread-forming' the cheap one. Declared, so this "
+                        "is a note rather than a refusal"
+                    ),
+                    severity="info",
+                )
+            )
+        return
+    if res.material_class == "metal":
+        res.thread_strategy = "tapped"
+        return
+    if res.material_class is None:
+        # Nothing says what this member is. The cut thread is still the
+        # answer for the material a nutless stack has always been assumed
+        # to end in, so rung 3a's behaviour stands — but it is now
+        # visibly an assumption rather than a fact, which is the whole
+        # difference between this and the defect above it.
+        res.thread_strategy = "tapped"
+        res.findings.append(
+            ValidationIssue(
+                rule="member_material_undeclared",
+                subject=subject,
+                detail=(
+                    f"nothing says what {last.block!r} is made of, so it was "
+                    "given a cut thread — the metal answer. If it is printed, "
+                    "that thread strips: set_mode(block=…, mode='fdm/…') and "
+                    "the right strategy will be asked for"
+                ),
+                severity="info",
+            )
+        )
+        return
+    options = " · ".join(
+        f"{k} ({v['title']})"
+        for k, v in core_tf.strategies().items()
+        if k in ("nut", "nut-trap", "insert", "thread-forming")
+    )
+    res.findings.append(
+        ValidationIssue(
+            rule="thread_strategy_undeclared",
+            subject=subject,
+            detail=(
+                f"{last.block!r} is printed ({last.mode}) and no nut ends "
+                "the stack, so what the screw threads into is a choice, not "
+                "a default — a cut thread in plastic is the wrong answer "
+                "often enough that nothing was stamped. Set "
+                "params.thread_strategy: " + options
+            ),
+            severity="warn",
+        )
+    )
+
+
+def _tool_access(
+    res: FastenResult,
+    tree: SeTree,
+    *,
+    subject: str,
+    specs: dict[str, Any],
+    origin: list[float],
+    axis: list[float],
+) -> None:
+    """Rung 3b: can any driver actually turn this screw where it sits.
+
+    The drive face is the top of the head for a proud head and the flush
+    face for a countersunk one, and the tool comes from ``−axis`` — the
+    screw's own frame answers both, which is why this lives here rather
+    than in the tool module."""
+    head_h = se_catalog.head_height(specs) or 0.0
+    sunk = str(specs.get("head_form") or "") == "countersunk"
+    offset = 0.0 if sunk else -head_h
+    face = [o + offset * a for o, a in zip(origin, axis, strict=True)]
+    result = se_toolaccess.access(
+        tree,
+        fastener=res.fastener or "",
+        subject=subject,
+        drive_origin=face,
+        drive_axis=[-a for a in axis],
+        drive_type=(
+            str(specs["drive_type"]) if specs.get("drive_type") is not None else None
+        ),
+        drive_size_mm=_mm_spec(specs, "drive_size"),
+    )
+    if result is None:
+        return
+    res.tool = result.fits[0].title if result.fits else None
+    issue = se_toolaccess.finding(result)
+    if issue is not None:
+        res.findings.append(issue)
+
+
+def _mm_spec(specs: dict[str, Any], key: str) -> float | None:
+    """A spec that arrives in metres, back in the millimetres the tool
+    tables are keyed by. The round-trip is deliberate and narrow: the
+    driver data is catalogue sizes ("a 4 mm key"), not lengths, so it is
+    keyed the way the tool is stamped."""
+    value = _num(specs, key)
+    return None if value is None else round(value * 1000.0, 4)
+
+
+def _drive_findings(res: FastenResult, *, subject: str, specs: dict[str, Any]) -> None:
+    """House drive policy: hex socket and hexalobular (Torx) only.
+
+    A finding, never a refusal — the design is allowed to be
+    mid-thought, and a slotted screw is a real part someone may
+    deliberately want. The preferred set is a module constant rather than
+    a data file because it is a *shop tooling* fact with exactly one
+    consumer; it moves to capability data the day a second shop needs a
+    different one."""
+    drive = specs.get("drive_type")
+    if drive is None or str(drive).strip().lower() in _PREFERRED_DRIVES:
+        return
+    res.findings.append(
+        ValidationIssue(
+            rule="drive_not_preferred",
+            subject=subject,
+            detail=(
+                f"{res.component or res.fastener} has a "
+                f"{str(drive).strip()!r} drive — this shop builds with "
+                f"{' and '.join(sorted(_PREFERRED_DRIVES))} only (they take "
+                "torque without camming out, and the tools are on the "
+                "bench). ISO 4762/10642/7380 are the hex-socket families, "
+                "ISO 14579/14581/14583 the Torx ones"
+            ),
+            severity="info",
+        )
     )
 
 
@@ -359,6 +648,7 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
         declared_lead_m=(
             float(params["lead"]) if params.get("lead") is not None else None
         ),
+        thread_strategy=params.get("thread_strategy"),
     )
     fastener = _find_fastener(tree, connect)
     if fastener is None:
@@ -366,7 +656,11 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
             "neither endpoint is a block bound to a screw-form `component` "
             "— the stack-up is positional, so the fastener has to be placed "
             "as a block (a BOM line names which screw, not where it is): "
-            "add_block + set_binding(kind='component')"
+            "add_block + set_binding(kind='component'), then connect the "
+            "SCREW BLOCK to what it fastens (a='bolt.thread', "
+            "b='bracket.boss'). A connect between the two members alone "
+            "says they are joined; it does not say by what, and the grip, "
+            "the holes and the tool are all read off the screw's own pose"
         )
         return res
     node = tree.blocks[fastener]
@@ -413,13 +707,17 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
     res.termination = "nut" if last.form == "nut" else "tapped"
     res.stack_m = sum(m.thickness_m for m in res.members)
     res.grip_m = res.stack_m - last.thickness_m
+    _resolve_strategy(res, subject=subject, last=last)
+    _drive_findings(res, subject=subject, specs=specs)
+    _tool_access(res, tree, subject=subject, specs=specs, origin=origin, axis=axis)
 
     nominal = _num(specs, "outer_diameter")
     pitch = res.thread.pitch_m if res.thread else None
+    engage_d = _engagement_d(res)
     if res.termination == "nut" and pitch is not None:
         res.required_length_m = res.stack_m + _PROTRUSION_PITCHES * pitch
     elif res.termination == "tapped" and nominal is not None:
-        res.required_length_m = res.grip_m + _MIN_ENGAGEMENT_D * nominal
+        res.required_length_m = res.grip_m + engage_d * nominal
 
     if res.required_length_m is not None and res.length_m is not None:
         engagement = (
@@ -442,7 +740,7 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
                 f"{_PROTRUSION_PITCHES:g} threads of protrusion past the nut"
                 if res.termination == "nut"
                 else f"{res.grip_m * 1000:.1f} mm of grip + "
-                f"{_MIN_ENGAGEMENT_D:g}×D of thread engagement"
+                f"{engage_d:g}×D of thread engagement"
             )
             res.findings.append(
                 ValidationIssue(
@@ -460,18 +758,25 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
     if (
         res.termination == "tapped"
         and nominal is not None
-        and last.thickness_m < _MIN_ENGAGEMENT_D * nominal
+        and last.thickness_m < engage_d * nominal
     ):
+        rule = core_tf.material(res.material_class)
+        why = (
+            f" ({rule.title.split(' — ')[0].lower()} wants "
+            f"{engage_d:g}×D, against 1×D in steel)"
+            if rule is not None and engage_d > 1.0
+            else ""
+        )
         res.findings.append(
             ValidationIssue(
                 rule="thread_engagement",
                 subject=subject,
                 detail=(
-                    f"the tapped member {last.block!r} is only "
+                    f"the threaded member {last.block!r} is only "
                     f"{last.thickness_m * 1000:.1f} mm thick, less than the "
-                    f"{_MIN_ENGAGEMENT_D:g}×D ({nominal * 1000:.1f} mm) of "
-                    "engagement a threaded joint wants — use a nut, a "
-                    "longer boss, or a thread insert"
+                    f"{engage_d:g}×D ({engage_d * nominal * 1000:.1f} mm) of "
+                    f"engagement this joint wants{why} — use a nut, a "
+                    "longer boss, or a heat-set insert"
                 ),
                 severity="warn",
             )
@@ -496,7 +801,7 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
                 )
             )
 
-    _stamp(res, subject=subject, origin=origin, axis=axis, specs=specs)
+    _stamp(res, subject=subject, origin=origin, axis=axis, specs=specs, params=params)
     return res
 
 
@@ -507,10 +812,11 @@ def _stamp(
     origin: list[float],
     axis: list[float],
     specs: dict[str, Any],
+    params: dict[str, Any],
 ) -> None:
-    """Emit the holes into ``res`` — clearance through every designed
-    member the screw passes, and a tapped hole in the terminal one when
-    no nut ends the stack."""
+    """Emit the holes into ``res``: head clearance where the head form
+    demands it, a clearance hole through every designed member the screw
+    passes, and whatever the thread strategy puts at the far end."""
     if res.thread_size is None:
         res.findings.append(
             ValidationIssue(
@@ -542,28 +848,60 @@ def _stamp(
         )
         return
     res.fit = fit
-    pitch = res.thread.pitch_m if res.thread else None
-    nominal = _num(specs, "outer_diameter")
     holes: list[Hole] = []
     for member in res.members:
         if member.bought:
             continue  # a bought part comes with its own hole
-        terminal = member is res.members[-1] and res.termination == "tapped"
-        if terminal and pitch is not None and nominal is not None:
-            # The tapping drill for a metric thread is d − P (~100% thread
-            # form) — the one number that is genuinely standard here, and
-            # skipped entirely when either input is absent.
-            holes.append(
-                _hole_for(
-                    member,
-                    subject=subject,
-                    kind="tapped",
-                    diameter_m=nominal - pitch,
-                    depth_m=member.thickness_m,
-                    origin=origin,
-                    axis=axis,
+        if member is res.members[-1] and res.termination == "tapped":
+            far = _far_end_feature(res, member, subject=subject, specs=specs)
+            if far is not None:
+                depth_m = (
+                    member.thickness_m
+                    if far.depth_m is None
+                    else min(far.depth_m, member.thickness_m)
                 )
-            )
+                if far.kind == "nut-pocket":
+                    # The screw has to REACH the nut, so the member is
+                    # drilled through and the pocket is recessed from its
+                    # far face — which is also where the nut takes the
+                    # load. A pocket at the entry face would put the nut
+                    # under the head, on the wrong side of the material.
+                    holes.append(
+                        _hole_for(
+                            member,
+                            subject=subject,
+                            kind="clearance",
+                            diameter_m=fit.hole_m,
+                            depth_m=member.thickness_m,
+                            origin=origin,
+                            axis=axis,
+                            source=fit.source,
+                        )
+                    )
+                holes.append(
+                    _hole_for(
+                        member,
+                        subject=subject,
+                        kind=far.kind,
+                        diameter_m=far.diameter_m,
+                        depth_m=depth_m,
+                        origin=origin,
+                        axis=axis,
+                        at_t=(
+                            member.t_out - depth_m if far.kind == "nut-pocket" else None
+                        ),
+                        across_flats_m=(
+                            None
+                            if far.across_flats_mm is None
+                            else far.across_flats_mm / 1000.0
+                        ),
+                        chamfer_m=(
+                            None if far.chamfer_mm is None else far.chamfer_mm / 1000.0
+                        ),
+                        source=far.source,
+                    )
+                )
+                _pocket_findings(res, member, far, subject=subject)
             continue
         holes.append(
             _hole_for(
@@ -574,9 +912,296 @@ def _stamp(
                 depth_m=member.thickness_m,
                 origin=origin,
                 axis=axis,
+                source=fit.source,
             )
         )
+    head = _head_feature(
+        res,
+        subject=subject,
+        specs=specs,
+        origin=origin,
+        axis=axis,
+        counterbore=bool(params.get("counterbore")),
+    )
+    if head is not None:
+        holes.insert(0, head)
     res.holes = holes
+
+
+def _far_end_feature(
+    res: FastenResult,
+    member: Member,
+    *,
+    subject: str,
+    specs: dict[str, Any],
+) -> core_tf.Feature | None:
+    """The feature the terminal member gets, by strategy. ``None`` means
+    the strategy is undeclared (already reported) or its inputs are
+    missing — and a missing input is reported here rather than turned into
+    a guessed diameter."""
+    strategy = res.thread_strategy
+    if strategy is None or res.thread_size is None:
+        return None
+    size = res.thread_size
+    # No ``nut`` branch: a nut in the stack makes the termination 'nut',
+    # and this is only reached on 'tapped'. The nut is a part, and the
+    # members it clamps get ordinary clearance holes.
+    if strategy == "tapped":
+        pitch = res.thread.pitch_m if res.thread else None
+        feature = (
+            core_tf.tapping_drill(size, pitch * 1000.0) if pitch is not None else None
+        )
+    elif strategy == "thread-forming":
+        feature = core_tf.core_hole(size, material_class=res.material_class)
+    elif strategy == "insert":
+        feature = _insert_feature(res, size, subject=subject)
+    elif strategy == "nut-trap":
+        feature = _nut_trap_feature(res, size, subject=subject)
+    else:  # pragma: no cover — the param is contract-classed at write time
+        feature = None
+    if feature is None and strategy in ("tapped", "thread-forming"):
+        res.findings.append(
+            ValidationIssue(
+                rule="thread_feature_unresolved",
+                subject=subject,
+                detail=(
+                    f"thread_strategy={strategy!r} needs a number this tree "
+                    f"cannot supply for thread size {size!r} "
+                    f"(material class {res.material_class or 'undeclared'}) "
+                    "— nothing was stamped rather than a guessed diameter"
+                ),
+                severity="warn",
+            )
+        )
+    _boss_finding(res, member, subject=subject, specs=specs)
+    return feature
+
+
+def _insert_feature(
+    res: FastenResult, size: str, *, subject: str
+) -> core_tf.Feature | None:
+    """The heat-set pocket, sized from the insert series row — which the
+    design must also carry as a BOM line, because a pocket with no insert
+    in it is a hole."""
+    series = component_series.find_series(core_tf.insert_series_id())
+    row = series.size(size) if series is not None else None
+    length_mm = None if row is None else row.specs.get("height")
+    if length_mm is None:
+        res.findings.append(
+            ValidationIssue(
+                rule="insert_unavailable",
+                subject=subject,
+                detail=(
+                    f"no heat-set insert is catalogued for {size} "
+                    f"(have: {', '.join(s.key for s in series.sizes)})"
+                    if series is not None
+                    else "the heat-set insert series is missing from the registry"
+                ),
+                severity="warn",
+            )
+        )
+        return None
+    res.findings.append(
+        ValidationIssue(
+            rule="insert_bom",
+            subject=subject,
+            detail=(
+                f"this joint needs a {size} heat-set insert as well as the "
+                f"screw — add it to the BOM ({core_tf.insert_series_id()}); "
+                "the pocket alone is just a hole"
+            ),
+            severity="info",
+        )
+    )
+    return core_tf.insert_pocket(size, insert_length_mm=float(length_mm))
+
+
+def _nut_trap_feature(
+    res: FastenResult, size: str, *, subject: str
+) -> core_tf.Feature | None:
+    """The hex pocket, sized from the plain-nut series row for the same
+    thread. A nut trap that is not in the BOM is the same omission as a
+    missing insert, and says so."""
+    series = component_series.find_series("iso-4032")
+    row = series.size(size) if series is not None else None
+    if row is None:
+        res.findings.append(
+            ValidationIssue(
+                rule="nut_trap_unavailable",
+                subject=subject,
+                detail=(
+                    f"no ISO 4032 nut is catalogued for {size}, so the "
+                    "pocket cannot be sized — nothing was stamped"
+                ),
+                severity="warn",
+            )
+        )
+        return None
+    res.findings.append(
+        ValidationIssue(
+            rule="nut_trap_bom",
+            subject=subject,
+            detail=(
+                f"this joint needs an ISO 4032 {size} nut captive in the "
+                "pocket — add it to the BOM. The pocket is stamped "
+                "recessed from the member's FAR face (where the nut takes "
+                "the load), with a clearance hole through to reach it; "
+                "whether you can get the nut in there is an assembly-order "
+                "question this does not check yet"
+            ),
+            severity="info",
+        )
+    )
+    return core_tf.nut_pocket(
+        across_flats_mm=float(row.specs["across_flats"]),
+        nut_height_mm=float(row.specs["height"]),
+    )
+
+
+def _boss_finding(
+    res: FastenResult, member: Member, *, subject: str, specs: dict[str, Any]
+) -> None:
+    """How much material has to surround a thread formed in plastic. Prose
+    rather than a stamped solid: the boss is *added* material, and this
+    pass only ever subtracts — stamping a solid into a member someone else
+    authored is the hand-edit collision the derived-feature rule avoids."""
+    if res.thread_strategy not in ("thread-forming", "tapped"):
+        return
+    if not (res.material_class or "").startswith("thermoplastic"):
+        return
+    if res.thread_size is None:
+        return
+    boss = core_tf.boss(res.thread_size, material_class=res.material_class)
+    if boss is None:
+        return
+    res.findings.append(
+        ValidationIssue(
+            rule="boss_required",
+            subject=subject,
+            detail=(
+                f"a thread formed in {member.block!r} needs at least "
+                f"{boss.diameter_mm:g} mm of material around the hole "
+                f"({boss.source}) — model the boss if the wall there is "
+                "thinner; this pass subtracts holes, it never adds material"
+            ),
+            severity="info",
+        )
+    )
+
+
+def _pocket_findings(
+    res: FastenResult, member: Member, feature: core_tf.Feature, *, subject: str
+) -> None:
+    """A pocket deeper than the member it is in comes out the far face.
+
+    This is the *checkable* half of rung 3a's deferred bottoming-out
+    question. The other half — whether a screw is too long for a blind
+    hole — stays deferred on purpose: a stamped hole's depth says how far
+    the feature goes, never whether the material below it ends, so
+    warning on every through-hole would train designers to ignore the
+    finding (the docstring's original reasoning, unchanged)."""
+    if feature.depth_m is None:
+        return
+    if feature.depth_m > member.thickness_m + _MIN_MEMBER_M:
+        res.findings.append(
+            ValidationIssue(
+                rule="pocket_too_deep",
+                subject=subject,
+                detail=(
+                    f"the {feature.kind} wants {feature.depth_m * 1000:.1f} mm "
+                    f"of depth but {member.block!r} is only "
+                    f"{member.thickness_m * 1000:.1f} mm thick on this axis "
+                    "— it would break through the far face"
+                ),
+                severity="warn",
+            )
+        )
+
+
+def _head_feature(
+    res: FastenResult,
+    *,
+    subject: str,
+    specs: dict[str, Any],
+    origin: list[float],
+    axis: list[float],
+    counterbore: bool,
+) -> Hole | None:
+    """Head clearance in the **first designed member** — the deferral
+    `fasten.py` opened with ("a head-form question, and the head forms are
+    one flat `fastener` category today"), closed by migration 0163's
+    ``head_form``.
+
+    **A countersink is required and a counterbore is a choice**, and the
+    difference is physical: a countersunk screw does not seat without its
+    cone, while a cap head is equally happy standing proud. So the cone is
+    stamped and the bore is only stamped when ``params.counterbore`` asks
+    — otherwise the head's protrusion is *reported*, the same posture the
+    thread strategy takes at the far end. A head form nobody declared
+    gets nothing, which is rung 3a's behaviour, now because the row is
+    silent rather than because nothing could ask."""
+    form = str(specs.get("head_form") or "").strip().lower()
+    if form not in ("countersunk", "cap", "pan", "button"):
+        return None
+    near = next((m for m in res.members if not m.bought), None)
+    if near is None or res.fit is None:
+        return None
+    head_d = _num(specs, "head_diameter")
+    if head_d is None:
+        return None
+    if form == "countersunk":
+        # The theoretical sharp cone: sized so the real head, which is
+        # smaller by its edge radius, lands at or below flush.
+        return _hole_for(
+            near,
+            subject=subject,
+            kind="countersink",
+            diameter_m=head_d,
+            depth_m=(head_d - res.fit.nominal_mm / 1000.0) / 2.0,
+            origin=origin,
+            axis=axis,
+            source=(
+                f"90° cone to the theoretical head Ø "
+                f"{head_d * 1000:.2f} mm ({specs.get('head_form')} head)"
+            ),
+        )
+    head_h = _num(specs, "head_height")
+    if head_h is None:
+        return None
+    # A counterbore is head Ø plus the same clearance the shank gets: the
+    # head has to drop in, not press in.
+    slack_m = (res.fit.hole_mm - res.fit.nominal_mm) / 1000.0
+    if not counterbore:
+        res.findings.append(
+            ValidationIssue(
+                rule="head_stands_proud",
+                subject=subject,
+                detail=(
+                    f"the {form} head stands {head_h * 1000:.1f} mm above "
+                    f"{near.block!r} — fine unless something has to pass over "
+                    f"it. To bury it, set params.counterbore=true and this "
+                    f"joint will stamp a "
+                    f"{(head_d + slack_m) * 1000:.1f} mm × "
+                    f"{head_h * 1000:.1f} mm bore instead"
+                ),
+                severity="info",
+            )
+        )
+        return None
+    return _hole_for(
+        near,
+        subject=subject,
+        kind="counterbore",
+        diameter_m=head_d + slack_m,
+        depth_m=head_h,
+        origin=origin,
+        axis=axis,
+        source=(
+            f"head Ø + the {res.fit.fit_class} fit's {slack_m * 1000:.1f} mm, "
+            f"deep enough to bury a {head_h * 1000:.1f} mm head "
+            "(params.counterbore asked for it)"
+        ),
+    )
 
 
 def _pattern_findings(results: list[FastenResult]) -> None:

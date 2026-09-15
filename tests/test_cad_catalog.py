@@ -40,6 +40,20 @@ def test_every_catalog_family_resolves_and_parses():
         "rail:mgn12x200",
         "nema:17",
         "gear:m1z20",
+        # The 2026-09-15 series-driven families (rung 2c): one sample per
+        # head form and drive, plus the pointy ones and the insert.
+        "screw:m4x12",
+        "csk:m4x12",
+        "button:m5x16",
+        "torx:m3x8",
+        "torxcsk:m4x12",
+        "torxpan:m3x10",
+        "tapscrew:st4.2x16",
+        "tapcsk:st4.2x16",
+        "setscrew:m4x6",
+        "locknut:m4",
+        "thinnut:m4",
+        "insert:m3",
     ]
     assert sorted({s.split(":")[0] for s in samples}) == sorted(
         catalog.known_families()

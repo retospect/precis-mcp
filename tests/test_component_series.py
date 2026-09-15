@@ -564,3 +564,72 @@ class TestCoreParams:
 
     def test_get_signature_advertises_q_for_the_resolver(self) -> None:
         assert "q" in inspect.signature(tools_core.get).parameters
+
+
+# ── view='stock' ────────────────────────────────────────────────────
+
+
+class TestStockView:
+    """Availability has two halves and they must not be confused: the
+    curated tier is an offline house judgement, a supplier quote is one
+    warehouse at one moment, and a *missing credential* is neither."""
+
+    def test_a_minted_part_reports_its_curated_tier(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_SECRET", raising=False)
+        handler = _handler(store)
+        handler.put(series="iso-4762", size="M4x12")
+        body = handler.get(id="iso-4762-m4x12", view="stock").body
+        assert "universal" in body
+        assert "curated house judgement" in body
+
+    def test_no_credentials_names_the_missing_one(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing key and a part nobody stocks must not read alike."""
+        monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_SECRET", raising=False)
+        handler = _handler(store)
+        handler.put(series="iso-4762", size="M4x12")
+        body = handler.get(id="iso-4762-m4x12", view="stock").body
+        assert "live stock: unavailable" in body
+        assert "PRECIS_DIGIKEY_CLIENT_ID" in body
+
+    def test_a_live_quote_is_shown_with_its_caveat(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import UTC, datetime
+
+        from precis import supply
+
+        quote = supply.StockQuote(
+            supplier="digikey",
+            sku="DK-1",
+            description="M4x12 socket cap",
+            quantity=4213,
+            unit_price=0.19,
+            currency="EUR",
+            url=None,
+            retrieved=datetime(2026, 9, 15, tzinfo=UTC),
+        )
+        monkeypatch.setattr(
+            "precis.handlers.component.supply.unavailable_reason", lambda: None
+        )
+        monkeypatch.setattr(
+            "precis.handlers.component.supply.quote", lambda q, **kw: [quote]
+        )
+        handler = _handler(store)
+        handler.put(series="iso-4762", size="M4x12")
+        body = handler.get(id="iso-4762-m4x12", view="stock").body
+        assert "4213 in stock" in body
+        assert "matched by keyword" in body
+        # …and the tier is still there: the live number refines it, it
+        # does not replace it.
+        assert "universal" in body
+
+    def test_the_series_table_shows_the_tier_as_a_column(self, store: Any) -> None:
+        body = _handler(store).get(id="iso-14585", view="series").body
+        assert "stocked" in body
+        assert "common" in body

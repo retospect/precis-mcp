@@ -30,6 +30,13 @@ Two resolver entry points, both pure:
   candidates. Ranked, never auto-picked: the caller shows the options and
   an agent names the one it meant, the `part` kind's colloquial→C-number
   precedent one level up.
+
+**Availability is a ranking input, not a gate.** Each size may carry a
+curated ``stocking`` tier (:data:`STOCKING_TIERS`), worth less than any
+fit signal, so "M14×55 exists" and "M4×12 is in every drawer" are both
+sayable and the second wins a tie. It is an offline prior by design — a
+live supplier quote (the owning backlog item's stock adapter) overrides
+it, and the tier is what answers when no credentials are configured.
 """
 
 from __future__ import annotations
@@ -59,6 +66,12 @@ class SeriesSize:
     #: variable (`length_spec`). Empty for a series without one — a nut has
     #: no length axis, and an empty list is that fact, not a data gap.
     lengths: tuple[float, ...] = ()
+    #: How widely this size is held: ``'universal' | 'common' | 'specialty'``,
+    #: or ``None`` where nobody has judged it. A **curated house judgement**,
+    #: deliberately not a number — it is the offline prior that ranks M4×12
+    #: above M14×55 with no network, and a live supplier quote overrides it
+    #: (the owning backlog item's "Stock as a selection signal").
+    stocking: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,32 @@ def normalize(text: str) -> str:
     return _NORM_RE.sub("", str(text)).strip().lower()
 
 
+#: Availability tiers, widest first, with the resolver weight each earns.
+#: Ordered because "more stocked" is a real ordering — a consumer that
+#: wants to compare two sizes should not have to re-invent it.
+STOCKING_TIERS: tuple[str, ...] = ("universal", "common", "specialty")
+
+#: Tier → resolver bonus. Deliberately smaller than a size-key hit (3.0):
+#: availability breaks ties between parts that *fit*, it never promotes a
+#: part that doesn't — the `part` kind's "fit is a gate" rule, applied to
+#: hardware.
+_STOCKING_BONUS: dict[str, float] = {
+    "universal": 0.6,
+    "common": 0.3,
+    "specialty": 0.0,
+}
+
+
+def _stocking(raw: Any) -> str | None:
+    """A size row's tier, or ``None`` when absent/unrecognized. An unknown
+    spelling is dropped rather than carried: a tier nobody ranks is worse
+    than no tier, because it reads as judged when it isn't."""
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    return text if text in STOCKING_TIERS else None
+
+
 def _load_raw() -> dict[str, Any]:
     raw = resources.files(_PACKAGED_DATA).joinpath(_FILE).read_text(encoding="utf-8")
     data: dict[str, Any] = json.loads(raw)
@@ -117,6 +156,7 @@ def load_series() -> tuple[Series, ...]:
                 key=str(s["key"]),
                 specs=dict(s.get("specs", {})),
                 lengths=tuple(float(x) for x in s.get("lengths", ())),
+                stocking=_stocking(s.get("stocking")),
             )
             for s in r.get("sizes", ())
         )
@@ -242,6 +282,13 @@ def resolve(query: str, *, limit: int = 8) -> list[SeriesMatch]:
                 stocked = not size.lengths or pick in size.lengths
                 score += 1.0 if stocked else -0.5
                 why.append(f"{pick:g}mm" if stocked else f"{pick:g}mm?")
+            # Availability last, and small: it separates two parts that
+            # both fit, which is the only thing it is evidence about.
+            if size.stocking:
+                bonus = _STOCKING_BONUS[size.stocking]
+                if bonus:
+                    score += bonus
+                    why.append(size.stocking)
             out.append(
                 SeriesMatch(
                     series=series,

@@ -1,0 +1,59 @@
+{
+  "_note": "DRIVER ENVELOPES — versioned DATA for docs/backlog/se-off-the-shelf-fabrication.md rung 3b (tool access). A screw you cannot reach is not fastened, and the geometry that decides it is the TOOL's, not the screw's: a hex key needs a swept circle for its long arm, a bit driver needs a straight cylinder, a ratchet needs both. Each tool is modelled as two solids above the head — a SHAFT (a cylinder of `shaft_radius_mm` standing `axial_mm` tall on the drive face) and an ARM (a disc of `swing_radius_mm`, `arm_thickness_mm` thick, at `swing_height_mm`), which is the whole swept volume of one turn. Millimetres throughout. CONFIDENCE, and it differs sharply by section: `hex_keys` is ISO 2936 (short arm l2 and the standard long arm), transcribed and exact. `bit_tools` is NOT a standard and never will be — it is the nominal geometry of ordinary bench tools (a 1/4-inch bit screwdriver, a stubby ratchet, a T-handle), rounded, and a shop whose tools differ should edit this file rather than argue with the finding. A tool that fits here fits in the model of it; whether it fits your hand is not modelled at all.",
+  "hex_keys": {
+    "source": "ISO 2936 (hexagon key sizes): `short_arm` is l2, `long_arm` is the standard-length arm.",
+    "sizes": [
+      {"across_flats": 1.5, "short_arm": 15.5, "long_arm": 46.5},
+      {"across_flats": 2.0, "short_arm": 18.0, "long_arm": 52.0},
+      {"across_flats": 2.5, "short_arm": 20.5, "long_arm": 58.5},
+      {"across_flats": 3.0, "short_arm": 23.0, "long_arm": 66.0},
+      {"across_flats": 4.0, "short_arm": 29.0, "long_arm": 74.0},
+      {"across_flats": 5.0, "short_arm": 33.0, "long_arm": 85.0},
+      {"across_flats": 6.0, "short_arm": 38.0, "long_arm": 96.0},
+      {"across_flats": 8.0, "short_arm": 44.0, "long_arm": 108.0},
+      {"across_flats": 10.0, "short_arm": 50.0, "long_arm": 122.0},
+      {"across_flats": 12.0, "short_arm": 57.0, "long_arm": 137.0},
+      {"across_flats": 14.0, "short_arm": 70.0, "long_arm": 154.0},
+      {"across_flats": 17.0, "short_arm": 80.0, "long_arm": 177.0}
+    ]
+  },
+  "bit_tools": [
+    {
+      "id": "bit-ratchet",
+      "title": "bit in a stubby ratchet",
+      "axial_mm": 45.0,
+      "shaft_radius_mm": 7.0,
+      "swing_radius_mm": 75.0,
+      "swing_height_mm": 35.0,
+      "arm_thickness_mm": 22.0,
+      "note": "The most forgiving in depth, the least in sweep — it wants a clear disc the size of a hand."
+    },
+    {
+      "id": "bit-driver",
+      "title": "bit screwdriver",
+      "axial_mm": 110.0,
+      "shaft_radius_mm": 13.0,
+      "swing_radius_mm": 13.0,
+      "swing_height_mm": 45.0,
+      "arm_thickness_mm": 65.0,
+      "note": "Needs a straight run to the head and almost no sweep — the tool for a screw down a hole."
+    },
+    {
+      "id": "t-handle",
+      "title": "T-handle driver",
+      "axial_mm": 90.0,
+      "shaft_radius_mm": 5.0,
+      "swing_radius_mm": 45.0,
+      "swing_height_mm": 85.0,
+      "arm_thickness_mm": 20.0,
+      "note": "Sweeps high and narrow: the compromise when the head is recessed but there is room above."
+    }
+  ],
+  "drive_tools": {
+    "socket": ["hex-key-short", "hex-key-long", "bit-ratchet", "bit-driver"],
+    "allen": ["hex-key-short", "hex-key-long", "bit-ratchet", "bit-driver"],
+    "torx": ["bit-ratchet", "bit-driver", "t-handle"],
+    "hex": ["bit-ratchet"],
+    "_note": "Order is PREFERENCE, best first: what the shop reaches for when everything fits. Torx has no L-key entry because these ones are driven with bits."
+  }
+}

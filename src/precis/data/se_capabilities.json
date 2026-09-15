@@ -1,0 +1,125 @@
+{
+  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c, which needed three fields and refused to hardcode them: a printed hole comes out undersize, so a core hole sized straight from the thread-forming table splits the boss it is in. The full field set (layer height, overhang angle, bridge span, bed contact, anisotropic strength vector, CNC/SLA/laser families) belongs to se-kind.md slice 5 and is NOT here yet — an absent field is absent, never a figure carried over from a neighbouring row. Every length is MILLIMETRES. TWO TIERS per field, as that section requires: `physical` is the floor the process cannot go below whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through one resolver and clamps to `physical`. CONFIDENCE: these are community FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override, which is why every row says so in its own source.",
+  "rows": [
+    {
+      "mode": "fdm/pla",
+      "title": "FDM, PLA — 0.4 mm nozzle, 0.2 mm layer",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": 0.0,
+          "house": 0.2,
+          "confidence": "low",
+          "source": "A vertical hole prints undersize: the extrusion's inside corner is laid on a polygon that cuts the circle, and the melt shrinks inward. +0.2 mm on the modelled diameter is the common community compensation for a 0.4 mm nozzle; the physical floor is 0, which is what a perfectly calibrated machine with hole compensation in the slicer needs. NOT measured here."
+        },
+        "min_wall": {
+          "physical": 0.42,
+          "house": 0.86,
+          "confidence": "medium",
+          "source": "One extrusion line at 0.42 mm (1.05 x nozzle) is the physical floor; two perimeters is the house minimum for anything structural."
+        },
+        "min_boss_wall": {
+          "physical": 0.86,
+          "house": 1.2,
+          "confidence": "low",
+          "source": "A boss that a thread is formed into carries hoop stress, so it wants three perimeters rather than two. House rule, not measured."
+        }
+      }
+    },
+    {
+      "mode": "fdm/petg",
+      "title": "FDM, PETG — 0.4 mm nozzle, 0.2 mm layer",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": 0.0,
+          "house": 0.25,
+          "confidence": "low",
+          "source": "As fdm/pla, plus a little: PETG oozes and rounds inside corners more, so holes close up further. NOT measured here."
+        },
+        "min_wall": {
+          "physical": 0.42,
+          "house": 0.86,
+          "confidence": "medium",
+          "source": "Same extrusion geometry as PLA."
+        },
+        "min_boss_wall": {
+          "physical": 0.86,
+          "house": 1.2,
+          "confidence": "low",
+          "source": "As fdm/pla; PETG's higher layer adhesion helps a formed thread rather than hurting it."
+        }
+      }
+    },
+    {
+      "mode": "fdm/abs",
+      "title": "FDM, ABS — 0.4 mm nozzle, 0.2 mm layer, enclosed",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": 0.0,
+          "house": 0.25,
+          "confidence": "low",
+          "source": "As fdm/pla plus shrinkage on cooling (ABS shrinks ~0.5-0.8% and a small hole shrinks with the part). NOT measured here."
+        },
+        "min_wall": {
+          "physical": 0.42,
+          "house": 0.86,
+          "confidence": "medium",
+          "source": "Same extrusion geometry as PLA."
+        },
+        "min_boss_wall": {
+          "physical": 0.86,
+          "house": 1.2,
+          "confidence": "low",
+          "source": "As fdm/pla."
+        }
+      }
+    },
+    {
+      "mode": "fdm/asa",
+      "title": "FDM, ASA — 0.4 mm nozzle, 0.2 mm layer, enclosed",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": 0.0,
+          "house": 0.25,
+          "confidence": "low",
+          "source": "As fdm/abs — same chemistry family, same shrinkage order. NOT measured here."
+        },
+        "min_wall": {
+          "physical": 0.42,
+          "house": 0.86,
+          "confidence": "medium",
+          "source": "Same extrusion geometry as PLA."
+        },
+        "min_boss_wall": {
+          "physical": 0.86,
+          "house": 1.2,
+          "confidence": "low",
+          "source": "As fdm/pla."
+        }
+      }
+    },
+    {
+      "mode": "fdm/tpu",
+      "title": "FDM, TPU — 0.4 mm nozzle, 0.2 mm layer",
+      "fields": {
+        "hole_diameter_compensation": {
+          "physical": 0.0,
+          "house": 0.35,
+          "confidence": "low",
+          "source": "Flexible filament is extruded slowly and springs back, so holes close up more than in a rigid material. NOT measured here."
+        },
+        "min_wall": {
+          "physical": 0.42,
+          "house": 1.2,
+          "confidence": "low",
+          "source": "A thin TPU wall is floppy rather than broken, so the minimum is a stiffness judgement, not a printability one."
+        },
+        "min_boss_wall": {
+          "physical": 0.86,
+          "house": 2.0,
+          "confidence": "low",
+          "source": "A thread formed in TPU deflects instead of gripping; if a joint needs one, it wants noticeably more material around it. House judgement."
+        }
+      }
+    }
+  ]
+}

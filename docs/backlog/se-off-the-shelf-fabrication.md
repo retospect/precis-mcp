@@ -170,6 +170,41 @@ ports and a size table; a supplier only becomes necessary when someone
 wants a price, and by then the `component` row it enriches already
 exists.
 
+### Stock as a *selection* signal — decided 2026-09-15 (Reto)
+
+The sequencing above still holds for geometry, but it missed a second
+reason to want a supplier, and it is not price: **"useless to spec a weird
+one"**. M14×55 is exactly as easy to type as M4×12 and only one of them is
+buyable, so availability has to bias *selection*, the way
+`precis-part-select-help` biases to JLCPCB Basic + high turnover before it
+ever looks at price. Reto's call: **a supplier API "in stock" number**,
+with the curated tier as the prior ("that'll roughly match on average").
+
+Survey 2026-09-15, re-run against the mechanical catalogues because the
+2026-09-05 one asked about *geometry* and this asks about *stock*:
+
+- **Digi-Key Product Information v4** — the only free, self-serve key
+  found. Developer registration on a My DigiKey account, no commercial
+  arrangement, real-time `QuantityAvailable`. Carries small metric
+  hardware (machine screws, standoffs, inserts) and thins out above M5 —
+  a partial signal, not a catalogue.
+- **JLCMC** — still the strongest *catalogue* fit (mechanical arm of the
+  JLCPCB/LCSC group, whose ingest machinery is already in-tree) and still
+  application-gated; no community dump for the mechanical side, unlike
+  `jlcparts` for electronics.
+- **Würth / Fabory / RS / Misumi** — no public product API; punchout or a
+  commercial key. Unchanged from the first survey.
+
+So the architecture is an **adapter, not an integration**: one
+`StockQuote` interface keyed by standards designation, Digi-Key as the
+first adapter, JLCMC when its application lands, and a curated
+`stocking` tier (`universal | common | specialty`) in the series rows as
+the offline prior — marked a house judgement, because it is one. Ranking
+rents the part-select posture wholesale: **fit is a gate**, then live
+stock, then tier, then whether the length is on the standard's own
+preferred list, then price. No credentials configured ⇒ say so and rank
+on the tier; never invent a stock number.
+
 ## Engine 2 — mechanism → geometry propagation
 
 **The highest-leverage building block.** se slice 3 made a mechanism
@@ -236,6 +271,81 @@ Checks that come with it, all reusing shipped machinery:
 - **Edge distance** — a hole too near a sheet edge or a tube end; a
   material rule, not a process one (`min_edge_distance` as a function of
   thickness/Ø).
+
+## Engine 2b — fastening a printed part (rung 3c)
+
+Design session 2026-09-15 (Reto + agent), from "I would like to start
+adding the standardized ISO parts (and threaded holes) such that the
+unicycle can be screwed together … also a way to 3D print holes that we
+can screw standardized pointy screws into".
+
+**The defect rung 3a shipped with.** `fasten.py` stamps a tapped hole
+(d − P) into the terminal member of a nutless stack *without asking what
+that member is made of*. In steel that is right. In an FDM part it is
+the wrong feature — a cut thread in a printed boss strips on the first
+or second assembly, and it is the kind of silently-plausible number this
+codebase refuses everywhere else. A printed member has four honest
+answers instead, and which one you get is a **declared choice**, because
+guessing between them changes the part:
+
+| `joint.params.thread_strategy` | what it stamps | when |
+|---|---|---|
+| `nut` | clearance through, nut on the far side | the strongest, needs access to both sides |
+| `nut-trap` | hex pocket (across-flats + fit, nut height + fit) + entry slot, clearance through | printed, one-sided access, full-strength steel thread |
+| `insert` | stepped pocket (insert Ø, depth = length + lead-in chamfer) for a heat-set brass insert | printed, repeated assembly |
+| `thread-forming` | a core hole ≈ 0.75–0.8 × D that the pointy screw **deforms** into a thread; a boss only where the surrounding wall is too thin | printed, one-shot or occasional, cheapest |
+| `tapped` | d − P, as today | metal/machined; on a printed member it is an explicit opt-in, never the default |
+
+**No silent default on a printed member.** `cnc-*`-family modes keep
+`tapped`; `fdm/*` with no declared strategy is a finding that names the
+four options. The block's mode is already recorded (`ops._op_set_mode`),
+so the terminal member's process is knowable at stamp time — the tapped
+hole was never wrong for lack of information, only for not asking.
+
+**The numbers are data, not constants** — `precis/data/thread_forming.json`,
+the `fit_classes.json` posture: core-hole factor per material class, min
+engagement (2×D in thermoplastic against the 1×D steel rule already in
+`fasten.py`), boss OD ≥ 2×D and min boss wall, the heat-set insert pocket
+table, the nut-trap pocket fits. Standards-vs-house marked per row; the
+insert table has **no ISO standard at all** and says so (supplier series,
+the voron-class M3 × Ø5.0 × 4.0 being the de-facto one).
+
+**A printed hole comes out undersize**, so a core hole that ignores
+shrink compensation splits the boss. That is the first field this rung
+needs from `se_capabilities.json` (se-kind.md's file, unbuilt) — seeded
+**narrowly** here: hole shrink compensation, min wall, min boss wall,
+rows `fdm/pla|petg|asa|tpu`, two tiers + `source`/`retrieved`/
+`field_confidence`, read through one resolver on the
+`pcb/rules.py::resolve_net_rules` pattern. Seeding three fields is not
+building slice 5; it is refusing to hardcode three numbers.
+
+**Blind-hole depth becomes knowable.** Rung 3a deferred "a screw bottoms
+out" because nothing said whether a tapped hole was blind or through.
+Every strategy above *stamps its own depth*, so the check is answerable
+for them — and stays deferred for a plain through-hole, which is the
+honest split rather than a blanket warning.
+
+### Head forms and drives — decided 2026-09-15 (Reto)
+
+- **Hex socket and hexalobular (Torx) only.** Slotted / cross-recess /
+  Pozidriv are a `view='fasten'` finding (`drive_not_preferred`), never a
+  write-time refusal — the house posture for a design that can be
+  mid-thought. The preferred set is data, so a shop with different tools
+  changes a file, not a branch.
+- **Head form finally drives a feature**, closing the counterbore/
+  countersink deferral named in `fasten.py`'s docstring: countersunk ⇒ a
+  90° countersink in the near member, cap ⇒ a counterbore (Ø = head Ø +
+  fit, depth ≥ head height), button/pan ⇒ a head-clearance check only.
+  The blocker was that `component` has one flat `fastener` category; the
+  fix is a `head_form` spec carried by the series row, not a category
+  split.
+- **Parametric, not imported.** Reto floated pulling in 3D models. We
+  don't: every family gets a generator that emits its solid from its
+  table row — cylinder plus hex/Torx recess, cone for countersunk — so
+  *any* size in the table resolves, and the drive recess (which a
+  TraceParts STEP would give us as dead geometry) stays a function of
+  `drive_size`. An import would add a licence review and lose the
+  parametry, for a part that is four primitives.
 
 ## Engine 3 — stock-constrained realizability + non-mesh outputs
 
@@ -331,6 +441,22 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
    clearance / DOF / connectivity / `envelope_fit`.
    - **2a (built)** — the series registry + mint (above): a bought part
      now has *dimensions*, in core, resolvable from a colloquial name.
+   - **2c (built 2026-09-15)**: series breadth + stock-biased selection.
+     Eleven new families in `component_series.json` — ISO 10642/7380
+     (hex-socket countersunk, button), 14579/14581/14583 (the Torx trio),
+     **14585/14586** (Torx tapping screws, the pointy ones), 4026 (set
+     screw), 7040/4035 (nyloc, thin nut), 7090 (chamfered washer), plus a
+     no-standard heat-set insert series that says so. Migration 0163 adds
+     the four specs a feature needs (`head_form`, `point_type`,
+     `head_angle`, `drive_code`); every size row carries a curated
+     `stocking` tier that ranks after fit. `cad/catalog.py` grew a
+     **generic series-driven builder** (`_SERIES_FAMILIES`) instead of one
+     generator per standard, so a family is now a line of data. Stock:
+     `precis/supply/` — one `StockQuote` port, a Digi-Key Product
+     Information v4 adapter (the only free self-serve key found), and
+     `get(kind='component', view='stock')`, which shows the tier *and* the
+     live number and names the missing credential rather than quietly
+     showing one.
    - **2b — next**, and the se half: envelope generators per category
      (spec values → a cad DSL config) and port templates per category, so
      `connect` can attach to a bought part at all. Reads
@@ -347,12 +473,51 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
      pattern-tolerance warning the house fit class implies. `view=
      'fasten'`; findings also in `view='drc'`. No migration — the fit
      table is a file and the stamped features are derived.
-   - **3b — next**: tool access (driver envelopes per `drive_type` ×
-     size as capability data, swept against the assembly), assembly-order
-     existence, edge distance.
+   - **3b (tool access built 2026-09-15)**: `precis_se/toolaccess.py`
+     stands each candidate driver's swept envelope — shaft plus the arm
+     disc of one full turn — on the drive face and asks whether it clears
+     the assembly, answering *which* tool rather than whether. Data:
+     `driver_envelopes.json` (ISO 2936 key geometry; bench tools marked as
+     bench tools). Affordable because of a **drive-face cull** before the
+     AABB phase: a driver is on one side of the head and the members are
+     on the other, so in an ordinary stack the narrow phase never runs.
+     *Assembly-order existence and edge distance remain unbuilt.*
+   - **3c (built 2026-09-15)**: fastening a printed part (engine 2b) —
+     the five thread strategies with `precis/data/thread_forming.json`
+     behind them, head-form counterbores/countersinks, the hex-and-Torx
+     drive policy, and the printed-hole compensation (three fields seeded
+     into `se_capabilities.json`, read through `precis_se/capabilities.py`).
+     Behaviour change worth knowing: a member that **says** it is printed
+     and declares no strategy now gets **no far-end hole**, while a member
+     with no mode at all keeps the old cut thread plus an `info` finding
+     — refusing there would have broken every design predating modes.
+     Skill: `precis-se-fasten-help`.
 4. **`laser/*` + `stock-cut/*`** — capability rows, realizability
    predicates, snap-to-stock, series/size tables.
 5. **Flat pattern DXF/SVG + nesting; cut lists + offcut yield.**
+
+### Left open by the 2026-09-15 build
+
+- **The prod dogfood.** `unicycle-mk2` still has one `screw` joint with no
+  fastener bound (`saddle.rail—seatpost.top`), which is what started this
+  rung. The surface is proven end to end by
+  `tests/test_se_fasten_seatclamp.py` — mint → bind → pose → connect →
+  `view='fasten'` — but the live design was not edited: the session that
+  built this had no `precis` MCP connection. The edit is small and the
+  grammar is in `precis-se-fasten-help`; the one thing to get right is
+  that **the connect names the screw block**, not the two members.
+- **Stock refresh is live-on-demand, not cached.** `view='stock'` asks the
+  adapter when someone asks it. No worker, no table, no migration — the
+  `parts_refresh` shape is the obvious upgrade if a BOM ever wants to
+  price a hundred lines at once, and deliberately not built for a surface
+  nobody has used yet.
+- **Credentials are user-side.** Digi-Key needs a free developer app
+  (`PRECIS_DIGIKEY_CLIENT_ID` / `_SECRET`); until one exists the tier is
+  the whole answer and the view says so. JLCMC's mechanical API is worth
+  applying for — it is the catalogue this actually wants, and the JLCPCB
+  order history is what they review.
+- **Assembly order and edge distance** (the rest of rung 3b) are
+  untouched, including whether a nut trap is reachable to drop the nut in.
 
 ## Deferred, named so they are not re-derived
 

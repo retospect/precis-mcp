@@ -49,7 +49,10 @@ facts and the made-of material), ``view='table'`` (tidy one-row-per-value),
 assembly tree), or ``view='bom'`` (the flattened BOM with cost/mass rollup,
 optionally annotated by ``spec=`` for a cross-leaf consistency check), or
 ``view='series'`` (the standards registry — bare = the index, ``id=`` = one
-family's size table, ``q=`` = the ranked colloquial resolver).
+family's size table, ``q=`` = the ranked colloquial resolver), or
+``view='stock'`` (is it buyable: the curated availability tier from the
+series row, plus a live supplier quote when a stock adapter is configured —
+:mod:`precis.supply`).
 ``search`` matches name/alias/mpn/manufacturer/category with ``q=``, or
 does the range-filter read (``spec=/min=/max=/maturity=``, optionally
 narrowed by ``category=``).
@@ -62,6 +65,7 @@ from __future__ import annotations
 from typing import Any, ClassVar, TypedDict
 
 from precis import component_series as cseries
+from precis import supply
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -83,7 +87,15 @@ _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 #: handler-layer enforcement of that vocabulary.
 _METHODS: tuple[str, ...] = ("measured", "datasheet", "estimated", "standard")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
-_VIEWS: tuple[str, ...] = ("table", "specs", "categories", "tree", "bom", "series")
+_VIEWS: tuple[str, ...] = (
+    "table",
+    "specs",
+    "categories",
+    "tree",
+    "bom",
+    "series",
+    "stock",
+)
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
@@ -113,7 +125,8 @@ class ComponentHandler(Handler):
             "entity from the standards series registry (id= optional — a "
             "deterministic slug is derived). get(view='series') lists the "
             "series; view='series' with id=<series_id> is its size table, "
-            "with q='<colloquial>' the ranked resolver. "
+            "with q='<colloquial>' the ranked resolver; view='stock' is the "
+            "availability tier plus a live supplier quote. "
             "search(spec=<spec_id>, min=, max=, maturity=, category=) is "
             "the range filter read; plain q= matches name/mpn/manufacturer/"
             "category. See precis-component-help."
@@ -491,10 +504,14 @@ class ComponentHandler(Handler):
                 entry["lengths"] = (
                     ", ".join(f"{x:g}" for x in row.lengths) if row.lengths else "—"
                 )
+            entry["stocked"] = row.stocking or "—"
             rows.append(entry)
         schema = ["size", *spec_ids]
         if srs.length_spec is not None:
             schema.append("lengths")
+        # Availability last, so it reads as the tiebreak it is: pick on
+        # fit, then prefer the size someone actually holds.
+        schema.append("stocked")
         head = [f"# {srs.series_id} — {srs.name}"]
         if srs.designation:
             head.append(f"designation: {srs.designation}")
@@ -506,6 +523,12 @@ class ComponentHandler(Handler):
             )
         if srs.aliases:
             head.append("aka: " + ", ".join(srs.aliases))
+        if any(row.stocking for row in srs.sizes):
+            head.append(
+                "`stocked` is a curated house judgement of how widely a size "
+                "is held (universal | common | specialty), not a live number "
+                "— get(id=<slug>, view='stock') asks a supplier"
+            )
         tail = (
             f"\n\nNext: put(kind='component', series='{srs.series_id}', "
             f"size='{srs.sizes[0].key}"
@@ -1123,6 +1146,8 @@ class ComponentHandler(Handler):
             return self._render_tree(ref)
         if view == "bom":
             return self._render_bom(ref, spec=str(spec).strip() if spec else None)
+        if view == "stock":
+            return self._render_stock(ref)
         values = self.store.component_values_for_ref(ref.id)
         if view == "table":
             return self._render_table(ref, values)
@@ -1249,6 +1274,60 @@ class ComponentHandler(Handler):
         for leaf_id, qty in self._flatten_bom(ref_id):
             summed[leaf_id] = summed.get(leaf_id, 0) + qty
         return summed
+
+    def _render_stock(self, ref: Any) -> Response:
+        """``view='stock'`` — is this thing buyable, right now.
+
+        Two answers, deliberately both shown (the owning backlog item's
+        "Stock as a selection signal"): the **curated tier** from the
+        series row, which is an offline house judgement that ranks M4×12
+        above M14×55 with no network, and a **live supplier quote**, which
+        is one distributor's warehouse at one moment. When no adapter is
+        configured the view says which credential is missing rather than
+        quietly showing the tier alone — a missing key and a part nobody
+        stocks must not read the same.
+        """
+        meta = ref.meta or {}
+        series_id = str(meta.get("series") or "")
+        size = str(meta.get("size") or "")
+        designation = str(meta.get("designation") or "")
+        lines = [f"# stock — {ref.id}"]
+        srs = cseries.find_series(series_id) if series_id else None
+        row = srs.size(cseries.split_designation(size)[0]) if srs and size else None
+        if srs is not None and row is not None and row.stocking:
+            lines.append(
+                f"availability tier: **{row.stocking}** — a curated house "
+                f"judgement about {srs.series_id} {row.key}, not a live number; "
+                "it is what ranks candidates when nothing can be asked."
+            )
+        else:
+            lines.append(
+                "availability tier: none recorded (hand-entered row, or a "
+                "series without a judgement for this size)"
+            )
+        query = " ".join(x for x in (designation or series_id, size) if x).strip()
+        if not query:
+            lines.append(
+                "no standards designation on this row, so there is nothing to "
+                "ask a supplier by — mint it from a series to get one."
+            )
+            return Response(body="\n".join(lines))
+        why = supply.unavailable_reason()
+        if why is not None:
+            lines.append(f"live stock: unavailable — {why}")
+            return Response(body="\n".join(lines))
+        quotes = supply.quote(query)
+        if not quotes:
+            lines.append(
+                f"live stock: asked for {query!r} and got nothing back — the "
+                "suppliers reachable from here do not list it. That is a "
+                "statement about them, not about the world: the catalogue "
+                "with the real fastener depth (JLCMC) is application-gated."
+            )
+            return Response(body="\n".join(lines))
+        lines.append(f"live stock for {query!r}:")
+        lines.extend(f"- {q.line()}" for q in quotes)
+        return Response(body="\n".join(lines))
 
     def _render_bom(self, ref: Any, *, spec: str | None) -> Response:
         spec_row: ComponentSpecRow | None = None

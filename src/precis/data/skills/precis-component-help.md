@@ -214,18 +214,42 @@ put(kind="component", series="iso-4762", size="M6x30")
 - `q=` **ranks, it never picks.** You get candidates with the tokens that
   matched; name the one you meant.
 
-Seeded families: `iso-4762` (socket cap screw), `iso-4017` (hex head
-screw), `iso-4032` (hex nut), `iso-7089` (plain washer),
-`en-10255-medium` (steel tube), `acrylic-sheet-cast` (cast acrylic stock
-thicknesses). These are **standards data, not a supplier catalog** — no
-price, no stock, no lead time, and nothing here reaches a network. A
-price/availability enrichment layer keyed by designation is a separate,
-later integration.
+## What the series registry holds
+
+Seeded families — **screws, by head form and drive**: `iso-4762` (socket
+cap), `iso-10642` (countersunk), `iso-7380` (button), `iso-14579` /
+`iso-14581` / `iso-14583` (the Torx cap / countersunk / pan trio),
+`iso-14585` / `iso-14586` (**Torx tapping screws** — the pointy ones that
+thread straight into plastic, ST2.9–ST6.3), `iso-4026` (set screw),
+`iso-4017` (hex head). **Nuts and washers**: `iso-4032` (hex nut),
+`iso-7040` (nyloc), `iso-4035` (thin nut), `iso-7089` / `iso-7090`
+(washers). **Stock and oddments**: `en-10255-medium` (steel tube),
+`acrylic-sheet-cast` (cast acrylic thicknesses), `insert-brass-heatset`
+(heat-set threaded inserts — **no standard exists**, and that row says so).
+
+These are **standards data, not a supplier catalog**: no price, no lead
+time, and `component_series.py` itself never reaches a network. Two things
+do speak to availability, and they are different kinds of fact:
+
+- every size row carries a curated **`stocking` tier** (`universal` ·
+  `common` · `specialty`) — a house judgement that ranks M4×12 above
+  M14×55 offline, and that `q=` weighs *after* fit;
+- `get(kind='component', id=<slug>, view='stock')` shows that tier **and**
+  asks a supplier for a live in-stock number, when one is configured
+  (`precis.supply`; Digi-Key today, free self-serve key). With no
+  credentials it says which one is missing rather than showing the tier
+  alone — a missing key and a part nobody stocks must not read alike.
 
 The dimension specs a mint writes (`outer_diameter`, `inner_diameter`,
 `wall_thickness`, `thickness`, `width`, `height`, `across_flats`,
 `head_diameter`, `head_height`, `drive_size`) are **universal** and in
-**mm** — an outside diameter means the same thing on a screw shank, a
+**mm**; a fastener row also carries `head_form`, `point_type`,
+`head_angle` and `drive_code` (migration 0163), which are what let the
+fastening pass decide between a counterbore, a 90° countersink and
+nothing at all — see `precis-se-fasten-help`. A countersunk row carries
+the **theoretical** sharp-cone `head_diameter` and no `head_height`: the
+sink depth is (head Ø − thread Ø)/2 by geometry, and a second
+transcription could only disagree with it — an outside diameter means the same thing on a screw shank, a
 pipe and a bearing race. Read `canonical_unit` off the spec registry
 before doing arithmetic: `length_overall` is the metres outlier.
 

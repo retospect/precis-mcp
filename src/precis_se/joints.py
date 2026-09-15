@@ -22,12 +22,19 @@ rejected loudly at write time (the ``**_kw`` swallowed-facet lesson);
 (engagement depth, stiffness for ``compliant`` — advisory/descriptive tier
 until a real consumer exists, per the annotations contract-class rule).
 
-Two params have since **earned contract class** by acquiring a consumer
-(:mod:`precis_se.fasten`, rung 3) and are checked here: ``fit_class``,
-which picks the clearance hole a `screw` mechanism stamps, and ``lead``,
-the metres-per-revolution of a `screw` *class*. The rest of ``params``
-stays open and descriptive — that is the rule working, not an exception
-to it.
+Four params have since **earned contract class** by acquiring a consumer
+(:mod:`precis_se.fasten`, rungs 3 and 3c) and are checked here:
+``fit_class``, which picks the clearance hole a `screw` mechanism stamps;
+``lead``, the metres-per-revolution of a `screw` *class*; and
+``thread_strategy``, which says what the screw threads *into* at the far
+end — a printed member has four honest answers (nut, nut trap, heat-set
+insert, thread-forming core hole) and a cut thread is the wrong default
+in plastic, so the choice is declared rather than assumed; and
+``counterbore``, which asks for a cap/pan/button head to be buried in the
+first member instead of standing proud (a countersunk head always gets
+its cone — that one is physics, not preference). The rest of ``params``
+stays open and descriptive — that is the rule working, not an
+exception to it.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ import math
 from typing import Any
 
 from precis import fit_classes as core_fit_classes
+from precis import thread_forming as core_thread_forming
 
 #: What motion the connection permits. ``compliant`` is a DOF with
 #: stiffness rather than freedom (TPU living hinge, flexure); ``captive``
@@ -219,6 +227,28 @@ def _vet_params(params: dict[str, Any]) -> dict[str, Any]:
                 "0.001, i.e. 1 mm of travel per turn"
             )
         params["lead"] = lead_m
+    strategy = params.get("thread_strategy")
+    if strategy is not None:
+        allowed = core_thread_forming.STRATEGIES
+        if not isinstance(strategy, str) or strategy.strip().lower() not in allowed:
+            raise JointError(
+                f"joint param 'thread_strategy' must be one of "
+                f"{' | '.join(allowed)}; got {strategy!r} — it says what the "
+                "screw threads INTO at the far end of the stack, which a "
+                "printed member cannot be given a hole without"
+            )
+        params["thread_strategy"] = strategy.strip().lower()
+    bore = params.get("counterbore")
+    if bore is not None:
+        if not isinstance(bore, bool):
+            raise JointError(
+                f"joint param 'counterbore' must be true or false, got "
+                f"{bore!r} — it asks a `screw` joint to bury the head in "
+                "the first member rather than leave it standing proud "
+                "(a countersunk head always gets its cone; this is for "
+                "cap/pan/button heads, where burying it is a choice)"
+            )
+        params["counterbore"] = bore
     # axial-member params (class 'axial'; contract-classed — consumed by
     # precis_se.stability). Sign convention: member force tension-positive,
     # so 'preload' may be negative (a strut is pre-compressed); both

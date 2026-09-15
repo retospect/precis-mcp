@@ -528,7 +528,10 @@ class SeHandler(Handler):
             "CONNECTS digest) | view='drc' (graph tier + DOF "
             "probe) | view='bom' (bought items, multiplied through the "
             "arrays, with cost/mass) | view='fasten' (screw joints: grip "
-            "stack-up, clearance holes, thread lead) | view='interview' "
+            "stack-up, the holes it stamps — clearance, countersink or "
+            "counterbore, and whatever the far end's thread_strategy "
+            "names — thread lead, and which driver can reach it) "
+            "| view='interview' "
             "(the question/answer/decision ledger, open questions first) "
             "| view='freedom' (what is still undecided, and by whom) "
             "| view='stability' (Maxwell/Calladine rigid / mechanism / "
@@ -2156,8 +2159,12 @@ def _mm(value: float | None) -> str:
 def _render_fasten(tree: SeTree) -> str:
     """``view='fasten'`` — what each screw joint does to the parts it
     joins (:mod:`precis_se.fasten`): the stack its axis walks through, the
-    grip and length check, the thread's lead and travel limits, and the
-    clearance/tapped holes it stamps.
+    grip and length check, the thread's lead and travel limits, which
+    driver can reach the head (rung 3b), and every feature it stamps —
+    the clearance holes, the head's countersink or counterbore, and the
+    far end, which on a printed member is whatever
+    ``params.thread_strategy`` named and nothing at all when it named
+    nothing (rung 3c).
 
     The holes are **derived**: regenerated from the connect on every read,
     stored nowhere, so this view is the feature list — there is no other
@@ -2195,17 +2202,33 @@ def _render_fasten(tree: SeTree) -> str:
                                 if m.bought
                                 else "designed"
                             ),
+                            "made by": m.mode or "—",
                         }
                         for m in res.members
                     ],
-                    schema=["member", "from", "to", "thickness", "note"],
+                    schema=["member", "from", "to", "thickness", "note", "made by"],
                 )
             )
             lines.append(
-                f"grip {_mm(res.grip_m)} · stack {_mm(res.stack_m)} · "
-                f"terminated by a {res.termination} · screw is "
-                f"{_mm(res.length_m)} under the head, needs "
+                f"grip {_mm(res.grip_m)} · stack {_mm(res.stack_m)}"
+                # Only the nut is worth saying here: 'tapped' is the
+                # internal "no nut in the stack" classification, and
+                # printing it beside a far end the pass refused to decide
+                # was two lines of one view contradicting each other.
+                + (" · terminated by a nut" if res.termination == "nut" else "")
+                + f" · screw is {_mm(res.length_m)} under the head, needs "
                 f"{_mm(res.required_length_m)}"
+            )
+            if res.tool:
+                lines.append(f"driven with: {res.tool}")
+            lines.append(
+                "far end: "
+                + (
+                    f"{res.thread_strategy} into "
+                    f"{res.material_class or 'an undeclared material'}"
+                    if res.thread_strategy
+                    else "UNDECIDED — see the finding below"
+                )
             )
         if res.thread is not None:
             t = res.thread
@@ -2237,14 +2260,34 @@ def _render_fasten(tree: SeTree) -> str:
                             "kind": h.kind,
                             "diameter": _mm(h.diameter_m),
                             "depth": _mm(h.depth_m),
+                            "across flats": (
+                                _mm(h.across_flats_m) if h.across_flats_m else "—"
+                            ),
                         }
                         for h in res.holes
                     ],
-                    schema=["feature", "member", "kind", "diameter", "depth"],
+                    schema=[
+                        "feature",
+                        "member",
+                        "kind",
+                        "diameter",
+                        "depth",
+                        "across flats",
+                    ],
                 )
             )
+            # Where each non-clearance number came from, once per kind. A
+            # shop rule and a published table must not read alike, and the
+            # table has no room to say which is which.
+            seen: set[str] = set()
+            for h in res.holes:
+                if h.kind == "clearance" or not h.source or h.kind in seen:
+                    continue
+                seen.add(h.kind)
+                lines.append(f"  {h.kind}: {h.source}")
         for f in res.findings:
-            lines.append(f"⚠ {f.rule}: {f.detail}")
+            mark = "ℹ" if getattr(f, "severity", "warn") == "info" else "⚠"
+            lines.append(f"{mark} {f.rule}: {f.detail}")
     return "\n".join(lines)
 
 

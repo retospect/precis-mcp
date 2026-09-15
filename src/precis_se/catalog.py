@@ -56,6 +56,8 @@ from precis_se.ops import PortSpec
 #: - ``bore`` — a through-hole this part presents to something else.
 #: - ``end`` — the cut end of a length of stock.
 #: - ``seat`` — a surface another part is pressed onto (a bearing race).
+#: - ``drive`` — the tool interface: where a hex key or Torx bit enters,
+#:   and the frame a swept driver envelope is checked from.
 ROLES = (
     "bearing-face",
     "thread",
@@ -63,6 +65,7 @@ ROLES = (
     "bore",
     "end",
     "seat",
+    "drive",
 )
 
 
@@ -168,14 +171,71 @@ def _axial_ports(
 # ── fastener: three forms, told apart by spec shape ───────────────────
 
 
+def head_height(specs: dict[str, Any]) -> float | None:
+    """The head's extent along the axis, in metres.
+
+    Transcribed for every head form except **countersunk**, where it is
+    *derived*: a 90° cone that goes from the shank diameter out to the
+    head diameter is that much deep, so the series file carries the two
+    diameters and the angle and nothing else. One number, one place — the
+    alternative is a second transcription that can disagree with the
+    geometry it describes (the file's own note says so)."""
+    stated = specs.get("head_height")
+    if stated is not None:
+        try:
+            value = float(stated)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0.0 else None
+    if str(specs.get("head_form") or "") != "countersunk":
+        return None
+    try:
+        head_d = float(specs["head_diameter"])
+        shank_d = float(specs["outer_diameter"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    sink = (head_d - shank_d) / 2.0
+    return sink if sink > 0.0 else None
+
+
+def _drive_port(specs: dict[str, Any], offset_m: float) -> PortSpec | None:
+    """The tool interface as a port, so a driver envelope has a frame to
+    be swept from (rung 3b's tool-access check). ``None`` when the row
+    says nothing about a drive — an external-hex bolt is driven on its
+    flats, which is a different geometry and not this port."""
+    drive_type = specs.get("drive_type")
+    if drive_type is None or str(drive_type) in {"hex", "external-hex"}:
+        return None
+    return PortSpec(
+        name="drive",
+        roles=["drive"],
+        direction=[0.0, 0.0, -1.0],
+        annotations={
+            "axial_offset_m": offset_m,
+            "drive_type": str(drive_type),
+            "drive_code": specs.get("drive_code"),
+            "drive_size_m": specs.get("drive_size"),
+        },
+    )
+
+
 def _screw(specs: dict[str, Any]) -> Derived:
-    (vals, missing) = _need(specs, "head_diameter", "head_height", "length")
+    (vals, missing) = _need(specs, "head_diameter", "length")
+    head_h = head_height(specs)
+    if head_h is None:
+        missing = [*missing, "head_height"]
     if missing:
         return Derived(why_not=f"screw needs {', '.join(missing)}")
-    head_d, head_h, length = vals
+    head_d, length = vals
+    assert head_h is not None
     shank_d = float(specs.get("outer_diameter") or 0.0)
     radius = max(head_d, shank_d) / 2.0
-    total = head_h + length
+    # A countersunk screw's length is measured over the WHOLE screw (the
+    # head sinks into the work); every other head form measures under the
+    # head. Adding the head to a countersunk length would lengthen the
+    # part by its own head — which the grip check would then believe.
+    sunk = str(specs.get("head_form") or "") == "countersunk"
+    total = length if sunk else head_h + length
     ports = _axial_ports(
         total,
         near="head",
@@ -187,9 +247,39 @@ def _screw(specs: dict[str, Any]) -> Derived:
         name="shank",
         roles=["shank"],
         direction=[0.0, 0.0, 1.0],
-        annotations={"axial_offset_m": head_h, "diameter_m": shank_d or None},
+        annotations={
+            "axial_offset_m": 0.0 if sunk else head_h,
+            "diameter_m": shank_d or None,
+        },
     )
+    drive = _drive_port(specs, 0.0 if sunk else head_h)
+    if drive is not None:
+        ports["drive"] = drive
     return Derived(envelope=f"cyl:r{_fmt(radius)}h{_fmt(total)}", ports=ports)
+
+
+def _insert(specs: dict[str, Any]) -> Derived:
+    """A threaded insert — not a fastener that clamps, a thread that a
+    printed part borrows. Its envelope is the knurl, because that is what
+    the pocket has to accept."""
+    (vals, missing) = _need(specs, "outer_diameter", "height")
+    if missing:
+        return Derived(why_not=f"insert needs {', '.join(missing)}")
+    outer_d, height = vals
+    ports = _axial_ports(
+        height,
+        near="face_a",
+        far="face_b",
+        near_roles=["seat"],
+        far_roles=["seat"],
+    )
+    ports["thread"] = PortSpec(
+        name="thread",
+        roles=["thread", "bore"],
+        direction=[0.0, 0.0, 1.0],
+        annotations={"diameter_m": specs.get("inner_diameter")},
+    )
+    return Derived(envelope=f"cyl:r{_fmt(outer_d / 2.0)}h{_fmt(height)}", ports=ports)
 
 
 def _nut(specs: dict[str, Any]) -> Derived:
@@ -252,16 +342,58 @@ _FASTENER_FORMS: tuple[tuple[str, str, Callable[[dict[str, Any]], Derived]], ...
     ("thickness", "washer", _washer),
 )
 
+#: Geometry per form name, for the rows that **declare** one.
+_FORM_BUILDERS: dict[str, Callable[[dict[str, Any]], Derived]] = {
+    "screw": _screw,
+    "nut": _nut,
+    "washer": _washer,
+    "insert": _insert,
+}
+
+#: ``head_form`` → form name. A declared head form is better evidence than
+#: a spec shape — a countersunk screw carries no ``head_height`` (the cone
+#: depth is derived), so shape alone would call it a washer.
+_FORM_BY_HEAD: dict[str, str] = {
+    "cap": "screw",
+    "pan": "screw",
+    "button": "screw",
+    "countersunk": "screw",
+    "hex": "screw",
+    "flange": "screw",
+}
+
+
+def declared_form(specs: dict[str, Any]) -> str | None:
+    """The form this row *says* it is, from the specs a series mint
+    writes (migration 0163's ``head_form`` / ``point_type``). ``None``
+    for a hand-entered row that declares neither — those fall back to the
+    spec-shape rules below, which is the only evidence they carry."""
+    if str(specs.get("point_type") or "") == "insert":
+        return "insert"
+    head = str(specs.get("head_form") or "")
+    if head in _FORM_BY_HEAD:
+        return _FORM_BY_HEAD[head]
+    if head == "none":
+        # A set screw is a headless screw; a nut also declares no head but
+        # carries an across-flats, and that tells them apart.
+        return "nut" if specs.get("across_flats") is not None else "screw"
+    return None
+
 
 def fastener_form(specs: dict[str, Any]) -> str | None:
     """Which fastener form this spec set describes — ``'screw'``,
-    ``'nut'``, ``'washer'`` — or ``None`` when nothing identifies it.
+    ``'nut'``, ``'washer'``, ``'insert'`` — or ``None`` when nothing
+    identifies it.
 
-    Same precedence as :func:`_fastener` (one tuple, so the two can never
-    disagree about what a hex-head screw is). Downstream passes need the
-    *name* without the geometry: :mod:`precis_se.fasten` tells the screw
-    from the nut it threads into, and neither is inferable from the
-    envelope, which is a cylinder either way."""
+    Declared form first (:func:`declared_form`), then the same precedence
+    as :func:`_fastener` (one tuple, so the two can never disagree about
+    what a hex-head screw is). Downstream passes need the *name* without
+    the geometry: :mod:`precis_se.fasten` tells the screw from the nut it
+    threads into, and neither is inferable from the envelope, which is a
+    cylinder either way."""
+    stated = declared_form(specs)
+    if stated is not None:
+        return stated
     for key, form, _fn in _FASTENER_FORMS:
         if specs.get(key) is not None:
             return form
@@ -269,14 +401,17 @@ def fastener_form(specs: dict[str, Any]) -> str | None:
 
 
 def _fastener(specs: dict[str, Any]) -> Derived:
+    stated = declared_form(specs)
+    if stated is not None:
+        return _FORM_BUILDERS[stated](specs)
     for key, _form, fn in _FASTENER_FORMS:
         if specs.get(key) is not None:
             return fn(specs)
     return Derived(
         why_not=(
-            "fastener needs one of head_diameter/head_height (screw), "
-            "across_flats (nut) or thickness (washer) to tell which form "
-            "it is"
+            "fastener needs a head_form/point_type, or one of "
+            "head_diameter/head_height (screw), across_flats (nut) or "
+            "thickness (washer) to tell which form it is"
         )
     )
 

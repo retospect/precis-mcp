@@ -51,9 +51,16 @@ def test_a_rule_class_and_a_tabulated_class_both_resolve() -> None:
     assert "offset_mm" not in core_fit.classes()["medium"]
     for size in core_fit.sizes():
         rule = core_fit.clearance_hole(size, "house")
-        tabulated = core_fit.clearance_hole(size, "medium")
-        assert rule is not None and tabulated is not None
+        assert rule is not None
         assert rule.hole_mm == pytest.approx(rule.nominal_mm + 0.2)
+        tabulated = core_fit.clearance_hole(size, "medium")
+        if size.startswith("ST"):
+            # A tapping screw has no ISO 273 column — the standard covers
+            # metric machine screws. The rule still answers, which is the
+            # point of having both shapes.
+            assert tabulated is None
+        else:
+            assert tabulated is not None
 
 
 def test_the_source_distinguishes_a_shop_rule_from_a_standard() -> None:
@@ -81,5 +88,19 @@ def test_an_unknown_size_or_class_is_none_not_a_guess() -> None:
 
 def test_sizes_come_back_smallest_first() -> None:
     listed = core_fit.sizes()
-    assert listed[0] == "M3" and listed[-1] == "M20"
-    assert listed == sorted(listed, key=lambda s: float(s[1:]))
+    metric = [s for s in listed if not s.startswith("ST")]
+    assert metric[0] == "M3" and metric[-1] == "M20"
+    nominals = [
+        core_fit.clearance_hole(s, "house").nominal_mm  # type: ignore[union-attr]
+        for s in listed
+    ]
+    assert nominals == sorted(nominals)
+
+
+def test_tapping_screw_sizes_are_listed_alongside_the_metric_ones() -> None:
+    """A pointy screw still passes through the members above the one it
+    bites, so it needs a clearance hole like any other."""
+    listed = core_fit.sizes()
+    assert "ST4.2" in listed
+    fit = core_fit.clearance_hole("ST4.2")
+    assert fit is not None and fit.fit_class == "house"

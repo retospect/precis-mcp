@@ -29,7 +29,9 @@ An `se` design is a **block tree** (blocks with poses + cad-DSL envelopes)
 plus **connects** (port↔port edges carrying a joint class, objectives,
 and optional preload). You author with typed ops, then read views that
 check what you claimed. For the design *workflow* (abstraction ladder,
-refine, tradeoffs) see `precis-se-design-help`.
+refine, tradeoffs) see `precis-se-design-help`; for screwing a design
+together — picking a real ISO screw, what a printed part's threaded hole
+should be, and what `view='fasten'` reports — see `precis-se-fasten-help`.
 
 ## Units and geometry conventions — read first
 
@@ -273,7 +275,14 @@ the design serves, default `related-to` for a sibling variant,
 `view='drc'`: capacity vs declared load ("asked to carry X N compression
 against a Y N buckling/crush ceiling"), mechanism-implied BOM demands,
 undeclared interpenetration, dof_disagreement, unconnected ports.
-`view='fasten'` refuses a stack-up with no screw-form component bound.
+`view='fasten'` refuses a stack-up with no screw-form component bound. It
+also decides **nothing** about what a printed member's far end threads into
+— `params.thread_strategy` (`nut | nut-trap | insert | thread-forming |
+tapped`) is contract-classed and required there, because a cut thread in
+plastic is the wrong default; metal members still default to `tapped`. The
+view reports the stack, the grip, the thread as a lead, which driver can
+reach the head, and every stamped hole with the provenance of its diameter.
+Full workflow: `precis-se-fasten-help`.
 
 `view='clearance'`: with `args={'a': <block>, 'b': <block>}`, the signed
 envelope gap between those two blocks (interference/touching/clear).

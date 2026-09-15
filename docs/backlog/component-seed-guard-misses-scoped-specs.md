@@ -93,3 +93,11 @@ investigation above could not close from outside the run.
 
 Any test that depends on 0093's category-scoped seed is exposed, not just
 se's — this is test-infrastructure, not an se defect.
+
+**It generalizes to every later category-scoped migration**, confirmed
+2026-09-15: migration 0163 (`head_form`/`point_type`/`head_angle`/
+`drive_code`, all scoped to `fastener`) has exactly the same exposure, and
+`tests/test_se_fasten_seatclamp.py` replays it the same way 0093 is
+replayed. Each new scoped seed otherwise needs its own workaround, which
+is the cost of leaving this open — and the reason the fix belongs in the
+clone path rather than in one more test fixture.

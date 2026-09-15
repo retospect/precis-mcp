@@ -58,19 +58,38 @@ class TestClearanceHolesVsWashers:
 
     def test_every_clearance_hole_clears_its_own_thread(self) -> None:
         """The invariant that makes the table usable at all: a hole a bolt
-        cannot pass through is worse than no row."""
+        cannot pass through is worse than no row.
+
+        ISO 273 covers metric machine screws, so a **tapping-screw (ST)**
+        size resolves only under the `house` rule — which is asserted
+        below rather than skipped, so a stray tabulated column would still
+        fail here."""
         for size in fit_classes.sizes():
             for cls in fit_classes.classes():
                 fit = fit_classes.clearance_hole(size, cls)
+                tabulated = "offset_mm" not in fit_classes.classes()[cls]
+                if size.startswith("ST") and tabulated:
+                    assert fit is None, f"{size}/{cls} — ISO 273 has no ST column"
+                    continue
                 assert fit is not None and fit.hole_mm > fit.nominal_mm, f"{size}/{cls}"
 
     def test_the_classes_are_ordered_fine_medium_coarse(self) -> None:
         for size in fit_classes.sizes():
+            if size.startswith("ST"):
+                continue  # no ISO 273 columns to order (above)
             fine = fit_classes.clearance_hole(size, "fine")
             medium = fit_classes.clearance_hole(size, "medium")
             coarse = fit_classes.clearance_hole(size, "coarse")
             assert fine is not None and medium is not None and coarse is not None
             assert fine.hole_mm <= medium.hole_mm <= coarse.hole_mm, size
+
+    def test_a_tapping_screw_still_gets_a_house_clearance_hole(self) -> None:
+        """A pointy screw passes through the members above the one it
+        bites, so it needs a clearance hole like anything else."""
+        fit = fit_classes.clearance_hole("ST4.2")
+        assert fit is not None
+        assert fit.fit_class == "house"
+        assert fit.hole_mm > fit.nominal_mm
 
 
 class TestSeriesInternalConsistency:

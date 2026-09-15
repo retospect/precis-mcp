@@ -1,0 +1,96 @@
+{
+  "_note": "THREADS INTO SOFT MATERIAL — versioned DATA for docs/backlog/se-off-the-shelf-fabrication.md engine 2b (rung 3c), the sibling of fit_classes.json. fit_classes answers 'how big a hole does this screw PASS THROUGH'; this answers 'what does the screw thread INTO when the member is printed'. A cut thread (d − P) is right in steel and wrong in an FDM boss, so the strategies here are the four honest alternatives and the numbers each one needs. Every length is MILLIMETRES, one unit for the whole file (the component_series.json convention); consumers convert — se is metres everywhere. CONFIDENCE, per section: `thread_cores.minor` is transcribed from ISO 1478 (tapping-screw d3 max) and ISO 261 (metric d − P) and is exact; every `core_hole_factor`, engagement multiple, boss rule and insert pocket is a HOUSE/INDUSTRY RULE OF THUMB, not a standard — thread-forming screw makers (EJOT Delta PT, Plastite, Remform) publish per-material pilot-hole tables for their own screws, and no ISO equivalent exists, so these are the conservative middle of that published range and are marked as such per row. Where a number is a rule rather than a measurement, `source` says so in words rather than citing a standard that does not cover it.",
+  "default_material_class": "thermoplastic-rigid",
+  "strategies": {
+    "nut": {
+      "title": "Through-bolt and nut",
+      "stamps": "a clearance hole through every member; the nut is a part, not a feature",
+      "note": "The strongest and the least clever: no thread touches the plastic at all. Needs access to both sides."
+    },
+    "nut-trap": {
+      "title": "Captive nut in a pocket",
+      "stamps": "a hex pocket sized from the nut plus a clearance hole through",
+      "note": "One-sided assembly with a full steel thread. The pocket must be reachable — either open to a face or bridged over during the print — which is an assembly-order question this does not answer."
+    },
+    "insert": {
+      "title": "Heat-set threaded insert",
+      "stamps": "a stepped pocket with a lead-in chamfer; the insert is a part as well as a feature",
+      "note": "The answer when the joint gets undone repeatedly. Needs the insert series row for its dimensions."
+    },
+    "thread-forming": {
+      "title": "Thread-forming (pointy) screw straight into the plastic",
+      "stamps": "a core hole the screw deforms into a thread, and a boss where the surrounding wall is too thin",
+      "note": "Cheapest, no second part. Good for a handful of assembly cycles, not dozens; re-driving the same screw into the same hole is what wears it out."
+    },
+    "tapped": {
+      "title": "Cut thread (d − P tapping drill)",
+      "stamps": "a tapping-drill hole",
+      "note": "Right in metal. In a printed part it is an explicit choice with a short life — a cut thread removes the material that a formed thread would have compacted."
+    }
+  },
+  "materials": {
+    "thermoplastic-rigid": {
+      "title": "Rigid thermoplastic — PLA, PETG, ABS, ASA, PC (printed or moulded)",
+      "core_hole_factor": 0.8,
+      "min_engagement_d": 2.0,
+      "boss_outer_factor": 2.0,
+      "min_boss_wall_mm": 1.2,
+      "source": "house rule at the conservative middle of the thread-forming screw makers' published pilot-hole range (0.75–0.85 × major Ø for rigid amorphous thermoplastics); engagement 2×D is the plastics-fastening rule of thumb against 1×D for steel. NOT a standard."
+    },
+    "thermoplastic-tough": {
+      "title": "Tough/ductile thermoplastic — nylon, PP, PE, TPU",
+      "core_hole_factor": 0.75,
+      "min_engagement_d": 2.5,
+      "boss_outer_factor": 2.2,
+      "min_boss_wall_mm": 1.5,
+      "source": "house rule — ductile materials want a smaller pilot (more material to displace) and more engagement, same published range. NOT a standard."
+    },
+    "metal": {
+      "title": "Metal — cut or formed thread in aluminium or steel",
+      "core_hole_factor": null,
+      "min_engagement_d": 1.0,
+      "boss_outer_factor": 2.0,
+      "min_boss_wall_mm": 1.0,
+      "source": "1×D engagement is the steel-into-steel rule of thumb; a cut thread's drill is d − P (ISO 261 coarse pitch), which is arithmetic rather than a table, so no core_hole_factor is carried."
+    }
+  },
+  "thread_cores": [
+    {"thread_size": "M2", "major": 2.0, "minor": 1.6, "source": "ISO 261 (d − P)"},
+    {"thread_size": "M2.5", "major": 2.5, "minor": 2.05, "source": "ISO 261 (d − P)"},
+    {"thread_size": "M3", "major": 3.0, "minor": 2.5, "source": "ISO 261 (d − P)"},
+    {"thread_size": "M4", "major": 4.0, "minor": 3.3, "source": "ISO 261 (d − P)"},
+    {"thread_size": "M5", "major": 5.0, "minor": 4.2, "source": "ISO 261 (d − P)"},
+    {"thread_size": "M6", "major": 6.0, "minor": 5.0, "source": "ISO 261 (d − P)"},
+    {"thread_size": "M8", "major": 8.0, "minor": 6.75, "source": "ISO 261 (d − P)"},
+    {"thread_size": "ST2.2", "major": 2.24, "minor": 1.47, "source": "ISO 1478 d3 max"},
+    {"thread_size": "ST2.9", "major": 2.9, "minor": 2.01, "source": "ISO 1478 d3 max"},
+    {"thread_size": "ST3.5", "major": 3.53, "minor": 2.41, "source": "ISO 1478 d3 max"},
+    {"thread_size": "ST3.9", "major": 3.91, "minor": 2.67, "source": "ISO 1478 d3 max"},
+    {"thread_size": "ST4.2", "major": 4.22, "minor": 2.84, "source": "ISO 1478 d3 max"},
+    {"thread_size": "ST4.8", "major": 4.8, "minor": 3.3, "source": "ISO 1478 d3 max"},
+    {"thread_size": "ST5.5", "major": 5.46, "minor": 3.86, "source": "ISO 1478 d3 max"},
+    {"thread_size": "ST6.3", "major": 6.25, "minor": 4.55, "source": "ISO 1478 d3 max"}
+  ],
+  "inserts": {
+    "series_id": "insert-brass-heatset",
+    "pocket_clearance_mm": 0.0,
+    "pocket_depth_over_mm": 0.5,
+    "lead_in_chamfer_mm": 0.4,
+    "min_wall_mm": 1.5,
+    "source": "POCKET RULE, not a standard: the pocket takes the insert's un-knurled body diameter (the series row's inner body, i.e. outer_diameter minus the knurl) so the knurl bites melting plastic rather than sliding into a clearance hole; depth is the insert length plus 0.5 mm so displaced plastic has somewhere to go; the chamfer is what stops the insert tipping as it starts. Community FDM practice (CNC Kitchen heat-set guidance).",
+    "sizes": [
+      {"thread_size": "M2", "pocket_diameter": 3.2},
+      {"thread_size": "M2.5", "pocket_diameter": 4.0},
+      {"thread_size": "M3", "pocket_diameter": 4.0},
+      {"thread_size": "M4", "pocket_diameter": 5.6},
+      {"thread_size": "M5", "pocket_diameter": 6.4},
+      {"thread_size": "M6", "pocket_diameter": 8.0}
+    ]
+  },
+  "nut_trap": {
+    "across_flats_clearance_mm": 0.2,
+    "depth_clearance_mm": 0.2,
+    "min_wall_mm": 1.2,
+    "source": "house rule: 0.2 mm on the across-flats is enough for a printed pocket to accept a nut without a hammer and little enough that the nut cannot rotate; the same on depth so the nut sits flush rather than proud. NOT a standard."
+  }
+}

@@ -87,7 +87,7 @@ Process DRC is unshipped: mode is intent, not yet checked.
 
 ## Worked example (in prod)
 
-`unicycle-printed-v1`: 29 blocks, 12 tension-only `axial` spokes at
+`unicycle-mk2`: 29 blocks, 12 tension-only `axial` spokes at
 600 N verified as a self-stress state; the stability view correctly
 reports it **first-order mobile** — radially-laced wheels transmit no
 crank torque, which is the kind of non-obvious truth the checking views

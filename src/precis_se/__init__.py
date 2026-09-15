@@ -117,6 +117,29 @@ coarse plus the house ``d + 0.2`` rule), the same file-not-a-table
 posture as :mod:`precis.component_series` (whose ISO fastener tables the
 cad catalog also reads since 2026-09-06 — one transcription, not three).
 
+**Rungs 3b + 3c** (2026-09-15) finish what a screw has to answer for.
+*3c, fastening a printed part*: rung 3 stamped ``d − P`` into whatever
+the stack ended in, which is right in aluminium and wrong in an FDM boss,
+so the terminal member's **mode** now decides. Metal keeps the cut
+thread; a printed member takes the ``joint.params.thread_strategy`` it
+declares — ``nut`` · ``nut-trap`` · ``insert`` · ``thread-forming`` —
+and, undeclared, gets **nothing stamped** plus a finding naming the four
+(:mod:`precis.thread_forming` holds the numbers: core-hole factors,
+engagement multiples, insert pockets, nut-trap fits, each marked as
+transcribed or as a shop rule). Head form finally stamps a feature too, which
+migration 0163's ``head_form`` made expressible — and splits the same way:
+a countersunk head's 90° cone is stamped because the screw does not seat
+without it, while burying a cap head is a choice
+(``params.counterbore``) and is reported rather than done. *3b, tool access*: :mod:`precis_se.toolaccess` stands
+each candidate driver's swept envelope on the drive face and asks whether
+it clears the assembly, answering **which** tool rather than whether
+(ISO 2936 key geometry + bench tools, in
+``precis/data/driver_envelopes.json``). Both need a *process* number the
+tree had nowhere to keep — a printed hole comes out undersize — so
+:mod:`precis_se.capabilities` seeds se-kind.md's
+``se_capabilities.json`` with exactly the three fields this consumes and
+leaves the rest to slice 5.
+
 **Tension rungs 1+4** (docs/backlog/structural-solution-space.md, its
 build-order slice 1) add the unilateral
 member and the whole-structure verdict: kinematic class ``axial`` — ONE

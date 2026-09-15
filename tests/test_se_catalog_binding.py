@@ -164,8 +164,11 @@ class TestDerivedPorts:
         slug = _bolt(hub, "iso-4762-m6x30-ports")
         tree = _load(handler, store, "cat-ports", _design("cat-ports", slug))
         ports = effective_ports(tree, tree.blocks["bolt"])
-        assert set(ports) == {"head", "shank", "thread"}
+        assert set(ports) == {"head", "shank", "thread", "drive"}
         assert ports["head"].roles == ["bearing-face"]
+        # The drive port is where a hex key enters, and the frame rung 3b
+        # sweeps a driver envelope from.
+        assert ports["drive"].roles == ["drive"]
 
     def test_an_authored_port_overrides_only_its_own_name(
         self, handler: SeHandler, store: Store, hub: Hub
@@ -176,7 +179,7 @@ class TestDerivedPorts:
         node.ports["head"] = PortSpec(name="head", roles=["custom"])
         ports = effective_ports(tree, node)
         assert ports["head"].roles == ["custom"]  # mine wins
-        assert set(ports) == {"head", "shank", "thread"}  # the rest survive
+        assert set(ports) == {"head", "shank", "thread", "drive"}  # rest survive
 
 
 class TestDerivationIsNotStored:

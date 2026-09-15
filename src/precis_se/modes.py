@@ -143,3 +143,50 @@ def family_of(mode: str | None) -> ModeFamily | None:
     except ModeError:
         return None
     return MODE_FAMILIES[family]
+
+
+#: Materials that thread like a tough/ductile thermoplastic rather than a
+#: rigid one — they want a smaller pilot hole and more engagement
+#: (`precis.thread_forming`'s two thermoplastic classes). Matched on the
+#: mode's material half, which is free text, so this is a *recognized*
+#: list and anything else in a plastic family reads as rigid.
+_TOUGH_PLASTICS: frozenset[str] = frozenset(
+    {"tpu", "tpe", "nylon", "pa", "pa6", "pa12", "pp", "pe", "hdpe"}
+)
+
+#: Mode families whose material is metal whatever it is called — a milled
+#: or sawn member takes a cut thread.
+_METAL_FAMILIES: frozenset[str] = frozenset({"cnc-2.5ax", "stock-cut"})
+
+#: …and the metals that turn up as a *material* half under any family.
+_METALS: frozenset[str] = frozenset(
+    {"aluminium", "aluminum", "alu", "steel", "stainless", "brass", "titanium", "ti"}
+)
+
+
+def thread_material_class(mode: str | None) -> str | None:
+    """Which :mod:`precis.thread_forming` material class a block's mode
+    implies — ``'metal'``, ``'thermoplastic-tough'``,
+    ``'thermoplastic-rigid'`` — or ``None`` when the mode says nothing
+    useful.
+
+    ``None`` is the load-bearing answer: it is what a block with no mode
+    returns, and the fastening pass turns that into "say what this is made
+    of" rather than into a default. A cut thread in a part nobody has
+    declared the material of is exactly the guess rung 3c exists to
+    stop."""
+    if not mode:
+        return None
+    try:
+        family, material = parse_mode(mode)
+    except ModeError:
+        return None
+    if family in _METAL_FAMILIES:
+        return "metal"
+    if material and material.lower() in _METALS:
+        return "metal"
+    if family in {"fdm", "sla", "laser"}:
+        if material and material.lower() in _TOUGH_PLASTICS:
+            return "thermoplastic-tough"
+        return "thermoplastic-rigid"
+    return None
