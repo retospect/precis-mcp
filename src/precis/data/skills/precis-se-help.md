@@ -1,7 +1,7 @@
 ---
 id: precis-se-help
 title: precis — the se kind (structural/mechanical designs in metres)
-summary: author a block-tree mechanical design (envelopes, ports, joints, axial members with preload, measures, BOM), then check it — validate/drc/clearance/stability/fasten/freedom/bom/interview; ATOMIC mode (the merged nm kind) designs chemistry: threading, dof, bind_structure, generate, view=mechanics/literature; put is a full REPLACE, edit ops= is the incremental path
+summary: author a block-tree mechanical design (envelopes, ports, joints, axial members with preload, measures, BOM), then check it — validate/drc/clearance/stability/fasten/freedom/bom/interview; OPTICAL domain: FRET links as a comm channel (set_chromophore/set_optical_link/set_optics, view=fret); ATOMIC mode (the merged nm kind) designs chemistry: threading, dof, bind_structure, generate, view=mechanics/literature; put is a full REPLACE, edit ops= is the incremental path
 answers:
   - how do I author an se structural design — blocks, connects, joints?
   - how do I model a cable / spoke / strut — a prestressed axial member?
@@ -14,6 +14,9 @@ answers:
   - how do I bind a block's ports to real atoms in a structure design?
   - how do I find literature for a block before filling it with real chemistry?
   - how do I check whether a bound block's atoms actually fit its declared envelope?
+  - how do I model FRET between two blocks — energy transfer as a communication channel?
+  - why is my FRET link dead even though the blocks are close enough?
+  - how do I declare a required transfer efficiency and check the geometry against it?
 applies-to: get/search/put/edit/delete/link (kind='se')
 status: active
 tags: verbs, design
@@ -146,6 +149,47 @@ unaddressable — nor contain `'#'`.)
   `q` per-member overrides · `q_tie`(+1)/`q_strut`(−1)/`q_rod`(+1) ·
   `move` (`'all'` | block list; default only `origin='proposed'` poses
   move — human-set poses are never overwritten).
+
+## Optical (FRET) ops — energy transfer as a comm channel
+
+Use these when blocks talk to each other by **Förster resonance energy
+transfer**: a donor dye hands its excitation to a nearby acceptor by
+near-field dipole coupling. There is no waveguide — the channel is the
+geometry — so the efficiency falls as `r⁻⁶` and is multiplied by an
+orientation factor `κ²` computed from the two transition dipoles. Check
+it with `view='fret'`.
+
+- `set_chromophore` — `block` (req) + the whole card: `label` (the dye,
+  e.g. `"Cy3"`) · `dipole` `[x,y,z]` **in the block frame** (the block's
+  own pose rotates it into world space, so an instance of a template
+  inherits the chemistry and gets its own orientation) · `quantum_yield`
+  (0–1) · `lifetime_s` (donor excited-state lifetime, seconds) ·
+  `emission` `[[nm, value], …]` (arbitrary units) · `absorption`
+  `[[nm, M⁻¹cm⁻¹], …]`. All fields required — a partial card would still
+  produce a number, from physics that isn't there. `clear: true` removes
+  it. Lives on the template, not on instances.
+- `set_optical_link` — `a`, `b` (each `'block.port'`, addressing an
+  existing connect like `set_joint` does) + `min_efficiency` (req,
+  strictly 0–1) · `channel` · `reason`. The L2 declaration: what this
+  link **needs**, stored, never derived. Both endpoints must already
+  carry a chromophore — a transfer requirement between blocks with no
+  optics is a typo, not an unmet requirement. `min_efficiency: null`
+  clears. Compatible with `joint`/`kind` on the same connect: an optical
+  link is different physics on the same pair, not a competing claim.
+- `set_optics` — the design's optical context: `medium_index` (req; every
+  Förster radius in the design divides by the same `n⁴` under a sixth
+  root, so this is a real input, not bookkeeping) · `excitation_nm` (the
+  pump, enables the spectral-crosstalk figure) · `clear`. Undeclared is
+  legal — the view then assumes ~1.4 and says so.
+
+**Two traps worth knowing before you place anything.** (1) `κ² = 0` for
+dipoles that are mutually perpendicular and both perpendicular to the
+line between them: a geometrically perfect link that transfers nothing,
+at any distance. The fix is rotating a block, not moving it. (2) A donor
+is a **broadcast, not a wire** — every acceptor in range competes for the
+same excitation, so `view='fret'` solves them together and a pair
+efficiency read in isolation overstates the link.
+
 ## Atomic-mode ops (exact parameter lists)
 
 - `declare_threading` / `remove_threading` — **atomic mode.** `a`, `b`
@@ -198,7 +242,7 @@ unaddressable — nor contain `'#'`.)
 
 `tree · block · ports · topology · measures · validate · clearance · drc ·
 bom · fasten · interview · freedom · stability · mechanics · literature ·
-links`. There is **no `mass` view** (mass goes via `bom`). `interview`
+fret · links`. There is **no `mass` view** (mass goes via `bom`). `interview`
 elicits what's missing — lead with it. `mechanics`/`literature` are
 atomic-mode-only (below); `topology` renders atomic mode's threading
 pairs + declared dof together and is empty prose for a non-atomic

@@ -19,7 +19,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.store import Store
 from precis_se import drc as se_drc
-from precis_se import persist
+from precis_se import fret, persist
 from precis_se.handler import SeHandler, _render_tree
 from precis_se.measures import MeasureSpec, stackup
 from precis_se.ops import OpError, SeTree, apply_ops, effective_envelope
@@ -719,6 +719,113 @@ def test_array_spec_survives_persistence_roundtrip(
         "pitch": 0.012,
         "axis": [0.0, 1.0, 0.0],
     }
+
+
+# ── persistence: FRET (chromophore / optical link / optics), 0010 ───────
+
+_DONOR_CARD = {
+    "label": "Cy3",
+    "dipole": [1.0, 0.0, 0.0],
+    "quantum_yield": 0.5,
+    "lifetime_s": 1e-9,
+    "emission": [[500.0, 0.0], [550.0, 1.0], [600.0, 0.2]],
+    "absorption": [[450.0, 0.0], [500.0, 1.0], [550.0, 0.1]],
+}
+_ACCEPTOR_CARD = {
+    "label": "Cy5",
+    "dipole": [0.0, 1.0, 0.0],
+    "quantum_yield": 0.3,
+    "lifetime_s": 2e-9,
+    "emission": [[650.0, 0.0], [670.0, 1.0], [700.0, 0.1]],
+    "absorption": [[600.0, 0.0], [650.0, 1.0], [700.0, 0.2]],
+}
+
+
+def _fret_pair(handler: SeHandler, slug: str, *, set_optics: bool = True) -> None:
+    """A donor/acceptor pair with ports, chromophore cards on both, a
+    connect carrying an ``optical`` invariant, and (optionally) the
+    design's ``optics`` context — one of every FRET payload 0010 opens
+    storage for."""
+    ops: list[dict] = [
+        {"op": "add_block", "name": "donor"},
+        {"op": "add_block", "name": "acceptor"},
+        {"op": "add_port", "block": "donor", "name": "out", "roles": ["mates"]},
+        {"op": "add_port", "block": "acceptor", "name": "in", "roles": ["mates"]},
+        {"op": "connect", "a": "donor.out", "b": "acceptor.in"},
+        {"op": "set_chromophore", "block": "donor", **_DONOR_CARD},
+        {"op": "set_chromophore", "block": "acceptor", **_ACCEPTOR_CARD},
+        {
+            "op": "set_optical_link",
+            "a": "donor.out",
+            "b": "acceptor.in",
+            "min_efficiency": 0.75,
+            "channel": "ch0",
+            "reason": "test link",
+        },
+    ]
+    if set_optics:
+        ops.append({"op": "set_optics", "medium_index": 1.4, "excitation_nm": 550.0})
+    handler.put(id=slug, text=json.dumps({"ops": ops}))
+
+
+def test_chromophore_connect_optical_and_optics_round_trip(
+    handler: SeHandler, store: Store
+) -> None:
+    _fret_pair(handler, "fret1")
+    ref = store.get_ref(kind="se", id="fret1")
+    assert ref is not None
+    tree = persist.load_tree(store, ref.id)
+    assert tree.blocks["donor"].chromophore == fret.validate_chromophore(_DONOR_CARD)
+    assert tree.blocks["acceptor"].chromophore == fret.validate_chromophore(
+        _ACCEPTOR_CARD
+    )
+    assert len(tree.connects) == 1
+    assert tree.connects[0].optical == {
+        "min_efficiency": 0.75,
+        "channel": "ch0",
+        "reason": "test link",
+    }
+    assert tree.optics == {"medium_index": 1.4, "excitation_nm": 550.0}
+
+
+def test_optics_none_round_trips_as_none_not_a_stray_row(
+    handler: SeHandler, store: Store
+) -> None:
+    _fret_pair(handler, "fret2", set_optics=False)
+    ref = store.get_ref(kind="se", id="fret2")
+    assert ref is not None
+    tree = persist.load_tree(store, ref.id)
+    assert tree.optics is None
+    with store.pool.connection() as c:
+        row = c.execute(
+            "SELECT count(*) FROM se_optics WHERE ref_id = %s", (ref.id,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 0
+
+
+def test_second_save_keeps_exactly_one_live_se_optics_row(
+    handler: SeHandler, store: Store
+) -> None:
+    _fret_pair(handler, "fret3")
+    ref = store.get_ref(kind="se", id="fret3")
+    assert ref is not None
+    # A second save (any edit re-runs save_tree's retire-all/reinsert-all
+    # pass, including the se_optics half) must retire the first row rather
+    # than accumulate a second live one.
+    handler.edit(
+        id="fret3",
+        ops=[{"op": "set_optics", "medium_index": 1.5, "excitation_nm": 555.0}],
+    )
+    with store.pool.connection() as c:
+        row = c.execute(
+            "SELECT count(*) FROM se_optics WHERE ref_id = %s AND retired_at IS NULL",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    tree = persist.load_tree(store, ref.id)
+    assert tree.optics == {"medium_index": 1.5, "excitation_nm": 555.0}
 
 
 # ── persistence: re-put replaces, edit accumulates, delete retires ──────

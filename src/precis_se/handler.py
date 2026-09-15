@@ -65,15 +65,19 @@ describing target state misdirects agents).
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+import numpy as np
+from numpy.typing import NDArray
 from psycopg.types.json import Jsonb
 
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
+from precis.cad.vec import rotation as cad_rotation
 from precis.design import scenarios as design_scenarios
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
@@ -88,9 +92,9 @@ from precis_se import bom as se_bom
 from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import freedom as se_freedom
+from precis_se import fret, persist
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
-from precis_se import persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
@@ -102,6 +106,7 @@ from precis_se.ops import (
     PortSpec,
     SeBlock,
     SeTree,
+    effective_chromophore,
     effective_dof,
     effective_envelope,
     effective_ports,
@@ -124,11 +129,11 @@ class SeHandler(Handler):
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
             "remove_note/formfind/declare_threading/remove_threading/"
             "declare_dof/clear_dof/bind_structure/unbind_structure/"
-            "generate); "
+            "generate/set_chromophore/set_optical_link/set_optics); "
             "get lists designs or renders one (view='tree'|'block'|"
             "'ports'|'topology'|'measures'|'validate'|'clearance'|'drc'|"
             "'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
-            "'literature'; block takes "
+            "'literature'|'fret'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes, or omit args for an all-pairs "
@@ -217,6 +222,23 @@ class SeHandler(Handler):
             "design's, with no block named) and runs it against the paper "
             "corpus. The LLM traverses a block tree, never atoms "
             "directly. "
+            "OPTICAL DOMAIN (FRET, precis_se.fret): set_chromophore "
+            "block= label= dipole=[x,y,z] (block frame) quantum_yield= "
+            "lifetime_s= emission=/absorption=[[wavelength_nm,value],...] "
+            "attaches a donor/acceptor card to a block (clear=true "
+            "removes it); set_optical_link a= b= min_efficiency= "
+            "(0,1) [channel=] [reason=] declares an existing connect's "
+            "required transfer efficiency (null clears it) — both "
+            "endpoints need a chromophore first; set_optics "
+            "medium_index= [excitation_nm=] declares the design's "
+            "optical context (clear=true removes it; undeclared falls "
+            "back to a stated default). view='fret' solves every "
+            "chromophore block as a donor against every other at once "
+            "(the competing-acceptor branching ratios share one "
+            "denominator — never a per-pair number), checks each "
+            "declared link's realised efficiency against its "
+            "min_efficiency, and flags orientation-nulled/too-close/"
+            "negligible declared links plus undeclared crosstalk. "
             "array_block patterns a template block N times "
             "(linear={'count','pitch','axis'} in metres, or "
             "polar={'count','radius','axis'}, axis default +z) — the "
@@ -258,6 +280,7 @@ class SeHandler(Handler):
             "stability",
             "mechanics",
             "literature",
+            "fret",
         ),
     )
 
@@ -499,6 +522,8 @@ class SeHandler(Handler):
             return Response(body=_render_freedom(tree))
         if v == "stability":
             return Response(body=_render_stability(tree))
+        if v == "fret":
+            return Response(body=_render_fret(tree))
         if v == "links":
             from precis.handlers._links_render import render_links_view
 
@@ -522,6 +547,9 @@ class SeHandler(Handler):
             "buckling, strain energy, min-cut tensile) | view='literature' "
             "(atomic mode: a deterministic paper query, optional "
             "args={'block':...}) "
+            "| view='fret' (optical domain: per-donor FRET budget solved "
+            "against every other chromophore block at once, declared-link "
+            "PASS/FAIL, orientation/Dexter/negligible/crosstalk findings) "
             "| view='links' (the design's link graph, both directions)",
         )
 
@@ -1690,6 +1718,347 @@ def _render_drc(tree: SeTree, scenario_line: str = "") -> str:
     return "\n".join(lines)
 
 
+#: Share of a donor's excitation an UNDECLARED pair has to reach before
+#: it is worth a finding — a comm-system crosstalk threshold, not a
+#: numerical tolerance (hence no ``*_EPS``/``*_TOL`` name): below it, two
+#: chromophores merely being in the same design is not actionable; above
+#: it, an agent that thought it was building one channel has quietly
+#: built two.
+_CROSSTALK_NOTABLE_FRACTION = 0.05
+
+
+def _fret_length(value_m: float) -> str:
+    """One FRET-scale length for a human reader — same neat SI-prefixed
+    formatter the rest of se's views use (:func:`_mm`'s sibling), so a
+    5 nm separation reads as ``5 nm`` and not ``5e-09 m``."""
+    return format_quantity(value_m, "length")
+
+
+def _isolation_str(db: float) -> str:
+    if math.isinf(db):
+        return "+∞ dB" if db > 0 else "−∞ dB"
+    return f"{db:+.1f} dB"
+
+
+def _fret_chromophores(
+    tree: SeTree,
+) -> tuple[
+    dict[str, tuple[fret.Chromophore, NDArray[np.float64], NDArray[np.float64]]],
+    list[str],
+]:
+    """Every block with an effective chromophore, resolved to its physics
+    card plus its world-space position/dipole — the collection step
+    shared by every section of ``view='fret'``.
+
+    World placement matches ``view='clearance'``'s own v1 convention
+    (:func:`_pair_clearance`/``precis_se.validate._posed_component``): a
+    block's own ``pose``/``rot`` ARE its world placement, never composed
+    through a parent chain — nested-frame inheritance is a later
+    increment, tracked in the same place clearance's is, and this view
+    stays consistent with the rest of se rather than quietly disagreeing
+    about what "world space" means.
+
+    A card that fails to build (a stored dipole that norms to zero, a
+    donor emission spectrum that integrates to zero) is excluded rather
+    than raised through — se designs are suggestive by contract, and a
+    half-built optical card is a finding for the header, never a crash
+    for the whole view."""
+    chromo: dict[
+        str, tuple[fret.Chromophore, NDArray[np.float64], NDArray[np.float64]]
+    ] = {}
+    bad: list[str] = []
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        raw = effective_chromophore(tree, node)
+        if raw is None:
+            continue
+        try:
+            card = fret.chromophore_from_spec(raw)
+            position = np.asarray([float(v) for v in node.pose], dtype=np.float64)
+            r_world = cad_rotation(*(float(v) for v in node.rot)).R
+            world_dip = fret.world_dipole(card.dipole, r_world)
+        except (fret.FretError, TypeError, ValueError, IndexError) as exc:
+            bad.append(f"{name}: {exc}")
+            continue
+        chromo[name] = (card, position, world_dip)
+    return chromo, bad
+
+
+def _render_fret(tree: SeTree) -> str:
+    """``view='fret'`` — the L4 optical-link (FRET) budget: every
+    chromophore-bearing block's realised transfer channels, solved
+    together per donor (:func:`precis_se.fret.solve_donor` — the
+    competition the physics enforces, never a per-pair number in
+    isolation), checked against any connect's declared ``optical``
+    requirement, and flagged for the geometry pitfalls the r⁻⁶ formula
+    itself cannot see (an orientation null, a too-close Dexter pair,
+    unintended crosstalk to a block nobody declared a link to).
+
+    Never stored: a design's poses move underneath it on every edit, so
+    this is recomputed from the realised geometry on every read — the
+    same rule ``view='clearance'``/``view='drc'`` already follow.
+    """
+    optics = tree.optics or {}
+    medium_declared = tree.optics is not None
+    medium_index = float(optics.get("medium_index", fret.DEFAULT_MEDIUM_INDEX))
+    excitation_nm = optics.get("excitation_nm")
+
+    chromo, bad = _fret_chromophores(tree)
+    lines: list[str] = [f"# fret — {len(chromo)} chromophore block(s)"]
+    if medium_declared:
+        lines.append(f"medium index: {medium_index:g} (declared)")
+    else:
+        lines.append(
+            f"medium index: {medium_index:g} (ASSUMED — set_optics not "
+            "declared; this is precis_se.fret.DEFAULT_MEDIUM_INDEX, not a "
+            "measured value)"
+        )
+    if excitation_nm is not None:
+        lines.append(f"pump: {float(excitation_nm):g} nm")
+    else:
+        lines.append(
+            "pump: not declared (set_optics excitation_nm=) — "
+            "spectral crosstalk NOT evaluated"
+        )
+    for msg in bad:
+        lines.append(f"⚠ {msg} — excluded from the budget")
+    # An array node is ONE row in `tree.blocks`; its members are derived at
+    # read time and have no poses here. Counting it once at the array
+    # node's own pose is an undercount of N-1 emitters, and an undercount
+    # that looks like an answer is worse than no answer — so say it.
+    arrayed = sorted(
+        name
+        for name, node in tree.blocks.items()
+        if node.array is not None and effective_chromophore(tree, node) is not None
+    )
+    for name in arrayed:
+        lines.append(
+            f"⚠ '{name}' is an array of chromophore blocks — counted ONCE at "
+            "the array node's own pose. Members are derived at read time and "
+            "are not expanded here, so this budget undercounts both the "
+            "emitters and the crosstalk between them"
+        )
+
+    if not chromo:
+        lines.append("")
+        lines.append(
+            "no optical domain in this design — no block carries a "
+            "chromophore card (set_chromophore to add one)"
+        )
+        return "\n".join(lines)
+
+    ids = {name: i for i, name in enumerate(sorted(chromo))}
+    id_names = {i: name for name, i in ids.items()}
+    budgets: dict[str, fret.DonorBudget] = {}
+    for donor_name, (donor_card, donor_pos, donor_dip) in chromo.items():
+        acceptors = [
+            fret.PairGeometry(
+                block_uid=ids[acc_name],
+                chromophore=acc_card,
+                separation=acc_pos - donor_pos,
+                world_dipole=acc_dip,
+            )
+            for acc_name, (acc_card, acc_pos, acc_dip) in chromo.items()
+            if acc_name != donor_name
+        ]
+        budgets[donor_name] = fret.solve_donor(
+            donor_uid=ids[donor_name],
+            donor=donor_card,
+            donor_world_dipole=donor_dip,
+            acceptors=acceptors,
+            refractive_index=medium_index,
+        )
+
+    if len(chromo) == 1:
+        (only,) = chromo
+        lines.append("")
+        lines.append(
+            f"only one chromophore block ('{only}') — a donor with no "
+            "acceptor in range is not an error"
+        )
+        return "\n".join(lines)
+
+    lines.append("")
+    lines.append("## per-donor budget (channels strongest-first)")
+    for name in sorted(chromo):
+        card = chromo[name][0]
+        budget = budgets[name]
+        lines.append("")
+        lines.append(f"### {name} — donor, τ={card.lifetime_s:g} s")
+        if not budget.channels:
+            lines.append("(no other chromophore block)")
+        else:
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "acceptor": id_names[ch.block_uid],
+                            "separation": _fret_length(ch.separation_m),
+                            "kappa_sq": f"{ch.kappa_sq:.3f}",
+                            "R0": _fret_length(ch.forster_radius_m),
+                            "efficiency": f"{ch.efficiency * 100:.2f}%",
+                            "regime": ch.regime.value,
+                        }
+                        for ch in budget.channels
+                    ],
+                    schema=[
+                        "acceptor",
+                        "separation",
+                        "kappa_sq",
+                        "R0",
+                        "efficiency",
+                        "regime",
+                    ],
+                )
+            )
+        lines.append(f"residual (own decay): {budget.residual_efficiency * 100:.2f}%")
+
+    declared_pairs: set[frozenset[str]] = set()
+    verdict_rows: list[dict[str, Any]] = []
+    findings: list[str] = []
+    # Narrowed once here rather than re-``float()``-ed at the call site:
+    # ``excitation_nm`` comes off a jsonb payload as ``Any | None``, and a
+    # bare ``float(...)`` guarded by a separate bool is something mypy
+    # cannot follow.
+    pump_nm = float(excitation_nm) if excitation_nm is not None else None
+    show_crosstalk = pump_nm is not None
+    for c in tree.connects:
+        if c.optical is None:
+            continue
+        a, b = c.a_block, c.b_block
+        declared_pairs.add(frozenset((a, b)))
+        min_eff = float(c.optical["min_efficiency"])
+        row: dict[str, Any] = {
+            "link (a→b, a=donor)": f"{a} → {b}",
+            "min_efficiency": f"{min_eff * 100:.1f}%",
+        }
+        if a not in chromo or b not in chromo:
+            missing = ", ".join(x for x in (a, b) if x not in chromo)
+            row |= {
+                "efficiency": "—",
+                "verdict": "N/A",
+                "isolation": "—",
+                "sensitivity": "—",
+            }
+            if show_crosstalk:
+                row["crosstalk"] = "—"
+            verdict_rows.append(row)
+            findings.append(
+                f"declared link {a}→{b}: {missing} has no chromophore card "
+                "— set_chromophore, or clear the link, to resolve"
+            )
+            continue
+        budget = budgets[a]
+        channel = budget.channel_for(ids[b])
+        assert (
+            channel is not None
+        )  # every other chromophore block is a candidate acceptor
+        verdict = "PASS" if channel.efficiency >= min_eff else "FAIL"
+        row |= {
+            "efficiency": f"{channel.efficiency * 100:.2f}%",
+            "verdict": verdict,
+            "isolation": _isolation_str(budget.isolation_db(ids[b])),
+            # Sensitivity is meaningful only where the r⁻⁶ law is what
+            # governs. Quoting ×6.00 for a coincident or nulled pair would
+            # be the limit of a formula for a link that does not exist —
+            # exactly the plausible-but-empty number the rest of this leg
+            # refuses to print.
+            "sensitivity": (
+                f"×{fret.distance_sensitivity(channel.efficiency):.2f} "
+                "efficiency error per unit distance error"
+                if channel.regime is fret.Regime.FORSTER
+                else "—"
+            ),
+        }
+        if pump_nm is not None:
+            donor_card, acc_card = chromo[a][0], chromo[b][0]
+            xtalk = fret.spectral_crosstalk(donor_card, acc_card, pump_nm)
+            row["crosstalk"] = (
+                "∞ (pump misses donor)" if math.isinf(xtalk) else f"{xtalk:.3g}"
+            )
+        verdict_rows.append(row)
+
+        if verdict == "FAIL":
+            findings.append(
+                f"declared link {a}→{b} FAILS its {min_eff * 100:.1f}% "
+                f"requirement: realised {channel.efficiency * 100:.2f}%"
+            )
+        if channel.regime is fret.Regime.ORIENTATION_NULL:
+            headroom = fret.orientation_headroom(channel.kappa_sq)
+            findings.append(
+                f"declared link {a}→{b} is orientation-nulled (κ²="
+                f"{channel.kappa_sq:.4f}, {headroom * 100:.1f}% of "
+                "isotropic) — the fix is rotating one of the two blocks, "
+                "not moving them"
+            )
+        elif channel.regime is fret.Regime.DEXTER:
+            findings.append(
+                f"declared link {a}→{b} is inside the Dexter crossover "
+                f"({_fret_length(channel.separation_m)} apart) — no "
+                "Förster number is quoted: exchange transfer competes and "
+                "the point-dipole model is unsafe this close"
+            )
+        elif channel.regime is fret.Regime.NEGLIGIBLE:
+            findings.append(
+                f"declared link {a}→{b} is negligible at this separation "
+                f"({_fret_length(channel.separation_m)}, R0="
+                f"{_fret_length(channel.forster_radius_m)}) — not a "
+                "working link"
+            )
+        elif channel.regime is fret.Regime.COINCIDENT:
+            findings.append(
+                f"declared link {a}→{b} has both blocks at the same pose — "
+                "no separation vector, so no efficiency can be computed. "
+                "set_pose on one of them; this is what an unplaced design "
+                "looks like, not a broken one"
+            )
+
+    if verdict_rows:
+        lines.append("")
+        lines.append("## declared links")
+        crosstalk_schema = ["crosstalk"] if show_crosstalk else []
+        lines.append(
+            render_agent_table(
+                verdict_rows,
+                schema=[
+                    "link (a→b, a=donor)",
+                    "min_efficiency",
+                    "efficiency",
+                    "verdict",
+                    "isolation",
+                    "sensitivity",
+                    *crosstalk_schema,
+                ],
+            )
+        )
+
+    for donor_name in sorted(chromo):
+        budget = budgets[donor_name]
+        for ch in budget.channels:
+            if ch.regime is not fret.Regime.FORSTER:
+                continue
+            if ch.efficiency < _CROSSTALK_NOTABLE_FRACTION:
+                continue
+            acc_name = id_names[ch.block_uid]
+            if frozenset((donor_name, acc_name)) in declared_pairs:
+                continue
+            findings.append(
+                f"undeclared crosstalk: {donor_name} transfers "
+                f"{ch.efficiency * 100:.1f}% to {acc_name} though no "
+                "optical link declares this pair — set_optical_link if "
+                "intended, or move/rotate the blocks apart if not"
+            )
+
+    lines.append("")
+    if findings:
+        lines.append(f"## findings ({len(findings)})")
+        for finding in findings:
+            lines.append(f"- {finding}")
+    else:
+        lines.append("✓ no fret findings")
+    return "\n".join(lines)
+
+
 def _render_stability(tree: SeTree) -> str:
     """``view='stability'`` — the Maxwell/Calladine report
     (:mod:`precis_se.stability`): counts, verdict, and the per-member
@@ -1931,6 +2300,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "stability": frozenset(),
     "mechanics": frozenset(),
     "literature": frozenset({"block"}),
+    "fret": frozenset(),
     "links": frozenset(),
 }
 

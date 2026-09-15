@@ -6,7 +6,8 @@ designed out here from day one): a design's blocks live in dedicated tables
 (``se_blocks``/``se_ports``/``se_connects``, migration ``0001_se_kind.sql``;
 ``se_measures`` from ``0002``, ``se_bom`` from ``0003``, ``se_notes``
 from ``0005``, ``se_topology`` — the atomic mode's L2 threading — from
-``0007``)
+``0007``, ``se_optics`` — the design's FRET medium/pump context, ONE live
+row per design rather than a ledger — from ``0010``)
 reached over the store's public connection surface (``store.tx()`` /
 ``store.pool.connection()``) — a plugin never joins core's mixin list.
 
@@ -104,7 +105,7 @@ _SE_MANAGED = "se_binding"
 _BLOCK_COLS = (
     "id, uid, parent_block_id, template_ref, template_uid, name, pose_xyz, "
     "pose_rot, envelope, array_spec, descr, use_, objectives, mode, "
-    "bound_kind, bound_design, origins, dof"
+    "bound_kind, bound_design, origins, dof, chromophore"
 )
 _PORT_COLS = (
     "block_id, name, roles, direction, annotations, expected_element, "
@@ -112,7 +113,7 @@ _PORT_COLS = (
 )
 _CONNECT_COLS = (
     "a_block, a_block_uid, a_port, b_block, b_block_uid, b_port, joint, "
-    "kind, objectives"
+    "kind, objectives, optical"
 )
 _MEASURE_COLS = (
     "block, block_uid, name, value, relation, strength, reason, min_value, "
@@ -128,6 +129,10 @@ _NOTE_COLS = "name, kind, body, re, about, origin, created_at"
 #: (0009) — never a block-row FK, which would strand on the very next save
 #: (module docstring's lockstep rule).
 _THREADING_COLS = "subject_name, subject_uid, object_name, object_uid"
+#: ``se_optics`` (migration 0010) is the one tree-level scalar record —
+#: everything else here is a list keyed by name/pair, so it gets its own
+#: short column tuple rather than folding into one of the above.
+_OPTICS_COLS = "medium_index, excitation_nm"
 
 
 def _label(uid_to_name: dict[int, str], uid: int | None, stored: str | None) -> Any:
@@ -206,6 +211,12 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 (ref_id,),
             )
             threading_rows = cur.fetchall()
+            cur.execute(
+                f"SELECT {_OPTICS_COLS} FROM se_optics "
+                "WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            )
+            optics_row = cur.fetchone()
     by_id = {r["id"]: r for r in rows}
     #: uid → the block's current label, the read half of the cutover.
     uid_to_name = {int(r["uid"]): r["name"] for r in rows if r["uid"] is not None}
@@ -233,6 +244,7 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             bound=r["bound_design"],
             origins=dict(r["origins"] or {}),
             dof=dict(r["dof"]) if r["dof"] is not None else None,
+            chromophore=dict(r["chromophore"]) if r["chromophore"] is not None else None,
         )
     for p in port_rows:
         block_row = by_id.get(p["block_id"])
@@ -259,6 +271,7 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 joint=dict(c["joint"]) if c["joint"] is not None else None,
                 kind=c["kind"],
                 objectives=dict(c["objectives"] or {}),
+                optical=dict(c["optical"]) if c["optical"] is not None else None,
             )
         )
     for m in measure_rows:
@@ -310,6 +323,15 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 b=_label(uid_to_name, t["object_uid"], t["object_name"]),
             )
         )
+    if optics_row is not None:
+        tree.optics = {
+            "medium_index": optics_row["medium_index"],
+            **(
+                {"excitation_nm": optics_row["excitation_nm"]}
+                if optics_row["excitation_nm"] is not None
+                else {}
+            ),
+        }
     attach_catalog(store, tree)
     return tree
 
@@ -614,6 +636,11 @@ def save_tree(
             (ref_id,),
         )
         c.execute(
+            "UPDATE se_optics SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        c.execute(
             "UPDATE se_blocks SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
@@ -627,8 +654,8 @@ def save_tree(
                 "(ref_id, uid, parent_block_id, template_ref, template_uid, "
                 " name, pose_xyz, pose_rot, envelope, array_spec, descr, "
                 " use_, objectives, mode, bound_kind, bound_design, origins, "
-                " dof) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                " dof, chromophore) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "RETURNING id",
                 (
                     ref_id,
@@ -651,6 +678,7 @@ def save_tree(
                     node.bound,
                     Jsonb(node.origins) if node.origins else None,
                     Jsonb(node.dof) if node.dof is not None else None,
+                    Jsonb(node.chromophore) if node.chromophore is not None else None,
                 ),
             ).fetchone()
             assert row is not None
@@ -690,8 +718,8 @@ def save_tree(
             c.execute(
                 "INSERT INTO se_connects "
                 "(ref_id, a_block, a_block_uid, a_port, b_block, b_block_uid, "
-                " b_port, joint, kind, objectives) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " b_port, joint, kind, objectives, optical) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     a[0],
@@ -703,6 +731,7 @@ def save_tree(
                     Jsonb(conn_spec.joint) if conn_spec.joint is not None else None,
                     conn_spec.kind,
                     Jsonb(conn_spec.objectives) if conn_spec.objectives else None,
+                    Jsonb(conn_spec.optical) if conn_spec.optical is not None else None,
                 ),
             )
         for m in tree.measures:
@@ -799,6 +828,20 @@ def save_tree(
                     uid_of.get(thread.b),
                 ),
             )
+        # ``se_optics`` is a 0-or-1-row table, not a ledger — a fresh row
+        # is inserted only when the tree actually declares an optical
+        # context, so an undeclared design leaves no stray row behind for
+        # the retire pass above to ever have to find again.
+        if tree.optics is not None:
+            c.execute(
+                "INSERT INTO se_optics (ref_id, medium_index, excitation_nm) "
+                "VALUES (%s,%s,%s)",
+                (
+                    ref_id,
+                    tree.optics["medium_index"],
+                    tree.optics.get("excitation_nm"),
+                ),
+            )
         store.chunks.upsert_card_combined(ref_id, card_text, conn=c)
 
     if conn is not None:
@@ -841,6 +884,11 @@ def retire_design(store: Any, ref_id: int) -> int:
         )
         conn.execute(
             "UPDATE se_topology SET retired_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE se_optics SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
         )

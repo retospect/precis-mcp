@@ -177,6 +177,41 @@ kind's storage is dropped by migration ``0008_se_drop_nm_tables.sql``;
 ``nm`` itself now answers with a retired-kind pointer at this one
 (``precis.runtime.dispatch``'s ``_RETIRED_KINDS``).
 
+**The optical domain** (:mod:`precis_se.fret`, migration
+``0010_se_fret.sql``) is se's first non-mechanical one: FRET links, where
+a donor chromophore hands its excitation to a nearby acceptor by
+near-field dipole-dipole coupling. It earns a place in a *space planner*
+because the coupling has no waveguide — the channel IS the geometry, and
+the rate runs as ``r⁻⁶`` times an orientation factor ``κ²`` computed from
+the two transition dipoles and the vector between them. Both inputs are
+things a space plan already decides, so the same six levels carry it with
+no new tier: L0 is a port↔port connect like any other; L1's per-block
+pose, with the dipole stored in the **block** frame, is what rotates each
+card into world space; L2 is the declared ``optical`` invariant on the
+connect (``min_efficiency`` — what the design *needs*, stored, never
+derived); L4 is ``view='fret'``, the realized geometry checked against
+that declaration. Ops: ``set_chromophore`` (the per-block property card,
+block-owned beside ``dof``/``objectives`` — label, dipole, quantum yield,
+lifetime, emission and absorption spectra), ``set_optical_link``, and
+``set_optics`` (the design's medium index and pump wavelength — se's one
+tree-level scalar record, earned by being a fact about the *space*: every
+Förster radius in a design divides by the same ``n⁴`` under a sixth
+root).
+
+Two decisions there are worth not re-deriving. The ``optical`` slot is
+deliberately **compatible** with ``joint`` and ``kind`` on the same
+connect, unlike those two with each other: a kinematic joint and a
+covalent bond are competing claims about one physics, while an optical
+link is a different physics on the same pair. And a donor is a
+**broadcast, not a wire** — every acceptor in range competes for one
+excitation, so the branching ratios share a denominator
+(:func:`precis_se.fret.solve_donor`) and a per-pair efficiency quoted in a
+dense network overstates every link. That is why the view is an all-pairs
+budget rather than a list. The module declines to quote a number outside
+Förster's range of validity (below ~1 nm, Dexter exchange competes and
+the point-dipole approximation fails; ``κ²`` near zero is a dead link at
+any distance, and the actionable fix is rotating a block, not moving it).
+
 A `component` binding additionally **projects onto a ``realized-by``
 link** on every save (``persist.sync_realized_by``, migration 0156's
 realization edge, the same one cad writes for its ``part`` lines). The

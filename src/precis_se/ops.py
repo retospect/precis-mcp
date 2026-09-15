@@ -198,6 +198,12 @@ from precis_se.atomic.vocab import (
     vet_dof_shape,
 )
 from precis_se.bom import BomError, BomLine, vet_bom_fields
+from precis_se.fret import (
+    FretError,
+    validate_chromophore,
+    validate_optical_link,
+    validate_optics,
+)
 from precis_se.identity import resolve_block
 from precis_se.measures import (
     ORIGINS,
@@ -273,6 +279,15 @@ class ConnectSpec(Connect):
 
     joint: dict[str, Any] | None = None
     kind: str | None = None
+    #: The **optical** (FRET) L2 statement about this same pair
+    #: (:func:`precis_se.fret.validate_optical_link`): ``{'min_efficiency',
+    #: 'channel'?, 'reason'?}`` — "this link must transfer at least this
+    #: fraction of the donor's excitation". Unlike ``joint`` and ``kind``,
+    #: which are competing claims about one physics and exclude each
+    #: other, this slot is **compatible with both**: an optical link is a
+    #: different physics on the same pair, and two blocks that are bonded
+    #: and also exchange excitation are an ordinary molecule.
+    optical: dict[str, Any] | None = None
 
 
 @dataclass
@@ -340,6 +355,17 @@ class SeBlock(BlockNode):
     #: follows, so ``save_tree`` must never write it back. A block that
     #: authors its own envelope always wins over this.
     derived: Any = None
+    #: The optical property card that makes this block a FRET node
+    #: (:func:`precis_se.fret.validate_chromophore`): transition dipole in
+    #: the BLOCK frame, quantum yield, excited-state lifetime, emission and
+    #: absorption spectra. Block-owned like ``dof`` and ``objectives``
+    #: rather than a table of its own — one per block, meaningless without
+    #: it, gone when it goes. The dipole is stored in the block frame so
+    #: the pose already on this node rotates it into world space: move the
+    #: block and its optics follow, which is the whole reason the
+    #: orientation factor κ² can be computed from realised geometry
+    #: instead of assumed.
+    chromophore: dict[str, Any] | None = None
     #: ``user | proposed`` stamps for authored facets, keyed by facet name
     #: (``'envelope'``, ``'pose'``) — slice 4's freedom vocabulary. An
     #: absent key means ``user`` (the default is never stored); a propose
@@ -369,6 +395,15 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: atomic-mode L2 threading invariants (:class:`~precis_se.atomic.
     #: vocab.ThreadingSpec`), unordered — identity is the ``(a, b)`` pair.
     threading: list[ThreadingSpec] = field(default_factory=list)
+    #: The design's optical context (:func:`precis_se.fret.validate_optics`)
+    #: — ``{'medium_index', 'excitation_nm'?}``. The one tree-level scalar
+    #: record se carries, and it earns that by being a fact about the
+    #: *space* rather than about any block: every Förster radius in the
+    #: design divides by the same medium index, and every spectral-
+    #: crosstalk figure is quoted at the same pump wavelength. ``None``
+    #: means undeclared, and the FRET view says so rather than quietly
+    #: using :data:`~precis_se.fret.DEFAULT_MEDIUM_INDEX`.
+    optics: dict[str, Any] | None = None
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
@@ -1595,6 +1630,112 @@ def _op_clear_dof(tree: SeTree, op: dict[str, Any]) -> None:
     node.dof = None
 
 
+def effective_chromophore(tree: SeTree, node: SeBlock) -> dict[str, Any] | None:
+    """The chromophore card "seen" at ``node`` — its own, or, when ``node``
+    is an instance/array, its template's.
+
+    Mirrors :func:`effective_dof` and :func:`effective_envelope` for the
+    same reason: a dye attached to a template block is genuinely present on
+    every instance of it, and the dipole is stored in the **block frame**,
+    so each instance's own pose rotates the same card into a different
+    world-space orientation. That is what makes an array of emitters a
+    useful thing to state once — the geometry varies, the chemistry does
+    not.
+    """
+    if node.template is not None:
+        template_node = resolve_template(tree, node.template)
+        return getattr(template_node, "chromophore", None)
+    return node.chromophore
+
+
+def _op_set_chromophore(tree: SeTree, op: dict[str, Any]) -> None:
+    """Attach (or replace) a block's optical property card — the op that
+    makes a block a FRET node.
+
+    ``block=`` plus ``label``, ``dipole`` ([x, y, z] in the **block**
+    frame), ``quantum_yield``, ``lifetime_s``, ``emission`` and
+    ``absorption`` (each ``[[wavelength_nm, value], ...]``; emission in
+    arbitrary units, absorption in M⁻¹cm⁻¹). ``clear=true`` removes the
+    card instead.
+
+    Replace semantics, and every field required: the card states a whole
+    chromophore or none at all. A partial card would still compute — it
+    would just compute a rate from a spectrum that isn't there — and a
+    plausible wrong number is worse here than a refusal.
+    """
+    name = _require_name(op, "block", "set_chromophore")
+    node = _template_owned(tree, name, opname="set_chromophore", what="chromophore")
+    if op.get("clear"):
+        node.chromophore = None
+        return
+    payload = {k: v for k, v in op.items() if k not in ("op", "block", "clear")}
+    try:
+        node.chromophore = validate_chromophore(payload)
+    except FretError as exc:
+        raise OpError(f"set_chromophore: {exc}") from exc
+
+
+def _op_set_optical_link(tree: SeTree, op: dict[str, Any]) -> None:
+    """Declare (or clear) an existing connect's required transfer
+    efficiency — the L2 invariant of the optical domain.
+
+    ``a=``/``b=`` address the connect the way ``set_joint`` does;
+    ``min_efficiency`` (strictly between 0 and 1) is the requirement, with
+    optional ``channel`` and ``reason``. ``min_efficiency=null`` clears it.
+
+    Declared, never derived — the number states what the design *needs*,
+    and the ``fret`` view is what checks the realised geometry against it.
+    Both endpoints must already carry a chromophore card: a required
+    efficiency between blocks with no optics is not an unmet requirement,
+    it is a typo, and catching it at write time beats surfacing it as a
+    view finding much later.
+    """
+    c = _find_connect(tree, op, opname="set_optical_link")
+    if "min_efficiency" not in op:
+        raise OpError(
+            "set_optical_link needs 'min_efficiency' (a fraction in (0, 1), "
+            "or null to clear)"
+        )
+    if op.get("min_efficiency") is None:
+        c.optical = None
+        return
+    for side, block_name in (("a", c.a_block), ("b", c.b_block)):
+        node = tree.blocks.get(block_name)
+        if node is None or effective_chromophore(tree, node) is None:
+            raise OpError(
+                f"set_optical_link: endpoint {side}={block_name!r} has no "
+                "chromophore — set_chromophore on both endpoints first; a "
+                "transfer requirement between blocks with no optics can "
+                "never be evaluated"
+            )
+    payload = {k: v for k, v in op.items() if k not in ("op", "a", "b")}
+    try:
+        c.optical = validate_optical_link(payload)
+    except FretError as exc:
+        raise OpError(f"set_optical_link: {exc}") from exc
+
+
+def _op_set_optics(tree: SeTree, op: dict[str, Any]) -> None:
+    """Declare the design's optical context — ``medium_index`` (required)
+    and ``excitation_nm`` (optional pump wavelength). ``clear=true``
+    removes it.
+
+    Design-level, because both are facts about the space rather than about
+    a block. Undeclared is a legitimate state: the ``fret`` view then
+    assumes :data:`~precis_se.fret.DEFAULT_MEDIUM_INDEX` and **says so** on
+    every number it quotes, rather than letting an assumed medium read as a
+    measured one.
+    """
+    if op.get("clear"):
+        tree.optics = None
+        return
+    payload = {k: v for k, v in op.items() if k not in ("op", "clear")}
+    try:
+        tree.optics = validate_optics(payload)
+    except FretError as exc:
+        raise OpError(f"set_optics: {exc}") from exc
+
+
 _OPS = {
     **blocktree.CORE_OPS,
     "add_block": _op_add_block,
@@ -1623,6 +1764,9 @@ _OPS = {
     "remove_threading": _op_remove_threading,
     "declare_dof": _op_declare_dof,
     "clear_dof": _op_clear_dof,
+    "set_chromophore": _op_set_chromophore,
+    "set_optical_link": _op_set_optical_link,
+    "set_optics": _op_set_optics,
 }
 
 
