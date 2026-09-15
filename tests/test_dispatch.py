@@ -280,6 +280,49 @@ def test_try_swallows_import_error(caplog: pytest.LogCaptureFixture) -> None:
     assert r.abilities == {}
 
 
+def test_try_swallows_os_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A handler whose ``__init__`` touches a down network dependency
+    (e.g. ``MdHandler`` calling a remote embedder's ``.model``) raises
+    ``OSError`` (``urllib.error.URLError`` is a subclass). ``_try``
+    must treat this the same as a missing dep: skip the kind, log a
+    WARN, record the failure in ``loadabilities`` — and, crucially,
+    NOT propagate. An escaped ``OSError`` here used to crash
+    ``boot()`` and take the whole MCP server down on a transient
+    embedder outage."""
+
+    class _NeedsNetwork(Handler):
+        spec = KindSpec(
+            kind="needsnet",
+            title="Needs a network dep",
+            description="Simulates a down network dependency at init time.",
+            supports_get=True,
+        )
+
+        def __init__(self, *, hub: Hub) -> None:
+            _ = hub
+            raise OSError("[Errno 61] Connection refused")
+
+        def get(self, **kw):
+            return Response(body="never")
+
+    r = Hub()
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        result = _try(_NeedsNetwork, hub=r)
+
+    assert result is None
+    # Never registered — no abilities, no handler instance.
+    assert r.abilities == {}
+    assert r.handlers == {}
+    # Recorded as a boot-time failure, not silently dropped.
+    assert "needsnet" in r.loadabilities
+    assert r.loadabilities["needsnet"].loaded is False
+    assert any(
+        "_NeedsNetwork init failed" in rec.message
+        and "Connection refused" in rec.message
+        for rec in caplog.records
+    )
+
+
 # ---------------------------------------------------------------------------
 # boot() smoke tests
 # ---------------------------------------------------------------------------
@@ -338,6 +381,32 @@ def test_boot_survives_missing_sympy(monkeypatch: pytest.MonkeyPatch) -> None:
 
     r = boot(store=None)
     assert "calc" not in r.kinds
+
+
+def test_boot_survives_one_handler_os_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The property that actually failed in prod: one handler's
+    ``__init__`` raising ``OSError`` (a down network dependency —
+    ``MdHandler`` hitting a dead remote embedder was the observed
+    case) must not take the rest of ``boot()`` with it. Every other
+    stateless kind stays live and ``boot()`` returns a usable hub."""
+    from precis.handlers.calc import CalcHandler
+
+    def _boom(self: Any, *, hub: Hub) -> None:
+        _ = hub
+        raise OSError("[Errno 61] Connection refused")
+
+    monkeypatch.setattr(CalcHandler, "__init__", _boom)
+
+    r = boot(store=None)
+
+    assert isinstance(r, Hub)
+    # The dependency-down kind is skipped, not fatal.
+    assert "calc" not in r.kinds
+    assert r.loadabilities["calc"].loaded is False
+    # Every other stateless kind is still fully live.
+    assert "provenance" in r.kinds
 
 
 # ---------------------------------------------------------------------------

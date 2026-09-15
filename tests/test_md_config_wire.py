@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.error import URLError
+
+import pytest
 
 from precis.dispatch import Hub, boot
 from precis.handlers.md import MdHandler, parse_md_roots
@@ -124,6 +127,63 @@ def test_md_handler_present_with_multiple_valid_roots(tmp_path: Path) -> None:
     h = r.handler_for("md")
     assert isinstance(h, MdHandler)
     assert set(h.roots) == {"a", "b"}
+
+
+class _DeadRemoteEmbedder:
+    """Stands in for ``RemoteEmbedder`` when the embedder service is
+    down. ``.model`` is an HTTP call (``embedder.py:705 _call`` ->
+    ``_urllib_transport``); a bounced service surfaces that as
+    ``urllib.error.URLError`` (an ``OSError`` subclass), exactly the
+    exception ``MdHandler.__init__`` triggers by reading
+    ``self.embedder.model`` while building its vector cache."""
+
+    dim = 1024
+
+    @property
+    def model(self) -> str:
+        raise URLError("Connection refused")
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise URLError("Connection refused")
+
+    def embed_one(self, text: str) -> list[float]:
+        raise URLError("Connection refused")
+
+    def is_ready(self) -> bool:
+        return False
+
+    def warmup(self) -> None:
+        return None
+
+    def unload(self) -> None:
+        return None
+
+
+def test_md_handler_survives_dead_remote_embedder(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (observed in prod): a REMOTE embedder that's down
+    when ``MdHandler.__init__`` builds its vector cache off
+    ``self.embedder.model`` raises ``URLError``. ``boot()`` must
+    swallow it via ``dispatch._try``'s ``OSError`` clause — skip
+    ``md``, keep booting — never let a bounced embedder kill the
+    whole MCP server at startup."""
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        r = boot(
+            store=None,
+            embedder=_DeadRemoteEmbedder(),
+            md_roots=f"r:{tmp_path}",
+        )
+    assert isinstance(r, Hub)
+    assert "md" not in r.kinds
+    assert "md" in r.loadabilities
+    assert r.loadabilities["md"].loaded is False
+    # Other stateless kinds are unaffected by md's dependency outage.
+    assert "calc" in r.kinds
+    assert any(
+        "MdHandler init failed" in rec.message and "Connection refused" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_md_handler_no_embedder_without_store(tmp_path: Path) -> None:

@@ -524,7 +524,19 @@ def _try(
 
     try:
         inst = cls(hub=hub, **kw)
-    except (InitError, ImportError, ValueError) as exc:
+    except (InitError, ImportError, ValueError, OSError) as exc:
+        # ``OSError`` covers a handler whose __init__ touches a NETWORK
+        # dependency that happens to be down — the whole point of this
+        # seam is that one unavailable kind is skipped, never fatal, and
+        # a refused socket is no different from a missing import.
+        # Observed: MdHandler.__init__ builds its vector cache from
+        # ``embedder.model``, which is an HTTP call to the embedder
+        # service; during a deploy's embedder bounce that raises
+        # ``urllib.error.URLError`` (an OSError), which used to escape
+        # boot() → build_runtime() → serve() and killed the ENTIRE MCP
+        # server at startup. The session then could not reconnect at all
+        # until the embedder came back — a transient dependency outage
+        # presenting as a permanently dead MCP.
         log.warning("%s init failed: %s", getattr(cls, "__name__", cls), exc)
         if spec is not None:
             hub.loadabilities[spec.kind] = loadability_from_exception(spec, exc)
