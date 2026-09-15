@@ -72,6 +72,28 @@ Slices 4-5 — publish path (POST gated, nothing published yet):
   quote+snip per grounding chunk, or for an agent-proposed hypothesis
   the envelope parked on ``refs.meta.proposed_payload``); ``/np/<code>``
   serves exact frozen bytes during embargo.
+- Quote provenance a reader can judge, on both reader-facing surfaces
+  (artifact + PDF). Literal quotes alone don't say whether several
+  excerpts from one paper are a single passage or scattered picks, and
+  a quoted result can be meaningless without paper-intrinsic context:
+  - *Contiguity* — :func:`.evidence.passages_contiguous` calls two
+    passages contiguous when their chunks are the same or ADJACENT ROWS
+    of the live body ordering (``ord >= 0 AND retired_at IS NULL``),
+    positional, never ``ord + 1`` (ord has gaps by design; it owns its
+    own ``retired_at`` filter — ``paper_body_chunks`` lacks one,
+    gr339961). :func:`.mint.approve` freezes the per-source verdict onto
+    the approved passages (NOT at prefill — that is the pre-edit
+    candidate set); :mod:`.assemble` emits ``precis:excerptsContiguous``
+    on the source's DOI node for a >=2-grounding source only.
+  - *Paper context* — :mod:`precis.workers.context_sentence` writes ONE
+    neutral method/evidence sentence to ``refs.meta['context_sentence']``
+    (code-enforced word cap + claim-strength blocklist, regenerate once
+    then drop). Emitted as ``precis:sourceContext``; absent is always
+    legal — minting never blocks on it.
+  Both render in the LaTeX hub footnote (``precis.export.latex``),
+  preferring the frozen publish-row copy and falling back to live data,
+  with the context sentence in roman "Context:" text against italic
+  quotes so added context can't be misread as quoted material.
 - Export appendix — a draft citing a signed/anchored/published hub gets
   a "Published claim artifacts" end-matter section (frozen AIDA
   sentence + trusty URI + status) in both exporters; unminted hubs

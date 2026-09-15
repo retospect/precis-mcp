@@ -202,18 +202,131 @@ def approve(
         # the type that was gated.
         artifact_type = gates.resolve_artifact_type(bundle, payload)
         row = store.nanopub_create_publish_row(hub_ref_id, artifact_type=artifact_type)
+    frozen_payload = dict(payload)
+    frozen_payload["passages"] = _freeze_contiguity(
+        store, list(payload.get("passages") or [])
+    )
+    frozen_payload["passages"] = _freeze_context_sentence(
+        store, frozen_payload["passages"]
+    )
     ok = store.nanopub_approve(
         row.id,
         approved_title=approved,
         claim_sha=claim_sha(approved),
         aida_uri=aida_uri(approved),
-        grounding=payload,
+        grounding=frozen_payload,
     )
     if not ok:
         raise BadInput(f"publish row {row.id} left candidate state mid-approve")
     refreshed = store.nanopub_publish_row_by_id(row.id)
     assert refreshed is not None
     return refreshed
+
+
+def _freeze_contiguity(
+    store: Store, passages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Stamp each passage with ``contiguous_group`` (bool) — the
+    paper-level quote-contiguity flag
+    (``docs/backlog/nanopub-quote-contiguity.md``), frozen NOW against
+    the exact ``chunk_id``s the reviewer approved (every passage here
+    already passed :func:`precis.nanopub.gates._check_passage`, which
+    requires a resolvable ``chunk_id``).
+
+    Grouped by DOI — the same key the assembled RDF groups grounding
+    nodes under (:mod:`precis.nanopub.assemble`) — since a paper's
+    passages can arrive with distinct dict identities but must share one
+    paper-level verdict. A group of one passage, or a group whose DOI is
+    missing/blank, carries no flag at all (``assemble`` only emits the
+    triple for a >=2-grounding source; no group-level fact exists for
+    one). Frozen here rather than left to compute live at RDF-build time
+    because the source chunks can be re-chunked (DELETE+INSERT) after
+    approval — the flag must describe the paper as it was quoted, not as
+    it happens to read later (the same reasoning that freezes the rest
+    of this payload)."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for p in passages:
+        groups.setdefault(str(p.get("doi") or ""), []).append(p)
+
+    flags: dict[str, bool] = {}
+    for doi, group in groups.items():
+        if not doi or len(group) < 2:
+            continue
+        raw_chunk_ids = [p.get("chunk_id") for p in group]
+        if any(cid is None for cid in raw_chunk_ids):
+            continue
+        chunk_ids = [int(cid) for cid in raw_chunk_ids]  # type: ignore[arg-type]
+        chunks = evidence.fetch_chunks(store, chunk_ids)
+        ref_ids = {c.ref_id for c in chunks}
+        # Against the DISTINCT count: two passages may legitimately quote
+        # one chunk (two excerpts off one paragraph), and fetch_chunks'
+        # `chunk_id = ANY(...)` returns one row per distinct id — comparing
+        # to len(chunk_ids) would read that as a vanished chunk and drop
+        # the fact from the signed (immutable) artifact.
+        if len(chunks) != len(set(chunk_ids)) or len(ref_ids) != 1:
+            continue  # a vanished chunk, or (shouldn't happen) mixed refs
+        (ref_id,) = ref_ids
+        flags[doi] = evidence.passages_contiguous(store, ref_id, chunk_ids)
+
+    if not flags:
+        return list(passages)
+    stamped: list[dict[str, Any]] = []
+    for p in passages:
+        doi = str(p.get("doi") or "")
+        if doi in flags:
+            p = {**p, "contiguous_group": flags[doi]}
+        else:
+            p = dict(p)
+        stamped.append(p)
+    return stamped
+
+
+def _freeze_context_sentence(
+    store: Store, passages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Stamp each passage with ``context_sentence`` — the paper-level
+    context sentence (``docs/backlog/paper-context-sentence.md``), read
+    from ``refs.meta['context_sentence']`` NOW against the exact
+    ``chunk_id`` the reviewer approved and frozen identically onto every
+    passage sharing a source (grouped by resolved ``ref_id``, mirroring
+    :func:`_freeze_contiguity`'s DOI grouping). Omitted from a passage
+    whose source carries no sentence yet — population is a deliberate
+    backfill + lazy enqueue (never a corpus-wide sweep), so this is the
+    common case, not an error — or whose ``chunk_id`` can't resolve;
+    minting never blocks on this."""
+    raw_chunk_ids = [
+        p.get("chunk_id") for p in passages if p.get("chunk_id") is not None
+    ]
+    if not raw_chunk_ids:
+        return list(passages)
+    chunk_ids = [int(cid) for cid in raw_chunk_ids]  # type: ignore[arg-type]
+    chunks = evidence.fetch_chunks(store, chunk_ids)
+    ref_by_chunk = {c.chunk_id: c.ref_id for c in chunks}
+    ref_ids = set(ref_by_chunk.values())
+    if not ref_ids:
+        return list(passages)
+    refs = store.fetch_refs_by_ids(list(ref_ids))
+    sentence_by_ref: dict[int, str] = {}
+    for ref_id, ref in refs.items():
+        sentence = (ref.meta or {}).get("context_sentence")
+        if isinstance(sentence, str) and sentence.strip():
+            sentence_by_ref[ref_id] = sentence
+    if not sentence_by_ref:
+        return list(passages)
+
+    stamped: list[dict[str, Any]] = []
+    for p in passages:
+        cid = p.get("chunk_id")
+        source_ref_id = ref_by_chunk.get(int(cid)) if cid is not None else None
+        sentence = (
+            sentence_by_ref.get(source_ref_id) if source_ref_id is not None else None
+        )
+        if sentence:
+            p = {**p, "context_sentence": sentence}
+        else:
+            p = dict(p)
+        stamped.append(p)
+    return stamped
 
 
 def sign(
@@ -351,6 +464,16 @@ def _mint_input(
             snip=str(p.get("snip") or ""),
             role=str(p.get("role") or "corroborates"),
             source_title=p.get("source_title"),
+            contiguous_group=(
+                p["contiguous_group"]
+                if isinstance(p.get("contiguous_group"), bool)
+                else None
+            ),
+            context_sentence=(
+                p["context_sentence"]
+                if isinstance(p.get("context_sentence"), str)
+                else None
+            ),
         )
         for p in payload.get("passages") or []
     ]

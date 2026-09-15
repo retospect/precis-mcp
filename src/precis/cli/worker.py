@@ -243,6 +243,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_classify_pass": PassPriority.BACKGROUND,
     "_llm_reconcile_pass": PassPriority.BACKGROUND,
     "_paper_glossary_pass": PassPriority.BACKGROUND,
+    "_context_sentence_pass": PassPriority.BACKGROUND,
     "_paper_rank_pass": PassPriority.BACKGROUND,
     "_classify_topics_pass": PassPriority.BACKGROUND,
     "_axis_pass": PassPriority.BACKGROUND,
@@ -1483,6 +1484,45 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_paper_glossary_pass)
+
+        # context_sentence — one neutral method/evidence-type sentence per
+        # grounding-source paper (docs/backlog/paper-context-sentence.md),
+        # written to refs.meta['context_sentence']. NOT a corpus-wide sweep:
+        # the default cohort is the distinct grounding source ref_ids of
+        # live nanopub_publish rows (context_sentence.
+        # backfill_candidate_ref_ids); the web app additionally enqueues
+        # this pass (ref_ids=[ref_id]) lazily on grounding prefill. Default-OFF
+        # (`service prio` or --only context_sentence). Model defaults to the
+        # cheap SMALL-tier chain, like llm_summarize. See
+        # workers/context_sentence.py.
+        if _register("context_sentence"):
+            from precis.utils.llm.router import DispatchClient as _DispatchClient
+            from precis.utils.llm.router import Tier as _Tier
+            from precis.workers.runner import BatchResult as _CtxSentBatchResult
+
+            _ctx_sentence_client = _DispatchClient(
+                tier=_Tier.SMALL,
+                source="context_sentence",
+                log_call=True,
+                log_blobs=False,
+            )
+
+            def _context_sentence_pass(batch_size: int) -> _CtxSentBatchResult:
+                from precis.workers.context_sentence import run_context_sentence_pass
+
+                r = run_context_sentence_pass(
+                    store,
+                    client=_ctx_sentence_client,
+                    batch_size=min(batch_size, 8),
+                )
+                return _CtxSentBatchResult(
+                    handler="context_sentence",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_context_sentence_pass)
 
         # paper_rank — deterministic five-signal reading-priority score per
         # `kind='paper'` ref, written to `meta.paper_rank` (feynman PaperRank

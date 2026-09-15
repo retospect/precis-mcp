@@ -24,8 +24,12 @@ without a routes-module import cycle back the other way.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import threading
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 #: One action per publish state (the state → next-transition map the
 #: action box renders from).
@@ -457,6 +461,94 @@ def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
     return quote, snip
 
 
+#: ref_ids whose lazy generation thread is still running. A prefill is
+#: rendered on every approve-form AND read-only dry-run-panel view, so an
+#: unguarded enqueue would spawn a fresh thread — and a fresh billed LLM
+#: call — per refresh for the whole window before the sentence lands.
+_CONTEXT_SENTENCE_INFLIGHT: set[int] = set()
+_CONTEXT_SENTENCE_LOCK = threading.Lock()
+
+
+def _run_context_sentence_enqueue(store: Any, ref_id: int) -> None:
+    """The actual paper-context-sentence generation for one ref (``docs/
+    backlog/paper-context-sentence.md``) — run off the request thread by
+    :func:`_enqueue_context_sentence`. Swallows every error: this is
+    best-effort background work, never something a page render depends on."""
+    try:
+        from precis.utils.llm.router import DispatchClient, Tier
+        from precis.workers.context_sentence import run_context_sentence_pass
+
+        client = DispatchClient(tier=Tier.SMALL, source="context_sentence")
+        run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+    except Exception:
+        log.warning(
+            "context_sentence: lazy enqueue failed for ref_id=%s",
+            ref_id,
+            exc_info=True,
+        )
+
+
+def _context_sentence_thread_body(store: Any, ref_id: int) -> None:
+    """Thread target: do the work, then always release the in-flight slot.
+    The release lives here rather than in :func:`_run_context_sentence_enqueue`
+    so it still happens when a test monkeypatches that function out."""
+    try:
+        _run_context_sentence_enqueue(store, ref_id)
+    finally:
+        with _CONTEXT_SENTENCE_LOCK:
+            _CONTEXT_SENTENCE_INFLIGHT.discard(ref_id)
+
+
+def _enqueue_context_sentence(store: Any, ref_id: int) -> threading.Thread | None:
+    """Fire-and-forget: generate + write the paper-context sentence for
+    ``ref_id`` in a background thread — never blocks or raises into the
+    prefill render. Returns ``None`` when a thread for this ref is already
+    in flight (:data:`_CONTEXT_SENTENCE_INFLIGHT`), else the started thread
+    (tests join it; callers otherwise ignore the return value)."""
+    with _CONTEXT_SENTENCE_LOCK:
+        if ref_id in _CONTEXT_SENTENCE_INFLIGHT:
+            return None
+        _CONTEXT_SENTENCE_INFLIGHT.add(ref_id)
+    thread = threading.Thread(
+        target=_context_sentence_thread_body,
+        args=(store, ref_id),
+        name=f"context-sentence-{ref_id}",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except Exception:
+        # A thread that never started will never run its finally-clause,
+        # so release the slot here or this ref is wedged for the process.
+        with _CONTEXT_SENTENCE_LOCK:
+            _CONTEXT_SENTENCE_INFLIGHT.discard(ref_id)
+        log.warning("context_sentence: thread start failed ref_id=%s", ref_id)
+        return None
+    return thread
+
+
+def _lazy_enqueue_context_sentences(store: Any, sources: list[Any]) -> None:
+    """Best-effort: for every grounding source paper in ``sources`` missing
+    ``refs.meta['context_sentence']``, fire off the generation pass
+    (:func:`_enqueue_context_sentence`) — the lazy half of the population
+    policy (docs/backlog/paper-context-sentence.md); the batch-backfill
+    half runs off ``context_sentence.backfill_candidate_ref_ids``. Never
+    raises: a lookup hiccup just skips the enqueue for this render."""
+    ref_ids = [s.ref_id for s in sources]
+    if not ref_ids:
+        return
+    try:
+        refs = store.fetch_refs_by_ids(ref_ids)
+    except Exception:
+        log.warning("context_sentence: lazy lookup failed", exc_info=True)
+        return
+    for ref_id in ref_ids:
+        ref = refs.get(ref_id)
+        meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
+        if not meta.get("context_sentence"):
+            _enqueue_context_sentence(store, ref_id)
+
+
 def _suggested_payload(
     store: Any, row: Any, bundle: Any, hub_meta: dict[str, Any]
 ) -> str:
@@ -465,7 +557,12 @@ def _suggested_payload(
     ``refs.meta`` (`handlers/_finding_hypothesis.py::META_PROPOSED_PAYLOAD`),
     so a human opening a proposed hub finds the form already filled in;
     else per-passage candidates derived from the grounding chunks — quote +
-    unique snip suggested, for the reviewer to trim and attest."""
+    unique snip suggested, for the reviewer to trim and attest.
+
+    Also fires the lazy half of the paper-context-sentence population
+    policy (:func:`_lazy_enqueue_context_sentences`) for every grounding
+    source paper missing a sentence — best-effort, never blocking."""
+    _lazy_enqueue_context_sentences(store, bundle.sources)
     if row is not None and row.grounding:
         return json.dumps(row.grounding, indent=2)
     from precis.handlers._finding_hypothesis import META_PROPOSED_PAYLOAD

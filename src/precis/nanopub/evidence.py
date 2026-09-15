@@ -720,6 +720,45 @@ def paper_body_chunks(store: Store, ref_id: int) -> list[ChunkInfo]:
     ]
 
 
+def passages_contiguous(store: Store, ref_id: int, chunk_ids: list[int]) -> bool:
+    """True iff every chunk in ``chunk_ids`` (all from one paper, ``ref_id``)
+    forms a single adjacent run of the paper's LIVE body-chunk reading
+    order — the paper-level quote-contiguity flag
+    (``docs/backlog/nanopub-quote-contiguity.md``).
+
+    "Adjacent" is positional in ``ord >= 0 AND retired_at IS NULL ORDER
+    BY ord``, NOT consecutive ``ord`` integers — ``ord`` has gaps by
+    design (a retired or never-quoted chunk between two live ones does
+    not break contiguity; two chunks separated by nothing but such gaps
+    are adjacent). Deliberately does NOT reuse :func:`paper_body_chunks`,
+    whose query is missing the ``retired_at`` filter its docstring
+    promises (gr339961, tracked separately) — this helper owns its own
+    filtered ordering so quote contiguity is never wrong because of that
+    bug. A single distinct chunk (one id, or a list of duplicates of it)
+    is trivially contiguous; an id outside the live ordering (a card
+    variant, a retired chunk, or one that plain doesn't exist) makes the
+    whole group non-contiguous — undecidable, and undecidable is not the
+    same claim as "adjacent"."""
+    ids = sorted({int(c) for c in chunk_ids})
+    if len(ids) <= 1:
+        return True
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id FROM chunks "
+            "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL "
+            "ORDER BY ord",
+            (ref_id,),
+        ).fetchall()
+    position = {int(r[0]): i for i, r in enumerate(rows)}
+    positions: list[int] = []
+    for cid in ids:
+        if cid not in position:
+            return False
+        positions.append(position[cid])
+    positions.sort()
+    return positions[-1] - positions[0] == len(positions) - 1
+
+
 def pdf_sha_rows(store: Store, ref_id: int) -> list[str]:
     """The sha256 candidates that could pin the quoted copy — the mint
     gate requires exactly one. ``refs.pdf_sha256`` (the held-file

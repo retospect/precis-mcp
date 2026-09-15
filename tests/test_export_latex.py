@@ -1109,6 +1109,251 @@ def test_footnote_mode_hub_trust_marked_once_inside_footnote(store) -> None:
     assert r"\textsuperscript{?}" not in out  # no trailing inline mark
 
 
+# ── quote-contiguity label (docs/backlog/nanopub-quote-contiguity.md) ──
+
+
+def _two_chunk_hub(
+    store, *, ord2: int, mid_text: str | None = None
+) -> tuple[int, int, str, str]:
+    """A hub grounded by one paper at two passages: chunk1 at ord 0,
+    chunk2 at ``ord2``. Returns ``(hub, paper, pc1, pc2)``."""
+    hub = mint_hub(store, _HUB_CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug="latxg01", title="Two-passage source", year=2003, meta={}
+    ).id
+    with store.pool.connection() as conn:
+        row1 = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES "
+            "(%s, 0, 'paragraph', 'First passage text.') RETURNING chunk_id",
+            (paper,),
+        ).fetchone()
+        if mid_text is not None:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES "
+                "(%s, %s, 'paragraph', %s)",
+                (paper, ord2 - 1, mid_text),
+            )
+        row2 = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES "
+            "(%s, %s, 'paragraph', 'Second passage text.') RETURNING chunk_id",
+            (paper, ord2),
+        ).fetchone()
+        conn.commit()
+    assert row1 is not None and row2 is not None
+    pc1, pc2 = f"pc{int(row1[0])}", f"pc{int(row2[0])}"
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": pc1},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": pc2},
+    )
+    return hub, paper, pc1, pc2
+
+
+def test_footnote_adjacent_quotes_label_contiguous_live_fallback(store) -> None:
+    """Live-fallback path: no publish row, so the label is computed by
+    :func:`precis.nanopub.evidence.passages_contiguous` off the live chunk
+    ordering. ord 0 and ord 1, nothing between — adjacent."""
+    hub, _paper, pc1, pc2 = _two_chunk_hub(store, ord2=1)
+    assert store.nanopub_publish_row(hub) is None
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert f"{pc1}" in out and f"{pc2}" in out
+    assert "(contiguous excerpt)" in out
+    assert "(non-contiguous excerpts)" not in out
+
+
+def test_footnote_non_adjacent_quotes_label_non_contiguous_live_fallback(
+    store,
+) -> None:
+    """A live intervening chunk between the two quoted ones breaks
+    adjacency — live-fallback path (no publish row)."""
+    hub, _paper, pc1, pc2 = _two_chunk_hub(
+        store, ord2=2, mid_text="An unrelated middle passage."
+    )
+    assert store.nanopub_publish_row(hub) is None
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert f"{pc1}" in out and f"{pc2}" in out
+    assert "(non-contiguous excerpts)" in out
+    assert "(contiguous excerpt)" not in out
+
+
+def test_footnote_single_quote_carries_no_contiguity_label(store) -> None:
+    hub = mint_hub(store, _HUB_CLAIM)
+    paper = store.insert_ref(
+        kind="paper",
+        slug="latxh10",
+        title="Single-passage source",
+        year=2004,
+        meta={},
+    ).id
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES "
+            "(%s, 0, 'paragraph', 'Only passage text.') RETURNING chunk_id",
+            (paper,),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    pc = f"pc{int(row[0])}"
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": pc},
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert pc in out
+    assert "contiguous excerpt" not in out  # neither the singular nor plural form
+
+
+def test_footnote_prefers_frozen_contiguity_flag_over_live_recompute(store) -> None:
+    """Frozen-payload path: the hub's live ``nanopub_publish`` row carries a
+    per-passage ``contiguous_group`` flag — the exact chunk_ids a reviewer
+    approved. Adjacent live chunks would recompute True; the frozen payload
+    says False (the paper as it was quoted at approval, immune to a later
+    re-chunk), and that is what the footnote must render."""
+    hub, _paper, pc1, pc2 = _two_chunk_hub(store, ord2=1)  # live-adjacent
+    chunk1_id, chunk2_id = int(pc1[2:]), int(pc2[2:])
+    row = store.nanopub_create_publish_row(hub)
+    assert store.nanopub_approve(
+        row.id,
+        approved_title="Frozen claim sentence.",
+        claim_sha="0" * 64,
+        aida_uri="http://purl.org/aida/y",
+        grounding={
+            "passages": [
+                {"chunk_id": chunk1_id, "contiguous_group": False},
+                {"chunk_id": chunk2_id, "contiguous_group": False},
+            ]
+        },
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert "(non-contiguous excerpts)" in out
+    assert "(contiguous excerpt)" not in out
+
+
+# ── paper-context sentence (docs/backlog/paper-context-sentence.md) ────
+
+
+def _single_quote_hub(
+    store, *, slug: str, title: str, year: int, meta: dict
+) -> tuple[int, int]:
+    """A hub grounded by one paper at one passage. Returns ``(hub, paper)``."""
+    hub = mint_hub(store, _HUB_CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug=slug, title=title, year=year, meta=meta
+    ).id
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES "
+            "(%s, 0, 'paragraph', 'Only passage text.') RETURNING chunk_id",
+            (paper,),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    chunk_id = int(row[0])
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk_id}"},
+    )
+    return hub, paper
+
+
+def test_footnote_renders_context_line_from_live_refs_meta(store) -> None:
+    hub, _paper = _single_quote_hub(
+        store,
+        slug="latxj01",
+        title="Context-sentenced source",
+        year=2005,
+        meta={
+            "context_sentence": (
+                "Computational study; DFT-calculated, no wet-lab work."
+            )
+        },
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert "Context: Computational study; DFT-calculated, no wet-lab work." in out
+
+
+def test_footnote_omits_context_line_when_source_carries_none(store) -> None:
+    hub, _paper = _single_quote_hub(
+        store, slug="latxj02", title="No sentence source", year=2006, meta={}
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert "Context:" not in out
+
+
+def test_footnote_context_sentence_is_latex_escaped(store) -> None:
+    hub, _paper = _single_quote_hub(
+        store,
+        slug="latxj03",
+        title="Escaped-sentence source",
+        year=2007,
+        meta={"context_sentence": "Yield 80% & purity_check # 3 failed."},
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert r"Yield 80\% \& purity\_check \# 3 failed." in out
+    # The raw unescaped specials must never reach the .tex output.
+    assert "80% &" not in out
+
+
+def test_footnote_prefers_frozen_context_sentence_over_live_meta(store) -> None:
+    hub, paper = _single_quote_hub(
+        store,
+        slug="latxj04",
+        title="Frozen-vs-live source",
+        year=2008,
+        meta={"context_sentence": "Live sentence, should not render."},
+    )
+    with store.pool.connection() as conn:
+        (chunk_id,) = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+        ).fetchone()
+    row = store.nanopub_create_publish_row(hub)
+    assert store.nanopub_approve(
+        row.id,
+        approved_title="Frozen claim sentence.",
+        claim_sha="0" * 64,
+        aida_uri="http://purl.org/aida/latxctxfrozen",
+        grounding={
+            "passages": [
+                {"chunk_id": int(chunk_id), "context_sentence": "Frozen sentence wins."}
+            ]
+        },
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert "Context: Frozen sentence wins." in out
+    assert "Live sentence, should not render." not in out
+
+
 def test_assemble_document_injects_remarkable_geometry() -> None:
     """remarkable=True stamps the RM2 page geometry after the preamble;
     the default export leaves the standard 1in margins untouched."""

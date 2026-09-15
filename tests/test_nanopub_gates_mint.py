@@ -1112,6 +1112,159 @@ def test_approve_needs_the_interactive_door(store: Any) -> None:
         mint.approve(store, hub, payload=_payload(chunk))
 
 
+# ── quote-contiguity freeze (docs/backlog/nanopub-quote-contiguity.md) ──
+
+
+def _add_body_chunk(store: Any, ref_id: int, *, ord: int, text: str) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
+            "section_path) VALUES (%s, 'system', %s, 'paragraph', %s, "
+            "%s) RETURNING chunk_id",
+            (ref_id, ord, text, ["Results"]),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _two_passage_payload(
+    doi: str, sha: str, chunk1: int, quote1: str, snip1: str, chunk2: int
+) -> dict[str, Any]:
+    return {
+        "passages": [
+            {
+                "doi": doi,
+                "pdf_sha256": sha,
+                "quote": quote1,
+                "snip": snip1,
+                "chunk_id": chunk1,
+                "role": "corroborates",
+            },
+            {
+                "doi": doi,
+                "pdf_sha256": sha,
+                "quote": "The elastic modulus stays isotropic overall.",
+                "snip": "elastic modulus stays isotropic overall",
+                "chunk_id": chunk2,
+                "role": "corroborates",
+            },
+        ],
+        "fields": {},
+    }
+
+
+def test_approve_freezes_contiguous_true_for_adjacent_same_paper_quotes(
+    store: Any,
+) -> None:
+    paper, chunk1, sha = _seed_paper(store)
+    chunk2 = _add_body_chunk(
+        store, paper, ord=1, text="The elastic modulus stays isotropic overall."
+    )
+    hub = _seed_hub(store, "DFT shows two adjacent supporting passages.", paper, chunk1)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk2}"},
+        check_retraction=False,
+    )
+    payload = _two_passage_payload(
+        "10.1103/PhysRevLett.109.195502", sha, chunk1, _QUOTE, _SNIP, chunk2
+    )
+    row = mint.approve(store, hub, payload=payload, interactive=True)
+    flags = {p["chunk_id"]: p["contiguous_group"] for p in row.grounding["passages"]}
+    assert flags == {chunk1: True, chunk2: True}
+
+
+def test_approve_freezes_contiguous_false_for_non_adjacent_same_paper_quotes(
+    store: Any,
+) -> None:
+    paper, chunk1, sha = _seed_paper(store)
+    # A live intervening chunk at ord 1 breaks adjacency between chunk1
+    # (ord 0) and chunk3 (ord 2).
+    _mid = _add_body_chunk(store, paper, ord=1, text="An unrelated middle passage.")
+    chunk3 = _add_body_chunk(
+        store, paper, ord=2, text="The elastic modulus stays isotropic overall."
+    )
+    hub = _seed_hub(
+        store, "DFT shows two non-adjacent supporting passages.", paper, chunk1
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk3}"},
+        check_retraction=False,
+    )
+    payload = _two_passage_payload(
+        "10.1103/PhysRevLett.109.195502", sha, chunk1, _QUOTE, _SNIP, chunk3
+    )
+    row = mint.approve(store, hub, payload=payload, interactive=True)
+    flags = {p["chunk_id"]: p["contiguous_group"] for p in row.grounding["passages"]}
+    assert flags == {chunk1: False, chunk3: False}
+
+
+def test_approve_freezes_contiguous_true_for_two_quotes_of_one_chunk(
+    store: Any,
+) -> None:
+    """Two excerpts off ONE paragraph is a legitimate payload, and
+    trivially contiguous. ``fetch_chunks``' ``chunk_id = ANY(...)`` returns
+    one row per DISTINCT id, so a length check against the raw id list
+    reads this as a vanished chunk and silently drops the fact from the
+    signed (immutable) artifact."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows one paragraph twice over.", paper, chunk)
+    payload = _two_passage_payload(
+        "10.1103/PhysRevLett.109.195502", sha, chunk, _QUOTE, _SNIP, chunk
+    )
+    payload["passages"][1]["quote"] = "Tensorial analysis"
+    payload["passages"][1]["snip"] = "tensorial analysis"
+
+    row = mint.approve(store, hub, payload=payload, interactive=True)
+
+    assert [p["contiguous_group"] for p in row.grounding["passages"]] == [True, True]
+
+
+def test_approve_single_passage_carries_no_contiguity_flag(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows a single supported passage.", paper, chunk)
+    row = mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
+    (passage,) = row.grounding["passages"]
+    assert "contiguous_group" not in passage
+
+
+# ── paper-context-sentence freeze (docs/backlog/paper-context-sentence.md) ──
+
+
+def test_approve_freezes_the_source_papers_context_sentence(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    store.update_ref(
+        paper,
+        meta_patch={
+            "context_sentence": "Computational study; DFT-calculated, no wet-lab work."
+        },
+    )
+    hub = _seed_hub(store, "DFT shows a context-sentenced source.", paper, chunk)
+    row = mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
+    (passage,) = row.grounding["passages"]
+    assert (
+        passage["context_sentence"]
+        == "Computational study; DFT-calculated, no wet-lab work."
+    )
+
+
+def test_approve_carries_no_context_sentence_key_when_source_has_none(
+    store: Any,
+) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(store, "DFT shows a source with no sentence yet.", paper, chunk)
+    row = mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
+    (passage,) = row.grounding["passages"]
+    assert "context_sentence" not in passage
+
+
 def test_advisory_lint_is_exactly_the_nonblocking_half() -> None:
     """``advisory_lint`` returns the lint warnings the mint gate does NOT
     enforce, and only those: a sentence carrying both a blocking code

@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from rdflib import Dataset, URIRef
+from rdflib import XSD, Dataset, Literal, URIRef
 
 from precis.nanopub import assemble
 from precis.nanopub.aida import aida_uri, canonical_sentence
@@ -154,6 +154,118 @@ def test_draft_omits_empty_quote_triples() -> None:
     text = prov.serialize(format="nt")
     assert "sourceQuote" not in text and "searchSnip" not in text
     assert "https://doi.org/10.1/a" in text
+
+
+def test_multi_grounding_source_carries_excerpts_contiguous_triple() -> None:
+    # docs/backlog/nanopub-quote-contiguity.md: a source contributing >=2
+    # groundings gets a group-level boolean on its doi_uri; a
+    # single-grounding source gets none.
+    two = _claim_input(
+        grounding=[
+            assemble.GroundingInput(
+                doi="10.1/a",
+                pdf_sha256="a" * 64,
+                quote="quote one",
+                snip="quote one",
+                role="corroborates",
+                contiguous_group=True,
+            ),
+            assemble.GroundingInput(
+                doi="10.1/a",
+                pdf_sha256="a" * 64,
+                quote="quote two",
+                snip="quote two",
+                role="corroborates",
+                contiguous_group=True,
+            ),
+        ]
+    )
+    _, prov, _ = assemble.build_graphs(two, assemble.DRAFT_NS)
+    triples = list(
+        prov.triples(
+            (
+                URIRef("https://doi.org/10.1/a"),
+                PRECIS["excerptsContiguous"],
+                None,
+            )
+        )
+    )
+    assert triples == [
+        (
+            URIRef("https://doi.org/10.1/a"),
+            PRECIS["excerptsContiguous"],
+            Literal(True, datatype=XSD.boolean),
+        )
+    ]
+
+
+def test_single_grounding_source_carries_no_contiguity_triple() -> None:
+    one = _claim_input()  # one grounding passage, per _claim_input's default
+    _, prov, _ = assemble.build_graphs(one, assemble.DRAFT_NS)
+    assert list(prov.triples((None, PRECIS["excerptsContiguous"], None))) == []
+
+
+def test_multi_grounding_source_without_a_frozen_flag_carries_no_triple() -> None:
+    # A legacy payload minted before this feature: >=2 groundings from one
+    # source, but neither carries a frozen contiguous_group — no triple, not
+    # a guessed one.
+    two = _claim_input(
+        grounding=[
+            assemble.GroundingInput(
+                doi="10.1/a",
+                pdf_sha256="a" * 64,
+                quote="quote one",
+                snip="quote one",
+                role="corroborates",
+            ),
+            assemble.GroundingInput(
+                doi="10.1/a",
+                pdf_sha256="a" * 64,
+                quote="quote two",
+                snip="quote two",
+                role="corroborates",
+            ),
+        ]
+    )
+    _, prov, _ = assemble.build_graphs(two, assemble.DRAFT_NS)
+    assert list(prov.triples((None, PRECIS["excerptsContiguous"], None))) == []
+
+
+# ── paper-context sentence (docs/backlog/paper-context-sentence.md) ──────
+
+
+def test_context_sentence_present_carries_source_context_triple() -> None:
+    one = _claim_input(
+        grounding=[
+            assemble.GroundingInput(
+                doi="10.1/a",
+                pdf_sha256="a" * 64,
+                quote="quote one",
+                snip="quote one",
+                role="corroborates",
+                context_sentence=(
+                    "Computational study; DFT-calculated, no wet-lab work."
+                ),
+            )
+        ]
+    )
+    _, prov, _ = assemble.build_graphs(one, assemble.DRAFT_NS)
+    triples = list(
+        prov.triples((URIRef("https://doi.org/10.1/a"), PRECIS["sourceContext"], None))
+    )
+    assert triples == [
+        (
+            URIRef("https://doi.org/10.1/a"),
+            PRECIS["sourceContext"],
+            Literal("Computational study; DFT-calculated, no wet-lab work.", lang="en"),
+        )
+    ]
+
+
+def test_context_sentence_absent_carries_no_triple_and_mint_is_clean() -> None:
+    one = _claim_input()  # default GroundingInput carries no context_sentence
+    _, prov, _ = assemble.build_graphs(one, assemble.DRAFT_NS)
+    assert list(prov.triples((None, PRECIS["sourceContext"], None))) == []
 
 
 # ── offline sign round trip ─────────────────────────────────────────────

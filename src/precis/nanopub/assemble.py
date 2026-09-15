@@ -69,6 +69,22 @@ class GroundingInput:
     #: 'establishes' | 'corroborates' — a live `contradicts` never mints.
     role: str = "corroborates"
     source_title: str | None = None
+    #: The frozen paper-level quote-contiguity flag
+    #: (``docs/backlog/nanopub-quote-contiguity.md``, computed once at
+    #: :func:`precis.nanopub.mint.approve` and stamped identically onto
+    #: every passage sharing this DOI) — ``None`` when no group flag was
+    #: frozen (a single-passage source, or a legacy payload minted before
+    #: this feature). Never derived here: the artifact must describe the
+    #: paper as it was quoted at approval, not as it reads at mint time.
+    contiguous_group: bool | None = None
+    #: The frozen paper-context sentence (``docs/backlog/
+    #: paper-context-sentence.md``) — one neutral method/evidence-type
+    #: sentence off ``refs.meta['context_sentence']`` at approval time,
+    #: stamped identically onto every passage sharing this DOI. ``None``
+    #: when the source paper carries no sentence yet (population is a
+    #: deliberate backfill + lazy enqueue, not a corpus-wide sweep) — the
+    #: triple is simply omitted then; minting never blocks on it.
+    context_sentence: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +197,47 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
             g.add((node, PRECIS["sourcePdfSha256"], Literal(ground.pdf_sha256)))
         if ground.source_title:
             g.add((doi_uri, DCT.title, Literal(ground.source_title)))
+        # Paper-context sentence (paper-context-sentence.md): a neutral
+        # method/evidence-type literal on the source node, same node
+        # dct:title and excerptsContiguous use. Omitted entirely when the
+        # source carries no frozen sentence — multiple passages of the
+        # same DOI emit the identical triple, which the Graph (a set)
+        # dedups for free.
+        if ground.context_sentence:
+            g.add(
+                (
+                    doi_uri,
+                    PRECIS["sourceContext"],
+                    Literal(ground.context_sentence, lang="en"),
+                )
+            )
+
+    # Group-level quote-contiguity flag (nanopub-quote-contiguity.md):
+    # a boolean adjacency fact about the passages one source contributed,
+    # not a per-node chain — emitted only for a source with >=2 grounding
+    # passages that actually carries a frozen flag (a single-passage
+    # source, or a legacy payload minted before this feature, gets no
+    # triple). Universal-anchors rule holds: only the DOI identifies the
+    # source here, never a chunk id.
+    by_doi: dict[str, list[GroundingInput]] = {}
+    for ground in inp.grounding:
+        if ground.doi:
+            by_doi.setdefault(ground.doi, []).append(ground)
+    for doi, group in by_doi.items():
+        if len(group) < 2:
+            continue
+        flags = {g_.contiguous_group for g_ in group if g_.contiguous_group is not None}
+        if len(flags) != 1:
+            continue
+        (flag,) = flags
+        doi_uri = URIRef(f"https://doi.org/{doi}")
+        g.add(
+            (
+                doi_uri,
+                PRECIS["excerptsContiguous"],
+                Literal(flag, datatype=XSD.boolean),
+            )
+        )
     return g
 
 

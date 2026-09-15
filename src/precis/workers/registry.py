@@ -924,6 +924,29 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # precis.workers.context_sentence (docs/backlog/
+        # paper-context-sentence.md): one neutral method/evidence-type
+        # sentence per grounding-source paper, written to
+        # refs.meta['context_sentence'] and surfaced on the nanopub
+        # artifact (precis:sourceContext) + the LaTeX hub footnote
+        # ("Context: ..." line). Population is NOT a corpus-wide sweep:
+        # the cohort is the distinct grounding source ref_ids of live
+        # nanopub_publish rows (any state) — see
+        # context_sentence.backfill_candidate_ref_ids — plus a lazy
+        # enqueue from precis_web.nanopub_render on grounding prefill.
+        name="context_sentence",
+        label="Paper context sentence",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_CONTEXT_SENTENCE_ENABLED",
+        uses_model=True,
+        cost_sources=("context_sentence",),
+        one_line="One neutral method/evidence-type sentence per grounding "
+        "source paper (refs.meta['context_sentence']).",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="paper_rank",
         label="Paper reading-priority rank",
         category="discovery",

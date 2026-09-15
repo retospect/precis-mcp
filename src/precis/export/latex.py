@@ -1207,6 +1207,112 @@ def _hub_publish_info(pk: int, ctx: _Ctx) -> tuple[str, str | None]:
     return str(row.state), (getattr(row, "approved_title", None) or None)
 
 
+def _frozen_contiguity_flags(pk: int, ctx: _Ctx) -> dict[int, bool]:
+    """``{chunk_id: contiguous_group}`` off the hub's live
+    ``nanopub_publish`` row's frozen grounding payload
+    (``docs/backlog/nanopub-quote-contiguity.md``) — empty when there is
+    no publish row, or its payload predates this feature. Degrades to
+    empty on any store hiccup, same policy as the rest of this footnote."""
+    fn = getattr(ctx.store, "nanopub_publish_row", None)
+    if not callable(fn):
+        return {}
+    try:
+        row = fn(pk)
+    except Exception:  # pragma: no cover — store hiccup
+        return {}
+    if row is None:
+        return {}
+    out: dict[int, bool] = {}
+    for p in (row.grounding or {}).get("passages") or []:
+        chunk_id, flag = p.get("chunk_id"), p.get("contiguous_group")
+        if chunk_id is not None and isinstance(flag, bool):
+            out[int(chunk_id)] = flag
+    return out
+
+
+def _paper_contiguity_label(
+    paper_ref_id: int, handles: list[str], frozen: dict[int, bool], ctx: _Ctx
+) -> str:
+    """`` (contiguous excerpt)`` / `` (non-contiguous excerpts)`` appended
+    to a paper's title line when the hub grounds it at >=2 passages;
+    ``''`` for a single passage (spec: nanopub-quote-contiguity.md's PDF
+    export acceptance criterion). Prefers the frozen per-chunk flag off
+    the hub's publish row (:func:`_frozen_contiguity_flags`) — the exact
+    chunk_ids a reviewer approved, immune to a later re-chunk; falls back
+    to a live computation (:func:`precis.nanopub.evidence.passages_contiguous`)
+    when no publish row exists yet or its payload doesn't cover every
+    quoted chunk here (a draft footnote, or grounding added after
+    approval)."""
+    chunk_ids: list[int] = []
+    for h in handles:
+        parsed = handle_registry.parse(h)
+        if parsed is not None and parsed[0] == "paper" and parsed[1]:
+            chunk_ids.append(parsed[2])
+    chunk_ids = sorted(set(chunk_ids))
+    if len(chunk_ids) < 2 or ctx.store is None:
+        return ""
+    flags = {frozen[c] for c in chunk_ids if c in frozen}
+    if len(flags) == 1 and all(c in frozen for c in chunk_ids):
+        (flag,) = flags
+    else:
+        try:
+            from precis.nanopub.evidence import passages_contiguous
+
+            flag = passages_contiguous(ctx.store, paper_ref_id, chunk_ids)
+        except Exception:  # pragma: no cover — store hiccup
+            return ""
+    return " (contiguous excerpt)" if flag else " (non-contiguous excerpts)"
+
+
+def _frozen_context_sentences(pk: int, ctx: _Ctx) -> dict[int, str]:
+    """``{chunk_id: context_sentence}`` off the hub's live
+    ``nanopub_publish`` row's frozen grounding payload (``docs/backlog/
+    paper-context-sentence.md``) — empty when there is no publish row, or
+    its payload carries no sentence. Same degrade policy as
+    :func:`_frozen_contiguity_flags`."""
+    fn = getattr(ctx.store, "nanopub_publish_row", None)
+    if not callable(fn):
+        return {}
+    try:
+        row = fn(pk)
+    except Exception:  # pragma: no cover — store hiccup
+        return {}
+    if row is None:
+        return {}
+    out: dict[int, str] = {}
+    for p in (row.grounding or {}).get("passages") or []:
+        chunk_id, sentence = p.get("chunk_id"), p.get("context_sentence")
+        if chunk_id is not None and isinstance(sentence, str) and sentence.strip():
+            out[int(chunk_id)] = sentence
+    return out
+
+
+def _paper_context_sentence(
+    paper_ref_id: int, handles: list[str], frozen: dict[int, str], ctx: _Ctx
+) -> str | None:
+    """The paper-context sentence for a source paper (``docs/backlog/
+    paper-context-sentence.md``) — the frozen copy off the hub's publish
+    row (:func:`_frozen_context_sentences`) keyed by any of this paper's
+    quoted ``chunk_id``s, else the live ``refs.meta['context_sentence']``.
+    ``None`` when neither is set — the caller renders no Context: line
+    (population is a deliberate backfill + lazy enqueue, not corpus-wide,
+    so an unset sentence is the common case, not an error)."""
+    for h in handles:
+        parsed = handle_registry.parse(h)
+        if parsed is not None and parsed[0] == "paper" and parsed[1]:
+            sentence = frozen.get(parsed[2])
+            if sentence:
+                return sentence
+    if ctx.store is None:
+        return None
+    try:
+        ref = ctx.store.fetch_refs_by_ids([paper_ref_id]).get(paper_ref_id)
+    except Exception:  # pragma: no cover — store hiccup
+        return None
+    sentence = (getattr(ref, "meta", None) or {}).get("context_sentence")
+    return sentence if isinstance(sentence, str) and sentence.strip() else None
+
+
 def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
     """reMarkable mode: render a Taproot claim-hub cite as ONE self-contained
     footnote — the nanopub statement, the publish ladder with the current
@@ -1239,6 +1345,8 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         if g.source_handle and g.source_handle not in bucket:
             bucket.append(g.source_handle)
 
+    frozen_contiguity = _frozen_contiguity_flags(pk, ctx)
+    frozen_context = _frozen_context_sentences(pk, ctx)
     lines: list[str] = []
     issues: list[str] = []
     seen_papers: set[int] = set()
@@ -1253,6 +1361,9 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         if handles:
             parts.append(_tex(", ".join(handles)) + " — ")
         title_tex = _render_gap(edge.title or f"paper {edge.paper_ref_id}", ctx)
+        title_tex += _tex(
+            _paper_contiguity_label(edge.paper_ref_id, handles, frozen_contiguity, ctx)
+        )
         parts.append(f"\\textbf{{{title_tex}}}")
         if edge.year:
             parts.append(f" ({edge.year})")
@@ -1260,6 +1371,15 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         if key:
             parts.append(f"~\\cite{{{key}}}")
         lines.append("".join(parts))
+        # Paper-context sentence (paper-context-sentence.md), roman text
+        # under the title line — visually distinct from the italic quoted
+        # passages below, so a reader never mistakes added context for a
+        # verbatim excerpt.
+        sentence = _paper_context_sentence(
+            edge.paper_ref_id, handles, frozen_context, ctx
+        )
+        if sentence:
+            lines.append(f"Context: {_render_gap(' '.join(sentence.split()), ctx)}")
         # The full grounding passage under each pc handle — the tablet
         # reader sees the exact supporting text, not just its address.
         for h in handles:

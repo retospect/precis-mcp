@@ -10,15 +10,19 @@ those two read live ``links`` rows, so a fake row can't stand in."""
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
+from precis_web import nanopub_render as _nanopub_render
 from precis_web.nanopub_render import (
     _contradicted_panel,
     _dispute_panel,
     _gate_report,
     _ladder,
+    _lazy_enqueue_context_sentences,
 )
 
 
@@ -263,6 +267,127 @@ def test_contradicted_panel_names_the_counterpart() -> None:
             "direction": "in",
         }
     ]
+
+
+# ── lazy paper-context-sentence enqueue (docs/backlog/
+# paper-context-sentence.md) ─────────────────────────────────────────
+
+
+def test_lazy_enqueue_skips_a_source_with_a_live_sentence(monkeypatch: Any) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        _nanopub_render,
+        "_enqueue_context_sentence",
+        lambda store, ref_id: calls.append(ref_id),
+    )
+    sources = [SimpleNamespace(ref_id=1), SimpleNamespace(ref_id=2)]
+    store = SimpleNamespace(
+        fetch_refs_by_ids=lambda ids: {
+            1: SimpleNamespace(meta={"context_sentence": "Already set."}),
+            2: SimpleNamespace(meta={}),
+        }
+    )
+
+    _lazy_enqueue_context_sentences(store, sources)
+
+    assert calls == [2]
+
+
+def test_lazy_enqueue_swallows_a_lookup_failure(monkeypatch: Any) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        _nanopub_render,
+        "_enqueue_context_sentence",
+        lambda store, ref_id: calls.append(ref_id),
+    )
+    sources = [SimpleNamespace(ref_id=1)]
+
+    def _boom(ids: Any) -> Any:
+        raise RuntimeError("db hiccup")
+
+    store = SimpleNamespace(fetch_refs_by_ids=_boom)
+
+    _lazy_enqueue_context_sentences(store, sources)  # must not raise
+
+    assert calls == []
+
+
+def test_lazy_enqueue_no_sources_is_a_no_op(monkeypatch: Any) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        _nanopub_render,
+        "_enqueue_context_sentence",
+        lambda store, ref_id: calls.append(ref_id),
+    )
+
+    _lazy_enqueue_context_sentences(SimpleNamespace(), [])
+
+    assert calls == []
+
+
+def test_enqueue_context_sentence_runs_in_a_background_thread(
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[Any, int]] = []
+    monkeypatch.setattr(
+        _nanopub_render,
+        "_run_context_sentence_enqueue",
+        lambda store, ref_id: calls.append((store, ref_id)),
+    )
+    store = SimpleNamespace()
+
+    thread = _nanopub_render._enqueue_context_sentence(store, 7)
+    assert thread is not None
+    thread.join(timeout=5)
+
+    assert calls == [(store, 7)]
+    assert not thread.is_alive()
+
+
+def test_enqueue_context_sentence_skips_a_ref_already_in_flight(
+    monkeypatch: Any,
+) -> None:
+    """A prefill renders on every approve-form and dry-run-panel view, so a
+    second enqueue for a ref whose thread is still running must be a no-op
+    rather than a duplicate (billed) LLM call."""
+    release = threading.Event()
+    started = threading.Event()
+
+    def _block(store: Any, ref_id: int) -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(_nanopub_render, "_run_context_sentence_enqueue", _block)
+    store = SimpleNamespace()
+
+    first = _nanopub_render._enqueue_context_sentence(store, 11)
+    assert first is not None
+    assert started.wait(timeout=5)
+
+    assert _nanopub_render._enqueue_context_sentence(store, 11) is None
+
+    release.set()
+    first.join(timeout=5)
+
+    # Slot released once the thread finished — a later render may retry.
+    assert 11 not in _nanopub_render._CONTEXT_SENTENCE_INFLIGHT
+    second = _nanopub_render._enqueue_context_sentence(store, 11)
+    assert second is not None
+    second.join(timeout=5)
+
+
+def test_run_context_sentence_enqueue_swallows_pass_failures(
+    monkeypatch: Any,
+) -> None:
+    def _boom(store: Any, *, client: Any, ref_ids: Any) -> Any:
+        raise RuntimeError("llm dispatch failed")
+
+    monkeypatch.setattr(
+        "precis.workers.context_sentence.run_context_sentence_pass", _boom
+    )
+
+    # Must not raise — this is best-effort background work.
+    _nanopub_render._run_context_sentence_enqueue(SimpleNamespace(), 7)
 
 
 def test_answer_model_label_env_chain(monkeypatch) -> None:
