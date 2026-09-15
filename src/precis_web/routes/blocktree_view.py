@@ -44,13 +44,28 @@ a permanent (308) redirect to the new bare-slug URL, query string
 forwarded unchanged (``_view3d_redirect``), so an old bookmark/link
 never just 404s.
 
-Still out of scope this round (see the gripe): argue-with-points (click
-→ anchor → job) and the anchored-notes layer.
+The anchored-notes layer arrived via
+docs/backlog/se-topology-cloud-and-surface-notes.md slice 2:
+
+* ``POST /se/{slug}/note/rewrite`` — AI-assisted intent capture: a raw
+  comment typed against the 3D selection comes back as a crisp one-or-
+  two-sentence note + a proposed kind (question | decision), for the
+  page to show inline for accept/edit. LLM failure degrades to the raw
+  text (``degraded: true``) — capture never blocks on the model.
+* ``POST /se/{slug}/note`` — save the accepted note into the design's
+  interrogation ledger via the existing ``add_note`` op path (origin
+  ``'user'``, ``about=[block]``, verbatim original appended as a
+  ``(verbatim: …)`` trailer when the text was rewritten).
+
+Still out of scope (see the gripe): argue-with-points (click → anchor →
+job).
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -59,6 +74,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.blocktree.types import BlockNode, Tree
+from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis_se import persist as se_persist
@@ -87,6 +103,8 @@ from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["blocktree"])
 
@@ -562,6 +580,11 @@ async def _view3d_page(
     scene_url = f"/{kind}/{quote(slug, safe='')}/scene3d.json?{common_qs}"
     # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
     detail_2d_url = f"/{kind}/{quote(slug, safe='')}/2d?{common_qs}"
+    # Comment-on-selection (slice 2, se only today — the routes are
+    # registered per kind, so a second blocktree kind opts in by adding
+    # its own note routes; the template hides the panel when unset).
+    note_url = f"/{kind}/{quote(slug, safe='')}/note" if kind == "se" else ""
+    note_rewrite_url = f"{note_url}/rewrite" if note_url else ""
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",
@@ -578,6 +601,8 @@ async def _view3d_page(
             "block_names": block_names,
             "scene_url": scene_url,
             "detail_2d_url": detail_2d_url,
+            "note_url": note_url,
+            "note_rewrite_url": note_rewrite_url,
         },
     )
 
@@ -779,3 +804,149 @@ async def se_scene3d(
     return await _scene3d_response(
         request, "se", slug, level=level, isolate=isolate, overrides=overrides
     )
+
+
+# ── comment-on-selection → interview note (slice 2 of
+#    docs/backlog/se-topology-cloud-and-surface-notes.md) ─────────────────
+
+#: The kinds the web comment box can mint. An ``answer`` needs a ``re``
+#: target picked from the existing ledger — out of scope for a viewer
+#: comment; the interview view is where answers happen.
+_WEB_NOTE_KINDS = ("question", "decision")
+
+_NOTE_REWRITE_PROMPT = """\
+You are capturing design intent on a structural design. The user selected
+block {block} in a 3D viewer and typed a raw comment about it. Rewrite the
+comment as ONE crisp interview note of one or two sentences, preserving the
+user's intent precisely — do not invent facts, soften, or expand scope.
+Classify it: "question" if it asks or opens something, "decision" if it
+settles or directs something.
+
+Raw comment:
+{comment}
+
+Reply with ONLY a JSON object: {{"text": "...", "kind": "question" or "decision"}}
+"""
+
+
+def _rewrite_note_comment(comment: str, block: str | None) -> dict[str, Any]:
+    """One MEDIUM-tier judge call: raw comment → ``{'text', 'kind'}``.
+    Raises on any transport/parse failure — the route degrades to the raw
+    text, this helper never does."""
+    from precis.utils.llm.json_reply import extract_json_object
+    from precis.utils.llm.router import LlmRequest, Tier, route
+
+    prompt = _NOTE_REWRITE_PROMPT.format(
+        block=repr(block) if block else "(none selected)", comment=comment
+    )
+    res = route(
+        LlmRequest(
+            tier=Tier.MEDIUM,
+            source="se-note-rewrite",
+            prompt=prompt,
+            max_usd=0.10,
+            timeout_s=60.0,
+        )
+    )
+    if res.error:
+        raise RuntimeError(res.error)
+    data = res.data or extract_json_object(res.text) or {}
+    text = str(data.get("text") or "").strip()
+    if not text:
+        raise RuntimeError("rewrite returned no text")
+    kind = str(data.get("kind") or "").strip().lower()
+    return {"text": text, "kind": kind if kind in _WEB_NOTE_KINDS else "question"}
+
+
+def _note_name(kind: str, text: str, taken: set[str]) -> str:
+    """A short, unique, readable ledger name for a web-minted note —
+    ``q-``/``d-`` prefix (matching the hand-written ``q-bore`` style the
+    handler's own examples teach) + the first few words, deduped with a
+    numeric suffix. Note names are unique per design (``_op_add_note``)."""
+    words = re.findall(r"[a-z0-9]+", text.lower())[:4]
+    base = f"{'q' if kind == 'question' else 'd'}-{'-'.join(words) or 'note'}"
+    name = base
+    n = 2
+    while name in taken:
+        name = f"{base}-{n}"
+        n += 1
+    return name
+
+
+@router.post("/se/{slug}/note/rewrite")
+async def se_note_rewrite(request: Request, slug: str) -> JSONResponse:
+    store = get_store(request)
+    try:
+        _require_ref(store, "se", slug)
+    except NotFound:
+        return JSONResponse({"error": f"no live se design {slug!r}"}, status_code=404)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    comment = str(payload.get("comment") or "").strip()
+    if not comment:
+        return JSONResponse({"error": "empty comment"}, status_code=400)
+    block = str(payload.get("block") or "").strip() or None
+    try:
+        proposal = await asyncio.to_thread(_rewrite_note_comment, comment, block)
+    except Exception:
+        # Degrade honestly: the raw words come back editable, flagged —
+        # capture must never block on the model being reachable.
+        log.exception("se note rewrite failed for %s", slug)
+        return JSONResponse({"text": comment, "kind": "question", "degraded": True})
+    return JSONResponse({**proposal, "degraded": False})
+
+
+@router.post("/se/{slug}/note")
+async def se_note_save(request: Request, slug: str) -> JSONResponse:
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, "se", slug)
+    except NotFound:
+        return JSONResponse({"error": f"no live se design {slug!r}"}, status_code=404)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "empty note text"}, status_code=400)
+    kind = str(payload.get("kind") or "question").strip().lower()
+    if kind not in _WEB_NOTE_KINDS:
+        return JSONResponse(
+            {"error": f"kind must be one of {' | '.join(_WEB_NOTE_KINDS)}"},
+            status_code=400,
+        )
+    block = str(payload.get("block") or "").strip() or None
+    verbatim = str(payload.get("verbatim") or "").strip()
+
+    def _save() -> str:
+        from precis_se.handler import SeHandler
+
+        tree = se_persist.load_tree(store, ref.id)
+        name = _note_name(kind, text, {n.name for n in tree.notes})
+        body = text
+        if verbatim and verbatim != text:
+            body += f"\n\n(verbatim: {verbatim})"
+        op: dict[str, Any] = {
+            "op": "add_note",
+            "name": name,
+            "kind": kind,
+            "text": body,
+            "origin": "user",
+        }
+        if block:
+            # A dangling anchor is legal by design (the interview view
+            # annotates it) — no existence check here.
+            op["about"] = [block]
+        SeHandler(hub=Hub(store=store)).edit(id=str(ref.slug), ops=[op])
+        return name
+
+    try:
+        name = await asyncio.to_thread(_save)
+    except Exception as exc:
+        # OpError/BadInput text is the actionable message; the client
+        # renders it as textContent, never markup.
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "name": name})

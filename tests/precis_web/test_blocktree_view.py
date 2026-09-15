@@ -556,3 +556,168 @@ def test_se_view3d_hostile_overrides_excluded_from_scene_url(
     assert "alert" not in scene_url_line
     assert "overrides=" not in scene_url_line  # the whole invalid pair was dropped
     assert "scene3d.json" in scene_url_line  # sanity: the right line
+
+
+# ── comment-on-selection → interview note (slice 2 of
+#    docs/backlog/se-topology-cloud-and-surface-notes.md) ────────────────
+
+
+def _load_notes(store: Any, slug: str = "unicycle_web") -> list[Any]:
+    from precis_se import persist as se_persist
+
+    ref = store.get_ref(kind="se", id=slug)
+    assert ref is not None
+    return se_persist.load_tree(store, ref.id).notes
+
+
+def test_se_note_save_appends_interview_note(
+    blocktree_client, runtime_with_store, store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.post(
+        "/se/unicycle_web/note",
+        json={
+            "text": "Should the hub bore be 17 mm?",
+            "kind": "question",
+            "block": "hub",
+            "verbatim": "hub bore 17mm??",
+        },
+    )
+    assert r.status_code == 200
+    name = r.json()["name"]
+    assert name.startswith("q-")
+    note = next(n for n in _load_notes(store) if n.name == name)
+    assert note.kind == "question"
+    assert note.origin == "user"
+    assert note.about == ["hub"]
+    assert note.body.startswith("Should the hub bore be 17 mm?")
+    assert "(verbatim: hub bore 17mm??)" in note.body
+
+
+def test_se_note_save_equal_verbatim_gets_no_trailer(
+    blocktree_client, runtime_with_store, store
+) -> None:
+    """The trailer exists to preserve words the rewrite changed — when
+    the user saved their own text untouched there is nothing to
+    preserve, and a ``(verbatim: …)`` echo would just be noise."""
+    _seed_se(runtime_with_store)
+    text = "Use a 17 mm bore for the hub."
+    r = blocktree_client.post(
+        "/se/unicycle_web/note",
+        json={"text": text, "kind": "decision", "block": "hub", "verbatim": text},
+    )
+    assert r.status_code == 200
+    name = r.json()["name"]
+    assert name.startswith("d-")
+    note = next(n for n in _load_notes(store) if n.name == name)
+    assert note.body == text
+    assert "(verbatim" not in note.body
+
+
+def test_se_note_save_dedupes_names(
+    blocktree_client, runtime_with_store, store
+) -> None:
+    _seed_se(runtime_with_store)
+    payload = {"text": "Should the rim be wider?", "kind": "question", "block": "rim"}
+    first = blocktree_client.post("/se/unicycle_web/note", json=payload)
+    second = blocktree_client.post("/se/unicycle_web/note", json=payload)
+    assert first.status_code == 200 and second.status_code == 200
+    names = {first.json()["name"], second.json()["name"]}
+    assert len(names) == 2
+    saved = {n.name for n in _load_notes(store)}
+    assert names <= saved
+
+
+def test_se_note_save_rejects_bad_kind(blocktree_client, runtime_with_store) -> None:
+    """``answer`` needs a ``re`` target picked from the ledger — the
+    viewer comment box only mints question|decision."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.post(
+        "/se/unicycle_web/note",
+        json={"text": "the bore is 17 mm", "kind": "answer", "block": "hub"},
+    )
+    assert r.status_code == 400
+    assert "kind" in r.json()["error"]
+
+
+def test_se_note_save_rejects_empty_text(blocktree_client, runtime_with_store) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.post("/se/unicycle_web/note", json={"text": "  "})
+    assert r.status_code == 400
+
+
+def test_se_note_routes_404_on_unknown_slug(client: TestClient) -> None:
+    assert client.post("/se/nope/note", json={"text": "x"}).status_code == 404
+    assert (
+        client.post("/se/nope/note/rewrite", json={"comment": "x"}).status_code == 404
+    )
+
+
+def test_se_note_rewrite_returns_proposal(
+    blocktree_client, runtime_with_store, monkeypatch
+) -> None:
+    from precis_web.routes import blocktree_view as btv
+
+    _seed_se(runtime_with_store)
+    monkeypatch.setattr(
+        btv,
+        "_rewrite_note_comment",
+        lambda comment, block: {
+            "text": f"Should {block}'s bore be 17 mm?",
+            "kind": "question",
+        },
+    )
+    r = blocktree_client.post(
+        "/se/unicycle_web/note/rewrite",
+        json={"comment": "hub bore 17?", "block": "hub"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {
+        "text": "Should hub's bore be 17 mm?",
+        "kind": "question",
+        "degraded": False,
+    }
+
+
+def test_se_note_rewrite_degrades_to_raw_text_on_llm_failure(
+    blocktree_client, runtime_with_store, monkeypatch
+) -> None:
+    """Capture must never block on the model: a failed rewrite comes
+    back 200 with the raw words, flagged ``degraded`` so the UI says so
+    honestly."""
+    from precis_web.routes import blocktree_view as btv
+
+    _seed_se(runtime_with_store)
+
+    def _boom(comment: str, block: str | None) -> dict[str, Any]:
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr(btv, "_rewrite_note_comment", _boom)
+    r = blocktree_client.post(
+        "/se/unicycle_web/note/rewrite",
+        json={"comment": "hub bore 17?", "block": "hub"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"text": "hub bore 17?", "kind": "question", "degraded": True}
+
+
+def test_se_note_rewrite_rejects_empty_comment(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.post("/se/unicycle_web/note/rewrite", json={"comment": ""})
+    assert r.status_code == 400
+
+
+def test_note_name_slugs_and_dedupes() -> None:
+    from precis_web.routes.blocktree_view import _note_name
+
+    assert _note_name("question", "Should the hub bore be 17mm?", set()) == (
+        "q-should-the-hub-bore"
+    )
+    assert _note_name("decision", "Use 17 mm.", set()) == "d-use-17-mm"
+    taken = {"q-should-the-hub-bore", "q-should-the-hub-bore-2"}
+    assert _note_name("question", "Should the hub bore be 17mm?", taken) == (
+        "q-should-the-hub-bore-3"
+    )
+    assert _note_name("question", "???", set()) == "q-note"

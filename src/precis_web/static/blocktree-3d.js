@@ -408,6 +408,8 @@ export async function blocktreeViewer3D({
   explodeButton,
   connectionsToggle,
   sceneUrl,
+  noteUrls,
+  noteEls,
 }) {
   // gr338976 — disable mermaid's startOnLoad auto-run BEFORE the first
   // await: the vendored bundle defaults startOnLoad:true and runs on the
@@ -564,6 +566,102 @@ export async function blocktreeViewer3D({
     }
     const blockId = primaryPath.split("/").pop();
     highlightMermaidNode(blockId);
+    showNotePanel(primaryPath);
+  }
+
+  // ── comment on the selection → interview note (slice 2 of
+  // docs/backlog/se-topology-cloud-and-surface-notes.md). The flow keeps
+  // the user's words sovereign: raw comment → server-side AI rewrite →
+  // shown EDITABLE for accept/edit → save posts the (possibly edited)
+  // text plus the verbatim original. Every status/error string lands via
+  // textContent (see showError — server text is untrusted).
+  let selectedBlock = null;
+
+  function noteStatus(msg) {
+    if (noteEls && noteEls.status) noteEls.status.textContent = msg;
+  }
+
+  function showNotePanel(primaryPath) {
+    if (!noteEls || !noteUrls) return;
+    const part = findPart(data.shapes, primaryPath);
+    const name = part ? part.name : null;
+    if (!name) return;
+    if (name !== selectedBlock) {
+      // A fresh selection restarts the capture — a half-typed comment
+      // about another block must not silently attach here.
+      noteEls.raw.value = "";
+      noteEls.proposal.classList.add("hidden");
+      noteStatus("");
+    }
+    selectedBlock = name;
+    noteEls.blockLabel.textContent = name;
+    noteEls.panel.classList.remove("hidden");
+  }
+
+  async function postJson(url, payload) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(body.error || `request failed (${resp.status})`);
+    return body;
+  }
+
+  if (noteEls && noteUrls) {
+    noteEls.suggestButton.addEventListener("click", async () => {
+      const comment = noteEls.raw.value.trim();
+      if (!comment || !selectedBlock) {
+        noteStatus(comment ? "select a block first" : "type a comment first");
+        return;
+      }
+      noteEls.suggestButton.disabled = true;
+      noteStatus("rewriting…");
+      try {
+        const j = await postJson(noteUrls.rewrite, {
+          comment,
+          block: selectedBlock,
+        });
+        noteEls.text.value = j.text || comment;
+        noteEls.kind.value = j.kind === "decision" ? "decision" : "question";
+        noteEls.proposal.classList.remove("hidden");
+        noteStatus(
+          j.degraded
+            ? "AI rewrite unavailable — raw text kept; edit and save."
+            : "AI-rewritten — edit if needed, then save."
+        );
+      } catch (err) {
+        noteStatus("rewrite failed: " + String(err.message || err));
+      } finally {
+        noteEls.suggestButton.disabled = false;
+      }
+    });
+
+    noteEls.saveButton.addEventListener("click", async () => {
+      const text = noteEls.text.value.trim();
+      if (!text || !selectedBlock) {
+        noteStatus("nothing to save");
+        return;
+      }
+      noteEls.saveButton.disabled = true;
+      noteStatus("saving…");
+      try {
+        const j = await postJson(noteUrls.save, {
+          text,
+          kind: noteEls.kind.value,
+          block: selectedBlock,
+          verbatim: noteEls.raw.value.trim(),
+        });
+        noteStatus(`saved as ${j.name}`);
+        noteEls.raw.value = "";
+        noteEls.proposal.classList.add("hidden");
+      } catch (err) {
+        noteStatus("save failed: " + String(err.message || err));
+      } finally {
+        noteEls.saveButton.disabled = false;
+      }
+    });
   }
 
   function notify(change) {
