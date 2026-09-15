@@ -205,6 +205,29 @@ def test_single_grounding_source_carries_no_contiguity_triple() -> None:
     assert list(prov.triples((None, PRECIS["excerptsContiguous"], None))) == []
 
 
+def test_a_lone_grounding_carrying_a_flag_still_emits_no_triple() -> None:
+    """The >=2 threshold guards on its own, not just via the flag lookup:
+    contiguity is a statement ABOUT a group, so one passage must stay
+    silent even if a frozen payload somehow stamped it. The default
+    single-grounding case can't prove this — it has no flag to find, so
+    the group-size check never decides the outcome."""
+    flagged = _claim_input(
+        grounding=[
+            assemble.GroundingInput(
+                doi="10.1103/PhysRevLett.109.195502",
+                pdf_sha256="cf2c" * 16,
+                quote="This anisotropy can reach a 400:1 ratio",
+                snip="anisotropy 400 1 ratio rigid weakest",
+                role="corroborates",
+                source_title="Anisotropic Elastic Properties of Flexible MOFs",
+                contiguous_group=True,
+            )
+        ]
+    )
+    _, prov, _ = assemble.build_graphs(flagged, assemble.DRAFT_NS)
+    assert list(prov.triples((None, PRECIS["excerptsContiguous"], None))) == []
+
+
 def test_multi_grounding_source_without_a_frozen_flag_carries_no_triple() -> None:
     # A legacy payload minted before this feature: >=2 groundings from one
     # source, but neither carries a frozen contiguous_group — no triple, not
