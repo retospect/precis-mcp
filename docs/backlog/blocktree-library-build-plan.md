@@ -105,34 +105,38 @@ Slices 7–9 are independent and can go any time by anyone.
 
 ---
 
-## Slice 1 — cross-design instancing (the library blocker)
+## Slice 1 — cross-design instancing (the library blocker) — **SHIPPED**
 
-**Why first.** Measured: `nm`/`se` `instance_block` resolves `template` to a
-block *in the same design*. There is no cross-design path. Until there is, a
-catalogued part cannot be placed and there is no library.
+Landed 2026-09-07 in `a5efc341`, in the same commit that wrote this plan —
+which is why the section read as open for a week afterwards. The heading
+stays (numbered, because slices 2–6 and three other docs cite these
+numbers); the spec body is gone per delete-on-ship. What exists now:
 
-**Shape.** A template reference becomes *qualified*: either a bare local block
-name (unchanged) or `<design-slug>#<block-name>`. Placement stays **by
-reference** — an instance keeps resolving envelope/ports/dof from its template
-at read time, so fixing a library part fixes every design using it. Do **not**
-add an import-and-flatten; that is the thing that makes libraries rot.
+- A `template` is *qualified* — a bare local block name, or
+  `<design-slug>#<block-name>` (`precis.blocktree.types.parse_template_ref`,
+  `TEMPLATE_SEP`; `'#'` is reserved out of block names at both places one is
+  minted). Placement is **by reference**: `effective_envelope`/
+  `effective_ports`/`effective_dof` resolve through
+  `blocktree.ops.resolve_template` on every read, so editing the library
+  design updates every consumer with no re-save.
+- `_find_instance_cycle` walks `(design slug, block name)` nodes across
+  designs and reports every hop qualified the moment more than one design is
+  involved, so an A→B→A cycle is refused naming both.
+- Read-path resolver: `precis_se.persist.foreign_resolver`, memoized per
+  closure and wired onto every tree `load_tree` returns — one
+  `get_ref`+`load_tree` per distinct foreign slug, never one per port, and
+  no read path (handler, web reader, jobs) can forget to wire one.
+  `SeHandler` replaces it with a call-scoped resolver so one put/edit/get
+  shares the cache across trees.
+- Storage: `se_blocks.template_ref`, name-keyed text (migration
+  `0004_se_template_ref.sql`) — never a row-id FK, since ids are rebuilt on
+  every save.
 
-**Touches.** `precis/blocktree/types.py` (template ref parsing),
-`ops.py` (`_instance_shared`, `_op_instance_block`, `effective_ports`,
-`effective_envelope`, `_find_instance_cycle`), plus one migration per plugin
-namespace for the widened template column.
-
-**The hard part, and the test that matters.** `_find_instance_cycle` currently
-walks one design. Cross-design cycles are real (A instances B, B instances A)
-and a naive resolver infinite-loops. **Write that test first**: two designs
-that instance each other must be rejected with a message naming both, not hang.
-
-**Also needs:** a resolver read-path decision — resolving a template now
-requires loading another design. Cache per request; do not re-query per port.
-
-**Done when:** a one-block design can be instanced into a second design, its
-ports resolve, editing the source updates the consumer, and a cross-design
-cycle is refused.
+**Deferred, on purpose:** a cross-design template stays *name*-keyed. The
+uid cutover (`0009_se_block_uid.sql`) gave local references a
+`template_uid` that survives a relabel; a foreign one has no uid→design
+index to walk, so that conversion is its own slice
+(`precis_se/persist.py`'s module docstring marks the spot).
 
 ---
 
@@ -283,7 +287,9 @@ things:
 
 ## Sequencing note
 
-Slices 1+2 share a migration; land them together but as separate commits.
+Slices 1 and 2 get **one migration each** (slice 2's §Schema paragraph
+settled this on 2026-09-07; the earlier "share a migration" advice here was
+the false economy it names). Land them together but as separate commits.
 3–6 are independently shippable. **Do not bundle 7–9 into any of them** — a
 refactor or schema change that also alters behaviour cannot be verified by
 "the tests still pass", which is the whole reason the earlier blocktree work

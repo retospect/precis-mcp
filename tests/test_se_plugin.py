@@ -520,6 +520,94 @@ def test_cross_design_instance_resolves_envelope_and_ports_by_reference(
     assert "mount" in block.body
 
 
+def test_editing_the_library_design_updates_every_consumer(
+    handler: SeHandler,
+) -> None:
+    # The whole point of placement BY REFERENCE (docs/backlog/blocktree-
+    # library-build-plan.md slice 1, "fixing a library part fixes every
+    # design using it"): the consumer is never re-saved between the two
+    # reads below, so anything it shows that changed came from resolving
+    # the template at READ time, not from a copy taken at instance time.
+    handler.put(
+        id="se_library2",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "part",
+                        "envelope": "box:w0.01d0.01h0.01",
+                    },
+                    {
+                        "op": "add_port",
+                        "block": "part",
+                        "name": "mount",
+                        "roles": ["bolt"],
+                    },
+                ]
+            }
+        ),
+    )
+    handler.put(
+        id="se_consumer2",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "instance_block",
+                        "name": "borrowed",
+                        "template": "se_library2#part",
+                    }
+                ]
+            }
+        ),
+    )
+    handler.edit(
+        id="se_library2",
+        ops=[
+            {"op": "set_envelope", "block": "part", "envelope": "cyl:r0.05h0.2"},
+            {"op": "add_port", "block": "part", "name": "tip", "roles": ["probe"]},
+        ],
+    )
+    body = handler.get(id="se_consumer2", view="block", args={"name": "borrowed"}).body
+    assert "envelope: cyl:r0.05h0.2" in body
+    assert "box:w0.01d0.01h0.01" not in body
+    assert "tip" in body
+
+
+def test_foreign_resolver_fetches_each_slug_once(
+    handler: SeHandler, store: Store
+) -> None:
+    # The plan's resolver read-path decision: "cache per request; do not
+    # re-query per port". Both halves are pinned — a slug that RESOLVES and
+    # one that never will (the dangling reference a retired library leaves
+    # behind) are each fetched exactly once.
+    handler.put(
+        id="se_library3",
+        text=json.dumps({"ops": [{"op": "add_block", "name": "part"}]}),
+    )
+
+    class _CountingStore:
+        def __init__(self, inner: Store) -> None:
+            self._inner = inner
+            self.calls = 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+        def get_ref(self, **kw: object) -> object:
+            self.calls += 1
+            return self._inner.get_ref(**kw)  # type: ignore[arg-type]
+
+    counting = _CountingStore(store)
+    resolve = persist.foreign_resolver(counting)
+    assert resolve("se_library3") is not None
+    assert resolve("se_library3") is not None
+    assert resolve("se_gone") is None
+    assert resolve("se_gone") is None
+    assert counting.calls == 2
+
+
 def test_remove_block_refuses_when_template_in_use(handler: SeHandler) -> None:
     handler.put(id="caster1", text=_CASTER)
     handler.edit(

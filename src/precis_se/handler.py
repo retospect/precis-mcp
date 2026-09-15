@@ -305,29 +305,19 @@ class SeHandler(Handler):
         return apply_ops_with_atomic(self.store, tree, ops, design_slug=slug)
 
     def _foreign_resolver(self) -> Callable[[str], SeTree | None]:
-        """Builds the cross-design ``template`` resolver
+        """One cross-design ``template`` resolver
         (:attr:`~precis.blocktree.types.Tree.foreign`, docs/backlog/
-        blocktree-library-build-plan.md slice 1) — store-aware, so it lives
-        here rather than in ``ops.py``/``precis.blocktree`` (both stay
-        store-free by design; ``precis_nm.handler``'s
-        ``_foreign_resolver`` is the same shape, one per plugin since each
-        resolves its OWN kind's designs). Memoized in a plain dict scoped
-        to ONE put/edit/get call: resolving the same foreign design's
-        template from many ports/blocks/cycle-check hops within that one
-        call costs one ``get_ref``+``load_tree``, never one per hop. A slug
-        that doesn't resolve to a live ``se`` design (never existed, or
-        soft-retired) caches as ``None`` too — never re-queried either."""
-        cache: dict[str, SeTree | None] = {}
+        blocktree-library-build-plan.md slice 1) for ONE put/edit/get call,
+        so the same foreign design read from many ports, blocks or
+        cycle-check hops within that call costs one fetch, not one per hop.
 
-        def resolve(slug: str) -> SeTree | None:
-            if slug not in cache:
-                ref = self.store.get_ref(kind="se", id=slug)
-                cache[slug] = (
-                    persist.load_tree(self.store, ref.id) if ref is not None else None
-                )
-            return cache[slug]
-
-        return resolve
+        The tree ``load_tree`` hands back already carries a resolver of its
+        own; this one replaces it for the handler's own trees purely to
+        widen the cache's scope from "this tree" to "this call" — a ``put``
+        builds its tree from nothing (no load to inherit a resolver from),
+        and ``edit`` runs the cycle check over a tree plus whatever
+        foreign designs it reaches."""
+        return persist.foreign_resolver(self.store)
 
     # ── put ──────────────────────────────────────────────────────────
     def put(

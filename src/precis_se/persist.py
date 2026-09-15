@@ -75,6 +75,7 @@ conversion is its own slice.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from psycopg import Connection
@@ -156,7 +157,16 @@ def _label(uid_to_name: dict[int, str], uid: int | None, stored: str | None) -> 
 def load_tree(store: Any, ref_id: int) -> SeTree:
     """Load a design's live block tree, keyed by name (the display label),
     with its live ports (per owning block) and its uid-keyed
-    cross-references resolved back to labels (module docstring)."""
+    cross-references resolved back to labels (module docstring).
+
+    The returned tree carries its own :func:`foreign_resolver`, so a
+    cross-design ``template`` resolves for every reader, not just the ones
+    that remember to wire one. ``own_slug`` is NOT set here (this takes a
+    ``ref_id``, not a slug): a caller that needs a foreign design's
+    reference back into THIS one recognised as the same node — the
+    cross-design cycle check, write-time only — sets it itself
+    (:class:`precis_se.handler.SeHandler`).
+    """
     with store.pool.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -335,7 +345,47 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             ),
         }
     attach_catalog(store, tree)
+    # Wired here, not at each call site: every reader of a loaded tree
+    # (handler, web reader, jobs) then resolves a cross-design template the
+    # same way, and a new reader cannot forget to (:func:`foreign_resolver`).
+    tree.foreign = foreign_resolver(store)
     return tree
+
+
+def foreign_resolver(store: Any) -> Callable[[str], SeTree | None]:
+    """Build the cross-design ``template`` resolver a tree hands to
+    :attr:`precis.blocktree.types.Tree.foreign` — ``'<design-slug>#<block-
+    name>'`` → that design's live tree (docs/backlog/blocktree-library-
+    build-plan.md slice 1).
+
+    Store-aware, so it lives here and not in :mod:`precis_se.ops` /
+    :mod:`precis.blocktree` (both stay store-free by design). Memoized in a
+    plain dict scoped to the returned closure — one ``get_ref`` +
+    :func:`load_tree` per distinct slug, however many ports, blocks or
+    cycle-check hops read through it ("cache per request", the plan's
+    resolver read-path decision). A slug that doesn't resolve to a live
+    ``se`` design (never existed, or soft-retired — ``store.get_ref``'s
+    "retired reads as absent" default) caches as ``None`` too, so a
+    dangling reference is not re-queried either.
+
+    Lazy: nothing is fetched unless a template is actually
+    cross-design-qualified, so the purely local designs that are the
+    overwhelming majority pay one closure allocation and no query. Depth is
+    1 by construction — only the tree a read STARTED from is asked to
+    resolve foreign slugs (:func:`precis.blocktree.ops._foreign_tree`), so
+    the resolver a foreign tree carries in turn is never walked and A→B→A
+    cannot recurse here; refusing an actual cross-design instance CYCLE is
+    :func:`precis.blocktree.ops._find_instance_cycle`'s job, at write time.
+    """
+    cache: dict[str, SeTree | None] = {}
+
+    def resolve(slug: str) -> SeTree | None:
+        if slug not in cache:
+            ref = store.get_ref(kind="se", id=slug)
+            cache[slug] = load_tree(store, ref.id) if ref is not None else None
+        return cache[slug]
+
+    return resolve
 
 
 def attach_catalog(store: Any, tree: SeTree) -> None:

@@ -317,6 +317,49 @@ def test_se_view_svg_isolate_narrows_to_one_subtree(
     assert "<title>rim</title>" not in r.text
 
 
+def test_se_view_svg_draws_a_cross_design_instance(
+    blocktree_client, runtime_with_store
+) -> None:
+    """A block instanced from ANOTHER design (``'slug#block'``, docs/
+    backlog/blocktree-library-build-plan.md slice 1) resolves its envelope
+    through the loaded tree's own cross-design resolver — the web reader
+    loads a tree straight from ``persist.load_tree``, never through the
+    handler, so without that wiring the borrowed block silently draws
+    nothing (no envelope → ``build_block_draws`` skips it)."""
+    h = SeHandler(hub=runtime_with_store.hub)
+    h.put(
+        id="web_library",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "part",
+                        "envelope": "box:w0.02d0.02h0.02",
+                    }
+                ]
+            }
+        ),
+    )
+    h.put(
+        id="web_consumer",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "instance_block",
+                        "name": "borrowed",
+                        "template": "web_library#part",
+                    }
+                ]
+            }
+        ),
+    )
+    r = blocktree_client.get("/se/web_consumer/view.svg")
+    assert r.status_code == 200
+    assert "<title>borrowed</title>" in r.text
+
+
 def test_se_detail_and_view_svg_url_encode_metacharacter_block_names(
     blocktree_client, runtime_with_store
 ) -> None:
