@@ -45,6 +45,11 @@ class TestQuoteShape:
         assert _quote(quantity=0).in_stock is False
         assert "0 in stock" in _quote(quantity=0).line()
 
+    def test_one_in_stock_is_in_stock(self) -> None:
+        """The boundary is one, not two — the last unit on the shelf is
+        still the difference between buyable and not."""
+        assert _quote(quantity=1).in_stock is True
+
     def test_a_priceless_quote_still_reports_its_stock(self) -> None:
         assert "no price" in _quote(unit_price=None).line()
 
@@ -59,6 +64,17 @@ class TestConfiguration:
         assert why is not None
         assert "PRECIS_DIGIKEY_CLIENT_ID" in why
         assert "developer.digikey.com" in why
+
+    def test_half_a_credential_is_not_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An id with no secret authenticates nothing — reporting it ready
+        would turn a config mistake into an auth error at query time."""
+        monkeypatch.setenv("PRECIS_DIGIKEY_CLIENT_ID", "id")
+        monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_SECRET", raising=False)
+        why = DigiKeyAdapter().configured()
+        assert why is not None and "PRECIS_DIGIKEY_CLIENT_SECRET" in why
+        assert "PRECIS_DIGIKEY_CLIENT_ID" not in why  # names only what's missing
 
     def test_both_credentials_present_means_ready(
         self, monkeypatch: pytest.MonkeyPatch

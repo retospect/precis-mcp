@@ -164,6 +164,14 @@ class TestStocking:
             for size in series.sizes:
                 assert size.stocking in (None, *cs.STOCKING_TIERS)
 
+    def test_an_unrecognized_tier_is_dropped_rather_than_carried(self) -> None:
+        """A tier nobody ranks is worse than no tier: it reads as judged
+        when it isn't, and the resolver has no weight for it."""
+        assert cs._stocking("universal") == "universal"
+        assert cs._stocking("UNIVERSAL ") == "universal"  # case/space folded
+        assert cs._stocking("plentiful") is None
+        assert cs._stocking(None) is None
+
     def test_the_everyday_sizes_are_marked_universal(self) -> None:
         cap = {s.key: s.stocking for s in _series("iso-4762").sizes}
         assert cap.get("M4") == "universal"
