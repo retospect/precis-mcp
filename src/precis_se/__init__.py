@@ -200,6 +200,28 @@ kind's storage is dropped by migration ``0008_se_drop_nm_tables.sql``;
 ``nm`` itself now answers with a retired-kind pointer at this one
 (``precis.runtime.dispatch``'s ``_RETIRED_KINDS``).
 
+**Discrete block states + stimulus-labelled transitions**
+(docs/backlog/blocktree-library-build-plan.md §Slice 2) rent the shared
+design core (:mod:`precis.design.states`, not an se-local table — the
+same mechanism serves macro bistables and photoswitches/conformers alike,
+per that module's A9 hysteresis warning: a state-carrying block's state
+is not a function of its parameter vector, so nothing here memoizes by
+configuration alone). ``declare_states``/``declare_transitions`` write a
+block's `{name, envelope?, port_pose_overrides?}` states and directed,
+`driver_kind`-labelled edges between them, materialized once
+``persist.save_tree`` has minted every block's uid
+(:func:`precis_se.handler._materialize_states`); ``set_current_state``
+persists a pose. ``get(..., args={'state': {block: state_name}})`` poses
+transiently, for one read, on ``view='tree'|'block'|'clearance'``
+(:func:`precis_se.handler._apply_state_arg`) — a block with no declared
+states is unchanged in shape or render. ``view='sweep'`` answers "does
+anything collide in ANY declared state" over the cross product of every
+state-carrying block's states (:func:`precis.design.states.
+state_carrying_uids` decides which blocks enter the product at all),
+reusing :func:`precis_se.validate.envelope_overlaps` per combination
+rather than a second geometry engine, with a hard combination-count
+budget it names rather than silently truncates.
+
 **The optical domain** (:mod:`precis_se.fret`, migration
 ``0010_se_fret.sql``) is se's first non-mechanical one: FRET links, where
 a donor chromophore hands its excitation to a nearby acceptor by

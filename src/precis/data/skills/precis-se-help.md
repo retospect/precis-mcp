@@ -1,10 +1,12 @@
 ---
 id: precis-se-help
 title: precis — the se kind (structural/mechanical designs in metres)
-summary: author a block-tree mechanical design (envelopes, ports, joints, axial members with preload, measures, BOM), then check it — validate/drc/clearance/stability/fasten/freedom/bom/interview; OPTICAL domain: FRET links as a comm channel (set_chromophore/set_optical_link/set_optics, view=fret); ATOMIC mode (the merged nm kind) designs chemistry: threading, dof, bind_structure, generate, view=mechanics/literature; put is a full REPLACE, edit ops= is the incremental path
+summary: author a block-tree mechanical design (envelopes, ports, joints, axial members with preload, measures, BOM), then check it — validate/drc/clearance/stability/fasten/freedom/bom/interview; discrete block states + stimulus-labelled transitions (declare_states/declare_transitions/set_current_state, args={'state':...} to pose transiently, view=sweep to check every declared state at once); OPTICAL domain: FRET links as a comm channel (set_chromophore/set_optical_link/set_optics, view=fret); ATOMIC mode (the merged nm kind) designs chemistry: threading, dof, bind_structure, generate, view=mechanics/literature; put is a full REPLACE, edit ops= is the incremental path
 answers:
   - how do I author an se structural design — blocks, connects, joints?
   - how do I model a cable / spoke / strut — a prestressed axial member?
+  - how do I declare a bistable/photoswitch block's two states, {loaded,bonded} or {trans,cis}?
+  - how do I check a block for clash in a specific state, or across every declared state?
   - how do I check whether my structure is rigid or a mechanism (stability)?
   - how do I declare loads, supports, measures, manufacturing mode, BOM?
   - what units does se use, and what do envelope w/d/h mean?
@@ -152,6 +154,45 @@ unaddressable — nor contain `'#'`.)
   `move` (`'all'` | block list; default only `origin='proposed'` poses
   move — human-set poses are never overwritten).
 
+## Discrete states + transitions (bistables, photoswitches, assembly steps)
+
+One mechanism for anything a block can be in more than one of —
+Howell-style compliant bistables/hard stops as much as photoswitches or
+conformers. A block with no declared states has exactly one implicit
+state; nothing about a plain block's shape changes.
+
+- `declare_states` — `block` (req), `states` `[{'name', 'envelope'?,
+  'port_pose_overrides'?, 'descr'?}]` (req; replaces the block's whole
+  state set). `envelope` overrides the block's own in that state (omit =
+  unchanged); `port_pose_overrides` is `{port: {'direction': [x,y,z]}}`
+  (unit-normalised at write time) — the only pose-like field a port
+  carries today. Ordinary blocks only (instances/arrays declare no
+  states of their own — pose the template).
+- `declare_transitions` — `block`, `transitions` `[{'from_state',
+  'to_state', 'driver_kind', 'driver_ref'?, 'params'?}]` (req). DIRECTED
+  edges — a ratchet's forward/reverse barriers are two rows, never one
+  shared undirected edge. `driver_kind` is closed: `light | reaction |
+  redox | ph | thermal | mechanical`.
+- `set_current_state` — `block`, `state` (req). PERSISTENTLY poses a
+  block into one of its declared states — the write-time counterpart of
+  the transient `args={'state': ...}` read below.
+
+**Posing a state to read it (transient).** `view='tree'|'block'|
+'clearance'` additionally take `args={'state': {'<block>':
+'<state name>'}}` — a one-read pose override, never written back (use
+`set_current_state` to persist a choice). Several blocks can be posed at
+once in the same `args.state` dict. An undeclared state name, an unknown
+block, or an instance target (states live on the template) are all
+rejected loudly, naming what IS available.
+
+```python
+edit(kind='se', id='switch1', ops=[{'op':'declare_states','block':'dye',
+     'states':[{'name':'trans'},{'name':'cis','envelope':'sphere:r0.006'}]}])
+get(kind='se', id='switch1', view='clearance',
+    args={'a':'dye','b':'wall','state':{'dye':'cis'}})  # probe THIS state
+get(kind='se', id='switch1', view='sweep')               # probe EVERY state
+```
+
 ## Optical (FRET) ops — energy transfer as a comm channel
 
 Use these when blocks talk to each other by **Förster resonance energy
@@ -242,9 +283,10 @@ efficiency read in isolation overstates the link.
 
 ## Views (`get(kind='se', id=…, view=…)`)
 
-`tree · block · ports · topology · measures · validate · clearance · drc ·
-bom · fasten · interview · freedom · stability · mechanics · literature ·
-fret · links`. There is **no `mass` view** (mass goes via `bom`). `interview`
+`tree · block · ports · topology · measures · validate · clearance · sweep ·
+drc · bom · fasten · interview · freedom · stability · mechanics ·
+literature · fret · links`. There is **no `mass` view** (mass goes via
+`bom`). `interview`
 elicits what's missing — lead with it. `mechanics`/`literature` are
 atomic-mode-only (below); `topology` renders atomic mode's threading
 pairs + declared dof together and is empty prose for a non-atomic
@@ -290,6 +332,15 @@ Omit `args` (or pass `{}`) for an all-pairs digest instead — every unique
 block pair named by the design's CONNECTS, worst gap first, capped at 64
 pairs; a block missing an effective envelope is skipped with a note
 rather than failing the whole survey.
+
+`view='sweep'`: "does anything collide in ANY declared state?" — the
+cross product of every state-carrying block's declared states (no
+`args`; a block needs 2+ declared states to enter the sweep at all).
+Each combination reruns the same undeclared-interpenetration check
+`view='validate'` uses; a design with no state-carrying blocks reads as
+a clean "nothing to sweep", not an error. The combination count is
+capped (64) — a sweep that hits the cap says so and names how many
+combinations went unchecked, never truncates silently.
 
 ## Atomic mode — block trees over atoms (the merged `nm` kind)
 

@@ -33,6 +33,11 @@ order"):
   (``view='clearance'``, ``args={'a': ..., 'b': ...}``, the cad kernel
   at metres — the nm clearance view's design, transferred; omit ``args``
   for an all-pairs digest over the design's CONNECTS, worst gap first),
+  "does anything collide in ANY declared state" swept across the cross
+  product of every state-carrying block's own states (``view='sweep'`` —
+  blocktree slice 2's discrete-domain mirror of cad's continuous-joint
+  sweep; :func:`precis_se.validate.envelope_overlaps` re-run per
+  combination, combo count budget-bounded and never silently truncated),
   or the
   graph-tier DRC report (``view='drc'`` — :mod:`precis_se.drc`: joint
   contradictions, mechanism-implied demands, unresolvable relations,
@@ -64,8 +69,10 @@ describing target state misdirects agents).
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -74,11 +81,13 @@ import numpy as np
 from numpy.typing import NDArray
 from psycopg.types.json import Jsonb
 
+from precis.blocktree.types import parse_template_ref
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import rotation as cad_rotation
 from precis.design import scenarios as design_scenarios
+from precis.design import states as design_states
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
@@ -129,16 +138,38 @@ class SeHandler(Handler):
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
             "remove_note/formfind/declare_threading/remove_threading/"
             "declare_dof/clear_dof/bind_structure/unbind_structure/"
-            "generate/set_chromophore/set_optical_link/set_optics); "
+            "generate/set_chromophore/set_optical_link/set_optics/"
+            "declare_states/declare_transitions/set_current_state); "
+            "declare_states block= states=[{'name','envelope'?,"
+            "'port_pose_overrides'?,'descr'?}] declares a block's discrete "
+            "states (a bistable's {loaded,bonded} or a photoswitch's "
+            "{trans,cis}) — port_pose_overrides={port: {'direction':"
+            "[x,y,z]}} overrides that port's direction in the state; "
+            "declare_transitions block= transitions=[{'from_state',"
+            "'to_state','driver_kind','driver_ref'?,'params'?}] adds "
+            "DIRECTED stimulus-labelled edges (driver_kind: light|"
+            "reaction|redox|ph|thermal|mechanical); set_current_state "
+            "block= state= PERSISTENTLY poses a block into one of its "
+            "declared states. "
             "get lists designs or renders one (view='tree'|'block'|"
-            "'ports'|'topology'|'measures'|'validate'|'clearance'|'drc'|"
-            "'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
+            "'ports'|'topology'|'measures'|'validate'|'clearance'|'sweep'|"
+            "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes, or omit args for an all-pairs "
             "clearance digest over the design's CONNECTS, worst gap "
-            "first); delete soft-retires; search finds "
+            "first; view='tree'|'block'|'clearance' additionally take "
+            "args={'state': {'<block>':'<state name>'}} — a TRANSIENT "
+            "pose override for this read only, never written back (use "
+            "set_current_state to persist a pose); view='sweep' takes no "
+            "args and checks EVERY combination of every state-carrying "
+            "block's declared states at once — does anything collide in "
+            "any declared state, reusing the same overlap check as "
+            "view='validate', reported per combination, with a hard combo "
+            "count budget it names rather than silently truncates); "
+            "delete soft-retires; "
+            "search finds "
             "by intent. connect wires two 'block.port' endpoints; a "
             "joint= is {'class': rigid|revolute|prismatic|cylindrical|"
             "planar|ball|compliant|captive|axial, 'axis'?, 'mechanism'?: "
@@ -272,6 +303,7 @@ class SeHandler(Handler):
             "measures",
             "validate",
             "clearance",
+            "sweep",
             "drc",
             "bom",
             "fasten",
@@ -374,6 +406,9 @@ class SeHandler(Handler):
                 card_text=_card_text(ttl, description, tree),
                 conn=conn,
             )
+            # Every block now carries the uid it was saved under — the
+            # shared design-core tables' write only becomes possible here.
+            _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.put")
             if scenario_id is not None:
                 # Same transaction as the tree: a design and the production
                 # context that decides which physics runs on it are one
@@ -426,12 +461,18 @@ class SeHandler(Handler):
         echo = self._apply(tree, op_list, slug=str(ref.slug))
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
-        persist.save_tree(
-            self.store,
-            ref_id=ref.id,
-            tree=tree,
-            card_text=_card_text(ttl, description, tree),
-        )
+        with self.store.tx() as conn:
+            persist.save_tree(
+                self.store,
+                ref_id=ref.id,
+                tree=tree,
+                card_text=_card_text(ttl, description, tree),
+                conn=conn,
+            )
+            # Same reasoning as put: block_uid only exists once save_tree
+            # has run, so the shared design-core write lands in the same
+            # transaction right after it, never before.
+            _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.edit")
         persist.sync_realized_by(self.store, ref.id, tree)
         body = f"# se design '{ref.slug}' edited\n\n" + _render_tree(
             tree, ttl, description
@@ -459,6 +500,9 @@ class SeHandler(Handler):
         tree.foreign = self._foreign_resolver()
         v = (view or "").strip().lower()
         _vet_view_args(v, args)
+        state_map = _state_arg_map(self.store, ref.id, tree, args)
+        if state_map:
+            _apply_state_arg(tree, state_map)
         if v in ("", "tree"):
             description = str((ref.meta or {}).get("description") or "").strip()
             return Response(
@@ -479,7 +523,7 @@ class SeHandler(Handler):
                 raise BadInput(str(exc)) from exc
             if node is None:
                 raise NotFound(_block_not_found(tree, block_name))
-            return Response(body=_render_block(tree, node))
+            return Response(body=_render_block(tree, node, self.store, ref.id))
         if v == "ports":
             return Response(body=_render_ports(tree))
         if v == "topology":
@@ -500,6 +544,8 @@ class SeHandler(Handler):
             )
         if v == "clearance":
             return Response(body=_render_clearance(tree, args))
+        if v == "sweep":
+            return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "drc":
             return Response(body=_render_drc(tree, _scenario_line(self.store, ref.id)))
         if v == "bom":
@@ -525,7 +571,10 @@ class SeHandler(Handler):
             "(atomic mode: threading + declared dof) | view='measures' "
             "(+ stack-up) | view='validate' | view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
-            "CONNECTS digest) | view='drc' (graph tier + DOF "
+            "CONNECTS digest) | view='sweep' (does anything collide in ANY "
+            "declared state? — the cross product of every state-carrying "
+            "block's declared states, budget-bounded) | view='drc' "
+            "(graph tier + DOF "
             "probe) | view='bom' (bought items, multiplied through the "
             "arrays, with cost/mass) | view='fasten' (screw joints: grip "
             "stack-up, the holes it stamps — clearance, countersink or "
@@ -965,6 +1014,97 @@ def _scenario_line(store: Any, ref_id: int) -> str:
     return " · ".join(bits)
 
 
+def _materialize_states(
+    store: Any, ref_id: int, tree: SeTree, *, conn: Any, set_by: str
+) -> None:
+    """Write this call's ``declare_states``/``declare_transitions``/
+    ``set_current_state`` ops (:mod:`precis_se.ops`) into the shared
+    design-core tables (:mod:`precis.design.states`) — blocktree slice 2's
+    second rental of the shared design core, the same posture as
+    :func:`_vet_scenario`.
+
+    Deliberately run *after* ``persist.save_tree`` (both ``put`` and
+    ``edit`` call this once the save has returned, in the same
+    transaction) because the shared tables key on ``block_uid``, which
+    only exists once that save has minted or adopted one for every block —
+    ``node.pending_states``/``pending_transitions``/
+    ``pending_current_state`` (set by the three ops, ``None`` when none of
+    them ran for that block) is exactly the payload this was waiting to
+    write. States land before transitions before current-state, block by
+    block: a call that declares states and transitions (or poses into a
+    just-declared state) for the same block in one shot must see its own
+    new states already written before its transitions' endpoints are
+    checked against the shared FK, or before ``set_current_state`` can
+    validate against them."""
+    for node in tree.blocks.values():
+        if (
+            node.pending_states is None
+            and node.pending_transitions is None
+            and node.pending_current_state is None
+        ):
+            continue
+        assert node.uid is not None, (
+            "save_tree mints a uid for every block before this runs"
+        )
+        uid: int = node.uid
+        if node.pending_states is not None:
+            states = [
+                design_states.BlockState(
+                    block_uid=uid,
+                    name=s["name"],
+                    envelope=s["envelope"],
+                    port_pose_overrides=s["port_pose_overrides"],
+                    descr=s["descr"],
+                )
+                for s in node.pending_states
+            ]
+            try:
+                design_states.set_states(store, ref_id, uid, states, conn=conn)
+            except design_states.StateError as exc:
+                raise BadInput(f"declare_states: {exc}") from exc
+        if node.pending_transitions is not None:
+            transitions = [
+                design_states.Transition(
+                    block_uid=uid,
+                    from_state=t["from_state"],
+                    to_state=t["to_state"],
+                    driver_kind=t["driver_kind"],
+                    driver_ref=t["driver_ref"],
+                    params=t["params"],
+                )
+                for t in node.pending_transitions
+            ]
+            try:
+                design_states.set_transitions(
+                    store, ref_id, uid, transitions, conn=conn
+                )
+            except design_states.StateError as exc:
+                raise BadInput(f"declare_transitions: {exc}") from exc
+        if node.pending_current_state is not None:
+            # No StateError to catch here — set_current_state itself never
+            # raises one (design/states.py); an unknown state name would
+            # otherwise surface as a raw FK violation, so the known names
+            # are checked here instead, se's own rejection-message style
+            # (name what IS declared).
+            declared = {
+                s.name for s in design_states.states_for(store, ref_id, uid, conn=conn)
+            }
+            if node.pending_current_state not in declared:
+                known = ", ".join(sorted(declared)) or "(none — declare_states first)"
+                raise BadInput(
+                    f"set_current_state: block {node.name!r} has no state "
+                    f"{node.pending_current_state!r} — declared: {known}"
+                )
+            design_states.set_current_state(
+                store,
+                ref_id,
+                uid,
+                node.pending_current_state,
+                set_by=set_by,
+                conn=conn,
+            )
+
+
 def _vet_put_payload(payload: dict[str, Any]) -> None:
     """Reject an unrecognised top-level ``put`` payload shape loudly,
     before any op is applied or anything is written — ``put`` is a full
@@ -1150,7 +1290,7 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
     return "\n".join(lines)
 
 
-def _render_block(tree: SeTree, node: SeBlock) -> str:
+def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
     # The uid is shown because it is the ADDRESS that survives a relabel —
     # args={'name': '#41'} reaches this block whatever it is called
     # (precis_se.identity). A block added but not yet saved has none.
@@ -1201,6 +1341,73 @@ def _render_block(tree: SeTree, node: SeBlock) -> str:
                 schema=["measure", "value", "relation", "strength", "reason"],
             )
         )
+
+    # Blocktree slice 2 — declared states + transitions
+    # (docs/backlog/blocktree-library-build-plan.md §Slice 2). A LOCAL
+    # instance/array shows its TEMPLATE's — the same rule as mode/dof/
+    # envelope, since it's the same design's ref_id and the shared tables
+    # (:mod:`precis.design.states`) key on (ref_id, block_uid). A
+    # CROSS-design template is deliberately skipped here (not resolved):
+    # its states live under the FOREIGN design's ref_id, which this design
+    # does not have, so guessing would read the wrong row rather than
+    # degrade to "none" — states/transitions stay a same-design-only read
+    # until cross-design resolution earns its own round. A block that
+    # never declared any (the common case today) gets NO section at all —
+    # the whole point of "a block with no declared states has exactly one
+    # implicit state" is that its rendered shape doesn't change either.
+    states_owner: Any = node
+    if node.template is not None:
+        design_slug, _ = parse_template_ref(node.template)
+        states_owner = (
+            resolve_template(tree, node.template) if design_slug is None else None
+        )
+    states_uid: int | None = getattr(states_owner, "uid", None)
+    states = (
+        design_states.states_for(store, ref_id, states_uid)
+        if states_uid is not None
+        else []
+    )
+    if states_uid is not None and states:
+        via = f" (from template {node.template!r})" if node.template else ""
+        lines.append("")
+        lines.append(f"## states{via}")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "name": s.name,
+                        "envelope": s.envelope or "—",
+                        "port_pose_overrides": (
+                            json.dumps(s.port_pose_overrides)
+                            if s.port_pose_overrides
+                            else "—"
+                        ),
+                        "descr": s.descr or "—",
+                    }
+                    for s in states
+                ],
+                schema=["name", "envelope", "port_pose_overrides", "descr"],
+            )
+        )
+        transitions = design_states.transitions_for(store, ref_id, states_uid)
+        if transitions:
+            lines.append("")
+            lines.append(f"## transitions{via}")
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "from": t.from_state,
+                            "to": t.to_state,
+                            "driver_kind": t.driver_kind,
+                            "driver_ref": t.driver_ref or "—",
+                            "params": json.dumps(t.params) if t.params else "—",
+                        }
+                        for t in transitions
+                    ],
+                    schema=["from", "to", "driver_kind", "driver_ref", "params"],
+                )
+            )
 
     ports = effective_ports(tree, node)
     lines.append("")
@@ -2310,6 +2517,19 @@ def _fill_fraction_line(tree: SeTree) -> str:
     return line
 
 
+#: Views that accept a TRANSIENT ``args={'state': {block: state_name}}``
+#: pose override (blocktree slice 2's get-time posing rung,
+#: :func:`_state_arg_map`/:func:`_apply_state_arg`) — se's discrete-domain
+#: analogue of cad's ``CadHandler._state_arg`` continuous joint state.
+#: ``tree``/``block`` so a posed block's own summary/record reads
+#: correctly; ``clearance`` so a posed pair can be probed for clash the
+#: same way an unposed one already is (the plan's "posed in either,
+#: probed for clash in each"). Deliberately NOT ``drc`` — wiring per-state
+#: clash into its own findings is a later round (docs/backlog/
+#: blocktree-library-build-plan.md §Slice 2, "leave drc.py alone" this
+#: round) — nor any other view; se has no ``view='sweep'`` at all yet.
+_STATE_VIEWS = frozenset({"", "tree", "block", "clearance"})
+
 #: Every ``get(kind='se')`` view's accepted ``args=`` keys — the single
 #: source :func:`_vet_view_args` checks a caller's ``args`` dict against
 #: (nm's ``_VIEW_ARGS`` transferred by the merge, extended to se's views).
@@ -2317,14 +2537,15 @@ def _fill_fraction_line(tree: SeTree) -> str:
 #: falls through to the plain "unknown se view" error unchanged, from
 #: :meth:`SeHandler.get`.
 _VIEW_ARGS: dict[str, frozenset[str]] = {
-    "": frozenset(),
-    "tree": frozenset(),
-    "block": frozenset({"name"}),
+    "": frozenset({"state"}),
+    "tree": frozenset({"state"}),
+    "block": frozenset({"name", "state"}),
     "ports": frozenset(),
     "topology": frozenset(),
     "measures": frozenset(),
     "validate": frozenset(),
-    "clearance": frozenset({"a", "b"}),
+    "clearance": frozenset({"a", "b", "state"}),
+    "sweep": frozenset(),
     "drc": frozenset(),
     "bom": frozenset(),
     "fasten": frozenset(),
@@ -2336,19 +2557,22 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "fret": frozenset(),
     "links": frozenset(),
 }
+assert {v for v, keys in _VIEW_ARGS.items() if "state" in keys} == _STATE_VIEWS
 
 
 def _vet_view_args(view: str, args: dict[str, Any] | None) -> None:
     """Reject any ``args=`` key a view doesn't accept — loudly, rather
     than silently ignoring it (gripe 334766: ``args={'state': ...}`` used
     to be accepted and dropped on every view, returning a confident answer
-    over the wrong (or just the default) geometry with no error at all; se
-    has no block-state concept yet — blocktree slice 2 — so 'state' in
-    particular gets its own pointed message rather than a generic "unknown
-    key"). Checked against :data:`_VIEW_ARGS` — the same table both this
-    function and every ``view=`` branch above implicitly agree on, so an
-    accepted key can never silently drift out of sync with what a view
-    actually reads."""
+    over the wrong (or just the default) geometry with no error at all).
+    ``state`` poses declared block states (blocktree slice 2) on the views
+    listed in :data:`_STATE_VIEWS`; elsewhere it still gets its own
+    pointed message rather than a generic "unknown key", since a caller
+    reaching for it on, say, ``view='drc'`` is reaching for a real
+    capability that just isn't wired there yet. Checked against
+    :data:`_VIEW_ARGS` — the same table both this function and every
+    ``view=`` branch above implicitly agree on, so an accepted key can
+    never silently drift out of sync with what a view actually reads."""
     if not args:
         return
     allowed = _VIEW_ARGS.get(view)
@@ -2359,14 +2583,105 @@ def _vet_view_args(view: str, args: dict[str, Any] | None) -> None:
         return
     accepted = ", ".join(sorted(allowed)) if allowed else "(none)"
     if "state" in unknown:
+        supported = ", ".join(sorted(f"{v or 'tree'!r}" for v in _STATE_VIEWS))
         raise BadInput(
-            "state is not supported on se yet (block states are unshipped)",
+            f"state is not supported on view={view or 'tree'!r} — declared "
+            f"block states pose on view={supported} only",
             next=f"accepted args for view={view or 'tree'!r}: {accepted}",
         )
     raise BadInput(
         f"unknown args key(s) {unknown} for view={view or 'tree'!r}; "
         f"accepted: {accepted}"
     )
+
+
+def _state_arg_map(
+    store: Any, ref_id: int, tree: SeTree, args: dict[str, Any] | None
+) -> dict[str, design_states.BlockState]:
+    """``args.state`` → ``{block label: BlockState}`` — se's discrete-domain
+    analogue of cad's ``CadHandler._state_arg`` (blocktree slice 2's
+    get-time posing rung, "copy cad's posing surface, do not invent one").
+    Resolved and vetted fully up front, before any view renders: an
+    unknown block name or an undeclared state name is rejected loudly,
+    naming what IS available — se's existing rejection-message style —
+    never silently ignored or partially applied. Only called once
+    :func:`_vet_view_args` has already confirmed ``view`` accepts
+    ``state`` at all (:data:`_STATE_VIEWS`).
+
+    Ordinary blocks only — the same rule ``declare_states`` itself
+    follows: a block's declared states live on it directly, and an
+    instance has no states of its own to be posed into (instance-side
+    state resolution is a later round, same as the states/transitions
+    render section already notes)."""
+    if not args or args.get("state") is None:
+        return {}
+    raw = args["state"]
+    if not isinstance(raw, dict):
+        raise BadInput(
+            "args.state must be a JSON object of {block: state_name}",
+            next="get(kind='se', id='<slug>', view='block', "
+            "args={'name': '<block>', 'state': {'<block>': '<state name>'}})",
+        )
+    resolved: dict[str, design_states.BlockState] = {}
+    for block_token, state_name in raw.items():
+        try:
+            node = resolve_block(tree, block_token)
+        except AmbiguousLabel as exc:
+            raise BadInput(str(exc)) from exc
+        if node is None:
+            raise NotFound(_block_not_found(tree, str(block_token)))
+        if node.template is not None:
+            raise BadInput(
+                f"args.state: block {node.name!r} is an instance (of "
+                f"{node.template!r}) — declared states live on the "
+                "template, and instance-side posing isn't supported yet; "
+                f"pose {node.template!r} instead"
+            )
+        assert node.uid is not None, "a loaded block always carries its uid"
+        by_name = {s.name: s for s in design_states.states_for(store, ref_id, node.uid)}
+        if not by_name:
+            raise BadInput(
+                f"args.state: block {node.name!r} has no declared states "
+                "(declare_states first)"
+            )
+        want = str(state_name).strip()
+        if want not in by_name:
+            raise BadInput(
+                f"args.state: block {node.name!r} has no state "
+                f"{state_name!r} — declared: {', '.join(sorted(by_name))}"
+            )
+        resolved[node.name] = by_name[want]
+    return resolved
+
+
+def _apply_state_arg(
+    tree: SeTree, resolved: dict[str, design_states.BlockState]
+) -> None:
+    """Mutate ``tree`` in place so every downstream view reads the posed
+    geometry — TRANSIENT, for this one ``get`` only: the tree is a fresh
+    load discarded at the end of the call (nothing here ever reaches
+    ``save_tree``; the persistent counterpart is the ``set_current_state``
+    op, materialized by :func:`_materialize_states`).
+
+    Envelope: the state's own (``None`` = unchanged, the block keeps its
+    default). Ports: ``port_pose_overrides``, keyed by port name,
+    overrides that port's ``direction`` — the only pose-like field a port
+    carries today (already unit-normalized at ``declare_states`` time,
+    :func:`~precis_se.ops._vet_port_pose_overrides`). An override naming a
+    port the block doesn't currently have is skipped rather than raised —
+    the same read-time honesty a dangling reference gets elsewhere in se;
+    wiring a checker for it is drc.py's job, out of scope this round."""
+    for name, state in resolved.items():
+        node = tree.blocks[name]
+        if state.envelope is not None:
+            node.envelope = state.envelope
+        for port_name, override in (state.port_pose_overrides or {}).items():
+            port = node.ports.get(port_name)
+            direction = (
+                override.get("direction") if isinstance(override, dict) else None
+            )
+            if port is not None and direction is not None:
+                port.direction = list(direction)
 
 
 def _clearance_verdict(gap: float, resolution: float) -> str:
@@ -2614,6 +2929,259 @@ def _render_clearance_digest(tree: SeTree) -> str:
     body = f"{header}\n\n{table}"
     if notes:
         body += "\n\n" + "\n".join(notes)
+    return body
+
+
+# ── sweep ────────────────────────────────────────────────────────────────
+
+#: Cap on the number of discrete-state COMBINATIONS ``view='sweep'`` will
+#: actually check. N state-carrying blocks with k states each is k^N
+#: combinations — same shape of problem as the clearance digest's pair
+#: count (:data:`_CLEARANCE_DIGEST_BUDGET`), same fix: a hard count cap,
+#: and combinations beyond it are reported UNCHECKED, never silently
+#: dropped (blocktree-library-build-plan.md §Slice 2's "swept across all
+#: states" — an honest partial sweep, not a truncated one that reads as
+#: complete).
+_SWEEP_COMBO_BUDGET = 64
+
+#: Overall wall-clock budget for the WHOLE sweep, seconds — NOT one
+#: allowance per combination. Each combination's ``envelope_overlaps``
+#: call used to get its own fresh ``validate._OVERLAP_BUDGET_S`` (30s)
+#: allowance, so a full ``_SWEEP_COMBO_BUDGET``-combination sweep could
+#: run up to combo_budget × 30s ≈ 32 minutes while every other se view
+#: caps near 30s (pre-ship review, blocktree slice 2). One deadline for
+#: the whole sweep, shared across every combination's call (each call is
+#: passed whatever time is actually left), keeps the ceiling the same
+#: order of magnitude as a single ``envelope_overlaps`` call regardless of
+#: how many combinations are in the domain. Same value as
+#: ``validate._OVERLAP_BUDGET_S`` by design — duplicated rather than
+#: imported since that name is private to its own module.
+_SWEEP_WALL_BUDGET_S = 30.0
+
+
+def _sweep_domain(
+    store: Any, ref_id: int, tree: SeTree
+) -> list[tuple[str, list[design_states.BlockState]]]:
+    """Every STATE-CARRYING ordinary block in this design (more than one
+    declared state — :func:`precis.design.states.state_carrying_uids`, the
+    A9 rule's own gate on what may enter a product at all), paired with
+    its declared states, in block-name order for a deterministic combo
+    enumeration. A block that never called ``declare_states``, or declared
+    exactly one, has exactly one implicit state and contributes NOTHING to
+    the product — including it would multiply the combination count for a
+    block that can never actually differ, which is exactly the mistake
+    this helper exists to avoid.
+
+    Instance/array blocks are skipped — the same "declared states live on
+    the template" rule :func:`_state_arg_map` already enforces; an
+    instance's uid never carries its own ``design_states`` rows."""
+    carrying = design_states.state_carrying_uids(store, ref_id)
+    domain: list[tuple[str, list[design_states.BlockState]]] = []
+    if not carrying:
+        return domain
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        if node.template is not None or node.uid is None or node.uid not in carrying:
+            continue
+        domain.append((name, design_states.states_for(store, ref_id, node.uid)))
+    return domain
+
+
+def _combo_label(
+    domain_names: list[str], combo: tuple[design_states.BlockState, ...]
+) -> str:
+    return ", ".join(
+        f"{name}={s.name}" for name, s in zip(domain_names, combo, strict=True)
+    )
+
+
+def _snapshot_sweep_domain(
+    tree: SeTree, domain_names: list[str]
+) -> dict[str, tuple[str | None, dict[str, list[float] | None]]]:
+    """Each state-carrying block's UN-posed envelope + per-port direction,
+    before the sweep touches anything — the base every combination resets
+    to (:func:`_pose_sweep_combo`) so combo *i+1* never inherits combo
+    *i*'s overrides, and the tree is restored to exactly this once the
+    sweep is done (the loaded tree is discarded at the end of ``get``
+    regardless, but a mid-call reader — e.g. a future finding that runs
+    after this one in the same call — must not see a stale posed state)."""
+    return {
+        name: (
+            tree.blocks[name].envelope,
+            {
+                p: (list(port.direction) if port.direction is not None else None)
+                for p, port in tree.blocks[name].ports.items()
+            },
+        )
+        for name in domain_names
+    }
+
+
+def _restore_sweep_domain(
+    tree: SeTree,
+    originals: dict[str, tuple[str | None, dict[str, list[float] | None]]],
+) -> None:
+    for name, (env0, dirs0) in originals.items():
+        node = tree.blocks[name]
+        node.envelope = env0
+        for port_name, direction in dirs0.items():
+            port = node.ports.get(port_name)
+            if port is not None:
+                port.direction = None if direction is None else list(direction)
+
+
+def _pose_sweep_combo(
+    tree: SeTree,
+    originals: dict[str, tuple[str | None, dict[str, list[float] | None]]],
+    domain_names: list[str],
+    combo: tuple[design_states.BlockState, ...],
+) -> None:
+    """Reset every state-carrying block to its snapshot, then pose this ONE
+    combination via :func:`_apply_state_arg` — the same transient posing
+    surface ``args={'state': ...}`` already uses, reused rather than
+    reinvented."""
+    _restore_sweep_domain(tree, originals)
+    state_map = dict(zip(domain_names, combo, strict=True))
+    _apply_state_arg(tree, state_map)
+
+
+def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
+    """``view='sweep'`` — "does anything collide in ANY declared state?"
+    (blocktree-library-build-plan.md §Slice 2's "Done when": "swept across
+    all states"). cad's ``view='sweep'`` samples a joint across its
+    continuous ``limits:``; se's discrete-domain mirror enumerates the
+    cross product of every state-carrying block's declared states instead
+    — same question, discrete domain, same report shape (per-combination
+    hits, an honest budget line rather than a silent truncation).
+
+    A loop over posed evaluations reusing what already exists —
+    :func:`_apply_state_arg` for the pose,
+    :func:`precis_se.validate.envelope_overlaps` for the clash — never a
+    second geometry engine. No caching/memoization here at all (the A9
+    hysteresis rule's warning is moot for a sweep: every combination is
+    computed fresh, never looked up by a configuration-only key).
+
+    A design with no state-carrying blocks is a sensible, non-error
+    result — se's absence-is-not-failure posture, not an empty-design
+    error.
+
+    Bounded two ways, complementary and separately reported:
+    :data:`_SWEEP_COMBO_BUDGET` caps how many combinations are even
+    attempted; :data:`_SWEEP_WALL_BUDGET_S` caps the whole loop's
+    wall-clock, shared across every attempted combination's
+    ``envelope_overlaps`` call rather than handed out fresh per call — a
+    combination cannot silently borrow another combination's time budget
+    and blow the total past what every other se view is bounded by."""
+    domain = _sweep_domain(store, ref_id, tree)
+    if not domain:
+        return (
+            "# sweep\n\nno state-carrying blocks in this design (a block "
+            "needs 2+ declared states to enter the sweep) — nothing to "
+            "check\n\nNext: edit(kind='se', id=..., ops=[{'op':"
+            "'declare_states','block':'<name>','states':[{'name':'a'},"
+            "{'name':'b'}]}])"
+        )
+    domain_names = [name for name, _ in domain]
+    state_lists = [states for _, states in domain]
+    total_combos = 1
+    for states in state_lists:
+        total_combos *= len(states)
+    truncated = total_combos > _SWEEP_COMBO_BUDGET
+    combos = list(
+        itertools.islice(itertools.product(*state_lists), _SWEEP_COMBO_BUDGET)
+    )
+
+    originals = _snapshot_sweep_domain(tree, domain_names)
+    hit_rows: list[dict[str, str]] = []
+    cross_scale_seen: set[tuple[str, str]] = set()
+    unchecked_geometry: set[tuple[str, str]] = set()
+    checked = 0
+    # One deadline for the whole sweep (:data:`_SWEEP_WALL_BUDGET_S`), not
+    # one fresh allowance per combination — each ``envelope_overlaps`` call
+    # below is passed whatever's actually left of it, so a wide domain
+    # degrades to reporting the tail as unchecked rather than running
+    # unbounded (pre-ship review, blocktree slice 2).
+    deadline = time.monotonic() + _SWEEP_WALL_BUDGET_S
+    time_budget_exceeded = False
+    try:
+        for combo in combos:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                time_budget_exceeded = True
+                break
+            _pose_sweep_combo(tree, originals, domain_names, combo)
+            overlaps, cross_scale, unchecked_budget = se_validate.envelope_overlaps(
+                tree, budget_s=remaining
+            )
+            checked += 1
+            label = _combo_label(domain_names, combo)
+            for a_name, b_name, gap in overlaps:
+                hit_rows.append(
+                    {
+                        "states": label,
+                        "pair": f"{a_name} ↔ {b_name}",
+                        "gap": format_quantity(gap, "length"),
+                    }
+                )
+            cross_scale_seen.update(cross_scale)
+            unchecked_geometry.update(unchecked_budget)
+    finally:
+        # Leave the tree exactly as loaded — the sweep's own poses are
+        # every bit as transient as a single args={'state': ...} read's
+        # (never written back; use set_current_state to persist one).
+        _restore_sweep_domain(tree, originals)
+
+    n_colliding_combos = len({r["states"] for r in hit_rows})
+    verdict = (
+        "no interference in any checked state ✓"
+        if not hit_rows
+        else f"⚠ {n_colliding_combos} colliding combination(s)"
+    )
+    lines = [
+        f"# sweep — {len(domain)} state-carrying block(s), "
+        f"{checked}/{total_combos} combination(s) checked: {verdict}",
+        "states swept: "
+        + "; ".join(
+            f"{name} ({', '.join(s.name for s in states)})" for name, states in domain
+        ),
+    ]
+    if truncated:
+        lines.append(
+            f"⚠ {total_combos - len(combos)} combination(s) UNCHECKED — the "
+            f"sweep's combination budget ({_SWEEP_COMBO_BUDGET}) ran out "
+            "before reaching them; they are unchecked, not clear (narrow "
+            "the state-carrying set to sweep it in full)"
+        )
+    if time_budget_exceeded:
+        lines.append(
+            f"⚠ {len(combos) - checked} combination(s) UNCHECKED — the "
+            f"sweep's overall wall-clock budget ({_SWEEP_WALL_BUDGET_S:g}s) "
+            "ran out before reaching them; they are unchecked, not clear. "
+            "This is a separate cap from the combination-budget count "
+            "(time, not a combination count) — narrow the state-carrying "
+            "set or the design's geometry to sweep it in full"
+        )
+    body = "\n".join(lines) + "\n"
+    if hit_rows:
+        body += "\n" + render_agent_table(hit_rows, schema=["states", "pair", "gap"])
+    if cross_scale_seen:
+        pairs_sorted = sorted(cross_scale_seen)
+        shown = ", ".join(f"{a}—{b}" for a, b in pairs_sorted[:5])
+        more = f" (+{len(pairs_sorted) - 5} more)" if len(pairs_sorted) > 5 else ""
+        body += (
+            f"\n\n⚠ cross-scale unverifiable in {len(pairs_sorted)} pair(s) "
+            f"(at least one checked state): {shown}{more} — block sizes "
+            "differ too much to share one SDF query"
+        )
+    if unchecked_geometry:
+        pairs_sorted = sorted(unchecked_geometry)
+        shown = ", ".join(f"{a}—{b}" for a, b in pairs_sorted[:5])
+        more = f" (+{len(pairs_sorted) - 5} more)" if len(pairs_sorted) > 5 else ""
+        body += (
+            f"\n\n⚠ {len(pairs_sorted)} pair(s) UNCHECKED by the per-state "
+            f"geometry budget (at least one checked state): {shown}{more} "
+            "— not clear, not reached"
+        )
     return body
 
 

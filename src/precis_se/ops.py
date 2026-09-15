@@ -149,6 +149,50 @@ solver-backed op:
   ``move=[...]``/``move='all'`` authorizes more — a user-origin pose is
   contract and never moves silently.
 
+Blocktree slice 2 (docs/backlog/blocktree-library-build-plan.md §Slice 2)
+adds discrete block states + stimulus-labelled transitions — the SHARED
+design-core home (:mod:`precis.design.states`), not a table of se's own
+(the shared-states ruling: bistability is true macro AND nano):
+
+- ``declare_states``      — replace a block's declared states:
+  ``block=`` + ``states=[{'name', 'envelope'?, 'port_pose_overrides'?,
+  'descr'?}, ...]`` (``[]`` clears them). Ordinary blocks only — the same
+  realization-facet rule as ``set_mode``/``set_binding``/``declare_dof``
+  (:func:`_template_owned`); an instance has no states of its own to
+  declare. **This op only validates and stashes the payload on the node**
+  (``node.pending_states``) — the actual write goes to
+  :func:`precis.design.states.set_states`, run by the handler *after*
+  ``persist.save_tree`` (:mod:`precis_se.persist`), because the shared
+  tables key on ``block_uid`` and a just-minted block has none until that
+  save runs. A duplicate state name in one call is rejected; an envelope
+  override is vetted through the same cad DSL parser every block envelope
+  is.
+- ``declare_transitions`` — replace a block's transitions: ``block=`` +
+  ``transitions=[{'from_state', 'to_state', 'driver_kind', 'driver_ref'?,
+  'params'?}, ...]`` (``[]`` clears them). **Directed** — a forward and its
+  reverse are two separate entries, never collapsed (a molecular ratchet's
+  barriers differ by direction). ``driver_kind`` is the closed enum
+  :data:`~precis.design.states.DRIVER_KINDS`; a self-edge (``from_state ==
+  to_state``) is rejected — it drives nothing. Same store-aware deferral
+  as ``declare_states``, and materializes *after* it in the same call, so
+  a transition declared alongside new states sees them already written
+  (the shared tables' composite FK checks every endpoint against a
+  declared state). ``port_pose_overrides`` is vetted to exactly
+  ``{port_name: {'direction': [x,y,z]}}`` (:func:`_vet_port_pose_overrides`)
+  — ``direction`` unit-normalized the same way ``add_port``'s own is,
+  since it is the only pose-like field a port carries today (an absolute
+  ``xyz`` slot is a later round's). The named port need not exist yet — a
+  forward reference, the same tolerance a measure's relation source gets.
+- ``set_current_state``   — PERSISTENTLY pose an ordinary block into one
+  of its declared states: ``block=`` + ``state=``. The counterpart to
+  ``get(..., args={'state': {...}})``'s TRANSIENT override
+  (:func:`precis_se.handler._apply_state_arg`), which never writes here —
+  this op is what actually changes a block's recorded current state
+  (:func:`precis.design.states.set_current_state`). Same store-aware
+  deferral (``node.pending_current_state``), validated against the
+  block's declared states — its own, or ones this same call just
+  declared — by the handler once a uid exists.
+
 **Atomic mode** (docs/backlog/nm-se-merge.md — the merged ``nm`` kind; the
 vetting lives in :mod:`precis_se.atomic.vocab`) adds the L2 vocabulary a
 block whose realization is *chemistry* states. It is the same op table,
@@ -188,6 +232,7 @@ from typing import Any, cast
 
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
+from precis.design.states import StateError, validate_driver_kind
 from precis_se import joints as se_joints
 from precis_se.atomic.vocab import (
     CONNECT_KINDS,
@@ -372,6 +417,28 @@ class SeBlock(BlockNode):
     #: job stamps ``proposed`` on its own choices and treats user facets
     #: as contract.
     origins: dict[str, str] = field(default_factory=dict)
+    #: This call's ``declare_states``/``declare_transitions`` payload
+    #: (blocktree slice 2), vetted but not yet written — ``None`` means
+    #: neither op ran this call. NEVER round-tripped through ``se_blocks``:
+    #: :mod:`precis_se.persist` does not read or write these fields at all,
+    #: because the actual store is the shared ``design_states``/
+    #: ``design_transitions`` tables (:mod:`precis.design.states`), keyed
+    #: by ``block_uid`` — a fact only known once ``save_tree`` mints one.
+    #: :class:`~precis_se.handler.SeHandler` reads these right after
+    #: ``save_tree`` and clears them by discarding the tree; a block this
+    #: call didn't touch keeps whatever it already had in the shared
+    #: tables, untouched.
+    pending_states: list[dict[str, Any]] | None = None
+    pending_transitions: list[dict[str, Any]] | None = None
+    #: This call's ``set_current_state`` payload (blocktree slice 2's
+    #: PERSISTENT posing op — the counterpart to get's TRANSIENT
+    #: ``args={'state': ...}`` override) — the state name to pose this
+    #: block into, or ``None`` when the op didn't run this call. Same
+    #: deferral as ``pending_states``/``pending_transitions``: written by
+    #: :func:`precis_se.handler._materialize_states` once ``save_tree`` has
+    #: minted a uid, after validating the name against the block's
+    #: (possibly just-declared) states.
+    pending_current_state: str | None = None
 
 
 @dataclass
@@ -1736,6 +1803,187 @@ def _op_set_optics(tree: SeTree, op: dict[str, Any]) -> None:
         raise OpError(f"set_optics: {exc}") from exc
 
 
+# ── blocktree slice 2 — discrete states + transitions ───────────────────
+# (docs/backlog/blocktree-library-build-plan.md §Slice 2). Both ops below
+# are store-free like everything else in this module — they vet and stash
+# the payload on the node; :func:`precis_se.handler._materialize_states`
+# does the actual write, after ``persist.save_tree`` has minted a uid for
+# every block (module docstring, and :mod:`precis.design.states`).
+
+
+def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | None:
+    """Vet a declared state's ``port_pose_overrides`` — ``{port_name:
+    {'direction': [x,y,z]}}``, keyed by the block's own port names
+    (migration ``0162_design_core.sql``'s column comment: "the ports a
+    state moves"). ``direction`` is the ONLY pose-like field a port
+    carries today (:class:`PortSpec` has no absolute position — a real
+    xyz slot is a later round's job, blocktree slice 2's posing rung);
+    unit-normalized here the same way ``add_port``'s own ``direction`` is,
+    so the get-time poser (:func:`precis_se.handler._apply_state_arg`) can
+    trust every stored vector without re-checking it.
+
+    The named port may not exist yet — a forward reference, the same
+    tolerance ``add_measure``'s relation source gets: only the SHAPE is
+    vetted here, never port existence (a dangling one is a read-time
+    honesty finding for a later round, not a write-time rejection)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise OpError(
+            f"declare_states: state {state_name!r} 'port_pose_overrides' "
+            f"must be a JSON object keyed by port name, got {raw!r}"
+        )
+    out: dict[str, Any] = {}
+    for port_name, override in raw.items():
+        if not isinstance(override, dict) or set(override) != {"direction"}:
+            raise OpError(
+                f"declare_states: state {state_name!r} "
+                f"port_pose_overrides[{port_name!r}] must be exactly "
+                f"{{'direction': [x,y,z]}} — the only pose-like field a "
+                f"port carries today, got {override!r}"
+            )
+        what = f"declare_states: state {state_name!r} port {port_name!r} direction"
+        out[str(port_name)] = {
+            "direction": _unit_vec(_as_vec3(override["direction"], what), what=what)
+        }
+    return out
+
+
+def _op_declare_states(tree: SeTree, op: dict[str, Any]) -> None:
+    """Replace a block's declared states — ``states=[{'name',
+    'envelope'?, 'port_pose_overrides'?, 'descr'?}, ...]`` (``[]`` clears
+    them). Ordinary blocks only (:func:`_template_owned`) — an instance
+    resolves its facets from its template, the same rule as envelope/mode/
+    dof, and a state declared on the template genuinely applies to every
+    instance of it once a later round adds instance-side resolution."""
+    node = _template_owned(
+        tree,
+        _require_name(op, "block", "declare_states"),
+        opname="declare_states",
+        what="states",
+    )
+    raw = op.get("states")
+    if not isinstance(raw, list):
+        raise OpError(
+            "declare_states needs 'states' — a list of state objects ([] clears them)"
+        )
+    parsed: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise OpError(
+                f"declare_states: every state must be a JSON object, got {entry!r}"
+            )
+        state_name = str(entry.get("name") or "").strip()
+        if not state_name:
+            raise OpError("declare_states: every state needs a non-empty 'name'")
+        if state_name in seen:
+            raise OpError(f"declare_states: state name {state_name!r} declared twice")
+        seen.add(state_name)
+        envelope = entry.get("envelope")
+        if envelope is not None:
+            envelope = str(envelope).strip()
+            _validate_envelope(envelope)
+        overrides = _vet_port_pose_overrides(
+            entry.get("port_pose_overrides"), state_name=state_name
+        )
+        parsed.append(
+            {
+                "name": state_name,
+                "envelope": envelope,
+                "port_pose_overrides": overrides,
+                "descr": _opt_str(entry.get("descr")),
+            }
+        )
+    node.pending_states = parsed
+
+
+def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
+    """Replace a block's transitions — ``transitions=[{'from_state',
+    'to_state', 'driver_kind', 'driver_ref'?, 'params'?}, ...]`` (``[]``
+    clears them). Directed: a ratchet's forward and reverse edges are two
+    separate entries here, never collapsed into one unordered pair —
+    declare both when both exist. ``driver_kind`` is the closed enum
+    (:func:`~precis.design.states.validate_driver_kind`); a self-edge
+    (``from_state == to_state``) is rejected outright, the same as the
+    shared table's own CHECK constraint."""
+    node = _template_owned(
+        tree,
+        _require_name(op, "block", "declare_transitions"),
+        opname="declare_transitions",
+        what="transitions",
+    )
+    raw = op.get("transitions")
+    if not isinstance(raw, list):
+        raise OpError(
+            "declare_transitions needs 'transitions' — a list of transition "
+            "objects ([] clears them)"
+        )
+    parsed: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise OpError(
+                "declare_transitions: every transition must be a JSON "
+                f"object, got {entry!r}"
+            )
+        from_state = str(entry.get("from_state") or "").strip()
+        to_state = str(entry.get("to_state") or "").strip()
+        if not from_state or not to_state:
+            raise OpError(
+                "declare_transitions: every transition needs 'from_state' "
+                "and 'to_state'"
+            )
+        if from_state == to_state:
+            raise OpError(
+                f"declare_transitions: transition from {from_state!r} to "
+                "itself — a self-edge drives nothing"
+            )
+        try:
+            driver_kind = validate_driver_kind(entry.get("driver_kind"))
+        except StateError as exc:
+            raise OpError(f"declare_transitions: {exc}") from exc
+        params = entry.get("params")
+        if params is not None and not isinstance(params, dict):
+            raise OpError(
+                f"declare_transitions: transition {from_state!r} -> "
+                f"{to_state!r} 'params' must be a JSON object, got {params!r}"
+            )
+        parsed.append(
+            {
+                "from_state": from_state,
+                "to_state": to_state,
+                "driver_kind": driver_kind,
+                "driver_ref": _opt_str(entry.get("driver_ref")),
+                "params": params or {},
+            }
+        )
+    node.pending_transitions = parsed
+
+
+def _op_set_current_state(tree: SeTree, op: dict[str, Any]) -> None:
+    """Persistently pose an ordinary block into one of its declared states
+    — ``block=`` + ``state=`` (a state name). The PERSISTENT counterpart to
+    get's TRANSIENT ``args={'state': ...}`` override
+    (:func:`precis_se.handler._apply_state_arg`): this op changes what the
+    block's CURRENT state records; the get-time override never does.
+
+    Store-free like ``declare_states``/``declare_transitions`` — stashes
+    the request on the node (``node.pending_current_state``);
+    :func:`precis_se.handler._materialize_states` validates the name
+    against the block's declared states (its own, or the ones this same
+    call just declared) and writes it via
+    :func:`precis.design.states.set_current_state`, after ``save_tree`` has
+    minted a uid for every block. Ordinary blocks only — the same
+    realization-facet rule ``declare_states`` itself follows."""
+    node = _template_owned(
+        tree,
+        _require_name(op, "block", "set_current_state"),
+        opname="set_current_state",
+        what="current state",
+    )
+    node.pending_current_state = _require_name(op, "state", "set_current_state")
+
+
 _OPS = {
     **blocktree.CORE_OPS,
     "add_block": _op_add_block,
@@ -1767,6 +2015,9 @@ _OPS = {
     "set_chromophore": _op_set_chromophore,
     "set_optical_link": _op_set_optical_link,
     "set_optics": _op_set_optics,
+    "declare_states": _op_declare_states,
+    "declare_transitions": _op_declare_transitions,
+    "set_current_state": _op_set_current_state,
 }
 
 

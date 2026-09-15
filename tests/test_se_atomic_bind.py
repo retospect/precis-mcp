@@ -209,15 +209,24 @@ def test_an_op_dict_with_no_op_key_is_rejected_before_dispatch(
 # ── gripe 334766: unknown args= keys are a loud reject, per view ─────────
 
 
-def test_view_args_state_key_rejected_with_pointed_message(handler: SeHandler) -> None:
+def test_view_args_state_key_rejected_on_unsupported_view(handler: SeHandler) -> None:
+    """``state`` poses declared block states (blocktree slice 2) only on
+    view='tree'|'block'|'clearance' — on any other view it still gets its
+    own pointed rejection, naming which views DO support it, rather than
+    the generic "unknown args key" message."""
     handler.put(id="rotax1", text=_TREE)
-    with pytest.raises(BadInput, match="state is not supported on se yet"):
+    with pytest.raises(BadInput, match="state is not supported on view='drc'"):
+        handler.get(id="rotax1", view="drc", args={"state": {"hub": "open"}})
+
+
+def test_view_args_state_must_be_a_dict(handler: SeHandler) -> None:
+    """A non-object ``state`` is now accepted syntactically by the views
+    that support posing — and rejected for its OWN shape, not the old
+    blanket "unshipped" message."""
+    handler.put(id="rotax1", text=_TREE)
+    with pytest.raises(BadInput, match="args.state must be a JSON object"):
         handler.get(id="rotax1", args={"state": "open"})
-
-
-def test_view_args_state_key_rejected_on_block_view_too(handler: SeHandler) -> None:
-    handler.put(id="rotax1", text=_TREE)
-    with pytest.raises(BadInput, match="state is not supported on se yet"):
+    with pytest.raises(BadInput, match="args.state must be a JSON object"):
         handler.get(id="rotax1", view="block", args={"name": "hub", "state": "open"})
 
 
