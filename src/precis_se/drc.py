@@ -30,6 +30,18 @@ The **atomic mode** (docs/backlog/nm-se-merge.md) adds two rules in the
 same posture — the L2 threading graph re-checked over stored data
 (``dangling_threading`` error, ``threaded_without_envelope`` warn) — plus
 the mode↔binding coupling in :func:`_mode_binding_findings`.
+
+**Connect geometric plausibility** (:mod:`precis_se.geometry_plausibility`,
+gr337040 + gr338426) closes the gap the DOF probe and the mechanism-demand
+checks (§3/3b above) both leave open: neither ever looks at whether the
+two envelopes are SHAPED the way a declared connect claims — a connect
+between geometrically disjoint envelopes (``connect_envelope_disjoint``,
+the undeclared-interpenetration check's mirror) and mechanism/kinematic-
+class implied geometry (``press``/``snap`` demand interference, ``captive``
+demands containment, ``bearing``/``revolute``/``cylindrical`` demand
+coaxial + radially-nested envelope axes, the ``screw`` class demands
+overlap along its axis) were both silently unchecked before. Warn tier
+throughout, same posture as the DOF probe.
 """
 
 from __future__ import annotations
@@ -41,6 +53,7 @@ from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis.utils.units import format_quantity
 from precis_se import fasten as se_fasten
+from precis_se import geometry_plausibility as se_geometry
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se import stability as se_stability
@@ -401,6 +414,14 @@ def drc(tree: SeTree) -> DrcReport:
                 severity="warn",
             )
         )
+
+    # 3d. connect geometric plausibility (gr337040 + gr338426) — a
+    # declared connect whose posed envelopes are geometrically disjoint,
+    # or whose mechanism/kinematic class implies an envelope shape
+    # (interference, coaxiality, radial containment) the actual geometry
+    # doesn't have. Its own module owns the geometry and the reasoning
+    # (severity posture, scope decisions); only the findings belong here.
+    findings.extend(se_geometry.findings(tree))
 
     # 4. stored objectives re-checked — an unregistered key is a
     # declared-but-unchecked facet (warn, the annotations contract-class

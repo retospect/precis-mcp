@@ -316,7 +316,19 @@ the design serves, default `related-to` for a sibling variant,
 
 `view='drc'`: capacity vs declared load ("asked to carry X N compression
 against a Y N buckling/crush ceiling"), mechanism-implied BOM demands,
-undeclared interpenetration, dof_disagreement, unconnected ports.
+undeclared interpenetration, dof_disagreement, unconnected ports, and
+**connect geometric plausibility** (gr337040/gr338426):
+`connect_envelope_disjoint` (a declared connect whose envelopes never
+touch — undeclared_interpenetration's mirror), `mechanism_no_interference`
+(a `press`/`snap` mechanism with zero envelope overlap),
+`captive_not_contained` (`captive` class with no overlap),
+`screw_axis_no_overlap` (the `screw` *class* — not the `screw`
+*mechanism*, which is `view='fasten'`'s job — with nothing overlapping
+along its axis), and `axis_not_coaxial`/`axis_not_radially_contained`
+(`bearing` mechanism or `revolute`/`cylindrical` class whose two
+envelopes' own axes — circular envelopes only — aren't lined up or
+nested). All warn tier; a bearing/press fit's declared interference is
+expected and stays clean.
 `view='fasten'` refuses a stack-up with no screw-form component bound. It
 also decides **nothing** about what a printed member's far end threads into
 — `params.thread_strategy` (`nut | nut-trap | insert | thread-forming |

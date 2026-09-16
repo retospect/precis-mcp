@@ -81,7 +81,12 @@ undeclared-interpenetration geometry check; rendered under the
 filled-fraction honesty header), :mod:`precis_se.drc` (graph-tier DRC:
 joint contradictions, mechanism-implied demands, unresolvable relations,
 the declared-vs-derived axis-travel probe renting
-``relate.translational_dof``), :mod:`precis_se.persist`
+``relate.translational_dof``, and :mod:`precis_se.geometry_plausibility`'s
+connect geometric plausibility pass — a declared connect between
+geometrically disjoint envelopes, and mechanism/kinematic-class implied
+envelope shape: press/snap interference, captive containment,
+bearing/revolute/cylindrical coaxiality + radial nesting, screw-class
+axial overlap), :mod:`precis_se.persist`
 (retire-all/reinsert-all store write-back, name-keyed identity, ports in
 lockstep with fresh block ids), and migrations ``0001_se_kind.sql`` +
 ``0002_se_l2.sql``.
