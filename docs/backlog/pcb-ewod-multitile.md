@@ -352,6 +352,17 @@ generator-tagged rows), port/net-binding semantics, whether blocks nest,
 and how a block's internal DRC findings attribute to the block vs the
 board.
 
+**That round is now written: `pcb-pre-place-route-blocks.md`** (opened by
+Reto's 2026-09-15 ruling — the generator emits vias *and* the traces to
+the pads as real fixed copper, unit cell solved once and tiled, spacing
+derived from `_plaza_capacity`). It answers the storage question
+(authored `pcb_fixed_copper` feeding derived `pcb_copper`, the
+`pcb_planes` precedent — `GeneratorExpansion` has no copper channel
+today), absorbs gr339236, and **re-sequences the engine gaps: the
+`PAD_LAYER` fix (gr341516) becomes a PREREQUISITE** of emitting real
+multi-layer copper, not a follow-on. 9×9 needs no new lattice rule —
+`r % 3 == 1` tiles it exactly.
+
 ### Slice 4 — dispenser generator + reservoir plumbing
 
 `dispenser` generator ("dispenser components with some configuration"):
