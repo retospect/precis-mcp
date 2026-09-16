@@ -65,6 +65,7 @@ import os
 import time
 import uuid
 import warnings
+import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -252,6 +253,39 @@ def _pg_available() -> bool:
     return _PG_AVAILABLE
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--shard",
+        default=None,
+        metavar="K/N",
+        help="Run only shard K of N (1-based). Each collected test id is "
+        "hashed (crc32) into one of N buckets, so the N shards partition "
+        "the suite exactly and any subset of shards is reproducible on its "
+        "own. CI (check.yml) fans the Linux legs across shards so the "
+        "wall-clock gate is one shard's worth, not the whole suite's.",
+    )
+
+
+def shard_index(nodeid: str, n: int) -> int:
+    """0-based shard for ``nodeid`` under an ``n``-way split. crc32, not
+    ``hash()``: Python salts str hashes per process, and xdist workers each
+    collect independently — every process must agree on the partition."""
+    return zlib.crc32(nodeid.encode("utf-8")) % n
+
+
+def parse_shard(spec: str) -> tuple[int, int]:
+    """``"K/N"`` → ``(K, N)`` with ``1 <= K <= N``; raises ``pytest.UsageError``
+    on anything else."""
+    try:
+        k_s, n_s = spec.split("/", 1)
+        k, n = int(k_s), int(n_s)
+    except ValueError:
+        raise pytest.UsageError(f"--shard expects K/N, got {spec!r}") from None
+    if n < 1 or not 1 <= k <= n:
+        raise pytest.UsageError(f"--shard {spec!r}: need 1 <= K <= N")
+    return k, n
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
@@ -285,6 +319,15 @@ def pytest_collection_modifyitems(
         fixturenames = getattr(item, "fixturenames", ())
         if db_fixtures.intersection(fixturenames):
             item.add_marker(pytest.mark.db)
+
+    spec = config.getoption("--shard")
+    if spec:
+        k, n = parse_shard(spec)
+        keep = [it for it in items if shard_index(it.nodeid, n) == k - 1]
+        drop = [it for it in items if shard_index(it.nodeid, n) != k - 1]
+        if drop:
+            config.hook.pytest_deselected(items=drop)
+        items[:] = keep
 
 
 MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "precis" / "migrations"

@@ -23,9 +23,15 @@ permissions:
   contents: read
 
 # `main` advances by squash-merge bursts (scripts/ship): only the newest
-# commit's verdict matters, so a superseded push's ~50-minute test matrix
-# is cancelled instead of queueing behind the runner quota. PR runs get
+# commit's verdict matters, so a superseded push's test matrix is
+# cancelled instead of queueing behind the runner quota. PR runs get
 # the same per-ref collapsing for free.
+#
+# Job budget: this matrix is 17 jobs (lint + 6 shards x 2 Linux legs +
+# 4 platform legs). The account's standard-runner concurrency cap is 20
+# (GitHub Free), so ONE ship's matrix fans out fully; a second concurrent
+# ship queues behind it rather than failing. Adding shards or legs past
+# that cap only lengthens the queue — reshape, don't grow.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
@@ -57,16 +63,26 @@ jobs:
   # so the db-tagged tests (~41% of the suite) actually gate the release
   # instead of auto-skipping. GHA service containers are Linux-only,
   # hence the split from `test-other`.
+  #
+  # Sharded: the whole suite is ~43 min of pytest on one 4-vCPU runner
+  # (CPU-bound; the same suite is ~10 min on a dev Mac), and that single
+  # job set the wall-clock of every ship gate. `--shard K/N`
+  # (tests/conftest.py) hashes each test id into one of N buckets, so the
+  # N shard jobs partition the suite exactly and run in parallel on
+  # separate runners, each with its own postgres service. Wall-clock is
+  # one shard's worth (~8 min + setup). The shard count is spelled twice
+  # below (matrix list + `/6`) — keep them equal.
   test-linux:
     runs-on: ubuntu-latest
-    # ~50 min steady-state; the cap is for hangs (a wedged test would
-    # otherwise hold the runner for GitHub's 6 h default while nobody
+    # ~10 min steady-state per shard; the cap is for hangs (a wedged test
+    # would otherwise hold the runner for GitHub's 6 h default while nobody
     # is watching — this workflow is checked asynchronously).
-    timeout-minutes: 90
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         python-version: ['3.12', '3.13']
+        shard: [1, 2, 3, 4, 5, 6]
     services:
       postgres:
         # pgvector image so the `vector` extension is present; the
@@ -123,7 +139,7 @@ jobs:
       # (test_nm_sugars' rdkit-primary-path assertion, and test_rxn's
       # q='CCO' search, which only matches the rdkit-CANONICALISED
       # ethanol; the raw fixture SMILES spells it OCC).
-      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest --shard ${{ matrix.shard }}/6
         env:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
 

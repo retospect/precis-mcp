@@ -57,7 +57,14 @@ scripts/test --fast                  # fast set (-m 'not db and not slow'), no P
 scripts/test -m 'not slow'           # full-minus-glacial (skips the heavy cluster)
 scripts/test --impacted              # ONLY tests your change affects (testmon)
 scripts/test --durations=25 …        # profile: pytest prints the 25 slowest
+scripts/test --shard 2/6             # bucket 2 of a 6-way split (what CI runs per job)
 ```
+
+`--shard K/N` (tests/conftest.py) hashes every test id into one of N
+buckets (crc32, so every process agrees). The N shards partition the suite
+exactly; check.yml runs the Linux legs as 6 parallel shard jobs so the gate's
+wall-clock is one shard, not the suite. Locally it is only for reproducing a
+red CI shard — run the same `K/N` the failing job name shows.
 
 Tiers, fastest to most complete — pick by what you changed:
 
