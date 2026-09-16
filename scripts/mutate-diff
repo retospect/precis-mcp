@@ -9,7 +9,11 @@
 # the tests that covered that line — not the whole suite. A survivor means a
 # changed, "covered" line has no test that actually pins its behaviour (a
 # gap diff-coverage can't see: diff-coverage only asks "was this line
-# executed", not "would a test notice if it broke").
+# executed", not "would a test notice if it broke"). A sampled survivor is
+# re-run against the full deduped covering set before being reported, so a
+# plain SURVIVED is a claim about all covering tests, not just the sample —
+# only a note ending "UNVERIFIED, may be a false survivor" (budget or
+# timeout stopped the re-run) still needs a manual check.
 #
 # Usage:
 #   scripts/mutate-diff            # mutate HEAD's own diff (HEAD^..HEAD)

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 import tokenize
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -657,6 +658,123 @@ def classify(rc: int, *, timed_out: bool = False) -> str:
     return "SKIPPED"
 
 
+Runner = Callable[[list[str], int], tuple[int, bool, str]]
+"""``(test_ids, timeout_s) -> (rc, timed_out, output_tail)`` — one pytest
+run against the mutant currently written to disk."""
+
+
+def _run_pytest(tests: list[str], timeout: int) -> tuple[int, bool, str]:
+    timed_out = False
+    rc = 0
+    tail = ""
+    try:
+        proc = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--no-sync",
+                "pytest",
+                "-q",
+                "-x",
+                "-p",
+                "no:warnings",
+                "-n0",
+                *tests,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+        rc = proc.returncode
+        tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-5:])
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        out = exc.stdout if isinstance(exc.stdout, str) else ""
+        err = exc.stderr if isinstance(exc.stderr, str) else ""
+        tail = "\n".join((out + err).splitlines()[-5:])
+    return rc, timed_out, tail
+
+
+def judge_mutant(
+    sampled: list[str],
+    full: list[str],
+    run: Runner,
+    *,
+    per_mutant_timeout: int,
+    budget_left: float,
+) -> tuple[str, str, str]:
+    """``(verdict, note, output_tail)`` for the mutant on disk.
+
+    Runs the ``sampled`` covering tests (``select_covering_tests``' cap)
+    first. A KILLED / SKIPPED verdict from the sample is final. A SURVIVED
+    verdict from a sample that is smaller than the ``full`` deduped covering
+    set is only a claim about that sample — the test that kills the mutant
+    can sit past the cap (on one ship two of six reported survivors were
+    killed by tests that existed all along — the ``-x`` sample never
+    reached them). So a sampled survivor is escalated: the
+    mutant is re-run against the full covering set, and only a survivor of
+    THAT is reported as ``SURVIVED``. The re-run is the rare path (survivors
+    are the minority; a killed or fully-covered mutant costs nothing extra).
+
+    ``note`` says what the verdict rests on (for SKIPPED, the pytest rc
+    that made it inconclusive). The two cases where the full
+    re-run could not settle it — no budget left, or the full set timed out
+    (a big covering set is a legitimate slow run, so a timeout here is NOT
+    read as a kill the way ``classify`` reads a sampled-run timeout) — are
+    reported as SURVIVED with an explicit ``UNVERIFIED`` note, so a survivor
+    line is never quietly weaker than it looks.
+    """
+    t0 = time.monotonic()
+    rc, timed_out, tail = run(sampled, per_mutant_timeout)
+    # The caller's budget_left was measured before the sampled run; charge
+    # that run's own wall time so the re-run decision sees the true remainder.
+    budget_left -= time.monotonic() - t0
+    verdict = classify(rc, timed_out=timed_out)
+    if verdict == "SKIPPED":
+        return verdict, f"pytest-rc-{rc}", tail
+    if verdict != "SURVIVED" or len(full) <= len(sampled):
+        note = f"all {len(full)} covering tests" if verdict == "SURVIVED" else ""
+        return verdict, note, tail
+
+    sampled_of = f"sampled {len(sampled)} of {len(full)} covering tests"
+    if budget_left <= 0:
+        return (
+            "SURVIVED",
+            f"{sampled_of} — budget exhausted before the full-set re-run; "
+            "UNVERIFIED, may be a false survivor",
+            tail,
+        )
+    # Scale the timeout with the set: the sample fit per_mutant_timeout, so
+    # the full set gets proportionally more, bounded by what's left.
+    scale = max(1, -(-len(full) // max(1, len(sampled))))
+    timeout = int(min(per_mutant_timeout * scale, max(budget_left, 1)))
+    rc2, timed_out2, tail2 = run(full, timeout)
+    if timed_out2:
+        return (
+            "SURVIVED",
+            f"{sampled_of} — full-set re-run timed out after {timeout}s; "
+            "UNVERIFIED, may be a false survivor",
+            tail2,
+        )
+    verdict2 = classify(rc2)
+    if verdict2 == "KILLED":
+        return (
+            "KILLED",
+            f"by the full covering set ({len(full)} tests) — the "
+            f"{len(sampled)}-test sample missed it",
+            tail2,
+        )
+    if verdict2 == "SURVIVED":
+        return "SURVIVED", f"all {len(full)} covering tests", tail2
+    return (
+        "SURVIVED",
+        f"{sampled_of} — full-set re-run inconclusive (pytest-rc-{rc2}); "
+        "UNVERIFIED, may be a false survivor",
+        tail2,
+    )
+
+
 # ── CLI / execution ─────────────────────────────────────────────────────────
 
 
@@ -812,8 +930,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"SKIPPED  budget exhausted — {remaining} mutant(s) not run")
             break
 
+        raw_tests = line_tests.get((m.path, m.lineno), [])
+        full_tests = _dedupe_parametrized(raw_tests)
         tests = select_covering_tests(
-            line_tests.get((m.path, m.lineno), []),
+            raw_tests,
             m.path,
             args.max_tests,
             changed_test_files,
@@ -830,49 +950,24 @@ def main(argv: list[str] | None = None) -> int:
             mutated = apply_mutant(original_bytes.decode("utf-8"), m)
             src_path.write_text(mutated, encoding="utf-8")
 
-            timed_out = False
-            rc = 0
-            tail = ""
-            try:
-                proc = subprocess.run(
-                    [
-                        "uv",
-                        "run",
-                        "--no-sync",
-                        "pytest",
-                        "-q",
-                        "-x",
-                        "-p",
-                        "no:warnings",
-                        "-n0",
-                        *tests,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    timeout=args.per_mutant_timeout,
-                )
-                rc = proc.returncode
-                tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-5:])
-            except subprocess.TimeoutExpired as exc:
-                timed_out = True
-                out = exc.stdout if isinstance(exc.stdout, str) else ""
-                err = exc.stderr if isinstance(exc.stderr, str) else ""
-                tail = "\n".join((out + err).splitlines()[-5:])
-
-            verdict = classify(rc, timed_out=timed_out)
+            verdict, note, tail = judge_mutant(
+                tests,
+                full_tests,
+                _run_pytest,
+                per_mutant_timeout=args.per_mutant_timeout,
+                budget_left=args.budget - (time.monotonic() - start),
+            )
+            suffix = f"  ({note})" if note else ""
             if verdict == "KILLED":
                 killed += 1
-                print(f"KILLED  {m.path}:{m.lineno}  {m.description}")
+                print(f"KILLED  {m.path}:{m.lineno}  {m.description}{suffix}")
             elif verdict == "SURVIVED":
                 survived += 1
-                print(f"SURVIVED  {m.path}:{m.lineno}  {m.description}")
-                print(f"    covering tests: {', '.join(tests)}")
+                print(f"SURVIVED  {m.path}:{m.lineno}  {m.description}{suffix}")
+                print(f"    covering tests: {', '.join(full_tests)}")
             else:
                 skipped += 1
-                print(
-                    f"SKIPPED  {m.path}:{m.lineno}  {m.description}  (pytest-rc-{rc})"
-                )
+                print(f"SKIPPED  {m.path}:{m.lineno}  {m.description}{suffix}")
                 if tail:
                     print(f"    {tail}")
         finally:

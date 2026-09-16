@@ -172,8 +172,13 @@ agent-written tests. Two tools:
 just-shipped commit's **covered** changed `src/` lines and runs each mutant
 against just the tests that covered that line (per-test contexts recorded by
 `scripts/ship --mutate`), capped by `PRECIS_MUTATE_MAX` (20) and
-`PRECIS_MUTATE_BUDGET` (600s). It never blocks — each `SURVIVED` line is a
-change your tests don't notice, harvested as a residual in `/go` step 10.
+`PRECIS_MUTATE_BUDGET` (600s). A sampled survivor is escalated and re-run
+against the full covering set before being reported, so a plain `SURVIVED`
+line is a claim about all covering tests, not the 5-test sample — a change
+your tests don't notice, harvested as a residual in `/go` step 10. Only a
+note ending `UNVERIFIED, may be a false survivor` (the re-run hit its budget
+or timeout) needs hand-checking before filing: apply the mutation and run
+the module's tests yourself.
 Diff-targeting is why it stays cheap: mutmut mutates whole files and can't
 use the gate's coverage contexts for test selection.
 

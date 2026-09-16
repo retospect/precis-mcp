@@ -700,12 +700,18 @@ def fetch_chunks(store: Store, chunk_ids: list[int]) -> list[ChunkInfo]:
 
 
 def paper_body_chunks(store: Store, ref_id: int) -> list[ChunkInfo]:
-    """All live body chunks (``ord >= 0``) of one paper, reading order —
-    the haystack for snip unique-within-paper validation."""
+    """All live body chunks (``ord >= 0 AND retired_at IS NULL``) of one
+    paper, reading order — the haystack for snip unique-within-paper
+    validation (gate 4) and snip-candidate generation. Retired chunks are
+    the soft-deleted copies a re-chunk leaves behind (``chunks`` is
+    append-only for body rows); counting them would double every snip
+    match in a re-chunked paper and fail the uniqueness gate on text that
+    is unique in the live copy (gr339961)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT chunk_id, ref_id, ord, text, section_path FROM chunks "
-            "WHERE ref_id = %s AND ord >= 0 ORDER BY ord",
+            "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL "
+            "ORDER BY ord",
             (ref_id,),
         ).fetchall()
     return [
@@ -730,11 +736,10 @@ def passages_contiguous(store: Store, ref_id: int, chunk_ids: list[int]) -> bool
     BY ord``, NOT consecutive ``ord`` integers — ``ord`` has gaps by
     design (a retired or never-quoted chunk between two live ones does
     not break contiguity; two chunks separated by nothing but such gaps
-    are adjacent). Deliberately does NOT reuse :func:`paper_body_chunks`,
-    whose query is missing the ``retired_at`` filter its docstring
-    promises (gr339961, tracked separately) — this helper owns its own
-    filtered ordering so quote contiguity is never wrong because of that
-    bug. A single distinct chunk (one id, or a list of duplicates of it)
+    are adjacent). Owns its own ``chunk_id``-only ordering rather than
+    reusing :func:`paper_body_chunks` (which hauls every chunk's text for
+    a question that needs only positions); both apply the same live
+    filter. A single distinct chunk (one id, or a list of duplicates of it)
     is trivially contiguous; an id outside the live ordering (a card
     variant, a retired chunk, or one that plain doesn't exist) makes the
     whole group non-contiguous — undecidable, and undecidable is not the

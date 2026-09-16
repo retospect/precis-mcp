@@ -675,6 +675,24 @@ def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]
     return out
 
 
+def integral_chunk_id(value: Any) -> int | None:
+    """The reviewer-submitted ``chunk_id`` as an ``int``, or ``None`` when
+    it is not an integral value — an ``int`` (never a ``bool``) or a
+    string of digits. A JSON float (``12.0``) is refused even though
+    ``int(12.0)`` works: the approved payload is frozen verbatim into
+    ``nanopub_publish.grounding`` and cast with ``::bigint`` downstream
+    (``workers.context_sentence._BACKFILL_SQL``), which Postgres rejects
+    for ``'12.0'`` — the gate is where such a value must stop, not a
+    ``CASE`` guard three modules later."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 def _check_passage(
     store: Store, index: int, passage: dict[str, Any]
 ) -> list[GateViolation]:
@@ -682,7 +700,7 @@ def _check_passage(
     label = f"passage {index}"
     quote = str(passage.get("quote") or "")
     snip = str(passage.get("snip") or "")
-    chunk_id = passage.get("chunk_id")
+    raw_chunk_id = passage.get("chunk_id")
     doi = passage.get("doi")
     sha = passage.get("pdf_sha256")
 
@@ -697,8 +715,18 @@ def _check_passage(
         )
 
     chunk: ev.ChunkInfo | None = None
+    chunk_id = integral_chunk_id(raw_chunk_id)
+    if raw_chunk_id is not None and chunk_id is None:
+        out.append(
+            GateViolation(
+                "grounding",
+                f"{label}: chunk_id {raw_chunk_id!r} is not an integral "
+                "chunk id — pass the pc<N> number as an integer",
+            )
+        )
+        return out
     if chunk_id is not None:
-        chunks = ev.fetch_chunks(store, [int(chunk_id)])
+        chunks = ev.fetch_chunks(store, [chunk_id])
         chunk = chunks[0] if chunks else None
     if chunk is None:
         out.append(

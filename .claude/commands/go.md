@@ -122,12 +122,16 @@ Optional ship message from the user: `$ARGUMENTS`
    costs no wall time next to the deploy): `scripts/mutate-diff` bare. It
    mutates only the just-shipped squash commit's covered `src/` lines and
    runs each mutant against just its covering tests (the contexts
-   `--mutate` recorded), capped by `PRECIS_MUTATE_MAX`/`_BUDGET`. A
-   `SURVIVED` line means your tests don't notice that change — treat each
-   survivor as a step-10 residual (add the missing assertion now, or file
-   it); never ignore one silently. It's advisory: it cannot fail the ship,
-   and a "no .coverage / skipping" note (e.g. after a docs-only ship) is
-   fine to relay as-is.
+   `--mutate` recorded), capped by `PRECIS_MUTATE_MAX`/`_BUDGET`. A sampled
+   survivor is re-run against the full covering set before being reported, so
+   a plain `SURVIVED` line means none of the covering tests (not just the
+   sample) notice that change — treat each survivor as a step-10 residual
+   (add the missing assertion now, or file it); never ignore one silently.
+   Only a note ending `UNVERIFIED, may be a false survivor` (the re-run hit
+   its budget or timeout) needs a manual check first — apply the mutation and
+   run the module's tests — before treating it as real. It's advisory: it
+   cannot fail the ship, and a "no .coverage / skipping" note (e.g. after a
+   docs-only ship) is fine to relay as-is.
 
 8. **Confirm — always end with this exact three-line block** (verify each
    line, don't assume; check `git rev-parse origin/main` for the sha):

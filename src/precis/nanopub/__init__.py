@@ -79,9 +79,9 @@ Slices 4-5 — publish path (POST gated, nothing published yet):
   - *Contiguity* — :func:`.evidence.passages_contiguous` calls two
     passages contiguous when their chunks are the same or ADJACENT ROWS
     of the live body ordering (``ord >= 0 AND retired_at IS NULL``),
-    positional, never ``ord + 1`` (ord has gaps by design; it owns its
-    own ``retired_at`` filter — ``paper_body_chunks`` lacks one,
-    gr339961). :func:`.mint.approve` freezes the per-source verdict onto
+    positional, never ``ord + 1`` (ord has gaps by design; the same
+    live filter :func:`.evidence.paper_body_chunks` applies to the snip
+    haystack). :func:`.mint.approve` freezes the per-source verdict onto
     the approved passages (NOT at prefill — that is the pre-edit
     candidate set); :mod:`.assemble` emits ``precis:excerptsContiguous``
     on the source's DOI node for a >=2-grounding source only.

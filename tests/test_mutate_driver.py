@@ -751,3 +751,171 @@ def test_classify_rc_five_is_skipped() -> None:
 
 def test_classify_rc_two_is_skipped() -> None:
     assert md.classify(2) == "SKIPPED"
+
+
+# ── judge_mutant ─────────────────────────────────────────────────────────
+
+
+class _FakeRunner:
+    """Records every ``(tests, timeout)`` call and replays scripted
+    ``(rc, timed_out, tail)`` results in order — stands in for a real
+    pytest subprocess run so these tests exercise ``judge_mutant``'s control
+    flow without spawning anything."""
+
+    def __init__(self, responses: list[tuple[int, bool, str]]) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[list[str], int]] = []
+
+    def __call__(self, tests: list[str], timeout: int) -> tuple[int, bool, str]:
+        self.calls.append((list(tests), timeout))
+        return self._responses[len(self.calls) - 1]
+
+
+def test_judge_mutant_sample_killed_is_final_no_second_run() -> None:
+    sampled = ["tests/test_x.py::test_a"]
+    full = ["tests/test_x.py::test_a", "tests/test_x.py::test_b"]
+    runner = _FakeRunner([(1, False, "tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert (verdict, note, tail) == ("KILLED", "", "tail")
+    assert runner.calls == [(sampled, 10)]
+
+
+def test_judge_mutant_sample_survived_and_full_equals_sampled_is_final() -> None:
+    # Nothing left to escalate to: the sample already IS the full covering
+    # set, so a re-run would just repeat the same run.
+    sampled = ["tests/test_x.py::test_a", "tests/test_x.py::test_b"]
+    full = list(sampled)
+    runner = _FakeRunner([(0, False, "tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "SURVIVED"
+    assert note == "all 2 covering tests"
+    assert runner.calls == [(sampled, 10)]
+
+
+def test_judge_mutant_sample_survived_full_rerun_kills_escalates_to_killed() -> None:
+    # The gr-acceptance case: only the 6th (past-the-cap) test kills it —
+    # the sample alone must not be the final word.
+    sampled = ["tests/test_x.py::test_a", "tests/test_x.py::test_b"]
+    full = sampled + [f"tests/test_x.py::test_c{i}" for i in range(3)]  # 5 total
+    runner = _FakeRunner([(0, False, "sample tail"), (1, False, "full tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "KILLED"
+    assert "full covering set" in note
+    assert "2-test sample" in note
+    assert tail == "full tail"
+    assert len(runner.calls) == 2
+    second_tests, second_timeout = runner.calls[1]
+    assert second_tests == full
+    # scale = ceil(5/2) = 3 -> 3 * per_mutant_timeout, bounded by budget_left.
+    assert second_timeout == 30
+    assert second_timeout >= 10
+
+
+def test_judge_mutant_sample_survived_full_rerun_also_survives() -> None:
+    sampled = ["tests/test_x.py::test_a"]
+    full = sampled + [f"tests/test_x.py::test_b{i}" for i in range(2)]  # 3 total
+    runner = _FakeRunner([(0, False, "sample tail"), (0, False, "full tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "SURVIVED"
+    assert note == "all 3 covering tests"
+    assert tail == "full tail"
+    assert len(runner.calls) == 2
+
+
+def test_judge_mutant_no_budget_left_skips_the_full_rerun_as_unverified() -> None:
+    sampled = ["tests/test_x.py::test_a"]
+    full = sampled + [f"tests/test_x.py::test_b{i}" for i in range(4)]  # 5 total
+    runner = _FakeRunner([(0, False, "sample tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=0
+    )
+    assert verdict == "SURVIVED"
+    assert "UNVERIFIED" in note
+    assert "sampled 1 of 5" in note
+    assert len(runner.calls) == 1
+
+
+def test_judge_mutant_full_rerun_timeout_is_unverified_not_a_kill() -> None:
+    # Unlike classify(), a timeout on the FULL set is a legitimately slow
+    # run (a big covering set), not evidence of a caught mutant — it must
+    # not be silently reported as KILLED.
+    sampled = ["tests/test_x.py::test_a"]
+    full = sampled + [f"tests/test_x.py::test_b{i}" for i in range(3)]  # 4 total
+    runner = _FakeRunner([(0, False, "sample tail"), (-1, True, "full tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "SURVIVED"
+    assert "UNVERIFIED" in note
+    assert len(runner.calls) == 2
+
+
+def test_judge_mutant_full_rerun_inconclusive_rc_is_unverified() -> None:
+    sampled = ["tests/test_x.py::test_a"]
+    full = sampled + [f"tests/test_x.py::test_b{i}" for i in range(3)]  # 4 total
+    runner = _FakeRunner([(0, False, "sample tail"), (5, False, "full tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "SURVIVED"
+    assert "UNVERIFIED" in note
+    assert "pytest-rc-5" in note
+    assert len(runner.calls) == 2
+
+
+def test_judge_mutant_sample_timeout_is_killed_classify_semantics_preserved() -> None:
+    sampled = ["tests/test_x.py::test_a"]
+    full = sampled + ["tests/test_x.py::test_b"]
+    runner = _FakeRunner([(-1, True, "tail")])
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "KILLED"
+    assert runner.calls == [(sampled, 10)]
+
+
+def test_judge_mutant_sample_skipped_carries_the_pytest_rc() -> None:
+    """A SKIPPED verdict (rc 2 usage error / rc 5 nothing collected) must
+    still say WHICH rc — that number is the only way to tell a renamed
+    test id from a broken invocation without re-reading the tail."""
+    runner = _FakeRunner([(5, False, "no tests ran")])
+    verdict, note, tail = md.judge_mutant(
+        ["tests/test_a.py::test_a"],
+        ["tests/test_a.py::test_a", "tests/test_a.py::test_b"],
+        runner,
+        per_mutant_timeout=10,
+        budget_left=100,
+    )
+    assert verdict == "SKIPPED"
+    assert note == "pytest-rc-5"
+    assert tail == "no tests ran"
+    assert len(runner.calls) == 1
+
+
+def test_judge_mutant_charges_the_sampled_run_against_the_budget(
+    monkeypatch: Any,
+) -> None:
+    """budget_left is measured by the caller BEFORE the sampled run; a
+    slow sample must not leave a stale positive figure that grants a
+    full-set re-run the budget no longer covers."""
+    clock = iter([0.0, 30.0, 30.0, 30.0])
+    monkeypatch.setattr(md.time, "monotonic", lambda: next(clock))
+    runner = _FakeRunner([(0, False, "")])
+    verdict, note, _ = md.judge_mutant(
+        ["tests/test_a.py::test_a"],
+        ["tests/test_a.py::test_a", "tests/test_a.py::test_b"],
+        runner,
+        per_mutant_timeout=60,
+        budget_left=20,
+    )
+    assert verdict == "SURVIVED"
+    assert "UNVERIFIED" in note and "budget exhausted" in note
+    assert len(runner.calls) == 1

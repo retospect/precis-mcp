@@ -157,6 +157,58 @@ def test_pdf_sha_alias_row_does_not_block_mint(store: Any) -> None:
     assert _gate_slugs(store, hub, _payload(chunk)) == set()
 
 
+@pytest.mark.parametrize("bad", ["abc", 12.0, True, "12.0", ""])
+def test_non_integral_chunk_id_is_a_gate_violation_not_a_500(
+    store: Any, bad: Any
+) -> None:
+    """A malformed reviewer-submitted chunk_id must come back as a grounding
+    violation the reviewer can act on, never as an uncaught ValueError /
+    TypeError out of run_mint_gates. A JSON float (12.0) is refused too:
+    int(12.0) would pass, but the frozen payload gets cast '::bigint'
+    downstream and Postgres rejects '12.0'."""
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    bundle = evidence.load_bundle(store, hub)
+    violations = gates.run_mint_gates(store, bundle, _payload(bad, sha))
+    grounding = [v for v in violations if v.gate == "grounding"]
+    assert grounding, violations
+    assert repr(bad) in grounding[0].message
+    assert "integral" in grounding[0].message
+
+
+def test_digit_string_chunk_id_is_accepted(store: Any) -> None:
+    paper, chunk, sha = _seed_paper(store)
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    payload = _payload(chunk, sha)
+    payload["passages"][0]["chunk_id"] = str(chunk)
+    assert _gate_slugs(store, hub, payload) == set()
+
+
+def test_snip_uniqueness_ignores_retired_chunks(store: Any) -> None:
+    """gr339961 — paper_body_chunks() is the snip haystack; a retired
+    (re-chunked, soft-deleted) copy of the same paragraph must not count
+    as a second match, or every re-chunked paper fails gate 4 on a snip
+    that is unique in its live text."""
+    paper, chunk, sha = _seed_paper(store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
+            "section_path, retired_at) VALUES (%s, 'system', 7, 'paragraph', "
+            "(SELECT text FROM chunks WHERE chunk_id = %s), ARRAY['Results'], "
+            "now())",
+            (paper, chunk),
+        )
+    assert [c.chunk_id for c in evidence.paper_body_chunks(store, paper)] == [chunk]
+    hub = _seed_hub(
+        store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
+    )
+    assert _gate_slugs(store, hub, _payload(chunk, sha)) == set()
+
+
 def test_hearsay_section_grounding_is_rejected(store: Any) -> None:
     # The fi34867 class: quote checks out but lives in a references list.
     paper, chunk, _sha = _seed_paper(store, section=["References"])
