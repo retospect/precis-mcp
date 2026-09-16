@@ -140,3 +140,8 @@ scripts/code-search/node_modules/
 docs/backlog/INDEX.md
 docs/runbooks/INDEX.md
 docs/codebase-map.md
+
+# per-session ship/deploy/mutate logs redirected by an operator (never commit)
+.ship.log
+.deploy-run.log
+.mutate-run.log
