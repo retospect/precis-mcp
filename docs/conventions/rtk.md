@@ -120,6 +120,25 @@ rtk summary -- <cmd>   # condensed summary
   for commands rtk already decided to run, not the pre-execution
   rewrite-vs-passthrough decision.)
 
+- **Worktree-isolated sessions refuse rtk-wrapped `git`.** Claude Code's
+  built-in isolation guard (`claude -w`, since 2.1.222; still present in
+  2.1.267) refuses any command it cannot prove stays inside the worktree,
+  and it cannot see through a launcher: `git status` → `rtk git status` is
+  refused with "runs rtk with a git command among its operands". The same
+  refusal hits a `grep`/`find` whose *arguments* contain the token `git`
+  (e.g. a pattern quoting `/usr/bin/git`). `scripts/ship`, `scripts/test` and
+  friends are unaffected (not rewritten). Fix, in layers:
+  1. `scripts/hooks/rtk-hook.sh` — a shim for the user-level hook that
+     leaves a git-mentioning command unrewritten when the session cwd is
+     under `.claude/worktrees/`. Wire it in `~/.claude/settings.json`
+     (the wiring line is in the script header); the hook is read once at
+     session start, so it takes effect from the next session.
+  2. Per command, without the shim: `RTK_DISABLED=1 git …` — rtk's own
+     general pass-through switch; the hook sees the prefix and skips the
+     rewrite, and the guard accepts the plain command. `/usr/bin/git …`
+     also works (an absolute path is never rewritten). `rtk proxy git …`
+     does NOT help here — it is still rtk with git among its operands.
+
 ## Filters and uninstall
 
 - Filters live in a committed `.rtk/filters.toml`, which overrides the
