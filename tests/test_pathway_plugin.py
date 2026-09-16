@@ -92,10 +92,9 @@ def _yaml_dict(text: str) -> dict:
 
 
 @pytest.fixture
-def pathway_store(store: Store, monkeypatch: pytest.MonkeyPatch) -> Store:
-    """The shared test store with the precis_pathway migration seeded + the
-    dark flag on (the `pathway` kind + `pathway_body` chunk kind)."""
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ENABLED", "1")
+def pathway_store(store: Store) -> Store:
+    """The shared test store with the precis_pathway migration seeded (the
+    `pathway` kind + `pathway_body` chunk kind)."""
     with store.pool.connection() as c:
         for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
             body = sql.read_text(encoding="utf-8")

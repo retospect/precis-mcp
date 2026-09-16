@@ -10,7 +10,7 @@
 # precis_bio); the heavy engine is the PURE `autocatpath` PyPI package pulled by
 # the precis-mcp `[catalyst-gpu]` extra (autocatpath[mace]). So this role just
 # adds that extra to the worker venv precis_worker manages, then wires
-# PRECIS_AUTOCATPATH_ENABLED / PRECIS_NODE via a systemd drop-in (never touching
+# PRECIS_NODE via a systemd drop-in (never touching
 # the precis_worker unit template). Linux / compute node only — the macOS MCP
 # host gets the kind SURFACE via roles/precis_web (the [catalyst] extra). See
 # roles/autocatpath/README.md and ADR 0069.
@@ -21,7 +21,7 @@
     fail_msg: >-
       The autocatpath role installs the compute backend on the Linux GPU node
       (the GPU node). The macOS gateway needs only the KIND SURFACE (precis-mcp[catalyst]
-      in the web venv + PRECIS_AUTOCATPATH_ENABLED) — wire that via roles/precis_web,
+      in the web venv) — wire that via roles/precis_web,
       not here. See roles/autocatpath/README.md.
 
 # OS prerequisites (CPython headers for Triton's runtime JIT). Shared with

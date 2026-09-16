@@ -5,8 +5,8 @@ it SHIPPED — present-state lives in the `src/precis_pathway/` module
 docstrings and ADR 0069; the full original design (the four tensions, the
 code-grounded architecture, slice-0/1 build findings) is git history of
 `docs/backlog/autocatpath-integration.md`. Shipped: the bundled in-tree
-plugin (`pathway` kind, `pathway_body` chunk, plugin-namespace migration,
-`PRECIS_AUTOCATPATH_ENABLED` dark switch), ssh_node routing to the pinned
+plugin (`pathway` kind, `pathway_body` chunk, plugin-namespace migration),
+ssh_node routing to the pinned
 GPU node, per-`(model, seed)` fan-out (`autocatpath_seed` /
 `autocatpath_aggregate` job types), native structure ingest
 (`ingest.py::scene_from_ase`, bond-free slabs, `related-to` links +

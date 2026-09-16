@@ -33,7 +33,6 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_DEEP_REVIEW` | Deep reviewer (opus, weekly) | off | LLM tier — agent profile. |
 | `PRECIS_CHEM_ENABLED` | `route`/chem kind **surface** | off | Now the *fallback tier* of the `chem.enabled` DB setting (`precis settings set chem.enabled true` wins fleet-wide); surface gate only — compute routes to the node named by `PRECIS_CHEM_ROUTE_NODE` (§5). |
 | `PRECIS_BIO_ENABLED` | `protein`/fold kind surface | off | Fallback tier of the `bio.enabled` DB setting (same scheme as chem); surface gate only — compute routes via `PRECIS_FOLD_NODE` (§5). |
-| `PRECIS_AUTOCATPATH_ENABLED` | `pathway`/autocatpath kind | off | Surface on the gateway; compute env on the GPU node. |
 | `PRECIS_BRIEFING_AUDIO_ENABLED` | Standalone daily briefing TTS pass (`news-<date>` episode) | off | Retired: the news wire is folded into the combined `morning_brief_<date>` reading-cast episode at narration time (`cast_audio._news_lead_in`); leave off to avoid double-publishing. |
 | `PRECIS_CAST_AUDIO_ENABLED` | Podcast cast TTS pass | off | |
 | `PRECIS_OA_FETCH` | Unpaywall/OA fetch leg | `0` | Single-fetcher design — two hosts fetching races the shared inbox (gripe history). |

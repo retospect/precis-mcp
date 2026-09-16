@@ -77,12 +77,11 @@ def _eyring(ea_ev: float, t_k: float = 300.0) -> float:
 
 
 @pytest.fixture
-def pathway_store(store: Store, monkeypatch: pytest.MonkeyPatch) -> Store:
-    """The shared test store with the precis_pathway migration seeded + the
-    dark flag on (mirrors test_pathway_step_selector.py's fixture of the same
-    name — duplicated rather than imported to keep this file independent and
+def pathway_store(store: Store) -> Store:
+    """The shared test store with the precis_pathway migration seeded
+    (mirrors test_pathway_step_selector.py's fixture of the same name —
+    duplicated rather than imported to keep this file independent and
     cheap to collect on its own)."""
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ENABLED", "1")
     with store.pool.connection() as c:
         for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
             body = sql.read_text(encoding="utf-8")

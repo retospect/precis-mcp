@@ -131,9 +131,9 @@
   # to core 2026-08-16, so only `paper` (marker/torch) remains here.
   #
   # ``catalyst`` (autocatpath_plugin hosts only) pulls the light pure
-  # autocatpath engine so PathwayHandler imports — the plist sets
-  # PRECIS_AUTOCATPATH_ENABLED, but without the module the handler
-  # InitErrors on every pathway dispatch (seen on the agent worker 2026-08-09).
+  # autocatpath engine so PathwayHandler imports — without the module the
+  # handler InitErrors on every pathway dispatch and the kind disappears
+  # (seen on the agent worker 2026-08-09).
   vars:
     _precis_worker_ref_is_sha: "{{ (precis_worker_git_ref | default('main')) is match('^[0-9a-f]{40}$') }}"
     _precis_worker_is_autocatpath_plugin: "{{ inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) }}"

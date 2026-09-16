@@ -217,8 +217,8 @@
           {{ _compute_venv }}/bin/precis worker --only job_ssh_node
           --batch-size 1
           --idle-seconds {{ precis_worker_compute_idle_seconds | default(5) }}
-        # The feature env (PRECIS_NODE, PRECIS_AUTOCATPATH_ENABLED /
-        # _ROUTE_NODE, PRECIS_DFT_*, PRECIS_FOLD_*, PRECIS_CHEM_*) comes from
+        # The feature env (PRECIS_NODE, PRECIS_AUTOCATPATH_ROUTE_NODE,
+        # PRECIS_DFT_*, PRECIS_FOLD_*, PRECIS_CHEM_*) comes from
         # these drop-ins — the exact files roles/autocatpath + roles/dft +
         # roles/alphafold + roles/aizynth render and the collapsed worker
         # already sources, so no duplication / no drift. All four listed since

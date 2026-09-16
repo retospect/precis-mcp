@@ -444,8 +444,8 @@ asa-slack = "asa_slack.__main__:main"
 # in-tree proposal): the `pathway` kind, the `autocatpath_explore` job_type
 # (autocatpath in-process on the GPU node), and its migrations — kept under
 # the `autocatpath` namespace (matches the value already applied in prod from
-# when the glue lived in the external autocatpath package), dark behind
-# PRECIS_AUTOCATPATH_ENABLED.
+# when the glue lived in the external autocatpath package). The kind is
+# gated on the `[catalyst]` extra being installed, not on a feature flag.
 # `precis_se` is the fourth keystone kind (docs/backlog/se-kind.md): the
 # `se` (structural envelope) kind — scale-agnostic block trees with
 # cad-DSL envelopes in metres, first-class arrays, manufacturing modes,

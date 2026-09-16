@@ -1,6 +1,6 @@
 """The ``pathway`` kind — a precis-mcp plugin handler.
 
-Slice 0 (dark, ``PRECIS_AUTOCATPATH_ENABLED``): a `pathway` ref owns a autocatpath
+Slice 0: a `pathway` ref owns a autocatpath
 reaction-network run. ``put`` takes the config YAML as the body, runs the
 autocatpath pipeline **in-process on EMT** (cheap, qualitative), and persists:
 

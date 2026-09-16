@@ -32,10 +32,10 @@ barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 (from ``results_json.score``), trust-gated kinetics scalars
 ``tof``/``log_tof``/band, ``kinetics_trusted``/``kinetics_note``/``drc_top``.
 
-Ships **dark** behind ``PRECIS_AUTOCATPATH_ENABLED`` (mirrors
-``PRECIS_BIO_ENABLED``/``PRECIS_SANDBOX_ENABLED``): with the switch off or
-no ``autocatpath``/``[catalyst]`` extra installed, the ``pathway`` kind
-just doesn't appear — no ``ImportError`` at boot.
+Gated on **dependency presence**, not a feature flag: with no
+``autocatpath``/``[catalyst]`` extra installed the handler raises
+``InitError`` at registration and the ``pathway`` kind just doesn't
+appear — no ``ImportError`` at boot.
 """
 
 from __future__ import annotations

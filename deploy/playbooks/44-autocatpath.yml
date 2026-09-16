@@ -18,7 +18,7 @@
 # NOTE: the ML backend image (torch + MACE weights on the GPU) is heavy and is
 # selected by the `autocatpath_mace` capability; the first install pulls it. The
 # macOS gateway needs only the KIND SURFACE (precis-mcp[catalyst] → pure
-# autocatpath in the web venv + PRECIS_AUTOCATPATH_ENABLED, via roles/precis_web)
+# autocatpath in the web venv, via roles/precis_web)
 # — see roles/autocatpath/README.md and ADR 0069.
 #
 # Documented standalone entry point (run explicitly, not part of site.yml),

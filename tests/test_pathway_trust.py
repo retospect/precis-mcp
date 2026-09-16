@@ -110,10 +110,9 @@ _RESULTS_LEGACY = {"pathway": ["R", "M", "P"], "target": "P"}
 
 
 @pytest.fixture
-def pathway_store(store: Store, monkeypatch: pytest.MonkeyPatch) -> Store:
+def pathway_store(store: Store) -> Store:
     """Mirrors ``test_pathway_kinetics.py``'s fixture of the same name
     (duplicated on purpose, keeps this file independently collectable)."""
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ENABLED", "1")
     with store.pool.connection() as c:
         for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
             body = sql.read_text(encoding="utf-8")

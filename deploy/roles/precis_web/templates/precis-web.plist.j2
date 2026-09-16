@@ -60,11 +60,10 @@
     <key>PRECIS_FOLLOWUP_MODEL</key>
     <string>opus</string>
     {% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %}
-    {# autocatpath `pathway` kind: expose it on the MCP surface, and route compute
-       to the pinned GPU node — the gateway has no ML backend, so an in-process
-       run here would be EMT-only. Topology: autocatpath_plugin / autocatpath. #}
-    <key>PRECIS_AUTOCATPATH_ENABLED</key>
-    <string>1</string>
+    {# autocatpath `pathway` kind: route compute to the pinned GPU node — the
+       gateway has no ML backend, so an in-process run here would be EMT-only.
+       The kind itself surfaces whenever the `[catalyst]` extra is importable,
+       no flag needed. Topology: autocatpath_plugin / autocatpath. #}
     {% if (precis_capabilities.autocatpath | default([])) | length > 0 %}
     <key>PRECIS_AUTOCATPATH_ROUTE_NODE</key>
     <string>{{ precis_capabilities.autocatpath | join(',') }}</string>
