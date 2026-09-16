@@ -173,24 +173,29 @@ this before a consumer bakes in direction-only semantics.
 
 ---
 
-## Slice 3 — complementary port roles
+## Slice 3 — complementary port roles — **SHIPPED**
 
-**Shape.** A role may declare a complementary partner:
-`azide ↔ alkyne` both affording `CuAAC` in opposite senses. The connect gate
-changes from *set intersection* ("both afford X") to *complementary halves*
-("A affords the donor half, B the acceptor half"). Azide–azide becomes
-illegal, which today it is not.
+Landed 2026-09-16. The heading stays (numbered, because slices 4–6 cite
+it); the spec body is gone per delete-on-ship. What exists now:
 
-**Do not change the trust model.** It stays declared-intent labelling, never
-chemistry proof. Keep the existing behaviour of naming the port's actual roles
-in the rejection.
+- `precis_se.atomic.vocab.COMPLEMENTARY_ROLES` — the pairs, reusing the
+  face-code alphabet of `nm-face-codes-and-scale.md` (donor↔acceptor,
+  bump↔hole, +↔−, ASCII `-`) plus `azide↔alkyne`; `JOINING_HALVES` maps a
+  joining's own name (`CuAAC`) onto its pair, so a bond gates on either
+  half or on the chemistry. `role_halves(role)` resolves all three;
+  `None` means a symmetric role, gated as before (`covalent`+`covalent`
+  unchanged).
+- One rule, `bond_capability_offences`, feeds both the write-time gate
+  (`check_bond_capability`, connect op) and the stored-data re-check
+  (`port_capability` in `precis_se.atomic.validate`), so they cannot
+  drift. Azide+azide is refused naming both ports' roles and the pair it
+  needs; a port with neither half is told its partner's complement.
+- Trust model unchanged: labels compared to labels, never chemistry
+  proof. Adding a joining is one tuple (plus one `JOINING_HALVES` entry
+  when it has a name). Roles match exactly, no case folding.
 
-**Reuse the vocabulary already specified** for faces in
-`nm-face-codes-and-scale.md`: "complementarity is elementwise
-(donor↔acceptor, bump↔hole, +↔−)". Ports should use that, not a parallel one.
-
-**Done when:** azide+alkyne connects, azide+azide is refused naming both roles,
-and the existing `covalent`+`covalent` symmetric case still works.
+Not touched: gr342026 (direction-only `port_pose_overrides`) — slice 3
+reads roles only and bakes in no port-pose semantics.
 
 ---
 

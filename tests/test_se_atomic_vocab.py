@@ -27,10 +27,20 @@ from precis.dispatch import Hub
 from precis.store import Store
 from precis_se import drc as se_drc
 from precis_se import persist
-from precis_se.atomic.vocab import ThreadingSpec, connect_role
+from precis_se.atomic import validate as se_atomic_validate
+from precis_se.atomic.vocab import (
+    COMPLEMENTARY_ROLES,
+    JOINING_HALVES,
+    ThreadingSpec,
+    connect_role,
+    role_halves,
+)
 from precis_se.handler import SeHandler
 from precis_se.ops import (
+    ConnectSpec,
     OpError,
+    PortSpec,
+    SeBlock,
     SeTree,
     apply_ops,
     effective_dof,
@@ -357,8 +367,23 @@ def test_a_bond_needs_both_ports_to_afford_the_role() -> None:
             {"op": "add_port", "block": "ring", "name": "bare"},
             {"op": "connect", "a": "axle.tail", "b": "ring.bare", "kind": "bond"},
         )
-    assert "does not afford 'covalent'" in str(exc.value)
+    assert "missing 'covalent'" in str(exc.value)
     assert "add_port" in str(exc.value)
+
+
+def test_a_symmetric_refusal_names_every_port_that_falls_short() -> None:
+    """Both ends lacking the role are reported together, not first-only —
+    one round trip to see the whole fix."""
+    with pytest.raises(OpError) as exc:
+        _tree(
+            {"op": "add_port", "block": "axle", "name": "stub"},
+            {"op": "add_port", "block": "ring", "name": "bare"},
+            {"op": "connect", "a": "axle.stub", "b": "ring.bare", "kind": "bond"},
+        )
+    msg = str(exc.value)
+    assert "axle.stub affords ['(none)'], missing 'covalent'" in msg
+    assert "ring.bare affords ['(none)'], missing 'covalent'" in msg
+    assert "both ports to afford the role" in msg
 
 
 def test_the_role_can_be_overridden_through_objectives() -> None:
@@ -388,7 +413,155 @@ def test_the_overridden_role_is_the_one_gated_on() -> None:
                 "objectives": {"role": "pi_stack"},
             },
         )
-    assert "does not afford 'pi_stack'" in str(exc.value)
+    assert "missing 'pi_stack'" in str(exc.value)
+
+
+# ── connect: complementary port roles (blocktree slice 3) ────────────────
+#
+# A joining chemistry has two halves (azide ↔ alkyne for CuAAC); the gate
+# moves from set intersection ("both afford X") to complementary halves
+# ("one affords each"), so azide–azide becomes illegal. The trust model is
+# unchanged: labels compared to labels, refusals naming the actual roles.
+
+
+def _click_tree(
+    a_roles: list[str], b_roles: list[str], *ops: dict[str, object]
+) -> SeTree:
+    return _tree(
+        {"op": "add_port", "block": "axle", "name": "click_a", "roles": a_roles},
+        {"op": "add_port", "block": "ring", "name": "click_b", "roles": b_roles},
+        *ops,
+    )
+
+
+def _click(role: str) -> dict[str, object]:
+    return {
+        "op": "connect",
+        "a": "axle.click_a",
+        "b": "ring.click_b",
+        "kind": "bond",
+        "objectives": {"role": role},
+    }
+
+
+def test_azide_plus_alkyne_bonds_under_the_joinings_name() -> None:
+    tree = _click_tree(["azide"], ["alkyne"], _click("CuAAC"))
+    assert tree.connects[-1].objectives == {"role": "CuAAC"}
+
+
+def test_the_halves_bond_in_either_order_and_gate_on_either_half() -> None:
+    assert (
+        _click_tree(["alkyne"], ["azide"], _click("CuAAC")).connects[-1].kind == "bond"
+    )
+    assert (
+        _click_tree(["azide"], ["alkyne"], _click("azide")).connects[-1].kind == "bond"
+    )
+    assert (
+        _click_tree(["azide"], ["alkyne"], _click("alkyne")).connects[-1].kind == "bond"
+    )
+
+
+def test_azide_plus_azide_is_refused_naming_both_ports_roles() -> None:
+    """The slice's headline: two of the same half is no longer a bond, and
+    the refusal says which half each port carries and what its partner
+    would need."""
+    with pytest.raises(OpError) as exc:
+        _click_tree(["azide"], ["azide", "covalent"], _click("CuAAC"))
+    msg = str(exc.value)
+    assert "both afford 'azide'" in msg
+    assert "axle.click_a: ['azide']" in msg
+    assert "ring.click_b: ['azide', 'covalent']" in msg
+    assert "'azide' ↔ 'alkyne'" in msg
+    assert "one port to afford 'azide' and the other 'alkyne'" in msg
+
+
+def test_a_port_with_neither_half_is_told_the_complement_it_needs() -> None:
+    with pytest.raises(OpError) as exc:
+        _click_tree(["azide"], ["covalent"], _click("CuAAC"))
+    msg = str(exc.value)
+    assert "ring.click_b affords ['covalent'], missing 'alkyne'" in msg
+    assert "axle.click_a" not in msg.split(" — ")[0]
+
+
+def test_two_bare_ports_are_told_either_half_would_do() -> None:
+    with pytest.raises(OpError) as exc:
+        _click_tree([], [], _click("CuAAC"))
+    msg = str(exc.value)
+    assert "axle.click_a affords ['(none)'], missing one of 'azide' | 'alkyne'" in msg
+    assert "ring.click_b affords ['(none)'], missing one of 'azide' | 'alkyne'" in msg
+
+
+def test_a_port_affording_both_halves_bonds_to_either() -> None:
+    """A bifunctional port carries both senses; its partner supplies the
+    other one, whichever that is."""
+    assert (
+        _click_tree(["azide", "alkyne"], ["azide"], _click("CuAAC")).connects[-1].kind
+    )
+    assert (
+        _click_tree(["azide", "alkyne"], ["alkyne"], _click("CuAAC")).connects[-1].kind
+    )
+
+
+def test_the_symmetric_covalent_case_is_unchanged() -> None:
+    """``covalent`` has no halves: both ports afford it, as before slice 3
+    (the rotaxane's default bond)."""
+    assert role_halves("covalent") is None
+    assert role_halves("pi_stack") is None
+    assert _tree().connects[0].objectives == {}
+
+
+def test_ports_reuse_the_face_code_alphabet() -> None:
+    """nm-face-codes-and-scale.md: complementarity is elementwise
+    (donor↔acceptor, bump↔hole, +↔−) — the same pairs, not a parallel
+    vocabulary."""
+    assert {("donor", "acceptor"), ("bump", "hole"), ("+", "-")} <= set(
+        COMPLEMENTARY_ROLES
+    )
+    assert JOINING_HALVES["CuAAC"] == ("azide", "alkyne")
+    assert role_halves("acceptor") == ("acceptor", "donor")
+    assert role_halves("CuAAC") == ("azide", "alkyne")
+    assert (
+        _click_tree(["donor"], ["acceptor"], _click("donor")).connects[-1].kind
+        == "bond"
+    )
+    with pytest.raises(OpError) as exc:
+        _click_tree(["bump"], ["bump"], _click("hole"))
+    assert "both afford 'bump'" in str(exc.value)
+
+
+def test_validate_port_capability_rechecks_complementary_halves() -> None:
+    """The stored-data re-check applies the same rule as the op: an
+    azide–azide bond that bypassed ``connect`` is an error naming both."""
+    tree = SeTree()
+    tree.blocks["a"] = SeBlock(
+        name="a", ports={"p": PortSpec(name="p", roles=["azide"])}
+    )
+    tree.blocks["b"] = SeBlock(
+        name="b", ports={"q": PortSpec(name="q", roles=["azide"])}
+    )
+    tree.connects.append(
+        ConnectSpec(
+            a_block="a",
+            a_port="p",
+            b_block="b",
+            b_port="q",
+            kind="bond",
+            objectives={"role": "CuAAC"},
+        )
+    )
+    finding = next(
+        f
+        for f in se_atomic_validate.validate_atomic(tree)
+        if f.rule == "port_capability"
+    )
+    assert finding.severity == "error"
+    assert "a.p and b.q both afford 'azide'" in finding.detail
+    tree.blocks["b"].ports["q"].roles = ["alkyne"]
+    assert not [
+        f
+        for f in se_atomic_validate.validate_atomic(tree)
+        if f.rule == "port_capability"
+    ]
 
 
 def test_an_interaction_connect_is_not_capability_gated() -> None:

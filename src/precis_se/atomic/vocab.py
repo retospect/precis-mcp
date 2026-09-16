@@ -5,10 +5,13 @@ that :mod:`precis_se.ops` therefore keeps out of its own body: the
 **declared degree of freedom** (a rotaxane's macrocycle spins about the
 axle), the **threading** invariant (it is *on* that axle, and that fact is
 stored, never re-derived from coordinates), and the **bond capability
-gate** (a covalent connect needs both ports to afford the role). All three
-came from ``precis_nm.ops`` with their semantics untouched by the merge
+gate** (a covalent connect needs both ports to afford the role; a joining
+chemistry with two *halves* — azide ↔ alkyne for CuAAC — needs one port to
+afford each, see :data:`COMPLEMENTARY_ROLES`). All three came from
+``precis_nm.ops`` with their semantics untouched by the merge
 (docs/backlog/nm-se-merge.md) — what changed is only where they live and
-which tree class they read.
+which tree class they read; the complementary-halves rule is blocktree
+slice 3 (docs/backlog/blocktree-library-build-plan.md), layered on top.
 
 Pure vetting/gating functions over values and already-resolved nodes: no
 store access (the ``ops.py`` discipline), and no mutation — every function
@@ -59,6 +62,50 @@ class ThreadingSpec:
     b: str
 
 
+#: Complementary role halves — blocktree slice 3. Each pair is two
+#: *senses* of one joining: a port affording the left half may bond only to
+#: a port affording the right half, never to another left. The vocabulary
+#: is the face-code alphabet of docs/backlog/nm-face-codes-and-scale.md
+#: ("complementarity is elementwise: donor↔acceptor, bump↔hole, +↔−",
+#: ASCII ``-`` here) plus the click-chemistry halves; ports reuse it rather
+#: than minting a parallel one. Role strings match exactly, like every
+#: other role. Declared intent only — a label on a port, never a claim
+#: that the chemistry works. Adding a joining is one tuple here (and, when
+#: it has a name of its own, one entry in :data:`JOINING_HALVES`).
+COMPLEMENTARY_ROLES: tuple[tuple[str, str], ...] = (
+    ("azide", "alkyne"),
+    ("donor", "acceptor"),
+    ("bump", "hole"),
+    ("+", "-"),
+)
+
+#: A joining chemistry's name standing for its pair of halves, so a bond
+#: may gate on the chemistry (``objectives={'role': 'CuAAC'}``) as well as
+#: on either half (``'azide'``); all three resolve to the same pair via
+#: :func:`role_halves`.
+JOINING_HALVES: dict[str, tuple[str, str]] = {"CuAAC": ("azide", "alkyne")}
+
+_COMPLEMENT_OF: dict[str, str] = {
+    **{a: b for a, b in COMPLEMENTARY_ROLES},
+    **{b: a for a, b in COMPLEMENTARY_ROLES},
+}
+
+
+def role_halves(role: str) -> tuple[str, str] | None:
+    """``(half_a, half_b)`` when ``role`` is one half of a complementary
+    pair or a joining name standing for one; ``None`` for a *symmetric*
+    role (``'covalent'``, ``'pi_stack'``, anything unlisted), which both
+    endpoints must afford as before. A half resolves to ``(itself, its
+    complement)``."""
+    named = JOINING_HALVES.get(role)
+    if named is not None:
+        return named
+    other = _COMPLEMENT_OF.get(role)
+    if other is not None:
+        return (role, other)
+    return None
+
+
 def connect_role(kind: str | None, objectives: dict[str, Any]) -> str | None:
     """The role a ``kind='bond'`` connect's endpoints must both afford —
     ``objectives={'role': ...}`` overrides the default ``'covalent'``.
@@ -71,6 +118,67 @@ def connect_role(kind: str | None, objectives: dict[str, Any]) -> str | None:
     return str(role).strip() if role else "covalent"
 
 
+def bond_capability_offences(
+    a_block: str,
+    a_port: str,
+    a_spec: PortSpec,
+    b_block: str,
+    b_port: str,
+    b_spec: PortSpec,
+    role: str,
+) -> list[str]:
+    """Why a ``kind='bond'`` edge between these two ports would violate its
+    ``role`` — one plain clause per offence (per endpoint that falls short;
+    the same-half collision is one clause naming both), each citing the
+    port's *actual* roles so the fix is legible; empty when the bond is
+    allowed.
+    The one rule both the write-time gate (:func:`check_bond_capability`)
+    and the stored-data re-check (``port_capability`` in
+    :mod:`precis_se.atomic.validate`) apply, so the two can never drift.
+
+    A **symmetric** role (:func:`role_halves` → ``None``): both endpoints
+    must afford it. A **complementary** role: one endpoint must afford each
+    half, in either order — azide + alkyne bonds, azide + azide is refused
+    naming both. Never chemistry proof: it compares labels."""
+    ends = ((a_block, a_port, a_spec), (b_block, b_port, b_spec))
+    halves = role_halves(role)
+    if halves is None:
+        return [
+            f"{blk}.{prt} affords {spec.roles or ['(none)']}, missing {role!r}"
+            for blk, prt, spec in ends
+            if role not in spec.roles
+        ]
+    h1, h2 = halves
+    a_has = {h for h in halves if h in a_spec.roles}
+    b_has = {h for h in halves if h in b_spec.roles}
+    if (h1 in a_has and h2 in b_has) or (h2 in a_has and h1 in b_has):
+        return []
+    if a_has and b_has:  # each carries exactly one half, and it's the same one
+        (same,) = a_has
+        return [
+            f"{a_block}.{a_port} and {b_block}.{b_port} both afford {same!r} "
+            f"({a_block}.{a_port}: {a_spec.roles}; {b_block}.{b_port}: "
+            f"{b_spec.roles}) — {role!r} needs complementary halves "
+            f"({h1!r} ↔ {h2!r}), never two of the same"
+        ]
+    offences: list[str] = []
+    for (blk, prt, spec), has, other_has in (
+        (ends[0], a_has, b_has),
+        (ends[1], b_has, a_has),
+    ):
+        if has:
+            continue
+        needed = (
+            " | ".join(repr(_COMPLEMENT_OF[h]) for h in sorted(other_has))
+            if other_has
+            else f"one of {h1!r} | {h2!r}"
+        )
+        offences.append(
+            f"{blk}.{prt} affords {spec.roles or ['(none)']}, missing {needed}"
+        )
+    return offences
+
+
 def check_bond_capability(
     a_block: str,
     a_port: str,
@@ -80,19 +188,34 @@ def check_bond_capability(
     b_spec: PortSpec,
     role: str,
 ) -> None:
-    """Both endpoints of a bond must afford ``role`` (the capability set is
-    a *set*, never an equivalence relation — legal attachments are derived
-    here at connect time, never stored as a second relation)."""
+    """Refuse a bond that :func:`bond_capability_offences` finds fault with
+    (the capability set is a *set*, never an equivalence relation — legal
+    attachments are derived here at connect time, never stored as a second
+    relation). The refusal names the offending ports' actual roles and the
+    two ways to fix it."""
+    offences = bond_capability_offences(
+        a_block, a_port, a_spec, b_block, b_port, b_spec, role
+    )
+    if not offences:
+        return
     role_label = "bond" if role == "covalent" else repr(role)
-    for blk, prt, spec in ((a_block, a_port, a_spec), (b_block, b_port, b_spec)):
-        if role not in spec.roles:
-            raise OpError(
-                f"connect: {blk}.{prt} does not afford {role!r} "
-                f"(its roles: {spec.roles or ['(none)']}) — a {role_label} "
-                "connect needs both ports to afford the role; add it via "
-                "add_port, or pass objectives={'role': '<a role both ports "
-                "have>'} to gate on a different one"
-            )
+    halves = role_halves(role)
+    if halves is None:
+        fix = (
+            "both ports to afford the role; add it via add_port, or pass "
+            "objectives={'role': '<a role both ports have>'} to gate on a "
+            "different one"
+        )
+    else:
+        fix = (
+            f"one port to afford {halves[0]!r} and the other {halves[1]!r}; "
+            "give a port the missing half via add_port (a port may carry "
+            "both), or pass objectives={'role': ...} to gate on a different "
+            "role"
+        )
+    raise OpError(
+        f"connect: {'; '.join(offences)} — a {role_label} connect needs {fix}"
+    )
 
 
 def vet_dof_shape(dof: Any, *, what: str) -> dict[str, Any]:

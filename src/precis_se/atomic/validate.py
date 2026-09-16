@@ -69,7 +69,7 @@ from precis.cad.vec import pose as cad_pose
 from precis.structure import Scene as StructScene
 from precis.utils.units import format_quantity
 from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
-from precis_se.atomic.vocab import connect_role
+from precis_se.atomic.vocab import bond_capability_offences, connect_role
 from precis_se.ops import SeTree, effective_envelope, effective_ports
 from precis_se.validate import ValidationIssue
 
@@ -505,10 +505,12 @@ def _bond_vector_findings(tree: SeTree) -> list[ValidationIssue]:
 
 def _port_capability_findings(tree: SeTree) -> list[ValidationIssue]:
     """``port_capability`` (error, defense in depth) — a stored
-    ``kind='bond'`` connect whose endpoints don't both afford its role
-    (:func:`~precis_se.atomic.vocab.connect_role`). ``ops.py``'s connect op
-    already gates this at write time; this re-checks whatever ended up
-    stored.
+    ``kind='bond'`` connect whose endpoints don't satisfy its role
+    (:func:`~precis_se.atomic.vocab.connect_role`): both affording a
+    symmetric role, or one affording each half of a complementary one
+    (:func:`~precis_se.atomic.vocab.bond_capability_offences` is the single
+    rule, shared with the op). ``ops.py``'s connect op already gates this
+    at write time; this re-checks whatever ended up stored.
 
     A connect with a dangling endpoint is skipped: there's no ``PortSpec``
     to read roles off, and :mod:`precis_se.validate`'s own
@@ -534,24 +536,16 @@ def _port_capability_findings(tree: SeTree) -> list[ValidationIssue]:
         role = connect_role(c.kind, c.objectives)
         if role is None:
             continue
-        offenders = [
-            (blk, prt, spec.roles)
-            for blk, prt, spec in (
-                (c.a_block, c.a_port, a_spec),
-                (c.b_block, c.b_port, b_spec),
-            )
-            if role not in spec.roles
-        ]
-        if not offenders:
+        offences = bond_capability_offences(
+            c.a_block, c.a_port, a_spec, c.b_block, c.b_port, b_spec, role
+        )
+        if not offences:
             continue
         findings.append(
             ValidationIssue(
                 rule="port_capability",
                 subject=f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}",
-                detail="; ".join(
-                    f"{blk}.{prt} affords {roles or ['(none)']}, missing {role!r}"
-                    for blk, prt, roles in offenders
-                ),
+                detail="; ".join(offences),
                 severity="error",
             )
         )

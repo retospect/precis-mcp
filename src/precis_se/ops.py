@@ -219,9 +219,11 @@ beside the others and each one's *scope* is the block it names.
   default) is se's ordinary structural edge, whose L2 statement is its
   ``joint`` — the two are mutually exclusive on one edge. A ``bond``
   additionally runs the **capability gate**: both ports must afford the
-  role (``'covalent'`` by default, or ``objectives={'role': ...}``),
-  derived at connect time from the ports' ``roles`` sets and never stored
-  as a second relation.
+  role (``'covalent'`` by default, or ``objectives={'role': ...}``) — or,
+  for a role with complementary halves (``'CuAAC'`` / ``'azide'`` ↔
+  ``'alkyne'``, :data:`precis_se.atomic.vocab.COMPLEMENTARY_ROLES`), one
+  port must afford each half — derived at connect time from the ports'
+  ``roles`` sets and never stored as a second relation.
 """
 
 from __future__ import annotations

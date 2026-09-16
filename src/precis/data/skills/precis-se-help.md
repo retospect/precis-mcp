@@ -121,7 +121,11 @@ unaddressable — nor contain `'#'`.)
   `objectives={'role': ...}`, both to afford that named role instead
   (rejection names the port's actual roles); `interaction`
   (non-bonded) skips the gate entirely. A declared-intent check, not a
-  chemical-plausibility one.
+  chemical-plausibility one. **Complementary roles** need one port per
+  half, never two of the same: `azide` ↔ `alkyne` (gate on either half
+  or on `CuAAC`), `donor` ↔ `acceptor`, `bump` ↔ `hole`, `+` ↔ `-`.
+  Azide + azide is refused naming both ports' roles; any unlisted role
+  is symmetric.
 - `disconnect` — `a`, `b`
 - `set_joint` — `a`, `b`, `joint` (req). Joint dict:
   `{"class": rigid|revolute|prismatic|cylindrical|screw|planar|ball|
