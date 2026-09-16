@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from precis.blocktree.types import OpError
 from precis.errors import BadInput, NotFound
-from precis_se.atomic.validate import envelope_fit
+from precis_se.atomic.validate import FrameMismatch, envelope_fit
 from precis_se.ops import SeTree, effective_envelope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -98,7 +98,12 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     bind (a hand-authored envelope is often a rough first guess) — a
     protrusion only appends a warning line to the returned echo, and the
     same check runs again, every future read, as ``view='validate'``'s
-    ``envelope_fit`` warn-tier finding."""
+    ``envelope_fit`` warn-tier finding. When the whole scene sits an
+    envelope-width away (an imported structure with no local-frame
+    alignment — gripe 334764,
+    :class:`precis_se.atomic.validate.FrameMismatch`), the line says
+    "cannot check — frames do not correspond" instead of advising a
+    destructive envelope widen."""
     block_name, node = _block_named(tree, op, opname="bind_structure")
     if node.template is not None:
         raise BadInput(
@@ -187,7 +192,21 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     env = effective_envelope(tree, node)
     if env:
         worst = envelope_fit(env, scene)
-        if worst is not None:
+        if isinstance(worst, FrameMismatch):
+            # gripe 334764: an imported (from_smiles) scene carries no
+            # alignment to the block's local frame — refuse loudly instead
+            # of advising a destructive envelope widen.
+            msg += (
+                "\n⚠ envelope_fit: cannot check — frames do not "
+                f"correspond: every atom of {design_slug!r} sits far "
+                f"outside block {block_name!r}'s declared envelope "
+                f"{env!r} (nearest atom {worst.nearest_label!r} is "
+                f"{worst.clearance_A:.3g} Å out; the envelope is only "
+                f"{worst.envelope_diag_A:.3g} Å across). Re-author the "
+                "structure's atoms near the envelope's own origin "
+                "(e.g. from_smiles offset=); do NOT widen the envelope"
+            )
+        elif worst is not None:
             atom_label, protrusion = worst
             msg += (
                 f"\n⚠ envelope_fit: atom {atom_label!r} protrudes "

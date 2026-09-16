@@ -825,6 +825,8 @@ def test_envelope_fit_atom_outside_margin_names_the_worst_offender() -> None:
     scene.atoms["b"] = Atom(label="b", element="C", frac=scene.cell.wrap(far_frac))
     result = se_atomic_validate.envelope_fit("sphere:r2e-10", scene)
     assert result is not None
+    # atom "a" sits inside, so this can never be the gr334764 refusal.
+    assert not isinstance(result, se_atomic_validate.FrameMismatch)
     label, protrusion = result
     assert label == "b"
     # sdf at [10,0,0] Å against a 2 Å sphere is 8 Å; the protrusion is
@@ -844,6 +846,40 @@ def test_envelope_fit_on_a_malformed_envelope_returns_none_not_raises() -> None:
     assert se_atomic_validate.envelope_fit("not-a-real-shape:x1", scene) is None
 
 
+def test_envelope_fit_frame_mismatch_when_whole_scene_far_away() -> None:
+    """gripe 334764 repro shape: an imported (from_smiles-style) scene's
+    atoms sit near (10,10,10) in their own cell while the envelope spans
+    z=0..9 at identity — the frames never corresponded, so the answer is a
+    refusal, not a protrusion whose "widen the envelope" advice would
+    destroy a correct envelope."""
+    scene = Scene(cell=_cell())
+    for i, cart in enumerate([[10.0, 10.0, 10.0], [11.0, 10.0, 10.0]]):
+        label = "ab"[i]
+        frac = scene.cell.cart_to_frac(np.array(cart))
+        scene.atoms[label] = Atom(label=label, element="C", frac=frac)
+    result = se_atomic_validate.envelope_fit("cyl:r3.5e-10h9e-10", scene)
+    assert isinstance(result, se_atomic_validate.FrameMismatch)
+    assert result.nearest_label == "a"
+    # definitional: mismatch only fires when even the nearest atom clears
+    # the margin by more than half the envelope's own bbox diagonal.
+    assert result.envelope_diag_A == pytest.approx(math.sqrt(49 + 49 + 81), rel=1e-6)
+    assert (
+        result.clearance_A - VDW_MARGIN_A
+        > se_atomic_validate.FRAME_MISMATCH_CLEARANCE_FRACTION * result.envelope_diag_A
+    )
+
+
+def test_envelope_fit_near_drift_stays_a_protrusion() -> None:
+    """All atoms slightly outside is genuine drift (an envelope shrunk
+    after the bind), NOT a frame mismatch — the scale-relative gate only
+    reclassifies a scene sitting an envelope-width away."""
+    scene = Scene(cell=_cell())
+    frac = scene.cell.cart_to_frac(np.array([4.5, 0.0, 0.0]))
+    scene.atoms["a"] = Atom(label="a", element="C", frac=frac)
+    result = se_atomic_validate.envelope_fit("sphere:r2e-10", scene)
+    assert result == ("a", pytest.approx(4.5 - 2.0 - VDW_MARGIN_A, abs=1e-6))
+
+
 def test_envelope_fit_honours_a_custom_margin() -> None:
     scene = Scene(cell=_cell())
     far_frac = scene.cell.cart_to_frac(np.array([5.0, 0.0, 0.0]))
@@ -858,10 +894,13 @@ def test_envelope_fit_honours_a_custom_margin() -> None:
 # ── envelope_fit: the bind preflight (advisory, never blocking) ──────────
 
 
-def test_bind_preflight_warns_on_a_gross_protrusion(
+def test_bind_preflight_warns_on_a_genuine_protrusion(
     handler: SeHandler, structure: StructureHandler
 ) -> None:
-    c_label = _make_structure(structure, "frag_far", carts=[[20.0, 0.0, 0.0]])[0]
+    """An atom just past the margin (5 Å out on a 2 Å sphere — within the
+    frame-mismatch gate's half-diagonal) is a real protrusion: the classic
+    warning, with the widen-the-envelope advice."""
+    c_label = _make_structure(structure, "frag_far", carts=[[5.0, 0.0, 0.0]])[0]
     ops = [
         {"op": "add_block", "name": "hub", "envelope": "sphere:r2e-10"},
         {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
@@ -876,6 +915,32 @@ def test_bind_preflight_warns_on_a_gross_protrusion(
     assert "bound block 'hub' to structure 'frag_far'" in resp.body
     assert "⚠ envelope_fit" in resp.body
     assert c_label in resp.body
+    assert "protrudes" in resp.body
+
+
+def test_bind_preflight_refuses_on_frame_mismatch(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    """gripe 334764: a fragment sitting an envelope-width away (an imported
+    scene with no local-frame alignment) gets the loud refusal, not a
+    protrusion — and never the destructive widen-the-envelope advice."""
+    c_label = _make_structure(structure, "frag_off_frame", carts=[[20.0, 0.0, 0.0]])[0]
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1", "expected_element": "C"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag_off_frame",
+            "ports": {"p1": c_label},
+        },
+    ]
+    resp = handler.put(id="envfitfm1", text=json.dumps({"ops": ops}))
+    assert "bound block 'hub' to structure 'frag_off_frame'" in resp.body
+    assert "⚠ envelope_fit: cannot check — frames do not correspond" in resp.body
+    assert c_label in resp.body
+    assert "do NOT widen the envelope" in resp.body
+    assert "protrudes" not in resp.body
 
 
 def test_bind_preflight_is_silent_within_the_margin(
@@ -923,7 +988,7 @@ def test_bind_preflight_never_blocks_the_bind(
 def test_validate_envelope_fit_warns_on_a_protruding_bound_scene(
     handler: SeHandler, structure: StructureHandler
 ) -> None:
-    c_label = _make_structure(structure, "frag_drift", carts=[[30.0, 0.0, 0.0]])[0]
+    c_label = _make_structure(structure, "frag_drift", carts=[[5.0, 0.0, 0.0]])[0]
     ops = [
         {"op": "add_block", "name": "hub", "envelope": "sphere:r2e-10"},
         {"op": "add_port", "block": "hub", "name": "p1"},
@@ -939,6 +1004,34 @@ def test_validate_envelope_fit_warns_on_a_protruding_bound_scene(
     assert "envelope_fit" in resp.body
     assert "warn" in resp.body
     assert "hub" in resp.body
+    assert "protrudes" in resp.body
+
+
+def test_validate_envelope_fit_refuses_on_frame_mismatch(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    """gripe 334764's standing-finding half: the read-time re-check emits
+    the refusal (still warn-tier — the agreement is unverifiable until the
+    scene is re-authored in the block's frame), never the drifted-apart
+    protrusion text."""
+    c_label = _make_structure(structure, "frag_off_frame2", carts=[[30.0, 0.0, 0.0]])[0]
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "frag_off_frame2",
+            "ports": {"p1": c_label},
+        },
+    ]
+    handler.put(id="envfitfm2", text=json.dumps({"ops": ops}))
+    resp = handler.get(id="envfitfm2", view="validate")
+    assert "envelope_fit" in resp.body
+    assert "warn" in resp.body
+    assert "cannot check — frames do not correspond" in resp.body
+    assert "do NOT widen the envelope" in resp.body
+    assert "protrudes" not in resp.body
 
 
 def test_validate_envelope_fit_is_clean_when_the_atoms_fit(

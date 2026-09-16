@@ -450,7 +450,7 @@ exactly when its template is):
 | `port_capability` | error | a stored connect violates its own endpoints' declared roles |
 | `dangling_binding` | error | `bound_design` no longer resolves, or a `bound_atom` no longer exists in it |
 | `binding_element_mismatch` | warn | a bound atom's element doesn't match the port's `expected_element` |
-| `envelope_fit` | warn | a bound block's realized atoms protrude beyond its declared envelope + vdW margin — the L1↔L5 agreement has drifted |
+| `envelope_fit` | warn | a bound block's realized atoms protrude beyond its declared envelope + vdW margin — the L1↔L5 agreement has drifted. Or `cannot check — frames do not correspond` when the whole scene sits an envelope-width away (imported structure, no local-frame alignment): re-author the atoms near the envelope's origin (e.g. `from_smiles` `offset=`), do NOT widen |
 | `connect_cycle` | warn | the connect graph closes a loop across the block tree (a macrocycle IS real chemistry — this names the path, never says "forbidden") |
 | `bond_length_sanity` | warn | a `kind='bond'` connect's block-pose gap (ports have no stored position; see Scope below) is wildly beyond a plausible bond |
 | `bond_vector_alignment` | warn | a `kind='bond'` connect's two ports' `direction` vectors are far from anti-parallel (>60° off 180°) |

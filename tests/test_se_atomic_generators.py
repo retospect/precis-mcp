@@ -518,6 +518,9 @@ def test_cyclodextrin_envelope_fit_protrusion_is_bounded() -> None:
     stored_env = ingest_envelope(block.envelope)
     fit = atomic_validate.envelope_fit(stored_env, scene)
     if fit is not None:
+        # A generator scene lives in the block's local frame by contract, so
+        # the gr334764 frame-mismatch refusal must never fire here.
+        assert not isinstance(fit, atomic_validate.FrameMismatch), fit
         _worst_atom, depth = fit
         assert depth < 2.0, f"gross envelope mismatch, not a rim fold: {fit}"
 

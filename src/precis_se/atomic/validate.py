@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -83,10 +84,40 @@ from precis_se.validate import ValidationIssue
 _A_TO_M = 1e-10
 _M_TO_A = 1e10
 
+#: :func:`envelope_fit`'s frame-correspondence gate (gripe 334764): when even
+#: the *nearest* atom sits farther outside the envelope than this fraction of
+#: the envelope's own bbox diagonal, the scene and the envelope do not share
+#: a frame at all — generator-minted scenes emit atoms into the block's local
+#: frame (the identity-pose contract in :func:`envelope_fit`'s docstring),
+#: but an imported/``from_smiles`` scene's atoms land wherever its own cell
+#: put them, and comparing the two answers nothing. Scale-relative per
+#: docs/backlog/multiscale-design-architecture.md "Units policy" (a fixed Å
+#: epsilon is nonsense across sub-nm..tens-of-nm blocks); 0.5 keeps a
+#: genuine near-drift (atoms hugging the surface after an envelope shrink)
+#: on the protrusion path while catching the dogfood's actual failure, where
+#: the whole fragment sat an envelope-width away.
+FRAME_MISMATCH_CLEARANCE_FRACTION = 0.5
+
+
+@dataclass
+class FrameMismatch:
+    """:func:`envelope_fit`'s refusal outcome (gripe 334764): every atom sits
+    grossly outside the envelope, so the two frames do not correspond and the
+    fit question is unanswerable — the caller must say "cannot check", never
+    "widen the envelope" (that advice would destroy a correct envelope)."""
+
+    #: the atom closest to the envelope, and how far outside it sits (Å) —
+    #: named so the refusal message stays concrete.
+    nearest_label: str
+    clearance_A: float
+    #: the envelope's own bbox diagonal (Å) — the governing length the
+    #: clearance was judged against.
+    envelope_diag_A: float
+
 
 def envelope_fit(
     envelope: str, scene: StructScene, *, margin_A: float = VDW_MARGIN_A
-) -> tuple[str, float] | None:
+) -> tuple[str, float] | FrameMismatch | None:
     """The L1↔L5 agreement check itself (module docstring): does every atom
     of ``scene`` sit inside ``envelope`` (a ``cad`` mini-DSL config string —
     design-space canonical text, metres, see :data:`_A_TO_M`) plus
@@ -100,6 +131,15 @@ def envelope_fit(
     atom sits inside the margin, or when ``envelope`` fails to parse (a
     malformed envelope is a different finding's job, not this one's to
     raise on).
+
+    **Or a :class:`FrameMismatch`** (gripe 334764) when even the nearest
+    atom sits farther out than :data:`FRAME_MISMATCH_CLEARANCE_FRACTION` of
+    the envelope's own bbox diagonal: the identity-pose contract below only
+    holds for scenes authored in the block's local frame, and an imported
+    (``from_smiles``) scene got no alignment step — a wholly-elsewhere atom
+    cloud means the frames do not correspond, so the caller must refuse
+    ("cannot check"), not report a protrusion whose "widen the envelope"
+    advice would destroy a correct envelope.
 
     **Posed at identity, not the block's world pose/rot.** A block's
     envelope is declared in the block's own *local* frame — the same local
@@ -123,6 +163,8 @@ def envelope_fit(
     margin_m = margin_A * _A_TO_M
     worst_label: str | None = None
     worst_protrusion_m = 0.0
+    nearest_label: str | None = None
+    nearest_sdf_m = math.inf
     for label, atom in scene.atoms.items():
         cart_A = scene.cell.frac_to_cart(atom.frac)  # atomistic enclave: Å
         cart_m = cad_as_vec3([c * _A_TO_M for c in cart_A])
@@ -131,8 +173,27 @@ def envelope_fit(
         if protrusion_m > worst_protrusion_m:
             worst_protrusion_m = protrusion_m
             worst_label = label
+        if sdf < nearest_sdf_m:
+            nearest_sdf_m = sdf
+            nearest_label = label
     if worst_label is None:
         return None
+    # Frame-correspondence gate (gripe 334764, FRAME_MISMATCH_CLEARANCE_
+    # FRACTION's docstring): only meaningful when EVERY atom protruded
+    # (worst_label set AND the nearest atom is itself outside the margin) —
+    # any atom genuinely inside proves the frames line up, and the finding
+    # is then a real protrusion.
+    diag_m = _envelope_diag(prim)
+    if (
+        nearest_label is not None
+        and diag_m is not None
+        and nearest_sdf_m - margin_m > FRAME_MISMATCH_CLEARANCE_FRACTION * diag_m
+    ):
+        return FrameMismatch(
+            nearest_label=nearest_label,
+            clearance_A=nearest_sdf_m * _M_TO_A,
+            envelope_diag_A=diag_m * _M_TO_A,
+        )
     return worst_label, worst_protrusion_m * _M_TO_A
 
 
@@ -586,6 +647,27 @@ def _envelope_fit_findings(
             continue
         worst = envelope_fit(env, scene)
         if worst is None:
+            continue
+        if isinstance(worst, FrameMismatch):
+            findings.append(
+                ValidationIssue(
+                    rule="envelope_fit",
+                    subject=node.name,
+                    detail=(
+                        "cannot check — frames do not correspond: every "
+                        f"atom of bound structure {node.bound!r} sits far "
+                        f"outside block {node.name!r}'s declared envelope "
+                        f"{env!r} (nearest atom {worst.nearest_label!r} is "
+                        f"{worst.clearance_A:.3g} Å out; the envelope is "
+                        f"only {worst.envelope_diag_A:.3g} Å across). An "
+                        "imported structure carries no alignment to the "
+                        "block's local frame — re-author its atoms near "
+                        "the envelope's own origin (e.g. from_smiles "
+                        "offset=); do NOT widen the envelope"
+                    ),
+                    severity="warn",
+                )
+            )
             continue
         atom_label, protrusion = worst
         findings.append(
