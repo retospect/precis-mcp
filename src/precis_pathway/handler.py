@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
+from precis.handlers._mode_help import require_mode
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
@@ -124,6 +125,12 @@ class PathwayHandler(Handler):
                     'text=\'substrate: "NO"\\ntarget: "NO3"\\n...\')'
                 ),
             )
+
+        # A typo'd/unknown mode (e.g. 'previw') must never fall through to
+        # the real run/dispatch path below and mint a GPU compute job —
+        # gr343054. `None` (the "run it" default) is never checked here.
+        if mode is not None:
+            require_mode(spec=self.spec, verb="put", mode=mode)
 
         # The env renders as the full autocatpath capability list since the
         # multi-node fan-out (comma-separated). This surface mints ONE
@@ -282,6 +289,9 @@ class PathwayHandler(Handler):
             )
         )
 
+    def accepted_views(self, *, id: Any = None) -> list[str]:
+        return list(self.spec.views)
+
     # -- get -------------------------------------------------------------
     def get(
         self,
@@ -310,6 +320,20 @@ class PathwayHandler(Handler):
         if ref is None:
             raise BadInput(f"no pathway '{id}'")
 
+        # An unknown view= (typo or stale doc) must never silently fall
+        # through to the default analysis/profile output — gr343054.
+        v = (view or "").lower()
+        if view is not None and v not in self.accepted_views():
+            accepted = self.accepted_views()
+            raise BadInput(
+                f"pathway view {view!r} not recognised",
+                options=accepted,
+                next=(
+                    f"get(kind='pathway', id={id!r}, view={accepted[0]!r}) — "
+                    f"accepted views: {accepted}"
+                ),
+            )
+
         meta = ref.meta or {}
         if meta.get("status") == "computing":
             node = meta.get("route_node", "?")
@@ -317,7 +341,6 @@ class PathwayHandler(Handler):
                 body=f"pathway '{id}' is computing on {node} "
                 f"(cache_key {str(meta.get('content_key', ''))[:12]}). Check back shortly."
             )
-        v = (view or "").lower()
         if v == "config":
             return Response(body=meta.get("config_snapshot_yaml", "(no config)"))
         if v == "methods":

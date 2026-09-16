@@ -89,6 +89,14 @@ def merge_duplicate(
     )
     # (b) Graph edges → survivor (self-loops + dup rows dropped internally).
     store.migrate_links(duplicate_ref_id, survivor_ref_id, conn=conn)
+    # (b2) Repoint bib entries that already resolved to the loser — else
+    # they keep citing a soft-deleted ref forever (nothing else re-checks
+    # a bib entry once match_conf is set; see resolve.py's retired_at
+    # guard for the belt-and-suspenders side of this).
+    conn.execute(
+        "UPDATE paper_bib_entries SET held_ref_id = %s WHERE held_ref_id = %s",
+        (survivor_ref_id, duplicate_ref_id),
+    )
     # (c) supersedes edge + provenance on the loser.
     store.add_link(
         src_ref_id=survivor_ref_id,

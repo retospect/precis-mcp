@@ -1726,6 +1726,12 @@ class SkillHandler(Handler):
             "",
             "Build + runtime + DB + optional-dependency health probe.",
             "",
+        ]
+        last_exit = _render_last_exit_note()
+        if last_exit is not None:
+            lines.append(f"**{last_exit}**")
+            lines.append("")
+        lines += [
             "**Build**",
             "",
             render_agent_table(
@@ -2016,6 +2022,41 @@ _BUILD_ENV_KEYS: tuple[tuple[str, str], ...] = (
     ("PRECIS_BUILD_HOST", "build_host"),
     ("PRECIS_BUILD_USER", "build_user"),
 )
+
+
+def _render_last_exit_note() -> str | None:
+    """One-line "why did the previous server end" note (gr341515).
+
+    ``None`` in the common case: no previous server on this host, or the
+    breadcrumb already reported once (and was consumed — see below) on
+    an earlier ``precis-status`` call this boot or a prior one.
+
+    Reads via
+    :func:`precis.install_watchdog.consume_last_exit_breadcrumb`, which
+    deletes the breadcrumb file as part of reading it — that delete-on-
+    read *is* the age-out gr341515 item 3 asks for, chosen over a
+    TTL/staleness check for the simpler invariant it gives: a breadcrumb
+    is surfaced exactly once, ever, with no "how old is too old"
+    judgement call.
+    """
+    from precis.install_watchdog import consume_last_exit_breadcrumb
+
+    crumb = consume_last_exit_breadcrumb()
+    if crumb is None:
+        return None
+    written_at = crumb.get("written_at") or "unknown time"
+    reason = crumb.get("reason")
+    if reason == "install-swapped":
+        old = crumb.get("old_fingerprint") or "unknown"
+        new = crumb.get("new_fingerprint") or "unknown"
+        what = f"install swapped {old}→{new}"
+    elif reason == "crash":
+        what = f"crashed ({crumb.get('detail') or 'no detail'})"
+    elif reason == "exit":
+        what = "exited normally"
+    else:  # pragma: no cover — forward-compat with an unrecognised reason
+        what = str(reason)
+    return f"previous server exited {written_at} — {what}"
 
 
 def _collect_build_info() -> list[tuple[str, str]]:

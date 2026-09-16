@@ -633,6 +633,52 @@ class TestMatchLocalDoi:
         assert held_ref_id == held_id
         assert match_conf == pytest.approx(1.0)
 
+    def test_local_doi_match_against_retired_ref_leaves_held_ref_null(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr341498: the DOI can outlive the ref that carried it (e.g. a
+        # dedup merge, or any other retirement) -- a retired ref must never
+        # be handed back as the held paper.
+        ref_id = seed_ref(store, title="citing paper")
+        held_id = seed_ref(store, title="the cited paper")
+        _add_id(store, held_id, "doi", "10.1002/cctc.201901234")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (held_id,)
+            )
+            conn.commit()
+        store.replace_s2_neighbors(
+            ref_id,
+            "cites",
+            [
+                {
+                    "s2_id": "S2X",
+                    "doi": "10.1002/cctc.201901234",
+                    "title": "T",
+                    "year": 2020,
+                    "held_ref_id": None,
+                }
+            ],
+        )
+        raw_text = (
+            "Some Author, ChemCatChem 2020, 12, 360, "
+            "https://doi.org/10.1002/cctc.201901234."
+        )
+        entry_id = _insert_entry(store, ref_id, 1, raw_text)
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("a local DOI hit must not query Crossref")
+
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _boom)
+
+        result = run_bib_parse_match_pass(store, ref_id, client=_FakeClient("{}"))
+        assert result == {"attempted": 1}
+        doi, s2_id, held_ref_id, match_conf = _entry_row(store, entry_id)
+        assert doi == "10.1002/cctc.201901234"
+        assert s2_id == "S2X"
+        assert held_ref_id is None
+        assert match_conf == pytest.approx(1.0)
+
     def test_text_doi_not_in_s2_neighbors_falls_through_to_crossref(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

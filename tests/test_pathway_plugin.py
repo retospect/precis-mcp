@@ -872,6 +872,80 @@ def test_preview_no_compute(pathway_store: Store) -> None:
     assert "Intermediates" in h.get(id=slug, view="intermediates").body
 
 
+def test_put_typo_mode_raises_and_mints_no_job(
+    pathway_store: Store,
+    register_autocatpath_explore: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr343054: `PathwayHandler.put` only branched on `mode == 'preview'`
+    and never validated `mode=` against the KindSpec's declared set, so a
+    typo'd mode (e.g. 'previw') fell through to the real run/dispatch path
+    instead of raising. A route node is set here so the pre-fix behaviour
+    would have minted a real `autocatpath_explore` compute job — proving
+    the fix stops it before that dispatch, not just before the in-process
+    EMT run."""
+    from precis.errors import BadInput
+
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark")
+    h = _handler(pathway_store)
+
+    with pytest.raises(BadInput) as exc_info:
+        h.put(id="typo_mode_test", text=SMOKE, mode="previw")
+    assert exc_info.value.options == ["preview"]
+
+    assert pathway_store.get_ref(kind="pathway", id="typo-mode-test") is None
+    with pathway_store.pool.connection() as c:
+        rows = c.execute(
+            "SELECT count(*) FROM refs WHERE kind='job' AND retired_at IS NULL"
+        ).fetchone()
+    assert rows is not None and rows[0] == 0, "typo'd mode must not mint a job"
+
+
+def test_put_valid_modes_still_work(pathway_store: Store) -> None:
+    """The two declared behaviours — omit mode= (run) and mode='preview'
+    (cheap network build, no compute) — are unaffected by the new mode=
+    validation."""
+    h = _handler(pathway_store)
+
+    r = h.put(id="valid_mode_run", text=SMOKE)
+    assert "created pathway" in r.body, r.body
+
+    r = h.put(id="valid_mode_preview", text=SMOKE, mode="preview")
+    assert "previewed" in r.body, r.body
+
+
+def test_get_unknown_view_raises_bad_input_naming_accepted_set(
+    pathway_store: Store,
+) -> None:
+    """gr343054: an unknown `view=` (typo or stale doc) must never silently
+    fall through to the default analysis/profile output — it must raise,
+    naming the declared enum."""
+    from precis.errors import BadInput
+
+    h = _handler(pathway_store)
+    h.put(id="unknown_view_test", text=SMOKE)
+
+    with pytest.raises(BadInput) as exc_info:
+        h.get(id="unknown-view-test", view="netwrok")
+    accepted = exc_info.value.options
+    assert accepted == list(PathwayHandler.spec.views)
+
+
+def test_all_declared_views_dispatch(pathway_store: Store) -> None:
+    """Every one of the 12 views the KindSpec declares must still pass
+    through `get` (not itself get rejected as 'unknown') once the view=
+    validation lands."""
+    h = _handler(pathway_store)
+    slug = "views-smoke"
+    h.put(id="views_smoke", text=SMOKE)
+
+    declared = PathwayHandler.spec.views
+    assert len(declared) == 12
+    for view in declared:
+        resp = h.get(id=slug, view=view)
+        assert resp.body, f"view={view!r} returned an empty body"
+
+
 def test_compare_view(pathway_store: Store) -> None:
     h = _handler(pathway_store)
 

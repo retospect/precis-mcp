@@ -68,6 +68,14 @@ def resolve_citation(
     Single-index lookup: ``chunk_citations`` is keyed ``(chunk_id, marker)``
     and joins ``paper_bib_entries`` for the resolved identity fields.
 
+    Defence in depth against a stale ``held_ref_id``: a dedup merge
+    (:func:`precis.ingest.dedup.merge_duplicate`) repoints every bib entry
+    off a retired ref, but a ref can also be retired by another path after
+    the bib entry was resolved. If the held target is retired, follow its
+    ``supersedes`` edge to the live survivor when one exists (the merge
+    always records one); otherwise the citation degrades to not-held rather
+    than surfacing a soft-deleted paper as held.
+
     ``conn`` (mirrors the store/taproot own-transaction convention): a
     caller already holding an open transaction — e.g. hub-refine's
     ``_citation_candidates`` loop — passes it so the read runs in the same
@@ -76,10 +84,18 @@ def resolve_citation(
     """
     sql = """
         SELECT pbe.id, pbe.ref_id, pbe.marker, pbe.raw_text, pbe.doi,
-               pbe.s2_id, pbe.held_ref_id, pbe.authors, pbe.journal,
-               pbe.year
+               pbe.s2_id,
+               CASE WHEN held.retired_at IS NULL THEN pbe.held_ref_id
+                    WHEN survivor_ref.retired_at IS NULL THEN survivor.src_ref_id
+                    ELSE NULL END AS held_ref_id,
+               pbe.authors, pbe.journal, pbe.year
           FROM chunk_citations cc
           JOIN paper_bib_entries pbe ON pbe.id = cc.bib_entry_id
+          LEFT JOIN refs held ON held.ref_id = pbe.held_ref_id
+          LEFT JOIN links survivor
+                 ON survivor.dst_ref_id = pbe.held_ref_id
+                AND survivor.relation = 'supersedes'
+          LEFT JOIN refs survivor_ref ON survivor_ref.ref_id = survivor.src_ref_id
          WHERE cc.chunk_id = %s AND cc.marker = %s
     """
     if conn is not None:

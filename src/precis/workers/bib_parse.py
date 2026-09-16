@@ -522,14 +522,23 @@ def _resolve_crossref_candidates(
 
 def _held_ref_for_doi(conn: Any, doi: str) -> int | None:
     """Resolve a matched ``doi`` to a **held** paper via ``ref_identifiers``
-    (mirrors ``backfill/citation_recall.py::_held_ref_for_neighbor``)."""
+    (mirrors ``backfill/citation_recall.py::_held_ref_for_neighbor``).
+
+    Excludes a retired ref (gr341498): a DOI can outlive the ref that
+    carried it (a dedup merge's identifier migration, or any other
+    retirement), and a retired ref must never be handed back as the held
+    paper — it would strand ``held_ref_id`` on a soft-deleted row exactly
+    like the ``merge_duplicate`` bug this fixes elsewhere.
+    """
     from precis.identity import normalize_doi
 
     nd = normalize_doi(doi)
     if not nd:
         return None
     row = conn.execute(
-        "SELECT ref_id FROM ref_identifiers WHERE id_kind = 'doi' AND id_value = %s",
+        "SELECT ri.ref_id FROM ref_identifiers ri "
+        "JOIN refs r ON r.ref_id = ri.ref_id "
+        "WHERE ri.id_kind = 'doi' AND ri.id_value = %s AND r.retired_at IS NULL",
         (nd,),
     ).fetchone()
     return int(row[0]) if row else None

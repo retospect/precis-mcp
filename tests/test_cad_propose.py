@@ -301,3 +301,46 @@ def test_dispatch_fails_on_unparseable_reply(seeded, monkeypatch):
     ctx = _FakeCtx(store, ref.id, {"cad_ref_id": ref.id, "instruction": "do a thing"})
     cp._dispatch(ctx, cp.SPEC)
     assert ctx.status is None and ctx.failure is not None
+
+
+def test_dispatch_is_tool_less(seeded, monkeypatch):
+    """Propose-only means the agent CANNOT act — pinned at the LlmRequest
+    boundary, not below it.
+
+    The other dispatch tests stub ``call_claude_agent``, which sits *under*
+    the request construction, so a regression that wired up ``mcp_config``
+    (handing the proposing agent real tools) would sail past every one of
+    them. This asserts on the request cad_propose actually builds.
+    """
+    store, ref = seeded
+    captured: dict = {}
+    reply = json.dumps(
+        {
+            "source": (
+                "component flange\nplate add cyl:r30mmh8mm\n"
+                "hub_bore cut cyl:r8mmh10mm @0mm,0mm,-1mm"
+            ),
+            "rationale": "widen the plate to r30",
+        }
+    )
+
+    class _Res:
+        error = None
+        text = reply
+
+    def _capture_request(req):
+        captured["req"] = req
+        return _Res()
+
+    monkeypatch.setattr(cp, "route", _capture_request)
+    ctx = _FakeCtx(
+        store,
+        ref.id,
+        {"cad_ref_id": ref.id, "slug": "cp_flange", "instruction": "widen plate"},
+    )
+    cp._dispatch(ctx, cp.SPEC)
+
+    req = captured["req"]
+    assert req.mcp_config is None, "cad_propose must never hand the agent MCP tools"
+    assert "WebFetch" in req.disallowed_tools
+    assert "WebSearch" in req.disallowed_tools

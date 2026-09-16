@@ -299,3 +299,49 @@ def test_dispatch_fails_on_unparseable_reply(seeded, monkeypatch):
     )
     sp._dispatch(ctx, sp.SPEC)
     assert ctx.status is None and ctx.failure is not None
+
+
+def test_dispatch_is_tool_less(seeded, monkeypatch):
+    """Propose-only means the agent CANNOT act — pinned at the LlmRequest
+    boundary, not below it.
+
+    The other dispatch tests stub ``call_claude_agent``, which sits *under*
+    the request construction, so a regression that wired up ``mcp_config``
+    (handing the proposing agent real tools) would sail past every one of
+    them. This asserts on the request structure_propose actually builds.
+    """
+    store, ref = seeded
+    captured: dict = {}
+    reply = json.dumps(
+        {
+            "ops": [{"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.55]}],
+            "rationale": "bridge the Pd pair with an oxygen",
+        }
+    )
+
+    class _Res:
+        error = None
+        text = reply
+
+    def _capture_request(req):
+        captured["req"] = req
+        return _Res()
+
+    monkeypatch.setattr(sp, "route", _capture_request)
+    ctx = _FakeCtx(
+        store,
+        ref.id,
+        {
+            "structure_ref_id": ref.id,
+            "slug": "pp_pd",
+            "instruction": "add an O bridging the Pd",
+        },
+    )
+    sp._dispatch(ctx, sp.SPEC)
+
+    req = captured["req"]
+    assert req.mcp_config is None, (
+        "structure_propose must never hand the agent MCP tools"
+    )
+    assert "WebFetch" in req.disallowed_tools
+    assert "WebSearch" in req.disallowed_tools

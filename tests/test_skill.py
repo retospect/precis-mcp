@@ -7,6 +7,8 @@ That's intentional: they double as a packaging smoke test.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from precis.dispatch import Hub
@@ -1764,3 +1766,110 @@ def test_ledger_no_bound_session_never_stubs(
     skill.get(id="a")
     out = skill.get(id="a")
     assert "unchanged this session" not in out.body
+
+
+# ── precis-status: previous-exit breadcrumb (gr341515) ─────────────────
+
+
+def test_status_silent_when_no_prior_breadcrumb(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The common case: no previous server ended notably, so the status
+    body carries no "previous server exited" line at all."""
+    from precis import install_watchdog
+
+    monkeypatch.setattr(
+        install_watchdog, "consume_last_exit_breadcrumb", lambda: None
+    )
+    out = skill.get(id="precis-status")
+    assert "previous server exited" not in out.body
+
+
+def test_status_surfaces_install_swapped_breadcrumb(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watchdog's exit must read as one line naming both
+    fingerprints — matching gr341515's worked example verbatim."""
+    from precis import install_watchdog
+
+    monkeypatch.setattr(
+        install_watchdog,
+        "consume_last_exit_breadcrumb",
+        lambda: {
+            "written_at": "2026-09-14T22:19:41Z",
+            "reason": "install-swapped",
+            "old_fingerprint": "0e3eac8b",
+            "new_fingerprint": "0e15f509",
+            "git_sha": "abc123",
+        },
+    )
+    out = skill.get(id="precis-status")
+    assert (
+        "previous server exited 2026-09-14T22:19:41Z — "
+        "install swapped 0e3eac8b→0e15f509" in out.body
+    )
+
+
+def test_status_surfaces_crash_breadcrumb_with_detail(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine crash must read distinguishably from a watchdog exit —
+    the exception detail carries through into the rendered line."""
+    from precis import install_watchdog
+
+    monkeypatch.setattr(
+        install_watchdog,
+        "consume_last_exit_breadcrumb",
+        lambda: {
+            "written_at": "2026-09-14T23:00:00Z",
+            "reason": "crash",
+            "detail": "ValueError: boom",
+        },
+    )
+    out = skill.get(id="precis-status")
+    assert "previous server exited 2026-09-14T23:00:00Z — crashed" in out.body
+    assert "ValueError: boom" in out.body
+
+
+def test_status_surfaces_normal_exit_breadcrumb(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import install_watchdog
+
+    monkeypatch.setattr(
+        install_watchdog,
+        "consume_last_exit_breadcrumb",
+        lambda: {"written_at": "2026-09-14T23:00:00Z", "reason": "exit"},
+    )
+    out = skill.get(id="precis-status")
+    assert (
+        "previous server exited 2026-09-14T23:00:00Z — exited normally"
+        in out.body
+    )
+
+
+def test_status_breadcrumb_is_consumed_not_repeated(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The renderer must call through to the real consume-on-read
+    contract (not cache its own copy) — a second ``precis-status`` call
+    against the real breadcrumb store must not repeat the line. This
+    exercises the actual
+    :func:`install_watchdog.consume_last_exit_breadcrumb` (not a stub)
+    against a tmp breadcrumb path."""
+    import json
+
+    from precis import install_watchdog
+
+    target = tmp_path / "last-exit.json"
+    target.write_text(
+        json.dumps({"written_at": "2026-09-14T23:00:00Z", "reason": "exit"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(install_watchdog, "_breadcrumb_path", lambda: target)
+
+    first = skill.get(id="precis-status")
+    assert "previous server exited" in first.body
+
+    second = skill.get(id="precis-status")
+    assert "previous server exited" not in second.body

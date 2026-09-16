@@ -5,7 +5,10 @@ the thread itself is a sleep-loop around :func:`_install_replaced` plus
 
 from __future__ import annotations
 
+import atexit
+import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -15,6 +18,8 @@ from precis import install_watchdog
 from precis.install_watchdog import (
     _fingerprint_for,
     _install_replaced,
+    consume_last_exit_breadcrumb,
+    install_exit_breadcrumb_hooks,
     start_install_watchdog,
 )
 
@@ -194,3 +199,180 @@ def test_env_kill_switch_documented_value_only(
     monkeypatch.setenv("PRECIS_INSTALL_WATCHDOG", "false")
     assert start_install_watchdog(interval_s=3600.0) is not None
     assert os.environ["PRECIS_INSTALL_WATCHDOG"] == "false"
+
+
+# ---------------------------------------------------------------------------
+# gr341515 — exit breadcrumb: the watchdog's exit was invisible past a
+# stderr line no MCP client surfaces. These pin the write/consume contract
+# `handlers/skill.py`'s precis-status renderer relies on.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _breadcrumb_in_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Redirect every breadcrumb read/write in this file at a tmp path —
+    never touch the real ``~/.cache/precis`` (a named, persistent gate
+    volume — see ``docker/dev/compose.yaml`` — so a real write here would
+    leak stale breadcrumbs across unrelated gate runs).
+
+    Also isolates the crash/exit hooks themselves: several existing tests
+    call ``start_install_watchdog()``, which now unconditionally arms
+    them (real ``sys.excepthook`` + a real ``atexit.register``). Reset
+    ``_hooks_installed`` so each test gets a fresh armed/not-armed state
+    to assert on, and unregister/restore afterward so no test leaks a
+    live hook (or a real atexit callback pointed at the *un-patched*
+    ``_breadcrumb_path``) into the rest of the suite.
+    """
+    target = tmp_path / "last-exit.json"
+    monkeypatch.setattr(install_watchdog, "_breadcrumb_path", lambda: target)
+    monkeypatch.setattr(install_watchdog, "_hooks_installed", False)
+    monkeypatch.setattr(install_watchdog, "_crash_detail", None)
+    original_excepthook = sys.excepthook
+    yield target
+    sys.excepthook = original_excepthook
+    atexit.unregister(install_watchdog._atexit_breadcrumb)
+
+
+def test_watchdog_exit_writes_breadcrumb_before_exiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _breadcrumb_in_tmp: Path
+) -> None:
+    """The install-swap exit path must drop the breadcrumb *before*
+    ``os._exit`` — the watchdog fires it on a daemon thread, so once the
+    real ``os._exit`` runs there is no further chance to flush anything."""
+    init = _fake_install(tmp_path)
+    baseline = _fingerprint_for(init)
+    assert baseline is not None
+
+    codes: list[int] = []
+    fired = threading.Event()
+
+    def _fake_exit(code: int) -> None:
+        codes.append(code)
+        fired.set()
+        raise SystemExit
+
+    monkeypatch.setattr(install_watchdog.os, "_exit", _fake_exit)
+    monkeypatch.setattr(
+        install_watchdog, "install_fingerprint", lambda: _fingerprint_for(init)
+    )
+    monkeypatch.delenv("PRECIS_INSTALL_WATCHDOG", raising=False)
+    thread = start_install_watchdog(interval_s=0.05)
+    assert thread is not None
+
+    init.unlink()
+    init.write_text("# v2 — replaced by a deploy\n", encoding="utf-8")
+    assert fired.wait(10.0), "watchdog never reacted to the replaced install"
+    thread.join(5.0)
+
+    assert codes == [0]
+    payload = json.loads(_breadcrumb_in_tmp.read_text(encoding="utf-8"))
+    assert payload["reason"] == "install-swapped"
+    assert payload["old_fingerprint"] is not None
+    assert payload["new_fingerprint"] is not None
+    assert payload["old_fingerprint"] != payload["new_fingerprint"]
+    assert "git_sha" in payload
+    assert "written_at" in payload
+
+
+def test_write_exit_breadcrumb_never_raises_on_a_bad_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Best-effort per the docstring: an unwritable target must not raise
+    past the call — this runs on an exit path where an exception here
+    would itself become the failure it's trying to record."""
+    unwritable = tmp_path / "not-a-dir" / "last-exit.json"
+    (tmp_path / "not-a-dir").write_text("blocks mkdir", encoding="utf-8")
+    monkeypatch.setattr(install_watchdog, "_breadcrumb_path", lambda: unwritable)
+    install_watchdog._write_exit_breadcrumb("install-swapped")  # must not raise
+
+
+def test_excepthook_marks_crash_reason(
+    monkeypatch: pytest.MonkeyPatch, _breadcrumb_in_tmp: Path
+) -> None:
+    """A genuine unhandled exception must produce ``reason="crash"`` with
+    the exception named in ``detail``, and must still forward to the
+    original hook so the traceback still reaches stderr."""
+    monkeypatch.setattr(install_watchdog, "_hooks_installed", False)
+    forwarded: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        install_watchdog,
+        "_ORIGINAL_EXCEPTHOOK",
+        lambda *a: forwarded.append(a),
+    )
+    monkeypatch.setattr(install_watchdog, "_crash_detail", None)
+    install_exit_breadcrumb_hooks()
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        sys.excepthook(*sys.exc_info())
+    assert forwarded, "original excepthook was not chained"
+
+    install_watchdog._atexit_breadcrumb()
+    payload = json.loads(_breadcrumb_in_tmp.read_text(encoding="utf-8"))
+    assert payload["reason"] == "crash"
+    assert "ValueError" in payload["detail"]
+    assert "boom" in payload["detail"]
+
+
+def test_atexit_breadcrumb_reason_is_exit_absent_a_crash(
+    monkeypatch: pytest.MonkeyPatch, _breadcrumb_in_tmp: Path
+) -> None:
+    """No exception seen this run → the atexit breadcrumb reads
+    ``reason="exit"``, distinguishing a normal/graceful shutdown from
+    both a crash and a watchdog-triggered ``install-swapped`` exit."""
+    monkeypatch.setattr(install_watchdog, "_crash_detail", None)
+    install_watchdog._atexit_breadcrumb()
+    payload = json.loads(_breadcrumb_in_tmp.read_text(encoding="utf-8"))
+    assert payload["reason"] == "exit"
+    assert "detail" not in payload
+
+
+def test_install_exit_breadcrumb_hooks_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second call must not register a second ``atexit`` callback —
+    every ``start_install_watchdog()`` call (including in this test
+    file) calls it, so without the guard a long-lived process would
+    write its exit breadcrumb once per call site."""
+    monkeypatch.setattr(install_watchdog, "_hooks_installed", False)
+    registrations: list[object] = []
+    monkeypatch.setattr(
+        install_watchdog.atexit, "register", registrations.append
+    )
+    install_exit_breadcrumb_hooks()
+    install_exit_breadcrumb_hooks()
+    assert len(registrations) == 1
+
+
+def test_consume_last_exit_breadcrumb_reads_and_deletes(
+    _breadcrumb_in_tmp: Path,
+) -> None:
+    """Consume-on-read is the age-out mechanism (gr341515 item 3, picked
+    over a TTL check for the simpler invariant): the second read must
+    come back empty even though nothing else changed."""
+    _breadcrumb_in_tmp.parent.mkdir(parents=True, exist_ok=True)
+    _breadcrumb_in_tmp.write_text(
+        json.dumps({"reason": "install-swapped", "written_at": "2026-09-14T22:19:41Z"}),
+        encoding="utf-8",
+    )
+    first = consume_last_exit_breadcrumb()
+    assert first is not None
+    assert first["reason"] == "install-swapped"
+    assert not _breadcrumb_in_tmp.exists()
+
+    assert consume_last_exit_breadcrumb() is None
+
+
+def test_consume_last_exit_breadcrumb_missing_file(_breadcrumb_in_tmp: Path) -> None:
+    assert consume_last_exit_breadcrumb() is None
+
+
+def test_consume_last_exit_breadcrumb_corrupt_json(_breadcrumb_in_tmp: Path) -> None:
+    """Malformed content must not raise — it's consumed (deleted) and
+    treated as absent, same as a missing file."""
+    _breadcrumb_in_tmp.parent.mkdir(parents=True, exist_ok=True)
+    _breadcrumb_in_tmp.write_text("{not json", encoding="utf-8")
+    assert consume_last_exit_breadcrumb() is None
+    assert not _breadcrumb_in_tmp.exists()

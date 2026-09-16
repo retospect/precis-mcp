@@ -1234,11 +1234,39 @@ class PaperHandler(Handler):
         live ``Ref`` + identifiers, renders each changed field as
         ``old → new``, and touches neither ``refs`` nor
         ``ref_identifiers`` — no :meth:`Store.tx` is opened.
+
+        gr341499: a ``doi=`` / ``arxiv=`` edit can fail atomically at
+        commit time — the real write (:meth:`Store.set_ref_identifier`)
+        raises :class:`BadInput` when the value is already claimed by a
+        *different* **live** ref (the ``(id_kind, id_value)`` uniqueness
+        that ``ref_identifiers`` enforces; migration 0049's
+        BEFORE-UPDATE trigger lowercases stored DOIs, so the collision
+        is case-insensitive) — but that check never ran here, so
+        ``dry_run='full'`` reported success on a commit that would
+        actually fail. Mirrors it with :meth:`Store.find_ref_by_identifier`
+        (the same ``(id_kind, id_value) ... AND retired_at IS NULL``
+        lookup the real write's own conflict check runs) for both
+        fields, and raises the identical error dry-run would hit for
+        real rather than silently implying the write will succeed.
+        Every other field this method previews (title / year / authors
+        / abstract / journal / entry_type) has no commit-time
+        validation beyond "the ref is still live", which the
+        ``NotFound`` above already covers — there's nothing else to
+        skip.
         """
         old = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
         if old is None:
             raise NotFound(f"{self.spec.kind} id={ref_id} not found")
         old_ids = self.store.identifiers_for_refs([ref_id]).get(ref_id, {})
+        for scheme, value in (("doi", doi), ("arxiv", arxiv)):
+            if not value or not str(value).strip():
+                continue
+            owner_id = self.store.find_ref_by_identifier(scheme, str(value))
+            if owner_id is not None and owner_id != ref_id:
+                raise BadInput(
+                    f"{scheme}={str(value).strip()!r} already belongs to ref id={owner_id}",
+                    next="resolve the duplicate before reassigning the identifier",
+                )
         lines: list[str] = []
         if new_title is not None:
             lines.append(f"title: {old.title!r} → {new_title!r}")

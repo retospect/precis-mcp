@@ -103,6 +103,52 @@ def test_resolve_not_held_citation_has_doi_but_no_held_ref(store: Any) -> None:
     assert res.doi == "10.9999/unheld"
 
 
+def test_resolve_retired_held_ref_degrades_to_not_held(store: Any) -> None:
+    # gr341498: a bib entry can point at a ref that gets soft-deleted after
+    # resolution (e.g. a dedup merge that predates the repoint fix, or any
+    # other retirement path). A retired ref must never surface as held.
+    citing = _seed_paper(store, slug="res-retired-citing")
+    retired = _seed_paper(store, slug="res-retired-held")
+    entry = _seed_entry(store, citing, 99, held_ref_id=retired)
+    chunk = _seed_chunk(store, citing, "as shown [99].")
+    _seed_citation(store, chunk, 99, entry)
+
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (retired,))
+        conn.commit()
+
+    res = resolve_citation(store, chunk, 99)
+    assert res is not None
+    assert res.held_ref_id is None
+    assert res.is_held is False
+
+
+def test_resolve_retired_held_ref_follows_supersedes_to_survivor(store: Any) -> None:
+    # The merge always records a `supersedes` edge (survivor -> duplicate);
+    # when present, resolve should hand back the live survivor instead of
+    # degrading to not-held.
+    citing = _seed_paper(store, slug="res-super-citing")
+    survivor = _seed_paper(store, slug="res-super-survivor")
+    retired = _seed_paper(store, slug="res-super-retired")
+    entry = _seed_entry(store, citing, 100, held_ref_id=retired)
+    chunk = _seed_chunk(store, citing, "as shown [100].")
+    _seed_citation(store, chunk, 100, entry)
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by) "
+            "VALUES (%s, %s, 'supersedes', 'system')",
+            (survivor, retired),
+        )
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (retired,))
+        conn.commit()
+
+    res = resolve_citation(store, chunk, 100)
+    assert res is not None
+    assert res.held_ref_id == survivor
+    assert res.is_held is True
+
+
 def test_resolve_unknown_marker_returns_none(store: Any) -> None:
     citing = _seed_paper(store, slug="res-none")
     entry = _seed_entry(store, citing, 5)
