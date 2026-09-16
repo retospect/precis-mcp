@@ -1778,9 +1778,7 @@ def test_status_silent_when_no_prior_breadcrumb(
     body carries no "previous server exited" line at all."""
     from precis import install_watchdog
 
-    monkeypatch.setattr(
-        install_watchdog, "consume_last_exit_breadcrumb", lambda: None
-    )
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
     out = skill.get(id="precis-status")
     assert "previous server exited" not in out.body
 
@@ -1842,10 +1840,7 @@ def test_status_surfaces_normal_exit_breadcrumb(
         lambda: {"written_at": "2026-09-14T23:00:00Z", "reason": "exit"},
     )
     out = skill.get(id="precis-status")
-    assert (
-        "previous server exited 2026-09-14T23:00:00Z — exited normally"
-        in out.body
-    )
+    assert "previous server exited 2026-09-14T23:00:00Z — exited normally" in out.body
 
 
 def test_status_breadcrumb_is_consumed_not_repeated(

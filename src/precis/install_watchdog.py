@@ -46,6 +46,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from types import TracebackType
 
 log = logging.getLogger(__name__)
 
@@ -130,8 +131,14 @@ def _git_sha_short() -> str:
 
     try:
         proc = subprocess.run(
-            ["git", "-C", str(Path(precis.__file__).resolve().parent),
-             "rev-parse", "--short=12", "HEAD"],
+            [
+                "git",
+                "-C",
+                str(Path(precis.__file__).resolve().parent),
+                "rev-parse",
+                "--short=12",
+                "HEAD",
+            ],
             capture_output=True,
             text=True,
             timeout=3,
@@ -217,7 +224,9 @@ def consume_last_exit_breadcrumb() -> dict[str, object] | None:
 _crash_detail: str | None = None
 
 
-def _excepthook(exc_type: type[BaseException], exc: BaseException, tb: object) -> None:
+def _excepthook(
+    exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
+) -> None:
     global _crash_detail
     _crash_detail = f"{exc_type.__name__}: {exc}"
     _ORIGINAL_EXCEPTHOOK(exc_type, exc, tb)  # never swallow — same stderr trace

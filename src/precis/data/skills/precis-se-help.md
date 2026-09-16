@@ -314,6 +314,8 @@ the design serves, default `related-to` for a sibling variant,
 - A loaded block that is not in the analysed subgraph is currently NOT
   flagged — check block membership yourself (j of N blocks in header).
 
+## Checking views — drc, fasten, clearance, sweep
+
 `view='drc'`: capacity vs declared load ("asked to carry X N compression
 against a Y N buckling/crush ceiling"), mechanism-implied BOM demands,
 undeclared interpenetration, dof_disagreement, unconnected ports, and

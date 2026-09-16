@@ -330,7 +330,10 @@ def findings(
             # rod) — envelope contact is not what 'axial' asserts
             # (KINEMATIC_CLASSES's own docstring).
             continue
-        if deadline is not None and time.monotonic() > deadline:
+        # >= not >: same coarse-clock rule as validate.py's overlap
+        # deadline — budget_s=0.0 must deterministically skip, even when
+        # the clock hasn't ticked since the deadline was computed.
+        if deadline is not None and time.monotonic() >= deadline:
             skipped.append(subject)
             continue
         pair = _pair_clearance(tree, c.a_block, c.b_block)

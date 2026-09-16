@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -211,7 +212,7 @@ def test_env_kill_switch_documented_value_only(
 @pytest.fixture(autouse=True)
 def _breadcrumb_in_tmp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+) -> Iterator[Path]:
     """Redirect every breadcrumb read/write in this file at a tmp path —
     never touch the real ``~/.cache/precis`` (a named, persistent gate
     volume — see ``docker/dev/compose.yaml`` — so a real write here would
@@ -338,9 +339,7 @@ def test_install_exit_breadcrumb_hooks_is_idempotent(
     write its exit breadcrumb once per call site."""
     monkeypatch.setattr(install_watchdog, "_hooks_installed", False)
     registrations: list[object] = []
-    monkeypatch.setattr(
-        install_watchdog.atexit, "register", registrations.append
-    )
+    monkeypatch.setattr(install_watchdog.atexit, "register", registrations.append)
     install_exit_breadcrumb_hooks()
     install_exit_breadcrumb_hooks()
     assert len(registrations) == 1

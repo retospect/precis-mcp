@@ -19,9 +19,7 @@ def _mk_paper(store: Store, *, slug: str) -> int:
     return int(store.insert_ref(kind="paper", slug=slug, title=f"T {slug}").id)
 
 
-def _seed_bib_entry(
-    store: Store, ref_id: int, marker: int, *, held_ref_id: int
-) -> int:
+def _seed_bib_entry(store: Store, ref_id: int, marker: int, *, held_ref_id: int) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             "INSERT INTO paper_bib_entries "

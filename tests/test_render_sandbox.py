@@ -92,7 +92,11 @@ def test_raising_code_fails_cleanly_with_traceback() -> None:
 
 
 def test_no_output_is_reported() -> None:
-    r = render_python("x = 1 + 1\n")  # produces no file, no figure
+    # Generous timeout_s: this asserts the no-output CLASSIFICATION, and a
+    # loaded CI runner (macOS leg, whole suite at -n auto) can take >30 s
+    # just to cold-start the python -I child — which reports "timeout"
+    # before the classifier ever runs.
+    r = render_python("x = 1 + 1\n", timeout_s=120.0)  # no file, no figure
     assert not r.ok
     assert r.error == "no-output"
 

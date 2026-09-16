@@ -70,7 +70,9 @@ _CASES: dict[str, dict[str, object]] = {
 
 def _sources() -> list[tuple[str, str]]:
     return [
-        (str(p.relative_to(_SE)), p.read_text(encoding="utf-8"))
+        # as_posix, not str: _ALLOWED keys are written with "/" and this
+        # must match them on Windows too (str gives "atomic\\mechanics.py").
+        (p.relative_to(_SE).as_posix(), p.read_text(encoding="utf-8"))
         for p in sorted(_SE.rglob("*.py"))
     ]
 

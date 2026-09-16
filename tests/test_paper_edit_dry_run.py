@@ -40,9 +40,7 @@ def _seed_paper_ref(
         ref.id, [ChunkInsert(ord=0, text="Body chunk.", meta={})]
     )
     if doi:
-        hub.live_store.insert_ref_identifiers(
-            ref.id, [("doi", doi, "test-seed")]
-        )
+        hub.live_store.insert_ref_identifiers(ref.id, [("doi", doi, "test-seed")])
     return ref.id
 
 

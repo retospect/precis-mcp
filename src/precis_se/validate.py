@@ -279,7 +279,12 @@ def envelope_overlaps(
             margin = cad_relate.CONTACT_TOL_REL * (min(diags) if diags else 0.0)
             if _aabb_clear(box_a, box_b, margin):
                 continue
-            if deadline is not None and time.monotonic() > deadline:
+            # >= not >: with budget_s=0.0 the deadline equals the start
+            # tick, and on a coarse clock (Windows monotonic ≈ 15.6 ms)
+            # the next reading can be the SAME tick — strict > would let
+            # a zero-budget pair through to the narrow phase and drop it
+            # from every bucket.
+            if deadline is not None and time.monotonic() >= deadline:
                 unchecked.append((a_name, b_name))
                 continue
             result = cad_relate.clearance(design, a_name, b_name)

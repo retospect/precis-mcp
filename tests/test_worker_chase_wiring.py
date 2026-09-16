@@ -21,10 +21,11 @@ resolution is attempted either).
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 from precis.cli.worker import _build_chase_pass
+from precis.store import Store
 
 _RUN_PATH = "precis.workers.chase.run_finding_chase_pass"
 
@@ -42,7 +43,9 @@ def test_env_flag_alone_turns_on_with_llm(monkeypatch: Any) -> None:
 
     with patch(_RUN_PATH) as mock_run:
         mock_run.return_value = {"claimed": 0, "ok": 0, "failed": 0}
-        chase_pass = _build_chase_pass(_args(with_llm=False), store=object(), handlers=[])
+        chase_pass = _build_chase_pass(
+            _args(with_llm=False), store=cast(Store, object()), handlers=[]
+        )
         chase_pass(5)
 
     mock_run.assert_called_once()
@@ -57,7 +60,9 @@ def test_no_flag_and_no_env_leaves_with_llm_off(monkeypatch: Any) -> None:
 
     with patch(_RUN_PATH) as mock_run:
         mock_run.return_value = {"claimed": 0, "ok": 0, "failed": 0}
-        chase_pass = _build_chase_pass(_args(with_llm=False), store=object(), handlers=[])
+        chase_pass = _build_chase_pass(
+            _args(with_llm=False), store=cast(Store, object()), handlers=[]
+        )
         chase_pass(5)
 
     mock_run.assert_called_once()

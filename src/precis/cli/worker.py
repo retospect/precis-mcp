@@ -762,9 +762,14 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_bib_retag_pass)
 
-        # Finding-chase pass — see _build_chase_pass's docstring.
+        # Finding-chase pass — see _build_chase_pass's docstring. Bound to
+        # a local before the append so the _REF_PASS_PRIORITY static guard
+        # (test_ref_pass_priority_keys_match_registered_passes, which only
+        # sees ``append(<Name>)`` sites) keeps matching the table key; the
+        # closure's own __name__ is _chase_pass either way.
         if _register("chase"):
-            ref_passes.append(_build_chase_pass(args, store, handlers))
+            _chase_pass = _build_chase_pass(args, store, handlers)
+            ref_passes.append(_chase_pass)
 
         # inbound_chase — inbound counterpart to the finding-chase pass
         # above: exhaustive one-hop citer sweep + chunk-level verdicts
@@ -2518,9 +2523,7 @@ def _build_chase_pass(
     _chase_embed_handler = next(
         (h for h in handlers if isinstance(h, EmbedHandler)), None
     )
-    _chase_taproot_flag_on = bool(
-        int(os.environ.get(_TAPROOT_CHASE_ENV, "0") or "0")
-    )
+    _chase_taproot_flag_on = bool(int(os.environ.get(_TAPROOT_CHASE_ENV, "0") or "0"))
     _chase_with_llm = args.with_llm or env_flag("PRECIS_CHASE_LLM")
     if _chase_embed_handler is not None:
         chase_embedder = _chase_embed_handler.embedder
@@ -2529,8 +2532,7 @@ def _build_chase_pass(
             chase_embedder = _resolve_embedder(args, store)
         except Exception:
             log.warning(
-                "chase: embedder unavailable -- taproot bridge "
-                "will degrade to no-op",
+                "chase: embedder unavailable -- taproot bridge will degrade to no-op",
                 exc_info=True,
             )
             chase_embedder = None
