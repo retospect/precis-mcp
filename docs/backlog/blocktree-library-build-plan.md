@@ -140,48 +140,36 @@ index to walk, so that conversion is its own slice
 
 ---
 
-## Slice 2 — discrete block states + stimulus-labelled transitions
+## Slice 2 — discrete block states + stimulus-labelled transitions — **SHIPPED**
 
-**Why here.** It is the one mechanism serving both photoswitches (`--[λ]-->`)
-and assembly (`--[rxn]-->`). Everything downstream assumes it.
+Storage landed 2026-09-14 in `7bb28f55` (design-core round 1); the se
+consumer side landed 2026-09-15 in `7f7f3a75`. The heading stays (numbered,
+because slices 3–6 and other docs cite these numbers); the spec body is gone
+per delete-on-ship. What exists now:
 
-**Shape.**
+- **Storage is shared, not se-local**, per the 2026-09-12 ruling: states,
+  transitions and per-block current state live in `precis.design.states`
+  (migration `0162_design_core.sql`), with `driver_kind` a closed enum
+  (`light`, `reaction`, `redox`, `ph`, `thermal`, `mechanical`). The
+  "two migrations" plan here was overtaken — the state tables rode
+  design-core's own migration, so **slice 2 added none**.
+- `declare_states` / `declare_transitions` / `set_current_state` ops on se
+  (`precis_se.ops`), materialized after `persist.save_tree` mints block uids
+  because the shared tables key on uid.
+- `get(..., args={"state": {...}})` poses transiently on `view='tree'`,
+  `'block'` and `'clearance'`; `set_current_state` is the persistent pose.
+  The two are deliberately distinct.
+- `view='sweep'` over the cross product of state-carrying blocks' states,
+  bounded on **both** axes — a combination cap and one shared wall-clock
+  budget — each reporting what went unchecked, so a timed-out sweep can
+  never read as a clean one.
+- Transitions are directed edges: forward and reverse are separate rows, so
+  a ratchet's differing barriers stay expressible.
 
-    state:       (block, name, envelope?, port_pose_overrides?)
-    transition:  (block, from_state, to_state, driver_kind, driver_ref, params)
-
-`driver_kind` ∈ {`light`, `reaction`, `redox`, `ph`, `thermal`}. `driver_ref`
-points at the thing that drives it — a `rxn` slug for a reaction, a wavelength
-+ params for light. A block with no declared states has exactly one implicit
-state, so **nothing existing changes shape**.
-
-*Shared-states ruling (Reto 2026-09-12, → `design-state-core.md`):*
-bistability is true macro AND nano (Howell-style compliant latches, hard
-stops · photoswitches, conformers), so this slice's state/transition
-tables land in the SHARED design-core home (`src/precis/design/`), not
-se-atomic-locally — this track builds them there as first consumer, schema
-exactly as above plus `mechanical` added to `driver_kind` by migration
-for the macro adopters. Per-block current state, no design-level
-pointer. `design-state-core.md` verifies the macro rental fits; do not
-add se-atomic-specific columns. Slice-level ordering: slice 1 (instancing) is
-free to go once units lands; THIS slice waits for design-core's package
-scaffold (`src/precis/design/` + its core-migration chain) so the
-states tables have their home — don't create the package from here.
-
-**Copy cad's posing surface, do not invent one.** `cad` already has
-`get(..., args={"state": {...}})` and `view='sweep'` ("does anything collide
-anywhere in the travel"). The block analogue is `view='sweep'` over declared
-*states* rather than a continuous joint range — same question, discrete domain.
-
-**Schema.** *Revised 2026-09-07, before starting:* land slice 2 in its **own
-migration**, separate from slice 1's. The original advice here was to share
-one migration since the block table is reshaped either way — that is a false
-economy. Migrations are forward-only and cheap; one change per migration is
-far easier to verify and to reason about later, and slices 1 and 2 fail in
-completely different ways. Two migrations.
-
-**Done when:** a block can declare `{loaded, bonded}` or `{trans, cis}`, be
-posed in either, probed for clash in each, and swept across all states.
+Known gap, tracked in **gr342026**: `port_pose_overrides` is direction-only
+(`{port: {'direction': [x,y,z]}}`), because `Port`/`PortSpec` has no
+absolute position field. A state can re-aim a port but not move it. Settle
+this before a consumer bakes in direction-only semantics.
 
 ---
 
@@ -287,10 +275,9 @@ things:
 
 ## Sequencing note
 
-Slices 1 and 2 get **one migration each** (slice 2's §Schema paragraph
-settled this on 2026-09-07; the earlier "share a migration" advice here was
-the false economy it names). Land them together but as separate commits.
-3–6 are independently shippable. **Do not bundle 7–9 into any of them** — a
+Slices 1 and 2 are shipped; in the event slice 1 took its own migration and
+slice 2 took none, its tables having ridden design-core's. 3–6 are
+independently shippable. **Do not bundle 7–9 into any of them** — a
 refactor or schema change that also alters behaviour cannot be verified by
 "the tests still pass", which is the whole reason the earlier blocktree work
 stayed behaviour-neutral.
