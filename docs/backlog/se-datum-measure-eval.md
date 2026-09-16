@@ -3,7 +3,6 @@ status: draft
 title: se datums + measurement-from-geometry evaluator — the attachment point for preferred-number wells
 prio: high
 model: opus
-blocked-by: preferred-number-term
 ---
 
 # se datums + `m(design)` evaluator

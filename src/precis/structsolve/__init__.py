@@ -45,6 +45,12 @@ Modules:
   limit points (force-controlled Newton failure, or a displacement-
   controlled reaction extremum) and reports a real energy barrier when
   the branch folds, honestly reporting none for a monostable sweep.
+- :mod:`precis.structsolve.preferred` — the preferred-number term
+  (multiscale-optimisation-method.md §4, slice 1): differentiable
+  round-value wells over declared measurements — bilateral-Huber
+  tiers combined by softmin, tier pitches from part size rounded to
+  1-2-5, coefficients as fixed rules rather than per-design
+  calibration.
 
 Where :mod:`~precis.structsolve.formfind` returns an exact equilibrium,
 ``simp`` returns an **estimate**: it discretises a continuum into voxels
@@ -79,6 +85,17 @@ from precis.structsolve.continuation import (
     trace_equilibrium_branch,
 )
 from precis.structsolve.formfind import FormFindError, FormFindResult, form_find
+from precis.structsolve.preferred import (
+    Coefficients,
+    PreferredResult,
+    default_coefficients,
+    evaluate,
+    penalty,
+    pull_ratio,
+    scale_A,
+    tiers_for,
+    well,
+)
 from precis.structsolve.simp import (
     LatticeResult,
     SimpResult,
@@ -90,6 +107,7 @@ from precis.structsolve.simp import (
 __all__ = [
     "IDIOMS",
     "BistabilityResult",
+    "Coefficients",
     "ComplementarityError",
     "ComplementarityInputError",
     "ComplementarityResult",
@@ -101,13 +119,21 @@ __all__ = [
     "FormFindResult",
     "LatticeResult",
     "LimitPoint",
+    "PreferredResult",
     "SimpResult",
     "barrier_over_kT",
+    "default_coefficients",
+    "evaluate",
     "form_find",
     "lattice_fill",
     "overhang_violations",
+    "penalty",
     "probe_bistability",
+    "pull_ratio",
+    "scale_A",
     "simp_optimize",
     "solve_complementarity",
+    "tiers_for",
     "trace_equilibrium_branch",
+    "well",
 ]

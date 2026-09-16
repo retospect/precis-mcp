@@ -95,7 +95,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | non-bonded menu (charge/H-bond/vdW), ratchets, hysteresis caching rule, DFT spacer library, synthesis-route choice | addendum A9 → stick-placement / photoswitch / design-core states / blocktree | spec'd 2026-09-12 |
 | process projection composability; reaction yield (open questions) | addendum A10 → spec §6.2 | spec'd 2026-09-12 |
 | level-set shape-functional inner layer (single boundary velocity field; scoped to phase-3 polish over the shipped SIMP screen) | `multiscale-optimisation-method.md` §2 | spec'd 2026-09-15; per-block first, multiphase + topological-derivative nucleation as upgrades |
-| preferred-number term (differentiable, min-of-offset-wells; generalises spec §4.6 lattice preference to declared measurements) | `multiscale-optimisation-method.md` §4 | spec'd 2026-09-15, max→min corrected on intake |
+| preferred-number term (differentiable, min-of-offset-wells; generalises spec §4.6 lattice preference to declared measurements) | `multiscale-optimisation-method.md` §4; slice 1 = `precis/structsolve/preferred.py` | term SHIPPED 2026-09-15 (pure numpy); attachment to se measures → `se-datum-measure-eval.md` |
 | fixed reference normalisation R_i (pins Chebyshev reference point too) | `multiscale-optimisation-method.md` §3 | decided 2026-09-15 |
 | move-set deltas (atomic merge-resplit, LLM-proposed split surfaces + random-cut hedge, demand-driven consultation, snap-to-coarser-tier) | `multiscale-optimisation-method.md` §6 | spec'd 2026-09-15 |
 | alchemical composition relaxation (atomic tier) | `multiscale-optimisation-method.md` §7 → spec §4.9 when investigated | flagged 2026-09-15 |
