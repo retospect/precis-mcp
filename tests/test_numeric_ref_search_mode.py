@@ -47,6 +47,7 @@ def test_ref_level_search_hits_default_mode_is_none(hub: Hub) -> None:
 
 def test_body_chunk_search_hits_forwards_mode_to_search_chunks(hub: Hub) -> None:
     memory = MemoryHandler(hub=hub)
+    assert hub.store is not None  # narrow Store | None for mypy
     with patch.object(
         hub.store.chunks, "search_chunks", wraps=hub.store.chunks.search_chunks
     ) as spy:
