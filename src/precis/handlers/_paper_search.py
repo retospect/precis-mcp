@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, NotFound, Upstream
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._paper_format import _clean_inline_text, _format_authors
@@ -519,6 +519,13 @@ class BlockSearchResult:
     #: whose ``total`` is ``None``. Ignored when ``total`` is set (the
     #: renderer prefers the exact count there).
     single_page_has_more: bool = False
+    #: gr340059 — ``\n\n⚠ …`` note naming any ``exclude=`` entry that
+    #: parsed as a well-formed handle but didn't resolve to a live ref.
+    #: Empty string when every entry resolved (or none were dead
+    #: handles — a stale bare slug still degrades silently, see
+    #: ``_exclude_closure``). Same append-at-every-branch wiring as
+    #: ``year_notice``.
+    exclude_notice: str = ""
     extra_queries: list[str] = field(default_factory=list)
     hyde_answers: list[str] = field(default_factory=list)
     per_paper_cap: int | None = None
@@ -777,13 +784,27 @@ class FusedBlockSearch:
             # ``scope=`` accepts a universal handle (``pa<id>`` /
             # ``pc<id>``) — the form output now emits — resolving it to the
             # paper's ref_id; else the legacy slug / DOI path.
+            scope_is_handle = handle_registry.parse(str(scope)) is not None
             scope_resolved = (
-                self.store.resolve_handle(str(scope))
-                if handle_registry.parse(str(scope)) is not None
-                else None
+                self.store.resolve_handle(str(scope)) if scope_is_handle else None
             )
             if scope_resolved is not None:
                 scope_ref_id = scope_resolved.ref_id
+            elif scope_is_handle:
+                # gr340059: ``scope=`` is well-formed handle *syntax*
+                # (``pa<id>``, ``pc<id>``, …) that ``resolve_handle``
+                # couldn't find a live row for (never existed, or
+                # soft-deleted with no supersede survivor). Raise here
+                # instead of falling into the slug path below — that
+                # path's ``resolve_live_slug_ref`` calls anything
+                # unresolved a "slug", which is wrong (and confusing) for
+                # an input that was never a slug to begin with; it also
+                # misdirects toward `_suggest_paper_slugs` fuzzy-slug
+                # suggestions, which don't apply to a dead numeric handle.
+                raise NotFound(
+                    f"{kind} handle {str(scope)!r} not found",
+                    next=f"search(kind={kind!r}, q='...') to find one",
+                )
             else:
                 scope_slug = _maybe_resolve_doi(self.store, str(scope))
                 scope_ref = resolve_live_slug_ref(
@@ -820,10 +841,26 @@ class FusedBlockSearch:
         # or pathological exclude= list is a plausible hang suspect.
         # DEBUG-only; never fatal, never changes behavior.
         _stage_t0 = time.monotonic()
-        exclude_ref_ids: list[int] = sorted(
-            resolve_exclude_paper_ids(exclude, store=self.store, kind=kind)
-            | set(extra_exclude_ref_ids or ())
+        exclude_resolved = resolve_exclude_paper_ids(
+            exclude, store=self.store, kind=kind
         )
+        exclude_ref_ids: list[int] = sorted(
+            exclude_resolved | set(extra_exclude_ref_ids or ())
+        )
+        # gr340059: a handle-shaped exclude= entry (``pa<id>`` etc.) that
+        # doesn't resolve to a live ref is a caller-visible skip-list
+        # mistake, not a stale-slug shrug — say so instead of quietly
+        # searching as if it were never named. Matches the ``year_notice``
+        # wiring just below: a ``\n\n⚠ …`` string threaded onto
+        # ``BlockSearchResult`` and appended at every render branch.
+        exclude_notice = ""
+        if exclude_resolved.dead_handles:
+            n_dead = len(exclude_resolved.dead_handles)
+            listed = ", ".join(repr(h) for h in exclude_resolved.dead_handles)
+            exclude_notice = (
+                f"\n\n⚠ exclude=: {n_dead} handle{'s' if n_dead != 1 else ''} "
+                f"not found, so not excluded: {listed}"
+            )
         _log.debug(
             "paper search: exclude-resolution stage took %.3fs (%d entries -> %d ids)",
             time.monotonic() - _stage_t0,
@@ -1123,6 +1160,7 @@ class FusedBlockSearch:
             broad=broad,
             broad_has_more=broad_has_more,
             single_page_has_more=single_page_has_more,
+            exclude_notice=exclude_notice,
             extra_queries=extra_queries,
             hyde_answers=hyde_answers,
             per_paper_cap=per_paper_cap,
@@ -1160,6 +1198,7 @@ class PaperSearchResultRenderer:
         q = result.q
         hits = result.hits
         year_notice = result.year_notice
+        exclude_notice = result.exclude_notice
 
         if not hits:
             # Use the canonical Next: block shape rather than an
@@ -1206,6 +1245,7 @@ class PaperSearchResultRenderer:
                         ]
                     )
                     + year_notice
+                    + exclude_notice
                 )
             doi_re_match = _DOI_RE.match(q.strip())
             if doi_re_match is not None and result.doi_resolved_id is not None:
@@ -1231,6 +1271,7 @@ class PaperSearchResultRenderer:
                         ]
                     )
                     + year_notice
+                    + exclude_notice
                 )
             if doi_re_match is not None:
                 doi = doi_re_match.group(1)
@@ -1286,7 +1327,7 @@ class PaperSearchResultRenderer:
                         ),
                     ]
                 )
-            return Response(body=body + year_notice)
+            return Response(body=body + year_notice + exclude_notice)
 
         total = result.total
         broad = result.broad
@@ -1391,6 +1432,7 @@ class PaperSearchResultRenderer:
         body = (
             head
             + year_notice
+            + exclude_notice
             + _render_title_callout(
                 result.title_matches,
                 label="DOI match" if result.doi_match else "Title match",

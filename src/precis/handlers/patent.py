@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.handlers._patent_cql import build_cql
 from precis.handlers._patent_ingest import (
     AWAITING_FULLTEXT_TAG,
@@ -297,7 +297,11 @@ class PatentHandler(Handler):
                     # "your query is invalid". Surface the upstream
                     # complaint so they can fix the query. Other HTTP
                     # failures (5xx, 403 quota, network) stay best-
-                    # effort below.
+                    # effort below — UNLESS reach='remote', where the
+                    # remote leg is the *entire* search (see :262, the
+                    # local leg never ran) and swallowing it renders
+                    # indistinguishable from a genuine zero-result
+                    # search (gr340056).
                     if e.status == 400:
                         raise BadInput(
                             f"OPS rejected the CQL query "
@@ -312,13 +316,29 @@ class PatentHandler(Handler):
                                 "Skill: get(kind='skill', id='precis-patent-help')"
                             ),
                         ) from e
+                    if reach == "remote":
+                        raise Upstream(
+                            f"remote OPS search failed ({type(e).__name__}, "
+                            f"HTTP {e.status}): {e}",
+                            next="retry shortly, or check EPO OPS status",
+                        ) from e
                     remote_hits = []
                 except OpsError as e:
-                    # Network/auth/quota/5xx — best-effort: the remote leg
-                    # empties rather than failing the whole search. But
-                    # auth/quota failures must NOT masquerade as "no
-                    # patents matched" — leave a breadcrumb so a
-                    # misconfigured sweep is diagnosable.
+                    # Network/auth/quota — best-effort when there's a
+                    # local leg to fall back on (reach='both'): the
+                    # remote leg empties rather than failing the whole
+                    # search, but auth/quota failures must NOT
+                    # masquerade as "no patents matched" — leave a
+                    # breadcrumb so a misconfigured sweep is
+                    # diagnosable. reach='remote' skips the local leg
+                    # entirely (:262) — an OPS failure there IS the
+                    # whole search, so it must not render as an
+                    # ordinary zero-result response (gr340056).
+                    if reach == "remote":
+                        raise Upstream(
+                            f"remote OPS search failed ({type(e).__name__}): {e}",
+                            next=("retry shortly, or check EPO OPS credentials/quota"),
+                        ) from e
                     if isinstance(e, (OpsAuthError, OpsQuotaError)):
                         log.warning(
                             "patent remote search leg failed (%s): %s; "

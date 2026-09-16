@@ -199,15 +199,55 @@ class MdHandler(Handler):
         # ``self.embedder = hub.embedder`` in __init__.
         self.embedder: Any = hub.embedder if hub is not None else None
 
-        self.vector_cache: MdVectorCache | None
+        # The vector cache needs ``self.embedder.model``/``.dim`` — for a
+        # *remote* embedder, reading ``.model`` is an HTTP call
+        # (gr341576: a bounced embedder service used to kill MdHandler
+        # construction, and with it the whole MCP server, at boot).
+        # Never probe here; ``vector_cache`` below resolves lazily on
+        # first real access, so a dead embedder only degrades search to
+        # lexical-only on first use, not at startup.
+        self._vector_cache: MdVectorCache | None
+        self._vector_cache_resolved: bool
         if vector_cache is not None:
-            self.vector_cache = vector_cache
-        elif self.embedder is not None:
-            self.vector_cache = MdVectorCache(
-                model=self.embedder.model, dim=self.embedder.dim
-            )
+            self._vector_cache = vector_cache
+            self._vector_cache_resolved = True
+        elif self.embedder is None:
+            self._vector_cache = None
+            self._vector_cache_resolved = True
         else:
-            self.vector_cache = None
+            self._vector_cache = None
+            self._vector_cache_resolved = False
+
+    @property
+    def vector_cache(self) -> MdVectorCache | None:
+        """Block-vector cache, built lazily on first access.
+
+        Resolving ``self.embedder.model``/``.dim`` may touch the network
+        (a remote embedder's ``.model`` is an HTTP call); deferring that
+        out of ``__init__`` to here means construction never blocks or
+        fails on a dead embedder. The probe runs at most once per
+        handler instance — success or failure is cached in
+        ``_vector_cache_resolved`` — so a persistently-down embedder
+        doesn't retry the network on every ``search()`` call; it just
+        keeps degrading to lexical-only.
+        """
+        if not self._vector_cache_resolved:
+            self._vector_cache_resolved = True
+            try:
+                model = self.embedder.model
+                dim = self.embedder.dim
+            except OSError as exc:
+                # Same failure mode the boot-time OSError safety net in
+                # dispatch.py._try exists for (e.g. urllib.error.URLError
+                # from a bounced remote embedder) — degrade to no vector
+                # cache rather than raising out of a search/get call.
+                log.warning(
+                    "md vector cache probe failed, degrading to lexical-only search: %s",
+                    exc,
+                )
+            else:
+                self._vector_cache = MdVectorCache(model=model, dim=dim)
+        return self._vector_cache
 
     # ── get ────────────────────────────────────────────────────────
 

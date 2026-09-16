@@ -46,7 +46,7 @@ from precis.handlers._link_target import parse_link_target
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
-from precis.store import Link, Ref, Tag
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Link, Ref, Tag
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.next_block import render_next_section
@@ -814,6 +814,7 @@ class NumericRefHandler(Handler):
         q: str,
         tags: list[str] | None = None,
         page_size: int = 10,
+        mode: str | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Ref-level hybrid search returned as ``SearchHit``s.
@@ -827,11 +828,19 @@ class NumericRefHandler(Handler):
         gets the same recall as a single-kind search — otherwise a query that
         worked against ``kind='memory'`` would silently find nothing in the
         same corpus when fanned out.
+
+        ``mode=`` (gr340057) was previously falling into ``**_kw`` and
+        vanishing — a cross-kind ``search(mode='semantic')`` still ran the
+        default hybrid stream for every kind built on this base. Declared
+        explicitly and forwarded into both branches, mirroring
+        ``PaperHandler.search_hits``.
         """
         if not (q and q.strip()):
             return []
         if self.search_body_chunks:
-            return self._body_search_hits(q=q, tags=tags, page_size=page_size)
+            return self._body_search_hits(
+                q=q, tags=tags, page_size=page_size, mode=mode
+            )
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
         refs = fused_ref_hits(
             self.store,
@@ -840,6 +849,7 @@ class NumericRefHandler(Handler):
             kind=self.kind,
             tags=normalized_tags,
             limit=page_size,
+            mode=mode,
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
         self.store.chunks.bump_salience(
@@ -898,13 +908,22 @@ class NumericRefHandler(Handler):
         with ref boundaries once several chunks per ref collapse to
         one. The over-fetch pool grows with ``page`` so later pages
         still have enough distinct refs to dedupe from.
+
+        ``mode=`` (gr340057) goes through ``search_chunks``, the same
+        mode-dispatched entry point ``PaperHandler`` uses — ``'lexical'``
+        skips the embed and runs FTS only, ``'semantic'`` is a true
+        semantic-only cut floored at ``SEMANTIC_DISTANCE_FLOOR`` (no
+        lexical leg at all), and the default/``'hybrid'`` falls through to
+        the same ``search_chunks_fused`` call this used before the fix.
         """
-        raw = self.store.chunks.search_chunks_fused(
+        raw = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, mode),
+            mode=mode,
             kind=self.kind,
             tags=tags,
             limit=page_size * 5 * max(1, page),
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
         )
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
@@ -1006,13 +1025,18 @@ class NumericRefHandler(Handler):
         return f"\n## {label}  (rank={rank:.2f})\n{self._snippet(block.text)}"
 
     def _body_search_hits(
-        self, *, q: str, tags: list[str] | None, page_size: int
+        self,
+        *,
+        q: str,
+        tags: list[str] | None,
+        page_size: int,
+        mode: str | None = None,
     ) -> list[SearchHit]:
         """Ref-grouped chunk-level hits as ``SearchHit`` for cross-kind merge."""
         if not (q and q.strip()):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
-        ordered, _ = self._best_body_hits(q, normalized_tags, page_size)
+        ordered, _ = self._best_body_hits(q, normalized_tags, page_size, mode=mode)
         return [
             SearchHit(
                 score=rank,

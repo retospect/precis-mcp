@@ -133,14 +133,18 @@ class _DeadRemoteEmbedder:
     """Stands in for ``RemoteEmbedder`` when the embedder service is
     down. ``.model`` is an HTTP call (``embedder.py:705 _call`` ->
     ``_urllib_transport``); a bounced service surfaces that as
-    ``urllib.error.URLError`` (an ``OSError`` subclass), exactly the
-    exception ``MdHandler.__init__`` triggers by reading
-    ``self.embedder.model`` while building its vector cache."""
+    ``urllib.error.URLError`` (an ``OSError`` subclass). ``model_calls``
+    counts ``.model`` accesses so tests can assert exactly when (if
+    ever) ``MdHandler`` probes it."""
 
     dim = 1024
 
+    def __init__(self) -> None:
+        self.model_calls = 0
+
     @property
     def model(self) -> str:
+        self.model_calls += 1
         raise URLError("Connection refused")
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -159,31 +163,131 @@ class _DeadRemoteEmbedder:
         return None
 
 
+class _CountingEmbedder:
+    """A *working* embedder shaped like ``_DeadRemoteEmbedder`` —
+    ``.model`` is a property so tests can count probes — used to prove
+    the lazy resolution still happens exactly once and is cached."""
+
+    dim = 3
+
+    def __init__(self) -> None:
+        self.model_calls = 0
+
+    @property
+    def model(self) -> str:
+        self.model_calls += 1
+        return "working-embedder"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    def embed_one(self, text: str) -> list[float]:
+        return [1.0, 0.0, 0.0]
+
+    def is_ready(self) -> bool:
+        return True
+
+    def warmup(self) -> None:
+        return None
+
+    def unload(self) -> None:
+        return None
+
+
 def test_md_handler_survives_dead_remote_embedder(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Regression (observed in prod): a REMOTE embedder that's down
-    when ``MdHandler.__init__`` builds its vector cache off
-    ``self.embedder.model`` raises ``URLError``. ``boot()`` must
-    swallow it via ``dispatch._try``'s ``OSError`` clause — skip
-    ``md``, keep booting — never let a bounced embedder kill the
-    whole MCP server at startup."""
-    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
-        r = boot(
-            store=None,
-            embedder=_DeadRemoteEmbedder(),
-            md_roots=f"r:{tmp_path}",
-        )
+    """Regression (observed in prod): ``MdHandler.__init__`` used to
+    build its vector cache off ``self.embedder.model`` at construction
+    time — for a REMOTE embedder that's an HTTP call, so a bounced
+    embedder service raised ``URLError`` (an ``OSError``) straight out
+    of ``boot()`` and killed the whole MCP server at startup.
+
+    Fixed at the source (gr341576): the model/dim probe is now lazy
+    (see ``MdHandler.vector_cache``), so ``md`` boots and STAYS
+    registered even with a dead embedder — dispatch.py's ``OSError``
+    safety net (``test_dispatch.py::test_try_swallows_os_error``)
+    remains as a generic backstop for any other handler, but MdHandler
+    no longer needs it. Only a search that actually needs embeddings
+    degrades — gracefully, to lexical-only — on first use."""
+    r = boot(
+        store=None,
+        embedder=_DeadRemoteEmbedder(),
+        md_roots=f"r:{tmp_path}",
+    )
     assert isinstance(r, Hub)
-    assert "md" not in r.kinds
-    assert "md" in r.loadabilities
-    assert r.loadabilities["md"].loaded is False
-    # Other stateless kinds are unaffected by md's dependency outage.
+    assert "md" in r.kinds
+    assert r.loadabilities["md"].loaded is True
     assert "calc" in r.kinds
+
+    h = r.handler_for("md")
+    assert isinstance(h, MdHandler)
+    with caplog.at_level(logging.WARNING, logger="precis.handlers.md"):
+        resp = h.search(q="anything")
+    assert resp.body  # doesn't raise; degrades instead
     assert any(
-        "MdHandler init failed" in rec.message and "Connection refused" in rec.message
+        "degrading to lexical-only search" in rec.message
+        and "Connection refused" in rec.message
         for rec in caplog.records
     )
+
+
+def test_md_handler_dead_embedder_no_network_at_construction(tmp_path: Path) -> None:
+    """gr341576 (remaining half): constructing ``MdHandler`` must not
+    touch the network at all — model/dim resolution is deferred to
+    first real use, never done in ``__init__``."""
+    embedder = _DeadRemoteEmbedder()
+    handler = MdHandler(hub=Hub(embedder=embedder), roots={"r": tmp_path})
+    assert embedder.model_calls == 0
+    assert handler.embedder is embedder
+
+
+def test_md_handler_dead_embedder_degrades_on_first_search(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """First embedding-needing use (``search``) triggers the deferred
+    probe; a dead embedder degrades that search to lexical-only rather
+    than raising, and the probe is attempted at most once — a second
+    search doesn't retry the dead network."""
+    (tmp_path / "a.md").write_text("# Heading\n\nsome body text\n", encoding="utf-8")
+    embedder = _DeadRemoteEmbedder()
+    handler = MdHandler(hub=Hub(embedder=embedder), roots={"r": tmp_path})
+    assert embedder.model_calls == 0
+
+    with caplog.at_level(logging.WARNING, logger="precis.handlers.md"):
+        handler.search(q="body")
+    assert embedder.model_calls == 1
+    assert handler.vector_cache is None
+    assert any(
+        "degrading to lexical-only search" in rec.message
+        and "Connection refused" in rec.message
+        for rec in caplog.records
+    )
+
+    handler.search(q="body")
+    assert embedder.model_calls == 1
+
+
+def test_md_handler_working_embedder_probes_once_and_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A working embedder still resolves ``vector_cache`` lazily — the
+    probe fires on first access, and every later access reuses the
+    same cached instance rather than re-reading ``.model``/``.dim``."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    md_root = tmp_path / "root"
+    md_root.mkdir()
+    embedder = _CountingEmbedder()
+    handler = MdHandler(hub=Hub(embedder=embedder), roots={"r": md_root})
+    assert embedder.model_calls == 0
+
+    cache1 = handler.vector_cache
+    assert cache1 is not None
+    assert embedder.model_calls == 1
+
+    cache2 = handler.vector_cache
+    assert cache2 is cache1
+    assert embedder.model_calls == 1
 
 
 def test_md_handler_no_embedder_without_store(tmp_path: Path) -> None:

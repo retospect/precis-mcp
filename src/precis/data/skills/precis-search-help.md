@@ -38,8 +38,8 @@ search(kind="paper", q="photocatalysis")  # one kind
 search(kind="paper,patent", q="photocatalysis")  # several kinds
 search(kind="paper", q="X", page=2, page_size=20)  # paginate
 search(kind="paper", q="X", tags=["topic:noxrr"])  # tag-filter
-search(kind="paper", q="X", scope="pa5")  # search inside one ref, by handle
-search(kind="paper", q="X", exclude=["pa5", "pa12"])  # skip refs by handle
+search(kind="paper", q="X", scope="pa1")  # search inside one ref, by handle
+search(kind="paper", q="X", exclude=["pa1", "pa2"])  # skip refs by handle
 search(kind="paper", q="X", uncited="dr173020")  # skip what that draft already cites
 search(kind="patent", q="X", reach="remote")  # patent/edgar-only knob
 search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
@@ -283,8 +283,8 @@ in the response header, never silent.
 ## Scope a search to one ref's contents
 
 ```python
-search(kind="paper", q="Z-scheme", scope="pa5")  # handle from get/search output
-search(kind="patent", q="heterojunction", scope="ep4123456a1")
+search(kind="paper", q="Z-scheme", scope="pa1")  # handle from get/search output
+search(kind="patent", q="heterojunction", scope="ep3501631a1")
 ```
 
 `scope=` restricts to one ref's blocks. Useful for "where in this
@@ -295,11 +295,14 @@ paper does X come up?"
 ## Search but ignore these refs
 
 ```python
-search(kind="paper", q="photocatalysis", exclude=["pa5", "pa12"])  # handles from output
+search(kind="paper", q="photocatalysis", exclude=["pa1", "pa2"])  # handles from output
 ```
 
 Ref-level — a handle (`pa<id>`), slug, chunk selector, or DOI all resolve to
-the underlying ref; unknown entries are silently ignored. `exclude=` is the
+the underlying ref. A stale/unknown **slug** is silently dropped; a
+well-formed but dead **handle** (`pa<id>` naming no live ref) is instead
+named in a `⚠ exclude=: …` line in the response — you copy-pasted a
+specific id, so a silent drop would hide the mistake. `exclude=` is the
 skip-list for known-irrelevant refs, not a paging mechanism — use `page=`
 for that.
 

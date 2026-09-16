@@ -740,6 +740,16 @@ class TestSearch:
         with pytest.raises(NotFound):
             handler.search(q="x", scope="nonexistent")
 
+    def test_search_dead_handle_scope_raises_handle_not_slug(
+        self, handler: PaperHandler
+    ) -> None:
+        """gr340059: ``scope=`` shaped like a well-formed handle
+        (``pa<id>``) but naming no live ref must say ``handle``, not
+        ``slug`` — a bare non-handle string (the case above) is still a
+        legitimate ``slug`` miss, but this one never was a slug."""
+        with pytest.raises(NotFound, match="paper handle 'pa999999999' not found"):
+            handler.search(q="x", scope="pa999999999")
+
     def test_search_no_hits_lex_only(self, store: Store) -> None:
         # Use a handler without an embedder so we exercise the lex-only
         # path; semantic search would always score nonzero RRF on the
@@ -1134,6 +1144,43 @@ class TestSearch:
         # Valid slug still drops; stale slug is no-op (no error).
         assert chunk_handle(store, "paper-a") not in resp.body
         assert chunk_handle(store, "paper-b") in resp.body
+
+    def test_search_exclude_surfaces_dead_handle(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr340059: unlike a stale bare *slug* (silently dropped, above),
+        a dead *handle* (``pa<id>`` shape, no such live ref) in
+        ``exclude=`` is a caller-visible mistake — the caller named a
+        specific numeric id — so it's surfaced in the response body as a
+        warning, not silently swallowed. A live handle in the same list
+        still excludes normally."""
+        live_id = _seed_paper(
+            store,
+            slug="paper-a",
+            title="A",
+            blocks=["alpha topic"],
+            doi="10.1/a",
+        )
+        _seed_paper(
+            store,
+            slug="paper-b",
+            title="B",
+            blocks=["alpha topic"],
+            doi="10.1/b",
+        )
+        dead_handle = handle_registry.format_handle("paper", live_id + 999999)
+        live_handle = handle_registry.format_handle("paper", live_id)
+        resp = handler.search(
+            q="alpha",
+            page_size=10,
+            exclude=[dead_handle, live_handle],
+        )
+        # Live handle still excludes its paper.
+        assert chunk_handle(store, "paper-a") not in resp.body
+        assert chunk_handle(store, "paper-b") in resp.body
+        # Dead handle is named in the body, not silently dropped.
+        assert dead_handle in resp.body
+        assert "not found" in resp.body
 
     def test_search_exclude_accepts_draft_ref_container(
         self, store: Store, handler: PaperHandler, hub: Hub

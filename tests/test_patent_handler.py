@@ -14,8 +14,13 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
-from precis.errors import BadInput, NotFound, Unsupported
-from precis.handlers._patent_ops import FakeOpsClient, OpsAuthError
+from precis.errors import BadInput, NotFound, Unsupported, Upstream
+from precis.handlers._patent_ops import (
+    FakeOpsClient,
+    OpsAuthError,
+    OpsError,
+    OpsQuotaError,
+)
 from precis.handlers.patent import PatentHandler
 from precis.store import Store, Tag
 from tests.conftest import chunk_handle, record_handle
@@ -391,6 +396,65 @@ class TestSearchReachKwarg:
         default = handler.search(q="photocatalytic", page_size=10)
         explicit = handler.search(q="photocatalytic", page_size=10, reach="both")
         assert default.body == explicit.body
+
+    # -- gr340056: reach='remote' has no local leg to fall back on, so
+    # an OPS failure IS the whole search — it must not render as an
+    # ordinary "no patents match" (indistinguishable from a genuine
+    # zero-result search). --------------------------------------------
+
+    def test_reach_remote_ops_auth_error_raises(self, hub: Hub, raw_root: Path) -> None:
+        # No local hits ingested — reach='remote' skips the local leg
+        # entirely, so a bad-credentials OPS failure is total.
+        cql = '(ti="photocatalytic" OR ab="photocatalytic")'
+        bad_ops = FakeOpsClient(
+            raises={("search", cql): OpsAuthError("invalid client credentials")}
+        )
+        bad_handler = PatentHandler(hub=hub, ops=bad_ops, raw_root=raw_root)
+
+        with pytest.raises(Upstream, match="OpsAuthError"):
+            bad_handler.search(q="photocatalytic", reach="remote")
+
+    def test_reach_remote_ops_quota_error_raises(
+        self, hub: Hub, raw_root: Path
+    ) -> None:
+        cql = '(ti="photocatalytic" OR ab="photocatalytic")'
+        bad_ops = FakeOpsClient(
+            raises={("search", cql): OpsQuotaError("quota exceeded")}
+        )
+        bad_handler = PatentHandler(hub=hub, ops=bad_ops, raw_root=raw_root)
+
+        with pytest.raises(Upstream, match="OpsQuotaError"):
+            bad_handler.search(q="photocatalytic", reach="remote")
+
+    def test_reach_remote_network_error_raises(self, hub: Hub, raw_root: Path) -> None:
+        # Generic OpsError (e.g. connection failure) — not a 400, not
+        # auth/quota-typed, just network-flavored best-effort in
+        # reach='both'. Under reach='remote' it must still surface.
+        cql = '(ti="photocatalytic" OR ab="photocatalytic")'
+        bad_ops = FakeOpsClient(
+            raises={("search", cql): OpsError("connection reset by peer")}
+        )
+        bad_handler = PatentHandler(hub=hub, ops=bad_ops, raw_root=raw_root)
+
+        with pytest.raises(Upstream, match="OpsError"):
+            bad_handler.search(q="photocatalytic", reach="remote")
+
+    def test_reach_both_ops_error_still_best_effort(
+        self, hub: Hub, raw_root: Path
+    ) -> None:
+        # Unchanged behavior pin: reach='both' with no local hits and
+        # a failing OPS leg still renders the plain no-match body
+        # (best-effort — the failure is only a *partial* loss when a
+        # local leg could in principle exist, per
+        # test_search_ops_auth_error_stays_best_effort_but_logs above).
+        cql = '(ti="photocatalytic" OR ab="photocatalytic")'
+        bad_ops = FakeOpsClient(
+            raises={("search", cql): OpsAuthError("invalid client credentials")}
+        )
+        bad_handler = PatentHandler(hub=hub, ops=bad_ops, raw_root=raw_root)
+
+        r = bad_handler.search(q="photocatalytic", reach="both")
+        assert "no patents match" in r.body.lower()
 
 
 # ---------------------------------------------------------------------------

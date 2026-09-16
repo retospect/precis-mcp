@@ -910,6 +910,11 @@ class PaperHandler(Handler):
         # same shared resolver ``search()``'s single-kind path uses via
         # ``FusedBlockSearch`` (gr311339), reused here instead of a serial
         # per-entry ``_normalise_exclude_slug`` loop.
+        # ``.dead_handles`` (gr340059) is dropped here: this structured
+        # cross-kind fan-out path returns bare ``SearchHit``s, not a
+        # rendered ``Response``, so there's no body to attach the notice
+        # to — the single-kind ``search(kind='paper', ...)`` path
+        # (``FusedBlockSearch`` below) is where it's surfaced.
         resolved_exclude_ref_ids |= resolve_exclude_paper_ids(
             exclude, store=self.store, kind=self.spec.kind
         )

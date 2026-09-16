@@ -351,6 +351,9 @@ class SemanticScholarHandler(CacheBackedHandler):
         *,
         hit: bool,
     ) -> Response:
+        # ``.dead_handles`` (gr340059) isn't surfaced here — this view has
+        # no exclude= notice slot; the single-kind paper search path is
+        # where a dead exclude= handle gets a footer.
         exclude_ids = resolve_exclude_paper_ids(self._pending_exclude, store=self.store)
         flags = self._corpus_flags_bulk(papers)
         lines = [f"# {ref.title}", ""]

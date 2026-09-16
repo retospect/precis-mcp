@@ -11,8 +11,10 @@ the date window, and the recency sort — all with the deterministic
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from precis.embedder import MockEmbedder
+from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store, Tag
 
 
@@ -342,3 +344,76 @@ def test_refs_with_body_chunks(store: Store) -> None:
     got = store.refs_with_body_chunks([ingested, stub.id])
     assert got == {ingested}
     assert store.refs_with_body_chunks([]) == set()
+
+
+# ── gr340057: search(mode=...) fanned out through NumericRefHandler ────
+#
+# The LLM-facing cross-kind dispatch (``search(kind='a,b', mode=...)``)
+# calls each kind's ``search_hits(mode=...)``. Before the fix, every kind
+# built on ``NumericRefHandler`` (job, todo, memory, gripe, ...) let
+# ``mode`` fall into ``**_kw`` and silently ran the default hybrid stream
+# regardless of what the caller asked for.
+
+
+def test_cross_kind_semantic_mode_excludes_lexical_only_memory_hit(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``memory`` is a body-chunk NumericRefHandler kind
+    (``search_body_chunks=True``): ``mode='semantic'`` now runs a true
+    ``SEMANTIC_DISTANCE_FLOOR`` cut with no lexical leg at all, so a
+    lexical-only match must be dropped outright — not merely re-ranked."""
+    tag = uuid4().hex[:8]
+    e = MockEmbedder(dim=store.embedding_dim())
+    marker = f"gr340057uniq{tag}"
+    query = f"{marker} exact phrase carried straight into the semantic leg"
+
+    paper = store.insert_ref(kind="paper", slug=f"mode-{tag}-paper", title="P")
+    store.chunks.insert_chunks(
+        paper.id, [ChunkInsert(ord=0, text=query, embedding=e.embed_one(query))]
+    )
+    far_text = f"{marker} — a wholly unrelated sentence about gardening topics"
+    mem_title = f"farmarker{tag}"
+    mem = store.insert_ref(kind="memory", slug=None, title=mem_title, meta={})
+    store.chunks.insert_chunks(
+        mem.id, [ChunkInsert(ord=0, text=far_text, embedding=e.embed_one(far_text))]
+    )
+
+    out_semantic = runtime_with_store.dispatch(
+        "search", {"kind": "paper,memory", "q": query, "mode": "semantic"}
+    )
+    assert "[error:" not in out_semantic
+    assert query in out_semantic  # the close paper chunk shows
+    # The lexical-only memory hit is cut outright, not merely re-ranked —
+    # the compact cross-kind table renders title, not full chunk text, so
+    # the marker-tagged title (not far_text itself) is the honest probe.
+    assert mem_title not in out_semantic
+
+    # mode='lexical' on the shared marker: memory's hit answers via pure
+    # FTS (no embedder round-trip needed for the lexical leg either).
+    out_lexical = runtime_with_store.dispatch(
+        "search", {"kind": "paper,memory", "q": marker, "mode": "lexical"}
+    )
+    assert "[error:" not in out_lexical
+    assert mem_title in out_lexical
+
+
+def test_cross_kind_mode_is_forwarded_to_ref_level_numeric_ref_kind(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``job`` is a ref-level NumericRefHandler kind
+    (``search_body_chunks=False``). Integration-level smoke check that
+    ``mode=`` survives the cross-kind fan-out end to end without erroring
+    and the title-lexical hit still answers; the direct pin that
+    ``fused_ref_hits`` actually *receives* ``mode`` (previously swallowed
+    by ``search_hits``'s ``**_kw``) is
+    ``tests/test_numeric_ref_search_mode.py::
+    test_ref_level_search_hits_forwards_explicit_mode``."""
+    tag = uuid4().hex[:8]
+    marker = f"gr340057job{tag}"
+    store.insert_ref(kind="job", slug=None, title=f"{marker} plain title match")
+
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "job,memory", "q": marker, "mode": "lexical"}
+    )
+    assert "[error:" not in out
+    assert marker in out

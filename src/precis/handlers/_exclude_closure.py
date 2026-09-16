@@ -36,10 +36,20 @@ check in :func:`resolve_exclude_paper_ids`. Only a genuine miss (soft-
 deleted / merged / kind-mismatched) pays the slower ``resolve_handle`` round
 trip, and only for that one entry — preserving the merge-redirect behavior
 for the rare case without paying its cost for the common one.
+
+gr340059: a *handle*-shaped entry (``pa<id>`` of the right ``kind``) that
+still doesn't resolve after both the bulk check and the ``resolve_handle``
+fallback is a genuinely dead reference (soft-deleted or never existed) —
+unlike a stale bare slug (see above), the caller named a specific numeric
+id, so silently dropping it is a surprise. These are collected into
+``ExcludeResolution.dead_handles`` for the caller to surface (a search
+footer, not a hard failure — an exclude= skip-list degrading gracefully
+still beats failing the whole call over one stale entry).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput
@@ -50,21 +60,45 @@ if TYPE_CHECKING:
     from precis.store.store import Store
 
 
+class ExcludeResolution(frozenset[int]):
+    """Result of :func:`resolve_exclude_paper_ids`.
+
+    A ``frozenset`` of the resolved paper ``ref_id``s to drop from a
+    result set — every pre-gr340059 call site (``got == {1, 2}``,
+    ``ids |= resolve_exclude_paper_ids(...)``, ``sorted(...)``) keeps
+    working unchanged. ``.dead_handles`` is the added-on extra: every
+    well-formed-but-unresolvable handle entry (original string, as
+    passed) — empty in the common case — for a caller that wants to
+    surface it rather than silently drop it.
+    """
+
+    dead_handles: tuple[str, ...]
+
+    def __new__(
+        cls, ids: Iterable[int], dead_handles: Iterable[str] = ()
+    ) -> ExcludeResolution:
+        obj = super().__new__(cls, ids)
+        obj.dead_handles = tuple(dead_handles)
+        return obj
+
+
 def resolve_exclude_paper_ids(
     entries: list[str] | None, *, store: Store, kind: str = "paper"
-) -> set[int]:
+) -> ExcludeResolution:
     """``exclude=`` (mixed paper-slug / ``dr…`` / ``dc…`` entries) → the
-    set of paper ``ref_id``s to drop from a result set.
+    set of paper ``ref_id``s to drop from a result set, plus any dead
+    handle entries the caller may want to surface.
 
-    ``entries=None`` / ``[]`` returns the empty set — the common, no-op
-    case for both callers. ``kind=`` scopes the bare-slug leg only
-    (``paper`` search's cfp/datasheet subclasses share this resolver but
-    address their own kind's slugs); the two draft-container legs always
-    resolve ``[pa…]``/``[pc…]`` cite tokens to ``paper`` refs regardless —
-    a draft cites papers, never cfp/datasheet records.
+    ``entries=None`` / ``[]`` returns the empty ``ExcludeResolution`` —
+    the common, no-op case for both callers. ``kind=`` scopes the
+    bare-slug leg only (``paper`` search's cfp/datasheet subclasses share
+    this resolver but address their own kind's slugs); the two
+    draft-container legs always resolve ``[pa…]``/``[pc…]`` cite tokens to
+    ``paper`` refs regardless — a draft cites papers, never cfp/datasheet
+    records.
     """
     if not entries:
-        return set()
+        return ExcludeResolution(set())
     # Local import: ``_paper_search`` is itself lazily imported from
     # ``paper.py`` (see that module's docstring) to dodge a circular
     # import; this module has a SECOND caller (``semanticscholar.py``)
@@ -89,6 +123,7 @@ def resolve_exclude_paper_ids(
     # slug/DOI.
     handle_pks: list[int] = []
     handle_entry_by_pk: dict[int, str] = {}
+    dead_handles: list[str] = []
     for raw in entries:
         entry = (raw or "").strip()
         if not entry:
@@ -124,9 +159,14 @@ def resolve_exclude_paper_ids(
                 resolved_handle = store.resolve_handle(handle_entry_by_pk[pk])
                 if resolved_handle is not None:
                     paper_ids.add(resolved_handle.ref_id)
+                else:
+                    # gr340059: genuinely dead — never existed, or
+                    # soft-deleted with no supersede survivor. Named so
+                    # the caller can surface it instead of a silent skip.
+                    dead_handles.append(handle_entry_by_pk[pk])
     if bare_slugs:
         paper_ids.update(store.fetch_ref_ids_by_slugs(bare_slugs, kind=kind))
-    return paper_ids
+    return ExcludeResolution(paper_ids, dead_handles)
 
 
 def _draft_container_texts(entry: str, *, store: Store) -> list[str] | None:
@@ -227,4 +267,4 @@ def _cite_closure_paper_ids(texts: list[str], *, store: Store) -> set[int]:
     return ids
 
 
-__all__ = ["resolve_exclude_paper_ids"]
+__all__ = ["ExcludeResolution", "resolve_exclude_paper_ids"]
