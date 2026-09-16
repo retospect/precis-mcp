@@ -8,6 +8,7 @@ that stay in sync with the tool function signatures.
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Any
 
 from precis.tools import get_tool_info, get_tool_names
@@ -20,6 +21,9 @@ def _parse_list_value(value: str) -> list[str]:
     - Comma-separated: "tag1,tag2,tag3"
     - Space-separated: "tag1 tag2 tag3" (quoted)
     - Single value: "tag1"
+
+    A value starting with ``[`` or ``{`` is JSON, not a comma list — see
+    :func:`convert_value`, which intercepts those before calling here.
     """
     if not value:
         return []
@@ -46,13 +50,36 @@ def _annotation_is(annotation: str, type_name: str) -> bool:
 
 
 def convert_value(value: str, param_info: dict[str, Any]) -> Any:
-    """Convert CLI string value to the appropriate Python type."""
+    """Convert CLI string value to the appropriate Python type.
+
+    A value whose stripped text starts with ``[`` or ``{`` is parsed as
+    JSON (a ``{`` on a list param is wrapped in a one-element list);
+    malformed JSON raises ``ArgumentTypeError`` rather than falling
+    through to comma-splitting.
+    """
+    annotation = str(param_info["annotation"])
+    stripped = value.strip()
+
     if param_info["is_list"]:
+        if stripped.startswith("[") or stripped.startswith("{"):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError as e:
+                raise argparse.ArgumentTypeError(
+                    f"Invalid JSON for parameter {param_info['name']!r}: {e}"
+                ) from None
+            return parsed if isinstance(parsed, list) else [parsed]
         return _parse_list_value(value)
 
-    # Handle basic types
-    annotation = str(param_info["annotation"])
+    if stripped.startswith("{") and "dict" in annotation:
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError as e:
+            raise argparse.ArgumentTypeError(
+                f"Invalid JSON for parameter {param_info['name']!r}: {e}"
+            ) from None
 
+    # Handle basic types
     if _annotation_is(annotation, "int"):
         try:
             return int(value)

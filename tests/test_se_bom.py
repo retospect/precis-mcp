@@ -513,6 +513,67 @@ def test_bearing_joint_satisfied_by_a_line_on_either_endpoint() -> None:
     assert not [f for f in report.findings if f.rule == "mechanism_bom"]
 
 
+def _screw_joint(*, bound: bool) -> SeTree:
+    """A screw mechanism whose fastener endpoint is (or isn't)
+    `component`-bound — the demand a fastening rung's ``set_binding``
+    already satisfies, without any separate BOM line."""
+    ops: list[Any] = [
+        {"op": "add_block", "name": "bracket"},
+        {"op": "add_block", "name": "bolt"},
+        {"op": "add_port", "block": "bolt", "name": "thread"},
+        {"op": "add_port", "block": "bracket", "name": "boss"},
+    ]
+    if bound:
+        ops.append(
+            {
+                "op": "set_binding",
+                "block": "bolt",
+                "kind": "component",
+                "design": "iso-4762-m6x30",
+            }
+        )
+    ops.append(
+        {
+            "op": "connect",
+            "a": "bolt.thread",
+            "b": "bracket.boss",
+            "joint": {"class": "rigid", "mechanism": "screw"},
+        }
+    )
+    return _tree(ops)
+
+
+def test_a_component_bound_fastener_endpoint_needs_no_bom_line() -> None:
+    report = se_drc.drc(_screw_joint(bound=True))
+    assert not [f for f in report.findings if f.rule == "mechanism_bom"]
+
+
+def test_the_same_connect_without_the_binding_is_a_finding() -> None:
+    report = se_drc.drc(_screw_joint(bound=False))
+    findings = [f for f in report.findings if f.rule == "mechanism_bom"]
+    assert len(findings) == 1
+    assert "set_binding" in findings[0].detail
+
+
+def test_a_bound_endpoint_does_not_answer_for_a_bearing() -> None:
+    """The binding shortcut is a screw thing: there the fastener IS an
+    endpoint. A wheel bound to a bought wheel says nothing about the
+    bearing the joint demands."""
+    tree = _bearing_joint(
+        [
+            {
+                "op": "set_binding",
+                "block": "wheel",
+                "kind": "component",
+                "design": "caster-wheel-100",
+            }
+        ]
+    )
+    findings = [f for f in se_drc.drc(tree).findings if f.rule == "mechanism_bom"]
+    assert len(findings) == 1
+    assert "bearing" in findings[0].detail
+
+
 def test_purchase_mode_naming_nothing_to_buy_is_a_finding() -> None:
     tree = _tree([*_WHEELS, {"op": "set_mode", "block": "wheel", "mode": "purchase"}])
     findings = [f for f in se_drc.drc(tree).findings if f.rule == "mode_without_item"]

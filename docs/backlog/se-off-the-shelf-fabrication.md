@@ -498,14 +498,22 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
 
 ### Left open by the 2026-09-15 build
 
-- **The prod dogfood.** `unicycle-mk2` still has one `screw` joint with no
-  fastener bound (`saddle.rail—seatpost.top`), which is what started this
-  rung. The surface is proven end to end by
-  `tests/test_se_fasten_seatclamp.py` — mint → bind → pose → connect →
-  `view='fasten'` — but the live design was not edited: the session that
-  built this had no `precis` MCP connection. The edit is small and the
-  grammar is in `precis-se-fasten-help`; the one thing to get right is
-  that **the connect names the screw block**, not the two members.
+- **The prod dogfood — done 2026-09-16.** `unicycle-mk2` now has a
+  `seat_bolt` block bound to `iso-4762-m6x35` (minted from the registry),
+  posed head-down on the saddle top and connected `seat_bolt.thread—
+  seatpost.top` (`counterbore`, house fit); the seatpost is
+  `purchase/aluminium` so the far end resolves to a cut thread, and the
+  old member-to-member `screw` joint is demoted to plain `rigid`. It was
+  done through `scripts/prod-precis tools edit --ops`, which is how it
+  found the CLI adapter comma-splitting JSON list params (fixed, same
+  ship). The first read of `view='fasten'` exposed two product defects,
+  both fixed in the same ship: the axis walk did not stop at the block the
+  connect names (it ran saddle → seatpost → clamp → crown → wheel → axle
+  and reported a 725 mm grip), and drc's `mechanism_bom` did not count a
+  component-bound fastener block as the BOM answer. Still open on the
+  design itself: the saddle is `purchase` with no material, so its
+  clearance hole carries no compensation provenance — fine for a bought
+  saddle, but `set_binding` it once a real part exists.
 - **Stock refresh is live-on-demand, not cached.** `view='stock'` asks the
   adapter when someone asks it. No worker, no table, no migration — the
   `parts_refresh` shape is the obvious upgrade if a BOM ever wants to

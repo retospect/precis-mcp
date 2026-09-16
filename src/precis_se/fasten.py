@@ -33,7 +33,10 @@ follows). Nothing here writes.
 **What is a hole and what isn't.** A member that is *bought* — a nut, a
 washer, anything ``component``-bound — already has whatever hole it has;
 you do not drill a nut. Only designed members get stamped, and the last
-one in a nutless stack gets whatever its **thread strategy** says.
+one in a nutless stack gets whatever its **thread strategy** says. And the
+walk itself has an end: the connect's other endpoint is the last member
+the joint owns (a trailing nut aside) — whatever the ray grazes beyond it
+is not this joint's business.
 
 **The far end is a declared choice, not a default** (rung 3c). Rung 3a
 gave the terminal member a cut thread (``d − P``) whatever it was made
@@ -370,6 +373,39 @@ def _walk_axis(
     return members
 
 
+def _truncate_at_target(
+    members: list[Member], target: str
+) -> tuple[list[Member], str | None]:
+    """Stop the stack at the block the connect actually fastens.
+
+    ``_walk_axis`` returns every block the ray crosses, with no notion of
+    which one the joint names — a bolt posed on a saddle and connected to
+    ``seatpost.top`` would otherwise walk straight through the seatpost,
+    the clamp and the crown, out to the axle. The connect's non-fastener
+    endpoint *is* that block; a nut sitting just beyond it is still the
+    joint's own hardware (the ``nut`` termination expects it as the
+    terminal member) and survives the cut, but nothing further does.
+    Ownership of that nut is by position only: two collinear joints
+    packed so tightly that a foreign nut sits immediately past this
+    joint's target are not told apart here.
+
+    If the target never appears in the walk at all, the walk is returned
+    unchanged and a detail string is returned instead of ``None`` — a
+    silent guess here would hide the very axis mismatch that caused it."""
+    idx = next((i for i, m in enumerate(members) if m.block == target), None)
+    if idx is None:
+        return members, (
+            f"the connect names {target!r} as what this screw fastens into, "
+            "but the screw's axis never crosses its envelope — the stack "
+            "was taken as everything on the axis; check its pose/rot or "
+            "the connect's far endpoint"
+        )
+    end = idx + 1
+    if end < len(members) and members[end].form == "nut":
+        end += 1
+    return members[:end], None
+
+
 def _find_fastener(tree: SeTree, connect: Any) -> str | None:
     """The screw among a connect's endpoints, or ``None``.
 
@@ -702,6 +738,18 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
             "and rot; the screw drives along its own +z)"
         )
         return res
+
+    target = connect.a_block if connect.b_block == fastener else connect.b_block
+    res.members, missed = _truncate_at_target(res.members, target)
+    if missed is not None:
+        res.findings.append(
+            ValidationIssue(
+                rule="fastener_target_missed",
+                subject=subject,
+                detail=missed,
+                severity="warn",
+            )
+        )
 
     last = res.members[-1]
     res.termination = "nut" if last.form == "nut" else "tapped"

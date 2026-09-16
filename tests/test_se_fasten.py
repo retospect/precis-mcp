@@ -74,7 +74,10 @@ def _stack(*, nut: bool, joint: dict | None = None, length: float = 0.030) -> Se
         ConnectSpec(
             a_block="bolt",
             a_port="thread",
-            b_block="plate_a",
+            # The connect's far endpoint names what the screw actually
+            # fastens into: the nut when there is one, else the tapped
+            # plate — the block the stack has to end at (`_truncate_at_target`).
+            b_block="nut" if nut else "plate_b",
             b_port="hole",
             joint=joint
             if joint is not None
@@ -136,6 +139,78 @@ class TestAxisWalk:
         tree.blocks["plate_b"].pose = [0.4, 0, 0.012]
         res = _only(tree)
         assert [m.block for m in res.members] == ["plate_a"]
+
+
+def _clamp_stack(*, extra: bool = False, nut: bool = False) -> SeTree:
+    """The seat clamp in miniature: a 4 mm rail on a 12 mm clamp block, the
+    screw connect naming ``clamp`` as the far end of the joint — the block
+    :func:`fasten._truncate_at_target` has to stop the walk at.
+
+    ``extra`` adds a further solid block past whatever terminates the
+    stack, ``nut`` adds a captive nut just past the clamp (with ``extra``
+    then sitting past the nut) — both are on the axis and neither is part
+    of this joint."""
+    tree = SeTree()
+    tree.blocks["bolt"] = _bought("bolt", [0, 0, 0.004], M6X30, slug="iso-4762-m6x30")
+    tree.blocks["rail"] = _designed(
+        "rail", [0, 0, 0.004], envelope="box:w0.05d0.05h0.004"
+    )
+    tree.blocks["clamp"] = _designed(
+        "clamp", [0, 0, 0.008], envelope="box:w0.05d0.05h0.012"
+    )
+    if nut:
+        tree.blocks["nut"] = _bought("nut", [0, 0, 0.020], M6_NUT, slug="iso-4032-m6")
+    if extra:
+        far_z = 0.0252 if nut else 0.020
+        tree.blocks["axle"] = _designed(
+            "axle", [0, 0, far_z], envelope="box:w0.05d0.05h0.010"
+        )
+    tree.connects.append(
+        ConnectSpec(
+            a_block="bolt",
+            a_port="thread",
+            b_block="clamp",
+            b_port="boss",
+            joint={
+                "class": "rigid",
+                "mechanism": "screw",
+                "params": {} if nut else {"thread_strategy": "tapped"},
+            },
+        )
+    )
+    return tree
+
+
+class TestFastenerTargetTruncation:
+    """Defect A: the walk has to stop at the block the connect actually
+    names, not wherever the ray happens to stop."""
+
+    def test_a_block_past_the_target_is_excluded(self) -> None:
+        res = _only(_clamp_stack(extra=True))
+        assert [m.block for m in res.members] == ["rail", "clamp"]
+        assert not any(h.name.startswith(f"{res.subject}#axle.") for h in res.holes)
+        assert res.grip_m == pytest.approx(0.004)
+        assert res.stack_m == pytest.approx(0.016)
+        assert "fastener_target_missed" not in _rules(res)
+
+    def test_a_nut_just_past_the_target_still_terminates_the_stack(self) -> None:
+        res = _only(_clamp_stack(nut=True, extra=True))
+        assert [m.block for m in res.members] == ["rail", "clamp", "nut"]
+        assert res.termination == "nut"
+        assert not any(h.name.startswith(f"{res.subject}#axle.") for h in res.holes)
+        assert "fastener_target_missed" not in _rules(res)
+
+    def test_a_target_the_axis_never_crosses_is_a_finding(self) -> None:
+        tree = _clamp_stack()
+        tree.blocks["clamp"].pose = [0.4, 0, 0.008]  # off the axis entirely
+        res = _only(tree)
+        # The walk is left exactly as it was — only the rail is on the axis.
+        assert [m.block for m in res.members] == ["rail"]
+        assert "fastener_target_missed" in _rules(res)
+        detail = next(
+            f.detail for f in res.findings if f.rule == "fastener_target_missed"
+        )
+        assert "clamp" in detail
 
 
 class TestLengthAndEngagement:
@@ -342,7 +417,7 @@ class TestPatternTolerance:
             ConnectSpec(
                 a_block="bolt2",
                 a_port="thread",
-                b_block="plate_a",
+                b_block="plate_b",
                 b_port="hole2",
                 joint=dict(joint),
             )

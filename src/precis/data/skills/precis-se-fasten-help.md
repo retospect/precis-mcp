@@ -79,7 +79,10 @@ ops=[
 `saddle.rail` and `post.top` says they are joined; it does not say by
 what, and the grip, the holes and the tool are all read off the screw
 block's pose. `view='fasten'` refuses a joint whose endpoints are both
-members rather than guessing which screw you meant.
+members rather than guessing which screw you meant. The stack itself
+ends at the block the connect's other endpoint names — a nut just beyond
+it still counts, but anything further along the axis is not part of this
+joint.
 
 The envelope and ports come from the catalogue row — you do not draw a
 screw. **Pose matters**: the screw drives along its own `+z`, head at the

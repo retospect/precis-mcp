@@ -342,7 +342,13 @@ def drc(tree: SeTree) -> DrcReport:
     # realized by a bought thing needs a line saying which one — on the
     # connect itself, or on either endpoint block (a designer may well
     # hang "2 bearings" on the hub rather than on the joint; both state
-    # the same purchase, so either satisfies the demand).
+    # the same purchase, so either satisfies the demand). For a `screw`
+    # the fastener is itself an endpoint, so a `component`/`part` binding
+    # on either endpoint block already names the bought thing — that is
+    # exactly what fastening asks for (set_binding on the screw block).
+    # Only for `screw`: on a bearing or cable joint the endpoints are the
+    # joined members, and a wheel bound to a bought wheel says nothing
+    # about the bearing.
     bom_targets: set[str] = set()
     block_bom_targets: set[str] = set()
     for line in tree.bom:
@@ -361,6 +367,12 @@ def drc(tree: SeTree) -> DrcReport:
             continue
         if {c.a_block, c.b_block} & bom_targets:
             continue
+        endpoints = (tree.blocks.get(c.a_block), tree.blocks.get(c.b_block))
+        if mech == "screw" and any(
+            b is not None and b.bound_kind in ("component", "part") and bool(b.bound)
+            for b in endpoints
+        ):
+            continue
         findings.append(
             ValidationIssue(
                 rule="mechanism_bom",
@@ -368,7 +380,8 @@ def drc(tree: SeTree) -> DrcReport:
                 detail=(
                     f"mechanism {mech!r} is realized by a bought part "
                     f"({spec['demands_bom']}) — nothing is on the BOM for "
-                    "this joint or its blocks (add_bom with the component)"
+                    "this joint or its blocks (add_bom with the component, "
+                    "or set_binding on the fastener block)"
                 ),
                 severity="warn",
             )
