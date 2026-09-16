@@ -94,6 +94,13 @@ already handled by `precis_se.validate.kernel_scale`.
 | laser/die/turning processes; 2.5D sheet kernel serving three processes | addendum A8 → `se-off-the-shelf-fabrication.md` rungs 4–5 (turning new) | spec'd 2026-09-12 |
 | non-bonded menu (charge/H-bond/vdW), ratchets, hysteresis caching rule, DFT spacer library, synthesis-route choice | addendum A9 → stick-placement / photoswitch / design-core states / blocktree | spec'd 2026-09-12 |
 | process projection composability; reaction yield (open questions) | addendum A10 → spec §6.2 | spec'd 2026-09-12 |
+| level-set shape-functional inner layer (single boundary velocity field; scoped to phase-3 polish over the shipped SIMP screen) | `multiscale-optimisation-method.md` §2 | spec'd 2026-09-15; per-block first, multiphase + topological-derivative nucleation as upgrades |
+| preferred-number term (differentiable, min-of-offset-wells; generalises spec §4.6 lattice preference to declared measurements) | `multiscale-optimisation-method.md` §4 | spec'd 2026-09-15, max→min corrected on intake |
+| fixed reference normalisation R_i (pins Chebyshev reference point too) | `multiscale-optimisation-method.md` §3 | decided 2026-09-15 |
+| move-set deltas (atomic merge-resplit, LLM-proposed split surfaces + random-cut hedge, demand-driven consultation, snap-to-coarser-tier) | `multiscale-optimisation-method.md` §6 | spec'd 2026-09-15 |
+| alchemical composition relaxation (atomic tier) | `multiscale-optimisation-method.md` §7 → spec §4.9 when investigated | flagged 2026-09-15 |
+| symmetry terms (soft $J_{\text{sym}}$ via $\phi\circ g$; imposed form → pattern-groups) | `multiscale-optimisation-method.md` §6a | spec'd 2026-09-15 |
+| pcb as second renter of the optimiser stack (descend positions, anneal layers/swaps; seed_placement bridge first) | `multiscale-optimisation-method.md` §6b | spec'd 2026-09-15 |
 
 ## Toolpath ownership — how far into the slicer we go (new)
 
@@ -282,6 +289,13 @@ stressed. Build detail: `complementarity-solver.md`.
   keep the worse direction. General: interval propagation. The worse
   *sign* is objective-dependent (lower convection is worse for a heat sink
   and better when thermal expansion closes a fit).
+- **Inner-solve resolution ladder** (2026-09-15,
+  `multiscale-optimisation-method.md` §2): feature parameterisation
+  (phase-2 sizing, this invariant) → SIMP density (topology generation —
+  nucleates holes the level set cannot) → level-set HJ advection
+  (phase-3 boundary polish, where every cost term enters one boundary
+  velocity field $v_n$). One smoothed-Heaviside formulation under all
+  three; what differs is which field is advected.
 - **House guard.** The acquisition function chooses *where to evaluate*;
   objective weights stay human-set (`quest` frontier discipline — a solver
   may not tune its own objective). BO is a search scheduler, never a
