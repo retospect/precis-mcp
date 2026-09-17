@@ -182,11 +182,21 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
     if not pads:
         return None
 
-    pin_map = {pad["number"]: {"name": pad["number"], "tags": []} for pad in pads}
-    # No schematic cross-reference happens here (see module docstring on
-    # why we deliberately never touch result.dataStr) — the footprint doc
-    # only knows pad *numbers*, not functional pin names, so name defaults
-    # to the pad's own number until a schematic-aware pass improves it.
+    # The footprint doc only knows pad NUMBERS. Functional pin names
+    # (HVOUT41, DIN, VPP, ...) live in the schematic SYMBOL — the other
+    # document the module docstring warns not to confuse with this one.
+    # Read deliberately here, for names only (never geometry): a design
+    # authored with datasheet pin names (the ``sink_grid`` generator's
+    # ``channel_pins``, gr341532) can only land on real pads if
+    # ``pin_map[number].name`` carries the symbol's name, because
+    # ``session._real_pin_offsets`` keys the real offsets by that name.
+    # A part whose symbol has no pin names (or no symbol at all) keeps
+    # the number as its name, exactly as before.
+    names = _symbol_pin_names(result)
+    pin_map = {
+        pad["number"]: {"name": names.get(pad["number"], pad["number"]), "tags": []}
+        for pad in pads
+    }
 
     uuid = package.get("uuid") or data.get("uuid")
     source = "easyeda:packageDetail" + (f":{uuid}" if uuid else "")
@@ -199,6 +209,42 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
         "source": source,
         "raw": doc,
     }
+
+
+def _symbol_pin_names(result: dict[str, Any]) -> dict[str, str]:
+    """``{pin_number: pin_name}`` from the schematic SYMBOL document
+    (``result.dataStr``, docType 2), names only — geometry is never read
+    from it. A symbol pin primitive is ``P~display~electric~NUMBER~x~y~
+    rot~id~locked^^<dot>^^<path>^^1~x~y~rot~NAME~start~...^^1~x~y~rot~
+    NUMBER~end~...^^...`` (spike-verified 2026-09-17 against C639448's
+    cached raw doc: pin 1 carries ``HVOUT41``). Anything that does not
+    parse is skipped, never fatal; a name equal to the number (or empty)
+    is dropped so the caller's number fallback stays the single default.
+    """
+    data = result.get("dataStr")
+    if not isinstance(data, dict):
+        return {}
+    shape = data.get("shape")
+    if not isinstance(shape, list):
+        return {}
+    names: dict[str, str] = {}
+    for prim in shape:
+        if not isinstance(prim, str) or not prim.startswith("P~"):
+            continue
+        segments = prim.split("^^")
+        head = segments[0].split("~")
+        if len(head) < 4:
+            continue
+        number = head[3].strip()
+        name = ""
+        for seg in segments[1:]:
+            fields = seg.split("~")
+            if len(fields) >= 6 and fields[5] == "start":
+                name = fields[4].strip()
+                break
+        if number and name and name != number:
+            names[number] = name
+    return names
 
 
 def _resolve_doc_type(data: dict[str, Any]) -> tuple[bool, Any]:
