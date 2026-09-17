@@ -520,25 +520,48 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
   `parts_refresh` shape is the obvious upgrade if a BOM ever wants to
   price a hundred lines at once, and deliberately not built for a surface
   nobody has used yet.
-- **Credentials are user-side.** Digi-Key needs a free developer app
-  (`PRECIS_DIGIKEY_CLIENT_ID` / `_SECRET`); until one exists the tier is
-  the whole answer and the view says so. JLCMC's mechanical API is worth
-  applying for — it is the catalogue this actually wants, and the JLCPCB
-  order history is what they review. *How to add them (2026-09-16):*
-  developer.digikey.com → My Apps → create a **Production** app with the
-  Product Information V4 API enabled (the sandbox returns canned data) →
-  Client ID + Client Secret. Locally: one file per variable under
-  `~/.secrets/pw/` (`scripts/prod-precis` forwards them when present; the
-  MCP launcher in the infrastructure repo needs two more `-e` lines in
-  the style of `EPO_OPS_CLIENT_KEY`). Cluster: the gitignored vault
-  overlay, same as `OPENROUTER_API_KEY`; only the gateway needs it since
-  `view='stock'` is on-demand. The port is the shim: a second adapter is
-  one class implementing `precis.supply.Adapter` plus a line in
-  `adapters()`. Re-surveyed 2026-09-16: RS Components (the European
-  fastener stockist) has **no self-serve product API** — trade customers
-  get PunchOut/cXML procurement plumbing only; Mouser and Farnell/element14
-  do issue free self-serve keys but carry the same thin metric-hardware
-  range as Digi-Key. Nothing European and self-serve holds fastener depth.
+- **Credentials live in the vault.** Digi-Key needs a free developer app
+  (`PRECIS_DIGIKEY_CLIENT_ID` / `PRECIS_DIGIKEY_CLIENT_SECRET`); until one
+  exists the tier is the whole answer and the view says so. *How to add
+  them (2026-09-17):* developer.digikey.com → My Apps → create a
+  **Production** app with the Product Information V4 API enabled (the
+  sandbox returns canned data) → Client ID + Client Secret → paste both on
+  the precis-web `/secrets` page. That is the whole procedure: the adapter
+  resolves them through `precis.secrets.get_secret`, so the MCP server,
+  precis-web and `scripts/prod-precis` all read the same vault row and the
+  `/secrets` page probes the pair against the token endpoint. An env var or
+  a `~/.secrets/pw/<name>` file is a local override only (resolver order in
+  `precis/secrets.py`); no launcher `-e` lines, no overlay entry.
+- **Other suppliers (surveyed 2026-09-16/17).** The port is the shim: a
+  second adapter is one class implementing `precis.supply.Adapter` plus a
+  line in `adapters()`, credentials as two more `KNOWN_SECRETS` rows.
+  What each would cost to add:
+  - *RS Components* (the European fastener stockist): **no self-serve
+    product API** — trade customers get PunchOut/cXML procurement plumbing
+    on a negotiated account, not catalogue data. Nothing to build until
+    that changes.
+  - *McMaster-Carr*: an official Product Information API, **approved
+    customers only** — email their eProcurement team, then a client
+    certificate (`.pfx` + password) per customer and a login call that
+    returns a bearer token. Adapter is straightforward once approved
+    (httpx with a client cert); US-centric stock and pricing.
+  - *LCSC*: an official OpenAPI (keyword search, 30 per page; product info
+    with EUR pricing; `X-API-Key` header) whose key issuance is behind the
+    help-centre "How to get LCSC's APIs?" — application, not sign-up. Its
+    catalogue is electronics; the mechanical sibling *JLCMC* has no
+    documented API and is the one to ask for.
+  - *Mouser*: free self-serve Search API key. *Farnell/element14*: free
+    generic key, contract pricing via a sales rep. Both carry the same thin
+    metric-hardware range as Digi-Key.
+  - *Nexar (Octopart)*: one GraphQL aggregator over 30+ distributors
+    (Digi-Key, Mouser, Arrow, Avnet, Farnell …), free registration with a
+    small matched-parts cap. One adapter would answer for several
+    stockists at once; whether it carries RS and McMaster lines is
+    unverified (their distributor list is behind a bot wall).
+  - *Misumi, Bossard, Würth*: no developer API found — only third-party
+    scrapers. Not candidates.
+  Order of value for fasteners: JLCMC (apply) > Nexar (one key, many
+  stockists) > Mouser (cheap, thin). Do not scrape.
 - **Pins.** Dowel and roll pins are not in the fastening pass at all: a
   `press` joint has no bound pin block, no reamed-hole fit table and no
   blind depth. Same shape as the tapped blind hole (pin engagement +

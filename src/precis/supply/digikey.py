@@ -2,9 +2,14 @@
 
 Register a developer app on developer.digikey.com against a My DigiKey
 account (no commercial arrangement, no order history required), enable the
-Product Information API, and set ``PRECIS_DIGIKEY_CLIENT_ID`` and
-``PRECIS_DIGIKEY_CLIENT_SECRET``. Auth is OAuth2 **client credentials**:
-one token request, cached until it expires, no user interaction.
+Product Information API, and paste the resulting client ID and secret onto
+the precis-web ``/secrets`` page (they resolve through the DB vault as
+``PRECIS_DIGIKEY_CLIENT_ID`` / ``PRECIS_DIGIKEY_CLIENT_SECRET`` —
+:func:`precis.secrets.get_secret`); an env var or a
+``~/.secrets/pw/<name>`` file still works as a local override, per the
+resolver order in ``src/precis/secrets.py``'s module docstring. Auth is
+OAuth2 **client credentials**: one token request, cached until it expires,
+no user interaction.
 
 **What it is good for, and what it isn't.** Digi-Key's hardware catalogue
 is real but partial for our purposes: machine screws, standoffs and
@@ -21,13 +26,13 @@ the right screw in the wrong grade, or a bag of 100.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from typing import Any
 
 import httpx
 
+from precis.secrets import get_secret
 from precis.supply.base import StockQuote, now
 
 _TOKEN_URL = "https://api.digikey.com/v1/oauth2/token"
@@ -54,9 +59,13 @@ class DigiKeyAdapter:
 
     @staticmethod
     def _credentials() -> tuple[str | None, str | None]:
+        # No store argument: the runtime factory binds the boot store, so
+        # the MCP server, precis-web, and the `precis tools` CLI all reach
+        # the vault; an env var still overrides per get_secret's resolution
+        # order.
         return (
-            os.environ.get("PRECIS_DIGIKEY_CLIENT_ID"),
-            os.environ.get("PRECIS_DIGIKEY_CLIENT_SECRET"),
+            get_secret("PRECIS_DIGIKEY_CLIENT_ID"),
+            get_secret("PRECIS_DIGIKEY_CLIENT_SECRET"),
         )
 
     def configured(self) -> str | None:
@@ -73,8 +82,10 @@ class DigiKeyAdapter:
         ]
         return (
             f"{' and '.join(missing)} not set — register a developer app at "
-            "developer.digikey.com (free, self-serve) and enable the Product "
-            "Information API"
+            "developer.digikey.com (free, self-serve), enable the Product "
+            "Information API, and paste the credentials on the precis-web "
+            "/secrets page (or an env var / ~/.secrets/pw/<name> file, as a "
+            "local override)"
         )
 
     # -- auth ------------------------------------------------------------

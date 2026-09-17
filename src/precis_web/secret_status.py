@@ -123,6 +123,28 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group="orcid",
     ),
     SecretSpec(
+        name="PRECIS_DIGIKEY_CLIENT_ID",
+        purpose="component kind — Digi-Key Product Information v4 OAuth pair "
+        "(client ID half); live stock for `view='stock'`.",
+        get_url="https://developer.digikey.com",
+        get_blurb="Register a **Production** app (the sandbox returns canned "
+        "data) with the Product Information API enabled; it hands you a "
+        "Client ID and Client Secret — set both here.",
+        cost="free tier",
+        probe_group="digikey",
+    ),
+    SecretSpec(
+        name="PRECIS_DIGIKEY_CLIENT_SECRET",
+        purpose="component kind — Digi-Key Product Information v4 OAuth pair "
+        "(secret half); live stock for `view='stock'`.",
+        get_url="https://developer.digikey.com",
+        get_blurb="Register a **Production** app (the sandbox returns canned "
+        "data) with the Product Information API enabled; it hands you a "
+        "Client ID and Client Secret — set both here.",
+        cost="free tier",
+        probe_group="digikey",
+    ),
+    SecretSpec(
         name="WOLFRAM_APP_ID",
         purpose="math kind — Wolfram|Alpha computation.",
         get_url="https://developer.wolframalpha.com",
@@ -329,6 +351,22 @@ async def _probe_orcid(
     return _classify_status(r.status_code)
 
 
+async def _probe_digikey(
+    client: httpx.AsyncClient, values: dict[str, str]
+) -> CheckResult:
+    r = await client.post(
+        "https://api.digikey.com/v1/oauth2/token",
+        data={
+            "client_id": values["PRECIS_DIGIKEY_CLIENT_ID"],
+            "client_secret": values["PRECIS_DIGIKEY_CLIENT_SECRET"],
+            "grant_type": "client_credentials",
+        },
+    )
+    # invalid_client comes back as either 400 or 401 depending on which half
+    # of the pair is wrong.
+    return _classify_status(r.status_code, bad_codes=(400, 401, 403))
+
+
 async def _probe_wolfram(
     client: httpx.AsyncClient, values: dict[str, str]
 ) -> CheckResult:
@@ -417,6 +455,7 @@ _PROBES: dict[str, ProbeFn] = {
     "s2": _probe_s2,
     "epo": _probe_epo,
     "orcid": _probe_orcid,
+    "digikey": _probe_digikey,
     "wolfram": _probe_wolfram,
     "core": _probe_core,
     "elsevier": _probe_elsevier,

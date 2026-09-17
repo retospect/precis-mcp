@@ -236,9 +236,10 @@ do speak to availability, and they are different kinds of fact:
   M14×55 offline, and that `q=` weighs *after* fit;
 - `get(kind='component', id=<slug>, view='stock')` shows that tier **and**
   asks a supplier for a live in-stock number, when one is configured
-  (`precis.supply`; Digi-Key today, free self-serve key). With no
-  credentials it says which one is missing rather than showing the tier
-  alone — a missing key and a part nobody stocks must not read alike.
+  (`precis.supply`; Digi-Key today — the operator pastes the free
+  developer-app pair on the web `/secrets` page). With no credentials it
+  says which one is missing rather than showing the tier alone — a
+  missing key and a part nobody stocks must not read alike.
 
 The dimension specs a mint writes (`outer_diameter`, `inner_diameter`,
 `wall_thickness`, `thickness`, `width`, `height`, `across_flats`,

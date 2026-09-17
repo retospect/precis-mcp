@@ -6,6 +6,12 @@ No network: the Digi-Key adapter is exercised against a stubbed
 that a missing credential says which one, that an outage does not sink
 the other suppliers, and that a quote carries the caveat that it was
 matched by keyword.
+
+Credentials now resolve through :mod:`precis.secrets` (env -> vault ->
+``~/.secrets/pw/<name>`` file -> default), so an unset env var no longer
+means "absent" on a machine that happens to have a real file or a bound
+store — the autouse fixture below pins the file layer to an empty
+``tmp_path`` and unbinds any store, making the module hermetic.
 """
 
 from __future__ import annotations
@@ -15,9 +21,19 @@ from typing import Any
 
 import pytest
 
+from precis import secrets as vault
 from precis import supply
 from precis.supply import base
 from precis.supply.digikey import DigiKeyAdapter
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Keep the vault/file layers of ``get_secret`` out of these tests unless
+    a test opts in — see ``tests/test_secrets_resolver.py`` for the pattern."""
+    monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
+    vault.bind_store(None)
+    vault.invalidate()
 
 
 def _quote(**kw: Any) -> base.StockQuote:
@@ -92,6 +108,22 @@ class TestConfiguration:
         monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_SECRET", raising=False)
         why = supply.unavailable_reason()
         assert why is not None and "digikey" in why
+
+    def test_credentials_resolve_through_the_file_layer_with_no_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """With env unset, a file under ``PRECIS_SECRETS_FILE_DIR`` (the
+        resolver's fallback below the vault) is enough to be configured —
+        proof the adapter goes through ``get_secret`` rather than a raw
+        ``os.environ`` read."""
+        monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("PRECIS_DIGIKEY_CLIENT_SECRET", raising=False)
+        monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
+        (tmp_path / "PRECIS_DIGIKEY_CLIENT_ID").write_text("id\n", encoding="utf-8")
+        (tmp_path / "PRECIS_DIGIKEY_CLIENT_SECRET").write_text(
+            "secret\n", encoding="utf-8"
+        )
+        assert DigiKeyAdapter().configured() is None
 
 
 class _Boom:

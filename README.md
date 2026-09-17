@@ -219,6 +219,7 @@ escape hatch) without building the multi-flag `precis tools <verb>
 | `PRECIS_PYTHON_ALLOW_EXEC=1`  | Gate for `python` runtrace (spawns subprocess).  |
 | `EPO_OPS_CLIENT_KEY` + `_SECRET` + `PRECIS_PATENT_RAW_ROOT` | Enables `patent` kind. |
 | `ORCID_CLIENT_ID` + `_SECRET` | Enables the `orcid` researcher-identity kind.    |
+| `PRECIS_DIGIKEY_CLIENT_ID` + `_SECRET` | Live supplier stock for `component` `view='stock'` (paste on `/secrets`). |
 | `WOLFRAM_APP_ID`              | Enables `math` kind.                             |
 | `PERPLEXITY_API_KEY`          | Enables `websearch` / `perplexity-reasoning` / `perplexity-research`. |
 | `PRECIS_WEB_AUTH`             | `off` disables the `precis web` HTTP Basic gate (local dev only). Anything else — including unset — keeps it **on**: every route requires an account from `precis users`. |
