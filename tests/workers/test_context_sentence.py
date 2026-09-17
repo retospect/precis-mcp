@@ -12,6 +12,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.workers.context_sentence import (
@@ -91,6 +93,47 @@ class TestLint:
             "establishes",
         ):
             assert lint_violation(f"This is {word} evidence for the claim.") is not None
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "The authors report on the measurement of X.",
+            "This paper reports the discovery of Y.",
+            "We measured Z by AFM.",
+            "Here we report Z.",
+            "In this study, Z was measured.",
+            "the study describes Z.",
+        ],
+    )
+    def test_attribution_preamble_is_rejected(self, sentence: str) -> None:
+        reason = lint_violation(sentence)
+        assert reason is not None
+        assert reason.startswith("attribution preamble")
+
+    def test_good_example_sentences_pass(self) -> None:
+        assert (
+            lint_violation(
+                "Elastic properties and intrinsic strength were measured "
+                "by atomic force microscopy."
+            )
+            is None
+        )
+        assert (
+            lint_violation(
+                "Helical microtubules of graphitic carbon were observed "
+                "by transmission electron microscopy."
+            )
+            is None
+        )
+
+    def test_mid_sentence_the_authors_is_not_rejected(self) -> None:
+        assert (
+            lint_violation(
+                "Elastic moduli were measured by AFM, following a protocol "
+                "the authors adapted from earlier work."
+            )
+            is None
+        )
 
 
 # ── propose (mocked LLM) ──────────────────────────────────────────────────

@@ -14,8 +14,10 @@ JSONB_COLUMNS``), so no migration/allowlist change is needed. Full spec:
 Context, never endorsement: the sentence is descriptive of method/evidence
 type only, never a claim-strength assertion. A small word-boundary
 blocklist (``proof``/``definitive``/``confirms``/``demonstrates``/
-``proves``/``establishes``) plus a ~35-word cap are enforced IN CODE
-(:func:`lint_violation`) — the model is not trusted. On a lint violation
+``proves``/``establishes``), a ban on attribution-preamble openers ("The
+authors report", "This paper presents", "We show", ...), and a ~35-word cap
+are enforced IN CODE (:func:`lint_violation`) — the model is not trusted.
+On a lint violation
 the pass regenerates ONCE; a second violation drops the sentence entirely
 ("no sentence beats a bad one") and stamps
 ``refs.meta['context_sentence_failed']`` so the paper converges rather
@@ -115,6 +117,24 @@ _BLOCKLIST_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Attribution-preamble openers the sentence must never lead with — the
+#: reader already knows the sentence is about the paper, so "The authors
+#: report ..." / "This paper presents ..." / "We show ..." is pure filler.
+#: Anchored at the START of the sentence (past optional leading punctuation/
+#: quote chars), case-insensitive, word-boundary after the phrase.
+_PREAMBLE_RE = re.compile(
+    r"^\W*(?:"
+    r"the\ authors?"
+    r"|this\ (?:paper|study|work|article|report|letter)"
+    r"|the\ (?:paper|study|work|article|report|letter)"
+    r"|the\ present\ (?:paper|study|work)"
+    r"|in\ this\ (?:paper|study|work|article)"
+    r"|here(?:,)?\ we"
+    r"|we"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _QUOTE_CHARS = "\"'`“”‘’"
 
 #: Exact token the model must return when the supplied text can't ground a
@@ -127,10 +147,18 @@ _SYS = (
     "trusting a quote pulled from it (for example: whether a result is "
     "computational, experimental, a review, or a case report). Never assert, "
     "endorse, or judge whether the paper's claims are correct -- describe "
-    "the method/evidence type only, in a neutral register. Never use words "
-    "like proof, definitive, confirms, demonstrates, proves, or establishes. "
-    "At most 35 words, ONE sentence, no preamble, no markdown. Reply with "
-    "ONLY the sentence and nothing else.\n\n"
+    "the method/evidence type only, in a neutral register. State what the "
+    "paper did directly, with the method or the measured thing as the "
+    "subject of the sentence -- for example: 'Elastic properties and "
+    "intrinsic strength were measured by atomic force microscopy.' or "
+    "'Helical microtubules of graphitic carbon were observed by "
+    "transmission electron microscopy.' Never open with attribution filler "
+    "such as 'The authors report', 'This paper presents', 'This study "
+    "describes', 'We show', or 'Here we report' -- the reader already "
+    "knows the sentence is about the paper. Never use words like proof, "
+    "definitive, confirms, demonstrates, proves, or establishes. At most "
+    "35 words, ONE sentence, no preamble, no markdown. Reply with ONLY "
+    "the sentence and nothing else.\n\n"
     "The TITLE is authoritative about what the paper is; the supplied text is "
     "machine-extracted and is sometimes NOT this paper's own prose -- a "
     "neighbouring article's reference list, front matter, or an unrelated "
@@ -147,10 +175,11 @@ _SYS = (
 
 def lint_violation(sentence: str) -> str | None:
     """The reason ``sentence`` fails the context-sentence contract, or
-    ``None`` when clean. Never raises. Two checks, both code-enforced
-    (the model is not trusted): the ~35-word cap, and the claim-strength
+    ``None`` when clean. Never raises. Three checks, all code-enforced
+    (the model is not trusted): the ~35-word cap, the claim-strength
     blocklist (word-boundary, case-insensitive — see
-    :data:`_BLOCKLIST_WORDS`)."""
+    :data:`_BLOCKLIST_WORDS`), and a ban on leading attribution preamble
+    (see :data:`_PREAMBLE_RE`)."""
     if not sentence or not sentence.strip():
         return "empty"
     words = sentence.split()
@@ -159,6 +188,9 @@ def lint_violation(sentence: str) -> str | None:
     m = _BLOCKLIST_RE.search(sentence)
     if m:
         return f"claim-strength word {m.group(0)!r}"
+    m = _PREAMBLE_RE.match(sentence)
+    if m:
+        return f"attribution preamble {m.group(0)!r}"
     return None
 
 

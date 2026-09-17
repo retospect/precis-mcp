@@ -87,9 +87,10 @@ Slices 4-5 — publish path (POST gated, nothing published yet):
     on the source's DOI node for a >=2-grounding source only.
   - *Paper context* — :mod:`precis.workers.context_sentence` writes ONE
     neutral method/evidence sentence to ``refs.meta['context_sentence']``
-    (code-enforced word cap + claim-strength blocklist, regenerate once
-    then drop). Emitted as ``precis:sourceContext``; absent is always
-    legal — minting never blocks on it.
+    (code-enforced word cap + claim-strength blocklist + no attribution
+    preamble, regenerate once then drop). Emitted as
+    ``precis:sourceContext``; absent is always legal — minting never
+    blocks on it.
   Both render in the LaTeX hub footnote (``precis.export.latex``),
   preferring the frozen publish-row copy and falling back to live data,
   with the context sentence in roman "Context:" text against italic
