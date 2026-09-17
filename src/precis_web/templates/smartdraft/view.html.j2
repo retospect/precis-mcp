@@ -1360,8 +1360,22 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       // drop any survivors defensively so a stale card can never linger
       // after navigating away from the para that opened it.
       document.querySelectorAll('body > .ref-popover').forEach((el) => el.remove());
-      cur.innerHTML = fresh.innerHTML;
-      if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(cur);
+      // Alpine's own MutationObserver also initialises the nodes an innerHTML
+      // replace adds, so an explicit initTree on top used to initialise every
+      // x-data component in the panel TWICE (Alpine 3.14.3 has no
+      // already-initialised guard): two reactive scopes per block, with the
+      // x-show effects bound to the dead one — after any nav/refresh swap the
+      // block editor mounted hidden and the ✎ click looked like a no-op
+      // (gr335590). mutateDom() pauses the observer around the replace so the
+      // explicit initTree is the only one; destroyTree() first runs the old
+      // components' cleanups the observer would otherwise have run.
+      if (window.Alpine && window.Alpine.mutateDom) {
+        window.Alpine.destroyTree(cur);
+        window.Alpine.mutateDom(() => { cur.innerHTML = fresh.innerHTML; });
+        window.Alpine.initTree(cur);
+      } else {
+        cur.innerHTML = fresh.innerHTML;
+      }
       ST = readState();
       afterSwap();
     } catch (e) { location.href = url; }
@@ -1429,7 +1443,14 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
         for (const el of batch) {
           const dc = el.getAttribute('data-dc');
           const fresh = doc.querySelector(`[data-dc="${CSS.escape(dc)}"]`);
-          if (fresh) { const node = fresh.cloneNode(true); el.replaceWith(node); inserted.push(node); }
+          if (fresh) {
+            const node = fresh.cloneNode(true);
+            // Same double-init trap as swapFrom(): pause Alpine's observer for
+            // the insert so the explicit initTree below is the only one.
+            if (window.Alpine && window.Alpine.mutateDom) window.Alpine.mutateDom(() => el.replaceWith(node));
+            else el.replaceWith(node);
+            inserted.push(node);
+          }
           else { el.removeAttribute('data-ph'); }   // unknown handle → drop the spacer
         }
         inserted.forEach((node) => {

@@ -319,11 +319,32 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
   // Arm the listener only once hasFocus() is confirmed true (or once the
   // retry budget is spent, so blur-to-save still works if focus genuinely
   // never lands) so a transient pre-focus blur can't trigger it.
+  // Second guard (gr335590, still flashing on prod after the arm-after-focus
+  // change): a blur with no visible cause — focus not handed to another
+  // element (relatedTarget null) and no pointer pressed outside the editor
+  // just before — is not a dismissal, whatever stole the focus. Retake focus
+  // instead (bounded, so a persistent thief can't loop forever); blur-to-save
+  // still fires for a real click elsewhere, Tab/Shift-Tab, or once the
+  // retakes are spent.
   let _blurArmed = false;
+  let _pointerOutsideAt = -Infinity;
+  let _retakes = 3;
+  const onPointerDown = (e) => {
+    if (!view.dom.contains(e.target)) _pointerOutsideAt = performance.now();
+  };
+  document.addEventListener('pointerdown', onPointerDown, true);
   const armBlur = () => {
     if (_blurArmed) return;
     _blurArmed = true;
-    view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
+    view.dom.addEventListener('blur', (e) => {
+      const deliberate = !!e.relatedTarget || (performance.now() - _pointerOutsideAt) < 800;
+      if (!deliberate && _retakes > 0) {
+        _retakes -= 1;
+        setTimeout(() => { try { if (!view.hasFocus()) view.focus(); } catch (err) { /* torn down */ } }, 0);
+        return;
+      }
+      opts.onBlur && opts.onBlur();
+    });
   };
   (function ensureFocus(n) {
     try { view.focus(); } catch (e) { return; }   // view torn down → stop
@@ -335,7 +356,11 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
   return {
     getText() { return docToText(view.state.doc); },
     focus() { view.focus(); },
-    destroy() { clearTimeout(timer); if (ac) ac.destroy(); view.destroy(); },
+    destroy() {
+      clearTimeout(timer); if (ac) ac.destroy();
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      view.destroy();
+    },
   };
 };
 </script>
