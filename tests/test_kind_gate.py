@@ -10,9 +10,10 @@ Phase 4 of the cold-start token budget design
 - :func:`precis.kind_gate.format_unavailable` banner rendering.
 - :func:`precis.server._kinds_unavailable_line` integration via a
   fake hub carrying explicit :class:`Loadability` verdicts.
-- ``PatentHandler.__init__`` convergence: env trio reading happens
-  inside the handler, so missing envs raise InitError with the
-  conventional ``"patent: missing env vars ..."`` shape.
+- ``PatentHandler`` convergence: env-trio reading happens inside the
+  handler, deferred to first OPS-touching use (gr343391) — missing
+  envs surface as ``Upstream`` with the conventional
+  ``"patent: missing ..."`` shape, not at construction.
 """
 
 from __future__ import annotations
@@ -388,14 +389,19 @@ def test_build_instructions_omits_unavailable_line_when_clean() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_patent_handler_raises_init_error_when_envs_missing() -> None:
+def test_patent_handler_defers_missing_env_check_to_first_use() -> None:
     """Convergence: with no explicit ops/raw_root and no env vars,
-    PatentHandler.__init__ raises InitError with the conventional
-    ``"patent: missing env vars ..."`` shape. (The kind_gate would
-    normally skip before we reach here in production; this test
-    exercises the defense-in-depth raise.)
+    ``PatentHandler.__init__`` no longer probes credentials at all —
+    that's deferred to first OPS-touching use (gr343391), so a
+    vault/DB hiccup during construction can't escape past
+    ``dispatch._try``. Construction succeeds; the conventional
+    ``"patent: missing ..."`` message surfaces as ``Upstream`` from
+    the ``ops`` property on first real use. (The kind_gate would
+    normally skip registration before we reach here in production;
+    this test exercises the handler's own defense-in-depth check.)
     """
-    from precis.dispatch import Hub, InitError
+    from precis.dispatch import Hub
+    from precis.errors import Upstream
     from precis.handlers.patent import PatentHandler
 
     # A hub with a non-None store so the earlier "store required"
@@ -413,8 +419,9 @@ def test_patent_handler_raises_init_error_when_envs_missing() -> None:
             "PRECIS_PATENT_RAW_ROOT",
         ):
             os.environ.pop(env, None)
-        with pytest.raises(InitError, match="patent: missing"):
-            PatentHandler(hub=hub)
+        handler = PatentHandler(hub=hub)  # construction never raises now
+        with pytest.raises(Upstream, match="patent: missing"):
+            _ = handler.ops
 
 
 def test_patent_handler_test_path_unaffected_by_env() -> None:

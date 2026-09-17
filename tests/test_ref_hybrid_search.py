@@ -147,6 +147,64 @@ class TestModeIsHonoured:
         assert spy.calls == 1
 
 
+class TestSemanticModeGatesTitleLexicalLeg:
+    """gr343635: ``mode='semantic'`` on a ref-level kind (``job``, ``todo``,
+    ``quest`` — ``NumericRefHandler`` kinds without body-chunk search) used
+    to still let pure title-keyword matches through, because the
+    title-lexical leg (and its notation-canonical twin) fused in
+    unconditionally regardless of ``mode``. Only the block leg is
+    ``mode``-aware.
+    """
+
+    def test_title_keyword_only_ref_excluded_under_semantic_mode(self, store) -> None:
+        e = MockEmbedder(dim=store.embedding_dim())
+        marker = "gr343635uniq"
+        query = f"{marker} phrase used as the semantic anchor"
+
+        # Title contains every query keyword, verbatim — but has no body
+        # chunk at all, so there is zero semantic signal to find it by.
+        title_only = store.insert_ref(kind="todo", slug=None, title=query, meta={})
+
+        # Unrelated title; a body chunk whose text IS the query, embedded
+        # with the same (deterministic-hash) embedder, so its distance to
+        # the query vector is exactly 0 — well inside SEMANTIC_DISTANCE_FLOOR.
+        semantic_match = store.insert_ref(
+            kind="todo", slug=None, title="unrelated title text", meta={}
+        )
+        store.chunks.insert_chunks(
+            semantic_match.id,
+            [ChunkInsert(ord=0, text=query, embedding=e.embed_one(query))],
+        )
+
+        # Default hybrid: the title-lexical leg still surfaces the
+        # keyword-only match — no regression on the default path.
+        hybrid_ids = {
+            r.id for r in fused_ref_hits(store, e, q=query, kind="todo", limit=10)
+        }
+        assert title_only.id in hybrid_ids
+        assert semantic_match.id in hybrid_ids
+
+        # mode='semantic': the title-keyword-only ref is excluded outright;
+        # the semantically-close ref survives.
+        semantic_ids = {
+            r.id
+            for r in fused_ref_hits(
+                store, e, q=query, kind="todo", limit=10, mode="semantic"
+            )
+        }
+        assert title_only.id not in semantic_ids
+        assert semantic_match.id in semantic_ids
+
+        # mode='lexical': title-keyword matching still works.
+        lexical_ids = {
+            r.id
+            for r in fused_ref_hits(
+                store, e, q=query, kind="todo", limit=10, mode="lexical"
+            )
+        }
+        assert title_only.id in lexical_ids
+
+
 class TestNoRegressionForChunklessKinds:
     def test_todo_without_body_chunks_is_still_found_by_title(self, store) -> None:
         """The guard on the additive design.

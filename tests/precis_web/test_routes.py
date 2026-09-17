@@ -3814,6 +3814,111 @@ def test_console_examples_grouped_box_rendered(client) -> None:
         assert kind in resp.text
 
 
+def test_visible_console_examples_hub_none_shows_everything() -> None:
+    """No hub introspection available ⇒ fail open, show every example —
+    matches the default fake (``runtime.hub`` is ``None`` unless a test
+    sets it), so a runtime that never wires a hub isn't left with a
+    blank examples box."""
+    from precis_web.routes.console import CONSOLE_EXAMPLES, _visible_console_examples
+
+    assert _visible_console_examples(None) == CONSOLE_EXAMPLES
+
+
+def test_visible_console_examples_drops_unloaded_kind_and_empty_groups() -> None:
+    """A kind missing from ``hub.kinds`` (gr340058: ``tex``/``markdown``
+    without ``PRECIS_ROOT``) is filtered out of its group; an example
+    with no ``kind=`` token (the cross-kind search demo) is never
+    gated. With nothing loaded, only that kind-less example survives."""
+    from types import SimpleNamespace
+
+    from precis_web.routes.console import (
+        CONSOLE_EXAMPLES,
+        _example_kind,
+        _visible_console_examples,
+    )
+
+    docs_before = next(g for g in CONSOLE_EXAMPLES if g["key"] == "docs")
+    assert any(_example_kind(ex["args"]) == "tex" for ex in docs_before["examples"])
+
+    visible = _visible_console_examples(SimpleNamespace(kinds=set()))
+    remaining = [ex for g in visible for ex in g["examples"]]
+    assert len(remaining) == 1
+    assert _example_kind(remaining[0]["args"]) is None  # the kind-less search demo
+
+    docs_after = next((g for g in visible if g["key"] == "docs"), None)
+    assert docs_after is None  # every docs example needed a kind — group dropped
+
+
+def test_console_examples_filtered_for_unloaded_kind(client, runtime) -> None:
+    """A host that hasn't registered ``tex``/``markdown`` (no
+    ``PRECIS_ROOT`` — ``dispatch.boot``'s file-handler gate) must not
+    render a chip for them; every other example survives. This is the
+    runtime fix for gr340058's ``[error:Unsupported]`` repro."""
+    from types import SimpleNamespace
+
+    from precis_web.routes.console import CONSOLE_EXAMPLES, _example_kind
+
+    all_kinds = {
+        kind
+        for g in CONSOLE_EXAMPLES
+        for ex in g["examples"]
+        if (kind := _example_kind(ex["args"])) is not None
+    }
+    runtime.hub = SimpleNamespace(kinds=all_kinds - {"tex", "markdown"})
+
+    resp = client.get("/console")
+    assert resp.status_code == 200
+    assert "kind=tex" not in resp.text
+    assert "kind=markdown" not in resp.text
+    for kind in ("kind=todo", "kind=skill", "kind=oracle", "kind=calc"):
+        assert kind in resp.text
+
+
+def test_console_examples_execute_for_loaded_kinds(client, runtime) -> None:
+    """Every get/search example whose kind the hub reports loaded must
+    dispatch clean through the console's shared execution path
+    (``_run_verb``) — guards gr340058: a future hardcoded example for a
+    kind the serving host didn't load must fail this test loudly rather
+    than ship as a permanently-dead chip. Simulates a host missing
+    ``PRECIS_ROOT`` (every other example kind loaded)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from precis.utils.search_merge import SearchHit
+    from precis_web.routes.console import CONSOLE_EXAMPLES, _example_kind, _run_verb
+
+    all_kinds = {
+        kind
+        for g in CONSOLE_EXAMPLES
+        for ex in g["examples"]
+        if (kind := _example_kind(ex["args"])) is not None
+    }
+    loaded = all_kinds - {"tex", "markdown", "plaintext"}
+
+    class FakeHandler:
+        def search_hits(self, **_kw: object) -> list[SearchHit]:
+            return []  # empty corpus — a real "no matches", not an error
+
+    runtime.hub = SimpleNamespace(kinds=loaded, handler_for=lambda k: FakeHandler())
+
+    class _FakeRequest:
+        app = SimpleNamespace(state=SimpleNamespace(runtime=runtime))
+
+    fake_request = _FakeRequest()
+
+    for g in CONSOLE_EXAMPLES:
+        for ex in g["examples"]:
+            if ex["verb"] not in ("get", "search"):
+                continue
+            kind = _example_kind(ex["args"])
+            if kind is not None and kind not in loaded:
+                continue
+            result, is_error = asyncio.run(
+                _run_verb(fake_request, ex["verb"], ex["args"])
+            )
+            assert not is_error, f"{ex['verb']} {ex['args']} -> {result}"
+
+
 def test_console_resolve_record_handle(client, runtime) -> None:
     """A universal record handle (``pa10``) routes through the ``/r/``
     resolver — not the cite_key shape (which would 404 on ``/r/paper/pa10``)."""

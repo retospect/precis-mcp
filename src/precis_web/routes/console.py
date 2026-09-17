@@ -271,6 +271,52 @@ CONSOLE_EXAMPLES: list[dict[str, Any]] = [
 ]
 
 
+#: Matches the ``kind=<value>`` token inside an example's ``args``
+#: string (every value used across :data:`CONSOLE_EXAMPLES` is a bare,
+#: unquoted token — no spaces / quotes to worry about). ``None`` means
+#: the example is cross-kind (no ``kind=`` at all) and is never gated.
+_EXAMPLE_KIND_RE = re.compile(r"\bkind=([^\s\"']+)")
+
+
+def _example_kind(args: str) -> str | None:
+    """Return the ``kind=`` value a :data:`CONSOLE_EXAMPLES` args string
+    targets, or ``None`` for a cross-kind example (no ``kind=`` token)."""
+    m = _EXAMPLE_KIND_RE.search(args)
+    return m.group(1) if m else None
+
+
+def _visible_console_examples(hub: Any) -> list[dict[str, Any]]:
+    """Drop any :data:`CONSOLE_EXAMPLES` entry whose kind the serving
+    hub didn't register.
+
+    Some kinds (``markdown`` / ``plaintext`` / ``tex`` today) are
+    deliberately skipped at boot when an env prerequisite is missing —
+    see ``dispatch.boot``'s file-handler gate — and never show up in
+    ``hub.kinds``. Before this filter, the console rendered a chip for
+    those anyway (the example list is static, checked against nothing),
+    so an operator on a host without ``PRECIS_ROOT`` clicked a tex/
+    markdown example and always got ``[error:Unsupported]`` — a
+    permanently-dead chip with no indication it would never work
+    (gr340058). Missing hub introspection (``hub`` is ``None``, or has
+    no ``.kinds``) fails open — show everything — rather than blanking
+    the whole examples box over a shape it doesn't understand; a group
+    that loses every example is dropped rather than rendered empty.
+    """
+    kinds = getattr(hub, "kinds", None)
+    if kinds is None:
+        return CONSOLE_EXAMPLES
+    visible: list[dict[str, Any]] = []
+    for group in CONSOLE_EXAMPLES:
+        examples = [
+            ex
+            for ex in group["examples"]
+            if (kind := _example_kind(ex["args"])) is None or kind in kinds
+        ]
+        if examples:
+            visible.append({**group, "examples": examples})
+    return visible
+
+
 # ---- smart-resolve detection ----------------------------------------
 #
 # Patterns checked in order; first match wins. Each maps to a target
@@ -396,9 +442,17 @@ def _parse_args(verb: str, args_text: str) -> dict[str, Any]:
     return payload
 
 
-def _quick_context(**overrides: Any) -> dict[str, Any]:
+def _quick_context(request: Request, **overrides: Any) -> dict[str, Any]:
     """Shared context shape so index/run/quick all hand the same keys
-    to the template."""
+    to the template.
+
+    ``console_examples`` is filtered per :func:`_visible_console_examples`
+    against the live hub on ``request.app.state.runtime`` — reached via
+    ``getattr`` chains (not :func:`~precis_web.deps.get_runtime`) so a
+    runtime-less app state degrades to "show everything" instead of a
+    500 on what used to be a static list.
+    """
+    hub = getattr(getattr(request.app.state, "runtime", None), "hub", None)
     ctx: dict[str, Any] = {
         "active_tab": "console",
         "verbs": list(get_tool_names()),
@@ -411,7 +465,7 @@ def _quick_context(**overrides: Any) -> dict[str, Any]:
         "quick_mode": "online",
         "quick_query": "",
         "quick_call": None,
-        "console_examples": CONSOLE_EXAMPLES,
+        "console_examples": _visible_console_examples(hub),
     }
     ctx.update(overrides)
     return ctx
@@ -620,7 +674,9 @@ async def index(request: Request) -> HTMLResponse:
     verb = request.query_params.get("verb", "search")
     args_text = request.query_params.get("args_text")
     if args_text is None:
-        return templates.TemplateResponse(request, "console.html.j2", _quick_context())
+        return templates.TemplateResponse(
+            request, "console.html.j2", _quick_context(request)
+        )
     result: Any = None
     is_error = False
     if verb in _GET_RUNNABLE_VERBS:
@@ -629,7 +685,7 @@ async def index(request: Request) -> HTMLResponse:
         request,
         "console.html.j2",
         _quick_context(
-            verb=verb, args_text=args_text, result=result, is_error=is_error
+            request, verb=verb, args_text=args_text, result=result, is_error=is_error
         ),
     )
 
@@ -646,7 +702,7 @@ async def run(
         request,
         "console.html.j2",
         _quick_context(
-            verb=verb, args_text=args_text, result=result, is_error=is_error
+            request, verb=verb, args_text=args_text, result=result, is_error=is_error
         ),
     )
 
@@ -691,7 +747,7 @@ async def resolve(
     return templates.TemplateResponse(
         request,
         "console.html.j2",
-        _quick_context(),
+        _quick_context(request),
     )
 
 
@@ -718,6 +774,7 @@ async def quick(
             request,
             "console.html.j2",
             _quick_context(
+                request,
                 quick_service=service,
                 quick_mode=mode,
                 quick_query=query,
@@ -731,6 +788,7 @@ async def quick(
             request,
             "console.html.j2",
             _quick_context(
+                request,
                 quick_service=service,
                 quick_mode=mode,
                 quick_query=query,
@@ -757,6 +815,7 @@ async def quick(
         request,
         "console.html.j2",
         _quick_context(
+            request,
             verb=verb,
             args_text=f"kind={kind} {'q' if mode == 'cache' else 'id'}={shlex.quote(query)}",
             result=result,

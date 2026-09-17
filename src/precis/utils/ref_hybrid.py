@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from precis.store import Ref
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.taproot.notation import normalize_notation
 from precis.utils.embed_query import query_vec_for
 
@@ -82,19 +82,34 @@ def _block_leg(
     *,
     q: str,
     query_vec: list[float] | None,
+    mode: str | None,
     kind: str | None,
     tags: list[str] | None,
     limit: int,
     chunk_kinds: list[str] | None,
 ) -> list[Ref]:
-    """Block-level hits collapsed to one ref each, best rank first."""
-    raw = store.chunks.search_chunks_fused(
+    """Block-level hits collapsed to one ref each, best rank first.
+
+    Goes through ``search_chunks`` — the same mode-dispatched entry point
+    ``_numeric_ref._best_body_hits`` uses — rather than calling
+    ``search_chunks_fused`` directly, so an explicit ``mode='semantic'``
+    gets the true semantic-only cut (``search_chunks_semantic``, floored at
+    ``SEMANTIC_DISTANCE_FLOOR``) instead of RRF-fusing in a lexical leg. For
+    ``mode=None``/``'hybrid'`` this dispatches straight through to
+    ``search_chunks_fused`` with the same arguments as before — byte-
+    identical to the pre-gr343635 behaviour.
+    """
+    raw = store.chunks.search_chunks(
         q=q,
         query_vec=query_vec,
+        mode=mode,
         kind=kind,
         tags=tags,
         limit=limit * _BLOCK_OVERFETCH,
         chunk_kinds=chunk_kinds,
+        max_distance=SEMANTIC_DISTANCE_FLOOR
+        if (mode or "").strip().lower() == "semantic"
+        else None,
     )
     best: dict[int, tuple[Ref, float]] = {}
     for _block, ref, rank in raw:
@@ -123,53 +138,74 @@ def fused_ref_hits(
 
     ``chunk_kinds`` scopes the block leg (``['finding_body']`` for claim hubs,
     so the leg matches the claim sentence rather than a chase-chain card).
+
+    **Explicit ``mode='semantic'`` is the one exception to "additive, never
+    substitutive"** (gr343635). The title-lexical leg and the two notation-
+    canonical legs below are all pure keyword matching with no semantic
+    signal; fusing them in regardless of ``mode`` meant a caller asking for
+    ``mode='semantic'`` on a ref-level kind (``job``, ``todo``, ``quest`` —
+    ``NumericRefHandler`` kinds with few or no body chunks) still got pure
+    title-keyword hits leaking through RRF. Under ``mode='semantic'`` those
+    three legs are skipped outright and only the block leg runs, itself cut
+    to semantic-only (see ``_block_leg``). ``mode='lexical'`` needed no
+    change: ``query_vec_for`` already returns ``None`` for it above, which
+    keeps every leg lexical-only exactly as before.
     """
     if not (q and q.strip()):
         return []
 
     query_vec = query_vec_for(embedder, q, mode)
+    semantic_only = (mode or "").strip().lower() == "semantic"
 
-    streams: list[list[Ref]] = [
-        [
-            ref
-            for ref, _rank in store.search_refs_lexical(
-                q=q, kind=kind, tags=tags, limit=limit
-            )
-        ],
-        _block_leg(
-            store,
-            q=q,
-            query_vec=query_vec,
-            kind=kind,
-            tags=tags,
-            limit=limit,
-            chunk_kinds=chunk_kinds,
-        ),
-    ]
-
-    canonical, _applied = normalize_notation(q)
-    if canonical and canonical != q:
+    streams: list[list[Ref]] = []
+    if not semantic_only:
         streams.append(
             [
                 ref
                 for ref, _rank in store.search_refs_lexical(
-                    q=canonical, kind=kind, tags=tags, limit=limit
+                    q=q, kind=kind, tags=tags, limit=limit
                 )
             ]
         )
-        # Lexical-only on the canonical form: the semantic leg already ran on
-        # the raw query and embeds notation variants close together, so a
-        # second embed would spend a model call for near-duplicate recall.
-        streams.append(
-            _block_leg(
-                store,
-                q=canonical,
-                query_vec=None,
-                kind=kind,
-                tags=tags,
-                limit=limit,
-                chunk_kinds=chunk_kinds,
-            )
+    streams.append(
+        _block_leg(
+            store,
+            q=q,
+            query_vec=query_vec,
+            mode=mode,
+            kind=kind,
+            tags=tags,
+            limit=limit,
+            chunk_kinds=chunk_kinds,
         )
+    )
+
+    if not semantic_only:
+        canonical, _applied = normalize_notation(q)
+        if canonical and canonical != q:
+            streams.append(
+                [
+                    ref
+                    for ref, _rank in store.search_refs_lexical(
+                        q=canonical, kind=kind, tags=tags, limit=limit
+                    )
+                ]
+            )
+            # Lexical-only on the canonical form: the semantic leg already ran
+            # on the raw query and embeds notation variants close together, so
+            # a second embed would spend a model call for near-duplicate
+            # recall.
+            streams.append(
+                _block_leg(
+                    store,
+                    q=canonical,
+                    query_vec=None,
+                    mode="lexical",
+                    kind=kind,
+                    tags=tags,
+                    limit=limit,
+                    chunk_kinds=chunk_kinds,
+                )
+            )
 
     return _fuse(streams, limit)

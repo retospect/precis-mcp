@@ -132,37 +132,100 @@ class PatentHandler(Handler):
             raise InitError("patent: store required")
         self.store = hub.store
         self.embedder = hub.embedder
-        # Production path: resolve the EPO credentials (via the vault) and
-        # the raw-root cache dir (defaulting when unset). The kind_gate has
-        # already enforced the credentials (``requires_secret``); the
-        # defensive raise prevents silent drift. Test path: callers pass
-        # explicit ``ops=`` / ``raw_root=`` so a fake OPS client can stand
-        # in for the network.
-        if ops is None or raw_root is None:
-            import os
+        # Credential + OPS-client resolution is deferred to first use (see
+        # ``ops`` / ``raw_root`` properties + ``_ensure_creds`` below)
+        # rather than done here. ``EPO_OPS_CLIENT_KEY``/``SECRET`` route
+        # through the secrets vault, which is a DB round trip on a cache
+        # miss — a psycopg ``OperationalError`` there is NOT an ``OSError``
+        # subclass, so it used to be able to escape ``__init__`` straight
+        # past ``dispatch._try``'s caught tuple and take the whole MCP
+        # server down on a transient vault/DB hiccup (gr343391 — the same
+        # failure shape as gr341576, whose fix is
+        # ``MdHandler.vector_cache``; mirrored here). Deferring means a
+        # down vault only fails the first OPS-touching call (``get()`` on
+        # an unseen patent, or ``search``'s remote leg) — local-only calls
+        # (list, view an already-stored patent, local-only search) never
+        # touch OPS and are unaffected. The outcome (success, or the
+        # specific missing-secret message) is cached in
+        # ``self._creds_error`` so a persistently-down vault degrades
+        # every call instead of re-probing the DB each time. Test path:
+        # callers pass explicit ``ops=`` / ``raw_root=`` so a fake OPS
+        # client can stand in for the network — resolution never runs.
+        self._ops: OpsClientProto | None = ops
+        self._raw_root: Path | None = raw_root
+        self._creds_resolved = ops is not None and raw_root is not None
+        self._creds_error: str | None = None
 
-            from precis import secrets as _secrets
-            from precis.config import patent_raw_root
-            from precis.handlers._patent_ops import OpsClient
+    def _ensure_creds(self) -> None:
+        """Resolve ``self._ops`` / ``self._raw_root`` on first use.
 
+        Runs at most once per handler instance (see module docstring on
+        ``__init__``); a failure caches its message in
+        ``self._creds_error`` rather than re-probing the vault on every
+        subsequent OPS-touching call.
+        """
+        if self._creds_resolved:
+            return
+        self._creds_resolved = True
+        import os
+
+        import psycopg
+
+        from precis import secrets as _secrets
+        from precis.config import patent_raw_root
+        from precis.handlers._patent_ops import OpsClient
+
+        try:
             key = _secrets.get_secret("EPO_OPS_CLIENT_KEY")
             secret = _secrets.get_secret("EPO_OPS_CLIENT_SECRET")
-            # The raw-root is an incidental cache dir (defaults if unset); only
-            # the EPO credentials are a real gate (kind_gate already enforced
-            # them via requires_secret, but stay defensive against drift).
-            if not (key and secret):
-                missing = [s for s in _REQUIRED_SECRETS if not _secrets.is_available(s)]
-                raise InitError("patent: missing " + ", ".join(missing))
-            if ops is None:
-                ops = OpsClient(
-                    key=key,
-                    secret=secret,
-                    user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
-                )
-            if raw_root is None:
-                raw_root = patent_raw_root()
-        self.ops = ops
-        self.raw_root = raw_root
+        except psycopg.OperationalError as exc:
+            # ``get_secret`` already swallows a vault/DB hiccup
+            # internally (``_reveal`` catches broadly and returns
+            # ``None``) — this is a defensive second net so this
+            # handler never assumes that forever (gr343391).
+            log.warning(
+                "patent: credential lookup hit a DB error, degrading "
+                "OPS access to unavailable: %s",
+                exc,
+            )
+            self._creds_error = f"patent: credential lookup failed ({exc})"
+            return
+        # The raw-root is an incidental cache dir (defaults if unset); only
+        # the EPO credentials are a real gate (kind_gate already enforced
+        # them via requires_secret at boot, but stay defensive against a
+        # vault outage between boot and this first real use).
+        if not (key and secret):
+            missing = [s for s in _REQUIRED_SECRETS if not _secrets.is_available(s)]
+            self._creds_error = "patent: missing " + ", ".join(missing)
+            return
+        if self._ops is None:
+            self._ops = OpsClient(
+                key=key,
+                secret=secret,
+                user_agent=os.environ.get("EPO_OPS_USER_AGENT"),
+            )
+        if self._raw_root is None:
+            self._raw_root = patent_raw_root()
+
+    @property
+    def ops(self) -> OpsClientProto:
+        self._ensure_creds()
+        if self._ops is None:
+            raise Upstream(
+                self._creds_error or "patent: EPO OPS credentials unavailable",
+                next="check EPO OPS credentials and quota",
+            )
+        return self._ops
+
+    @property
+    def raw_root(self) -> Path:
+        self._ensure_creds()
+        if self._raw_root is None:
+            raise Upstream(
+                self._creds_error or "patent: EPO OPS credentials unavailable",
+                next="check EPO OPS credentials and quota",
+            )
+        return self._raw_root
 
     # ── verbs ──────────────────────────────────────────────────────────
 

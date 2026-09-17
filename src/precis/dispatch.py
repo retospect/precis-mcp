@@ -50,6 +50,8 @@ from dataclasses import dataclass, field
 from importlib.metadata import entry_points as _entry_points
 from typing import TYPE_CHECKING, Any, ClassVar
 
+import psycopg
+
 from precis.hints import Hint, HintBus
 
 if TYPE_CHECKING:
@@ -491,6 +493,11 @@ def _try(
       raise this from their existing ``__init__`` for malformed /
       non-existent roots. Legacy behaviour, preserved for now;
       eventually those paths convert to :class:`InitError`.
+    - ``OSError`` / ``psycopg.OperationalError`` — a handler whose
+      ``__init__`` touches a down network or DB dependency (a bounced
+      embedder, a vault reveal on a cache miss). See the inline
+      comment at the ``except`` clause for the two observed incidents
+      (gr341576, gr343391).
 
     Anything else propagates — a stray ``KeyError`` /
     ``AttributeError`` is a programmer bug and should crash boot so
@@ -524,7 +531,13 @@ def _try(
 
     try:
         inst = cls(hub=hub, **kw)
-    except (InitError, ImportError, ValueError, OSError) as exc:
+    except (
+        InitError,
+        ImportError,
+        ValueError,
+        OSError,
+        psycopg.OperationalError,
+    ) as exc:
         # ``OSError`` covers a handler whose __init__ touches a NETWORK
         # dependency that happens to be down — the whole point of this
         # seam is that one unavailable kind is skipped, never fatal, and
@@ -537,6 +550,17 @@ def _try(
         # server at startup. The session then could not reconnect at all
         # until the embedder came back — a transient dependency outage
         # presenting as a permanently dead MCP.
+        #
+        # ``psycopg.OperationalError`` is NOT an ``OSError`` subclass, so
+        # it needs its own slot here: a handler whose __init__ resolves a
+        # secret through the vault (``precis.secrets.get_secret`` →
+        # ``_reveal``) on a cache miss makes a DB round trip, and a DB
+        # hiccup there raises this instead. Same "one dependency outage,
+        # one skipped kind" story as the OSError case above — added as a
+        # defensive net alongside making patent/orcid resolve their
+        # credentials lazily (gr343391), so a handler that gains a new
+        # eager DB touch in the future degrades here too rather than
+        # taking the whole server down.
         log.warning("%s init failed: %s", getattr(cls, "__name__", cls), exc)
         if spec is not None:
             hub.loadabilities[spec.kind] = loadability_from_exception(spec, exc)

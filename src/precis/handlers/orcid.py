@@ -23,10 +23,15 @@ Refresh is **on-demand**: a stale node (older than the soft TTL) renders
 with a hint; the model re-pulls with ``args={'refresh': true}``. There is
 no background refresh pass.
 
-Auth degrades gracefully: missing ``ORCID_CLIENT_ID`` /
-``ORCID_CLIENT_SECRET`` raises :class:`InitError` at boot, which
-:func:`precis.dispatch._try` catches — the kind drops off the surface
-rather than blocking the server.
+Auth degrades gracefully: ``requires_secret`` on the :class:`KindSpec`
+below makes missing ``ORCID_CLIENT_ID`` / ``ORCID_CLIENT_SECRET`` a
+pre-construction gate (:func:`precis.kind_gate.gate`) — the kind simply
+doesn't register, never blocking the rest of the server. ``__init__``
+does not re-probe the vault (gr343391): a vault/DB hiccup between boot
+and first use instead surfaces as :class:`~precis.errors.Upstream` from
+the first network call that actually needs a bearer token (see
+``_credentials()`` in :mod:`precis.ingest.orcid`); a cached node's
+``get()`` needs no credentials at all.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput
+from precis.errors import BadInput, Upstream
 from precis.handlers._link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -215,11 +220,24 @@ class OrcidHandler(Handler):
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError("orcid: store required")
-        # Client-credentials are mandatory — the Public API is not open.
-        # Missing creds ⇒ disable the kind (InitError is caught by the
-        # boot gate), never block the rest of the surface.
-        if not orcid_api.has_credentials():
-            raise InitError("orcid: ORCID_CLIENT_ID / ORCID_CLIENT_SECRET not set")
+        # Client-credentials are mandatory — the Public API is not open —
+        # but that's enforced by ``kind_gate``'s ``requires_secret`` check
+        # (see the spec above) *before* this constructor ever runs; the
+        # kind simply never registers without them, so __init__ does not
+        # re-probe. A prior version duplicated the check here via
+        # ``orcid_api.has_credentials()``, which reads the secrets vault
+        # (a DB round trip on a cache miss) — a vault/DB hiccup there
+        # could raise a bare ``psycopg.OperationalError`` (not an
+        # ``OSError``) straight out of ``__init__``, past
+        # ``dispatch._try``'s caught tuple, and take the whole MCP server
+        # down at boot (gr343391, same shape as gr341576). Any network
+        # call this handler makes (``orcid_api.fetch_record`` /
+        # ``fetch_works_only``) already resolves and reports missing
+        # credentials gracefully via ``Upstream`` at call time (see
+        # ``_credentials()`` in ``precis.ingest.orcid``), so a vault
+        # outage between boot and first use degrades that one call
+        # rather than the server; a cached node's ``get()`` needs no
+        # credentials at all.
         self.store: Store = hub.store
         self.embedder = hub.embedder
 
@@ -264,7 +282,7 @@ class OrcidHandler(Handler):
         # the model decides (refresh decision).
         works: list[dict[str, Any]] | None = None
         if existing is None or force_refresh:
-            record = orcid_api.fetch_record(orcid_id)
+            record = self._fetch_upstream(orcid_api.fetch_record, orcid_id)
             ref_id = self._store_record(
                 record, existing_ref_id=existing.id if existing else None
             )
@@ -277,7 +295,7 @@ class OrcidHandler(Handler):
         summary: dict[str, int] | None = None
         if enqueue is not None:
             if works is None:  # cached node — re-pull just /works (cheap leg)
-                works = orcid_api.fetch_works_only(orcid_id)
+                works = self._fetch_upstream(orcid_api.fetch_works_only, orcid_id)
             summary = enqueue_authored_works(
                 self.store, ref_id, works, limit=_enqueue_limit(enqueue, works)
             )
@@ -393,6 +411,30 @@ class OrcidHandler(Handler):
         )
 
     # -- internals -----------------------------------------------------------
+
+    @staticmethod
+    def _fetch_upstream(fn: Any, orcid_id: str) -> Any:
+        """Run an ORCID-API network call (``fetch_record`` /
+        ``fetch_works_only``), converting a bare ``psycopg.OperationalError``
+        into :class:`Upstream`.
+
+        Credential resolution inside ``fn`` goes through
+        ``precis.secrets.get_secret``, which already swallows a vault/DB
+        hiccup internally and reports missing credentials via the
+        module's own ``Upstream`` (``_credentials()`` in
+        ``precis.ingest.orcid``) — this is a defensive second net at the
+        call site so this handler never assumes that forever (gr343391;
+        mirrors the local catch in ``PatentHandler._ensure_creds``).
+        """
+        import psycopg
+
+        try:
+            return fn(orcid_id)
+        except psycopg.OperationalError as exc:
+            raise Upstream(
+                f"orcid: credential/vault lookup failed ({exc})",
+                next="retry shortly, or check ORCID_CLIENT_ID/ORCID_CLIENT_SECRET",
+            ) from exc
 
     def _resolve_ref(self, id: str | int | None):
         if id is None:

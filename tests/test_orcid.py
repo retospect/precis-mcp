@@ -16,7 +16,7 @@ from typing import Any, cast
 
 import pytest
 
-from precis.errors import BadInput
+from precis.errors import BadInput, Upstream
 from precis.handlers import orcid as orcid_handler
 from precis.handlers.orcid import enqueue_authored_works
 from precis.handlers.semanticscholar import _format_author
@@ -327,3 +327,55 @@ def test_orcid_handler_resolve_then_gated_enqueue(
     assert paper_ref_id is not None
     links = store.links_for(ref.id, relation="authored", direction="out")
     assert any(l.dst_ref_id == paper_ref_id for l in links)
+
+
+# ── lazy credential resolution (gr343391) ──────────────────────────────
+#
+# Construction never probes the vault at all — ``kind_gate``'s
+# ``requires_secret`` check already gates registration before __init__
+# runs; a vault/DB hiccup on the first real network call degrades that
+# call, not the whole MCP server.
+
+
+def test_orcid_construct_makes_zero_secret_calls(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psycopg
+
+    from precis import secrets as _secrets
+    from precis.dispatch import Hub
+    from precis.handlers.orcid import OrcidHandler
+
+    calls: list[str] = []
+
+    def _raising(name: str, **kw: object) -> str | None:
+        calls.append(name)
+        raise psycopg.OperationalError("connection to server was lost")
+
+    monkeypatch.setattr(_secrets, "get_secret", _raising)
+
+    OrcidHandler(hub=Hub(store=store, embedder=None))  # must not raise
+    assert calls == []
+
+
+def test_orcid_operational_error_degrades_first_use_to_upstream(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psycopg
+
+    from precis import secrets as _secrets
+    from precis.dispatch import Hub
+    from precis.handlers.orcid import OrcidHandler
+
+    calls: list[str] = []
+
+    def _raising(name: str, **kw: object) -> str | None:
+        calls.append(name)
+        raise psycopg.OperationalError("connection to server was lost")
+
+    monkeypatch.setattr(_secrets, "get_secret", _raising)
+
+    handler = OrcidHandler(hub=Hub(store=store, embedder=None))
+    with pytest.raises(Upstream):
+        handler.get(id=_VALID_ID)
+    assert calls  # the first credentialed use actually probed

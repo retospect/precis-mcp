@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import psycopg
 import pytest
 
 from precis.dispatch import (
@@ -319,6 +320,50 @@ def test_try_swallows_os_error(caplog: pytest.LogCaptureFixture) -> None:
     assert any(
         "_NeedsNetwork init failed" in rec.message
         and "Connection refused" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_try_swallows_psycopg_operational_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A handler whose ``__init__`` resolves a secret through the vault
+    (``precis.secrets.get_secret`` → ``_reveal``) on a cache miss makes a
+    DB round trip; a DB hiccup there raises ``psycopg.OperationalError``,
+    which is NOT an ``OSError`` subclass. ``_try`` must treat this the
+    same as the OSError/ImportError/InitError cases: skip the kind, log
+    a WARN, record the failure — and not propagate. An escaped
+    ``OperationalError`` here used to crash ``boot()`` and take the
+    whole MCP server down on a transient vault/DB hiccup (gr343391,
+    observed via the patent/orcid handlers)."""
+
+    class _NeedsVault(Handler):
+        spec = KindSpec(
+            kind="needsvault",
+            title="Needs a vault round trip",
+            description="Simulates a DB hiccup resolving a secret at init time.",
+            supports_get=True,
+        )
+
+        def __init__(self, *, hub: Hub) -> None:
+            _ = hub
+            raise psycopg.OperationalError("connection to server was lost")
+
+        def get(self, **kw):
+            return Response(body="never")
+
+    r = Hub()
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        result = _try(_NeedsVault, hub=r)
+
+    assert result is None
+    assert r.abilities == {}
+    assert r.handlers == {}
+    assert "needsvault" in r.loadabilities
+    assert r.loadabilities["needsvault"].loaded is False
+    assert any(
+        "_NeedsVault init failed" in rec.message
+        and "connection to server was lost" in rec.message
         for rec in caplog.records
     )
 

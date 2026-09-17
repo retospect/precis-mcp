@@ -97,6 +97,65 @@ def handler(hub: Hub, fake_ops: FakeOpsClient, raw_root: Path) -> PatentHandler:
 
 
 # ---------------------------------------------------------------------------
+# lazy credential resolution (gr343391) — construction never touches the
+# secrets vault; a vault/DB hiccup degrades the first OPS-touching call.
+# ---------------------------------------------------------------------------
+
+
+class TestLazyCredentialResolution:
+    def test_construct_makes_zero_secret_calls(
+        self, hub: Hub, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Constructing without explicit ``ops=``/``raw_root=`` must not
+        touch ``precis.secrets.get_secret`` at all — resolution is
+        deferred to first OPS-touching use."""
+        import psycopg
+
+        from precis import secrets as _secrets
+
+        calls: list[str] = []
+
+        def _raising(name: str, **kw: object) -> str | None:
+            calls.append(name)
+            raise psycopg.OperationalError("connection to server was lost")
+
+        monkeypatch.setattr(_secrets, "get_secret", _raising)
+
+        PatentHandler(hub=hub)  # must not raise, must not call get_secret
+        assert calls == []
+
+    def test_operational_error_degrades_first_use_to_upstream(
+        self, hub: Hub, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vault/DB hiccup (``psycopg.OperationalError``) resolving
+        credentials on first real use raises ``Upstream``, not the bare
+        driver exception — and the outcome is cached (no re-probe on a
+        second call)."""
+        import psycopg
+
+        from precis import secrets as _secrets
+
+        calls: list[str] = []
+
+        def _raising(name: str, **kw: object) -> str | None:
+            calls.append(name)
+            raise psycopg.OperationalError("connection to server was lost")
+
+        monkeypatch.setattr(_secrets, "get_secret", _raising)
+
+        handler = PatentHandler(hub=hub)
+        with pytest.raises(Upstream):
+            handler.get(id="ep1234567b1")
+        assert calls  # the first credentialed use actually probed
+
+        n_calls_after_first = len(calls)
+        with pytest.raises(Upstream):
+            handler.get(id="ep1234567b1")
+        # Cached outcome — no second DB round trip.
+        assert len(calls) == n_calls_after_first
+
+
+# ---------------------------------------------------------------------------
 # put — explicitly unsupported
 # ---------------------------------------------------------------------------
 
