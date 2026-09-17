@@ -21,20 +21,12 @@ env var and CLI line reaches the agent as text it cannot act on.
 
 ## In scope
 
-**C. Ratchet gate — `tests/test_skill_prose.py`** (pattern: the WARN_BYTES
-allowlist in `tests/test_skill_size.py`; frozen allowlist of current
-offenders, a test asserting it only shrinks). Checks:
-
-| check | rule | now |
-|---|---|---|
-| ADR ref | `ADR ?\d{4}` anywhere in body | 26 files |
-| backlog path in prose | `docs/backlog/` outside a fenced `get(kind='md', …)` call | ≤15 files |
-| operator affordance | `PRECIS_[A-Z_]+=`, `precis (jobs\|worker\|service\|cast) `, `INSERT INTO`/`UPDATE ` | ~15 files |
-| unfenced verb call | line starting `(get\|search\|put\|edit\|delete\|tag\|link)\(` outside a fence | figure-*/mermaid-* (17 files) |
-| alias overrun | >4 consecutive H2s with no body | status-help + few |
-
-Gripe ids (`gr\d{6}`) are valid handles — NOT gated; bare-noun H2s advisory
-count only.
+**C. Ratchet gate — `tests/test_skill_prose.py`** — LANDED 2026-09-17.
+Five checks (ADR ref, backlog path in prose, operator affordance, unfenced
+verb call, alias overrun >4) with a frozen per-file allowlist that only
+shrinks; D–F drain it. Gripe ids are valid handles — not gated; bare-noun H2s
+are an advisory warning. Frozen counts: adr 26 files / backlog 14 / operator
+25 / unfenced_verb 2 (audio, figure) / alias_overrun 2 (anki, status).
 
 **D. Gut ops-doc skills to verb-facing lines**; move removed prose verbatim
 to `docs/runbooks/<kind>-ops.md`, link from the owning package docstring.

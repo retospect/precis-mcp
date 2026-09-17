@@ -36,7 +36,11 @@ Humans rarely read these. Optimise for the LLM:
 ## What to cut
 
 Categories below come from a grep pass over the existing skill
-corpus. Real strings, real files.
+corpus. Real strings, real files. Five of them are gated:
+`tests/test_skill_prose.py` ratchets ADR references, `docs/backlog/`
+paths in prose, operator affordances (env vars, `precis jobs|worker`
+lines, SQL), unfenced verb calls and H2 alias runs over four, against
+a per-file allowlist that only shrinks.
 
 ### 1. Internal storage names
 
