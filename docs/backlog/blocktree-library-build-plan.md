@@ -226,6 +226,44 @@ already exist for exactly this. Its discipline carries: weights are
 row showing which attributes matched and the actual value of those that did
 not — and an empty result set is impossible unless the library is empty.
 
+**SHIPPED** (2026-09-17): `search(kind='se', wants={...})` —
+`src/precis_se/library.py` (candidate walk, attribute resolution, ranking,
+rendering), `SeHandler.search`'s dispatch, one new `wants: dict[str, Any] |
+None` kwarg on the `search` verb (`src/precis/tools/core.py`). `wants` is
+one dict, not a flat kwarg per attribute — the plan's own sketch
+(`stimulus=`, `bistable=`, `delta_length_nm=`, `joining=`) was a code-level
+enumeration of a vocabulary that is star-schema *data*
+(`material_properties.prop_id` / `component_specs.spec_id`), which would
+have baked every proposed-tier property/spec into the verb signature. Each
+`wants` value is a scalar target (10% relative tolerance for numbers, exact
+for str/bool), a `[lo, hi]` interval (band-overlap, `material_search_
+values`'s own rule), or an explicit `{'target'?, 'min'?, 'max'?, 'tol'?,
+'weight'?}` — `weight` is the only place a weight comes from, human-set,
+per the quest rubric discipline. `q=` becomes optional and pre-narrows the
+candidate *designs* via the existing card search; a narrow to zero falls
+back to the whole library and says so, never reading as "no matches".
+
+Star-schema join order (first hit wins): a `component`-bound block's own
+current spec values, then that component's `made-of` material's property
+values, then the design's own `made-of` material (scoped to one block via
+the link's `meta.block`, else every block). Ranking reuses
+`precis.quest.frontier.pareto_split` for the tie-break over numeric keys
+rather than a second dominance rule, exactly as directed.
+
+**Known gap, left deliberately:** a **structure-bound** atomic block (its
+L3 realization is chemistry, not a `component`) carries no value rows of
+its own in this round — the star schema only reaches it via a design-level
+`made-of` link, and a miss on such a block says so explicitly ("bound to
+structure X: no value rows") rather than silently reading as absent data.
+Wiring atomic-mode facts through `realized-by`/generated-structure
+provenance is unscoped work for a later round.
+
+`made-of` between an `se` design/component and a `material` needed no
+relations-registry change — the generic `link()` door has no source/target
+kind-pair gate (only the relation name is validated), so the edge was
+already legal; the spec's contingency ("allow it there minimally") did not
+apply.
+
 ---
 
 ## Slice 5 — rxn-driven transitions + precedent DRC

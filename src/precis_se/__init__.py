@@ -349,6 +349,19 @@ here). ``view='fab'`` is the new top-level index — one row per
 implementation-bearing block, any source (purchase/fdm/atomic/
 unimplemented), pointing at each row's own handle; it never exports
 itself. ``MODE_FAMILIES['fdm'].implemented`` flips to ``True``.
+
+**Blocktree slice 4 — ranked library search** (docs/backlog/
+blocktree-library-build-plan.md §Slice 4, port-pose-and-composition-
+search.md Decision 2) lands ``search(kind='se', wants={...})``:
+:mod:`precis_se.library` walks every non-instance block in the whole
+library, scores it against a per-attribute wishlist (three built-in
+structural keys read off the block/tree — ``stimulus``/``bistable``/
+``joining`` — plus any ``component``/``material`` star-schema key
+reached through a binding or a ``made-of`` link), and ranks with
+:mod:`precis.quest.frontier`'s Pareto tie-break rather than a second
+dominance rule. Never a strict filter: every row shows its per-attribute
+match/miss with the actual value, and the result set is empty only when
+the library itself is.
 """
 
 from __future__ import annotations

@@ -109,6 +109,7 @@ from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import freedom as se_freedom
 from precis_se import fret, persist
+from precis_se import library as se_library
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
 from precis_se import printing as se_printing
@@ -184,7 +185,12 @@ class SeHandler(Handler):
             "count budget it names rather than silently truncates); "
             "delete soft-retires; "
             "search finds "
-            "by intent. connect wires two 'block.port' endpoints; a "
+            "by intent, or, with wants=, ranks every library block against "
+            "a per-attribute wishlist (never a strict filter — "
+            "wants={'stimulus':'light','bistable':True,'joining':'CuAAC'}, "
+            "each value a target|[lo,hi]|{'target'?,'min'?,'max'?,'tol'?,"
+            "'weight'?}; q= then narrows the candidate designs instead of "
+            "filtering). connect wires two 'block.port' endpoints; a "
             "joint= is {'class': rigid|revolute|prismatic|cylindrical|"
             "planar|ball|compliant|captive|axial, 'axis'?, 'mechanism'?: "
             "snap|screw|press|key|magnet|bearing|bond|integral|cable, "
@@ -1172,8 +1178,41 @@ class SeHandler(Handler):
         q: str | None = None,
         mode: str | None = None,
         page_size: int = 20,
+        wants: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # Ranked library search (blocktree-library-build-plan.md §Slice 4):
+        # `wants=` makes `q=` optional — with one, the card search narrows
+        # the CANDIDATE designs; a narrow to zero falls back to the whole
+        # library and says so, rather than reading as "no matches" (this
+        # surface is never a strict filter). Checked before the q-only
+        # BadInput below, on purpose — that guard is unchanged for the
+        # plain-search caller.
+        if wants is not None:
+            narrowed_slugs: set[str] | None = None
+            narrow_note = ""
+            if q is not None and str(q).strip():
+                triples = self._card_search(
+                    str(q), query_vec=None, mode=mode, page_size=500
+                )
+                slugs = {ref.slug for _b, ref, _s in triples}
+                if slugs:
+                    narrowed_slugs = slugs
+                    narrow_note = f"(q={q!r} narrowed to {len(slugs)} design(s))"
+                else:
+                    narrow_note = (
+                        f"(q={q!r} matched no designs — showing the whole library)"
+                    )
+            return Response(
+                body=se_library.render_search(
+                    self.store,
+                    wants=wants,
+                    q=q,
+                    narrowed_slugs=narrowed_slugs,
+                    narrow_note=narrow_note,
+                    page_size=page_size,
+                )
+            )
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='se') requires q=",

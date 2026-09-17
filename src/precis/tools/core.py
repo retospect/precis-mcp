@@ -635,6 +635,17 @@ def search(
     # search() ignore them.
     tag: str | None = None,
     kinds: str | None = None,
+    # se library search (docs/backlog/blocktree-library-build-plan.md
+    # §Slice 4 / port-pose-and-composition-search.md Decision 2):
+    # search(kind='se', wants={'stimulus': 'light', 'bistable': True, ...})
+    # ranks every non-instance block in the library against a per-attribute
+    # wishlist — never a strict filter. One dict kwarg rather than a flat
+    # kwarg per attribute because the vocabulary IS star-schema data
+    # (material_properties.prop_id / component_specs.spec_id), not code; a
+    # fixed parameter list would bake the row vocabulary into the verb
+    # signature. Declared at the verb level so strict-schema MCP clients
+    # don't strip it.
+    wants: dict[str, Any] | None = None,
     # See ``get`` — FastMCP injects the live per-request ``Context``
     # here (excluded from the wire schema); used only to key the skill
     # serve ledger off the real MCP session for this call.
@@ -661,6 +672,9 @@ def search(
     `'disputed'`/`'any'`. `status=`: chase lifecycle.
 
     `uncited=<draft>` drops sources it already cites.
+
+    `wants=` (se): ranked library search over block attributes — never a
+    strict filter, see precis-se-help.
 
     Full docs: get(kind='skill', id='precis-search-help').
     """
@@ -916,6 +930,10 @@ def search(
         payload["tag"] = tag
     if kinds is not None:
         payload["kinds"] = kinds
+    # se library search — forwarded only when set, same discipline as every
+    # optional kwarg above.
+    if wants is not None:
+        payload["wants"] = wants
 
     # See ``get`` for the ``str | CallToolResult`` return contract, and
     # for why the serve-ledger session binds only around the dispatch

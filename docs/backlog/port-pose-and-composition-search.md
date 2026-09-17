@@ -85,7 +85,11 @@ rows) decides whether a series stroke survives.
 1. Port pose slot (decision 1) — before slice 4 or a consumer bakes in
    direction-only semantics (`nm-stick-placement.md`,
    `structural-solution-space.md` slice 5).
-2. Slice 4 ranked search, with the star-schema shape (decision 2).
+2. Slice 4 ranked search, with the star-schema shape (decision 2) —
+   **SHIPPED** 2026-09-17, `search(kind='se', wants={...})`; see
+   blocktree-library-build-plan.md §Slice 4's shipped note for the
+   `wants=` shape, join order and the structure-bound-block gap it leaves
+   open.
 3. Composition proposer.
 
 Sources to import before the proposer ships (cite-sources rule): azobenzene

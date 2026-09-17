@@ -19,6 +19,7 @@ answers:
   - how do I model FRET between two blocks — energy transfer as a communication channel?
   - why is my FRET link dead even though the blocks are close enough?
   - how do I declare a required transfer efficiency and check the geometry against it?
+  - how do I search the library for a block matching several properties at once, like opto-deform + bistable + a click-chemistry port?
 applies-to: get/search/put/edit/delete/link (kind='se')
 status: active
 tags: verbs, design
@@ -229,6 +230,52 @@ get(kind='se', id='switch1', view='clearance',
     args={'a':'dye','b':'wall','state':{'dye':'cis'}})  # probe THIS state
 get(kind='se', id='switch1', view='sweep')               # probe EVERY state
 ```
+
+## Ranked library search — search(kind='se', wants=…)
+
+`search(kind='se', wants={...})` ranks every non-instance block in the
+whole library against a per-attribute wishlist — **never a strict
+filter**: results are always ranked, every row shows each attribute's
+✓/✗ and its actual value, and an empty result is impossible unless the
+library itself has no blocks. `q=` is then optional — with it, the card
+search narrows which *designs* are considered; a narrow to zero designs
+falls back to the whole library and says so in the header.
+
+Each `wants` value is one of three shapes: a bare scalar (`'light'`,
+`True`, `1.0`) is a *target* — numeric targets match within 10% relative
+tolerance, str/bool match exactly; a `[lo, hi]` list is an *interval* —
+matches when the value's band overlaps it; a dict
+`{'target'?, 'min'?, 'max'?, 'tol'?, 'weight'?}` (weight default 1.0,
+tol default 0.1) spells out both the comparison and its human-set
+importance — an agent never tunes its own weight.
+
+Three keys are built in, read off the block/tree itself: `stimulus`
+(matches if the wanted value is among the block's transitions'
+`driver_kind`s); `bistable` (True iff ≥2 declared states AND no
+`thermal` transition — a thermal path is a T-type reverse); `joining`
+(matches a port `roles` entry, or either half of a named chemistry —
+`'CuAAC'` matches an `azide` or `alkyne` port). Every other key is a
+**star-schema lookup**, never a fact stored on the block: a
+`component`-bound block's own spec values, then that component's
+`made-of` material's property values, then the design's own `made-of`
+material (optionally scoped to one block via the link's
+`meta.block`) — first hit wins, and the row names the entity + source
++ conditions it came from. An unrecognised key (not a spec, not a
+property, not a built-in) still scores as a plain miss; the header
+notes it once, never a refusal.
+
+```python
+search(kind='se', wants={'stimulus': 'light', 'bistable': True,
+       'delta_length': 1.0, 'joining': 'CuAAC'})
+# 3 library block(s) ranked for wants={...}
+# 1. switch1#dye  3/4  ✓stimulus: light  ✓joining: azide (CuAAC)
+#    ✗bistable: T-type (thermal reverse)  ✓delta_length: 1 nm (component:azo1)
+```
+
+The winning row instances directly: `edit(kind='se', id=<yours>,
+ops=[{'op':'instance_block','name':'<new>','template':'switch1#dye'}])`
+— `template` takes the qualified `<design>#<block>` spelling cross-design
+instancing already supports (slice 1).
 
 ## Optical (FRET) ops — energy transfer as a comm channel
 
