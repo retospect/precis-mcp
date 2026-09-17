@@ -88,7 +88,7 @@ either way, so a design written by uid reads back the same as one
 written by name. (A block may not be *named* `'uid:…'` — that would be
 unaddressable — nor contain `'#'`.)
 
-## Ops — blocks, ports, connect (exact parameter lists)
+## Ops — blocks and ports (exact parameter lists)
 
 - `add_block` — `name` (req) · `parent` · `pose` [x,y,z] m (bare) · `rot`
   [x,y,z] rad (bare, Euler `Rz@Ry@Rx`; see "Units") · `envelope`
@@ -115,7 +115,7 @@ unaddressable — nor contain `'#'`.)
   to `info`.
 - `remove_port` — `block`, `name`
 
-## Ops — connects, joints, loads, measures, notes (exact parameter lists)
+## Ops — connect, disconnect, joints (exact parameter lists)
 
 - `connect` — `a`, `b` (req, `"block.port"` — **ports must already
   exist**; connect never auto-creates) · `joint` dict · `objectives`
@@ -131,20 +131,14 @@ unaddressable — nor contain `'#'`.)
   or on `CuAAC`), `donor` ↔ `acceptor`, `bump` ↔ `hole`, `+` ↔ `-`.
   Azide + azide is refused naming both roles; unlisted roles are
   symmetric.
-
-## Ops — joints, loads, measures, modes, notes (exact parameter lists)
-
 - `disconnect` — `a`, `b`
-
-## Ops — joints, loads, measures, modes, BOM, notes, formfind
-
 - `set_joint` — `a`, `b`, `joint` (req). Joint dict:
   `{"class": rigid|revolute|prismatic|cylindrical|screw|planar|ball|
   compliant|captive|axial, "axis"?: [x,y,z], "mechanism"?: snap|screw|
   press|key|magnet|bearing|bond|integral|cable, "params"?: {…}}` —
   nested, never flat.
 
-## Ops — loads, prose, measures, modes, BOM, notes (exact parameter lists)
+## Ops — loads, prose, measures, modes, BOM, notes, formfind (exact parameter lists)
 
 - `set_load` — exactly one of `block` | `a`+`b` (connect), then flat
   keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `fixed`
