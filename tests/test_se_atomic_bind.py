@@ -164,16 +164,20 @@ _TREE = json.dumps(
 )
 
 
-# ── the op roster: the 3 store-aware ops are dispatchable and named ──────
+# ── the op roster: the store-aware ops are dispatchable and named ───────
 
 
-def test_the_three_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
+def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     """They never reach ``ops.apply_ops`` (it is store-free), so the pure
-    table can't see them — the union is what ``put``/``edit`` accept."""
+    table can't see them — the union is what ``put``/``edit`` accept.
+    ``realize`` (se-print-implementer.md) joined the atomic mode's
+    original 3 as the first non-atomic store-write-deferred op, reusing
+    the same interception seam."""
     assert set(HANDLER_LEVEL_OPS) == {
         "bind_structure",
         "unbind_structure",
         "generate",
+        "realize",
     }
     assert set(HANDLER_LEVEL_OPS).isdisjoint(known_ops())
     assert set(HANDLER_LEVEL_OPS) <= all_op_names()

@@ -33,7 +33,9 @@ and optional preload). You author with typed ops, then read views that
 check what you claimed. For the design *workflow* (abstraction ladder,
 refine, tradeoffs) see `precis-se-design-help`; for screwing a design
 together — picking a real ISO screw, what a printed part's threaded hole
-should be, and what `view='fasten'` reports — see `precis-se-fasten-help`.
+should be, and what `view='fasten'` reports — see `precis-se-fasten-help`;
+for printing a block — `realize`, build frame, process DRC, STL/3MF
+export, `view='fab'`'s fabrication table — see `precis-se-print-help`.
 
 ## Units and geometry conventions — read first
 
@@ -47,13 +49,11 @@ should be, and what `view='fasten'` reports — see `precis-se-fasten-help`.
   metres.
 - **Envelope `box` `w`/`d`/`h` are FULL dimensions**: `box:w0.028d0.240
   h0.020` is a 28 × 240 × 20 mm block — centred in x/y, **base at
-  `z=0`** (spans z=0..h, like `cyl`). Verified against the kernel
-  (`box:w0.028d0.240h0.020` → AABB x ±0.014, y ±0.12, z 0..0.02);
-  an earlier revision of this skill claimed half-extents — wrong.
+  `z=0`** (spans z=0..h, like `cyl`) — verified against the kernel;
+  not half-extents.
 - `cyl` has its **base at the pose** (not centred); `sphere` is centred.
 - `rot` is a bare **radians** vector (Euler, composed `Rz@Ry@Rx`) — reads
-  render it back in degrees (the shared neat formatter), but the op-level
-  value you author is radians, not degrees. `90°` about z is
+  render degrees, but you author radians. `90°` about z is
   `rot: [0, 0, 1.5707963267948966]` (`math.pi / 2`), not `[0, 0, 90]`.
 - `pose` is the block origin in the parent frame, bare **metres**.
 
@@ -72,8 +72,8 @@ five-year service) · `mass_production` (100 000, full lifetime physics).
 It decides which checks are meaningful, so `view='validate'` and
 `view='drc'` both print which scenario governed the run — or say
 `scenario: none chosen` rather than assume a default. An unknown name is
-rejected; an *absent* key leaves an earlier choice standing (the scenario
-is design-level context, not part of the block tree `put` replaces).
+rejected; an *absent* key keeps the earlier choice (design-level context,
+not part of the block tree `put` replaces).
 
 **Blocks are addressed by label or by uid.** A label (the block `name`)
 is unique within a design and is the usual way to say which block you
@@ -85,10 +85,9 @@ instead — including the block half of a `'block.port'` endpoint
 (`connect a='#41.bore'`). Use it when a label is ambiguous; the error
 then lists every matching uid. What gets *stored* is the block's label
 either way, so a design written by uid reads back the same as one
-written by name. (A block may not be *named* `'uid:…'` — that would be
-unaddressable — nor contain `'#'`.)
+written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
 
-## Ops — blocks and ports (exact parameter lists)
+## Ops — blocks and ports
 
 - `add_block` — `name` (req) · `parent` · `pose` [x,y,z] m (bare) · `rot`
   [x,y,z] rad (bare, Euler `Rz@Ry@Rx`; see "Units") · `envelope`
@@ -97,16 +96,14 @@ unaddressable — nor contain `'#'`.)
   Rejects envelope/desc/use (they live on the template).
 - `array_block` — `name`, `template` (req) + exactly one of
   `linear` `{count≥2, pitch>0, axis?}` | `polar` `{count≥2, radius≥0,
-  axis?}`. Blocks only — no array form for connects; N spokes = N
-  `connect` ops.
+  axis?}`. Blocks only; N spokes = N `connect` ops.
 - `set_pose` — `block` (req) + `pose` and/or `rot`
 - `set_envelope` — `block`, `envelope` (req; null clears) · `origin`
   `'user'|'proposed'`. Rejects instances/arrays.
 - `remove_block` — `block`
 - `add_port` — `block`, `name` (req; no dots) · `roles` [str] ·
   `direction` [x,y,z] (normalised) · `pose` [x,y,z] · `rot` [rx,ry,rz]
-  (port origin/frame in the block's local frame, m/rad; `rot` needs
-  `pose`) · `annotations` dict · **atomic
+  (block-local, m/rad; `rot` needs `pose`) · `annotations` dict · **atomic
   mode:** `expected_element`/`expected_hybridization` (checked
   by `bind_structure`). `roles` is a
   capability set the caller asserts, never checked against real
@@ -115,7 +112,7 @@ unaddressable — nor contain `'#'`.)
   to `info`.
 - `remove_port` — `block`, `name`
 
-## Ops — connect, disconnect, joints (exact parameter lists)
+## Ops — connect, disconnect, joints
 
 - `connect` — `a`, `b` (req, `"block.port"` — **ports must already
   exist**; connect never auto-creates) · `joint` dict · `objectives`
@@ -138,7 +135,7 @@ unaddressable — nor contain `'#'`.)
   press|key|magnet|bearing|bond|integral|cable, "params"?: {…}}` —
   nested, never flat.
 
-## Ops — loads, prose, measures, modes, BOM, notes, formfind (exact parameter lists)
+## Ops — loads, prose, measures, modes, fabrication, BOM, notes, formfind
 
 - `set_load` — exactly one of `block` | `a`+`b` (connect), then flat
   keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `fixed`
@@ -169,11 +166,16 @@ unaddressable — nor contain `'#'`.)
   stock-cut · atomic` (e.g. `"fdm/asa"`).
 - `set_binding` — `block` + (`kind` ∈ `cad|structure|component|part` +
   `design`) or `clear: true`
+- `realize` — `block`, `mode` (req): mints the block's first
+  implementation (a `cad` design from its envelope, bound + moded) ·
+  `set_process_override`/`clear_process_override`
+  — `block`, `field` (+ `value`) · `set_build_frame` — `block`, `down`
+  [x,y,z] / `clear_build_frame` — `block`. Contracts: `precis-se-print-help`.
 - `add_bom` / `remove_bom` — `block` | `a`+`b`, `item_kind`
   `component|part`, `item` (slug/C-number) · `qty` · `uom` · `reason`.
   Slugs aren't vetted at write time; `view='bom'` flags dangling ones.
 - `add_note` — `name`, `kind` `question|answer|decision`, `text` ·
-  `re` (note name) · `about` [anchors] · `origin`
+  `re` · `about` [anchors] · `origin`
 - `formfind` — force-density form-finding over the axial subgraph:
   `q` per-member overrides · `q_tie`(+1)/`q_strut`(−1)/`q_rod`(+1) ·
   `move` (`'all'` | block list; default: only `origin='proposed'`

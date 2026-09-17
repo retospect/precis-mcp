@@ -106,7 +106,8 @@ _SE_MANAGED = "se_binding"
 _BLOCK_COLS = (
     "id, uid, parent_block_id, template_ref, template_uid, name, pose_xyz, "
     "pose_rot, envelope, array_spec, descr, use_, objectives, mode, "
-    "bound_kind, bound_design, origins, dof, chromophore"
+    "bound_kind, bound_design, origins, dof, chromophore, process_overrides, "
+    "build_frame"
 )
 _PORT_COLS = (
     "block_id, name, roles, direction, annotations, expected_element, "
@@ -257,6 +258,12 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             dof=dict(r["dof"]) if r["dof"] is not None else None,
             chromophore=dict(r["chromophore"])
             if r["chromophore"] is not None
+            else None,
+            process_overrides=dict(r["process_overrides"])
+            if r["process_overrides"] is not None
+            else None,
+            build_frame=dict(r["build_frame"])
+            if r["build_frame"] is not None
             else None,
         )
     for p in port_rows:
@@ -711,8 +718,9 @@ def save_tree(
                 "(ref_id, uid, parent_block_id, template_ref, template_uid, "
                 " name, pose_xyz, pose_rot, envelope, array_spec, descr, "
                 " use_, objectives, mode, bound_kind, bound_design, origins, "
-                " dof, chromophore) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                " dof, chromophore, process_overrides, build_frame) "
+                "VALUES "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "RETURNING id",
                 (
                     ref_id,
@@ -736,6 +744,10 @@ def save_tree(
                     Jsonb(node.origins) if node.origins else None,
                     Jsonb(node.dof) if node.dof is not None else None,
                     Jsonb(node.chromophore) if node.chromophore is not None else None,
+                    Jsonb(node.process_overrides)
+                    if node.process_overrides is not None
+                    else None,
+                    Jsonb(node.build_frame) if node.build_frame is not None else None,
                 ),
             ).fetchone()
             assert row is not None

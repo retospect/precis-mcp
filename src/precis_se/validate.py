@@ -53,7 +53,13 @@ from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 @dataclass
 class ValidationIssue:
     """One validator finding — mirrors ``precis_nm.validate.
-    ValidationIssue`` (rule/subject/detail + severity)."""
+    ValidationIssue`` (rule/subject/detail + severity).
+
+    ``measured``/``expected``/``suggested_fix`` are se-print-implementer.md
+    Engine 3's addition (process DRC, :mod:`precis_se.printing`) — all
+    default ``None`` so every existing finding/renderer is unchanged; only
+    ``view='print'`` renders all six fields. No other kind's
+    ``ValidationIssue`` is touched."""
 
     rule: str
     subject: str
@@ -65,6 +71,16 @@ class ValidationIssue:
     #: today only ``unconnected_port``'s "external by design" line for a
     #: port annotated ``external=true``).
     severity: str = "error"
+    #: The measured figure a process-DRC finding is about (e.g. "40.0 mm"),
+    #: ``None`` for every finding outside Engine 3.
+    measured: str | None = None
+    #: The threshold the measured figure is checked against, with its
+    #: capability-field name (e.g. "<= 10 mm (max_bridge)"), ``None``
+    #: outside Engine 3.
+    expected: str | None = None
+    #: v1 = plain text (a later rung may promote this to a process-skill
+    #: reference); ``None`` outside Engine 3.
+    suggested_fix: str | None = None
 
 
 def _is_ancestor(tree: SeTree, a: str, b: str) -> bool:

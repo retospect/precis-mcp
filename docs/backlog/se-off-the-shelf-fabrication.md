@@ -354,7 +354,8 @@ length are **discrete design variables**, which no part of the tree has
 ever modelled.
 
 **A realizability predicate per mode** — the honest generalization of
-`cad-printability-probe.md`'s orientation search. Each mode answers "can
+the shipped fdm orientation search (`precis.cad.printability.orient`,
+`precis_se.printing`). Each mode answers "can
 *this solid* be made by *this process*, and if not, where":
 
 | mode | predicate |

@@ -1,0 +1,5 @@
+# Skills are byte-capped content (tests/test_skill_size.py, 32 KiB) and are
+# read as UTF-8 text at runtime. Pin LF so a Windows checkout's CRLF
+# conversion does not inflate every line by a byte and fail the cap there
+# for a file that passes everywhere else.
+src/precis/data/skills/*.md text eol=lf

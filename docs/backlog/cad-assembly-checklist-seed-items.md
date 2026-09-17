@@ -42,5 +42,5 @@ tool item.
 | disassembly-path-exists | design | judgment | The assembly can be put together but not taken apart (captive part, glue-only step, fastener whose tool access exists only before a later part is mounted) — repair or battery/wear-part replacement means destroying the print. |
 
 Print-phase items (overhangs, supports, orientation, tolerances-vs-
-process) arrive with `cad-printability-probe` — they are that item's
-scope, not duplicated here.
+process) are the shipped `view='printability'` (cad) / `view='print'`
+(se) process DRC in `precis.cad.printability` — not duplicated here.

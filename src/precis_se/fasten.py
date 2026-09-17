@@ -103,7 +103,7 @@ from precis_se import catalog as se_catalog
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se import toolaccess as se_toolaccess
-from precis_se.ops import SeTree, effective_envelope
+from precis_se.ops import ConnectSpec, SeTree, effective_envelope
 from precis_se.validate import ValidationIssue, _posed_component
 
 #: The ray-span state that means material (``precis.cad.fold`` spells the
@@ -1433,3 +1433,65 @@ def fasten(tree: SeTree) -> list[FastenResult]:
 def findings(results: list[FastenResult]) -> list[ValidationIssue]:
     """Flatten the pass into DRC's finding list."""
     return [f for res in results for f in res.findings]
+
+
+def features_for(tree: SeTree, block: str) -> list[Hole]:
+    """Every :class:`Hole` stamped into ``block`` across every screw
+    connect in the tree — the per-block collector se-print-implementer.md
+    names as the one thing :func:`fasten` doesn't already give a caller.
+
+    Deliberately **not** a second walk: :func:`fasten` already runs the
+    one per-connect pass ``view='fasten'`` renders (:func:`_one` per live
+    screw connect) and stores every stamped :class:`Hole` on its
+    :class:`FastenResult`, so this is a filter over that result, not a
+    reimplementation of the walk."""
+    return [hole for res in fasten(tree) for hole in res.holes if hole.block == block]
+
+
+def abstract_joints(tree: SeTree) -> list[tuple[ConnectSpec, str]]:
+    """Every connect whose mechanism *implies* real hardware
+    (:data:`precis_se.joints.MECHANISMS`'s ``demands_bom`` entries — today
+    ``screw``/``magnet``/``bearing``/``cable``) where nothing real has been
+    named for it yet: the requirements say a joint exists, but nothing
+    realizes it — se-print-implementer.md's "real things need real
+    things". Rung 4 renders these as the ``abstract_joint`` finding; this
+    only computes the list.
+
+    The ``screw`` mechanism reuses :func:`_find_fastener` verbatim — the
+    same catalog-form check (a `component`-bound endpoint whose fastener
+    form is ``'screw'``) every other screw-stamping code path in this
+    module already trusts. The other demanding mechanisms have no
+    analogous catalog-form check (a bearing or a magnet is not one flat
+    `fastener` category), so they fall back to the coarser, still-real
+    question :mod:`precis_se.drc`'s own ``mechanism_bom`` finding answers
+    the same way: is either endpoint block actually **bound** to a bought
+    `component`/`part`. A connect satisfied on the BOM alone (a bearing
+    named on the block rather than bound to it) is not double-covered here
+    — that is drc's own finding's job, not this list's; this list is about
+    a *fastener block that has to be placed*, which only a bought binding
+    (never a bare BOM line) can be."""
+    out: list[tuple[ConnectSpec, str]] = []
+    for connect in tree.connects:
+        if not connect.joint:
+            continue
+        mech = connect.joint.get("mechanism")
+        if not isinstance(mech, str):
+            continue
+        spec = se_joints.MECHANISMS.get(mech)
+        if spec is None or spec.get("demands_bom") is None:
+            continue
+        if mech == "screw":
+            if _find_fastener(tree, connect) is not None:
+                continue
+        else:
+            named = any(
+                (node := tree.blocks.get(name)) is not None
+                and node.bound_kind in ("component", "part")
+                and node.bound
+                for name in (connect.a_block, connect.b_block)
+            )
+            if named:
+                continue
+        out.append((connect, mech))
+    out.sort(key=lambda pair: (pair[0].a_block, pair[0].a_port, pair[0].b_block))
+    return out

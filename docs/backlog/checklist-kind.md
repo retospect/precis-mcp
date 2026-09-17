@@ -33,7 +33,7 @@ not prose frozen in a skill; skills shrink to orchestration.
 
 - The ledger mechanics are domain-independent: versioned items, per-target
   runs, verdict + evidence + checked-at, staleness, three-valued honesty.
-  Next consumers already exist: `cad-printability-probe` (3D printing),
+  Next consumers already exist: `precis.cad.printability` (3D printing, shipped),
   se validate-before-build, deploy preflight (`deploy-verification-guards`).
 - pcb supports neither `tag` nor `link` (`protocol.py` raises
   `Unsupported`) — and that mostly does not matter here. Links INTO a
@@ -306,8 +306,8 @@ verification becomes one page instead of schematic-vs-PDF flipping.
    `cad-assembly-checklist-seed-items.md` (tool-clearance,
    one-direction fastening, sequence marking, turns budget,
    hands count, disassembly path; prerequisite: owned-tool library +
-   reachability probe), print items joint with
-   `cad-printability-probe`; proves the kind is actually generic
+   reachability probe), print items joint with the shipped
+   `precis.cad.printability` rules; proves the kind is actually generic
    before declaring it so.
 5. **annotated schematic view** (independent of 1–4).
 

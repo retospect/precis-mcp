@@ -26,6 +26,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, ClassVar
 
+import numpy as np
+
 from precis.cad import catalog
 from precis.cad.bulk import expr_aabb
 from precis.cad.bulk import volume as cad_volume
@@ -36,6 +38,12 @@ from precis.cad.export import (
     manifold_available,
     step_available,
     to_openscad,
+)
+from precis.cad.printability import (
+    BuildCandidate,
+    PrintFinding,
+    orient,
+    process_findings,
 )
 from precis.cad.probe import (
     probe_arc,
@@ -104,8 +112,53 @@ _PROBE_VIEWS = (
     "mass",
 )
 _EXPORT_VIEWS = ("scad", "stl", "3mf", "step")
-_OTHER_VIEWS = ("links", "sweep", "bom")
+_OTHER_VIEWS = ("links", "sweep", "bom", "printability")
 _VIEWS = (*_PROBE_VIEWS, *_EXPORT_VIEWS, *_OTHER_VIEWS)
+
+#: view='printability' — flat, equal weights (se passes its own
+#: family-level weights, resolved through capabilities.orientation_policy).
+_PRINTABILITY_FLAT_WEIGHTS: dict[str, float] = {
+    "overhang": 1.0,
+    "bed_contact": 1.0,
+    "height": 1.0,
+    "bridges": 1.0,
+    "load_vs_layer": 1.0,
+}
+_PRINTABILITY_SWEEP_DEG_DEFAULT = 30.0
+_PRINTABILITY_TOP_N = 5
+#: args key -> the rules dict field it feeds, and its unit dimension
+#: ('angle'/'length') or None for a bare ratio — no default value is ever
+#: substituted for an omitted one (see printability.py's honesty rule).
+_PRINTABILITY_RULE_ARGS: tuple[tuple[str, Dimension | None], ...] = (
+    ("max_overhang", "angle"),
+    ("max_bridge", "length"),
+    ("layer_height", "length"),
+    ("min_bed_contact", None),
+)
+
+
+def _printability_rules(args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The ``rules`` dict :func:`precis.cad.printability.orient` reads,
+    from ``args`` — lengths in metres (the mesh unit), **angles in
+    degrees**: the engine compares a face's angle-from-vertical in degrees
+    against ``max_overhang``, the same bare-degree convention
+    ``se_capabilities.json`` stores, so :func:`parse_quantity`'s SI radian
+    is turned back into degrees here. Second element: the fields left out
+    (skipped, never defaulted)."""
+    rules: dict[str, Any] = {}
+    skipped: list[str] = []
+    for key, dim in _PRINTABILITY_RULE_ARGS:
+        raw = args.get(key)
+        if raw is None:
+            skipped.append(key)
+            continue
+        if dim is None:
+            rules[key] = float(raw)
+            continue
+        value = parse_quantity(raw, dim, arg_name=f"args.{key}")
+        rules[key] = float(np.degrees(value)) if dim == "angle" else value
+    return rules, skipped
+
 
 #: view='sweep' samples per joint (args.n overrides, clamped here).
 _SWEEP_N_DEFAULT, _SWEEP_N_MIN, _SWEEP_N_MAX = 9, 3, 25
@@ -147,6 +200,13 @@ def _fmt_vec3(v: Any) -> str:
     (``(2.3 mm, 0 m, -1 cm)``) — never a bare-number tuple, which would
     silently imply mm again."""
     return "(" + ", ".join(format_quantity(float(x), "length") for x in v) + ")"
+
+
+def _fmt_dir3(v: Any) -> str:
+    """A bare unit-direction 3-vector (``down``, a candidate) — numbers
+    only, never a length unit (a direction has no length scale of its
+    own, same convention as ray ``d`` / arc ``axis``)."""
+    return "(" + ", ".join(f"{float(x):.4g}" for x in v) + ")"
 
 
 def _fmt_rot3(v: Any) -> str:
@@ -235,7 +295,11 @@ class CadHandler(Handler):
             "analytically (view='ray|point|arc|section|clearance|connectivity|"
             "dof|volume|mass', args={...}; mass: cited per-component density × sampled volume, CoM; connectivity: what touches what, path "
             "a→b, is-it-one-solid; view='sweep': motion interference across "
-            "joint travel); search over names; delete soft-retires; link "
+            "joint travel; view='printability': build-orientation search + "
+            "process DRC over the tessellated solid, args={'down', "
+            "'max_overhang', 'max_bridge', 'layer_height', "
+            "'min_bed_contact', 'sweep_deg'} — the one probe that meshes); "
+            "search over names; delete soft-retires; link "
             "rel='analyzed-by' target='finding:N' attaches an analysis "
             "result, pinning the design version (stale analyses are "
             "flagged). Postgres-"
@@ -917,6 +981,117 @@ class CadHandler(Handler):
             )
         return Response(body="\n".join(lines))
 
+    # ── printability ─────────────────────────────────────────────────
+    def _render_printability(
+        self, ref: Any, spec: SceneSpec, args: dict[str, Any]
+    ) -> Response:
+        """``view='printability'`` — the absorbed ``cad-printability-
+        probe.md``: an orientation search + process DRC over the design's
+        tessellated solid (:mod:`precis.cad.printability`, mesh-in /
+        findings-out, se-free). This view uses **flat, equal (1.0)
+        weights** — the cad kind has no material/mode of its own to weigh
+        by; ``se``'s implementer passes its own family-level weights
+        (``capabilities.orientation_policy()``) through the same
+        ``orient()`` call. A rule field omitted from ``args`` is skipped
+        (named loudly), never defaulted."""
+        # local: heavy extra; `_solid_mesh` is the same private mesh helper
+        # precis.cad.gltf's 'solid' mode reuses directly on an unscaled
+        # spec — native (metre) units, unlike export_mesh's mm-scaled path.
+        from precis.cad.export import ExportError, _solid_mesh, manifold_available
+
+        if not manifold_available():
+            raise Unsupported(
+                "view='printability' needs the manifold3d backend "
+                "(core dependency — a broken venv?)",
+                next="pip install --force-reinstall 'precis-mcp'",
+            )
+        built = self._expand(spec, state=self._state_arg(args, spec))
+        try:
+            mesh = _solid_mesh(built)
+        except ExportError as exc:
+            raise BadInput(str(exc)) from exc
+
+        rules, rule_skipped = _printability_rules(args)
+        policy = {
+            "weights": dict(_PRINTABILITY_FLAT_WEIGHTS),
+            "sweep_deg": float(args.get("sweep_deg", _PRINTABILITY_SWEEP_DEG_DEFAULT)),
+        }
+        cands: list[BuildCandidate] = orient(mesh, rules, policy, [])
+        if not cands:  # pragma: no cover - candidates() always yields >= 6
+            raise BadInput("view='printability' found no orientation candidates")
+
+        chosen = cands[0]
+        chosen_note = ""
+        if args.get("down") is not None:
+            chosen_down = _vec(args, "down", lengths=False)
+            chosen_down = chosen_down / np.linalg.norm(chosen_down)
+            chosen_note = f" (pinned down={_fmt_dir3(chosen_down)})"
+        else:
+            chosen_down = chosen.down
+
+        best_other = (
+            f"down={_fmt_dir3(cands[0].down)}"
+            if not np.allclose(chosen_down, cands[0].down, atol=1e-6)
+            else None
+        )
+        findings: list[PrintFinding] = process_findings(
+            mesh, chosen_down, rules, best_other=best_other
+        )
+
+        head = [
+            f"# printability — {ref.slug}: {len(cands)} candidate(s) "
+            f"searched (sweep {policy['sweep_deg']:g}°){chosen_note}",
+            "weights: cad view uses flat 1.0 weights for every term (se "
+            "passes its own family-level weights via "
+            "capabilities.orientation_policy)",
+        ]
+        if rule_skipped:
+            head.append(
+                "skipped (no arg given — never defaulted): " + ", ".join(rule_skipped)
+            )
+        top = cands[:_PRINTABILITY_TOP_N]
+        term_keys = sorted(top[0].terms.keys()) if top else []
+        rows = [
+            {
+                "down": _fmt_dir3(c.down),
+                "score": f"{c.score:.6g}",
+                **{k: f"{c.terms[k]:.6g}" for k in term_keys},
+            }
+            for c in top
+        ]
+        body = (
+            "\n".join(head)
+            + "\n"
+            + render_agent_table(rows, schema=["down", "score", *term_keys])
+        )
+        if findings:
+            frows = [
+                {
+                    "rule": f.rule,
+                    "measured": f.measured,
+                    "expected": f.expected,
+                    "severity": f.severity,
+                    "suggested_fix": f.suggested_fix,
+                }
+                for f in findings
+            ]
+            body += (
+                f"\n\nfindings for down={_fmt_dir3(chosen_down)}:\n"
+                + render_agent_table(
+                    frows,
+                    schema=[
+                        "rule",
+                        "measured",
+                        "expected",
+                        "severity",
+                        "suggested_fix",
+                    ],
+                )
+            )
+        else:
+            body += f"\n\nno process findings for down={_fmt_dir3(chosen_down)}"
+        return Response(body=body)
+
     # ── get ──────────────────────────────────────────────────────────
     def get(
         self,
@@ -965,6 +1140,8 @@ class CadHandler(Handler):
             return self._render_sweep(spec, args or {})
         if view == "bom":
             return self._render_bom(ref, spec)
+        if view == "printability":
+            return self._render_printability(ref, spec, args or {})
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.

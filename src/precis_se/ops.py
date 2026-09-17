@@ -242,6 +242,7 @@ beside the others and each one's *scope* is the block it names.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -249,6 +250,7 @@ from typing import Any, cast
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
 from precis.design.states import StateError, validate_driver_kind
+from precis_se import capabilities as se_caps
 from precis_se import joints as se_joints
 from precis_se.atomic.vocab import (
     CONNECT_KINDS,
@@ -408,6 +410,34 @@ class SeBlock(BlockNode):
     #: both ``None`` when the block's solid is still just its envelope.
     bound_kind: str | None = None
     bound: str | None = None
+    #: Per-block overrides of a :mod:`precis_se.capabilities` figure,
+    #: keyed by field name (``{'max_overhang': 35}``) — the override tier
+    #: :func:`precis_se.capabilities.resolve` reads first, migration
+    #: ``0011_se_process_overrides.sql``. ``None`` = no overrides (never
+    #: stored as ``{}``). A field this block's mode family does not
+    #: define, or a value beyond the field's physical floor, is rejected
+    #: at write time by :func:`_op_set_process_override` — this dict never
+    #: holds one. Realization-facet-adjacent like ``mode``/``bound_kind``,
+    #: and template-owned the same way: :func:`_op_set_process_override`
+    #: goes through :func:`_template_owned` too, for the same reason
+    #: ``mode`` does — an instance has no mode of its own to check a field
+    #: against.
+    process_overrides: dict[str, float] | None = None
+    #: A **pinned** print build-down direction (se-print-implementer.md
+    #: Engine 2): ``{"down": [x, y, z], "origin": "user"}``, unit vector.
+    #: ``None`` = no pin — ``view='print'`` proposes the best-scoring
+    #: candidate every read and stores nothing. Deliberately never carries
+    #: a ``score``: a stored score would go stale the moment the block's
+    #: solid changes (a stamped hole added, a cut fixed), and the pin's
+    #: whole contract is that it survives exactly that (a later
+    #: ``set_envelope`` never touches this field) — the view recomputes
+    #: the pinned candidate's score fresh on every read instead of trusting
+    #: one written once. Written/cleared by :func:`_op_set_build_frame`/
+    #: ``clear_build_frame``; ``se_blocks.build_frame`` has carried this
+    #: column, dark, since migration 0001 — rung 4 is the first write to
+    #: it, so no new migration is needed. Realization-facet-adjacent and
+    #: template-owned the same way ``mode``/``process_overrides`` are.
+    build_frame: dict[str, Any] | None = None
     #: Catalog-**derived** envelope/ports for a `component` binding
     #: (:mod:`precis_se.catalog`), filled at load time by
     #: :func:`precis_se.persist.load_tree`. DERIVED, never stored: it is
@@ -1490,6 +1520,143 @@ def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
     node.bound = design
 
 
+def _op_set_process_override(tree: SeTree, op: dict[str, Any]) -> None:
+    """Set (or replace) a per-block override of one
+    :mod:`precis_se.capabilities` field — se-kind.md L5's "the model
+    overrides if it wants" posture: the resolver's house-tier default may
+    be tightened or loosened per block, never below the process's
+    physical figure. ``block`` + ``field`` (req) + ``value`` (a number, in
+    the field's own unit). Rejected at write, never stored malformed: a
+    field the block's mode family doesn't define (or a block with no mode
+    at all — nothing to check a field against), and a value beyond the
+    field's physical floor/ceiling."""
+    node = _template_owned(
+        tree,
+        _require_name(op, "block", "set_process_override"),
+        opname="set_process_override",
+        what="process override",
+    )
+    field = _require_name(op, "field", "set_process_override")
+    if op.get("value") is None:
+        raise OpError("set_process_override needs 'value' (a number)")
+    try:
+        value = float(op["value"])
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"set_process_override {field!r}: 'value' must be a number, "
+            f"got {op['value']!r}"
+        ) from exc
+    known = se_caps.known_fields(node.mode)
+    if not known:
+        raise OpError(
+            f"set_process_override: block {node.name!r} has "
+            f"{'no mode set' if not node.mode else f'mode {node.mode!r}, an unrecognized family'} "
+            "— a process override needs a mode with capability fields to "
+            "check against (set_mode first)"
+        )
+    if field not in known:
+        accepted = ", ".join(sorted(known))
+        raise OpError(
+            f"set_process_override: {field!r} is not a field {node.mode!r}'s "
+            f"family defines — accepted fields: {accepted}"
+        )
+    cap = se_caps.capability(node.mode, field)
+    if cap is not None and cap.physical is not None:
+        if field.startswith("max_") and value > cap.physical:
+            raise OpError(
+                f"set_process_override: {field} {value:g} exceeds the "
+                f"physical ceiling {cap.physical:g} {cap.unit} — the process "
+                "cannot beat it whatever the design declares"
+            )
+        if field.startswith("min_") and value < cap.physical:
+            raise OpError(
+                f"set_process_override: {field} {value:g} is below the "
+                f"physical floor {cap.physical:g} {cap.unit} — the process "
+                "cannot beat it whatever the design declares"
+            )
+    overrides = dict(node.process_overrides or {})
+    overrides[field] = value
+    node.process_overrides = overrides
+
+
+def _op_clear_process_override(tree: SeTree, op: dict[str, Any]) -> None:
+    """Remove one block's override of one capability field — the inverse
+    of :func:`_op_set_process_override`. A field with no override on this
+    block is a typo the ops layer names, the same posture
+    ``remove_measure`` takes: naming what *is* overridden costs nothing
+    and catches a caller's stale assumption."""
+    node = _template_owned(
+        tree,
+        _require_name(op, "block", "clear_process_override"),
+        opname="clear_process_override",
+        what="process override",
+    )
+    field = _require_name(op, "field", "clear_process_override")
+    current = node.process_overrides or {}
+    if field not in current:
+        roster = ", ".join(sorted(current)) or "(none)"
+        raise OpError(
+            f"clear_process_override: block {node.name!r} has no override "
+            f"for {field!r}. Overridden fields on {node.name!r}: {roster}"
+        )
+    overrides = dict(current)
+    del overrides[field]
+    node.process_overrides = overrides or None
+
+
+def _op_set_build_frame(tree: SeTree, op: dict[str, Any]) -> None:
+    """Pin a block's print build-down direction — se-print-implementer.md
+    Engine 2's ``origin: user`` posture: ``view='print'`` searches every
+    read regardless, but a pinned block reports how much worse the pin
+    scores than the best candidate rather than silently switching to it.
+    ``block`` + ``down`` (a non-zero 3-vector, any scale — normalized on
+    write so a re-read never has to). Pure — no store, no mesh, no score:
+    the pin is a direction, not a verdict; the verdict is computed fresh
+    by the view every time, since the block's solid can change underneath
+    a standing pin (which survives that on purpose, se-kind.md's origin
+    contract)."""
+    node = _template_owned(
+        tree,
+        _require_name(op, "block", "set_build_frame"),
+        opname="set_build_frame",
+        what="build frame",
+    )
+    down = op.get("down")
+    if down is None:
+        raise OpError("set_build_frame needs 'down' (a non-zero 3-vector [x, y, z])")
+    try:
+        vec = [float(x) for x in down]
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"set_build_frame: 'down' must be a 3-vector [x, y, z], got {down!r}"
+        ) from exc
+    if len(vec) != 3:
+        raise OpError(
+            f"set_build_frame: 'down' must be a 3-vector [x, y, z], got {down!r}"
+        )
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm <= 0.0:
+        raise OpError("set_build_frame: 'down' must be non-zero")
+    node.build_frame = {"down": [v / norm for v in vec], "origin": "user"}
+
+
+def _op_clear_build_frame(tree: SeTree, op: dict[str, Any]) -> None:
+    """Remove a block's pinned build frame — the inverse of
+    :func:`_op_set_build_frame`. ``view='print'`` resumes proposing the
+    best-scoring candidate on the very next read; nothing else changes."""
+    node = _template_owned(
+        tree,
+        _require_name(op, "block", "clear_build_frame"),
+        opname="clear_build_frame",
+        what="build frame",
+    )
+    if node.build_frame is None:
+        raise OpError(
+            f"clear_build_frame: block {node.name!r} has no pinned build frame"
+        )
+    node.build_frame = None
+
+
 def _bom_pair(line: BomLine) -> frozenset[tuple[str, str]]:
     """A connect-targeted line's endpoint pair, for identity comparison."""
     assert line.a_block is not None and line.a_port is not None
@@ -2093,6 +2260,10 @@ _OPS = {
     "remove_measure": _op_remove_measure,
     "set_mode": _op_set_mode,
     "set_binding": _op_set_binding,
+    "set_process_override": _op_set_process_override,
+    "clear_process_override": _op_clear_process_override,
+    "set_build_frame": _op_set_build_frame,
+    "clear_build_frame": _op_clear_build_frame,
     "add_bom": _op_add_bom,
     "remove_bom": _op_remove_bom,
     "add_note": _op_add_note,

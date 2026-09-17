@@ -70,7 +70,11 @@ MODE_FAMILIES: dict[str, ModeFamily] = {
         demands_item=True,
         realization_kinds=("component", "part"),
     ),
-    "fdm": ModeFamily(key="fdm", summary="fused deposition (se-kind.md slice 5)"),
+    "fdm": ModeFamily(
+        key="fdm",
+        summary="fused deposition (se-kind.md slice 5)",
+        implemented=True,
+    ),
     "sla": ModeFamily(key="sla", summary="resin (se-kind.md slice 6)"),
     "cnc-2.5ax": ModeFamily(
         key="cnc-2.5ax", summary="2.5-axis milling — top-reachable pockets"

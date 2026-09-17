@@ -1,5 +1,5 @@
 {
-  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c, which needed three fields and refused to hardcode them: a printed hole comes out undersize, so a core hole sized straight from the thread-forming table splits the boss it is in. The full field set (layer height, overhang angle, bridge span, bed contact, anisotropic strength vector, CNC/SLA/laser families) belongs to se-kind.md slice 5 and is NOT here yet — an absent field is absent, never a figure carried over from a neighbouring row. Every length is MILLIMETRES. TWO TIERS per field, as that section requires: `physical` is the floor the process cannot go below whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through one resolver and clamps to `physical`. CONFIDENCE: these are community FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override, which is why every row says so in its own source.",
+  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c (hole_diameter_compensation/min_wall/min_boss_wall only). WIDENED on 2026-09-16 by docs/backlog/se-print-implementer.md rung 1 with the full process-figure set for the printed-solid/orientation/process-DRC implementer: layer_height, line_width, max_overhang, max_bridge, min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build — every widened field carries `unit` (`mm` default | `deg` | `ratio`), `retrieved`, and a `source` naming se-kind.md's 2026-09-02 validation (`perplexity-reasoning:292746`) or, honestly, that no figure was published there. A null field is null, with a source saying so, NEVER a figure carried over from a neighbouring material's row — three of the new fields (layer_height, line_width, max_overhang) are process/nozzle-class figures the validated section gives ONE number for across every fdm material; the rest (min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build) have no published figure at all yet and are null in every row. Every length is MILLIMETRES unless `unit` says otherwise. TWO TIERS per field: `physical` is the floor/ceiling the process cannot beat whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through `precis_se.capabilities.resolve()` (block override -> load-derived, unimplemented -> this file's house tier), which clamps to `physical` for `min_*`/`max_*`-named fields only — a field named neither way carries `physical` as information, not a clamp direction (see that function's docstring). CONFIDENCE: these are community/slicer-doc FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override (`set_process_override`), which is why every row says so in its own source. Separately, the top-level `orientation` block carries the FAMILY-level (not per-material) build-orientation-search weights for Engine 2 (`precis/cad/printability.py`) — a house judgment, not a measured figure, read through `capabilities.orientation_policy(mode)`.",
   "rows": [
     {
       "mode": "fdm/pla",
@@ -22,6 +22,72 @@
           "house": 1.2,
           "confidence": "low",
           "source": "A boss that a thread is formed into carries hoop stress, so it wants three perimeters rather than two. House rule, not measured."
+        },
+        "layer_height": {
+          "physical": null,
+          "house": 0.2,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): 0.2 mm is the confirmed default layer height for a 0.4 mm-nozzle-class machine — a process/nozzle figure, the same for every fdm material, not a per-material one. No distinct physical floor is recorded for this nozzle class (a thinner layer is a slicer choice, not a process failure), so 'physical' stays null rather than inventing one."
+        },
+        "line_width": {
+          "physical": 0.3,
+          "house": 0.45,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): the confirmed working range for a 0.4 mm nozzle is 0.42-0.48 mm (~1.1x nozzle) — house is the midpoint of that range, 0.45 mm. Below ~0.3 mm the section flags the line as out-of-spec/weak, which is the physical floor. A 0.2 mm generic-slicer default is explicitly called out as wrong for this nozzle class. Process/nozzle figure, not per-material."
+        },
+        "max_overhang": {
+          "physical": 45,
+          "house": 40,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): 45 degrees from vertical is the confirmed slicer-default overhang limit at 0.15-0.25 mm layers — the process/nozzle-class ceiling this row treats as the physical limit. House tightens to 40 degrees, the margin the section names as the pull toward the 0.32 mm layer ceiling. Process/nozzle figure, not per-material."
+        },
+        "max_bridge": {
+          "physical": 10,
+          "house": 10,
+          "confidence": "low",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): ~10 mm is the reliable community limit for PLA-class FDM bridging. Only one figure is published — no separate house-vs-physical margin recorded, so both tiers carry that one number rather than inventing a spread."
+        },
+        "min_bed_contact": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes describes min bed-contact only as 'a function of total print size', with no published figure or formula. Not characterized; never borrowed from a sibling material."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no figure distinct from this row's own min_wall/min_boss_wall (the 2026-09-15 rung-3c seed, a different validation pass). Not characterized as its own facet; never borrowed."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no published minimum-hole figure. Not characterized; never borrowed from a sibling row."
+        },
+        "strength_z_ratio": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes names the anisotropic strength vector only qualitatively ('weak across layers'), with no measured tensile-across-layers ÷ in-plane ratio. Not characterized; never borrowed."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
         }
       }
     },
@@ -46,6 +112,72 @@
           "house": 1.2,
           "confidence": "low",
           "source": "As fdm/pla; PETG's higher layer adhesion helps a formed thread rather than hurting it."
+        },
+        "layer_height": {
+          "physical": null,
+          "house": 0.2,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "line_width": {
+          "physical": 0.3,
+          "house": 0.45,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "max_overhang": {
+          "physical": 45,
+          "house": 40,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "max_bridge": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes gives a bridge figure for 'PLA-class', ASA and TPU by name only — PETG is not named, and the no-borrowing rule means its PLA-class kinship is not assumed. Not characterized."
+        },
+        "min_bed_contact": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes describes min bed-contact only as 'a function of total print size', with no published figure or formula. Not characterized; never borrowed from a sibling material."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no figure distinct from this row's own min_wall/min_boss_wall (the 2026-09-15 rung-3c seed, a different validation pass). Not characterized as its own facet; never borrowed."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no published minimum-hole figure. Not characterized; never borrowed from a sibling row."
+        },
+        "strength_z_ratio": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes names the anisotropic strength vector only qualitatively ('weak across layers'), with no measured tensile-across-layers ÷ in-plane ratio. Not characterized; never borrowed."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
         }
       }
     },
@@ -70,6 +202,72 @@
           "house": 1.2,
           "confidence": "low",
           "source": "As fdm/pla."
+        },
+        "layer_height": {
+          "physical": null,
+          "house": 0.2,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "line_width": {
+          "physical": 0.3,
+          "house": 0.45,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "max_overhang": {
+          "physical": 45,
+          "house": 40,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "max_bridge": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes gives a bridge figure for 'PLA-class', ASA and TPU by name only — ABS is not named, and the no-borrowing rule means its enclosed-print kinship with ASA is not assumed. Not characterized."
+        },
+        "min_bed_contact": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes describes min bed-contact only as 'a function of total print size', with no published figure or formula. Not characterized; never borrowed from a sibling material."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no figure distinct from this row's own min_wall/min_boss_wall (the 2026-09-15 rung-3c seed, a different validation pass). Not characterized as its own facet; never borrowed."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no published minimum-hole figure. Not characterized; never borrowed from a sibling row."
+        },
+        "strength_z_ratio": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes names the anisotropic strength vector only qualitatively ('weak across layers'), with no measured tensile-across-layers ÷ in-plane ratio. Not characterized; never borrowed."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
         }
       }
     },
@@ -94,6 +292,72 @@
           "house": 1.2,
           "confidence": "low",
           "source": "As fdm/pla."
+        },
+        "layer_height": {
+          "physical": null,
+          "house": 0.2,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "line_width": {
+          "physical": 0.3,
+          "house": 0.45,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "max_overhang": {
+          "physical": 45,
+          "house": 40,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "max_bridge": {
+          "physical": 10,
+          "house": 10,
+          "confidence": "low",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): ASA bridges worse than PLA under low fan/enclosed printing, but the section keeps the same ~10 mm figure as a 'warn' threshold rather than tightening it with a new number — both tiers carry that one figure."
+        },
+        "min_bed_contact": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes describes min bed-contact only as 'a function of total print size', with no published figure or formula. Not characterized; never borrowed from a sibling material."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no figure distinct from this row's own min_wall/min_boss_wall (the 2026-09-15 rung-3c seed, a different validation pass). Not characterized as its own facet; never borrowed."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no published minimum-hole figure. Not characterized; never borrowed from a sibling row."
+        },
+        "strength_z_ratio": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes names the anisotropic strength vector only qualitatively ('weak across layers'), with no measured tensile-across-layers ÷ in-plane ratio. Not characterized; never borrowed."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
         }
       }
     },
@@ -118,8 +382,88 @@
           "house": 2.0,
           "confidence": "low",
           "source": "A thread formed in TPU deflects instead of gripping; if a joint needs one, it wants noticeably more material around it. House judgement."
+        },
+        "layer_height": {
+          "physical": null,
+          "house": 0.2,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "line_width": {
+          "physical": 0.3,
+          "house": 0.45,
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note."
+        },
+        "max_overhang": {
+          "physical": 45,
+          "house": 40,
+          "unit": "deg",
+          "confidence": "medium",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): process/nozzle-class figure, the same for every fdm material — see fdm/pla's own field for the full note. TPU's flexibility may make this optimistic, but the section does not give a material-specific overhang number, so it is not tightened here."
+        },
+        "max_bridge": {
+          "physical": 5,
+          "house": 5,
+          "confidence": "low",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes, validated 2026-09-02 (perplexity-reasoning:292746): TPU bridges worst of the fdm materials — ~5 mm, replacing an earlier flat global 5 mm rule the section calls over-conservative for the rigid materials. Only one figure published; both tiers carry it."
+        },
+        "min_bed_contact": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes describes min bed-contact only as 'a function of total print size', with no published figure or formula. Not characterized; never borrowed from a sibling material."
+        },
+        "min_feature": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no figure distinct from this row's own min_wall/min_boss_wall (the 2026-09-15 rung-3c seed, a different validation pass). Not characterized as its own facet; never borrowed."
+        },
+        "min_hole": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes groups 'min wall/hole' together with no published minimum-hole figure. Not characterized; never borrowed from a sibling row."
+        },
+        "strength_z_ratio": {
+          "physical": null,
+          "house": null,
+          "unit": "ratio",
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "se-kind.md §Manufacturing modes names the anisotropic strength vector only qualitatively ('weak across layers'), with no measured tensile-across-layers ÷ in-plane ratio. Not characterized; never borrowed."
+        },
+        "max_build": {
+          "physical": null,
+          "house": null,
+          "confidence": "unknown",
+          "retrieved": "2026-09-02",
+          "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
         }
       }
     }
-  ]
+  ],
+  "orientation": {
+    "fdm": {
+      "weights": {
+        "overhang": 1.0,
+        "bed_contact": 0.5,
+        "height": 0.2,
+        "bridges": 0.8,
+        "load_vs_layer": 1.0
+      },
+      "sweep_deg": 30,
+      "source": "house judgment 2026-09-16 (docs/backlog/se-print-implementer.md Engine 2) — plain weights for the orientation-search score terms, a judgment call to be retuned in data after the first real prints, not a measured figure.",
+      "confidence": "low"
+    }
+  }
 }

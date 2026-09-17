@@ -99,6 +99,7 @@ _EXEMPT_NAMES = frozenset(
         "_AM_SMIN_EPS",  # ditto
         "_FILTER_GAMMA",  # structsolve density-filter exponent, dimensionless
         "_SINGULAR_RTOL",  # relative by construction (rtol)
+        "_DEDUP_TOL",  # cad/printability: unit-vector dedup, dimensionless
         # -- structsolve's broader dimensionless/count inventory (dossier §2) --
         "_AM_P",
         "_AM_STENCIL",

@@ -16,9 +16,9 @@ order"):
 - ``put``    — create/replace a design from a JSON payload
   ``{description?, ops: [...]}`` (``id=`` the design slug). A re-put
   soft-retires the prior blocks and reinserts the new tree (the
-  ``structure`` re-put shape). The atomic mode's 3 store-aware ops
-  (``bind_structure``/``unbind_structure``/``generate``) are intercepted
-  before the pure ops table sees them —
+  ``structure`` re-put shape). The store-aware ops (the atomic mode's
+  ``bind_structure``/``unbind_structure``/``generate``, plus ``realize``)
+  are intercepted before the pure ops table sees them —
   :func:`precis_se.atomic.apply.apply_ops_with_atomic`, the
   ``import_fragment`` precedent.
 - ``edit``   — apply more ops (``ops=`` or ``text=`` JSON) to an existing
@@ -74,9 +74,11 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import tempfile
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
@@ -86,13 +88,14 @@ from psycopg.types.json import Jsonb
 from precis.blocktree.types import parse_template_ref
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
+from precis.cad.export import ExportError
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import rotation as cad_rotation
 from precis.design import scenarios as design_scenarios
 from precis.design import states as design_states
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -108,6 +111,7 @@ from precis_se import freedom as se_freedom
 from precis_se import fret, persist
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
+from precis_se import printing as se_printing
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
@@ -142,7 +146,8 @@ class SeHandler(Handler):
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
             "remove_note/formfind/declare_threading/remove_threading/"
             "declare_dof/clear_dof/bind_structure/unbind_structure/"
-            "generate/set_chromophore/set_optical_link/set_optics/"
+            "generate/realize/set_build_frame/clear_build_frame/"
+            "set_chromophore/set_optical_link/set_optics/"
             "declare_states/declare_transitions/set_current_state); "
             "declare_states block= states=[{'name','envelope'?,"
             "'port_pose_overrides'?,'descr'?}] declares a block's discrete "
@@ -163,7 +168,7 @@ class SeHandler(Handler):
             "get lists designs or renders one (view='tree'|'block'|"
             "'ports'|'topology'|'measures'|'datums'|'validate'|'clearance'|'sweep'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
-            "'literature'|'fret'; block takes "
+            "'literature'|'fret'|'print'|'fab'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes, or omit args for an all-pairs "
@@ -235,6 +240,28 @@ class SeHandler(Handler):
             "block's realization at a cad|structure|component|part "
             "row — a mode and a binding that contradict each other are a "
             "view='drc' finding, never a rejected write. "
+            "realize block= mode= mints a block's first implementation: a "
+            "stored cad design seeded from its effective envelope (its own "
+            "local frame, identity pose), bound (kind='cad') and moded — "
+            "deterministic, no LLM guessing; refused on an already-bound "
+            "block (unbind first) or an envelope-less one (set_envelope "
+            "first); an array/template member realizes through its "
+            "template. It never mints fasteners — which hardware to buy "
+            "is a design decision. "
+            "view='print' is the fdm implementer: omit args for one "
+            "section per fdm block (mode, realized/unrealized, proposed/"
+            "pinned build frame + score, findings); args={'block':...} "
+            "for one block's full orientation-candidate table; "
+            "args={'block':...,'fmt':'stl'|'3mf'[,'path':...]} writes the "
+            "file in the build frame (manifold3d required). "
+            "set_build_frame block= down=[x,y,z] pins a block's print "
+            "orientation (view='print' still searches every read and "
+            "reports how much worse the pin scores); clear_build_frame "
+            "block= removes the pin. view='fab' is the design's whole "
+            "fabrication plan — one row per implementation-bearing block "
+            "(any source: purchase/fdm/atomic/unimplemented), qty "
+            "through the array multiplicities, status and the handle "
+            "that fetches the thing. "
             "ATOMIC MODE (the merged nm kind): a block whose realization "
             "is chemistry binds a structure design and states its L2 "
             "explicitly — declare_threading a through b (a macrocycle on "
@@ -323,6 +350,8 @@ class SeHandler(Handler):
             "mechanics",
             "literature",
             "fret",
+            "print",
+            "fab",
         ),
     )
 
@@ -338,12 +367,13 @@ class SeHandler(Handler):
     ) -> str | None:
         """Walk one ``put``/``edit``'s ops list. Delegates to
         :func:`~precis_se.atomic.apply.apply_ops_with_atomic` rather than
-        calling :func:`~precis_se.ops.apply_ops` directly: the 3 atomic
-        store-aware ops (``bind_structure``/``unbind_structure``/
-        ``generate``) are intercepted before the pure table ever sees them,
-        and ``add_block``'s deferred ``dof`` axis-port check runs once the
-        whole list has been walked (that function's docstring for both).
-        Returns the atomic ops' echo, or ``None``."""
+        calling :func:`~precis_se.ops.apply_ops` directly: the store-aware
+        ops (the atomic mode's ``bind_structure``/``unbind_structure``/
+        ``generate``, plus ``realize``) are intercepted before the pure
+        table ever sees them, and ``add_block``'s deferred ``dof``
+        axis-port check runs once the whole list has been walked (that
+        function's docstring for both). Returns the store-aware ops'
+        echo, or ``None``."""
         return apply_ops_with_atomic(self.store, tree, ops, design_slug=slug)
 
     def _foreign_resolver(self) -> Callable[[str], SeTree | None]:
@@ -559,7 +589,14 @@ class SeHandler(Handler):
         if v == "sweep":
             return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "drc":
-            return Response(body=_render_drc(tree, _scenario_line(self.store, ref.id)))
+            body = _render_drc(tree, _scenario_line(self.store, ref.id))
+            try:
+                body += self._fdm_drc_pointer(tree)
+            except se_printing.PrintUnsupported as exc:
+                raise Unsupported(
+                    str(exc), next="pip install --force-reinstall 'precis-mcp'"
+                ) from exc
+            return Response(body=body)
         if v == "bom":
             return Response(body=self._render_bom(tree))
         if v == "fasten":
@@ -572,6 +609,10 @@ class SeHandler(Handler):
             return Response(body=_render_stability(tree))
         if v == "fret":
             return Response(body=_render_fret(tree))
+        if v == "print":
+            return self._render_print(tree, ref, args or {})
+        if v == "fab":
+            return Response(body=self._render_fab(tree))
         if v == "links":
             from precis.handlers._links_render import render_links_view
 
@@ -605,7 +646,11 @@ class SeHandler(Handler):
             "| view='fret' (optical domain: per-donor FRET budget solved "
             "against every other chromophore block at once, declared-link "
             "PASS/FAIL, orientation/Dexter/negligible/crosstalk findings) "
-            "| view='links' (the design's link graph, both directions)",
+            "| view='print' (fdm process DRC + STL/3MF export, "
+            "args={'block':...,'fmt':...,'path':...}) | view='fab' (the "
+            "whole fabrication plan, one row per implementation-bearing "
+            "block) | view='links' (the design's link graph, both "
+            "directions)",
         )
 
     def _render_validate(self, tree: SeTree, ref_id: int) -> str:
@@ -640,6 +685,16 @@ class SeHandler(Handler):
         atomic_line = se_atomic_render.atomic_fill_line(tree)
         if atomic_line:
             header_lines.append(atomic_line)
+        try:
+            fdm_status = self._fdm_print_status(tree)
+        except se_printing.PrintUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="pip install --force-reinstall 'precis-mcp'"
+            ) from exc
+        fdm_checked = sum(1 for _, r in fdm_status if r.printed is not None)
+        header_lines.append(
+            f"{fdm_checked}/{len(fdm_status)} fdm block(s) print-checked"
+        )
         fill_block = "\n".join(header_lines)
         if not findings:
             return f"✓ no validator findings\n{fill_block}"
@@ -788,6 +843,267 @@ class SeHandler(Handler):
         if ref is None:
             return None
         return ref.id, str(ref.title or ref.slug or ref.id)
+
+    def _bom_cost_mass_footer(self, tree: SeTree) -> str | None:
+        """The same unit_cost/mass total numbers ``view='bom'`` computes
+        (:meth:`_render_bom`) — reused by ``view='fab'``'s footer when any
+        purchase row exists, se-print-implementer.md's "the view='bom'
+        cost/mass line": one BOM total, never two truths. ``None`` when
+        nothing is bought at all (``view='bom'``'s own empty case)."""
+        totals = se_bom.rollup(tree)
+        if not totals:
+            return None
+        total_cost = 0.0
+        cost_covered = 0
+        total_mass = 0.0
+        mass_covered = 0
+        for total in totals:
+            if total.item_kind != "component" or total.total is None:
+                continue
+            resolved = self._resolve_item(total.item_kind, total.item)
+            if resolved is None:
+                continue
+            ref_id, _label = resolved
+            cost_num = self._spec_number(ref_id, "unit_cost")
+            if cost_num is not None:
+                total_cost += total.total * cost_num
+                cost_covered += 1
+            mass_num = self._spec_number(ref_id, "mass")
+            if mass_num is not None:
+                total_mass += total.total * mass_num
+                mass_covered += 1
+        n = len(totals)
+        return (
+            f"unit_cost total: {total_cost:g} — priced: {cost_covered} of {n} item(s)\n"
+            f"mass total: {total_mass:g} — massed: {mass_covered} of {n} item(s)"
+        )
+
+    def _fdm_print_status(
+        self, tree: SeTree
+    ) -> list[tuple[str, se_printing.BlockPrintReport]]:
+        """Every fdm-family (ordinary, template-owning) block's
+        :class:`~precis_se.printing.BlockPrintReport`, name-sorted — the
+        one store-aware pass ``view='validate'``'s header line and
+        ``view='drc'``'s pointer line both read, so the two counts can
+        never drift apart."""
+        out: list[tuple[str, se_printing.BlockPrintReport]] = []
+        for name in sorted(tree.blocks):
+            node = tree.blocks[name]
+            if node.template is not None:
+                continue
+            family = se_modes.family_of(node.mode)
+            if family is None or family.key != "fdm":
+                continue
+            report = se_printing.report_for(tree, name, cad_store_reader=self.store)
+            assert report is not None  # already gated on family.key == 'fdm'
+            out.append((name, report))
+        return out
+
+    def _fdm_drc_pointer(self, tree: SeTree) -> str:
+        """``view='drc'``'s appended pointer (se-print-implementer.md): one
+        line per fdm block naming its process-finding count and
+        ``view='print'`` — the design-DRC view stays design-tier, but a red
+        print is never missed."""
+        status = self._fdm_print_status(tree)
+        if not status:
+            return ""
+        lines = ["", "## fdm print-check (view='print' for the full report)"]
+        for name, report in status:
+            n = len(report.findings)
+            lines.append(
+                f"- {name}: {n} process finding(s) — "
+                f"view='print' args={{'block': {name!r}}}"
+            )
+        return "\n" + "\n".join(lines)
+
+    def _render_print(self, tree: SeTree, ref: Any, args: dict[str, Any]) -> Response:
+        """``view='print'`` — Engine 3's report
+        (:mod:`precis_se.printing`): no args renders one section per
+        fdm-family block; ``block=`` alone renders one block's full
+        orientation-candidate table; ``block=``+``fmt=`` writes the file
+        (``manifold3d`` required — the existing ``Unsupported`` + install
+        hint on a broken venv, mirroring ``handlers/cad.py``)."""
+        block_arg = args.get("block")
+        block = str(block_arg).strip() if block_arg else ""
+        fmt_arg = args.get("fmt")
+        if fmt_arg is not None and not block:
+            raise BadInput("view='print': fmt= needs block= (which block to export)")
+        if not block:
+            return Response(body=self._render_print_all(tree))
+        node = tree.blocks.get(block)
+        if node is None:
+            raise NotFound(_block_not_found(tree, block))
+        if node.template is not None:
+            raise BadInput(
+                f"block {block!r} is an instance (of {node.template!r}) — print "
+                f"status lives on the template; view='print' "
+                f"args={{'block': {node.template!r}}} instead"
+            )
+        try:
+            report = se_printing.report_for(tree, block, cad_store_reader=self.store)
+        except se_printing.PrintUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="pip install --force-reinstall 'precis-mcp'"
+            ) from exc
+        if report is None:
+            raise BadInput(
+                f"block {block!r}'s resolved mode family isn't fdm — "
+                "view='print' only covers fdm blocks; view='fab' covers "
+                "every source"
+            )
+        if fmt_arg is None:
+            return Response(body=_render_print_block(report))
+        fmt = str(fmt_arg).strip().lower()
+        if fmt not in ("stl", "3mf"):
+            raise BadInput(
+                f"view='print': fmt= must be 'stl' or '3mf', got {fmt_arg!r}"
+            )
+        if report.printed is None or report.chosen_down is None:
+            raise BadInput(
+                f"block {block!r} has nothing to export "
+                f"({'unrealized' if report.printed is None else 'net-empty solid'})"
+            )
+        raw_path = args.get("path")
+        out = (
+            Path(str(raw_path)).expanduser()
+            if raw_path
+            else Path(tempfile.gettempdir()) / f"{ref.slug}-{block}.{fmt}"
+        )
+        try:
+            path = se_printing.write_mesh(report.printed, report.chosen_down, fmt, out)
+        except se_printing.PrintUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="pip install --force-reinstall 'precis-mcp'"
+            ) from exc
+        except ExportError as exc:
+            raise BadInput(str(exc)) from exc
+        size = path.stat().st_size
+        error_findings = [f for f in report.findings if f.severity == "error"]
+        lines = [
+            f"# exported {ref.slug}:{block} → {fmt.upper()} (manifold3d mesh)",
+            f"{path}  ({size:,} bytes)",
+            f"build frame: down={se_printing.format_down(report.chosen_down)} "
+            f"({'pinned' if report.pinned else 'proposed'})",
+        ]
+        if error_findings:
+            lines.append("")
+            lines.append(
+                "⚠ exported WITH error-severity finding(s) — a file "
+                "never leaves without its warnings:"
+            )
+            lines.append(_findings_table(error_findings))
+        return Response(body="\n".join(lines))
+
+    def _render_print_all(self, tree: SeTree) -> str:
+        """``view='print'`` with no args — one section per fdm-family
+        block, then a pointer to ``view='fab'`` for everything else."""
+        names = sorted(
+            name
+            for name, node in tree.blocks.items()
+            if node.template is None
+            and (fam := se_modes.family_of(node.mode)) is not None
+            and fam.key == "fdm"
+        )
+        if not names:
+            return (
+                "# view='print' — no fdm-mode block in this design\n"
+                "(set_mode block=... mode='fdm/<material>' first, or "
+                "view='fab' for the whole fabrication plan)"
+            )
+        sections = []
+        for name in names:
+            try:
+                report = se_printing.report_for(tree, name, cad_store_reader=self.store)
+            except se_printing.PrintUnsupported as exc:
+                raise Unsupported(
+                    str(exc), next="pip install --force-reinstall 'precis-mcp'"
+                ) from exc
+            assert report is not None
+            sections.append(_render_print_summary(report))
+        return (
+            "\n\n".join(sections)
+            + "\n\nNext: view='fab' for the whole fabrication plan."
+        )
+
+    def _render_fab(self, tree: SeTree) -> str:
+        """``view='fab'`` — the design's whole fabrication plan
+        (se-print-implementer.md): one row per implementation-bearing
+        block, any source, pointing at each row's own handle. Never
+        exports itself — every row's handle is the export route."""
+        occ = se_bom.design_occurrences(tree)
+        rows: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        for name in sorted(tree.blocks):
+            node = tree.blocks[name]
+            if node.template is not None:
+                continue
+            qty = occ.get(name, 0)
+            mode = node.mode
+            family = se_modes.family_of(mode)
+            if mode is None:
+                key, source, status, handle = "unassigned", "—", "—", "set_mode"
+            elif family is None:
+                key, source = "unknown", mode
+                status, handle = "⚠ unknown family — set_mode to repair", "set_mode"
+            elif family.key == "purchase":
+                key, source = "purchase", mode
+                if node.bound_kind in ("component", "part") and node.bound:
+                    status = f"bound: {node.bound_kind}:{node.bound}"
+                    handle = f"{node.bound} (view='bom')"
+                else:
+                    status, handle = "no item", "set_binding"
+            elif family.key == "atomic":
+                key, source = "atomic", mode
+                if node.bound_kind == "structure" and node.bound:
+                    status = f"bound: {node.bound}"
+                    handle = f"view='block' args={{'name': {name!r}}}"
+                else:
+                    status, handle = "unbound", "bind_structure / generate"
+            elif family.key == "fdm":
+                key, source = "fdm", mode
+                try:
+                    report = se_printing.report_for(
+                        tree, name, cad_store_reader=self.store
+                    )
+                except se_printing.PrintUnsupported as exc:
+                    raise Unsupported(
+                        str(exc), next="pip install --force-reinstall 'precis-mcp'"
+                    ) from exc
+                assert report is not None
+                status, handle = _fab_fdm_cell(name, mode, report)
+            elif not family.implemented:
+                key, source = family.key, mode
+                status, handle = (
+                    "planned, not checked",
+                    f"{family.key} — no implementer yet",
+                )
+            else:  # pragma: no cover - every implemented family is handled above
+                key, source, status, handle = family.key, mode, "—", "—"
+            counts[key] = counts.get(key, 0) + 1
+            rows.append(
+                {
+                    "block": name,
+                    "qty": f"{qty:g}",
+                    "source": source,
+                    "status": status,
+                    "handle": handle,
+                }
+            )
+        if not rows:
+            return "# view='fab' — no blocks in this design"
+        lines = [
+            "# view='fab' — the fabrication plan (one row per "
+            "implementation-bearing block)",
+            render_agent_table(
+                rows, schema=["block", "qty", "source", "status", "handle"]
+            ),
+            "",
+            "totals: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())),
+        ]
+        footer = self._bom_cost_mass_footer(tree)
+        if footer:
+            lines.append(footer)
+        return "\n".join(lines)
 
     # ── delete ───────────────────────────────────────────────────────
     def delete(self, *, id: str | int | None = None, **_kw: Any) -> Response:
@@ -2062,6 +2378,140 @@ def _render_drc(tree: SeTree, scenario_line: str = "") -> str:
     return "\n".join(lines)
 
 
+def _findings_table(findings: list[se_validate.ValidationIssue]) -> str:
+    """The six-column ``view='print'`` findings table — the one render
+    that shows ``measured``/``expected``/``suggested_fix`` (module
+    docstring's rule: existing renderers stay 4-column, unchanged)."""
+    return render_agent_table(
+        [
+            {
+                "severity": f.severity,
+                "rule": f.rule,
+                "subject": f.subject,
+                "measured": f.measured or "",
+                "expected": f.expected or "",
+                "detail": f.detail,
+                "suggested_fix": f.suggested_fix or "",
+            }
+            for f in findings
+        ],
+        schema=[
+            "severity",
+            "rule",
+            "subject",
+            "measured",
+            "expected",
+            "detail",
+            "suggested_fix",
+        ],
+    )
+
+
+def _render_print_summary(report: se_printing.BlockPrintReport) -> str:
+    """One ``## block`` section of ``view='print'``'s no-args summary —
+    mode, realized/unrealized, the proposed/pinned frame with its score,
+    then findings."""
+    lines = [f"## {report.block} — mode {report.mode}"]
+    if report.printed is None:
+        lines.append("unrealized — no bound cad design yet")
+    else:
+        lines.append(
+            f"realized: {report.printed.volume_after_m3 * 1e9:.4g} mm³ "
+            f"({len(report.printed.features)} stamped feature(s))"
+        )
+        if report.chosen_down is not None:
+            origin = "pinned" if report.pinned else "proposed"
+            score_bit = (
+                f", score {report.chosen_score.total:.4g}"
+                if report.chosen_score is not None
+                else ""
+            )
+            lines.append(
+                f"build frame ({origin}): "
+                f"down={se_printing.format_down(report.chosen_down)}{score_bit}"
+            )
+            if report.best_other:
+                lines.append(f"vs best: {report.best_other}")
+    if report.findings:
+        lines.append(_findings_table(report.findings))
+    else:
+        lines.append("no findings")
+    return "\n".join(lines)
+
+
+def _render_print_block(report: se_printing.BlockPrintReport) -> str:
+    """``view='print' args={'block': ...}`` — one block's full
+    orientation-candidate table plus findings."""
+    lines = [f"# view='print' — {report.block} (mode {report.mode})"]
+    if report.printed is None:
+        lines.append("")
+        lines.append("unrealized — no bound cad design yet")
+        lines.append("")
+        lines.append(
+            _findings_table(report.findings) if report.findings else "no findings"
+        )
+        return "\n".join(lines)
+    lines.append(
+        f"volume: {report.printed.volume_before_m3 * 1e9:.4g} mm³ before, "
+        f"{report.printed.volume_after_m3 * 1e9:.4g} mm³ after "
+        f"{len(report.printed.features)} stamped feature(s)"
+    )
+    if report.chosen_down is not None:
+        origin = "pinned" if report.pinned else "proposed"
+        lines.append("")
+        lines.append(
+            f"build frame ({origin}): down={se_printing.format_down(report.chosen_down)}"
+        )
+        if report.best_other:
+            lines.append(f"vs best: {report.best_other}")
+        if report.candidates:
+            top = report.candidates[: se_printing.CANDIDATE_TABLE_N]
+            term_keys = sorted(top[0].terms.keys())
+            lines.append("")
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "down": se_printing.format_down(c.down),
+                            "score": f"{c.score:.4g}",
+                            **{k: f"{c.terms[k]:.4g}" for k in term_keys},
+                        }
+                        for c in top
+                    ],
+                    schema=["down", "score", *term_keys],
+                )
+            )
+    lines.append("")
+    lines.append(_findings_table(report.findings) if report.findings else "no findings")
+    return "\n".join(lines)
+
+
+def _fab_fdm_cell(
+    name: str, mode: str, report: se_printing.BlockPrintReport
+) -> tuple[str, str]:
+    """``view='fab'``'s ``(status, handle)`` pair for one fdm-family row —
+    se-print-implementer.md's status priority: unrealized, else abstract
+    joints, else the process-finding count, else the frame's pinned/
+    proposed origin."""
+    if report.printed is None:
+        return "unrealized", f"realize(block={name!r}, mode={mode!r})"
+    bits = ["realized"]
+    n_abs = sum(1 for f in report.findings if f.rule == "abstract_joint")
+    if n_abs:
+        bits.append(f"abstract joints: {n_abs}")
+    other = [
+        f
+        for f in report.findings
+        if f.rule != "abstract_joint" and f.severity != "info"
+    ]
+    if other:
+        bits.append(f"print-checked: {len(other)} finding(s)")
+    elif not n_abs:
+        bits.append("pinned" if report.pinned else "proposed")
+    handle = f"view='print' args={{'block': {name!r}, 'fmt': 'stl'}}"
+    return ", ".join(bits), handle
+
+
 #: Share of a donor's excitation an UNDECLARED pair has to reach before
 #: it is worth a finding — a comm-system crosstalk threshold, not a
 #: numerical tolerance (hence no ``*_EPS``/``*_TOL`` name): below it, two
@@ -2708,6 +3158,8 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "literature": frozenset({"block"}),
     "fret": frozenset(),
     "links": frozenset(),
+    "print": frozenset({"block", "fmt", "path"}),
+    "fab": frozenset(),
 }
 assert {v for v, keys in _VIEW_ARGS.items() if "state" in keys} == _STATE_VIEWS
 

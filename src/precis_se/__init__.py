@@ -319,6 +319,36 @@ the profile tier, and the rest of mechanism→geometry: tool access
 (a swept driver envelope per drive type × size), assembly-order
 existence, edge distance, and the sheet/tube instances of the stamping
 engine (finger joints, cope/fishmouth, press seats).
+
+**se-print-implementer.md rung 1** (2026-09-16) widens every ``fdm``
+``se_capabilities.json`` row with the full process-figure set (layer
+height, line width, overhang, bridge, bed contact, min feature/hole,
+strength-vs-layer ratio, build volume) plus a family-level
+``orientation`` weights block for the build-frame search (rung 4, below),
+and builds the one resolver se-kind.md's L5 promised:
+:func:`precis_se.capabilities.resolve` chains a block's own
+``process_overrides`` (migration ``0011_se_process_overrides.sql``, ops
+``set_process_override``/``clear_process_override``) over the
+unimplemented load-derived slot over :func:`precis_se.capabilities.
+capability`'s house tier, always clamped to the physical floor. Process
+DRC, the printed solid, the orientation search itself and ``view='print'``
+are the rungs after this one.
+
+**se-print-implementer.md rung 4** (2026-09-17) lands the implementer:
+:mod:`precis_se.printing` composes Engine 1's printed solid
+(:mod:`precis_se.printsolid`) with Engine 2's cad-level orientation search
+(:mod:`precis.cad.printability`) into one report per fdm-family block,
+adding the se-only rules a mesh alone can't know (``unrealized``,
+``abstract_joint``, ``hole_undersize``/``hole_shrink_absorbed``,
+``min_feature``, ``layer_vs_load``). ``view='print'`` renders it — no args
+for one section per fdm block, ``args={'block': ...}`` for the full
+candidate table, ``+{'fmt': 'stl'|'3mf'}`` to write the file in the build
+frame; ``set_build_frame``/``clear_build_frame`` pin/unpin the direction
+(``se_blocks.build_frame``, dark since migration ``0001``, first written
+here). ``view='fab'`` is the new top-level index — one row per
+implementation-bearing block, any source (purchase/fdm/atomic/
+unimplemented), pointing at each row's own handle; it never exports
+itself. ``MODE_FAMILIES['fdm'].implemented`` flips to ``True``.
 """
 
 from __future__ import annotations

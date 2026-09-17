@@ -592,6 +592,26 @@ assembly can push a `put` past 120 s. For larger assemblies either merge
 bodies you don't need connectivity verdicts on, or expect to background
 the `put` and poll.
 
+## Print orientation — `view='printability'`
+
+The one probe that meshes (`manifold3d`, the export kernel): searches
+build-down directions for the one that prints best. se's fdm
+implementer (`precis-se-print-help`) shares it:
+
+```python
+get(kind="cad", id="bracket", view="printability",
+    args={"max_overhang": "50deg", "max_bridge": "8mm",
+          "layer_height": "0.2mm", "min_bed_contact": 0.15})
+```
+
+Scores overhang area, bed contact, height, and bridge spans with flat
+weights (se passes its own; loads are se's lane). An omitted `args`
+field (`max_overhang`, `max_bridge`, `layer_height`, `min_bed_contact`,
+`sweep_deg` default 30°) skips that term, never guesses a threshold, and
+the reply says so. Pin `args.down=[x,y,z]` to check one orientation; the
+reply names any better candidate. Returns the top 5 candidates plus
+process-DRC findings (overhang, bridge, bed_contact, build_volume).
+
 > **Tip — need a number, exactly?** Don't eyeball arithmetic. The
 > `calc` kind is a local sympy engine: `get(kind='calc', q='2+3*4')`
 > evaluates arbitrarily complex expressions *exactly* — fractions,
@@ -689,7 +709,8 @@ pyramid), sphere, torus, chamfer half-space bevel tool. Ops: merge /
 subtract / intersect, place, polar / linear pattern, **instance another
 design** (`use <slug> as <name>`). Probes: point /
 ray / arc / section(z). Relations: clearance / interference /
-translational DOF. Bulk: geometric volume (sampled). **Deferred to
+translational DOF. Bulk: geometric volume (sampled). `printability`: build-
+orientation search + process DRC (the one probe that meshes). **Deferred to
 phase 2**: threads / gears, rotational DOF, fillets / rounds, datums,
 persisted observers, mass/density.
 
