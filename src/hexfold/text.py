@@ -29,6 +29,7 @@ class Hole:
     ring: int
     site: Site
     dir: int | None = None  # dir from site toward the ring centre
+    source: str | None = None  # menu that generated this hole (None = authored)
 
 
 @dataclass(frozen=True)
@@ -475,6 +476,7 @@ def spec_from_dict(d: dict) -> Spec:
                 _hole_ring_code(h["ring"]),
                 Site.parse(h["site"]),
                 int(h["dir"]) if h.get("dir") is not None else None,
+                source=h.get("source"),
             )
             for h in idata.get("holes", [])
         )

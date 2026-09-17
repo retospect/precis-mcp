@@ -63,6 +63,19 @@ _SUPPORTED_FIDELITIES = ("check", "stick")
 _UNWIRED_FIDELITIES = ("geo", "emt", "ml")
 
 
+def _se_port_name(hx_name: str) -> str:
+    """The se port name for a hexfold port path.
+
+    hexfold qualifies rim names as ``<instance>.<rim>`` (``h.out``) as soon
+    as a spec has more than one instance; se's ``add_port`` reserves the
+    dot for its ``block.port`` endpoint syntax and refuses dotted names.
+    ``h.out`` → ``h_out``; a single-instance spec's bare ``in``/``out``
+    pass through unchanged. The hexfold path is kept verbatim as
+    ``topology.ports[<se name>].hx``.
+    """
+    return hx_name.replace(".", "_")
+
+
 def _resolve_fidelity(params: dict[str, Any]) -> str:
     """``params["fidelity"]``, with ``params["dry_run"]`` honoured as a
     deprecated alias (``dry_run=True`` ⇒ ``fidelity="check"``,
@@ -168,12 +181,20 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
     ]
 
     ports: list[GeneratedPort] = []
+    se_names = [_se_port_name(p.name) for _n, p in net.ports]
+    if len(set(se_names)) != len(se_names):
+        # `.`→`_` is not injective (instance `a_b` port `c` vs `a` port
+        # `b_c`); hexfold's rim vocabulary has no underscores today, so
+        # this only fires if that changes -- loudly, not by overwriting
+        # a topology.ports entry.
+        dup = sorted({n for n in se_names if se_names.count(n) > 1})
+        raise GeneratorError(f"hexfold port names collide as se ports: {dup}")
     for _name, port in net.ports:
         ring = list(port.dangling) if port.dangling else list(port.atoms)
         atom_index = ring[0]
         ports.append(
             GeneratedPort(
-                name=port.name,
+                name=_se_port_name(port.name),
                 atom_index=atom_index,
                 direction=_port_direction(coords, tuple(ring)),
                 roles=["covalent"],
@@ -187,16 +208,17 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         rings[len(member_ring)] = rings.get(len(member_ring), 0) + 1
 
     topology: dict[str, Any] = {
-        "hexfold": "0.1",
+        "hexfold": hexfold.__version__,
         "spec": spec,
         "canonical_json": canonical_json(net),
         "ports": {
-            name: {
+            _se_port_name(p.name): {
+                "hx": p.name,
                 "atoms": list(p.dangling) if p.dangling else list(p.atoms),
                 "word": p.word,
                 "B": p.b,
             }
-            for name, p in net.ports
+            for _name, p in net.ports
         },
         "regions": {name: list(ords) for name, ords in net.regions},
         "report": net.report.to_dict(),

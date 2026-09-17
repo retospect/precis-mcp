@@ -51,8 +51,10 @@ b @ h/(7,0,A):0 [9-6]
 ```
 
 `h: tube(...)` / `fullerene(C60)` are instances; `b @ h/(site):dir
-[menu]` attaches. Remaining rims become block ports (each carries its
-dangling ring in `topology.ports`).
+[menu]` attaches. Remaining rims become block ports, named
+`<instance>_<rim>` (hexfold's `h.out` is se port `h_out`; a
+single-instance spec keeps bare `in`/`out`). Each carries its dangling
+ring and the hexfold path (`hx`) in `topology.ports`.
 
 ## Nanobud menus (attachments)
 

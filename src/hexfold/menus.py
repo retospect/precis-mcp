@@ -55,12 +55,14 @@ def _gen_name(spec_insts: list[Instance], base: str) -> str:
     return name
 
 
-def _add_hole(insts: list[Instance], name: str, hole: Hole) -> str:
-    """Append ``hole`` to instance ``name``; return its port name."""
+def _add_hole(insts: list[Instance], name: str, hole: Hole, source: str) -> str:
+    """Append ``hole`` to instance ``name`` tagged with the generating menu
+    (``Hole.source``, so canonicalisation anchors on authored holes only);
+    return its port name."""
     for i, inst in enumerate(insts):
         if inst.name == name:
             pname = _hole_name(inst)
-            insts[i] = replace(inst, holes=(*inst.holes, hole))
+            insts[i] = replace(inst, holes=(*inst.holes, replace(hole, source=source)))
             return pname
     raise KeyError(name)
 
@@ -125,7 +127,7 @@ def expand(spec: Spec) -> Spec:
             sites = d.sites()
             rings = [[sites[a] for a in ring] for ring in d.hexagons]
             hsite_b = _c60_min_site(_lexmin_ring(rings))
-            _add_hole(insts, bud, Hole(6, hsite_b))
+            _add_hole(insts, bud, Hole(6, hsite_b), menu)
             gen = []
             exp["holes"] = {bud: [str(hsite_b)]}
             exp["connects"] = [f"{bud}.hole --{name}--> {host}/{hsite}:{hdir}"]
@@ -144,14 +146,14 @@ def expand(spec: Spec) -> Spec:
                 # also destroys the three adjacent pentagons -> P5 = 9.
                 bud_holes.append(Hole(6, _c60_min_site(_lexmin_ring(rings6))))
                 neck_nm = (6, 0)
-            hole_names = [f"{bud}.{_add_hole(insts, bud, h)}" for h in bud_holes]
+            hole_names = [f"{bud}.{_add_hole(insts, bud, h, menu)}" for h in bud_holes]
             host_hole_name = None
             if name == "DA-neck":
                 # 5-dangling host opening: a connected 3-atom path
                 # (3|S| - 2 e_S = 5 for |S|=3, e_S=2) — Baowan, Cox &
                 # Hill's (5,0) neck seats on it
                 host_hole_name = (
-                    f"{host}.{_add_hole(insts, host, Hole(-2, hsite, hdir))}"
+                    f"{host}.{_add_hole(insts, host, Hole(-2, hsite, hdir), menu)}"
                 )
             nname = _gen_name(insts, "neck")
             insts.append(

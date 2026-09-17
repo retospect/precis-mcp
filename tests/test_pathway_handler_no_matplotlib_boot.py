@@ -26,6 +26,10 @@ from precis.store import Store
 def test_construct_does_not_import_matplotlib(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The probe under test is "is autocatpath installed"; without the
+    # catalyst extra (the CI lint/test lanes run --no-extra catalyst) the
+    # handler refuses to construct and there is no boot path to measure.
+    pytest.importorskip("autocatpath")
     # Purge every module the boot-time chain could re-pull, plus any prior
     # matplotlib import from an earlier test in this worker — otherwise a
     # regression would hide behind "already imported by someone else".

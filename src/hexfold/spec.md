@@ -575,6 +575,25 @@ Canonical form covers the **authored sections only** (0.2).
    rotations and axial translation). Re-express all defects, sort, serialize;
    **pick the lexicographically smallest.** Ties are true symmetries; the
    first in enumeration order wins.
+   *0.2 note (impl):* a candidate frame is kept **only if it builds the
+   same structure** (atom and bond counts, ring census, port sizes) — a
+   frame is a symmetry or it is nothing. On a bounded sheet or tube a
+   defect's offset from the rim is structural (the port words differ), so
+   those keep their authored frame; 0.1 anchored every defect at `(0,0)`
+   regardless, which clipped sheet glyphs at the corner and dragged a
+   tube's flank hole onto its `in` rim. A fullerene's site labels are not
+   a lattice either, so in 0.2 **every instance keeps its authored
+   frame**; the true symmetries (a patch's point group, a tube's
+   `C_gcd(n,m)` rotation, the cage's icosahedral group) are roadmap
+   candidate sources (§28). Candidates come from **authored** defects and
+   holes only — holes a menu
+   cuts (§16; `source` on the hole) are present on a built net but not on
+   its unexpanded text, and both must canonicalise alike. A frame
+   re-expresses **every site reference** to the origin instance: its
+   defects and holes, and `<inst>/(u,v,s)` endpoints in `bond`/`@`/menu
+   lines and their expansion records. A spec that addresses the origin
+   instance by site keeps its rotation (menu targets' `:d` neighbour index
+   is not rotation-equivariant); only translation is tried.
 3. **Mirrors are excluded.** Chirality is a real distinction. An
    enantiomer-invariant hash is a separate, opt-in function.
 4. Edge-words: lex-min rotation (§10). Menus (§16) are stored *expanded* in
@@ -1108,8 +1127,12 @@ precis generator on the dev DB. Small scale first.
    sheet-pill-bump closed seam; `registry.closure`; `fit` families and
    `fit.alternatives`; sectioned file with the generated block and
    `gen.stale`; `op.dangling`; sp³ ideal angle in `geom.angle.dev`.
-3. hexgen roadmap, in order: **sheet + light bud, capped (5,5) + bud**
-   (finish the dev-DB dogfood); **`cap(n,m)` flat-lid family** (six
+3. hexgen roadmap, in order: sheet + light bud, capped (5,5) + bud
+   (dev-DB dogfood done 2026-09-17: `sheet_bud_22.hx`,
+   `capped_tube_da_neck.hx`); **canonical-frame symmetry sources**
+   (§14.2 note — a patch's point group, a tube's `C_gcd(n,m)` rotation,
+   the fullerene's icosahedral group as candidate frames; today every
+   instance keeps its authored frame); **`cap(n,m)` flat-lid family** (six
    pentagons in a ring; the box lid; unblocks the pill); **`opening(port=)`**
    (solve a host hole from the target rim; a C5 rim on the C6 lattice meets
    only through an asymmetric seam → the **tilted pill**, `geom.join.angle`);

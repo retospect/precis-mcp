@@ -273,7 +273,7 @@ def prepare_generate(
         provenance=block.provenance,
         ports_map=ports_map,
     )
-    topo = ", ".join(f"{k}={v}" for k, v in block.topology.items())
+    topo = ", ".join(f"{k}={_topo_brief(v)}" for k, v in block.topology.items())
     echo = (
         f"generated block {block_name!r} via {gen_name!r}: "
         f"{len(scene.atoms)} atom(s), {len(scene.bonds)} bond(s), "
@@ -281,6 +281,28 @@ def prepare_generate(
         f"({topo})"
     )
     return echo, pending
+
+
+def _topo_brief(value: object, limit: int = 80) -> str:
+    """One-line digest of a topology fact for the generate echo.
+
+    The facts themselves land on the block (``topology``); the echo only
+    names them. Scalars and short strings print verbatim; a long string
+    (a ``.hx`` spec, a canonical JSON) is cut with its length; a dict
+    shows its keys and a list its length -- the hexfold generator's
+    ``regions``/``ports`` carry every atom ordinal, which turned a
+    one-line echo into kilobytes (dev-DB dogfood,
+    docs/backlog/hexfold-integration.md step 4).
+    """
+    if isinstance(value, dict):
+        keys = ",".join(str(k) for k in value)
+        return f"{{{keys}}}" if len(keys) <= limit else f"{{{len(value)} keys}}"
+    if isinstance(value, list | tuple):
+        return f"[{len(value)} items]"
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…({len(text)} chars)"
 
 
 def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> None:

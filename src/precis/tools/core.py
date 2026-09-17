@@ -668,13 +668,13 @@ def search(
     search; `title=`/`author=` look up by byline.
 
     Claims (finding): `trust='verified'` = evidence-backed + unopposed;
-    `'signed'` = provenance (a separate axis); also
-    `'disputed'`/`'any'`. `status=`: chase lifecycle.
+    `'signed'` = provenance; also `'disputed'`/`'any'`. `status=`:
+    chase lifecycle.
 
     `uncited=<draft>` drops sources it already cites.
 
-    `wants=` (se): ranked library search over block attributes — never a
-    strict filter, see precis-se-help.
+    `wants=` (se): ranked library search, never a strict filter
+    (precis-se-help).
 
     Full docs: get(kind='skill', id='precis-search-help').
     """

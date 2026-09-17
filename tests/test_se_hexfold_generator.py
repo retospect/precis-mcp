@@ -170,6 +170,39 @@ def test_prepare_generate_binds_atoms_and_ports(store: Store) -> None:
     assert set(node.ports) == {"in", "out"}
 
 
+def test_prepare_generate_multi_instance_ports_are_undotted(store: Store) -> None:
+    """A spec with several instances gets hexfold-qualified rim names
+    (``h.in``); se's ``add_port`` reserves the dot for ``block.port``
+    endpoints, so the adapter maps them to ``h_in`` and keeps the hexfold
+    path under ``topology.ports[<name>].hx`` (found by the dev-DB dogfood,
+    docs/backlog/hexfold-integration.md step 4)."""
+    tree = SeTree()
+    echo, pending = prepare_generate(
+        store,
+        tree,
+        {
+            "op": "generate",
+            "generator": "hexfold",
+            "params": {"spec": NANOBUD_SPEC},
+            "name": "bud",
+        },
+        "hx-design",
+    )
+    assert pending is not None
+    # the echo names the topology facts, it does not dump them (regions
+    # and ports carry every atom ordinal; the spec and canonical JSON
+    # are kilobytes)
+    assert len(echo) < 1500, len(echo)
+    assert "ports={h_in,h_out}" in echo and "canonical_json=" in echo
+    node = tree.blocks["bud"]
+    assert set(node.ports) == {"h_in", "h_out"}
+    assert not any("." in p for p in node.ports)
+    block = _build(NANOBUD_SPEC)
+    assert {p.name for p in block.ports} == set(node.ports)
+    hx_paths = {p: v["hx"] for p, v in block.topology["ports"].items()}
+    assert hx_paths == {"h_in": "h.in", "h_out": "h.out"}
+
+
 def test_prepare_generate_fidelity_check_returns_none_pending(store: Store) -> None:
     tree = SeTree()
     echo, pending = prepare_generate(

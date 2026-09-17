@@ -49,7 +49,7 @@ _BUILTIN_KEYS = frozenset({"stimulus", "bistable", "joining"})
 #: The only keys an explicit ``{...}`` want form may carry.
 _ALLOWED_WANT_DICT_KEYS = frozenset({"target", "min", "max", "tol", "weight"})
 
-_DEFAULT_TOL = 0.1
+_DEFAULT_TOL_REL = 0.1
 _DEFAULT_WEIGHT = 1.0
 
 #: ``store.list_refs`` page size while walking the whole se library — a
@@ -76,7 +76,7 @@ class WantSpec:
     target: Any = None
     min: float | None = None
     max: float | None = None
-    tol: float = _DEFAULT_TOL
+    tol: float = _DEFAULT_TOL_REL
     weight: float = _DEFAULT_WEIGHT
 
     @property
@@ -131,7 +131,7 @@ def _parse_one_want(key: str, raw: Any) -> WantSpec:
             target=raw.get("target"),
             min=None if lo is None else float(lo),
             max=None if hi is None else float(hi),
-            tol=float(raw.get("tol", _DEFAULT_TOL)),
+            tol=float(raw.get("tol", _DEFAULT_TOL_REL)),
             weight=float(raw.get("weight", _DEFAULT_WEIGHT)),
         )
     if isinstance(raw, list):

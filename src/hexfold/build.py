@@ -174,6 +174,7 @@ class Net:
                         "dir": h.dir,
                         "ring": "notch" if h.ring == -1 else h.ring,
                         "site": str(h.site),
+                        **({"source": h.source} if h.source is not None else {}),
                     }
                     for h in inst.holes
                 ]

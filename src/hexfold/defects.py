@@ -419,7 +419,14 @@ class Patch:
 
 
 def run_length(word: str) -> str:
-    """zaaaazzz -> z·a4·z3 style: 'z4' run-length, '.' separated."""
+    """zaaaazzz -> z·a4·z3 style: 'z4' run-length, '.' separated.
+
+    Only the letter symbols ``z``/``a`` compress: a ring-size symbol is a
+    digit string, so ``55`` run-lengthed to ``52`` reads back as the single
+    symbol ``52`` (:func:`expand_word` takes ``\\d+`` as one symbol) and two
+    equal port words could serialise differently. Digit runs stay
+    ``5.5``.
+    """
     if not word:
         return ""
     out: list[str] = []
@@ -428,7 +435,10 @@ def run_length(word: str) -> str:
         j = i
         while j < len(word) and word[j] == word[i]:
             j += 1
-        out.append(f"{word[i]}{j - i}" if j - i > 1 else word[i])
+        if j - i > 1 and word[i] in "za":
+            out.append(f"{word[i]}{j - i}")
+        else:
+            out.extend([word[i]] * (j - i))
         i = j
     return ".".join(out)
 

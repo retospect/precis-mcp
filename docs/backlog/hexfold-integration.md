@@ -52,17 +52,32 @@ development, with the boundary kept clean for a later pip re-export.
    makes, crashing on DA-neck).
 3. [x] Sources: 22 DOIs Crossref-verified, 20 papers imported, store ids
    in spec §31 (2026-09-16).
-4. [ ] Dogfood on the DEV DB (`scripts/dev`; never the session MCP).
-   The earlier inputs (`a_sheet_bud.hx`, `c_tube_bud.hx`) lived in a
-   gitignored dir of the since-deleted `hexfold` worktree and are gone:
-   re-author them (a sheet with a `[2+2]` bud; a capped (5,5) tube with a
-   `[DA-neck]` bud) — or start from `hexfold/examples/nanobud_*.hx`.
-   Blocked last time at the DSN in `precis-dev.sh`
-   (pool: `failed to resolve host 'precis'` — password likely needs
-   URL-quoting or the compose service name differs; check
-   `docker/dev/compose.yaml`). Record per spec: dry-run echo, minted
-   block uids, structure ids, atom/bond counts, whether the bond-mode bud
-   became its own block, `topology` keys.
+4. [x] Dogfood on the DEV DB (2026-09-17). Inputs are now committed
+   examples: `hexfold/examples/sheet_bud_22.hx` (sheet(12,12) + C60
+   `[2+2]`) and `capped_tube_da_neck.hx` (tube(5,5) + cap(5,5) +
+   `[DA-neck(3)]`). Path: `scripts/dev` on this worktree's compose
+   project → `precis-test-db` resolves; `Migrator.discover_sources` (the
+   se chain is a plugin source — the legacy single-dir form leaves
+   `se_blocks` missing); `precis tools put --kind se` with one `generate`
+   op (the CLI mirror of the verb). Record: `fidelity=check` echoes the
+   report and mints nothing ("no blocks yet"); `stick` minted se refs 14
+   (`hxdog-sheet`) and 16 (`hxdog-tube`), each ONE block `bud` (uids 1,
+   2) bound to structure refs 13/15 (`hxdog-sheet-bud`, `hxdog-tube-bud`);
+   sheet: 348 atoms, 500 bonds, port `h_rim`, rings {6:141, 5:12}; tube:
+   442 atoms, 658 bonds, port `h_in`, rings {6:191, 5:17, 7:7, 8:2}. The
+   bond-mode bud is NOT its own block (one connected net → one block, as
+   designed). `topology` keys: hexfold, spec, canonical_json, ports (se
+   name → {hx, atoms, word, B}), regions, report, seed_kind, n_atoms,
+   n_bonds, rings. Found and fixed: (a) multi-instance specs gave dotted
+   port names (`h.rim`) that `add_port` refuses → `h_rim` + `hx`;
+   (b) `canonical_json(net) != canonical_json(text)` with `origin` —
+   0.1's canonical frame anchored defects at (0,0) regardless of rims
+   (dragged the DA-neck host hole onto the tube's `in` rim; clipped sheet
+   glyphs at the corner) and ignored menu-generated holes and site
+   references in connects → spec §14.2 note; (c) `run_length` compressed
+   digit symbols (`55`→`52`, re-read as one symbol) → digit runs stay
+   `5.5`; (d) the generate echo dumped every topology value (kilobytes
+   of ordinals) → keys/lengths only.
 5. [ ] hexgen roadmap items (spec §28.3) in order, starting with
    `cap(n,m)` flat-lid family and `opening(port=)` → the pill.
 6. [ ] `precis-surface-kernel.md` (stage 1 chain solver) once 1–2 hold.

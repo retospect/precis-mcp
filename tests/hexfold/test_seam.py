@@ -264,6 +264,10 @@ def test_example_registry_closure_absent() -> None:
 _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
     "c60_hole.hx": (True, [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)]),
     "capped_tube.hx": (True, [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)]),
+    "capped_tube_da_neck.hx": (
+        True,
+        [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)],
+    ),
     "cone5.hx": (True, [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)]),
     "nanobud_22.hx": (
         True,
@@ -299,6 +303,15 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
         [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)],
     ),
     "pillar.hx": (True, [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)]),
+    "sheet_bud_22.hx": (
+        True,
+        [
+            ("euler.chi", "INFO", 2),
+            ("euler.chi", "INFO", 1),
+            ("euler.residual", "INFO", 0),
+            ("euler.residual", "INFO", 0),
+        ],
+    ),
     "sheet_sw.hx": (True, [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)]),
     "tube55.hx": (True, [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)]),
     "tube_fuse.hx": (True, [("euler.chi", "INFO", 0), ("euler.residual", "INFO", 0)]),

@@ -587,7 +587,9 @@ def mounted_runtime(
     # the hub refuses (DuplicateRegistration).
     if "se" not in runtime_with_store.hub.handlers:
         SeHandler(hub=runtime_with_store.hub)._register_with(runtime_with_store.hub)
-    tools_core._runtime = runtime_with_store
+    # ``_runtime`` is declared ``= None`` at module level (mypy infers
+    # ``None``); the other runtime-swapping fixtures go through setattr too.
+    setattr(tools_core, "_runtime", runtime_with_store)  # noqa: B010
     try:
         yield runtime_with_store
     finally:
@@ -671,7 +673,9 @@ def test_a_two_key_query_reads_each_blocks_transitions_once(
     monkeypatch.setattr(design_states, "transitions_for", counting)
     body = handler.search(wants={"stimulus": "light", "bistable": True}).body
     assert "cache-d#b1" in body
-    mine = [c for c in calls if c[0] == store.get_ref(kind="se", id="cache-d").id]
+    cache_ref = store.get_ref(kind="se", id="cache-d")
+    assert cache_ref is not None
+    mine = [c for c in calls if c[0] == cache_ref.id]
     assert len(mine) == 3, calls
 
 
