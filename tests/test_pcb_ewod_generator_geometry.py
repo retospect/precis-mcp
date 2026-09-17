@@ -30,11 +30,11 @@ import re
 from typing import Any
 
 import pytest
-from shapely.geometry import (
-    LineString,  # type: ignore[import-untyped]
+from shapely.geometry import (  # type: ignore[import-untyped]
+    LineString,
     Polygon,
 )
-from shapely.geometry import Point as SPoint  # type: ignore[import-untyped]
+from shapely.geometry import Point as SPoint
 from shapely.validation import explain_validity  # type: ignore[import-untyped]
 
 from precis.pcb import generators as G

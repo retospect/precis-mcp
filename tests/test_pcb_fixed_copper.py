@@ -198,7 +198,7 @@ def test_changed_params_retires_old_and_writes_new(store: Store, fake_gen):
             "WHERE ref_id = %s GROUP BY 1",
             (ref_id,),
         ).fetchall()
-    by_active = dict(counts)
+    by_active: dict[bool, int] = dict(counts)
     assert by_active[True] == 3
     assert by_active[False] == 2
 
@@ -242,9 +242,11 @@ def test_pcb_copper_list_unions_fixed_and_derived_no_duplication(
     combined_again = store.pcb_copper_list(board_id)
     assert len(combined_again) == 3
     with store.pool.connection() as conn:
-        (derived_count,) = conn.execute(
+        row = conn.execute(
             "SELECT count(*) FROM pcb_copper WHERE board_id = %s", (board_id,)
         ).fetchone()
+        assert row is not None
+        (derived_count,) = row
     assert derived_count == 1  # pcb_copper itself never absorbed a fixed row
 
 

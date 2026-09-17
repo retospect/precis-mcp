@@ -487,10 +487,12 @@ def test_pcb_route_job_marks_a_fixed_bridged_net_realized_with_no_derived_track(
     assert status_rows["N1"]["note"] == "realized by fixed copper"
 
     with store.pool.connection() as conn:
-        (n_derived_tracks,) = conn.execute(
+        row = conn.execute(
             "SELECT count(*) FROM pcb_copper WHERE board_id = %s AND ctype = 'track'",
             (board_id,),
         ).fetchone()
+        assert row is not None
+        (n_derived_tracks,) = row
     assert n_derived_tracks == 0
 
 
