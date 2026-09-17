@@ -20,6 +20,7 @@
 #   scripts/test tests/test_foo.py::test_bar -x
 #   scripts/test --fast                       # no-DB fast set (-m 'not db')
 #   scripts/test --impacted                   # ONLY tests your changes affect
+#   scripts/test --typecheck                  # `uv run mypy src tests` in the container
 #   scripts/test --bg <args…>                 # detach the run; prints an --await line
 #   scripts/test --await <run-id>             # bounded wait: exits with the run's
 #                                             # code, or 124 = still running (re-run)
@@ -39,6 +40,15 @@
 # NOTE: the dev image bakes all extras, so you never need `--with`/`--extra`
 # here — that's only for the torch-free host (and the testmon plugin, which
 # --impacted pulls in on the fly so no image rebuild is needed).
+#
+# --typecheck : the gate's mypy check (`uv run mypy src tests`), through the
+# same container path as pytest — same compose project, same worktree bind
+# mount — so it sees the SAME tree the rest of this script tests, and the
+# baked-image extras (fastapi/rdkit/torch) that a bare host `uv run mypy`
+# lacks. Skips the DB startup and the gate-slot wait: mypy touches no
+# service and is light next to a full pytest run, so it doesn't need to
+# queue behind the shared-VM gate-slot cap (gr202193/gr339251). Optional
+# trailing args override the default `src tests` target.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
@@ -142,6 +152,18 @@ COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
 source "${WORKTREE}/scripts/lib/gate-slot.sh"
 trap gate_slot_release EXIT
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
+
+# --typecheck : reuses the compose project/mount above but skips the test-db
+# startup and the gate-slot wait entirely (see header) — runs mypy and exits
+# with its status, never falling through to the pytest path below.
+if [[ "${1:-}" == "--typecheck" ]]; then
+    shift
+    MYPY_ARGS=("$@")
+    [[ ${#MYPY_ARGS[@]} -eq 0 ]] && MYPY_ARGS=(src tests)
+    compose run --rm --no-deps -v "${WORKTREE}":/app precis-dev \
+        bash -lc 'uv run --no-sync mypy "$@"' _ "${MYPY_ARGS[@]}"
+    exit $?
+fi
 
 # Co-located RAM test DB (the same service scripts/ship's gate uses). If it
 # can't start, fall back to whatever PRECIS_TEST_PG_URL the container carries.

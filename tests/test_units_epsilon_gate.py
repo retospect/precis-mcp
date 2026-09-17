@@ -1,6 +1,7 @@
 """AST gate: no new absolute LENGTH epsilon constant in cad/se/nm/structsolve.
 
-units-policy-cutover.md item 4 (the relative-tolerance audit) + its
+the units-policy cutover's item 4 (the relative-tolerance audit,
+see `precis/utils/units.py` module docstring) + its
 acceptance criterion: "no absolute LENGTH epsilon constants remain in
 cad/se/nm/structsolve comparison paths (each is derived from a governing
 length); an AST-walk or grep test pins this, with an explicit exempt list
@@ -28,7 +29,7 @@ the "silently absolute default" hazard takes (``LINEAR_EPS = 1e-6``,
 
 1. Path-based enclaves (pcb, the atomistic layers, generator internals,
    export/serializer modules) that DECIDED to keep a non-SI absolute
-   convention, per units-policy-cutover.md's decisions log.
+   convention, per `precis/utils/units.py`'s module docstring.
 2. Name signals "already relative" (``REL``/``RTOL`` substring — the
    codebase's own naming convention for a fraction-of-a-governing-length
    or relative-tolerance constant: ``LINEAR_REL_EPS``, ``CONTACT_TOL_REL``,
@@ -52,8 +53,8 @@ from pathlib import Path
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
 
-#: Packages this gate polices (units-policy-cutover.md item 4's target
-#: set, verbatim).
+#: Packages this gate polices (the units-policy cutover's item 4 target
+#: set, verbatim — see `precis/utils/units.py` module docstring).
 _POLICED_PACKAGES = (
     _SRC / "precis" / "cad",
     _SRC / "precis_se",
@@ -61,7 +62,7 @@ _POLICED_PACKAGES = (
 )
 
 #: Enclaves exempt WHOLESALE — each ruled by name in
-#: units-policy-cutover.md's decisions log:
+#: `precis/utils/units.py`'s module docstring:
 #: - ``precis/pcb`` — mm-native enclave (self-naming ``_mm`` identifiers;
 #:   every cross-package API converts to SI).
 #: - ``precis_se/atomic/generators`` — atomistic-internal (bond lengths,
@@ -190,7 +191,7 @@ def test_no_new_absolute_length_epsilon_constants() -> None:
     assert not offenders, (
         "found an absolute-looking epsilon/tolerance constant in "
         "cad/se/nm/structsolve with no relative-naming signal and no "
-        "exemption — units-policy-cutover.md item 4 requires every "
+        "exemption — the units-policy cutover's item 4 requires every "
         "system-supplied LENGTH epsilon to be derived from a governing "
         "length (feature size, else bbox diagonal), not a bare absolute "
         "constant. If this is genuinely dimensionless/angular or an "

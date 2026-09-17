@@ -357,6 +357,95 @@ def test_changed_test_files_from_patch_ignores_dev_null() -> None:
     assert md.changed_test_files_from_patch(patch) == frozenset()
 
 
+# ── same-commit safety net (gr339256) ───────────────────────────────────
+
+
+def test_same_commit_test_ids_finds_module_and_class_level_tests(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    test_file = tmp_path / "test_new.py"
+    test_file.write_text(
+        textwrap.dedent(
+            """\
+            def test_plain() -> None:
+                pass
+
+            def _helper() -> None:
+                pass
+
+            class TestGroup:
+                def test_in_class(self) -> None:
+                    pass
+
+                def not_a_test(self) -> None:
+                    pass
+            """
+        ),
+        encoding="utf-8",
+    )
+    ids = md.same_commit_test_ids(frozenset({"test_new.py"}))
+    assert set(ids) == {
+        "test_new.py::test_plain",
+        "test_new.py::TestGroup::test_in_class",
+    }
+
+
+def test_same_commit_test_ids_excludes_parametrized_tests(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A parametrized test has no bare collectible node id — offering one as
+    an escalation candidate would just make pytest error out on it."""
+    monkeypatch.chdir(tmp_path)
+    test_file = tmp_path / "test_new.py"
+    test_file.write_text(
+        textwrap.dedent(
+            """\
+            import pytest
+
+            @pytest.mark.parametrize("x", [1, 2])
+            def test_parametrized(x: int) -> None:
+                pass
+
+            def test_plain() -> None:
+                pass
+            """
+        ),
+        encoding="utf-8",
+    )
+    assert md.same_commit_test_ids(frozenset({"test_new.py"})) == [
+        "test_new.py::test_plain"
+    ]
+
+
+def test_same_commit_test_ids_skips_a_missing_file() -> None:
+    assert md.same_commit_test_ids(frozenset({"tests/does_not_exist.py"})) == []
+
+
+def test_full_candidate_tests_keeps_parametrized_siblings_undeduped() -> None:
+    """gr336066: the escalation set must NOT collapse a parametrized family
+    to one representative — the representative kept by
+    ``_dedupe_parametrized`` (the sample's own dedupe) can target a
+    different guarded clause than the one the mutant actually broke."""
+    raw = [
+        "tests/test_x.py::test_shape_mismatches_reject[rate must be]",
+        "tests/test_x.py::test_shape_mismatches_reject[coords must be]",
+        "tests/test_x.py::test_shape_mismatches_reject[members must be]",
+    ]
+    assert md.full_candidate_tests(raw, []) == raw
+
+
+def test_full_candidate_tests_appends_same_commit_ids_not_already_covering() -> None:
+    """gr339256: a same-commit test id ``.coverage`` never attributed to
+    this line must still be tried before the mutant is reported SURVIVED."""
+    raw = ["tests/test_x.py::test_old"]
+    same_commit = ["tests/test_x.py::test_old", "tests/test_x.py::test_new"]
+    assert md.full_candidate_tests(raw, same_commit) == [
+        "tests/test_x.py::test_old",
+        "tests/test_x.py::test_new",
+    ]
+
+
 def test_has_any_test_context_true_when_a_real_context_exists() -> None:
     data = _FakeCoverageData({"src/precis/x.py": {1: ["tests/test_x.py::test_a|run"]}})
     assert md.has_any_test_context(data) is True
@@ -919,3 +1008,56 @@ def test_judge_mutant_charges_the_sampled_run_against_the_budget(
     assert verdict == "SURVIVED"
     assert "UNVERIFIED" in note and "budget exhausted" in note
     assert len(runner.calls) == 1
+
+
+def test_judge_mutant_end_to_end_parametrized_family_is_not_a_false_survivor() -> None:
+    """gr336066 reproduced end-to-end: the sample (``select_covering_tests``'
+    deduped-to-one-representative cap) doesn't kill the mutant — its
+    representative variant targets a different guarded clause — but the
+    escalation set built by ``full_candidate_tests`` keeps every sibling, and
+    the ACTUAL killer among them (run second, since the representative was
+    tried and missed) settles it as KILLED, not a false SURVIVED."""
+    raw = [
+        "tests/test_x.py::test_shape_mismatches_reject[rate must be]",
+        "tests/test_x.py::test_shape_mismatches_reject[coords must be]",
+    ]
+    # `select_covering_tests`' own sample cap dedupes to the family's first
+    # variant once past `max_tests` — reproduced directly here rather than
+    # via a bigger family fixture: this IS the exact representative it would
+    # keep.
+    sampled = md._dedupe_parametrized(raw)
+    assert sampled == ["tests/test_x.py::test_shape_mismatches_reject[rate must be]"]
+    full = md.full_candidate_tests(raw, [])
+    assert full == raw  # NOT collapsed — both siblings survive into escalation
+
+    # The representative alone (rate-must-be) doesn't notice the mutation;
+    # the coords-must-be sibling does.
+    runner = _FakeRunner(
+        [(0, False, "sample missed it"), (1, False, "coords caught it")]
+    )
+    verdict, note, tail = md.judge_mutant(
+        sampled, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "KILLED"
+    assert tail == "coords caught it"
+
+
+def test_judge_mutant_end_to_end_same_commit_test_kills_a_coverage_blind_spot() -> None:
+    """gr339256 reproduced end-to-end: ``.coverage`` attributes the line to
+    only the pre-existing test, which doesn't kill the mutant; the
+    same-commit new test — never attributed by ``.coverage`` at all — is
+    still tried via ``full_candidate_tests`` and kills it."""
+    raw = ["tests/test_latex.py::test_old_behaviour"]
+    full = md.full_candidate_tests(raw, ["tests/test_latex.py::test_new"])
+    assert full == [
+        "tests/test_latex.py::test_old_behaviour",
+        "tests/test_latex.py::test_new",
+    ]
+    runner = _FakeRunner(
+        [(0, False, "old test missed it"), (1, False, "new test caught it")]
+    )
+    verdict, note, tail = md.judge_mutant(
+        raw, full, runner, per_mutant_timeout=10, budget_left=1000
+    )
+    assert verdict == "KILLED"
+    assert tail == "new test caught it"

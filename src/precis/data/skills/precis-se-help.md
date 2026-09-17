@@ -38,11 +38,11 @@ should be, and what `view='fasten'` reports — see `precis-se-fasten-help`.
 ## Units and geometry conventions — read first
 
 - **Everything is metres, newtons, radians.** `envelope`/`pose`/`rot` are
-  bare numbers, **not** run through the units-policy-cutover's
+  bare numbers, **not** run through `precis/utils/units.py`'s
   unit-required ingest boundary (that boundary is for `cad`'s own
   hand-authored text; `se` parses/stores its envelope DSL and pose/rot
   vectors in the pre-existing bare-SI convention — see
-  `units-policy-cutover.md`'s decisions log). `cyl:r0.02h0.01` is a
+  `precis/utils/units.py`'s module docstring). `cyl:r0.02h0.01` is a
   2 cm × 1 cm cylinder — the cad kernel is unit-agnostic; `se` stores
   metres.
 - **Envelope `box` `w`/`d`/`h` are FULL dimensions**: `box:w0.028d0.240
@@ -134,10 +134,18 @@ unaddressable — nor contain `'#'`.)
   compliant|captive|axial, "axis"?: [x,y,z], "mechanism"?: snap|screw|
   press|key|magnet|bearing|bond|integral|cable, "params"?: {…}}` —
   nested, never flat.
+
+## Ops — loads, prose, measures, modes, BOM, notes (exact parameter lists)
+
 - `set_load` — exactly one of `block` | `a`+`b` (connect), then flat
   keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `fixed`
   (true or subset of `["x","y","z"]`; blocks only) · `clear`. Flat —
-  never nested under `objectives=`.
+  never nested under `objectives=`. Keys MERGE across calls (`fixed`
+  then `force` keeps both; a repeated key overwrites); `clear: true` is
+  the only reset. Same for the connect target — amend a connect's
+  objectives in place, no disconnect/reconnect.
+- `set_desc` — `block` + `desc` and/or `use` (null clears). Amends a
+  block's prose after creation; on a template, not an instance.
 - `add_measure` — `block`, `name` (req) · `value`/`min`/`max` · `unit`
   `m|count|ratio|deg` · `relation` `{source: "block.measure", scale,
   offset, tol}` · `strength` `hard|soft|gauge` (default gauge) ·

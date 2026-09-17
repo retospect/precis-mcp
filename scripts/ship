@@ -250,6 +250,22 @@ _relock() {
 [[ -n "$BRANCH" ]] || die "detached HEAD — check out a feature branch first."
 [[ "$BRANCH" != "main" ]] || die "on main — nothing to ship."
 
+# ── 1b. per-worktree ship lock (gr335894) ────────────────────────────────
+# Taken here — after the sanity checks, before the first git write (§2 WIP
+# commit) — and deliberately AFTER the "── 1. sanity" marker: everything
+# above it is the side-effect-free prelude that tests/test_deploy_lag_honesty
+# slices out and runs standalone. See scripts/lib/ship-lock.sh for the
+# incident and why this REFUSES rather than waits, unlike the repo-wide
+# squash lock acquired later in §3. Armed immediately on success; the
+# repo-wide lock's own trap (§3) is widened to release this one too, since a
+# script can only hold one EXIT trap at a time.
+# shellcheck source=scripts/lib/lock-holder.sh
+source "${WORKTREE}/scripts/lib/lock-holder.sh"
+# shellcheck source=scripts/lib/ship-lock.sh
+source "${WORKTREE}/scripts/lib/ship-lock.sh"
+acquire_worktree_ship_lock "$WORKTREE" || exit 1
+trap _release_worktree_ship_lock EXIT
+
 # A lock lost BEFORE this run (a nested `claude -p`, a killed background task)
 # leaves the tree exposed the instant the squash lands; repair it up front
 # rather than only at the end, so the exposure never spans the whole gate.
@@ -559,7 +575,12 @@ acquire_ship_lock() {
     # Arm the release trap only now that we actually hold the lock (gr202363) —
     # arming it earlier meant a kill mid-wait fired the trap against a lock we
     # never acquired. (Re-arming on a remote-mode re-acquire is idempotent.)
-    trap _release_ship_lock EXIT
+    # Widened to also release the per-worktree lock (gr335894): a script has
+    # only one EXIT trap slot, and that lock's own trap (armed right after it
+    # was acquired, near the top of the script) would otherwise be clobbered
+    # by this one. _release_worktree_ship_lock is itself ownership-checked and
+    # a no-op once already released, so folding it in here is safe.
+    trap '_release_ship_lock; _release_worktree_ship_lock' EXIT
 }
 
 # Classic modes hold the lock across the whole sync→gate→push section (the

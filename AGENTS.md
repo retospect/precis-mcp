@@ -95,8 +95,9 @@ precis-mcp/
 6. Run the full check before claiming done. Tests: **`scripts/test`** — runs
    pytest in the dev container against your worktree with the test DB wired
    (don't hand-roll `uv run pytest`: the torch-free host reports spurious
-   missing-extra failures for `marker`, `sympy`, …). Lint/types on the host:
-   `uv run ruff check . && uv run ruff format --check . && uv run mypy src tests`.
+   missing-extra failures for `marker`, `sympy`, …). Lint on the host:
+   `uv run ruff check . && uv run ruff format --check .`; types via
+   `scripts/test --typecheck` (host mypy reports phantom errors, gr339251).
 7. If you altered the schema, run `precis migrate --dry-run` against a
    throwaway DB; confirm only the new file is pending and apply
    succeeds.
@@ -117,7 +118,9 @@ precis-mcp/
       (no CHANGELOG file — git history is the record).
 - [ ] `uv run ruff check .` passes.
 - [ ] `uv run ruff format --check .` passes.
-- [ ] `uv run mypy src tests` passes.
+- [ ] `scripts/test --typecheck` (`uv run mypy src tests` in the dev
+      container — a bare host `uv run mypy` reports phantom errors on the
+      torch-free host venv) passes.
 - [ ] The full suite passes in the dev container (`scripts/test`; the
       torch-free host can only run extra-free subsets), and changed `src/`
       lines are test-executed — the full-suite ship gate enforces this

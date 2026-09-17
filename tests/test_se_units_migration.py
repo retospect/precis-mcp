@@ -1,8 +1,8 @@
 """``0006_units_se_pose_rot_rad.sql`` — lossless deg->rad rewrite of
 live ``se_blocks.pose_rot`` data.
 
-units-policy-cutover angle ruling (docs/backlog/units-policy-cutover.md
-decisions log, "se pose_rot deg->rad migration", round 8): unlike cad/nm's
+units-policy-cutover angle ruling (`precis/utils/units.py` module
+docstring, "se pose_rot deg->rad migration", round 8): unlike cad/nm's
 clean-slate wipes, se's stored designs (``unicycle-printed-v1``,
 ``boxel-3nm``) are live dogfood — this is a LOSSLESS numeric rewrite,
 proven exact against seeded degree rows (0, negative, >360) rather than

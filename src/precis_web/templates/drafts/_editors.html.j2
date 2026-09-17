@@ -294,7 +294,6 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
       }
     },
   });
-  view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
   if (opts.refSearchUrl) { try { ac = makeAutocomplete(view, opts.refSearchUrl); } catch (e) { ac = null; } }
   // Place the caret (end by default; 'start' from the block above / after a
   // split; a number = string offset, e.g. the merge join point — doc pos is
@@ -308,14 +307,29 @@ window.__mountDraftPM = function (mountEl, seedText, opts) {
     else sel = TextSelection.atEnd(_d);
     view.dispatch(view.state.tr.setSelection(sel));
   } catch (e) { view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(_d))); }
-  // Retry focus until it lands. A just-revealed contenteditable opened
-  // programmatically (caret handoff / split / merge — or even the initial
-  // ✎ click) isn't focusable for a few frames, so a lone view.focus()
-  // silently no-ops and the block opens blurred (looks like it "didn't open").
+  // Retry focus until it lands, then arm blur-to-save (gr335590). A
+  // just-revealed contenteditable opened programmatically (caret handoff /
+  // split / merge — or even the initial ✎ click) isn't focusable for a few
+  // frames, so a lone view.focus() silently no-ops and the block opens
+  // blurred (looks like it "didn't open"). Registering the blur listener
+  // immediately at mount used to race this: focus would land transiently on
+  // one retry and get knocked off before the next, firing a native `blur`
+  // on view.dom while text was still unchanged — save()'s no-op guard then
+  // tore the editor straight back down, i.e. the "opens for 10ms" flash.
+  // Arm the listener only once hasFocus() is confirmed true (or once the
+  // retry budget is spent, so blur-to-save still works if focus genuinely
+  // never lands) so a transient pre-focus blur can't trigger it.
+  let _blurArmed = false;
+  const armBlur = () => {
+    if (_blurArmed) return;
+    _blurArmed = true;
+    view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
+  };
   (function ensureFocus(n) {
     try { view.focus(); } catch (e) { return; }   // view torn down → stop
-    if (view.hasFocus && view.hasFocus()) return;
+    if (view.hasFocus && view.hasFocus()) { armBlur(); return; }
     if (n > 0) setTimeout(() => ensureFocus(n - 1), 30);
+    else armBlur();
   })(15);
   setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
   return {

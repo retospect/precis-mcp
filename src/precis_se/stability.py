@@ -547,6 +547,11 @@ class PrestressRow:
     declared: float | None  # joint param 'preload', N, tension-positive
     implied: float | None = None  # completed self-stress force, N
     skipped: str | None = None
+    #: Short per-row marker for a role-sign or capacity violation on this
+    #: row's implied force (gripe 334780) — set alongside the matching
+    #: ``findings`` entry so a renderer that only surfaces per-row notes
+    #: (not the findings list) still shows the violation.
+    flag: str | None = None
 
 
 @dataclass
@@ -576,9 +581,12 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
     node with no external load (``A_free · t ≈ 0``), so declared preloads
     that leave a net force at a free node cannot exist in the geometry as
     built. Undeclared members are unknowns, completed by least squares
-    (minimum-magnitude when not pinned uniquely); when the state is
-    compatible, the implied forces are vetted against each member's role
-    sign and capacity pair. Returns ``None`` when no member declares a
+    (minimum-magnitude when not pinned uniquely); the implied forces are
+    then vetted against each member's role sign and capacity pair whether
+    or not the declared set turned out compatible — an incompatible set
+    still produces a least-squares completion, and a sign/capacity
+    violation in it is worth a finding (gripe 334780), phrased
+    conditionally to say so. Returns ``None`` when no member declares a
     preload — absent prestress is not a finding. Pure over the tree."""
     system = _assemble(tree)
     rows: list[PrestressRow] = []
@@ -704,57 +712,86 @@ def prestress_report(tree: SeTree) -> PrestressReport | None:
                 "geometry (view='stability' reports the feasible state)",
             )
         )
-    else:
-        # Vet the implied forces on the undeclared members. Declared
-        # preloads vs their own member's capacities are already
-        # capacity_findings' job; an incompatible state's implied numbers
-        # are least-squares artifacts, so they are not vetted.
-        for k in unknown_idx:
-            row = live[k]
-            force = float(t[k])
-            sign_violated = False
-            if row.role == "tie" and force < -tolerance:
-                sign_violated = True
-                findings.append(
-                    (
-                        row.subject,
-                        f"the declared preloads imply {-force:g} N "
-                        "compression in this tension-only member (tie) — "
-                        "the state cannot be realised",
-                    )
+
+    # Vet the implied forces on the undeclared members against role sign
+    # and capacity, regardless of `compatible` (gripe 334780): an
+    # incompatible declared set still produces a least-squares completion,
+    # and a sign/capacity violation in that completion — e.g. tension in a
+    # tension_capacity: 0.0 strut — is worth a finding even though the
+    # underlying state "cannot be realised" for the separate reason of
+    # being out of equilibrium. Declared preloads vs their own member's
+    # capacities are already capacity_findings' job.
+    def _sign_phrase(detail: str) -> str:
+        if compatible:
+            return (
+                f"the declared preloads imply {detail} — the state cannot be realised"
+            )
+        return (
+            "on the least-squares completion of an incompatible preload "
+            f"set, {detail} is implied — the state cannot be realised"
+        )
+
+    def _capacity_phrase(detail: str) -> str:
+        if compatible:
+            return f"the declared preloads imply {detail}"
+        return (
+            "on the least-squares completion of an incompatible preload "
+            f"set, {detail} is implied"
+        )
+
+    for k in unknown_idx:
+        row = live[k]
+        pr = live_rows[k]
+        force = float(t[k])
+        sign_violated = False
+        if row.role == "tie" and force < -tolerance:
+            sign_violated = True
+            findings.append(
+                (
+                    row.subject,
+                    _sign_phrase(
+                        f"{-force:g} N compression in this tension-only member (tie)"
+                    ),
                 )
-            elif row.role == "strut" and force > tolerance:
-                sign_violated = True
-                findings.append(
-                    (
-                        row.subject,
-                        f"the declared preloads imply {force:g} N tension "
-                        "in this compression-only member (strut) — the "
-                        "state cannot be realised",
-                    )
+            )
+            pr.flag = "sign violated (tie in compression)"
+        elif row.role == "strut" and force > tolerance:
+            sign_violated = True
+            findings.append(
+                (
+                    row.subject,
+                    _sign_phrase(
+                        f"{force:g} N tension in this compression-only member (strut)"
+                    ),
                 )
-            if sign_violated:
-                continue
-            tension = row.params.get("tension_capacity")
-            compression = row.params.get("compression_capacity")
-            if tension is not None and force > tension:
-                findings.append(
-                    (
-                        row.subject,
-                        f"the declared preloads imply {force:g} N tension "
-                        f"against this member's {tension:g} N tension "
-                        "capacity",
-                    )
+            )
+            pr.flag = "sign violated (strut in tension)"
+        if sign_violated:
+            continue
+        tension = row.params.get("tension_capacity")
+        compression = row.params.get("compression_capacity")
+        if tension is not None and force > tension:
+            findings.append(
+                (
+                    row.subject,
+                    _capacity_phrase(
+                        f"{force:g} N tension against this member's "
+                        f"{tension:g} N tension capacity"
+                    ),
                 )
-            if compression is not None and -force > compression:
-                findings.append(
-                    (
-                        row.subject,
-                        f"the declared preloads imply {-force:g} N "
-                        f"compression against this member's {compression:g} "
-                        "N buckling/crush ceiling",
-                    )
+            )
+            pr.flag = pr.flag or "capacity exceeded (tension)"
+        if compression is not None and -force > compression:
+            findings.append(
+                (
+                    row.subject,
+                    _capacity_phrase(
+                        f"{-force:g} N compression against this member's "
+                        f"{compression:g} N buckling/crush ceiling"
+                    ),
                 )
+            )
+            pr.flag = pr.flag or "capacity exceeded (compression)"
 
     return PrestressReport(
         declared_count=declared_count,

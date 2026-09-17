@@ -277,6 +277,45 @@ def test_set_envelope_on_instance_rejected(handler: SeHandler) -> None:
         )
 
 
+def test_set_desc_amends_without_a_full_re_put(handler: SeHandler) -> None:
+    # gr334771: the sole prose channel needs an incremental path — a
+    # full re-put was the only way to revise a block's description.
+    handler.put(id="caster1", text=_CASTER)
+    resp = handler.edit(
+        id="caster1",
+        ops=[{"op": "set_desc", "block": "fork", "desc": "the reinforced fork"}],
+    )
+    assert "the reinforced fork" in resp.body
+    assert "the load-bearing fork" not in resp.body
+
+
+def test_set_desc_revises_desc_and_use_independently() -> None:
+    tree = _l2_tree()
+    apply_ops(tree, [{"op": "set_desc", "block": "hub", "desc": "axle hub"}])
+    assert tree.blocks["hub"].descr == "axle hub"
+    assert tree.blocks["hub"].use is None
+    # a use-only call leaves the already-set desc alone (amend, not replace).
+    apply_ops(tree, [{"op": "set_desc", "block": "hub", "use": "bearing seat"}])
+    assert tree.blocks["hub"].descr == "axle hub"
+    assert tree.blocks["hub"].use == "bearing seat"
+    apply_ops(tree, [{"op": "set_desc", "block": "hub", "desc": None}])
+    assert tree.blocks["hub"].descr is None
+    assert tree.blocks["hub"].use == "bearing seat"
+
+
+def test_set_desc_needs_desc_or_use() -> None:
+    tree = _l2_tree()
+    with pytest.raises(OpError, match="needs 'desc' and/or 'use'"):
+        apply_ops(tree, [{"op": "set_desc", "block": "hub"}])
+
+
+def test_set_desc_on_instance_rejected() -> None:
+    tree = _l2_tree()
+    apply_ops(tree, [{"op": "instance_block", "name": "hub2", "template": "hub"}])
+    with pytest.raises(OpError, match="live on the template"):
+        apply_ops(tree, [{"op": "set_desc", "block": "hub2", "desc": "nope"}])
+
+
 def test_set_pose_moves_a_block(handler: SeHandler) -> None:
     handler.put(id="caster1", text=_CASTER)
     resp = handler.edit(
@@ -1659,6 +1698,65 @@ def test_set_load_on_connect_and_clear() -> None:
         ],
     )
     assert tree.connects[0].objectives == {"torque": [0.0, 0.0, 1.5]}
+    apply_ops(
+        tree,
+        [{"op": "set_load", "a": "wheel.bore", "b": "hub.shaft", "clear": True}],
+    )
+    assert tree.connects[0].objectives == {}
+
+
+def test_set_load_on_block_merges_across_calls() -> None:
+    # gr335190: support (fixed=) and load (force=) declared in two
+    # separate calls — the natural authoring order — must not have the
+    # second call silently drop the first.
+    tree = _l2_tree()
+    apply_ops(tree, [{"op": "set_load", "block": "wheel", "fixed": True}])
+    assert tree.blocks["wheel"].objectives == {"fixed": ["x", "y", "z"]}
+    apply_ops(tree, [{"op": "set_load", "block": "wheel", "force": [0, 0, -200]}])
+    assert tree.blocks["wheel"].objectives == {
+        "fixed": ["x", "y", "z"],
+        "force": [0.0, 0.0, -200.0],
+    }
+    # re-declaring an already-set key overwrites just that key.
+    apply_ops(tree, [{"op": "set_load", "block": "wheel", "force": [0, 0, -50]}])
+    assert tree.blocks["wheel"].objectives == {
+        "fixed": ["x", "y", "z"],
+        "force": [0.0, 0.0, -50.0],
+    }
+    # clear= is still the explicit full reset, not per-key.
+    apply_ops(tree, [{"op": "set_load", "block": "wheel", "clear": True}])
+    assert tree.blocks["wheel"].objectives == {}
+
+
+def test_set_load_on_connect_merges_across_calls() -> None:
+    # gr335190's "same audit worth doing on the connect-target variant".
+    tree = _l2_tree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_load",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "torque": [0, 0, 1.5],
+            }
+        ],
+    )
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_load",
+                "a": "wheel.bore",
+                "b": "hub.shaft",
+                "duty": "spins continuously",
+            }
+        ],
+    )
+    assert tree.connects[0].objectives == {
+        "torque": [0.0, 0.0, 1.5],
+        "duty": "spins continuously",
+    }
     apply_ops(
         tree,
         [{"op": "set_load", "a": "wheel.bore", "b": "hub.shaft", "clear": True}],

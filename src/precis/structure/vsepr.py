@@ -11,7 +11,7 @@ chemistry. Pure reads over the Scene, same findings shape as validate.py
 Unit enclave (package docstring): Å/degree-native; angle checks are degrees,
 any length checks are Å — never SI. ``precis_se`` (atomic mode) imports
 this module's angle/hybridization helpers directly (atomistic-internal
-use, per `units-policy-cutover.md`'s explicit-scope note) — those call
+use, per `precis/utils/units.py`'s explicit-scope note) — those call
 sites stay Å.
 """
 

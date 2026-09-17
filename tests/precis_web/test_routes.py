@@ -3914,7 +3914,7 @@ def test_console_examples_execute_for_loaded_kinds(client, runtime) -> None:
             if kind is not None and kind not in loaded:
                 continue
             result, is_error = asyncio.run(
-                _run_verb(fake_request, ex["verb"], ex["args"])
+                _run_verb(fake_request, ex["verb"], ex["args"])  # type: ignore[arg-type]
             )
             assert not is_error, f"{ex['verb']} {ex['args']} -> {result}"
 

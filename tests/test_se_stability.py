@@ -639,6 +639,34 @@ def test_prism_preloads_off_the_state_ratio_are_refused() -> None:
     assert not any("s = 0" in d for _s, d in report.findings)
 
 
+def test_implied_sign_violation_under_an_incompatible_preload_set_is_flagged() -> None:
+    # gripe 334780: an incompatible declared set (equilibrium already
+    # failing) still least-squares-completes the undeclared members, and a
+    # zero-tension-capacity strut forced into implied tension there was
+    # silently dropped — the vetting loop only ran when `compatible`. It
+    # must fire here too, conditionally worded, with a per-row marker.
+    report = se_stability.prestress_report(
+        _prism_with_preloads({("b0", "t0"): -50.0, ("b0", "b1"): 10.0})
+    )
+    assert report is not None
+    assert report.compatible is False
+    strut_findings = [
+        d
+        for _s, d in report.findings
+        if "tension in this compression-only member (strut)" in d
+    ]
+    assert strut_findings, report.findings
+    assert all(
+        "least-squares completion of an incompatible preload set" in d
+        and "cannot be realised" in d
+        for d in strut_findings
+    )
+    strut_rows = [row for row in report.rows if row.role == "strut"]
+    assert strut_rows and all(
+        row.flag == "sign violated (strut in tension)" for row in strut_rows
+    )
+
+
 def test_implied_compression_in_a_tie_is_flagged() -> None:
     # struts declared as ties: the state needs them in compression, which
     # a tension-only member cannot supply — three sign findings.

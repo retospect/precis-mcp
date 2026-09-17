@@ -92,6 +92,91 @@ def changed_test_files_from_patch(text: str) -> frozenset[str]:
     return frozenset(files)
 
 
+def _is_parametrize_decorator(dec: ast.expr) -> bool:
+    """True for ``@pytest.mark.parametrize(...)`` (or any ``...parametrize(...)``
+    call) — a parametrized test has no bare collectible node id (pytest needs
+    the concrete ``[param]`` suffix), so ``same_commit_test_ids`` must not
+    offer one as a run candidate."""
+    return (
+        isinstance(dec, ast.Call)
+        and isinstance(dec.func, ast.Attribute)
+        and dec.func.attr == "parametrize"
+    )
+
+
+def _test_ids_in_file(path: Path) -> list[str]:
+    """Every non-parametrized ``def test_*``/``async def test_*`` defined in
+    ``path`` — module-level or one level deep inside a ``class Test*`` — as
+    pytest node ids (``path::test_x`` / ``path::TestX::test_x``)."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+    rel = str(path)
+    ids: list[str] = []
+
+    def _is_plain_test(node: ast.stmt) -> bool:
+        return (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name.startswith("test_")
+            and not any(_is_parametrize_decorator(d) for d in node.decorator_list)
+        )
+
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _is_plain_test(
+            node
+        ):
+            ids.append(f"{rel}::{node.name}")
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            for sub in node.body:
+                if isinstance(
+                    sub, ast.FunctionDef | ast.AsyncFunctionDef
+                ) and _is_plain_test(sub):
+                    ids.append(f"{rel}::{node.name}::{sub.name}")
+    return ids
+
+
+def same_commit_test_ids(changed_test_files: frozenset[str]) -> list[str]:
+    """Every (non-parametrized) test id defined in a test file the SAME
+    commit/patch touched.
+
+    A safety net for gr339256: a test added or edited in the same ship can
+    be genuinely absent from ``.coverage``'s per-line contexts — that
+    coverage db is written by an earlier stage of the ship pipeline, and
+    reproductions of gr339256 found survivors on lines a same-commit test
+    demonstrably killed by hand. Rather than trust ``.coverage`` alone to
+    notice a same-commit test, its own file's tests are offered
+    unconditionally as escalation candidates (``full_candidate_tests``) —
+    tried before a mutant on a same-commit-changed src file is ever reported
+    SURVIVED, the same "cheap — only runs on survivors" posture gr336066
+    used for the parametrized-family fix.
+    """
+    ids: list[str] = []
+    for f in sorted(changed_test_files):
+        p = Path(f)
+        if p.exists():
+            ids.extend(_test_ids_in_file(p))
+    return ids
+
+
+def full_candidate_tests(
+    raw_tests: list[str], same_commit_tests: list[str]
+) -> list[str]:
+    """The escalation candidate set for a SURVIVED sample.
+
+    Every test ``.coverage`` attributed to the mutant's line
+    (``raw_tests`` — already distinct ids, NOT collapsed by parametrized
+    family: gr336066 found that a pre-existing collapse defeated the
+    escalation itself, since the deduped representative kept could be a
+    sibling that targets a completely different guarded clause than the one
+    that actually failed), plus any same-commit test id (``same_commit_tests``,
+    see ``same_commit_test_ids``) ``.coverage`` didn't attribute to this line
+    at all (gr339256), in order, without repeats.
+    """
+    seen = set(raw_tests)
+    return raw_tests + [t for t in same_commit_tests if t not in seen]
+
+
 # ── covering-test lookup ───────────────────────────────────────────────────
 
 
@@ -708,12 +793,17 @@ def judge_mutant(
 
     Runs the ``sampled`` covering tests (``select_covering_tests``' cap)
     first. A KILLED / SKIPPED verdict from the sample is final. A SURVIVED
-    verdict from a sample that is smaller than the ``full`` deduped covering
-    set is only a claim about that sample — the test that kills the mutant
-    can sit past the cap (on one ship two of six reported survivors were
-    killed by tests that existed all along — the ``-x`` sample never
-    reached them). So a sampled survivor is escalated: the
-    mutant is re-run against the full covering set, and only a survivor of
+    verdict from a sample that is smaller than the ``full`` candidate set
+    (``full_candidate_tests`` — every test ``.coverage`` attributed to the
+    line, undeduped, plus any same-commit test id it missed entirely) is
+    only a claim about that sample — the test that kills the mutant can sit
+    past the cap (on one ship two of six reported survivors were killed by
+    tests that existed all along — the ``-x`` sample never reached them),
+    or be collapsed out of the sample by parametrized-family dedupe while
+    targeting a different guarded clause than the representative kept
+    (gr336066), or be a same-commit test ``.coverage`` never attributed to
+    this line at all (gr339256). So a sampled survivor is escalated: the
+    mutant is re-run against the full candidate set, and only a survivor of
     THAT is reported as ``SURVIVED``. The re-run is the rare path (survivors
     are the minority; a killed or fully-covered mutant costs nothing extra).
 
@@ -920,6 +1010,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    # Same-commit safety net (gr339256): computed once, not per-mutant — a
+    # test defined in a test file this commit touched is offered as an
+    # escalation candidate for EVERY mutant, regardless of what `.coverage`
+    # attributed to its exact line (see `same_commit_test_ids`).
+    same_commit_tests = same_commit_test_ids(changed_test_files)
+
     start = time.monotonic()
     run = killed = survived = skipped = 0
 
@@ -931,7 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
             break
 
         raw_tests = line_tests.get((m.path, m.lineno), [])
-        full_tests = _dedupe_parametrized(raw_tests)
+        full_tests = full_candidate_tests(raw_tests, same_commit_tests)
         tests = select_covering_tests(
             raw_tests,
             m.path,

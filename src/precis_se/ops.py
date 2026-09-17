@@ -801,6 +801,29 @@ def _op_set_envelope(tree: SeTree, op: dict[str, Any]) -> None:
     _stamp_origin(node, op, facet="envelope", opname="set_envelope")
 
 
+def _op_set_desc(tree: SeTree, op: dict[str, Any]) -> None:
+    """Amend a block's prose — ``desc``/``use`` (:attr:`BlockNode.descr`/
+    ``.use``, the fields ``add_block`` sets at creation time only).
+    Either key may be given alone; ``null`` clears it. Without this op,
+    changing a block's description after the fact meant a full
+    destructive re-put (gr334771) — the sole prose channel had no
+    incremental path, unlike ``set_envelope``/``set_pose``/etc."""
+    name = _require_block(tree, op, "block", "set_desc")
+    node = tree.blocks[name]
+    if node.template is not None:
+        raise OpError(
+            f"block {name!r} is an instance (of {node.template!r}) — "
+            "desc/use live on the template, same as envelope/ports; "
+            f"set_desc on {node.template!r} instead"
+        )
+    if "desc" not in op and "use" not in op:
+        raise OpError("set_desc needs 'desc' and/or 'use' (null clears either)")
+    if "desc" in op:
+        node.descr = _opt_str(op.get("desc"))
+    if "use" in op:
+        node.use = _opt_str(op.get("use"))
+
+
 def _stamp_origin(
     node: SeBlock, op: dict[str, Any], *, facet: str, opname: str
 ) -> None:
@@ -1081,10 +1104,14 @@ def _op_set_joint(tree: SeTree, op: dict[str, Any]) -> None:
 
 
 def _op_set_load(tree: SeTree, op: dict[str, Any]) -> None:
-    """Set/replace the loads (objective vectors, real units) on a block
-    (``block=``) or an existing connect (``a=``/``b=``). Replace
-    semantics — the op states the whole load picture for its target;
-    ``clear=true`` removes it."""
+    """Merge loads (objective vectors, real units) onto a block
+    (``block=``) or an existing connect (``a=``/``b=``). MERGE semantics,
+    not replace — given keys overlay whatever's already stored, so
+    ``set_load(block, fixed=true)`` (declare support) followed by
+    ``set_load(block, force=[...])`` (declare load) — the natural
+    authoring order, in separate calls — keeps both instead of the second
+    call silently dropping the first (gr335190). ``clear=true`` stays the
+    explicit full reset, on either target."""
     has_block = op.get("block") is not None
     has_edge = op.get("a") is not None or op.get("b") is not None
     if has_block == has_edge:
@@ -1103,10 +1130,11 @@ def _op_set_load(tree: SeTree, op: dict[str, Any]) -> None:
             f"load keys: {known}"
         )
     given = {k: op[k] for k in se_joints.OBJECTIVE_KEYS if op.get(k) is not None}
-    if op.get("clear"):
+    clear = bool(op.get("clear"))
+    if clear:
         if given:
             raise OpError("set_load: 'clear' and load keys are mutually exclusive")
-        objectives: dict[str, Any] = {}
+        vetted: dict[str, Any] = {}
     else:
         if not given:
             known = ", ".join(sorted(se_joints.OBJECTIVE_KEYS))
@@ -1114,15 +1142,13 @@ def _op_set_load(tree: SeTree, op: dict[str, Any]) -> None:
                 f"set_load needs at least one of {known} (or clear=true "
                 "to remove loads)"
             )
-        vetted = _vet_objectives(given, opname="set_load", edge=not has_block)
-        objectives = vetted or {}
+        vetted = _vet_objectives(given, opname="set_load", edge=not has_block) or {}
     if has_block:
-        tree.blocks[
-            _require_block(tree, op, "block", "set_load")
-        ].objectives = objectives
+        node = tree.blocks[_require_block(tree, op, "block", "set_load")]
+        node.objectives = {} if clear else {**node.objectives, **vetted}
     else:
         c = _find_connect(tree, op, opname="set_load")
-        c.objectives = objectives
+        c.objectives = {} if clear else {**c.objectives, **vetted}
 
 
 _STRENGTHS = ("hard", "soft", "gauge")
@@ -1992,6 +2018,7 @@ _OPS = {
     "add_port": _op_add_port,
     "remove_port": _op_remove_port,
     "set_pose": _op_set_pose,
+    "set_desc": _op_set_desc,
     "instance_block": _op_instance_block,
     "array_block": _op_array_block,
     "set_envelope": _op_set_envelope,

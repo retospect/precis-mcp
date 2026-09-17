@@ -188,7 +188,7 @@ put(kind="memory", text="Anchors our claim.", link="pa5", rel="cites")
 put(
     kind="memory",
     text="Touches the same idea.",
-    link="pa5~38..42",
+    link="pc38",
     rel="discusses",
 )
 ```

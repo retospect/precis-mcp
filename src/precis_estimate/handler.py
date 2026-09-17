@@ -1,25 +1,39 @@
 """The ``estimate`` kind — a precis-mcp plugin handler.
 
-Slice 1: composition-tier workup only. `get(kind='estimate', q='Pd Zr H')`
-parses the query into a set of element symbols (space/comma-separated
-list, or a concatenated formula like ``'PdZrH'`` or ``'PdZrH2'`` — digits
-are read as stoichiometry and dropped, tier 1 cares about identity only),
+Two fidelity tiers ship, both cache-pinned (deterministic for a fixed
+input — ``ttl_seconds = None`` pins the cache forever, same as `math`).
+
+**Composition tier.** `get(kind='estimate', q='Pd Zr H')` parses the
+query into a set of element symbols (space/comma-separated list, or a
+concatenated formula like ``'PdZrH'`` or ``'PdZrH2'`` — digits are read
+as stoichiometry and dropped, this tier cares about identity only),
 validates each symbol against the real periodic table, and renders the
 composition panel (`compute/composition.py`): one row per element (Z,
 group/period, Pauling electronegativity, covalent radius, ground-state
 magmom, d-electron count, Hammer–Nørskov d-band center where vendored) plus
 a pairwise alloying-heuristic section when ≥2 elements are given.
 
+**Structure tier.** `get(kind='estimate', id='st<...>')` (a `structure`
+handle, routed via `handle_registry` in `get()`) runs a held design's own
+geometry through `compute/structure.py` (`_get_structure`/
+`_fetch_structure`): geometry lint, coordination/strain, spglib symmetry,
+`StructureMatcher` dedup, own-campaign BEP scaling. `args={'ops': [...]}`
+applies a what-if mutation (`structure.apply_ops`) on a copy first — the
+held design is never touched; `args={'quest': 'qu<...>'}` grounds
+dedup/BEP in that quest's served structures; `view='compare'` +
+`args={'against': 'st<...>'}` runs both sides and adds a numeric delta
+table. See the class docstring and `precis-estimate-help` for the panel
+contents.
+
 Subclasses :class:`~precis.handlers._cache_base.CacheBackedHandler` (the
 same base `math`/`youtube`/`web` share) so the cache-flow plumbing (hash →
 lookup → freshness → fetch-on-miss → attribution footer → cost trailer) is
-free. Results are deterministic for a fixed composition — ``ttl_seconds =
-None`` pins the cache forever, same as `math`.
+free.
 
-**Views.** Slice 1 ships the default composition panel only (``view=None``
-or ``view='panel'``). Every other view named in the design doc (`structure`,
-`whatif`, `compare`, `shape`, `orbitals`, `spin`, `kinetics`, `card`) is
-slice 2 — asking for one now raises a clean :class:`Unsupported` naming
+**Views.** `_PANEL_VIEWS` (``None``/``'panel'``) is the default panel on
+either tier; `_STRUCTURE_VIEWS` adds `compare` on the structure tier only.
+`_PLANNED_VIEWS` (`shape`, `orbitals`, `spin`, `kinetics`, `card`) is
+slice 3 — asking for one now raises a clean :class:`Unsupported` naming
 what exists and what's coming, mirroring `precis_pathway.handler`'s
 unknown-view error shape rather than silently falling through.
 

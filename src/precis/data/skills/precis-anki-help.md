@@ -34,7 +34,7 @@ put(
     kind="anki",
     text="The {{c2::mitochondrion::cellular organelle}} is the {{c1::powerhouse::popculture function name}} of the cell.",
     tags=["topic:cell-bio"],
-    link="pa5~12",
+    link="pc12",
     rel="derived-from",
 )
 ```
@@ -126,7 +126,7 @@ Tag `deck-<topic>` to file an authored card under the `Precis::<topic>` sub-deck
 ```python
 put(kind="anki", text="{{c1::heart}} pumps blood.", tags=["deck-anatomy"])
 tag(kind="anki", id=204, add=["topic:cell-bio"])
-link(kind="anki", id=204, target="pa5~12", rel="derived-from")
+link(kind="anki", id=204, target="pc12", rel="derived-from")
 ```
 
 ## Edit or remove a card

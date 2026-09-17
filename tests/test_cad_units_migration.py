@@ -1,6 +1,6 @@
 """0159_units_cad_wipe.sql — clean-slate wipe of pre-cutover cad designs.
 
-units-policy-cutover (docs/backlog/units-policy-cutover.md): every cad
+units-policy-cutover (`precis/utils/units.py` module docstring): every cad
 design stored before the SI-metres cutover (chain round 4) is dev/test
 data only (Reto, 2026-09-12) — no numeric rewrite, just a retire-and-drop
 so a `put` after this migration authors fresh, unit-suffixed source

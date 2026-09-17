@@ -1,5 +1,5 @@
 """L4 mechanics ceilings — slice 4a build order (iii)
-(docs/backlog/units-policy-cutover.md all-SI ruling: this module's PUBLIC
+(`precis/utils/units.py`'s all-SI ruling: this module's PUBLIC
 API returns SI (newtons, joules) — the `_nN`/`_eV` return-value suffixes
 are dropped from the function names below (``euler_buckling_ceiling_N``,
 ``harmonic_strain_energy_J``, ``min_cut``'s second tuple element). Å-named
@@ -218,7 +218,7 @@ def tube_geometry_from_envelope(envelope: str | None) -> tuple[float, float] | N
     non-positive radius (a hand-authored ``cyl`` envelope smaller than the
     margin — not a generated tube, don't guess).
 
-    **The design↔atomistic seam** (units-policy-cutover.md, structure-
+    **The design↔atomistic seam** (`precis/utils/units.py`, structure-
     unit-enclave.md): ``envelope`` is a block's *design-space* cad-DSL
     string — canonical/storage-mode, i.e. bare numbers in metres (the
     block tree's own internal unit since the units cutover) — while this

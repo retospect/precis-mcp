@@ -1,6 +1,6 @@
 """Tests for the shared units utility (``precis.utils.units``).
 
-Covers the units-policy-cutover acceptance criteria for this module:
+Covers this module's own acceptance criteria (see its module docstring):
 ingest-any-unit parsing, the bare-number zero-counting guard + hint,
 the neat display formatter's goldens, and the DSL-safe canonical
 emitter's round-trip through ``cad.dsl._NUM``.

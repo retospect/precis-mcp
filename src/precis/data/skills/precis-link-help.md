@@ -104,7 +104,7 @@ to a ref that already exists.
 ## Block-level link to a paper paragraph
 
 ```python
-link(kind="memory", id=42, target="pa5~38", rel="annotates")
+link(kind="memory", id=42, target="pc38", rel="annotates")
 ```
 
 ## Workflow blocker between tasks

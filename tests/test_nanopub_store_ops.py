@@ -240,5 +240,37 @@ def test_candidate_regate_rows_reads_disputed_and_canonical(store: Any) -> None:
     assert rows[clean_row.id].ref_id == clean
     assert rows[clean_row.id].disputed is False
     assert rows[clean_row.id].canonical is True
+    # gr333988 survivor 2: artifact_type read from the wrong column
+    # (stringified ``disputed``) is never checked otherwise — pin it.
+    assert rows[clean_row.id].artifact_type == "claim"
     assert rows[disputed_row.id].disputed is True
+    assert rows[disputed_row.id].artifact_type == "claim"
     assert reviewed_row.id not in rows
+
+
+def test_candidate_regate_rows_publish_id_is_not_conflated_with_ref_id(
+    store: Any,
+) -> None:
+    """gr333988 survivor 1: :class:`CandidateRegateRow`'s ``publish_id``
+    (``int(r[0])``) and ``ref_id`` (``int(r[1])``) columns must not be
+    swappable without a test noticing. A single fresh-DB fixture can't
+    catch that: both id sequences start small and the two numbers can
+    coincide by chance, so a swapped read silently passes. Burn a run of
+    publish ids on one hub (create+discard, which frees the hub's slot
+    without consuming a new ref id) so the real row's publish_id and
+    ref_id are provably distinct, then locate the row by its (unaffected)
+    ref_id and check publish_id explicitly against the known value."""
+    burner = seed_ref(store, title="Burner hub.", kind="finding")
+    for _ in range(5):
+        burner_row = store.nanopub_create_publish_row(burner)
+        assert store.nanopub_discard_candidate(burner_row.id)
+
+    hub = seed_ref(store, title="Distinct ids claim.", kind="finding")
+    row = store.nanopub_create_publish_row(hub)
+    # Sanity: the burn actually produced distinct ids for this pair —
+    # otherwise the assertion below would pass "by accident" even against
+    # the swapped-column mutant, same trap as survivor 1's original gap.
+    assert row.id != hub
+
+    match = next(r for r in store.nanopub_candidate_regate_rows() if r.ref_id == hub)
+    assert match.publish_id == row.id

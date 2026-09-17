@@ -28,12 +28,14 @@ def _block(
     envelope: str | None,
     *,
     rot: list[float] | None = None,
+    parent: str | None = None,
 ) -> SeBlock:
     return SeBlock(
         name=name,
         pose=list(pose),
         envelope=envelope,
         rot=list(rot) if rot is not None else [0.0, 0.0, 0.0],
+        parent=parent,
     )
 
 
@@ -110,6 +112,40 @@ def test_axial_class_is_exempt_from_the_disjoint_check() -> None:
     )
     findings = se_geom.findings(tree)
     assert not _rule(findings, "connect_envelope_disjoint")
+
+
+def test_ancestor_pair_still_gets_the_disjoint_check() -> None:
+    # gr341644: a bearing declared as a CHILD block of its own leg (a
+    # legitimate nesting design) whose envelopes are 100 mm apart is
+    # exactly as wrong as the same gap between two unrelated blocks — the
+    # ancestor skip envelope_overlaps uses for undeclared-clash detection
+    # (validate.py) must not suppress this pass's declared-connect checks.
+    tree = _tree(
+        [
+            _block("leg", [0, 0, 0], "cyl:r0.02h0.05"),
+            _block("bearing", [0, 0, 5.0], "cyl:r0.008h0.01", parent="leg"),
+        ],
+        [_connect("leg", "bearing", {"class": "rigid"})],
+    )
+    findings = se_geom.findings(tree)
+    hits = _rule(findings, "connect_envelope_disjoint")
+    assert len(hits) == 1
+    assert hits[0].severity == "warn"
+
+
+def test_ancestor_pair_press_mechanism_still_needs_interference() -> None:
+    # same gripe, gr338426's press/interference rule: a "press" mechanism
+    # between a parent and its child block still needs volumetric overlap
+    # — nesting in the tree is not nesting in space.
+    tree = _tree(
+        [
+            _block("leg", [0, 0, 0], "cyl:r0.02h0.05"),
+            _block("boss", [0.5, 0, 0], "cyl:r0.008h0.01", parent="leg"),
+        ],
+        [_connect("leg", "boss", {"class": "rigid", "mechanism": "press"})],
+    )
+    findings = se_geom.findings(tree)
+    assert _rule(findings, "mechanism_no_interference")
 
 
 def test_undeclared_joint_still_gets_the_disjoint_check() -> None:
@@ -486,3 +522,27 @@ def test_unicycle_printed_v1_negative_control_is_flagged() -> None:
     assert "axis_not_coaxial" in rules  # the tangent bearing
     assert "connect_envelope_disjoint" in rules  # the floating seatpost
     assert all(f.severity == "warn" for f in findings)
+
+
+# ── gr337040: drc() surfaces the pass, not just findings() in isolation ──
+
+
+def test_drc_surfaces_connect_envelope_disjoint() -> None:
+    # gr337040's original complaint was 'drc reports 0 errors' on a design
+    # with floating declared-connected parts — this asserts the FULL
+    # drc.drc() pipeline (drc.py §3d: findings.extend(se_geometry.
+    # findings(tree))), not just geometry_plausibility.findings() called
+    # directly, actually carries the finding through.
+    from precis_se import drc as se_drc
+
+    tree = _tree(
+        [
+            _block("clamp", [0, 0, 0], "cyl:r0.01h0.02"),
+            _block("seatpost", [0, 0, 0.49], "cyl:r0.008h0.15"),
+        ],
+        [_connect("clamp", "seatpost", {"class": "rigid"})],
+    )
+    report = se_drc.drc(tree)
+    hits = _rule(report.findings, "connect_envelope_disjoint")
+    assert len(hits) == 1
+    assert hits[0].severity == "warn"

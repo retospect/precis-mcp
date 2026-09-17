@@ -412,3 +412,138 @@ def test_overlap_budget_exceeded_detail_shows_five_and_counts_the_rest() -> None
     assert "0s time budget" in finding.detail
     assert "0.0s" not in finding.detail
     assert "unbounded" not in finding.detail
+
+
+# ---------------------------------------------------------------------------
+# gr338945 — 3 mutation survivors after the round above: ``_aabb_diag``'s
+# subtraction direction was only pinned at the origin (where translating
+# the diagonal off-centre still leaves ``hi - lo`` unchanged but flips what
+# ``hi + lo`` would compute), the budget deadline's sign was only exercised
+# at ``budget_s`` values (``None``/``0.0``) blind to its direction, and the
+# ancestor/descendant skip's ``continue`` had no case where losing the rest
+# of the inner loop (a ``break``) would drop a real, later pair.
+# ---------------------------------------------------------------------------
+
+
+def test_aabb_diag_margin_is_translation_invariant_off_origin() -> None:
+    """``_aabb_diag`` must compute ``hi - lo`` (a size, invariant under
+    translating the pair), not ``hi + lo`` (which tracks absolute position).
+    Every existing pair in this module straddles the origin symmetrically,
+    where a pose chosen to make ``hi + lo`` collapse toward zero for one box
+    still leaves the *other* box's mutant diagonal large enough to produce a
+    margin that (coincidentally) still gates the same sub/super-margin
+    outcome as the real ``hi - lo`` value — the flip is invisible there.
+    Off-centre poses break that coincidence: two unit cubes 1.0005 m apart
+    (a 0.5 mm gap — inside the real ``margin`` ≈ 1.732 mm for a unit cube,
+    so the broad phase must NOT clear this pair) placed so ``b`` sits just
+    past the origin (pose 0.001) and ``a`` trails behind it (pose -0.9995).
+    ``b``'s mutant diagonal (``hi + lo`` ≈ 2×0.001) collapses to near zero,
+    dragging the mutant margin down to ~2e-6 m — far below the real 0.5 mm
+    gap — so the mutant wrongly clears the pair outright (it never reaches
+    the budget check and disappears from every bucket), while the real
+    ``hi - lo`` margin correctly keeps it un-cleared, landing in
+    ``unchecked_budget`` under a zero budget."""
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "add_block",
+                "name": "a",
+                "envelope": "box:w1d1h1",
+                "pose": [-0.9995, 0, 0],
+            },
+            {
+                "op": "add_block",
+                "name": "b",
+                "envelope": "box:w1d1h1",
+                "pose": [0.001, 0, 0],
+            },
+        ],
+    )
+
+    overlaps, cross_scale, unchecked = envelope_overlaps(tree, budget_s=0.0)
+
+    assert cross_scale == []
+    assert overlaps == []
+    assert unchecked == [("a", "b")], (
+        "sub-margin pair vanished from every bucket — the broad phase "
+        "wrongly cleared it"
+    )
+
+
+def test_generous_budget_still_computes_a_real_overlap_not_unchecked() -> None:
+    """``deadline = time.monotonic() + budget_s`` must push the deadline
+    into the *future* — flipping the sign puts it in the past, so the very
+    first non-AABB-cleared pair immediately reads as past-deadline and
+    lands in ``unchecked_budget`` no matter how generous ``budget_s`` is.
+    The existing budget tests only use ``budget_s=None`` (deadline stays
+    ``None``, blind to sign) or ``budget_s=0.0`` (``now + 0`` and
+    ``now - 0`` are the same instant, also blind to sign); a large finite
+    budget on a genuinely close pair is the case that actually depends on
+    the deadline landing in the future."""
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "a", "envelope": "box:w1d1h1"},
+            {
+                "op": "add_block",
+                "name": "b",
+                "envelope": "box:w1d1h1",
+                "pose": [0.5, 0, 0],
+            },
+        ],
+    )
+
+    overlaps, cross_scale, unchecked = envelope_overlaps(tree, budget_s=60.0)
+
+    assert cross_scale == []
+    assert unchecked == [], (
+        "a 60s budget should never be exhausted by one close pair — a "
+        "negative deadline would exhaust it instantly"
+    )
+    pairs = {frozenset((x, y)): gap for x, y, gap in overlaps}
+    assert pairs.get(frozenset(("a", "b"))) == -0.5
+
+
+def test_ancestor_skip_continue_does_not_stop_the_inner_loop() -> None:
+    """The ancestor/descendant skip (``if _is_ancestor(...) or
+    _is_ancestor(...): continue``) must only skip that one pair, not abort
+    the rest of ``a``'s inner loop. ``a_child``'s parent is ``a`` and sorts
+    immediately after it, so it is the *first* partner ``a`` considers;
+    ``b`` (a genuine overlap with ``a``) sorts after ``a_child`` and is
+    only reached because the skip is a ``continue``. If it were a
+    ``break``, the inner loop would stop at the ancestor pair and never
+    even evaluate ``a``/``b``, silently losing a real overlap — distinct
+    from ``test_aabb_cleared_pair_does_not_stop_the_inner_loop`` above,
+    which pins the same shape for the AABB-clear ``continue`` a few lines
+    later, not this ancestor-skip one."""
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "a", "envelope": "box:w1d1h1"},
+            {
+                "op": "add_block",
+                "name": "a_child",
+                "envelope": "box:w1d1h1",
+                "parent": "a",
+                "pose": [1000, 0, 0],
+            },
+            {
+                "op": "add_block",
+                "name": "b",
+                "envelope": "box:w1d1h1",
+                "pose": [0.5, 0, 0],
+            },
+        ],
+    )
+
+    overlaps, cross_scale, unchecked = envelope_overlaps(tree)
+
+    assert cross_scale == []
+    assert unchecked == []
+    pairs = {frozenset((x, y)): gap for x, y, gap in overlaps}
+    assert pairs.get(frozenset(("a", "b"))) == -0.5
+    assert frozenset(("a", "a_child")) not in pairs

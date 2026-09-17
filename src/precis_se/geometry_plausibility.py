@@ -81,6 +81,21 @@ scope here; nothing in this module changes tier based on binding state.
   connects must not turn a routine ``view='drc'`` read into a multi-minute
   call. Connects the budget doesn't reach are reported UNCHECKED, never
   silently skipped.
+* **No ancestor skip (gr341644).** :mod:`precis_se.validate`'s
+  ``envelope_overlaps`` skips any pair on each other's parent chain — a
+  child block legitimately sits inside its parent's envelope, so
+  containment there must not read as an UNDECLARED clash. That reasoning
+  is specific to a rule asserting "no clash unless declared"; nothing in
+  *this* module asserts separation between a connect's two endpoints —
+  every rule here demands contact, overlap, or coaxial containment for a
+  connect the designer already declared, and a parent/child connect
+  claims exactly the same physical relation a sibling connect would (a
+  bearing housed as a child block of its leg still needs volumetric
+  overlap). So the skip does not transfer, and none of the checks below
+  apply it — a declared parent/child connect gets full coverage, same as
+  any other pair. A future rule that DOES assert separation for some
+  joint class would earn its own narrow, rule-local ancestor check here;
+  none currently does.
 """
 
 from __future__ import annotations
@@ -102,7 +117,6 @@ from precis_se.ops import ConnectSpec, SeTree, effective_envelope
 from precis_se.validate import (
     ValidationIssue,
     _characteristic_length,
-    _is_ancestor,
     _posed_component,
     kernel_scale,
 )
@@ -311,10 +325,6 @@ def findings(
     for c in tree.connects:
         subject = f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}"
         if c.a_block == c.b_block:
-            continue
-        if _is_ancestor(tree, c.a_block, c.b_block) or _is_ancestor(
-            tree, c.b_block, c.a_block
-        ):
             continue
         joint: dict[str, Any] | None = None
         if c.joint:

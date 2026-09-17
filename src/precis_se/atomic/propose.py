@@ -368,7 +368,7 @@ def _envelope_fit_warnings(
         # buildable this case arrived as a DslError; now it builds.)
         return None
     # The same design↔atomistic seam atomic.validate.envelope_fit converts
-    # at (units-policy-cutover.md, structure-unit-enclave.md): `prim` is
+    # at (precis/utils/units.py, structure-unit-enclave.md): `prim` is
     # metres (design-space canonical), `scene`'s atoms are Å (the
     # atomistic enclave) — both sides compared in metres here, reusing that
     # module's own conversion constants rather than restating them (the

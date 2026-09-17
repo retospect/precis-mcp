@@ -73,7 +73,7 @@ from precis_se.atomic.vocab import bond_capability_offences, connect_role
 from precis_se.ops import SeTree, effective_envelope, effective_ports
 from precis_se.validate import ValidationIssue
 
-#: The design↔atomistic seam conversion factor (units-policy-cutover.md,
+#: The design↔atomistic seam conversion factor (`precis/utils/units.py`,
 #: structure-unit-enclave.md): a block's ``envelope`` is design-space
 #: cad-DSL text — canonical/storage mode, bare numbers in METRES (the
 #: block tree's own internal unit) — while a bound ``structure`` scene's
@@ -395,7 +395,7 @@ def _bond_length_findings(tree: SeTree) -> list[ValidationIssue]:
         b_pos = np.asarray(b_node.pose, dtype=float)
         delta = b_pos - a_pos
         distance = float(np.linalg.norm(delta))
-        # Scale-relative, not a fixed 1e-9 (units-policy-cutover.md's
+        # Scale-relative, not a fixed 1e-9 (`precis/utils/units.py`'s
         # relative-tolerance audit): a fraction of the smaller block's own
         # envelope size (this module's governing-length convention) reads
         # the same at every scale, where 1e-9 m is negligible at Å scale

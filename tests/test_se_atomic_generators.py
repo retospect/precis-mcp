@@ -501,7 +501,7 @@ def test_generator_envelope_fit_reports_nothing(block: GeneratedBlock) -> None:
     # envelope_fit's `envelope` arg is STORED (design-space canonical)
     # text — bare metres — while a generator's own `block.envelope` is
     # Å-SUFFIXED raw output; round-trip through the same single ingest
-    # boundary `generate` uses in production (units-policy-cutover.md,
+    # boundary `generate` uses in production (`precis/utils/units.py`,
     # nm-se-merge.md: no handler-side pre-conversion any more).
     stored_env = ingest_envelope(block.envelope)
     assert atomic_validate.envelope_fit(stored_env, scene) is None

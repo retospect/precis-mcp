@@ -2337,7 +2337,7 @@ def _render_stability(tree: SeTree) -> str:
                         if row.declared is None
                         else f"{row.declared:g} N",
                         "implied": "—" if row.implied is None else f"{row.implied:g} N",
-                        "note": row.skipped or "",
+                        "note": row.skipped or row.flag or "",
                     }
                     for row in prestress.rows
                 ],

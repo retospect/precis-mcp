@@ -375,7 +375,7 @@ render ISO units with scale-appropriate prefixes.**
   fallback); capability absolutes are what make "asked 10 µm, fdm holds
   200 µm" DRC computable (even ISO IT grades scale ~D^⅓, not linearly).
 - **Angles are a fifth dimension of the same ladder** (Reto 2026-09-12,
-  `units-policy-cutover.md`'s decisions log): radians internal, an
+  `precis/utils/units.py`'s angle ruling): radians internal, an
   explicit unit at ingest (`deg`/`rad` — a bare angle number is refused
   the same as a bare length), degrees on display (the shared formatter
   never SI-prefixes an angle — nobody reads femto-degrees). `se`/`nm`'s
@@ -418,8 +418,8 @@ render ISO units with scale-appropriate prefixes.**
   specced in `pcb-se-binding.md`. Any future pcb geometry export routes
   through that funnel rather than growing its own conversion.
 
-Shipped (`units-policy-cutover.md`, 2026-09-12 window): `precis/utils/
-units.py` is the one shared parser/formatter; `cad`'s DSL/scene grammar,
+Shipped (2026-09-12 window; see `precis/utils/units.py` module docstring):
+`precis/utils/units.py` is the one shared parser/formatter; `cad`'s DSL/scene grammar,
 `se`/`nm`'s handlers and ops, and their display sites all route through
 it; `se`'s `pose_rot` and `nm`'s pose/envelope columns carry a
 forward-only migration/wipe to the units this section describes. Cross-
@@ -503,9 +503,9 @@ Standing compute decision: long solves run on the existing worker lanes;
 GPU only for genuinely-GPU work, written as Python tensors (torch) — a C
 CUDA path only if a real workload ever forces it.
 
-1. **Units cutover — exclusive window** (`units-policy-cutover.md`).
-   Cross-cuts se+nm+cad, so nothing else lands on those packages while
-   it's in flight. *(Shipped, 2026-09-12 window.)*
+1. **Units cutover — exclusive window** (`precis/utils/units.py` module
+   docstring). Cross-cuts se+nm+cad, so nothing else lands on those
+   packages while it's in flight. *(Shipped, 2026-09-12 window.)*
 1b. **nm→se merge — exclusive window, RAN 2026-09-14** (`nm-se-merge.md`,
    added same day). Across precis_se + precis_nm; `nm` retired (its
    domain layer folded into `se`'s atomic mode, its unshipped round-2

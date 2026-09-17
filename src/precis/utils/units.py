@@ -1,12 +1,15 @@
 """Shared units utility — ingest-any → SI internal → neat formatter.
 
-Implements the map's §Units policy (`docs/backlog/multiscale-design-
-architecture.md`) per `docs/backlog/units-policy-cutover.md`: se/nm/cad
-ops and the cad DSL accept any pint-parseable unit at the boundary
-(`3 mm`, `1.4 Å`, `12 lbf`, ...); everything downstream — handler state,
-plugin tables, kernel calls — is SI base float64 (metre, newton,
-kilogram, cubic metre). Conversion happens exactly once, inbound, via
-:func:`parse_quantity`.
+**This module is the units policy's home** (shipped 2026-09-12, the
+units-policy cutover; superseded the now-deleted
+`docs/backlog/units-policy-cutover.md` decisions log — cite this
+docstring, not that path). Implements the map's §Units policy
+(`docs/backlog/multiscale-design-architecture.md`): se/cad ops (`nm` was
+folded into `se`, see `precis_se/__init__.py`) and the cad DSL accept any
+pint-parseable unit at the boundary (`3 mm`, `1.4 Å`, `12 lbf`, ...);
+everything downstream — handler state, plugin tables, kernel calls — is
+SI base float64 (metre, newton, kilogram, cubic metre). Conversion
+happens exactly once, inbound, via :func:`parse_quantity`.
 
 Two separate formatter contexts (dossier §4's closing distinction —
 do not merge them):
@@ -19,20 +22,19 @@ do not merge them):
   emitter. Full float64 precision, guaranteed to re-parse under
   `cad.dsl._NUM`'s grammar. This is the shared implementation meant to
   replace both `cad.dsl._fmt_num` and `precis_se.catalog._fmt` (not
-  rewired yet — see the units-policy-cutover backlog item).
+  rewired yet).
 
 `pint` is a core dependency (`pint>=0.23`, see pyproject) and is used
 here at the ingest boundary only — no `pint.Quantity`/`pint.Unit` value
 ever escapes this module; every public function takes/returns plain
 `str`/`float`.
 
-Explicitly out of scope (map boundary, `units-policy-cutover.md`
-"Explicitly NOT in scope"): interaction physics, `structure`'s
+Explicitly out of scope (map boundary): interaction physics, `structure`'s
 Å-native crystallography path, and `precis_se/atomic/mechanics.py`'s
 Å/nN/eV signatures — those never route through this module; `se`'s
 atomic mode converts m↔Å explicitly at its own seams.
 
-**Angles** (the decisions log's angle ruling) are a fifth dimension,
+**Angles** (the angle ruling below) are a fifth dimension,
 ``"angle"``, canonical unit radian — everywhere `pint` treats an angle
 as dimensionless (its default registry has no separate angle
 dimension: ``ureg.Quantity(1.0, "degree").dimensionless`` is ``True``),

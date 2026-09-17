@@ -48,7 +48,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 
 def ingest_envelope(config: str) -> str:
-    """The m-boundary for a *generated* envelope (units-policy-cutover.md's
+    """The m-boundary for a *generated* envelope (`precis/utils/units.py`'s
     ingest boundary, mirroring cad's own shipped posture —
     ``precis.cad.dsl``'s ``require_units=True``/``format_spec`` pair, never
     re-implemented here): every dimensioned token must carry an explicit

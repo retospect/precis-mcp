@@ -101,6 +101,21 @@ _EXT_BY_MIME: dict[str, str] = {
 _SVG_EXPORT_ZOOM = 3.0
 
 
+#: Sandbox verification gotcha (gr338918): an agent rasterizing SVG via
+#: ``resvg_py.svg_to_bytes`` for render-and-look review — the only path with
+#: no browser in this sandbox — hits the same two silent failures this
+#: function does:
+#: 1. A generic ``font-family="sans-serif"`` (browsers resolve it fine) drops
+#:    that text element with no error. Swap in a concrete family confirmed via
+#:    ``fc-list`` in the container (e.g. ``"DejaVu Sans"``) before rasterizing
+#:    to check labels/legends — this also means production export through
+#:    this function silently loses text on any SVG using a generic family.
+#: 2. A width/height carrying a unit suffix (``"33.9mm"``, as emitted by
+#:    ``precis.pcb.svg._wrap_svg``) raises ``ValueError("SVG has an invalid
+#:    size")``. Strip the suffix before feeding resvg.
+#: Both are resvg-only; browsers render generic families and ``mm`` units
+#: fine, so production SVG is unaffected — the massage is only needed when
+#: eyeballing a resvg-rasterized PNG in this sandbox.
 def _svg_to_png(svg: str) -> bytes | None:
     """Rasterise (sanitized) SVG source to PNG bytes via ``resvg`` — a
     self-contained Rust wheel, no system cairo. ``None`` if ``resvg`` is absent
