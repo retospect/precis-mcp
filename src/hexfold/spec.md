@@ -1117,7 +1117,12 @@ algebra cannot see.
 ### 28. Roadmap and build order
 
 Each step is a spec that must `check` clean and round-trip through the
-precis generator on the dev DB. Small scale first.
+precis generator on the dev DB. Small scale first. **This section is the
+one roadmap**: `docs/backlog/hexfold-integration.md` (steps 1–3, 7) and
+`docs/backlog/precis-surface-kernel.md` (steps 4–6, 8) carry only tick
+state against these numbers, never a second ordering. Test pieces that
+drive the order: the box (step 3) and the rotary ratchet valve
+(`docs/backlog/rotary-ratchet-valve.md`, steps 3 and 8).
 
 1. **Fold-in** (this repo): `src/hexfold/` + `tests/hexfold/` + root
    `hexfold/` export seed; cherry-pick the `feat/hexfold-integration`
@@ -1129,11 +1134,16 @@ precis generator on the dev DB. Small scale first.
    `gen.stale`; `op.dangling`; sp³ ideal angle in `geom.angle.dev`.
 3. hexgen roadmap, in order: sheet + light bud, capped (5,5) + bud
    (dev-DB dogfood done 2026-09-17: `sheet_bud_22.hx`,
-   `capped_tube_da_neck.hx`); **canonical-frame symmetry sources**
+   `capped_tube_da_neck.hx`); **`cap(n,m)` flat-lid family** (six
+   pentagons in a ring; the box lid; unblocks the pill *and* the valve
+   rotor, which is a lid pair — recommended next slice 2026-09-17,
+   Reto to confirm); **canonical-frame symmetry sources**
    (§14.2 note — a patch's point group, a tube's `C_gcd(n,m)` rotation,
    the fullerene's icosahedral group as candidate frames; today every
-   instance keeps its authored frame); **`cap(n,m)` flat-lid family** (six
-   pentagons in a ring; the box lid; unblocks the pill); **`opening(port=)`**
+   instance keeps its authored frame; cosmetic, so after the lid);
+   **radius-changing shell** (tube → symmetric `collar{r×k @fit}` → wider
+   tube → collar → tube, holes in the bulge wall; every seam flat, §22.2
+   — the valve shell); **`opening(port=)`**
    (solve a host hole from the target rim; a C5 rim on the C6 lattice meets
    only through an asymmetric seam → the **tilted pill**, `geom.join.angle`);
    **`junction(3)`** = opening + fuse (tee); **elbow + closure → genus-1
@@ -1145,7 +1155,10 @@ precis generator on the dev DB. Small scale first.
    quotient; P = pcu, D = dia, G = srs nets, schwarzites as tubes along a
    periodic skeletal net + junctions [S27, S28, S29]); **box test piece**
    (~4 nm pillbox: (18,0) liner, (5,5) axle, capped crossbars, ~5k atoms;
-   axle ⇄ liner as separate blocks with a revolute joint).
+   axle ⇄ liner as separate blocks with a revolute joint); **valve test
+   piece** (the radius-changing shell above plus a pillbox rotor of two
+   lids; rotor ⇄ shell as separate blocks with a revolute joint; first
+   instance discrete at ~1 nm radius, the smooth/atomic boundary).
 4. **`precis_surface` stage 1**: symbolic chain solver with a **stub
    geometry backend** — every part reports rim indices and a rough length;
    the whole chain solves. This alone proves the interface claim, before
@@ -1155,7 +1168,23 @@ precis generator on the dev DB. Small scale first.
    film clusters.
 6. **Direction field** (§20.5) and the bent collar (§22.2).
 7. **sp³ seam line and seam vertices** — backlog item `hexfold-sp3-seam`,
-   blocked by 2; can join three or four sheets at an atom.
+   blocked by 2; can join three or four sheets at an atom. Also the home
+   of the valve's sp³ isolation loops and three-port Y-node.
+8. **Valve tool set** (`rotary-ratchet-valve.md` §Design tool set), in
+   dependency order: **clearance field** (gap between two surfaces as a
+   function of rotor angle; a stub on `stick` atoms plus van der Waals
+   radii before step 5's mesh exists, the §27 broad phase *measuring*
+   instead of rejecting once it does; lands in `view='surface'`);
+   **pocket extractor** (connected components under a clearance
+   threshold → voids with volumes; the count is the metering number);
+   **attachment-site enumerator** (ring taxonomy × steric exposure ×
+   Y-carbon face assignment, per surface; only the rim's sites travel);
+   **complementarity scorer** (shape-and-polarity stub first, energetics
+   later via the se atomic-mode ladder); **bond-energy audit** (any bond
+   within 2× of the drive photon energy, chromophore-weighted);
+   **drag-vs-torque check** over all ganged wheels. `options(handle,
+   wish)` (§25.3) takes the valve's whitelist / blacklist / throughput
+   wish; the clearance field and pocket extractor are read-only queries.
 
 Out of scope until the above holds: general Goldberg fullerenes, surface
 tiling from a target SDF (the 30 nm oval box), rdkit realisation of
@@ -1173,6 +1202,7 @@ chain solver never changes.
 | 5 | **`strain_max` default.** Mechanism decided (§15.2); the number is a literature lookup, per-design override. | — | medium — lookup |
 | 6 | **Seam census vs literature.** The sp² octagon census (§6.2) is derived here; check against the carbon honeycomb sp² junction [S2]. | — | medium — build |
 | 7 | CoNTub licensing, if source were reused. Moot under §27's papers-only rule. | — | low |
+| 8 | **Valve questions** (throughput kHz vs MHz, scrubber cadence, first-instance scale, clearance on mesh vs atoms) live in `docs/backlog/rotary-ratchet-valve.md` Q1–Q4, not here. | — | see item |
 
 Closed: addressing across edits (handles in smooth space, §23); scale
 selection (a constraint, §20.4); embedding detection method (§27);
@@ -1222,6 +1252,14 @@ scope, seam vertices out (§6.4); registry closure as integer arithmetic
 - Monorepo for now: `src/hexfold/` MIT-marked, imports no `precis*`;
   `precis_surface` is a precis package; re-export later is packaging, not
   refactoring.
+- Valve decisions (2026-09-17, `rotary-ratchet-valve.md`): an sp³ patch
+  (a four-point-anchored sugar) is a **fitted component with an interface
+  contract, not a tile** — the ring taxonomy never describes it; Y-junction
+  seam atoms are the attachment sites (two inner for binding, two outer
+  for charge patterning); a closed sp³ loop is both the electronic
+  isolation boundary and the quantum-region cut line; charge-pattern
+  coupling across a 3–4 Å gap over mechanical gearing; the smooth mapper
+  takes over above ~1–2 nm radius, atoms are explicit below.
 
 ### 31. Sources
 

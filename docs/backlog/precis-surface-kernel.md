@@ -40,25 +40,23 @@ build plan and the precis-side decisions only.
   op `move_handle`; the one new handler is `options(handle, wish)` =
   `fit.alternatives` surfaced as ranked candidates.
 
-## Build order (spec §28.4–6; each swap local, chain solver never changes)
+## State (the ordering is spec §28 — steps 4–6 and 8; this list is ticks only)
 
-1. [ ] **Stage 1 — symbolic chain solver with a stub geometry backend.**
-   Parts report rim indices and a rough length; the whole chain solves
-   both directions from pinned ends. This alone proves the interface
-   claim (an LLM driving the system end to end) before any geometry.
-2. [ ] Straight tubes; symmetric collars; caps from the cache.
-3. [ ] Discrete-mesh smooth solve (area minimisation, Pinkall–Polthier;
-   film clusters à la Surface Evolver), the two-part curvature bound
-   (`smooth.bend`, `smooth.singularity_spacing`), seams with the 120°
-   condition. Closed forms (catenoid, Schwarz P/D patches, C60 tables)
-   as seeds and test oracle only.
-4. [ ] Direction field (N-RoSy with prescribed singularities) →
-   commensurability before discretising; then the bent collar (search
-   → fitting) behind the `fit` family interface.
-5. [ ] Self-intersection: BVH in the loop, CCD during relaxation,
-   repulsive energy on finalists (implemented from the papers, not the
-   reference source).
-6. [ ] `strain_max` default from a literature lookup (spec §29 Q5).
+- [ ] §28.4 stage 1 — symbolic chain solver with a stub geometry
+  backend; proves the interface claim before any geometry.
+- [ ] §28.5 — straight tubes, symmetric collars, caps from the cache;
+  then the discrete-mesh smooth solve, the two-part curvature bound,
+  seams as film clusters. Closed forms as seeds and oracle only.
+- [ ] §28.6 — direction field, then the bent collar behind the `fit`
+  family interface.
+- [ ] §27 self-intersection tiers (BVH in the loop, CCD in relaxation,
+  repulsive energy on finalists; from the papers). Rides with §28.5.
+- [ ] §28.8 valve tool set (`rotary-ratchet-valve.md`): clearance field
+  → pocket extractor → attachment-site enumerator → complementarity
+  scorer stub → bond-energy audit → drag-vs-torque. The clearance stub on
+  `stick` atoms + vdW radii can start before §28.5's mesh exists (valve
+  Q4); the enumerator is discrete and can ride with hexgen (§28.3).
+- [ ] `strain_max` default from a literature lookup (spec §29 Q5).
 
 ## Open (spec §29, verify early)
 

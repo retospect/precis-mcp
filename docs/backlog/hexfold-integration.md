@@ -78,9 +78,16 @@ development, with the boundary kept clean for a later pip re-export.
    digit symbols (`55`→`52`, re-read as one symbol) → digit runs stay
    `5.5`; (d) the generate echo dumped every topology value (kilobytes
    of ordinals) → keys/lengths only.
-5. [ ] hexgen roadmap items (spec §28.3) in order, starting with
-   `cap(n,m)` flat-lid family and `opening(port=)` → the pill.
-6. [ ] `precis-surface-kernel.md` (stage 1 chain solver) once 1–2 hold.
+5. [ ] hexgen roadmap items in spec §28.3's order. **Next slice =
+   `cap(n,m)` flat-lid family** (recommended 2026-09-17, Reto to
+   confirm): it unblocks both the pill (this item's acceptance) and the
+   rotary ratchet valve's rotor, which is a lid pair
+   (`rotary-ratchet-valve.md`); the canonical-frame symmetry sources are
+   cosmetic and follow it. Then the radius-changing shell (valve shell),
+   `opening(port=)`, and the rest of §28.3.
+6. [ ] Smooth mapper: `precis-surface-kernel.md` holds the ticks for
+   spec §28.4–6 and §28.8 (the valve tools); nothing about the order
+   lives here.
 
 ## What builds today (hexfold 0.1, verified with `hexfold check`)
 
