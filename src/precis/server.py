@@ -51,6 +51,7 @@ import os
 import re
 import secrets
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -219,7 +220,20 @@ _FILE_KIND_EXTS: dict[str, frozenset[str]] = {
 }
 
 
-def _file_kind_counts(root: str, kinds: list[str]) -> dict[str, int]:
+#: Wall-clock budget for the boot-time ``PRECIS_ROOT`` file count. The
+#: count runs on the main thread *before* the MCP handshake, so it eats
+#: directly into the client's connect timeout (Claude Code: 30 s). The
+#: dev-stdio launcher mounts all of ``~/work`` (hundreds of thousands of
+#: files over a Docker bind mount), which took ~20 s per boot and pushed
+#: the ``initialize`` reply past the timeout — the server "never came
+#: up". Past the budget the walk stops and the preamble reports lower
+#: bounds (``≥N``) instead of exact counts.
+_FILE_COUNT_BUDGET_S: float = 1.0
+
+
+def _file_kind_counts(
+    root: str, kinds: list[str], *, budget_s: float | None = None
+) -> tuple[dict[str, int], bool]:
     """One ``os.walk`` over ``root`` counting files per file-rooted kind.
 
     ``kinds`` is the subset of :data:`_FILE_KIND_EXTS` actually registered
@@ -228,22 +242,42 @@ def _file_kind_counts(root: str, kinds: list[str]) -> dict[str, int]:
     tally. Every listed kind appears in the return value, possibly with
     ``0`` so callers can distinguish *"registered but empty"* from
     *"not registered"*.
+
+    Returns ``(counts, truncated)``. The walk is bounded by ``budget_s``
+    (default :data:`_FILE_COUNT_BUDGET_S`) of wall clock, checked once
+    per directory; when the budget trips, ``truncated`` is ``True`` and
+    every count is a lower bound. No pruning — the file-rooted handlers
+    walk the whole tree too, so a pruned count would disagree with what
+    ``get(kind='markdown')`` actually lists.
     """
     counts: dict[str, int] = {k: 0 for k in kinds}
     if not counts:
-        return counts
+        return counts, False
     ext_to_kind: dict[str, str] = {
         ext: kind for kind in kinds for ext in _FILE_KIND_EXTS.get(kind, ())
     }
     root_path = Path(root)
     if not root_path.is_dir():
-        return counts
-    for _dirpath, _dirnames, files in os.walk(root_path):
+        return counts, False
+    budget = _FILE_COUNT_BUDGET_S if budget_s is None else budget_s
+    deadline = time.monotonic() + budget
+    for seen_dirs, (_dirpath, _dirnames, files) in enumerate(os.walk(root_path)):
+        # ``>=`` not ``>``: Windows' monotonic clock ticks at ~15 ms, so a
+        # zero budget would otherwise never trip on the first directory.
+        if time.monotonic() >= deadline:
+            log.warning(
+                "PRECIS_ROOT file count hit the %.1fs boot budget after %d "
+                "director(ies) under %s; preamble reports lower bounds",
+                budget,
+                seen_dirs,
+                root,
+            )
+            return counts, True
         for name in files:
             kind = ext_to_kind.get(Path(name).suffix.lower())
             if kind is not None:
                 counts[kind] += 1
-    return counts
+    return counts, False
 
 
 def _startup_skills_banner(runtime: PrecisRuntime) -> str:
@@ -359,7 +393,7 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     file_kinds = [k for k in _FILE_KIND_EXTS if k in registered_kinds]
     if not file_kinds:
         return core + tail
-    counts = _file_kind_counts(root, file_kinds)
+    counts, truncated = _file_kind_counts(root, file_kinds)
     total = sum(counts.values())
     # A root that doesn't exist yet is *not* read-only — it'll be
     # created on first write via ``mkdir(parents=True)`` — so only
@@ -369,7 +403,7 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
     # OSError deep in ``put`` instead of an honest banner + typed
     # error).
     writable = not os.path.isdir(root) or os.access(root, os.W_OK)
-    if total == 0:
+    if total == 0 and not truncated:
         if writable:
             preamble = (
                 "Sandbox PRECIS_ROOT empty: "
@@ -383,7 +417,13 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
                 "disabled in this deployment.\n"
             )
     else:
-        summary = ", ".join(f"{counts[k]} {k}" for k in file_kinds if counts[k])
+        # A truncated walk yields lower bounds — say so rather than
+        # presenting a partial tally as the whole sandbox.
+        bound = "\u2265" if truncated else ""
+        summary = (
+            ", ".join(f"{bound}{counts[k]} {k}" for k in file_kinds if counts[k])
+            or "large tree, count skipped"
+        )
         kinds_str = "|".join(f"'{k}'" for k in file_kinds)
         ro_note = "" if writable else " (read-only mount — writes disabled)"
         preamble = (

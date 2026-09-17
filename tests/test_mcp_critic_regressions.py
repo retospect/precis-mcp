@@ -1239,6 +1239,54 @@ def test_build_instructions_missing_root_is_not_flagged_readonly(
     assert "mode='create'" in out
 
 
+def test_file_kind_counts_stops_at_boot_budget(tmp_path) -> None:
+    """The boot-time ``PRECIS_ROOT`` walk runs on the main thread before
+    the MCP handshake, so it must be bounded: the dev-stdio launcher
+    mounts all of ``~/work`` and an unbounded walk blew the client's
+    30 s connect timeout (precis "never came up"). A zero budget trips
+    on the first directory and flags the result as a lower bound."""
+    from precis import server
+
+    for i in range(3):
+        (tmp_path / f"n{i}.md").write_text("# x", encoding="utf-8")
+    exact, truncated = server._file_kind_counts(str(tmp_path), ["markdown"])
+    assert (exact, truncated) == ({"markdown": 3}, False)
+
+    bounded, truncated = server._file_kind_counts(
+        str(tmp_path), ["markdown"], budget_s=0.0
+    )
+    assert truncated is True
+    assert bounded["markdown"] <= 3
+
+
+def test_build_instructions_marks_truncated_counts_as_lower_bounds(
+    tmp_path, monkeypatch
+) -> None:
+    """When the walk trips its budget the preamble must not present a
+    partial tally as the whole sandbox, nor call a big tree "empty":
+    counts render with a ``≥`` prefix, and an all-zero partial tally
+    says the count was skipped."""
+    from precis import server
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "one.md").write_text("# x", encoding="utf-8")
+    runtime = _runtime_with_root(str(tmp_path), file_kinds=("markdown",))
+
+    monkeypatch.setattr(
+        server, "_file_kind_counts", lambda *_a, **_k: ({"markdown": 1}, True)
+    )
+    out = server._build_instructions(runtime)
+    assert "\u22651 markdown" in out
+    assert "empty" not in out.split(server._INSTRUCTIONS)[0]
+
+    monkeypatch.setattr(
+        server, "_file_kind_counts", lambda *_a, **_k: ({"markdown": 0}, True)
+    )
+    out = server._build_instructions(runtime)
+    assert "large tree, count skipped" in out
+    assert "Sandbox PRECIS_ROOT empty" not in out
+
+
 def test_apply_instructions_mutates_underlying_mcp_server(tmp_path) -> None:
     """The ``_apply_instructions`` helper must write through to
     ``fastmcp._mcp_server.instructions`` so the handshake payload

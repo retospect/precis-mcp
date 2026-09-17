@@ -113,6 +113,9 @@ unaddressable — nor contain `'#'`.)
   antenna) — `view='validate'`'s `unconnected_port` reads it as `info`
   instead of `warn`.
 - `remove_port` — `block`, `name`
+
+## Ops — connects, joints, loads, measures, notes (exact parameter lists)
+
 - `connect` — `a`, `b` (req, `"block.port"` — **ports must already
   exist**; connect never auto-creates) · `joint` dict · `objectives`
   flat dict (`force`/`torque`/`duty`/`cycles`) · **atomic mode:**
