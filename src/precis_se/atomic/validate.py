@@ -59,6 +59,7 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 
 from precis.cad import dsl as cad_dsl
 from precis.cad.graph import Design as CadDesign
@@ -70,7 +71,7 @@ from precis.structure import Scene as StructScene
 from precis.utils.units import format_quantity
 from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
 from precis_se.atomic.vocab import bond_capability_offences, connect_role
-from precis_se.ops import SeTree, effective_envelope, effective_ports
+from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 from precis_se.validate import ValidationIssue
 
 #: The design↔atomistic seam conversion factor (`precis/utils/units.py`,
@@ -216,9 +217,12 @@ def envelope_fit(
 #: minus each block's own envelope extent along that line should come out
 #: near zero (or negative — a port often sits inside its nominal envelope);
 #: 50% leaves generous headroom for the block-pose-not-port-position
-#: approximation this check is forced into (ports have no stored position)
-#: while still catching the dogfood's 48.5 Å bond against ~10s-of-Å blocks,
-#: whose residual gap is many multiples of either block's own size.
+#: approximation this check falls back to whenever a port's own pose slot
+#: is null, while still catching the dogfood's 48.5 Å bond against
+#: ~10s-of-Å blocks, whose residual gap is many multiples of either block's
+#: own size. The SAME number bounds the exact port-to-port distance when
+#: both ports do carry a pose: a real covalent bond is a small fraction of
+#: a block, so half the smaller block's diagonal is as generous there.
 BOND_GAP_FRACTION = 0.5
 
 #: :func:`_bond_vector_findings`'s alignment threshold, radians off
@@ -361,15 +365,45 @@ def _connect_cycle_findings(tree: SeTree) -> list[ValidationIssue]:
     return findings
 
 
+def _port_world_origin(
+    tree: SeTree, node: SeBlock, port_name: str
+) -> NDArray[np.float64] | None:
+    """The world-space origin of ``node``'s ``port_name``, or ``None`` when
+    that port carries no stored pose of its own (the nullable slot's normal
+    case, :class:`~precis.blocktree.types.Port`). The port's pose is in the
+    block's LOCAL frame — the same convention ``direction``/``envelope``
+    use (:func:`envelope_fit`) — so the block's own placement maps it
+    out."""
+    port = effective_ports(tree, node).get(port_name)
+    if port is None or port.pose is None:
+        return None
+    placement = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
+    return np.asarray(placement.apply(cad_as_vec3(port.pose)), dtype=float)
+
+
+def _port_pose_source(tree: SeTree, node: SeBlock, port_name: str) -> str:
+    """The provenance stamp on that port's stored pose (``'declared'`` /
+    ``'bound'``), for the finding to name — a target the realization is
+    checked against reads differently from one measured off it."""
+    port = effective_ports(tree, node).get(port_name)
+    return (port.pose_source if port is not None else None) or "?"
+
+
 def _bond_length_findings(tree: SeTree) -> list[ValidationIssue]:
     """``bond_length_sanity`` (warn) — a ``kind='bond'`` connect whose two
-    blocks' pose-to-pose gap (distance minus each block's own envelope
-    extent along that line — an approximation: ports have no stored
-    position of their own, only their owning block's pose) is wildly beyond
-    a plausible bond. Never gates (``warn``): the approximation can read
-    long for a legitimate reason (a bent/off-axis port), so this only ever
-    flags for a human/agent to look again, the same trust level
-    ``port_capability`` extends to declared roles."""
+    endpoints sit wildly further apart than a plausible bond. Measured two
+    ways, and the finding always says which one it used:
+
+    * both ports carry a stored ``pose`` → the real **port-to-port** world
+      distance, no approximation anywhere in it;
+    * otherwise → the blocks' pose-to-pose distance minus each block's own
+      envelope extent along that line, which is an approximation: those
+      ports have no position of their own, only their block's.
+
+    Same scale-relative threshold either way. Never gates (``warn``): the
+    approximation can read long for a legitimate reason (a bent/off-axis
+    port), so this only ever flags for a human/agent to look again, the
+    same trust level ``port_capability`` extends to declared roles."""
     findings: list[ValidationIssue] = []
     for c in tree.connects:
         if c.kind != "bond":
@@ -390,6 +424,35 @@ def _bond_length_findings(tree: SeTree) -> list[ValidationIssue]:
         a_diag = _envelope_diag(a_prim)
         b_diag = _envelope_diag(b_prim)
         if a_diag is None or b_diag is None:
+            continue
+        threshold = BOND_GAP_FRACTION * min(a_diag, b_diag)
+        subject = f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}"
+        # Preferred measurement: both ports know where they are, so the
+        # distance is the real port-to-port one, with no approximation in
+        # it at all. The envelope-extent projection below is the fallback
+        # for the (normal, by-design) case where the slot is null.
+        a_origin = _port_world_origin(tree, a_node, c.a_port)
+        b_origin = _port_world_origin(tree, b_node, c.b_port)
+        if a_origin is not None and b_origin is not None:
+            span = float(np.linalg.norm(b_origin - a_origin))
+            if span <= threshold:
+                continue
+            a_src = _port_pose_source(tree, a_node, c.a_port)
+            b_src = _port_pose_source(tree, b_node, c.b_port)
+            findings.append(
+                ValidationIssue(
+                    rule="bond_length_sanity",
+                    subject=subject,
+                    detail=(
+                        f"port-to-port distance {span:.3g} m (both ports "
+                        f"carry a stored pose: a={a_src}, b={b_src}) "
+                        f"exceeds the {threshold:.3g} m scale-relative "
+                        "threshold for a plausible bond — not a chemically "
+                        "real covalent bond at this distance"
+                    ),
+                    severity="warn",
+                )
+            )
             continue
         a_pos = np.asarray(a_node.pose, dtype=float)
         b_pos = np.asarray(b_node.pose, dtype=float)
@@ -412,10 +475,8 @@ def _bond_length_findings(tree: SeTree) -> list[ValidationIssue]:
         gap = (
             distance - _extent_along(a_lo, a_hi, unit) - _extent_along(b_lo, b_hi, unit)
         )
-        threshold = BOND_GAP_FRACTION * min(a_diag, b_diag)
         if gap <= threshold:
             continue
-        subject = f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}"
         findings.append(
             ValidationIssue(
                 rule="bond_length_sanity",
@@ -423,9 +484,9 @@ def _bond_length_findings(tree: SeTree) -> list[ValidationIssue]:
                 detail=(
                     f"block-pose gap ≈{gap:.3g} m (pose distance {distance:.3g} "
                     f"m minus each block's own envelope extent along the "
-                    f"line — an approximation: ports have no stored position "
-                    f"of their own, only their block's pose) exceeds the "
-                    f"{threshold:.3g} m scale-relative threshold for a "
+                    f"line — an approximation: these ports carry no stored "
+                    f"pose of their own, only their block's pose) exceeds "
+                    f"the {threshold:.3g} m scale-relative threshold for a "
                     "plausible bond — not a chemically real covalent bond "
                     "at this distance"
                 ),

@@ -6,10 +6,10 @@ typed ops; :func:`apply_ops` mutates a :class:`~precis.blocktree.types.Tree`
 in place; an unknown op or a bad reference raises :class:`~precis.
 blocktree.types.OpError`. A domain plugin (``precis_se``) registers its
 own extra ops alongside :data:`CORE_OPS` in the table it passes to
-:func:`apply_ops`, and may override any of the 8 core entries outright —
+:func:`apply_ops`, and may override any of the 9 core entries outright —
 ``apply_ops`` never hardcodes which ops exist, the caller's table does.
 
-The 8 shared ops:
+The 9 shared ops:
 
 - ``add_block``      — mint a new block, optionally nested under an
   existing ``parent``, with an optional envelope (validated through the
@@ -52,11 +52,17 @@ The 8 shared ops:
   ports from its template at read time (:func:`effective_ports`, the same
   rule as envelope/desc/use). ``roles`` is a capability set; ``direction``
   normalizes to unit length (zero vector rejected); ``annotations`` is an
-  open dict. The port ``name`` may not contain ``'.'`` — the ``connect``/
+  open dict; ``pose``/``rot`` optionally place the port itself in the
+  block's local frame (``rot`` without ``pose`` is refused). The port ``name`` may not contain ``'.'`` — the ``connect``/
   ``disconnect`` ``'block.port'`` syntax reserves it.
 - ``remove_port``     — drop a port; refused while any live ``connect``
   still references it, *including* one stored against an instance of this
   block.
+- ``set_port_pose``   — rewrite (or ``clear``) a port's OWN ``pose``/
+  ``rot`` in the block's local frame — ``set_pose`` one level down. The
+  slot is nullable by design and stays null until someone fills it
+  (:class:`~precis.blocktree.types.Port`); this op and ``add_port`` are
+  the two that fill it, both stamping ``pose_source='declared'``.
 - ``connect``         — a port↔port intent edge (``a``/``b`` as
   ``'block.port'``, split on the *last* dot). Each endpoint resolves on
   the block itself or — for an instance — its template. Self- and
@@ -223,6 +229,28 @@ def _unit_vec(vec: list[float], *, what: str) -> list[float]:
     if norm == 0.0:
         raise OpError(f"{what} must be a nonzero vector, got {vec!r}")
     return [x / norm for x in vec]
+
+
+def _port_pose_args(
+    op: dict[str, Any], *, opname: str, what: str
+) -> tuple[list[float] | None, list[float] | None]:
+    """The shared ``pose``/``rot`` read for the two ops that write a port's
+    own placement (:func:`op_add_port`, :func:`op_set_port_pose`). Absent
+    ``pose`` → ``(None, None)``; note ``_as_vec3(None)`` returns ZEROS, so
+    presence is tested on the raw key, never on the coerced vector — an
+    origin of ``[0,0,0]`` is a real, declarable answer ("the attachment
+    point IS the block origin") and must not read as unset."""
+    pose_raw, rot_raw = op.get("pose"), op.get("rot")
+    if pose_raw is None:
+        if rot_raw is not None:
+            raise OpError(
+                f"{opname} rot for {what} needs 'pose' — a rotation with "
+                "no origin is meaningless"
+            )
+        return None, None
+    pose = _as_vec3(pose_raw, f"{opname} pose for {what}")
+    rot = None if rot_raw is None else _as_vec3(rot_raw, f"{opname} rot for {what}")
+    return pose, rot
 
 
 def _no_block_msg(tree: Tree[Any, Any], name: str, *, what: str) -> str:
@@ -631,7 +659,7 @@ def _commit_instance(
         raise OpError(f"instance cycle: {' → '.join(cycle)}")
 
 
-# ── the 8 shared op implementations ─────────────────────────────────────
+# ── the 9 shared op implementations ─────────────────────────────────────
 
 
 def op_add_block(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
@@ -739,11 +767,15 @@ def op_add_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
         raise OpError(
             f"add_port 'annotations' must be a JSON object, got {annotations_raw!r}"
         )
+    pose, rot = _port_pose_args(op, opname="add_port", what=f"{block}.{name}")
     node.ports[name] = Port(
         name=name,
         roles=roles,
         direction=direction,
         annotations=dict(annotations_raw) if annotations_raw else {},
+        pose=pose,
+        rot=rot,
+        pose_source=None if pose is None else "declared",
     )
 
 
@@ -777,6 +809,59 @@ def op_remove_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
             f"port {block}.{name} is used by live connect(s) {names} — disconnect first"
         )
     del node.ports[name]
+
+
+def op_set_port_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
+    """Rewrite an existing port's own ``pose``/``rot`` — :func:`op_set_pose`
+    for ports, and the only way to fill the slot after ``add_port``.
+
+    ``clear=True`` nulls all three fields back to "no stored pose" (the
+    fallback approximation resumes). Otherwise ``pose`` is required unless
+    the port already carries one (so ``rot`` alone can be corrected without
+    restating the origin), ``rot`` is optional and an absent ``rot`` keeps
+    the stored one (each key rewrites only itself), and the write stamps
+    ``pose_source='declared'`` — this op is an agent stating design intent;
+    a measured ``'bound'`` origin comes from a realization, not from here
+    (:data:`~precis.blocktree.types.PORT_POSE_SOURCES`)."""
+    block = _require_block(tree, op, "block", "set_port_pose")
+    node = tree.blocks[block]
+    if node.template is not None:
+        raise OpError(
+            f"block {block!r} is an instance (of {node.template!r}) — an "
+            "instance resolves its ports from its template at read time "
+            "(same rule as add_port); set_port_pose on "
+            f"{node.template!r} instead"
+        )
+    name = _require_name(op, "name", "set_port_pose")
+    port = node.ports.get(name)
+    if port is None:
+        roster = ", ".join(sorted(node.ports)) if node.ports else "(none)"
+        raise OpError(
+            f"no such port on block {block!r}: {name!r}. Available ports: {roster}"
+        )
+    if op.get("clear"):
+        port.pose = port.rot = port.pose_source = None
+        return
+    what = f"{block}.{name}"
+    if op.get("pose") is None and port.pose is not None:
+        # Keep the stored origin, rewrite the rotation on top of it.
+        if op.get("rot") is None:
+            raise OpError("set_port_pose needs 'pose' and/or 'rot' (or clear=True)")
+        port.rot = _as_vec3(op.get("rot"), f"set_port_pose rot for {what}")
+        port.pose_source = "declared"
+        return
+    pose, rot = _port_pose_args(op, opname="set_port_pose", what=what)
+    if pose is None:
+        raise OpError(
+            f"set_port_pose needs 'pose' for {what} — the port carries no "
+            "origin yet (or pass clear=True to null it)"
+        )
+    if op.get("rot") is None:
+        # An absent ``rot`` keeps the stored one — nudging the origin must
+        # not silently unrotate the port; ``clear=True`` is the way to drop
+        # a rotation.
+        rot = port.rot
+    port.pose, port.rot, port.pose_source = pose, rot, "declared"
 
 
 def op_connect(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
@@ -832,7 +917,7 @@ def op_disconnect(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     )
 
 
-#: The 8 shared ops, keyed by op name — a domain merges this with its own
+#: The 9 shared ops, keyed by op name — a domain merges this with its own
 #: extra ops (and may override any entry) to build the table it passes to
 #: :func:`apply_ops`.
 CORE_OPS: OpsTable = {
@@ -842,6 +927,7 @@ CORE_OPS: OpsTable = {
     "remove_block": op_remove_block,
     "add_port": op_add_port,
     "remove_port": op_remove_port,
+    "set_port_pose": op_set_port_pose,
     "connect": op_connect,
     "disconnect": op_disconnect,
 }

@@ -682,6 +682,97 @@ def test_declare_states_rejects_malformed_port_pose_overrides(
         )
 
 
+def test_declare_states_rejects_an_empty_port_pose_override(
+    handler: SeHandler,
+) -> None:
+    """``{}`` states nothing about the port — a write that changes nothing
+    at read time should fail at write time, not look applied."""
+    with pytest.raises(BadInput, match="at least one of"):
+        handler.put(
+            id="poseportbad2",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "add_block",
+                            "name": "switch",
+                            "envelope": "box:w0.002d0.002h0.002",
+                        },
+                        {
+                            "op": "declare_states",
+                            "block": "switch",
+                            "states": [
+                                {"name": "cis", "port_pose_overrides": {"p1": {}}}
+                            ],
+                        },
+                    ]
+                }
+            ),
+        )
+
+
+def test_port_pose_overrides_accept_direction_pose_and_rot_together(
+    handler: SeHandler, store: Store
+) -> None:
+    """All three keys in one entry, stored verbatim (bar ``direction``'s
+    unit-normalization) — the pose slot's arrival did not cost the
+    direction-only shape that already worked."""
+    handler.put(
+        id="poseportmix1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "switch",
+                        "envelope": "box:w0.002d0.002h0.002",
+                    },
+                    {
+                        "op": "add_port",
+                        "block": "switch",
+                        "name": "p1",
+                        "direction": [1, 0, 0],
+                        "pose": [0.001, 0, 0],
+                    },
+                    {
+                        "op": "declare_states",
+                        "block": "switch",
+                        "states": [
+                            {
+                                "name": "cis",
+                                "port_pose_overrides": {
+                                    "p1": {
+                                        "direction": [0, 2, 0],
+                                        "pose": [0.0005, 0, 0],
+                                        "rot": [0, 0, 0.5],
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+    )
+    ref = store.get_ref(kind="se", id="poseportmix1")
+    assert ref is not None
+    uid = _block_uid(store, "poseportmix1", "switch")
+    state = design_states.states_for(store, ref.id, uid)[0]
+    assert state.port_pose_overrides is not None
+    override = state.port_pose_overrides["p1"]
+    assert override["direction"] == [0.0, 1.0, 0.0]  # normalized at write time
+    assert override["pose"] == [0.0005, 0.0, 0.0]
+    assert override["rot"] == [0.0, 0.0, 0.5]
+
+    body = handler.get(
+        id="poseportmix1",
+        view="block",
+        args={"name": "switch", "state": {"switch": "cis"}},
+    ).body
+    assert "[0, 1, 0]" in body  # direction replaced outright
+    assert "[0.0015, 0, 0]" in body  # pose added to the port's own
+
+
 # ── round 2: set_current_state (persistent) vs args.state (transient) ────
 
 

@@ -166,10 +166,11 @@ per delete-on-ship. What exists now:
 - Transitions are directed edges: forward and reverse are separate rows, so
   a ratchet's differing barriers stay expressible.
 
-Known gap, tracked in **gr342026**: `port_pose_overrides` is direction-only
-(`{port: {'direction': [x,y,z]}}`), because `Port`/`PortSpec` has no
-absolute position field. A state can re-aim a port but not move it. Settle
-this before a consumer bakes in direction-only semantics.
+gr342026 (direction-only `port_pose_overrides`) is settled: ports carry a
+nullable, provenance-tagged pose slot (`Port.pose`/`rot`/`pose_source`,
+se migration `0011_se_port_pose.sql`) and a state override is a rigid
+delta `{port: {'direction'?, 'pose'?, 'rot'?}}` — see
+`port-pose-and-composition-search.md` §Decision 1.
 
 ---
 

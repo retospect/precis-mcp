@@ -87,6 +87,7 @@ from precis.blocktree.types import parse_template_ref
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
+from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import rotation as cad_rotation
 from precis.design import scenarios as design_scenarios
 from precis.design import states as design_states
@@ -136,7 +137,7 @@ class SeHandler(Handler):
             "cad-DSL envelopes in METRES, poses, read-time template "
             "instancing, and first-class arrays. put/edit take typed ops "
             "(add_block/instance_block/array_block/set_pose/set_envelope/"
-            "remove_block/add_port/remove_port/connect/disconnect/"
+            "remove_block/add_port/remove_port/set_port_pose/connect/disconnect/"
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
             "remove_note/formfind/declare_threading/remove_threading/"
@@ -146,8 +147,13 @@ class SeHandler(Handler):
             "declare_states block= states=[{'name','envelope'?,"
             "'port_pose_overrides'?,'descr'?}] declares a block's discrete "
             "states (a bistable's {loaded,bonded} or a photoswitch's "
-            "{trans,cis}) — port_pose_overrides={port: {'direction':"
-            "[x,y,z]}} overrides that port's direction in the state; "
+            "{trans,cis}) — port_pose_overrides={port: {'direction'?:"
+            "[x,y,z], 'pose'?:[dx,dy,dz], 'rot'?:[rx,ry,rz]}} overrides "
+            "that port in the state: direction outright, pose/rot as a "
+            "rigid DELTA in the block frame (applied only to a port that "
+            "carries a pose of its own); add_port/set_port_pose "
+            "pose=[x,y,z] rot=[rx,ry,rz] place the port itself in the "
+            "block's local frame (m/rad; rot needs pose); "
             "declare_transitions block= transitions=[{'from_state',"
             "'to_state','driver_kind','driver_ref'?,'params'?}] adds "
             "DIRECTED stimulus-labelled edges (driver_kind: light|"
@@ -1205,6 +1211,12 @@ def _fmt_bound(port: PortSpec) -> str:
 #: when :func:`_shows_atomic_ports` says something fills them.
 _ATOMIC_PORT_SCHEMA = ("expected", "bound")
 
+#: The port-pose column, appended on the same conditional rule as
+#: :data:`_ATOMIC_PORT_SCHEMA`: a design whose ports carry no pose (the
+#: common case — the slot is nullable by design) renders exactly as it did
+#: before this column existed, rather than growing a column of dashes.
+_POSE_PORT_SCHEMA = ("pose",)
+
 
 def _shows_atomic_ports(ports: Iterable[PortSpec]) -> bool:
     """Whether a ports table should carry the two atomic columns —
@@ -1216,16 +1228,40 @@ def _shows_atomic_ports(ports: Iterable[PortSpec]) -> bool:
     )
 
 
-def _port_cells(port: PortSpec, *, atomic: bool) -> dict[str, str]:
-    """One ports-table row's cells for ``port``. The atomic two ride along
-    only when the table declares them — a row key outside the schema would
-    still reach the JSON backend, which ignores ``schema``."""
+def _shows_port_poses(ports: Iterable[PortSpec]) -> bool:
+    """Whether a ports table should carry the ``pose`` column — the same
+    mode-scoped rule the atomic two get: the slot is nullable on purpose
+    (:class:`~precis.blocktree.types.Port`), so a design that never filled
+    it must not grow a column of dashes."""
+    return any(p.pose is not None for p in ports)
+
+
+def _fmt_port_pose(port: PortSpec) -> str:
+    """The ``pose`` cell — the port's OWN origin (and frame, when it has
+    one) in the block's local frame, with its provenance, e.g.
+    ``[0, 0, 0.004] rot [0, 1.5708, 0] · declared``. ``rot`` is omitted
+    rather than printed as zeros when the port carries none: unrotated and
+    "no rotation stated" mean the same thing, unlike ``pose``, whose
+    absence is exactly what the dash is there to report."""
+    if port.pose is None:
+        return "—"
+    rot = f" rot [{_fmt3(port.rot)}]" if port.rot is not None else ""
+    return f"[{_fmt3(port.pose)}]{rot} · {port.pose_source or '?'}"
+
+
+def _port_cells(port: PortSpec, *, atomic: bool, posed: bool = False) -> dict[str, str]:
+    """One ports-table row's cells for ``port``. The atomic two and the
+    pose one ride along only when the table declares them — a row key
+    outside the schema would still reach the JSON backend, which ignores
+    ``schema``."""
     cells = {
         "port": port.name,
         "roles": ", ".join(port.roles) or "—",
         "direction": f"[{_fmt3(port.direction)}]" if port.direction else "—",
         "annotations": json.dumps(port.annotations) if port.annotations else "—",
     }
+    if posed:
+        cells["pose"] = _fmt_port_pose(port)
     if atomic:
         cells["expected"] = _fmt_expected(
             port.expected_element, port.expected_hybridization
@@ -1422,10 +1458,14 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
         via = f" (resolved via template {node.template!r})" if node.template else ""
         lines.append(f"## ports{via}")
         atomic = _shows_atomic_ports(ports.values())
-        extra = _ATOMIC_PORT_SCHEMA if atomic else ()
+        posed = _shows_port_poses(ports.values())
+        extra = (
+            *(_POSE_PORT_SCHEMA if posed else ()),
+            *(_ATOMIC_PORT_SCHEMA if atomic else ()),
+        )
         lines.append(
             render_agent_table(
-                [_port_cells(p, atomic=atomic) for p in ports.values()],
+                [_port_cells(p, atomic=atomic, posed=posed) for p in ports.values()],
                 schema=["port", "roles", "direction", "annotations", *extra],
             )
         )
@@ -1538,13 +1578,19 @@ def _render_ports(tree: SeTree) -> str:
     atomic = _shows_atomic_ports(
         p for ports in by_block.values() for p in ports.values()
     )
-    extra = _ATOMIC_PORT_SCHEMA if atomic else ()
+    posed = _shows_port_poses(p for ports in by_block.values() for p in ports.values())
+    extra = (
+        *(_POSE_PORT_SCHEMA if posed else ()),
+        *(_ATOMIC_PORT_SCHEMA if atomic else ()),
+    )
     rows = []
     for name, ports in by_block.items():
         node = tree.blocks[name]
         block_label = f"{name} (via {node.template})" if node.template else name
         for p in ports.values():
-            rows.append({"block": block_label, **_port_cells(p, atomic=atomic)})
+            rows.append(
+                {"block": block_label, **_port_cells(p, atomic=atomic, posed=posed)}
+            )
     if not rows:
         return "# se ports\n\n(no ports declared yet)"
     return f"# {len(rows)} port(s)\n" + render_agent_table(
@@ -2770,24 +2816,71 @@ def _apply_state_arg(
     op, materialized by :func:`_materialize_states`).
 
     Envelope: the state's own (``None`` = unchanged, the block keeps its
-    default). Ports: ``port_pose_overrides``, keyed by port name,
-    overrides that port's ``direction`` — the only pose-like field a port
-    carries today (already unit-normalized at ``declare_states`` time,
-    :func:`~precis_se.ops._vet_port_pose_overrides`). An override naming a
-    port the block doesn't currently have is skipped rather than raised —
-    the same read-time honesty a dangling reference gets elsewhere in se;
-    wiring a checker for it is drc.py's job, out of scope this round."""
+    default). Ports: ``port_pose_overrides``, keyed by port name
+    (vetted at ``declare_states`` time,
+    :func:`~precis_se.ops._vet_port_pose_overrides`) —
+
+    * ``direction`` replaces the port's direction outright (already
+      unit-normalized at write time);
+    * ``pose``/``rot`` are a rigid DELTA in the block frame: the
+      translation adds to the port's own origin, the rotation composes on
+      top of the port's own frame.
+
+    A delta on a port whose own :attr:`~precis.blocktree.types.Port.pose`
+    is ``None`` is **not** applied — the pose stays null and the
+    consumers keep their envelope approximation, because there is no
+    origin to displace and inventing one (implicitly ``[0,0,0]``) would
+    manufacture a position the design never declared. The state row still
+    shows the raw override JSON, so the intent is visible either way.
+
+    An override naming a port the block doesn't currently have is skipped
+    rather than raised — the same read-time honesty a dangling reference
+    gets elsewhere in se; wiring a checker for it is drc.py's job, out of
+    scope this round."""
     for name, state in resolved.items():
         node = tree.blocks[name]
         if state.envelope is not None:
             node.envelope = state.envelope
         for port_name, override in (state.port_pose_overrides or {}).items():
             port = node.ports.get(port_name)
-            direction = (
-                override.get("direction") if isinstance(override, dict) else None
-            )
-            if port is not None and direction is not None:
+            if port is None or not isinstance(override, dict):
+                continue
+            direction = override.get("direction")
+            if direction is not None:
                 port.direction = list(direction)
+            _apply_port_delta(port, override)
+
+
+def _apply_port_delta(port: PortSpec, override: dict[str, Any]) -> None:
+    """Apply one state's rigid ``pose``/``rot`` delta to ``port``, in the
+    block's local frame. No-op for a pose-less port (see
+    :func:`_apply_state_arg`). Rotation composes through the cad kernel's
+    own transforms rather than a second Euler implementation here — a null
+    port ``rot`` reads as zeros, and the composed matrix goes back to
+    Euler radians via :func:`~precis.cad.vec.euler_rad_from_matrix`.
+
+    Frame: the delta rotation is expressed in the BLOCK frame — the same
+    frame the ``pose`` delta is added in — so the result is
+    ``R_delta @ R_port`` (a hinge swinging the port about a block axis),
+    NOT the port-local ``R_port @ R_delta`` that a scene mate's spin uses.
+    Off-axis base + delta pairs do not commute, so the order is pinned by
+    a multi-axis test, not just the single-axis ones."""
+    delta_pose = override.get("pose")
+    delta_rot = override.get("rot")
+    if (delta_pose is None and delta_rot is None) or port.pose is None:
+        return
+    if delta_pose is not None:
+        port.pose = [p + float(d) for p, d in zip(port.pose, delta_pose, strict=True)]
+    if delta_rot is not None:
+        base = port.rot or [0.0, 0.0, 0.0]
+        composed = cad_rotation(*(float(x) for x in delta_rot)).compose(
+            cad_rotation(*(float(x) for x in base))
+        )
+        # ``-0.0`` is what the arcsin/arctan2 round trip hands back for an
+        # untouched axis; it compares equal to zero but RENDERS as "-0",
+        # which reads like a real (tiny, negative) angle. Normalize once,
+        # here, rather than teaching every renderer about it.
+        port.rot = [0.0 if x == 0.0 else x for x in cad_euler_rad(composed.R)]
 
 
 def _clearance_verdict(gap: float, resolution: float) -> str:
@@ -3101,21 +3194,35 @@ def _combo_label(
     )
 
 
-def _snapshot_sweep_domain(
-    tree: SeTree, domain_names: list[str]
-) -> dict[str, tuple[str | None, dict[str, list[float] | None]]]:
-    """Each state-carrying block's UN-posed envelope + per-port direction,
-    before the sweep touches anything — the base every combination resets
-    to (:func:`_pose_sweep_combo`) so combo *i+1* never inherits combo
-    *i*'s overrides, and the tree is restored to exactly this once the
-    sweep is done (the loaded tree is discarded at the end of ``get``
-    regardless, but a mid-call reader — e.g. a future finding that runs
-    after this one in the same call — must not see a stale posed state)."""
+#: One block's un-posed sweep baseline: its envelope, plus each port's
+#: ``(direction, pose, rot)`` — every field :func:`_apply_state_arg` can
+#: touch. A ``pose``/``rot`` override is a *delta* (it accumulates), so
+#: missing one here would silently compound across combinations rather
+#: than merely leaking one.
+_PortBaseline = dict[
+    str, tuple[list[float] | None, list[float] | None, list[float] | None]
+]
+_SweepBaseline = dict[str, tuple[str | None, _PortBaseline]]
+
+
+def _snapshot_sweep_domain(tree: SeTree, domain_names: list[str]) -> _SweepBaseline:
+    """Each state-carrying block's UN-posed envelope + per-port
+    direction/pose/rot, before the sweep touches anything — the base every
+    combination resets to (:func:`_pose_sweep_combo`) so combo *i+1* never
+    inherits combo *i*'s overrides, and the tree is restored to exactly
+    this once the sweep is done (the loaded tree is discarded at the end of
+    ``get`` regardless, but a mid-call reader — e.g. a future finding that
+    runs after this one in the same call — must not see a stale posed
+    state)."""
     return {
         name: (
             tree.blocks[name].envelope,
             {
-                p: (list(port.direction) if port.direction is not None else None)
+                p: (
+                    list(port.direction) if port.direction is not None else None,
+                    list(port.pose) if port.pose is not None else None,
+                    list(port.rot) if port.rot is not None else None,
+                )
                 for p, port in tree.blocks[name].ports.items()
             },
         )
@@ -3123,22 +3230,22 @@ def _snapshot_sweep_domain(
     }
 
 
-def _restore_sweep_domain(
-    tree: SeTree,
-    originals: dict[str, tuple[str | None, dict[str, list[float] | None]]],
-) -> None:
-    for name, (env0, dirs0) in originals.items():
+def _restore_sweep_domain(tree: SeTree, originals: _SweepBaseline) -> None:
+    for name, (env0, ports0) in originals.items():
         node = tree.blocks[name]
         node.envelope = env0
-        for port_name, direction in dirs0.items():
+        for port_name, (direction, pose, rot) in ports0.items():
             port = node.ports.get(port_name)
-            if port is not None:
-                port.direction = None if direction is None else list(direction)
+            if port is None:
+                continue
+            port.direction = None if direction is None else list(direction)
+            port.pose = None if pose is None else list(pose)
+            port.rot = None if rot is None else list(rot)
 
 
 def _pose_sweep_combo(
     tree: SeTree,
-    originals: dict[str, tuple[str | None, dict[str, list[float] | None]]],
+    originals: _SweepBaseline,
     domain_names: list[str],
     combo: tuple[design_states.BlockState, ...],
 ) -> None:

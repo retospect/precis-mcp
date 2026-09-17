@@ -204,19 +204,22 @@ def prepare_generate(
     try:
         apply_ops(tree, [add_op])
         for port in block.ports:
-            apply_ops(
-                tree,
-                [
-                    {
-                        "op": "add_port",
-                        "block": block_name,
-                        "name": port.name,
-                        "roles": port.roles,
-                        "direction": port.direction,
-                        "expected_element": port.expected_element,
-                    }
-                ],
-            )
+            port_op: dict[str, Any] = {
+                "op": "add_port",
+                "block": block_name,
+                "name": port.name,
+                "roles": port.roles,
+                "direction": port.direction,
+                "expected_element": port.expected_element,
+            }
+            # Only when the generator actually stated one — add_port reads
+            # an absent 'pose' as "no stored pose", and a null rot with a
+            # null pose would be refused as a rotation with no origin.
+            if port.pose is not None:
+                port_op["pose"] = port.pose
+                if port.rot is not None:
+                    port_op["rot"] = port.rot
+            apply_ops(tree, [port_op])
     except OpError as exc:
         raise BadInput(str(exc)) from exc
 

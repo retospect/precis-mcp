@@ -110,7 +110,8 @@ _BLOCK_COLS = (
 )
 _PORT_COLS = (
     "block_id, name, roles, direction, annotations, expected_element, "
-    "expected_hybridization, bound_design, bound_atom"
+    "expected_hybridization, bound_design, bound_atom, pose_xyz, pose_rot, "
+    "pose_source"
 )
 _CONNECT_COLS = (
     "a_block, a_block_uid, a_port, b_block, b_block_uid, b_port, joint, "
@@ -272,6 +273,9 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
             expected_hybridization=p["expected_hybridization"],
             bound_design=p["bound_design"],
             bound_atom=p["bound_atom"],
+            pose=list(p["pose_xyz"]) if p["pose_xyz"] is not None else None,
+            rot=list(p["pose_rot"]) if p["pose_rot"] is not None else None,
+            pose_source=p["pose_source"],
         )
     for c in connect_rows:
         tree.connects.append(
@@ -744,8 +748,9 @@ def save_tree(
                     "INSERT INTO se_ports "
                     "(block_id, name, roles, direction, annotations, "
                     " expected_element, expected_hybridization, "
-                    " bound_design, bound_atom) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    " bound_design, bound_atom, pose_xyz, pose_rot, "
+                    " pose_source) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         name_to_id[name],
                         port.name,
@@ -756,6 +761,9 @@ def save_tree(
                         port.expected_hybridization,
                         port.bound_design,
                         port.bound_atom,
+                        port.pose,
+                        port.rot,
+                        port.pose_source,
                     ),
                 )
         for conn_spec in tree.connects:

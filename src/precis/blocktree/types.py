@@ -8,7 +8,7 @@
 subclasses everywhere, while :mod:`precis.blocktree.ops`'s helpers still
 operate over the generic base. Construction of a fresh block instance goes
 through :meth:`Tree.make_block` (overridden by the domain subclass) rather
-than a hardcoded ``BlockNode(...)`` call, so the 8 shared ops in
+than a hardcoded ``BlockNode(...)`` call, so the 9 shared ops in
 :mod:`precis.blocktree.ops` mint the *domain's* block type, not the bare
 core one.
 """
@@ -88,6 +88,19 @@ def parse_template_ref(raw: str) -> tuple[str | None, str]:
 ForeignResolver = Callable[[str], "Tree[Any, Any] | None"]
 
 
+#: Where a port's :attr:`Port.pose` came from — a CLOSED enum (``None``
+#: = the port carries no pose at all). ``'declared'`` is design intent: an
+#: agent said where on the block this attachment point sits.
+#: ``'bound'`` is measurement: the displacement read back off a realized
+#: structure the block binds. The distinction is load-bearing for the
+#: consumers — a declared origin is a target to check a realization
+#: against, a bound one is what the realization actually did — so it is
+#: stored, not inferred. A domain that persists ports mirrors this enum as
+#: a DB CHECK (``se``'s ``se_ports_pose_source_check``); ``'bound'`` has
+#: no writer yet, and exists now so the later one needs no migration.
+PORT_POSE_SOURCES: tuple[str, ...] = ("declared", "bound")
+
+
 @dataclass
 class Port:
     """A named attachment point on a block (the pcb pin→roles pattern:
@@ -95,12 +108,31 @@ class Port:
     connect/joint time from these roles, never stored as a second
     relation). ``annotations`` is the open dict a domain hangs its own
     descriptive (or, later, contract-classed) extras on — every key is
-    *descriptive* until a domain gives it a checked consumer."""
+    *descriptive* until a domain gives it a checked consumer.
+
+    ``pose``/``rot`` are the port's OWN placement in its block's local
+    frame — the same shape (origin + Euler triple) and the same units as
+    the owning :class:`BlockNode`'s, which this class likewise does not
+    know the name of. Both are **nullable**, and that is the normal case:
+    at box level the exact displacement from the block's origin to its
+    attachment point is genuinely unknown, and a made-up number would be
+    indistinguishable from a measured one. Every geometry consumer
+    therefore keeps a fallback — ``se``'s bond-length check projects the
+    block's envelope extent instead — and says in its output *which* of
+    the two it used, so "≈" is never mistaken for a port-to-port distance.
+
+    Invariants, enforced by the ops (and mirrored as DB CHECKs by a domain
+    that persists ports): ``rot`` requires ``pose`` (a rotation with no
+    origin is meaningless), and ``pose_source`` is set exactly when
+    ``pose`` is — see :data:`PORT_POSE_SOURCES`."""
 
     name: str
     roles: list[str] = field(default_factory=list)
     direction: list[float] | None = None
     annotations: dict[str, Any] = field(default_factory=dict)
+    pose: list[float] | None = None
+    rot: list[float] | None = None
+    pose_source: str | None = None
 
 
 @dataclass
@@ -207,7 +239,7 @@ class Tree[TBlock: BlockNode, TConnect: Connect]:
         """Construct a new block row for this tree. The base
         implementation mints a bare :class:`BlockNode`; a domain ``Tree``
         subclass overrides this to mint its own ``BlockNode`` subclass
-        instead — the hook the 8 shared ops in :mod:`precis.blocktree.ops`
+        instead — the hook the 9 shared ops in :mod:`precis.blocktree.ops`
         use so they never hardcode a concrete block class."""
         return BlockNode(**kwargs)  # type: ignore[return-value]
 

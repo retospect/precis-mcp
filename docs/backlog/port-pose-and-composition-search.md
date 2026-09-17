@@ -11,31 +11,38 @@ Reto, 2026-09-16, settling gr342026 and extending
 `blocktree-library-build-plan.md` §Slice 4. Three decisions, one new
 design item.
 
-## Decision 1 — ports get a pose slot, on the port, as a *target*
+## Decision 1 — ports get a pose slot, on the port, as a *target* — **SHIPPED**
 
-gr342026: a state can re-aim a port (`direction`) but not move it, because
-`Port` has no position. Ruling: **put it on the port**, mirroring the
-block's own pose — an origin and a rotation, so a state's
-`port_pose_overrides` becomes a **rigid delta in the block frame**
-(translation + rotation), not direction-only.
+Ruling (gr342026): **put it on the port**, mirroring the block's own pose
+— an origin and a rotation, so a state's `port_pose_overrides` is a
+**rigid delta in the block frame** (translation + rotation), not
+direction-only. Delta, not absolute, because it stays meaningful when the
+port's own pose is unknown ("the far port moves 9 Å along x").
 
-The slot is **nullable and provenance-tagged**, because at the box level
-the exact displacement is not known up front — it depends on the
-realization. The value is one of: a *declared target* (design intent,
-intervals allowed), a *bound geometry* (filled later from the realized
-`structure` per state, the `expected_element`/`bound_atom` pattern), or
-unset. A bare float with no origin is refused. Every consumer says which
-it used: clearance/sweep/bond-length keep today's approximation (block
-pose + envelope extent, `precis_se/atomic/validate.py`'s "ports have no
-stored position" comment) when the slot is null.
+Shipped 2026-09-17 (declared half): `Port.pose`/`rot`/`pose_source`
+(`precis.blocktree.types`, enum `PORT_POSE_SOURCES = declared | bound`,
+`None` = unset); `add_port pose= rot=` and the new `set_port_pose` op
+(rot without an origin refused, scalar refused); se columns
+`se_ports.pose_xyz/pose_rot/pose_source` with CHECKs
+(`0011_se_port_pose.sql`, metres/radians, block-local frame);
+`port_pose_overrides = {port: {'direction'?, 'pose'?, 'rot'?}}` applied
+at get time only when the port carries a pose (sweep resets it per
+combo); a `pose` column on `view='block'|'ports'` only when some port
+has one; `bond_length_sanity` uses the port-to-port world distance when
+both ends carry a pose and says which source each came from, else the
+envelope approximation and says so.
 
 **Why rotation too:** a rotation at a hinge port × arm length is a
 displacement at the far end. Without the angle the solver below can only
 find series stacking; with it, levers/cranks/scissors are solutions.
 
-Cost: one nullable column in design core (migration), persist round-trip,
-one more key next to `direction` in `_vet_port_pose_overrides`, a small
-provenance enum. Bound half waits for per-state `bind_structure`.
+**Open — the `bound` half:** the enum value, CHECK and render exist, but
+nothing writes `pose_source='bound'`. Natural writer is `bind_structure`
+(it already resolves each port to an atom; the atom's block-local
+coordinates are the pose). Reto's call: does a bind overwrite a
+`declared` target, or refuse and file a mismatch finding? Waits on
+per-state `bind_structure`. Intervals on a target ("10–12 Å") are
+Decision 3's requirement, not the port slot.
 
 ## Decision 2 — Δ-length facts stay in the star schema
 

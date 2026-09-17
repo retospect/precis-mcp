@@ -78,10 +78,22 @@ used here as-is or extended with se's own cascades:
   arrives with the first checked consumer, and *then* the three-way
   engaged/declared-but-unchecked/descriptive honesty report. The port
   ``name`` may not contain ``'.'`` — the ``connect``/``disconnect``
-  ``'block.port'`` syntax reserves it. Unmodified core op.
+  ``'block.port'`` syntax reserves it. ``pose``/``rot`` optionally place
+  the port ITSELF in the block's local frame (metres/radians; ``rot``
+  without ``pose`` is refused — a rotation with no origin is meaningless),
+  stamped ``pose_source='declared'``. The core op plus se's two
+  *expected chemistry* fields (:func:`_op_add_port`).
 - ``remove_port``     — drop a port; refused while any live ``connect``
   still references it, *including* one stored against an instance/array
-  of this block. Unmodified core op.
+  of this block. Core op plus se's dof guard (:func:`_op_remove_port`).
+- ``set_port_pose``   — rewrite an existing port's own ``pose``/``rot``,
+  or ``clear=True`` to null them (the consumers fall back to the envelope
+  approximation, and say so). ``set_pose`` one level down; ordinary
+  blocks only, same instance rule as ``add_port``. The slot is nullable
+  on purpose — at box level the exact origin of an attachment point is
+  often genuinely unknown (:class:`~precis.blocktree.types.Port`).
+  Unmodified core op: it mutates the port in place, so se's
+  :class:`PortSpec` survives.
 - ``connect``         — a port↔port intent edge (``a``/``b`` as
   ``'block.port'``, split on the *last* dot). Each endpoint resolves on
   the block itself or — for an instance/array — its template (via se's
@@ -177,11 +189,13 @@ design-core home (:mod:`precis.design.states`), not a table of se's own
   as ``declare_states``, and materializes *after* it in the same call, so
   a transition declared alongside new states sees them already written
   (the shared tables' composite FK checks every endpoint against a
-  declared state). ``port_pose_overrides`` is vetted to exactly
-  ``{port_name: {'direction': [x,y,z]}}`` (:func:`_vet_port_pose_overrides`)
-  — ``direction`` unit-normalized the same way ``add_port``'s own is,
-  since it is the only pose-like field a port carries today (an absolute
-  ``xyz`` slot is a later round's). The named port need not exist yet — a
+  declared state). ``port_pose_overrides`` is vetted to
+  ``{port_name: {'direction'?, 'pose'?, 'rot'?}}``
+  (:func:`_vet_port_pose_overrides`) — ``direction`` unit-normalized the
+  same way ``add_port``'s own is; ``pose``/``rot`` are a rigid DELTA in
+  the block frame (translation added to the port's own origin, rotation
+  composed on top of it), applied at read time only to a port that
+  actually carries a pose. The named port need not exist yet — a
   forward reference, the same tolerance a measure's relation source gets.
 - ``set_current_state``   — PERSISTENTLY pose an ordinary block into one
   of its declared states: ``block=`` + ``state=``. The counterpart to
@@ -498,7 +512,7 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
 
 def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
     """Apply a list of typed ops to ``tree`` in order, mutating it —
-    dispatches through :data:`_OPS` (the core's 8 shared ops, 6 of them
+    dispatches through :data:`_OPS` (the core's 9 shared ops, 8 of them
     overridden here, plus se's own — :func:`known_ops` is the roster), via
     the core's generic :func:`~precis.blocktree.ops.apply_ops`."""
     return blocktree.apply_ops(tree, ops, _OPS)
@@ -892,11 +906,13 @@ def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
 
 def _op_add_port(tree: SeTree, op: dict[str, Any]) -> None:
     """The core's ``add_port`` (which owns every check and the
-    roles/direction/annotations vetting) plus the atomic mode's two
+    roles/direction/pose/annotations vetting) plus the atomic mode's two
     *expected chemistry* fields — se's own :class:`PortSpec`. The core
     mints a bare :class:`~precis.blocktree.types.Port`; this rewrites that
     slot as the richer spec, so there is one add_port grammar for an agent
-    to learn whatever mode the block is in."""
+    to learn whatever mode the block is in. ``set_port_pose`` needs no
+    such override — it mutates the existing port object in place, so the
+    :class:`PortSpec` survives."""
     blocktree.op_add_port(tree, op)
     node = tree.blocks[_require_block(tree, op, "block", "add_port")]
     name = str(op["name"]).strip()
@@ -906,6 +922,9 @@ def _op_add_port(tree: SeTree, op: dict[str, Any]) -> None:
         roles=base.roles,
         direction=base.direction,
         annotations=base.annotations,
+        pose=base.pose,
+        rot=base.rot,
+        pose_source=base.pose_source,
         expected_element=_opt_str(op.get("expected_element")),
         expected_hybridization=_opt_str(op.get("expected_hybridization")),
     )
@@ -1857,16 +1876,30 @@ def _op_set_optics(tree: SeTree, op: dict[str, Any]) -> None:
 # every block (module docstring, and :mod:`precis.design.states`).
 
 
+#: The keys one port's entry in a state's ``port_pose_overrides`` may
+#: carry (:func:`_vet_port_pose_overrides`) — closed, so a typo ('xyz')
+#: is a loud write-time rejection rather than an override that silently
+#: does nothing at read time.
+_PORT_OVERRIDE_KEYS = frozenset({"direction", "pose", "rot"})
+
+
 def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | None:
     """Vet a declared state's ``port_pose_overrides`` — ``{port_name:
-    {'direction': [x,y,z]}}``, keyed by the block's own port names
-    (migration ``0162_design_core.sql``'s column comment: "the ports a
-    state moves"). ``direction`` is the ONLY pose-like field a port
-    carries today (:class:`PortSpec` has no absolute position — a real
-    xyz slot is a later round's job, blocktree slice 2's posing rung);
-    unit-normalized here the same way ``add_port``'s own ``direction`` is,
-    so the get-time poser (:func:`precis_se.handler._apply_state_arg`) can
-    trust every stored vector without re-checking it.
+    {'direction'?: [x,y,z], 'pose'?: [dx,dy,dz], 'rot'?: [rx,ry,rz]}}``,
+    keyed by the block's own port names (migration
+    ``0162_design_core.sql``'s column comment: "the ports a state moves"),
+    at least one key and no others.
+
+    ``direction`` is unit-normalized here the same way ``add_port``'s own
+    is, so the get-time poser (:func:`precis_se.handler._apply_state_arg`)
+    can trust every stored vector without re-checking it. ``pose``/``rot``
+    are a rigid **DELTA** in the block frame, not an absolute placement:
+    the translation adds to the port's own origin, the rotation composes
+    on top of the port's own. Delta because the requirement is phrased
+    that way ("in the bonded state the far port moves 9 Å along x") and
+    because it stays meaningful for a port whose own
+    :attr:`~precis.blocktree.types.Port.pose` is null — an absolute value
+    there would silently invent an origin the design never declared.
 
     The named port may not exist yet — a forward reference, the same
     tolerance ``add_measure``'s relation source gets: only the SHAPE is
@@ -1881,17 +1914,27 @@ def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | N
         )
     out: dict[str, Any] = {}
     for port_name, override in raw.items():
-        if not isinstance(override, dict) or set(override) != {"direction"}:
+        keys = set(override) if isinstance(override, dict) else set()
+        if not isinstance(override, dict) or not keys or keys - _PORT_OVERRIDE_KEYS:
             raise OpError(
                 f"declare_states: state {state_name!r} "
-                f"port_pose_overrides[{port_name!r}] must be exactly "
-                f"{{'direction': [x,y,z]}} — the only pose-like field a "
-                f"port carries today, got {override!r}"
+                f"port_pose_overrides[{port_name!r}] takes at least one of "
+                f"'direction' [x,y,z], 'pose' [dx,dy,dz], 'rot' [rx,ry,rz] "
+                f"(pose/rot are a rigid delta in the block frame) and "
+                f"nothing else, got {override!r}"
             )
-        what = f"declare_states: state {state_name!r} port {port_name!r} direction"
-        out[str(port_name)] = {
-            "direction": _unit_vec(_as_vec3(override["direction"], what), what=what)
-        }
+        what = f"declare_states: state {state_name!r} port {port_name!r}"
+        entry: dict[str, Any] = {}
+        if "direction" in keys:
+            d_what = f"{what} direction"
+            entry["direction"] = _unit_vec(
+                _as_vec3(override["direction"], d_what), what=d_what
+            )
+        if "pose" in keys:
+            entry["pose"] = _as_vec3(override["pose"], f"{what} pose")
+        if "rot" in keys:
+            entry["rot"] = _as_vec3(override["rot"], f"{what} rot")
+        out[str(port_name)] = entry
     return out
 
 

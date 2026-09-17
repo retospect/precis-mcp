@@ -23,9 +23,9 @@ Two submodules:
   its own fields.
 - :mod:`precis.blocktree.ops` — the pure helpers (vector/name/envelope
   validation, tree-walk helpers, ``effective_ports``/``effective_envelope``)
-  and the 8 shared op implementations (``add_block``, ``instance_block``,
+  and the 9 shared op implementations (``add_block``, ``instance_block``,
   ``set_pose``, ``remove_block``, ``add_port``, ``remove_port``,
-  ``connect``, ``disconnect``), dispatched through :func:`~precis.blocktree.
+  ``set_port_pose``, ``connect``, ``disconnect``), dispatched through :func:`~precis.blocktree.
   ops.apply_ops` over a domain-supplied (and domain-extendable) ops table.
 
 This package imports nothing from ``precis_se`` — dependency flows one

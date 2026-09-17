@@ -91,27 +91,28 @@ unaddressable — nor contain `'#'`.)
 ## Ops — blocks, ports, connect (exact parameter lists)
 
 - `add_block` — `name` (req) · `parent` · `pose` [x,y,z] m (bare) · `rot`
-  [x,y,z] rad (bare, Euler `Rz@Ry@Rx` — see "Units" above) · `envelope`
+  [x,y,z] rad (bare, Euler `Rz@Ry@Rx`; see "Units") · `envelope`
   (DSL string) · `desc` · `use`
 - `instance_block` — `name`, `template` (req) · `parent`/`pose`/`rot`.
   Rejects envelope/desc/use (they live on the template).
 - `array_block` — `name`, `template` (req) + exactly one of
   `linear` `{count≥2, pitch>0, axis?}` | `polar` `{count≥2, radius≥0,
-  axis?}`. Blocks only — **there is no array form for connects**; N
-  spokes are N `connect` ops (generate them programmatically).
+  axis?}`. Blocks only — no array form for connects; N spokes = N
+  `connect` ops.
 - `set_pose` — `block` (req) + `pose` and/or `rot`
 - `set_envelope` — `block`, `envelope` (req; null clears) · `origin`
   `'user'|'proposed'`. Rejects instances/arrays.
 - `remove_block` — `block`
 - `add_port` — `block`, `name` (req; no dots) · `roles` [str] ·
-  `direction` [x,y,z] (normalised) · `annotations` dict · **atomic
-  mode:** `expected_element`/`expected_hybridization` (what
-  `bind_structure` checks the bound atom against). `roles` is a
-  **capability set the caller asserts**, never checked against real
-  chemistry — see `connect`'s gate below. `{"external": true}` in
-  `annotations` marks a port as intentionally left unconnected (an
-  antenna) — `view='validate'`'s `unconnected_port` reads it as `info`
-  instead of `warn`.
+  `direction` [x,y,z] (normalised) · `pose` [x,y,z] · `rot` [rx,ry,rz]
+  (port origin/frame in the block's local frame, m/rad; `rot` needs
+  `pose`) · `annotations` dict · **atomic
+  mode:** `expected_element`/`expected_hybridization` (checked
+  by `bind_structure`). `roles` is a
+  capability set the caller asserts, never checked against real
+  chemistry (see `connect`). `annotations: {"external": true}` = intentionally
+  unconnected (antenna); `validate`'s `unconnected_port` downgrades it
+  to `info`.
 - `remove_port` — `block`, `name`
 
 ## Ops — connects, joints, loads, measures, notes (exact parameter lists)
@@ -122,15 +123,14 @@ unaddressable — nor contain `'#'`.)
   `kind` `bond|interaction` (default `bond`) — a `bond` connect
   requires **both** ports to afford `'covalent'`, or, with
   `objectives={'role': ...}`, both to afford that named role instead
-  (rejection names the port's actual roles); `interaction`
-  (non-bonded) skips the gate entirely. A declared-intent check, not a
-  chemical-plausibility one. `kind` and `joint` are mutually exclusive on
-  one connect — an atomic bond and a kinematic joint are different claims
-  about the same pair; declare one. **Complementary roles** need one port per
+  (rejection names the actual roles); `interaction`
+  (non-bonded) skips the gate entirely. Declared intent, not chemical
+  plausibility. `kind` and `joint` are mutually exclusive — a
+  bond and a kinematic joint are different claims; declare one. **Complementary roles** need one port per
   half, never two of the same: `azide` ↔ `alkyne` (gate on either half
   or on `CuAAC`), `donor` ↔ `acceptor`, `bump` ↔ `hole`, `+` ↔ `-`.
-  Azide + azide is refused naming both ports' roles; any unlisted role
-  is symmetric.
+  Azide + azide is refused naming both roles; unlisted roles are
+  symmetric.
 
 ## Ops — joints, loads, measures, modes, notes (exact parameter lists)
 
@@ -168,8 +168,8 @@ unaddressable — nor contain `'#'`.)
   geometric feature instead of chaining declared values. The derived
   number's `mismatch` note is band-first: outside `[min_value,max_value]`
   when declared, else beyond `tol` of `value`, else not exactly `value`.
-- `set_measure` / `remove_measure` — `block`, `name` (+ at least one
-  field for set; no explicit nulls — remove then re-add)
+- `set_measure` / `remove_measure` — `block`, `name` (set needs ≥1
+  field; no explicit nulls — remove then re-add)
 - `set_mode` — `block`, `mode` = `"family"` or `"family/material"` or
   null. Families: `purchase · fdm · sla · cnc-2.5ax · laser ·
   stock-cut · atomic` (e.g. `"fdm/asa"`).
@@ -177,14 +177,13 @@ unaddressable — nor contain `'#'`.)
   `design`) or `clear: true`
 - `add_bom` / `remove_bom` — `block` | `a`+`b`, `item_kind`
   `component|part`, `item` (slug/C-number) · `qty` · `uom` · `reason`.
-  Slugs are not vetted at write time — `view='bom'` reports dangling
-  ones (`⚠ not in the store`).
+  Slugs aren't vetted at write time; `view='bom'` flags dangling ones.
 - `add_note` — `name`, `kind` `question|answer|decision`, `text` ·
   `re` (note name) · `about` [anchors] · `origin`
 - `formfind` — force-density form-finding over the axial subgraph:
   `q` per-member overrides · `q_tie`(+1)/`q_strut`(−1)/`q_rod`(+1) ·
-  `move` (`'all'` | block list; default only `origin='proposed'` poses
-  move — human-set poses are never overwritten).
+  `move` (`'all'` | block list; default: only `origin='proposed'`
+  poses move).
 
 ## Discrete states + transitions (bistables, photoswitches, assembly steps)
 
@@ -196,10 +195,20 @@ state; nothing about a plain block's shape changes.
 - `declare_states` — `block` (req), `states` `[{'name', 'envelope'?,
   'port_pose_overrides'?, 'descr'?}]` (req; replaces the block's whole
   state set). `envelope` overrides the block's own in that state (omit =
-  unchanged); `port_pose_overrides` is `{port: {'direction': [x,y,z]}}`
-  (unit-normalised at write time) — the only pose-like field a port
-  carries today. Ordinary blocks only (instances/arrays declare no
+  unchanged); `port_pose_overrides` is `{port: {'direction'?: [x,y,z],
+  'pose'?: [dx,dy,dz], 'rot'?: [rx,ry,rz]}}` (≥1 key, no others) —
+  `direction` replaces outright (unit-normalised at write time),
+  `pose`/`rot` are a per-state rigid **delta** in the block frame (added
+  to / composed on the port's own pose), applied ONLY to a port that
+  carries a pose; on a pose-less port the override is stored and shown
+  but changes nothing. Ordinary blocks only (instances/arrays declare no
   states of their own — pose the template).
+- `set_port_pose` — `block`, `name` (req) + `pose` and/or `rot`, or
+  `clear: true`. Fills/rewrites a port's OWN placement after `add_port`
+  (`set_pose` one level down). The slot is nullable on purpose — with no
+  pose, geometry checks fall back to the block-pose + envelope-extent
+  approximation and say so; with one on both ends, `bond_length_sanity`
+  reports the exact port-to-port distance instead.
 - `declare_transitions` — `block`, `transitions` `[{'from_state',
   'to_state', 'driver_kind', 'driver_ref'?, 'params'?}]` (req). DIRECTED
   edges — a ratchet's forward/reverse barriers are two rows, never one
@@ -490,7 +499,7 @@ exactly when its template is):
 | `binding_element_mismatch` | warn | a bound atom's element doesn't match the port's `expected_element` |
 | `envelope_fit` | warn | a bound block's realized atoms protrude beyond its declared envelope + vdW margin — the L1↔L5 agreement has drifted. Or `cannot check — frames do not correspond` when the whole scene sits an envelope-width away (imported structure, no local-frame alignment): re-author the atoms near the envelope's origin (e.g. `from_smiles` `offset=`), do NOT widen |
 | `connect_cycle` | warn | the connect graph closes a loop across the block tree (a macrocycle IS real chemistry — this names the path, never says "forbidden") |
-| `bond_length_sanity` | warn | a `kind='bond'` connect's block-pose gap (ports have no stored position; see Scope below) is wildly beyond a plausible bond |
+| `bond_length_sanity` | warn | a `kind='bond'` connect's endpoints are wildly further apart than a plausible bond — the exact port-to-port distance when both ports carry a `pose`, else the block-pose gap approximation (see Scope below). The finding says which |
 | `bond_vector_alignment` | warn | a `kind='bond'` connect's two ports' `direction` vectors are far from anti-parallel (>60° off 180°) |
 
 `bind_structure` also runs an `envelope_fit` **preflight** on bind (never
@@ -526,11 +535,14 @@ other).
 - **No charge, optical, or simulation views.** No mechanism/dynamics
   analysis, no torsion scan, no rotational-barrier estimate —
   `declare_dof` records intent only.
-- **Ports have no stored position of their own** — only their owning
-  block's pose. `bond_length_sanity` approximates a bond's real length
-  from the two blocks' pose-to-pose gap, so it can read long for a
-  legitimate off-axis port even on an otherwise-correct design; it warns,
-  never gates.
+- **A port's own position is optional** (`add_port`/`set_port_pose`
+  `pose`), and usually absent — at box level the displacement from the
+  block's origin to its attachment point is often genuinely unknown.
+  Where both ends of a bond have one, `bond_length_sanity` measures the
+  real port-to-port distance; where they don't it approximates from the
+  two blocks' pose-to-pose gap, so it can read long for a legitimate
+  off-axis port even on an otherwise-correct design. It warns, never
+  gates, and names which measurement it used.
 
 ## Known sharp edges
 

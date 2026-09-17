@@ -74,7 +74,12 @@ class StateError(ValueError):
 class BlockState:
     """One declared state of one block. ``envelope`` overrides the block's
     own envelope in this state (None = unchanged); ``port_pose_overrides``
-    moves the ports this state moves, keyed by port name."""
+    moves the ports this state moves, keyed by port name — an UNQUALIFIED
+    JSON payload here, vetted by the owning domain, which reads it as a
+    rigid delta on that port (``se``: ``{'direction'?, 'pose'?, 'rot'?}``,
+    :func:`precis_se.ops._vet_port_pose_overrides`). This core stores and
+    returns it verbatim; what a port even has to move is the domain's
+    vocabulary, not this table's."""
 
     block_uid: int
     name: str

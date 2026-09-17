@@ -240,7 +240,10 @@ same mechanism serves macro bistables and photoswitches/conformers alike,
 per that module's A9 hysteresis warning: a state-carrying block's state
 is not a function of its parameter vector, so nothing here memoizes by
 configuration alone). ``declare_states``/``declare_transitions`` write a
-block's `{name, envelope?, port_pose_overrides?}` states and directed,
+block's `{name, envelope?, port_pose_overrides?}` states (an override is
+`{port: {'direction'?, 'pose'?, 'rot'?}}` — direction outright, pose/rot
+a rigid delta in the block frame, applied only to a port carrying a pose
+of its own) and directed,
 `driver_kind`-labelled edges between them, materialized once
 ``persist.save_tree`` has minted every block's uid
 (:func:`precis_se.handler._materialize_states`); ``set_current_state``

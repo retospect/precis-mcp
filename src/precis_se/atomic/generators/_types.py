@@ -51,14 +51,19 @@ class GeneratedPort:
     atom label minted for that atom (in array order) in the freshly-minted
     ``structure`` design, and passes ``{port name: atom label}`` straight
     to ``bind_structure``, so the port is bound the moment the block is
-    created — no separate "unbound generated port" state ever exists.
-    There is no stored "position" field on a port (``nm_ports``'s schema
-    carries ``direction`` only, no migration added for this slice, per the
-    round-1 instruction) — the bound atom's coordinates in the structure
-    design ARE the port's position, the "one fact, two projections" port
-    model (pcb-component-model.md, transferred into nm-kind.md) applied
-    here at the generator boundary rather than only at hand-built
+    created — no separate "unbound generated port" state ever exists. The
+    bound atom's coordinates in the structure design ARE the port's
+    position, the "one fact, two projections" port model
+    (pcb-component-model.md, transferred into nm-kind.md) applied here at
+    the generator boundary rather than only at hand-built
     ``bind_structure`` time.
+
+    ``pose``/``rot`` are the block-local placement slot a port may now
+    carry (:class:`~precis.blocktree.types.Port`, gr342026), forwarded to
+    ``add_port`` when set. No generator fills them today — for a generated
+    block the atom projection is the authority — but the seam exists so a
+    generator that DOES know its stub's own frame needs no change at this
+    boundary.
     """
 
     name: str
@@ -66,6 +71,8 @@ class GeneratedPort:
     direction: list[float]
     roles: list[str] = field(default_factory=lambda: ["covalent"])
     expected_element: str | None = None
+    pose: list[float] | None = None
+    rot: list[float] | None = None
     #: For a *ring* port (hexfold-style rim openings): the full dangling
     #: ring of atom indices this port can bond across — ``atom_index``
     #: stays atom 0 of that ring for back-compat binding. ``None`` for a
