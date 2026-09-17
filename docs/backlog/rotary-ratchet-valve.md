@@ -347,18 +347,20 @@ candidates cheaply, run energetics only on survivors.
 
 ## Sources
 
-Store ids `pa…` for us, DOI for readers. Not Crossref-verified yet
-except where a store id is given (those were verified at import).
+Store ids `pa…` for us, DOI for readers. All store ids below resolved
+at import (Semantic Scholar match); pa345694–98 are stubs whose full
+text was still fetching on 2026-09-17.
 
 - **[V1]** M. Klok, N. Boyle, M. T. Pryce, A. Meetsma, W. R. Browne,
   B. L. Feringa, "MHz unidirectional rotation of molecular rotary
   motors," *J. Am. Chem. Soc.* 130 (2008) 10484–10485.
-  doi:10.1021/ja8037245. **To import.**
-- **[V2]** molecular gear train on Pb(111) with single Cu atoms as
-  pinning centres, STM-driven, 5 K (Joachim group). **DOI to
-  establish; to import.** Related, on Au(111):
-  doi:10.1021/acs.jpclett.0c01747 (transmitting stepwise rotation among
-  three molecule-gears).
+  doi:10.1021/ja8037245: **`pa345694`**.
+- **[V2]** "Train of single molecule-gears" — two 1.2 nm six-tooth gears
+  each on a Cu adatom axle 1.9 nm apart on Pb(111), LT-STM, reversible
+  teeth-to-teeth transmission (Joachim group), *J. Phys. Chem. Lett.*
+  2019, doi:10.1021/acs.jpclett.9b02259: **`pa345695`**. Related, on
+  Au(111): doi:10.1021/acs.jpclett.0c01747 (transmitting stepwise
+  rotation among three molecule-gears; not imported).
 - **[V3]** Dube group, light-driven motors: **`pa179409`** (constitutional
   alteration + proton transfer mechanism) and **`pa1088`** (rotation
   without thermal ratcheting, three consecutive photoreactions).
@@ -366,10 +368,12 @@ except where a store id is given (those were verified at import).
   by proton gradient or electric potential: **`pa165135`**.
 - **[V5]** molecular-machines review carrying the electric-field
   dipolar-rotor torque analyses (Zhao, Zhang, Van Hove, *ACS Omega* 2022,
-  doi:10.1021/acsomega.2c04128), chirality-specific rotation on Cu(111)
-  (Schied et al., *ACS Nano* 2023, doi:10.1021/acsnano.2c12720) and the
-  electron-driven third-generation motor (Srivastava et al., *ACS Nano*
-  2023): **`pa342603`**. The three primaries are **to import**.
+  doi:10.1021/acsomega.2c04128: **`pa345696`**), chirality-specific
+  rotation on Cu(111) (Schied et al., *ACS Nano* 2023,
+  doi:10.1021/acsnano.2c12720: **`pa345697`**) and the electron-driven
+  third-generation motor (Srivastava et al., *ACS Nano* 17 (2023)
+  3931–3938, doi:10.1021/acsnano.2c12340: **`pa345698`**): review
+  **`pa342603`**.
 - **Source needed:** countercurrent cascade enrichment (separation
   textbook); Debye length in physiological saline; flagellar
   hydrodynamic synchronisation; C–C bond dissociation energies vs
