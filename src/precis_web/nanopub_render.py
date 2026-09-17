@@ -429,7 +429,18 @@ def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
     signature covers), and a snip validated unique-within-paper with the
     same helpers the mint gates run. Newlines split too, and ``**`` spans
     are disqualified outright — both keep markdown heading residue
-    ("Introduction**\\n\\nThe debate…") out of the candidate pool."""
+    ("Introduction**\n\nThe debate…") out of the candidate pool.
+
+    Candidates are tried in relevance order until one yields a unique
+    snip. Body chunks overlap at their seams (a chunk's first sentence is
+    routinely the previous chunk's last), so the most relevant sentence
+    can be one that occurs verbatim in two chunks — every 8-token window
+    of it then matches twice and no snip exists inside it. Falling through
+    to the next sentence keeps the prefill submittable; the old
+    best-sentence-only pick handed the reviewer an empty snip that the
+    gate refused on submit (first seen on fi191121, 2026-09-16). Only when
+    no candidate carries a unique window does the top sentence go out with
+    an empty snip."""
     from precis.nanopub import evidence as ev
     from precis.nanopub import snip as sniplib
 
@@ -439,26 +450,36 @@ def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
         for s in _SENTENCE_SPLIT.split(chunk.text or "")
         if len(sniplib.tokens(s)) >= 6 and "**" not in s and not ev.citation_markers(s)
     ]
-    quote = (
-        max(
-            candidates,
-            key=lambda s: (
-                len(claim_tokens & set(sniplib.tokens(s))),
-                len(sniplib.tokens(s)),
-            ),
-        )
-        if candidates
-        else (chunk.text or "").strip()
-    )
     haystacks = [c.text for c in ev.paper_body_chunks(store, chunk.ref_id)]
+    if not candidates:
+        whole = (chunk.text or "").strip()
+        return whole, _unique_snip(whole, haystacks)
+    ranked = sorted(
+        candidates,
+        key=lambda s: (
+            len(claim_tokens & set(sniplib.tokens(s))),
+            len(sniplib.tokens(s)),
+        ),
+        reverse=True,
+    )
+    for quote in ranked:
+        snip = _unique_snip(quote, haystacks)
+        if snip:
+            return quote, snip
+    return ranked[0], ""
+
+
+def _unique_snip(quote: str, haystacks: list[str]) -> str:
+    """The first 8-token window of ``quote`` that occurs exactly once
+    across ``haystacks`` (the paper's live body chunks), or ``""``."""
+    from precis.nanopub import snip as sniplib
+
     toks = sniplib.tokens(quote)
-    snip = ""
     for i in range(max(1, len(toks) - 7)):
         candidate = " ".join(toks[i : i + 8])
         if sniplib.count_matches(candidate, haystacks) == 1:
-            snip = candidate
-            break
-    return quote, snip
+            return candidate
+    return ""
 
 
 #: ref_ids whose lazy generation thread is still running. A prefill is

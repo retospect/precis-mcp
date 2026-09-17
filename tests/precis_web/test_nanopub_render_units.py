@@ -390,6 +390,159 @@ def test_run_context_sentence_enqueue_swallows_pass_failures(
     _nanopub_render._run_context_sentence_enqueue(SimpleNamespace(), 7)
 
 
+# ── ``_suggest_quote_snip`` (fi191121: seam sentences repeat across
+# chunks, so the top-ranked candidate can have no unique 8-token window
+# — the picker must fall through to the next candidate rather than hand
+# back an empty snip) ────────────────────────────────────────────────
+
+
+def _seed_body_chunk(store: Any, *, ref_id: int, ord: int, text: str) -> int:
+    """A live body chunk with a section_path, matching the shape
+    ``evidence.paper_body_chunks`` reads (see
+    ``tests/test_nanopub_gates_mint.py::_seed_paper``)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, section_path) "
+            "VALUES (%s, 'system', %s, 'paragraph', %s, ARRAY['Results']) "
+            "RETURNING chunk_id",
+            (ref_id, ord, text),
+        ).fetchone()
+        assert row is not None
+        conn.commit()
+        return int(row[0])
+
+
+def test_suggest_quote_snip_falls_through_a_seam_sentence(store: Any) -> None:
+    """The top-ranked sentence in chunk B is verbatim-duplicated in chunk
+    A (the routine chunk-boundary overlap) — no 8-token window of it is
+    unique across the paper's live body chunks. The old best-sentence-only
+    pick returned that sentence with an empty snip (unsubmittable, first
+    seen on fi191121); the fix must fall through to the next candidate."""
+    from precis.nanopub import evidence as ev
+    from precis.nanopub import snip as sniplib
+    from precis_web.nanopub_render import _suggest_quote_snip
+    from tests.workers._helpers import seed_ref
+
+    ref_id = seed_ref(store, title="a seam-overlap paper", kind="paper")
+    text_a = (
+        "Filler sentence about nothing in particular here. "
+        "When the bias exceeds a threshold near one volt the current "
+        "flows in the semiconducting system."
+    )
+    text_b = (
+        "When the bias exceeds a threshold near one volt the current "
+        "flows in the semiconducting system. As a result we conclude "
+        "that nanobuds keep the character of the pristine nanotube base."
+    )
+    _seed_body_chunk(store, ref_id=ref_id, ord=0, text=text_a)
+    chunk_b_id = _seed_body_chunk(store, ref_id=ref_id, ord=1, text=text_b)
+    claim = "threshold bias near one volt in the semiconducting system"
+
+    chunk_b = ev.ChunkInfo(
+        chunk_id=chunk_b_id,
+        ref_id=ref_id,
+        ord=1,
+        text=text_b,
+        section_path=["Results"],
+    )
+
+    quote, snip = _suggest_quote_snip(store, chunk_b, claim)
+
+    assert quote.startswith("As a result")
+    assert snip != ""
+    toks = snip.split(" ")
+    assert len(toks) == 8
+    assert all(t.islower() for t in toks)
+    assert sniplib.count_matches(snip, [text_a, text_b]) == 1
+
+
+def test_suggest_quote_snip_happy_path_no_overlap(store: Any) -> None:
+    """No seam collision: the most claim-relevant sentence is unique on
+    its own, so the existing single-shot behaviour still holds."""
+    from precis.nanopub import evidence as ev
+    from precis_web.nanopub_render import _suggest_quote_snip
+    from tests.workers._helpers import seed_ref
+
+    ref_id = seed_ref(store, title="a standalone paper", kind="paper")
+    text_b = (
+        "When the bias exceeds a threshold near one volt the current "
+        "flows in the semiconducting system. As a result we conclude "
+        "that nanobuds keep the character of the pristine nanotube base."
+    )
+    chunk_b_id = _seed_body_chunk(store, ref_id=ref_id, ord=0, text=text_b)
+    claim = "threshold bias near one volt in the semiconducting system"
+
+    chunk_b = ev.ChunkInfo(
+        chunk_id=chunk_b_id,
+        ref_id=ref_id,
+        ord=0,
+        text=text_b,
+        section_path=["Results"],
+    )
+
+    quote, snip = _suggest_quote_snip(store, chunk_b, claim)
+
+    assert quote.startswith("When the bias exceeds a threshold")
+    assert snip != ""
+
+
+def test_suggest_quote_snip_no_unique_window_anywhere_returns_empty_snip(
+    store: Any,
+) -> None:
+    """Two chunks with identical text: every sentence in either occurs
+    twice, so no candidate ever yields a unique window. The picker must
+    exhaust the ranked list and return the top sentence with an empty
+    snip rather than crash."""
+    from precis.nanopub import evidence as ev
+    from precis_web.nanopub_render import _suggest_quote_snip
+    from tests.workers._helpers import seed_ref
+
+    ref_id = seed_ref(store, title="a duplicated-text paper", kind="paper")
+    text = (
+        "When the bias exceeds a threshold near one volt the current "
+        "flows in the semiconducting system. As a result we conclude "
+        "that nanobuds keep the character of the pristine nanotube base."
+    )
+    chunk_a_id = _seed_body_chunk(store, ref_id=ref_id, ord=0, text=text)
+    _seed_body_chunk(store, ref_id=ref_id, ord=1, text=text)
+    claim = "threshold bias near one volt in the semiconducting system"
+
+    chunk_a = ev.ChunkInfo(
+        chunk_id=chunk_a_id, ref_id=ref_id, ord=0, text=text, section_path=["Results"]
+    )
+
+    quote, snip = _suggest_quote_snip(store, chunk_a, claim)
+
+    assert snip == ""
+    assert quote.startswith("When the bias exceeds a threshold")
+
+
+def test_suggest_quote_snip_no_sentence_candidates_falls_back_to_whole_chunk(
+    store: Any,
+) -> None:
+    """A chunk too short to produce any 6-token sentence candidate (e.g.
+    a stray fragment) hits the ``if not candidates`` branch: quote is the
+    stripped chunk text. The chunk is NOT itself persisted as a body row
+    (``paper_body_chunks`` is empty for this ref), so the whole-text
+    fallback has nothing to match uniquely against and snip stays empty —
+    no crash either way."""
+    from precis.nanopub import evidence as ev
+    from precis_web.nanopub_render import _suggest_quote_snip
+    from tests.workers._helpers import seed_ref
+
+    ref_id = seed_ref(store, title="a fragment paper", kind="paper")
+    text = "  Too short.  "
+
+    chunk = ev.ChunkInfo(
+        chunk_id=999999, ref_id=ref_id, ord=0, text=text, section_path=["Results"]
+    )
+
+    quote, snip = _suggest_quote_snip(store, chunk, "irrelevant claim text")
+
+    assert quote == text.strip()
+    assert snip == ""
+
+
 def test_answer_model_label_env_chain(monkeypatch) -> None:
     from precis_web.ask import answer_model_label
 
