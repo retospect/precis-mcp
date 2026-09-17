@@ -66,6 +66,19 @@ exactly; check.yml runs the Linux legs as 6 parallel shard jobs so the gate's
 wall-clock is one shard, not the suite. Locally it is only for reproducing a
 red CI shard — run the same `K/N` the failing job name shows.
 
+**CI shapes (check.yml, decided by its `plan` job).** The ship gate
+(`ci/**` and `main` pushes, PRs) is lint + mypy + 6 shards of Linux+db on
+3.13 — 8 jobs, so two ships fan out fully under the 20-runner cap. A diff
+that touches only `docs/` and root `*.md` gets the **docs lane** instead of
+the shards: one job of the fast set (`-m 'not db and not slow'`, no
+Postgres), which holds the doc-reading tests (doc pointers, the secrets
+sweep, backlog front-matter). Skills, `scripts/` and `.claude/` are not docs
+for this purpose — tests execute them. The **full** shape (adds 3.12, macOS,
+Windows) runs nightly and on `workflow_dispatch` with `full: true`; a
+platform-only break therefore surfaces the next morning, off the ship that
+caused it — `tests/test_posix_only_guards.py` is the compile-time stand-in
+for the Windows leg.
+
 Tiers, fastest to most complete — pick by what you changed:
 
 - **`--impacted`** is the tightest inner loop: `pytest-testmon` maps

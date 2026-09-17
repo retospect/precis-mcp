@@ -4,7 +4,7 @@ on:
   push:
     # ci/** are scripts/ship --remote's pre-merge gate refs: ship pushes the
     # synced branch there, polls this workflow to conclusion, and only a
-    # green full matrix reaches main (via ship's CAS squash-push — the
+    # green run reaches main (via ship's CAS squash-push — the
     # force-with-lease rejection is the "did anything land meanwhile" check,
     # which re-syncs and re-runs this gate). A ship retry force-pushes the
     # same ref, so the per-ref concurrency group below auto-cancels the
@@ -12,12 +12,21 @@ on:
     # direct-push escape hatches, which bypass the pre-merge gate.
     branches: [main, 'ci/**']
   pull_request:
+  # Nightly FULL matrix (both Pythons + macOS + Windows) on main. The ship
+  # gate below runs only the 3.13 Linux legs; the platform/3.12 legs are
+  # scheduled so a break there surfaces the next morning, not weeks later.
   schedule:
-    - cron: '6 4 3 * *'
-  # Manual lever for the check-asynchronously model: re-run the matrix on
-  # the current main without an empty commit — needed in practice because
-  # a push event dropped during a GitHub incident is never replayed.
+    - cron: '23 3 * * *'
+  # Manual lever for the check-asynchronously model: re-run on the current
+  # ref without an empty commit — needed in practice because a push event
+  # dropped during a GitHub incident is never replayed (scripts/ship uses it
+  # bare, which yields the gate shape). `full: true` = the nightly shape.
   workflow_dispatch:
+    inputs:
+      full:
+        description: run the full matrix (3.12 + macOS + Windows), not the ship-gate shape
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,16 +36,78 @@ permissions:
 # cancelled instead of queueing behind the runner quota. PR runs get
 # the same per-ref collapsing for free.
 #
-# Job budget: this matrix is 17 jobs (lint + 6 shards x 2 Linux legs +
-# 4 platform legs). The account's standard-runner concurrency cap is 20
-# (GitHub Free), so ONE ship's matrix fans out fully; a second concurrent
-# ship queues behind it rather than failing. Adding shards or legs past
-# that cap only lengthens the queue — reshape, don't grow.
+# Job budget: the ship-gate shape is 8 jobs (plan + lint + 6 shards of one
+# Linux leg); the nightly full shape is 18. The account's standard-runner
+# concurrency cap is 20 (GitHub Free), so TWO concurrent ships fan out
+# fully; a third queues behind them rather than failing. Adding shards or
+# legs to the gate shape past ~10 jobs costs that second slot — reshape,
+# don't grow.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
+  # Decides the run's shape from the event and the diff:
+  #   full      — nightly schedule or `workflow_dispatch` with full=true:
+  #               every leg below runs.
+  #   docs_only — every changed path is under docs/ or a root *.md, so the
+  #               shard matrix is replaced by one job of the fast set (the
+  #               documented gate for a change that can't touch a DB path,
+  #               docs/conventions/testing.md); lint + mypy still run.
+  #               `src/precis/data/skills/**`, `scripts/**` and `.claude/**`
+  #               are deliberately NOT docs here — skills are served and
+  #               tested at runtime, scripts are executed by tests, and the
+  #               .claude hooks are shell that tests exercise.
+  # Anything else is the ship-gate shape: lint + 6 shards of 3.13 Linux.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.shape.outputs.full }}
+      docs_only: ${{ steps.shape.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: shape
+        env:
+          EVENT: ${{ github.event_name }}
+          FULL_INPUT: ${{ inputs.full }}
+          BEFORE: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          full=false
+          docs_only=false
+          case "$EVENT" in
+            schedule) full=true ;;
+            workflow_dispatch) if [[ "$FULL_INPUT" == "true" ]]; then full=true; fi ;;
+          esac
+          range=""
+          if [[ "$full" == false ]]; then
+            case "$EVENT" in
+              pull_request) range="origin/${BASE_REF}...HEAD" ;;
+              push)
+                # main: the squash-merge's own delta (`before` is the
+                # previous main; all-zeros = ref creation, keep the gate).
+                # ci/<branch>: the branch is already merged with origin/main
+                # by ship, so the three-dot diff is the branch's own change.
+                if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+                  [[ "$BEFORE" =~ ^0+$ ]] || range="${BEFORE}..HEAD"
+                else
+                  range="origin/main...HEAD"
+                fi ;;
+            esac
+          fi
+          if [[ -n "$range" ]]; then
+            changed="$(git diff --name-only $range 2>/dev/null || true)"
+            if [[ -n "$changed" ]] && ! grep -qvE '^(docs/|[^/]+\.md$)' <<<"$changed"; then
+              docs_only=true
+            fi
+          fi
+          echo "shape: event=$EVENT full=$full docs_only=$docs_only range=${range:-none}"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -72,7 +143,11 @@ jobs:
   # separate runners, each with its own postgres service. Wall-clock is
   # one shard's worth (~8 min + setup). The shard count is spelled twice
   # below (matrix list + `/6`) — keep them equal.
+  #
+  # Gate shape runs 3.13 only; the nightly adds 3.12 (see `plan`).
   test-linux:
+    needs: plan
+    if: needs.plan.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     # ~10 min steady-state per shard; the cap is for hangs (a wedged test
     # would otherwise hold the runner for GitHub's 6 h default while nobody
@@ -81,7 +156,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.12', '3.13']
+        python-version: ${{ needs.plan.outputs.full == 'true' && fromJSON('["3.12", "3.13"]') || fromJSON('["3.13"]') }}
         shard: [1, 2, 3, 4, 5, 6]
     services:
       postgres:
@@ -143,10 +218,33 @@ jobs:
         env:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
 
+  # Docs-only lane: replaces the shard matrix when `plan` saw nothing but
+  # docs/ + root *.md. Runs the fast set (`not db and not slow`, no
+  # Postgres) — that is the documented gate for a change that can't reach
+  # a DB path, and it contains the doc-reading tests (doc pointers, the
+  # secrets sweep, backlog front-matter). The nightly full run and the next
+  # code ship cover the db-bound remainder.
+  test-docs:
+    needs: plan
+    if: needs.plan.outputs.docs_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: '3.13'
+      - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu pytest -m 'not db and not slow'
+
   # macOS / Windows: no service-container support, so postgres is absent
   # and the db-tagged tests auto-skip via the conftest probe. These legs
-  # cover the db-less suite + platform-specific paths.
+  # cover the db-less suite + platform-specific paths. Nightly only (or
+  # `workflow_dispatch` with full=true) — off the ship gate since
+  # 2026-09-16 so two ships fit the runner cap; `tests/test_posix_only_guards.py`
+  # is the compile-time stand-in for the Windows leg.
   test-other:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 90
     strategy:

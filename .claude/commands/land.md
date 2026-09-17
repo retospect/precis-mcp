@@ -53,19 +53,21 @@ Optional ship message from the user: `$ARGUMENTS`
 
 4. **Run the script.** It is idempotent — re-running after a fix resumes
    cleanly. **Run it in the background with output redirected to a log**
-   (the remote gate takes ~1h; a foreground run would block the session and
-   raw output would flood context):
+   (the remote gate takes ~12 min green, longer when queued; a foreground
+   run would block the session and raw output would flood context):
    ```
    scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
    ```
    `--remote` gates on **GitHub's computers**: the synced branch goes to
-   `ci/<branch>`, the full check.yml matrix (lint · mypy · Linux+db
-   3.12/3.13 · macOS · Windows) runs there, and only a green run reaches
+   `ci/<branch>`, the check.yml gate shape (lint · mypy · 6 shards of
+   Linux+db 3.13; a docs-only diff runs the fast-set docs lane instead of
+   the shards; 3.12 · macOS · Windows are nightly-only) runs there, and only
+   a green run reaches
    `main` — via the same atomic CAS squash-push, so main only ever advances
-   through a tree the matrix tested against the then-current main. If main
+   through a tree the gate tested against the then-current main. If main
    moves during the wait, the hybrid race policy engages automatically:
    ship keeps the lock, re-syncs, and validates the integrated tree with
-   the full LOCAL container gate (~10 min) instead of a second CI hour.
+   the full LOCAL container gate (~10 min) instead of a second CI run.
    Opt-in belt for risky diffs: `scripts/ship --remote --impacted` runs the
    local impacted container gate FIRST, before spending a CI cycle.
    (`scripts/ship --impacted` without `--remote` is the legacy local-gate

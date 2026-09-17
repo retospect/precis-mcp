@@ -112,14 +112,16 @@ QUICK="${PRECIS_SHIP_QUICK:-0}"
 # squash-push — the --force-with-lease IS the "did anything land meanwhile"
 # check, and a rejection loops back through sync + a fresh CI run, so main
 # only ever advances through an exactly-tested tree. The ship lock is NOT
-# held across the CI wait (the ~55-min matrix would trip the lock's 30-min
+# held across the CI wait (a queued matrix can exceed the lock's 30-min
 # staleness steal and starve sibling ships) — it's taken only around the
 # final CAS section.
 REMOTE="${PRECIS_SHIP_REMOTE:-0}"
 # Hybrid race policy (user-decided 2026-09-13): when a GREEN remote gate
-# loses the CAS race (main moved during the ~1h matrix — measured: three
-# consecutive green runs starved during one burst afternoon), do NOT burn
-# another CI hour. Keep the ship lock, re-sync, and validate the integrated
+# loses the CAS race (main moved during the matrix — measured when it took
+# ~1h: three consecutive green runs starved during one burst afternoon; the
+# gate is ~12 min since the 2026-09-16 shard + single-leg reshape, see
+# gr343941 for whether this fallback still pays), do NOT burn
+# another CI run. Keep the ship lock, re-sync, and validate the integrated
 # tree with the FULL LOCAL container gate (~10 min) instead, then push. The
 # change itself still had a full pre-merge matrix; only the merge-integration
 # delta (siblings' already-shipped commits) gets the local-suite check.
@@ -585,8 +587,8 @@ acquire_ship_lock() {
 
 # Classic modes hold the lock across the whole sync→gate→push section (the
 # gate is minutes). Remote mode takes it ONLY around the final CAS push —
-# holding it across a ~55-min GitHub matrix would starve every sibling ship
-# and trip the 30-min staleness steal above anyway.
+# holding it across a GitHub matrix (12 min green, unbounded when queued)
+# would starve every sibling ship and trip the 30-min staleness steal above.
 if [[ "$REMOTE" != 1 ]]; then
     acquire_ship_lock
 fi
@@ -594,7 +596,9 @@ fi
 # ── 3b. remote gate (--remote): push ci/<branch>, wait for check.yml ─────
 # The branch (already synced with origin/main by the loop below) goes to the
 # throwaway ref ci/<branch>; check.yml triggers on ci/** pushes and runs the
-# full matrix (lint · mypy · Linux+db 3.12/3.13 · macOS · Windows) on exactly
+# gate shape (lint · mypy · 6 shards of Linux+db 3.13; a docs-only diff gets
+# the fast-set docs lane instead of the shards; 3.12 + macOS + Windows are
+# nightly-only) on exactly
 # the tree the CAS push below will make main. A force-push retry to the same
 # ref auto-cancels the superseded run via the workflow's per-ref concurrency
 # group. Green → return 0; red/timeout → return 1 (caller dies — a red gate
@@ -606,7 +610,7 @@ remote_gate_wait() {
     sha="$(git rev-parse HEAD)"
     t0="$(date +%s)"
     deadline=$(( t0 + 60 * ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} ))
-    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (full matrix, ~1h)"
+    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 6 shards, ~12 min green; docs-only diffs ~5 min)"
     git push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
         || { echo "✖ could not push ci/${BRANCH}" >&2; return 1; }
     while :; do
@@ -827,7 +831,7 @@ for attempt in 1 2 3; do
     # In remote mode a retry means a FRESH CI cycle on the re-synced tree
     # (that's the contract: main only advances through an exactly-tested
     # tree), and the lock is dropped first so siblings aren't starved
-    # through the new ~1h wait.
+    # through the CI wait (~12 min green, unbounded when queued).
     say "shipping to main"
     git fetch -q origin main
     if ! git merge-base --is-ancestor origin/main HEAD; then

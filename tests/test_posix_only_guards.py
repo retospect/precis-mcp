@@ -173,8 +173,8 @@ def test_posix_only_test_modules_carry_a_win32_guard() -> None:
             bad.append(f"{rel}: {'; '.join(why)}")
     assert not bad, (
         f"{len(bad)} test module(s) look POSIX-only but never consider win32 "
-        "(the Windows CI leg only runs post-merge — this is how check.yml "
-        "goes red for days). Add a skipif guard, module-level for a wholly-"
+        "(the Windows CI leg only runs nightly, off the ship gate — this is "
+        "how check.yml goes red for days). Add a skipif guard, module-level for a wholly-"
         "POSIX module: pytestmark = pytest.mark.skipif(sys.platform == "
         '"win32", reason="POSIX-only <what>") — or vet + _EXEMPT it here:\n'
         + "\n".join(bad)

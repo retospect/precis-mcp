@@ -14,12 +14,13 @@ Reading order: `docs/codebase.md` → owning package `__init__.py` docstring →
 
 Work happens in worktrees (`claude -w <name>`). **`/land`** = ship with the
 gate on GitHub (`scripts/ship --remote`: commit WIP → sync main → push
-`ci/<branch>` → wait for the full check.yml matrix (~1h; run ship in
-background, output to a log) → atomic CAS squash-merge to `main` — main only
-advances through a tree the matrix tested against the then-current main; if
-main moves meanwhile, the hybrid race policy re-syncs and validates the
-integrated tree with the full LOCAL gate (~10 min) instead of a second CI
-hour. Squawk on new
+`ci/<branch>` → wait for the check.yml gate (lint + 6 Linux shards, ~12 min;
+docs-only diffs get a ~5 min docs lane; 3.12/macOS/Windows run nightly — run
+ship in background, output to a log) → atomic CAS squash-merge to `main` —
+main only advances through a tree the gate tested against the then-current
+main; if main moves meanwhile, the hybrid race policy re-syncs and validates
+the integrated tree with the full LOCAL gate (~10 min) instead of a second CI
+run. Squawk on new
 migration SQL stays host-side. `--remote --impacted` = opt-in local impacted
 pre-gate first; bare `--impacted` = legacy local-only gate). **`/go`** = ship
 with the full LOCAL suite + diff-coverage gate (changed src lines need
