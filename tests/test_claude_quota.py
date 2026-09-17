@@ -345,3 +345,13 @@ def test_looks_like_logged_out_is_narrower_than_auth_failure() -> None:
     assert _looks_like_auth_failure("used 1401 tokens")
     assert not _looks_like_logged_out("used 1401 tokens")
     assert not _looks_like_logged_out("")
+    # Plain-text lines only: the phrase inside a stream-json event is
+    # CONTENT (a quoted gripe title, a tool result), not the CLI banner.
+    assert not _looks_like_logged_out(
+        '{"type":"user","message":{"content":[{"type":"tool_result",'
+        '"content":"gr335305: Not logged in. Please run /login"}]}}\n'
+        '{"type":"result","result":"ok"}\n'
+    )
+    assert _looks_like_logged_out(
+        'Not logged in · Please run /login\n{"type":"result","result":""}\n'
+    )

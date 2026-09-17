@@ -88,7 +88,7 @@ either way, so a design written by uid reads back the same as one
 written by name. (A block may not be *named* `'uid:…'` — that would be
 unaddressable — nor contain `'#'`.)
 
-## Ops (exact parameter lists)
+## Ops — blocks, ports, connect (exact parameter lists)
 
 - `add_block` — `name` (req) · `parent` · `pose` [x,y,z] m (bare) · `rot`
   [x,y,z] rad (bare, Euler `Rz@Ry@Rx` — see "Units" above) · `envelope`
@@ -131,6 +131,9 @@ unaddressable — nor contain `'#'`.)
   or on `CuAAC`), `donor` ↔ `acceptor`, `bump` ↔ `hole`, `+` ↔ `-`.
   Azide + azide is refused naming both ports' roles; any unlisted role
   is symmetric.
+
+## Ops — joints, loads, measures, modes, notes (exact parameter lists)
+
 - `disconnect` — `a`, `b`
 
 ## Ops — joints, loads, measures, modes, BOM, notes, formfind

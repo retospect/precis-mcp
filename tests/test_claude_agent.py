@@ -1728,3 +1728,77 @@ def test_call_claude_agent_async_timeout_raises(stub_bin: Path) -> None:
 
     with pytest.raises(ClaudeAgentError, match="timed out"):
         asyncio.run(call_claude_agent_async("do", timeout_s=0.5))
+
+
+# ── "Not logged in" guard is structural, not a substring search ──────────
+# The banner is plain text printed BEFORE the agent loop; a run that saw it
+# never made a tool call. Matching the phrase anywhere in the stream failed
+# every doctor_tick from 2026-09-10 (its tool results quote alerts/gripes
+# that say "not logged in") while the token served every other run
+# (gr335305 misread that as token expiry).
+
+
+def test_not_logged_in_banner_raises(stub_bin: Path) -> None:
+    _write_stream_stub(stub_bin, stdout="Not logged in · Please run /login\n")
+    with pytest.raises(ClaudeAgentError, match="not logged in"):
+        call_claude_agent("do")
+
+
+def test_not_logged_in_phrase_inside_tool_result_does_not_raise(
+    stub_bin: Path,
+) -> None:
+    """A doctor-shaped run: a tool RESULT quotes a gripe titled with the
+    phrase, the agent then answers and the stream ends with a result event.
+    That is a successful run, not a logged-out one."""
+    stdout = _stream(
+        [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "mcp__precis__search", "input": {}}
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "content": "gr335305: claude -p returned but is "
+                            "Not logged in. Please run /login — token expiry?",
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "report filed"}]},
+            },
+            {
+                "type": "result",
+                "total_cost_usd": 0.31,
+                "num_turns": 4,
+                "result": "report filed",
+            },
+        ]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout)
+    res = call_claude_agent("do")
+    assert res.final_text == "report filed"
+    assert res.tool_calls == 1
+
+
+def test_not_logged_in_banner_with_result_event_but_no_tool_calls_raises(
+    stub_bin: Path,
+) -> None:
+    """Banner present and zero tool calls: still logged out, even if a CLI
+    version tacks a result event onto the end."""
+    stdout = "Not logged in · Please run /login\n" + _stream(
+        [{"type": "result", "total_cost_usd": 0, "num_turns": 0, "result": ""}]
+    )
+    _write_stream_stub(stub_bin, stdout=stdout)
+    with pytest.raises(ClaudeAgentError, match="not logged in"):
+        call_claude_agent("do")

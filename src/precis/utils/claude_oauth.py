@@ -108,10 +108,35 @@ def prefer_oauth_over_api_key(env: MutableMapping[str, str]) -> str:
     return "none"
 
 
+#: The banner ``claude -p`` prints on a **clean (exit 0)** run when its OAuth
+#: state is bad: ``Not logged in · Please run /login``. Lower-cased substrings.
+LOGGED_OUT_MARKERS: tuple[str, ...] = ("not logged in", "please run /login")
+
+
+def logged_out_banner_present(stdout: str) -> bool:
+    """True when ``claude -p``'s stdout carries the logged-out banner as
+    **plain text** — i.e. outside any stream-json event line.
+
+    The banner is printed before the agent loop starts, so it is never
+    wrapped in JSON. Tool results and assistant text, by contrast, always
+    arrive inside ``{"type": …}`` lines — and an agent whose job is to read
+    alerts/gripes/logs (doctor_tick) routinely echoes the phrase "not logged
+    in" from *content* it fetched. Scanning the raw stream matched those
+    echoes and failed every doctor tick from 2026-09-10 (gr335305 misread it
+    as token expiry); scanning only the non-JSON lines cannot.
+    """
+    plain = "\n".join(
+        ln for ln in (stdout or "").splitlines() if not ln.lstrip().startswith("{")
+    ).lower()
+    return any(marker in plain for marker in LOGGED_OUT_MARKERS)
+
+
 __all__ = [
     "API_KEY_VAR",
     "ENV_VAR",
     "LEGACY_TOKEN_FILENAME",
+    "LOGGED_OUT_MARKERS",
     "ensure_oauth_token",
+    "logged_out_banner_present",
     "prefer_oauth_over_api_key",
 ]

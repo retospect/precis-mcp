@@ -46,7 +46,11 @@ from precis.utils._claude_subprocess import (
     run_claude_async,
     to_str,
 )
-from precis.utils.claude_oauth import ensure_oauth_token, prefer_oauth_over_api_key
+from precis.utils.claude_oauth import (
+    ensure_oauth_token,
+    logged_out_banner_present,
+    prefer_oauth_over_api_key,
+)
 from precis.utils.friction_reflect import append_friction_footer
 
 if TYPE_CHECKING:
@@ -839,8 +843,19 @@ def _build_agent_result(res: Any, *, duration_s: float) -> AgentResult:
     # run /login" on stdout when the OAuth state is bad, which otherwise
     # looks like a clean cost=$0 turns=None success. Detect and raise
     # explicitly so the operator sees the failure where it happened.
-    stdout_text = (res.stdout or "").strip()
-    if "Not logged in" in stdout_text or "Please run /login" in stdout_text:
+    #
+    # Structural, not a substring search over the whole stream: the banner
+    # is plain text printed BEFORE the agent loop, so (a) it lives outside
+    # the JSON event lines and (b) a run that hit it never made a tool call.
+    # A bare `"Not logged in" in stdout` matched the phrase inside tool
+    # RESULTS — the doctor agent reads alerts/gripes that quote it — and
+    # failed every 3-minute doctor_tick from 2026-09-10 as "not logged in"
+    # while the same token served ~120 other runs a day (gr335305).
+    stdout_text = res.stdout or ""
+    if logged_out_banner_present(stdout_text) and (
+        _last_result_event(stdout_text) is None
+        or _count_tool_use_events(stdout_text) == 0
+    ):
         raise ClaudeAgentError(
             "claude -p (agent) returned but is not logged in. "
             "CLAUDE_CODE_OAUTH_TOKEN missing or stale — load it from "

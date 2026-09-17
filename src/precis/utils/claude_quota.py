@@ -40,7 +40,11 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from precis.utils.claude_oauth import ensure_oauth_token
+from precis.utils.claude_oauth import (
+    LOGGED_OUT_MARKERS,
+    ensure_oauth_token,
+    logged_out_banner_present,
+)
 
 log = logging.getLogger(__name__)
 
@@ -95,18 +99,22 @@ def _looks_like_auth_failure(*texts: str) -> bool:
 
 #: The logged-out markers the CLI prints on a **clean (exit 0)** run —
 #: deliberately the narrow subset of :data:`_AUTH_FAILURE_MARKERS`, and the
-#: same pair ``claude_agent._build_agent_result`` guards on. The loose set
-#: must NOT be reused here: it matches the bare substring ``"401"``, which
-#: occurs inside ordinary numbers in a successful quota payload (a
-#: ``1401``-token count, an epoch timestamp) and would page on a healthy
-#: refresh.
-_LOGGED_OUT_MARKERS: tuple[str, ...] = ("not logged in", "please run /login")
+#: same pair ``claude_agent._build_agent_result`` guards on (one definition,
+#: ``claude_oauth.LOGGED_OUT_MARKERS``). The loose set must NOT be reused
+#: here: it matches the bare substring ``"401"``, which occurs inside
+#: ordinary numbers in a successful quota payload (a ``1401``-token count,
+#: an epoch timestamp) and would page on a healthy refresh.
+_LOGGED_OUT_MARKERS: tuple[str, ...] = LOGGED_OUT_MARKERS
 
 
 def _looks_like_logged_out(stdout: str) -> bool:
-    """True if a clean-exit ``claude -p`` stdout says it is not logged in."""
-    haystack = stdout.lower()
-    return any(marker in haystack for marker in _LOGGED_OUT_MARKERS)
+    """True if a clean-exit ``claude -p`` stdout says it is not logged in.
+
+    Plain-text lines only (``claude_oauth.logged_out_banner_present``): the
+    banner is never inside a stream-json event, whereas a quota payload or
+    an echoed tool result can carry the phrase as *content*.
+    """
+    return logged_out_banner_present(stdout)
 
 
 #: Scope key used by the singleton row. Future multi-OAuth deployments
