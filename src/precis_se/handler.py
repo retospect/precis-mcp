@@ -2565,6 +2565,12 @@ def _render_fasten(tree: SeTree) -> str:
                             "kind": h.kind,
                             "diameter": _mm(h.diameter_m),
                             "depth": _mm(h.depth_m),
+                            # A blind tapped/core hole is drilled past its
+                            # full-form thread; both numbers matter to the
+                            # person cutting it.
+                            "full thread": (
+                                _mm(h.thread_depth_m) if h.thread_depth_m else "—"
+                            ),
                             "across flats": (
                                 _mm(h.across_flats_m) if h.across_flats_m else "—"
                             ),
@@ -2577,6 +2583,7 @@ def _render_fasten(tree: SeTree) -> str:
                         "kind",
                         "diameter",
                         "depth",
+                        "full thread",
                         "across flats",
                     ],
                 )

@@ -372,6 +372,122 @@ class TestStampedHoles:
         assert "fit_unresolved" in _rules(res)
 
 
+def _blind_stack(
+    *,
+    screw_length_m: float,
+    grip_m: float,
+    terminal_m: float,
+    mode: str | None,
+    thread_strategy: str | None = None,
+) -> SeTree:
+    """One non-terminal plate of ``grip_m``, then a terminal ``member`` of
+    ``terminal_m`` an M6 screw drives into — gr343427's seatpost in
+    miniature (a 150 mm member stamped 150 mm deep for 10 mm of real
+    engagement). Only the *ratio* of screw length, grip and terminal
+    thickness matters, not the specific part."""
+    tree = SeTree()
+    specs = dict(M6X30, length=screw_length_m)
+    tree.blocks["bolt"] = _bought("bolt", [0, 0, 0], specs, slug="iso-4762-m6")
+    tree.blocks["plate"] = _designed(
+        "plate", [0, 0, 0], envelope=f"box:w0.05d0.05h{grip_m}"
+    )
+    terminal = SeBlock(
+        name="member", pose=[0, 0, grip_m], envelope=f"box:w0.05d0.05h{terminal_m}"
+    )
+    terminal.mode = mode
+    tree.blocks["member"] = terminal
+    params: dict[str, Any] = {}
+    if thread_strategy is not None:
+        params["thread_strategy"] = thread_strategy
+    tree.connects.append(
+        ConnectSpec(
+            a_block="bolt",
+            a_port="thread",
+            b_block="member",
+            b_port="hole",
+            joint={"class": "rigid", "mechanism": "screw", "params": params},
+        )
+    )
+    return tree
+
+
+class TestBlindHoleDepth:
+    """gr343427: `core_tf.tapping_drill`/`core_hole` size the *diameter*
+    of the far-end hole and leave `depth_mm` unset, so without the
+    blind-hole rule the only fallback was the whole member thickness —
+    a real design stamped an M6 tapped hole 150 mm deep for 10 mm of
+    actual engagement."""
+
+    def test_a_thick_terminal_member_gets_a_blind_hole_not_its_full_depth(
+        self,
+    ) -> None:
+        res = _only(
+            _blind_stack(
+                screw_length_m=0.035,
+                grip_m=0.025,
+                terminal_m=0.150,
+                mode="cnc-2.5ax/aluminium",
+            )
+        )
+        assert res.thread_strategy == "tapped"
+        tapped = next(h for h in res.holes if h.kind == "tapped")
+        # 10 mm engaged (35 mm screw − 25 mm grip) + 2 pitches tip
+        # clearance + 3 pitches tap chamfer, M6 coarse (1 mm pitch).
+        assert tapped.depth_m == pytest.approx(0.015)
+        assert tapped.depth_m < 0.150
+        assert tapped.thread_depth_m == pytest.approx(0.012)
+        assert "blind" in (tapped.source or "")
+
+    def test_a_blind_depth_past_the_member_comes_back_through(self) -> None:
+        res = _only(
+            _blind_stack(
+                screw_length_m=0.020,
+                grip_m=0.004,
+                terminal_m=0.008,
+                mode="cnc-2.5ax/aluminium",
+            )
+        )
+        tapped = next(h for h in res.holes if h.kind == "tapped")
+        assert tapped.depth_m == pytest.approx(0.008)
+        assert "through" in (tapped.source or "")
+
+    def test_thread_forming_takes_tip_clearance_only_no_tap_chamfer(self) -> None:
+        res = _only(
+            _blind_stack(
+                screw_length_m=0.016,
+                grip_m=0.004,
+                terminal_m=0.020,
+                mode="fdm/petg",
+                thread_strategy="thread-forming",
+            )
+        )
+        core = next(h for h in res.holes if h.kind == "core")
+        # 12 mm engaged (16 mm screw − 4 mm grip) + 2 pitches, no chamfer.
+        assert core.depth_m == pytest.approx(0.014)
+        assert core.thread_depth_m == pytest.approx(0.014)
+        assert core.depth_m < 0.020
+
+    def test_a_screw_too_short_sizes_the_hole_from_required_engagement(
+        self,
+    ) -> None:
+        """Length == grip is no thread at all — the hole still has to be
+        sized for the engagement this joint *needs* (1×D in steel), not
+        for the wrong screw (`screw_too_short` already names that)."""
+        res = _only(
+            _blind_stack(
+                screw_length_m=0.010,
+                grip_m=0.010,
+                terminal_m=0.030,
+                mode="cnc-2.5ax/aluminium",
+            )
+        )
+        assert "screw_too_short" in _rules(res)
+        tapped = next(h for h in res.holes if h.kind == "tapped")
+        # required 1×D (6 mm, M6) + 2 pitches + 3 pitches, 1 mm pitch.
+        assert tapped.depth_m == pytest.approx(0.011)
+        assert tapped.depth_m > 0.0
+
+
 class TestDeclaredAxis:
     def test_a_declared_axis_that_disagrees_with_the_screw_is_a_finding(self) -> None:
         res = _only(

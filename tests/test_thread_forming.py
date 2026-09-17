@@ -121,3 +121,23 @@ class TestMaterials:
         assert set(tf.STRATEGIES) <= set(strategies)
         for entry in strategies.values():
             assert entry["title"] and entry["note"]
+
+
+class TestBlindHole:
+    """gr343427: how much deeper than the engaged thread a blind hole is
+    drilled. Not a standard — the numbers are asserted as house policy
+    (2 pitches tip clearance, 3 tap chamfer), not re-derived here."""
+
+    def test_the_house_allowances_are_carried_in_pitches(self) -> None:
+        rule = tf.blind_hole()
+        assert rule.tip_clearance_pitches == pytest.approx(2)
+        assert rule.tap_chamfer_pitches == pytest.approx(3)
+        assert "HOUSE RULE" in rule.source
+
+    def test_the_tap_chamfer_is_on_top_of_tip_clearance(self) -> None:
+        """A cut thread needs more drilled past the engagement than a
+        thread-forming core hole — a plug tap's chamfer, not just the
+        screw's own tip runout."""
+        rule = tf.blind_hole()
+        assert rule.tap_chamfer_pitches > 0
+        assert rule.tip_clearance_pitches > 0

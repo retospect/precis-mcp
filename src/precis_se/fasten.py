@@ -64,10 +64,14 @@ assembly-order existence — including whether a nut trap can be *reached*;
 edge distance (needs hole positions in a member's outline, which arrives
 with the profile tier); washers as load-spreaders in the stack-up
 (they are members here, which is geometrically right and mechanically
-silent); **a screw bottoming out** — still deferred, for rung 3a's
-reason: a stamped depth says how far the feature goes, never whether the
-material under it ends. What *is* now checked is the other half, a pocket
-deeper than the member it sits in (``pocket_too_deep``);
+silent); **a screw bottoming out** is now answered for the two BLIND
+strategies — ``tapped``/``core`` are drilled past the engaged thread by
+the house tip-clearance/tap-chamfer allowance
+(:func:`precis.thread_forming.blind_hole`, gr343427) and come back
+*through* instead when that reaches the far face, rather than stamping
+the whole member thickness regardless of how little thread the screw
+actually needs. What is still checked separately is the other half, a
+pocket deeper than the member it sits in (``pocket_too_deep``);
 the printed **boss** as geometry rather than prose — this pass only ever
 subtracts, and adding material to a member someone else authored is the
 hand-edit collision the derived-feature rule exists to avoid; and the
@@ -142,17 +146,6 @@ _MIN_ENGAGEMENT_D = 1.0
 #: Threads of protrusion past a nut — the assembly convention that the
 #: nut is fully engaged, expressed in pitches.
 _PROTRUSION_PITCHES = 2.0
-
-#: Extra depth a blind tapped or thread-forming hole needs beyond the
-#: engaged thread length: the tap's chamfer (the first few threads, which
-#: cut full-depth only once the tap has run past them) and a thread-
-#: forming screw's pointed lead-in both need somewhere to go that isn't
-#: "load-bearing thread", or the last engaged turn is also the bottom of
-#: the hole. 3 pitches is the shop rule of thumb for a taper/plug tap;
-#: expressed in pitches, like ``_PROTRUSION_PITCHES``, so it scales with
-#: thread size rather than being one mm figure applied to an M2 and an
-#: M12 alike.
-_TAP_DRILL_ALLOWANCE_PITCHES = 3.0
 
 #: Drives this shop builds with (Reto, 2026-09-15): the two internal
 #: drives that take real torque. ``'socket'`` is `component`'s spelling of
@@ -231,6 +224,15 @@ class Hole:
     across_flats_m: float | None = None
     chamfer_m: float | None = None
     source: str | None = None
+    #: How much of a ``tapped``/``core`` far-end hole is full-form thread —
+    #: the rest of ``depth_m`` is the house tip-clearance/tap-chamfer
+    #: allowance that lets a blind hole drill past it
+    #: (:func:`precis.thread_forming.blind_hole`). ``None`` for every other
+    #: kind, and when the far end has no catalog pitch to size it from.
+    thread_depth_m: float | None = None
+    #: True when the feature exits the member's far face — every clearance
+    #: hole, and a ``tapped``/``core`` hole whose blind depth would have
+    #: reached the far face and was capped at the thickness instead.
     through: bool = False
 
 
@@ -465,6 +467,7 @@ def _hole_for(
     across_flats_m: float | None = None,
     chamfer_m: float | None = None,
     source: str | None = None,
+    thread_depth_m: float | None = None,
     through: bool = False,
 ) -> Hole:
     # A printed hole comes out undersize, so the *modelled* diameter is
@@ -499,6 +502,7 @@ def _hole_for(
         across_flats_m=across_flats_m,
         chamfer_m=chamfer_m,
         source=source,
+        thread_depth_m=thread_depth_m,
         through=through,
     )
 
@@ -512,38 +516,6 @@ def _engagement_d(res: FastenResult) -> float:
     silently inflated length requirement that nobody can trace."""
     rule = core_tf.material(res.material_class) if res.material_class else None
     return rule.min_engagement_d if rule is not None else _MIN_ENGAGEMENT_D
-
-
-def _blind_tap_depth_m(
-    res: FastenResult, member: Member, *, specs: dict[str, Any]
-) -> float:
-    """How deep a **tapped** or **thread-forming** terminal feature
-    actually goes: the thread's engagement plus a tap-drill allowance,
-    never the whole member — a tapped hole the full length of a 150 mm
-    seatpost is not what anyone drills for 10 mm of engaged thread.
-
-    Prefers the *measured* engagement (``res.thread.engagement_m``, only
-    set once :func:`_one` has a declared screw length to measure
-    from); falls back to the design *minimum* (:func:`_engagement_d`
-    nominal diameters) when no length was declared — the strategy still
-    calls for a blind hole, not a guess dressed as a through one. The
-    caller caps the result at ``member.thickness_m``."""
-    pitch = res.thread.pitch_m if res.thread is not None else None
-    engagement = res.thread.engagement_m if res.thread is not None else None
-    if engagement is None:
-        nominal = _num(specs, "outer_diameter")
-        engagement = _engagement_d(res) * nominal if nominal is not None else None
-    if engagement is None:
-        # Neither a measured nor a nominal-diameter engagement could be
-        # had — no thread_pitch/outer_diameter spec to reason from at
-        # all. There is nothing to size a blind hole from, so this falls
-        # back to the pre-fix behaviour (full member thickness) rather
-        # than inventing a number — an honest "don't know" that a
-        # through hole represents, not the silent guess a mid-length
-        # blind depth would be.
-        return member.thickness_m
-    allowance = _TAP_DRILL_ALLOWANCE_PITCHES * pitch if pitch is not None else 0.0
-    return engagement + allowance
 
 
 def _resolve_strategy(res: FastenResult, *, subject: str, last: Member) -> None:
@@ -960,23 +932,23 @@ def _stamp(
         if member is res.members[-1] and res.termination == "tapped":
             far = _far_end_feature(res, member, subject=subject, specs=specs)
             if far is not None:
-                # A 'tapped'/'core' feature has no depth of its own — the
-                # tapping-drill/core-hole tables are cross-sectional (they
-                # only know d − P or a factor × major), not axial — so it
-                # is sized here from engagement, not read off the table.
-                # 'insert-pocket'/'nut-pocket' already carry a real depth
-                # from the series row and pass through ``min`` unchanged.
-                uncapped_m = (
-                    _blind_tap_depth_m(res, member, specs=specs)
-                    if far.depth_m is None
-                    else far.depth_m
-                )
-                depth_m = min(uncapped_m, member.thickness_m)
-                # Capped at the member's own thickness means the blind
-                # hole would have gone past the far face — at that point
-                # it is a through hole (which can say so), not a blind
-                # one that bottoms out where the material does anyway.
-                far_through = far.depth_m is None and uncapped_m >= member.thickness_m
+                thread_depth_m: float | None = None
+                far_source = far.source
+                far_through = False
+                if far.kind in ("tapped", "core"):
+                    # Neither leaves depth_mm set — the tapping-drill and
+                    # core-hole tables are cross-sectional, so a BLIND
+                    # hole's depth is sized here from engagement
+                    # (gr343427). Capped at the member's thickness it is a
+                    # through hole, and says so.
+                    depth_m, thread_depth_m, far_source = _blind_hole_depth(
+                        res, member, far, specs=specs
+                    )
+                    far_through = depth_m >= member.thickness_m
+                elif far.depth_m is None:
+                    depth_m = member.thickness_m
+                else:
+                    depth_m = min(far.depth_m, member.thickness_m)
                 if far.kind == "nut-pocket":
                     # The screw has to REACH the nut, so the member is
                     # drilled through and the pocket is recessed from its
@@ -1016,7 +988,8 @@ def _stamp(
                         chamfer_m=(
                             None if far.chamfer_mm is None else far.chamfer_mm / 1000.0
                         ),
-                        source=far.source,
+                        source=far_source,
+                        thread_depth_m=thread_depth_m,
                         through=far_through,
                     )
                 )
@@ -1095,6 +1068,65 @@ def _far_end_feature(
         )
     _boss_finding(res, member, subject=subject, specs=specs)
     return feature
+
+
+def _blind_hole_depth(
+    res: FastenResult, member: Member, far: core_tf.Feature, *, specs: dict[str, Any]
+) -> tuple[float, float | None, str]:
+    """The depth a ``tapped`` or thread-forming ``core`` far-end hole is
+    actually drilled to — ``core_tf.tapping_drill``/``core_hole`` size the
+    *diameter* and leave ``depth_mm`` unset, so without this the caller's
+    only fallback is the whole member thickness (gr343427: a 150 mm
+    seatpost stamped 150 mm deep for 10 mm of real engagement).
+
+    House rule (:func:`precis.thread_forming.blind_hole`): drill past the
+    thread the screw actually engages by a tip-clearance allowance so it
+    never bottoms on thread runout, plus — for a cut thread only — a
+    tap-chamfer allowance for the plug tap's lead-in. Returns
+    ``(drill_depth_m, thread_depth_m, source)``, the depth capped at the
+    member's thickness (through instead of blind) when the rule would
+    otherwise reach the far face.
+
+    ``res.thread`` absent (no catalog pitch) falls back to the earlier
+    behaviour unchanged: the whole member thickness, source untouched."""
+    if res.thread is None:
+        return member.thickness_m, None, far.source or ""
+    pitch_m = res.thread.pitch_m
+    nominal = _num(specs, "outer_diameter")
+    actual_m = (
+        max(0.0, res.length_m - (res.grip_m or 0.0))
+        if res.length_m is not None
+        else 0.0
+    )
+    if actual_m > 0.0:
+        # The screw's own declared length says how much thread it puts
+        # into this member — capped at the member, which is the most any
+        # engagement can be.
+        engagement_m = min(actual_m, member.thickness_m)
+    else:
+        # No screw, or one too short to engage at all (`screw_too_short`
+        # already names that as the defect) — size the hole for the
+        # engagement the joint *needs*, not for the wrong screw.
+        engagement_m = _engagement_d(res) * nominal if nominal is not None else 0.0
+    rule = core_tf.blind_hole()
+    thread_depth_m = engagement_m + rule.tip_clearance_pitches * pitch_m
+    drill_depth_m = (
+        thread_depth_m + rule.tap_chamfer_pitches * pitch_m
+        if far.kind == "tapped"
+        else thread_depth_m
+    )
+    if drill_depth_m >= member.thickness_m:
+        return (
+            member.thickness_m,
+            thread_depth_m,
+            f"{far.source} — through: the blind depth would reach the far face",
+        )
+    return (
+        drill_depth_m,
+        thread_depth_m,
+        f"{far.source} — blind: {thread_depth_m * 1000:.1f} mm of full "
+        f"thread, drilled to {drill_depth_m * 1000:.1f} mm ({rule.source})",
+    )
 
 
 def _insert_feature(

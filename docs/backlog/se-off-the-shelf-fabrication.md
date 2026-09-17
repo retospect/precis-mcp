@@ -523,7 +523,27 @@ Rungs 1–3 are mode-independent and pay off even in an all-FDM design;
   (`PRECIS_DIGIKEY_CLIENT_ID` / `_SECRET`); until one exists the tier is
   the whole answer and the view says so. JLCMC's mechanical API is worth
   applying for — it is the catalogue this actually wants, and the JLCPCB
-  order history is what they review.
+  order history is what they review. *How to add them (2026-09-16):*
+  developer.digikey.com → My Apps → create a **Production** app with the
+  Product Information V4 API enabled (the sandbox returns canned data) →
+  Client ID + Client Secret. Locally: one file per variable under
+  `~/.secrets/pw/` (`scripts/prod-precis` forwards them when present; the
+  MCP launcher in the infrastructure repo needs two more `-e` lines in
+  the style of `EPO_OPS_CLIENT_KEY`). Cluster: the gitignored vault
+  overlay, same as `OPENROUTER_API_KEY`; only the gateway needs it since
+  `view='stock'` is on-demand. The port is the shim: a second adapter is
+  one class implementing `precis.supply.Adapter` plus a line in
+  `adapters()`. Re-surveyed 2026-09-16: RS Components (the European
+  fastener stockist) has **no self-serve product API** — trade customers
+  get PunchOut/cXML procurement plumbing only; Mouser and Farnell/element14
+  do issue free self-serve keys but carry the same thin metric-hardware
+  range as Digi-Key. Nothing European and self-serve holds fastener depth.
+- **Pins.** Dowel and roll pins are not in the fastening pass at all: a
+  `press` joint has no bound pin block, no reamed-hole fit table and no
+  blind depth. Same shape as the tapped blind hole (pin engagement +
+  relief for air and the drill point), a different fit table (H7/m6 and
+  the roll-pin ISO 8752 hole), and worth its own small rung once a design
+  asks for one.
 - **Assembly order and edge distance** (the rest of rung 3b) are
   untouched, including whether a nut trap is reachable to drop the nut in.
 

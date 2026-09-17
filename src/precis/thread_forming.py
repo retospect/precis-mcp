@@ -112,6 +112,30 @@ def strategies() -> dict[str, dict[str, str]]:
     return {str(k): {kk: str(vv) for kk, vv in v.items()} for k, v in raw.items()}
 
 
+@dataclass(frozen=True)
+class BlindHoleRule:
+    """How much deeper than the engaged thread a **blind** tapped or
+    thread-forming hole is drilled — there is no ISO for this, it is shop
+    practice (``blind_hole.source``): tip clearance so the screw never
+    bottoms on thread runout, plus (for a cut thread only) a tap-chamfer
+    allowance for the plug tap's lead-in."""
+
+    tip_clearance_pitches: float
+    tap_chamfer_pitches: float
+    source: str
+
+
+def blind_hole() -> BlindHoleRule:
+    """The blind-hole depth rule, in pitches (there is no diameter or
+    material dependence here, unlike every other section of this file)."""
+    row: dict[str, Any] = _data().get("blind_hole") or {}
+    return BlindHoleRule(
+        tip_clearance_pitches=float(row.get("tip_clearance_pitches") or 0.0),
+        tap_chamfer_pitches=float(row.get("tap_chamfer_pitches") or 0.0),
+        source=str(row.get("source") or ""),
+    )
+
+
 @lru_cache(maxsize=1)
 def _materials() -> dict[str, MaterialRule]:
     out: dict[str, MaterialRule] = {}

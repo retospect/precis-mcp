@@ -35,8 +35,11 @@ M6 = {
 
 CLAMPED_6MM = "box:w0.05d0.05h0.006"
 
-#: 3 pitches (`fasten._TAP_DRILL_ALLOWANCE_PITCHES`) × M6's 1 mm pitch.
-_ALLOWANCE_M = 0.003
+#: The house blind-hole rule (`thread_forming.json` ``blind_hole``) × M6's
+#: 1 mm pitch: 2 pitches of tip clearance for every blind far end, plus 3
+#: pitches of tap chamfer for a cut thread only.
+_TAPPED_ALLOWANCE_M = 0.005
+_CORE_ALLOWANCE_M = 0.002
 
 
 def _bought(name: str, pose: list[float], specs: dict) -> SeBlock:
@@ -106,7 +109,8 @@ class TestBlindTapDepthFromEngagement:
         assert res.thread is not None
         assert res.thread.engagement_m == pytest.approx(0.010)
         tapped = next(h for h in res.holes if h.kind == "tapped")
-        assert tapped.depth_m == pytest.approx(0.010 + _ALLOWANCE_M)
+        assert tapped.depth_m == pytest.approx(0.010 + _TAPPED_ALLOWANCE_M)
+        assert tapped.thread_depth_m == pytest.approx(0.012)
         assert tapped.depth_m < 0.150
         assert not tapped.through
 
@@ -159,6 +163,6 @@ class TestBlindThreadFormingDepth:
         assert res.thread is not None
         assert res.thread.engagement_m == pytest.approx(0.010)
         core = next(h for h in res.holes if h.kind == "core")
-        assert core.depth_m == pytest.approx(0.010 + _ALLOWANCE_M)
+        assert core.depth_m == pytest.approx(0.010 + _CORE_ALLOWANCE_M)
         assert core.depth_m < 0.150
         assert not core.through

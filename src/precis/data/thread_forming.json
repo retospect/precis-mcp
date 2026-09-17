@@ -92,5 +92,10 @@
     "depth_clearance_mm": 0.2,
     "min_wall_mm": 1.2,
     "source": "house rule: 0.2 mm on the across-flats is enough for a printed pocket to accept a nut without a hammer and little enough that the nut cannot rotate; the same on depth so the nut sits flush rather than proud. NOT a standard."
+  },
+  "blind_hole": {
+    "tip_clearance_pitches": 2,
+    "tap_chamfer_pitches": 3,
+    "source": "HOUSE RULE, not a standard: a blind tapped hole is drilled deeper than the thread it carries — 2 pitches of tip clearance so the screw never bottoms on thread runout, plus 3 pitches for the plug tap's chamfer and chip room (shop practice puts the tap allowance at 3–5 pitches; 3 is the minimum, so a bottoming tap is assumed for the last turns). A thread-forming core hole takes only the tip clearance — no tap runs in it. Where the resulting drill depth reaches the member's far face the hole is through and the feature says so."
   }
 }

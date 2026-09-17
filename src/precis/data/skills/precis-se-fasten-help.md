@@ -134,6 +134,13 @@ in a 6 mm plate is too big a thing to do to a part unasked.
   `fdm/*` member is modelled ~0.2–0.35 mm oversize; the hole's `source`
   line says by how much and how confident that is. Calibrate your printer
   once and edit `se_capabilities.json` rather than arguing with it.
+- **A blind tapped or thread-forming hole is drilled deeper than the
+  thread it carries**: 2 pitches of tip clearance so the screw never
+  bottoms on thread runout, plus (`tapped` only) 3 pitches for the plug
+  tap's chamfer — a thread-forming core hole gets the tip clearance alone,
+  no tap runs in it. Where that would reach the member's far face, the
+  hole comes back through instead and the feature's `source` says so —
+  a house rule, not a standard.
 
 ## 4 — read `view='fasten'`
 
@@ -150,9 +157,11 @@ diameter. Findings worth knowing by name:
 - `thread_strategy_undeclared` — the printed far end, above.
 - `screw_too_short` / `thread_engagement` — the stack needs more screw.
 - `pocket_too_deep` — an insert pocket or nut trap deeper than the member
-  it sits in, i.e. out the far face. (Whether a *screw* bottoms out in a
-  blind hole is still not answerable: a stamped depth says how far the
-  feature goes, never whether the material under it ends.)
+  it sits in, i.e. out the far face. A `tapped`/`thread-forming` hole's
+  own depth is sized from the engagement it needs rather than the whole
+  member thickness (above), and comes back through instead when that
+  would reach the far face — a house allowance, not a certification that
+  a specific screw can't bottom out.
 - `no_tool_access` — no driver clears the assembly. Names the block in the
   way. A hex key sweeps its long arm in a circle, which is usually what
   runs out first; a bit driver needs a straight run instead. (A ratchet
