@@ -80,6 +80,59 @@ n·Δ·p_cis, shown per row); a 40–50 nm span exceeds rigid small-organic
 struts, so the spacer library (DNA / peptide / OPE rods with stiffness
 rows) decides whether a series stroke survives.
 
+### Design — enumeration over slice 4's rows (2026-09-17, unshipped)
+
+**Surface.** `search(kind='se', wants={...}, compose={...})` — a second
+dict kwarg beside `wants=` (same rationale: the vocabulary is star-schema
+data, not a flat signature). NOT `se_propose_atomic`: that job
+(`src/precis_se/atomic/propose.py`) is the tool-less LLM fragment fill
+for ONE block, and `se_propose` is reserved for the whole-design LLM
+proposer; this proposer is a deterministic enumerator, so it lives in
+`precis_se/library.py`'s read path, not a job. `compose` is the Decision-3
+requirement box until transitions carry ranges: `{delta: [lo, hi]` (Å,
+port-to-port stroke), `span: [lo, hi]` (nm, long-state length), `n_max?`
+(default 6 switches), `m_max?` (default 4 spacers)`}`. When Decision 3
+ships, `compose='<design>#<block>'` reads the same box off that block's
+declared transition ranges.
+
+**Per-unit facts** come through `resolve_block_attrs` with these property
+keys (minted `proposed`-tier on first write per the material skill — no
+migration): `delta_length` (Å, long→short state Δ end-to-end),
+`unit_length` (nm, long-state port-to-port), `pss_short_fraction` (0–1,
+conditions carry the wavelength), `thermal_half_life` (s),
+`persistence_length` (nm). A block with a `delta_length` row is a switch;
+a block with `unit_length` and no `delta_length` is a spacer. Blocks
+with neither are skipped and counted in the header ("N blocks carry no
+length facts — put(kind='material', property='unit_length', …)").
+
+**Enumeration.** For each switch S, n ∈ 1..n_max, each spacer P (or
+none), m ∈ 0..m_max: Δ_ideal = n·Δ_S; Δ_pss = Δ_ideal·p_short (only when a
+`pss_short_fraction` row exists; else Δ_ideal with a "PSS unknown" mark);
+span = n·L_S + m·L_P. Cap at 2 000 compositions, largest n first is
+NOT the order — feasibility is. Each composition is scored exactly like a
+slice 4 row: synthesize value rows `{value_num: Δ_pss}` / `{value_num:
+span}` and run them through `_match_value_row` against the box's
+intervals; `wants=` keys (stimulus, bistable, joining, any star key)
+evaluate on the switch block and pass through unchanged. Rank with
+`rank_rows`' order (score, Pareto frontier on the two miss distances,
+Σ distance, id). Never empty: with no feasible composition the nearest
+misses show with their distances.
+
+**Must surface, per row:** `Δ 10.2 Å (8.2 Å at PSS 80 % cis)`;
+`bistable ✗ (T-type, τ½ …)` from `thermal_half_life`; `floppy: span 44 nm
+> Lp 15 nm (OPE)` whenever span exceeds the spacer's `persistence_length`
+(or `stiffness unknown` when the spacer has no row); `joining` from the
+switch↔spacer port roles (slice 3's complementarity). Next-line = the
+`instance_block` × n + spacer ops script joining alternating units via
+complementary ports.
+
+**Tests** (tests/test_se_library_compose.py): enumeration arithmetic incl.
+PSS scaling and the "PSS unknown" mark; never-empty nearest-miss; the
+floppy flag and the stiffness-unknown mark; a block without length rows is
+skipped and counted; `compose=` reaches the handler over the MCP door
+(the verb signature IS the schema, memory `mcp_verb_kwarg_silent_drop`);
+`wants=` keys still score on the switch block.
+
 ## Order
 
 1. Port pose slot (decision 1) — before slice 4 or a consumer bakes in
@@ -92,5 +145,18 @@ rows) decides whether a series stroke survives.
    open.
 3. Composition proposer.
 
-Sources to import before the proposer ships (cite-sources rule): azobenzene
-trans/cis Δ end-to-end and PSS ratios; OPE / dsDNA persistence lengths.
+Sources for the proposer (cite-sources rule) — resolved 2026-09-17, all
+held or queued in prod:
+
+- azobenzene Δ end-to-end: pa46340~pc1629105 (trans 9.0 Å → cis 5.5 Å,
+  citing the primary work) and pa40485~pc1321680 (MCBJ plateau length
+  trans > cis, measured); review pa3359 (Bandara & Burdette 2012).
+- azobenzene PSS ratios: pa3359~pc389953 (313 nm → ~20 % trans, 436 nm →
+  ~90 % trans); a red-shifted derivative's ratios in pa44934~pc1574485.
+- dsDNA persistence length: pa2832~pc309592 (Table 1, 49.9 ± 0.8 nm;
+  33 nm at 250 mM NaCl) and pa1564 (Smith/Cui/Bustamante 1996, primary).
+- OPE / PPE persistence length: stubs pa345576 (Cotts, Swager, Zhao 1996,
+  doi 10.1021/ma9602583) and pa345577 (Bunz 2000 review, doi
+  10.1021/cr990257j) — minted 2026-09-17, fetching; cite their chunks
+  once landed. The spacer stiffness rows in the example above stay
+  illustrative until then.
