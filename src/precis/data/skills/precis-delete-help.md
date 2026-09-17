@@ -53,7 +53,7 @@ grammar is the same one `get` uses — see `precis-files-help`.
 ## Cut lines 40–60 of this file
 
 ```python
-delete(kind="plaintext", id="captures/log~L40-L60")
+delete(kind="plaintext", id="captures/log~L40-60")
 delete(kind="plaintext", id="captures/log~L12")
 ```
 

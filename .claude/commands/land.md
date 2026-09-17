@@ -110,10 +110,7 @@ Optional ship message from the user: `$ARGUMENTS`
      **isolated re-run in a quiet window** (wait for sibling `precis-dev-run`
      containers to clear; optionally `PRECIS_GATE_N=3`) — **not** immediate
      churn, log-tail loops, or `PRECIS_GATE_N=0`. Only re-touch code once
-     you've confirmed the failure names *your* changed files. (Full
-     signatures: auto-memory `gate-oom-silent-death`,
-     `gate-mypy-oom-and-pypi-flake`, `gate-pycache-collection-flake`,
-     `shared-test-db-concurrency-flake`.)
+     you've confirmed the failure names *your* changed files.
    - **CAS push rejected** — a sibling worktree shipped first; just re-run
      `scripts/ship` (it re-syncs onto the new `main`).
    - A `WARNING:` about the primary `main` not fast-forwarding is
@@ -173,7 +170,7 @@ Optional ship message from the user: `$ARGUMENTS`
    the user what — if anything — comes next: the persisted residuals from step
    8, the next item on a tracked list, or "nothing open." Then, when the session
    ran long *or* there are next steps to resume, emit a **full handoff block**
-   per `.claude/commands/next.md` step 3 (the copy → `/compact` → paste
+   per `.claude/commands/next.md` steps 4–5 (the copy → `/compact` → paste
    recovery prompt), drawing its pointers from the **persisted** source
    (`docs/backlog/` / `kind='todo'` / memory), never a recap of this
    conversation — the durable artifact is what survives compaction. Skip the

@@ -15,7 +15,7 @@ call for the caller.
 2. Apply it with `uv` (never bare `pip`): update the constraint in
    `pyproject.toml` if pinned, then `uv lock` / `uv sync`. Keep the change minimal
    — just this dependency and its lock fallout.
-3. Run `scripts/test --impacted` (or the suite the caller names). This is the
+3. Run `scripts/test --impacted` (or the suite the caller names; long run: `--bg` then loop `--await <run-id>`, exit 124 = still going; never kill gate/test containers). This is the
    proof the bump is safe.
 4. **Green** → report done: package, old→new version, tests run.
    **Red** → STOP. Report the failing test ids and the error. Do NOT rewrite
@@ -29,9 +29,9 @@ call for the caller.
   that requires a major jump so the caller can weigh it.
 
 ## Filing a gripe
-If you notice something worth tracking that's outside your remit to fix — a
-bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
-to check it isn't already open, then `put(kind='gripe', text='...')` if not.
-File it and move on; don't spin on it, and don't duplicate an existing one.
+Something worth tracking that's outside your remit to fix: `search(kind='gripe',
+q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
+File it and move on. That `put` lands in PROD (the session MCP is write-capable)
+and is the only prod write you may make.
 
 Bump, test, report. Safe green or an honest red — never a forced fit.

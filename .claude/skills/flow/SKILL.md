@@ -1,12 +1,11 @@
 ---
 name: flow
 description: >-
-  A map of this repo's request → spec → spec-review → coding → ship stages and
-  which existing tool owns each one — not a new pipeline, a reminder of the
-  order and a guard against duplicating what `/land`/`/go` already do (code
-  review, issue-closing). Reach for it when a request is substantial enough to
-  need a spec before coding, or when you're unsure which stage-tool applies
-  next. Repo-dev tool for developing precis-mcp; NOT a precis product skill.
+  Use when a request is substantial enough to need a spec before coding, or
+  when unsure which stage-tool (ready / coder / reviewer / land / go /
+  issue-closer) applies next. Maps the repo's request → spec → spec-review →
+  coding → ship stages to the tool that owns each. Repo-dev tool for
+  developing precis-mcp; NOT a precis product skill.
 ---
 
 # flow — request to shipped, without reinventing a stage
@@ -24,8 +23,7 @@ manufacture ceremony for a small change.
 
 1. **Request.** The ask, as stated. If it's a one-line fix, a well-scoped
    single-file change, or something the user gave exact instructions for —
-   skip straight to **Coding**. Same triviality test `EnterPlanMode`'s own
-   guidance already uses; `flow` doesn't add a new bar.
+   skip straight to **Coding**.
 
 2. **Spec.** For anything architectural, multi-file, ambiguous, or where more
    than one reasonable approach exists — write it down before coding. The

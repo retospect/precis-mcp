@@ -1,12 +1,11 @@
 ---
 name: bug
 description: >-
-  A map of this repo's bug-intake triage — three buckets a defect falls into,
-  and which one is worth a read-only root-cause investigation before any
-  patch gets written. Not a new pipeline; a reminder to classify before
-  coding, and a guard against a symptom-patch that hides a live defect.
-  Reach for it when a bug report or gripe lands and you're about to fix it.
-  Repo-dev tool for developing precis-mcp; NOT a precis product skill.
+  Use when a bug report or gripe lands and a fix is about to be written —
+  classify it into one of three buckets first, and dispatch a read-only
+  root-cause investigation when the obvious fix would patch the symptom and
+  leave the real defect live. Repo-dev tool for developing precis-mcp; NOT a
+  precis product skill.
 ---
 
 # bug — triage before you patch

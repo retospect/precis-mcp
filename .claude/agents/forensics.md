@@ -35,10 +35,10 @@ actually wrong.
 - `nothing actionable` if the window is clean — don't inflate noise into findings.
 
 ## Filing a gripe
-If you notice something worth tracking that's outside your remit to fix — a
-bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
-to check it isn't already open, then `put(kind='gripe', text='...')` if not.
-File it and move on; don't spin on it, and don't duplicate an existing one.
+Something worth tracking that's outside your remit to fix: `search(kind='gripe',
+q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
+File it and move on. That `put` lands in PROD (the session MCP is write-capable)
+and is the only prod write you may make.
 
 Read-only except for filing your own gripes. You produce the summary and may
 file a gripe for what you find; the caller still decides what actually gets

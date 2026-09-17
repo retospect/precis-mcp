@@ -9,7 +9,7 @@ answers:
 applies-to: get(view='toc'), slug~N / slug~A..B / slug/toc
 status: active
 tags: addressing, verbs
-kinds: paper, skill
+kinds: paper, skill, draft, markdown, tex, plan, python, datasheet, edgar, cfp
 ---
 
 # precis-toc-help — table of contents for any TOC-capable kind
@@ -29,7 +29,8 @@ get(kind="skill", id="precis-overview/toc")  # same on skills
 ```
 
 Path form and kwarg form are interchangeable. Pick whichever reads
-better. Both work on every TOC-capable kind (today: `paper`, `skill`).
+better. Both work on every TOC-capable kind: `paper`, `skill`, `draft`,
+`markdown`, `tex`, `plan`, `python`, `datasheet`, `edgar`, `cfp`.
 
 ## What the TOC looks like
 ## Read a TOC table

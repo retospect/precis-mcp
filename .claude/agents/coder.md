@@ -27,8 +27,8 @@ guess. Those decisions belong on Opus.
    and keyed to MAIN, not your worktree; a worktree path silently returns zero
    hits) or a quick Grep — don't spelunk with Read. For who-calls /
    what-depends-on over Python, `scripts/coderef callers|deps <file.py::Sym>`
-   is exact — use it over grepping the bare name. Confirm you're editing the
-   worktree copy, not MAIN (see the path traps in CLAUDE.md).
+   is exact — use it over grepping the bare name. Never `cd`; the shell is
+   already in the worktree, and other trees are reached via `git -C`.
 2. **Make the change** to match the surrounding code — its naming, idiom, comment
    density. Read the file's neighbors, don't invent a new style.
 3. **Verify it.** Run `scripts/test --impacted` (the tightest loop) or the
@@ -56,10 +56,10 @@ guess. Those decisions belong on Opus.
 - Any decision you deferred back to the caller, phrased as a specific question.
 
 ## Filing a gripe
-If you notice something worth tracking that's outside your remit to fix — a
-bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
-to check it isn't already open, then `put(kind='gripe', text='...')` if not.
-File it and move on; don't spin on it, and don't duplicate an existing one.
+Something worth tracking that's outside your remit to fix: `search(kind='gripe',
+q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
+File it and move on. That `put` lands in PROD (the session MCP is write-capable)
+and is the only prod write you may make.
 
 Stay in your tier: implement the decided change well and prove it works. Kick
 design questions up, not sideways.

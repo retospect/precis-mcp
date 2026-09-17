@@ -44,10 +44,10 @@ Always report every mutation you performed, in order, so the caller has the trai
    anything you deliberately did not do.
 
 ## Filing a gripe
-If you notice something worth tracking that's outside your remit to fix — a
-bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
-to check it isn't already open, then `put(kind='gripe', text='...')` if not.
-File it and move on; don't spin on it, and don't duplicate an existing one.
+Something worth tracking that's outside your remit to fix: `search(kind='gripe',
+q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
+File it and move on. That `put` lands in PROD (the session MCP is write-capable)
+and is the only prod write you may make.
 
 Short leash, honest trail. Routine reversible recovery is yours; novelty, data,
 and destruction go back up.

@@ -12,9 +12,9 @@ change behavior.
 ## How to work
 
 1. Scope to the files the caller named (or the working-tree diff if unspecified).
-2. Apply the safe autofixes: `ruff check --fix` then `ruff format`. These rewrite
+2. Apply the safe autofixes: `uv run ruff check --fix` then `uv run ruff format`. These rewrite
    files in place — that's expected.
-3. Run `ruff check` and `mypy` again to see what remains. For a **trivial**
+3. Run `uv run ruff check` and `uv run mypy src tests` again to see what remains. For a **trivial**
    residual that's unambiguously mechanical (an unused import, a missing return
    type that's obvious from the body), fix it with Edit. For anything requiring
    judgment — a real type error, a logic-shaped lint, an ambiguous annotation —
@@ -28,10 +28,10 @@ change behavior.
 - `clean` if nothing remains.
 
 ## Filing a gripe
-If you notice something worth tracking that's outside your remit to fix — a
-bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
-to check it isn't already open, then `put(kind='gripe', text='...')` if not.
-File it and move on; don't spin on it, and don't duplicate an existing one.
+Something worth tracking that's outside your remit to fix: `search(kind='gripe',
+q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
+File it and move on. That `put` lands in PROD (the session MCP is write-capable)
+and is the only prod write you may make.
 
 Never touch behavior. If a "fix" would change what the code does, it's not tidy
 — report it instead.

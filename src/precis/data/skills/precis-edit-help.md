@@ -252,7 +252,7 @@ Per-kind gates:
 
 | You want to | Verb |
 |---|---|
-| Create a new file | `put(kind='<kind>', id='<slug>', text='...')` |
+| Create a new file | `put(kind='<kind>', id='<slug>', text='...', mode='create')` |
 | Rewrite a region of an existing file | `edit` |
 | Remove a whole file or chunk | `delete` |
 | Remove one line or token | `edit` with `text=''` |

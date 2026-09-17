@@ -81,6 +81,7 @@ put(
     kind="citation",
     text="MOF X improves CO2 reduction by 12%",  # the claim
     source_handle="pc7",  # the chunk it points at
+    source_quote="CO2 reduction rose 12% on MOF X",  # verbatim from that chunk; required
     verifier_confidence=0.95,
     link="pa5",
     rel="cites",

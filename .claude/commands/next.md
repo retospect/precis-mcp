@@ -80,7 +80,7 @@ it, then let it shape the whole handoff:
    durable. Anything this session surfaced but never wrote down — a residual
    bug, a daemon left down, a design gap, a diagnosis not yet re-verified —
    gets a `kind='todo'` / `gripe` row or a `docs/backlog/` item now, the same
-   "persist first" move `/go` step 8 makes after a ship. Conversely, if this
+   "persist first" move `/go` step 10 makes after a ship. Conversely, if this
    session's work already resolved something durable-list-worthy (a gripe a
    landed commit fixed, a `docs/backlog/` item whose fix has merged), close
    it now — resolution-comment-then-soft-delete for a gripe, delete-the-file

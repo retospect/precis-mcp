@@ -100,11 +100,11 @@ errors with the supported set as `options`).
 ## What if there are more refs than fit on one page?
 
 ```python
-search(kind="paper", q="perovskite", offset=20)  # next page of hits
+search(kind="paper", q="perovskite", page=2)  # next page of hits
 ```
 
 `get(kind='paper')` does not paginate — only `search` does, via
-`offset=N`. `exclude=[…]` is for hand-skipping known slugs, not paging.
+`page=N`. `exclude=[…]` is for hand-skipping known slugs, not paging.
 
 ## Address a chunk or sub-range inside a ref
 ## Read just chunk 38, or chunks 38..42

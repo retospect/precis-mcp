@@ -1,7 +1,7 @@
 ---
 name: gripe-filer
-description: "Haiku mechanical filer — files a decided finding (gripe/backlog) after dedup; won't pick the target."
-tools: Read, Edit, Write, mcp__precis__precis
+description: "Haiku mechanical filer — files a decided one-paragraph finding as a gripe or a plain IDEA backlog item, after dedup; won't pick the target. Not for specced backlog items — use scaffold."
+tools: Read, Glob, Bash, Write, mcp__precis__precis
 model: haiku
 ---
 

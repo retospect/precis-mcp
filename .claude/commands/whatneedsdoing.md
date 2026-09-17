@@ -264,8 +264,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    in a transcript is the LLM getting a verb wrong — a fix waiting in a
    skill or in the MCP surface. There is **no** interactive tool-call ledger
    (the live `precis serve` path logs nothing), so `plan_tick`'s job
-   transcripts are the signal that exists today. Prod-hop (`agent_rw` has
-   SELECT; see CLAUDE.md "Peeking at prod"), pull the last 48h, and rank
+   transcripts are the signal that exists today. Prod-hop via
+   `scripts/prod-psql` (read-only SELECT), pull the last 48h, and rank
    error shapes:
    ```sql
    -- histogram of confusion, most-frequent first (plan_tick = full stream;

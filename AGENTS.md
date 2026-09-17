@@ -249,11 +249,9 @@ session model (= Opus), so a mechanical task runs expensive by accident; use the
 Agent tool's `model:` for one-off downgrades.
 
 For a build too large for one `coder` call to finish cleanly (many files, many
-test-fix cycles), `.claude/workflows/coder-chain.js` chains fresh, small
-`coder` rounds via compact handoffs instead of growing one huge transcript —
-invoke with `Workflow({name: 'coder-chain', args: {task, maxRounds}})`. Ask
-for it by name; only opt in when the task genuinely needs it (`Workflow` is
-billed multi-agent orchestration, gated on explicit opt-in).
+test-fix cycles), use the `coder-chain` skill: sequential fresh `coder` rounds
+seeded only by the prior round's compact handoff. Opt in only when the task
+genuinely needs it.
 
 ## On-demand pointers
 

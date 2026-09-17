@@ -49,7 +49,9 @@ justify against the diff.
 - Backlog item: `git rm docs/backlog/<slug>.md` in the same pass
   (delete-on-ship, no done-markers, per this repo's own convention) and
   commit that edit separately — the ship commit already happened, don't
-  try to amend it.
+  try to amend it. Hard stop: if `scripts/ship` is still running in the
+  caller's worktree, do NOT commit — its final reset destroys post-start
+  WIP; report the files to remove and let the caller commit.
 
 ## What to return
 Short and structured — this text is relayed to the user verbatim, so no

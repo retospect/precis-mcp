@@ -3,7 +3,7 @@ id: precis-session-context-help
 title: precis — session context (pinned skills, disabled kinds, default tags)
 summary: per-session configuration — pinned skills, disabled kinds, default tags via env vars
 answers:
-  - why does get(kind='patent') return NotFound in this session?
+  - why did a verb fail with Unsupported on a kind I expected in this session?
   - which skills did the operator pre-pin for this deployment?
   - why did my note end up tagged with a project tag I didn't add?
   - what does the workspace tag mean on a file?
@@ -20,12 +20,12 @@ yours alone.
 
 ## What kinds are available in this session?
 ## Which kinds did the operator turn off?
-## Why does `get(kind='patent')` return NotFound here?
+## Why does `get(kind='patent')` raise Unsupported here?
 
 Look at the cold-start banner for `Kinds loaded:` and
 `Kinds unavailable: <kind> (prohibited)`. A prohibited kind
-raises `NotFound` on every verb — don't retry, don't suggest
-it to the user without flagging the prohibition.
+raises `Unsupported` on every verb (see [[precis-kinds-disabled-help]]) —
+don't retry, don't suggest it to the user without flagging the prohibition.
 
 ```text
 Kinds loaded: paper, memory, gripe, conversation, ...

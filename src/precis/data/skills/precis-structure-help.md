@@ -484,12 +484,10 @@ get(
   code-complete but needs a SUNCAT credential to reach the network.
 - **Keyless ingress — mine a local cathub `.db`.** A cathub `.db` is a
   self-contained, credential-free package (relational reactions + embedded ASE
-  structures + citation). `precis.structure.importers.cathub_db.batch_import(
-  store, path, surface_contains=['Pd','Cu','Ni'], facet='111',
-  product_contains=['NO'])` imports each reaction's product adsorbate config as
-  an ordinary `structure` (external run carries the adsorption energy + method
-  fingerprint), idempotent on `(dataset, config_id)`, needs only ASE (a core
-  dep), no network. This is the "bulk-download-and-mine-local" path.
+  structures + citation). The bulk import is operator-run, not a verb — ask a
+  human to run it. Each reaction's product adsorbate config lands as an
+  ordinary `structure` (its external run carries the adsorption energy +
+  method fingerprint), searchable as usual.
 - **Imported designs are read-only.** They carry `provenance:external` on
   their `struct_runs` row; `edit` refuses ("derive a variant instead") —
   branch off one with `derive(id=<imported-slug>, to=<new-slug>, ops=[...])`.

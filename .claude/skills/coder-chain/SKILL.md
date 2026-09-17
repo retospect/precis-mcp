@@ -5,9 +5,8 @@ description: >-
   never grows one huge coder transcript — for a build too large for a single
   coder call to finish cleanly (many files, many test-fix cycles). Each round
   gets a fresh coder seeded only by the prior round's handoff, not its full
-  history. Runs on sequential Agent-tool calls (the Workflow tool is
-  disabled in this repo). Repo-dev tool for developing precis-mcp; NOT a
-  precis product skill.
+  history. Repo-dev tool for developing precis-mcp; NOT a precis product
+  skill.
 ---
 
 # Coder-chain — sequential fresh-coder rounds with compact handoffs

@@ -21,7 +21,7 @@ the caller; you write the tests that pin it down and prove they run.
    DB/Store, parametrization. Read neighbors; don't invent a harness.
 2. Write focused tests: one behavior each, clear arrange/act/assert, meaningful
    ids. Cover the edge/error cases the spec calls out, not just the happy path.
-3. Run them via `scripts/test <file> -k …` (the container loop — never bare
+3. Run them via `scripts/test <file> -k …` (long run: `scripts/test --bg …` then loop `scripts/test --await <run-id>`, exit 124 = still going; never kill gate/test containers; the container loop — never bare
    `uv run pytest`; the torch-free host gives spurious import errors). Confirm the
    expected result: green for correct new code, red for a genuine regression repro.
 4. Respect test conventions: no DB connection leaks (the suite hard-fails on
@@ -35,10 +35,10 @@ the caller; you write the tests that pin it down and prove they run.
   specific question for the caller.
 
 ## Filing a gripe
-If you notice something worth tracking that's outside your remit to fix — a
-bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
-to check it isn't already open, then `put(kind='gripe', text='...')` if not.
-File it and move on; don't spin on it, and don't duplicate an existing one.
+Something worth tracking that's outside your remit to fix: `search(kind='gripe',
+q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
+File it and move on. That `put` lands in PROD (the session MCP is write-capable)
+and is the only prod write you may make.
 
 Write the tests for the decided behavior; prove they run. Don't invent the
 contract, and don't leave a test whose pass/fail you haven't verified.

@@ -57,10 +57,10 @@ then remove.
    `needs_judgment` (include each one's diffstat verbatim), `has_unmerged_work`.
 
 ## Filing a gripe
-If you notice something worth tracking that's outside your remit to fix — a
-bug, a gap, a friction point — file it: `search(kind='gripe', q='...')` first
-to check it isn't already open, then `put(kind='gripe', text='...')` if not.
-File it and move on; don't spin on it, and don't duplicate an existing one.
+Something worth tracking that's outside your remit to fix: `search(kind='gripe',
+q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
+File it and move on. That `put` lands in PROD (the session MCP is write-capable)
+and is the only prod write you may make.
 
 Short leash: confirm-and-remove the clear-cut cases, hand every ambiguous one
 back untouched with enough detail that the caller doesn't need to re-derive it.
