@@ -34,6 +34,30 @@ search(kind="skill", q="health digest")  # discover more skill docs
 name what each check watches and how it escalates — read one whenever a
 finding needs more context than the raw alert gives.
 
+**"Did the fix actually land?" — you CAN answer this.** No Bash and no ssh
+does not mean no deploy visibility:
+
+```python
+get(kind="skill", id="precis-status")  # Build block: git_sha_short, git_source, build_time
+```
+
+`precis-status` reports the build actually serving this MCP — on the agent
+lane that is the deployed venv, recovered from the installed wheel's
+`direct_url.json` (`git_source: vcs-install`). When a gripe comment names a
+fix commit, compare it against that sha before writing "needs confirmation
+it landed": if the running sha is newer than the fix and a scheduled run of
+the affected job has succeeded since, the fix IS deployed and verified —
+say so, don't queue it to a human. You cannot resolve the alert yourself,
+but a resolved-looking condition plus a matching build is a confirmation,
+not an open question. What you still cannot see: which *other* hosts run
+which sha, and anything needing raw SQL.
+
+**Your own tick is not in your evidence.** The alert state you read at
+Step 1 is a snapshot from before this tick did anything, including before
+your own report write. A condition whose freshness budget your own success
+resets will still read as stale here — say "as of tick start" rather than
+asserting a still-broken pass you are in the act of clearing.
+
 Skim `search(kind='skill', q='<surface you need>')` for anything not listed
 above (scheduler-lease staleness, per-host `worker_logs` rates, claim-
 registry forensics) — the skill docs describe what's checked even where no
@@ -66,11 +90,17 @@ downstream stages "failing" past that point are symptoms, not the cause.
 
 Your only write this tick is `put(kind='gripe', ...)`.
 
-- **Dedup first — two searches, both against GRIPES.**
+- **Dedup first — three searches, all against GRIPES.**
   `search(kind="gripe", q="<the failure mode>")` AND, when the finding
   traces to an alert or a specific ref, `search(kind="gripe",
   q="<the alert/ref id, e.g. al314976>")` — prior trackers usually name
-  the id verbatim even when their wording differs. Searching alerts for
+  the id verbatim even when their wording differs — AND
+  `search(kind="gripe", q="<the alert-source, e.g. nursery:orphan>",
+  status="*")`, because a cluster's tracker is usually filed against the
+  *source* that mints it, in wording that shares no words with today's
+  symptom. Do that third search before writing "X has no tracker": a check
+  that never gripes itself can still have its whole population tracked by
+  someone else's gripe. Searching alerts for
   siblings is NOT dedup; the tracker you must not duplicate is a gripe.
   A match in ANY non-terminal status counts as covering it — open,
   triaged, ready_for_fix, AND in_review (in_review means a fix shipped
