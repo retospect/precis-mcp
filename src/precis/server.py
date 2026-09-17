@@ -61,6 +61,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.tools import TOOL_REGISTRY
+from precis.utils.walk_budget import FILE_WALK_BUDGET_S
 
 # mcp 1.27.0's ``FuncMetadata.convert_result`` validates
 # ``CallToolResult.structuredContent`` against the auto-generated output
@@ -228,7 +229,12 @@ _FILE_KIND_EXTS: dict[str, frozenset[str]] = {
 #: the ``initialize`` reply past the timeout — the server "never came
 #: up". Past the budget the walk stops and the preamble reports lower
 #: bounds (``≥N``) instead of exact counts.
-_FILE_COUNT_BUDGET_S: float = 1.0
+#:
+#: Shared with the listing walk in ``precis.handlers.plaintext`` (see
+#: :mod:`precis.utils.walk_budget`) — one budget constant, so the boot
+#: preamble's counts and ``get(kind='markdown')``'s listing agree on
+#: how much of the tree "large" means.
+_FILE_COUNT_BUDGET_S: float = FILE_WALK_BUDGET_S
 
 
 def _file_kind_counts(

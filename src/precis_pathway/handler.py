@@ -99,8 +99,16 @@ class PathwayHandler(Handler):
     def __init__(self, *, hub: Hub) -> None:
         # autocatpath (ase/rdkit/networkx) is a hard dep of autocatpath[precis], but
         # guard so a broken env drops the kind cleanly instead of crashing boot.
+        # Probe the base `autocatpath` package directly rather than `from .
+        # import runner`: `runner` pulls in `autocatpath.pipeline`, which
+        # module-level-imports `render`/`viz` for matplotlib figure export —
+        # forcing a ~2.5s font-cache regen on every fresh container boot just
+        # to answer "is autocatpath installed" (gr345269). ase/rdkit/networkx
+        # are unconditional deps of `autocatpath` itself, so a clean bare
+        # import already proves the whole catalyst extra is present; the
+        # real `runner` import still happens lazily on first `put()`.
         try:
-            from . import runner  # noqa: F401
+            import autocatpath  # noqa: F401
         except Exception as e:  # pragma: no cover - env-dependent
             raise InitError(f"autocatpath pipeline unavailable: {e}") from e
         _ = hub

@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,7 @@ from precis.utils.plaintext_parse import (
 from precis.utils.search_header import detect_score_cliff, format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
+from precis.utils.walk_budget import FILE_WALK_BUDGET_S
 
 log = logging.getLogger(__name__)
 
@@ -234,6 +236,26 @@ def _require_find_and_text(
     return user_mode
 
 
+def _listing_truncation_notice(kind: str, count: int, budget_s: float) -> str:
+    """``⚠`` notice appended to a truncated file listing (gr345271).
+
+    ``PRECIS_ROOT`` can be bind-mounted over a huge host tree (~660k
+    files in the reported case) — :meth:`PlaintextHandler._walk_files`
+    stops at :data:`FILE_WALK_BUDGET_S` wall clock rather than walking
+    it in full, so the listing above is a partial prefix, not "here's
+    everything". ``tags=`` and subfolder scoping aren't listing
+    filters today (``get`` always lists the whole root), so the real
+    escape hatches are searching by content or addressing a file
+    directly once its slug is known.
+    """
+    return (
+        f"\n\n⚠ listing truncated at {count} file(s) (walk budget "
+        f"{budget_s:.0f}s) — PRECIS_ROOT is too large to list in full. "
+        f"Narrow with search(kind='{kind}', q='...') to find a file by "
+        "content, or get(id='<slug>') directly if you already know it."
+    )
+
+
 class PlaintextHandler(Handler):
     """Slug-addressed read/write handler for ``.txt`` / ``.log`` / ``.bib`` files."""
 
@@ -364,18 +386,49 @@ class PlaintextHandler(Handler):
                 return rel_path[: -len(candidate)], rel_path[-len(candidate) :].lower()
         return rel_path, ""
 
-    def _walk_files(self) -> list[Path]:
-        """Yield every file under ``self.root`` whose extension is in
+    def _walk_files(self, *, budget_s: float | None = None) -> tuple[list[Path], bool]:
+        """Collect every file under ``self.root`` whose extension is in
         :attr:`_EXTENSIONS` (case-insensitive).
 
         Symlinks whose target resolves **outside** :attr:`root` are
         dropped — listing them in the index would mislead the agent
         (the file would show up but every read would fail the
         ``relative_to`` gate). Listing == reachability.
+
+        Bounded by :data:`precis.utils.walk_budget.FILE_WALK_BUDGET_S`
+        wall clock (same budget the boot-time ``PRECIS_ROOT`` file
+        count uses — see :mod:`precis.utils.walk_budget`), checked
+        once per directory. ``PRECIS_ROOT`` can be bind-mounted over a
+        huge host tree (gr345271: ~660k files took seconds per
+        listing call); past the budget the walk stops where it is and
+        returns ``truncated=True`` rather than continuing unbounded.
+        No pruning — a pruned walk would see a different (smaller) set
+        of directories than an unbudgeted one, so a fast listing could
+        silently disagree with what actually exists on disk depending
+        on when the budget happened to trip.
+
+        Returns ``(paths, truncated)``. ``paths`` is in ``os.walk``
+        order (top-down, directory-entry order) — stable across calls
+        against an unchanged tree, not sorted here so callers that
+        truncate get a deterministic *prefix* of that order rather
+        than a sort that would need the whole walk to compute.
         """
         out: list[Path] = []
         exts = tuple(e.lower() for e in self._EXTENSIONS)
+        budget = FILE_WALK_BUDGET_S if budget_s is None else budget_s
+        deadline = time.monotonic() + budget
         for dirpath, _dirnames, filenames in os.walk(self.root):
+            # ``>=`` not ``>``: mirrors the boot-time file count so a
+            # zero budget (tests) trips on the very first directory.
+            if time.monotonic() >= deadline:
+                log.warning(
+                    "%s listing walk hit the %.1fs budget under %s; "
+                    "listing is a truncated prefix",
+                    self._KIND,
+                    budget,
+                    self.root,
+                )
+                return out, True
             for name in filenames:
                 if not name.lower().endswith(exts):
                     continue
@@ -388,7 +441,7 @@ class PlaintextHandler(Handler):
                     # unresolvable path — silently skip.
                     continue
                 out.append(candidate)
-        return out
+        return out, False
 
     def __init__(self, *, hub: Hub, root: Path) -> None:
         if hub.store is None:
@@ -1383,7 +1436,8 @@ class PlaintextHandler(Handler):
             # listed there must also resolve here (gr311326: the
             # NotFound suggester's own options= listed ids that 404'd
             # on direct get because this reconstruction missed).
-            real_rel = self._list_file_slugs_on_disk().get(slug)
+            slug_map, _truncated = self._list_file_slugs_on_disk()
+            real_rel = slug_map.get(slug)
             if real_rel is not None:
                 path = (self.root / real_rel).resolve()
         ref = self.store.get_ref(kind=self._KIND, id=slug)
@@ -1452,7 +1506,7 @@ class PlaintextHandler(Handler):
 
     # ── not-found helpers ──────────────────────────────────────────
 
-    def _list_file_slugs_on_disk(self) -> dict[str, str]:
+    def _list_file_slugs_on_disk(self) -> tuple[dict[str, str], bool]:
         """Enumerate valid ``{slug: relpath}`` pairs under ``self.root``.
 
         Shared by :meth:`_render_index` (which needs both slug and
@@ -1461,9 +1515,17 @@ class PlaintextHandler(Handler):
         canonical "what does this handler see on disk?" answer in a
         single place so index rendering and error hinting can't
         drift apart.
+
+        Returns ``(seen, truncated)`` — ``truncated`` mirrors
+        :meth:`_walk_files`'s budget flag; a truncated walk still
+        yields a valid (if partial) slug map, it just isn't the whole
+        tree. The sort here is over whatever :meth:`_walk_files`
+        already collected (full or truncated) — it doesn't cost an
+        extra walk, so it's safe even when the budget tripped.
         """
         seen: dict[str, str] = {}
-        for path in sorted(self._walk_files()):
+        paths, truncated = self._walk_files()
+        for path in sorted(paths):
             try:
                 rel = str(path.relative_to(self.root))
                 # ``file_slug_from_path`` strips the (one true) extension
@@ -1478,7 +1540,7 @@ class PlaintextHandler(Handler):
             if not is_valid_file_slug(slug):
                 continue
             seen[slug] = rel
-        return seen
+        return seen, truncated
 
     def _raise_file_not_found(self, slug: str) -> NotFound:
         """Raise ``NotFound`` for a missing file slug, with fuzzy-match
@@ -1496,7 +1558,8 @@ class PlaintextHandler(Handler):
         ``NotFound`` purely so ``raise self._raise_file_not_found(...)``
         passes the type checker.
         """
-        candidates = list(self._list_file_slugs_on_disk())
+        slug_map, _truncated = self._list_file_slugs_on_disk()
+        candidates = list(slug_map)
         suggestions = nearest_slugs(slug, candidates)
         raise NotFound(
             f"{self._KIND} file {slug!r} not found in workspace",
@@ -1524,8 +1587,21 @@ class PlaintextHandler(Handler):
     # ── render helpers ─────────────────────────────────────────────
 
     def _render_index(self) -> Response:
-        seen = self._list_file_slugs_on_disk()
+        seen, truncated = self._list_file_slugs_on_disk()
         if not seen:
+            if truncated:
+                # The budget tripped before the walk reached a single
+                # matching file — an empty result here means "unknown",
+                # not "confirmed empty" (mirrors dc785a20's boot-count
+                # fix: never present a partial/zero tally as the whole
+                # sandbox).
+                return Response(
+                    body=(
+                        f"# 0 {self._KIND} file(s) found before the listing "
+                        "walk budget was hit"
+                    )
+                    + _listing_truncation_notice(self._KIND, 0, FILE_WALK_BUDGET_S)
+                )
             return Response(
                 body=(
                     f"no {self._KIND} files in workspace\n"
@@ -1539,6 +1615,10 @@ class PlaintextHandler(Handler):
         for slug in sorted(seen):
             lines.append(f"  {slug:<{max_w}}  {seen[slug]}")
         body = "\n".join(lines)
+        if truncated:
+            body += _listing_truncation_notice(
+                self._KIND, len(seen), FILE_WALK_BUDGET_S
+            )
         body += render_next_section(
             [
                 (f"get(kind='{self._KIND}', id='<slug>')", "open a file"),

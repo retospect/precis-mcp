@@ -8,6 +8,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.handlers import plaintext as plaintext_mod
 from precis.handlers.plaintext import PlaintextHandler
 from precis.store import Store
 from precis.utils.plaintext_parse import parse_plaintext
@@ -121,6 +122,91 @@ def test_index_lists_txt_and_log(handler: PlaintextHandler, pt_root: Path) -> No
     assert "ignore" not in out.body
 
 
+# ── gr345271: unbounded listing walk on a huge PRECIS_ROOT ──────────
+#
+# ``_walk_files`` used to run one unbounded ``os.walk`` per
+# ``get(kind='plaintext'|'markdown'|'tex')`` listing call. With
+# PRECIS_ROOT bind-mounted over a huge host tree that's seconds per
+# call. Mirrors dc785a20's boot-time file-count fix: a wall-clock
+# budget (:data:`precis.utils.walk_budget.FILE_WALK_BUDGET_S`, shared
+# with the boot preamble so the two never disagree), checked once per
+# directory, with a truncation marker in the rendered listing instead
+# of silent partial results.
+
+
+def test_walk_files_under_budget_is_unchanged(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """Comfortably under budget: same ``(paths, truncated=False)``
+    shape as before the fix, for an ordinary small tree."""
+    _write(pt_root, "alpha.txt", "hello")
+    _write(pt_root, "notes/daily.txt", "standup")
+    paths, truncated = handler._walk_files()
+    assert truncated is False
+    assert {p.name for p in paths} == {"alpha.txt", "daily.txt"}
+
+
+def test_walk_files_stops_at_injected_budget(
+    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fake monotonic clock makes the trip point deterministic:
+    ``os.walk`` visits ``pt_root`` itself before its one subdirectory,
+    so injecting a clock that reports "budget exhausted" exactly on
+    the second directory check proves the walk stopped after the
+    first — collecting ``one.txt`` but never reaching ``sub/two.txt``.
+    """
+    _write(pt_root, "one.txt", "x")
+    _write(pt_root, "sub/two.txt", "x")
+
+    # Call 1: deadline = 0.0 + budget. Call 2: root-dir check (still
+    # under budget). Call 3: sub-dir check (budget exhausted).
+    clock = iter([0.0, 0.0, 100.0])
+    monkeypatch.setattr(plaintext_mod.time, "monotonic", lambda: next(clock))
+
+    paths, truncated = handler._walk_files(budget_s=1.0)
+    assert truncated is True
+    assert [p.name for p in paths] == ["one.txt"]
+
+
+def test_index_zero_budget_reports_unknown_not_empty(
+    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zero budget trips before the walk reaches even the root
+    directory's own files (the ``>=`` check, same as dc785a20's boot
+    count) — the listing must say "budget hit", never claim the
+    workspace is empty when it hasn't actually looked."""
+    _write(pt_root, "alpha.txt", "hello")
+    monkeypatch.setattr(plaintext_mod, "FILE_WALK_BUDGET_S", 0.0)
+
+    out = handler.get()
+    assert "walk budget" in out.body
+    assert "no plaintext files in workspace" not in out.body
+
+
+def test_index_truncated_listing_carries_marker(
+    handler: PlaintextHandler, pt_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once some files are collected before the budget trips, the
+    rendered index carries a ``⚠`` truncation marker naming the count
+    and the budget, alongside whatever partial listing it did manage."""
+    _write(pt_root, "one.txt", "x")
+    _write(pt_root, "sub/two.txt", "x")
+
+    real_walk = handler._walk_files
+
+    def fake_walk_files(*, budget_s: float | None = None) -> tuple[list, bool]:
+        paths, _truncated = real_walk(budget_s=budget_s)
+        return paths[:1], True
+
+    monkeypatch.setattr(handler, "_walk_files", fake_walk_files)
+
+    out = handler.get()
+    assert "⚠" in out.body
+    assert "truncated at 1 file(s)" in out.body
+    assert "walk budget" in out.body
+    assert "search(kind='plaintext'" in out.body
+
+
 # ── overview + block reads ───────────────────────────────────────────
 
 
@@ -187,7 +273,7 @@ def test_multidot_stem_slug_lists_full_and_round_trips(
     handler: PlaintextHandler, pt_root: Path
 ) -> None:
     _write(pt_root, "errors/yang2023explainable.error.log", "boom")
-    on_disk = handler._list_file_slugs_on_disk()
+    on_disk, _truncated = handler._list_file_slugs_on_disk()
     # Pre-fix this double-stripped to 'errors--yang2023explainable'
     # (the '.error' silently dropped), which then 404'd on get().
     assert "errors--yang2023explainable-error" in on_disk

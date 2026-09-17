@@ -34,7 +34,11 @@ from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from precis.handlers._paper_toc import build_toc, render_toc
-from precis.handlers.plaintext import PlaintextHandler
+from precis.handlers.plaintext import (
+    FILE_WALK_BUDGET_S,
+    PlaintextHandler,
+    _listing_truncation_notice,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref
@@ -243,26 +247,28 @@ class MarkdownHandler(PlaintextHandler):
     def _render_index(self) -> Response:
         """Same layout as plaintext's index, but the Next: hints
         mention ``/toc`` (markdown's signature view) rather than
-        ``/raw``."""
-        from precis.utils.md_parse import file_slug_from_path, is_valid_file_slug
+        ``/raw``.
 
-        on_disk = sorted(self._walk_files())
-        seen: dict[str, str] = {}
-        for path in on_disk:
-            try:
-                rel = str(path.relative_to(self.root))
-                # ``file_slug_from_path`` strips the extension itself —
-                # don't pre-strip via ``_strip_ext`` first, or a stem
-                # with a further ``.`` (e.g. ``foo.error.log``) gets
-                # double-stripped and the slug can't resolve (gr311326).
-                slug = file_slug_from_path(rel)
-            except ValueError:
-                continue
-            if not is_valid_file_slug(slug):
-                continue
-            seen[slug] = rel
+        Draws the slug map from the shared
+        :meth:`PlaintextHandler._list_file_slugs_on_disk` (rather than
+        re-walking ``self.root`` here) so the walk-budget truncation
+        marker (gr345271) can't drift out of sync between the two
+        ``_render_index`` overrides.
+        """
+        seen, truncated = self._list_file_slugs_on_disk()
 
         if not seen:
+            if truncated:
+                # See PlaintextHandler._render_index — an empty tally
+                # under a tripped budget means "unknown", not
+                # "confirmed empty".
+                return Response(
+                    body=(
+                        "# 0 markdown file(s) found before the listing "
+                        "walk budget was hit"
+                    )
+                    + _listing_truncation_notice(self._KIND, 0, FILE_WALK_BUDGET_S)
+                )
             return Response(
                 body=(
                     "no markdown files in workspace\n"
@@ -276,6 +282,10 @@ class MarkdownHandler(PlaintextHandler):
         for slug in sorted(seen):
             lines.append(f"  {slug:<{max_w}}  {seen[slug]}")
         body = "\n".join(lines)
+        if truncated:
+            body += _listing_truncation_notice(
+                self._KIND, len(seen), FILE_WALK_BUDGET_S
+            )
         body += render_next_section(
             [
                 ("get(kind='markdown', id='<slug>')", "open a file"),

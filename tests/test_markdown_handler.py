@@ -99,17 +99,42 @@ def test_path_form_index(handler: MarkdownHandler, md_root: Path) -> None:
 def test_multidot_stem_index_lists_full_slug(
     handler: MarkdownHandler, md_root: Path
 ) -> None:
-    """gr311326: markdown's index re-derives the on-disk slug map with
-    its own copy of the same encode logic as the plaintext suggester —
-    pre-stripping the extension via ``_strip_ext`` then handing the
-    bare base to ``file_slug_from_path`` (which strips an extension
-    itself) double-strips any further ``.`` in the stem. A stem with
+    """gr311326: markdown's index draws its slug map from the shared
+    :meth:`PlaintextHandler._list_file_slugs_on_disk` (which strips
+    the extension via ``file_slug_from_path`` only once). A stem with
     an interior dot (``notes.v2.md``) must be listed in full and
     resolve, not silently truncated to a slug ``get`` then 404s on."""
     _write(md_root, "notes.v2.md", "# v2")
     out = handler.get()
     assert "notes-v2" in out.body
     handler.get(id="notes-v2")  # must not raise
+
+
+# ── gr345271: shared walk-budget truncation marker ──────────────────
+
+
+def test_index_truncated_listing_carries_marker(
+    handler: MarkdownHandler, md_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markdown's ``_render_index`` override draws from the same
+    :meth:`PlaintextHandler._list_file_slugs_on_disk` as plaintext's,
+    so a truncated walk must carry the same ``⚠`` marker here too —
+    proving the two ``_render_index`` overrides can't drift apart."""
+    _write(md_root, "alpha.md", "# A")
+    _write(md_root, "beta.md", "# B")
+
+    real_walk = handler._walk_files
+
+    def fake_walk_files(*, budget_s: float | None = None):
+        paths, _truncated = real_walk(budget_s=budget_s)
+        return paths[:1], True
+
+    monkeypatch.setattr(handler, "_walk_files", fake_walk_files)
+
+    out = handler.get()
+    assert "⚠" in out.body
+    assert "truncated at 1 file(s)" in out.body
+    assert "search(kind='markdown'" in out.body
 
 
 # ── overview ─────────────────────────────────────────────────────────
