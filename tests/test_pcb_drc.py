@@ -653,7 +653,13 @@ def test_check_via_pad_keepout_fires_when_a_via_lands_on_a_same_net_pad():
     """The exact 'they have a courtyard too' case: same-net copper is
     legal by :func:`drc.check_clearance` (a trace legitimately touches its
     own pad), so this is the ONE rule that has to catch a via dropped
-    squarely on a pad it is nominally allowed to overlap."""
+    squarely on a pad it is nominally allowed to overlap. Still true for
+    an ORDINARY (non-fixed, i.e. router-placed) via — the same-net
+    exemption added for the plaza-via false positive
+    (docs/backlog/pcb-pre-place-route-blocks.md geometry residues) is
+    scoped to ``fixed`` (authored) copper only; see
+    :func:`test_check_via_pad_keepout_exempts_a_same_net_fixed_via`
+    below for that narrower case."""
     pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
     via = _via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
     model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
@@ -667,6 +673,23 @@ def test_check_via_pad_keepout_fires_when_a_via_lands_on_a_same_net_pad():
     required = _CAP4.jlc_min["trace_spacing_mm"]
     assert required is not None
     assert f.margin_mm == pytest.approx(-0.3 - 0.5 - required, abs=1e-9)
+
+
+def test_check_via_pad_keepout_exempts_a_same_net_fixed_via():
+    """pcb-pre-place-route-blocks geometry residues (2026-09-17): a
+    plaza via against its OWN net's electrode body false-positived on
+    this rule's circumscribed-circle approximation of the electrode's
+    real (crenellated/chamfered) outline. Narrowest correct fix: exempt
+    ``via_net == pad_net`` ONLY when the via is authored FIXED copper
+    (``item["fixed"]`` — :meth:`precis.store._pcb_ops.PcbMixin.
+    pcb_fixed_copper_list`'s own marker) — a same-net FIXED via is this
+    net's own designed fabric, not a foreign intrusion; an ordinary
+    router-placed via stays fully checked (test immediately above)."""
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0)
+    via = {**_via("SIG", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3), "fixed": True}
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    assert drc.check_clearance(model, _CAP4) == []
+    assert drc.check_via_pad_keepout(model, _CAP4) == []
 
 
 def test_check_via_pad_keepout_fires_regardless_of_net():

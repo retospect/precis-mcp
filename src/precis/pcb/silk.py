@@ -202,16 +202,18 @@ outright) — but real silk primitives already sit unparsed in
 tell a generated refdes apart from an ingested outline on the same side.
 This flag is that seam, not a promise anything reads it yet.
 
-**No per-instance board side in the IR.** :class:`precis.pcb.ir.PcbIR`
-carries no top/bottom field at all (confirmed: :func:`precis.pcb.ir.
-pin_point` never mirrors, and :func:`precis.pcb.realize.pads_for_ir`
-flashes every pad on the single ``PAD_LAYER`` regardless of the store's
-own ``pcb_instances.layer`` column) — an existing simplification of the
-whole L0-L5 IR path, not something this module can fix without touching
-``ir.py``. ``instance_sides`` is therefore a SEPARATE lookup this module
-accepts (refdes -> ``'top'``/``'bottom'``, the same string convention
-:mod:`precis.pcb.padplace`'s ``_is_bottom`` already uses); an instance
-missing from it defaults to ``'top'``.
+**Per-instance board side in the IR (gr341516, landed).**
+:class:`precis.pcb.ir.PcbIR` now carries it —
+:attr:`~precis.pcb.ir.PcbIR.inst_bottom`, read off ``pcb_instances.layer``
+at :func:`precis.pcb.ir.from_graph` time — and
+:func:`precis.pcb.realize.pads_for_ir` flashes each pad on the real outer
+layer for its own instance's side instead of a single hardcoded one.
+``instance_sides`` here stays a SEPARATE lookup this module accepts
+(refdes -> ``'top'``/``'bottom'``, the same string convention
+:func:`precis.pcb.padplace.is_bottom_instance` uses) rather than reading
+the IR directly — this module builds silk from the design's own
+``instances`` list, not an IR object — with an instance missing from it
+defaulting to ``'top'``.
 
 **Two things every real board has, that a settled IR does not carry at
 all: fiducials and an identification (title) block.** Both are

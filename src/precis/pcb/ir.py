@@ -56,7 +56,7 @@ from shapely.geometry import (  # type: ignore[import-untyped]
     MultiPoint as _ShapelyMultiPoint,
 )
 
-from precis.pcb import landpattern
+from precis.pcb import landpattern, padplace
 
 #: Sentinel: a pin/segment/via with no net (unconnected / pure keepout).
 NO_NET: int = -1
@@ -142,6 +142,19 @@ class PcbIR:
         np.ndarray
     )  # object[n_inst] -> str (opaque id = index; refdes is a late label)
     inst_extended_part: np.ndarray  # bool[n_inst] (JLC "Extended" part fee applies)
+    #: bool[n_inst] — this instance's authored board SIDE
+    #: (``pcb_instances.layer``, ``"top"``/``"bottom"``), ``True`` for
+    #: bottom. Same string parse as :func:`precis.pcb.padplace.
+    #: is_bottom_instance` (gr341516) — every pad-placement/gerber
+    #: consumer already read the graph's ``layer`` field through that one
+    #: function; the IR/DRC/preview path (:func:`precis.pcb.realize.
+    #: pads_for_ir`) did not, and forced every pad's IR ``layer`` to the
+    #: top copper index regardless (the retired ``rules.PAD_LAYER``
+    #: constant that field replaced there), so a bottom-side part read to
+    #: DRC as coplanar with whatever sat above it. Static, never mutated
+    #: by a move method — board side is an authored placement fact, not
+    #: something the router/optimizer ever flips.
+    inst_bottom: np.ndarray
     #: object[n_inst] -> str | None — the catalog LCSC C-number
     #: (``pcb_components.part_lcsc``) when the instance is a real catalog
     #: part; ``None`` for an unlinked instance (mounting hole,
@@ -930,6 +943,9 @@ def from_graph(
         instance_refdes=_obj_array([inst["refdes"] for inst in instances]),
         inst_extended_part=np.array(
             [bool(inst.get("extended_part")) for inst in instances], dtype=bool
+        ),
+        inst_bottom=np.array(
+            [padplace.is_bottom_instance(inst) for inst in instances], dtype=bool
         ),
         instance_part_lcsc=_obj_array([inst.get("part_lcsc") for inst in instances]),
         pin_instance=np.array(pin_instance, dtype=np.int32),

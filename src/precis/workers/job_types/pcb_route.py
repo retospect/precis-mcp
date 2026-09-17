@@ -342,7 +342,16 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
         local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
     )
-    rres = pcb_realize.realize(ir, config=realize_config, footprints=footprints)
+    # Authored fixed copper (pcb-pre-place-route-blocks Slice 1, "Realize
+    # seam"): claimed on the occupancy grid as real obstacles for every
+    # OTHER net, and short-circuits any ratsnest segment its own two pins
+    # already bridge (`RealizeResult.fixed_realized` below) — see
+    # `realize()`'s own `fixed_copper` keyword docstring for both halves.
+    fixed_copper = ctx.store.pcb_fixed_copper_list(int(board_id))
+    rres = pcb_realize.realize(
+        ir, config=realize_config, footprints=footprints, fixed_copper=fixed_copper
+    )
+    fixed_realized_net_ids = {int(ir.seg_net[s]) for s in rres.fixed_realized}
     plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}
     crossing_fail = _residual_crossings(ir, plane_net_ids)
     congestion_fail: dict[str, list[dict[str, Any]]] = {}
@@ -434,7 +443,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             unstitched_note[u.net] = u.message
 
     sketch = pcb_session.extract_sketch(ir)
-    routed_nets = {int(t.net_id) for t in rres.tracks}
+    # `fixed_realized_net_ids` folds in beside genuinely-routed nets for
+    # BOTH readers below: the chord-crossing sweep (a net whose segments
+    # are all realized by fixed copper has real copper, not a placement
+    # chord, same as a routed net) and the status ladder (a net entirely
+    # bridged by fixed copper needs no derived track to count as done).
+    routed_nets = {int(t.net_id) for t in rres.tracks} | fixed_realized_net_ids
     member_counts = net_member_counts(ir)
     stackup = ir.stackup
     rows: dict[str, dict[str, Any]] = {}
@@ -506,6 +520,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             n_realized += 1
         else:
             status = "sketched"  # topology decided but nothing placed to realize yet
+        if note is None and status == "realized" and net_id in fixed_realized_net_ids:
+            # Only ever set on the CLEAN path (`problems` empty) -- a net
+            # that also failed elsewhere already carries its own `note`
+            # from the branch above, and this is additive information, not
+            # a correction of it.
+            note = "realized by fixed copper"
         if note is None and net_name in unstitched_note:
             # Floating poured copper on an otherwise sound net. Deliberately
             # OUTSIDE the status ladder above — it is not a failure and must

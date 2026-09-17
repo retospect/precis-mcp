@@ -29,17 +29,25 @@ Fetcher = Callable[[str], "dict[str, Any] | None"]
 
 
 def ensure_footprint(
-    store: Store, lcsc: str, *, fetcher: Fetcher | None = None
+    store: Store,
+    lcsc: str,
+    *,
+    fetcher: Fetcher | None = None,
+    force: bool = False,
 ) -> dict[str, Any] | None:
     """Return the cached footprint for ``lcsc``, fetching + caching on a miss.
 
     ``store`` provides ``part_footprint_get`` / ``part_footprint_put``.
-    Returns None if the part has no resolvable footprint.
+    Returns None if the part has no resolvable footprint. ``force=True``
+    (``put(kind='pcb', op='footprint', force=True)`` — see
+    :mod:`precis.handlers.pcb`) skips the cache read and re-fetches even
+    when a row already exists, for a stale/wrong cached pull.
     """
     lcsc = lcsc.strip().upper()
-    cached = store.part_footprint_get(lcsc)
-    if cached is not None:
-        return cached
+    if not force:
+        cached = store.part_footprint_get(lcsc)
+        if cached is not None:
+            return cached
     fetch = fetcher or _easyeda_fetch
     data = fetch(lcsc)
     if data is None:

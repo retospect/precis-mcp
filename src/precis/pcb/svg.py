@@ -208,21 +208,37 @@ def _stroke_el(
 
 
 def _pad_el(pad: dict[str, Any], *, fill: str) -> str:
+    """A pad's outline, plus — when ``pad["drill"]`` is set — the hole
+    through it, using the SAME annulus-with-a-white-punched-centre
+    convention :func:`_via_el` already draws a via with, rather than the
+    plain filled shape below on its own. A drilled pad (an ordinary THT
+    catalog pin, or an authored via-in-pad) is a hole through the board,
+    same as a via; before this it drew as a solid disc/rect with no hole
+    at all — the same defect :func:`_drill_el`'s own docstring records
+    already having been fixed for a bare mounting hole, just not here."""
     shape = pad.get("shape", "circle")
+    x, y = float(pad["x"]), float(pad["y"])
+    drill = pad.get("drill")
+    hole = ""
+    if drill:
+        r_drill = float(drill) / 2
+        hole = f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r_drill)}" fill="#ffffff"/>'
     if shape == "polygon" and pad.get("poly"):
         pts = " ".join(f"{_fmt(float(p[0]))},{_fmt(float(p[1]))}" for p in pad["poly"])
-        return f'<polygon points="{pts}" fill="{fill}"/>'
-    x, y = float(pad["x"]), float(pad["y"])
+        return f'<polygon points="{pts}" fill="{fill}"/>' + hole
     if shape == "circle":
         r = float(pad["w"]) / 2
-        return f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r)}" fill="{fill}"/>'
+        return (
+            f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(r)}" fill="{fill}"/>'
+            + hole
+        )
     w = float(pad["w"])
     h = float(pad.get("h", pad["w"]))
     rx = min(w, h) / 2 if shape == "obround" else 0.0
     return (
         f'<rect x="{_fmt(x - w / 2)}" y="{_fmt(y - h / 2)}" '
         f'width="{_fmt(w)}" height="{_fmt(h)}" rx="{_fmt(rx)}" ry="{_fmt(rx)}" '
-        f'fill="{fill}"/>'
+        f'fill="{fill}"/>' + hole
     )
 
 

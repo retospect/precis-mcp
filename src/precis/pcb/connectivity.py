@@ -212,4 +212,227 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     return out
 
 
-__all__ = ["TOUCH_EPS_MM", "NetIslands", "net_islands"]
+def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]]:
+    """Every pair of ``(refdes, pin)`` pads ``model["pads"]`` already joins
+    through ``model["copper"]`` — the same union-find :func:`net_islands`
+    runs, restated at PIN granularity for a caller asking a different
+    question: not "is this net whole" but "are these two SPECIFIC pins
+    already one piece of copper, whatever else is going on with the rest
+    of their net". :mod:`precis.pcb.realize`'s fixed-copper short-circuit
+    (pcb-pre-place-route-blocks Slice 1, "Realize seam") is the intended
+    caller: a ratsnest segment whose two pins land in one returned pair
+    needs no route, because authored fabric already carries the
+    connection.
+
+    Reuses this module's own primitive/gap machinery
+    (:func:`_copper_primitives_with_vias`, :func:`_DisjointSet`, the same
+    pour-containment and capsule-gap passes :func:`net_islands` runs) — a
+    second connectivity reasoning path here would be exactly the
+    producer/checker drift this module's docstring warns
+    :mod:`precis.pcb.realize` itself away from; this function differs from
+    :func:`net_islands` only in what it reads back out of the same
+    union-find, never in how the union-find is built.
+
+    A pad with no ``net``, or missing ``refdes``/``pin`` identity (the
+    mounting-hole rings :func:`~precis.pcb.realize.pads_for_ir` emits
+    carry neither), contributes no pair — same "nothing to check against"
+    convention :func:`_pad_primitives` already applies to a netless pad."""
+    prims, via_groups = _copper_primitives_with_vias(model)
+    pad_offset = len(prims)
+    pad_keys: list[tuple[str, str] | None] = []
+    for pad in model.get("pads") or []:
+        net = str(pad.get("net", ""))
+        if not net:
+            continue
+        w = float(pad.get("w", 0.0))
+        h = float(pad.get("h", w))
+        r = min(w, h) / 2.0
+        prims.append(
+            _Prim(
+                (float(pad["x"]), float(pad["y"])),
+                None,
+                r,
+                pad_offset + len(pad_keys),
+                net,
+                str(pad.get("layer", "")),
+            )
+        )
+        refdes, pin = pad.get("refdes"), pad.get("pin")
+        pad_keys.append(
+            (str(refdes), str(pin)) if refdes is not None and pin is not None else None
+        )
+    if not prims:
+        return set()
+
+    dsu = _DisjointSet(len(prims))
+    for members in via_groups.values():
+        for other in members[1:]:
+            dsu.union(members[0], other)
+
+    pours = [
+        item for item in (model.get("copper") or []) if item.get("ctype") == "pour"
+    ]
+    for pour in pours:
+        net, layer = str(pour.get("net", "")), str(pour.get("layer", ""))
+        members = [
+            i
+            for i, p in enumerate(prims)
+            if p.net == net and p.layer == layer and point_in_pour(pour, p.a[0], p.a[1])
+        ]
+        for other in members[1:]:
+            dsu.union(members[0], other)
+
+    by_key: dict[tuple[str, str], list[int]] = {}
+    for i, p in enumerate(prims):
+        by_key.setdefault((p.net, p.layer), []).append(i)
+    for members in by_key.values():
+        for a_i in range(len(members)):
+            pa = prims[members[a_i]]
+            for b_i in range(a_i + 1, len(members)):
+                pb = prims[members[b_i]]
+                if _capsule_capsule_gap(pa, pb) <= TOUCH_EPS_MM:
+                    dsu.union(members[a_i], members[b_i])
+
+    by_root: dict[int, list[tuple[str, str]]] = {}
+    for offset, key in enumerate(pad_keys):
+        if key is None:
+            continue
+        by_root.setdefault(dsu.find(pad_offset + offset), []).append(key)
+
+    pairs: set[frozenset[tuple[str, str]]] = set()
+    for keys in by_root.values():
+        for i in range(len(keys)):
+            for j in range(i + 1, len(keys)):
+                pairs.add(frozenset((keys[i], keys[j])))
+    return pairs
+
+
+#: One terminal a router may start/end a search on: the exact board
+#: coordinate, the stackup LAYER NAME it sits on, and what kind of fixed
+#: copper it came from (``'via'`` or ``'track'``) — the ``kind`` carries no
+#: weight in this module's own union-find, it exists purely so a caller
+#: (:mod:`precis.pcb.realize`'s island-terminal seam) can report WHICH
+#: piece of authored copper a route actually used, in the same
+#: "fail/succeed legibly" spirit :class:`~precis.pcb.realize.UnroutedReason`
+#: already applies to the router's failure side.
+@dataclass(frozen=True, slots=True)
+class FixedTerminal:
+    point: tuple[float, float]
+    layer: str
+    kind: str
+
+
+def fixed_copper_pin_terminals(
+    model: dict[str, Any],
+) -> dict[tuple[str, str], tuple[FixedTerminal, ...]]:
+    """For every pad pin whose connectivity ISLAND (the same union-find
+    :func:`connected_pin_pairs` builds, restricted here to ``model["copper"]``
+    itself rather than only what it joins to another PIN) contains at least
+    one piece of AUTHORED fixed copper, every terminal point that island's
+    fixed copper offers: a via's centre on EACH layer it spans (one
+    :class:`FixedTerminal` per layer — :func:`_copper_primitives_with_vias`
+    already expands a via into one primitive per spanned layer, so this
+    falls out for free), and a track's segment endpoints on its own layer.
+
+    **The router's alternate start/target set, restated per pin.**
+    :mod:`precis.pcb.realize`'s maze search normally has exactly one
+    start/goal point per connection: the pin's own pad centre. A pin whose
+    fixed-copper island reaches somewhere the pad-to-pad grid search cannot
+    walk to (a dense field of foreign claims with no corridor, even though
+    the AUTHORED copper physically bridges it) needs more candidates than
+    that one point — this is where they come from. Purely geometric
+    (the same capsule-gap touching test :func:`net_islands`/
+    :func:`connected_pin_pairs` already run), so it answers correctly
+    whether or not the router's OWN occupancy grid can currently walk the
+    same path — the two questions are independent on purpose (this
+    module's own docstring).
+
+    A pin with no fixed copper in its island — the overwhelmingly common
+    case, every board with no ``fixed_copper`` argument at all included —
+    is simply absent from the returned mapping; no empty tuple is stored
+    for the majority that gets nothing extra."""
+    prims, via_groups = _copper_primitives_with_vias(model)
+    n_fixed_prims = len(prims)
+    if n_fixed_prims == 0:
+        return {}
+    pad_offset = n_fixed_prims
+    pad_keys: list[tuple[str, str] | None] = []
+    for pad in model.get("pads") or []:
+        net = str(pad.get("net", ""))
+        if not net:
+            continue
+        w = float(pad.get("w", 0.0))
+        h = float(pad.get("h", w))
+        r = min(w, h) / 2.0
+        prims.append(
+            _Prim(
+                (float(pad["x"]), float(pad["y"])),
+                None,
+                r,
+                pad_offset + len(pad_keys),
+                net,
+                str(pad.get("layer", "")),
+            )
+        )
+        refdes, pin = pad.get("refdes"), pad.get("pin")
+        pad_keys.append(
+            (str(refdes), str(pin)) if refdes is not None and pin is not None else None
+        )
+    if not prims:
+        return {}
+
+    dsu = _DisjointSet(len(prims))
+    for members in via_groups.values():
+        for other in members[1:]:
+            dsu.union(members[0], other)
+
+    by_key: dict[tuple[str, str], list[int]] = {}
+    for i, p in enumerate(prims):
+        by_key.setdefault((p.net, p.layer), []).append(i)
+    for members in by_key.values():
+        for a_i in range(len(members)):
+            pa = prims[members[a_i]]
+            for b_i in range(a_i + 1, len(members)):
+                pb = prims[members[b_i]]
+                if _capsule_capsule_gap(pa, pb) <= TOUCH_EPS_MM:
+                    dsu.union(members[a_i], members[b_i])
+
+    fixed_by_root: dict[int, list[int]] = {}
+    for i in range(n_fixed_prims):
+        fixed_by_root.setdefault(dsu.find(i), []).append(i)
+    kind_by_group = {
+        idx: str(item.get("ctype"))
+        for idx, item in enumerate(model.get("copper") or [])
+    }
+
+    out: dict[tuple[str, str], tuple[FixedTerminal, ...]] = {}
+    for offset, key in enumerate(pad_keys):
+        if key is None:
+            continue
+        fixed_members = fixed_by_root.get(dsu.find(pad_offset + offset))
+        if not fixed_members:
+            continue
+        terminals: list[FixedTerminal] = []
+        seen: set[tuple[float, float, str]] = set()
+        for i in fixed_members:
+            p = prims[i]
+            kind = kind_by_group.get(p.group, "track")
+            points = (p.a,) if p.b is None else (p.a, p.b)
+            for point in points:
+                sig = (round(point[0], 6), round(point[1], 6), p.layer)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                terminals.append(FixedTerminal(point, p.layer, kind))
+        out[key] = tuple(terminals)
+    return out
+
+
+__all__ = [
+    "TOUCH_EPS_MM",
+    "FixedTerminal",
+    "NetIslands",
+    "connected_pin_pairs",
+    "fixed_copper_pin_terminals",
+    "net_islands",
+]

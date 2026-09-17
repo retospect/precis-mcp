@@ -17,20 +17,11 @@ LCSC C-numbers are the spec's own choice (HV507PG-G = C639448) or a
 documented placeholder for an unverified "any in-stock I2C temp sensor"
 pick — see each constant's own comment.
 
-**Two known engine gaps this board sits on — both kind-wide, neither
-introduced here, and both asserted rather than tolerated:**
+**One known engine gap this board still sits on** (a second, the
+bottom-side-pads-checked-as-top-side gap, was CLOSED gr341516 — see
+below):
 
-1. **Bottom-side pads are checked as if they were on top.** The sink sits
-   directly under the array by design (the whole point of ``sink_grid``)
-   but ``rules.py::PAD_LAYER`` still forces every pad's IR layer to 0
-   regardless of the instance's real ``layer='bottom'`` side, so
-   courtyard/clearance checks have no way to know the sink and the array
-   are on OPPOSITE physical sides. Pre-existing, kind-wide
-   (pcb-ewod-multitile Slice 3's scope) — it just bites hardest here.
-   The array's OWN geometry is nevertheless clean through the same path
-   (``test_dogfood_drc_view_findings_are_all_the_documented_side_gap``
-   isolates it and asserts zero errors).
-2. **The IR carries one position per PIN**, so an electrode's three
+1. **The IR carries one position per PIN**, so an electrode's three
    authored pads (body + neck stub + plaza via) collapse to the body
    alone: the router never sees the plaza via, which is precisely the
    escape this design is built around, and every electrode escape comes
@@ -39,6 +30,18 @@ introduced here, and both asserted rather than tolerated:**
    a reason, rather than reporting a silently-"realized" board).
    Round-8 finding; see docs/backlog/pcb-ewod-multitile.md's decisions
    log.
+
+**gr341516, closed:** the sink sits directly under the array by design
+(the whole point of ``sink_grid``) and used to be checked as if it were
+on top — ``rules.py::PAD_LAYER`` forced every pad's IR layer to 0
+regardless of the instance's real ``layer='bottom'`` side, so courtyard/
+clearance checks had no way to know the sink and the array are on
+OPPOSITE physical sides. Fixed: the IR now carries a real per-instance
+side (:attr:`precis.pcb.ir.PcbIR.inst_bottom`), and
+:func:`precis.pcb.realize.pads_for_ir` emits each pad's own outer layer
+off it. ``test_dogfood_drc_view_findings_are_all_the_documented_side_gap``
+now asserts the array-vs-sink pair produces ZERO cross-layer findings,
+not merely that the array's own geometry is clean.
 
 (Round 7's much larger third gap — synthesized per-pin POSITIONS reaching
 DRC/routing/connectivity while pad SIZE came from the real footprint,
@@ -372,20 +375,32 @@ def test_dogfood_drc_view_findings_are_all_the_documented_side_gap(pcb, store):
     clearance measurement was taken between wrongly-anchored polygons
     (gripe 338983). With real pin positions on the IR, each finding is a
     genuine geometry fact, so this test asserts WHICH facts they are —
-    the strong form: every remaining error is the ONE documented,
-    kind-wide gap (module docstring item 1, Slice 3's own scope), the
-    bottom-side sink checked as if it were on top, and NOTHING is an
-    array-internal electrode-to-electrode finding.
+    the strong form: NOTHING is an array-internal electrode-to-electrode
+    finding, and (gr341516, closed — module docstring's own "gr341516,
+    closed" note) NOTHING is an array-vs-sink finding either, now that the
+    IR/DRC path knows the sink sits on the OPPOSITE physical side.
+    ``test_dogfood_applies_and_places_69_channel_sink_under_the_array``
+    already pins that the sink really is ``layer='bottom'`` in the
+    design; this is the DRC-side consequence of that fact.
 
-    That last clause is the load-bearing one: the array's own zigzag
-    geometry, plaza rings and stub tapers were proved clean by
-    ``tests/test_pcb_ewod_generator_drc.py`` against the ``board_pads``
-    export path — this asserts the IR/DRC path now agrees with it on a
-    real board instead of reporting dozens of phantom clearance errors."""
+    The array-internal clause is the older, still load-bearing one: the
+    array's own zigzag geometry, plaza rings and stub tapers were proved
+    clean by ``tests/test_pcb_ewod_generator_drc.py`` against the
+    ``board_pads`` export path — this asserts the IR/DRC path now agrees
+    with it on a real board instead of reporting dozens of phantom
+    clearance errors."""
     slug = _seed(pcb)
     resp = pcb.get(id=slug, view="drc")
     assert "no realized copper yet" not in resp.body
-    assert "(pads-only DRC — no routed copper yet)" in resp.body
+    # NOT "(pads-only DRC ...)" — the array generator now writes its own
+    # electrode-to-plaza-via stub as real `ctype='track'` copper at
+    # generation time (`generators.py`'s own "the generator's own via is
+    # a copper row now" note), so `_seed` alone (no `op='route'`) already
+    # leaves `pcb_copper` non-empty. Pre-existing, independent of
+    # gr341516 — noticed while updating this test for it, not caused by
+    # it (this fixture is `@pytest.mark.slow` and evidently hadn't been
+    # run in a while).
+    assert "(pads-only DRC — no routed copper yet)" not in resp.body
     m = re.search(r"(\d+) error\(s\), (\d+) warn\(s\)", resp.body)
     assert m is not None
 
@@ -419,9 +434,8 @@ def test_dogfood_drc_view_findings_are_all_the_documented_side_gap(pcb, store):
         )
         for n in design["nets"]
     }
-    array_pads = [
-        p for p in pcb._drc_pads(ref.id, layer_names) if str(p.get("refdes")) == "ARR1"
-    ]
+    all_pads = pcb._drc_pads(ref.id, layer_names)
+    array_pads = [p for p in all_pads if str(p.get("refdes")) == "ARR1"]
     assert len(array_pads) >= 50
     array_model = {
         "layers": layer_names,
@@ -441,6 +455,48 @@ def test_dogfood_drc_view_findings_are_all_the_documented_side_gap(pcb, store):
         f"{len(array_errors)} array-INTERNAL clearance error(s) through the IR pad "
         "path — either a real geometry defect or a regression of the pad-source "
         f"agreement gripe 338983 closed:\n{detail}"
+    )
+
+    # gr341516: the array PLUS the bottom-side sink beneath it, both
+    # through the same IR/DRC pad path — before the fix, this pair alone
+    # produced dozens of phantom cross-layer clearance errors (the
+    # documented side gap the module docstring used to describe); now
+    # they are on correctly-opposite reported layers (F.Cu/B.Cu) and
+    # never contend at all.
+    sink_refdes = "ARR1_SINK_0_0"
+    two_refdes_pads = [
+        p for p in all_pads if str(p.get("refdes")) in ("ARR1", sink_refdes)
+    ]
+    assert any(p.get("refdes") == sink_refdes for p in two_refdes_pads)
+    sink_layers = {
+        str(p.get("layer")) for p in two_refdes_pads if p.get("refdes") == sink_refdes
+    }
+    array_layers = {
+        str(p.get("layer")) for p in two_refdes_pads if p.get("refdes") == "ARR1"
+    }
+    assert sink_layers and array_layers and sink_layers.isdisjoint(array_layers), (
+        f"expected the sink's pads on a different reported layer than the "
+        f"array's: sink={sink_layers} array={array_layers}"
+    )
+    combined_model = {
+        "layers": layer_names,
+        "copper": [],
+        "pads": two_refdes_pads,
+        "drills": [],
+    }
+    combined_errors = [
+        f
+        for f in pcb_drc.check_clearance(
+            combined_model, capability, net_rules=net_rules
+        )
+        if f.severity == "error"
+    ]
+    combined_detail = "\n".join(
+        f"  {f.rule}: {f.where} :: {str(f.detail)[:140]}" for f in combined_errors[:12]
+    )
+    assert not combined_errors, (
+        f"{len(combined_errors)} array-vs-sink clearance error(s) survived "
+        f"gr341516:\n{combined_detail}"
     )
 
 
@@ -618,18 +674,38 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     )
     assert tracks, f"op='route' drew no copper at all — {diag}"
 
-    # (1) Every routed track ends on its own net's REAL pad geometry.
+    # (1) Every routed track ends on its own net's REAL pad geometry OR
+    # its own net's authored fixed copper (a via centre / track endpoint
+    # from `pcb_fixed_copper` — the plaza's own via/stub fabric). The
+    # router legitimately terminates on that fabric now (island terminals,
+    # docs/backlog/pcb-pre-place-route-blocks.md): a net whose escape IS
+    # the authored plaza via ends there by design, not by disagreement.
+    # An endpoint near NEITHER is still the gripe-338983 failure.
     layer_names = [str(layer["name"]) for layer in design["board"]["stackup"]]
     pads_by_net: dict[str, list[tuple[float, float]]] = {}
     for pad in pcb._drc_pads(ref.id, layer_names):
         net = str(pad.get("net") or "")
         if net:
             pads_by_net.setdefault(net, []).append((float(pad["x"]), float(pad["y"])))
+    fixed_by_net: dict[str, list[tuple[float, float]]] = {}
+    for row in store.pcb_fixed_copper_list(int(design["board"]["board_id"])):
+        net = str(row.get("net") or "")
+        if not net:
+            continue
+        pts: list[tuple[float, float]] = []
+        if row.get("ctype") == "via" and row.get("x") is not None:
+            pts.append((float(row["x"]), float(row["y"])))
+        elif row.get("ctype") == "track":
+            for seg in row.get("segments") or []:
+                pts.append((float(seg["start"][0]), float(seg["start"][1])))
+                pts.append((float(seg["end"][0]), float(seg["end"][1])))
+        fixed_by_net.setdefault(net, []).extend(pts)
     for track in tracks:
         if track.get("is_dogbone"):
             continue  # a plane fan-out stub ends at its drop via, not a pad
         segs = track["segments"]
-        targets = pads_by_net.get(str(track["net"]), [])
+        net = str(track["net"])
+        targets = pads_by_net.get(net, []) + fixed_by_net.get(net, [])
         assert targets, f"routed net {track['net']} has no pads at all — {diag}"
         for end in (
             (float(segs[0]["start"][0]), float(segs[0]["start"][1])),
@@ -639,8 +715,9 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
                 min(math.hypot(end[0] - tx, end[1] - ty) for tx, ty in targets) < 1.0
             ), (
                 f"{track['net']}: track end {end} is nowhere near any of its own "
-                f"pads {targets} — the router and the board disagree about where "
-                "this net's copper is (gripe 338983's signature)"
+                f"pads or fixed copper {targets} — the router and the board "
+                "disagree about where this net's copper is (gripe 338983's "
+                "signature)"
             )
 
     # (2) The escape gap, stated out loud rather than silently passed.

@@ -6,20 +6,35 @@ Covers the load-bearing claims the store/handler-level
 polygon is a valid simple ring, the zigzag gap between same-row/same-col
 neighbours is a CONSTANT ``gap`` (acceptance criterion 2's geometric
 assertion), and no two DIFFERENT electrodes' copper (electrode body, neck
-stub, or via) ever overlaps -- a short-circuit in this kind, found the
-hard way while building this slice (round-2 stress test: the naive "3x3
-via sub-grid" and "uniform-width diagonal stub" both clipped a
-neighbour; :func:`precis.pcb.generators._plaza_capacity` and the tapered
-:func:`precis.pcb.generators._stub_polygon` are the fixes).
+stub track, or via) ever overlaps -- a short-circuit in this kind, found
+the hard way while building this slice (round-2 stress test: the naive
+"3x3 via sub-grid" and "uniform-width diagonal stub" both clipped a
+neighbour; :func:`precis.pcb.generators._plaza_capacity` and the (former)
+tapered ``_stub_polygon`` were the fixes).
+
+**pcb-pre-place-route-blocks Slice 2** moved the neck stub and the plaza
+via off ``footprints[0]['pads']`` and onto :attr:`~precis.pcb.generators.
+GeneratorExpansion.copper` as real ``track``/``via`` rows
+(:func:`precis.pcb.generators._stub_track_row`/:func:`~precis.pcb.
+generators._via_row`) — ``pads`` now carries exactly ONE row per pin (the
+electrode body). Tests below that used to find the stub/via among a
+pin's several pads now read them off ``exp.copper`` instead
+(:func:`_copper_by_net`/:func:`_copper_shape`); the cross-net-overlap
+sweep folds copper shapes in alongside pad shapes so the "no short"
+property still covers the whole fabric, not just the bodies.
 """
 
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pytest
+from shapely.geometry import (
+    LineString,  # type: ignore[import-untyped]
+    Polygon,
+)
 from shapely.geometry import Point as SPoint  # type: ignore[import-untyped]
-from shapely.geometry import Polygon
 from shapely.validation import explain_validity  # type: ignore[import-untyped]
 
 from precis.pcb import generators as G
@@ -38,6 +53,51 @@ def _shape(p: dict) -> Polygon:
     if p["shape"] == "polygon":
         return Polygon(p["poly"]).buffer(0)
     return SPoint(p["x"], p["y"]).buffer(p["w"] / 2.0)
+
+
+def _pin_for_net(name: str, net: str) -> str:
+    prefix = f"{name}_"
+    assert net.startswith(prefix), (net, prefix)
+    return net[len(prefix) :]
+
+
+def _copper_by_pin(
+    exp: G.GeneratorExpansion, name: str = "ARR"
+) -> dict[str, list[dict]]:
+    """``exp.copper`` (the neck track + plaza via, pcb-pre-place-route-
+    blocks Slice 2) keyed by pin -- the copper-row analogue of
+    :func:`_pads_by_pin`, since those two rows no longer live in
+    ``pads``."""
+    out: dict[str, list[dict]] = {}
+    for item in exp.copper:
+        pin = _pin_for_net(name, str(item["net"]))
+        out.setdefault(pin, []).append(item)
+    return out
+
+
+def _copper_shape(item: dict[str, Any]) -> Polygon:
+    geom = item["geom"]
+    if item["ctype"] == "via":
+        return SPoint(geom["x"], geom["y"]).buffer(geom["dia_mm"] / 2.0)
+    seg = geom["segments"][0]
+    line = LineString([tuple(seg["start"]), tuple(seg["end"])])
+    r = float(geom["width_mm"]) / 2.0
+    return line.buffer(r) if r > 0 else line
+
+
+def _all_shapes(
+    exp: G.GeneratorExpansion, name: str = "ARR"
+) -> list[tuple[str, Polygon]]:
+    """Every net's copper as one shape list — electrode bodies (``pads``)
+    AND the neck track + plaza via (``copper``) — so a cross-net overlap
+    sweep still covers the whole fabric now that only the body lives in
+    ``pads``."""
+    shapes = [(p["pin"], _shape(p)) for p in exp.footprints[0]["pads"]]
+    shapes += [
+        (_pin_for_net(name, str(item["net"])), _copper_shape(item))
+        for item in exp.copper
+    ]
+    return shapes
 
 
 @pytest.mark.parametrize("grid", [[3, 3], [8, 8], [9, 9], [3, 8]])
@@ -95,7 +155,7 @@ def test_zigzag_gap_between_row_neighbours_is_constant(grid):
 )
 def test_no_cross_net_copper_overlap(variant, grid):
     exp = G.expand("ewod_pad_array", "ARR", {"grid": grid, "variant": variant})
-    shapes = [(p["pin"], _shape(p)) for p in exp.footprints[0]["pads"]]
+    shapes = _all_shapes(exp)  # bodies (pads) + neck tracks/vias (copper)
     n = len(shapes)
     for i in range(n):
         pin_i, gi = shapes[i]
@@ -161,10 +221,14 @@ def test_pad_sizes_merges_a_1x2_span_into_one_pad():
     by_pin = _pads_by_pin(exp)
     assert "R0C0" in by_pin
     assert "R0C1" not in by_pin
+    assert len(by_pin["R0C0"]) == 1  # body only -- no stub/via pad rows
     # exactly one via for the merged pad, same "one via suffices" rule as
-    # any ordinary single-cell electrode.
-    vias = [p for p in by_pin["R0C0"] if p.get("drill")]
+    # any ordinary single-cell electrode -- now a copper row, not a pad.
+    copper_by_pin = _copper_by_pin(exp)
+    vias = [c for c in copper_by_pin["R0C0"] if c["ctype"] == "via"]
+    tracks = [c for c in copper_by_pin["R0C0"] if c["ctype"] == "track"]
     assert len(vias) == 1
+    assert len(tracks) == 1
 
 
 def test_pad_sizes_merged_electrode_body_is_a_valid_simple_ring_and_wider_than_one_cell():
@@ -269,7 +333,7 @@ def test_no_cross_net_copper_overlap_with_a_merged_pad(variant, grid, cells):
         "ARR",
         {"grid": grid, "variant": variant, "pad_sizes": [{"cells": cells}]},
     )
-    shapes = [(p["pin"], _shape(p)) for p in exp.footprints[0]["pads"]]
+    shapes = _all_shapes(exp)  # bodies (pads) + neck tracks/vias (copper)
     n = len(shapes)
     for i in range(n):
         pin_i, gi = shapes[i]
@@ -290,10 +354,16 @@ def test_pad_sizes_merge_idempotent_canonical_params():
 
 
 def test_one_via_per_usable_electrode():
+    # pcb-pre-place-route-blocks Slice 2: every pin has exactly ONE pad
+    # (the body) regardless of usability; the via lives in `copper` now,
+    # one per USABLE (driven) electrode.
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [3, 3]})
     by_pin = _pads_by_pin(exp)
     for pin, pads in by_pin.items():
-        vias = [p for p in pads if p.get("drill")]
+        assert len(pads) == 1, f"{pin} has {len(pads)} pads, expected exactly 1 (body)"
+    copper_by_pin = _copper_by_pin(exp)
+    for pin, items in copper_by_pin.items():
+        vias = [c for c in items if c["ctype"] == "via"]
         assert len(vias) == 1, f"{pin} has {len(vias)} vias, expected exactly 1"
 
 
@@ -303,3 +373,7 @@ def test_reserved_slot_gets_no_via_and_no_stub():
     r0c1_pads = by_pin["R0C1"]
     assert len(r0c1_pads) == 1  # electrode body only -- no stub, no via
     assert not any(p.get("drill") for p in r0c1_pads)
+    # the suppressed net gets no copper at all (pcb-pre-place-route-
+    # blocks Slice 2 -- see test_pcb_ewod_fabric.py for the ledger side).
+    copper_by_pin = _copper_by_pin(exp)
+    assert "R0C1" not in copper_by_pin

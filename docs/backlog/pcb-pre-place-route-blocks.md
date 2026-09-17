@@ -1,5 +1,5 @@
 ---
-status: draft
+status: building
 title: "pcb: pre-place-route blocks — generators emit real fixed copper (vias + traces), solved once per unit cell and tiled"
 prio: high
 model: opus
@@ -71,9 +71,10 @@ the next realize run. **Decision: authored copper is an input, parallel to
 ("authored plane assignment per (board, layer, net)", `:227`), an authored
 table that feeds derived geometry without living in it.
 
-- New authored table **`pcb_fixed_copper`** (core migration — take the
-  next free number at build time; 0163 is claimed by
-  `pcb-argue-with-design.md`). Columns mirror `pcb_copper`'s geometry
+- New authored table **`pcb_fixed_copper`** (core migration **0165**;
+  0163 went to `component_head_form_specs`, 0164 to `se_measure_datum`,
+  so `pcb-argue-with-design.md`'s 0163 claim is stale — it takes the next
+  free number when it builds). Columns mirror `pcb_copper`'s geometry
   contract (`ctype` ∈ `track|via`, `layer`, `net_id`, `geom` jsonb, mm)
   plus provenance (`refdes` / generator identity + version) and
   `retired_at` — unlike `pcb_copper`, authored rows soft-delete, because
@@ -194,8 +195,20 @@ fabric: a merged pad may never cover a plaza (it would short 8 nets),
 which is an existing rule the emitter must now honour in copper, not just
 in pad layout.
 
+**Slice 2 build note (2026-09-16):** stubs + plaza vias are emitted as
+copper (constant-width track replaces the taper); the **B.Cu fan to the
+sink is NOT emitted by the generator** — `expand()` is pure of DB reads and
+does not know the sink's real footprint pad positions. Instead the router
+starts from the fixed via's B.Cu landing (island terminals in `realize`),
+recorded as `ledger.fabric.fan == "router"`. A "solved-once" fan needs a
+footprint context passed into expansion — its own round if wanted.
+
 **Slice 3 — resize the dogfood to 9×9** and re-run the full path: apply →
-DRC → `view='gerber'`.
+DRC → `view='gerber'`. Constraint found at build: `sink_grid.per_tiles`
+is a square block of cells per sink and HV507 has 64 channels, so a 9×9
+(72 electrodes) needs either two sinks or a channel-overflow rule the
+generator does not have yet — verify with a 9×9 + `sink_grid` test before
+resizing prod.
 
 ## Acceptance criteria
 
@@ -220,12 +233,13 @@ DRC → `view='gerber'`.
 
 ## Open questions this round still must answer
 
-- **Does the fabric belong to the footprint or the board?** Emitting per
-  generator-instance (above) is the assumption; the alternative is a
-  reusable footprint-scoped fabric that every instance inherits. The
-  per-instance choice is simpler and matches `_pcb_apply`'s existing
-  identity diffing — but it duplicates rows per instance, which matters at
-  9×9 × N cards.
+- **Does the fabric belong to the footprint or the board? — DECIDED
+  (build, 2026-09-16): per generator-instance**, keyed `(ref_id,
+  generator_name)` + `board_id`. It matches `_pcb_apply`'s existing
+  `canonical_params` identity diffing and retire-on-change, and the rows
+  are absolute board coordinates so nothing has to re-derive placement.
+  Row count at 9×9 × N cards is linear in electrodes (≈3 rows each) and
+  cheap; revisit only if a multi-card assembly makes it a measured cost.
 - **DRC attribution**: does a finding inside the fabric report against the
   block/generator or the board? (`pcb-ewod-multitile.md:350-353` lists this
   as open; a generator-attributed finding is the more useful default,
@@ -247,7 +261,19 @@ seams (ruled out permanently — coating break).
 
 ## Vet status
 
-**Not yet vetted** — written directly rather than through the `ready`
-agent, so the storage-shape claim (`pcb_fixed_copper` vs extending
-`pcb_planes`' pattern), the migration number, and the realize-seam
-assumption each want a read against current code before build.
+**Vetted against code 2026-09-16** (navigator read, session
+foamy-doodling-barto), the three claims:
+
+- *Storage shape* — holds. `pcb_copper` (0138) is DELETE+INSERT per
+  realize via `pcb_copper_replace`, no `retired_at`; `pcb_planes` is the
+  authored precedent with `retired_at`. `GeneratorExpansion` has no
+  copper field. Decision stands: new authored table, not a `pcb_planes`
+  extension (planes are per (layer, net) regions, not segment geometry).
+- *Migration number* — 0165 (see above).
+- *Realize seam* — the assumption was wrong in one detail: realize does
+  NOT read `pcb_copper` at all; `pcb_copper_list` is read only after
+  realize by DRC/gerber. So the seam is two-sided: `pcb_copper_list`
+  unions active fixed rows (`fixed=True`) so every reader sees them with
+  no change, and the router consumes fixed copper as obstacles for other
+  nets + connectivity for its own net (skip a net fully connected by
+  fabric; route only the remaining gap otherwise).

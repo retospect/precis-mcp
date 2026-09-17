@@ -7,6 +7,7 @@ answers:
   - how do I place and route a board (op='place'/op='route')?
   - how do I export a BOM/CPL/DSN or route the board?
   - how do I read a PCB design as a graph — pins, nets, neighbours?
+  - view='drc' reports synthesized_footprint — how do I fix it?
 applies-to: get/search/put/delete (kind='pcb'); see also kind='part', kind='datasheet'
 status: active
 tags: [design]
@@ -206,6 +207,38 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 - **trace** walks series 2-pin parts (a resistor/cap in line) automatically; a
   multi-pin part terminates the auto-walk — you supply the next hop from the
   datasheet ([[precis-datasheet-help]]).
+
+## Fill in a missing footprint — `op='footprint'`
+
+`view='drc'` reporting `synthesized_footprint` means a catalog `part=`
+instance has no cached pad geometry — it was DRC'd at a fabricated bound,
+not its real footprint, so every other finding on that refdes is a guess.
+Pull the real one:
+
+```python
+get(kind="pcb", id="s", view="drc")  # -> synthesized_footprint: part U1
+put(kind="pcb", id="s", args={"op": "footprint", "part": "C639448"})
+get(kind="pcb", id="s", view="footprints")  # confirm U1's C-number is cached
+```
+
+`parts=[...]` pulls several C-numbers in one call; a failed pull reports
+`error` in that part's own row instead of raising, so one bad C-number
+doesn't lose the rest. `force=True` re-pulls even when already cached.
+When the vendor has nothing for a C-number, author the footprint directly
+instead — same pad shape as `footprints:[...]` in `put`'s design-authoring
+args:
+
+```python
+put(
+    kind="pcb", id="s",
+    args={"op": "footprint", "part": "C999999",
+          "footprint": {"pads": [{"pin": "1", "shape": "rect", "x": -0.5, "y": 0, "w": 0.6, "h": 0.8}, ...]}},
+)
+```
+
+`view='footprints'` lists every catalog-part instance on the board
+(refdes, C-number, cached?, source, pad count) — the read-side counterpart,
+and where to check before trusting a `view='drc'` pass on that part.
 
 ## Place and route it — `put(args={'op':'place'|'route', …})`
 

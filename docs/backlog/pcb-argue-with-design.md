@@ -108,7 +108,7 @@ established rule, `precis_se` migration 0005's own comment).
    the box. No modifier keys, no multi-select state: the text box IS
    the state.
 4. **Submit → a pcb note, verbatim.** New `pcb_notes` table (core
-   migration **0163** — verified free, 0162 is design-core's),
+   migration — next free number at build time; 0163 was taken by `component_head_form_specs`, 0164 by `se_measure_datum`, 0165 by `pcb_fixed_copper`),
    column-for-column `se_notes`: `ref_id, name, kind, body, re,
    about jsonb, origin, created_at, retired_at`. `about` gets the
    handles parsed out of the submitted text (they stay inline in the

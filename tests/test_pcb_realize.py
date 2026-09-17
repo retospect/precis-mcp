@@ -2880,7 +2880,7 @@ def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
 
     cheap_grid = build_grid()
     cheap_grid.set_body_mask(mask)
-    _tracks, cheap_vias, cheap_unrouted = pcb_realize._route_pass(
+    _tracks, cheap_vias, cheap_unrouted, _island_notes = pcb_realize._route_pass(
         ir,
         [0],
         [],
@@ -2901,7 +2901,7 @@ def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
 
     priced_grid = build_grid()
     priced_grid.set_body_mask(mask)
-    _tracks, priced_vias, priced_unrouted = pcb_realize._route_pass(
+    _tracks, priced_vias, priced_unrouted, _island_notes = pcb_realize._route_pass(
         ir,
         [0],
         [],

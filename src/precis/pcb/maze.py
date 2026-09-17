@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import heapq
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -645,6 +645,8 @@ class OccupancyGrid:
         via_body_cost_mm: float = 0.0,
         max_expansions: int = MAX_EXPANSIONS,
         layer_prefs: dict[int, str] | None = None,
+        extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
+        extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
     ) -> RoutePath | None:
         """Weighted-A* from ``start`` to ``goal`` for a trace of
         ``width_mm``, through cells this net's centreline may legally
@@ -664,7 +666,23 @@ class OccupancyGrid:
         ``heuristic`` below: folding it in there would make the heuristic
         overestimate a path that turns out to avoid every body cell,
         breaking A*'s admissibility guarantee for a search that is
-        supposed to stay optimal-under-weighting, not just fast."""
+        supposed to stay optimal-under-weighting, not just fast.
+
+        ``extra_start_terminals``/``extra_goal_terminals`` are additional
+        ``((x, y), layer)`` candidates the search may begin/end on, ON TOP
+        OF ``start``/``goal`` — never instead of them (precis.pcb.realize's
+        island-terminal seam: a pin already bridged to fixed copper offers
+        every one of that island's via centres and track endpoints as a
+        further source/target, because the plain pad-to-pad corridor a
+        dense field of foreign claims can wall off entirely). Each becomes
+        its own zero-cost source (mirroring ``attach``'s own-routed-copper
+        sourcing below) or an additional member of a MULTI-TARGET search —
+        the search still stops at the FIRST one reached, never all of
+        them, same as a single goal. A candidate whose layer is not in
+        ``layers`` or whose cell is not currently passable for this net is
+        silently dropped, the same "nothing to check against" convention
+        every other claim in this module already follows for data it
+        cannot resolve."""
         spec = self.spec
         if not layers:
             return None
@@ -724,17 +742,55 @@ class OccupancyGrid:
         if start_idx == goal_idx:
             x, y = spec.to_point(sx, sy)
             return RoutePath(net_id, ((x, y, start_layer),), 0.0)
-        if not passable(start_idx) or not passable(goal_idx):
+        no_extra_terminals = not extra_start_terminals and not extra_goal_terminals
+        start_ok = passable(start_idx)
+        goal_ok = passable(goal_idx)
+        if no_extra_terminals and (not start_ok or not goal_ok):
             return None
 
         pitch = spec.pitch
 
+        # The MULTI-TARGET set: the primary goal cell (if it is even
+        # passable — with extra terminals supplied it need not be, exactly
+        # the island-terminal scenario this parameter exists for: the plain
+        # pad-to-pad corridor is the one thing that's walled off) plus every
+        # extra goal terminal whose own layer/cell resolves to something
+        # this net could legally land on. `goal_anchor` carries the EXACT
+        # (not cell-centre) coordinate for every terminal beyond the
+        # primary — :meth:`_reconstruct` snaps the path's final point there,
+        # the same discipline :meth:`stamp_path`'s `anchors` already gives
+        # the SOURCE side, and for the same reason: a cell-centre landing on
+        # an off-grid via centre can be up to half a cell diagonal short of
+        # the copper it is meant to touch.
+        targets: list[tuple[int, int, int, int]] = []
+        goal_anchor: dict[int, tuple[float, float]] = {}
+        if goal_ok:
+            targets.append((gx, gy, goal_layer, goal_idx))
+        for (tx, ty), layer in extra_goal_terminals:
+            if layer not in layer_set:
+                continue
+            tcx, tcy = spec.to_cell(tx, ty)
+            tidx = layer * plane + tcy * spec.nx + tcx
+            if tidx == start_idx or any(tidx == t[3] for t in targets):
+                continue
+            if not passable(tidx):
+                continue
+            targets.append((tcx, tcy, layer, tidx))
+            goal_anchor[tidx] = (tx, ty)
+        if not targets:
+            return None
+        target_idx_set = {t[3] for t in targets}
+
         def heuristic(ix: int, iy: int, layer: int) -> float:
-            dx, dy = abs(ix - gx), abs(iy - gy)
-            octile = pitch * (max(dx, dy) + (_SQRT2 - 1.0) * min(dx, dy))
-            if layer != goal_layer:
-                octile += via_cost_mm
-            return octile * HEURISTIC_WEIGHT
+            best = math.inf
+            for tgx, tgy, tlayer, _ in targets:
+                dx, dy = abs(ix - tgx), abs(iy - tgy)
+                octile = pitch * (max(dx, dy) + (_SQRT2 - 1.0) * min(dx, dy))
+                if layer != tlayer:
+                    octile += via_cost_mm
+                if octile < best:
+                    best = octile
+            return best * HEURISTIC_WEIGHT
 
         # Multi-source: this net's own already-routed copper is a legal
         # place to start, because connecting to a net means reaching ANY
@@ -742,13 +798,16 @@ class OccupancyGrid:
         # decomposition's hub pad has to carry every one of its net's
         # connections through its own escape corridor — 26 GND segments
         # radiating from one pin, of which about two fit.
-        g_score: dict[int, float] = {start_idx: 0.0}
+        g_score: dict[int, float] = {}
         came: dict[int, int] = {}
         closed: set[int] = set()
-        heap: list[tuple[float, int]] = [(heuristic(sx, sy, start_layer), start_idx)]
+        heap: list[tuple[float, int]] = []
         # cell -> the exact copper coordinate that source represents, so the
         # reconstructed path can BEGIN on the trunk instead of near it.
         anchors: dict[int, tuple[float, float]] = {}
+        if start_ok:
+            g_score[start_idx] = 0.0
+            heapq.heappush(heap, (heuristic(sx, sy, start_layer), start_idx))
         if attach:
             for src, at in self._routed_cells.get(net_id, {}).items():
                 s_layer, s_rem = divmod(src, plane)
@@ -766,12 +825,27 @@ class OccupancyGrid:
                 # layers carried copper.
                 if s_layer not in layer_set:
                     continue
-                if src == goal_idx or src in g_score or not passable(src):
+                if src in target_idx_set or src in g_score or not passable(src):
                     continue
                 g_score[src] = 0.0
                 anchors[src] = at
                 s_iy, s_ix = divmod(s_rem, spec.nx)
                 heapq.heappush(heap, (heuristic(s_ix, s_iy, s_layer), src))
+        # The island-terminal sources themselves — same zero-cost seeding
+        # as `attach`'s own-routed-copper sources right above, for AUTHORED
+        # (not router-drawn) same-net copper instead.
+        for (tx, ty), layer in extra_start_terminals:
+            if layer not in layer_set:
+                continue
+            tcx, tcy = spec.to_cell(tx, ty)
+            tidx = layer * plane + tcy * spec.nx + tcx
+            if tidx in target_idx_set or tidx in g_score or not passable(tidx):
+                continue
+            g_score[tidx] = 0.0
+            anchors[tidx] = (tx, ty)
+            heapq.heappush(heap, (heuristic(tcx, tcy, layer), tidx))
+        if not g_score:
+            return None
         expansions = 0
 
         while heap:
@@ -779,8 +853,10 @@ class OccupancyGrid:
             if cur in closed:
                 continue
             closed.add(cur)
-            if cur == goal_idx:
-                return self._reconstruct(came, cur, net_id, g_score[cur], anchors)
+            if cur in target_idx_set:
+                return self._reconstruct(
+                    came, cur, net_id, g_score[cur], anchors, goal_anchor.get(cur)
+                )
             expansions += 1
             if expansions > max_expansions:
                 return None
@@ -833,6 +909,7 @@ class OccupancyGrid:
         net_id: int,
         length: float,
         anchors: dict[int, tuple[float, float]] | None = None,
+        goal_anchor: tuple[float, float] | None = None,
     ) -> RoutePath:
         spec = self.spec
         plane = spec.nx * spec.ny
@@ -858,6 +935,17 @@ class OccupancyGrid:
         if attached and points:
             ax, ay = (anchors or {})[source]
             points = ((ax, ay, points[0][2]), *points[1:])
+        # Symmetric snap for the GOAL end: ``goal_anchor`` is set only when
+        # the search landed on an ``extra_goal_terminals`` candidate (an
+        # island's via centre or track endpoint, off-grid like any real
+        # copper), never on the primary ``goal`` — that one is a plain pad
+        # centre and :mod:`precis.pcb.realize`'s own ``_snap_to_pads`` is
+        # what already pulls it exactly onto the pad, same as it always
+        # has. A path can carry BOTH an attached source and a snapped goal
+        # at once (an island-to-island connection).
+        if goal_anchor is not None and points:
+            gxp, gyp = goal_anchor
+            points = (*points[:-1], (gxp, gyp, points[-1][2]))
         return RoutePath(net_id, points, length, attached)
 
 

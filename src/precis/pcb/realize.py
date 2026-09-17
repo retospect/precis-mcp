@@ -135,6 +135,7 @@ from shapely.geometry import (  # type: ignore[import-untyped]
 from shapely.geometry import Point as _ShapelyPoint
 from shapely.geometry import Polygon as _ShapelyPolygon
 
+from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import geom, landpattern, maze, padplace
 from precis.pcb import silk as pcb_silk
 from precis.pcb.capabilities import CapabilityRow, capability_for
@@ -801,6 +802,39 @@ class RealizeResult:
     #: honest "tried and could not", independent of whatever
     #: :func:`precis.pcb.connectivity.net_islands` separately finds.
     unstitched: tuple[UnstitchedNet, ...] = ()
+    #: Segment ids :func:`realize` never handed to the router at all —
+    #: pcb-pre-place-route-blocks Slice 1's "Realize seam": each of these
+    #: segments' own two pins already sit in one connectivity component of
+    #: the ``fixed_copper`` :func:`realize` was called with (
+    #: :func:`precis.pcb.connectivity.connected_pin_pairs`), so the
+    #: authored fabric has already done this connection's job. Disjoint
+    #: from ``unrouted`` (a segment is in exactly one of the two — this
+    #: one never entered the search at all) and from ``tracks`` (no
+    #: derived copper is emitted for a segment realized this way — the
+    #: whole point is that none is needed). Always empty when ``realize``
+    #: was called with no ``fixed_copper``, and always empty for
+    #: ``router='tangent'`` (that drawer does not accept the keyword).
+    #:
+    #: **Known residue, stated rather than hidden**: only a segment whose
+    #: BOTH pins land in one fixed-copper island qualifies for THIS
+    #: short-circuit. A net with a free (unconnected) end — fixed copper
+    #: reaches one pin but not the other — still gets searched, but now
+    #: the search's own start/target set for the fixed pin is that
+    #: island's every via centre and track endpoint, not only its pad
+    #: (see :attr:`island_terminals`) — a route that starts or ends
+    #: mid-span on authored copper, not only pin-to-pin.
+    fixed_realized: tuple[int, ...] = ()
+    #: Which segments' derived route actually started or ended on a
+    #: fixed-copper ISLAND terminal — a via centre or track endpoint other
+    #: than the pin's own pad — rather than the plain pad-to-pad corridor
+    #: (pcb-pre-place-route-blocks, "island terminals"). Keyed by
+    #: ``seg_id``, one short human-readable note per entry (e.g. "started
+    #: from fixed via at (12.500, 4.200) on B.Cu"). A segment absent here
+    #: either routed pad-to-pad as always, or never routed at all — the
+    #: honesty this module already applies to ``unrouted``/``unrouted_
+    #: reasons`` extended to the OTHER surprising case: a route that
+    #: succeeded but not from where a reader would assume.
+    island_terminals: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1047,6 +1081,7 @@ def _realize_maze(
     ids: list[int],
     config: RealizeConfig,
     footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> tuple[
     list[RealizedTrack],
     list[RealizedVia],
@@ -1054,6 +1089,7 @@ def _realize_maze(
     list[dict[str, Any]],
     list[UnroutedReason],
     list[UnstitchedNet],
+    dict[int, str],
 ]:
     """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
     maze` for why this cannot emit overlapping copper, and what it gives
@@ -1113,13 +1149,13 @@ def _realize_maze(
                 net = ir.n_nets + pid
             pads.append((point, net, radius))
     if not pads:
-        return [], [], list(ids), [], [], []
+        return [], [], list(ids), [], [], [], {}
 
     rules_by_net = {
         n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
     }
     if not rules_by_net:
-        return [], [], list(ids), [], [], []
+        return [], [], list(ids), [], [], [], {}
     clearance = max(
         config.clearance_mm, max(r.clearance_mm for r in rules_by_net.values())
     )
@@ -1181,7 +1217,14 @@ def _realize_maze(
     # placement-derived, so it does not change between rip-up-and-retry
     # attempts.
     body_mask = _courtyard_body_mask(ir, spec)
-    best: tuple[list[RealizedTrack], list[RealizedVia], list[int]] | None = None
+    # Built ONCE, outside the retry loop, same reasoning as `ink_field`/
+    # `body_mask` above: which pins sit in a fixed-copper island is
+    # placement- and fixed-copper-derived, not attempt-derived.
+    island_terminals = _seg_island_terminals(
+        ir, route_ids, _island_terminals_by_pin(ir, footprints, fixed_copper)
+    )
+    Outcome = tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]
+    best: Outcome | None = None
     for _attempt in range(max(1, config.route_passes)):
         attempt_grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
         attempt_grid.set_body_mask(body_mask)
@@ -1198,6 +1241,8 @@ def _realize_maze(
             spec,
             pad_geoms,
             ink_field=ink_field,
+            fixed_copper=fixed_copper,
+            island_terminals=island_terminals,
         )
         if best is None or len(outcome[2]) < len(best[2]):
             best = outcome
@@ -1209,7 +1254,7 @@ def _realize_maze(
         failed = [s for s in order if s in set(outcome[2])]
         order = failed + [s for s in order if s not in set(failed)]
     assert best is not None  # the loop runs at least once
-    tracks, vias, unrouted = best
+    tracks, vias, unrouted, island_terminal_notes = best
     # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
     # which is a TRACK-CENTERLINE figure (edge rule + half the widest
     # track) that over-insets a polygon rim by `widest/2` and left parts
@@ -1290,8 +1335,17 @@ def _realize_maze(
         signal_layers,
         rules_by_net,
         config.max_expansions,
+        fixed_copper=fixed_copper,
     )
-    return tracks, vias, unrouted + extra_unrouted, pours, reasons, unstitched
+    return (
+        tracks,
+        vias,
+        unrouted + extra_unrouted,
+        pours,
+        reasons,
+        unstitched,
+        island_terminal_notes,
+    )
 
 
 def _diagnose_all(
@@ -1305,6 +1359,8 @@ def _diagnose_all(
     signal_layers: list[int],
     rules_by_net: dict[int, NetRules],
     max_expansions: int,
+    *,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> list[UnroutedReason]:
     """One :class:`UnroutedReason` per segment in ``unrouted +
     extra_unrouted`` — split out of :func:`_realize_maze` purely to keep
@@ -1346,6 +1402,7 @@ def _diagnose_all(
                 n_vias,
                 group_extent,
                 max_expansions,
+                fixed_copper=fixed_copper,
             )
         )
     for seg_id in extra_unrouted:
@@ -1439,6 +1496,131 @@ def _claim_mounting_holes(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
         layers = range(0, grid.spec.n_layers)
         grid.stamp_disk(layers, hole.x, hole.y, grid.core_radius_mm(2.0 * r), net)
         grid.stamp_pad(layers, hole.x, hole.y, r, net)
+
+
+def _fixed_copper_polyline(seg: dict[str, Any]) -> list[Point]:
+    """One fixed-copper track segment's polyline, for stamping only.
+
+    ``"line"`` is just its two endpoints; ``"arc"`` is flattened by hand
+    (mirroring :mod:`precis.pcb.drc`'s own ``_arc_points`` sampler at
+    ~0.05mm chord steps — not imported: a small, self-contained geometry
+    helper, the same "a stamping bug here must never make a defect
+    invisible to a DIFFERENT checker reading the same segment shape"
+    reasoning this module's own docstring gives for
+    ``clearance_violations_naive`` staying independent of the accelerated
+    engine). The maze router itself never emits an arc into
+    ``RealizedTrack.segments`` when re-stamped by
+    :func:`_stamp_realized_track` — fixed copper is authored, not
+    router-derived, so it can carry one (a generator's curved trace), and
+    this claim path must not silently skip it."""
+    if seg.get("shape") != "arc":
+        return [
+            (float(seg["start"][0]), float(seg["start"][1])),
+            (float(seg["end"][0]), float(seg["end"][1])),
+        ]
+    cx, cy = float(seg["center"][0]), float(seg["center"][1])
+    sx, sy = float(seg["start"][0]), float(seg["start"][1])
+    ex, ey = float(seg["end"][0]), float(seg["end"][1])
+    r = math.hypot(sx - cx, sy - cy)
+    a1 = math.atan2(sy - cy, sx - cx)
+    a2 = math.atan2(ey - cy, ex - cx)
+    diff = (a2 - a1) % (2 * math.pi)
+    if seg.get("cw"):
+        diff -= 2 * math.pi
+    n = max(1, math.ceil(abs(diff) * max(r, 1e-6) / 0.05))
+    return [
+        (cx + r * math.cos(a1 + diff * k / n), cy + r * math.sin(a1 + diff * k / n))
+        for k in range(n + 1)
+    ]
+
+
+def _claim_fixed_copper(
+    grid: maze.OccupancyGrid,
+    ir: PcbIR,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> None:
+    """Claim every AUTHORED fixed-copper row (``store.pcb_fixed_copper_
+    list`` — docs/backlog/pcb-pre-place-route-blocks.md Slice 1, "Realize
+    seam") onto ``grid`` as real copper — BEFORE :func:`_stamp_pads`, same
+    discipline as :func:`_claim_fiducial_keepouts`/:func:`
+    _claim_mounting_holes` right above: a fixture the router cannot see is
+    one it draws straight through, and a pad's own re-assert (this
+    module's existing ordering) should always win the cells directly under
+    a real pad, fixed copper or not.
+
+    Claimed with the row's OWN net as owner (:meth:`~precis.pcb.maze.
+    OccupancyGrid.stamp_disk`'s ``net_id``, resolved by NAME — the same
+    join every other net-by-name lookup in this build already does), never
+    ``contest=True``: this claim represents copper that is DEFINITELY
+    there, same certainty a pad's core disk carries, not two candidates
+    disputing a cell. Same-net routing may therefore still touch it (the
+    maze search's passable set is "every OTHER net's copper, dilated" —
+    :meth:`~precis.pcb.maze.OccupancyGrid.route`'s own docstring); a
+    foreign net treats it as blocked, exactly like a pad. A row naming no
+    net, or a net this IR does not currently carry (a stale/retired
+    name), or a layer/span this stackup does not carry, claims nothing —
+    a row this router cannot resolve is a fact it has no keep-out rule for
+    yet, the same "nothing to check against" gap :func:`_default_obstacles`
+    already accepts for an obstacle with no position.
+
+    Track geometry is sampled along each segment at half-pitch steps —
+    :meth:`~precis.pcb.maze.OccupancyGrid.stamp_path`'s own technique, for
+    the same reason: a long span skips intermediate grid cells if only its
+    two endpoints are stamped. Via geometry claims every layer in its
+    ``span``, both ends inclusive. Both use ``grid.core_radius_mm`` — half
+    the physical width/diameter plus the grid's own clearance figure, the
+    SAME keep-out radius every other claim in this module (pads,
+    fiducials, mounting holes) resolves to, per this function's own
+    docstring instruction."""
+    if not fixed_copper:
+        return
+    net_name_to_id = {str(ir.net_name[n]): n for n in range(ir.n_nets)}
+    layer_name_to_idx = {
+        str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
+    }
+    step = grid.spec.pitch / 2.0
+    for row in fixed_copper:
+        net_name = row.get("net")
+        net_id = net_name_to_id.get(str(net_name)) if net_name else None
+        if net_id is None:
+            continue
+        ctype = row.get("ctype")
+        if ctype == "track":
+            layer = layer_name_to_idx.get(str(row.get("layer")))
+            if layer is None:
+                continue
+            radius = grid.core_radius_mm(float(row.get("width_mm", 0.0)))
+            for seg in row.get("segments") or []:
+                pts = _fixed_copper_polyline(seg)
+                for a, b in itertools.pairwise(pts):
+                    seg_len = dist(a, b)
+                    n = max(1, math.ceil(seg_len / step))
+                    for k in range(n + 1):
+                        t = k / n
+                        grid.stamp_disk(
+                            (layer,),
+                            a[0] + (b[0] - a[0]) * t,
+                            a[1] + (b[1] - a[1]) * t,
+                            radius,
+                            net_id,
+                        )
+        elif ctype == "via":
+            span = row.get("span")
+            if not span or len(span) != 2:
+                continue
+            lo = layer_name_to_idx.get(str(span[0]))
+            hi = layer_name_to_idx.get(str(span[1]))
+            if lo is None or hi is None:
+                continue
+            lo, hi = min(lo, hi), max(lo, hi)
+            radius = grid.core_radius_mm(float(row.get("dia_mm", 0.0)))
+            grid.stamp_disk(
+                range(lo, hi + 1),
+                float(row.get("x", 0.0)),
+                float(row.get("y", 0.0)),
+                radius,
+                net_id,
+            )
 
 
 def _stamp_pads(grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float]]) -> None:
@@ -1540,6 +1722,8 @@ def _diagnose_unrouted(
     n_vias: int,
     group_extent: float | None,
     max_expansions: int,
+    *,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> UnroutedReason:
     """WHY ``seg_id`` never routed, in one of :class:`UnroutedReason`'s
     three route-search categories — 'BOARD TWO' finding 1's diagnostic gap
@@ -1572,6 +1756,7 @@ def _diagnose_unrouted(
             "this connection's endpoint has no placed (x, y) yet — nothing to route",
         )
     probe = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    _claim_fixed_copper(probe, ir, fixed_copper)
     _claim_fiducial_keepouts(probe, ir)
     _claim_mounting_holes(probe, ir)
     _stamp_pads(probe, pads)
@@ -1648,14 +1833,31 @@ def _route_pass(
     spec: maze.GridSpec,
     pad_geoms: list[PadGeom],
     ink_field: _InkField | None = None,
-) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
+    fixed_copper: list[dict[str, Any]] | None = None,
+    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None = None,
+) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]:
     """One complete routing attempt onto a fresh ``grid``, in ``order``.
 
     ``ink_field`` (:func:`_courtyard_ink_field`, built ONCE in
     :func:`_realize_maze` — placement-derived, so it is identical on every
     attempt) is forwarded to the plane fan-out's drop-via search and to
     the straighten pass's via shove, the two via-placement sites that
-    defer to courtyard silk (this section's module note)."""
+    defer to courtyard silk (this section's module note).
+
+    ``fixed_copper`` (:func:`realize`'s own new keyword — pcb-pre-place-
+    route-blocks Slice 1's "Realize seam") is claimed FIRST, before even
+    the fiducial/mounting-hole keep-outs — see :func:`_claim_fixed_copper`
+    for why a pad's own re-assert must still win the cells directly under
+    it regardless of claim order.
+
+    ``island_terminals`` (:func:`_seg_island_terminals`, also built ONCE
+    in :func:`_realize_maze`) hands each segment's search the alternate
+    start/target set its fixed-copper-connected pin(s) offer, on top of
+    the plain pad point — see :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
+    ``extra_start_terminals``/``extra_goal_terminals``. Every segment
+    whose realized path actually used one is named in the returned notes
+    dict (:attr:`RealizeResult.island_terminals`)."""
+    _claim_fixed_copper(grid, ir, fixed_copper)
     _claim_fiducial_keepouts(grid, ir)
     _claim_mounting_holes(grid, ir)
     _stamp_pads(grid, pads)
@@ -1663,6 +1865,7 @@ def _route_pass(
     tracks: list[RealizedTrack] = []
     vias: list[RealizedVia] = []
     unrouted: list[int] = []
+    island_notes: dict[int, str] = {}
 
     # Plane-served segments are dog-bone stubs, not searched routes — but
     # they ARE copper, so they get realized (and claimed) first, before
@@ -1694,6 +1897,7 @@ def _route_pass(
         # extent up front and only changes layer where the whole group
         # fits.
         n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
+        terms = (island_terminals or {}).get(seg_id)
         path = grid.route(
             net_id,
             start,
@@ -1709,10 +1913,19 @@ def _route_pass(
                 if config.preferred_directions
                 else None
             ),
+            extra_start_terminals=tuple((t.point, layer) for t, layer in terms[0])
+            if terms
+            else (),
+            extra_goal_terminals=tuple((t.point, layer) for t, layer in terms[1])
+            if terms
+            else (),
         )
         if path is None or len(path.points) < 2:
             unrouted.append(seg_id)
             continue
+        note = _describe_used_terminal(path, terms)
+        if note is not None:
+            island_notes[seg_id] = note
         path = _snap_to_pads(path, start, end, spec.pitch)
         if config.straighten:
             path = _straighten(
@@ -1782,7 +1995,7 @@ def _route_pass(
                 fillet_radius_mm=config.fillet_radius_tracks * rules.track_width_mm,
             )
         )
-    return tracks, vias, unrouted
+    return tracks, vias, unrouted, island_notes
 
 
 def _pad_blockers(
@@ -4329,6 +4542,184 @@ def _track_from_run(
 # ── the checkpoint entry point ────────────────────────────────────────────
 
 
+def _fixed_copper_connectivity_model(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The :mod:`precis.pcb.connectivity`-shaped model of "every placed
+    pad, plus ONLY the authored ``fixed_copper`` — never derived copper,
+    which does not exist yet at this point in a checkpoint run" — the
+    input :func:`_split_fixed_realized` asks
+    :func:`~precis.pcb.connectivity.connected_pin_pairs` about.
+
+    ``pads`` is :func:`pads_for_ir`'s own output, unmodified — the single
+    "where is this pad, and which pin" answer this module already gives
+    every other consumer (module docstring). Each fixed-copper row's
+    ``net`` is normalized to ``""`` when absent (``None``) rather than
+    left as a bare dict key: :mod:`precis.pcb.drc`'s ``_Prim`` builders
+    this module's connectivity siblings share do ``item.get("net", "")``,
+    which reads back ``None`` (not the empty-string default) for a key
+    that is PRESENT with a ``None`` value — exactly ``pcb_fixed_copper_
+    list``'s own shape for a row with no net."""
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    return {
+        "layers": layers,
+        "pads": pads_for_ir(ir, layers, footprints),
+        "copper": [{**row, "net": row.get("net") or ""} for row in fixed_copper],
+    }
+
+
+#: Terminal candidates for ONE end of a segment: every one of that pin's
+#: fixed-copper island terminals, paired with the resolved layer INDEX the
+#: maze router already speaks (:func:`_island_terminals_by_pin`'s own
+#: output is keyed by layer NAME, connectivity's currency; this module's
+#: grid is keyed by stackup index).
+_EndTerminals = tuple[tuple[pcb_connectivity.FixedTerminal, int], ...]
+
+
+def _island_terminals_by_pin(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> dict[tuple[str, str], _EndTerminals]:
+    """Every pin's fixed-copper island terminals
+    (:func:`~precis.pcb.connectivity.fixed_copper_pin_terminals`), with
+    each terminal's LAYER NAME resolved to this stackup's own layer
+    INDEX — the same ``layer_name_to_idx`` join :func:`_claim_fixed_copper`
+    already does, repeated here (not threaded through as shared state)
+    because the two call sites — claiming geometry vs. offering route
+    terminals — share no other state. A terminal naming a layer this
+    stackup does not carry is dropped, same "nothing to check against"
+    convention :func:`_claim_fixed_copper` already applies to a row it
+    cannot resolve.
+
+    Built ONCE per :func:`_realize_maze` call, outside the rip-up/retry
+    loop — same reasoning as :func:`_courtyard_ink_field`/
+    :func:`_courtyard_body_mask` right above it: this is fixed-copper- and
+    placement-derived, identical on every attempt."""
+    if not fixed_copper:
+        return {}
+    model = _fixed_copper_connectivity_model(ir, footprints, fixed_copper)
+    by_pin = pcb_connectivity.fixed_copper_pin_terminals(model)
+    if not by_pin:
+        return {}
+    layer_name_to_idx = {
+        str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
+    }
+    out: dict[tuple[str, str], _EndTerminals] = {}
+    for key, terminals in by_pin.items():
+        resolved = tuple(
+            (t, layer_name_to_idx[t.layer])
+            for t in terminals
+            if t.layer in layer_name_to_idx
+        )
+        if resolved:
+            out[key] = resolved
+    return out
+
+
+def _seg_island_terminals(
+    ir: PcbIR, ids: list[int], by_pin: dict[tuple[str, str], _EndTerminals]
+) -> dict[int, tuple[_EndTerminals, _EndTerminals]]:
+    """Restate :func:`_island_terminals_by_pin`'s per-PIN answer at
+    per-SEGMENT granularity — ``(pin-a's terminals, pin-b's terminals)`` —
+    which is what :func:`_route_pass` actually needs to hand
+    :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
+    ``extra_start_terminals``/``extra_goal_terminals``. A segment with
+    neither pin in ``by_pin`` (the common case, always true when
+    ``fixed_copper`` was empty to begin with) is absent from the result."""
+    if not by_pin:
+        return {}
+    out: dict[int, tuple[_EndTerminals, _EndTerminals]] = {}
+    for seg_id in ids:
+        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+        key_a = (str(ir.instance_refdes[int(ir.pin_instance[a])]), str(ir.pin_label[a]))
+        key_b = (str(ir.instance_refdes[int(ir.pin_instance[b])]), str(ir.pin_label[b]))
+        term_a = by_pin.get(key_a, ())
+        term_b = by_pin.get(key_b, ())
+        if term_a or term_b:
+            out[seg_id] = (term_a, term_b)
+    return out
+
+
+def _describe_used_terminal(
+    path: maze.RoutePath, terms: tuple[_EndTerminals, _EndTerminals] | None
+) -> str | None:
+    """The honesty half of the island-terminal seam
+    (:attr:`RealizeResult.island_terminals`): did this successful route
+    actually start or end on one of the extra candidates offered, rather
+    than the plain pad? Matched by exact coordinate + layer — the search
+    only ever snaps a path onto a terminal's EXACT point
+    (:meth:`~precis.pcb.maze.OccupancyGrid._reconstruct`'s anchor/
+    goal-anchor snap), so an honest float equality is enough; no tolerance
+    band to get wrong."""
+    if terms is None or not path.points:
+        return None
+    parts: list[str] = []
+    head = path.points[0]
+    for t, layer in terms[0]:
+        if layer == head[2] and dist(t.point, (head[0], head[1])) < 1e-6:
+            parts.append(
+                f"started from fixed {t.kind} at "
+                f"({t.point[0]:.3f}, {t.point[1]:.3f}) on {t.layer}"
+            )
+            break
+    tail = path.points[-1]
+    for t, layer in terms[1]:
+        if layer == tail[2] and dist(t.point, (tail[0], tail[1])) < 1e-6:
+            parts.append(
+                f"ended at fixed {t.kind} at "
+                f"({t.point[0]:.3f}, {t.point[1]:.3f}) on {t.layer}"
+            )
+            break
+    return "; ".join(parts) if parts else None
+
+
+def _split_fixed_realized(
+    ir: PcbIR,
+    ids: list[int],
+    footprints: dict[str, dict[str, Any]] | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> tuple[list[int], list[int]]:
+    """Partition ``ids`` into ``(still needs a route, already realized by
+    fixed copper)`` — pcb-pre-place-route-blocks Slice 1's "Realize
+    seam", router side, item 2: a segment counts as fixed-realized only
+    when its OWN two pins already sit in one connectivity component of
+    ``fixed_copper`` alone, via :func:`~precis.pcb.connectivity.
+    connected_pin_pairs`.
+
+    **Whole-net short-circuit is deliberately out of scope.** This only
+    ever drops a segment whose specific two endpoints are already one
+    piece, never an entire net because ONE of its segments qualified — a
+    net with 3+ pins where fixed copper bridges only two of them still
+    routes its other segment(s) normally. See :attr:`RealizeResult.
+    fixed_realized`'s own docstring for the free-end residue this leaves."""
+    if not fixed_copper:
+        return list(ids), []
+    model = _fixed_copper_connectivity_model(ir, footprints, fixed_copper)
+    connected = pcb_connectivity.connected_pin_pairs(model)
+    if not connected:
+        return list(ids), []
+    route_ids: list[int] = []
+    fixed_realized: list[int] = []
+    for seg_id in ids:
+        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+        key_a = (
+            str(ir.instance_refdes[int(ir.pin_instance[a])]),
+            str(ir.pin_label[a]),
+        )
+        key_b = (
+            str(ir.instance_refdes[int(ir.pin_instance[b])]),
+            str(ir.pin_label[b]),
+        )
+        if key_a != key_b and frozenset((key_a, key_b)) in connected:
+            fixed_realized.append(seg_id)
+        else:
+            route_ids.append(seg_id)
+    return route_ids, fixed_realized
+
+
 def realize(
     ir: PcbIR,
     *,
@@ -4336,6 +4727,7 @@ def realize(
     config: RealizeConfig = RealizeConfig(),
     seg_ids: list[int] | None = None,
     footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> RealizeResult:
     """Realize every segment in ``seg_ids`` (default: the whole board) —
     the checkpoint call. Never touches the IR (module docstring); pure
@@ -4349,13 +4741,28 @@ def realize(
     router only — the tangent drawer's obstacles are component courtyards,
     not pad geometry) is forwarded to :func:`pad_geometry` for the
     occupancy grid's own pad claims; ``None`` (the default) claims every
-    pad at :mod:`precis.pcb.landpattern`'s synthesized size."""
+    pad at :mod:`precis.pcb.landpattern`'s synthesized size.
+
+    ``fixed_copper`` (maze router only, pcb-pre-place-route-blocks
+    Slice 1 — ``store.pcb_fixed_copper_list``'s own row shape) is
+    AUTHORED copper this call must treat as already real: every row is
+    claimed on the occupancy grid as its own net's copper before any
+    segment is searched (:func:`_claim_fixed_copper`, so same-net routing
+    may still touch it and every foreign net treats it as blocked, same
+    as a pad), and any segment whose two pins ALREADY sit in one
+    connectivity component of ``fixed_copper`` alone is never searched at
+    all — see :func:`_split_fixed_realized` and :attr:`RealizeResult.
+    fixed_realized`. ``None`` (the default) reproduces the prior
+    behaviour exactly: nothing is claimed, nothing is short-circuited."""
     ids = list(range(ir.n_segments)) if seg_ids is None else seg_ids
     if config.router == "maze":
-        tracks, vias, unrouted, pours, reasons, unstitched = _realize_maze(
-            ir, ids, config, footprints
+        route_ids, fixed_realized = _split_fixed_realized(
+            ir, ids, footprints, fixed_copper
         )
-        warnings = _gap_usage(ir, ids, config)
+        tracks, vias, unrouted, pours, reasons, unstitched, island_notes = (
+            _realize_maze(ir, route_ids, config, footprints, fixed_copper)
+        )
+        warnings = _gap_usage(ir, route_ids, config)
         return RealizeResult(
             tuple(tracks),
             tuple(vias),
@@ -4364,6 +4771,8 @@ def realize(
             tuple(pours),
             tuple(reasons),
             tuple(unstitched),
+            tuple(fixed_realized),
+            island_notes,
         )
     if config.router != "tangent":
         raise ValueError(
@@ -4578,23 +4987,49 @@ class PadGeom:
     pin_dx`/``pin_dy`` already use for a pin's offset), unrotated by the
     instance's pose. :func:`pads_for_ir` is what rotates+translates it
     into board space — the one place every OTHER shape's placement
-    already happens, so a polygon pad is not a second transform path."""
+    already happens, so a polygon pad is not a second transform path.
+
+    ``role``/``mask``/``paste``/``drill_mm`` (gr341578) are the SAME
+    optional authoring fields :func:`~precis.pcb.padplace.
+    place_footprint_pads` already threads onto a real footprint's placed
+    pad dict — carried here, unmolested, only when the source pad (real
+    footprint or authored local footprint) actually set them. ``None``
+    for every synthesized pad (no real footprint at all — there is no
+    fact to carry, the same "no key" default a bare real pad with none of
+    these authored gets from ``place_footprint_pads`` itself)."""
 
     w_mm: float
     h_mm: float
     shape: str
     synthesized: bool
     poly: list[tuple[float, float]] | None = None
+    role: str | None = None
+    mask: str | None = None
+    paste: str | None = None
+    drill_mm: float | None = None
 
 
 def _real_pad_sizes(
     ir: PcbIR, inst_id: int, fp: dict[str, Any]
-) -> dict[str, tuple[float, float, str, list[tuple[float, float]] | None]]:
-    """This one instance's REAL per-pin pad size, keyed by NETLIST pin
-    name, sourced from a cached ``part_footprints`` row (``fp`` in that
-    row's own shape: ``{"pads": [...], "pin_map": {...}}``, the exact
-    dict :func:`precis.pcb.padplace.place_footprint_pads` already
-    consumes for the fab-export path).
+) -> dict[
+    str,
+    tuple[
+        float,
+        float,
+        str,
+        list[tuple[float, float]] | None,
+        str | None,
+        str | None,
+        str | None,
+        float | None,
+    ],
+]:
+    """This one instance's REAL per-pin pad size (plus
+    role/mask/paste/drill, gr341578), keyed by NETLIST pin name, sourced
+    from a cached ``part_footprints`` row (``fp`` in that row's own
+    shape: ``{"pads": [...], "pin_map": {...}}``, the exact dict
+    :func:`precis.pcb.padplace.place_footprint_pads` already consumes for
+    the fab-export path).
 
     Delegates the mirror/rotate/90-degree-swap-for-rect-pads resolution to
     :func:`~precis.pcb.padplace.place_footprint_pads` itself rather than
@@ -4603,11 +5038,12 @@ def _real_pad_sizes(
     the trick is asking it to resolve each pad's ``net`` field as the
     pin's own NAME (``pin_to_net={name: name for ...}``), which smuggles
     pin identity through the one field of its output that survives the
-    transform unmolested, letting real w/h/shape be read back out keyed by
-    the same pin name this module already indexes everything else by.
-    Position is irrelevant here (only size is read back), so the probe
-    instance is placed at the origin regardless of where the real
-    instance actually sits.
+    transform unmolested, letting real w/h/shape (and the rotation/side
+    invariant role/mask/paste/drill flags, gr341578) be read back out
+    keyed by the same pin name this module already indexes everything
+    else by. Position is irrelevant here (only size and those flags are
+    read back), so the probe instance is placed at the origin regardless
+    of where the real instance actually sits.
 
     A ``shape == "polygon"`` pad's vertex ring is read straight off the
     RAW footprint pad (never through the probe above, which — usefully
@@ -4673,7 +5109,19 @@ def _real_pad_sizes(
         raw_poly_by_name[name] = [
             (float(vx) - cx, float(vy) - cy) for vx, vy in raw["poly"]
         ]
-    out: dict[str, tuple[float, float, str, list[tuple[float, float]] | None]] = {}
+    out: dict[
+        str,
+        tuple[
+            float,
+            float,
+            str,
+            list[tuple[float, float]] | None,
+            str | None,
+            str | None,
+            str | None,
+            float | None,
+        ],
+    ] = {}
     for pad in pads:
         name = str(pad.get("net") or "")
         if not name or name in out:
@@ -4681,7 +5129,25 @@ def _real_pad_sizes(
         w = float(pad["w"])
         shape = str(pad["shape"])
         poly = raw_poly_by_name.get(name) if shape == "polygon" else None
-        out[name] = (w, float(pad.get("h", w)), shape, poly)
+        # `place_footprint_pads` already threads role/mask/paste/drill
+        # straight off the raw pad onto this placed one (its own
+        # docstring) -- reading them back here off ITS output, not a
+        # second raw-pad scan, keeps this the same one-hop indirection
+        # the w/h/shape/poly reads above already use.
+        role = pad.get("role")
+        mask = pad.get("mask")
+        paste = pad.get("paste")
+        drill = pad.get("drill")
+        out[name] = (
+            w,
+            float(pad.get("h", w)),
+            shape,
+            poly,
+            str(role) if role is not None else None,
+            str(mask) if mask is not None else None,
+            str(paste) if paste is not None else None,
+            float(drill) if drill is not None else None,
+        )
     return out
 
 
@@ -4712,7 +5178,20 @@ def pad_geometry(
     from ``ir.pin_pad_synthesized`` (always ``True`` for that path).
     """
     real_by_inst: dict[
-        int, dict[str, tuple[float, float, str, list[tuple[float, float]] | None]]
+        int,
+        dict[
+            str,
+            tuple[
+                float,
+                float,
+                str,
+                list[tuple[float, float]] | None,
+                str | None,
+                str | None,
+                str | None,
+                float | None,
+            ],
+        ],
     ] = {}
     if footprints:
         for inst_id in range(ir.n_instances):
@@ -4724,8 +5203,20 @@ def pad_geometry(
         inst_id = int(ir.pin_instance[pid])
         real = real_by_inst.get(inst_id, {}).get(str(ir.pin_label[pid]))
         if real is not None:
-            w, h, shape, poly = real
-            out.append(PadGeom(w, h, shape, synthesized=False, poly=poly))
+            w, h, shape, poly, role, mask, paste, drill = real
+            out.append(
+                PadGeom(
+                    w,
+                    h,
+                    shape,
+                    synthesized=False,
+                    poly=poly,
+                    role=role,
+                    mask=mask,
+                    paste=paste,
+                    drill_mm=drill,
+                )
+            )
         else:
             out.append(
                 PadGeom(
@@ -4767,6 +5258,14 @@ def pads_for_ir(
     *near* its pad is not connected to it — and the flag is what stops
     synthesized geometry from quietly becoming a gerber. See
     :func:`precis.pcb.gerber.export_fab`'s refusal.
+
+    **``paste``/``mask``/``role``/``drill`` ride along too (gr341578)**,
+    sourced the same way :func:`~precis.pcb.padplace.place_footprint_pads`
+    already carries them for the fab-export path — added only when the
+    source pad set them, never invented. These are additive: every prior
+    consumer keying off ``layer``/``net``/``shape``/``x``/``y``/``w``
+    (``/h``/``poly``)/``synthesized``/``refdes``/``pin`` alone is
+    unaffected.
     """
     if not layers:
         return []
@@ -4777,6 +5276,7 @@ def pads_for_ir(
         if point is None:
             continue
         geom = geoms[pid]
+        inst_id = int(ir.pin_instance[pid])
         # NO_NET must never index `net_name`: NO_NET is -1,
         # and `ir.net_name[-1]` is not an error in Python/numpy -- it
         # WRAPS to the LAST real net, silently mislabelling every
@@ -4791,8 +5291,29 @@ def pads_for_ir(
         # IN the model (still checkable for clearance) without being
         # attributed to a net it was never wired to.
         net_id = int(ir.pin_net[pid])
+        # gr341516 — a pad's IR layer used to be `layers[PAD_LAYER]`
+        # (always index 0, F.Cu) for every pin regardless of which side
+        # of the board its instance actually mounts on
+        # (`ir.py::from_graph` now reads `pcb_instances.layer` into
+        # `PcbIR.inst_bottom`, the same predicate the real gerber path
+        # (`padplace.place_footprint_pads`) already used) -- so a
+        # bottom-side part's pads read, to DRC/preview, as sitting on the
+        # SAME copper as whatever top-side part happened to be above it.
+        # `layers[0]`/`layers[-1]` are the board's own two outer entries
+        # (`layers` is index-aligned to `ir.stackup` -- module docstring's
+        # "layers are integer indexes" convention, and DEFAULT_STACKUP's
+        # own F.Cu-first/B.Cu-last ordering), never a stackup-index lookup
+        # of a hardcoded name. A drilled (through-hole) pad's own land is
+        # real copper on every layer, not just the one reported here (see
+        # `place_footprint_pads`'s identical `drill` handling) -- DRC's
+        # clearance/via-keepout rules treat `pad["drill"]` as the "spans
+        # every layer" signal instead (`drc.py::clearance_pairs_indexed`),
+        # so this single-entry `layer` value stays honest as "this pad's
+        # OUTER copper flash lands here" without this function needing a
+        # second, per-layer pad-dict shape only THT pins would use.
+        pad_layer = layers[-1] if bool(ir.inst_bottom[inst_id]) else layers[0]
         pad: dict[str, Any] = {
-            "layer": layers[PAD_LAYER],
+            "layer": pad_layer,
             "net": "" if net_id == NO_NET else str(ir.net_name[net_id]),
             "shape": geom.shape,
             "x": point[0],
@@ -4808,9 +5329,22 @@ def pads_for_ir(
             # GEOMETRY is a bound — withholding identity there would make
             # the tooltip least informative exactly where the shape is
             # least trustworthy, backwards from the point of having one.
-            "refdes": str(ir.instance_refdes[int(ir.pin_instance[pid])]),
+            "refdes": str(ir.instance_refdes[inst_id]),
             "pin": str(ir.pin_label[pid]),
         }
+        # `part_lcsc` (gr341532 scoping fix) -- carried only when the
+        # instance is a real catalog part (`PcbIR.instance_part_lcsc`,
+        # never an empty string, `None` for an unlinked instance). This is
+        # what lets `drc.py::check_synthesized_footprint` tell "a catalog
+        # part with no cached footprint" (an actionable gap: go cache it)
+        # apart from "a design-local/hand-authored pad the landpattern
+        # module sized" (this module's normal, permanent path for
+        # anything with no LCSC C-number -- a generator's own pads,
+        # mounting holes, wires) which can never become "real" by caching
+        # anything and must never be flagged as if it could.
+        part_lcsc = ir.instance_part_lcsc[inst_id]
+        if part_lcsc:
+            pad["part_lcsc"] = str(part_lcsc)
         if geom.shape != "circle":
             pad["h"] = geom.h_mm
         if geom.shape == "polygon" and geom.poly:
@@ -4819,7 +5353,6 @@ def pads_for_ir(
             # center (`PadGeom.poly`'s own docstring), so it only needs
             # the SAME rotation (never a second translate) before adding
             # `point` back on -- one placement rule, reused per vertex.
-            inst_id = int(ir.pin_instance[pid])
             inst_rot = float(ir.inst_rot[inst_id])
             inst_rot = 0.0 if math.isnan(inst_rot) else inst_rot
             pad["poly"] = [
@@ -4828,6 +5361,27 @@ def pads_for_ir(
                     landpattern.rotate_offset(vx, vy, inst_rot) for vx, vy in geom.poly
                 )
             ]
+        # role/mask/paste/drill (gr341578) — the SAME optional keys
+        # :func:`precis.pcb.padplace.place_footprint_pads` already emits
+        # for the fab-export path, added only when the source pad
+        # actually set them (a synthesized pad, or a real pad that never
+        # authored one, carries none of these — same "no key" convention
+        # `place_footprint_pads` itself uses for a bare pad, see its own
+        # docstring). Without these, `gerber.solderpaste_gerber`'s own
+        # `paste == "none"` skip (module docstring) never fires for a
+        # pad built off this IR path, so an electrode meant to get NO
+        # stencil opening got one anyway — the F_Paste layer came out
+        # byte-identical to F_Cu on every board whose fab preview reaches
+        # pads only through here (this function's own docstring: "every
+        # consumer that needs pad geometry calls this").
+        if geom.role is not None:
+            pad["role"] = geom.role
+        if geom.mask is not None:
+            pad["mask"] = geom.mask
+        if geom.paste is not None:
+            pad["paste"] = geom.paste
+        if geom.drill_mm:
+            pad["drill"] = geom.drill_mm
         out.append(pad)
     # A PLATED mounting hole's copper annulus (a solder-on nut's land) is
     # real pad copper on EVERY copper layer — emitted here because this

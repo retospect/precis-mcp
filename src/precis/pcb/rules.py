@@ -276,17 +276,29 @@ def net_current_a_or_none(value: float | None) -> float | None:
     return float(value)
 
 
-#: Every instance's pad(s) are assumed to sit on this stackup layer — the
-#: IR carries no per-instance mount-side field yet, so index 0 (the first
-#: outer layer, F.Cu in :data:`precis.pcb.DEFAULT_STACKUP`) is the one
-#: fixed reference every via transition (both :mod:`precis.pcb.realize`'s
-#: geometry and :func:`implied_via_count`'s count below) is computed
-#: against, not a per-instance lookup that doesn't exist yet. Lives here
-#: (not :mod:`precis.pcb.realize`, its original home) so :mod:`precis.pcb.
-#: cost` can share the exact same "did this segment change layer" test
-#: without importing the realizer (see :func:`implied_via_count`'s
-#: docstring for why that import would cycle); :mod:`precis.pcb.realize`
-#: re-exports this same object rather than keeping a second definition.
+#: The ROUTER's own fixed reference layer for via-transition bookkeeping —
+#: NOT "which copper layer a pad's real land sits on" (gr341516 split that
+#: question off, once the IR gained a real per-instance mount-side field:
+#: see :attr:`precis.pcb.ir.PcbIR.inst_bottom`, populated by
+#: :func:`~precis.pcb.ir.from_graph` from ``pcb_instances.layer``, and
+#: :func:`precis.pcb.realize.pads_for_ir`, which now emits each pad's own
+#: ``layer`` key off that field instead of this constant). This constant
+#: remains index 0 (the first outer layer, F.Cu in
+#: :data:`precis.pcb.DEFAULT_STACKUP`) as the one fixed frame every via
+#: transition the ROUTER draws (both :mod:`precis.pcb.realize`'s maze/
+#: plane-fanout/drop-via geometry and :func:`implied_via_count`'s count
+#: below) is computed against — the router still routes every net as if
+#: every pad started from the SAME outer layer regardless of its
+#: instance's real mount side (a real, pre-existing, separate gap: a
+#: bottom-side part's stub/via geometry is anchored to the wrong physical
+#: layer today), which is a routing-engine change, not a DRC/IR-shape one,
+#: and out of this constant's own scope to fix by renaming it away. Lives
+#: here (not :mod:`precis.pcb.realize`, its original home) so
+#: :mod:`precis.pcb.cost` can share the exact same "did this segment
+#: change layer" test without importing the realizer (see
+#: :func:`implied_via_count`'s docstring for why that import would
+#: cycle); :mod:`precis.pcb.realize` re-exports this same object rather
+#: than keeping a second definition.
 PAD_LAYER = 0
 
 

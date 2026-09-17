@@ -21,6 +21,7 @@ Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from typing import Any
 
@@ -29,6 +30,7 @@ from psycopg.types.json import Jsonb
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb import generators as pcb_generators
+from precis.pcb.capabilities import capability_for
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
@@ -194,6 +196,29 @@ def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 #: distinct from omitting the kwarg (leave the lock alone).
 _UNSET: Any = object()
 
+#: pcb-pre-place-route-blocks Slice 1 — the fab process
+#: :meth:`PcbMixin._pcb_fixed_copper_board_envelope`'s rule-envelope gate
+#: compares a fixed-copper row against — pinned to ``4layer`` for the same
+#: reason :data:`precis.pcb.generators._FAB_PROCESS` is (no per-board
+#: process selection exists yet; lift both together once
+#: ``put(stackup=...)`` authoring lands).
+_FIXED_COPPER_FAB_PROCESS = "4layer"
+#: envelope key -> :class:`precis.pcb.capabilities.CapabilityRow.jlc_min`
+#: key. These, plus ``layers`` (from ``pcb_boards.stackup``, checked
+#: separately), are the ONLY facts genuinely "on the board" today: the
+#: board carries no authored clearance/track/via-size rule row anywhere in
+#: the schema, so the gate compares against the same fixed capability
+#: floor every generator already reads
+#: (:func:`precis.pcb.generators.resolve_ewod_sizing`) rather than
+#: inventing a second, unauthored source of truth. A row's envelope may
+#: omit any of these — an omitted field is never checked.
+_FIXED_COPPER_ENVELOPE_FIELDS = {
+    "min_clearance_mm": "trace_spacing_mm",
+    "min_track_mm": "trace_width_mm",
+    "via_drill_mm": "drill_mm",
+    "via_diameter_mm": "via_diameter_mm",
+}
+
 
 class PcbMixin:
     pool: Any
@@ -354,6 +379,13 @@ class PcbMixin:
         footprints = list(footprints or [])
         features = list(features or [])
         net_classes: dict[str, dict[str, Any]] = {}
+        # pcb-pre-place-route-blocks Slice 1 -- an expansion's `copper`
+        # (fixed track/via rows) can't be written until `nets` below has
+        # been merged into `net_by_name` (a row's `net` is a NAME this
+        # generator's OWN nets list just introduced), so accepted
+        # expansions queue their copper here and `_pcb_fixed_copper_put`
+        # runs once, after the nets loop, per queued generator.
+        pending_copper: list[tuple[str, str, int, list[dict[str, Any]]]] = []
         for g in generators or []:
             gname = str(g.get("name") or "").strip()
             if not gname:
@@ -391,6 +423,10 @@ class PcbMixin:
                 expansion.ledger,
             )
             counts["generators"] += 1
+            if expansion.copper:
+                pending_copper.append(
+                    (gname, expansion.generator, expansion.version, expansion.copper)
+                )
 
         # Footprints land BEFORE components: a component's own
         # `footprint` field (below) is the join key an instance authored
@@ -440,6 +476,19 @@ class PcbMixin:
                 continue
             net_by_name[name] = self._pcb_insert_net(conn, ref.id, n)
             counts["nets"] += 1
+
+        # pcb-pre-place-route-blocks Slice 1 -- runs AFTER nets so a
+        # generator's own copper rows (named nets it just introduced above)
+        # resolve; `_pcb_fixed_copper_put` re-derives the active net map
+        # itself rather than threading `net_by_name` through, so it sees
+        # every net inserted above regardless of authoring order. An
+        # envelope mismatch raises here, aborting this WHOLE apply (same
+        # transaction as everything else in this method) -- nothing
+        # partially lands.
+        for gname, gtype, gversion, copper_rows in pending_copper:
+            self._pcb_fixed_copper_put(
+                conn, ref.id, board_id, gname, gtype, str(gversion), copper_rows
+            )
 
         for k in connections:
             counts["conns"] += self._pcb_connect(
@@ -1534,7 +1583,14 @@ class PcbMixin:
     def pcb_copper_replace(self, board_id: int, rows: list[dict[str, Any]]) -> int:
         """Regenerate a board's derived copper wholesale — DELETE + INSERT,
         the same cascade discipline as chunks->embeddings the table's own
-        comment promises (never a partial UPDATE)."""
+        comment promises (never a partial UPDATE). ``rows`` must be
+        router-derived geometry only — NEVER the output of
+        :meth:`pcb_copper_list` round-tripped back in, which would persist
+        that call's unioned AUTHORED ``pcb_fixed_copper`` rows into this
+        DERIVED table and defeat the whole point of keeping the two
+        separate (pcb-pre-place-route-blocks Slice 1). No caller does that
+        today (checked: every :meth:`pcb_copper_list` reader is a render/
+        DRC consumer, never a :meth:`pcb_copper_replace` source)."""
         with self.tx() as conn:
             conn.execute("DELETE FROM pcb_copper WHERE board_id = %s", (board_id,))
             for r in rows:
@@ -1562,7 +1618,15 @@ class PcbMixin:
         :func:`precis.pcb.drc.run_geometric_drc` with no reshaping.
         ``net_id`` resolves to its net NAME via a join — DRC findings
         read by name, matching this layer's "names for humans/export, not
-        internal identity" discipline."""
+        internal identity" discipline.
+
+        **pcb-pre-place-route-blocks Slice 1**: UNIONS in the board's
+        active AUTHORED fixed copper (:meth:`pcb_fixed_copper_list`) —
+        every reader (DRC, ``view='gerber'``, ``view='svg'``) sees authored
+        + derived copper as one list with no separate read path to
+        remember; ``fixed: True`` marks the authored rows, absent/``False``
+        on derived ones. See :meth:`pcb_copper_replace`'s own docstring for
+        the one thing this union must NEVER feed back into."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT c.ctype, c.layer, n.name, c.geom "
@@ -1570,10 +1634,225 @@ class PcbMixin:
                 "WHERE c.board_id = %s AND n.retired_at IS NULL",
                 (board_id,),
             ).fetchall()
-        return [
+        derived = [
             {"ctype": ctype, "layer": layer, "net": net_name, **(geom or {})}
             for ctype, layer, net_name, geom in rows
         ]
+        return derived + self.pcb_fixed_copper_list(board_id)
+
+    # -- pcb_fixed_copper -- AUTHORED copper, an input parallel to
+    # pcb_planes (pcb-pre-place-route-blocks Slice 1) ----------------------
+    def _pcb_fixed_copper_board_envelope(
+        self, conn: Connection, board_id: int
+    ) -> dict[str, float | int | None]:
+        """The board's CURRENT envelope facts, in the same key shape a
+        row's ``envelope`` dict uses — what
+        :meth:`_pcb_fixed_copper_envelope_mismatch` diffs an incoming row
+        against."""
+        row = conn.execute(
+            "SELECT stackup FROM pcb_boards WHERE board_id = %s", (board_id,)
+        ).fetchone()
+        stackup = row[0] if row is not None else DEFAULT_STACKUP
+        cap = capability_for(_FIXED_COPPER_FAB_PROCESS)
+        out: dict[str, float | int | None] = {"layers": len(stackup)}
+        for env_key, cap_key in _FIXED_COPPER_ENVELOPE_FIELDS.items():
+            out[env_key] = cap.jlc_min.get(cap_key)
+        return out
+
+    def _pcb_fixed_copper_envelope_mismatch(
+        self, conn: Connection, board_id: int, envelope: dict[str, Any]
+    ) -> str | None:
+        """``None`` when every field ``envelope`` actually carries agrees
+        with the board's current envelope, else the exact refusal message
+        (the spec's own worked example: "fabric solved for 4 layers, board
+        has 2"). An empty/missing ``envelope`` is never checked — only a
+        row that records one can be refused over it."""
+        if not envelope:
+            return None
+        current = self._pcb_fixed_copper_board_envelope(conn, board_id)
+        if "layers" in envelope:
+            want = envelope["layers"]
+            have = current["layers"]  # always an int -- len(stackup)
+            assert have is not None
+            if int(want) != int(have):
+                return (
+                    f"fixed copper envelope mismatch: fabric solved for "
+                    f"{want} layers, board has {have}"
+                )
+        for env_key in _FIXED_COPPER_ENVELOPE_FIELDS:
+            if env_key not in envelope:
+                continue
+            want = envelope[env_key]
+            have = current.get(env_key)
+            if have is None or not math.isclose(
+                float(want), float(have), rel_tol=1e-6, abs_tol=1e-6
+            ):
+                return (
+                    f"fixed copper envelope mismatch: fabric solved for "
+                    f"{env_key}={want!r}, board's current floor is {have!r}"
+                )
+        return None
+
+    def pcb_fixed_copper_put(
+        self,
+        ref_id: int,
+        board_id: int,
+        generator_name: str,
+        generator: str,
+        version: str,
+        rows: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Insert generator ``generator_name``'s authored fixed-copper
+        rows (pcb-pre-place-route-blocks Slice 1) — the AUTHORED track/via
+        geometry an expansion wants alongside its ordinary components/
+        nets/connections (:attr:`precis.pcb.generators.GeneratorExpansion.
+        copper`), parallel to ``pcb_planes``'s authored-input status. Each
+        row: ``{ctype: 'track'|'via', layer, net?, geom, envelope?,
+        meta?}`` — ``net`` (a net NAME) resolves against the design's
+        currently active nets, raising ``ValueError`` for an unknown name
+        (mirrors :meth:`_pcb_connect`'s sibling check, except this one
+        never auto-creates: a copper row inventing its own net is a bug,
+        not intent). A row's ``envelope``, if given, is checked against
+        the board's current stackup/rule floor
+        (:meth:`_pcb_fixed_copper_envelope_mismatch`) BEFORE any row is
+        written — a mismatch refuses the WHOLE call, nothing partially
+        lands. Reuses ``conn`` inside an existing transaction (e.g.
+        :meth:`_pcb_apply`'s own), opens its own otherwise."""
+        if conn is not None:
+            return self._pcb_fixed_copper_put(
+                conn, ref_id, board_id, generator_name, generator, version, rows
+            )
+        with self.tx() as c:
+            return self._pcb_fixed_copper_put(
+                c, ref_id, board_id, generator_name, generator, version, rows
+            )
+
+    def _pcb_fixed_copper_put(
+        self,
+        conn: Connection,
+        ref_id: int,
+        board_id: int,
+        generator_name: str,
+        generator: str,
+        version: str,
+        rows: list[dict[str, Any]],
+    ) -> int:
+        if not rows:
+            return 0
+        # Envelope gate FIRST, over every row, before any INSERT — a
+        # mismatch on row 5 must not leave rows 1-4 written.
+        for r in rows:
+            mismatch = self._pcb_fixed_copper_envelope_mismatch(
+                conn, board_id, dict(r.get("envelope") or {})
+            )
+            if mismatch is not None:
+                raise ValueError(mismatch)
+        net_by_name = self._pcb_net_map(conn, ref_id)
+        n = 0
+        for r in rows:
+            ctype = str(r.get("ctype") or "").strip()
+            if ctype not in ("track", "via"):
+                raise ValueError(
+                    f"pcb fixed copper row needs ctype 'track' or 'via', got {ctype!r}"
+                )
+            layer = str(r.get("layer") or "").strip()
+            if not layer:
+                raise ValueError("pcb fixed copper row needs a layer")
+            geom = r.get("geom")
+            if not geom:
+                raise ValueError("pcb fixed copper row needs geom")
+            net_id: int | None = None
+            net_name = r.get("net")
+            if net_name:
+                net_name = str(net_name).strip()
+                if net_name not in net_by_name:
+                    raise ValueError(
+                        f"pcb fixed copper row references unknown net {net_name!r}"
+                    )
+                net_id = net_by_name[net_name]
+            conn.execute(
+                "INSERT INTO pcb_fixed_copper "
+                "(board_id, ref_id, generator_name, generator, generator_version, "
+                " ctype, layer, net_id, geom, envelope, meta) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    board_id,
+                    ref_id,
+                    generator_name,
+                    generator,
+                    version,
+                    ctype,
+                    layer,
+                    net_id,
+                    Jsonb(dict(geom)),
+                    Jsonb(dict(r.get("envelope") or {})),
+                    Jsonb(dict(r.get("meta") or {})),
+                ),
+            )
+            n += 1
+        return n
+
+    def pcb_fixed_copper_list(self, board_id: int) -> list[dict[str, Any]]:
+        """Every ACTIVE (``retired_at IS NULL``) authored fixed-copper row
+        for a board, flattened to :meth:`pcb_copper_list`'s own item shape
+        (``{"ctype", "layer", "net", ...geom fields}``) plus ``fixed:
+        True``, ``generator_name`` (which ``pcb_generators`` call emitted
+        it), and ``envelope`` (the rule envelope it was solved under) —
+        the read-back surface :meth:`pcb_copper_list` unions in so DRC/
+        gerber/SVG see it as real copper with no extra plumbing. ``net``
+        is ``None`` for a row whose ``net_id`` is NULL (schema-legal —
+        unlike ``pcb_copper.net_id``, this FK is nullable) or whose net has
+        since been retired — the geometry row itself stays visible either
+        way (never silently dropped, unlike :meth:`pcb_copper_list`'s
+        derived side, which inner-joins on an active net)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT fc.ctype, fc.layer, n.name, fc.geom, fc.generator_name, "
+                "       fc.envelope "
+                "FROM pcb_fixed_copper fc "
+                "LEFT JOIN pcb_nets n ON n.net_id = fc.net_id AND n.retired_at IS NULL "
+                "WHERE fc.board_id = %s AND fc.retired_at IS NULL",
+                (board_id,),
+            ).fetchall()
+        return [
+            {
+                "ctype": ctype,
+                "layer": layer,
+                "net": net_name,
+                **(geom or {}),
+                "fixed": True,
+                "generator_name": gname,
+                "envelope": envelope or {},
+            }
+            for ctype, layer, net_name, geom, gname, envelope in rows
+        ]
+
+    def pcb_fixed_copper_retire(
+        self, ref_id: int, generator_name: str, *, conn: Connection | None = None
+    ) -> int:
+        """Soft-delete every active fixed-copper row generator
+        ``generator_name`` owns — the copper-table half of
+        :meth:`_pcb_generator_retire_expansion`'s changed-params retire
+        (which calls this internally); exposed publicly for a caller that
+        wants to retire a generator's fabric without re-expanding it.
+        Reuses ``conn`` inside an existing transaction, opens its own
+        otherwise."""
+        if conn is not None:
+            return self._pcb_fixed_copper_retire(conn, ref_id, generator_name)
+        with self.tx() as c:
+            return self._pcb_fixed_copper_retire(c, ref_id, generator_name)
+
+    def _pcb_fixed_copper_retire(
+        self, conn: Connection, ref_id: int, generator_name: str
+    ) -> int:
+        cur = conn.execute(
+            "UPDATE pcb_fixed_copper SET retired_at = now() "
+            "WHERE ref_id = %s AND generator_name = %s AND retired_at IS NULL",
+            (ref_id, generator_name),
+        )
+        return cur.rowcount
 
     def pcb_rip_route(self, ref_id: int, net_name: str) -> bool:
         """The rip-up primitive: reset one net's sketch back to
@@ -2140,6 +2419,11 @@ class PcbMixin:
             "WHERE ref_id = %s AND note = %s AND retired_at IS NULL",
             (ref_id, f"generator:{generator_name}"),
         )
+        # pcb-pre-place-route-blocks Slice 1 -- a changed-params re-apply
+        # must retire this generator's authored fixed copper too, the same
+        # "the previous expansion's rows never survive under stale params"
+        # discipline as everything else this method retires.
+        self._pcb_fixed_copper_retire(conn, ref_id, generator_name)
 
     def pcb_generators_for(self, ref_id: int) -> dict[str, dict[str, Any]]:
         """Every generator call authored on this design, keyed by its

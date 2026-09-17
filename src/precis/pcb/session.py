@@ -32,10 +32,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
+
+log = logging.getLogger(__name__)
 
 
 def _pin_key(refdes: str, pin: str) -> str:
@@ -321,14 +324,33 @@ def apply_real_pin_offsets(
     sanctioned mutator, which owns the dirty-mask cascade) rather than
     assigning into the arrays, and is idempotent: re-running with the same
     footprints writes the same coordinates.
+
+    **A catalog instance with no cached footprint logs a warning here**
+    (gripe gr341532) — this is the ONE seam where "no real footprint" is
+    known (``footprints`` is already refdes-keyed and already dropped that
+    instance if :func:`footprints_by_refdes` found nothing to remap onto
+    it) and where whether it MATTERS is known (``instance_part_lcsc`` says
+    whether this is a catalog part at all, vs. an authored/local-footprint
+    or bare-``label`` instance that was never going to have a cached
+    footprint in the first place). Every pin of that instance still falls
+    back to :mod:`precis.pcb.landpattern`'s synthesized bound exactly as
+    before — this only makes the fallback audible; it does not change it.
     """
-    if not footprints:
-        return 0
     real_by_inst: dict[int, dict[str, tuple[float, float]]] = {}
     for inst_id in range(ir.n_instances):
-        fp = footprints.get(str(ir.instance_refdes[inst_id]))
+        refdes = str(ir.instance_refdes[inst_id])
+        fp = footprints.get(refdes) if footprints else None
         if fp and fp.get("pads"):
             real_by_inst[inst_id] = _real_pin_offsets(fp)
+            continue
+        lcsc = ir.instance_part_lcsc[inst_id]
+        if lcsc:
+            log.warning(
+                "pcb: %s (lcsc %s) has no cached footprint — its pins stay "
+                "at the synthesized landpattern bound",
+                refdes,
+                lcsc,
+            )
     if not real_by_inst:
         return 0
     changed = 0

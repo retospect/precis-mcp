@@ -151,9 +151,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/escape.py::escape_graph_from_dict": (
         "inverse of escape_graph_to_dict -- same unwired cache call site"
     ),
-    "src/precis/pcb/footprint.py::ensure_footprint": (
-        "fetch-and-cache-on-miss for a footprint; no ingest/handler path calls it yet"
-    ),
     "src/precis/pcb/ir.py::validate_embedding": (
         "read-only L2/L3 consistency check; no DRC or session pass invokes it yet"
     ),

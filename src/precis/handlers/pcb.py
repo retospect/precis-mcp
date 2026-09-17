@@ -25,13 +25,21 @@ pixels. The verbs map onto the seven-verb surface:
   worker job (never compute inline — the optimizer measures ~880 moves/s,
   minutes per board) idempotent per (design, op, content-hash); ``op='move'``/
   ``'rip'``/``'pin_side'``/``'plane_net'``/``'class_rules'`` are cheap inline
-  edits. See ``precis-pcb-route-help``.
+  edits. ``op='footprint'`` (gr341532 fix 3) pulls a catalog part's real pad
+  geometry into the ``part_footprints`` cache (``part='C639448'`` or
+  ``parts=[...]``, ``force=True`` to re-pull) through the live EasyEDA/JLC
+  clients (:mod:`precis.pcb.footprint`), or authors one directly
+  (``footprint={...}`` with ``part=``) when the API has nothing for the
+  C-number — per-part failures report in that part's own row, never raise.
+  See ``precis-pcb-route-help``.
 - ``get``    — list designs (no id); a design's netlist TOC (``id=slug``,
   now with the board/stackup + net_classes + route-status summary); one
   instance's neighbourhood (``id='slug#U3'`` — its pins, the net on each, and
   the connected instances); a net's members (``id='slug@SCL'``); the *eyes*
   (``view='crossings'|'ratsnest'|'drc'|'trace'|'proximity'|'measures'|
-  'feasibility'|'route-status'|'congestion'|'planes'``); ``view='svg'`` — a
+  'feasibility'|'route-status'|'congestion'|'planes'``); ``view='footprints'``
+  — which catalog-part instances have a cached footprint, the read-side
+  counterpart to ``op='footprint'``; ``view='svg'`` — a
   publication-quality vector figure (``args={'level':'board'|'sketch'|'fab'}``,
   see :mod:`precis.pcb.svg`); ``view='capability'`` — a generator's
   capability map (usable/reserved pads, plaza slots, pin names, computed
@@ -84,11 +92,15 @@ from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
 from precis.pcb.capabilities import CapabilityRow, capability_for
+from precis.pcb.footprint import ensure_footprint
 from precis.pcb.landpattern import place_points
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.store._pcb_ops import (
+    _normalize_local_footprint as normalize_local_footprint,
+)
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
@@ -147,7 +159,9 @@ _SESSION_VIEWS = ("congestion", "planes")
 #: computed sizing — off the ``pcb_generators`` ledger, SVG or a
 #: machine-readable table (:meth:`PcbHandler._render_capability`).
 _RENDER_VIEWS = ("svg", "schematic", "capability")
-_OTHER_VIEWS = ("links",)
+#: gr341532 fix 3 — the ``part_footprints`` cache gap made visible per
+#: catalog-part instance, the read-side counterpart to ``op='footprint'``.
+_OTHER_VIEWS = ("links", "footprints")
 _VIEWS = (
     *_PROBE_VIEWS,
     *_EXPORT_VIEWS,
@@ -163,7 +177,12 @@ _VIEWS = (
 #: are cheap enough to run in the request path.
 _JOB_OPS = ("place", "route")
 _INLINE_EDIT_OPS = ("move", "rip", "pin_side", "plane_net", "class_rules")
-_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS)
+#: gr341532 fix 3 — pull/author a catalog part's real footprint into the
+#: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
+#: the router's per-board compute, so it runs inline like the edits above,
+#: never as an enqueued worker job.
+_FOOTPRINT_OPS = ("footprint",)
+_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS)
 
 #: :meth:`PcbHandler._polarized_refdes`'s label-inference half — an
 #: instance whose ``label`` matches this (case-insensitively) is treated
@@ -204,7 +223,9 @@ class PcbHandler(Handler):
             "instance's neighbourhood (id='slug#U3'), a net's members "
             "(id='slug@SCL'), the eyes (view='crossings'|'ratsnest'|'drc'|"
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
-            "'congestion'|'planes'), a vector figure (view='svg', "
+            "'congestion'|'planes'), which catalog parts have a cached "
+            "footprint (view='footprints', one row per catalog-part "
+            "instance), a vector figure (view='svg', "
             "args={'level':'board'|'sketch'|'fab','layers':[...],'include':[...]}), "
             "a net-label schematic SVG off the netlist alone "
             "(view='schematic', works before any placement), "
@@ -221,7 +242,12 @@ class PcbHandler(Handler):
             "job (never inline; idempotent per design+op+content-hash) — "
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
             "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'}) "
-            "are cheap inline edits; search over names; delete soft-retires. "
+            "are cheap inline edits; put(args={'op':'footprint','part':"
+            "'C639448'}) (or parts=[...], force=True to re-pull, or "
+            "footprint={...} to author one directly under part=) pulls/"
+            "authors a catalog part's real pad geometry into the "
+            "part_footprints cache -- fixes the synthesized_footprint DRC "
+            "finding; search over names; delete soft-retires. "
             "Postgres-canonical; routing/gerbers are downstream export. "
             "See precis-pcb-help and precis-pcb-route-help."
         ),
@@ -449,6 +475,8 @@ class PcbHandler(Handler):
             return self._op_plane_net(ref, args)
         if op == "class_rules":
             return self._op_class_rules(ref, args)
+        if op == "footprint":
+            return self._op_footprint(ref, args)
         raise BadInput(
             f"unknown op {op!r}",
             options=list(_OPS),
@@ -615,6 +643,151 @@ class PcbHandler(Handler):
         self.store.pcb_set_class_rules(ref.id, name, rules)
         return Response(body=f"# net class {name!r} rules set: {rules}")
 
+    # ── footprint cache (gr341532 fix 3) ────────────────────────────────
+    def _op_footprint(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'footprint', ...})`` — fill the ``part_footprints``
+        cache :func:`precis.pcb.footprint.ensure_footprint` reads/writes but
+        which nothing in this handler ever called: a catalog-part instance
+        with no cached row silently DRC'd at a synthesized bound (the
+        ``synthesized_footprint`` finding, :func:`precis.pcb.drc.
+        check_synthesized_footprint`) with no MCP-facing way to close the
+        gap. Two modes:
+
+        ``args.part``/``args.parts`` — pull each C-number through the real
+        EasyEDA fetcher (:func:`precis.pcb.easyeda.fetch_component`, wired
+        through :func:`precis.utils.safe_fetch.safe_get`). ``args.force``
+        re-pulls even when already cached. A per-part failure (network,
+        vendor, no-footprint) is reported in that part's own row — never
+        raised — so one bad C-number in a batch doesn't lose the rest.
+
+        ``args.footprint`` (with ``args.part`` naming exactly one C-number)
+        authors a footprint directly, for a part the API has nothing for —
+        the same ``{pads, ...}`` shape and the same validator
+        (:func:`precis.store._pcb_ops._normalize_local_footprint`) the
+        design-local ``footprints:[...]`` batch key already uses, cached
+        under ``source='authored'``.
+
+        Cached pad geometry is read lazily at IR-build time
+        (:meth:`_build_ir` -> :func:`precis.pcb.session.
+        apply_real_pin_offsets`), off ``pcb_footprints_for``/
+        ``part_footprint_get`` fresh on every call — nothing derived is
+        stored on the design itself, so there is no re-derive step here."""
+        footprint_data = args.get("footprint")
+        raw_parts = args.get("parts")
+        if raw_parts is None:
+            single = args.get("part")
+            raw_parts = [single] if single else []
+        parts = [str(p).strip() for p in raw_parts if str(p or "").strip()]
+
+        if footprint_data is not None:
+            if len(parts) != 1:
+                raise BadInput(
+                    "op='footprint' with args.footprint needs exactly one "
+                    "args.part (the C-number to author it under)",
+                    next="put(kind='pcb', id='slug', args={'op':'footprint',"
+                    "'part':'C639448','footprint':{'pads':[...]}})",
+                )
+            lcsc = parts[0].upper()
+            try:
+                _, data = normalize_local_footprint({**footprint_data, "name": lcsc})
+            except ValueError as exc:
+                raise BadInput(f"pcb: {exc}") from exc
+            data["source"] = "authored"
+            self.store.part_footprint_put(lcsc, data)
+            row = self.store.part_footprint_get(lcsc)
+            return Response(
+                body=f"# footprint {lcsc} — authored\n"
+                + render_agent_table(
+                    [self._footprint_summary_row(lcsc, row, error=None)],
+                    schema=[
+                        "lcsc",
+                        "cached",
+                        "source",
+                        "n_pads",
+                        "n_pins",
+                        "courtyard",
+                        "error",
+                    ],
+                )
+            )
+
+        if not parts:
+            raise BadInput(
+                "op='footprint' needs args.part (one C-number) or "
+                "args.parts (a list), or args.footprint to author one",
+                next="put(kind='pcb', id='slug', args={'op':'footprint',"
+                "'part':'C639448'})",
+            )
+        force = bool(args.get("force"))
+        rows: list[dict[str, str]] = []
+        n_ok = 0
+        for raw in parts:
+            lcsc = raw.upper()
+            error: str | None = None
+            try:
+                ensure_footprint(self.store, lcsc, force=force)
+            except Exception as exc:
+                # Broad on purpose — per-part isolation is the whole point
+                # (gr341532 fix 3's spec: "must NOT raise for the batch"); a
+                # vendor/network failure on one C-number reports in that
+                # row, the rest of the batch still runs.
+                error = f"{type(exc).__name__}: {exc}"
+            row = self.store.part_footprint_get(lcsc)
+            if row is None and error is None:
+                error = (
+                    "no EasyEDA footprint for this part (symbol-only, or unrecognized)"
+                )
+            if row is not None:
+                n_ok += 1
+            rows.append(self._footprint_summary_row(lcsc, row, error=error))
+        head = f"# footprint — {n_ok}/{len(parts)} cached"
+        return Response(
+            body=head
+            + "\n"
+            + render_agent_table(
+                rows,
+                schema=[
+                    "lcsc",
+                    "cached",
+                    "source",
+                    "n_pads",
+                    "n_pins",
+                    "courtyard",
+                    "error",
+                ],
+            )
+        )
+
+    @staticmethod
+    def _footprint_summary_row(
+        lcsc: str, row: dict[str, Any] | None, *, error: str | None
+    ) -> dict[str, str]:
+        """One ``op='footprint'``/``view='footprints'`` table row off a
+        ``part_footprint_get`` row (or ``None`` on a miss) — the shared
+        shape both surfaces render so a pulled/authored part and a
+        still-uncached one read the same way."""
+        if row is None:
+            return {
+                "lcsc": lcsc,
+                "cached": "no",
+                "source": "",
+                "n_pads": "",
+                "n_pins": "",
+                "courtyard": "",
+                "error": error or "",
+            }
+        pads = row.get("pads") or []
+        pin_map = row.get("pin_map") or {}
+        return {
+            "lcsc": lcsc,
+            "cached": "yes",
+            "source": str(row.get("source") or ""),
+            "n_pads": str(len(pads)),
+            "n_pins": str(len(pin_map)),
+            "courtyard": "yes" if row.get("courtyard") else "no",
+            "error": error or "",
+        }
+
     # ── the eyes ───────────────────────────────────────
     def _render_view(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
         if view not in _VIEWS:
@@ -648,6 +821,8 @@ class PcbHandler(Handler):
                     self.store.pcb_graph(ref_id), title=slug
                 )
             )
+        if view == "footprints":
+            return self._render_footprints_view(ref_id)
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
@@ -1837,6 +2012,62 @@ class PcbHandler(Handler):
             + render_agent_table(table_rows, schema=["layer", "net", "source"])
         )
 
+    def _render_footprints_view(self, ref_id: int) -> Response:
+        """gr341532 fix 3 — one row per catalog-part instance (``part``/
+        ``part_lcsc`` set), showing whether its ``part_footprints`` cache
+        row exists: the read-side counterpart to ``op='footprint'`` and
+        the gap the ``synthesized_footprint`` DRC finding
+        (:func:`precis.pcb.drc.check_synthesized_footprint`) points at.
+        Instances that name a design-local ``footprint=`` (authored copper
+        with no LCSC C-number) are out of scope here by construction —
+        they carry no ``part_lcsc`` and can never be "synthesized" in
+        this sense."""
+        design = self.store.pcb_load(ref_id)
+        catalog = [i for i in design["instances"] if i.get("part_lcsc")]
+        if not catalog:
+            return Response(
+                body="no catalog-part instances on this board (every "
+                "component is a design-local footprint, or has neither)"
+            )
+        rows_by_lcsc = {
+            lcsc: self.store.part_footprint_get(lcsc)
+            for lcsc in sorted({str(i["part_lcsc"]).strip().upper() for i in catalog})
+        }
+        rows = []
+        n_cached = 0
+        for i in sorted(catalog, key=lambda x: str(x["refdes"])):
+            lcsc = str(i["part_lcsc"]).strip().upper()
+            row = rows_by_lcsc.get(lcsc)
+            if row is not None:
+                n_cached += 1
+            summary = self._footprint_summary_row(lcsc, row, error=None)
+            rows.append(
+                {
+                    "refdes": str(i["refdes"]),
+                    "lcsc": lcsc,
+                    "cached": summary["cached"],
+                    "source": summary["source"],
+                    "n_pads": summary["n_pads"],
+                    "synthesized": "no" if row is not None else "yes",
+                }
+            )
+        head = (
+            f"# footprints — {n_cached}/{len(catalog)} catalog-part instance(s) cached"
+        )
+        if n_cached < len(catalog):
+            head += (
+                "\n\nNext: put(kind='pcb', id='slug', args={'op':'footprint',"
+                "'part':'<C-number>'}) for each uncached part"
+            )
+        return Response(
+            body=head
+            + "\n"
+            + render_agent_table(
+                rows,
+                schema=["refdes", "lcsc", "cached", "source", "n_pads", "synthesized"],
+            )
+        )
+
     def _render_drc(self, ref_id: int) -> Response:
         """Geometric DRC (pcb-guided-place-route Slice 8, :mod:`precis.pcb.
         drc`) — the L5 check. Superseded ``eyes.drc_lite`` (graph-shape
@@ -2012,6 +2243,18 @@ class PcbHandler(Handler):
             for i in design["instances"]
             if i["x"] is not None and i["y"] is not None
         ]
+        # gr341516 — a courtyard reservation says nothing about which side
+        # of the board it sits on; two parts on OPPOSITE sides, one
+        # directly beneath the other (an EWOD sink grid's whole point,
+        # `generators.py`'s own module docstring), are not colliding.
+        # `padplace.is_bottom_instance` is the SAME predicate `_drc_pads`'s
+        # own pad source now reads (`ir.py::from_graph` ->
+        # `PcbIR.inst_bottom`) -- one parse of `pcb_instances.layer`, not a
+        # second one narrower than it.
+        courtyard_bottom = {
+            str(i["refdes"]): padplace.is_bottom_instance(i)
+            for i in design["instances"]
+        }
         net_classes = design.get("net_classes") or {}
         net_rules: dict[str, NetRules] = {
             str(n["name"]): resolve_net_rules(
@@ -2031,6 +2274,7 @@ class PcbHandler(Handler):
             capability=capability,
             outline=outline,
             courtyards=courtyards,
+            courtyard_bottom=courtyard_bottom,
             net_rules=net_rules,
             unrouted=[
                 {"net": r["name"], "note": r.get("note")}
@@ -2046,6 +2290,13 @@ class PcbHandler(Handler):
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = len(findings) - n_error
         head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
+        n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
+        if n_synth:
+            head += (
+                f"\n{n_synth} part(s) have no cached footprint — checked at a "
+                "synthesized bound (see the synthesized_footprint finding(s) "
+                "below); their DRC results are not a verdict"
+            )
         if pads_only:
             # State the scope EXPLICITLY (round-4 contract) so a clean
             # pads-only pass — pad geometry only, no router output yet
@@ -2232,6 +2483,28 @@ class PcbHandler(Handler):
             body += "\n\n## plaza slots\n" + render_agent_table(
                 slot_rows, schema=["plaza", "direction", "status", "pin"]
             )
+        # docs/backlog/pcb-pre-place-route-blocks.md Slice 2 -- the escape
+        # fabric's own per-tile emitted/refused/suppressed counts, off the
+        # SAME ledger dict this view already renders (no re-expansion,
+        # same as every other section here). Absent for a generator that
+        # emits no ``copper`` of its own.
+        fabric = ledger.get("fabric") or {}
+        fabric_tiles = fabric.get("tiles") or {}
+        if fabric_tiles:
+            totals = fabric.get("totals") or {}
+            body += (
+                "\n\n## fabric\n"
+                f"{totals.get('emitted', 0)} emitted, {totals.get('refused', 0)} "
+                f"refused, {totals.get('suppressed', 0)} suppressed "
+                f"(fan-out: {fabric.get('fan', '?')})\n"
+                + render_agent_table(
+                    [
+                        {"tile": tile, **counts}
+                        for tile, counts in sorted(fabric_tiles.items())
+                    ],
+                    schema=["tile", "emitted", "refused", "suppressed"],
+                )
+            )
         return Response(body=body)
 
     def _render_fab_svg(self, ref_id: int, slug: str) -> Response:
@@ -2307,6 +2580,23 @@ class PcbHandler(Handler):
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
             "mask_open_regions": self._mask_open_regions(ref_id),
         }
+        # `synthesized_by_refdes` off `pads` BEFORE export_fab -- the gerber
+        # round-trip loses this flag entirely (gerber has no "this pad is a
+        # bound, not a measurement" concept, only net/refdes/pin X2
+        # attributes), so it can only be read here, from the model, not
+        # from the fab set `render_fab_svg` parses back (gripe gr341532).
+        synthesized_by_refdes: dict[str, int] = {}
+        for pad in pads:
+            # `part_lcsc` scoping (gr341532 fix, same as
+            # `drc.py::check_synthesized_footprint`) -- a design-local pad
+            # (no LCSC C-number) is synthesized by construction and can
+            # never be cached, so it is not this note's business.
+            if pad.get("synthesized") and pad.get("part_lcsc"):
+                refdes = str(pad.get("refdes") or "")
+                if refdes:
+                    synthesized_by_refdes[refdes] = (
+                        synthesized_by_refdes.get(refdes, 0) + 1
+                    )
         # allow_synthesized, because this is a picture and not an order.
         # export_fab's refusal exists to stop a land-pattern BOUND reaching
         # a fab; looking at one is exactly how you notice it is a bound.
@@ -2334,6 +2624,21 @@ class PcbHandler(Handler):
                     for w in furniture_warnings
                 )
                 desc = f"<desc>pcb render warnings:\n{notes}\n</desc>\n"
+                body = body.replace("</svg>", f"{desc}</svg>", 1)
+            if synthesized_by_refdes:
+                # A dashed-stroke/hatch per-pad treatment would need the
+                # gerber round-trip to carry a per-flash "synthesized" flag
+                # (it doesn't -- see the comment above `synthesized_by_
+                # refdes` -- and gerber.py/gerber_view.py are outside this
+                # change's remit), so this stays a legend NOTE rather than a
+                # distinct visual treatment on the copper itself.
+                lines = "\n".join(
+                    "  synthesized footprint: "
+                    f"{refdes.replace('&', '&amp;').replace('<', '&lt;')} "
+                    f"({n} pins) — geometry is a bound, not the part"
+                    for refdes, n in sorted(synthesized_by_refdes.items())
+                )
+                desc = f"<desc>synthesized footprints (not real geometry):\n{lines}\n</desc>\n"
                 body = body.replace("</svg>", f"{desc}</svg>", 1)
             return Response(body=body)
         except gerber_view.UnsupportedGerber as exc:

@@ -463,7 +463,18 @@ def clearance_pairs_indexed(
     primitive alphabet (module docstring); a rect/obround pad is neither,
     so pad clearance — like pour clearance before it — is validated by
     this accelerated engine alone, a stated gap in oracle coverage, not a
-    silent one."""
+    silent one.
+
+    **A drilled (through-hole) pad has no single ``item["layer"]`` either**
+    (gr341516) — its plated land is real copper on every board layer, not
+    only the one side :func:`precis.pcb.realize.pads_for_ir` reports for
+    it (that field means "this pad's OUTER flash", see that function's own
+    docstring), exactly the physical fact :func:`check_annular_ring`
+    already treats a drilled pad and a router via as the same construct
+    for. Handled the SAME way a via's multi-layer span is here: one entry
+    per layer, deduplicated at the SOURCE-pair level below so a THT pad
+    close to a foreign net on several layers still reports ONE finding,
+    not one per layer."""
     items = _clearance_items(model)
     all_layers = list(model.get("layers") or [])
     # (source_idx, net, layer, polygon) — one entry per (item, layer it's on).
@@ -473,7 +484,9 @@ def clearance_pairs_indexed(
         if poly is None or poly.is_empty:
             continue
         net = str(item.get("net", ""))
-        if item.get("ctype") == "via":
+        if item.get("ctype") == "via" or (
+            item.get("ctype") == "pad" and item.get("drill")
+        ):
             for layer in _via_layer_names(item, all_layers):
                 entries.append((idx, net, layer, poly))
         else:
@@ -1007,7 +1020,7 @@ def check_via_pad_keepout(
     That rule deliberately EXEMPTS same-net copper (module docstring's
     two-tier section) — correctly: same-net copper touching is how a
     trace joins a pad. A via is not a trace. It is a hole drilled through
-    the board; landing its annulus on a pad — even the via's own net's
+    the board; landing its annulus ON a pad — even the via's own net's
     pad — wicks solder down the barrel and starves the joint, or on a
     through-hole pad drills a second hole through the first. Widening the
     clearance exemption to cover this would make the wrong case legal
@@ -1015,6 +1028,30 @@ def check_via_pad_keepout(
     the two questions need two rules over the same geometry — the same
     relationship :func:`check_connectivity` has to :func:`check_clearance`:
     a different question, not a variant of the same one.
+
+    **A same-net FIXED (authored) via is exempted** (docs/backlog/
+    pcb-pre-place-route-blocks.md geometry residues) — a NARROWER
+    carve-out than the paragraph above argues against, and deliberately
+    scoped to ``item.get("fixed")`` (:meth:`precis.store._pcb_ops.
+    PcbMixin.pcb_fixed_copper_list`'s own "authored rows carry
+    ``fixed: True```, absent/``False`` on derived ones" marker) so it
+    NEVER reaches a router-PLACED via: that argument above is about a via
+    genuinely landing ON a pad's solder land, which stays an error
+    regardless of net for anything the ROUTER puts there (see
+    :func:`check_via_via_keepout`'s own net-blind stance, unaffected by
+    this, and ``tests/test_pcb_drc.py::
+    test_check_via_pad_keepout_fires_on_a_real_realized_via``, which stays
+    red on a router-placed via-in-pad). What actually reached this rule
+    is a plaza via against its OWN net's electrode BODY — an AUTHORED
+    fixed-copper row, that electrode's own designed drop point, placed
+    just outside the body by :mod:`precis.pcb.generators`'s own derived
+    spacing (:func:`~precis.pcb.generators._plaza_capacity`) — and the
+    pad-radius approximation just below (circumscribed circle, not the
+    electrode's real crenellated/chamfered outline) over-states how close
+    the body actually reaches there — a false positive on real geometry,
+    not a wicking risk on it. A FOREIGN net's via, or an ordinary
+    (non-fixed) via on the SAME net, is unaffected: only ``item["fixed"]
+    and via_net == pad_net`` (both non-empty) skips.
 
     The margin is DERIVED, not invented: ``trace_spacing_mm`` is already
     this project's figure for how close two independent copper features
@@ -1024,6 +1061,13 @@ def check_via_pad_keepout(
     floor applies, net or no net. Severity is always ``error`` (no warn
     tier): a via drilled into a land is a manufacturing defect, not a
     margin the house_default tier would grade.
+
+    **A drilled (through-hole) pad is never excluded by the via's own
+    layer span** (gr341516) — same reasoning as
+    :func:`clearance_pairs_indexed`'s drilled-pad handling: its land is
+    real copper on every board layer, so a via landing near it is a
+    keepout violation regardless of which particular layers the via
+    itself spans.
     """
     field = "trace_spacing_mm"
     required = capability.jlc_min[field]
@@ -1038,9 +1082,13 @@ def check_via_pad_keepout(
         vx, vy = float(item["x"]), float(item["y"])
         vr = float(item.get("dia_mm", 0.0)) / 2.0
         via_net = item.get("net")
+        via_fixed = bool(item.get("fixed"))
         via_layers = set(_via_layer_names(item, all_layers))
         for pad in pads:
-            if pad.get("layer") not in via_layers:
+            if pad.get("layer") not in via_layers and not pad.get("drill"):
+                continue
+            pad_net_raw = pad.get("net")
+            if via_fixed and via_net and pad_net_raw and via_net == pad_net_raw:
                 continue
             px, py = float(pad["x"]), float(pad["y"])
             w = float(pad.get("w", 0.0))
@@ -1226,6 +1274,70 @@ def check_via_via_keepout(
     return findings
 
 
+# ── synthesized footprint (gripe gr341532) ───────────────────────────────
+
+
+def check_synthesized_footprint(model: dict[str, Any]) -> list[DrcFinding]:
+    """One finding per REFDES that is a real catalog part (a ``part_lcsc``
+    C-number, carried on the pad since gr341532's scoping fix — see
+    :func:`precis.pcb.realize.pads_for_ir`) with any ``synthesized=True``
+    pad — a catalog part with no cached footprint, silently DRC'd at
+    :mod:`precis.pcb.landpattern`'s fabricated ``_quad``/``_dual_row``/etc.
+    bound instead of its real geometry (:func:`precis.pcb.session.
+    apply_real_pin_offsets` no-ops for that instance; every pin of it then
+    falls back through :func:`precis.pcb.landpattern.offsets_for`).
+
+    **Scoped to catalog parts only.** A design-local/hand-authored pad
+    (a generator's own copper, a mounting hole, a wire) is ALSO
+    ``synthesized=True`` — :mod:`precis.pcb.landpattern` sizes it the same
+    way — but it has no LCSC C-number and no cache to ever fill, so it can
+    never stop being "synthesized"; flagging it produced a permanent,
+    unfixable finding on every generic/generated board (the ESP32C3
+    reference fixture, every EWOD array) with nothing to cache toward.
+    Only a pad carrying ``part_lcsc`` (real catalog part, cache genuinely
+    empty) is actionable, so only those pads count here.
+
+    Before this rule, that fallback was silent everywhere ``view='drc'``
+    could see: :func:`precis.pcb.realize.pads_for_ir` sets
+    ``pad["synthesized"]`` but nothing in this module read it, so a whole
+    part placed at a fabricated bound produced clearance/connectivity
+    findings that READ as real shorts — on the prod dogfood board, 196 of
+    them, for one uncached LCSC part. :func:`precis.pcb.gerber.export_fab`
+    already refuses a ``view='gerber'`` export over synthesized geometry
+    (:class:`~precis.pcb.gerber.SynthesizedPadError`); this is that same
+    refusal's ``view='drc'`` counterpart — not a refusal (a DRC view
+    reports, it does not block), but a finding loud enough that the
+    findings list around it is read correctly: every other rule's verdict
+    on this refdes is against a guess, not a measurement.
+
+    Severity is always ``error`` — a synthesized bound is not a
+    manufacturability margin to grade, it is an instruction to go cache
+    the part's real footprint before trusting anything else this run said
+    about it."""
+    by_refdes: dict[str, int] = {}
+    for pad in model.get("pads") or []:
+        if pad.get("synthesized") and pad.get("part_lcsc"):
+            refdes = str(pad.get("refdes") or "")
+            if refdes:
+                by_refdes[refdes] = by_refdes.get(refdes, 0) + 1
+    findings: list[DrcFinding] = []
+    for refdes in sorted(by_refdes):
+        n = by_refdes[refdes]
+        findings.append(
+            DrcFinding(
+                rule="synthesized_footprint",
+                severity="error",
+                where=f"part {refdes}",
+                detail=(
+                    f"{n} pin(s) of {refdes} have no real footprint — checked "
+                    "at a synthesized bound; DRC on this part is not a verdict"
+                ),
+                objects=({"refdes": refdes, "n_pins": n},),
+            )
+        )
+    return findings
+
+
 # ── courtyard overlap ──────────────────────────────────────────────────
 
 
@@ -1238,7 +1350,9 @@ def check_via_via_keepout(
 Courtyard = tuple[str, list[tuple[float, float]]]
 
 
-def check_courtyard_overlap(courtyards: list[Courtyard]) -> list[DrcFinding]:
+def check_courtyard_overlap(
+    courtyards: list[Courtyard], *, bottom_by_refdes: dict[str, bool] | None = None
+) -> list[DrcFinding]:
     """Any two parts' courtyards overlapping is a hard error — no
     capability two-tier here; overlap is categorical, not a
     manufacturability margin.
@@ -1258,7 +1372,20 @@ def check_courtyard_overlap(courtyards: list[Courtyard]) -> list[DrcFinding]:
     (:func:`_overlap_depth_mm`), i.e. how far the parts must move apart
     along the easier axis to separate. A pair that overlaps only near a corner and a pair
     that is half-buried report very different second numbers, which is the
-    thing a reader wants and a bare flag cannot give."""
+    thing a reader wants and a bare flag cannot give.
+
+    ``bottom_by_refdes`` (gr341516, refdes -> "is this instance mounted on
+    the bottom of the board") is optional — ``None`` (the default) keeps
+    every existing caller's behaviour exactly as before: two 2-D polygons
+    overlapping is an overlap regardless of side, the reading that was
+    correct back when every part was implicitly top-side. Supplied, a pair
+    on OPPOSITE sides is never flagged — a bottom-side sink placed directly
+    beneath a top-side array (the physically correct, intentional layout
+    for e.g. an EWOD sink grid) is not two parts colliding, it is two parts
+    facing each other across the board's own thickness. A refdes absent
+    from the map (an instance the caller never resolved a side for)
+    defaults to top, same as :func:`precis.pcb.padplace.is_bottom_instance`
+    itself defaults an unset ``layer`` to top."""
     if len(courtyards) < 2:
         return []
     geoms = [Polygon(poly) if len(poly) >= 3 else None for _, poly in courtyards]
@@ -1277,6 +1404,14 @@ def check_courtyard_overlap(courtyards: list[Courtyard]) -> list[DrcFinding]:
             if key in seen:
                 continue
             seen.add(key)
+            if bottom_by_refdes is not None:
+                bottom_i = bottom_by_refdes.get(courtyards[i][0], False)
+                bottom_j = bottom_by_refdes.get(courtyards[j][0], False)
+                if bottom_i != bottom_j:
+                    # Opposite sides of the board -- physically facing
+                    # each other, not colliding (docstring's sink-under-
+                    # array example).
+                    continue
             overlap = gi.intersection(gj)
             if overlap.is_empty or overlap.area <= _EPS:
                 # A shared edge or a single touching vertex: STRtree's
@@ -1941,6 +2076,7 @@ def run_geometric_drc(
     capability: CapabilityRow,
     outline: list[list[float]] | None = None,
     courtyards: list[Courtyard] | None = None,
+    courtyard_bottom: dict[str, bool] | None = None,
     panel_type: str | None = None,
     net_rules: dict[str, NetRules] | None = None,
     unrouted: list[dict[str, Any]] | None = None,
@@ -1971,8 +2107,14 @@ def run_geometric_drc(
     existed — DRC-clean on this axis exactly as before, the identical
     "silent about a thing this module was never told" contract
     ``unrouted=None`` already has.
+
+    ``courtyard_bottom`` (gr341516) threads straight into
+    :func:`check_courtyard_overlap`'s own ``bottom_by_refdes`` — see that
+    function's docstring; ``None`` (the default) keeps every existing
+    caller's courtyard-overlap behaviour unchanged.
     """
     findings: list[DrcFinding] = []
+    findings += check_synthesized_footprint(model)
     findings += check_clearance(model, capability, net_rules=net_rules)
     findings += check_trace_width(model, capability)
     findings += check_annular_ring(model, capability)
@@ -1988,7 +2130,9 @@ def run_geometric_drc(
     findings += check_connectivity(model)
     findings += check_unrouted(unrouted)
     if courtyards:
-        findings += check_courtyard_overlap(courtyards)
+        findings += check_courtyard_overlap(
+            courtyards, bottom_by_refdes=courtyard_bottom
+        )
     findings += check_silk_missing(census or (), model)
     findings += check_silk_printability(census or (), capability)
     return findings
@@ -2009,6 +2153,7 @@ __all__ = [
     "check_silk_edge_clearance",
     "check_silk_missing",
     "check_silk_printability",
+    "check_synthesized_footprint",
     "check_trace_width",
     "check_unrouted",
     "check_via_pad_keepout",

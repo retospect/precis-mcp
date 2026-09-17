@@ -1,55 +1,83 @@
-"""Computed-component generators — pcb-ewod-multitile Slice 2.
+"""Computed-component generators — pcb-ewod-multitile Slice 2, now emitting
+its escape fabric as real copper (docs/backlog/pcb-pre-place-route-blocks.md
+Slice 2).
 
 A ``generators`` block on ``put(kind='pcb')`` (:meth:`precis.store.
 _pcb_ops.PcbMixin._pcb_apply`) names a generator call — ``{name, generator,
 params}`` — that gets *expanded*, deterministically and in pure Python, into
 the same shapes the manual authoring surface already accepts: components,
-nets, connections, local footprints, features. That reuse is the whole
+nets, connections, local footprints, features, and (as of pcb-pre-place-
+route-blocks Slice 2) authored fixed copper. That reuse is the whole
 architecture here: expansion never talks to the database directly, and
 nothing downstream (padplace/DRC/gerber/SVG) needs to know a component was
 generated rather than hand-authored — a :class:`GeneratorExpansion` is just
 a batch :meth:`_pcb_apply` was going to process anyway.
 
-**Why one component, many pads.** The spec's own framing (docs/backlog/
+**One component, one pad per pin.** The spec's own framing (docs/backlog/
 pcb-ewod-multitile.md, "the array generator emits the integrated unit") is
 "the whole array is one component whose pins are the electrode nets" — so
 ``ewod_pad_array`` below emits exactly ONE ``components[]`` entry (one
-refdes) whose local footprint's ``pads`` list carries every electrode
-square, every F.Cu neck stub, and every plaza via as its own pad row, all
-addressed by pin name. :func:`precis.pcb.padplace.place_footprint_pads`
-already places every pad in a footprint's ``pads`` list independently and
-resolves each one's net through ``pin_map`` — nothing stops two (or three)
-pads sharing the SAME pin number (an electrode pad + its neck stub + its
-via all being electrically the same net), which is exactly the "one via
-per electrode, capacitive load, negligible current" contract. A drilled
-pad (``drill`` set) already lands on every copper layer
-(:func:`place_footprint_pads`), so the via pad alone gives the electrode
-copper on B.Cu with zero extra machinery — the existing router
-(``op='route'``) picks that B.Cu landing up like any other pad on that
-net. **This is why slice 2's "B.Cu-only escape" needs no new routing
-code**: escape routing IS routing, on an ordinary net, once the via pad
-exists.
+refdes) whose local footprint's ``pads`` list carries every electrode's
+BODY polygon, one pad per pin, addressed by pin name. **This is a change
+from pcb-ewod-multitile Slice 2's original shape**, which additionally gave
+each driven electrode a second (F.Cu neck stub) and third (drilled plaza
+via) pad row sharing the same pin — "one via per electrode, capacitive
+load, negligible current" was real, but a stub/via pad is fake geometry
+from the router's and the fab's point of view (see the "pcb-pre-place-
+route-blocks Slice 2" section below for why, and gr339236 for the router
+symptom this reverses). The neck and the via are now real ``track``/``via``
+rows in :attr:`GeneratorExpansion.copper` instead — the electrode BODY pad
+is, and stays, each pin's ONLY pad.
 
-**Round 8 (gripe 338983 fixed) — what that claim now does and does not
-cover.** The router/DRC pad source (``precis.pcb.realize.pads_for_ir``)
-used to place every pin at ``ir.py``'s SYNTHESIZED ``pin_dx``/``pin_dy``
-regardless of the real footprint, so for THIS module's own custom-grid
-component it measured and routed wildly wrong virtual positions. Real
-per-pin positions now reach the IR (``precis.pcb.session.
-apply_real_pin_offsets``, wired into ``build_ir``), so escape routing IS
-driven off the real electrode copper — verified end-to-end on the
-``ewod-dogfood-1`` fixture (``tests/test_pcb_ewod_dogfood.py``), which
-routes escapes to a real bottom-side sink and DRCs the result. **The
-residue that remains is the IR's one-position-per-pin model**: an
-electrode's three pads (body + stub + via) collapse to ONE IR pad — the
-body, first-wins — so the plaza via itself is invisible to the router,
-which drops its OWN via for a layer change rather than reusing the
-authored one, and DRC through the IR path never sees stub/via copper at
-all (the exact-geometry coverage for those lives in
-``tests/test_pcb_ewod_generator_drc.py``, which drives ``padplace.
-board_pads`` directly — the full, all-pads path the gerber writer uses).
-Teaching the IR several pads per pin is an architecture round of its own;
-see docs/backlog/pcb-ewod-multitile.md's round-8 decisions log.
+**pcb-pre-place-route-blocks Slice 2 — the escape fabric is real copper,
+not pad geometry.** Every DRIVEN electrode (one with a usable plaza escape)
+gets exactly two :attr:`GeneratorExpansion.copper` rows: one ``track`` on
+F.Cu from the electrode body's own boundary anchor to its plaza via centre
+(:func:`_stub_track_row`), and one ``via`` at the plaza slot, spanning F.Cu
+to B.Cu (:func:`_via_row`). The track is CONSTANT-width (``stub_width``,
+the same sizing figure the old tapered pad used) — the taper existed only
+to clear a diagonal escape's own pinch point against a NEIGHBOUR
+electrode's flat corner, and :func:`_electrode_polygon`'s
+``plaza_corner_chamfer`` (round 4) already does that clearance job on the
+ELECTRODE side, so the track itself needs no taper of its own. Both rows
+carry an ``envelope`` (:func:`_fabric_envelope`) — the capability floor
+(layer count, clearance/track-width/via-size) the fabric was solved under —
+so a re-apply into a design whose rules have since moved refuses honestly
+rather than silently keeping copper that may no longer be legal
+(:meth:`precis.store._pcb_ops.PcbMixin._pcb_fixed_copper_envelope_mismatch`).
+A merged pad may never cover a plaza (:func:`_parse_pad_sizes` refuses that
+whole apply outright — 8 OTHER nets' escapes live there); a ``reserve``'d
+slot suppresses its via/stub the same as it always suppressed the old pad
+pair. Both non-emissions are COUNTED, in the ledger's new ``fabric``
+section (per-tile ``{emitted, refused, suppressed}`` plus a flat reason
+list) — see :func:`_expand_ewod_pad_array`'s own fabric-bookkeeping
+comment. **B.Cu fan-out from the via's own landing to the tile's sink
+footprint is explicitly OUT OF SCOPE this slice** (``ledger["fabric"]
+["fan"] == "router"``): this module is pure and has no DB access to the
+sink's real pin positions, so it cannot compute that geometry; a sibling
+slice teaches the router to treat this generator's fixed copper as
+pre-existing obstacles/connectivity and finish the B.Cu run itself.
+
+**Round 8 (gripe 338983 fixed), and what pcb-pre-place-route-blocks Slice 2
+closes on top of it.** The router/DRC pad source (``precis.pcb.realize.
+pads_for_ir``) used to place every pin at ``ir.py``'s SYNTHESIZED
+``pin_dx``/``pin_dy`` regardless of the real footprint, so for THIS
+module's own custom-grid component it measured and routed wildly wrong
+virtual positions. Real per-pin positions now reach the IR (``precis.pcb.
+session.apply_real_pin_offsets``, wired into ``build_ir``), so escape
+routing IS driven off the real electrode copper — verified end-to-end on
+the ``ewod-dogfood-1`` fixture (``tests/test_pcb_ewod_dogfood.py``). Round
+8 then found **the IR's one-position-per-pin model** turned an electrode's
+three pads (body + stub + via) into ONE IR pad — the body, first-wins — so
+the plaza via itself was invisible to the router (gr339236). Moving the
+stub/via OFF the pad list and onto real ``pcb_fixed_copper`` rows (this
+slice) removes the multi-pad-per-pin collapse at the source: an electrode
+has exactly one pad again, and the via/track are geometry the router reads
+as pre-existing fixed copper instead of a pad it never saw. Whether
+``op='route'`` has actually been taught to consume ``pcb_fixed_copper`` yet
+is tracked outside this module (docs/backlog/pcb-pre-place-route-blocks.md,
+the router/connectivity slices) — this generator's own job, emitting
+correct fabric, is done regardless of when that lands.
 
 **Idempotency contract.** :func:`expand` is a pure function of
 ``(generator, name, params)`` — same inputs, byte-identical output, no
@@ -65,25 +93,25 @@ plaza slot capacity, via :func:`_plaza_capacity` below — and which remain
 open; the ones below are this module's own scope boundary, not
 necessarily still-open spec questions):
 
-- **DRC integration — resolved round 3, decision: the plaza via STAYS a
-  drilled THT footprint pad, never a persistent ``model["copper"]`` via
-  row.** Round 2's own docstring here got the risk backwards: it worried
-  ``check_via_pad_keepout`` (a ROUTER-placed via must clear every pad) was
-  blind to the plaza via because a footprint pad is not a ``model
-  ["copper"]`` ``ctype == "via"`` item — true, but irrelevant, because
-  that check's whole job is protecting pads from a router-inserted via
-  landing on them, and a plaza via is never the VIA side of that question;
-  it is one of the PADS every real router via still gets checked against
-  (``model["pads"]``, generically — polygon electrodes included, via
-  their authored bbox), unchanged, no waiver needed
-  (``tests/test_pcb_ewod_generator_drc.py``). The REAL gap round 3 found
-  and fixed instead: ``check_annular_ring`` iterated
-  ``model["copper"]`` vias only, so a plaza via's own drilled hole
-  (a THT footprint pad, never a ``copper`` via row by this design's own
-  decision) had its annular ring computed by nothing — extended in
-  ``drc.py`` to also ring-check every drilled footprint pad, deduplicated
-  across the one-flash-per-copper-layer repetition
-  :mod:`precis.pcb.padplace` emits for a THT pad.
+- **DRC integration — round 3's "plaza via stays a footprint pad" decision
+  is REVERSED by pcb-pre-place-route-blocks Slice 2.** Round 3 kept the
+  plaza via a drilled THT footprint pad specifically because
+  ``check_annular_ring`` only iterated ``model["copper"]`` vias and a pad
+  never reaches that list — fixed there instead (extending ``drc.py`` to
+  also ring-check drilled footprint pads) rather than by promoting the via
+  to real copper. That trade-off inverted once the router-visibility cost
+  of a pad-shaped via became load-bearing (gr339236: the IR's one-
+  position-per-pin model makes a same-pin pad invisible the instant a
+  BODY pad exists on that pin too) — real copper fixes the router gap by
+  construction (:mod:`precis.pcb.drc`'s existing ``check_annular_ring``
+  extension for drilled pads keeps working for every OTHER drilled pad in
+  the kind; it simply has nothing left to check here, because this
+  generator's own via is a ``copper`` row now, which
+  ``check_annular_ring`` already iterated regardless).
+  ``check_via_pad_keepout`` (a ROUTER-placed via must clear every pad) is
+  unaffected either way: it protects PADS from a foreign via, and the
+  electrode BODY is still a pad on the exact same terms, polygon shape
+  included (``tests/test_pcb_ewod_generator_drc.py``).
 - **Electrode-gap net-class clearance floor — resolved round 3.** Every
   electrode net gets ``net_class = f"ewod_{name}"`` with a dedicated
   ``pcb_net_classes`` rule (``clearance_mm = gap``), upserted by
@@ -108,8 +136,9 @@ necessarily still-open spec questions):
   m x n rectangle of cells, rejects any entry that would cover a via
   plaza or (``variant='rim'``) hollow cell outright (spec's own "never
   relocate the plaza" rule), and the main loop emits exactly ONE
-  electrode pad + ONE stub + ONE via for the whole span — "one via
-  suffices, the electrode is a capacitor" (spec decision), picked as the
+  electrode pad plus (pcb-pre-place-route-blocks Slice 2) ONE stub track
+  and ONE via copper row for the whole span — "one via suffices, the
+  electrode is a capacitor" (spec decision), picked as the
   FIRST plaza-adjacent cell/direction found across the span
   (:func:`_find_plaza_escape`), same determinism the single-cell case
   already had. :func:`_electrode_polygon` itself is the load-bearing
@@ -127,22 +156,18 @@ necessarily still-open spec questions):
   and (optionally) tied into a shared top-plate/complement-rail net. It
   is deliberately PART-AGNOSTIC (:func:`expand` is pure, no DB reads, so
   it cannot look up a real part's own pin names) — the caller names
-  every pin this module needs to wire. **Known engine limitation, NOT
-  fixed here (out of round-7 scope, per the round-6 handoff)**: a sink
-  instance's own ``layer='bottom'`` is honest (gerber/silk already read
-  ``pcb_instances.layer``), but ``rules.py::PAD_LAYER`` still forces
-  EVERY pad's IR layer to 0 regardless of instance side
-  (``ir.py::from_graph`` ignores ``pcb_instances.layer`` entirely) — so a
-  sink placed directly under the array (its correct real-world position)
-  reads, to DRC, as sitting on the SAME copper layer as the electrode
-  field above it, which a courtyard-overlap/clearance check has no way
-  to know is actually a different physical side. This is a pre-existing,
-  kind-wide gap (slice 3's own scope, docs/backlog/pcb-ewod-multitile.md
-  target list), not something ``sink_grid`` introduced; it bites HARDER
-  here than anywhere else in the kind because "directly under the array"
-  is the whole point of a sink grid. Pin-to-channel assignment order is
-  documented in the ledger (auto row-major; the pre-place-route block
-  spec will revisit the whole scheme).
+  every pin this module needs to wire. **Layer-aware pads (gr341516,
+  landed) fixed the engine limitation this note used to describe**: a
+  sink instance's own ``layer='bottom'`` is honest (gerber/silk already
+  read ``pcb_instances.layer``), and ``ir.py::from_graph`` now reads it
+  too — into :attr:`~precis.pcb.ir.PcbIR.inst_bottom` — so every pad's IR
+  layer reflects the instance's real board side (:func:`precis.pcb.
+  realize.pads_for_ir`). ``rules.py::PAD_LAYER`` still exists, but only as
+  the router's own via F.Cu/B.Cu transition reference, not a pad-layer
+  override; a sink placed directly under the array is correctly read as a
+  different physical side by courtyard-overlap/clearance checks. Pin-to-
+  channel assignment order is documented in the ledger (auto row-major;
+  the pre-place-route block spec will revisit the whole scheme).
 - ``corner_radius`` (the electrode's own OUTER 4 corners — a separate
   concept from the tooth TRANSITION rounding :func:`_s_curve` now does
   internally, radius=``tooth_depth``, not user-tunable) is accepted
@@ -166,7 +191,8 @@ from typing import Any
 
 from shapely.geometry import LineString  # type: ignore[import-untyped]
 
-from precis.pcb.capabilities import capability_for
+from precis.pcb import DEFAULT_STACKUP
+from precis.pcb.capabilities import CapabilityRow, capability_for
 
 Point = tuple[float, float]
 
@@ -211,9 +237,23 @@ _HV_SEPARATION_V_SCALE = 0.002
 #: any OTHER already-tuned clearance) until the corridor reopens to the
 #: same ``gap`` the rest of the array's design already targets everywhere
 #: else. This margin is added on top of that geometric target to absorb
-#: the tapered stub's own residual half-width at its closest approach (a
-#: separate, much smaller effect — round-3's own measured deficit was a
-#: few hundredths of a mm) and ordinary coordinate-rounding noise.
+#: the stub's own residual half-width at its closest approach and
+#: ordinary coordinate-rounding noise.
+#:
+#: **pcb-pre-place-route-blocks Slice 2 finding, NOT fixed here: the stub
+#: is no longer near-zero-width at the corner.** Round 4's number was
+#: calibrated for a TAPERED footprint-pad neck (:func:`_stub_polygon`, now
+#: retired), whose width right at the pinch point was ~0 — "a separate,
+#: much smaller effect" this docstring used to say. Slice 2 replaced the
+#: taper with a CONSTANT-width track (:func:`_stub_track_row`) the full
+#: length, so the copper occupies ``stub_width/2`` of the corridor
+#: everywhere, including at the corner — at default sizing this can read
+#: a couple hundredths of a mm under the fab's absolute clearance floor
+#: (see ``resolve_ewod_sizing``'s own ``plaza_corner_chamfer`` comment for
+#: why a naive margin widening was tried and reverted: it fixed this but
+#: opened a WORSE, unrelated zigzag-wall regression). Left as a known,
+#: documented gap for a dedicated follow-up geometry round rather than a
+#: guessed-at fix.
 _PLAZA_CORNER_CHAMFER_MARGIN_MM = 0.01
 
 #: 1 micron. The electrode-gap net class's ``clearance_mm`` (below) is set
@@ -264,6 +304,34 @@ class GeneratorExpansion:
     #: alongside the rest of the expansion's rows rather than merely
     #: recorded and never applied.
     net_classes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: docs/backlog/pcb-pre-place-route-blocks.md Slice 1 — real, fixed
+    #: copper this expansion wants routed into ``pcb_fixed_copper`` (an
+    #: AUTHORED input parallel to ``pcb_planes``, never ``pcb_copper``
+    #: directly — that table is DERIVED and would have this fabric deleted
+    #: by the next realize run; see :meth:`precis.store._pcb_ops.PcbMixin.
+    #: _pcb_apply`'s routing of this field). Each dict: ``{ctype: 'track'|
+    #: 'via', layer: <layer NAME, e.g. 'F.Cu'>, net: <net name>, geom:
+    #: {...}, envelope?: {...}, meta?: {...}}``. ``geom`` uses the exact
+    #: same per-``ctype`` shape ``pcb_copper.geom`` already carries
+    #: (:mod:`precis.workers.job_types.pcb_route`'s writer): a ``track``'s
+    #: ``{segments: [{shape, start:[x,y], end:[x,y]}, ...], width_mm,
+    #: length_mm?, is_dogbone?}``; a ``via``'s ``{x, y, dia_mm, drill_mm,
+    #: span: [layer_name_lo, layer_name_hi]}`` — a via's real layer
+    #: membership is ``span``, never the top-level ``layer`` (which is a
+    #: schema-satisfying placeholder only, same convention ``pcb_copper``
+    #: itself uses). Coordinates are absolute BOARD mm — the generator
+    #: resolves its own instance placement (grid origin, rotation) before
+    #: emitting these, the same way it already resolves electrode/pad
+    #: positions; nothing downstream re-offsets this geometry. ``envelope``,
+    #: when given, is the rule envelope (layer count / clearance / track /
+    #: via floor) the fabric was solved under — the store layer refuses the
+    #: whole apply if it disagrees with the board's current rules rather
+    #: than silently keeping copper that may no longer be legal. Empty by
+    #: default (a generator with no escape fabric of its own, e.g. every
+    #: pin unusable, simply never appends here); ``ewod_pad_array``
+    #: (pcb-pre-place-route-blocks Slice 2, :func:`_stub_track_row`/
+    #: :func:`_via_row`) is the first real emitter.
+    copper: list[dict[str, Any]] = field(default_factory=list)
 
 
 def expand(generator: str, name: str, params: dict[str, Any]) -> GeneratorExpansion:
@@ -451,11 +519,18 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # see the `stub_width = min(...)` clamp below -- turning "default"
     # into "default, plus a warning every single call"), so start from
     # the floor instead.
-    stub_width = float(
+    stub_width_uncapped = float(
         params.get(
             "stub_width", cap.jlc_min.get("trace_width_mm") or _DEFAULT_STUB_WIDTH_MM
         )
     )
+    # A diagonal escape's via slot sits only `gap*sqrt(2)` from the
+    # diagonally-adjacent electrode's own corner (round-2 stress-test
+    # finding). A neck wider than `gap` at that end clips the neighbour --
+    # capped here (once; :func:`_expand_ewod_pad_array` no longer repeats
+    # this clamp) so `plaza_corner_chamfer` below can be derived from the
+    # SAME final width the track will actually be drawn at.
+    stub_width = min(stub_width_uncapped, gap)
     edge = params.get("edge") or {}
     tooth_depth = float(edge.get("tooth_depth", _DEFAULT_TOOTH_DEPTH_MM))
     tooth_pitch = float(edge.get("tooth_pitch", _DEFAULT_TOOTH_PITCH_MM))
@@ -499,6 +574,29 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # to the escape's 45-degree centreline grows from the un-chamfered
     # gap/sqrt(2) up to the array's own uniform `gap` design target, plus
     # a fixed safety margin.
+    #
+    # **pcb-pre-place-route-blocks Slice 2 tried and REVERTED a stub-
+    # aware widening here.** Naively growing this margin to also cover the
+    # constant-width track's own half-width (replacing the near-zero
+    # taper -- _PLAZA_CORNER_CHAMFER_MARGIN_MM's own docstring) fixed the
+    # track-vs-neighbour clearance this docstring flags below, but
+    # introduced a WORSE, un-related regression: the wider chamfer shrinks
+    # the flat run each MESHING wall gets before `_edge_sign`'s own
+    # tooth-transition margin kicks in, which measurably tightened the
+    # zigzag offset curve's OWN clearance against its mirrored neighbour
+    # (observed: two electrode BODIES, no stub involved, down to 0.04mm at
+    # default sizing -- worse than the 0.065mm the stub itself caused).
+    # That is exactly the class of subtle mesh-wall interaction rounds
+    # 2-4 above each needed a dedicated stress-test pass to pin down, not
+    # a one-line margin bump -- left for a follow-up round rather than
+    # guessed at here. **Known consequence, left open**: at DEFAULT
+    # sizing, a diagonal escape's stub track can read 0.02-0.03mm under
+    # the fab's absolute clearance floor against its two flanking
+    # neighbours' bodies (``tests/test_pcb_ewod_generator_drc.py``'s
+    # ``test_diagonal_escape_stub_track_clearance_is_a_known_gap`` pins
+    # the exact figure) -- a wider ``gap``/narrower ``stub_width`` author
+    # override clears it today; closing it for the DEFAULT sizing needs
+    # its own geometry round.
     plaza_corner_chamfer = (
         math.sqrt(2.0) * (gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM) - gap
     )
@@ -516,6 +614,7 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
         "via_drill": via_drill,
         "hv_separation": hv_separation,
         "stub_width": stub_width,
+        "stub_width_uncapped": stub_width_uncapped,
         "tooth_depth": tooth_depth,
         "tooth_pitch": tooth_pitch,
         "slot_radius": capacity["slot_radius"],
@@ -1053,36 +1152,95 @@ def _electrode_polygon(
     return out
 
 
-def _stub_polygon(anchor: Point, target: Point, width: float) -> list[Point]:
-    """A TAPERED neck from ``anchor`` (a point on/near the electrode's own
-    boundary) to ``target`` (the via slot centre) — a point (zero width)
-    at ``anchor``, widening linearly to ``width`` at ``target``, rather
-    than a uniform-width rectangle.
+#: The rule-envelope keys :meth:`precis.store._pcb_ops.PcbMixin.
+#: _pcb_fixed_copper_envelope_mismatch` reads off a copper row's own
+#: ``envelope`` dict -- built once per :func:`_expand_ewod_pad_array` call
+#: (the fabric is a pure function of the SAME capability floor
+#: :func:`resolve_ewod_sizing` already reads, never a per-row recompute)
+#: and stamped onto every emitted row, so an apply against a board whose
+#: rules have since moved refuses honestly instead of keeping fabric that
+#: may no longer be legal (docs/backlog/pcb-pre-place-route-blocks.md,
+#: "Rule envelope is a hard gate").
+def _fabric_envelope(cap: CapabilityRow) -> dict[str, Any]:
+    return {
+        "layers": len(DEFAULT_STACKUP),
+        "min_clearance_mm": cap.jlc_min.get("trace_spacing_mm"),
+        "min_track_mm": cap.jlc_min.get("trace_width_mm"),
+        "via_drill_mm": cap.jlc_min.get("drill_mm"),
+        "via_diameter_mm": cap.jlc_min.get("via_diameter_mm"),
+    }
 
-    The taper matters for a DIAGONAL escape specifically: its anchor is
-    the electrode's own corner, which sits only ``gap*sqrt(2)`` from the
-    diagonally-adjacent electrode's own corner — closer than a full-width
-    stub's own half-width would clear. A stub that starts at zero width
-    right at the corner and only reaches full width once it has travelled
-    away from that pinch point (same idea as a trace-to-pad teardrop
-    fillet) tracks the real available clearance; a uniform-width
-    rectangle does not and clips the neighbour there (round-2 stress-test
-    finding). Same-net overlap with the electrode's OWN polygon at the
-    anchor end is still fine (redundant copper, not a short) — the fix
-    here is only about NEIGHBOURING electrodes."""
-    ax, ay = anchor
-    bx, by = target
-    dx, dy = bx - ax, by - ay
-    length = math.hypot(dx, dy)
-    if length < 1e-9:
-        return [(ax, ay), (ax, ay), (ax, ay), (ax, ay)]
-    ux, uy = dx / length, dy / length
-    px, py = -uy * width / 2.0, ux * width / 2.0
-    return [
-        (ax, ay),
-        (bx + px, by + py),
-        (bx - px, by - py),
-    ]
+
+def _stub_track_row(
+    net_name: str, anchor: Point, via_pt: Point, width: float, envelope: dict[str, Any]
+) -> dict[str, Any]:
+    """One driven electrode's F.Cu neck as REAL copper
+    (docs/backlog/pcb-pre-place-route-blocks.md Slice 2) — a straight,
+    CONSTANT-width track from the electrode body's own boundary anchor to
+    its plaza via centre, on ``net_name``. This REPLACES the TAPERED
+    footprint-pad neck (:func:`_stub_polygon`, pre-Slice-2) the module
+    docstring's earlier rounds describe: the taper existed only to clear a
+    diagonal escape's own pinch point against a NEIGHBOUR electrode's flat
+    corner, and :func:`_electrode_polygon`'s ``plaza_corner_chamfer``
+    (round 4) already does that clearance job on the ELECTRODE side —
+    retreating the neighbour's own corner rather than narrowing this
+    track — so a constant-width track needs no taper of its own to stay
+    clear. ``geom`` matches ``pcb_copper.geom``'s own ``ctype='track'``
+    shape exactly (:class:`GeneratorExpansion.copper`'s docstring)."""
+    (ax, ay), (vx, vy) = anchor, via_pt
+    return {
+        "ctype": "track",
+        "layer": "F.Cu",
+        "net": net_name,
+        "geom": {
+            "segments": [{"shape": "line", "start": [ax, ay], "end": [vx, vy]}],
+            "width_mm": width,
+        },
+        "envelope": envelope,
+    }
+
+
+def _via_row(
+    net_name: str, via_pt: Point, sizing: dict[str, Any], envelope: dict[str, Any]
+) -> dict[str, Any]:
+    """One driven electrode's plaza via as REAL copper, on ``net_name`` —
+    replaces the drilled-THT-pad via the module docstring's earlier
+    rounds describe (docs/backlog/pcb-pre-place-route-blocks.md Slice 2
+    reverses that round-3 decision; see the module docstring's own
+    updated notice). ``span`` carries the via's real layer membership
+    (F.Cu to B.Cu, this generator's escape is B.Cu-only per the module
+    docstring's scope note); the top-level ``layer`` is a schema-
+    satisfying placeholder only, the same convention ``pcb_copper`` itself
+    uses (:class:`GeneratorExpansion.copper`'s own docstring)."""
+    vx, vy = via_pt
+    return {
+        "ctype": "via",
+        "layer": "F.Cu",
+        "net": net_name,
+        "geom": {
+            "x": vx,
+            "y": vy,
+            "dia_mm": sizing["via_dia"],
+            "drill_mm": sizing["via_drill"],
+            "span": ["F.Cu", "B.Cu"],
+        },
+        "envelope": envelope,
+    }
+
+
+def _rim_virtual_plaza_cell(layout: _Layout, r: int, c: int) -> tuple[int, int]:
+    """The hollow grid cell ``(r, c)``'s own rim via reaches toward --
+    ``(r, c)`` itself when neither axis has an open direction (a
+    degenerate 1-row/1-col layout has no interior to reach at all). Split
+    out of :func:`_rim_via_point` (pcb-pre-place-route-blocks Slice 2) so
+    the fabric ledger can key a tile by this cell the same way a real
+    plaza is keyed by its own ``(row, col)`` -- two or three rim pads that
+    share the SAME hollow cell (a rim's own 4 corners, see
+    :func:`_rim_via_point`'s docstring) must land in ONE ledger tile, not
+    one each."""
+    dx = 1 if c == 0 else (-1 if c == layout.cols - 1 else 0)
+    dy = 1 if r == 0 else (-1 if r == layout.rows - 1 else 0)
+    return (r + dy, c + dx)
 
 
 def _rim_via_point(layout: _Layout, r: int, c: int) -> Point:
@@ -1117,12 +1275,12 @@ def _rim_via_point(layout: _Layout, r: int, c: int) -> Point:
     consumers closes both gaps at once: a corner's 3-consumer cell is
     just an under-subscribed real plaza, not a special case."""
     cx, cy = layout.cx(c), layout.cy(r)
-    dx = 1 if c == 0 else (-1 if c == layout.cols - 1 else 0)
-    dy = 1 if r == 0 else (-1 if r == layout.rows - 1 else 0)
+    vr, vc = _rim_virtual_plaza_cell(layout, r, c)
+    dy, dx = vr - r, vc - c
     if dx == 0 and dy == 0:
         return (cx, cy)
     direction = _DIR_BY_DELTA[(dy, dx)]
-    return _plaza_slot_point(layout, r + dy, c + dx, direction)
+    return _plaza_slot_point(layout, vr, vc, direction)
 
 
 #: Opposite of each direction key -- ``_expand_ewod_pad_array`` finds an
@@ -1405,18 +1563,44 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     # A diagonal escape's via slot sits only `gap*sqrt(2)` from the
     # diagonally-adjacent electrode's own corner (round-2 stress-test
     # finding: two abutting electrodes' corners approach that closely by
-    # construction, half+half+gap=pitch). A neck wider than `gap` at that
-    # end WILL clip the neighbour despite the taper (_stub_polygon's own
-    # docstring) -- cap it here, once, rather than at each of the two
-    # call sites below.
-    stub_width = min(sizing["stub_width"], sizing["gap"])
-    if stub_width < sizing["stub_width"] - 1e-9:
+    # construction, half+half+gap=pitch). A neck wider than `gap` clips
+    # the neighbour along its WHOLE length now (Slice 2's constant-width
+    # track has no taper to thin out near the corner) -- `resolve_ewod_
+    # sizing` already clamped `sizing["stub_width"]` to `gap` for this
+    # reason; only the warning (needing the PRE-clamp value for its own
+    # message) is this function's job.
+    if sizing["stub_width"] < sizing["stub_width_uncapped"] - 1e-9:
         warnings.append(
-            f"stub_width {sizing['stub_width']}mm capped to gap {sizing['gap']}mm "
-            "at the via end -- wider would clip a diagonally-adjacent electrode's "
-            "corner (only gap*sqrt(2) away there)"
+            f"stub_width {sizing['stub_width_uncapped']}mm capped to gap "
+            f"{sizing['gap']}mm along the whole constant-width track -- wider "
+            "would clip a diagonally-adjacent electrode's corner (only "
+            "gap*sqrt(2) away there, see _stub_track_row)"
         )
-    sizing["stub_width"] = stub_width
+
+    # docs/backlog/pcb-pre-place-route-blocks.md Slice 2 -- the escape
+    # fabric (neck track + plaza via, per driven electrode) is emitted as
+    # REAL copper here, not footprint pads (see _stub_track_row/_via_row).
+    # `fabric_envelope` is the rule floor every row below is stamped with
+    # (once, not per-row -- it's a pure function of the SAME capability
+    # `resolve_ewod_sizing` already read). `fabric_tiles` mirrors
+    # `ledger_plazas`'s own per-plaza keying (a rim pad's virtual plaza,
+    # `_rim_virtual_plaza_cell`, gets the SAME "rim:R{r}C{c}" tile key its
+    # 2-3 co-located consumers share); `fabric_reasons` is a flat list so
+    # a reader never has to walk every tile hunting for the few that
+    # refused/suppressed something. B.Cu fan-out to the sink is NOT
+    # emitted this slice (module docstring's scope note) -- the router
+    # picks the via's B.Cu landing up as pre-existing copper instead.
+    cap = capability_for(_FAB_PROCESS)
+    fabric_envelope = _fabric_envelope(cap)
+    copper: list[dict[str, Any]] = []
+    fabric_tiles: dict[str, dict[str, int]] = {}
+    fabric_totals = {"emitted": 0, "refused": 0, "suppressed": 0}
+    fabric_reasons: list[dict[str, Any]] = []
+
+    def _fabric_tile(tile_key: str) -> dict[str, int]:
+        return fabric_tiles.setdefault(
+            tile_key, {"emitted": 0, "refused": 0, "suppressed": 0}
+        )
 
     def pin_name(r: int, c: int) -> str:
         return f"R{r}C{c}"
@@ -1468,6 +1652,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 # collide against.
                 via_r, via_c = cells[0]
                 via_pt = _rim_via_point(layout, via_r, via_c)
+                vr, vc = _rim_virtual_plaza_cell(layout, via_r, via_c)
                 # Anchor the stub on that cell's own boundary, not its
                 # centre -- project the via direction back onto the
                 # nominal half-boundary.
@@ -1478,28 +1663,17 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                     layout.cx(via_c) + dx / dn * half,
                     layout.cy(via_r) + dy / dn * half,
                 )
-                pads.append(
-                    {
-                        "pin": pin,
-                        "shape": "polygon",
-                        "poly": _stub_polygon(anchor, via_pt, sizing["stub_width"]),
-                        "role": "electrode",
-                        "mask": "covered",
-                    }
+                net_name = f"{name}_{pin}"
+                copper.append(
+                    _stub_track_row(
+                        net_name, anchor, via_pt, sizing["stub_width"], fabric_envelope
+                    )
                 )
-                pads.append(
-                    {
-                        "pin": pin,
-                        "shape": "circle",
-                        "x": via_pt[0],
-                        "y": via_pt[1],
-                        "w": sizing["via_dia"],
-                        "drill": sizing["via_drill"],
-                        "role": "electrode",
-                        "mask": "covered",
-                    }
-                )
+                copper.append(_via_row(net_name, via_pt, sizing, fabric_envelope))
                 ledger_pads[pin]["via"] = {"x": via_pt[0], "y": via_pt[1]}
+                rim_tile_key = f"rim:R{vr}C{vc}"
+                _fabric_tile(rim_tile_key)["emitted"] += 1
+                fabric_totals["emitted"] += 1
                 continue
 
             # full variant: find this electrode's plaza neighbour --
@@ -1510,12 +1684,21 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             # (_find_plaza_escape's own docstring: "one via suffices").
             escape = _find_plaza_escape(layout, cells)
             if escape is None:
+                reason = "no adjacent plaza (array boundary)"
                 ledger_pads[pin]["usable"] = False
-                ledger_pads[pin]["reason"] = "no adjacent plaza (array boundary)"
+                ledger_pads[pin]["reason"] = reason
                 warnings.append(
                     f"{pin}: no adjacent via plaza -- marked unusable "
                     "(array-boundary effect of the 3x3 auto rule)"
                 )
+                # No plaza tile exists to attribute this to (that is
+                # exactly the problem) -- board-total only, `tile: None`
+                # in the reason list, same honesty the per-tile counts
+                # give a genuine tile (docs/backlog/
+                # pcb-pre-place-route-blocks.md Slice 2, acceptance
+                # criterion "truncated edge tiles report honestly").
+                fabric_totals["refused"] += 1
+                fabric_reasons.append({"pin": pin, "tile": None, "reason": reason})
                 continue
             d, pr, pc, (er, ec) = escape
             # Ledger/slot-id naming uses the PLAZA's own frame (the
@@ -1534,6 +1717,14 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 plaza_ledger["slots"][slot_dir] = {"status": "reserved"}
                 ledger_pads[pin]["usable"] = False
                 ledger_pads[pin]["reason"] = f"slot {slot_id} reserved"
+                # 'reserve' suppresses this slot's via/stub -- counted,
+                # not just silently skipped (docs/backlog/
+                # pcb-pre-place-route-blocks.md Slice 2 item 2/3).
+                _fabric_tile(slot_key)["suppressed"] += 1
+                fabric_totals["suppressed"] += 1
+                fabric_reasons.append(
+                    {"pin": pin, "tile": slot_key, "reason": f"slot {slot_id} reserved"}
+                )
                 warnings.append(
                     f"{pin}: escape slot {slot_id} withheld by 'reserve' -- "
                     "marked unusable"
@@ -1545,30 +1736,18 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             # c0)`) -- that cell's own edge/corner facing the plaza is
             # what sits on the merged polygon's real boundary there.
             anchor = _edge_anchor(layout, er, ec, d)
-            pads.append(
-                {
-                    "pin": pin,
-                    "shape": "polygon",
-                    "poly": _stub_polygon(anchor, via_pt, sizing["stub_width"]),
-                    "role": "electrode",
-                    "mask": "covered",
-                }
+            net_name = f"{name}_{pin}"
+            copper.append(
+                _stub_track_row(
+                    net_name, anchor, via_pt, sizing["stub_width"], fabric_envelope
+                )
             )
-            pads.append(
-                {
-                    "pin": pin,
-                    "shape": "circle",
-                    "x": via_pt[0],
-                    "y": via_pt[1],
-                    "w": sizing["via_dia"],
-                    "drill": sizing["via_drill"],
-                    "role": "electrode",
-                    "mask": "covered",
-                }
-            )
+            copper.append(_via_row(net_name, via_pt, sizing, fabric_envelope))
             plaza_ledger["slots"][slot_dir] = {"status": "used", "pin": pin}
             ledger_pads[pin]["via"] = {"x": via_pt[0], "y": via_pt[1]}
             ledger_pads[pin]["plaza"] = slot_key
+            _fabric_tile(slot_key)["emitted"] += 1
+            fabric_totals["emitted"] += 1
             if sink_cfg is not None:
                 tile_key = (r0 // sink_cfg.per_tiles, c0 // sink_cfg.per_tiles)
                 tile_pin_lists.setdefault(tile_key, []).append((r0, c0, pin))
@@ -1779,6 +1958,29 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             "pads_unusable": n_unusable,
             "plazas": len(plaza_set),
         },
+        # docs/backlog/pcb-pre-place-route-blocks.md Slice 2 -- the
+        # per-tile escape-fabric report: `tiles` keyed the same way
+        # `plazas` is ("P{row}_{col}", plus "rim:R{row}C{col}" for a
+        # rim's virtual plazas), each `{emitted, refused, suppressed}`;
+        # `totals` sums across every tile PLUS every tile-less refusal
+        # (a boundary electrode with no adjacent plaza at all has no
+        # tile to attribute to -- see the `tile: None` reason entries);
+        # `reasons` is the flat, greppable list behind every non-zero
+        # refused/suppressed count. "merged-over" (a merged pad covering
+        # a plaza) never appears here: `_parse_pad_sizes` refuses that
+        # whole apply before any expansion is built at all, so it is a
+        # hard validation error, not a per-tile fabric count. `fan` states
+        # the scope boundary out loud: the B.Cu run from a via's own
+        # landing to the tile's sink footprint is the ROUTER's job (a
+        # sibling slice teaches it to start from fixed copper), never
+        # this generator's -- it has no DB access to the sink's real pin
+        # positions to route to.
+        "fabric": {
+            "tiles": fabric_tiles,
+            "totals": fabric_totals,
+            "reasons": fabric_reasons,
+            "fan": "router",
+        },
     }
     if sink_cfg is not None:
         ledger["sink_grid"] = ledger_sinks
@@ -1827,6 +2029,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         features=features,
         ledger=ledger,
         warnings=warnings,
+        copper=copper,
         net_classes={
             net_class: {
                 "clearance_mm": max(0.0, sizing["gap"] - _GEOMETRY_ROUNDING_SLACK_MM)

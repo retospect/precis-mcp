@@ -191,6 +191,15 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "pcb_drc_findings.objects",
         "pcb_features.geom",
         "pcb_features.meta",
+        # 0165 (pcb-pre-place-route-blocks Slice 1): AUTHORED fixed copper,
+        # an input parallel to pcb_planes. geom mirrors pcb_copper.geom's
+        # own open per-ctype shape; envelope is the rule floor (layers/
+        # clearance/track/via) the fabric was solved under, read back
+        # whole and diffed against the board's current floor, never
+        # queried by key.
+        "pcb_fixed_copper.envelope",
+        "pcb_fixed_copper.geom",
+        "pcb_fixed_copper.meta",
         # 0161: computed pad-field generator (pcb-ewod-multitile Slice 2,
         # 8543341b, qlanded ungated — allowlisted here in passing): params
         # is the generator's open-ended invocation blob, ledger its

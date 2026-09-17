@@ -102,9 +102,17 @@ def _rotate_cw(x: float, y: float, deg: float) -> tuple[float, float]:
     return x * c + y * s, -x * s + y * c
 
 
-def _is_bottom(inst: dict[str, Any]) -> bool:
+def is_bottom_instance(inst: dict[str, Any]) -> bool:
     """Same string convention :mod:`precis.pcb.export` already uses
-    (``cpl_csv``/``specctra_dsn``) — never a second parallel parse."""
+    (``cpl_csv``/``specctra_dsn``) — never a second parallel parse.
+
+    Public (gr341516) — :func:`precis.pcb.ir.from_graph` reads this SAME
+    predicate to populate :attr:`~precis.pcb.ir.PcbIR.inst_bottom`, and
+    :mod:`precis.handlers.pcb` reads it again to build a courtyard's
+    board-side tag for :func:`precis.pcb.drc.check_courtyard_overlap`. One
+    parse of ``pcb_instances.layer``'s ``"top"``/``"bottom"`` string, not
+    three — the exact "one rule, two call sites, drifted" defect this
+    module's other docstrings already name for pad geometry and rotation."""
     return str(inst.get("layer") or "top").lower() in ("bottom", "bot", "b")
 
 
@@ -137,7 +145,7 @@ def _transform_local_point(
     position afterwards gives the same answer as transforming the
     absolute vertex directly — one transform, reused per-point instead of
     re-derived for the polygon case."""
-    if _is_bottom(inst):
+    if is_bottom_instance(inst):
         lx = -lx
     return _rotate_cw(lx, ly, float(inst.get("rot") or 0.0))
 
@@ -188,7 +196,7 @@ def place_footprint_pads(
     ``x``/``y``/``w``/``h`` (the courtyard/DRC bbox fallback) keeps
     working.
     """
-    bottom = _is_bottom(inst)
+    bottom = is_bottom_instance(inst)
     inst_rot = float(inst.get("rot") or 0.0)
     pin_map = pin_map or {}
     pin_to_net = pin_to_net or {}
@@ -331,6 +339,7 @@ def board_pads(
 
 __all__ = [
     "board_pads",
+    "is_bottom_instance",
     "place_footprint_pads",
     "place_pad_point",
 ]

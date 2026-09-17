@@ -73,19 +73,47 @@ def test_generator_row_and_ledger_are_readable_back(pcb):
     assert row["ledger"]["summary"]["pads_usable"] == 8
 
 
-def test_local_footprint_carries_electrode_polygon_and_drilled_via_pads(pcb):
+def test_local_footprint_carries_one_electrode_body_pad_per_pin(pcb):
+    """pcb-pre-place-route-blocks Slice 2: the stub neck and the plaza
+    via are no longer pad rows (see
+    ``test_generator_copper_carries_the_escape_fabric_as_tracks_and_vias``
+    below for where they went) — the local footprint's ``pads`` list
+    carries ONLY the electrode body, one per pin, ever."""
     pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
     ref = pcb.store.get_ref(kind="pcb", id="ewod-gen-1")
     assert ref is not None
     fp = pcb.store.pcb_local_footprints_for(ref.id)["__gen_ARR1"]
     pads = fp["pads"]
     electrodes = [p for p in pads if p["shape"] == "polygon" and len(p["poly"]) > 4]
-    vias = [p for p in pads if p.get("drill")]
     assert len(electrodes) == 8
-    assert len(vias) == 8
+    assert len(pads) == 8  # ONE pad per pin -- no stub, no via pad
+    assert not any(p.get("drill") for p in pads)
     assert all(p["role"] == "electrode" for p in pads)
     # role=electrode defaults paste to "none" (Slice 1's own default).
     assert all(p["paste"] == "none" for p in pads)
+
+
+def test_generator_copper_carries_the_escape_fabric_as_tracks_and_vias(pcb):
+    """pcb-pre-place-route-blocks Slice 2: every driven electrode's neck
+    stub and plaza via land in ``pcb_fixed_copper`` as real ``track``/
+    ``via`` rows, scoped to this generator's own identity — not as
+    footprint pads (see the sibling test above)."""
+    pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-gen-1")
+    assert ref is not None
+    board = pcb.store.pcb_load(ref.id)["board"]
+    assert board is not None
+    rows = pcb.store.pcb_fixed_copper_list(int(board["board_id"]))
+    tracks = [r for r in rows if r["ctype"] == "track"]
+    vias = [r for r in rows if r["ctype"] == "via"]
+    assert len(tracks) == 8
+    assert len(vias) == 8
+    assert all(r["fixed"] is True for r in rows)
+    assert all(r["generator_name"] == "ARR1" for r in rows)
+    expected_pins = ("R0C0", "R0C1", "R0C2", "R1C0", "R1C2", "R2C0", "R2C1", "R2C2")
+    assert {r["net"] for r in vias} == {f"ARR1_{p}" for p in expected_pins}
+    assert all(v["span"] == ["F.Cu", "B.Cu"] for v in vias)
+    assert all(t["segments"] and t["width_mm"] > 0 for t in tracks)
 
 
 def test_field_wide_mask_open_feature_is_emitted(pcb):
@@ -332,7 +360,15 @@ def test_reserve_marks_a_plaza_slot_unusable(pcb):
     ledger = pcb.store.pcb_generators_for(ref.id)["ARR1"]["ledger"]
     assert ledger["pads"]["R0C1"]["usable"] is False
     assert ledger["plazas"]["P1_1"]["slots"]["N"]["status"] == "reserved"
-    # the reserved electrode gets no via/stub pad, but still exists as copper
+    # the reserved electrode gets no via/stub copper (suppressed, counted
+    # in ledger['fabric'] -- test_pcb_ewod_fabric.py's own coverage), but
+    # its electrode BODY still exists as copper (still wired -- just
+    # unroutable for now).
+    assert ledger["fabric"]["tiles"]["P1_1"]["suppressed"] == 1
+    board = pcb.store.pcb_load(ref.id)["board"]
+    assert board is not None
+    fixed = pcb.store.pcb_fixed_copper_list(int(board["board_id"]))
+    assert not any(r["net"] == "ARR1_R0C1" for r in fixed)
     net_names = {n["name"] for n in pcb.store.pcb_graph(ref.id)["nets"]}
     assert "ARR1_R0C1" in net_names  # still wired -- just unroutable for now
 
@@ -350,10 +386,13 @@ def test_gerber_export_of_the_generated_array_never_raises_synthesized(pcb, tmp_
         f_cu = zf.read("ewod-gen-1-F_Cu.gbr").decode("utf-8")
         assert "G36*" in f_cu and "G37*" in f_cu  # the polygon electrodes
         # role=electrode -> paste=none is asserted directly on the pad data
-        # in test_local_footprint_carries_electrode_polygon_and_drilled_via_
-        # pads; solderpaste_gerber always writes both side files regardless
-        # of content (round-1's own test avoided proving this negative on
-        # gerber content directly, for the same reason).
+        # in test_local_footprint_carries_one_electrode_body_pad_per_pin;
+        # solderpaste_gerber always writes both side files regardless of
+        # content (round-1's own test avoided proving this negative on
+        # gerber content directly, for the same reason). The plaza vias'
+        # own drill hits (pcb-pre-place-route-blocks Slice 2, now real
+        # ``pcb_fixed_copper`` rows) are covered board-wide by
+        # ``tests/test_pcb_ewod_dogfood.py``'s gerber export test.
 
 
 def test_svg_fab_level_render_does_not_crash_on_the_generated_array(pcb):
@@ -362,29 +401,31 @@ def test_svg_fab_level_render_does_not_crash_on_the_generated_array(pcb):
     assert "<svg" in resp.body
 
 
-def test_drc_view_runs_pads_only_on_a_standalone_generated_array(pcb):
+def test_drc_view_runs_the_full_pass_once_the_fabric_is_real_copper(pcb):
     """Round-4 contract (docs/backlog/pcb-ewod-multitile.md's decisions
-    log): a standalone ``ewod_pad_array`` board has every net at fanout 1
-    (its own single pin — the array's electrode escapes are footprint-pad
-    geometry, not something a router ever touches), so ``op='route'``
-    never writes it a single ``pcb_copper`` row even once run (a dangling
-    <2-member net is marked ``'realized'`` in ``pcb_routes`` only -- it
-    never has segments) -- the OLD gate (``pcb_copper_list`` non-empty)
-    could therefore never run a single DRC rule against a bare EWOD
-    board. ``PcbHandler._render_drc`` now runs whenever REAL (generator-
-    authored, never synthesized) pad geometry exists, labelling the
-    reduced scope. Without ``op='route'`` ever having been called at all,
-    every net still reads ``'unrouted'`` (the router bookkeeping default,
-    unrelated to whether a fanout-1 net actually needs a track) -- a
-    real, correctly-reported finding, not a defect this decision is
-    scoped to fix. The rule-level clearance/annular-ring/via-keepout
-    coverage against REAL generator pad geometry lives in
+    log) widened ``view='drc'`` to run a PADS-ONLY pass whenever real
+    (non-synthesized) pad geometry exists but ``pcb_copper_list`` is
+    still empty — the motivating case being a standalone
+    ``ewod_pad_array`` board, since its escape geometry used to be
+    footprint-pad copper the router never touches. **pcb-pre-place-
+    route-blocks Slice 2 retires that motivating case**: the escape
+    fabric is now real ``pcb_fixed_copper`` (track + via) rows, which
+    ``pcb_copper_list`` unions in — so this board now has realized copper
+    the moment ``generators:[...]`` is applied, before ``op='route'``
+    ever runs, and gets the FULL geometric DRC pass, not the reduced
+    pads-only one. Every escape net still reads ``'unrouted'`` (the
+    router bookkeeping status is unrelated to whether the NET's copper
+    exists — a fanout-1 net with a fixed-copper via landing has nothing
+    left for a router to draw, see docs/backlog/pcb-pre-place-route-
+    blocks.md's router-posture note) — a real, correctly-reported status,
+    not a defect. The rule-level clearance/annular-ring/via-keepout
+    coverage against REAL generator copper lives in
     ``test_pcb_ewod_generator_drc.py``, driving ``precis.pcb.drc``
     directly; this test stays the handler-path smoke + contract check."""
     pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
     resp = pcb.get(id="ewod-gen-1", view="drc")
     assert "no realized copper yet" not in resp.body
-    assert "(pads-only DRC — no routed copper yet)" in resp.body
+    assert "(pads-only DRC — no routed copper yet)" not in resp.body
     assert "unrouted" in resp.body
 
 
