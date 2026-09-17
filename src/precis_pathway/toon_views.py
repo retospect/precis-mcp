@@ -12,6 +12,8 @@ Imports precis, so this module is handler-side (not part of the precis-free
 from __future__ import annotations
 
 import math
+import re
+from collections import Counter
 from typing import Any
 
 from precis.format import toon
@@ -112,12 +114,208 @@ def steps_toon(meta: dict[str, Any]) -> str:
     return table
 
 
-def warnings_toon(meta: dict[str, Any]) -> str:
-    warns = meta.get("warnings") or []
+#: Collapses a flat warning string's numeric literals to a single ``N`` so
+#: repeated templates that differ only by e.g. an fmax reading, a seed index,
+#: or an eV value count as one template — see :func:`_collapse_template`.
+#: The negative lookbehind excludes a digit run directly glued to a letter
+#: (``NH2``, ``N2H4``) — those are species-formula tokens, not a
+#: measurement, and must stay distinct (``NH2`` must never collapse onto
+#: ``NH3``).
+_NUM_RE = re.compile(r"(?<![A-Za-z])[0-9]+(?:\.[0-9]+)?")
+
+#: Cap on distinct message templates rendered by ``warnings_toon``'s
+#: "messages" section (docs/backlog/pathway-conditions-effects-report.md
+#: "Warnings" fix 1) — a long tail of one-off templates still shows as a
+#: trailing "(+K more templates)" count rather than being silently dropped.
+_MESSAGE_TEMPLATE_CAP = 25
+
+
+def _collapse_template(msg: str) -> str:
+    return _NUM_RE.sub("N", str(msg))
+
+
+def _trust_context(
+    meta: dict[str, Any],
+) -> tuple[list[dict[str, Any]], set[str] | None, dict[str, Any]]:
+    """``(records, route_steps, trust_summary)`` pulled off ``meta['results']``
+    — the same structured trust-records contract :func:`trust_toon` reads
+    (``trust_schema`` 1-2). ``route_steps`` is ``None`` when the pathway's
+    results don't carry it (older engine) — callers must then treat every
+    fatal fail as on-route, per the spec's "when route_steps is absent, all
+    fatal fails" rule."""
+    results = meta.get("results")
+    results = results if isinstance(results, dict) else {}
+    records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
+    route_steps = results.get("route_steps")
+    route_steps = set(route_steps) if isinstance(route_steps, list) else None
+    trust_summary = results.get("trust_summary")
+    trust_summary = trust_summary if isinstance(trust_summary, dict) else {}
+    return records, route_steps, trust_summary
+
+
+def _on_route(rec: dict[str, Any], route_steps: set[str] | None) -> bool:
+    return route_steps is None or rec.get("step") in route_steps
+
+
+def _is_blocking(rec: dict[str, Any], route_steps: set[str] | None) -> bool:
+    return (
+        rec.get("verdict") == "fail"
+        and rec.get("severity") == "fatal"
+        and _on_route(rec, route_steps)
+    )
+
+
+def _blocking_records(
+    records: list[dict[str, Any]],
+    route_steps: set[str] | None,
+    trust_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Fatal on-route fails, ``trust_summary.barrier.blocked_by`` ids first
+    (when that list exists), then by step/seed for a stable read."""
+    blocking = [r for r in records if _is_blocking(r, route_steps)]
+    priority = list((trust_summary.get("barrier") or {}).get("blocked_by") or [])
+    order = {rid: i for i, rid in enumerate(priority)}
+    blocking.sort(
+        key=lambda r: (
+            order.get(r.get("id"), len(order)),
+            _trust_subject(r),
+            r.get("seed") or 0,
+        )
+    )
+    return blocking
+
+
+def _blocked_by_note(trust_summary: dict[str, Any]) -> str:
+    barrier = trust_summary.get("barrier") or {}
+    selectivity = trust_summary.get("selectivity") or {}
+    n_barrier = len(barrier.get("blocked_by") or [])
+    n_sel = len(selectivity.get("blocked_by") or [])
+    return f"barrier blocked_by: {n_barrier} · selectivity blocked_by: {n_sel}"
+
+
+def _counts_rows(
+    records: list[dict[str, Any]],
+    route_steps: set[str] | None,
+) -> list[dict[str, Any]]:
+    """One row per ``(check, verdict)`` among everything that isn't blocking
+    and isn't a plain ``pass`` — the "3 marginal, 5 off-route" collapse from
+    the spec. A ``fail`` at ``severity: warn`` renders as ``fail(warn)`` so it
+    reads distinctly from a blocking fatal fail; a fatal fail that's simply
+    off the reported route (so not blocking) still renders as plain ``fail``,
+    with its off-route share called out via the count column."""
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in records:
+        if _is_blocking(r, route_steps) or r.get("verdict") == "pass":
+            continue
+        verdict = r.get("verdict")
+        vdisp = (
+            "fail(warn)"
+            if verdict == "fail" and r.get("severity") == "warn"
+            else str(verdict or "?")
+        )
+        key = (str(r.get("check") or "?"), vdisp)
+        groups.setdefault(key, []).append(r)
+
+    rows = []
+    for (check, vdisp), recs in sorted(groups.items()):
+        total = len(recs)
+        off = sum(1 for r in recs if not _on_route(r, route_steps))
+        count = str(total) if not off else f"{total} (off-route {off})"
+        rows.append({"check": check, "verdict": vdisp, "count": count})
+    return rows
+
+
+def _messages_toon(warns: list[Any]) -> str:
     if not warns:
-        return "no warnings — states/barriers converged and within tolerance."
-    rows = [{"warning": w} for w in warns]
-    return toon.dump(rows, schema=["warning"])
+        return "no messages — states/barriers converged and within tolerance."
+    counts = Counter(_collapse_template(w) for w in warns)
+    first: dict[str, str] = {}
+    for w in warns:
+        first.setdefault(_collapse_template(w), str(w))
+    ordered = counts.most_common()  # count desc, ties in first-seen order
+    shown = ordered[:_MESSAGE_TEMPLATE_CAP]
+    # A template seen once keeps its literal numbers — collapsing "edge 3"
+    # to "edge N" only pays off when it merges repeats.
+    rows = [{"message": f"{n} × {t if n > 1 else first[t]}"} for t, n in shown]
+    table = toon.dump(rows, schema=["message"])
+    extra = len(ordered) - len(shown)
+    if extra > 0:
+        table += f"\n(+{extra} more templates)"
+    return table
+
+
+def _warnings_summary(meta: dict[str, Any]) -> str:
+    """Compact ``blocking=<n> · other-records=<m> · messages=<k
+    templates/<total>>`` line — replaces a raw ``len(warnings)`` count
+    wherever one would otherwise read as "17 warnings" for one real
+    blocker (spec fix 1, item 2)."""
+    records, route_steps, trust_summary = _trust_context(meta)
+    warns = meta.get("warnings") or []
+    if records:
+        n_blocking = sum(1 for r in records if _is_blocking(r, route_steps))
+        n_other = sum(
+            1
+            for r in records
+            if not _is_blocking(r, route_steps) and r.get("verdict") != "pass"
+        )
+    else:
+        n_blocking = n_other = 0
+    n_templates = len({_collapse_template(w) for w in warns})
+    return (
+        f"blocking={n_blocking} · other-records={n_other} · "
+        f"messages={n_templates} templates/{len(warns)}"
+    )
+
+
+def warnings_toon(meta: dict[str, Any]) -> str:
+    """Severity- and route-aware warnings view (spec:
+    docs/backlog/pathway-conditions-effects-report.md "Warnings" fix 1):
+    the flat ``meta['warnings']`` prose list mixes informational marginal
+    notes, a repeated data gap, off-route notes, and the few fatal on-route
+    blockers, so on prod (2026-09-16, n=24) 16/24 pathways showed >10
+    warnings for at most a couple of real problems. Three sections:
+    ``blocking`` (the real, route-scoped fatal fails, from the structured
+    ``trust`` records — never the prose), ``counts`` (everything else,
+    collapsed to one row per check/verdict), ``messages`` (the flat prose,
+    collapsed by numeric-literal template and capped)."""
+    warns = meta.get("warnings") or []
+    records, route_steps, trust_summary = _trust_context(meta)
+
+    sections = [f"warnings: {_warnings_summary(meta)}", ""]
+
+    if not records:
+        sections.append("## blocking")
+        sections.append("no trust records: pre-trust-schema artifact")
+    else:
+        blocking = _blocking_records(records, route_steps, trust_summary)
+        sections.append("## blocking")
+        if blocking:
+            rows = [
+                {
+                    "step": _trust_subject(r),
+                    "seed": r.get("seed"),
+                    "check": r.get("check"),
+                    "evidence": _trust_evidence(r),
+                    "id": r.get("id"),
+                }
+                for r in blocking
+            ]
+            sections.append(
+                toon.dump(rows, schema=["step", "seed", "check", "evidence", "id"])
+            )
+        else:
+            sections.append("no blocking (fatal, on-route) trust records.")
+
+        sections.append("")
+        sections.append("## counts")
+        counts_rows = _counts_rows(records, route_steps)
+        sections.append(toon.dump(counts_rows, schema=["check", "verdict", "count"]))
+        sections.append(_blocked_by_note(trust_summary))
+
+    sections.append("")
+    sections.append("## messages")
+    sections.append(_messages_toon(warns))
+    return "\n".join(sections)
 
 
 def _trust_subject(rec: dict[str, Any]) -> str:
@@ -206,6 +404,7 @@ def analysis_text(meta: dict[str, Any]) -> str:
             )
     if span is not None:
         head.append(f"energetic span (whole-path apparent barrier): {_b(span)} eV")
+    head.append(f"warnings: {_warnings_summary(meta)}   (view='warnings' for detail)")
     head.append("")
 
     ranked = analysis.barriers_ranked(graph)

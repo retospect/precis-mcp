@@ -733,6 +733,36 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
     return "\n".join(lines)
 
 
+def _results_table_section(
+    store: Store, quest_id: int, *, fr: Any | None = None
+) -> str:
+    """The ``## Results so far`` section — one row per evaluated candidate,
+    lineage-ordered (:mod:`precis.quest.results_table`), so the model checks
+    what a doped-slab series has already tried before proposing another
+    variant of it (Reto, 2026-09-16: "provide a tabular view of what has
+    already been done in context"). Complements :func:`_frontier_summary`'s
+    banded one-liner digest, not a replacement for it.
+
+    ``fr`` reuses the tick's already-computed frontier (same threading
+    convention as :func:`_frontier_summary`/:func:`_champion`). Returns
+    ``""`` (section omitted entirely) when the quest has no candidates yet —
+    an empty table would just be noise ahead of the axis notes.
+    """
+    from precis.quest.results_table import build_results_rows, render_results_table
+
+    rows = build_results_rows(store, quest_id, fr=fr)
+    if not rows:
+        return ""
+    table = render_results_table(rows)
+    return (
+        "\n## Results so far (one row per evaluated candidate — read this "
+        "BEFORE proposing)\n"
+        "band: frontier|beaten|provisional|awaiting · trusted: barrier trust "
+        "gate · blocker: first fatal on-route trust id\n"
+        f"{table}\n"
+    )
+
+
 #: One-liner explaining each KNOWN Pareto axis, for :func:`_axis_reading_notes`
 #: — gripe 263257: the prompt's axis explainer used to be a static paragraph
 #: that unconditionally declared `log_tof` the activity axis, even for a
@@ -1211,6 +1241,7 @@ def build_tick_prompt(
 
     fr = quest_frontier(store, qid)
     frontier_text = _frontier_summary(store, qid, fr=fr)
+    results_table = _results_table_section(store, qid, fr=fr)
     literature = _literature_section(store, qid)
 
     if review:
@@ -1243,6 +1274,7 @@ def build_tick_prompt(
         logbook="\n".join(tail),
         servers="\n".join(servers),
         frontier=frontier_text,
+        results_table=results_table,
         axis_notes=_axis_reading_notes(fr),
         literature=literature,
         reaction_context=_reaction_context(store, quest, fr=fr),
@@ -1303,7 +1335,7 @@ You do not emit `result`/`milestone` entries — the system stamps those from \
 simulations; you close a lead with a `dead-end` when the table shows it \
 beaten.)
 
-{axis_notes}{literature}{reaction_context}{skill_injection}
+{results_table}{axis_notes}{literature}{reaction_context}{skill_injection}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
 next direction to close a gap, and note what you'd try. Then rewrite the \

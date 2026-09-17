@@ -110,6 +110,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "dossier",
     "frontier",
     "leaderboard",
+    "results",
     "logbook",
 )
 
@@ -131,7 +132,9 @@ class QuestHandler(NumericRefHandler):
             "id='/gaps' (all active quests) surfaces the exploration queue; "
             "view='dossier' shows the living research synthesis; view='frontier' "
             "the Pareto frontier of candidate materials (banded); "
-            "view='leaderboard' the same frontier as a TOON design table. "
+            "view='leaderboard' the same frontier as a TOON design table; "
+            "view='results' a lineage-ordered results table (one row per "
+            "candidate across every band, dopant/site/co-adsorbate columns). "
             "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
@@ -468,6 +471,9 @@ class QuestHandler(NumericRefHandler):
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_leaderboard(ref))
+        if view == "results" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_results(ref))
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_logbook(ref))
@@ -483,7 +489,7 @@ class QuestHandler(NumericRefHandler):
                 options=[*_QUEST_CONCRETE_VIEWS, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "logbook (quest-specific) · links, log, raw (generic)",
+                    "results, logbook (quest-specific) · links, log, raw (generic)",
                     "no 'deeds' view — default get(kind='quest', id=N) shows a "
                     "digest with a logbook tail; view='logbook' is the full lab "
                     "notebook; view='log' is the raw ref-events ledger",
@@ -574,6 +580,39 @@ class QuestHandler(NumericRefHandler):
         return (
             f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n"
             f"tier: {tier_legend}\n\n{body}"
+        )
+
+    def _render_results(self, ref: Ref) -> str:
+        """`view='results'` — the lineage-ordered results table
+        (:mod:`precis.quest.results_table`): one row per candidate across
+        every Pareto band, dopant/site/co-adsorbate + trust/blocker columns.
+        Renders the same rows twice — a TOON table (LLM-legible, same
+        ``toon.dump`` helper :func:`_render_leaderboard` uses) followed by
+        the fixed-width text table the tick prompt itself embeds — so this
+        view doubles as "what would the tick see right now"."""
+        from precis.format import toon
+        from precis.quest import frontier as frontier_mod
+        from precis.quest.results_table import (
+            RESULTS_COLUMNS,
+            build_results_rows,
+            render_results_table,
+        )
+
+        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        rows = build_results_rows(self.store, ref.id, fr=fr)
+        if not rows:
+            return (
+                f"# results — quest {ref.id}: {head}\n\n"
+                "no candidate structures serve this quest yet."
+            )
+        toon_body = toon.dump(rows, schema=list(RESULTS_COLUMNS))
+        text_table = render_results_table(rows)
+        return (
+            f"# results — quest {ref.id}: {head}\n\n"
+            f"{toon_body}\n\n"
+            "## text table (as embedded in the tick prompt)\n"
+            f"{text_table}"
         )
 
     def _render_dossier(self, ref: Ref) -> str:

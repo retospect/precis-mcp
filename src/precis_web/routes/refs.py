@@ -1051,6 +1051,148 @@ def _pathway_status_banner(
     return banner
 
 
+#: Same collapse rule as ``precis_pathway.toon_views._NUM_RE`` — the
+#: negative lookbehind excludes a digit run glued to a letter (``NH2``)
+#: so a species formula never collapses onto a different one.
+_PATHWAY_WARNING_NUM_RE = re.compile(r"(?<![A-Za-z])[0-9]+(?:\.[0-9]+)?")
+#: Cap on distinct message templates the "messages" warnings section shows
+#: — mirrors ``precis_pathway.toon_views._MESSAGE_TEMPLATE_CAP``.
+_PATHWAY_WARNING_TEMPLATE_CAP = 25
+
+
+def _pathway_warning_template(msg: str) -> str:
+    """Collapse a flat warning string's numeric literals to ``N`` so
+    repeated templates (an fmax reading, a seed index, an eV value) count as
+    one — see :func:`_pathway_warnings_sections`."""
+    return _PATHWAY_WARNING_NUM_RE.sub("N", str(msg))
+
+
+def _pathway_trust_on_route(rec: dict[str, Any], route_steps: set[str] | None) -> bool:
+    return route_steps is None or rec.get("step") in route_steps
+
+
+def _pathway_trust_subject(rec: dict[str, Any]) -> str:
+    state, step = rec.get("state"), rec.get("step")
+    if state and step:
+        return f"{state}@{step}"
+    return str(state or step or "?")
+
+
+def _pathway_trust_evidence(rec: dict[str, Any]) -> str:
+    ev = rec.get("evidence")
+    if not isinstance(ev, dict) or not ev:
+        return ""
+    return ", ".join(f"{k}={v}" for k, v in ev.items())
+
+
+def _pathway_trust_blocking(
+    records: list[dict[str, Any]],
+    route_steps: set[str] | None,
+    trust_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Fatal on-route fails, ``trust_summary.barrier.blocked_by`` ids first
+    (when that list exists) — same rule as
+    ``precis_pathway.toon_views._blocking_records``."""
+    blocking = [
+        r
+        for r in records
+        if r.get("verdict") == "fail"
+        and r.get("severity") == "fatal"
+        and _pathway_trust_on_route(r, route_steps)
+    ]
+    priority = list((trust_summary.get("barrier") or {}).get("blocked_by") or [])
+    order = {rid: i for i, rid in enumerate(priority)}
+    blocking.sort(
+        key=lambda r: (
+            order.get(r.get("id"), len(order)),
+            _pathway_trust_subject(r),
+            r.get("seed") or 0,
+        )
+    )
+    return blocking
+
+
+def _pathway_warnings_sections(
+    results: dict[str, Any], warnings_list: list[str]
+) -> dict[str, Any]:
+    """Severity- and route-aware warnings, re-derived for the detail page
+    (spec: docs/backlog/pathway-conditions-effects-report.md "Warnings" fix
+    1 — the flat ``warnings`` list mixed marginal/off-route/data-gap prose
+    with the few real fatal-on-route blockers, so 16/24 prod pathways showed
+    >10 warnings). Mirrors ``precis_pathway.toon_views.warnings_toon``'s
+    three sections (blocking / counts / messages) rather than importing it —
+    ``precis_web`` deliberately doesn't depend on the ``autocatpath``-gated
+    ``precis_pathway`` package (see ``pathway_kinetics.py`` for the same
+    re-derive-don't-import pattern)."""
+    records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
+    route_steps_raw = results.get("route_steps")
+    route_steps = set(route_steps_raw) if isinstance(route_steps_raw, list) else None
+    trust_summary = results.get("trust_summary")
+    trust_summary = trust_summary if isinstance(trust_summary, dict) else {}
+
+    blocking_rows: list[dict[str, Any]] = []
+    counts_rows: list[dict[str, Any]] = []
+    blocked_by_note = ""
+    no_trust_records = not records
+
+    if records:
+        blocking = _pathway_trust_blocking(records, route_steps, trust_summary)
+        blocking_rows = [
+            {
+                "step": _pathway_trust_subject(r),
+                "seed": r.get("seed"),
+                "check": r.get("check"),
+                "evidence": _pathway_trust_evidence(r),
+                "id": r.get("id"),
+            }
+            for r in blocking
+        ]
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for r in records:
+            if (
+                r.get("verdict") == "fail"
+                and r.get("severity") == "fatal"
+                and _pathway_trust_on_route(r, route_steps)
+            ) or r.get("verdict") == "pass":
+                continue
+            verdict = r.get("verdict")
+            vdisp = (
+                "fail(warn)"
+                if verdict == "fail" and r.get("severity") == "warn"
+                else str(verdict or "?")
+            )
+            groups.setdefault((str(r.get("check") or "?"), vdisp), []).append(r)
+        for (check, vdisp), recs in sorted(groups.items()):
+            total = len(recs)
+            off = sum(1 for r in recs if not _pathway_trust_on_route(r, route_steps))
+            count = str(total) if not off else f"{total} (off-route {off})"
+            counts_rows.append({"check": check, "verdict": vdisp, "count": count})
+        barrier = trust_summary.get("barrier") or {}
+        selectivity = trust_summary.get("selectivity") or {}
+        blocked_by_note = (
+            f"barrier blocked_by: {len(barrier.get('blocked_by') or [])} · "
+            f"selectivity blocked_by: {len(selectivity.get('blocked_by') or [])}"
+        )
+
+    msg_counts = Counter(_pathway_warning_template(w) for w in warnings_list)
+    first_msg: dict[str, str] = {}
+    for w in warnings_list:
+        first_msg.setdefault(_pathway_warning_template(w), str(w))
+    ordered = msg_counts.most_common()  # count desc, ties in first-seen order
+    shown = ordered[:_PATHWAY_WARNING_TEMPLATE_CAP]
+    # A once-seen template keeps its literal numbers (mirrors toon_views).
+    messages = [{"n": n, "template": t if n > 1 else first_msg[t]} for t, n in shown]
+
+    return {
+        "no_trust_records": no_trust_records,
+        "blocking": blocking_rows,
+        "counts": counts_rows,
+        "blocked_by_note": blocked_by_note,
+        "messages": messages,
+        "messages_more": len(ordered) - len(shown),
+    }
+
+
 def _pathway_measures(raw: Any) -> tuple[list[Measure], list[str]]:
     """Parse ``meta.measures`` into ad-hoc :class:`~precis.structure.Measure`
     objects for live per-state evaluation (``op`` -> ``kind``, ``atoms`` ->
@@ -1951,6 +2093,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
         "n_nodes": len(nodes) if isinstance(nodes, (list, dict)) else None,
         "n_edges": len(edges) if isinstance(edges, (list, dict)) else None,
         "warnings": warnings_list,
+        "warnings_sections": _pathway_warnings_sections(results, warnings_list),
     }
 
     # Kinetics panel — the catpath report's microkinetics panel, off the

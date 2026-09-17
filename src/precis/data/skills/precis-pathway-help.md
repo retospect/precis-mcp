@@ -150,10 +150,13 @@ for one candidate's whole landscape.
 ## Other reads
 
 - `view='intermediates'` / `view='steps'` — the states / elementary steps as tables.
-- `view='warnings'` — where to distrust the numbers (non-converged NEB, bad
-  geometry); a ~0 eV barrier carries no auto-flag and is usually a
-  broken/degenerate NEB, not a record — see `precis-quest-help`'s trust
-  section for the full auto-flag list and the low-vs-high read asymmetry.
+- `view='warnings'` — where to distrust the numbers, in three sections:
+  **blocking** (real fatal, on-route trust-record fails — read these first),
+  **counts** (everything else, one row per check/verdict, e.g. `wrong_binder
+  marginal 12 (off-route 3)`, plus barrier/selectivity `blocked_by` totals),
+  **messages** (the flat prose, collapsed by numeric-literal template,
+  capped at 25). A ~0 eV barrier carries no auto-flag — see `precis-quest-
+  help`'s trust section for the full auto-flag list.
 - `view='methods'` — the citable methods paragraph; `view='config'` — the snapshot.
 
 ## See the reaction — the interactive web explorer

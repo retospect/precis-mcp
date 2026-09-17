@@ -326,7 +326,7 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3", "torch-dftd>=0.4"]
 # export excludes autocatpath (--no-emit-package, deploy/playbooks/
 # 03-precis-constraints.yml) and the catalyst installs resolve it from the
 # host wheelhouse (deploy/roles/autocatpath, --find-links).
-catalyst = ["autocatpath>=0.20.0"]
+catalyst = ["autocatpath>=0.21.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in the shipped
@@ -337,7 +337,7 @@ catalyst = ["autocatpath>=0.20.0"]
 # `mace` extra lean, so the dep rides here; Linux-only (no macOS wheels).
 # Same 0.20.0-not-on-PyPI caveat as the `catalyst` floor above.
 catalyst-gpu = [
-    "autocatpath[mace]>=0.20.0",
+    "autocatpath[mace]>=0.21.0",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
 # NOTE: [external] and [patent] were promoted into core (2026-08-16) —
