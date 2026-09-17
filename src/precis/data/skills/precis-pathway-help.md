@@ -135,6 +135,29 @@ from the highest-fidelity trusted run; a superseded parked value is kept as
 error, calibration data, never deleted. Graduation requires a trusted
 verify-tier barrier on tier-ladder quests.
 
+Promotion is code-driven, never an LLM call. screening→neb takes the
+best-ranked screening candidates (cap `meta.fidelity_promote_neb`);
+neb→verify takes any live neb-tier candidate with a **trusted barrier**
+(cap `meta.fidelity_promote_verify`), Pareto-frontier members first, then
+the rest best-first — a trusted barrier is the evidence that earns the
+authoritative pass, and it is deliberately not gated on the frontier being
+populated (an axis only verify can measure would otherwise deadlock the
+ladder). The verify tier always runs at least three seeds (a pinned
+`search.seeds` shorter than that is widened to `[0, 1, 2]`): a single-seed
+Estimate is `insufficient_samples` and blocks every branch fraction built on
+it, so a one-seed verify would re-measure the barrier and still leave
+`P_side` unavailable.
+
+`P_side` is normally unavailable below verify (best_first prunes the
+competitor barriers a branch fraction needs; single-seed estimates are
+low-confidence). Rank on it anyway by flagging the axis
+`{"key": "P_side", "sense": "min", "optional": true}` in
+`meta.rubric_objectives`: a candidate missing an optional axis is still
+evaluated, scored worst on that axis (anyone with a real value beats it
+there), so trusted neb-tier candidates converge on their measured axes and
+verify fills the missing one in. Without the flag every rubric key is
+required and a candidate lacking one stays "awaiting a sim".
+
 ## Compare candidates / rank levers / which surface is best
 
 ```python

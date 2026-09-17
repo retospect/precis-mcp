@@ -85,6 +85,100 @@ class TestPareto:
         assert fr.unevaluated and not fr.frontier
 
 
+class TestParetoOptionalAxes:
+    """``pareto_split(..., optional={...})`` — an axis only a later ladder
+    tier can measure (``P_side`` at neb: pruned competitor barriers) must not
+    keep every candidate unevaluated; a missing optional value scores worst
+    on that axis and the candidate still competes on the rest."""
+
+    _OBJ = [("span", "min"), ("P_side", "min")]
+
+    def test_missing_optional_axis_is_still_evaluated(self) -> None:
+        a = Candidate(1, "st1", "A", {"span": 1.0}, True)
+        fr = pareto_split([a], self._OBJ, optional=frozenset({"P_side"}))
+        assert [c.ref_id for c in fr.frontier] == [1]
+        assert not fr.unevaluated
+
+    def test_missing_required_axis_stays_unevaluated(self) -> None:
+        a = Candidate(1, "st1", "A", {"span": 1.0}, True)
+        fr = pareto_split([a], self._OBJ)  # strict: P_side required
+        assert fr.unevaluated and not fr.frontier
+
+    def test_real_value_beats_missing_optional_on_that_axis(self) -> None:
+        # equal span; b has a measured P_side, a has none → b dominates a
+        a = Candidate(1, "st1", "A", {"span": 1.0}, True)
+        b = Candidate(2, "st2", "B", {"span": 1.0, "P_side": 0.2}, True)
+        fr = pareto_split([a, b], self._OBJ, optional=frozenset({"P_side"}))
+        assert [c.ref_id for c in fr.frontier] == [2]
+        assert [c.ref_id for c in fr.dominated] == [1]
+
+    def test_better_span_without_optional_still_makes_the_frontier(self) -> None:
+        # a wins on span, b wins on P_side (a has none) → a genuine tradeoff
+        a = Candidate(1, "st1", "A", {"span": 0.5}, True)
+        b = Candidate(2, "st2", "B", {"span": 1.0, "P_side": 0.2}, True)
+        fr = pareto_split([a, b], self._OBJ, optional=frozenset({"P_side"}))
+        assert {c.ref_id for c in fr.frontier} == {1, 2}
+
+    def test_two_missing_optional_tie_on_that_axis(self) -> None:
+        a = Candidate(1, "st1", "A", {"span": 0.5}, True)
+        b = Candidate(2, "st2", "B", {"span": 1.0}, True)
+        fr = pareto_split([a, b], self._OBJ, optional=frozenset({"P_side"}))
+        assert [c.ref_id for c in fr.frontier] == [1]
+        assert [c.ref_id for c in fr.dominated] == [2]
+
+    def test_max_sense_missing_optional_scores_minus_inf(self) -> None:
+        obj = [("span", "min"), ("margin", "max")]
+        a = Candidate(1, "st1", "A", {"span": 1.0}, True)
+        b = Candidate(2, "st2", "B", {"span": 1.0, "margin": -3.0}, True)
+        fr = pareto_split([a, b], obj, optional=frozenset({"margin"}))
+        assert [c.ref_id for c in fr.frontier] == [2]
+
+    def test_quest_frontier_reads_optional_flag_from_rubric(self, store: Any) -> None:
+        from precis.quest.frontier import quest_frontier
+
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "energy", "sense": "min"},
+                    {"key": "P_side", "sense": "min", "optional": True},
+                ]
+            },
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-5.0,
+        )
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [sid]
+        # flip the flag off → the same candidate is unevaluated (P_side required)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "energy", "sense": "min"},
+                    {"key": "P_side", "sense": "min"},
+                ]
+            },
+        )
+        fr = quest_frontier(store, qid)
+        # not confirmed: it lands in the provisional bucket (measured on one
+        # declared axis, missing another), never on the confirmed frontier
+        assert fr.frontier == []
+        assert fr.dominated == []
+        assert sid not in {c.ref_id for c in fr.frontier}
+
+
 # ── frontier scatter — Cycle C J4 (quest hub v2) ────────────────────────
 
 
@@ -4297,6 +4391,33 @@ class TestTierConfigMapping:
         assert out["template"] == "coadsorbed"
         assert out["search"] == self._CFG["search"]
 
+    def test_verify_widens_a_single_seed_to_three(self) -> None:
+        # qu164903's reaction config pins seeds [0]; a single-seed verify run
+        # leaves every Estimate `insufficient_samples` and P_side blocked.
+        cfg = {"search": {"seeds": [0], "fmax": 0.1}}
+        out = compute_mod._apply_tier_config(cfg, compute_mod._TIER_VERIFY)
+        assert out["search"]["seeds"] == [0, 1, 2]
+        assert out["search"]["fmax"] == 0.1  # other search keys survive
+        assert cfg == {"search": {"seeds": [0], "fmax": 0.1}}  # no mutation
+
+    def test_verify_adds_seeds_when_absent(self) -> None:
+        out = compute_mod._apply_tier_config(
+            {"substrate": "NO"}, compute_mod._TIER_VERIFY
+        )
+        assert out["search"]["seeds"] == [0, 1, 2]
+
+    def test_verify_honours_an_explicit_wide_seed_list(self) -> None:
+        cfg = {"search": {"seeds": [3, 4, 5, 6]}}
+        out = compute_mod._apply_tier_config(cfg, compute_mod._TIER_VERIFY)
+        assert out["search"]["seeds"] == [3, 4, 5, 6]
+
+    def test_neb_tier_keeps_a_single_seed(self) -> None:
+        # only the authoritative pass widens; neb stays the cheap rung
+        out = compute_mod._apply_tier_config(
+            {"search": {"seeds": [0]}}, compute_mod._TIER_NEB
+        )
+        assert out["search"]["seeds"] == [0]
+
     def test_neb_tier_overlays_fast_screening_stack(self) -> None:
         out = compute_mod._apply_tier_config(self._CFG, compute_mod._TIER_NEB)
         # the fast-screening NEB stack: frontier-first scheduling + neb-ode
@@ -5469,6 +5590,69 @@ class TestTierPromotion:
         assert lower_handle is not None
         assert any(f"promoted [{lower_handle}] neb→verify:" in n for n in notes)
 
+    def test_neb_to_verify_promotes_trusted_barrier_off_an_empty_frontier(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """qu164903 deadlock: a rubric axis only verify can measure (P_side,
+        NOT flagged optional here) keeps every candidate unevaluated, so a
+        frontier-only rule promoted nobody and no verify run ever landed.
+        A trusted neb-tier barrier is enough to earn the authoritative pass."""
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, fidelity_promote_neb=0, fidelity_promote_verify=1)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "barrier", "sense": "min"},
+                    {"key": "P_side", "sense": "min"},
+                ]
+            },
+        )
+        worse = self._neb_frontier_candidate(store, qid, "worse", 0.9, -5.0)
+        better = self._neb_frontier_candidate(store, qid, "better", 0.3, -5.0)
+        store.stamp_ref_meta(worse, {"tier": compute_mod._TIER_NEB})
+        store.stamp_ref_meta(better, {"tier": compute_mod._TIER_NEB})
+        from precis.quest.frontier import quest_frontier
+
+        assert quest_frontier(store, qid).frontier == []  # the deadlock shape
+        notes = compute_mod.promote_tiers(store, qid)
+        assert len(notes) == 1
+        assert calls == [(better, compute_mod._TIER_VERIFY)]  # best-first
+
+    def test_neb_to_verify_ranks_frontier_members_before_the_rest(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, fidelity_promote_neb=0, fidelity_promote_verify=1)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        on_front = self._neb_frontier_candidate(store, qid, "front", 0.3, -5.0)
+        dominated = self._neb_frontier_candidate(store, qid, "dominated", 0.6, -5.0)
+        store.stamp_ref_meta(on_front, {"tier": compute_mod._TIER_NEB})
+        store.stamp_ref_meta(dominated, {"tier": compute_mod._TIER_NEB})
+        compute_mod.promote_tiers(store, qid)
+        assert calls == [(on_front, compute_mod._TIER_VERIFY)]
+
+    def test_neb_to_verify_skips_screening_tier_candidates(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, fidelity_promote_neb=0, fidelity_promote_verify=2)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        neb = self._neb_frontier_candidate(store, qid, "neb", 0.3, -5.0)
+        screening = self._neb_frontier_candidate(store, qid, "screen", 0.2, -5.0)
+        store.stamp_ref_meta(neb, {"tier": compute_mod._TIER_NEB})
+        # highest completed rung is screening — its "barrier" is not a neb one
+        store.stamp_ref_meta(
+            screening,
+            {"tier": compute_mod._TIER_SCREENING, "barrier_fidelity": "screening"},
+        )
+        compute_mod.promote_tiers(store, qid)
+        assert calls == [(neb, compute_mod._TIER_VERIFY)]
+
     def test_neb_to_verify_skips_untrusted_barrier(
         self, store: Any, monkeypatch: Any
     ) -> None:
@@ -6535,3 +6719,143 @@ class TestFoldViewportUpdates:
             },
         )
         assert updates == {"barrier": (0.4, 0.4)}
+
+
+class TestCleanRungRunsAreNotMeasurements:
+    """gr343666: a rung-0 ``clean``/``geo`` pass (no calculator, energy None
+    by design) is recorded by EVERY structure put/edit. The quest must never
+    read it as a relax result (the tick model built a phantom
+    "converged-but-no-energy infra fault" out of those log lines), as the
+    "latest relax" behind the 0-step guard, or as a frontier convergence."""
+
+    def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _autocatpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    @staticmethod
+    def _quest_logs(store: Any, qid: int) -> list[str]:
+        return [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+
+    def test_clean_run_is_not_harvested_as_a_relax_result(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="clean",
+            on_version=1,
+            converged=True,
+            n_steps=19,
+            max_disp=0.3,
+        )
+        res = compute_mod.harvest_measures(store, qid)
+        assert res.results_harvested == 0
+        logs = self._quest_logs(store, qid)
+        assert not any("relax result for" in t for t in logs)
+        assert not any("no energy" in t for t in logs)
+
+    def test_ml_run_still_harvested_when_a_clean_pass_follows(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        ml_id = store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=12,
+            max_disp=0.1,
+            energy=-10.0,
+        )
+        store.structure_record_run(
+            sid, fidelity="clean", on_version=2, converged=True, n_steps=1, max_disp=0.0
+        )
+        res = compute_mod.harvest_measures(store, qid)
+        assert res.results_harvested == 1
+        relax_logs = [
+            t for t in self._quest_logs(store, qid) if "relax result for" in t
+        ]
+        assert len(relax_logs) == 1
+        assert "E=-10 eV" in relax_logs[0]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert int(meta["quest_harvested_upto"]) >= int(ml_id)
+
+    def test_clean_pass_after_relax_does_not_trip_unrelaxed_guard(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=12,
+            max_disp=0.1,
+            energy=-10.0,
+        )
+        # the "degenerate n_steps=0 / max_disp=0" signature: a clean pass over
+        # an already-clean geometry — NOT a 0-step ML relax
+        store.structure_record_run(
+            sid, fidelity="clean", on_version=2, converged=True, n_steps=0, max_disp=0.0
+        )
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.5}})
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier_unrelaxed_geometry" not in meta
+
+    def test_clean_pass_after_relax_keeps_candidate_on_frontier(
+        self, store: Any
+    ) -> None:
+        from precis.quest.frontier import quest_frontier
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=12,
+            max_disp=0.1,
+            energy=-10.0,
+        )
+        store.structure_record_run(
+            sid, fidelity="clean", on_version=2, converged=True, n_steps=3, max_disp=0.2
+        )
+        fr = quest_frontier(store, qid, objectives=[("energy", "min")])
+        assert [c.ref_id for c in fr.frontier] == [sid]
+        assert fr.frontier[0].converged is True
+        assert fr.frontier[0].measures["energy"] == -10.0
+
+    def test_only_a_clean_pass_is_not_a_converged_candidate(self, store: Any) -> None:
+        from precis.quest.frontier import quest_frontier
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.structure_record_run(
+            sid,
+            fidelity="clean",
+            on_version=1,
+            converged=True,
+            n_steps=19,
+            max_disp=0.3,
+        )
+        fr = quest_frontier(store, qid, objectives=[("energy", "min")])
+        assert fr.frontier == []
+        assert [c.ref_id for c in fr.unevaluated] == [sid]
+        assert fr.unevaluated[0].converged is False

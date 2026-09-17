@@ -85,7 +85,10 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
 
     from precis.quest.frontier import quest_frontier
 
-    fr = quest_frontier(store, quest_id)
+    # strict: an ``optional: true`` rubric axis (e.g. P_side below the verify
+    # tier) lets a candidate rank on the working frontier, but graduation to
+    # a real-world experiment requires every declared axis measured.
+    fr = quest_frontier(store, quest_id, strict=True)
     ladder_on = _fidelity_ladder_enabled(store, quest_id)
     graduated: list[int] = []
     for c in fr.frontier:

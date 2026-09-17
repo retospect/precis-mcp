@@ -844,14 +844,25 @@ def build_frontier_scatter(
 
 
 def _dominates_measures(
-    a: dict[str, float], b: dict[str, float], objectives: list[tuple[str, str]]
+    a: dict[str, float],
+    b: dict[str, float],
+    objectives: list[tuple[str, str]],
+    optional: frozenset[str] = frozenset(),
 ) -> bool:
     """True when measures dict ``a`` Pareto-dominates ``b`` over ``objectives``.
 
     ``a`` dominates ``b`` iff it is no worse on every objective and strictly
-    better on at least one. Missing a measure on either side → not comparable
-    (returns False), so a partially-measured point never dominates. Shared by
-    :func:`_dominates` (real ``Candidate.measures``) and
+    better on at least one. Missing a *required* measure on either side → not
+    comparable (returns False), so a partially-measured point never dominates.
+    A missing **optional** objective (:func:`_optional_objectives_for`) is
+    scored as the worst possible value on that axis (``+inf`` for ``min``,
+    ``-inf`` for ``max``): the candidate stays comparable, anyone with a real
+    value beats it there, and two candidates both lacking it tie on it. That
+    is what lets a neb-tier candidate whose selectivity the engine could not
+    yet compute (``P_side`` blocked by pruned competitor barriers) converge
+    on the frontier on its trusted axes — and be promoted to the verify tier
+    that measures the missing one — instead of deadlocking as unevaluated.
+    Shared by :func:`_dominates` (real ``Candidate.measures``) and
     :func:`_provisional_split` (a provisional candidate's merged trusted +
     recovered-untrusted view) — same rule, two measure sources.
     """
@@ -859,6 +870,10 @@ def _dominates_measures(
     for key, sense in objectives:
         av = a.get(key)
         bv = b.get(key)
+        if key in optional:
+            worst = float("inf") if sense == "min" else float("-inf")
+            av = worst if av is None else av
+            bv = worst if bv is None else bv
         if av is None or bv is None:
             return False
         if sense == "min":
@@ -874,17 +889,32 @@ def _dominates_measures(
     return strictly_better
 
 
-def _dominates(a: Candidate, b: Candidate, objectives: list[tuple[str, str]]) -> bool:
+def _dominates(
+    a: Candidate,
+    b: Candidate,
+    objectives: list[tuple[str, str]],
+    optional: frozenset[str] = frozenset(),
+) -> bool:
     """True when ``a`` Pareto-dominates ``b`` over ``objectives`` (see
     :func:`_dominates_measures` for the rule)."""
-    return _dominates_measures(a.measures, b.measures, objectives)
+    return _dominates_measures(a.measures, b.measures, objectives, optional)
 
 
 def pareto_split(
-    candidates: list[Candidate], objectives: list[tuple[str, str]]
+    candidates: list[Candidate],
+    objectives: list[tuple[str, str]],
+    *,
+    optional: frozenset[str] = frozenset(),
 ) -> FrontierResult:
-    """Partition ``candidates`` into frontier / dominated / unevaluated."""
-    keys = [k for k, _ in objectives]
+    """Partition ``candidates`` into frontier / dominated / unevaluated.
+
+    A candidate is *evaluated* when it converged and carries every objective
+    not in ``optional``; a missing optional axis scores worst in the
+    domination rule (:func:`_dominates_measures`) rather than excluding the
+    candidate. Callers that want the strict all-axes split (graduation, the
+    generic non-quest reuse) simply pass no ``optional``.
+    """
+    keys = [k for k, _ in objectives if k not in optional]
     evaluated = [
         c
         for c in candidates
@@ -895,7 +925,11 @@ def pareto_split(
     frontier: list[Candidate] = []
     dominated: list[Candidate] = []
     for c in evaluated:
-        if any(_dominates(o, c, objectives) for o in evaluated if o.ref_id != c.ref_id):
+        if any(
+            _dominates(o, c, objectives, optional)
+            for o in evaluated
+            if o.ref_id != c.ref_id
+        ):
             dominated.append(c)
         else:
             frontier.append(c)
@@ -920,6 +954,31 @@ def _objectives_for(store: Store, quest_id: int) -> list[tuple[str, str]]:
             if key and sense in _VALID_SENSES:
                 out.append((key, sense))
     return out or list(DEFAULT_OBJECTIVES)
+
+
+def _optional_objectives_for(store: Store, quest_id: int) -> frozenset[str]:
+    """Keys of the quest's ``rubric_objectives`` items flagged
+    ``"optional": true`` — axes a candidate may lack and still be evaluated
+    (scored worst there, see :func:`_dominates_measures`). Human-set rubric
+    data like the objectives themselves. The canonical use is ``P_side``: the
+    screening/neb tiers cannot always compute a branch fraction (competitor
+    barriers pruned by best_first, single-seed estimates), and only the
+    verify tier fills it in — which :func:`precis.quest.compute.promote_tiers`
+    dispatches for trusted-barrier candidates. Without this flag a quest
+    ranking on ``P_side`` never converges a single point and the ladder
+    deadlocks (qu164903, 2026-09-16).
+    """
+    ref = store.get_ref(kind="quest", id=quest_id)
+    raw = (ref.meta or {}).get("rubric_objectives") if ref else None
+    out: set[str] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict) or not item.get("optional"):
+                continue
+            key = str(item.get("key") or "").strip()
+            if key:
+                out.add(key)
+    return frozenset(out)
 
 
 def _rubric_composite_for(store: Store, quest_id: int) -> dict[str, Any] | None:
@@ -1050,8 +1109,16 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
     name = (s.title or "").splitlines()[0] if s.title else handle
     runs = store.structure_runs(s.id)
-    # Best = the most recent converged run (structure_runs is newest-first).
-    best = next((r for r in runs if r.get("converged")), None)
+    # Best = the most recent converged run THAT CARRIES AN ENERGY
+    # (structure_runs is newest-first). A rung-0 ``clean``/``geo`` pass —
+    # recorded by every structure put/edit, no calculator, energy None — is
+    # not a measurement: picking it here dropped the candidate's ``energy``
+    # measure (and hence the candidate off the frontier) the moment a
+    # site-symbolic edit landed after its ML relax (gr343666).
+    best = next(
+        (r for r in runs if r.get("converged") and r.get("energy") is not None),
+        None,
+    )
     converged = best is not None
 
     measures: dict[str, float] = {}
@@ -1317,6 +1384,7 @@ def _provisional_split(
     confirmed: Sequence[Candidate],
     unevaluated: Sequence[Candidate],
     objectives: list[tuple[str, str]],
+    optional: frozenset[str] = frozenset(),
 ) -> tuple[list[ProvisionalCandidate], list[Candidate]]:
     """Split ``unevaluated`` into the provisional bucket + the truly-
     unevaluated remainder, then mark which provisional candidates sit on the
@@ -1360,7 +1428,7 @@ def _provisional_split(
     def _is_dominated(ref_id: int, measures: dict[str, float]) -> bool:
         return any(
             other_id != ref_id
-            and _dominates_measures(other_measures, measures, objectives)
+            and _dominates_measures(other_measures, measures, objectives, optional)
             for other_id, other_measures in pool
         )
 
@@ -1761,6 +1829,7 @@ def quest_frontier(
     quest_id: int,
     *,
     objectives: list[tuple[str, str]] | None = None,
+    strict: bool = False,
 ) -> FrontierResult:
     """The Pareto frontier over the quest's candidate `structure` servers.
 
@@ -1773,6 +1842,13 @@ def quest_frontier(
     specific (it reads the ``barrier_trusted``/``*_untrusted_value`` flags
     :func:`_candidate_from_structure` stamps), so it lives here rather than
     in the generic splitter.
+
+    ``strict=True`` ignores the rubric's ``optional`` axis flags
+    (:func:`_optional_objectives_for`): every declared objective is required.
+    Graduation (:mod:`precis.quest.graduate`) uses it — a candidate whose
+    selectivity was never measured may rank on the working frontier so the
+    ladder can promote it, but it must not graduate to a real-world
+    experiment on a worst-case placeholder.
     """
     from precis.quest.gaps import _live_servers
 
@@ -1782,9 +1858,13 @@ def quest_frontier(
     _flag_geom_duplicates(store, candidates, structures)
     _flag_energy_twins(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
-    result = pareto_split(candidates, objs)
+    optional = frozenset() if strict else _optional_objectives_for(store, quest_id)
+    result = pareto_split(candidates, objs, optional=optional)
     provisional, still_unevaluated = _provisional_split(
-        [*result.frontier, *result.dominated], result.unevaluated, objs
+        [*result.frontier, *result.dominated],
+        result.unevaluated,
+        objs,
+        optional=optional,
     )
     return replace(result, provisional=provisional, unevaluated=still_unevaluated)
 

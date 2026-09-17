@@ -38,3 +38,18 @@ blocked step (visible as a new job with distinct seed/idem key) → quantity
 flips to available when the retry lands clean; retry cap respected; test
 covers the parked-forever regression (retry must NOT fire on cost-cap or
 spend-limit failures — only on trust-check verdicts).
+
+## Status 2026-09-16 — the ladder half landed, the per-step half is still open
+
+The deadlock this item's cost argument sits on top of turned out to be
+upstream of step-level retry: `promote_tiers` only promoted neb→verify for
+Pareto-frontier members, and with `P_side` a required rubric axis that no
+neb-tier run can produce (best_first prunes competitor barriers; the quest
+config pinned `seeds: [0]` so every Estimate was `insufficient_samples`),
+the frontier was empty, nobody was promoted, and no verify run ever landed
+(qu164903: 0 converged points, 23/23 schema-2 pathways with selectivity
+unavailable). Shipped: neb→verify promotes any trusted-barrier neb-tier
+candidate (frontier first), verify forces ≥ 3 seeds, and rubric axes can be
+flagged `optional: true` (`frontier._optional_objectives_for`). What remains
+here is exactly the design above: re-dispatching ONE blocked step with a
+fresh seed instead of a whole verify run.

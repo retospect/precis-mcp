@@ -76,6 +76,11 @@ _TIER_FIDELITY: dict[str, int] = {_TIER_SCREENING: 0, _TIER_NEB: 1, _TIER_VERIFY
 _DEFAULT_TIER_PROMOTE_NEB = 2
 _DEFAULT_TIER_PROMOTE_VERIFY = 3
 
+#: Seeds the verify tier runs at minimum — three is catpath's own "minimum
+#: for a meaningful spread" (docs/METHODS.md, uncertainty pooling); two would
+#: clear ``insufficient_samples`` but report a spread of two points.
+_VERIFY_MIN_SEEDS = 3
+
 
 def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
     """Overlay a ladder ``tier`` onto a catpath reaction config.
@@ -127,7 +132,18 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
         cfg["template"] = "parked"
         return cfg
     if tier == _TIER_VERIFY:
-        return {**config, "template": "coadsorbed"}
+        # The authoritative pass must carry a real spread: catpath grades a
+        # single-seed Estimate ``insufficient_samples`` (n < 2), which blocks
+        # every branch fraction (``P_side``) built on it — a verify run on a
+        # quest whose reaction config pins ``seeds: [0]`` would re-measure
+        # the barrier and STILL leave selectivity unavailable (qu164903,
+        # 2026-09-16). Fewer than :data:`_VERIFY_MIN_SEEDS` seeds are widened
+        # to the default triple; an explicit >= 3 list is honoured as-is.
+        search = dict(config.get("search") or {})
+        seeds = search.get("seeds")
+        if not isinstance(seeds, list) or len(seeds) < _VERIFY_MIN_SEEDS:
+            search["seeds"] = list(range(_VERIFY_MIN_SEEDS))
+        return {**config, "template": "coadsorbed", "search": search}
     # neb (or an unrecognized tier): the fast-screening NEB stack (best_first
     # scheduling + neb-ode optimizer + intra-band batching) unless the caller
     # pinned a schedule explicitly (then the whole hand-tuned NEB config wins).
@@ -1789,15 +1805,27 @@ def _flag_absurd_barrier(measures: dict[str, Any]) -> bool:
     return True
 
 
+def _is_energy_run(r: Mapping[str, Any]) -> bool:
+    """True for a converged run that carries a potential energy — the only
+    kind of ``struct_runs`` row that is a *measurement*. The rung-0
+    ``clean``/``geo`` passes every structure put/edit records have no
+    calculator and hence no energy (``RelaxResult.energy`` is None by
+    design); they must never be read as a relax result, a "latest relax",
+    or a frontier convergence (gr343666)."""
+    return bool(r.get("converged")) and r.get("energy") is not None
+
+
 def _latest_converged_relax_run(
     runs: Sequence[Mapping[str, Any]],
 ) -> Mapping[str, Any] | None:
-    """The most recent CONVERGED run in ``runs`` (:meth:`Store.structure_runs`'
-    most-recent-first order), or ``None`` when there is no converged run at
-    all — kept separate from the raw list so :func:`harvest_measures` doesn't
-    re-derive "latest converged" scan logic at each barrier landing."""
+    """The most recent CONVERGED, energy-bearing run in ``runs``
+    (:meth:`Store.structure_runs`' most-recent-first order), or ``None`` when
+    there is none — kept separate from the raw list so :func:`harvest_measures`
+    doesn't re-derive "latest converged" scan logic at each barrier landing.
+    A build-time ``clean`` pass recorded after the real relax is skipped, so
+    it can neither trip nor mask the 0-step unrelaxed-geometry guard."""
     for r in runs:
-        if r.get("converged"):
+        if _is_energy_run(r):
             return r
     return None
 
@@ -2572,7 +2600,13 @@ def harvest_measures(
                 )
         upto = int((s.meta or {}).get("quest_harvested_upto", 0) or 0)
         runs = store.structure_runs(s.id)
-        fresh = [r for r in runs if r.get("converged") and int(r.get("id", 0)) > upto]
+        # Only energy-bearing runs are measurements. A rung-0 ``clean``/``geo``
+        # pass (recorded by EVERY structure put/edit, energy None by design —
+        # no calculator) is build-time geometry hygiene; harvesting it logged
+        # "no energy, N steps, converged", which the tick model read as an
+        # infra fault and built a phantom "measurement-trust gate" around
+        # (gr343666).
+        fresh = [r for r in runs if _is_energy_run(r) and int(r.get("id", 0)) > upto]
         for r in sorted(fresh, key=lambda r: int(r.get("id", 0))):
             energy = r.get("energy")
             e_s = (
@@ -3020,12 +3054,19 @@ def promote_tiers(
       (:func:`_promotion_sort_key`) on the screening tier's thermodynamic
       measures (U_L_abs / span / …).
     * **neb → verify** — up to ``meta.fidelity_promote_verify`` (default
-      :data:`_DEFAULT_TIER_PROMOTE_VERIFY`) **frontier** (Pareto
-      non-dominated) candidates with a trusted neb-tier barrier
+      :data:`_DEFAULT_TIER_PROMOTE_VERIFY`) live, non-ruled-out candidates
+      whose highest completed run is ``neb`` with a trusted barrier
       (``barrier_trusted is True`` + a ``barrier`` measure — the neb tier is
       the only source of a trusted `barrier` before a verify run lands, since
-      screening emits none) and no verify-tier pathway dispatched yet, same
-      ranking.
+      screening emits none) and no verify-tier pathway dispatched yet.
+      Frontier (Pareto non-dominated) members go first, then the rest, each
+      group ranked best-first. Eligibility is deliberately NOT restricted to
+      the frontier: when a rubric axis only the verify tier can measure
+      (``P_side`` — pruned competitor barriers / single-seed estimates leave
+      selectivity unavailable at neb) keeps every candidate unevaluated, a
+      frontier-only rule promotes nobody and the ladder deadlocks (qu164903:
+      0 converged points, 0 verify runs, 2026-09-16). A trusted barrier is
+      the evidence that the candidate is worth the authoritative pass.
 
     Returns one short note per promotion dispatched; never raises (a
     promotion bug must not cost an already-successful harvest/graduation
@@ -3072,17 +3113,34 @@ def promote_tiers(
                 )
                 notes.append(f"promoted [{c.handle}] screening→neb: {note}")
 
-        # neb → verify (frontier candidates only)
+        # neb → verify (trusted-barrier neb-tier candidates; frontier first)
         if cap_verify > 0:
             fr = quest_frontier(store, quest_id)
-            eligible_v = [
-                c
-                for c in fr.frontier
-                if c.flags.get("barrier_trusted") is True
-                and c.measures.get("barrier") is not None
-                and _find_tier_pathway(store, c.ref_id, _TIER_VERIFY) is None
-            ]
-            eligible_v.sort(key=lambda c: _promotion_sort_key(store, quest_id, c))
+            frontier_ids = {c.ref_id for c in fr.frontier}
+            eligible_v = []
+            for s in structures:
+                smeta = s.meta or {}
+                # ``tier`` = highest completed rung (:func:`_bump_tier_stamp`);
+                # ``barrier_fidelity`` is the pre-ladder stamp a neb-era
+                # candidate may carry alone.
+                if (smeta.get("tier") or smeta.get("barrier_fidelity")) != _TIER_NEB:
+                    continue
+                if any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id)):
+                    continue
+                c = _candidate_from_structure(store, s)
+                if c.flags.get("barrier_trusted") is not True:
+                    continue
+                if c.measures.get("barrier") is None:
+                    continue
+                if _find_tier_pathway(store, c.ref_id, _TIER_VERIFY) is not None:
+                    continue
+                eligible_v.append(c)
+            eligible_v.sort(
+                key=lambda c: (
+                    0 if c.ref_id in frontier_ids else 1,
+                    _promotion_sort_key(store, quest_id, c),
+                )
+            )
             for c in eligible_v[:cap_verify]:
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=_TIER_VERIFY

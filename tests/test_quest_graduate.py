@@ -89,6 +89,36 @@ class TestGraduation:
         _set_rule(store, qid, key="energy", sense="min", threshold=-15.0)
         assert grad.graduate_frontier(store, qid) == []
 
+    def test_missing_optional_axis_ranks_but_does_not_graduate(
+        self, store: Any
+    ) -> None:
+        """An ``optional: true`` rubric axis lets an unmeasured candidate rank
+        on the working frontier (so the ladder can promote it); graduation
+        to a real-world experiment stays strict — every axis measured."""
+        from precis.quest.cascade import _merge_meta
+        from precis.quest.frontier import quest_frontier
+
+        qid = _mk_quest(store, "A striving")
+        sid = _candidate_with_energy(store, qid, _SPEC, -20.0)
+        _merge_meta(
+            store,
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "energy", "sense": "min"},
+                    {"key": "P_side", "sense": "min", "optional": True},
+                ]
+            },
+        )
+        _set_rule(store, qid, key="energy", sense="min", threshold=-15.0)
+        assert [c.ref_id for c in quest_frontier(store, qid).frontier] == [sid]
+        assert quest_frontier(store, qid, strict=True).frontier == []
+        assert grad.graduate_frontier(store, qid) == []
+        assert not any(str(t) == "needs-experiment" for t in store.tags_for(sid))
+        # once P_side is measured (verify tier landed), graduation proceeds
+        store.stamp_ref_meta(sid, {"P_side": 0.1})
+        assert grad.graduate_frontier(store, qid) == [sid]
+
     def test_graduated_candidate_surfaces_as_gap(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = _candidate_with_energy(store, qid, _SPEC, -20.0)

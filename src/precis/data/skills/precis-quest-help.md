@@ -291,7 +291,10 @@ a later tick **harvests** the result into a `result` logbook entry (with
 an energy + step-count cost that feeds the tote). A candidate whose relax
 fails is `ruled-out:`-tagged so the proposer never re-treads it. The
 converged candidates form a **Pareto frontier** over the quest's
-objective vector (override via `meta.rubric_objectives`; the catalyst
+objective vector (override via `meta.rubric_objectives` — a list of
+`{key, sense}` items; add `"optional": true` to an axis a lower ladder
+tier cannot yet measure, e.g. `P_side`, so a candidate lacking it is still
+evaluated and scored worst there instead of parked as unevaluated; the catalyst
 default ranks `log_tof` max (activity, from the kinetics model —
 `barrier` demotes to a context scalar it's derived from) ·
 `atom_cost` min (mass-weighted $/kg — a soft economic axis: a dear-but-
