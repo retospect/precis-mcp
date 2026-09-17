@@ -184,46 +184,9 @@ for one candidate's whole landscape.
 
 ## See the reaction — the interactive web explorer
 
-`/refs/pathway/{id}` (web, not an MCP verb) renders a clickable energy
-diagram — one coloured profile per root→leaf path, target path first,
-shared prefixes aligned (mirrors catpath's `viz.draw_profile`), TS humps,
-Ea labels, ±1σ bands, low-confidence marked — plus a per-state 3D cell
-viewer stepping through the linked `structure` refs in the same path order.
-The states panel is grouped by branch (one section per path, tinted like
-its profile; branch sections say where they diverge), and supply-edge rows
-annotate reservoir traffic — `+H* from reservoir`, and where a dissociation
-byproduct goes: `O* parked — continues in → H2O`. A preflight warning that
-names a state (`INFEASIBLE`, `wrong-site`, `detached` = red; `RESEATED ok`
-= amber) badges that state's row and reddens its diagram level, so a
-quarantined number is visible where you'd read it. A provenance strip links
-the candidate structure, owning quest, dossier, logbook, and the run jobs
-that produced the pathway (the per-seed jobs carry a `run_log` chunk — the
-compute's captured stdout/stderr tail — and the strip notes which node it
-`ran on`); a candidate
-stepper walks sibling pathways for the same substrate→target reaction
-(ranked by `rate_Ea`), carrying the selected state across so you can park
-on one step and compare candidates.
-When the run solved microkinetics (`results.kinetics`), a Kinetics card
-renders the catpath report's panel: the fixed-rule verdict, TOF /
-5–95 % band / span-limit table, excluded-step bracket guard, a collapsed
-"kinetic equations solved" section (master equation, per-kind rate-constant
-forms, this run's ODE system with the numbered rate constants), X_RC/X_TRC
-bars, steady-state coverages, and the solve warnings; a `kinetics_error`
-shows as a did-not-run note instead.
-Clicking an atom lists its element-grouped relationships and bonds ranked
-by Pauling bond order `s = exp((R0−d)/0.37)` (MIC distances; same panel on
-`/structure/{slug}`). The selection follows the active state: stepping or
-clicking to another state re-reads the same atom/bond against that state's
-geometry — a bond broken there is recomputed (length + `s`) rather than
-dropped. When
-the pathway carries `refs.meta.measures` (`[{name, op, atoms, element?}]`),
-each state's measures overlay: `min_distance` (a labeled atom → nearest atom
-of an `element`) is identity-safe across states by construction; a plain
-`distance`/`angle` anchored on an atom whose element repeats in the slab
-renders flagged "unverified across states" (label order isn't guaranteed
-stable state-to-state). `refs.meta.measures` has no writer yet — no
-`put`/`edit` verb sets it; today it's a manually-authored JSONB field, not
-something a call from here produces.
+`/refs/pathway/{id}` (web, not an MCP verb) is the interactive reaction
+diagram — energy profiles, per-state 3D structure viewer, kinetics panel,
+and candidate comparison, all in one page.
 
 ## Moves worth having — a menu, not a recipe
 

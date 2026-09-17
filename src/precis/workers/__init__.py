@@ -30,11 +30,15 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
   ``hub_refine``, ``nursery``, ``sweeper``, ``heartbeat``,
   ``corpus_reconcile``, ``paper_reconcile``, ``paper_meta_enrich``,
   ``openalex_enrich``, ``stub_rank``, ``paper_rank``, ``llm_summarize``,
-  ``backlog_groom``, ``diagnose_scan``, … — roster: ``registry.py``).
+  ``backlog_groom``, ``diagnose_scan``, ``news_poll``, ``briefing``, … —
+  roster: ``registry.py``; ``news_poll``/``briefing`` dedup, backoff and
+  delivery detail: ``docs/runbooks/news-ops.md``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`). The
   ``dispatch`` pass is the intent→compute bridge: walks open todos with
   ``meta.executor`` and mints one child ``kind='job'`` per, stamping
-  ``prio`` from the parent so urgency flows down the DAG.
+  ``prio`` from the parent so urgency flows down the DAG (rejection log
+  lines + the executor/job_type capability registry:
+  ``docs/runbooks/minter-ops.md``).
 
 ``run_loop`` is strictly serial round-robin — one slow handler starves
 every other pass. That drives the scheduler-lease cadences (below), the
@@ -104,8 +108,11 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
   catalogue. ``critical`` categories (worker-restart, dead-worker,
   dispatch-stall, orphaned-coordinator, nas-denied, host-dark,
   embed-lane-stalled) page once via ``alerts.notify_critical_alert``.
+  Alert-producer mechanics (``raise_alert``/``resolve_stale_alerts``):
+  ``docs/runbooks/alert-ops.md``.
 * ``health_digest`` — the slow-rot sibling (hourly, SQL-only); own
-  docstring for the check/route/push pipeline.
+  docstring for the check/route/push pipeline. Ops: ``docs/runbooks/
+  health-digest-ops.md``.
 * ``disk_check`` — SQL-free, every node: ``shutil.disk_usage`` over
   ``PRECIS_DISK_WATCH_PATHS``, warn/critical alerts.
 * ``structural`` (5h dedup)/``deep_review`` (144h) — opus reviewers via

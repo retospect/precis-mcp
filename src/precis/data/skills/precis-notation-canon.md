@@ -66,9 +66,7 @@ no subscript glyph for most letters (`d`, `g`, …), and the modifier
 superscripts that do exist (`ᴺ`, U+1D3A) are a different character class
 that renders inconsistently across surfaces. Only digits and `+`/`−`
 actually sub/superscript (`cm²`, `10⁻¹⁰`); a letter stays ASCII
-underscore/caret. All three normalization agents on the 2026-08-19 pass
-improvised this rule independently — the signal it needed writing down,
-not that it was obvious.
+underscore/caret.
 
 **ASCII → UTF-8 fallback — closed list.** Apply these spelling
 substitutions wherever ASCII notation reaches an extraction:
@@ -101,9 +99,7 @@ below ("never convert the paper's unit") blocks changing a quantity's
 *unit*; it does not block writing that same unit's UTF-8 symbol instead of
 its ASCII spelling — `ug` → `µg` stays micrograms, it is not a conversion
 to milligrams. Apply the fallback table wherever its condition column is
-met; carve-out 2 does not gate it. (All three normalization agents on the
-2026-08-19 pass stalled on this exact ambiguity — it must not be misread
-again.)
+met; carve-out 2 does not gate it.
 
 ## Em-dash and terseness
 

@@ -30,8 +30,7 @@ tag(kind="memory", id=42, remove=["pinned"])
 ```
 
 `add=` and `remove=` are both lists. Either can be omitted; both
-in one call is a single atomic update. `remove=` of a tag the ref
-doesn't have is a no-op.
+in one call is a single atomic update.
 
 ## Bump a workflow STATUS atomically
 ## Move a todo from open to done in one call

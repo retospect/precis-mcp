@@ -73,7 +73,7 @@ get(kind="calc", q="integrate(sin(x), x)", view="rad")  # → -cos(x)
 `view='deg'` is an explicit synonym for the default. No note appears in
 radian mode or when an expression uses no trig.
 
-## Unit conversion (local, via pint)
+## Convert units in a calculation
 
 A query with an explicit **`to`**, **`in`**, or **`->`** clause is a unit
 conversion — handled locally by `pint`, exact and offline, before SymPy

@@ -23,6 +23,8 @@ register additional job_types via the ``precis.job_types``
 entry-point group; failure isolation mirrors
 :func:`precis.dispatch._load_plugins` — one broken plugin must not
 brick the worker.
+
+``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 """
 
 from __future__ import annotations

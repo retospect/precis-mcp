@@ -28,21 +28,16 @@ shrinks; D–F drain it. Gripe ids are valid handles — not gated; bare-noun H2
 are an advisory warning. Frozen counts: adr 26 files / backlog 14 / operator
 25 / unfenced_verb 2 (audio, figure) / alias_overrun 2 (anki, status).
 
-**D. Gut ops-doc skills to verb-facing lines**; move removed prose verbatim
-to `docs/runbooks/<kind>-ops.md`, link from the owning package docstring.
-Keep every sentence naming a verb the agent can call or the next call on a
-miss. Targets (est. cut): settings-help 90%, health-digest-help 75%,
-news-help 55%, datasheet-help 45%, minter-help 45%, audio-help 40% (also
-drop hostnames), alert-help "Lifecycle (producer side)", fix-gripe-help
-"Trust model". Same batch: delete negative-laundry sections (research-help
-"Anti-patterns", anki-help "What this is NOT", cad-help "Scope (v1)",
-se-help "Known sharp edges"), the three "by design" lines
-(paper-tag-axes, structure-help, gripe-help), nm-kind history in se-help,
-LaTeX-recovery postmortem in draft-help "Data / table chunks", 2026-08-19
-narration in notation-canon, measured-corpus stats in taproot-mint-help
-"Claim admissibility" and finding-help "How settled is this claim?",
-pathway-help web-explorer section → one line, toon "Parse … in Python" +
-"Pick a format on the CLI" sections.
+**D. Gut ops-doc skills** — LANDED 2026-09-17: settings (rewritten around
+the missing-setting Unsupported error), health-digest, news, datasheet,
+minter, audio (hostnames gone), alert producer side, fix-gripe trust model
+→ `docs/runbooks/<kind>-ops.md`, linked from the owning package docstring;
+the negative-laundry / "by design" / history / stats deletions and the
+toon CLI sections are gone. Residue: draft `meta.pronunciation` is settable
+only at `put` time (no in-place edit — `edit(meta=)` patches chunk
+term-attrs); file as a gripe once prod's schema is current (the CLI
+fallback from a fresh tree hits `UndefinedColumn owner_login` until the
+next deploy).
 
 **E. Splits + recipes.** One coder per file (coder-chain), `scaffold` mints
 siblings, wikilinks corpus-grepped after each move:
@@ -54,17 +49,13 @@ siblings, wikilinks corpus-grepped after each move:
   + `precis-cad-build-help` (make-tree/dim/material-mass/BOM).
 - taproot-mint-help (24K) → `precis-taproot-hub-edit-help`
   (sharpen/refine/merge, attach evidence, reword).
-- todo-tree-help: add H2 "Claim a doable leaf before working it" — the
-  `claimed-by:<handle>` CAS lease (`handlers/todo.py`) is documented as a
-  state, never as the `tag(...)` call; verify the call shape first.
+- todo-tree-help claim-lease H2 — LANDED 2026-09-17.
 - Own each duplicated fact once: `more(cursor=)` rule (4 files → toon),
   id-vs-q rule (overview owns; toolpath drops "Rule of thumb"), refs.bib
   find-replace (edit-help owns), component-help unit/band rules → one line +
   [[precis-material-help]], startup-skills vs session-context pinned-skills.
-- Small verified fixes not in A: tag-help "remove= … no-op" sentence
-  (universal restatement); folder-help bare fences → python; edit/delete/
-  plaintext fence tags; delete-help "Undo a delete" needs a next call;
-  structure-help "continued" H2 → goal-voice; calc-help H2 drops `pint`.
+- Small verified fixes — LANDED 2026-09-17 except structure-help
+  "continued" H2 → goal-voice (do with the E splits).
 
 **F. Review family** (after E). First list the 17 `{{include}}` sites —
 overlap that is one source spliced twice is not a finding. Then: standardise

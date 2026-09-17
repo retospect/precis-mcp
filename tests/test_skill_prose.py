@@ -190,8 +190,8 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-taproot-help": 2,
     },
     "backlog": {
+        "personas/precis-claim-adversary": 1,
         "precis-addressing-help": 1,
-        "precis-health-digest-help": 1,
         "precis-link-help": 1,
         "precis-md-help": 1,
         "precis-nanopub-help": 3,
@@ -199,26 +199,21 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-paper-help": 1,
         "precis-relations": 1,
         "precis-rxn-help": 1,
-        "precis-se-help": 2,
-        "precis-settings-help": 1,
+        "precis-se-help": 1,
         "precis-taproot-help": 1,
         "precis-taproot-mint-help": 1,
         "precis-toolpath-help": 1,
     },
     "operator": {
+        "personas/precis-citation-reviewer": 1,
         "precis-anki-help": 2,
-        "precis-audio-help": 5,
         "precis-auto-todo-help": 2,
         "precis-doi-extract-help": 1,
         "precis-files-help": 5,
         "precis-finding-help": 1,
-        "precis-fix-gripe-help": 5,
-        "precis-health-digest-help": 2,
         "precis-inner-life-help": 2,
         "precis-job-help": 2,
         "precis-md-help": 1,
-        "precis-minter-help": 5,
-        "precis-news-help": 4,
         "precis-nursery-help": 2,
         "precis-paper-help": 2,
         "precis-patent-power": 9,
@@ -229,11 +224,11 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-recurring-help": 1,
         "precis-session-context-help": 3,
         "precis-startup-skills-help": 2,
-        "precis-toon": 3,
         "precis-wikipedia-help": 1,
     },
     "unfenced_verb": {
-        "precis-audio-help": 3,
+        "personas/precis-draft-reviewer": 1,
+        "personas/precis-review-authoring": 4,
         "precis-figure-help": 10,
     },
     "alias_overrun": {
@@ -244,23 +239,30 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
 
 
 def _skill_files() -> list[Path]:
-    return sorted(_SKILLS_DIR.glob("*.md"))
+    """Top-level skills plus ``personas/`` — both are served bodies."""
+    return sorted(_SKILLS_DIR.rglob("*.md"))
 
 
-@pytest.mark.parametrize("path", _skill_files(), ids=lambda p: p.stem)
+def _key(path: Path) -> str:
+    """Allowlist key: path relative to the skills dir, no suffix
+    (``precis-get-help``, ``personas/precis-draft-reviewer``)."""
+    return path.relative_to(_SKILLS_DIR).with_suffix("").as_posix()
+
+
+@pytest.mark.parametrize("path", _skill_files(), ids=_key)
 def test_skill_prose_within_ratchet(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     failures: list[str] = []
     for check, fn in CHECKS.items():
         hits = fn(text)
-        allowed = _ALLOWLIST[check].get(path.stem, 0)
+        allowed = _ALLOWLIST[check].get(_key(path), 0)
         if len(hits) > allowed:
             failures.append(
                 f"{check}: {len(hits)} hit(s) at line(s) {hits} (allowed {allowed}) "
                 f"— {_FIX_HINT[check]}"
             )
     assert not failures, (
-        f"{path.stem}: skill prose ratchet tripped —\n  "
+        f"{_key(path)}: skill prose ratchet tripped —\n  "
         + "\n  ".join(failures)
         + "\n  Skill bodies reach agents verbatim; an agent has the seven verbs "
         "and nothing else (docs/conventions/skill-authoring-style.md). The "
@@ -309,7 +311,7 @@ def test_bare_noun_h2s_advisory() -> None:
             if title.lower() in _BARE_H2_EXEMPT:
                 continue
             if len(title.split()) <= _BARE_H2_MAX_WORDS:
-                bare.append(f"{path.stem}: {title}")
+                bare.append(f"{_key(path)}: {title}")
     if bare:
         warnings.warn(
             f"{len(bare)} bare-noun H2(s) across skills (advisory; goal-voice "

@@ -35,7 +35,7 @@ seen everything under X?" and for orienting at the start of a task.
 
 ## Verbs
 
-```
+```python
 put(kind='folder', text='Hardware')                    # create
 get(kind='folder')                                     # the whole folder tree
 get(kind='folder', id=12)                              # path + contents
@@ -50,7 +50,7 @@ delete(kind='folder', id=12)                           # refused while non-empty
 `role='artifact'`: **draft, structure, cad, todo (strategic roots),
 folder**.
 
-```
+```python
 link(kind='draft',     id='<slug>', target='folder:12', rel='parent')
 link(kind='structure', id='<slug>', target='folder:12', rel='parent')
 link(kind='cad',       id='<slug>', target='folder:12', rel='parent')
@@ -80,7 +80,7 @@ Rules:
 (recursive walk over `parent_id`). Accepts the id, `folder:N`, the
 `fo<N>` handle, or the folder's unique name.
 
-```
+```python
 search(q='relaxation cache', folder=12)          # everything about X, in here
 search(kind='draft', q='intro', folder='Hardware')
 search(tags=['throwaway'], folder=12)            # tags-only sweep, scoped

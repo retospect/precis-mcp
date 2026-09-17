@@ -161,6 +161,7 @@ question was too narrow or the corpus too thin (mint fetch subtasks).
 
 ## When to split into siblings
 
+
 A research task is splittable along its **distinguishing axes** (see
 rule 3). If your topic is "QD luminescence efficiency," good
 parallel children are:
@@ -173,16 +174,3 @@ parallel children are:
 
 …rather than "left half of papers" / "right half of papers." Each
 child carries the same depth discipline, applied to its slice.
-
-## Anti-patterns (do not do)
-
-- "Here are five key findings" — five is what Perplexity gives. We
-  want fifteen-plus with quantification.
-- Paraphrasing the source quote in the citation field. Verbatim or
-  it's not a citation.
-- Citing a review for a primary claim.
-- Bullet-form summaries of paper abstracts. Synthesise across
-  papers; an abstract-by-abstract recap is a reading list, not a
-  finding.
-- Hedging language ("studies suggest", "research has shown") instead
-  of the specific source. Say who measured what, when.

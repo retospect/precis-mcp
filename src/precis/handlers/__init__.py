@@ -5,6 +5,8 @@ declares its verb surface via :class:`precis.protocol.KindSpec`; handlers
 register with the :class:`precis.dispatch.Hub` at boot (contract + failure
 modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
+``datasheet`` inbox-drop paths and the browser two-pane reader/citation
+detail: ``docs/runbooks/datasheet-ops.md``.
 
 **Bare ``**_kw`` catch-alls are strict by default (gr334695).** A verb
 method's own ``**kwargs`` is the cooperative-inheritance idiom this

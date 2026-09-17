@@ -177,14 +177,6 @@ the reading-prep card loop — installed by `precis cast schedule`:
 Retired (soft-deleted) precis-authored cards are removed from the Anki mirror on
 the next sync — own-guid lookups only, so your hand-made cards are unreachable.
 
-## What this is NOT
-
-- **No image occlusion / structured notetypes** — cloze only for now. The note
-  shape (`meta.notetype`/`meta.fields`) is generic, so other notetypes can be
-  added later without a migration.
-- **No SM-2 / recall rating in precis** — Anki schedules; precis mirrors the
-  decay stats back (once the sync slice lands) but never grades.
-
 ## See also
 
 - [[precis-cloze]] — HOW to write good cards (the craft)

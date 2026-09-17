@@ -92,42 +92,6 @@ get wrapped, inner `"` is doubled (`""`).
 Empty cells render as the empty string. `None` → empty;
 `True`/`False` → `true`/`false`.
 
-## Parse a TOON response in Python
-## Decode a TOON table programmatically
-
-Stdlib only:
-
-```python
-import csv, io
-
-rows = list(csv.DictReader(io.StringIO(text), delimiter="\t"))
-# Header still carries the {…} markers — strip if needed:
-if rows:
-    first_key = next(iter(rows[0]))
-    rows[0] = {first_key.lstrip("{"): v for k, v in rows[0].items()}
-```
-
-Or the precis helper, which strips the brace markers for you:
-
-```python
-from precis.format import toon
-
-rows = toon.load(text)  # list[dict[str, str]]
-```
-
-Cells always come back as `str`. Type recovery is the caller's job.
-
-## Pick a format on the CLI
-
-```sh
-precis worker --status                  # TTY → ASCII table
-precis worker --status | cat            # pipe → TOON
-precis worker --status --format json    # nested/single-record output
-```
-
-`--format {toon,json,table}`. JSON is the right pick for single
-records or nested structures; TOON is for homogeneous row lists.
-
 ## See also
 
 - [[precis-overview]] — verbs and kinds

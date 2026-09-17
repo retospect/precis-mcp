@@ -397,22 +397,20 @@ a clean "nothing to sweep", not an error. The combination count is
 capped (64) — a sweep that hits the cap says so and names how many
 combinations went unchecked, never truncates silently.
 
-## Atomic mode — block trees over atoms (the merged `nm` kind)
+## Atomic mode — block trees over atoms
 
 `set_mode(block=…, mode='atomic')` marks a block's realization as
 **chemistry** rather than a solid: `mode='atomic'` on a block whose
 binding is anything other than a `structure` design (or a `structure`
 binding on a block whose mode says otherwise) is a `mode_binding_mismatch`
 `view='drc'` finding, never a write-time rejection — the house posture for
-a design that can be mid-thought about its own realization. This is the
-former `nm` kind (retired 2026-09, `docs/backlog/nm-se-merge.md`): the
-same six-level block tree — nested envelopes/poses/ports/connects, L2
+a design that can be mid-thought about its own realization. The
+six-level block tree — nested envelopes/poses/ports/connects, L2
 threading + declared dof, an L5 binding into a real `structure` design for
-the filled chemistry — now authored through `kind='se'` with **no
+the filled chemistry — is authored through `kind='se'` with **no
 separate units convention**: atomic-mode `envelope`/`pose`/`rot` are the
 same bare-metres/bare-radians numbers every other `se` block uses (see
-"Units and geometry conventions" above) — unlike the retired `nm` kind,
-which required a unit suffix on every hand-authored envelope. The one
+"Units and geometry conventions" above). The one
 surviving Å boundary is internal to `generate` (below): its generators
 compute in ångström and the crossing to metres happens once, before the
 block ever reaches the tree.
@@ -540,11 +538,3 @@ other).
   off-axis port even on an otherwise-correct design. It warns, never
   gates, and names which measurement it used.
 
-## Known sharp edges
-
-- Ports are mandatory for `connect` but stability discards their
-  geometry; invented port names are fine.
-- A `component` for common hardware (bearings, spokes) may not exist —
-  your first BOM will be dangling until minted; that's expected.
-- Process/printability DRC (does `fdm` survive this load?) is unshipped:
-  `set_mode` is intent, nothing checks it yet.

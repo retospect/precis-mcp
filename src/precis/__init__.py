@@ -1,4 +1,7 @@
-"""precis-mcp v8 — MCP server for paper / document / state / tool access."""
+"""precis-mcp v8 — MCP server for paper / document / state / tool access.
+
+DB-resident settings ops: ``docs/runbooks/settings-ops.md``.
+"""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version

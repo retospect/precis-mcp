@@ -14,13 +14,10 @@ kinds: [news]
 
 # precis-news-help — news in the corpus
 
-A `news` ref is a single news article: URL-addressed, pinned in cache,
-its body block-split + embedded like `web`/`wikipedia`, so
-`search(kind='news', q=...)` lands hits inside article text. News is a
-first-class kind, not a side table — it searches, tags, and links like
-everything else. Every article is stamped `category:news` +
-`source:<slug>` (plus the feed's `default_tags` and a `published:<date>`
-tag), so you filter it in or out of search by tag.
+A `news` ref is a single news article: URL-addressed, its body embedded and
+searchable like `web`/`wikipedia`. Every article is stamped `category:news` +
+`source:<slug>` (plus a `published:<date>` tag), so you filter it in or out
+of search by tag.
 
 ## Reading news
 
@@ -31,117 +28,52 @@ search(q="...", tags=["source:bbc"])  # scope to one source
 search(q="...", tags=["category:news"])  # news only, across the corpus
 ```
 
-Each ingested article has a handle — `nw<id>` (the 2-char `news` code +
-its decimal ref id, computed not stored; `nc<id>` for a body chunk), ADR
-0036. The handle is its stable address; the source URL is **metadata, not
-the address** (kept on the ref for dedup / re-fetch / citation). Search
-output shows the handle; copy it back into `get`, no `kind=` needed:
+Each article has a handle (`nw<id>`); copy it back into `get`, no `kind=`
+needed:
 
 ```python
 get(id="nw42")  # handle infers kind=news; see precis-addressing-help
 ```
 
-A single article on demand by URL (fetches + extracts the live page):
+Fetch a single article on demand by URL:
 
 ```python
 get(kind="news", id="https://www.bbc.com/news/articles/abc123")
 ```
 
-On-demand page fetch uses trafilatura/httpx (core deps, always present).
-The scheduled poller doesn't fetch pages — it ingests straight from the
-feed.
+## Ingestion
 
-## Ingestion: the `news_poll` worker + `news_sources` registry
-
-Feeds live in the operator-editable `news_sources` table (one row per
-feed). The `news_poll` pass walks every enabled row, parses each feed
-(feedparser), and mints any new article as a `news` ref. By default the
-article **body comes straight from the feed entry** (`content`/`summary`,
-HTML-stripped) — feedparser only, no page fetch. **No duplicate stories:**
-each item is deduped on the feed's `<guid>` (the outlet's stable per-story
-id, source-scoped — so a story re-posted under a changed URL isn't taken
-twice) and on the canonical URL. **Polite polling:** a conditional GET
-(`etag`/`last-modified`) means an unchanged feed returns `304` and isn't
-re-downloaded. Article pages are never fetched at all (RSS-only).
-
-Run one pass by hand:
-
-```
-precis worker --only news_poll --once
-```
-
-Managing feeds (plain SQL against the registry):
-
-```sql
--- add a feed
-INSERT INTO news_sources (url, title, source_slug, category, default_tags)
-VALUES ('https://example.com/rss', 'Example', 'example', 'tech', '{topic:tech}');
--- park a feed without deleting it
-UPDATE news_sources SET enabled = false WHERE source_slug = 'example';
-```
-
-**Failing-feed backoff:** a source that errors is retried on an
-exponential backoff (`30min · 2^(N-1)`, capped ~1 day) keyed off
-`consecutive_errors` — it stops being hammered every tick and self-heals
-once it recovers. `last_status` / `consecutive_errors` on the row show
-the state.
+New articles arrive on a schedule from an operator-managed feed registry —
+there's no `put` for minting a news ref from a feed. Ask a human operator to
+add or manage one (`docs/runbooks/news-ops.md`).
 
 ## The morning briefing
 
-The `briefing` pass summarizes recent `news` refs (last ~26h) via the
-litellm `summarizer` alias and persists a dated, searchable
-`briefing-<date>` ref. Optionally it **delivers** the brief by queuing a
-`message` ref (`put(kind='message', target=…)`) — asa_bot, the one process
-holding a Discord socket, posts it verbatim. The worker needs no socket;
-delivery is just a DB write, idempotent per brief-date.
+A recurring pass summarizes recent news and persists a dated, searchable
+brief; optionally it delivers into a Discord thread. Read a past brief by
+its handle:
 
+```python
+get(id="nw<id>")
 ```
-precis worker --only briefing --once
-```
-
-Read a past brief by its handle (`get(id='nw<id>')`).
 
 ## Scheduling (recurring todos, not OS timers)
 
-Both passes run on the always-on system worker via recurring todos — no
-launchd/cron job. The schedule + dispatch passes tick them; the
-`news_poll` / `briefing` job_types run the work in-process (see
-`precis-recurring-help` for the recurring-todo mechanics).
+Both passes run via recurring todos (see `precis-recurring-help`):
 
 ```python
-# poll feeds every 30 minutes
 put(
     kind="todo",
     text="news poll",
     meta={
         "schedule": {"every": "30m"},
         "executor": "claude_inproc",
-        "job_type": "news_poll",
-        "params": {},
-    },
-)
-
-# brief every morning at 07:00 UTC, delivered into a Discord conv thread
-put(
-    kind="todo",
-    text="morning briefing",
-    meta={
-        "schedule": {"cron": "0 7 * * *"},
-        "executor": "claude_inproc",
-        "job_type": "briefing",
-        "params": {"deliver_to": "conv:discord/<guild>/<channel>/<thread>"},
+        "job_type": "news_poll",  # or "briefing", schedule={"cron": "0 7 * * *"}
+        "params": {},  # briefing: {"deliver_to": "conv:discord/<g>/<c>/<t>"}
     },
 )
 ```
 
-Prefer a thread/conv target (`conv:discord/<g>/<c>/<t>`): a
-proactive delivery to a conv thread is mirrored into that thread's
-history, so follow-up questions see the brief as context instead of
-denying it. Omit `params.deliver_to` to only persist the brief without
-delivering it.
-
-## Lineage
-
-Replaces the retired `daily_briefing` / `rss_ingest` monolith stack: a
-news item is now a queryable ref instead of a row in a bespoke
-`news_items` table, and the briefing reads `news` refs back out.
+A `conv:` delivery target mirrors into that thread's history, so follow-ups
+see the brief as context. Omit `params.deliver_to` to persist without
+delivering.

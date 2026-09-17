@@ -426,10 +426,7 @@ For a LaTeX-sourced chunk the recovered grid **only addresses** the edit, it
 never re-serialises the chunk: `cell=`/`find=`/`sub=` patch the matched span
 *inside the raw LaTeX*, leaving the rest byte-for-byte intact — no grid is
 persisted and the flag stays put, since nothing canonical was stored. The grid
-is lossy (`{caption, header, rows}` and nothing else), so re-deriving markdown
-from it used to silently destroy `\label{}` (dangling every inbound `\ref`),
-flatten `\multicolumn` spans so a summary value migrated columns, and eat
-booktabs rules and `\,` thin spaces. Two consequences:
+is lossy (`{caption, header, rows}` and nothing else). Two consequences:
 
 - A `cell=` address that can't be safely mapped — typically inside a
   `\multicolumn` span — **refuses**, chunk unchanged, rather than guessing.

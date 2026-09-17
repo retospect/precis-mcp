@@ -221,7 +221,7 @@ Second chunk axis: `open-question:` (`axes/open-question.yaml`) — a
 recall-biased binary flag for experiment planning: does the chunk
 name something *specific* not yet done (future direction, open
 question, untried condition, acknowledged failure, negative result)?
-Cross-cutting by design — leads live in `future-work`, `limitation`,
+Cross-cutting — leads live in `future-work`, `limitation`,
 `result`, and even `motivation` chunks. Gated on `ROLE3 ∈ {own,
 background}` (runs only after the role3 cascade; skips `furniture`, where
 no lead lives):

@@ -702,18 +702,6 @@ landing page). It mirrors the DFT editor (`/structure`):
 delete(kind="cad", id="flange")  # soft-retire the whole design (recoverable)
 ```
 
-## Scope (v1)
-
-Primitives: frustum family (box / cyl / cone / tcone / n-gon prism /
-pyramid), sphere, torus, chamfer half-space bevel tool. Ops: merge /
-subtract / intersect, place, polar / linear pattern, **instance another
-design** (`use <slug> as <name>`). Probes: point /
-ray / arc / section(z). Relations: clearance / interference /
-translational DOF. Bulk: geometric volume (sampled). `printability`: build-
-orientation search + process DRC (the one probe that meshes). **Deferred to
-phase 2**: threads / gears, rotational DOF, fillets / rounds, datums,
-persisted observers, mass/density.
-
 One limit worth knowing: a design whose node is *both* patterned and
 `intersect` can't be instanced (flattening it under a pose would change the
 solid) — split that node into explicit nodes and it instances fine.

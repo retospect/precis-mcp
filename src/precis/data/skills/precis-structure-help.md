@@ -28,7 +28,7 @@ render, **probe it as a graph + numbers**: "what's bonded to this atom?",
 is a small in-memory object, so every probe is exact and instant. Lengths
 are **ångström**, positions are **fractional** (cell coordinates).
 
-**Unit enclave.** `structure` is Å/eV-native by design, not by omission — it
+**Unit enclave.** `structure` is Å/eV-native — it
 sits on ASE (`Atoms`, EMT, FIRE), whose own convention is Å/eV, and every
 other kind that talks to it (`se`'s atomic-mode design↔atomistic boundary,
 `precis_bio`'s fold-to-Scene projection) converts at *its own* seam, never

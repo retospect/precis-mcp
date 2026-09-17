@@ -116,9 +116,10 @@ to overwrite the local copy.
 ## Undo a delete
 ## I deleted the wrong thing — can I get it back?
 
-Soft-deletes (numeric refs) are recoverable at the SQL layer — the
-row is still there. Selector deletes on file kinds rewrite the
-file; recover from VCS or your editor's undo.
+No MCP verb restores a soft-deleted numeric ref — ask the owner to
+click Undelete on the ref's tombstone page in precis-web. Selector
+deletes on file kinds rewrite the file; recover from VCS or your
+editor's undo.
 
 ## See also
 

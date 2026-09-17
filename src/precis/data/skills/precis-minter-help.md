@@ -15,24 +15,15 @@ status: active
 
 # precis-minter-help — the intent → execution bridge
 
-Wires the todo tree (intent) to the job substrate
-(execution) via three pieces:
+Set `meta.executor` + `meta.job_type` on a `kind='todo'` to mean "turn this
+into a job." A background pass mints a `kind='job'` child under any open
+todo with `meta.executor` set and no live job child yet, and auto-injects
+`meta.auto_check={'type': 'child_job_succeeded'}` on the parent when you
+didn't set one, so it flips `STATUS:done` when the job succeeds.
 
-* **`meta.executor`** + **`meta.job_type`** on a `kind='todo'` ref —
-  the "I want this run" marker.
-* The **minter worker** (`precis worker --only minter`, in the
-  default rotation; legacy name `dispatch`) — walks open todos with
-  `meta.executor` set, mints a `kind='job'` child under each, leaves
-  the existing executor pool to run it.
-* The **`child_job_succeeded` auto_check evaluator** —
-  auto-injected on the parent when the minter worker mints the
-  job, so the parent flips `STATUS:done` when the job succeeds.
-
-The minter worker is the **only sanctioned path** for minting new
-jobs. Direct `put(kind='job', parent_id=N, ...)` still works
-(documented in `precis-job-help`) but skips the auto_check
-injection and the minter's logging — use it for one-off submits,
-not for recurring intent.
+Direct `put(kind="job", parent_id=N, ...)` still works (`precis-job-help`)
+but skips the auto_check injection — use it for one-off submits, not
+recurring intent.
 
 ## When do I set `meta.executor`?
 
@@ -43,9 +34,6 @@ not for recurring intent.
 | …needs to wait for a paper to ingest | no — use `meta.auto_check={'type':'paper_ingested', ...}` |
 | …is the umbrella of recurring scheduled work | no — `meta.schedule` set (see `precis-recurring-help`) |
 | …is one tick of a recurring (spawned automatically) | usually inherited from the umbrella |
-
-In short: `meta.executor` means **"this todo IS a thing the
-minter worker should turn into a job."**
 
 ## Toolpath — write an intent, walk away
 
@@ -59,61 +47,24 @@ todo = put(
 )
 # 2) Link to whatever the job operates on, if anything.
 link(kind="todo", id=todo.id, target="gripe:42", rel="fixes")
-# 3) That's it. Within one minter tick (≤ 1 min) you'll see:
+# 3) That's it. Within one tick you'll see:
 #    - a kind='job' child of todo.id with STATUS:queued
 #    - meta.auto_check={'type':'child_job_succeeded'} on the todo
-#    - a ref_events row on the todo: source='minter', event='job-minted'
 ```
 
-You can verify by reading the todo:
+Verify by reading the todo:
 
 ```python
 get(kind="todo", id=todo.id, view="tree")
 # → todo + the spawned job under it (job rendered with ⚙ marker)
 ```
 
-## What the minter does, step-by-step
-
-1. **Candidate scan.** SQL: every open todo with `meta.executor`,
-   no existing live `kind='job'` child, status in `open|doing`,
-   not under a paused / recurring ancestor.
-2. **Per-candidate claim.** `SELECT … FROM refs WHERE ref_id = …
-   FOR UPDATE OF r SKIP LOCKED` so two minter workers (different
-   hosts) serialise on the row.
-3. **Validate.** Executor must be known (`is_known_executor`);
-   job_type must exist; `job_type.compatible_executors` must
-   include the chosen executor; `job_type.requires ⊆
-   executor.provides`. Bad combinations are logged and skipped —
-   the todo stays open, no zombie queued job lands.
-4. **Auto-inject auto_check.** If `meta.auto_check` is absent,
-   write `{'type': 'child_job_succeeded'}` into the parent's meta.
-5. **Mint the child job.** `parent_id` = the todo; `meta` carries
-   `job_type`, `executor`, `params`, `dispatched_from_todo`;
-   `STATUS:queued` open tag.
-6. **Append `ref_events`** on the parent: `source='minter',
-   event='job-minted', payload={'job_id': N, ...}`.
-
-Once the job is queued, the `job_claude_inproc` worker (also in
-the default rotation) picks it up by `STATUS:queued`, runs the
-executor, and flips status to succeeded / failed.
-
 ## What gets rejected at mint time?
 
-The minter logs the rejection and moves on; the todo stays
-open. The operator notices via worker logs, which carry structured
-entries with the rejection reason.
-
-| Cause | Log line |
-|---|---|
-| Unknown `meta.executor` value | `dispatch: parent #N has unknown meta.executor=...` |
-| Missing `meta.job_type` | `dispatch: parent #N has missing meta.job_type` |
-| Unknown `meta.job_type` | `dispatch: parent #N has unknown meta.job_type=...` |
-| Executor / job_type mismatch | `dispatch: parent #N job_type=X incompatible with executor=Y` |
-| Required capability missing | `dispatch: parent #N executor=X missing caps for Y: {...}` |
-
-(Log lines still carry the `dispatch:` prefix — `workers/dispatch.py`
-is the still-named module; `registry.py`'s `log_name="dispatch"`
-keeps `worker_logs` attribution matched to it.)
+An unknown `meta.executor` / `meta.job_type`, or a job_type incompatible
+with the chosen executor, is skipped — the todo stays open, no job mints.
+Ask a human operator to check the worker log for the reason
+(`docs/runbooks/minter-ops.md`).
 
 ## Toolpath — failed job, decide next move
 
@@ -132,8 +83,8 @@ the_job = get(kind="job", id=143)  # status + job_event chunks
 # Option A — same executor, fresh attempt.
 tag(kind="todo", id=98, remove=["child-failed:143"])
 delete(kind="job", id=143)
-# Minter worker mints a fresh kind='job' on the next tick because
-# the "no existing child job" check now passes.
+# A fresh kind='job' mints on the next tick because the "no existing
+# child job" check now passes.
 
 # Option B — switch executor (once we have more than claude_inproc).
 # Edit the parent's meta.executor, then clear + delete as above.
@@ -166,41 +117,9 @@ move — asa-bot or human pulls the lever each time.
 
 ## The executor / job_type registry
 
-## Host capabilities (what an executor advertises)
-
-Executors live in `src/precis/workers/executors/__init__.py`
-(`EXECUTOR_PROVIDES`); job_types live in
-`src/precis/workers/job_types/__init__.py` (the `_REGISTRY` +
-lazy loaders). Each executor advertises the capabilities it
-provides (e.g. `clones_dir`); a job_type's requirements must be a
-subset at submit.
-
-Executors today: `claude_inproc` (offline `claude -p`, provides
-`{claude_bin, git, clones_dir, claude_config_mount, mcp_config}`),
-`ssh_node` (remote GPU-node compute, provides `{has_gpaw}`),
-`claude_docker` (sandboxed detached container run, provides
-`{podman, claude_oauth}` — only satisfiable on
-`PRECIS_SANDBOX_ENABLED=1` hosts), `job_inproc` (in-process bounded
-compute with slot reservation, empty PROVIDES — gated by
-`resource_slots`, not this capability check), and `coordinator`
-(yield/resume phase machines — provides `{claude_bin}`, needed by
-`quest_tick`'s inline LLM slice; most coordinator job_types declare
-`REQUIRES=frozenset()` since the real work happens in spawned
-children — the job_type's `dispatch` does the work in slices and
-parks at `STATUS:waiting_*` between them).
-Job_types pair with a compatible executor at submit; see the table
-in `precis-job-help`.
-
-## Running the minter
-
-```sh
-precis worker --only minter                # drain alone (debug / backfill)
-precis worker                              # default cycle includes minter
-precis worker --profile system             # explicit profile (default)
-```
-
-The pass is SQL-only and cheap — multi-host safe via `FOR UPDATE
-OF r SKIP LOCKED` per candidate parent.
+Job_types pair with a compatible executor at submit — see the
+compatibility table in `precis-job-help`. An incompatible pairing is
+rejected at mint time (above), not silently coerced.
 
 ## See also
 

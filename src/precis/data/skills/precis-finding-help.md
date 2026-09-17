@@ -189,10 +189,8 @@ common mistake:
   immutability ladder (`signed`/`anchored` = frozen bytes), not an
   evidence tier. It is provenance, *not* a higher evidence bar.
 
-Neither dominates the other. Measured 2026-08-29: `trust='signed'`
-matches **4** hubs; `trust='verified'` matches **~1478** of 1552. An
-unminted hub is one nobody has pushed through the publication pipeline —
-1347 of the 1413 unminted hubs carry verdicts. "Unminted" ≠ unvetted.
+Neither dominates the other. An unminted hub is one nobody has pushed
+through the publication pipeline. "Unminted" ≠ unvetted.
 
 | `trust=` | keeps a hit when |
 |---|---|

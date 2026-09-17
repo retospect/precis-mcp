@@ -45,23 +45,6 @@ Alerts are **not embedded** — no `card_combined` chunk, so they never
 reach `search(kind='*', like=...)`. Read them by tag / view / the web
 tab, not by semantic neighbourhood.
 
-## Lifecycle (producer side — workers only)
-
-Background passes raise alerts through `precis.alerts`:
-
-* `raise_alert(store, source=, fingerprint=, title=, detail=,
-  severity=, subject_ref_id=)` — upserts on `(source, fingerprint)`
-  among *open* alerts. A repeat sighting bumps `seen_count` +
-  `updated_at` (no duplicate). Pick `fingerprint` so the same
-  underlying problem always hashes to the same string.
-* `resolve_stale_alerts(store, source=, live_fingerprints=)` — flips
-  any open alert of `source` whose fingerprint is absent from the
-  current live set to `alert-state:resolved` (kept for history).
-
-A detector pass = raise for every current finding, then
-`resolve_stale_alerts` with that pass's full fingerprint set, so a
-fixed condition leaves the open list on the next pass.
-
 ## Reading (agent side)
 
 ```

@@ -207,6 +207,20 @@ lease stops excluding, so a dead claimer's work re-surfaces), no
 then least-picked strategic, then ref_id (sibling order). PRIO 1
 preempts the 1/N rotation; cron-spawned subtasks default to PRIO 2.
 
+## Take a lease on a leaf before starting work
+## Claim a doable leaf before working it
+
+```python
+tag(kind="todo", id=67, add=["claimed-by:asa-worker-3"])  # one claimed-by: tag per call
+```
+
+This is a compare-and-set lease: if another handle already holds a
+live lease the call raises `BadInput` naming the holder — pull a
+different leaf from `search(kind="todo", view="doable")` instead.
+The lease expires 4h after the last claim; re-issuing the same
+`claimed-by:` tag refreshes it, and tagging `STATUS:done` or
+`STATUS:won't-do` releases it.
+
 ## Pausing a subtree
 
 ```python
@@ -253,7 +267,7 @@ The level tier is `meta`, not a tag — write `tier=`, read the booleans:
 | Tag | Purpose | Who writes |
 |---|---|---|
 | `proposed-tactical` | Worker's tactical pitch | anyone |
-| `claimed-by:<handle>` | Claim **lease** (CAS): claiming a leaf whose live lease another handle holds is rejected naming the holder (owner sources may take over). Auto-expires 4h after the last (re-)claim — re-claim to extend; a live lease excludes the leaf from `doable`/dispatch; released automatically on done / won't-do | the claimer |
+| `claimed-by:<handle>` | Claim lease (CAS) — see "Claim a doable leaf before working it" above. A live lease excludes the leaf from `doable`/dispatch; owner sources may take over a held lease | the claimer |
 | `waiting-for:<target>` | External wait | anyone |
 | `ask-user` / `ask-user:<question>` | Parked on a human's reply; bare = "any human", `ask-user:<text>` carries the question inline. Add `user:<who>` to address a specific person | anyone |
 | `child-failed:<job_id>` | A child `kind='job'` failed; the parent's owner must decide next move (retry / switch / give up). Doable view skips parents with this tag | written by the executor / `JobHandler.tag` on STATUS:failed |

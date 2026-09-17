@@ -226,7 +226,7 @@ delete(kind="gripe", id=42)
 Not tracked on this surface. `put(kind='gripe', ...)` — and the
 read-only carve-out it always routes through
 (`file_gripe_readonly`, migration 0079) — insert the ref with no
-`set_by`, by design (gr311332). `get(kind='gripe', id=N)`'s header
+`set_by`. `get(kind='gripe', id=N)`'s header
 shows `filed by: ...` only on the rare pre-migration row that has
 it; in practice, assume it's absent. If you need provenance, say
 who you are in the body text or a follow-up comment.

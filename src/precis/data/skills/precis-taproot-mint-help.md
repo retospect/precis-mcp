@@ -24,8 +24,8 @@ See [[precis-taproot-help]] for what a claim hub is, `fi<id>` vs
 Extraction order: **admissibility test → mint → notation autofix → dedup
 check → park for review.** Runs first, on the sentence, before any
 supporter is attached. Skip it and what gets minted is often not a claim
-at all — that gap produced 234 of 1,527 live claim hubs with no evidence
-edge, the orphan-hub bucket that turned out to be bibliography stubs.
+at all — the orphan-hub bucket (no evidence edge) turned out to be
+bibliography stubs.
 
 **Admissible is not true.** This test and every gate below it check that
 a claim is well-formed, sourced, and traceable — none checks whether it
@@ -69,7 +69,7 @@ nothing mechanical can resolve them. The line is *measured*, not
 assumed: a code earns blocking status by dry-running over the whole
 corpus at a zero false-positive rate. `hyphen-numeric-range` and
 `ascii-x-multiplier` cleared that bar and block; `formula-ascii-subscript`
-did not (~23% nomenclature collisions) and stays advisory forever.
+did not and stays advisory forever.
 Authoring stays frictionless; nothing ungoverned reaches *publishable*,
 but a hub can sit `candidate` indefinitely with an advisory flag
 unresolved.
@@ -82,11 +82,7 @@ yet, so its mode lives in the type plus the mandatory `testable_by`.
 `claim` and `compound` face the full set, and an unlisted type inherits
 it — the default is strict, so a new artifact type fails closed.
 
-**Expect refusal at approve, not malfunction.** Measured 2026-08-23 over
-the strict cohort (`TAPROOT:claim` + `STATUS:canonical`, n=1,267): 83
-hubs (6.6%) lint clean. Common blockers: `no-epistemic-mode` (1,052),
-`no-evidence-verb` (903), `over-long` (162), `author-name` (83),
-`no-terminal-period` (48), `not-falsifiable` (22). A legacy hub failing
+**Expect refusal at approve, not malfunction.** A legacy hub failing
 approve is the intended workflow, not a bug — the sentence gets authored
 properly at that point, not patched around.
 
