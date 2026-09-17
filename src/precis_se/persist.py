@@ -118,7 +118,7 @@ _CONNECT_COLS = (
 )
 _MEASURE_COLS = (
     "block, block_uid, name, value, relation, strength, reason, min_value, "
-    "max_value, origin, unit"
+    "max_value, origin, unit, datum"
 )
 _BOM_COLS = (
     "block, block_uid, a_block, a_block_uid, a_port, b_block, b_block_uid, "
@@ -299,6 +299,7 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
                 max_value=m["max_value"],
                 origin=m["origin"],
                 unit=m["unit"],
+                datum=m["datum"],
             )
         )
     for b in bom_rows:
@@ -790,8 +791,8 @@ def save_tree(
             c.execute(
                 "INSERT INTO se_measures "
                 "(ref_id, block, block_uid, name, value, relation, strength, "
-                " reason, min_value, max_value, origin, unit) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " reason, min_value, max_value, origin, unit, datum) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     m.block,
@@ -805,6 +806,7 @@ def save_tree(
                     m.max_value,
                     m.origin,
                     m.unit,
+                    m.datum,
                 ),
             )
         for note in tree.notes:

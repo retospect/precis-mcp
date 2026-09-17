@@ -61,7 +61,7 @@ level-*k* object):
 This package (slices 1–3, se-kind.md "Ship order") covers the scaffold,
 the L0/L1 core, and the L2 invariant tier: :mod:`precis_se.handler`
 (``SeHandler``, the ``se`` kind — tree CRUD; tree/block/ports/measures/
-validate/clearance/drc views, clearance renting the cad kernel's
+datums/validate/clearance/drc views, clearance renting the cad kernel's
 exact-sign SDF at metres), :mod:`precis_se.ops` (pure typed-op
 application over an in-memory tree — no store access: ``add_block``/
 ``instance_block``/``array_block``/``set_pose``/``set_envelope``/
@@ -75,7 +75,9 @@ derived at read time — realization never flattens the tree),
 :mod:`precis_se.joints` (the joint vocabulary: kinematic class ×
 mechanism registry with implied demands, + the registered loads/
 objectives keys), :mod:`precis_se.measures` (named measures, tolerance
-relations, worst-case stack-up evaluation), :mod:`precis_se.validate`
+relations, worst-case stack-up evaluation), :mod:`precis_se.datums`
+(the datum a measure is declared against — see below),
+:mod:`precis_se.validate`
 (read-time L0/L1 feasibility findings incl. the
 undeclared-interpenetration geometry check; rendered under the
 filled-fraction honesty header), :mod:`precis_se.drc` (graph-tier DRC:
@@ -89,7 +91,33 @@ bearing/revolute/cylindrical coaxiality + radial nesting, screw-class
 axial overlap), :mod:`precis_se.persist`
 (retire-all/reinsert-all store write-back, name-keyed identity, ports in
 lockstep with fresh block ids), and migrations ``0001_se_kind.sql`` +
-``0002_se_l2.sql``.
+``0002_se_l2.sql`` (…+ ``0012_se_measure_datum.sql`` for ``datum``).
+
+**Datums + measured-from-geometry** (docs/backlog/
+se-datum-measure-eval.md; the se plumbing multiscale-optimisation
+§4's preferred-number wells attach through): a measure may declare
+``datum:`` — ``frame`` (the default; prismatic → the three pose-frame
+faces through the frame origin, rotational → axis + base face),
+``port:<name>``, ``face:<block>.<tag>``, ``axis:<block>`` — resolved
+through the block's cad primitive by :mod:`precis_se.datums`
+(``parse_selector``/``resolve``/``rank_datums``/``evaluate_measure``/
+``d_measure``). Three settled decisions: the datum is a **column, not
+relation JSON**, because every reader must understand it — evaluator,
+stack-up, migration — and nothing may silently skip it; the
+``measure`` predicate *declares the name and pins the feature* (the
+method doc's predicate shape); and the datum is **never an optimiser
+DOF** — if it could slide, the well term would round a dimension by
+moving the datum instead of the geometry. ``rank_datums`` is
+deterministic (largest flat face, port faces free, process-setup
+candidates, accessible); ``evaluate_measure`` reads the number from
+geometry (ray exits for plain extents, the param for envelope
+dimensions, ``feature`` relations for sub-envelope anchors), stamps
+``source: derived``, and reports ``datum_resolved`` plus a
+``datum moved`` note when the caller passes the previous resolution.
+Its ``mismatch`` note is band-first: a declared ``[min,max]`` flags the
+derived value falling outside it, else ``relation.tol`` around the
+declared value, else exact. ``d_measure`` central-differences over the
+envelope params.
 
 **Off-the-shelf rung 1** (docs/backlog/se-off-the-shelf-fabrication.md,
 migration ``0003_se_bom.sql``) adds the layer for things you *don't*

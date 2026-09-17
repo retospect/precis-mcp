@@ -152,7 +152,16 @@ unaddressable — nor contain `'#'`.)
 - `add_measure` — `block`, `name` (req) · `value`/`min`/`max` · `unit`
   `m|count|ratio|deg` · `relation` `{source: "block.measure", scale,
   offset, tol}` · `strength` `hard|soft|gauge` (default gauge) ·
-  `reason` · `origin`
+  `reason` · `origin` · `datum` — the feature the measure is declared
+  against: `frame` (default; prismatic → the three pose-frame faces,
+  rotational → axis + base face) · `port:<name>` · `face:<block>.<tag>`
+  · `axis:<block>`. Resolved through the block's cad primitive at read
+  time — a feature, never an optimiser DOF; see `view='datums'`.
+  Relation key `feature: "face:<block>.<tag>"` (same selector grammar)
+  anchors the measure to a
+  geometric feature instead of chaining declared values. The derived
+  number's `mismatch` note is band-first: outside `[min_value,max_value]`
+  when declared, else beyond `tol` of `value`, else not exactly `value`.
 - `set_measure` / `remove_measure` — `block`, `name` (+ at least one
   field for set; no explicit nulls — remove then re-add)
 - `set_mode` — `block`, `mode` = `"family"` or `"family/material"` or
@@ -300,7 +309,7 @@ efficiency read in isolation overstates the link.
 
 ## Views (`get(kind='se', id=…, view=…)`)
 
-`tree · block · ports · topology · measures · validate · clearance · sweep ·
+`tree · block · ports · topology · measures · datums · validate · clearance · sweep ·
 drc · bom · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links`. There is **no `mass` view** (mass goes via
 `bom`). `interview`

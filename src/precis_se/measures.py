@@ -42,7 +42,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-_RELATION_KEYS = frozenset({"source", "offset", "tol", "scale"})
+_RELATION_KEYS = frozenset({"source", "offset", "tol", "scale", "feature"})
 
 #: The closed unit registry (se-kind.md slice 4): metres, dimensionless
 #: counts (gear teeth), dimensionless ratios, degrees. Relations require
@@ -77,6 +77,11 @@ class MeasureSpec:
     max_value: float | None = None
     origin: str = "user"
     unit: str = "m"
+    #: Declared datum selector (:mod:`precis_se.datums` grammar —
+    #: ``frame | port:<name> | face:<instance>.<tag> | …``); ``None`` is
+    #: the pose frame. A column on ``se_measures``, not a JSON key: it
+    #: is addressable (the datums view, stale-datum findings).
+    datum: str | None = None
 
 
 def validate_relation(raw: dict[str, Any]) -> dict[str, Any]:
@@ -89,9 +94,41 @@ def validate_relation(raw: dict[str, Any]) -> dict[str, Any]:
         raise MeasureError(
             f"unknown relation key(s): {', '.join(sorted(unknown))} — a "
             "relation is {'source': 'block.measure', 'scale': <×, default "
-            "1>, 'offset': <unit>, 'tol': <unit ≥ 0>}"
+            "1>, 'offset': <unit>, 'tol': <unit ≥ 0>} and/or "
+            "{'feature': <datum-grammar selector>}"
         )
+    feature_raw = raw.get("feature")
+    if feature_raw is not None:
+        # ``feature`` names the measured geometry in the
+        # :mod:`precis_se.datums` selector grammar — strict on shape
+        # here (unknown prefix → loud), lenient on existence (a named
+        # face that isn't there yet is legal, the resolve-time finding
+        # posture). Lazy import: datums → ops → measures.
+        if not isinstance(feature_raw, str) or not feature_raw.strip():
+            raise MeasureError(
+                f"relation 'feature' must be a selector string "
+                f"(face:<instance>.<tag>, axis:<instance>, …), got "
+                f"{feature_raw!r}"
+            )
+        from precis_se.datums import parse_selector
+
+        parse_selector(feature_raw.strip())  # raises MeasureError on shape
     source_raw = raw.get("source")
+    if source_raw is None:
+        if feature_raw is None:
+            raise MeasureError(
+                "relation 'source' must be a single 'block.measure' string, "
+                f"got {source_raw!r} — a relation has exactly one source; a "
+                "sum of two measures (center distance = r1 + r2) is not yet "
+                "expressible: give this measure a declared value and relate "
+                "it to ONE source, folding the other term into 'offset'"
+            )
+        if set(raw) - {"feature"}:
+            raise MeasureError(
+                "a feature-only relation takes no scale/offset/tol — those "
+                "bind a source measure; 'feature' alone binds geometry"
+            )
+        return {"feature": feature_raw.strip()}
     if not isinstance(source_raw, str):
         # str() would happily stringify a list/dict into a dot-containing
         # name that passes the shape check and lands as an unresolvable
@@ -143,6 +180,8 @@ def validate_relation(raw: dict[str, Any]) -> dict[str, Any]:
     # pre-slice-4 rows and scale-less writes stay byte-identical.
     if scale != 1.0:
         out["scale"] = scale
+    if feature_raw is not None:
+        out["feature"] = feature_raw.strip()
     return out
 
 
@@ -236,6 +275,16 @@ def stackup(measures: list[MeasureSpec]) -> list[StackupResult]:
                     problem_kind="malformed",
                 )
             )
+            continue
+        rel0 = valid_rel[me]
+        if rel0 is not None and "source" not in rel0:
+            # feature-only relation: a geometry binding
+            # (:mod:`precis_se.datums`), not a stack-up chain — an
+            # anchor by construction; its own band agreement still runs.
+            res = StackupResult(measure=me, declared=m.value, unit=m.unit, chain=[me])
+            res.problem, res.problem_kind = _agreement_problem(m, res)
+            if res.problem is not None:
+                out.append(res)
             continue
         res = StackupResult(measure=me, declared=m.value, unit=m.unit, chain=[me])
         seen = {me}

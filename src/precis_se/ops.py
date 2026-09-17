@@ -1251,6 +1251,23 @@ def _vet_measure_fields(op: dict[str, Any], *, opname: str) -> dict[str, Any]:
     reason = _opt_str(op.get("reason"))
     if reason is not None:
         out["reason"] = reason
+    if op.get("datum") is not None:
+        # Strict on shape at write (the selector grammar is vetted now);
+        # lenient on existence — a selector naming a face that isn't
+        # there yet is legal (precis_se.datums' resolve-time finding).
+        if not isinstance(op["datum"], str) or not op["datum"].strip():
+            raise OpError(
+                f"{opname} 'datum' must be a selector string "
+                f"(frame | port:<name> | face:<instance>.<tag> | …), "
+                f"got {op['datum']!r}"
+            )
+        from precis_se.datums import parse_selector
+
+        try:
+            parse_selector(op["datum"].strip())
+        except MeasureError as exc:
+            raise OpError(f"{opname}: {exc}") from exc
+        out["datum"] = op["datum"].strip()
     return out
 
 
@@ -1337,11 +1354,12 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
         "max",
         "origin",
         "unit",
+        "datum",
     )
     if not any(k in op for k in field_keys):
         raise OpError(
             "set_measure needs at least one of value/relation/strength/"
-            "reason/min/max/origin/unit"
+            "reason/min/max/origin/unit/datum"
         )
     # An explicit null must push back, not silently no-op (reviewer
     # finding): presence-based updates can't express "clear this field".

@@ -27,7 +27,9 @@ order"):
   (``id=slug``, the default view), one block's full record
   (``view='block'``, ``args={'name': ...}``), every block's ports
   (``view='ports'``), measures + stack-up (``view='measures'`` —
-  :mod:`precis_se.measures`), feasibility findings with the
+  :mod:`precis_se.measures`), the deterministic datum ranking and which
+  measures hang off each datum (``view='datums'`` —
+  :mod:`precis_se.datums`), feasibility findings with the
   filled-fraction honesty header (``view='validate'`` —
   :mod:`precis_se.validate`), the signed envelope gap between two blocks
   (``view='clearance'``, ``args={'a': ..., 'b': ...}``, the cad kernel
@@ -98,6 +100,7 @@ from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
 from precis.utils.units import format_quantity
 from precis_se import bom as se_bom
+from precis_se import datums as se_datums
 from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import freedom as se_freedom
@@ -152,7 +155,7 @@ class SeHandler(Handler):
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|"
-            "'ports'|'topology'|'measures'|'validate'|'clearance'|'sweep'|"
+            "'ports'|'topology'|'measures'|'datums'|'validate'|'clearance'|'sweep'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
@@ -301,6 +304,7 @@ class SeHandler(Handler):
             "ports",
             "topology",
             "measures",
+            "datums",
             "validate",
             "clearance",
             "sweep",
@@ -530,6 +534,8 @@ class SeHandler(Handler):
             return Response(body=_render_topology(tree))
         if v == "measures":
             return Response(body=_render_measures(tree))
+        if v == "datums":
+            return Response(body=_render_datums(tree))
         if v == "validate":
             return Response(body=self._render_validate(tree, ref.id))
         if v == "mechanics":
@@ -569,7 +575,8 @@ class SeHandler(Handler):
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='ports' | view='topology' "
             "(atomic mode: threading + declared dof) | view='measures' "
-            "(+ stack-up) | view='validate' | view='clearance' "
+            "(+ stack-up) | view='datums' (datum ranking + which "
+            "measures hang off each) | view='validate' | view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
             "CONNECTS digest) | view='sweep' (does anything collide in ANY "
             "declared state? — the cross product of every state-carrying "
@@ -1630,17 +1637,24 @@ def _fmt_band(m: Any) -> str:
     return f"[{_fmt_in_unit(m.min_value, m.unit)}, {_fmt_in_unit(m.max_value, m.unit)}]"
 
 
-def _measure_row(m: Any) -> dict[str, str]:
+def _measure_row(m: Any, tree: Any = None) -> dict[str, str]:
     rel = "—"
     if m.relation is not None:
-        scale = m.relation.get("scale", 1)
-        scale_part = "" if scale == 1 else f"{_fmt_num(scale)} × "
-        rel = (
-            f"= {scale_part}{m.relation.get('source')} "
-            f"+ {_fmt_num(m.relation.get('offset', 0))} "
-            f"± {_fmt_num(m.relation.get('tol', 0))}"
-        )
-    return {
+        if m.relation.get("source"):
+            scale = m.relation.get("scale", 1)
+            scale_part = "" if scale == 1 else f"{_fmt_num(scale)} × "
+            rel = (
+                f"= {scale_part}{m.relation['source']} "
+                f"+ {_fmt_num(m.relation.get('offset', 0))} "
+                f"± {_fmt_num(m.relation.get('tol', 0))}"
+            )
+        if m.relation.get("feature"):
+            rel = (
+                f"feature {m.relation['feature']}"
+                if rel == "—"
+                else rel + f" · feature {m.relation['feature']}"
+            )
+    row = {
         "measure": f"{m.block}.{m.name}",
         "value": _fmt_in_unit(m.value, m.unit),
         "band": _fmt_band(m),
@@ -1648,7 +1662,26 @@ def _measure_row(m: Any) -> dict[str, str]:
         "strength": m.strength,
         "origin": m.origin,
         "reason": m.reason or "—",
+        "datum": m.datum or "frame",
+        "derived": "—",
     }
+    if tree is not None:
+        # The geometric number beside the declared one — evaluation is
+        # cheap (envelope ray exits, no field solve) and stateless.
+        try:
+            mv = se_datums.evaluate_measure(tree, m)
+        except (se_datums.MeasureError, cad_dsl.DslError):
+            mv = None
+        if mv is not None:
+            if mv.value is not None:
+                row["derived"] = _fmt_in_unit(mv.value, m.unit)
+                if mv.datum_resolved:
+                    row["datum"] = f"{m.datum or 'frame'} → {mv.datum_resolved}"
+            if mv.notes:
+                row["reason"] = "; ".join(
+                    part for part in [m.reason or "", *mv.notes] if part
+                )
+    return row
 
 
 def _stackup_rows(results: list[Any]) -> list[dict[str, str]]:
@@ -1697,12 +1730,14 @@ def _render_measures(tree: SeTree) -> str:
     lines = [f"# {len(tree.measures)} measure(s)  (units: metres unless noted)"]
     lines.append(
         render_agent_table(
-            [_measure_row(m) for m in tree.measures],
+            [_measure_row(m, tree) for m in tree.measures],
             schema=[
                 "measure",
                 "value",
                 "band",
                 "relation",
+                "datum",
+                "derived",
                 "strength",
                 "origin",
                 "reason",
@@ -1721,6 +1756,69 @@ def _render_measures(tree: SeTree) -> str:
         )
     else:
         lines.append("## stack-up\n(no relations declared — nothing to evaluate)")
+    return "\n".join(lines)
+
+
+def _render_datums(tree: SeTree) -> str:
+    """``view='datums'`` — per block: the deterministic datum ranking
+    (:func:`precis_se.datums.rank_datums`) with reasons, and which
+    measures hang off each datum (declared selector, or ``frame`` when
+    the column is NULL — the pose-frame default)."""
+    lines = [
+        "# se datums  (a datum is a feature of the block, never an "
+        "optimiser DOF; NULL datum = pose frame)"
+    ]
+    if not tree.blocks:
+        lines.append("\n(no blocks)")
+        return "\n".join(lines)
+    for name, node in tree.blocks.items():
+        ranked = se_datums.rank_datums(tree, node)
+        lines.append(f"\n## {name}")
+        # A measure hangs off the datum its selector RESOLVES to — a
+        # predicate (`face:largest`, `face:normal=+z`) never string-equals
+        # a ranked row's concrete identity, so match on the resolution.
+        # Declared text matches directly; else the resolution, in the
+        # ranked rows' identity form (`face:<instance>.<tag>`).
+        # Unresolvable declared selectors still hang by text (a port
+        # without a direction is ranked but not measurable).
+        hangs_on: dict[str, set[str]] = {}
+        for m in tree.measures:
+            if m.block != name:
+                continue
+            declared = m.datum or "frame"
+            ids = {declared}
+            try:
+                res = se_datums.resolve(tree, node, declared)
+            except se_datums.MeasureError:
+                res = None
+            if res is not None and res.resolved is not None:
+                ids.add(f"face:{res.resolved}" if res.kind == "face" else res.resolved)
+            hangs_on[m.name] = ids
+        rows = []
+        for i, r in enumerate(ranked, 1):
+            hanging = sorted(
+                f"{m.name} (default)"
+                if not m.datum
+                else f"{m.name} (declared)"
+                if m.datum == r.datum
+                else f"{m.name} (declared {m.datum})"
+                for m in tree.measures
+                if m.block == name and r.datum in hangs_on.get(m.name, ())
+            )
+            rows.append(
+                {
+                    "rank": str(i),
+                    "datum": r.datum,
+                    "score": "—" if math.isinf(r.score) else f"{r.score:.4g}",
+                    "reason": r.reason,
+                    "measures": ", ".join(hanging) if hanging else "—",
+                }
+            )
+        lines.append(
+            render_agent_table(
+                rows, schema=["rank", "datum", "score", "reason", "measures"]
+            )
+        )
     return "\n".join(lines)
 
 
@@ -2543,6 +2641,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "ports": frozenset(),
     "topology": frozenset(),
     "measures": frozenset(),
+    "datums": frozenset(),
     "validate": frozenset(),
     "clearance": frozenset({"a", "b", "state"}),
     "sweep": frozenset(),
