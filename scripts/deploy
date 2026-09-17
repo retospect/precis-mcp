@@ -60,6 +60,40 @@
 #     custom `precis heartbeat --host`); default is the canary name itself.
 set -euo pipefail
 
+# --help / -h : print usage and exit BEFORE any side effect (gr344875). Scans
+# the whole argv (not just $1) since --force-rollback can precede or follow
+# the ref positional — must stay the first thing checked, ahead of the
+# lock acquire, the freshness/rollback guards, and every ansible/ssh call.
+usage() {
+    cat <<'USAGE'
+scripts/deploy — non-interactive prod deploy: reinstall precis-mcp@<ref>
+into every cluster venv and bounce every daemon.
+
+Usage:
+  scripts/deploy                              # deploy main (default)
+  scripts/deploy <ref>                        # deploy a branch/tag/sha
+  scripts/deploy <old-sha> --force-rollback   # deliberate rollback
+  scripts/deploy --help | -h                  # this message; no reachability
+                                               # check, no ansible, no ssh
+
+<ref> is a positional git ref (branch/tag/sha); default 'main'.
+--force-rollback bypasses the ancestor-sha rollback guard (gr338201) — use
+only for a deliberate rollback.
+
+Notable env vars (see the header comment in this script for full docs):
+  PRECIS_CLUSTER_DIR, PRECIS_DEPLOY_EXTRA_VARS, PRECIS_DEPLOY_ALLOW_STALE,
+  PRECIS_DEPLOY_NO_LOG, PRECIS_DEPLOY_LOG_DIR, PRECIS_DEPLOY_FROM_TREE,
+  PRECIS_OVERLAY_DIR, PRECIS_DEPLOY_SKIP_CATPATH_WHEEL, PRECIS_CATPATH_DIR,
+  PRECIS_DEPLOY_LOCK_WAIT, PRECIS_DEPLOY_CANARY, PRECIS_DEPLOY_CANARY_TIMEOUT_S,
+  PRECIS_DEPLOY_CANARY_DB_HOST.
+USAGE
+}
+for _a in "$@"; do
+    case "$_a" in
+        --help|-h) usage; exit 0 ;;
+    esac
+done
+
 FORCE_ROLLBACK=0
 _POSITIONAL=()
 for _a in "$@"; do
