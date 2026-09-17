@@ -36,8 +36,9 @@ becomes a `\newacronym`, first use full and later `\gls{…}`, with a
 page-number list in the glossary; `[me<id>]`/cross-draft `[dc<id>]` links
 render to nothing (provenance only). The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
-(or the byline) yourself. Citations must resolve (`[pc<id>]` → a chunk
-of a held paper) or the export marks a stub + warns.
+(or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub
+with held originator papers; legacy `[pc<id>]` → a chunk of a held
+paper) or the export marks a stub + warns.
 
 - **PDF** — deterministic but slow, so it runs as a **job**
   (`put(kind='job', ...)` above), landing the path in

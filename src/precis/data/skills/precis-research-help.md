@@ -143,17 +143,20 @@ The honest gap is more valuable than the dressed-up surface.
 Markdown numbered list. Each row:
 
 ```
-1. <claim — ≤2 sentences, with quantification>. [pc142][pc143]
-2. <next claim>. [pc144]
+1. <claim — ≤2 sentences, with quantification>. [fi142][fi143]
+2. <next claim>. [fi144]
 …
-N. **Contradiction:** <description>. Group A: <quote>. [pc145]
-   Group B: <conflicting quote>. [pc146] Possible resolutions: …
+N. **Contradiction:** <description>. Group A: <quote>. [fi145]
+   Group B: <conflicting quote>. [fi146] Possible resolutions: …
 ```
 
-Each `[pc<id>]` is a paper-chunk handle copied verbatim from search/get
-output — the chunk *is* the evidence, so the handle is self-verifying
-and there is no separate citation footer to maintain. Never write a bare
-number or a constructed handle where a `[pc<id>]` belongs.
+Each `[fi<id>]` is a finding-hub handle copied verbatim from search/put
+output — a hub grounded on the paper chunk you read (`precis-citation-help`:
+search hubs → mint on the passage → adversarial check → cite), so the
+handle carries its evidence and there is no separate citation footer to
+maintain. A contradiction row is a `disputes` edge between the two hubs.
+Never write a bare number, a paper chunk `[pc<id>]`, or a constructed
+handle where a `[fi<id>]` belongs.
 
 Target 15–30 findings for a topic survey, 5–10 for a focused
 question, 30+ for a broad lit review. Less than 5 findings = the

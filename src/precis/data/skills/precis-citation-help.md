@@ -1,194 +1,231 @@
 ---
 id: precis-citation-help
-title: precis — cite a paper inline with its chunk handle
-summary: the inline [pc<id>] cite — write the supporting paper-chunk handle in prose; kind='citation' is an optional verification record, not how you cite
+title: precis — cite a claim by its finding hub [fi<id>]
+summary: every cite in prose is a finding hub [fi<id>] — search hubs first, else find the grounding paper passages in the corpus and mint a hub on them, run an adversarial search for what disputes it, then cite; a paper chunk [pc<id>] grounds a hub's evidence edge, it is never the cite
 answers:
-  - how do I cite a claim in my prose — do I write a [pc<id>] or create a kind='citation' record?
-  - when should I bother creating a verification record for a citation?
-  - how do I read back a stored citation by id?
-  - what happens to a paper's own inline [N] reference markers?
-applies-to: drafting prose; put (kind='citation'), get (kind='citation')
+  - how do I cite a claim in my prose — do I write [pc<id>] or [fi<id>]?
+  - no finding hub matches my claim — how do I make one from the papers in the corpus?
+  - how do I check whether the claim I'm about to cite is disputed, and what do I do with the disagreement?
+  - when should I record a kind='citation' verification record?
+applies-to: drafting prose; search/put/link/get (kind='finding'); put/get (kind='citation')
 status: active
 tags: [drafting]
-kinds: [citation]
+kinds: [finding, citation]
 ---
 
-# precis-citation-help — cite a paper inline
+# precis-citation-help — cite the finding, not the paper
 
-A citation in a draft is the **bare supporting paper-chunk handle,
-written inline in your prose**: `[pc234]` (paper chunk 234). The chunk
-*is* the evidence — there is no verbatim quote to copy and no citation
-command to type. This is the **write side** of cite-a-passage: find the chunk that
-backs your claim, read it to confirm it supports the point
-([[precis-check-source-help]]), then drop its handle inline.
+A citation in prose is a **finding hub handle written inline**:
+`[fi<id>]`. Never a bare paper chunk `[pc<id>]`, patent chunk
+`[pk<id>]` or whole paper `[pa<id>]` — those are **grounding**: the
+passages a hub's evidence edges point at. The hub is the cite because
+it is *living* (resolves to the current best originator on every
+render), *graded* (support counts, disputes, refutation are visible on
+the handle) and *shared* (the next writer stacks evidence on it instead
+of citing the paper again).
 
-## Cite a claim — write the supporting chunk handle inline
-## Drop a [pc<id>] cite in my prose
-## Several chunks back one sentence
+**Discovery is wide; the finding is exact.** Search broadly, several
+phrasings, whole corpus. Cite only a hub whose sentence asserts what
+your sentence asserts, at the same scope. A near miss is not a hit.
 
-Write the handle directly in the sentence it supports:
+## Cite a claim — the four steps
+## How do I cite this?
 
-```text
-Aqueous synthesis yields higher quantum yields than hot-injection [pc234].
-```
+1. **Search hubs** for the claim. Hit → step 3.
+2. **No hub** → find the grounding passages in the paper corpus, mint
+   a hub on them.
+3. **Adversarial search** — look for what disagrees; file it.
+4. **Write `[fi<id>]`** inline. The hub carries the papers.
 
-Several supporting chunks — in one paper or across papers — list
-together, no separators:
-
-```text
-…higher quantum yields than hot-injection [pc232][pc234][pc593].
-```
-
-Patents cite the same way by their chunk handle `[pk<id>]`; an in-flight
-`finding` is cited `[fi<id>]` until the chase resolves it
-([[precis-finding-help]]).
-
-The handle is a value you **copy from search / get output** — never
-construct or guess it. There is no slug to assemble:
+## Step 1 — is there already a finding hub for this claim?
+## Search fi* before anything else
 
 ```python
-search(
-    kind="paper", q="<claim or key phrase>", scope="<slug>"
-)  # → returns pc<id> handles
-get(id="pc234")  # read it; the chunk IS the evidence
+search(kind="finding", q="<the claim as you would write it>", status="*", mode="semantic")
+search(kind="finding", q="<its rarest token: a number, a compound, a phrase>", status="*")
 ```
 
-**The author never hand-writes LaTeX citation commands** — they are
-retired (export-only). The Tier-B export engine resolves each `[pc<id>]`
-→ its paper and renders the citation plus **one bibliography entry per
-paper** at compile time. A made-up bibliography key matches nothing and
-is wrong.
+`status='*'` is required — the default cohort hides most hubs. Two
+queries: the sentence, then its rarest token (hybrid search ranks a
+rare token high). Each hit shows `state`, `support` (`2✓ 1✗ 1?` =
+affirmative / negative / withheld verdicts) and `flags` (`disputed`,
+`drifted`, `refuted`, `open-questions:N`). Read them before choosing.
 
-**A memory / thought / other draft is a link, not a citation.** Drop a
-`[me<id>]` or `[dc<id>]` handle to record a `related-to` provenance
-edge — it never reaches the bibliography. Citations are to the
-literature, not to our notes.
+Judge each near hit precisely:
+
+- **Same claim, same scope** → cite it. Read
+  `get(id='fi<id>', view='evidence')` once: the originator and passages
+  there are what your reader inherits.
+- **Same claim, your paper adds a passage** → attach, then cite:
+  `link(kind='finding', id='fi<id>', rel='corroborates', target='pc<id>')`.
+- **Coarser, narrower, or a different regime** than your sentence →
+  not a match. Mint yours (step 2), then `link(rel='refines')` to it.
+- **Compound hub** (bundles several atoms) → cite the atom your
+  sentence asserts; `get(id='fi<id>', view='links')` lists its
+  `conjunct-of` atoms.
+- **`refuted` or `disputed` flag** → not a supporting cite. Step 3
+  says how a disagreement is cited.
+
+## Step 2 — no hub: find the grounding papers, mint the hub
+## Turn corpus passages into a citable finding
+
+Discovery is the wide part — query the whole corpus, several ways, and
+never ground on whatever paper you happen to be holding:
+
+```python
+search(kind="paper", q="<the claim's most distinctive phrase>")
+search(kind="paper", q="<claim terms> <the technique you'd expect>",
+       queries=["<the question form>"],
+       answers=["<a sentence that would state the result>"], per_paper=2)
+get(id="pc<id>")                  # read the full chunk — excerpts are triage-only
+get(id="pa<id>", view="claims")   # hubs this paper already grounds — yours may be here
+```
+
+Precision rules for what you attach:
+
+- **Read before you ground.** The chunk must state the claim's
+  substantive core — a "12%" claim needs "12%" in the chunk. Reader
+  loop: [[precis-check-source-help]].
+- **Ground on the doer.** A passage attributing the result onward
+  ("X et al. showed…"), an introduction, a related-work block
+  (`get(id='pa<id>', view='toc')` shows the block) is testimony. Find
+  the primary (`search(kind='paper', author='…')`) and ground there.
+  Not held → stub it (`put(kind='paper', doi=…)`) and wait, or register
+  a chase finding and cite that `[fi<id>]` meanwhile
+  ([[precis-cite-paper-help]]). Never a hub on hearsay.
+- **A review by genre is secondhand** — mint blocks on it unless the
+  claim sentence declares a synthesis mode.
+
+Mint on what you read. Write the sentence to
+[[precis-taproot-mint-help]]'s admissibility test — falsifiable,
+self-contained, method-attributed, one assertion, the source's
+precision, no rounding:
+
+```python
+put(kind="finding",
+    title="<one self-contained claim sentence>",
+    scope={"<regime-key>": "<controlled term>"},
+    supporters=[{"paper": "pa5", "source_handle": "pc293"},
+                {"paper": "pa9", "source_handle": "pc871"}])
+# → "claim hub fi<id>  pub_id=…" — this is your cite
+```
+
+Always give `source_handle`: a supporter without one grounds the whole
+paper, which is what makes a hub unreadable later. Two passages of one
+paper are two supporters. A re-`put` of the same spec attaches nothing
+twice.
+
+## Step 3 — adversarial search: is it disputed?
+## Look for the paper that disagrees before you cite
+
+Phrase one to three negations yourself — the opposite of the claim, or
+a conflicting value / mechanism / tendency under the same conditions —
+and search those, in both corpora:
+
+```python
+search(kind="paper", q="<negated claim>",
+       answers=["<conflicting version 1>", "<conflicting version 2>"], per_paper=1)
+search(kind="finding", q="<negated claim>", status="*", mode="semantic")
+get(id="fi<id>", view="evidence")   # contradicts / disputes edges already on the hub
+```
+
+Read every hit in full. A passage about a different system,
+functional, cell size or measurement regime is a **scope mismatch, not
+a disagreement** — leave it. Then act:
+
+- **Genuine opposing passage, same conditions** →
+  `link(kind='finding', id='fi<id>', rel='disputes', target='pc<id>')`.
+  Free and non-blocking: "these appear to conflict; someone should
+  look". Never file `contradicts` by hand — it is adjudication-derived
+  and blocks the hub's publish.
+- **An opposing hub exists** →
+  `link(kind='finding', id='fi<id>', rel='disputes', target='fi<other>')`.
+- **Your claim is the dissenting one** → mint it anyway (step 2), file
+  `disputes` toward the incumbent, cite yours. A hub with a live
+  dispute is citable; the reader sees `open-questions:N`.
+- **Nothing found** → cite. Claim nothing about absence in prose: the
+  hub's `meta.conflict_search` ledger, once the sweep has run it, is
+  the checkable statement; your search is not.
+
+Cite the disagreement, don't hide it. Where the text acknowledges a
+conflict, the opposing hub sits next to yours:
+
+```text
+…higher quantum yields than hot-injection [fi41], though one report
+finds no effect at the same ligand ratio [fi77].
+```
+
+A `refuted` hub is cited only as the thing that was refuted.
+
+## Step 4 — write the cite
+## Drop a [fi<id>] in my prose
+
+```text
+Aqueous synthesis yields higher quantum yields than hot-injection [fi41].
+…and Pd loading reverses the trend above 5 wt% [fi41][fi92].
+```
+
+Several hubs list together, no separators. Pin when you know better
+than the derivation: `[fi41>pc293]` cites exactly that passage,
+`[fi41+pa5]` adds to the derived originators ([[precis-taproot-help]]).
+Export resolves each `[fi<id>]` to its current originator paper(s) and
+renders one bibliography entry per paper — you never write LaTeX
+citation commands or bibliography keys. The handle is a value you copy
+from search / put output, never constructed.
+
+**A memory or another draft is a link, not a citation.** `[me<id>]` /
+`[dc<id>]` record provenance and never reach the bibliography.
+
+**Legacy `[pc<id>]` / `[pa<id>]` cites in an existing draft** convert
+in bulk ([[precis-taproot-backfill-help]]) or by hand with steps 1–3.
+The draft lint's `◆ taproot:` line names the hub a cited paper already
+grounds — take it, or pin it (`[fi<hub>>pc<id>]`) to keep the passage.
 
 ## Optionally record a verification audit (kind='citation')
+## Persist a claim → chunk audit a verifier confirmed
 
 `kind='citation'` is an **optional** verification record — a claim +
-`verifier_confidence` pointing at the chunk you checked. It is **not
-required to cite** and **not what builds the bibliography** (the inline
-`[pc<id>]` does that). Mint one only when you want an auditable record
-that a verifier confirmed the chunk supports the claim.
-
-## Write a verification record once a verifier has confirmed support
-## Persist an optional claim → chunk audit
-## Store a citation record for a claim
+`verifier_confidence` pointing at the chunk a verifier checked. It is
+not how you cite and not what builds the bibliography. Mint one only
+for an auditable record that a verifier confirmed the passage supports
+the claim:
 
 ```python
 put(
     kind="citation",
     text="MOF X improves CO2 reduction by 12%",  # the claim
-    source_handle="pc7",  # the chunk it points at
+    source_handle="pc7",  # the chunk it points at; a patent chunk pk<id> works too
     source_quote="CO2 reduction rose 12% on MOF X",  # verbatim from that chunk; required
-    verifier_confidence=0.95,
+    verifier_confidence=0.95,  # 0.95 strong, 0.8 moderate, 0.5 weak
     link="pa5",
     rel="cites",
 )
 # → created citation id=42
-```
-
-This is optional — the inline `[pc7]` in your prose is what cites the
-paper. The record just captures that a verifier judged chunk `pc7` to
-support the claim. `verifier_confidence` is a float in `[0.0, 1.0]` —
-use any precise value the verifier emits, or stick to conventions
-(0.95 strong, 0.8 moderate, 0.5 weak). The `link='pa5'` (paper handle) +
-`rel='cites'` makes the source paper findable via the graph and
-surfaces "who cites me?" on the paper itself.
-
-`source_handle` accepts a **patent** chunk the same way — a `[pk<id>]`
-handle or an explicit `patent:<slug>~N` — validated against the patent
-corpus instead of papers; `link='patent:<slug>'` wires the same `cites`
-edge. A simple-family stub (biblio only, no blocks) is rejected with the
-family's full representative named in the error.
-
-Citation records are write-once. Re-verifying the same claim against a
-different chunk creates a new record; the old one stays as the audit
-trail.
-
-## Read back a citation by id
-## Fetch a stored citation
-## Show me citation 42
-
-```python
-get(id="ci42")  # by handle (prefix infers kind)
-```
-
-```text
-# citation 42
-_MOF X improves CO2 reduction by 12%_
-
-source: `pc7`
-verifier_confidence: 0.95
-verified_at: 2026-05-31T14:23:00Z
-```
-
-## Browse recent or matching citations
-
-```python
+get(id="ci42")  # read it back
 search(kind="citation", q="MOF CO2 reduction")
 get(kind="citation", id="/recent")
 ```
 
-## How does this become LaTeX? (you don't write the citation commands)
+Records are write-once: re-verifying against a different chunk creates
+a new record; the old one stays as the audit trail.
 
-You write only the inline `[pc<id>]` handles. At compile time the
-Tier-B export engine resolves each handle → its paper and emits the
-LaTeX citation plus **one bibliography entry per paper** — you never
-hand-write citation commands or bibliography keys; they are retired. A
-made-up key matches nothing in the export resolver and is wrong: it is
-the inline handle, not a key you author, that carries the cite.
+## A paper's own inline [N] markers (automatic)
 
-The review-pass citation-faithfulness verifier reads each `[pc<id>]`,
-resolves it, and confirms the chunk supports the claim it sits beside —
-the chunk itself is the evidence, so there is no quote string to drift.
-
-## Discipline that keeps cites honest
-
-**Cite the chunk that actually supports the claim.** Read it by handle
-(`get(id='pc234')`) and confirm support before you write `[pc234]`. The
-chunk is the evidence; a handle next to a claim it doesn't back is a
-hallucinated citation.
-
-**Triage excerpts are not citation-grade.** The `excerpt @ ~N:`
-sub-lines in search results are picked for triage — they help you
-decide whether to drill in. Fetch the full chunk with
-`get(id='pc<id>')` (or the `~A..B` range) and read it before you cite.
-
-**Numeric claims need numeric support.** A "12%" claim demands "12%"
-(or "twelve percent") in the cited chunk. A claim of 12% FE backed by
-a chunk that only says "an improvement was noted" is a hallucination —
-cite a different chunk or chase a finding.
-
-**Cite the doer, not the mention.** A chunk that supports the claim but
-is itself quoting/citing another paper is hearsay, not the source —
-walk back to the paper that did the work. Full policy + rationale:
-[[precis-cite-paper-help]].
-
-## What happens to a paper's OWN inline `[N]` markers (automatic)
-
-The `[pc<id>]` handles above are how *you* cite while drafting. Separately,
-the system resolves the numbered `[N]` markers that already sit in an
-**ingested paper's body** ("as shown previously [34]"): the `bib_mark`
-pass maps each to the paper's parsed bibliography entry (`chunk_citations`
-→ `paper_bib_entries`), and `taproot.resolve_citation(store, chunk_id,
-marker)` returns the cited paper's identity (`doi` / `held_ref_id`). This
-is machinery, not a verb you call — but it powers a real check: taproot's
-hub-refine now **follows a claim's own citation** and verifies the claim
-against the paper it actually cites. When "we read the cited paper and the
-claimed content isn't there", the claim page shows a red *"cited source
-does not support this claim"* line (`meta.citation_misses` on the hub).
-Hub trust itself is unchanged — the miss is a surfaced fact, not a
-trust-state flip.
+The numbered `[N]` markers inside an ingested paper's body resolve by
+machinery, not by you: each maps to the paper's parsed bibliography
+entry, and hub-refine follows a claim's own citation to verify the
+claim against the paper it cites. A miss shows on the claim page as a
+red *"cited source does not support this claim"* line — a surfaced
+fact, not a trust change.
 
 ## See also
 
-- [[precis-cite-paper-help]] — the cite-a-paper router (in/out of corpus, which branch).
+- [[precis-cite-paper-help]] — the router: which branch when the paper is / isn't held.
+- [[precis-taproot-help]] — what a hub is; what `[fi<id>]` resolves to; pins.
+- [[precis-taproot-mint-help]] — admissibility test, notation, search-before-mint.
+- [[precis-taproot-hub-edit-help]] — attach evidence, reword, merge an existing hub.
 - [[precis-check-source-help]] — reader side: find the chunk, read surrounds, judge support.
 - [[precis-finding-help]] — chase side: claim → primary source, cite `[fi<id>]` meanwhile.
-- [[precis-search-help]] — find the chunk handle to cite.
-- [[precis-paper-help]] — fetch chunks; `pc<id>` / `~N` grammar.
-- [[precis-link-help]] — cites and other graph relations.
-- [[precis-taproot-help]] — cross-paper claim hubs, `[fi<id>]` living citation.
-- [[precis-overview]] — verbs and kinds.
+- [[precis-taproot-backfill-help]] — bulk-convert legacy `[pc<id>]` cites.
+- [[precis-search-help]] — broad retrieval (`queries=`, `answers=`, `per_paper=`).
+- [[precis-link-help]] — `corroborates`, `refines`, `disputes` and the other relations.

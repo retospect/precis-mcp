@@ -89,8 +89,9 @@ same row.
 
 ## Cite the exact source behind every field
 
-Cite the chunk backing each recipe field: `[pc<id>]` for a paper
-passage. A field you're still chasing gets a `finding`, not a guess.
+Cite the finding hub backing each recipe field: `[fi<id>]`, grounded
+on the paper passage (`precis-citation-help`). A field you're still
+chasing gets a chase `finding`, not a guess.
 
 ## See also
 

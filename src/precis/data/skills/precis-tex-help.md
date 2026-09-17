@@ -86,7 +86,7 @@ claim) work with `kind='paper'`, not by reading keys here.
 
 This is a different layer from a **draft** (`kind='draft'`), the
 chunk-native document a project *authors* into. There you never
-hand-write `\cite{}`: you cite by the bare paper-chunk handle `[pc<id>]`
+hand-write `\cite{}`: you cite by the finding-hub handle `[fi<id>]`
 and the export engine generates the `\cite` + bibliography. That model
 is `precis-draft-help` / `precis-citation-help` — not this skill. Don't
 import it here: editing a `.tex` file is editing literal LaTeX.

@@ -120,4 +120,4 @@ collapse into the existing ref.
 
 - [[precis-paper-help]] — corpus read / search side.
 - [[precis-citation-help]] — using fetched papers as cite sources.
-- [[precis-draft-help]] — cite a paper inline by its `[pc<id>]` chunk handle.
+- [[precis-citation-help]] — cite a paper's finding inline by its `[fi<id>]` hub handle.

@@ -143,4 +143,4 @@ CLI equivalent: `precis taproot backfill --chunk dc1652005 --apply [--ref-level]
 - [[precis-taproot-help]] — what a hub is; citing [fi<id>]
 - [[precis-taproot-mint-help]] — admissibility rubric the extraction cascade applies
 - [[precis-draft-help]] — draft chunk model, the edit door the rewrite uses
-- [[precis-citation-help]] — the inline [pc<id>] cite, write side
+- [[precis-citation-help]] — the four-step cite procedure (hubs only), write side

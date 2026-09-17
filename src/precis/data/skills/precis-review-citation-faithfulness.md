@@ -24,9 +24,9 @@ One review pass, three concerns, all keyed off the citation tokens
 2. **Correctness** — the cited chunk **actually supports the claim it
    backs**. This is the pass's core and the single highest-value
    finding category in any review.
-3. **Living-cite preference** — a bare `[pc<id>]`/`[pa<id>]` cite
-   whose paper already grounds a taproot claim hub should switch to
-   the living `[fi<hub>]` form (procedure step 7).
+3. **Hub-cite rule** — every cite must be a finding hub `[fi<hub>]`;
+   a bare `[pc<id>]`/`[pa<id>]` cite is a legacy form to convert
+   (procedure step 7).
 
 **Existence is not this pass's job.** Cite-token resolution and
 paper-held status are checked deterministically before you see this
@@ -47,7 +47,9 @@ First, scan the passage for non-obvious claims with **no** citation
 at all (sufficiency) — file each as the missing-citation todo below,
 not a finding. Then, for each citation handle already present:
 
-1. Resolve the handle to the exact chunk: `get(id='pc<id>')`.
+1. Resolve the handle to the exact chunk(s): `[fi<id>]` →
+   `get(id='fi<id>', view='evidence')` for its grounding chunks, then
+   `get(id='pc<id>')` on each; a legacy `[pc<id>]` → `get(id='pc<id>')`.
 2. Read the chunk's text and compare it against the claim the
    citation backs in the draft.
 3. If the chunk directly and substantively supports the claim —
@@ -59,16 +61,17 @@ not a finding. Then, for each citation handle already present:
    wrong paper for this one — finding: wrong cite.
 6. If the chunk says nothing that bears on the claim — finding:
    unsupported claim. This is the highest-severity finding type.
-7. If the rendered passage carries a `◆ taproot:` hint next to this
-   cite (the cited paper already grounds claim hub `[fi<hub>]`) — file
-   a change-request: switch to `[fi<hub>]` for the living resolution,
-   or `[fi<hub>>pc<id>]` to pin this exact passage while still riding
-   it. Hub coverage itself is deterministic (no LLM spent counting
-   it) — your job is only to act on the hint when it's there.
+7. If the cite is a bare `[pc<id>]`/`[pa<id>]` — file a change-request:
+   it must become a hub cite. A `◆ taproot:` hint next to it names the
+   hub the paper already grounds — switch to `[fi<hub>]`, or
+   `[fi<hub>>pc<id>]` to pin this exact passage while riding the living
+   resolution; no hint → the writer mints a hub on the passage and runs
+   the adversarial check (`precis-citation-help` steps 2–3). Hub
+   coverage itself is deterministic — you only act on it.
 
-A citation is the **bare paper-chunk handle written inline** —
-`[pc234]`, or several supporting chunks `[pc232][pc234][pc593]`. The
-author never types `\cite{}`; that is export-only output. A
+A citation is a **finding-hub handle written inline** — `[fi41]`, or
+several `[fi41][fi92]`; the hub's grounding chunks are the passages you
+check. The author never types `\cite{}`; that is export-only output. A
 `[me<id>]`/`[dc<id>]` reference is a **link, not a citation** (it
 points at our own notes, not the literature) — it is out of scope
 here; skip it.
@@ -165,7 +168,7 @@ unsupported citation that survives review is expensive.
 
 ## See also
 
-- [[precis-draft-help]] — write side: inline [pc<id>] citations
+- [[precis-draft-help]] — write side: inline [fi<id>] citations
 - [[precis-bibliography-help]] — read side: who cites a paper
 - [[precis-review-paper-help]] — full adversarial review including claim-support
 - [[precis-common-reviewer]] — shared reviewer discipline

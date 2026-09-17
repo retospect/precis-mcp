@@ -163,8 +163,9 @@ claim as a whole. `get(id='fi<id>', view='links')` lists a compound's
 **If a cited `[fi<id>]` errors "not a TAPROOT:claim finding":** the
 finding either never was a hub, or was demoted to `TAPROOT:review` — a
 2026-08-04 axis-pass race (fixed), but pre-fix casualties exist. Check
-its tags (`get(id='fi<id>')`); if the sentence is meta-prose, de-cite
-the draft down to the underlying `[pc<id>]`; if it passes
+its tags (`get(id='fi<id>')`); if the sentence is meta-prose it was
+never a claim — mint a proper hub on the grounding passage
+([[precis-citation-help]]) and cite that instead; if it passes
 [[precis-taproot-mint-help]]'s "Claim admissibility" rubric, restore the
 `TAPROOT:claim` tag
 (`tag(kind='finding', id='fi<id>', add=['TAPROOT:claim'])`).
@@ -183,6 +184,6 @@ conversion.
 - [[precis-taproot-backfill-help]] — convert a draft's [pc]/[pa] cites in bulk
 - [[precis-fisheye-help]] — Claims explosion in the reference ring
 - [[precis-finding-help]] — finding lifecycle, chase, the evidence view
-- [[precis-citation-help]] — the inline [pc<id>] cite, write side
+- [[precis-citation-help]] — the four-step cite procedure (hubs only), write side
 - [[precis-draft-help]] — authoring prose that cites hubs
 - [[precis-nanopub-help]] — mint gates + claim-sentence grammar (authoring-scope) + publish pipeline

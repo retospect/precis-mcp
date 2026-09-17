@@ -27,10 +27,11 @@ doesn't survive a serious reader.
 
 1. **Claim-level citation density.** Not paragraph-level. Each
    factual assertion that isn't the author's own contribution
-   carries an inline paper-chunk handle `[pc<id>]` — the exact chunk
-   you read the claim in, copied verbatim from search/get output (the
-   chunk *is* the evidence; the export engine builds the bibliography
-   from these handles). Density target: ~1 citation per 2–3 sentences
+   carries an inline finding-hub handle `[fi<id>]` — a hub grounded
+   on the exact chunk you read the claim in (`precis-citation-help`:
+   search hubs → mint on the passage → adversarial check → cite; the
+   export engine builds the bibliography from the hubs' originator
+   papers). Density target: ~1 citation per 2–3 sentences
    in an evidence-dense section, every sentence in a literature review.
 
 2. **Distinguish own contribution from prior work.** Every claim
@@ -98,24 +99,25 @@ another); restating the brief or repeating a point across blocks.
 
 ## Output format
 
-Markdown, with inline **paper-chunk handles `[pc<id>]`** — each copied
-verbatim from search/get output, pointing at the exact chunk that
-supports the claim. Never construct or guess a handle. Multiple cites
-per claim sit together: `[pc142][pc143]`. The chunk is the evidence, so
-there is no separate footer to maintain and no `kind='citation'` ref to
-mint (that ref is an optional audit record, not how you cite); the
-export engine resolves each `[pc<id>]` to its paper and renders one
-bibliography entry per paper at compile time.
+Markdown, with inline **finding-hub handles `[fi<id>]`** — each copied
+verbatim from search/put output, a hub grounded on the exact chunk that
+supports the claim. Never construct or guess a handle, never cite a
+paper chunk directly. Multiple hubs per claim sit together:
+`[fi142][fi143]`. The hub carries the evidence, so there is no separate
+footer to maintain and no `kind='citation'` ref to mint (that ref is an
+optional audit record, not how you cite); the export engine resolves
+each `[fi<id>]` to its originator paper(s) and renders one bibliography
+entry per paper at compile time.
 
 Example:
 
 ```markdown
 Recent work shows substantial QY enhancement when CdSe cores are
-shelled with ZnS. [pc142] reported peak quantum yields of 68 ± 4 %
+shelled with ZnS. [fi142] reported peak quantum yields of 68 ± 4 %
 in CdSe/ZnS prepared by aqueous synthesis, a four-fold improvement
-over comparable core-only systems. [pc143] However, this gain
+over comparable core-only systems. [fi143] However, this gain
 depends on shell thickness; samples with shells thinner than 1.5
-monolayers showed no improvement over bare cores. [pc144]
+monolayers showed no improvement over bare cores. [fi144]
 
 We extend this work by measuring QY under continuous illumination at
 elevated temperature (60°C, 100 mW cm⁻²). Our data show…
@@ -138,12 +140,14 @@ that list and produces prose.
 - "Studies have shown" / "Research suggests" / "It is widely believed"
   — hedges that hide the source. Either cite the paper that
   showed it, or say "We do not have evidence in the corpus."
-- Paragraph-level cites only (one `[pc<id>]` at the end of a
+- Paragraph-level cites only (one `[fi<id>]` at the end of a
   paragraph that made five claims). Each claim gets its own cite.
 - Citing the abstract. Cite the result section's specific claim.
-- Writing a bare number or a made-up handle where a `[pc<id>]` belongs
-  — copy the handle from search/get output; a number in the text is
+- Writing a bare number or a made-up handle where a `[fi<id>]` belongs
+  — copy the handle from search/put output; a number in the text is
   not a citation and resolves to nothing.
+- Citing a paper chunk `[pc<id>]` directly. Ground a hub on it and
+  cite the hub — the hub is what the next writer stacks evidence on.
 - "We will discuss …" / "This paper presents …" meta-prose. The
   reader is reading; tell them what's true, not what they're about
   to read.

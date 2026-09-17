@@ -81,8 +81,9 @@ Project context`** block (your idea + personnel brief), and proceeds.
 3. **Write the prose.** Add paragraphs under each heading:
    `put(kind='draft', id='<draft>', chunk_kind='paragraph', text='…',
    at={'into':'dc<heading>', 'last': True})`. Cite *evidence* (papers)
-   with the bare paper-chunk handle `[pc<id>]` inline (copied from
-   search/get output) — never the cfp, and never a bare number.
+   with a finding-hub handle `[fi<id>]` inline (a hub grounded on the
+   paper chunk — `precis-citation-help`) — never the cfp, never a bare
+   paper chunk, never a bare number.
 4. **Check length.** `get(kind='draft', id='<draft>', view='wordcount')`
    returns each section's word count, its target, and an over/under/ok
    verdict, plus the whole-draft total. Revise sections flagged `over`

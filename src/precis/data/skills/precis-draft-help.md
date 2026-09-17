@@ -409,22 +409,23 @@ words. Two routes:
 
 | write | route | means | renders / exports |
 |---|---|---|---|
-| `[pc<id>]` paper chunk, `[pk<id>]` patent, `[fi<id>]` finding | **citation** | this passage supports the claim | `cites` edge + one bibliography entry per paper at export |
+| `[fi<id>]` finding hub (grounded on `[pc<id>]` paper / `[pk<id>]` patent chunks) | **citation** | this hub's evidence supports the claim | `cites` edge + one bibliography entry per originator paper at export |
 | `[dc<id>]` draft chunk, `[me<id>]` memory, any other kind | **link** | provenance / cross-ref | `related-to` backlink; never in the bibliography |
 | `[text](<handle>)` / `[text](https://…)` | (either) / web | display text / web link | hyperlink |
 
-Cite the **exact chunk** (`[pc234]`), not the whole paper — several
-chunks supporting one claim sit side by side: `[pc232][pc234][pc593]`.
-Export resolves each → its paper, renders `\cite{}` + one bibliography
-entry per paper; you never type `\cite{}` yourself. `[fi<id>]` exports
-the same way — its real `cite_key` once established, else a stub off
-`pub_id`; swapping for a direct paper cite later is optional, never
-automatic. A **link** (`[me<id>]`, cross-draft `[dc<id>]`) is never a
+Cite the **finding hub** (`[fi41]`), never the paper or chunk directly
+— the hub is grounded on the exact chunks (`source_handle='pc234'`), and
+several hubs backing one sentence sit side by side: `[fi41][fi92]`.
+Export resolves each hub → its originator paper(s), renders `\cite{}` +
+one bibliography entry per paper; you never type `\cite{}` yourself. A
+bare `[pc<id>]`/`[pa<id>]` is a legacy cite — convert it (backfill
+below, or by hand per `precis-citation-help`). A **link** (`[me<id>]`, cross-draft `[dc<id>]`) is never a
 citation — provenance only, dropped on removal; intra-draft `[dc<id>]`
 cross-refs stay document-internal (TOC/`\ref`), not a graph edge.
 
 **Rigor.** Must **directly support the specific claim** — read the
-cited chunk first (`get(id='pc<id>')`). Too weak? **Soften** ("suggests")
+hub's evidence first (`get(id='fi<id>', view='evidence')`), then the
+grounding chunk (`get(id='pc<id>')`). Too weak? **Soften** ("suggests")
 or **find a better source** (prefer the primary); never cite
 topically-related-but-non-supporting work, or a stronger claim than the
 source makes. Match strength to evidence: single study → tentative;
@@ -519,15 +520,16 @@ or silenced, a token stops being hinted; reference a term with
 5. **Still nothing?** Soften the claim to match the evidence, or drop it.
 
 Never invent a paper-chunk handle or write `paper:slug` for a paper not
-held — cite the in-flight `[fi<id>]` finding until `[pc<id>]` lands. See
+held — cite the in-flight chase `[fi<id>]` until the paper lands and a
+hub is grounded on it. See
 `precis-stubs-help`, `precis-auto-todo-help`, `precis-paper-help`.
 
 ## Audit the draft — hygiene checks & the gap-finder
 
 Two things the runtime flags before export: an undefined abbreviation
 (see *Define an abbreviation*, above) and a citation that resolves to
-nothing (see *References in prose*, above — cite the exact `[pc<id>]`
-chunk, never the whole paper). Neither needs a hand-maintained
+nothing (see *References in prose*, above — cite a `[fi<id>]` hub
+grounded on the exact chunk, never the paper). Neither needs a hand-maintained
 bibliography footer — citation handles resolve to one entry per paper at
 export. Skim the **outline** (`get(kind='draft', id=…)`) first — cheapest
 place to catch both; its hygiene footer truncates each list to 8 entries.

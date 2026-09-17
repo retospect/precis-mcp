@@ -1,7 +1,7 @@
 ---
 id: precis-check-source-help
 title: precis — find a passage, read its surrounds, check it supports the point
-summary: reader-side source-checking — locate the passage by chunk handle, fetch the chunks around it (~A..B range), judge whether it actually supports the claim, then cite it inline as [pc<id>]
+summary: reader-side source-checking — locate the passage by chunk handle, fetch the chunks around it (~A..B range), judge whether it actually supports the claim, then ground a finding hub on it and cite the hub [fi<id>]
 answers:
   - how do I find the passage in a paper that backs a claim I want to cite?
   - how do I read the context around a chunk before citing it?
@@ -18,9 +18,9 @@ kinds: [paper, finding]
 Before you cite a passage — or when you're reviewing one someone else
 cited — you do three things: **find** the passage, **read its
 surrounds**, and **judge** whether it really supports the claim. Then
-you cite it inline by its chunk handle `[pc<id>]`. This is the reader
-side; the write side (the inline cite + optional verification record)
-is [[precis-citation-help]].
+you ground a finding hub on it and cite the hub `[fi<id>]` — the
+chunk is never the cite. This is the reader side; the write side (hub
+search → mint → adversarial check → cite) is [[precis-citation-help]].
 
 The failure this prevents: a quote that looks supportive in isolation
 but is hedged, negated, or about a different system once you read the
@@ -104,22 +104,28 @@ back to the paper that actually did the work
 beats a hearsay cite.
 
 ## I confirmed the passage supports the claim — now what?
-## Cite the chunk inline
+## Ground a hub on the chunk, cite the hub
 
-Drop the chunk handle directly in the sentence it supports — the chunk
-*is* the evidence, so there is no quote to copy:
+The verified chunk is a hub's **grounding**, never the cite itself.
+Search for a hub that asserts the claim, attach the chunk to it or mint
+one on it, run the adversarial check, then write the hub's handle:
 
-```text
-Aqueous synthesis yields higher quantum yields than hot-injection [pc7].
+```python
+search(kind="finding", q="<the claim>", status="*", mode="semantic")
+link(kind="finding", id="fi<id>", rel="corroborates", target="pc7")  # hub exists
+put(kind="finding", title="<one self-contained claim sentence>",
+    supporters=[{"paper": "pa<id>", "source_handle": "pc7"}])  # no hub yet
 ```
 
-Several supporting chunks list together: `[pc232][pc234][pc593]`. The
-handle is the one you just read and verified — copy it from the search /
-get output, never construct it. At compile time the export engine
-resolves each `[pc<id>]` → its paper and emits `\cite{}` plus one
-bibliography entry per paper; you never type `\cite{}` or `\citequote{}`.
-Optionally also persist a `kind='citation'` verification record — see
-[[precis-citation-help]].
+```text
+Aqueous synthesis yields higher quantum yields than hot-injection [fi41].
+```
+
+The `source_handle` is the chunk you just read and verified — copy it
+from the search / get output, never construct it. Export resolves each
+`[fi<id>]` → its originator paper(s) and emits one bibliography entry
+per paper; you never type LaTeX citation commands. The full procedure,
+including the adversarial search: [[precis-citation-help]].
 
 ## Triage excerpts are not citation-grade
 
@@ -130,14 +136,14 @@ or the `~A..B` range) and read it before you cite.
 
 ## Reviewing someone else's citation (the faithfulness check)
 
-Checking that each inline `[pc<id>]` in a manuscript actually resolves
-to a chunk that supports the claim it sits beside is the same skill at
+Checking that each inline `[fi<id>]` in a manuscript resolves to a
+hub whose grounding chunks support the claim it sits beside is the same skill at
 scale — one finding per unsupported or dangling handle. That review
 pass is [[precis-review-citation-faithfulness]].
 
 ## See also
 
-- [[precis-citation-help]] — write side: the inline `[pc<id>]` cite + optional record.
+- [[precis-citation-help]] — write side: hub search → mint → adversarial check → `[fi<id>]` cite.
 - [[precis-cite-paper-help]] — the cite-a-paper router.
 - [[precis-paper-help]] — `~A..B` grammar, TOC, scoped search.
 - [[precis-finding-help]] — chase a claim to its primary source.

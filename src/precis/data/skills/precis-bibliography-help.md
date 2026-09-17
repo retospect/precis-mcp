@@ -5,7 +5,7 @@ summary: read side of citations — list verified claims pointing at a paper wit
 answers:
   - how do I see which claims have been verified against a paper?
   - what does each column in a bibliography listing mean?
-  - what's the difference between the bibliography (kind='citation') and an inline [pc<id>] cite?
+  - what's the difference between the bibliography (kind='citation') and an inline [fi<id>] cite?
   - how do I find citations across all papers, not just one?
 applies-to: get (kind='paper', view='bibliography')
 status: active
@@ -20,9 +20,10 @@ verified `citation` records pointing at it **and** the drafts that
 cite it inline. Read-side counterpart to authoring citations
 (`precis-draft-help`).
 
-When a draft cites a paper inline by writing a bare paper-chunk handle
-`[pc<id>]`, that handle resolves to its paper and materialises a
-`cites` graph edge from the draft to the paper. So drafts now surface
+When a draft cites a finding hub inline (`[fi<id>]`), or a legacy bare
+paper-chunk handle `[pc<id>]`, the cite resolves to the paper(s) behind
+it and materialises a `cites` graph edge from the draft to the paper.
+So drafts surface
 here in "who cites this paper" alongside `citation` records —
 citations are to the literature, and a draft pointing at a paper chunk
 is exactly that. (A draft pointing at a memory or another draft via
@@ -83,8 +84,9 @@ across the corpus, query the `citation` kind directly.
 ## Bibliography vs short-form citation
 
 The bibliography lists *what cites this paper*. To cite the paper
-itself in a draft you write a bare paper-chunk handle `[pc<id>]`
-inline (see `precis-draft-help`) — you never hand-author a BibTeX key;
+in a draft you write a finding-hub handle `[fi<id>]` inline, the hub
+grounded on the paper's chunk (see `precis-citation-help`) — you never
+hand-author a BibTeX key;
 the export engine renders `\cite{}` + one bibliography entry per paper
 at compile time. To fetch a short-form entry for external use:
 
@@ -101,7 +103,7 @@ appear in the bibliography so the audit trail survives.
 
 ## See also
 
-- [[precis-draft-help]] — write-side: inline [pc<id>] citations in a draft
+- [[precis-draft-help]] — write-side: inline [fi<id>] citations in a draft
 - [[precis-citation-help]] — the citation kind + verifier loop
 - [[precis-paper-help]] — paper views, pa<id> handle, short-form cite
 - [[precis-link-help]] — the cites relation in the graph
