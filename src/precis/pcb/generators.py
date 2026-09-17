@@ -240,20 +240,22 @@ _HV_SEPARATION_V_SCALE = 0.002
 #: the stub's own residual half-width at its closest approach and
 #: ordinary coordinate-rounding noise.
 #:
-#: **pcb-pre-place-route-blocks Slice 2 finding, NOT fixed here: the stub
-#: is no longer near-zero-width at the corner.** Round 4's number was
+#: **pcb-pre-place-route-blocks Slice 2 finding, since CLOSED (see
+#: ``resolve_ewod_sizing``'s own ``stub_width`` derivation, not here): the
+#: stub is no longer near-zero-width at the corner.** Round 4's number was
 #: calibrated for a TAPERED footprint-pad neck (:func:`_stub_polygon`, now
 #: retired), whose width right at the pinch point was ~0 — "a separate,
 #: much smaller effect" this docstring used to say. Slice 2 replaced the
 #: taper with a CONSTANT-width track (:func:`_stub_track_row`) the full
 #: length, so the copper occupies ``stub_width/2`` of the corridor
-#: everywhere, including at the corner — at default sizing this can read
-#: a couple hundredths of a mm under the fab's absolute clearance floor
-#: (see ``resolve_ewod_sizing``'s own ``plaza_corner_chamfer`` comment for
-#: why a naive margin widening was tried and reverted: it fixed this but
-#: opened a WORSE, unrelated zigzag-wall regression). Left as a known,
-#: documented gap for a dedicated follow-up geometry round rather than a
-#: guessed-at fix.
+#: everywhere, including at the corner — at default sizing this read a
+#: couple hundredths of a mm under the fab's absolute clearance floor. A
+#: naive fix WIDENING THIS MARGIN was tried and reverted: it closed the
+#: gap but opened a WORSE, unrelated zigzag-wall regression (still true —
+#: do not widen this margin). The actual fix instead NARROWS the track:
+#: ``resolve_ewod_sizing`` derives the widest ``stub_width`` that still
+#: leaves the fab floor intact against this exact corridor (which this
+#: margin defines the width of), independent of the margin itself.
 _PLAZA_CORNER_CHAMFER_MARGIN_MM = 0.01
 
 #: 1 micron. The electrode-gap net class's ``clearance_mm`` (below) is set
@@ -531,6 +533,30 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # this clamp) so `plaza_corner_chamfer` below can be derived from the
     # SAME final width the track will actually be drawn at.
     stub_width = min(stub_width_uncapped, gap)
+    # pcb-pre-place-route-blocks Slice 2 geometry residue, CLOSED here: a
+    # constant-width track (unlike round 4's near-zero-width taper) eats
+    # `stub_width/2` of the corridor the plaza-corner chamfer opens, at
+    # its own closest approach right at the flanking corner. That corridor
+    # is `gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM` wide, by construction of
+    # `plaza_corner_chamfer` below (the chamfer's whole job is to retreat
+    # the corner out to exactly that distance from the escape centreline).
+    # Deriving the widest `stub_width` that still leaves the fab's own
+    # absolute clearance floor (jlc_min `trace_spacing_mm` -- the ERROR
+    # tier `check_clearance` actually enforces regardless of any net-class
+    # override, module docstring) intact -- plus the same rounding slack
+    # used elsewhere for shapely/coordinate-rounding noise -- is the fix
+    # the module docstring's "tried and reverted" note explicitly did NOT
+    # take (widening the chamfer MARGIN instead, which regressed the
+    # mesh-wall zigzag clearance): this narrows the TRACK, which is
+    # load-bearing only against this exact corridor, never against
+    # anything the chamfer margin itself also protects.
+    _trace_spacing_floor = float(cap.jlc_min.get("trace_spacing_mm") or 0.09)
+    _corridor = gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM
+    _max_stub_for_corridor = 2.0 * (
+        _corridor - _trace_spacing_floor - _GEOMETRY_ROUNDING_SLACK_MM
+    )
+    if _max_stub_for_corridor > 0.0:
+        stub_width = min(stub_width, _max_stub_for_corridor)
     edge = params.get("edge") or {}
     tooth_depth = float(edge.get("tooth_depth", _DEFAULT_TOOTH_DEPTH_MM))
     tooth_pitch = float(edge.get("tooth_pitch", _DEFAULT_TOOTH_PITCH_MM))
@@ -579,7 +605,7 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # aware widening here.** Naively growing this margin to also cover the
     # constant-width track's own half-width (replacing the near-zero
     # taper -- _PLAZA_CORNER_CHAMFER_MARGIN_MM's own docstring) fixed the
-    # track-vs-neighbour clearance this docstring flags below, but
+    # track-vs-neighbour clearance this docstring used to flag, but
     # introduced a WORSE, un-related regression: the wider chamfer shrinks
     # the flat run each MESHING wall gets before `_edge_sign`'s own
     # tooth-transition margin kicks in, which measurably tightened the
@@ -588,15 +614,15 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # default sizing -- worse than the 0.065mm the stub itself caused).
     # That is exactly the class of subtle mesh-wall interaction rounds
     # 2-4 above each needed a dedicated stress-test pass to pin down, not
-    # a one-line margin bump -- left for a follow-up round rather than
-    # guessed at here. **Known consequence, left open**: at DEFAULT
-    # sizing, a diagonal escape's stub track can read 0.02-0.03mm under
-    # the fab's absolute clearance floor against its two flanking
-    # neighbours' bodies (``tests/test_pcb_ewod_generator_drc.py``'s
-    # ``test_diagonal_escape_stub_track_clearance_is_a_known_gap`` pins
-    # the exact figure) -- a wider ``gap``/narrower ``stub_width`` author
-    # override clears it today; closing it for the DEFAULT sizing needs
-    # its own geometry round.
+    # a one-line margin bump. **Fixed instead by narrowing the TRACK, not
+    # this margin**: `stub_width` above is capped to the widest value that
+    # still leaves the fab's absolute clearance floor intact against this
+    # exact corridor (``gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM``), so the
+    # corridor this chamfer opens stays exactly as wide as it always was
+    # -- nothing here changed -- and the diagonal escape's stub track
+    # clears its two flanking neighbours' bodies by construction
+    # (``tests/test_pcb_ewod_generator_drc.py``'s
+    # ``test_diagonal_escape_stub_track_clearance_stays_clean`` pins this).
     plaza_corner_chamfer = (
         math.sqrt(2.0) * (gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM) - gap
     )
