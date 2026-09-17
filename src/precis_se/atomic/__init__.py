@@ -19,6 +19,13 @@ nm's domain modules land here as submodules rather than inline:
   Å-native by design: generator math stays in ångström (the atomistic
   enclave convention, ``docs/backlog/structure-unit-enclave.md``), and
   the m↔Å crossing happens once, at the envelope's ingest boundary.
+  The ``hexfold`` generator integrates the standalone topology-only
+  ``.hx`` notation package (sheets/tubes/cones/fullerenes/defects/
+  attachments as one spec text; geometry derived, never authored),
+  vendored at ``src/hexfold`` (its own spec ``src/hexfold/spec.md``;
+  never imports precis) and imported directly; ``params.fidelity``
+  ``check|stick`` picks report-only vs stick-preview coordinates — see
+  ``docs/backlog/hexfold-integration.md``.
 - :mod:`precis_se.atomic.mechanics` — the L4 closed-form mechanics
   ceilings (Euler buckling, rupture force, bend stiffness). Signatures
   keep Å/nN/eV deliberately: these are cost terms *over* the geometry,

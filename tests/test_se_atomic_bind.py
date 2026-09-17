@@ -593,7 +593,7 @@ def test_a_structure_binding_and_atomic_mode_agree_in_drc(
 
 
 def test_the_generator_registry_is_reachable_from_se() -> None:
-    assert set(GENERATORS) == {"cnt", "fullerene", "cone", "cyclodextrin"}
+    assert set(GENERATORS) == {"cnt", "fullerene", "cone", "cyclodextrin", "hexfold"}
 
 
 def test_unknown_generator_names_the_known_ones(handler: SeHandler) -> None:

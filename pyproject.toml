@@ -428,6 +428,7 @@ all = ["precis-mcp[embed,paper,web]"]
 precis = "precis.cli:main"
 asa-bot = "asa_bot.__main__:main"
 asa-slack = "asa_slack.__main__:main"
+hexfold = "hexfold.cli:main"
 
 # Core kinds use an in-tree `BUILTINS` registry (V2 dropped entry-point
 # discovery for them). The three groups below are the THIRD-PARTY / plugin
@@ -543,7 +544,7 @@ dev = [
 autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_se"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_se", "src/hexfold"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
@@ -705,6 +706,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B007", "E402", "E731", "E741", "F841", "RUF012", "RUF015", "RUF059", "UP036"]
 "src/**" = ["E402", "RUF059"]
+# The U+00D7 repeat marker is required by the hexfold notation format.
+"src/hexfold/text.py" = ["RUF001", "RUF002"]
+"tests/hexfold/*" = ["RUF001", "RUF002"]
 
 [tool.mypy]
 python_version = "3.12"

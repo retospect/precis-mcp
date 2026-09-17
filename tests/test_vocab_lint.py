@@ -29,6 +29,11 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 _GLOSSARY = _ROOT / "docs" / "glossary.md"
 _SRC_SKIP = {"data", "migrations", "__pycache__"}
+# Vendored packages that ship on their own (never import precis, exported as
+# their own pip later — tests/test_hexfold_import_boundary.py) keep their own
+# vocabulary; their public types (hexfold's `Finding`, spec §13) are not
+# precis homonyms to police.
+_VENDORED = {"src/hexfold"}
 
 
 def _src_files() -> list[Path]:
@@ -36,6 +41,9 @@ def _src_files() -> list[Path]:
         p
         for p in _ROOT.glob("src/**/*.py")
         if not _SRC_SKIP & set(p.relative_to(_ROOT).parts)
+        and not any(
+            p.relative_to(_ROOT).as_posix().startswith(v + "/") for v in _VENDORED
+        )
     ]
 
 

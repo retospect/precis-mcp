@@ -42,7 +42,12 @@ continued): ``cyclodextrin`` (alpha/beta/gamma-CD,
 + a loud cavity-diameter check, falling back to a Cn-symmetric idealized
 template) rather than the closed-form-only construction the sp² family
 uses; L4 mechanics-ceiling metrics (build order (iii)) live in
-:mod:`precis_se.atomic.mechanics`, not this registry.
+:mod:`precis_se.atomic.mechanics`, not this registry. Round 4:
+``hexfold`` (:mod:`precis_se.atomic.generators.hexfold_spec`) — the whole
+curved-sp² family behind one ``spec`` text param (topology-only `.hx`
+notation; sheets/tubes/cones/fullerenes/defects/attachments as one
+compiler), with hexfold itself a lazy optional import, not a declared
+dependency.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ from precis_se.atomic.generators._types import (
     GeneratedPort,
     GeneratorError,
 )
+from precis_se.atomic.generators.hexfold_spec import build_hexfold
 from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
 from precis_se.atomic.generators.sugars import build_cyclodextrin
 
@@ -69,6 +75,7 @@ GENERATORS: dict[str, Generator] = {
     "fullerene": build_fullerene,
     "cone": build_cone,
     "cyclodextrin": build_cyclodextrin,
+    "hexfold": build_hexfold,
 }
 
 __all__ = [

@@ -107,7 +107,7 @@ class PendingGenerate:
 
 def prepare_generate(
     store: Store, tree: SeTree, op: dict[str, Any], design_slug: str
-) -> tuple[str, PendingGenerate]:
+) -> tuple[str, PendingGenerate | None]:
     """``{"op": "generate", "generator": <name>, "params": {...}, "name":
     <new block name>, "parent"?/"pose"?/"rot"?: ...}`` — the pure/in-memory
     half (module docstring): runs a pure builder (params → a
@@ -127,10 +127,17 @@ def prepare_generate(
     ``(i, j, order, kind)`` quadruples — never a hardcoded aromatic order
     for every family (gripe 279306: an all-``order=1.5`` assignment
     over-sums an all-sp² atom's declared valence budget, 3 × 1.5 = 4.5 >
-    carbon's max valence of 4). Every atom's ``hybridization`` is set
-    uniformly from :attr:`~precis_se.atomic.generators.GeneratedBlock.
-    hybridization`. Returns the caller-facing echo string plus the deferred
-    write."""
+    carbon's max valence of 4). Each atom's ``hybridization`` comes from
+    :attr:`~precis_se.atomic.generators.GeneratedBlock.hybridizations`
+    when the generator set a per-atom list, else uniformly from
+    :attr:`~precis_se.atomic.generators.GeneratedBlock.hybridization`.
+
+    A generator may instead return a **dry-run** block
+    (:attr:`~precis_se.atomic.generators.GeneratedBlock.dry_run` — a
+    check/report-only result): its rendered report goes to the caller as
+    the echo and the pending write is ``None``, so nothing enters the
+    tree and nothing is minted. Returns the caller-facing echo string
+    plus the deferred write."""
     gen_name = op.get("generator")
     if not gen_name or not str(gen_name).strip():
         raise BadInput("generate needs 'generator'")
@@ -154,6 +161,14 @@ def prepare_generate(
         block = builder(params)
     except GeneratorError as exc:
         raise BadInput(f"generate({gen_name!r}): {exc}") from exc
+
+    # Dry-run (``block.dry_run``, e.g. the hexfold generator's check-only
+    # mode): the block carries the rendered report as its provenance and
+    # nothing else — no slug preflight, no add_block, no structure mint.
+    # The caller gets the report as the echo and a ``None`` pending, so
+    # the deferred-write half has nothing to finish.
+    if block.dry_run:
+        return f"{gen_name} dry-run for block {block_name!r}:\n{block.provenance}", None
 
     # Slug-collision preflight: structure_save is create-or-replace, and
     # "axle"-style block names are exactly the shared vocabulary a
@@ -207,14 +222,18 @@ def prepare_generate(
 
     scene = StructScene(cell=generated_cell(block.coords))
     labels: list[str] = []
-    for element, cart in zip(block.elements, block.coords, strict=True):
+    for i, (element, cart) in enumerate(zip(block.elements, block.coords, strict=True)):
         label = scene.next_label(element)
         frac = scene.cell.wrap(scene.cell.cart_to_frac(np.asarray(cart, dtype=float)))
         scene.atoms[label] = StructAtom(
             label=label,
             element=element,
             frac=frac,
-            hybridization=block.hybridization,
+            hybridization=(
+                block.hybridizations[i]
+                if block.hybridizations is not None
+                else block.hybridization
+            ),
         )
         labels.append(label)
     for i, j, order, kind in block.bonds:

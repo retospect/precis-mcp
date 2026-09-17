@@ -289,13 +289,17 @@ efficiency read in isolation overstates the link.
   `unbind_structure` clears a block's binding and every one of its
   ports'.
 - `generate` — **atomic mode.** `generator` `cnt|fullerene|cone|
-  cyclodextrin`, `params` (dict), `name` (new block) · `parent`/`pose`/
+  cyclodextrin|hexfold`, `params` (dict), `name` (new block) · `parent`/`pose`/
   `rot` passthrough. One op = a canonical block whose atoms follow from
   math, no LLM: mints a `structure` design at `<design>-<name>` holding
   the generated atoms, adds the block (envelope + ports + topology
   facts), and binds it — the echo names the minted slug. A `structure`
   design already living at the target slug is a loud rejection —
-  `generate` never overwrites.
+  `generate` never overwrites. `hexfold` takes `params.spec` (a `.hx`
+  spec text: tubes/cones/fullerenes/holes/nanobud attachments as one
+  topology-only notation — `precis-hexfold-help`) and `params.fidelity`
+  (`check|stick`, default `stick`; `check` is a report-only preview that
+  mints nothing; `dry_run` is a deprecated alias for `fidelity="check"`).
 
 ## The axial member (ties, struts, rods, spokes)
 

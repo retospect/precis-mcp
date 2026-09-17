@@ -105,7 +105,8 @@ def apply_ops_with_atomic(
         if name == "generate":
             echo, pending = prepare_generate(store, tree, op, design_slug)
             echoes.append(echo)
-            pending_generates.append(pending)
+            if pending is not None:  # dry-run blocks mint nothing
+                pending_generates.append(pending)
             continue
         try:
             apply_ops(tree, [op])

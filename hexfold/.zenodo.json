@@ -1,0 +1,19 @@
+{
+  "title": "hexfold: a SMILES-like notation for curved sp2 carbon as defect placement on a hexagonal lattice",
+  "description": "<p>hexfold is an interchange notation and Python library for curved sp2 carbon allotropes (nanotubes, cones, sheets, fullerenes, caps, nanobuds and their junctions) expressed as defect placement on a hexagonal lattice. A .hx text file is parsed into a topology-only Net with stable atom IDs, checked against Euler/curvature counting and valence rules, canonicalised, and optionally rendered as a rubber-stick preview model. Coordinates are derived, never stored. The format specification is SPEC.md.</p>",
+  "upload_type": "software",
+  "license": "MIT",
+  "access_right": "open",
+  "creators": [
+    { "name": "Stamm, Reto" }
+  ],
+  "keywords": [
+    "carbon nanotube",
+    "fullerene",
+    "nanobud",
+    "graphene",
+    "topology",
+    "Euler characteristic",
+    "interchange format"
+  ]
+}

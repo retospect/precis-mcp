@@ -65,6 +65,12 @@ _CASES: dict[str, dict[str, object]] = {
     "fullerene": {"atoms": 60},
     "cone": {"pentagons": 2, "length_A": 12.0},
     "cyclodextrin": {"variant": "alpha"},
+    "hexfold": {
+        "spec": (
+            "hexfold 0.1\n\nlattice: element=C sigma=1.42\n\n"
+            "origin post\npost: tube(5,5,len=2)\n"
+        )
+    },
 }
 
 

@@ -66,6 +66,13 @@ class GeneratedPort:
     direction: list[float]
     roles: list[str] = field(default_factory=lambda: ["covalent"])
     expected_element: str | None = None
+    #: For a *ring* port (hexfold-style rim openings): the full dangling
+    #: ring of atom indices this port can bond across — ``atom_index``
+    #: stays atom 0 of that ring for back-compat binding. ``None`` for a
+    #: single-atom port. Carried through the block's ``topology`` (the
+    #: handler's ``add_port`` op has no column for it — the ring-port hook
+    #: named in docs/backlog/hexfold-integration.md).
+    atoms: list[int] | None = None
 
 
 @dataclass
@@ -114,3 +121,14 @@ class GeneratedBlock:
     #: (:mod:`precis_se.atomic.generators.sugars`) is the first sp³ family and
     #: sets ``"sp3"``.
     hybridization: str = "sp2"
+    #: Per-atom hybridization override, parallel to ``elements`` — used by
+    #: ``prepare_generate`` in place of the uniform :attr:`hybridization`
+    #: when set (mixed-hybridization families: a hexfold net with sp³
+    #: attachment sites stamps ``"sp2"``/``"sp3"`` per atom). ``None``
+    #: keeps the uniform fallback.
+    hybridizations: list[str] | None = None
+    #: ``True`` for a check-only result (hexfold ``dry_run``): no atoms,
+    #: no ports, ``provenance`` carries the rendered report, and
+    #: ``prepare_generate`` returns a ``None`` pending — nothing is added
+    #: to the tree or minted.
+    dry_run: bool = False
