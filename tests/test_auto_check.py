@@ -90,6 +90,38 @@ def test_validate_known_registry_keys() -> None:
 # ── put-time validation surfaces through TodoHandler ───────────────
 
 
+def test_validate_paper_ingested_requires_identifier() -> None:
+    # The shape an agent reaches for first (a paper ref id) is not an
+    # identifier the evaluator can resolve — refuse it at write time
+    # instead of raising on every runner pass (td338232).
+    with pytest.raises(BadInput, match="needs an identifier"):
+        validate_auto_check_spec({"type": "paper_ingested", "paper": "pa338225"})
+    validate_auto_check_spec({"type": "paper_ingested", "doi": "10.1/x"})
+    validate_auto_check_spec({"type": "paper_ingested", "arxiv": "2401.00001"})
+
+
+def test_pass_parks_unevaluable_spec_once(store: Store) -> None:
+    # A row written before the per-evaluator validator existed: the
+    # runner must park it ONCE (auto-timeout + spec-error event), not
+    # log an ERROR and retry it on every pass.
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="wait for pa1",
+        meta={"auto_check": {"type": "paper_ingested", "paper": "pa1"}},
+    )
+    result = run_auto_check_pass(store, limit=50)
+    assert result.failed >= 1
+    tags = {str(t) for t in store.tags_for(ref.id)}
+    assert "STATUS:auto-timeout" in tags
+    events = [e for e in store.events_for(ref.id) if e.event == "spec-error"]
+    assert len(events) == 1
+    # Parked rows leave the candidate set: a second pass is a no-op.
+    run_auto_check_pass(store, limit=50)
+    events = [e for e in store.events_for(ref.id) if e.event == "spec-error"]
+    assert len(events) == 1
+
+
 def test_put_with_unknown_auto_check_type_rejected(handler: TodoHandler) -> None:
     with pytest.raises(BadInput, match="not a registered evaluator"):
         handler.put(

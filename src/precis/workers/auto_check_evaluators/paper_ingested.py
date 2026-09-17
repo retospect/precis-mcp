@@ -70,6 +70,16 @@ def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:
     return row is not None
 
 
+def validate(spec: dict[str, Any]) -> None:
+    """Write-time check: the spec must name one identifier.
+
+    Without this a ``{"type": "paper_ingested", "paper": "pa123"}``
+    spec (the shape an agent reaches for first) passes the registry
+    validator and then raises on every runner pass forever.
+    """
+    _select_identifier(spec)
+
+
 def _select_identifier(spec: dict[str, Any]) -> tuple[str, str]:
     """Pick the identifier kind + value from the spec.
 

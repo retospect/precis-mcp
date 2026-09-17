@@ -88,6 +88,7 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
 
 ## Log
 
+- **2026-09-16** — Healthy; no long-runners, bloat all <5%. `app_settings` seq_scans 8.6M (3x from 2026-08-23's 2.9M) — the 13-row table is polled hot; `docs/backlog/db-resident-settings.md` (cache TTL) is now the actionable fix. Known drop candidates unchanged: `llm_call_log` request/response hash indexes (~206 MB, lifetime idx_scan 0/2) — verify-then-drop migration pending since 2026-08-07. `ref_tags` seq_scan/size ratio climbing (199k on 120 MB).
 Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict.
 
 - **2026-08-26** — Healthy; re-confirms 2026-08-23 (which the DUE detector

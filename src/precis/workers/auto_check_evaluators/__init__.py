@@ -22,6 +22,7 @@ re-implement that surface here.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.errors import BadInput
@@ -43,7 +44,13 @@ if TYPE_CHECKING:
 
 
 class Evaluator(Protocol):
-    """Evaluator surface — one callable per ``type``."""
+    """Evaluator surface — one callable per ``type``.
+
+    Contract: raise ``BadInput`` ONLY for a spec-shape problem the
+    caller can fix (the runner parks such a row once as
+    ``auto-timeout``/``spec-error``); a store or backend failure must
+    surface as any other exception so the row is retried next pass.
+    """
 
     def __call__(
         self, store: Store, spec: dict[str, Any], *, ref_id: int
@@ -70,6 +77,14 @@ REGISTRY: dict[str, Evaluator] = {
     "netlist_drc_clean": netlist_drc_clean.evaluate,
 }
 
+# Optional write-time argument validators, keyed like REGISTRY. An
+# evaluator earns an entry by exposing ``validate(spec) -> None`` that
+# raises BadInput; it is called from validate_auto_check_spec after the
+# shared type / on_resolve / timeout_at checks.
+VALIDATORS: dict[str, Callable[[dict[str, Any]], None]] = {
+    "paper_ingested": paper_ingested.validate,
+}
+
 
 def validate_auto_check_spec(spec: Any) -> None:
     """Reject obviously-malformed ``meta.auto_check`` blocks at write time.
@@ -81,10 +96,11 @@ def validate_auto_check_spec(spec: Any) -> None:
     * ``spec['timeout_at']``, if present, is an ISO-shaped string
       (parseable by :func:`datetime.datetime.fromisoformat`).
 
-    Per-evaluator argument validation runs lazily at evaluator
-    dispatch — this keeps the registry's surface tight and means
-    a future evaluator with a complicated arg shape doesn't have
-    to also register a validator.
+    Per-evaluator argument validation is opt-in: an evaluator module
+    that exposes ``validate(spec)`` is called here too (see
+    :data:`VALIDATORS`), so a spec that can never evaluate is refused
+    at the handler boundary instead of raising on every runner pass.
+    Evaluators without one keep validating lazily at dispatch.
     """
     if not isinstance(spec, dict):
         raise BadInput(
@@ -129,6 +145,9 @@ def validate_auto_check_spec(spec: Any) -> None:
                 f"meta.auto_check.timeout_at is not parseable: {exc}",
                 next="timeout_at='YYYY-MM-DDTHH:MM:SS+00:00' (ISO 8601)",
             ) from exc
+    validator = VALIDATORS.get(type_name)
+    if validator is not None:
+        validator(spec)
 
 
-__all__ = ["REGISTRY", "Evaluator", "validate_auto_check_spec"]
+__all__ = ["REGISTRY", "VALIDATORS", "Evaluator", "validate_auto_check_spec"]

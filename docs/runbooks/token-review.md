@@ -53,6 +53,19 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-09-16** — sampled the 8 largest sessions since 09-02 (2.5–16.8 MB,
+  main + 6 worktrees). Rule D (`sed -n`/`cat` instead of rtk/Read) still
+  prose-only and still regressing: 78 raw un-rtk'd calls >5 KB (~606 KB) across
+  all 8, worst `ad9a29e6` (25 calls/183 KB) and `32f60212` (23 calls/212 KB).
+  Rule F recurred a third time: `32f60212` = 10-day, 806-Bash/198-Edit/46-Write
+  session with ZERO Agent dispatches; the 09-02 "build the delegation nudge now"
+  is still unshipped (`bash-reflex-nudge.py` implements only Rules A–C). New
+  pattern: `TaskOutput {block:true,timeout:600000}` re-polled on the SAME
+  task_id 3–12x (~32 KB/call regardless of status) instead of `Monitor`, ~778 KB
+  across 5/8 sessions (`be5a0b9a` worst, 259 KB); the two Monitor-only sessions
+  show ~0 such bytes — Rule E's failure mode via the native tool, uncovered by
+  any hook. Compact-thrash re-reads mild (2–3x/file). All folded into
+  `token-review-hook-gaps`; nothing filed standalone.
 - **2026-09-02** — sampled 6 largest sessions since 08-23 (4.1-73 MB; top one
   4x the next-largest — a 5-day, 25023-line PCB place+route marathon,
   `8b8de41e`/humble-honking-plum). All findings folded into

@@ -12,7 +12,9 @@ each to the registered evaluator, and either:
   when X" rather than "X completes this"; or
 * flips ``STATUS:...`` → ``STATUS:auto-timeout`` when
   ``meta.auto_check.timeout_at`` is in the past, appending an
-  ``auto-timeout`` event.
+  ``auto-timeout`` event; the same flip with a ``spec-error`` event
+  when the evaluator rejects the spec outright (``BadInput``), so an
+  unevaluable row is parked once instead of erroring every pass.
 
 A leaf that resolves and a leaf that times out are mutually
 exclusive on any single pass; the timeout check fires first so a
@@ -31,6 +33,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.auto_check_evaluators import REGISTRY
@@ -68,11 +71,26 @@ def run_auto_check_pass(store: Store, *, limit: int = 50) -> BatchResult:
     for ref_id, spec in candidates:
         try:
             handled = _process_one(store, ref_id, spec)
+        except BadInput as exc:
+            # The spec can never evaluate (a row that pre-dates the
+            # per-evaluator write-time validator, or one written
+            # around it). Retrying it every pass is a permanent
+            # ERROR-per-pass leak (td338232: 200+/day for a week), so
+            # park it ONCE as auto-timeout with the reason on the
+            # event row; the operator sees it in the timed-out view.
+            _flip_status(store, ref_id, to="auto-timeout", event="spec-error")
+            log.error(
+                "auto_check: todo id=%d has an unevaluable spec → "
+                "STATUS:auto-timeout (spec-error): %s",
+                ref_id,
+                exc,
+            )
+            n_timeout += 1
+            continue
         except Exception:
-            # An evaluator throwing on bad spec is a write-time bug
-            # (validate_auto_check_spec should have caught it). Log
-            # loudly so the bad row gets noticed; don't crash the
-            # whole pass — the next leaf may be fine.
+            # A genuine evaluator crash (backend down, bug). Log
+            # loudly; don't crash the whole pass — the next leaf may
+            # be fine — and leave the row for the next pass.
             log.exception("auto_check: evaluator raised on todo id=%d", ref_id)
             continue
         if handled == "done":

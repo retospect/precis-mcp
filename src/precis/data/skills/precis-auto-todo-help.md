@@ -69,7 +69,11 @@ timeout passes before the evaluator resolves, the leaf flips to
 `STATUS:auto-timeout` rather than resolving, and no further
 evaluation happens; and `on_resolve: 'done'|'open'` — what
 resolution does (`'done'` completes the leaf, `'open'` wakes it —
-see Pattern 3).
+see Pattern 3). Evaluator arguments are checked at `put` time where
+the evaluator can (`paper_ingested` refuses a spec with no
+`doi`/`arxiv`/`s2`/`pubmed` — a `paper: 'pa…'` ref id is NOT an
+identifier); a row that slips through is parked `STATUS:auto-timeout`
+with a `spec-error` event on its first pass.
 
 ## Pattern 1 — wait on the ingest pipeline
 

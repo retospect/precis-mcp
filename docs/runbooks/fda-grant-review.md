@@ -167,3 +167,4 @@ Then append a dated line to the `## Log` below.
   `/opt/precis/embedder-venv` (precis_embedder role). Currently granted, so no
   outage; rebuild them onto the python.org framework before the next cycle
   (due 2026-10-09).
+- **2026-09-16** — Audit pass (7d; the DUE flag was the script reading the oldest-first log — fixed): melchior + balthazar nas_ok=true; caspar absent from host_heartbeat (investigate separately). All python.org interpreters (3.12 + 3.14) Developer-ID signed and TCC-granted (auth_value=2), pinned. Drift persists: three venvs still on Homebrew ad-hoc python — melchior /opt/hermes (hermes role), balthazar /opt/mcps/extract (extract_watch role), caspar /opt/precis/embedder (precis_embedder role) — granted today, but a `brew upgrade python@3.x` re-mints the cdhash and silently voids the grant. Rebuild onto python.org before the next cycle (due 2026-10-16). No open nas-denied alerts.
