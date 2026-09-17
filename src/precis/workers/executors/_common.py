@@ -18,6 +18,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -1154,12 +1155,99 @@ _TRANSIENT_FAILURE_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
     ),
 )
 
+#: The Claude CLI's own weekly/session quota-exhaustion message, e.g.
+#: "You've hit your weekly limit · resets 11am (UTC)" or "...hit your
+#: session limit · resets 3:40pm (America/Los_Angeles)" (gr344988). This is
+#: a 429 under the hood (``api_error_status=429``) but reads nothing like
+#: an ordinary per-minute rate limit above: the window doesn't clear in
+#: minutes, it clears at one specific wall-clock instant that can be up to
+#: a week away. Checked BEFORE :data:`_TRANSIENT_FAILURE_PATTERNS` in
+#: :func:`classify_transient_backoff_hours` so a reason naming both (e.g.
+#: it also contains the literal "429") classifies here, not there — the
+#: bare-429 15-minute horizon would have the sweeper burn through
+#: ``sweeper.UNPARK_CAP`` retries hours before the real reset and latch
+#: the leaf ``child-failed-final``, exactly the failure this exists to
+#: prevent. The optional "resets <clock> (<tz>)" clause is parsed by
+#: :func:`_parse_quota_reset_at`; an ordinary per-minute 429 (no "hit your
+#: … limit" wording) never matches this and keeps falling through to the
+#: generic 0.25h pattern above unchanged.
+_QUOTA_LIMIT_PATTERN = re.compile(
+    r"hit your (?:weekly|session) limit"
+    r"(?:.*?resets\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+    r"(?P<meridiem>am|pm)(?:\s*\(\s*(?P<tz>[^)]+?)\s*\))?)?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: Fallback backoff when a quota-limit message's "resets …" clause is
+#: missing or doesn't parse (unrecognised tz name, malformed clock). Well
+#: past even the shortest quota window (``five_hour``) — a weekly/session
+#: exhaustion won't clear sooner than that, so this stays conservative in
+#: the same spirit as the fixed delays above, just sized for a cap that
+#: really can be a week away.
+_QUOTA_LIMIT_FALLBACK_HOURS = 6.0
+
+
+def _parse_quota_reset_at(match: re.Match[str], now: datetime) -> datetime | None:
+    """Absolute UTC instant named by a matched :data:`_QUOTA_LIMIT_PATTERN`
+    "resets <clock> (<tz>)" clause, or ``None`` when that clause is absent
+    or unparseable.
+
+    The message gives a bare wall-clock time with no date — it always
+    means "the next occurrence of this clock time" in the named zone (UTC
+    when the ``(<tz>)`` suffix is omitted), which for a reset notice is
+    always within the next 24h of ``now``.
+    """
+    hour_s, meridiem = match.group("hour"), match.group("meridiem")
+    if hour_s is None or meridiem is None:
+        return None
+    hour, minute = int(hour_s), int(match.group("minute") or 0)
+    if not (1 <= hour <= 12) or not (0 <= minute <= 59):
+        return None
+    hour24 = hour % 12
+    if meridiem.lower() == "pm":
+        hour24 += 12
+    tz_name = (match.group("tz") or "UTC").strip()
+    try:
+        tz = UTC if tz_name.upper() == "UTC" else ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    local_now = now.astimezone(tz)
+    candidate = local_now.replace(hour=hour24, minute=minute, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)
+
+
+def _quota_limit_backoff_hours(reason: str, now: datetime) -> float | None:
+    """Hours from ``now`` until a Claude quota window named in ``reason``
+    resets, or ``None`` when ``reason`` doesn't read as a quota-limit
+    message at all (falls through to :data:`_TRANSIENT_FAILURE_PATTERNS`).
+
+    A matched message with an unparseable/missing reset clause still
+    returns a value (:data:`_QUOTA_LIMIT_FALLBACK_HOURS`) — the message
+    shape alone is enough to know a fresh attempt won't help soon; only
+    the precise wake time is uncertain.
+    """
+    m = _QUOTA_LIMIT_PATTERN.search(reason)
+    if m is None:
+        return None
+    reset_at = _parse_quota_reset_at(m, now)
+    if reset_at is None:
+        return _QUOTA_LIMIT_FALLBACK_HOURS
+    return max((reset_at - now).total_seconds() / 3600.0, 0.0)
+
 
 def classify_transient_backoff_hours(reason: str) -> float | None:
     """Backoff (hours) when ``reason`` reads as a transient failure, else
-    ``None``. First matching pattern in
-    :data:`_TRANSIENT_FAILURE_PATTERNS` wins (rate-limit before spend —
-    a message naming both is retryable at the shorter horizon)."""
+    ``None``. The Claude weekly/session quota-limit shape
+    (:data:`_QUOTA_LIMIT_PATTERN`) is checked first (its backoff runs to
+    the actual reset instant, not a fixed horizon); otherwise the first
+    matching pattern in :data:`_TRANSIENT_FAILURE_PATTERNS` wins
+    (rate-limit before spend — a message naming both is retryable at the
+    shorter horizon)."""
+    quota_hours = _quota_limit_backoff_hours(reason, datetime.now(UTC))
+    if quota_hours is not None:
+        return quota_hours
     for pattern, hours in _TRANSIENT_FAILURE_PATTERNS:
         if pattern.search(reason):
             return hours

@@ -5,6 +5,7 @@ Pure tests against tmp_path directories — no DB.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,37 @@ def test_scan_oversized_chunk_becomes_failure(tmp_path: Path) -> None:
     r = scan_skill_dir(tmp_path)
     assert r.plans == ()
     [f] = r.failures
+    assert "chunk-size budget" in f.reason
+    assert "Split the section" in f.reason
+
+
+def test_scan_multiple_oversized_chunks_reported_in_one_pass(tmp_path: Path) -> None:
+    # gr344818: a file with several over-budget H2s used to surface them
+    # one re-run at a time (the gate raised on the first hit and stopped).
+    # Both oversized sections must be named — with their sizes — in the
+    # single failure this file produces.
+    ops_body = "x" * (DEFAULT_CHUNK_BUDGET_CHARS + 100)
+    views_body = "y" * (DEFAULT_CHUNK_BUDGET_CHARS + 250)
+    _write(
+        tmp_path,
+        "fat.md",
+        (
+            f"---\nflavor: reference\n---\n# t\n"
+            f"## Ops\n{ops_body}\n"
+            f"## Views\n{views_body}\n"
+        ),
+    )
+    r = scan_skill_dir(tmp_path)
+    assert r.plans == ()
+    [f] = r.failures
+    # Both oversized sections named — with distinct sizes — in one failure,
+    # not just the first one hit.
+    assert "'Ops'" in f.reason
+    assert "'Views'" in f.reason
+    sizes = [int(n) for n in re.findall(r"\((\d+) > \d+ chars\)", f.reason)]
+    assert len(sizes) == 2
+    assert all(n > DEFAULT_CHUNK_BUDGET_CHARS for n in sizes)
+    assert sizes[0] != sizes[1]
     assert "chunk-size budget" in f.reason
     assert "Split the section" in f.reason
 

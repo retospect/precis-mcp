@@ -10,7 +10,8 @@ stamp on the failed job; the sweeper's unpark phase (tested in
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -50,6 +51,66 @@ def test_classifier_prefers_shorter_rate_limit_horizon() -> None:
     assert classify_transient_backoff_hours(reason) == 0.25
 
 
+# ── weekly/session quota-limit classification (gr344988) ──────────────
+#
+# The Claude CLI's own quota-exhaustion message ("You've hit your weekly
+# limit · resets 11am (UTC)") carries a literal 429 under the hood but
+# must NOT fall into the generic 15-minute rate-limit horizon above — the
+# sweeper would burn through its bounded unpark retries hours before the
+# real reset and latch the leaf `child-failed-final`. These tests build
+# the message from a live reference instant (not a fixed calendar time)
+# so they never trip on a day/DST boundary.
+
+
+def test_classify_transient_backoff_hours_weekly_quota_reset_parses() -> None:
+    now = datetime.now(UTC)
+    target = now + timedelta(hours=2, minutes=17)
+    clock = target.strftime("%-I:%M%p").lower()  # e.g. "3:17pm"
+    reason = (
+        f"ClaudeAgentError: API error 429 - You've hit your weekly limit "
+        f"· resets {clock} (UTC)"
+    )
+
+    hours = classify_transient_backoff_hours(reason)
+
+    assert hours is not None
+    computed_reset = datetime.now(UTC) + timedelta(hours=hours)
+    assert abs((computed_reset - target).total_seconds()) < 60
+
+
+def test_classify_transient_backoff_hours_session_quota_reset_other_tz() -> None:
+    now = datetime.now(UTC)
+    target = now + timedelta(hours=1, minutes=40)
+    local = target.astimezone(ZoneInfo("America/Los_Angeles"))
+    clock = local.strftime("%-I:%M%p").lower()
+    reason = f"You've hit your session limit · resets {clock} (America/Los_Angeles)"
+
+    hours = classify_transient_backoff_hours(reason)
+
+    assert hours is not None
+    computed_reset = datetime.now(UTC) + timedelta(hours=hours)
+    assert abs((computed_reset - target).total_seconds()) < 60
+
+
+def test_classify_transient_backoff_hours_quota_reset_unparseable_falls_back() -> None:
+    reason = "You've hit your weekly limit · resets soon"
+    assert classify_transient_backoff_hours(reason) == 6.0
+
+
+def test_classify_transient_backoff_hours_quota_reset_missing_falls_back() -> None:
+    reason = "You've hit your weekly limit"
+    assert classify_transient_backoff_hours(reason) == 6.0
+
+
+def test_classify_transient_backoff_hours_plain_429_unaffected() -> None:
+    """A non-quota 429 (no 'hit your … limit' wording) keeps the generic
+    15-minute rate-limit classification — the quota case must not
+    swallow ordinary rate limiting."""
+    assert classify_transient_backoff_hours("API error 429: rate limit exceeded") == (
+        0.25
+    )
+
+
 def _fresh_job(store: Store) -> int:
     job = store.insert_ref(kind="job", slug=None, title="doomed job", meta={})
     return job.id
@@ -75,6 +136,26 @@ def test_record_failure_stamps_retry_after_for_transient_reason(
     assert "rate limit" in meta["error"]
     retry_after = datetime.fromisoformat(meta["retry_after"])
     assert retry_after > datetime.now(UTC)
+
+
+def test_record_failure_stamps_retry_after_at_quota_reset_instant(
+    store: Store,
+) -> None:
+    """The retry_after stamped for a weekly-quota 429 is the parsed reset
+    instant, not the generic 15-minute rate-limit horizon — the sweeper
+    must keep the leaf parked past it, not exhaust retries before it."""
+    job_id = _fresh_job(store)
+    now = datetime.now(UTC)
+    target = now + timedelta(hours=5, minutes=3)
+    clock = target.strftime("%-I:%M%p").lower()
+    reason = f"API error 429 - You've hit your weekly limit · resets {clock} (UTC)"
+
+    record_failure(store, job_id, reason, gripe_rollback=None)
+
+    meta = _meta_of(store, job_id)
+    assert meta["failure_class"] == "transient"
+    retry_after = datetime.fromisoformat(meta["retry_after"])
+    assert abs((retry_after - target).total_seconds()) < 60
 
 
 def test_record_failure_leaves_non_transient_reason_unstamped(

@@ -220,14 +220,19 @@ def _plan_one(
             "an alias group at EOF without a body."
         )
 
-    for c in chunks:
-        if len(c.text) > chunk_budget_chars:
-            label = c.heading or "(head)"
-            raise _PlanError(
-                f"chunk {label!r} body exceeds the chunk-size budget "
-                f"({len(c.text)} > {chunk_budget_chars} chars). "
-                f"Split the section into multiple H2s (decision 5)."
-            )
+    oversized = [c for c in chunks if len(c.text) > chunk_budget_chars]
+    if oversized:
+        # Report every oversized section in one pass (gr344818) — a file
+        # with several over-budget H2s used to surface them one re-run at
+        # a time, since the loop raised on the first hit.
+        details = "; ".join(
+            f"chunk {(c.heading or '(head)')!r} body exceeds the "
+            f"chunk-size budget ({len(c.text)} > {chunk_budget_chars} chars)"
+            for c in oversized
+        )
+        raise _PlanError(
+            f"{details}. Split the section(s) into multiple H2s (decision 5)."
+        )
 
     tags = _build_tags(fm)
     links = tuple(t for t in extract_wikilinks(expanded) if t != slug)
