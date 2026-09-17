@@ -93,9 +93,9 @@ axial overlap), :mod:`precis_se.persist`
 lockstep with fresh block ids), and migrations ``0001_se_kind.sql`` +
 ``0002_se_l2.sql`` (…+ ``0012_se_measure_datum.sql`` for ``datum``).
 
-**Datums + measured-from-geometry** (docs/backlog/
-se-datum-measure-eval.md; the se plumbing multiscale-optimisation
-§4's preferred-number wells attach through): a measure may declare
+**Datums + measured-from-geometry** (the se plumbing
+multiscale-optimisation §4's preferred-number wells attach through;
+history in multiscaledesign.README.md): a measure may declare
 ``datum:`` — ``frame`` (the default; prismatic → the three pose-frame
 faces through the frame origin, rotational → axis + base face),
 ``port:<name>``, ``face:<block>.<tag>``, ``axis:<block>`` — resolved
