@@ -190,7 +190,6 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-taproot-help": 2,
     },
     "backlog": {
-        "personas/precis-claim-adversary": 1,
         "precis-addressing-help": 1,
         "precis-link-help": 1,
         "precis-md-help": 1,
@@ -199,13 +198,11 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-paper-help": 1,
         "precis-relations": 1,
         "precis-rxn-help": 1,
-        "precis-se-help": 1,
         "precis-taproot-help": 1,
         "precis-taproot-mint-help": 1,
         "precis-toolpath-help": 1,
     },
     "operator": {
-        "personas/precis-citation-reviewer": 1,
         "precis-anki-help": 2,
         "precis-auto-todo-help": 2,
         "precis-doi-extract-help": 1,
@@ -222,13 +219,11 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-provenance-help": 4,
         "precis-python-help": 2,
         "precis-recurring-help": 1,
-        "precis-session-context-help": 3,
+        "precis-session-context-help": 2,
         "precis-startup-skills-help": 2,
         "precis-wikipedia-help": 1,
     },
     "unfenced_verb": {
-        "personas/precis-draft-reviewer": 1,
-        "personas/precis-review-authoring": 4,
         "precis-figure-help": 10,
     },
     "alias_overrun": {

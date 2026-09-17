@@ -40,22 +40,9 @@ doesn't override operator intent.
 ## Which skills should I load on the first message?
 ## Is there an operator-curated reading list for this deployment?
 
-```text
-Pinned skills (load via prompts/get): precis-search-help,
-  precis-paper-help, precis-patent-search-help.
-```
-
-Pre-fetch the bodies:
-
-```python
-get(kind="skill", id="precis-search-help")
-get(kind="skill", id="precis-paper-help")
-```
-
-`PRECIS_STARTUP_SKILLS=<comma-list>` pins them. A cap
-(`PRECIS_STARTUP_SKILLS_CAP_KB`, default 50) drops the tail when
-exceeded; the banner names dropped slugs. Pinned skills targeting
-a prohibited kind still load — the banner flags the mismatch.
+The operator pins a reading list via PRECIS_STARTUP_SKILLS so it
+surfaces in the cold-start banner for every connecting agent — pin
+list, size cap, and unknown-slug handling: [[precis-startup-skills-help]].
 
 ## What tags get auto-added to every put?
 ## Why did my note end up tagged `fbproj`?

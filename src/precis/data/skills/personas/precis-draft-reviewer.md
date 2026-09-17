@@ -40,9 +40,11 @@ Every finding becomes **one anchored change-request todo** — the same
 surface the human's "around here…" box files into, so the editor picks
 it up on its next tick:
 
-    put(kind='todo',
-        meta={'anchor': 'dc<id>'},     # the chunk the finding is about
-        text='<what is wrong> — <the specific fix to make>')
+```python
+put(kind='todo',
+    meta={'anchor': 'dc<id>'},     # the chunk the finding is about
+    text='<what is wrong> — <the specific fix to make>')
+```
 
 Rules that make a finding actionable:
 

@@ -8,7 +8,7 @@ answers:
   - what are the ground rules for a read-only reviewer pass?
 flavor: reference
 status: active
-applies-to: every reviewer persona under src/precis/data/skills/personas/
+applies-to: every reviewer skill under src/precis/data/skills/ (personas/ and the review-* family)
 tags: [workflow]
 ---
 
@@ -115,6 +115,12 @@ pass aggregation:
 ## Coverage
 <which sections / chunks / aspects you exercised>
 ```
+
+## Finding doesn't fit a synthesis pass
+
+`kind='finding'` doesn't fit here — it's a citation-chase target
+(`cited_in=` mandatory, "your own synthesis with no single source →
+not a finding"; see `precis-finding-help`).
 
 ## Cleanup
 

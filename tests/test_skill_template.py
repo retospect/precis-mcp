@@ -213,6 +213,40 @@ def test_docresolver_section_terminates_at_next_h1() -> None:
     assert "after" not in out
 
 
+def test_docresolver_section_ignores_headings_inside_fences() -> None:
+    """A ``## heading`` inside a fenced example is literal text — the
+    findings-table skeleton in precis-common-reviewer's anchor spliced
+    truncated at its own ``## Summary`` line before this was fence-aware."""
+    body = (
+        "## Output format\n"
+        "Emit exactly this skeleton:\n"
+        "```\n"
+        "## Summary\n"
+        "one paragraph\n"
+        "# Not a real H1 either\n"
+        "## Findings\n"
+        "| id | severity |\n"
+        "```\n"
+        "Then stop.\n"
+        "## Cleanup\n"
+        "cleanup body\n"
+    )
+    r = DocResolver(docs={"d": body})
+    out = r("d", "output-format")
+    assert "| id | severity |" in out
+    assert "Then stop." in out
+    assert "cleanup body" not in out
+    # the fenced pseudo-headings are not addressable sections
+    with pytest.raises(IncludeError, match="section 'summary' not found"):
+        r("d", "summary")
+
+
+def test_docresolver_unclosed_fence_runs_to_end() -> None:
+    body = "## First\n```\n## Inside\nstill inside\n"
+    r = DocResolver(docs={"d": body})
+    assert "still inside" in r("d", "first")
+
+
 # ── end-to-end with DocResolver ──────────────────────────────────────
 
 

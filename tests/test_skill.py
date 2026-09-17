@@ -739,14 +739,15 @@ def test_title_boost_df1_token_bypasses_coverage_bar_for_taproot_family(
 ) -> None:
     """gr259665's repro query must surface a taproot-family skill in the
     top rows instead of sinking below the page_size cut. "merge" has
-    catalogue identity-DF == 1 (only ``precis-taproot-mint-help``'s
-    title carries it) — that's the token that should fire the bypass, so
-    that skill is the one that gets pinned to the top."""
+    catalogue identity-DF == 1 (only ``precis-taproot-hub-edit-help``'s
+    title carries it, since the sharpen/refine/merge section split out of
+    mint-help) — that's the token that should fire the bypass, so that
+    skill is the one that gets pinned to the top."""
     ranked = _ranked_slugs(
         skill.search(q="taproot help merge repoint demote claim").body
     )
     assert ranked, "expected at least one ranked hit"
-    assert ranked[0] == "precis-taproot-mint-help", ranked[:5]
+    assert ranked[0] == "precis-taproot-hub-edit-help", ranked[:5]
 
 
 def test_title_boost_df1_token_pins_taproot_help_on_its_own_identity(

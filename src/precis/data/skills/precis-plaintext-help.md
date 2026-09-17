@@ -116,26 +116,13 @@ edit(
     find="09:15",
     text="09:20",
 )
-
-# Delete one line by replacing it with empty text. Anchors disambiguate
-# in case the same find= text appears elsewhere in the file.
-edit(
-    kind="plaintext",
-    id="refs.bib",
-    mode="find-replace",
-    find="doi     = {10.1111/ejn.12125}",
-    before="@article{tritsch2012dopaminergic,",
-    after="volume  = {35},",
-    text="",
-)
 ```
 
 Scope the edit by passing `~<slug>` or `~L<n>-<m>` in `id=` so the
 match is bounded to one paragraph or line range. `delete` is for
-whole files and whole blocks; for line-level removals use
-`find-replace` with `text=''`.
-
-Full edit grammar lives in `precis-edit-help`.
+whole files and whole blocks; for line-level removals, including
+anchored deletes with `before=`/`after=`, use `find-replace` with
+`text=''` — full recipe: [[precis-edit-help]].
 
 ## See also
 

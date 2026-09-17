@@ -78,6 +78,24 @@ doesn't survive a serious reader.
    excitation density". "Improved stability" → "<5% drift over 30
    days at 20°C".
 
+## Prose craft — structure, diction, and tells to avoid
+
+A research write-up is *flowing prose*, not a slide deck. One paragraph,
+one idea, topic sentence first; given → new sentence flow, each section
+opens with a signpost (structure the paragraph's *own* claim → evidence →
+implication per the quality bar above).
+
+**Diction** — consistent terminology, no elegant variation on key terms;
+quantify (a number + unit beats "significant/several/many"); concise,
+active ("in order to" → "to", "due to the fact that" → "because"); past
+tense for what was done/found, present for established facts.
+
+**More tells to avoid** — slide-deck/listy prose and over-bolding instead
+of paragraphs; filler openings ("In recent years, X has attracted
+significant attention…"); mismatched calibration (over-hedging in one
+place, over-claiming — "proves", "clearly", "novel", "first" — in
+another); restating the brief or repeating a point across blocks.
+
 ## Output format
 
 Markdown, with inline **paper-chunk handles `[pc<id>]`** — each copied

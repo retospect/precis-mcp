@@ -88,11 +88,10 @@ Failure modes:
 
 ## Output: one flag per structural break
 
-`kind='finding'` doesn't fit here — it's a citation-chase target
-(`cited_in=` mandatory, "your own synthesis with no single source
-→ not a finding"; see `precis-finding-help`). A structural read is
-your own synthesis across the manuscript, not a sourced claim, so
-record it as a `kind='memory'` linked to the section it's about:
+{{include doc:precis-common-reviewer#finding-doesnt-fit-a-synthesis-pass}}
+A structural read is your own synthesis across the manuscript, not
+a sourced claim, so record it as a `kind='memory'` linked to the
+section it's about:
 
 ```python
 put(
@@ -106,7 +105,7 @@ Specifically:
   CNTs against armchair GNRs at room temperature."
 - §4 (Mobility): only CNTs covered. No GNR mobility data presented.
 
-Severity: SUBSTANTIVE — the intro contract is broken. Either add a
+Severity: BLOCKER — the intro contract is broken. Either add a
 §4.2 GNR mobility subsection, or trim the intro's promise.""",
     tags=["topic:section-structure-review"],
     link="xc<id>",  # the §4 section handle, from get() output
@@ -115,18 +114,18 @@ Severity: SUBSTANTIVE — the intro contract is broken. Either add a
 
 Severity guide:
 
-- **SUBSTANTIVE** — missing thesis, conclusion claim with no body
+- **BLOCKER** — missing thesis, conclusion claim with no body
   support, intro promise not delivered.
-- **MODERATE** — section without local frame, outdated roadmap,
+- **MEDIUM** — section without local frame, outdated roadmap,
   lost contribution in conclusion.
-- **NITPICK** — section-numbering style. Skip.
+- **LOW** — section-numbering style. Skip.
 
 ## Order of operations
 
 Recommended order — saves time if an early check fails badly:
 
 1. Thesis check (intro). If you can't extract a thesis, **stop
-   here** and record that as the single SUBSTANTIVE flag. The
+   here** and record that as the single BLOCKER flag. The
    rest of the review is downstream of fixing this.
 2. Roadmap-vs-sections.
 3. Per-section mini-intros.
@@ -148,4 +147,5 @@ Recommended order — saves time if an early check fails badly:
 - [[precis-review-paragraph-flow]] — paragraph-level
 - [[precis-review-citation-faithfulness]] — claim ↔ source
 - [[precis-polish-paper]] — runbook tying review passes together
+- [[precis-common-reviewer]] — shared reviewer discipline
 - [[precis-memory-help]] — memory shape, link=/rel= on create

@@ -49,9 +49,6 @@ Personas this runbook orchestrates:
 - [[precis-adversarial-reviewer]] — claims and method.
 - [[precis-citation-reviewer]] — bibliography integrity.
 
-(More personas land here as they're authored —
-flow-and-arc, paragraph-structure, statistics, novelty.)
-
 ## Aggregate the findings
 
 After every per-persona report is in hand, produce the

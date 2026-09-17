@@ -76,12 +76,9 @@ hit a wall of undrillable one-row-per-chunk singletons on the way down.
 
 ## A drilled-in range came back truncated
 
-A wide `~A..B` range can still overflow the MCP frame budget; the body
-ends with a `⚠️ Truncated` footer carrying `more(cursor='...')`.
-**Drain it sequentially — never fire several `more()` calls in
-parallel.** Each cursor is single-use and expires in a few minutes;
-a batched second call gets "no such cursor in this process", not a
-retryable error. Full mechanics: `precis-toon`.
+A wide `~A..B` range can still overflow the MCP frame budget and
+return a `more(cursor='...')` footer — pagination mechanics:
+[[precis-toon]].
 
 ## See also
 

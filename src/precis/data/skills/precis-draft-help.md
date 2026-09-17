@@ -4,9 +4,7 @@ title: precis — the editable document kind
 summary: author a living document as chunks — create, read (outline/verbatim), edit text, reorder/reparent, soft-delete; markdown-ish prose with [dc…] links (any handle) and bare [pc…] paper-chunk citations
 answers:
   - how do I create a new draft, or fork/scaffold one from an existing document?
-  - how do I add a paragraph, figure, or table to a draft?
   - how do I search inside a draft — lexical, semantic, or regex?
-  - how do I export a draft to LaTeX, PDF, or Word?
   - how do I cite a paper I don't have yet without faking the reference?
 applies-to: get/search/put/edit/delete (kind='draft')
 status: active
@@ -51,7 +49,6 @@ positional `~N` ordinals (they rot on insert).
 | `get(id=<scope>, view='toc')` | heading skeleton (whole draft, or one heading's subtree) |
 | `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
-| `get(id=<scope>, view='toc')` | heading skeleton (§-numbers + gist/keywords), whole draft or one subtree |
 | `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
 | `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes) |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |
@@ -323,127 +320,9 @@ Same rule governs claim sentences (`precis-notation-canon`), so prose and
 claims cannot disagree. A malformed temperature trips a
 `⚠ temperature/unit formatting` hint on write.
 
-## Figures & images
+## Add a figure or a data table
 
-A **figure** is a chunk whose caption is `text` and whose image bytes are
-stored separately (never in `text`): `chunk_kind='figure'`, image
-**base64** in `image=`, plus `origin=`:
-
-```python
-put(
-    kind="draft",
-    id="nanotrans",
-    chunk_kind="figure",
-    text="Fig 1. Device cross-section.",
-    image="<base64>",
-    origin="original",
-    at={"after": "dc12"},
-)  # our own diagram/schematic
-```
-
-`origin` ∈ `{original, own_graph, third_party}` drives a **clearance
-gate**: a `third_party` figure needs a **granted, unexpired**
-`permission={'publisher', 'permission_id', 'status', 'granted_at',
-'source_paper'}` (also accepts `requested_at`/`scope`/`required_credit`;
-`status` ∈ `requested|granted|denied`) or **export fails**. `mime=` is
-sniffed when omitted. Set clearance later with `edit(kind='draft',
-id='dc<id>', origin='third_party', permission={…})` — caption/image
-bytes stay put. The caption **is** the figure's `text`, so it edits like
-any other prose: `edit(kind='draft', id='dc<id>', text='…')`.
-
-A figure's **medium** is separate from `origin`: a static **blob**
-(`image=` above), a data-driven **graph** (`own_graph` + a render recipe,
-below), or an editable SVG canvas (`has-figure` edge). Clearance is
-medium-aware — no blob and no canvas = **uncleared**. On export a raster
-blob embeds directly; an SVG (blob or canvas) rasterises to PNG.
-
-**Graph** (`origin='own_graph'`): give it **`render=`** (the Python that
-draws it) instead of `image=`, and **`plots=[dc<id>]`** (the data/table
-chunks it reads):
-
-```python
-put(
-    kind="draft",
-    id="nanotrans",
-    chunk_kind="figure",
-    text="Fig 2. Band gap vs lattice constant.",
-    plots=["dc42"],  # the data/table chunk(s) it renders
-    render=(
-        "import matplotlib.pyplot as plt\n"
-        't = data["tables"][0]\n'  # plotted chunks arrive as data["tables"]
-        'plt.scatter([r[0] for r in t["rows"]], [r[1] for r in t["rows"]])'
-    ),
-    at={"last": True},
-)
-```
-
-The render code runs **sandboxed, out-of-band** (never at `put` time): it
-receives `data={'tables': [...]}` and `out` (the PNG path). The image is
-**deferred** — a placeholder until the render lands, then refreshes
-whenever the plotted data changes (the `plots` edge is the one reactive
-recompute). A graph is otherwise an ordinary `figure` chunk — clearance,
-caption, export all apply identically.
-
-## Data / table chunks
-
-A `chunk_kind='table'` chunk holds **structured data, not prose** — pass
-it as `table={header, rows}`, not `text=`; the markdown you read back is
-*derived* (regenerated on every write), so the numbers stay the source
-of truth and numerics-indexable.
-
-```python
-put(
-    kind="draft",
-    id="nanotrans",
-    chunk_kind="table",
-    table={"header": ["element", "gap_eV"], "rows": [["Si", 1.12], ["Ge", 0.67]]},
-    caption="Measured band gaps",  # the legend (optional); rides in the derived text
-    regen={"source": "dft", "cmd": "vasp relax"},  # inert provenance metadata
-    at={"last": True},
-)
-```
-
-Editing: change the data, not the rendered text (`text=` is rejected on a
-table chunk); the four forms are `table=`/`cell=`/`find=`+`text=`/`sub=`
-(grammar in the quick reference above). `cell=` is type-inferred
-Excel-style (int → finite float → bool → else string): `text='1.523'`
-lands as a JSON number; a header cell (row 1) stays a string; a
-non-finite `NaN`/`inf` stays a string. Excel-eager inference turns a
-leading-zero code like `007` into int `7` — send the full `table=`
-payload to force a type. An out-of-range/malformed `cell=` is refused,
-naming the table's actual dimensions; a zero-match find-replace is
-refused too (chunk untouched); only one of `table=`/`cell=`/`find=`/`sub=`
-per edit.
-
-A LaTeX-imported table flagged `needs-table-review` recovers its grid by
-re-parsing the chunk's own raw LaTeX, so it's editable (and citable) like any
-other — cells recovered this way stay **strings** (raw LaTeX carries no type
-information). A chunk whose `tabular` genuinely isn't in its text refuses with
-"no stored data"; don't hand-type a `table=` grid to defeat that, it risks
-mangling live content.
-
-For a LaTeX-sourced chunk the recovered grid **only addresses** the edit, it
-never re-serialises the chunk: `cell=`/`find=`/`sub=` patch the matched span
-*inside the raw LaTeX*, leaving the rest byte-for-byte intact — no grid is
-persisted and the flag stays put, since nothing canonical was stored. The grid
-is lossy (`{caption, header, rows}` and nothing else). Two consequences:
-
-- A `cell=` address that can't be safely mapped — typically inside a
-  `\multicolumn` span — **refuses**, chunk unchanged, rather than guessing.
-- `caption=`/`regen=` can't ride along with a `cell=`/`find=`/`sub=` edit on
-  such a chunk: caption is re-derived from `\caption{}` in the text, so patching
-  metadata wouldn't be read back. Passing both is a `BadInput`.
-
-`table=` is unchanged — a declared wholesale replacement, so it still re-derives
-from the grid you hand it.
-
-For a cell holding raw LaTeX (`$\sim$` and friends), prefer `cell=`/
-`text=`/find-replace over the whole `table=` **dict**: a value nested in
-a `table=` dict doubles its backslashes on the wire, while
-`text=` round-trips one correctly. For a whole grid with backslashes,
-pass `table=` as a JSON **string**, not a dict:
-`table='{"header": [...], "rows": [["$\\sim$3 aJ"]]}'` — decoded once
-server-side, the same reliable channel `caption=` uses.
+See [[precis-draft-rich-content-help]].
 
 ## Read the document — outline, verbatim, fisheye
 
@@ -615,67 +494,33 @@ or silenced, a token stops being hinted; reference a term with
 
 ## Cite a paper we don't have yet — request it, don't fake it
 
-Not in the corpus is **not** a reason to silently soften a claim (soften
-only when the *evidence* is weaker). Every move below ends with a real,
-ingested paper chunk to quote. Cheapest / highest-precision first:
-
 1. **Re-check the corpus.** `search(kind='paper', q=…)` — may already be
    held under another slug/cite_key.
 2. **Find the source, never cite the finder.** Mine bibliographies of
-   papers we hold (real DOIs, no guessing), or search by topic when none
-   points the way — S2 first (structured DOI, actionable), Perplexity/
-   websearch as fallback:
-
-   ```python
-   get(kind="semanticscholar", id="refs:<held-paper-doi>")  # papers it cites
-   get(kind="semanticscholar", id="cites:<held-paper-doi>")  # papers citing it
-   get(kind="semanticscholar", id="<title or topic>")  # structured hits → DOIs
-   get(kind="perplexity-research", q="<question>")  # fills the gap, names the work
-   ```
-
-   Convert the answer to a resolvable id and ingest it — never cite
-   Perplexity or a web page as a scientific source.
+   held papers, or `get(kind="semanticscholar", id="refs:<doi>"|"cites:<doi>"|"<title or topic>")`;
+   `get(kind="perplexity-research", q="<question>")` as fallback — convert
+   whatever it names to a resolvable id and ingest that, never cite the
+   web page itself.
 3. **Request it + park the citing work behind the ingest.**
 
    ```python
-   put(
-       kind="paper", doi="10.1038/nature10352"
-   )  # a — request; idempotent, DOI/arXiv preferred
-   # fetch_oa grabs an OA PDF, watcher ingests, embedder indexes; title-only parks with no auto-fetch
-
+   put(kind="paper", doi="10.1038/nature10352")  # idempotent request
    wait = put(
        kind="todo",
        text="[auto] wait for 10.1038/nature10352 ingested+indexed",
-       meta={
-           "auto_check": {
-               "type": "paper_ingested",
-               "doi": "10.1038/nature10352",
-               "timeout_at": "<ISO-8601, e.g. +7d>",
-           }
-       },
-   )  # b — park a leaf
-
-   link(
-       kind="todo", id="<your citing todo>", target=f"todo:{wait.id}", rel="blocked-by"
-   )  # c — block on the wait
+       meta={"auto_check": {"type": "paper_ingested", "doi": "10.1038/nature10352",
+                             "timeout_at": "<ISO-8601, e.g. +7d>"}},
+   )
+   link(kind="todo", id="<your citing todo>", target=f"todo:{wait.id}", rel="blocked-by")
    ```
 
-   The wait is a plain **todo leaf** (not a job): `auto_check` polls it
-   ~every minute, flips `STATUS:done` once ingested + embedded,
-   re-entering your citing todo; `timeout_at` surfaces a stalled fetch.
 4. **No resolvable id, only a fuzzy claim?** `put(kind='finding',
-   text='<claim>', …)`; `finding_chase` resolves it (Unpaywall/arXiv/S2/
-   EPO), then cite on a re-tick — prefer a stub when you have an id, it's
-   deterministic.
-5. **Only now consider softening** — no supporting source after step 2?
-   Match the evidence, or drop it.
+   text='<claim>', …)`; `finding_chase` resolves it, then cite on a re-tick.
+5. **Still nothing?** Soften the claim to match the evidence, or drop it.
 
-Never invent a paper-chunk handle, write `paper:slug` for a paper not
-held, or leave a bare `[citation pending]` with nothing chasing it — the
-stub/finding *is* the acquisition. Until `[pc<id>]` lands, cite the
-in-flight `[fi<id>]` finding (a resolved citation form). See
-`precis-stubs-help`, `precis-auto-todo-help` (wait-on-ingest),
-`precis-paper-help` (S2 nav + held-paper citing).
+Never invent a paper-chunk handle or write `paper:slug` for a paper not
+held — cite the in-flight `[fi<id>]` finding until `[pc<id>]` lands. See
+`precis-stubs-help`, `precis-auto-todo-help`, `precis-paper-help`.
 
 ## Audit the draft — hygiene checks & the gap-finder
 
@@ -710,24 +555,10 @@ written by the process that owns it; `put`/`edit`/`delete` on one raises
 `Unsupported`. Read it freely — if such a draft looks wrong, the fix
 belongs in the process that writes it, not in the document.
 
-## Writing well, and steering rather than hand-editing
+## Steer prose changes rather than hand-edit
 
-A research write-up is *flowing prose*, not a slide deck.
-
-**Structure** — one paragraph, one idea, topic sentence first; claim →
-evidence → citation, in that order; given → new sentence flow, each
-section opens with a signpost.
-
-**Diction** — consistent terminology, no elegant variation on key terms;
-quantify (a number + unit beats "significant/several/many"); concise,
-active ("in order to" → "to", "due to the fact that" → "because"); tense
-past for what was done/found, present for established facts.
-
-**Avoid (LLM tells)** — slide-deck/listy prose and over-bolding instead
-of paragraphs; filler openings ("In recent years, X has attracted
-significant attention…"); mismatched calibration (over-hedging in one
-place, over-claiming — "proves", "clearly", "novel", "first" — in
-another); restating the brief or repeating a point across blocks.
+Prose craft (structure, diction, LLM tells to avoid) lives in
+[[precis-write-paper-help]]. Here, steering:
 
 **You usually don't rewrite prose directly; you steer:**
 
@@ -746,72 +577,9 @@ addresses). Bad: `ask-user:see-chunk-0`. Good: `ask-user: '"remove this
 para" is anchored at dc5 (the intro); did you mean dc5 or the sibling
 dc12?'`. The ask surfaces on the draft block as a 🔔, linking to your run.
 
-## Export — LaTeX, PDF, Word, reMarkable
+## Export the draft
 
-```
-precis draft export <slug> [--out DIR]   # → main.tex + refs.bib + preamble.tex
-precis draft export <slug> --pdf          # …and run latexmk to produce main.pdf
-precis draft remarkable <slug> [--folder /Precis] [--dry-run]
-```
-
-```python
-put(kind='job', job_type='draft_export', parent_id=<project-todo-id>, params={'draft': '<slug>'})
-```
-
-Exports are one-way and disposable (re-export, never hand-edit). Resolves
-automatically: each block gets `\label{chunk:<handle>}`, `[dc<id>]`
-cross-refs become `\cref{chunk:h}`; each `[pc<id>]`/`[fi<id>]` citation
-resolves to its paper and becomes `\cite{}`, `refs.bib` carrying one
-entry per cited paper (DOI/arXiv when known); every defined abbreviation
-becomes a `\newacronym`, first use full and later `\gls{…}`, with a
-page-number list in the glossary; `[me<id>]`/cross-draft `[dc<id>]` links
-render to nothing (provenance only). The byline becomes an `authblk`
-block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
-(or the byline) yourself. Citations must resolve (`[pc<id>]` → a chunk
-of a held paper) or the export marks a stub + warns.
-
-- **PDF** — deterministic but slow, so it runs as a **job**
-  (`put(kind='job', ...)` above), landing the path in
-  `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
-- **Word/.docx** — toolchain-free and **synchronous**, with render-time
-  acronym first-use expansion + an auto acronyms list.
-- **reMarkable** (`precis draft remarkable`, needs a device credential —
-  per-user only, the signed-in user's own `/account` pairing (`--user
-  <login>` on the CLI; required for an actual upload) — there is no
-  deployment-wide fallback) uploads a reMarkable-mode PDF: RM2 page
-  geometry, and every citation renders as a numbered `\footnote` instead
-  of a bare `\cite`, so you
-  read the source inline. A paper/patent cite footnotes the human cite +
-  bibliography number + the referenced chunk excerpt; a **claim-hub**
-  `[fi<id>]` cite footnotes the claim itself — the nanopub statement
-  (frozen approved sentence once reviewed), the publish ladder with the
-  current rung bolded, each supporting citation's grounding `pc<id>` +
-  the source paper's title in bold + its bibliography number, and any
-  recorded validation issues (trust label, citation misses, disputes,
-  source integrity flags). Cites inside figure captions and headings
-  stay plain `\cite` (LaTeX forbids a footnote there). Destination =
-  `remarkable.target_folder` app_setting (default `/Precis`).
-  `params={'placeholder_figures': True}` (job) waives the clearance gate
-  for **image-less** figures only — they print as visible placeholders; a
-  licensing block on a real image still fails the send.
-- **Cited sources → reMarkable**
-  (`put(kind='job', job_type='remarkable_papers_send',
-  params={'draft': '<slug>'})`) sends every cited source PDF (paper /
-  patent / datasheet) held on the worker host into a per-draft subfolder
-  (`/Precis/<slug>`); missing-on-host sources are reported, not fatal.
-- **Reading editions → reMarkable**
-  (`put(kind='job', job_type='remarkable_reading_send',
-  params={'draft': '<slug>', 'source': '<optional slug>'})`) typesets
-  each cited source as its own tablet-sized PDF: the source's body
-  chunks in reading order, then a claims appendix (every Taproot claim
-  hub grounded in that source), then the original PDF when this host
-  holds a copy. A source missing from this host's corpus still gets a
-  reading edition without the appended PDF; only a source with zero body
-  chunks and no local PDF is skipped. `params.source` restricts the run
-  to one cited source (slug).
-- **Freeze/snapshot** (release + backup) copies the draft's current
-  chunks into an immutable `paper`-like ref (versioned, searchable,
-  citable), linked `snapshot-of` the draft; the draft keeps evolving.
+See [[precis-draft-export-help]].
 
 ## See also
 
@@ -824,3 +592,6 @@ of a held paper) or the export marks a stub + warns.
 - [[precis-taproot-help]] — cite a claim hub (living `[fi<id>]`).
 - [[precis-taproot-mint-help]] — mint a claim hub.
 - [[precis-taproot-backfill-help]] — backfill `[pc<id>]`/`[pa<id>]` cites to hub cites.
+- [[precis-draft-rich-content-help]] — figures, images, and data tables.
+- [[precis-draft-export-help]] — LaTeX/PDF/Word/reMarkable export.
+- [[precis-write-paper-help]] — prose craft: structure, diction, LLM tells to avoid.

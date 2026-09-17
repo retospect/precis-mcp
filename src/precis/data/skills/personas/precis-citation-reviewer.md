@@ -40,11 +40,10 @@ is a finding regardless of how well the manuscript reads.
 ```bash
 # Extract DOIs from the bib file
 grep -oE '10\.[0-9]{4,9}/[^"} ,]+' <bib> | sort -u > preflight.txt
-
-# Audit
-precis jobs check-provenance --refs preflight.txt \
-    --view default --out preflight.md
 ```
+
+Ask a human operator to run the provenance-check job against
+`preflight.txt` and hand back `preflight.md`.
 
 Read `preflight.md`. 🔴 / 🟠 hits go straight into your
 findings as `retracted-source` / `eoc-source` /

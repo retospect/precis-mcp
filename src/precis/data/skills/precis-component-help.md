@@ -337,9 +337,8 @@ definition.
 
 ## Recording an uncertainty band
 
-`value_low=`/`value_high=` on a numeric (`quantity`/`ratio`) value record a
-range alongside (or instead of) the point value — identical to
-`material`'s band:
+Same band mechanics as `material`'s `value_low=`/`value_high=` —
+see [[precis-material-help]].
 
 ```python
 put(
@@ -354,18 +353,10 @@ put(
 # get/search render this as "25 (20–30)"
 ```
 
-Omit `value=` and give both bounds to default the recorded value to their
-mean. Giving only one bound with no `value=` is rejected ("give value=, or
-both value_low= and value_high="); `value_low=` above `value_high=` is
-rejected. A band is numeric-only — `value_low=`/`value_high=` on a
-`boolean`/`categorical`/`text` spec is rejected, naming the value type.
-
 ## The canonical-unit rule
 
-Every spec has one canonical unit (or none, for a dimensionless /
-categorical / boolean / text spec). `unit=` on a value write **must match
-it exactly**, or the write is rejected naming the canonical one — no
-conversion:
+Same canonical-unit-only enforcement as `material` — see
+[[precis-material-help]].
 
 ```python
 put(kind="component", id="m6-a2-bolt", spec="thread_pitch", value=0.04, unit="in")

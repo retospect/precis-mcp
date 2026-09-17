@@ -22,9 +22,7 @@ full surface. Seven verbs — `get` / `search` / `put` / `edit` /
 `delete` / `tag` / `link` — apply to every kind that supports them; the
 kinds table + address grammar live in `precis-overview`.
 
-Rule of thumb: **`id=` addresses a name/handle, `q=` searches content.**
-For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required; for
-`search`, `kind=` is optional (omit it for cross-kind fan-out).
+Addressing (`id=` vs `q=`) and `kind=` requirements: [[precis-overview]].
 
 **Before a native tool, check for a precis kind.** External content that
 precis already fetches + caches goes through a `kind`, never a native library
@@ -78,7 +76,7 @@ their own view set instead, is in `precis-overview`.
 | Soft-delete a ref | `delete(kind='gripe', id=42)` | `precis-delete-help` |
 | Classify / prioritise | `tag(kind='todo', id=122, add=['STATUS:done'])` | `precis-tag-help`, `precis-tags` |
 | Connect two refs | `link(kind='todo', id=141, target='todo:158', rel='blocked-by')` | `precis-link-help`, `precis-relations` |
-| Page a long response | `more(cursor='...')` (from a `Next: more(...)` footer) — single-use, expires in minutes, drain sequentially, never batch in parallel | `precis-toon` |
+| Page a long response | `more(cursor='...')` (from a `Next: more(...)` footer) | `precis-toon` |
 
 Closed-prefix (`STATUS:`/`PRIO:`/`SRC:`/`CACHE:`) replace-within-axis
 semantics live in `precis-tags`.

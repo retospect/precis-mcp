@@ -223,15 +223,9 @@ call must repeat the same `queries=`/`answers=`/`per_paper=` arguments
 (see "Broad retrieval" above) — dropping them switches to the
 single-query ordering mid-walk.
 
-`page=`/`page_size=` above is a **search-level** knob — each call is
-independent, safe to fire however you like. Don't confuse it with
-`more(cursor=...)`, the separate **MCP-transport** mechanism that
-continues a single response too large for one frame (a `⚠️ Truncated`
-footer on an oversized hit table). A `more()` cursor is single-use,
-expires in a few minutes, and lives only in the backend process that
-minted it — drain it sequentially, never fire several `more()` calls
-in parallel (a batched call gets "no such cursor in this process").
-Full mechanics: `precis-toon`.
+`page=`/`page_size=` above is a **search-level** knob, independent of
+`more(cursor=...)`, the separate MCP-transport pagination mechanism
+for a single oversized response — see [[precis-toon]].
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X

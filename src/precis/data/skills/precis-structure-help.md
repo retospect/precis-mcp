@@ -122,7 +122,7 @@ put(
 | `measure` | `kind`, `atoms:[…]`, `direction?`, `goal?`, `strength?`, `for?` | pin a measurement with an optional graded goal |
 | `unmark` | `name` | retire an eye by name |
 | `remove_measure` | `kind`, `atoms:[…]` | retire a measure |
-## Author a design — the ops table, continued
+## Assemble rings and fragments, then relax the structure
 
 | op | args | effect |
 |----|------|--------|

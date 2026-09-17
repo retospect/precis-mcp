@@ -38,14 +38,7 @@ WARN_BYTES = 16 * 1024
 #: slug (filename stem, no ``.md``) -> justification. Every entry here is
 #: exempt from ``FAIL_BYTES`` but still counted toward the ``WARN_BYTES``
 #: drift warning, so its shrink-back is visible too.
-_ALLOWLIST: dict[str, str] = {
-    "precis-draft-help": (
-        "restructured 2026-08 (51KB -> 40KB -> ~36KB after a second prose "
-        "pass); the residual ~4.5KB over-cap is dense verb/arg contract "
-        "material (figures/tables/citations/export), accepted for now. "
-        "Remove when <= 32KB."
-    ),
-}
+_ALLOWLIST: dict[str, str] = {}
 
 
 def _skill_files() -> list[Path]:

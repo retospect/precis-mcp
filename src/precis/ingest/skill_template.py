@@ -277,6 +277,30 @@ def _strip_frontmatter(text: str) -> str:
 
 
 _H2_RE: Final[re.Pattern[str]] = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+_FENCE_BODY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*(`{3,}|~{3,})", re.MULTILINE
+)
+
+
+def _fenced_spans(body: str) -> list[tuple[int, int]]:
+    """Character spans of fenced code blocks. A ``## heading`` inside a
+    fence is literal example text, not a section boundary — an anchor
+    whose body shows a findings-table skeleton must splice whole."""
+    spans: list[tuple[int, int]] = []
+    open_at: int | None = None
+    for m in _FENCE_BODY_RE.finditer(body):
+        if open_at is None:
+            open_at = m.start()
+        else:
+            spans.append((open_at, m.end()))
+            open_at = None
+    if open_at is not None:
+        spans.append((open_at, len(body)))
+    return spans
+
+
+def _in_fence(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(a <= pos < b for a, b in spans)
 
 
 def _find_section(body: str, section_slug: str) -> str | None:
@@ -286,7 +310,8 @@ def _find_section(body: str, section_slug: str) -> str | None:
     The section body is everything from the H2's start through the
     end-of-file or the next H1/H2 (whichever comes first).
     """
-    matches = list(_H2_RE.finditer(body))
+    spans = _fenced_spans(body)
+    matches = [m for m in _H2_RE.finditer(body) if not _in_fence(m.start(), spans)]
     for i, m in enumerate(matches):
         if slugify_heading(m.group(1)) != section_slug:
             continue
@@ -298,8 +323,9 @@ def _find_section(body: str, section_slug: str) -> str | None:
         # H2 we're inside.
         heading_end = body.find("\n", start)
         if 0 <= heading_end < end:
-            h1_match = re.search(r"^#\s+", body[heading_end + 1 : end], re.MULTILINE)
-            if h1_match:
-                end = heading_end + 1 + h1_match.start()
+            for h1 in re.finditer(r"^#\s+", body[heading_end + 1 : end], re.MULTILINE):
+                if not _in_fence(heading_end + 1 + h1.start(), spans):
+                    end = heading_end + 1 + h1.start()
+                    break
         return body[start:end].rstrip()
     return None

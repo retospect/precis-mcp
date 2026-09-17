@@ -84,21 +84,9 @@ verb refuses to wipe a whole file by accident. Use `edit` with
 ## Delete a single matched span (one citation, one line)
 ## Cut one occurrence of a string from a file
 
-```python
-edit(
-    kind="plaintext",
-    id="refs.bib",
-    mode="find-replace",
-    find="doi     = {10.1111/ejn.12125}",
-    before="@article{tritsch2012dopaminergic,",
-    after="volume  = {35},",
-    text="",
-)
-```
-
-`delete` operates on whole chunks / line ranges / symbols.
-For arbitrary spans inside a chunk, use `edit(mode='find-replace',
-text='')`. See `precis-edit-help`.
+`delete` operates on whole chunks / line ranges / symbols. For
+arbitrary spans inside a chunk, use `edit(mode='find-replace',
+text='')` — anchored find-replace recipe: [[precis-edit-help]].
 
 ## Why can't I delete a paper or a cached tool answer?
 

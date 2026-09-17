@@ -82,11 +82,10 @@ that's a missing subhead — flag.
 
 ## Output: one flag per paragraph
 
-`kind='finding'` doesn't fit here — it's a citation-chase target
-(`cited_in=` mandatory, "your own synthesis with no single source
-→ not a finding"; see `precis-finding-help`). A paragraph-flow
-observation is your own read of the prose, not a sourced claim, so
-record it as a `kind='memory'` linked to the reviewed block:
+{{include doc:precis-common-reviewer#finding-doesnt-fit-a-synthesis-pass}}
+A paragraph-flow observation is your own read of the prose, not a
+sourced claim, so record it as a `kind='memory'` linked to the
+reviewed block:
 
 ```python
 put(
@@ -97,7 +96,7 @@ Sentence 1: "Carbon nanotubes have been studied since the 1990s."
 Sentence 3 carries the actual claim: "Their ballistic transport at
 room temperature is what makes them candidate transistors."
 
-Severity: MODERATE — the topic sentence is generic background;
+Severity: MEDIUM — the topic sentence is generic background;
 the paragraph's actual point is buried mid-paragraph. Lift sentence
 3 to the lead and re-paragraph the historical context as a separate
 "Background" paragraph or trim it.""",
@@ -108,12 +107,12 @@ the paragraph's actual point is buried mid-paragraph. Lift sentence
 
 Severity guide:
 
-- **SUBSTANTIVE** — paragraph has no claim at all, OR two unrelated
+- **BLOCKER** — paragraph has no claim at all, OR two unrelated
   claims, OR opens by contradicting the prior paragraph without
   signposting.
-- **MODERATE** — claim buried mid-paragraph, weak transition, lazy
+- **MEDIUM** — claim buried mid-paragraph, weak transition, lazy
   full-stop ending.
-- **NITPICK** — sentence-level rhythm. Don't bother; the writer
+- **LOW** — sentence-level rhythm. Don't bother; the writer
   can self-edit those.
 
 ## Skipped block kinds

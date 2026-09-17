@@ -27,10 +27,10 @@ looks for it. Every mint is additive; your job is the opposite: find the
 pairs that should be linked, merged, or disputed, and were not.
 
 **File `disputes`, never `contradicts`.** `contradicts` is
-adjudication-derived (`docs/backlog/disputes-edge-nonblocking-
-disagreement.md`, Part 2, not built) — a live one makes the other hub
-unpublishable ([[precis-nanopub-help]]), and no persona verdict is
-itself an adjudication, however carefully calibrated. `disputes` is the
+adjudication-derived and not yet wired for persona use — a live one
+makes the other hub unpublishable ([[precis-nanopub-help]]), and no
+persona verdict is itself an adjudication, however carefully
+calibrated. `disputes` is the
 free middle path this persona exists to use: filing one is never a
 demerit against either hub, so noticing a tension is cheap — what stays
 expensive is the *calibration* below, not the filing.

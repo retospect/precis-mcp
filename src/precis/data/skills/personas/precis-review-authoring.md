@@ -44,9 +44,11 @@ For each gap your persona finds:
   change-request todo instead (the flag path), exactly as the read-only
   reviewer does:
 
-      put(kind='todo',
-          meta={'anchor': 'dc<id>'},
-          text='<what is missing> — <the source or evidence needed>')
+  ```python
+  put(kind='todo',
+      meta={'anchor': 'dc<id>'},
+      text='<what is missing> — <the source or evidence needed>')
+  ```
 
 Uncertainty is not a reason to guess; it is the signal to flag. A gap you
 flag will get a human's attention. A claim you fabricate will not — it
@@ -58,11 +60,13 @@ will read as finished and ship. **When in doubt, flag.**
    citation so the grounding is on record and validated (the citation
    door confirms the source exists in the corpus):
 
-       put(kind='citation',
-           text='<the claim, verbatim as you will write it>',   # claim → refs.title
-           source_handle='pc<id>',            # the grounding chunk
-           source_quote='<the verbatim span that supports it>',
-           verifier_confidence=<0..1>)         # your honest confidence
+   ```python
+   put(kind='citation',
+       text='<the claim, verbatim as you will write it>',   # claim → refs.title
+       source_handle='pc<id>',            # the grounding chunk
+       source_quote='<the verbatim span that supports it>',
+       verifier_confidence=<0..1>)         # your honest confidence
+   ```
 
    Set `verifier_confidence` to what you actually believe after reading
    the source span — not a hopeful number. If it would be below ~0.7,
@@ -79,16 +83,20 @@ will read as finished and ship. **When in doubt, flag.**
      reserved for the term-attribute patch and would silently swallow your
      `text=`):
 
-         edit(kind='draft', id='dc<id>', text='<the extended paragraph>',
-              source={'authored_by': 'review:<persona>'})
+     ```python
+     edit(kind='draft', id='dc<id>', text='<the extended paragraph>',
+          source={'authored_by': 'review:<persona>'})
+     ```
 
    - **Add a new paragraph/subsection** only when the content is genuinely
      missing (not merely thin) — insert a new chunk in place, stamping it
      via `meta=` (safe here — `meta=` on `put(kind='draft', ...)` is stored
      verbatim on the new chunk):
 
-         put(kind='draft', id='<draft>', at={'into': 'dc<parent>'} | {'after': 'dc<id>'},
-             text='<the new paragraph>', meta={'authored_by': 'review:<persona>'})
+     ```python
+     put(kind='draft', id='<draft>', at={'into': 'dc<parent>'} | {'after': 'dc<id>'},
+         text='<the new paragraph>', meta={'authored_by': 'review:<persona>'})
+     ```
 
    Prefer extending over adding: a new chunk is for a real structural
    hole, not a sentence that belongs in an existing paragraph.

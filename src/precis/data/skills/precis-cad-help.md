@@ -1,10 +1,9 @@
 ---
 id: precis-cad-help
 title: precis — the CAD kind (analytic solid design you can read)
-summary: author a parametric solid as a text node-list, then probe it analytically (point/ray/arc/section/volume) and relate parts (clearance/interference/connectivity/translational DOF) — no meshing, no pixels; STL/3MF/STEP/SCAD are downstream exports
+summary: author a parametric solid as a text node-list, then probe it analytically (point/ray/arc/section/volume) — no meshing, no pixels; STL/3MF/STEP/SCAD are downstream exports; assembly (ports/mates/joints) and build planning (make-tree/mass/BOM) are sibling skills
 answers:
   - how do I author a parametric solid model as text?
-  - how do I check clearance or interference between two parts?
   - how do I export a CAD design to STL / STEP / SCAD?
   - how do I probe a design — find a point, section, or volume?
 applies-to: get/search/put/delete (kind='cad')
@@ -117,163 +116,11 @@ it is, and the exports carry it as a named body like any other component.
 - Edit the sub-design and every assembly using it picks the change up on
   its next read; there is no stale copy to re-sync.
 
-## Author a design — assembly and payloads
+## Assemble parts — ports, mates, joints
 
-### Assemble by interface — `port` and `mate`
+See [[precis-cad-assembly-help]].
 
-Typing world coordinates for every sub-assembly is where designs (and
-models) drift. Declare a **port** — a named frame on a design — and let a
-**mate** compute the pose:
-
-```python
-put(kind="cad", id="nema17", text="""
-component body
-case   add  box:w42mmd42mmh40mm
-port   shaft  @0mm,0mm,40mm     # the output face, 40 mm up its own z
-""")
-
-put(kind="cad", id="drivetrain", text="""
-port deck @0mm,0mm,12mm          # a frame on THIS design
-
-use gearbox as g
-use nema17  as m
-
-mate g.input to deck             # anchor = one of this design's ports
-mate m.shaft to g.output flip    # anchor = another instance's port
-""")
-```
-
-- `port <name> [@x,y,z] [rot:rx,ry,rz]` is a **top-level directive** like
-  `component` / `use` — it names a frame, not geometry, so it never becomes
-  a node, never appears in a probe, and never exports.
-- `mate <instance>.<port> to <anchor> [flip] [spin:<angle>]` places
-  `<instance>`. The anchor is either `<port>` (this design's own, fixed) or
-  `<instance>.<port>` (another instance, posed first).
-- **The default is coincidence** — the two frames land exactly on top of
-  each other, same origin, same axes. That is "put your connection point
-  right here". `flip` adds an explicit 180° about x (the two faces then
-  oppose, which is what you want for a shaft entering a bore); `spin:<angle>`
-  (`deg`/`rad`, e.g. `spin:30deg`) rotates about the port's z, for clocking
-  a bolt pattern.
-- Addressing is **one level**: `m.shaft`, not `m.inner.shaft`.
-- An instance with no mate sits where you placed it (the origin by default)
-  — a frame or base part needs no mate.
-
-Refused at `put`, each naming the offender: mating an instance twice, or
-mating one that also carries `@`/`rot:` (both over-constrained — a mate
-already fixes all six DOF); mating a `polar:`/`linear:` instance; a mate
-cycle (`a` mated to `b` mated to `a`); an unknown instance or port (the
-error lists the ports the design actually declares).
-
-Ports are also **searchable**: they go into the design's one card, so
-`search(kind='cad', q='nema17 mount port')` finds designs by the interfaces
-they advertise.
-
-Ports take two optional tags: `type:<t>` (free compatibility tag — two
-*typed* ports only mate when the types match, an untyped side always may)
-and `of:<component>` (scopes the frame to a component — required for the
-pivot of a component `joint` below).
-
-### Straddling modules — `payload … at:<port>`
-
-A port may carry **payload geometry** — features the module machines into
-whatever it mates against (a hinge's knuckle recess, its pin bore):
-
-```
-component body
-barrel  add cyl:r4mmh20mm
-port leaf_a @-10mm,0mm,0mm of:body type:hinge-leaf
-payload recess   cut box:w8mmd3mmh20mm at:leaf_a @0mm,0mm,-10mm
-payload pin_bore cut cyl:r2mmh24mm     at:leaf_a @0mm,0mm,-2mm
-```
-
-`payload <name> <op> <config> at:<port> [@x,y,z] [rot:...]` — placement is
-relative to the port's frame; `op` is `add`/`cut` only. On the module
-itself the payload is dormant. When the port **mates**, each payload is
-spliced into the component on the *other* side as a node named
-`<instance>~<name>` — so the host's tree and `view='volume'` (which adds a
-"payload contribution" delta line) attribute the change to the module,
-never silently. Requirements and refusals: the far side's port must be
-scoped `of:` a component (the host body — refused otherwise, a payload
-needs a host); across an articulated `joint …` the payload stays rigid in
-the host (a recess doesn't swing with the hinge). An instanced module
-whose payload port is never mated is flagged at `put`
-(`⚠ payload port(s) never mated`) — the geometry would exist in no host.
-
-## Author a design — joints and print-in-place
-
-### Articulate — `joint`, `state`, and `view='sweep'`
-
-A **mate is a `fixed` joint**. The articulated kinds insert one degree of
-freedom at the interface, about/along the **anchor frame's z axis**:
-
-```python
-put(kind="cad", id="crane", text="""
-component tower
-mast add box:w20mmd20mmh200mm
-
-component jib
-beam add box:w150mmd10mmh10mm @75mm,0mm,205mm
-port slew @0mm,0mm,205mm of:jib
-
-joint jib revolute at:slew limits:-170deg..170deg     # component form
-
-use hook_block as h
-joint h.eye to jib.tip prismatic limits:0mm..180mm    # instance form
-""")
-
-# pose it — a joint's name is its subject instance / component; every
-# probe arg that's a length or angle carries its own explicit unit too,
-# same rule as the source text:
-get(kind="cad", id="crane", view="point",
-    args={"state": {"jib": "45deg", "h": "120mm"}, "p": ["0mm", "90mm", "205mm"]})
-
-# the payoff question — does anything hit anything, anywhere in the travel?
-get(kind="cad", id="crane", view="sweep")
-```
-
-- Kinds: `revolute` (deg) · `prismatic` (mm) · `cylindrical`
-  (`[deg, mm]`, two DOF) · `screw` (deg, advances `pitch:<length>` per
-  rev) · `fixed` (= `mate`). `limits:`/`pitch:` at the text boundary always
-  carry an explicit unit; internally revolute/screw/cylindrical-angle state
-  is radians, prismatic/cylindrical-slide state is metres.
-- **Two forms**: `joint <inst>.<port> to <anchor> <kind> [opts]` poses an
-  instance (a generalised mate — `flip`/`spin:` still apply);
-  `joint <component> <kind> at:<port>` articulates a whole component of
-  *this* design about a port scoped `of:` that component.
-- `state=` in any probe/export view's `args` poses the design. Missing
-  joints default to 0 (clamped into `limits:`); an **explicit** state
-  outside `limits:` is an error, never clamped. `state` addresses only the
-  top design's joints — instanced sub-designs pose at their defaults.
-- `gear <a> to <b> ratio:<r>` / `belt …` couple two joint states
-  (`b = r × a`; the sign carries the sense, so contact gears want a
-  negative ratio). A driven joint derives; setting it explicitly to a
-  conflicting value is an error.
-- A mate/joint anchored on a port `of:` a jointed component **follows**
-  that component — a motor mated onto an articulated arm swings with it.
-- `view='sweep'` sweeps each joint across its `limits:` (others held
-  neutral, `args.n` samples, default 9), reporting every colliding pair
-  with the state range where it interferes, plus the swept envelope per
-  moving body. `args={'joint': 'jib'}` sweeps one joint only.
-
-### Print-in-place joints — the `printed-` type convention
-
-For 3D-printed realizations, hinges/slides/pins can be **built in** —
-printed captive, no assembly. Express one as a module: its own pin as a
-node reaching into the host, the bore as a `cut` payload (pin radius +
-process clearance), the `joint … revolute|prismatic` line, and a port
-`type:printed-hinge` (the `printed-` prefix marks the interface as
-captive-printed — "pip" in 3D-printing parlance, spelled out here to
-avoid the Python-pip collision). Put the clearance floor in a dim
-(`dim clearance >= 0.3mm` for FDM) so an undersized joint refuses at
-parse. The honesty rule rides make-tree alignment: a `printed-` mate
-whose two hosts are `made-by` **different print steps** is flagged on
-the design's `view='links'` — a captive joint needs both sides in the
-same print.
-
-## Author a design — analysis and catalog parts
-
-### Attach analysis results — `link` `rel='analyzed-by'`
+## Attach analysis results — `link` `rel='analyzed-by'`
 
 An analysis number (FEA stress, a multiphysics result — stored as a
 `finding`, later `estimate`) attaches to the design it describes:
@@ -299,118 +146,9 @@ File exports are version-anchored the same way: `view='stl'|'3mf'|'step'`
 records the design version it wrote, so a drifted artifact is detectable
 (`design version <sha> recorded` in the reply).
 
-### Catalog parts — `part <name> <family>:<code>` → `view='bom'`
+## Plan the build — dimensions, mass, BOM, printability
 
-Standard procurable parts are built in — envelope + ports, never true
-thread/ball geometry (what matters is honest outer shape, mate frames,
-and procurement identity):
-
-```
-part b1 bearing:6202            # d15 D35 B11; ports: bore (midplane), face
-part bolts bolt:m6x20 @40mm,0mm,10mm polar:n4r30mm   # patterns multiply BOM qty
-part m1 nema:17                 # ports: face (mount plane), shaft
-mate b1.face to seat            # parts mate like instances — no coordinates
-```
-
-(`bolt:m6x20`'s `m6x20` is the part's designation — mm by fastener-standard
-convention, a procurement code rather than a free quantity, so it does
-NOT take a unit token; only the placement tokens `@`/`polar:` do.)
-
-Families: `bearing:6202` (deep-groove, 60x/62xx/63xx), `bolt:m6x20` /
-`nut:m6` / `washer:m6` (ISO 4017/4032/7089, M3–M12), `extrusion:2020x400`
-and `rail:mgn12x200` (profile × cut length), `nema:17` (11–34),
-`gear:m1z20[w8]` (blank, OD = m·(z+2)). Unknown codes refuse at `put`
-naming what IS known. Parts-only designs need no sub-design resolution.
-
-`view='bom'` flattens the whole assembly (patterns × nesting) to one row
-per distinct code and resolves each to the procurable `component` ref
-under the catalog's slug (`bearing-6202`, `bolt-m6x20`, length-free for
-cut stock) with its recorded `unit_cost`. No matching component ref =
-listed `⚠ unsourced` — seed one under that slug to price it. Each save
-syncs `realized-by` links design→component for resolved parts;
-hand-name extra candidates with
-`link(kind='cad', id=…, target='component:<slug>', rel='realized-by')`
-(never pruned by the sync). Fabricated bodies are make-tree territory,
-not BOM lines. **`se` designs emit the same edge** from their
-`set_binding` bindings, so asking a component what calls for it
-(`rel='realizes'`) reaches both tracks in one query; each sync prunes
-only its own managed rows.
-
-## Author a design — build planning, dimensions, mass
-
-### Plan how it's built — `kind='make'` + `rel='made-by'`
-
-A design tree says what a thing IS; a **make-tree** (`kind='make'`) says
-the ORDER it comes together — and the two need not align (a step may
-bundle parts across subsystems). Steps are first-class, ordered nodes
-addressed `mk<id>`, each carrying its conditions in `meta`:
-
-```python
-put(kind="make", id="crane-assembly", title="crane assembly order")
-put(kind="make", id="crane-assembly", text="bolt tower to base",
-    meta={"fixture": "torque wrench", "torque": "40 Nm"})
-# align blocks from the design side — many-to-many, ref- or step-level:
-link(kind="cad", id="crane", target="make:crane-assembly", rel="made-by")
-link(kind="cad", id="tower_sub", target="mk123", rel="made-by")
-```
-
-`get(kind='make', id=…)` renders the step tree with each step's
-conditions and its aligned blocks (`⛓`). Once a design declares a
-make-tree, `view='links'` on the design warns about `contains`
-sub-designs not aligned to any step (`⚠ make-coverage`). Steps track
-`status=open|wip|done`; `edit` moves/rewords a step without changing its
-handle. Two make-orders over the same design (placed assembly vs bulk
-synthesis) are just two `make` refs.
-
-### Declare dimensions — `dim` / `constrain` (refuse the impossible)
-
-Name your driving dimensions and let the kernel catch contradictions
-**before any geometry exists**:
-
-```
-dim a = 200mm          # exact
-dim c >= 100mm         # one-sided bounds are first-class ("longer than
-dim c <= 500mm         # 10cm" is a valid open-ended requirement)
-constrain a = c        # equality between dims
-```
-
-Bounds on one name intersect; `constrain` merges dims into an equality
-class; a class whose combined range is empty — `a = 200mm`, `b = 150mm`,
-`constrain a = b` — is **refused at put** with the members and their
-bounds named. They're the carrier for process rules like print
-clearances (`clearance >= 0.3mm` for FDM) and for estimates that narrow
-over time.
-
-**Configs can reference dims**: `slab add box:w{a}d{b}h0.01` — the stored
-source stays parametric (edit the `dim` line, geometry follows). Once a
-config references `{name}` at all, every literal number in *that same
-config token* parses bare/canonical (SI metres) — so the un-substituted
-`h0.01` above is 0.01 metres, not millimetres, exactly like the dim values
-`{a}`/`{b}` it sits next to (a `dim` declaration is unit-required and
-converts to SI once, at the `dim` line, so the two agree in scale). A
-referenced dim must be **pinned** to an exact value (directly or through
-its equality class); a still-open bound is refused, never silently
-averaged. Sub-designs resolve `{…}` against their own dims; payload
-configs may not reference dims.
-
-### Weigh it — `material <component> <slug>` + `view='mass'`
-
-Assign each component a `material` kind slug; the mass view joins that
-material's **sourced** density (canonical kg/m3) against sampled
-per-component volume:
-
-```
-component frame
-slab add box:w100mmd100mmh10mm
-material frame 6061-t6
-```
-
-`get(view='mass')` → per-component table (volume ±err, density, mass,
-**source** — the numbers arrive cited), total ± sampled-volume error,
-CoM. Components without a material are listed as excluded, loudly —
-never silently zeroed. Sub-designs bring their own assignments in
-(namespaced), and `state=` poses the design first, so CoM at a joint
-state is one call.
+See [[precis-cad-build-help]].
 
 ## Author a design — description and the config DSL
 
@@ -524,107 +262,6 @@ A carved region reads **empty** and **names the blocking node** ("empty;
 removed by hub_bore") — subtraction is visible without ever merging the
 solid.
 
-## Relate parts — clearance / interference / DOF
-
-Built at real dimensions and *analyzed*, not declared (there is no `fit`
-object — a press fit is simply *clearance = −0.02 mm*, and whether that's
-intended is your call):
-
-```python
-# signed min gap between two components: + clear, ≈0 line-to-line, − interference
-get(kind="cad", id="asm", view="clearance", args={"a": "shaft", "b": "hub"})
-
-# how far one part can translate along ±x/±y/±z before hitting another
-get(kind="cad", id="asm", view="dof", args={"moving": "shaft", "fixed": "hub"})
-```
-
-Clearance is measured against the *material* — a shaft sitting in a bored
-hub reads the **radial wall gap**, not a false collision against the
-un-bored plate.
-
-## Connectivity — is it one solid? what touches what?
-
-`view='connectivity'` builds the **contact graph** over the design's
-components: two parts are *connected* when their realised (post-cut)
-material touches or overlaps (signed gap ≤ tol). It answers three questions:
-
-```python
-# full report: the connected bodies + every contact + the one-solid verdict
-get(kind="cad", id="wheel", view="connectivity")
-
-# what touches this part? (empty ⇒ a floating body)
-get(kind="cad", id="wheel", view="connectivity", args={"of": "hub"})
-
-# is there a contact path between two parts? (e.g. hub → rim through spokes)
-get(kind="cad", id="wheel", view="connectivity", args={"a": "hub", "b": "rim"})
-
-# loosen/tighten what counts as "touching" (explicit unit; default is
-# scale-relative to the design's own bbox diagonal, not a fixed mm figure)
-get(kind="cad", id="wheel", view="connectivity", args={"tol": "0.05mm"})
-```
-
-Because contact is tested on the **folded CSG** (cuts already applied),
-the classic trap is avoided: a rim (`disc − cutout`) and a hub
-(`disc − cutout`) whose *raw* discs overlapped massively before the cuts
-are correctly seen as **not touching** — only their post-cut annulus/disc
-material counts. So "is the hub connected to the rim?" gives the physical
-answer, not the pre-cut one.
-
-### Truisms — a real part is one connected solid
-
-A manufacturable part is a *single connected body*: a wheel is its hub, its
-spokes, **and** its rim, and they must all touch (directly or through each
-other). Model each distinct body as its own **component** (`hub`, `rim`,
-`spoke`) — then `connectivity` verifies the whole thing hangs together, and
-`put` warns you at author time if it doesn't:
-
-- `⚠ floating (touches nothing): rim` — a part welded to nothing.
-- `⚠ 2 disconnected bodies: hub+spoke | rim` — two islands that should be one.
-
-After any edit that moves or resizes a body, re-check connectivity: a spoke
-nudged 0.1 mm too short silently disconnects the rim. Connectivity is at
-the **component** level — a stray *instance* inside one component isn't
-caught; keep distinct bodies as distinct components.
-
-One cost caveat: every `put` runs a pairwise clearance/interference sweep
-over all components — O(N²) in **component count**, and a ~14-component
-assembly can push a `put` past 120 s. For larger assemblies either merge
-bodies you don't need connectivity verdicts on, or expect to background
-the `put` and poll.
-
-## Print orientation — `view='printability'`
-
-The one probe that meshes (`manifold3d`, the export kernel): searches
-build-down directions for the one that prints best. se's fdm
-implementer (`precis-se-print-help`) shares it:
-
-```python
-get(kind="cad", id="bracket", view="printability",
-    args={"max_overhang": "50deg", "max_bridge": "8mm",
-          "layer_height": "0.2mm", "min_bed_contact": 0.15})
-```
-
-Scores overhang area, bed contact, height, and bridge spans with flat
-weights (se passes its own; loads are se's lane). An omitted `args`
-field (`max_overhang`, `max_bridge`, `layer_height`, `min_bed_contact`,
-`sweep_deg` default 30°) skips that term, never guesses a threshold, and
-the reply says so. Pin `args.down=[x,y,z]` to check one orientation; the
-reply names any better candidate. Returns the top 5 candidates plus
-process-DRC findings (overhang, bridge, bed_contact, build_volume).
-
-> **Tip — need a number, exactly?** Don't eyeball arithmetic. The
-> `calc` kind is a local sympy engine: `get(kind='calc', q='2+3*4')`
-> evaluates arbitrarily complex expressions *exactly* — fractions,
-> roots (`sqrt(2)`, `2**10`), **trig** (`sin cos tan atan2`, `pi`), even
-> calculus and linear algebra. Handy here for bolt-circle coordinates,
-> slant/draft angles, and tolerance stacks before you `put` them into
-> the source.
-> **`calc` trig is in degrees by default** — matching cad's convention —
-> so `get(kind='calc', q='sin(30)')` → `1/2` and `get(kind='calc',
-> q='N(atan2(1,1))')` → `45` directly, and the result carries a
-> "degrees" note. Pass `view='rad'` for radians (symbolic calculus);
-> wrap in `N(...)` for a decimal instead of the exact form.
-
 ## Find a design — `search`
 
 ```python
@@ -705,3 +342,8 @@ delete(kind="cad", id="flange")  # soft-retire the whole design (recoverable)
 One limit worth knowing: a design whose node is *both* patterned and
 `intersect` can't be instanced (flattening it under a pose would change the
 solid) — split that node into explicit nodes and it instances fine.
+
+## See also
+
+- [[precis-cad-assembly-help]] — ports, mates, joints, connectivity
+- [[precis-cad-build-help]] — make-tree, dimensions, mass, BOM, printability
