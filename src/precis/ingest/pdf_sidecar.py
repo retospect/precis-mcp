@@ -9,8 +9,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import fitz
-
 log = logging.getLogger(__name__)
 
 DOI_REGEX = re.compile(r"10\.\d{4,}/[^\s<\"}\)]+")
@@ -53,6 +51,21 @@ def extract_pdf_meta(path: str | Path) -> dict[str, Any]:
     Returns:
         Dict with keys: info, xmp, doi, pdf_hash, first_pages_text, page_count.
     """
+    # Lazy import: fitz (PyMuPDF) ships in the ``[paper]`` extra, but this
+    # module's pure-text helpers (is_garbage_title, is_pii, ...) are
+    # imported at module top by five non-PDF ingest modules (dedup,
+    # lookup, metadata_resolve, pdf_metadata, remediate). A module-top
+    # ``import fitz`` would make all of them hard-fail without the extra.
+    # Mirrors the embedder.py / handlers/provenance.py missing-extra
+    # pattern (gr343744).
+    try:
+        import fitz
+    except ImportError as exc:
+        raise ImportError(
+            "pdf_sidecar.extract_pdf_meta: PyMuPDF (fitz) not installed "
+            "(install with `pip install 'precis-mcp[paper]'`)"
+        ) from exc
+
     path = Path(path)
     doc = fitz.open(str(path))
 

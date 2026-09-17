@@ -53,6 +53,46 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
 
+# --help / -h : print usage and exit BEFORE any side effect (gr343798). This
+# must stay the first thing checked — no gate slot, no tmpfs test-db, no
+# container, no lock — so `scripts/test --help` is instant and never touches
+# the fleet-wide gate.
+usage() {
+    cat <<'USAGE'
+scripts/test — run the suite (or a subset) in the precis-dev container
+against THIS worktree, with the RAM test DB wired.
+
+Usage:
+  scripts/test                              # full suite (-n6)
+  scripts/test tests/test_foo.py            # one file
+  scripts/test -k "registry or env"         # a -k expression
+  scripts/test tests/test_foo.py::test_bar -x
+  scripts/test --fast | -f                  # no-DB fast set (-m 'not db and not slow')
+  scripts/test --impacted | -i              # ONLY tests your changes affect (testmon)
+  scripts/test --bg <args…>                 # detach the run; prints an --await line
+  scripts/test --await <run-id>             # bounded wait: exits with the run's
+                                             # code, or 124 = still running (re-run)
+  scripts/test --help | -h                  # this message; no gate slot, no container
+
+Everything after the script name (other than the flags above) is passed
+straight to pytest. Default parallelism is -n6; pass your own -n0/-nN to
+override for a single fast test.
+
+Two-call background protocol for capped foreground shells: `--bg <args>`
+detaches the run and prints its run-id; poll with `--await <run-id>`
+repeatedly (each call blocks up to PRECIS_TEST_AWAIT_BUDGET seconds, default
+480, and exits 124 while still running — re-run the same command until it
+returns the run's real exit code).
+
+See the header comment in this script for the full rationale (why the
+wrapper exists, --impacted/testmon details, the UV_WITH escape hatch).
+USAGE
+}
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
 # --bg / --await : two-call protocol for agent harnesses whose foreground
 # shell calls are hard-capped (~10 min). A gate-congested run can't fit one
 # call, and the cap KILLS the run mid-flight (a re-run starts over at the

@@ -52,10 +52,15 @@ def _annotation_is(annotation: str, type_name: str) -> bool:
 def convert_value(value: str, param_info: dict[str, Any]) -> Any:
     """Convert CLI string value to the appropriate Python type.
 
-    A value whose stripped text starts with ``[`` or ``{`` is parsed as
-    JSON (a ``{`` on a list param is wrapped in a one-element list);
-    malformed JSON raises ``ArgumentTypeError`` rather than falling
-    through to comma-splitting.
+    On a list param, a value whose stripped text starts with ``[`` or
+    ``{`` is parsed as JSON (a bare ``{...}`` is wrapped in a
+    one-element list); malformed JSON raises ``ArgumentTypeError``
+    rather than falling through to comma-splitting. A param annotated
+    exactly ``dict[str, Any] | None`` (e.g. ``get``/``put``/``edit``'s
+    ``args=``, the typed-extras channel for views like block/callgraph
+    that need more than a flat kwarg) is always parsed as JSON and must
+    produce an object — malformed JSON or non-object JSON (a list, a
+    bare scalar) raises ``ArgumentTypeError`` naming the expected shape.
     """
     annotation = str(param_info["annotation"])
     stripped = value.strip()
@@ -71,13 +76,20 @@ def convert_value(value: str, param_info: dict[str, Any]) -> Any:
             return parsed if isinstance(parsed, list) else [parsed]
         return _parse_list_value(value)
 
-    if stripped.startswith("{") and "dict" in annotation:
+    if _annotation_is(annotation, "dict[str, Any]"):
         try:
-            return json.loads(stripped)
+            parsed = json.loads(stripped)
         except json.JSONDecodeError as e:
             raise argparse.ArgumentTypeError(
                 f"Invalid JSON for parameter {param_info['name']!r}: {e}"
             ) from None
+        if not isinstance(parsed, dict):
+            raise argparse.ArgumentTypeError(
+                f"Parameter {param_info['name']!r} expects a JSON object "
+                f'(e.g. \'{{"key": "value"}}\'), got {type(parsed).__name__}: '
+                f"{stripped}"
+            )
+        return parsed
 
     # Handle basic types
     if _annotation_is(annotation, "int"):
@@ -126,10 +138,6 @@ def build_parser_for_tool(
     for param_name, param_info in tool_info["parameters"].items():
         cli_flag = param_info["cli_flag"]
 
-        # Skip 'args' parameter for CLI - it's complex and rarely used
-        if param_name == "args":
-            continue
-
         # Prefer the explicit per-arg help registered next to the tool
         # function (see :data:`precis.tools.core.CLI_HELP`); fall back
         # to docstring extraction when a tool didn't register one (e.g.
@@ -174,9 +182,6 @@ def convert_args_to_payload(tool_name: str, args: argparse.Namespace) -> dict[st
     payload = {}
 
     for param_name, param_info in tool_info["parameters"].items():
-        if param_name == "args":
-            continue  # Skip complex args parameter
-
         # Get the value from parsed args (convert CLI flag name to param name)
         cli_attr_name = param_name.replace("-", "_")
         value = getattr(args, cli_attr_name, None)

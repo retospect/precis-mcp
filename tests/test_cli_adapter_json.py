@@ -13,8 +13,13 @@ import argparse
 
 import pytest
 
-from precis.tools import get_tool_info
-from precis.tools.cli_adapter import convert_value
+from precis.tools import TOOL_REGISTRY, get_tool_info
+from precis.tools.cli_adapter import (
+    build_parser_for_tool,
+    convert_args_to_payload,
+    convert_value,
+    run_tool_from_cli,
+)
 
 
 def _param_info(*, is_list: bool, annotation: str, name: str = "value") -> dict:
@@ -101,3 +106,155 @@ def test_edit_ops_param_is_registered_as_a_list() -> None:
     ops_param = info["parameters"]["ops"]
 
     assert ops_param["is_list"] is True
+
+
+# --- gr344095: `tools get`/`put`/`edit` expose --args for typed extras ---
+
+
+def test_args_dict_json_object_parses_to_dict() -> None:
+    """`--args '{"detail": "full"}'` parses to a plain dict, same as any dict param."""
+    param_info = _param_info(
+        is_list=False, annotation="dict[str, Any] | None", name="args"
+    )
+
+    result = convert_value('{"detail": "full"}', param_info)
+
+    assert result == {"detail": "full"}
+
+
+def test_args_malformed_json_raises_naming_the_param() -> None:
+    """Malformed JSON on args= errors clearly instead of passing the raw string."""
+    param_info = _param_info(
+        is_list=False, annotation="dict[str, Any] | None", name="args"
+    )
+
+    with pytest.raises(argparse.ArgumentTypeError, match="args"):
+        convert_value('{"detail": ', param_info)
+
+
+@pytest.mark.parametrize("non_dict_json", ["[1, 2, 3]", "5", '"hello"', "true"])
+def test_args_non_dict_json_rejected_with_expected_shape(non_dict_json: str) -> None:
+    """Valid JSON that isn't an object is rejected — args= must be a JSON object."""
+    param_info = _param_info(
+        is_list=False, annotation="dict[str, Any] | None", name="args"
+    )
+
+    with pytest.raises(argparse.ArgumentTypeError, match="JSON object"):
+        convert_value(non_dict_json, param_info)
+
+
+def test_get_args_param_is_registered_and_no_longer_skipped() -> None:
+    """`get`'s `args` param round-trips through the registry like any other."""
+    info = get_tool_info("get")
+
+    args_param = info["parameters"]["args"]
+
+    assert args_param["is_list"] is False
+    assert str(args_param["annotation"]) == "dict[str, Any] | None"
+
+
+@pytest.mark.parametrize("tool_name", ["get", "put", "edit"])
+def test_tools_get_put_edit_parsers_expose_an_args_flag(tool_name: str) -> None:
+    """`--args` is a real flag on get/put/edit — it was silently dropped before."""
+    top = argparse.ArgumentParser()
+    subparsers = top.add_subparsers(dest="tool")
+
+    parser = build_parser_for_tool(tool_name, subparsers)
+
+    dests = {action.dest for action in parser._actions}
+    assert "args" in dests
+
+
+def test_search_has_no_args_param_to_expose() -> None:
+    """`search` takes structured extras as dedicated kwargs, not an args= dict —
+    nothing for the CLI adapter to unlock there."""
+    info = get_tool_info("search")
+
+    assert "args" not in info["parameters"]
+
+
+def test_cli_args_flag_reaches_the_tool_call_as_a_dict(monkeypatch) -> None:
+    """`tools get --args '{...}'` reaches the underlying tool call as a plain
+    dict — the same payload shape the MCP verb's `args=` accepts."""
+    captured: dict = {}
+
+    def fake_get(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setitem(
+        TOOL_REGISTRY, "get", {**TOOL_REGISTRY["get"], "func": fake_get}
+    )
+
+    top = argparse.ArgumentParser()
+    subparsers = top.add_subparsers(dest="tool")
+    build_parser_for_tool("get", subparsers)
+
+    ns = top.parse_args(
+        [
+            "get",
+            "--kind",
+            "se",
+            "--id",
+            "blk1",
+            "--view",
+            "block",
+            "--args",
+            '{"detail": true}',
+        ]
+    )
+
+    result = run_tool_from_cli("get", ns)
+
+    assert result == "ok"
+    assert captured["args"] == {"detail": True}
+
+
+def test_cli_args_flag_omitted_behaves_as_before(monkeypatch) -> None:
+    """Omitting --args doesn't forward it at all — same as every other unset
+    optional flag (``convert_args_to_payload`` only includes a key when the
+    value is non-None or required), so the tool's own ``args=None`` default
+    applies, unchanged from before this fix."""
+    captured: dict = {}
+
+    def fake_get(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setitem(
+        TOOL_REGISTRY, "get", {**TOOL_REGISTRY["get"], "func": fake_get}
+    )
+
+    top = argparse.ArgumentParser()
+    subparsers = top.add_subparsers(dest="tool")
+    build_parser_for_tool("get", subparsers)
+
+    ns = top.parse_args(["get", "--kind", "se", "--id", "blk1"])
+
+    run_tool_from_cli("get", ns)
+
+    assert "args" not in captured
+
+
+def test_cli_args_flag_invalid_json_errors_at_parse_time() -> None:
+    """A malformed --args value is rejected by argparse before the tool ever
+    runs — the same clear-error contract as any other JSON-typed CLI flag."""
+    top = argparse.ArgumentParser()
+    subparsers = top.add_subparsers(dest="tool")
+    build_parser_for_tool("get", subparsers)
+
+    with pytest.raises(SystemExit):
+        top.parse_args(["get", "--args", "not-json"])
+
+
+def test_convert_args_to_payload_includes_args_key() -> None:
+    """`convert_args_to_payload` no longer drops `args=` on the floor."""
+    top = argparse.ArgumentParser()
+    subparsers = top.add_subparsers(dest="tool")
+    build_parser_for_tool("get", subparsers)
+
+    ns = top.parse_args(["get", "--kind", "se", "--args", '{"a": 1}'])
+
+    payload = convert_args_to_payload("get", ns)
+
+    assert payload["args"] == {"a": 1}

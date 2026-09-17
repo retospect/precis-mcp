@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
+
+import pytest
+
 from precis.ingest.pdf_sidecar import (
     _clean_doi,
     _extract_doi,
@@ -398,3 +403,78 @@ class TestExtractDOIFromFilename:
 
     def test_empty_filename(self):
         assert extract_doi_from_filename(".pdf") is None
+
+
+# ── fitz optional-dep degrade (gr343744) ─────────────────────────────────
+#
+# fitz (PyMuPDF) is gated behind the ``[paper]`` extra. It must be a lazy
+# import confined to extract_pdf_meta — every text-only helper in this
+# module (is_garbage_title, is_pii, ...) is imported at module top by five
+# non-PDF ingest modules (dedup, lookup, metadata_resolve, pdf_metadata,
+# remediate), so a module-top ``import fitz`` here would hard-fail all of
+# them on a host without ``[paper]``.
+
+
+class TestFitzLazyImport:
+    def test_module_imports_with_fitz_blocked(self, monkeypatch: pytest.MonkeyPatch):
+        """pdf_sidecar itself must import cleanly without fitz installed.
+
+        Simulated by poisoning ``sys.modules['fitz'] = None``, the standard
+        trick to make ``import fitz`` raise ``ImportError`` regardless of
+        whether the real package is actually installed in this test
+        environment (see test_estimate_plugin.py for the same pattern).
+        """
+        monkeypatch.setitem(sys.modules, "fitz", None)
+
+        import precis.ingest.pdf_sidecar as mod
+
+        importlib.reload(mod)  # must not raise even with fitz "gone"
+
+    def test_extract_pdf_meta_raises_clean_error_without_fitz(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        """Calling the one fitz-needing function with fitz absent must raise
+        a clear, actionable error — never an opaque ``ModuleNotFoundError``
+        traceback."""
+        monkeypatch.setitem(sys.modules, "fitz", None)
+
+        import precis.ingest.pdf_sidecar as mod
+
+        importlib.reload(mod)
+        dummy_pdf = tmp_path / "dummy.pdf"
+        dummy_pdf.write_bytes(b"%PDF-1.4\n")
+        with pytest.raises(ImportError, match=r"fitz.*\[paper\]"):
+            mod.extract_pdf_meta(dummy_pdf)
+
+
+class TestFiveImportersSurviveFitzBlocked:
+    """The five modules that import pdf_sidecar helpers at module top must
+    not require fitz — they only use the pure-text helpers, never
+    extract_pdf_meta's body at import time. Reproduces the gr343744 report:
+    a host without ``[paper]`` must be able to import dedup/lookup/
+    metadata_resolve/pdf_metadata/remediate."""
+
+    @pytest.mark.parametrize(
+        "module_name",
+        [
+            "precis.ingest.dedup",
+            "precis.ingest.lookup",
+            "precis.ingest.metadata_resolve",
+            "precis.ingest.pdf_metadata",
+            "precis.ingest.remediate",
+        ],
+    )
+    def test_importer_module_imports_with_fitz_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, module_name: str
+    ):
+        monkeypatch.setitem(sys.modules, "fitz", None)
+
+        # Force a fresh import of pdf_sidecar and the importer under test so
+        # the fitz-blocked sys.modules state is actually exercised, rather
+        # than short-circuiting on an already-imported (fitz-bound) module.
+        # monkeypatch.delitem restores each entry to its prior value at
+        # teardown, so later tests see the real, already-imported modules.
+        for name in (module_name, "precis.ingest.pdf_sidecar"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+        importlib.import_module(module_name)  # must not raise

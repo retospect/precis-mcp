@@ -2249,6 +2249,12 @@ _OPTIONAL_DEP_PROBES: tuple[tuple[str, str, str, str], ...] = (
         "pip install 'precis-mcp[embed]'",
     ),
     (
+        "fitz",
+        "pymupdf",
+        "paper ingest (pdf_sidecar DOI/metadata extraction)",
+        "pip install 'precis-mcp[paper]'",
+    ),
+    (
         "sympy",
         "sympy",
         "calc",

@@ -298,6 +298,9 @@ def test_precis_status_renders_optional_dep_table(
     body = runtime_with_store.dispatch("get", {"kind": "skill", "id": "precis-status"})
     assert "# precis-status" in body
     assert "sentence-transformers" in body
+    # gr343744: fitz (PyMuPDF) is a [paper]-extra dep — the probe table
+    # must enumerate it like every other optional dep.
+    assert "pymupdf" in body
     assert "**Overall:" in body
     # We test against an env that has [all] installed, so the
     # overall status is OK.  If the test runner ever drops
