@@ -203,12 +203,39 @@ starts from the fixed via's B.Cu landing (island terminals in `realize`),
 recorded as `ledger.fabric.fan == "router"`. A "solved-once" fan needs a
 footprint context passed into expansion — its own round if wanted.
 
+**Slice 2 geometry residue — a DESIGN DECISION, not a build item
+(2026-09-17):** at the spec's default `gap` (0.10 mm) the chamfered escape
+corridor is 0.11 mm wide, which cannot host a JLC-minimum track (0.09 mm)
+plus two JLC-minimum clearances (2 × 0.09 mm). The stub therefore reads
+~0.025 mm under the clearance floor against its two flanking electrodes,
+and every honest fix is a geometry change: widening the chamfer margin
+regressed the zigzag mesh; narrowing the track under the fab minimum
+(tried 2026-09-17, reverted the same day) "closed" the clearance finding by
+emitting 0.038 mm copper JLC cannot etch. `resolve_ewod_sizing` now caps
+the stub to the corridor but floors the cap at the fab's minimum trace
+width, so the deficit stays visible as a `clearance` finding
+(`tests/test_pcb_ewod_generator_drc.py` pins it as KNOWN with a −0.05 mm
+bound). Options for Reto: (a) raise the default `gap` to ≥ ~0.27 mm
+(changes the electrode pitch budget and the droplet physics); (b) derive
+the chamfer corridor from the fab rules (`trace_width + 2 × spacing`) and
+re-solve the zigzag wall against the wider chamfer; (c) accept the
+finding for the dogfood and fab at a house with tighter rules.
+
 **Slice 3 — resize the dogfood to 9×9** and re-run the full path: apply →
 DRC → `view='gerber'`. Constraint found at build: `sink_grid.per_tiles`
 is a square block of cells per sink and HV507 has 64 channels, so a 9×9
 (72 electrodes) needs either two sinks or a channel-overflow rule the
 generator does not have yet — verify with a 9×9 + `sink_grid` test before
 resizing prod.
+
+**Slice 3 finding (2026-09-17, tests/test_pcb_ewod_fabric.py):** with
+`per_tiles: 8` a 9×9 auto-splits into FOUR sinks (55/8/8/1 channels — three
+near-empty HV507s); with `per_tiles: 9` (one whole-field sink) the generator
+**refuses** with a named 64-channel overflow. Neither is the 9×9 board we
+want. Resizing prod to 9×9 needs a channel-packing rule (two sinks, 36 each,
+or one sink plus a remainder rule) — a Reto decision, not a build item.
+Slices 1–2 shipped ungated as 74bfc61b + 2b4bbe36; the prod dogfood stays
+8×8 with fabric until that call.
 
 ## Acceptance criteria
 

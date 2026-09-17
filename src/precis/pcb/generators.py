@@ -240,22 +240,24 @@ _HV_SEPARATION_V_SCALE = 0.002
 #: the stub's own residual half-width at its closest approach and
 #: ordinary coordinate-rounding noise.
 #:
-#: **pcb-pre-place-route-blocks Slice 2 finding, since CLOSED (see
-#: ``resolve_ewod_sizing``'s own ``stub_width`` derivation, not here): the
-#: stub is no longer near-zero-width at the corner.** Round 4's number was
+#: **pcb-pre-place-route-blocks Slice 2 finding, STILL OPEN at the default
+#: ``gap`` — a design decision, not a build item.** Round 4's number was
 #: calibrated for a TAPERED footprint-pad neck (:func:`_stub_polygon`, now
-#: retired), whose width right at the pinch point was ~0 — "a separate,
-#: much smaller effect" this docstring used to say. Slice 2 replaced the
-#: taper with a CONSTANT-width track (:func:`_stub_track_row`) the full
-#: length, so the copper occupies ``stub_width/2`` of the corridor
-#: everywhere, including at the corner — at default sizing this read a
-#: couple hundredths of a mm under the fab's absolute clearance floor. A
-#: naive fix WIDENING THIS MARGIN was tried and reverted: it closed the
-#: gap but opened a WORSE, unrelated zigzag-wall regression (still true —
-#: do not widen this margin). The actual fix instead NARROWS the track:
-#: ``resolve_ewod_sizing`` derives the widest ``stub_width`` that still
-#: leaves the fab floor intact against this exact corridor (which this
-#: margin defines the width of), independent of the margin itself.
+#: retired), whose width right at the pinch point was ~0. Slice 2 replaced
+#: the taper with a CONSTANT-width track (:func:`_stub_track_row`) the
+#: full length, so the copper occupies ``stub_width/2`` of the corridor
+#: everywhere, including at the corner — at default sizing this reads a
+#: couple hundredths of a mm under the fab's absolute clearance floor. Two
+#: fixes were tried and both rejected: WIDENING THIS MARGIN (closed the
+#: gap, opened a worse, unrelated zigzag-wall regression — do not retry),
+#: and NARROWING THE TRACK below the fab's minimum trace width (closed the
+#: clearance finding by emitting 0.038mm copper JLC cannot etch — a lie
+#: the `trace_width` DRC rule and the fixed-copper envelope both expose).
+#: ``resolve_ewod_sizing`` keeps the cap but floors it at the fab's
+#: minimum trace width; the residual deficit stays visible as a
+#: ``clearance`` finding until the corridor is made wide enough for
+#: min-width + two clearances (a wider ``gap``, >= ~0.27mm at JLC 4-layer
+#: rules, or a rule-derived chamfer corridor).
 _PLAZA_CORNER_CHAMFER_MARGIN_MM = 0.01
 
 #: 1 micron. The electrode-gap net class's ``clearance_mm`` (below) is set
@@ -533,7 +535,8 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # this clamp) so `plaza_corner_chamfer` below can be derived from the
     # SAME final width the track will actually be drawn at.
     stub_width = min(stub_width_uncapped, gap)
-    # pcb-pre-place-route-blocks Slice 2 geometry residue, CLOSED here: a
+    # pcb-pre-place-route-blocks Slice 2 geometry residue, BOUNDED here (not
+    # closed at the default gap -- see `_PLAZA_CORNER_CHAMFER_MARGIN_MM`): a
     # constant-width track (unlike round 4's near-zero-width taper) eats
     # `stub_width/2` of the corridor the plaza-corner chamfer opens, at
     # its own closest approach right at the flanking corner. That corridor
@@ -550,13 +553,28 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # mesh-wall zigzag clearance): this narrows the TRACK, which is
     # load-bearing only against this exact corridor, never against
     # anything the chamfer margin itself also protects.
+    #
+    # The cap has a FLOOR of its own: the fab's minimum trace width. A
+    # track narrower than that is not "extra clearance", it is copper JLC
+    # will not etch — and `_fabric_envelope` stamps `min_track_mm` = that
+    # same floor onto every row, so emitting a thinner stub would make the
+    # envelope lie. At the spec's DEFAULT gap (0.10mm) the corridor
+    # (0.11mm) cannot host min-width + two clearances (0.09 + 2×0.09), so
+    # the cap bottoms out at the floor and the residual clearance deficit
+    # stays VISIBLE as a `clearance` finding — never traded for a silent
+    # sub-minimum track. Closing it needs a wider `gap` (>= ~0.27mm at JLC
+    # 4-layer rules) or a rule-derived chamfer corridor: a design call,
+    # recorded in docs/backlog/pcb-pre-place-route-blocks.md.
     _trace_spacing_floor = float(cap.jlc_min.get("trace_spacing_mm") or 0.09)
-    _corridor = gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM
-    _max_stub_for_corridor = 2.0 * (
-        _corridor - _trace_spacing_floor - _GEOMETRY_ROUNDING_SLACK_MM
+    _trace_width_floor = float(
+        cap.jlc_min.get("trace_width_mm") or _DEFAULT_STUB_WIDTH_MM
     )
-    if _max_stub_for_corridor > 0.0:
-        stub_width = min(stub_width, _max_stub_for_corridor)
+    _corridor = gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM
+    _max_stub_for_corridor = max(
+        2.0 * (_corridor - _trace_spacing_floor - _GEOMETRY_ROUNDING_SLACK_MM),
+        _trace_width_floor,
+    )
+    stub_width = min(stub_width, _max_stub_for_corridor)
     edge = params.get("edge") or {}
     tooth_depth = float(edge.get("tooth_depth", _DEFAULT_TOOTH_DEPTH_MM))
     tooth_pitch = float(edge.get("tooth_pitch", _DEFAULT_TOOTH_PITCH_MM))

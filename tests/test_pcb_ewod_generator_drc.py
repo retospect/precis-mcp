@@ -30,20 +30,26 @@ paying for a store round-trip per case. See ``test_pcb_ewod_generator.py``
 for the store/handler wiring layer and
 ``test_pcb_ewod_generator_geometry.py`` for pure zigzag/gap geometry.
 
-**Two pcb-pre-place-route-blocks Slice 2 geometry residues, both CLOSED
-(docs/backlog/pcb-pre-place-route-blocks.md's own "geometry residues"
-item):**
+**Two pcb-pre-place-route-blocks Slice 2 geometry residues — one KNOWN
+and pinned, one CLOSED (docs/backlog/pcb-pre-place-route-blocks.md's own
+"geometry residues" item):**
 
-1. At default sizing, a diagonal escape's neck TRACK used to read a
-   couple hundredths of a mm under the fab's absolute clearance floor
-   against its two flanking neighbours' bodies (the round-4
-   taper-clearance fix was calibrated for a near-zero-width taper;
-   Slice 2's track is constant-width the whole way). Widening
-   ``precis.pcb.generators``'s ``plaza_corner_chamfer`` margin was tried
-   and reverted (still a worse, unrelated zigzag-wall regression — do not
-   retry it). Fixed instead by deriving ``stub_width`` from that same
-   corridor (``resolve_ewod_sizing``) so the track itself narrows just
-   enough to clear the fab floor, independent of the margin.
+1. **KNOWN gap, documented rather than hidden.** At default sizing, a
+   diagonal escape's neck TRACK reads a couple hundredths of a mm under
+   the fab's absolute clearance floor against its two flanking
+   neighbours' bodies (the round-4 taper-clearance fix was calibrated for
+   a near-zero-width taper; Slice 2's track is constant-width the whole
+   way). Two fixes were tried and rejected: widening
+   ``precis.pcb.generators``'s ``plaza_corner_chamfer`` margin (a worse,
+   unrelated zigzag-wall regression — do not retry), and narrowing
+   ``stub_width`` below the fab's minimum trace width (cleared this
+   check by emitting 0.038mm copper JLC cannot etch — do not retry
+   either). ``resolve_ewod_sizing`` now caps ``stub_width`` to the
+   chamfered corridor but FLOORS that cap at the fab's minimum trace
+   width, so at the default ``gap`` the deficit stays visible here.
+   Closing it is a design call (a wider ``gap`` or a rule-derived
+   corridor), recorded in the backlog spec. Pinned as KNOWN with a bound;
+   a worse margin or any other pairing is a NEW regression.
 2. ``check_via_pad_keepout``'s PRE-EXISTING circumscribed-circle pad
    approximation over-states a LARGE polygon pad's (an electrode body's)
    effective radius enough that a plaza via reads as a keepout violation
@@ -223,10 +229,10 @@ def test_diagonal_escape_electrode_bodies_stay_clear_of_each_other(grid):
     two flanking corners (``plaza_corner_chamfer``) back out to the
     array's own uniform ``gap`` design target — checked here against
     ELECTRODE BODIES ONLY (no copper), which pcb-pre-place-route-blocks
-    Slice 2 did not touch and does not regress. The neck TRACK's own
-    clearance against those same flanking bodies is
-    ``test_diagonal_escape_stub_track_clearance_stays_clean`` below, not
-    this test."""
+    Slice 2 did not touch and does not regress. The neck TRACK's own,
+    separate, KNOWN clearance gap against those same flanking bodies is
+    ``test_diagonal_escape_stub_track_undercuts_the_fab_floor_known_gap``
+    below, not this test."""
     _, model = _ewod_model(grid=grid)
     body_only = _electrode_bodies_only(model)
     findings = drc.check_clearance(body_only, _CAP4)
@@ -234,26 +240,68 @@ def test_diagonal_escape_electrode_bodies_stay_clear_of_each_other(grid):
     assert errors == [], [f.detail for f in errors]
 
 
+#: The bound on the pcb-pre-place-route-blocks Slice 2 known gap (module
+#: docstring): a diagonal escape's constant-width neck track can read
+#: this far under the fab's absolute clearance floor against its two
+#: flanking neighbours' bodies at DEFAULT sizing, consistently, across
+#: every grid/variant this file sweeps (measured: -0.025mm, never worse).
+#: A margin worse than this bound is a NEW regression, not the known one.
+_KNOWN_STUB_TRACK_GAP_MIN_MARGIN_MM = -0.05
+
+
+def _assert_clearance_errors_are_only_the_known_stub_track_gap(
+    errors: list[Any],
+) -> None:
+    """A ``check_clearance`` error list may ONLY contain the known
+    track-vs-flanking-body gap (module docstring) — any OTHER pairing
+    (pad-vs-pad, via-vs-via, or a track/pad margin worse than the known
+    bound) fails loudly rather than being silently swept in with it."""
+    for f in errors:
+        kinds = {f.objects[0]["ctype"], f.objects[1]["ctype"]}
+        assert kinds == {"track", "pad"}, (
+            f"clearance error outside the known stub-track gap: {f.where} :: {f.detail}"
+        )
+        assert (
+            f.margin_mm is not None
+            and f.margin_mm >= _KNOWN_STUB_TRACK_GAP_MIN_MARGIN_MM
+        ), f"clearance error worse than the known gap's bound: {f.detail}"
+
+
 @pytest.mark.parametrize("grid", [[3, 3], [8, 8], [9, 9], [3, 8]])
-def test_diagonal_escape_stub_track_clearance_stays_clean(grid):
-    """**Formerly a KNOWN gap, pcb-pre-place-route-blocks Slice 2 —
-    CLOSED** (module docstring). Round 4's ``plaza_corner_chamfer``
-    margin was calibrated for a TAPERED footprint-pad neck whose width
-    right at the flanking-corner pinch point was ~0; Slice 2 replaced
-    that with a CONSTANT-width track the whole length
-    (:func:`precis.pcb.generators._stub_track_row`), so the track's own
-    half-width used to eat into the same corridor the chamfer opened for
-    a near-zero-width path. Widening the chamfer margin was tried and
-    reverted (still opens a worse, unrelated zigzag-wall regression — do
-    not retry it). Fixed instead by deriving the narrowest safe
-    ``stub_width`` from that same corridor
-    (:func:`precis.pcb.generators.resolve_ewod_sizing`), independent of
-    the margin, so the diagonal escape clears the fab floor at DEFAULT
-    sizing on every grid/variant this file sweeps."""
+def test_diagonal_escape_stub_track_undercuts_the_fab_floor_known_gap(grid):
+    """**KNOWN gap, pcb-pre-place-route-blocks Slice 2** (module
+    docstring item 1) — pinned, not hidden. Round 4's
+    ``plaza_corner_chamfer`` margin was calibrated for a TAPERED neck
+    whose width at the flanking-corner pinch point was ~0; Slice 2's
+    CONSTANT-width track (:func:`precis.pcb.generators._stub_track_row`)
+    eats its own half-width out of that corridor. At the default ``gap``
+    the corridor cannot host a fab-minimum-width track plus two fab
+    clearances, and :func:`precis.pcb.generators.resolve_ewod_sizing`
+    refuses to narrow the track below the fab minimum (that would be
+    unetchable copper, not clearance), so the deficit MUST show up here.
+    A clean result on this test means the geometry decision was made
+    (wider gap / rule-derived corridor) — flip the assertion then, not
+    before."""
     _, model = _ewod_model(grid=grid)
     findings = drc.check_clearance(model, _CAP4)
     errors = [f for f in findings if f.rule == "clearance" and f.severity == "error"]
-    assert errors == [], [f.detail for f in errors]
+    assert errors, "expected the known stub-track clearance gap, found none"
+    _assert_clearance_errors_are_only_the_known_stub_track_gap(errors)
+
+
+def test_stub_width_never_drops_below_the_fab_minimum_trace_width():
+    """The corridor cap in :func:`precis.pcb.generators.resolve_ewod_sizing`
+    is floored at the fab's minimum trace width: at the default ``gap``
+    the un-floored cap would be ~0.038mm (0.11mm corridor minus 0.09mm
+    clearance and rounding slack, doubled) — copper JLC cannot etch, and
+    a lie against the ``min_track_mm`` the fixed-copper envelope stamps
+    on every row. The stub stays at the fab minimum; the clearance
+    deficit is reported instead (known-gap test above)."""
+    sizing = pcb_generators.resolve_ewod_sizing({"grid": [3, 3]})
+    trace_min = _CAP4.jlc_min["trace_width_mm"]
+    assert trace_min is not None
+    assert sizing["stub_width"] == pytest.approx(trace_min)
+    assert sizing["stub_width"] >= trace_min
 
 
 def test_stub_width_override_wider_than_the_corridor_is_still_safety_capped():
@@ -261,16 +309,69 @@ def test_stub_width_override_wider_than_the_corridor_is_still_safety_capped():
     corridor can safely carry is silently narrowed the same way an
     over-wide ``stub_width`` was already silently narrowed to ``gap``
     (:func:`precis.pcb.generators.resolve_ewod_sizing`'s own ``stub_width
-    = min(stub_width_uncapped, gap)`` precedent) — never a
-    DRC-violating board by construction, regardless of what an author
-    asks for."""
+    = min(stub_width_uncapped, gap)`` precedent) — the result is the
+    SAME board as default sizing (fab-minimum track, known gap only),
+    never a wider track that clips its neighbours."""
+    sizing = pcb_generators.resolve_ewod_sizing({"grid": [3, 3], "stub_width": 5.0})
+    assert sizing["stub_width"] == pytest.approx(_CAP4.jlc_min["trace_width_mm"])
     _, model = _ewod_model(grid=[3, 3], stub_width=5.0)
     errors = [
         f
         for f in drc.check_clearance(model, _CAP4)
         if f.rule == "clearance" and f.severity == "error"
     ]
-    assert errors == [], [f.detail for f in errors]
+    _assert_clearance_errors_are_only_the_known_stub_track_gap(errors)
+
+
+def test_diagonal_escape_stub_track_gap_clears_with_a_narrower_stub_width():
+    """The author-level escape hatch for the known gap above: an explicit
+    ``stub_width`` override narrow enough that the track's own half-width
+    no longer eats past the chamfered corridor clears the CLEARANCE check
+    on the same board that fails at default sizing. (It is below the fab
+    minimum trace width, so ``check_trace_width`` reports it instead — an
+    author choosing that trade sees it, which is the point.)"""
+    jlc_min = _CAP4.jlc_min["trace_spacing_mm"]
+    assert jlc_min is not None
+    _, narrow_model = _ewod_model(grid=[3, 3], stub_width=jlc_min / 4.0)
+    narrow_errors = [
+        f
+        for f in drc.check_clearance(narrow_model, _CAP4)
+        if f.rule == "clearance" and f.severity == "error"
+    ]
+    assert narrow_errors == [], [f.detail for f in narrow_errors]
+
+
+def test_corridor_cap_falls_back_to_the_documented_spacing_floor(monkeypatch):
+    """Mutation survivor (settle-up gate, 2026-09-17): the corridor cap's
+    ``trace_spacing_mm`` read falls back to 0.09mm when the capability
+    row lacks the field or carries a falsy value — pinned so ``or`` →
+    ``and`` no longer survives. With the fab-minimum floor in place the
+    default-gap cap bottoms out at the trace-width floor either way, so
+    the fallback is observed through an OVERRIDE below that floor, where
+    the corridor arithmetic is what actually bites."""
+    import dataclasses
+
+    real_cap = pcb_generators.capability_for(pcb_generators._FAB_PROCESS)
+    # A tiny (truthy) trace-width floor so the corridor arithmetic, not
+    # the fab-minimum floor, is what decides the result.
+    no_spacing = dataclasses.replace(
+        real_cap,
+        jlc_min={
+            **{k: v for k, v in real_cap.jlc_min.items() if k != "trace_spacing_mm"},
+            "trace_width_mm": 0.01,
+        },
+    )
+    monkeypatch.setattr(pcb_generators, "capability_for", lambda _p: no_spacing)
+    gap = pcb_generators._DEFAULT_GAP_MM
+    expected_cap = 2.0 * (
+        gap
+        + pcb_generators._PLAZA_CORNER_CHAMFER_MARGIN_MM
+        - 0.09
+        - pcb_generators._GEOMETRY_ROUNDING_SLACK_MM
+    )
+    assert 0.0 < expected_cap < gap  # the cap, not the gap clamp, must bite
+    sizing = pcb_generators.resolve_ewod_sizing({"grid": [3, 3], "stub_width": 5.0})
+    assert sizing["stub_width"] == pytest.approx(expected_cap)
 
 
 def test_plaza_ring_via_to_via_clearance_survives_coordinate_rounding():
@@ -309,16 +410,15 @@ def test_plaza_ring_via_to_via_clearance_survives_coordinate_rounding():
         ([32, 32], "rim"),
     ],
 )
-def test_min_clearance_stays_clean_across_grid_sizes(grid, variant):
+def test_min_clearance_stays_within_the_known_gap_across_grid_sizes(grid, variant):
     """The exact-geometry stress sweep the round-4 fix (both the
     plaza-corner chamfer and the rim via-reach rewrite) was validated
     against, at every grid size from degenerate (a single pad, no plaza
     at all) up to the spec's own 1024-pad ceiling, for either variant.
     **Bodies alone stay fully clean** (round 4's own guarantee, untouched
-    by Slice 2); the copper-inclusive check now stays clean too (module
-    docstring's "geometry residues" section — the former stub-track known
-    gap is closed) — a genuine geometry regression still fails this
-    test."""
+    by Slice 2); any copper-inclusive finding may only be the known
+    stub-track gap (module docstring item 1), never a NEW pairing or a
+    worse margin — a genuine geometry regression still fails this test."""
     _, model = _ewod_model(grid=grid, variant=variant)
     body_errors = [
         f
@@ -329,7 +429,7 @@ def test_min_clearance_stays_clean_across_grid_sizes(grid, variant):
 
     findings = drc.check_clearance(model, _CAP4)
     errors = [f for f in findings if f.rule == "clearance" and f.severity == "error"]
-    assert errors == [], [f.detail for f in errors]
+    _assert_clearance_errors_are_only_the_known_stub_track_gap(errors)
 
 
 # ── plaza via annular ring ────────────────────────────────────────────────
@@ -523,14 +623,13 @@ def test_router_via_clear_of_the_field_stays_quiet():
 )
 def test_merged_pad_min_clearance_stays_at_or_above_the_fab_floor(variant, grid, cells):
     """The same exact-geometry sweep as
-    ``test_min_clearance_stays_clean_across_grid_sizes``, now with a
-    ``pad_sizes`` merge covering the span -- adjacent to a real plaza,
-    adjacent to the external mesh boundary, mid-field, and on both a
-    rim's straight edge and its corner, on top of the ordinary
+    ``test_min_clearance_stays_within_the_known_gap_across_grid_sizes``,
+    now with a ``pad_sizes`` merge covering the span -- adjacent to a real
+    plaza, adjacent to the external mesh boundary, mid-field, and on both
+    a rim's straight edge and its corner, on top of the ordinary
     unmerged-neighbour geometry every one of these still has along its
-    OTHER walls. Bodies alone stay fully clean, and so does the
-    copper-inclusive check (module docstring's "geometry residues"
-    section)."""
+    OTHER walls. Bodies alone stay fully clean; a copper-inclusive finding
+    may only be the known stub-track gap (module docstring item 1)."""
     _, model = _ewod_model(grid=grid, variant=variant, pad_sizes=[{"cells": cells}])
     body_errors = [
         f
@@ -541,7 +640,7 @@ def test_merged_pad_min_clearance_stays_at_or_above_the_fab_floor(variant, grid,
 
     findings = drc.check_clearance(model, _CAP4)
     errors = [f for f in findings if f.rule == "clearance" and f.severity == "error"]
-    assert errors == [], [f.detail for f in errors]
+    _assert_clearance_errors_are_only_the_known_stub_track_gap(errors)
 
 
 def test_merged_pad_plaza_via_annular_ring_stays_clean_at_default_sizing():
