@@ -3,8 +3,9 @@
 Unit tests drive a ``#!/bin/sh`` stub through ``PRECIS_RMAPI_BIN`` +
 ``shutil.which`` + ``subprocess.run`` (the same POSIX stub-binary pattern
 as the latexmk compile tests), so no real ``rmapi`` / device is needed.
-The credential resolves from the ``REMARKABLE_TOKEN`` env var (``get_secret``
-checks the environment first).
+The credential is per-user only (vault entry ``REMARKABLE_RMAPI_CONFIG:
+<login>``) — there is no deployment-wide fallback, so most tests here arm
+the ``vault_box`` fixture with a per-user entry rather than an env var.
 """
 
 from __future__ import annotations
@@ -47,12 +48,15 @@ def _pdf(tmp_path: Path) -> Path:
     return p
 
 
-def test_remarkable_configured_reads_credential(monkeypatch) -> None:
+def test_remarkable_configured_requires_a_login(monkeypatch) -> None:
+    """No ``login`` → always False, regardless of any env var — there is no
+    deployment-wide credential to check instead."""
     monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
     monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
     assert rm.remarkable_configured(store=None) is False
     monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
-    assert rm.remarkable_configured(store=None) is True
+    assert rm.remarkable_configured(store=None) is False
+    assert rm.remarkable_configured(store=None, login=None) is False
 
 
 # ── per-user pairing (vault-backed; env can't hold a colon name) ────
@@ -98,32 +102,40 @@ def test_user_config_secret_is_colon_scoped() -> None:
     assert rm.user_config_secret("reto") == "REMARKABLE_RMAPI_CONFIG:reto"
 
 
-def test_per_user_config_beats_global(vault_box: dict[str, str]) -> None:
+def test_per_user_config_ignores_a_leftover_global_secret(
+    vault_box: dict[str, str],
+) -> None:
+    """A ``REMARKABLE_RMAPI_CONFIG`` entry with no login suffix (the old
+    deployment-wide shape) must never satisfy a per-user lookup — a
+    different login with no paired device of their own gets nothing, not
+    the leftover global config."""
     store = _fake_store()
     vault_box["REMARKABLE_RMAPI_CONFIG"] = "devicetoken: global-token\n"
     vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: retos-own-token\n"
     assert rm._config_body(store, "reto") == "devicetoken: retos-own-token\n"
-    # A different login with no paired device of its own falls through to
-    # the deployment-wide config.
-    assert rm._config_body(store, "someone-else") == "devicetoken: global-token\n"
+    assert rm._config_body(store, "someone-else") is None
 
 
-def test_login_none_keeps_global_behaviour(vault_box: dict[str, str]) -> None:
+def test_login_none_means_no_config_even_with_a_bare_token_set(
+    vault_box: dict[str, str],
+) -> None:
+    """No ``login`` → ``None``/``False`` unconditionally — a bare
+    ``REMARKABLE_TOKEN``-shaped entry is never consulted."""
     store = _fake_store()
     vault_box["REMARKABLE_TOKEN"] = "bare-token"
-    assert rm._config_body(store, None) == "devicetoken: bare-token\n"
-    assert rm.remarkable_configured(store) is True
-    assert rm.remarkable_configured(store, login=None) is True
+    assert rm._config_body(store, None) is None
+    assert rm.remarkable_configured(store) is False
+    assert rm.remarkable_configured(store, login=None) is False
 
 
-def test_remarkable_configured_per_user_and_global(vault_box: dict[str, str]) -> None:
+def test_remarkable_configured_per_user_only(vault_box: dict[str, str]) -> None:
     store = _fake_store()
     assert rm.remarkable_configured(store, login="reto") is False
     assert rm.user_remarkable_configured(store, "reto") is False
     vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: t\n"
     assert rm.remarkable_configured(store, login="reto") is True
     assert rm.user_remarkable_configured(store, "reto") is True
-    # No global fallback bleeds into the per-user-only check.
+    # reto's pairing never bleeds into another login's check.
     assert rm.user_remarkable_configured(store, "someone-else") is False
     assert rm.remarkable_configured(store, login="someone-else") is False
 
@@ -168,9 +180,11 @@ def test_clear_user_config_reports_vault_failure(
 
 
 @_needs_posix_stub
-def test_send_pdf_prefers_the_users_own_device(
+def test_send_pdf_uses_the_users_own_device_ignoring_a_leftover_global_env(
     tmp_path, monkeypatch, vault_box: dict[str, str]
 ) -> None:
+    """A leftover ``REMARKABLE_TOKEN`` env var must never leak into the
+    per-user resolution — only ``login``'s own vault entry counts."""
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi(tmp_path)))
     monkeypatch.setenv("REMARKABLE_TOKEN", "global-token")
     vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: retos-token\n"
@@ -279,28 +293,38 @@ def test_register_device_over_a_real_socket(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen["auth"] == "Bearer"
 
 
-def test_send_pdf_skips_without_binary(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+def test_send_pdf_skips_without_binary(
+    tmp_path, monkeypatch, vault_box: dict[str, str]
+) -> None:
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token\n"
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(tmp_path / "does-not-exist"))
-    res = rm.send_pdf(_pdf(tmp_path), store=None)
+    res = rm.send_pdf(_pdf(tmp_path), store=_fake_store(), login="reto")
     assert res.skipped and not res.ok and "not installed" in res.error
 
 
 @_needs_posix_stub
 def test_send_pdf_skips_without_credential(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    """No ``login`` at all — the default no-argument call must skip, not
+    error, even with a leftover deployment-wide-shaped env var set."""
+    monkeypatch.setenv("REMARKABLE_RMAPI_CONFIG", "devicetoken: leftover-global\n")
+    monkeypatch.setenv("REMARKABLE_TOKEN", "leftover-global")
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi(tmp_path)))
     res = rm.send_pdf(_pdf(tmp_path), store=None)
-    assert res.skipped and not res.ok and "credential" in res.error
+    assert res.skipped and not res.ok and "paired" in res.error
 
 
 @_needs_posix_stub
-def test_send_pdf_uploads_via_stub(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+def test_send_pdf_uploads_via_stub(
+    tmp_path, monkeypatch, vault_box: dict[str, str]
+) -> None:
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token\n"
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi(tmp_path)))
     res = rm.send_pdf(
-        _pdf(tmp_path), folder="/Precis", display_name="My Draft!", store=None
+        _pdf(tmp_path),
+        folder="/Precis",
+        display_name="My Draft!",
+        store=_fake_store(),
+        login="reto",
     )
     assert res.ok and res.returncode == 0
     assert res.name == "My Draft"  # sanitised (‘!’ dropped)
@@ -326,16 +350,20 @@ def _stub_rmapi_logging(tmp_path: Path, log_path: Path) -> Path:
 
 @_needs_posix_stub
 def test_send_pdf_creates_nested_folder_segment_by_segment(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, vault_box: dict[str, str]
 ) -> None:
     """rmapi's mkdir is not recursive — a nested destination like
     "/Precis/173020" must get one mkdir per ancestor, in order, before the
     put."""
     log_path = tmp_path / "argv.log"
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token\n"
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi_logging(tmp_path, log_path)))
     res = rm.send_pdf(
-        _pdf(tmp_path), folder="/Precis/173020", display_name="Source", store=None
+        _pdf(tmp_path),
+        folder="/Precis/173020",
+        display_name="Source",
+        store=_fake_store(),
+        login="reto",
     )
     assert res.ok
     lines = log_path.read_text(encoding="utf-8").splitlines()
@@ -354,17 +382,20 @@ def test_send_pdf_creates_nested_folder_segment_by_segment(
 
 @_needs_posix_stub
 def test_send_pdf_rejects_unsafe_folder(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    """Folder validation happens before the credential lookup, so this needs
+    no login/pairing at all."""
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi(tmp_path)))
     res = rm.send_pdf(_pdf(tmp_path), folder="/a; rm -rf /", store=None)
     assert not res.ok and not res.skipped and "unsafe" in res.error
 
 
 @_needs_posix_stub
-def test_send_pdf_reports_upload_failure(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+def test_send_pdf_reports_upload_failure(
+    tmp_path, monkeypatch, vault_box: dict[str, str]
+) -> None:
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token\n"
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(_stub_rmapi(tmp_path, succeed=False)))
-    res = rm.send_pdf(_pdf(tmp_path), store=None)
+    res = rm.send_pdf(_pdf(tmp_path), store=_fake_store(), login="reto")
     assert not res.ok and res.returncode == 1 and "failed" in res.error
 
 
@@ -427,17 +458,23 @@ def test_build_container_argv_invariants(tmp_path) -> None:
 
 
 @_needs_posix_stub
-def test_send_pdf_uploads_via_container(tmp_path, monkeypatch) -> None:
+def test_send_pdf_uploads_via_container(
+    tmp_path, monkeypatch, vault_box: dict[str, str]
+) -> None:
     log = tmp_path / "argv.log"
     monkeypatch.setenv("RM_STUB_LOG", str(log))
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token-SECRET123")
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token-SECRET123\n"
     monkeypatch.setenv("PRECIS_REMARKABLE_IMAGE", "precis-remarkable:t")
     monkeypatch.setenv("PRECIS_CONTAINER_BIN", str(_stub_container(tmp_path)))
     # No rmapi on the host at all — the container owns it.
     monkeypatch.setenv("PRECIS_RMAPI_BIN", str(tmp_path / "no-rmapi"))
 
     res = rm.send_pdf(
-        _pdf(tmp_path), folder="/Precis", display_name="My Draft!", store=None
+        _pdf(tmp_path),
+        folder="/Precis",
+        display_name="My Draft!",
+        store=_fake_store(),
+        login="reto",
     )
     assert res.ok and res.returncode == 0
     assert res.name == "My Draft" and res.folder == "/Precis"
@@ -449,31 +486,37 @@ def test_send_pdf_uploads_via_container(tmp_path, monkeypatch) -> None:
 
 
 @_needs_posix_stub
-def test_send_pdf_container_reports_failure(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+def test_send_pdf_container_reports_failure(
+    tmp_path, monkeypatch, vault_box: dict[str, str]
+) -> None:
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token\n"
     monkeypatch.setenv("PRECIS_REMARKABLE_IMAGE", "precis-remarkable:t")
     monkeypatch.setenv("PRECIS_CONTAINER_BIN", str(_stub_container(tmp_path, ok=False)))
-    res = rm.send_pdf(_pdf(tmp_path), store=None)
+    res = rm.send_pdf(_pdf(tmp_path), store=_fake_store(), login="reto")
     assert not res.ok and res.returncode == 1 and "failed" in res.error
 
 
 @_needs_posix_stub
-def test_send_pdf_container_no_result_is_failure(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+def test_send_pdf_container_no_result_is_failure(
+    tmp_path, monkeypatch, vault_box: dict[str, str]
+) -> None:
+    vault_box["REMARKABLE_RMAPI_CONFIG:reto"] = "devicetoken: dev-token\n"
     monkeypatch.setenv("PRECIS_REMARKABLE_IMAGE", "precis-remarkable:t")
     monkeypatch.setenv(
         "PRECIS_CONTAINER_BIN", str(_stub_container(tmp_path, write_result=False))
     )
-    res = rm.send_pdf(_pdf(tmp_path), store=None)
+    res = rm.send_pdf(_pdf(tmp_path), store=_fake_store(), login="reto")
     assert not res.ok and "result.json" in res.error
 
 
 @_needs_posix_stub
 def test_send_pdf_container_skips_without_credential(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    """No ``login`` → skipped, even with a leftover deployment-wide-shaped
+    env var set — there is no fallback to check."""
+    monkeypatch.setenv("REMARKABLE_RMAPI_CONFIG", "devicetoken: leftover-global\n")
+    monkeypatch.setenv("REMARKABLE_TOKEN", "leftover-global")
     monkeypatch.setenv("PRECIS_REMARKABLE_IMAGE", "precis-remarkable:t")
     monkeypatch.setenv("PRECIS_CONTAINER_BIN", str(_stub_container(tmp_path)))
     res = rm.send_pdf(_pdf(tmp_path), store=None)
     # Credential gate fires before the container is ever run.
-    assert res.skipped and not res.ok and "credential" in res.error
+    assert res.skipped and not res.ok and "paired" in res.error

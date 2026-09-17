@@ -9,10 +9,12 @@ bind-mount sharing on macOS. Docs: docker/remarkable/README.md.
 
 Per-user self-service pairing now exists on `/account` — any signed-in
 user can pair their own tablet with a one-time code
-(`precis.export.remarkable.register_device`) with no ops involvement, and
-that credential wins over the deployment-wide one. This item stays open
-for the global/deployment device + the container-image rollout above,
-which individual pairing doesn't replace.
+(`precis.export.remarkable.register_device`) with no ops involvement. The
+credential is per-user only (2026-09-17): the deployment-wide/global
+device fallback (vault `REMARKABLE_RMAPI_CONFIG` with no login suffix) was
+removed — a send with no signed-in, paired user now fails outright rather
+than falling back to a shared device. This item stays open for the
+container-image rollout above, which individual pairing doesn't replace.
 
 **rmapi version constraint** (verified 2026-08-31): v0.0.34 fails with
 HTTP 400 from the reMarkable cloud on `mkdir` and `put` (auth and `ls` work).

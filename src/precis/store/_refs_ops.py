@@ -162,6 +162,7 @@ class RefsMixin:
         auto_refresh_days: int | None = None,
         parent_id: int | None = None,
         prio: int | None = None,
+        owner_login: str | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Insert a ref. Slug rules: slug kinds (paper/book/oracle/conv/
@@ -172,6 +173,11 @@ class RefsMixin:
         ``authors``/``year`` are first-class ``refs`` columns; pass them
         here so bibtex/RIS/EndNote renderers see them — stashing in
         ``meta`` instead leaves the columns NULL.
+
+        ``owner_login`` (migration 0164) is the FK to ``web_users.login``
+        for kinds that are inherently per-user (first consumer:
+        ``anki``). ``None`` (the default) means unowned; an unknown
+        login raises the DB's own FK-violation error.
 
         Two-step insert in the same connection: the ``refs`` row, then
         (when ``slug is not None``) a ``ref_identifiers`` row
@@ -195,8 +201,8 @@ class RefsMixin:
             insert_sql = (
                 "INSERT INTO refs "
                 "(kind, title, authors, year, provider, meta, "
-                " auto_refresh_days, refreshed_at, parent_id, prio) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s, %s) "
+                " auto_refresh_days, refreshed_at, parent_id, prio, owner_login) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s, %s, %s) "
                 "RETURNING ref_id"
             )
             insert_params: tuple[Any, ...] = (
@@ -209,12 +215,14 @@ class RefsMixin:
                 auto_refresh_days,
                 parent_id,
                 prio,
+                owner_login,
             )
         else:
             insert_sql = (
                 "INSERT INTO refs "
-                "(kind, title, authors, year, provider, meta, parent_id, prio) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "(kind, title, authors, year, provider, meta, parent_id, prio, "
+                " owner_login) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING ref_id"
             )
             insert_params = (
@@ -226,6 +234,7 @@ class RefsMixin:
                 Jsonb(meta or {}),
                 parent_id,
                 prio,
+                owner_login,
             )
 
         def _do(c: Connection) -> Ref:
@@ -1782,6 +1791,62 @@ class RefsMixin:
             with self.pool.connection() as c:
                 c.execute(sql, (Jsonb(updates), ref_id))
 
+    def set_ref_owner(
+        self,
+        ref_id: int,
+        login: str | None,
+        *,
+        conn: Connection | None = None,
+    ) -> bool:
+        """Set (or clear, ``login=None``) a single ref's ``owner_login``.
+
+        Touches ``updated_at`` like every other ref mutation. Returns
+        whether a live row matched — ``False`` for a missing or already
+        soft-deleted ``ref_id`` rather than raising, mirroring
+        :meth:`touch_viewed`'s tolerant style since this is an ownership
+        bookkeeping op, not a content write. An unknown ``login`` raises
+        the DB's own FK-violation error (``owner_login`` FKs to
+        ``web_users.login``).
+        """
+        sql = (
+            "UPDATE refs SET owner_login = %s, updated_at = now() "
+            "WHERE ref_id = %s AND retired_at IS NULL"
+        )
+        params = (login, ref_id)
+        if conn is not None:
+            rowcount = conn.execute(sql, params).rowcount
+        else:
+            with self.pool.connection() as c:
+                rowcount = c.execute(sql, params).rowcount
+        return rowcount > 0
+
+    def claim_unowned_refs(
+        self,
+        kind: str,
+        login: str,
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Bulk-claim every unowned live ref of ``kind`` for ``login``.
+
+        The runtime path for the "first consumer" story: the anki
+        worker syncs cards it minted before an owner was assigned (or
+        before this migration existed at all), and claims them for the
+        AnkiWeb account it's syncing as a one-shot catch-up rather than
+        threading ``owner_login`` through every mint call site. Only
+        rows with ``owner_login IS NULL`` move — an already-owned row is
+        never reassigned by a claim. Returns the number of rows claimed.
+        """
+        sql = (
+            "UPDATE refs SET owner_login = %s, updated_at = now() "
+            "WHERE kind = %s AND owner_login IS NULL AND retired_at IS NULL"
+        )
+        params = (login, kind)
+        if conn is not None:
+            return conn.execute(sql, params).rowcount
+        with self.pool.connection() as c:
+            return c.execute(sql, params).rowcount
+
     def kind_for_slug(self, slug: str) -> str | None:
         """The kind of the **unique** live ref whose ``cite_key`` is
         ``slug``, or ``None`` when no ref matches or more than one kind
@@ -1866,6 +1931,8 @@ class RefsMixin:
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
+        owner_login: str | None = None,
+        unowned: bool = False,
         order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
@@ -1878,7 +1945,17 @@ class RefsMixin:
         ``refs.pdf_sha256``/body-chunk existence — back the Papers tab's
         ingested/PDF toggles. ``has_schedule`` filters on
         ``meta ? 'schedule'`` (replaces the old ``level:recurring`` tag).
+
+        ``owner_login=`` narrows to refs owned by that exact login;
+        ``unowned=True`` narrows to ``owner_login IS NULL``. Passing both
+        is a contradiction (no row can be both owned and unowned) and
+        raises :class:`~precis.errors.BadInput` rather than silently
+        picking one.
         """
+        if owner_login is not None and unowned:
+            raise BadInput(
+                "list_refs: owner_login= and unowned=True are mutually exclusive"
+            )
         # Aliased as ``r`` so the tag-filter helper can reference
         # ``r.ref_id`` uniformly across all store query shapes.
         clauses = ["r.retired_at IS NULL"]
@@ -1889,6 +1966,11 @@ class RefsMixin:
         if provider is not None:
             params.append(provider)
             clauses.append("r.provider = %s")
+        if owner_login is not None:
+            params.append(owner_login)
+            clauses.append("r.owner_login = %s")
+        if unowned:
+            clauses.append("r.owner_login IS NULL")
         if updated_after is not None:
             params.append(updated_after)
             clauses.append("r.updated_at > %s")

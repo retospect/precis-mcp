@@ -22,14 +22,20 @@ Three things live here today:
   token's digest, so the readable copy comes from the vault
   (:func:`precis.users.recall_feed_token`); when the vault can't produce
   one, the page falls back to "mint to see a link".
-* **reMarkable pairing** — self-service send-to-tablet, the per-user
-  half of :mod:`precis.export.remarkable`. Pairing exchanges an 8-character
-  one-time code (from ``my.remarkable.com/device/apps/connect``) for a
-  device token via :func:`precis.export.remarkable.register_device`, stored
-  in the vault under this login's own name — never shared with, or
-  overridden by, the deployment-wide device other accounts might fall back
-  to. An "advanced" box also accepts a pasted config/token directly, for
-  when the pairing endpoint has drifted or the device was paired elsewhere.
+* **reMarkable pairing** — send-to-tablet, entirely per-user
+  (:mod:`precis.export.remarkable`) — there is no deployment-wide device.
+  Pairing exchanges an 8-character one-time code (from
+  ``my.remarkable.com/device/apps/connect``) for a device token via
+  :func:`precis.export.remarkable.register_device`, stored in the vault
+  under this login's own name. An "advanced" box also accepts a pasted
+  config/token directly, for when the pairing endpoint has drifted or the
+  device was paired elsewhere.
+* **Anki (AnkiWeb) credentials** — the login/password the `anki_sync`
+  cadence uses to sync this user's `anki` cloze cards
+  (:mod:`precis.anki.creds`, ``refs.owner_login``) — again entirely
+  per-user, vault-resident, never a deployment-wide account. Save sets
+  both fields at once (there's no useful "half configured" state); forget
+  removes them, after which the sync cadence simply skips this login.
 
 **Changing your password signs you out, and that is not a bug.** HTTP
 Basic has no session to re-issue: the browser holds the old credential
@@ -153,20 +159,17 @@ def _render(
     if feed_url is None:
         feed_url = _feed_url(request, user) if user else ""
     remarkable_paired = False
-    remarkable_fallback = False
+    anki_connected = False
+    anki_email: str | None = None
     if user is not None:
-        from precis.export.remarkable import (
-            remarkable_configured,
-            user_remarkable_configured,
-        )
+        from precis.anki.creds import get_user_credentials
+        from precis.export.remarkable import user_remarkable_configured
 
         store = get_store(request)
         remarkable_paired = user_remarkable_configured(store, user.login)
-        if not remarkable_paired:
-            # Deployment-wide device, checked with no login — a per-user
-            # secret must never satisfy this check, or an already-paired
-            # user's own device would look like "everyone's fallback".
-            remarkable_fallback = remarkable_configured(store)
+        creds = get_user_credentials(store, user.login)
+        anki_connected = creds is not None
+        anki_email = creds[0] if creds is not None else None
     return templates.TemplateResponse(
         request,
         "account/index.html.j2",
@@ -177,7 +180,8 @@ def _render(
             "notice": notice,
             "feed_url": feed_url,
             "remarkable_paired": remarkable_paired,
-            "remarkable_fallback": remarkable_fallback,
+            "anki_connected": anki_connected,
+            "anki_email": anki_email,
             "auth_on": get_web_config(request).auth_required,
             "min_password_length": MIN_PASSWORD_LENGTH,
         },
@@ -449,6 +453,51 @@ def remarkable(
         return RedirectResponse("/account?saved=1", status_code=303)
 
     return _render(request, user=user, error=f"unknown reMarkable action {action!r}")
+
+
+@router.post("/anki", response_class=HTMLResponse)
+async def anki(
+    request: Request,
+    action: str = Form(...),
+    email: str = Form(""),
+    password: str = Form(""),
+) -> Response:
+    """Save or forget this user's own AnkiWeb credentials.
+
+    ``action=save`` requires both fields — there is no useful
+    half-configured state, and :func:`precis.anki.creds.user_anki_configured`
+    (the sync's gate) checks both anyway, so a partial save would just look
+    like it worked and then silently never sync. ``action=forget`` deletes
+    both vault entries.
+    """
+    from precis.anki.creds import clear_user_credentials, set_user_credentials
+
+    user = _require_self(request)
+    store = get_store(request)
+
+    if action == "forget":
+        if not clear_user_credentials(store, user.login):
+            return _render(
+                request,
+                user=_fresh(request, user),
+                error=(
+                    "Still connected: the credentials could not be deleted "
+                    "from the vault — try again. Check the precis-web log."
+                ),
+            )
+        return RedirectResponse("/account?saved=1", status_code=303)
+
+    if action == "save":
+        addr = email.strip()
+        pw = password.strip()
+        if not addr or not pw:
+            return _render(
+                request, user=user, error="Enter both your AnkiWeb email and password."
+            )
+        set_user_credentials(store, user.login, addr, pw)
+        return RedirectResponse("/account?saved=1", status_code=303)
+
+    return _render(request, user=user, error=f"unknown Anki action {action!r}")
 
 
 def _feed_url(request: Request, user: WebUser) -> str:

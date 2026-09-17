@@ -80,6 +80,20 @@ def _entry(slug: str, *, present: bool, reason: str = "") -> SourceEntry:
     )
 
 
+def _arm_paired_device(monkeypatch: Any, login: str = "reto") -> None:
+    """Pair ``login``'s own device in the vault — there is no
+    deployment-wide fallback secret, so every test that needs the
+    credential gate open needs a concrete per-user vault entry."""
+    from precis import secrets as vault_mod
+
+    box = {f"REMARKABLE_RMAPI_CONFIG:{login}": "devicetoken: t\n"}
+    monkeypatch.setattr(
+        vault_mod,
+        "get_secret",
+        lambda n, *, store=None, default=None: box.get(n, default),
+    )
+
+
 def _armed_compile(monkeypatch: Any, tmp_path: Path, *, ok: bool = True) -> Path:
     """Arm ``have_latexmk``/``compile_pdf`` for a happy compile; returns the
     stub PDF path."""
@@ -178,6 +192,8 @@ def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:
 
 
 def test_dispatch_fails_without_credential(hub: Hub, monkeypatch: Any) -> None:
+    """No ``params.user`` → no signed-in user to resolve a device for; there
+    is no deployment-wide secret to fall back to."""
     monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
     monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
     slug = _project_and_draft(hub)
@@ -185,17 +201,37 @@ def test_dispatch_fails_without_credential(hub: Hub, monkeypatch: Any) -> None:
     ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
-    assert any("credential" in f for f in ctx.failures), ctx.failures
+    assert any("no signed-in user" in f for f in ctx.failures), ctx.failures
+
+
+def test_dispatch_fails_when_user_has_no_paired_device(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """``params.user`` is present but that login has nothing paired."""
+    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
+    slug = _project_and_draft(hub)
+    spec = get_job_type("remarkable_reading_send")
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+    assert any("no reMarkable device paired for 'reto'" in f for f in ctx.failures), (
+        ctx.failures
+    )
 
 
 def test_dispatch_fails_without_latexmk(hub: Hub, monkeypatch: Any) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     from precis.export import compile as compile_mod
 
     monkeypatch.setattr(compile_mod, "have_latexmk", lambda: False)
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("latexmk" in f for f in ctx.failures), ctx.failures
@@ -204,7 +240,7 @@ def test_dispatch_fails_without_latexmk(hub: Hub, monkeypatch: Any) -> None:
 def test_dispatch_no_cited_sources_fails(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _armed_compile(monkeypatch, tmp_path)
 
@@ -214,7 +250,9 @@ def test_dispatch_no_cited_sources_fails(
     monkeypatch.setattr(sources_mod, "collect_cited_sources", lambda store, ref: bundle)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("cites no paper/patent/datasheet sources" in f for f in ctx.failures)
@@ -223,7 +261,7 @@ def test_dispatch_no_cited_sources_fails(
 def test_dispatch_source_resolution_failure_reported(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _armed_compile(monkeypatch, tmp_path)
 
@@ -235,7 +273,9 @@ def test_dispatch_source_resolution_failure_reported(
     monkeypatch.setattr(sources_mod, "collect_cited_sources", _boom)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("source resolution failed" in f for f in ctx.failures)
@@ -247,7 +287,7 @@ def test_dispatch_source_resolution_failure_reported(
 def test_dispatch_source_param_not_in_cited_set_fails(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _armed_compile(monkeypatch, tmp_path)
 
@@ -258,7 +298,8 @@ def test_dispatch_source_param_not_in_cited_set_fails(
 
     spec = get_job_type("remarkable_reading_send")
     ctx = _FakeCtx(
-        store=hub.live_store, meta={"params": {"draft": slug, "source": "nope"}}
+        store=hub.live_store,
+        meta={"params": {"draft": slug, "source": "nope", "user": "reto"}},
     )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
@@ -268,7 +309,7 @@ def test_dispatch_source_param_not_in_cited_set_fails(
 def test_dispatch_source_param_filters_to_one(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _seed_paper(hub.live_store, "smith2024")
     _seed_paper(hub.live_store, "jones2022")
@@ -286,7 +327,8 @@ def test_dispatch_source_param_filters_to_one(
 
     spec = get_job_type("remarkable_reading_send")
     ctx = _FakeCtx(
-        store=hub.live_store, meta={"params": {"draft": slug, "source": "jones2022"}}
+        store=hub.live_store,
+        meta={"params": {"draft": slug, "source": "jones2022", "user": "reto"}},
     )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
@@ -303,7 +345,7 @@ def test_dispatch_source_param_filters_to_one(
 def test_dispatch_happy_path_two_sources(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _seed_paper(hub.live_store, "smith2024")
     _seed_paper(hub.live_store, "jones2022")
@@ -320,7 +362,9 @@ def test_dispatch_happy_path_two_sources(
     calls = _stub_send(monkeypatch)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
 
@@ -340,7 +384,7 @@ def test_dispatch_not_on_host_source_still_builds(
 ) -> None:
     """A source with no local PDF still gets a reading edition — just
     ``original_pdf=None`` — the per-host caveat this job exists to honour."""
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _seed_paper(hub.live_store, "jones2022")
 
@@ -356,7 +400,9 @@ def test_dispatch_not_on_host_source_still_builds(
     calls = _stub_send(monkeypatch)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
 
@@ -369,7 +415,7 @@ def test_dispatch_not_on_host_source_still_builds(
 def test_dispatch_unresolved_entry_skipped(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _seed_paper(hub.live_store, "smith2024")
 
@@ -388,7 +434,9 @@ def test_dispatch_unresolved_entry_skipped(
     calls = _stub_send(monkeypatch)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
 
@@ -401,7 +449,7 @@ def test_dispatch_unresolved_entry_skipped(
 def test_dispatch_zero_chunks_no_original_skips_source(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _seed_paper(hub.live_store, "smith2024")
 
@@ -425,7 +473,9 @@ def test_dispatch_zero_chunks_no_original_skips_source(
     calls = _stub_send(monkeypatch)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
 
@@ -437,7 +487,7 @@ def test_dispatch_zero_chunks_no_original_skips_source(
 def test_dispatch_compile_failure_continues_and_fails_at_end(
     hub: Hub, monkeypatch: Any, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _seed_paper(hub.live_store, "smith2024")
     _seed_paper(hub.live_store, "jones2022")
@@ -474,7 +524,9 @@ def test_dispatch_compile_failure_continues_and_fails_at_end(
     calls = _stub_send(monkeypatch)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
 
@@ -490,7 +542,7 @@ def test_dispatch_compile_failure_continues_and_fails_at_end(
 def test_dispatch_mid_run_credential_or_binary_loss(
     hub: Hub, monkeypatch: Any, tmp_path: Path, skipped_error: str
 ) -> None:
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     slug = _project_and_draft(hub)
     _seed_paper(hub.live_store, "smith2024")
 
@@ -503,7 +555,9 @@ def test_dispatch_mid_run_credential_or_binary_loss(
     _stub_send(monkeypatch, ok=False, skipped=True)
 
     spec = get_job_type("remarkable_reading_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any(skipped_error in f for f in ctx.failures), ctx.failures

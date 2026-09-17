@@ -335,16 +335,12 @@ class PrecisConfig(BaseSettings):
     `precis-infra` stack), where ansible has `pip install`-ed the `anki` wheel.
     Set via ``PRECIS_ANKI_ENABLED``."""
 
-    anki_user: str | None = None
-    """AnkiWeb login email for the sync. A per-runner secret. ``PRECIS_ANKI_USER``."""
-
-    anki_password: str | None = None
-    """AnkiWeb password for the sync. A per-runner secret. ``PRECIS_ANKI_PASSWORD``."""
-
     anki_mirror_dir: str | None = None
-    """Directory holding the single authoritative `.anki2` mirror. Must be
-    stable across runs and unique to the one sync runner (two mirrors syncing
-    one account would manufacture a full-sync conflict). ``PRECIS_ANKI_MIRROR_DIR``."""
+    """Root directory holding every user's `.anki2` mirror — each web user's
+    own credentials live in the vault (`precis.anki.creds`), and their mirror
+    is `<anki_mirror_dir>/<login>/mirror.anki2`. Must be stable across runs
+    and unique to the one sync runner (two mirrors syncing one account would
+    manufacture a full-sync conflict). ``PRECIS_ANKI_MIRROR_DIR``."""
 
     anki_deck: str = "Precis"
     """The deck precis-authored cards land in. ``PRECIS_ANKI_DECK``."""

@@ -610,22 +610,13 @@ def test_account_page_shows_paired_status(vault) -> None:
     assert "paired" in r.text.lower()
 
 
-def test_account_page_shows_deployment_fallback_status(
+def test_account_page_shows_unpaired_status_even_with_a_global_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No per-user device yet, but a deployment-wide credential exists — the
-    page must say sends fall back to it, not "not configured"."""
+    """No per-user device — a leftover deployment-wide-shaped secret must
+    not read as "paired" or a fallback; there is no such fallback anymore."""
+    monkeypatch.setenv("REMARKABLE_RMAPI_CONFIG", "devicetoken: leftover-global\n")
     monkeypatch.setenv("REMARKABLE_TOKEN", "global-device")
-    r = _client(FakeStore()).get("/account", headers=_auth())
-    assert "shared device" in r.text
-
-
-def test_account_page_shows_unpaired_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No per-user device and no deployment-wide fallback — the signed-in
-    but unpaired user must see the "pair your tablet" invite, not the
-    paired or fallback banners."""
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
     r = _client(FakeStore()).get("/account", headers=_auth())
     assert "Pair your reMarkable tablet" in r.text
     assert "Your tablet is paired" not in r.text
@@ -639,6 +630,93 @@ def test_remarkable_auth_off_refuses_writes() -> None:
         web_config=WebConfig(corpus_dir=None, auth_required=False),
     )
     r = TestClient(app).post("/account/remarkable", data={"action": "unpair"})
+    assert r.status_code == 503
+
+
+# ── Anki credentials ────────────────────────────────────────────────
+
+
+def test_anki_page_shows_not_connected_by_default() -> None:
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert r.status_code == 200
+    assert "Not connected" in r.text
+
+
+def test_anki_save_requires_both_fields(vault) -> None:
+    r = _client(FakeStore()).post(
+        "/account/anki",
+        data={"action": "save", "email": "reto@ankiweb.example", "password": ""},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert "Enter both" in r.text
+    assert "ANKI_USER:reto" not in vault
+    assert "ANKI_PASSWORD:reto" not in vault
+
+
+def test_anki_save_blank_email_is_refused(vault) -> None:
+    r = _client(FakeStore()).post(
+        "/account/anki",
+        data={"action": "save", "email": "  ", "password": "hunter2"},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert "Enter both" in r.text
+    assert "ANKI_PASSWORD:reto" not in vault
+
+
+def test_anki_save_stores_both_credentials(vault) -> None:
+    r = _client(FakeStore()).post(
+        "/account/anki",
+        data={"action": "save", "email": "reto@ankiweb.example", "password": "hunter2"},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/account?saved=1"
+    assert vault["ANKI_USER:reto"] == "reto@ankiweb.example"
+    assert vault["ANKI_PASSWORD:reto"] == "hunter2"
+
+
+def test_anki_page_shows_connected_as_the_saved_email(vault) -> None:
+    vault["ANKI_USER:reto"] = "reto@ankiweb.example"
+    vault["ANKI_PASSWORD:reto"] = "hunter2"
+    r = _client(FakeStore()).get("/account", headers=_auth())
+    assert r.status_code == 200
+    assert "AnkiWeb connected as reto@ankiweb.example" in r.text
+    # the password never appears in the rendered page
+    assert "hunter2" not in r.text
+
+
+def test_anki_forget_deletes_both_vault_entries(vault) -> None:
+    vault["ANKI_USER:reto"] = "reto@ankiweb.example"
+    vault["ANKI_PASSWORD:reto"] = "hunter2"
+    r = _client(FakeStore()).post(
+        "/account/anki",
+        data={"action": "forget"},
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "ANKI_USER:reto" not in vault
+    assert "ANKI_PASSWORD:reto" not in vault
+
+
+def test_anki_unknown_action_renders_inline_error() -> None:
+    r = _client(FakeStore()).post(
+        "/account/anki", data={"action": "bogus"}, headers=_auth()
+    )
+    assert r.status_code == 200
+    assert "unknown Anki action" in r.text
+
+
+def test_anki_auth_off_refuses_writes() -> None:
+    store = FakeStore()
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=False),
+    )
+    r = TestClient(app).post("/account/anki", data={"action": "forget"})
     assert r.status_code == 503
 
 
@@ -666,14 +744,17 @@ def test_with_auth_off_the_page_explains_itself_and_refuses_writes() -> None:
     assert store.password_writes == 0
 
 
-def test_with_auth_off_the_remarkable_flags_default_false(
+def test_with_auth_off_the_remarkable_flag_defaults_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No signed-in user means ``_render`` never has a login to check a
-    device against — both flags must default False, not stay whatever a
-    stray edit left them at. The template happens to hide the reMarkable
+    device against — the flag must default False, not stay whatever a
+    stray edit left it at. The template happens to hide the reMarkable
     section entirely for this case, so this checks the context ``_render``
-    hands the template directly rather than the rendered HTML."""
+    hands the template directly rather than the rendered HTML. There is no
+    ``remarkable_fallback`` key anymore — the credential is per-user only,
+    with no deployment-wide device for a signed-out request to fall back
+    to."""
     from precis_web.routes import account as account_mod
 
     captured: dict[str, object] = {}
@@ -693,4 +774,4 @@ def test_with_auth_off_the_remarkable_flags_default_false(
     r = TestClient(app).get("/account")
     assert r.status_code == 200
     assert captured["remarkable_paired"] is False
-    assert captured["remarkable_fallback"] is False
+    assert "remarkable_fallback" not in captured

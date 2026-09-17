@@ -332,7 +332,7 @@ _REFS_COLS = (
     "pdf_sha256, pdf_pages::text AS pdf_pages, pdf_role, "
     "auto_refresh_days, refreshed_at, "
     "parent_id, prio, alert_source, fingerprint, resolved_at, "
-    "doi_status, doi_validated_at"
+    "doi_status, doi_validated_at, owner_login"
 )
 _REFS_COLS_ALIASED = (
     "r.ref_id AS id, "
@@ -348,13 +348,13 @@ _REFS_COLS_ALIASED = (
     "r.pdf_sha256, r.pdf_pages::text AS pdf_pages, r.pdf_role, "
     "r.auto_refresh_days, r.refreshed_at, "
     "r.parent_id, r.prio, r.alert_source, r.fingerprint, r.resolved_at, "
-    "r.doi_status, r.doi_validated_at"
+    "r.doi_status, r.doi_validated_at, r.owner_login"
 )
 #: Column count produced by ``_REFS_COLS`` / ``_REFS_COLS_ALIASED``.
 #: Joined-projection slicers (chunks ⋈ refs in ``_chunks_ops``)
 #: reference this so adding a column to the projection list above
 #: doesn't silently drift the downstream row layout.
-_REFS_COLS_LEN = 32
+_REFS_COLS_LEN = 33
 
 
 def _row_to_ref(row: tuple) -> Ref:
@@ -393,6 +393,7 @@ def _row_to_ref(row: tuple) -> Ref:
       29 resolved_at
       30 doi_status
       31 doi_validated_at
+      32 owner_login
 
     Every ``SELECT`` that feeds this mapper should reference
     :data:`_REFS_COLS` / :data:`_REFS_COLS_ALIASED` so drift between
@@ -431,6 +432,7 @@ def _row_to_ref(row: tuple) -> Ref:
         resolved_at=row[29],
         doi_status=row[30],
         doi_validated_at=row[31],
+        owner_login=row[32],
     )
 
 

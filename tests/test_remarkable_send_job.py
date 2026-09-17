@@ -51,6 +51,20 @@ class _FakeCtx:
         self.failures.append(reason)
 
 
+def _arm_paired_device(monkeypatch: Any, login: str = "reto") -> None:
+    """Pair ``login``'s own device in the vault — there is no
+    deployment-wide fallback secret, so every test that needs the
+    credential gate open needs a concrete per-user vault entry."""
+    from precis import secrets as vault_mod
+
+    box = {f"REMARKABLE_RMAPI_CONFIG:{login}": "devicetoken: t\n"}
+    monkeypatch.setattr(
+        vault_mod,
+        "get_secret",
+        lambda n, *, store=None, default=None: box.get(n, default),
+    )
+
+
 def _project_and_draft(hub: Hub) -> str:
     pid = int(
         TodoHandler(hub=hub)
@@ -80,6 +94,9 @@ def test_target_folder_default_setting_and_override(hub: Hub) -> None:
 
 
 def test_dispatch_fails_without_credential(hub: Hub, monkeypatch: Any) -> None:
+    """No ``params.user`` at all (no signed-in user threaded in) fails with
+    a message pointing at signing in + pairing, not a generic credential
+    error — there is no deployment-wide secret to check instead."""
     monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
     monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
     slug = _project_and_draft(hub)
@@ -87,17 +104,19 @@ def test_dispatch_fails_without_credential(hub: Hub, monkeypatch: Any) -> None:
     ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
-    assert any("credential" in f for f in ctx.failures), ctx.failures
+    assert any("no signed-in user" in f for f in ctx.failures), ctx.failures
 
 
 def test_dispatch_fails_without_latexmk(hub: Hub, monkeypatch: Any) -> None:
     # Credential present (so we get past the gate), but the test host has no
     # latexmk → the send fails cleanly before any upload is attempted.
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
     slug = _project_and_draft(hub)
     spec = get_job_type("remarkable_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert any("latexmk" in f for f in ctx.failures), ctx.failures
@@ -109,7 +128,7 @@ def test_dispatch_compiles_with_send_scoped_timeout(hub: Hub, monkeypatch: Any) 
     import precis.export.compile as compile_mod
     from precis.export.compile import CompileResult
 
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     monkeypatch.setenv("PRECIS_RM_COMPILE_TIMEOUT_S", "777")
     monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
     seen: dict[str, Any] = {}
@@ -121,7 +140,9 @@ def test_dispatch_compiles_with_send_scoped_timeout(hub: Hub, monkeypatch: Any) 
     monkeypatch.setattr(compile_mod, "compile_pdf", _fake_compile)
     slug = _project_and_draft(hub)
     spec = get_job_type("remarkable_send")
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     assert spec is not None and spec.dispatch is not None
     spec.dispatch(ctx, spec)
     assert seen["timeout_s"] == 777
@@ -132,7 +153,7 @@ def test_placeholder_figures_waives_imageless_gate(hub: Hub, monkeypatch: Any) -
     """An image-less (caption-only) figure blocks the send by default, but the
     ``placeholder_figures`` opt-in waives it — proven by dispatch reaching the
     later latexmk failure — and logs a placeholder warning event."""
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
     slug = _project_and_draft(hub)
     DraftHandler(hub=hub).put(
@@ -140,12 +161,14 @@ def test_placeholder_figures_waives_imageless_gate(hub: Hub, monkeypatch: Any) -
     )
     spec = get_job_type("remarkable_send")
     assert spec is not None and spec.dispatch is not None
-    ctx = _FakeCtx(store=hub.live_store, meta={"params": {"draft": slug}})
+    ctx = _FakeCtx(
+        store=hub.live_store, meta={"params": {"draft": slug, "user": "reto"}}
+    )
     spec.dispatch(ctx, spec)
     assert any("not cleared" in f for f in ctx.failures), ctx.failures
     ctx2 = _FakeCtx(
         store=hub.live_store,
-        meta={"params": {"draft": slug, "placeholder_figures": True}},
+        meta={"params": {"draft": slug, "user": "reto", "placeholder_figures": True}},
     )
     spec.dispatch(ctx2, spec)
     assert not any("not cleared" in f for f in ctx2.failures), ctx2.failures
@@ -161,7 +184,7 @@ def test_placeholder_figures_never_waives_a_licensing_block(
     figures that would export as placeholders anyway."""
     import base64
 
-    monkeypatch.setenv("REMARKABLE_TOKEN", "dev-token")
+    _arm_paired_device(monkeypatch)
     monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-not-a-real-latexmk-bin")
     slug = _project_and_draft(hub)
     png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
@@ -177,7 +200,7 @@ def test_placeholder_figures_never_waives_a_licensing_block(
     assert spec is not None and spec.dispatch is not None
     ctx = _FakeCtx(
         store=hub.live_store,
-        meta={"params": {"draft": slug, "placeholder_figures": True}},
+        meta={"params": {"draft": slug, "user": "reto", "placeholder_figures": True}},
     )
     spec.dispatch(ctx, spec)
     assert any("not cleared" in f for f in ctx.failures), ctx.failures

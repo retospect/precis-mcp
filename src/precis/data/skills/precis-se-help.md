@@ -132,6 +132,9 @@ unaddressable — nor contain `'#'`.)
   Azide + azide is refused naming both ports' roles; any unlisted role
   is symmetric.
 - `disconnect` — `a`, `b`
+
+## Ops — joints, loads, measures, modes, BOM, notes, formfind
+
 - `set_joint` — `a`, `b`, `joint` (req). Joint dict:
   `{"class": rigid|revolute|prismatic|cylindrical|screw|planar|ball|
   compliant|captive|axial, "axis"?: [x,y,z], "mechanism"?: snap|screw|

@@ -43,7 +43,8 @@ vault_nginx_ssl_key: |
 # vault_unpaywall_email unless vault_crossref_mailto is also set.
 vault_unpaywall_email: "CHANGEME"  # Unpaywall/CrossRef contact email
 vault_semantic_scholar_api_key: "CHANGEME"  # Semantic Scholar (S2) API key
-vault_anki_user: "CHANGEME"  # AnkiWeb login email
+# AnkiWeb credentials are per web user, not a deployment secret — each
+# account sets its own on /account (precis.anki.creds, vault-resident).
 vault_edgar_user_agent: "CHANGEME"  # SEC EDGAR User-Agent string incl. contact email
 
 # Backblaze B2 (offsite backup)
@@ -56,5 +57,5 @@ vault_discord_guild_id: 0
 
 # Everything else — ANTHROPIC_API_KEY, Perplexity, Kagi, Wolfram, EPO OPS,
 # ORCID, Elsevier, Wiley, CORE, OpenAlex, Discord/Slack bot tokens, email
-# account passwords, Outlook OAuth, REMARKABLE_RMAPI_CONFIG, … — goes in the
+# account passwords, Outlook OAuth, … — goes in the
 # DB vault: `precis secret set NAME --prompt`.

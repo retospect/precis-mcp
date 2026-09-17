@@ -19,11 +19,11 @@ an ``unresolved`` cited slug (no matching ref at all), or a source with zero
 body chunks *and* no local PDF, has nothing worth typesetting and is
 skipped.
 
-Destination folder + per-user credential resolution are identical to
+Destination folder + credential resolution are identical to
 ``remarkable_papers_send`` — a per-draft subfolder under the
 ``remarkable.target_folder`` app_setting (default ``/Precis``), an explicit
-``params.folder`` override wins verbatim, and ``params.user`` resolves a
-paired device first, falling back to the deployment-wide credential.
+``params.folder`` override wins verbatim, and ``params.user`` resolves that
+user's own paired device, per-user only (no deployment-wide fallback).
 
 Started from the ``/drafts`` "reading → reMarkable" button (shown only when
 a device credential is configured), or by an agent::
@@ -88,12 +88,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if ref is None:
         ctx.record_failure(f"remarkable_reading_send: no draft {slug!r}")
         return
+    if not login:
+        ctx.record_failure(
+            "remarkable_reading_send: no signed-in user — pair a reMarkable "
+            "device at /account and resend from a signed-in session."
+        )
+        return
     if not remarkable_configured(ctx.store, login=login):
         ctx.record_failure(
-            "remarkable_reading_send: no reMarkable credential configured — "
-            "pair your tablet at /account, or set REMARKABLE_RMAPI_CONFIG "
-            "(or REMARKABLE_TOKEN) in the vault (/secrets) for a "
-            "deployment-wide device."
+            f"remarkable_reading_send: no reMarkable device paired for "
+            f"{login!r} — pair one at /account."
         )
         return
     if not have_latexmk():

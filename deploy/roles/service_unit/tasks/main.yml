@@ -78,7 +78,8 @@
 
 # 0640 root:<run_as>, NOT 0644. A launchd plist inlines its whole environment
 # in <EnvironmentVariables>, and several of these carry live credentials
-# (PRECIS_ANKI_PASSWORD on the worker; a DSN with a password on older hosts) —
+# (a DSN with a password on older hosts; historically PRECIS_ANKI_PASSWORD on
+# the worker, before AnkiWeb credentials moved per-user into the vault) —
 # at 0644 every local account could read them. Owner stays root (launchd
 # requires it); the group is the service account so precis-web's env inspector,
 # which runs as that user and reads plists by label

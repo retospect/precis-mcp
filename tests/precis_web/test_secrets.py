@@ -11,7 +11,11 @@ against the fake store's empty-cursor pool:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
+
+import precis_web.routes.secrets as secrets_mod
 
 
 def test_secrets_index_renders(client: TestClient) -> None:
@@ -39,6 +43,29 @@ def test_named_submit_writes(client: TestClient) -> None:
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/secrets"
+
+
+def test_per_user_vault_rows_are_hidden_with_a_count_note(
+    client: TestClient, monkeypatch
+) -> None:
+    """A vault-only row whose name carries a ``:<login>`` suffix (the
+    per-user credential convention — reMarkable pairing, feed tokens) is
+    never listed row-by-row; instead a short muted count note appears."""
+    now = datetime.now(UTC)
+    fake_rows = [
+        {"name": "REMARKABLE_RMAPI_CONFIG:reto", "hint": "***abcd", "updated_at": now},
+        {"name": "PRECIS_WEB_FEED_TOKEN:someone", "hint": "***efgh", "updated_at": now},
+        {"name": "SOME_OTHER_SECRET", "hint": "***ijkl", "updated_at": now},
+    ]
+    monkeypatch.setattr(secrets_mod.vault, "list_secrets", lambda **kw: fake_rows)
+
+    resp = client.get("/secrets")
+    assert resp.status_code == 200
+    assert "REMARKABLE_RMAPI_CONFIG:reto" not in resp.text
+    assert "PRECIS_WEB_FEED_TOKEN:someone" not in resp.text
+    assert "SOME_OTHER_SECRET" in resp.text
+    assert "2 per-user credentials" in resp.text
+    assert "/account" in resp.text
 
 
 def test_delete_redirects(client: TestClient) -> None:

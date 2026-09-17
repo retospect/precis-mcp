@@ -9,8 +9,10 @@
 # job runs. The worker env is NOT wired here: `PRECIS_CONTAINER_BIN` is already
 # set by roles/precis_worker_agent, and `PRECIS_REMARKABLE_IMAGE` rides the
 # existing `precis_shared_env` dict (see README) — so this role only builds the
-# image. The device credential lives in the vault (REMARKABLE_RMAPI_CONFIG,
-# ADR 0055), resolved at run time and passed into the container by key.
+# image. The device credential is per user (vault REMARKABLE_RMAPI_CONFIG:
+# <login>, paired self-service on /account, ADR 0055) — there is no
+# deployment-wide vault entry; the credential is resolved at run time and
+# passed into the container by key.
 
 # The node this role targets (the agent host that runs remarkable_send).
 remarkable_node: "{{ inventory_hostname }}"

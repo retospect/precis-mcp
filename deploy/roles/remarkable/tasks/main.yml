@@ -4,7 +4,8 @@
 # `remarkable_send` job, compiles the RM2 PDF with its own MacTeX, and shells
 # out to `docker run precis-remarkable` to push it to the reMarkable cloud —
 # staging the PDF + a params blob under a scratch dir and passing the device
-# credential (vault: REMARKABLE_RMAPI_CONFIG) into the container by key.
+# credential (vault: REMARKABLE_RMAPI_CONFIG:<login>, per user via /account —
+# no ops action needed here) into the container by key.
 #
 # This role wires ONLY the image build. The env is already in place:
 #   - PRECIS_CONTAINER_BIN — set by roles/precis_worker_agent (colima docker),
@@ -83,12 +84,13 @@
   failed_when: remarkable_img.rc != 0
   # Fails when the image is absent: (re)build with -e remarkable_build_image=true.
 
-- name: Remind about the remaining wiring (env + credential)
+- name: Remind about the remaining wiring (env)
   ansible.builtin.debug:
     msg: >-
-      precis-remarkable image built. To arm the send: (1) vault the device
-      credential as REMARKABLE_RMAPI_CONFIG (precis secret set, or
-      /secrets), (2) add PRECIS_REMARKABLE_IMAGE={{ remarkable_image }} to
-      precis_shared_env and re-run playbooks/37-precis-worker-agent.yml so the
-      worker plist renders it. Until both are done the send stays dark (the
-      button is hidden; the job reports 'no credential').
+      precis-remarkable image built. To arm the send: add
+      PRECIS_REMARKABLE_IMAGE={{ remarkable_image }} to precis_shared_env and
+      re-run playbooks/37-precis-worker-agent.yml so the worker plist renders
+      it. The device credential itself is per-user, paired self-service on
+      /account — no ops-side vaulting needed. Until the image env is set the
+      send stays dark (the button is hidden; a signed-in but unpaired user's
+      job reports 'no reMarkable device paired').

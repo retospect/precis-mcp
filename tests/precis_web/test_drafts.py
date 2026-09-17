@@ -1376,12 +1376,45 @@ def test_retraction_check_route_force_flag_passed_through(
     assert seen["force"] is True
 
 
+def _fake_signed_in_user(login: str = "reto"):
+    """A ``current_user`` stand-in for a signed-in ``WebUser`` — the
+    credential is per-user only now, so every "gate is open" test needs a
+    concrete login to pair a device against."""
+    from precis.users import WebUser
+
+    def _fake_user(request):
+        return WebUser(
+            id=1,
+            login=login,
+            abbrev="rs",
+            full_name=None,
+            email=None,
+            disabled_at=None,
+            last_login_at=None,
+            created_at=None,
+            updated_at=None,
+        )
+
+    return _fake_user
+
+
+def _arm_paired_device(monkeypatch, login: str = "reto") -> None:
+    """Sign ``login`` in and pair their own reMarkable device — there is no
+    deployment-wide fallback secret to arm instead, so opening the gate in a
+    test always means a per-user vault entry."""
+    from precis import secrets as vault_mod
+
+    monkeypatch.setattr(drafts_mod, "current_user", _fake_signed_in_user(login))
+    box = {f"REMARKABLE_RMAPI_CONFIG:{login}": "devicetoken: t\n"}
+    monkeypatch.setattr(vault_mod, "is_available", lambda n, *, store=None: n in box)
+
+
 def test_remarkable_send_falls_back_to_draft_ref_when_no_project(
     tmp_path, monkeypatch
 ) -> None:
     """The reMarkable send must not 400 on a project-less draft either — same
-    draft-ref fallback as export. (Credential armed via env so the gate opens.)"""
-    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    draft-ref fallback as export. (Signed in + paired so the gate opens.)"""
+    _arm_paired_device(monkeypatch)
     runtime = FakeRuntime(_NoProjectStore())
     app = create_app(runtime=runtime, web_config=WebConfig(corpus_dir=tmp_path))
     r = TestClient(app).post("/drafts/nt/remarkable", follow_redirects=False)
@@ -1396,8 +1429,18 @@ def test_remarkable_send_400s_without_credential(
 ) -> None:
     """No device credential → the route declines (the button is hidden, but a
     stale page must not enqueue a doomed job)."""
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
+    r = draft_client.post("/drafts/nt/remarkable", follow_redirects=False)
+    assert r.status_code == 400
+
+
+def test_remarkable_send_signed_out_400s_even_with_a_global_secret(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """A legacy deployment-wide-shaped secret must not open the gate for a
+    signed-out request — the credential is per-user only, and signing out
+    means there is no login to resolve one against."""
+    monkeypatch.setenv("REMARKABLE_RMAPI_CONFIG", "devicetoken: leftover-global\n")
+    monkeypatch.setenv("REMARKABLE_TOKEN", "leftover-global")
     r = draft_client.post("/drafts/nt/remarkable", follow_redirects=False)
     assert r.status_code == 400
 
@@ -1406,32 +1449,9 @@ def test_remarkable_send_threads_the_signed_in_login_into_job_params(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
     """A signed-in user's login rides the job so it resolves *their* paired
-    device first — proves the route reads ``current_user`` and forwards it
-    as ``params.user``, not just gating on a global credential."""
-    from precis.users import WebUser
-
-    def _fake_user(request):
-        return WebUser(
-            id=1,
-            login="reto",
-            abbrev="rs",
-            full_name=None,
-            email=None,
-            disabled_at=None,
-            last_login_at=None,
-            created_at=None,
-            updated_at=None,
-        )
-
-    monkeypatch.setattr(drafts_mod, "current_user", _fake_user)
-    # The route gates with login="reto" — a per-user credential (no global
-    # one) must be enough to pass, and must be what lands in job params.
-    from precis import secrets as vault_mod
-
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
-    box = {"REMARKABLE_RMAPI_CONFIG:reto": "devicetoken: t\n"}
-    monkeypatch.setattr(vault_mod, "is_available", lambda n, *, store=None: n in box)
+    device — proves the route reads ``current_user`` and forwards it as
+    ``params.user``. There is no global credential to gate on instead."""
+    _arm_paired_device(monkeypatch)
 
     r = draft_client.post("/drafts/nt/remarkable", follow_redirects=False)
     assert r.status_code == 303
@@ -1443,28 +1463,13 @@ def test_remarkable_send_threads_the_signed_in_login_into_job_params(
     assert args["idem_key"] == "remarkable_send:nt:reto"
 
 
-def test_remarkable_send_omits_user_param_when_signed_out(
-    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
-) -> None:
-    """Auth off / nobody signed in → no ``params.user`` at all, same
-    deployment-wide-only behaviour as before this feature existed."""
-    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
-    r = draft_client.post("/drafts/nt/remarkable", follow_redirects=False)
-    assert r.status_code == 303
-    verb, args = draft_runtime.calls[-1]
-    assert verb == "put" and args["job_type"] == "remarkable_send"
-    assert "user" not in args["params"]
-    # Signed-out send falls back to the shared idem_key, not None/empty.
-    assert args["idem_key"] == "remarkable_send:nt:shared"
-
-
 def test_remarkable_send_threads_the_placeholder_figures_checkbox(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
     """The "allow placeholder figures" checkbox rides the job as
     ``params.placeholder_figures`` when checked ("1"), and is ABSENT — not
     False — when the hidden input posts empty (unchecked)."""
-    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    _arm_paired_device(monkeypatch)
     r = draft_client.post(
         "/drafts/nt/remarkable",
         data={"placeholder_figures": "1"},
@@ -1489,14 +1494,14 @@ def test_remarkable_papers_send_enqueues_the_right_job(
 ) -> None:
     """The "papers → reMarkable" button starts a ``remarkable_papers_send``
     job, not ``remarkable_send`` — no export/compile involved."""
-    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    _arm_paired_device(monkeypatch)
     r = draft_client.post("/drafts/nt/remarkable-papers", follow_redirects=False)
     assert r.status_code == 303
     verb, args = draft_runtime.calls[-1]
     assert verb == "put" and args["job_type"] == "remarkable_papers_send"
     assert args["params"]["draft"] == "nt"
-    assert "user" not in args["params"]
-    assert args["idem_key"] == "remarkable_papers_send:nt:shared"
+    assert args["params"]["user"] == "reto"
+    assert args["idem_key"] == "remarkable_papers_send:nt:reto"
 
 
 def test_remarkable_papers_send_400s_without_credential(
@@ -1504,8 +1509,6 @@ def test_remarkable_papers_send_400s_without_credential(
 ) -> None:
     """No device credential → the route declines (the button is hidden, but a
     stale page must not enqueue a doomed job)."""
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
     r = draft_client.post("/drafts/nt/remarkable-papers", follow_redirects=False)
     assert r.status_code == 400
 
@@ -1514,28 +1517,7 @@ def test_remarkable_papers_send_threads_the_signed_in_login_into_job_params(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
     """A signed-in user's login rides the job, same as remarkable_send."""
-    from precis.users import WebUser
-
-    def _fake_user(request):
-        return WebUser(
-            id=1,
-            login="reto",
-            abbrev="rs",
-            full_name=None,
-            email=None,
-            disabled_at=None,
-            last_login_at=None,
-            created_at=None,
-            updated_at=None,
-        )
-
-    monkeypatch.setattr(drafts_mod, "current_user", _fake_user)
-    from precis import secrets as vault_mod
-
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
-    box = {"REMARKABLE_RMAPI_CONFIG:reto": "devicetoken: t\n"}
-    monkeypatch.setattr(vault_mod, "is_available", lambda n, *, store=None: n in box)
+    _arm_paired_device(monkeypatch)
 
     r = draft_client.post("/drafts/nt/remarkable-papers", follow_redirects=False)
     assert r.status_code == 303
@@ -1551,14 +1533,14 @@ def test_remarkable_reading_send_enqueues_the_right_job(
     """The "reading → reMarkable" button starts a ``remarkable_reading_send``
     job, not ``remarkable_papers_send`` — per-source typeset, not a raw
     PDF push."""
-    monkeypatch.setenv("REMARKABLE_TOKEN", "test-device-token")
+    _arm_paired_device(monkeypatch)
     r = draft_client.post("/drafts/nt/remarkable-reading", follow_redirects=False)
     assert r.status_code == 303
     verb, args = draft_runtime.calls[-1]
     assert verb == "put" and args["job_type"] == "remarkable_reading_send"
     assert args["params"]["draft"] == "nt"
-    assert "user" not in args["params"]
-    assert args["idem_key"] == "remarkable_reading_send:nt:shared"
+    assert args["params"]["user"] == "reto"
+    assert args["idem_key"] == "remarkable_reading_send:nt:reto"
 
 
 def test_remarkable_reading_send_400s_without_credential(
@@ -1566,8 +1548,6 @@ def test_remarkable_reading_send_400s_without_credential(
 ) -> None:
     """No device credential → the route declines (the button is hidden, but a
     stale page must not enqueue a doomed job)."""
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
     r = draft_client.post("/drafts/nt/remarkable-reading", follow_redirects=False)
     assert r.status_code == 400
 
@@ -1576,28 +1556,7 @@ def test_remarkable_reading_send_threads_the_signed_in_login_into_job_params(
     draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
 ) -> None:
     """A signed-in user's login rides the job, same as remarkable_send."""
-    from precis.users import WebUser
-
-    def _fake_user(request):
-        return WebUser(
-            id=1,
-            login="reto",
-            abbrev="rs",
-            full_name=None,
-            email=None,
-            disabled_at=None,
-            last_login_at=None,
-            created_at=None,
-            updated_at=None,
-        )
-
-    monkeypatch.setattr(drafts_mod, "current_user", _fake_user)
-    from precis import secrets as vault_mod
-
-    monkeypatch.delenv("REMARKABLE_TOKEN", raising=False)
-    monkeypatch.delenv("REMARKABLE_RMAPI_CONFIG", raising=False)
-    box = {"REMARKABLE_RMAPI_CONFIG:reto": "devicetoken: t\n"}
-    monkeypatch.setattr(vault_mod, "is_available", lambda n, *, store=None: n in box)
+    _arm_paired_device(monkeypatch)
 
     r = draft_client.post("/drafts/nt/remarkable-reading", follow_redirects=False)
     assert r.status_code == 303

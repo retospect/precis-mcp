@@ -12,10 +12,10 @@ streams as a ``job_event`` so the run is followable on the todo page.
 The destination is a per-draft subfolder under the ``remarkable.target_folder``
 app_setting (default ``/Precis``) — e.g. ``/Precis/173020`` — so a tablet
 holding sources for several drafts doesn't jumble them into one folder; an
-explicit ``params.folder`` override wins verbatim, as-is. Per-user credential
-resolution is identical to ``remarkable_send`` — ``params.user`` (the
-signed-in login the web route threads through) resolves a paired device
-first, falling back to the deployment-wide credential.
+explicit ``params.folder`` override wins verbatim, as-is. Credential
+resolution is identical to ``remarkable_send`` — per-user only:
+``params.user`` (the signed-in login the web route threads through)
+resolves that user's paired device; there is no deployment-wide fallback.
 
 **Per-host caveat, not a hard failure.** The corpus is a per-host mount, so
 this worker may not physically hold every cited PDF — a bundle can be
@@ -101,12 +101,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if ref is None:
         ctx.record_failure(f"remarkable_papers_send: no draft {slug!r}")
         return
+    if not login:
+        ctx.record_failure(
+            "remarkable_papers_send: no signed-in user — pair a reMarkable "
+            "device at /account and resend from a signed-in session."
+        )
+        return
     if not remarkable_configured(ctx.store, login=login):
         ctx.record_failure(
-            "remarkable_papers_send: no reMarkable credential configured — "
-            "pair your tablet at /account, or set REMARKABLE_RMAPI_CONFIG "
-            "(or REMARKABLE_TOKEN) in the vault (/secrets) for a "
-            "deployment-wide device."
+            f"remarkable_papers_send: no reMarkable device paired for "
+            f"{login!r} — pair one at /account."
         )
         return
 

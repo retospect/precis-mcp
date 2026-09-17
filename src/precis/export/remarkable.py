@@ -8,23 +8,17 @@ rather than reimplement the moving-target cloud protocol in Python, and
 because a bundled binary needs no Python client that breaks on the next
 sync-protocol bump.
 
-Auth — per-user first, deployment-wide fallback, both in the secrets vault
-or the environment, never in plaintext ``app_settings``:
+Auth — per-user only, resolved from the secrets vault (never plaintext
+``app_settings``), and never from a shared/deployment-wide credential:
 
 * ``REMARKABLE_RMAPI_CONFIG:<login>`` — one signed-in user's own paired
   device, self-service from ``/account`` (:func:`register_device` exchanges
   a one-time pairing code for this; the account page's "advanced" box also
-  accepts a pasted config/token for when pairing has drifted). Checked
-  first when a ``login`` is given — a user who paired their own tablet is
-  never silently overridden by the deployment-wide device.
-* ``REMARKABLE_RMAPI_CONFIG`` — the body of an ``rmapi`` config file
-  (produced once by interactive ``rmapi`` registration; at minimum
-  ``devicetoken: <token>`` — rmapi refreshes the short-lived usertoken
-  itself). Written verbatim to a temp file pointed at by ``RMAPI_CONFIG``.
-  Deployment-wide fallback for users who haven't paired their own.
-* ``REMARKABLE_TOKEN`` — fallback: a bare device token (the
-  cluster-provisioned ``vault_remarkable_token``), wrapped into a minimal
-  config.
+  accepts a pasted config/token for when pairing has drifted). The body is
+  either a full ``rmapi`` config file (at minimum ``devicetoken: <token>``
+  — rmapi refreshes the short-lived usertoken itself) or a bare device
+  token, wrapped into a minimal config. Every send needs a ``login`` to
+  resolve against — without one there is nothing to fall back to.
 
 Container path — when ``PRECIS_REMARKABLE_IMAGE`` is set, :func:`send_pdf`
 delegates to :func:`send_via_container`: it stages the PDF + a tiny params
@@ -60,10 +54,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-#: Secret holding the full ``rmapi`` config body (preferred), deployment-wide.
+#: Prefix for the per-login vault secret holding one user's own paired
+#: ``rmapi`` config body — see :func:`user_config_secret`. No bare secret of
+#: this name is ever consulted; there is no deployment-wide credential.
 _CONFIG_SECRET = "REMARKABLE_RMAPI_CONFIG"
-#: Fallback secret: a bare device token (cluster ``vault_remarkable_token``).
-_TOKEN_SECRET = "REMARKABLE_TOKEN"
 
 #: A reMarkable cloud folder path we'll accept as an upload destination.
 #: Absolute, and restricted to a safe character set — the call is an arg
@@ -123,43 +117,34 @@ def have_rmapi() -> bool:
 def remarkable_configured(
     store: Store | None = None, *, login: str | None = None
 ) -> bool:
-    """True when a reMarkable credential is available (vault/env). This is
-    the gate for the web button and CLI — a bare token or a full config
-    both count, and so does ``login``'s own paired device when one is
-    given. Does **not** check the binary (report that separately so a
-    misconfigured host gives a precise error, not a silent no-op)."""
-    if login and secrets.is_available(user_config_secret(login), store=store):
-        return True
-    return secrets.is_available(_CONFIG_SECRET, store=store) or secrets.is_available(
-        _TOKEN_SECRET, store=store
-    )
+    """True when ``login`` has their own reMarkable device paired. This is
+    the gate for the web button and CLI. No ``login`` → False: there is no
+    deployment-wide credential to fall back to. Does **not** check the
+    binary (report that separately so a misconfigured host gives a
+    precise error, not a silent no-op)."""
+    if not login:
+        return False
+    return secrets.is_available(user_config_secret(login), store=store)
 
 
 def user_remarkable_configured(store: Store | None, login: str) -> bool:
-    """True when ``login`` has paired their *own* device — no deployment-wide
-    fallback. For ``/account``'s status line, which must say "paired" only
-    when this user actually did the pairing, not when the shared device
-    happens to be covering for them."""
+    """True when ``login`` has paired their *own* device. Same check as
+    :func:`remarkable_configured` with a required ``login`` — kept as its
+    own name for ``/account``'s status line, which always has a concrete
+    login in hand and reads better spelled this way."""
     return secrets.is_available(user_config_secret(login), store=store)
 
 
 def _config_body(store: Store | None, login: str | None = None) -> str | None:
-    """The rmapi config file body to write, from the vault/env.
-
-    ``login``'s own paired device wins when given and present; then the
-    deployment-wide full config; then a bare deployment-wide device token
-    wrapped into a minimal one. ``None`` when nothing is configured."""
-    if login:
-        body = secrets.get_secret(user_config_secret(login), store=store)
-        if body:
-            return body if "token" in body else f"devicetoken: {body.strip()}\n"
-    body = secrets.get_secret(_CONFIG_SECRET, store=store)
-    if body:
-        return body if "token" in body else f"devicetoken: {body.strip()}\n"
-    token = secrets.get_secret(_TOKEN_SECRET, store=store)
-    if token:
-        return f"devicetoken: {token.strip()}\n"
-    return None
+    """The rmapi config file body to write, from ``login``'s own paired
+    device — ``None`` when ``login`` is absent or has nothing paired. There
+    is no deployment-wide fallback to fall through to."""
+    if not login:
+        return None
+    body = secrets.get_secret(user_config_secret(login), store=store)
+    if not body:
+        return None
+    return body if "token" in body else f"devicetoken: {body.strip()}\n"
 
 
 def set_user_config(store: Store, login: str, body: str) -> None:
@@ -292,9 +277,10 @@ def send_pdf(
     when the binary or credential is missing (a configuration gap, not a
     failed upload). ``display_name`` sets the document's visible title on the
     tablet (defaults to the PDF's stem); the file is staged under that name
-    so the tablet doesn't show ``main``. ``login``, when given, resolves
-    that user's own paired device first (see :func:`_config_body`) before
-    falling back to the deployment-wide credential.
+    so the tablet doesn't show ``main``. ``login`` is required to resolve a
+    credential — it identifies whose paired device (see :func:`_config_body`)
+    to upload to; without it the result is ``skipped=True, error="no
+    reMarkable device paired for this user"``.
     """
     pdf_path = Path(pdf_path)
     name = _safe_name(display_name or pdf_path.stem)
@@ -326,7 +312,7 @@ def send_pdf(
             returncode=-1,
             output="",
             skipped=True,
-            error="no reMarkable credential configured",
+            error="no reMarkable device paired for this user",
         )
     if timeout_s is None:
         timeout_s = int(os.environ.get("PRECIS_RMAPI_TIMEOUT_S", "120"))

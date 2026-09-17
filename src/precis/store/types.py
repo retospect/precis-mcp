@@ -493,6 +493,11 @@ class Ref:
     # ``check_ref_doi_validity``, the DOI twin of ``check_ref_retraction``).
     doi_status: str | None = None
     doi_validated_at: datetime | None = None
+    # Migration 0164 / per-record ownership. FK to web_users.login. NULL
+    # (the default, and every kind but the per-user ones) means unowned.
+    # First consumer: kind='anki' — each card belongs to the AnkiWeb
+    # account it syncs to.
+    owner_login: str | None = None
 
     @property
     def public_id(self) -> str:

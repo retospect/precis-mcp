@@ -1,18 +1,22 @@
-"""``precis anki-sync`` — the headless AnkiWeb sync tick (slice 2).
+"""``precis anki-sync`` — the headless, per-user AnkiWeb sync tick (slice 2).
 
 The "occasional tick" the design calls for: this used to be invoked ONLY by a
 dedicated cron on the single designated runner; §A folds that cadence onto
 the decentralized ``scheduler`` worker pass too (``anki_sync`` in
 :mod:`precis.workers.scheduler`) — this subcommand stays for a manual /
 ad-hoc run, delegating its guts to :func:`precis.workers.anki_sync.run_anki_sync`
-so the two triggers share one implementation. It reads precis `anki` refs,
-upserts them into the local `.anki2` mirror by deterministic guid, drives a
-*guarded* AnkiWeb sync (bootstrap-download / incremental / abort-on-lossy-upload),
-and writes the decay stats back into each ref's ``meta.anki_stats``.
+so the two triggers share one implementation. It reads each configured web
+user's own `anki` refs (``refs.owner_login``), upserts them into that user's
+`.anki2` mirror by deterministic guid, drives a *guarded* AnkiWeb sync
+(bootstrap-download / incremental / abort-on-lossy-upload) against their own
+AnkiWeb account (credentials from the vault, :mod:`precis.anki.creds`,
+self-service from ``/account``), and writes the decay stats back into each
+ref's ``meta.anki_stats``.
 
-Single-runner: a pg advisory lock ensures only one sync touches the account at a
-time (two mirrors on one account would manufacture a full-sync conflict).
-Default-off behind ``PRECIS_ANKI_ENABLED``; the `anki` wheel is lazy-imported.
+Every user's own AnkiWeb account gets its own pg advisory lock, so two
+mirrors never race on the same account, but two different users sync
+independently. Default off behind ``PRECIS_ANKI_ENABLED``; the `anki` wheel
+is lazy-imported.
 """
 
 from __future__ import annotations
@@ -39,13 +43,19 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "anki-sync",
         help="Sync precis anki cards to AnkiWeb + read decay stats back.",
         description=(
-            "Headless AnkiWeb sync for the `anki` cloze kind. Gated behind "
-            "PRECIS_ANKI_ENABLED; needs the `anki` wheel + PRECIS_ANKI_USER / "
-            "PRECIS_ANKI_PASSWORD / PRECIS_ANKI_MIRROR_DIR."
+            "Headless, per-user AnkiWeb sync for the `anki` cloze kind. Gated "
+            "behind PRECIS_ANKI_ENABLED; needs the `anki` wheel + "
+            "PRECIS_ANKI_MIRROR_DIR. Each web user's own AnkiWeb credentials "
+            "come from the vault (set on /account), not the environment."
         ),
     )
     p.add_argument("--database-url", default=None)
     p.add_argument("--limit", type=int, default=10000, help="Max anki refs to sync.")
+    p.add_argument(
+        "--user",
+        default=None,
+        help="Sync only this web login's cards (default: every configured user).",
+    )
     p.add_argument(
         "--dry-run",
         action="store_true",
@@ -112,6 +122,7 @@ def _run_sync(args: argparse.Namespace, cfg: Any, store: Store) -> None:
             fix=args.fix,
             project=args.project,
             no_retire=args.no_retire,
+            login=args.user,
         )
     except AnkiSyncMisconfigured as e:
         # Same exit code as before the refactor (2 = misconfigured, distinct

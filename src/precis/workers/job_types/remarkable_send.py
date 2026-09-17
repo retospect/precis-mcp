@@ -15,10 +15,10 @@ device credential is configured), or by an agent::
 
 The destination folder is the ``remarkable.target_folder`` app_setting
 (default ``/Precis``); the device credential lives in the secrets vault,
-per-user first — ``params.user`` (the signed-in login the web route
-threads through) resolves ``REMARKABLE_RMAPI_CONFIG:<login>``, paired
-self-service at ``/account`` — falling back to the deployment-wide
-``REMARKABLE_RMAPI_CONFIG`` / ``REMARKABLE_TOKEN``, never in app_settings.
+per-user only — ``params.user`` (the signed-in login the web route threads
+through) resolves ``REMARKABLE_RMAPI_CONFIG:<login>``, paired self-service
+at ``/account``. There is no deployment-wide fallback: a missing/blank
+``params.user``, or a user who hasn't paired a device, fails the job.
 """
 
 from __future__ import annotations
@@ -94,12 +94,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if ref is None:
         ctx.record_failure(f"remarkable_send: no draft {slug!r}")
         return
+    if not login:
+        ctx.record_failure(
+            "remarkable_send: no signed-in user — pair a reMarkable device "
+            "at /account and resend from a signed-in session."
+        )
+        return
     if not remarkable_configured(ctx.store, login=login):
         ctx.record_failure(
-            "remarkable_send: no reMarkable credential configured — pair "
-            "your tablet at /account, or set REMARKABLE_RMAPI_CONFIG (or "
-            "REMARKABLE_TOKEN) in the vault (/secrets) for a deployment-wide "
-            "device."
+            f"remarkable_send: no reMarkable device paired for {login!r} "
+            "— pair one at /account."
         )
         return
 

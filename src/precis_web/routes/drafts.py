@@ -1501,11 +1501,12 @@ async def send_remarkable_route(request: Request, ident: str) -> Response:
     and upload it to the tablet. Runs on a worker; progress + result land
     under the draft's project on the todo page. Redirects back to the reader.
 
-    Only meaningful when a reMarkable credential is configured — the button
-    is hidden otherwise — but we re-check here so a stale page can't enqueue
-    a job that would just fail. When someone is signed in, their own login
-    is threaded into the job so it resolves *their* paired device first
-    (see ``precis.export.remarkable``)."""
+    Only meaningful when the signed-in user has paired their own reMarkable
+    device — the button is hidden otherwise, but we re-check here so a stale
+    page can't enqueue a job that would just fail. The credential is
+    per-user only (no signed-in user ⇒ no credential): the login is threaded
+    into the job so it resolves *their* paired device (see
+    ``precis.export.remarkable``)."""
     from precis.export.remarkable import remarkable_configured
 
     store = get_store(request)
@@ -1520,9 +1521,8 @@ async def send_remarkable_route(request: Request, ident: str) -> Response:
             "error.html.j2",
             {
                 "title": "reMarkable not configured",
-                "detail": "no reMarkable device credential is set — pair "
-                "your tablet at /account, or set the deployment-wide "
-                "REMARKABLE_RMAPI_CONFIG (or REMARKABLE_TOKEN) at /secrets.",
+                "detail": "no reMarkable device is paired for your account "
+                "— pair your tablet at /account.",
                 "status": 400,
             },
             status_code=400,
@@ -1559,11 +1559,12 @@ async def send_remarkable_papers_route(request: Request, ident: str) -> Response
     per-draft folder. Runs on a worker; progress + result land under the
     draft's project on the todo page. Redirects back to the reader.
 
-    Only meaningful when a reMarkable credential is configured — the button
-    is hidden otherwise — but we re-check here so a stale page can't enqueue
-    a job that would just fail. When someone is signed in, their own login
-    is threaded into the job so it resolves *their* paired device first
-    (see ``precis.export.remarkable``)."""
+    Only meaningful when the signed-in user has paired their own reMarkable
+    device — the button is hidden otherwise, but we re-check here so a stale
+    page can't enqueue a job that would just fail. The credential is
+    per-user only (no signed-in user ⇒ no credential): the login is threaded
+    into the job so it resolves *their* paired device (see
+    ``precis.export.remarkable``)."""
     from precis.export.remarkable import remarkable_configured
 
     store = get_store(request)
@@ -1578,9 +1579,8 @@ async def send_remarkable_papers_route(request: Request, ident: str) -> Response
             "error.html.j2",
             {
                 "title": "reMarkable not configured",
-                "detail": "no reMarkable device credential is set — pair "
-                "your tablet at /account, or set the deployment-wide "
-                "REMARKABLE_RMAPI_CONFIG (or REMARKABLE_TOKEN) at /secrets.",
+                "detail": "no reMarkable device is paired for your account "
+                "— pair your tablet at /account.",
                 "status": 400,
             },
             status_code=400,
@@ -1615,11 +1615,12 @@ async def send_remarkable_reading_route(request: Request, ident: str) -> Respons
     progress + result land under the draft's project on the todo page.
     Redirects back to the reader.
 
-    Only meaningful when a reMarkable credential is configured — the button
-    is hidden otherwise — but we re-check here so a stale page can't enqueue
-    a job that would just fail. When someone is signed in, their own login
-    is threaded into the job so it resolves *their* paired device first
-    (see ``precis.export.remarkable``)."""
+    Only meaningful when the signed-in user has paired their own reMarkable
+    device — the button is hidden otherwise, but we re-check here so a stale
+    page can't enqueue a job that would just fail. The credential is
+    per-user only (no signed-in user ⇒ no credential): the login is threaded
+    into the job so it resolves *their* paired device (see
+    ``precis.export.remarkable``)."""
     from precis.export.remarkable import remarkable_configured
 
     store = get_store(request)
@@ -1634,9 +1635,8 @@ async def send_remarkable_reading_route(request: Request, ident: str) -> Respons
             "error.html.j2",
             {
                 "title": "reMarkable not configured",
-                "detail": "no reMarkable device credential is set — pair "
-                "your tablet at /account, or set the deployment-wide "
-                "REMARKABLE_RMAPI_CONFIG (or REMARKABLE_TOKEN) at /secrets.",
+                "detail": "no reMarkable device is paired for your account "
+                "— pair your tablet at /account.",
                 "status": 400,
             },
             status_code=400,

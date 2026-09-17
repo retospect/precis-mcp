@@ -288,12 +288,12 @@
     _l_b_dream_env: >-
       {{ {'PRECIS_DREAM_AGENT': '1'}
          if inventory_hostname in groups['gateway'] else {} }}
+    # Each web user's own AnkiWeb credentials live in the vault
+    # (precis.anki.creds, set on /account) — no deployment-wide login here.
     _l_b_anki_env: >-
       {{ (
         {
           'PRECIS_ANKI_ENABLED': '1',
-          'PRECIS_ANKI_USER': vault_anki_user | default(anki_user | default('')),
-          'PRECIS_ANKI_PASSWORD': vault_anki_password | default(''),
           'PRECIS_ANKI_MIRROR_DIR': anki_mirror_dir | default('/opt/mcps/anki-mirror'),
           'PRECIS_ANKI_DECK': anki_deck | default('Precis'),
         }

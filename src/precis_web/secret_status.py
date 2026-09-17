@@ -203,23 +203,6 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group="discord",
     ),
     SecretSpec(
-        name="REMARKABLE_RMAPI_CONFIG",
-        purpose="Deployment-wide shared reMarkable fallback (full rmapi config body).",
-        get_url="/account",
-        get_blurb="Prefer per-user pairing on the /account page — this "
-        "vault entry is only the shared-device fallback for sends before "
-        "a user has paired their own tablet.",
-        probe_group=None,
-    ),
-    SecretSpec(
-        name="REMARKABLE_TOKEN",
-        purpose="Same shared reMarkable fallback, bare device-token form.",
-        get_url="https://my.remarkable.com/device/apps/connect",
-        get_blurb="Get a one-time code there and exchange it for a device "
-        "token — per-user pairing on /account is still preferred.",
-        probe_group=None,
-    ),
-    SecretSpec(
         name="PRECIS_WEB_PASSWORD_PEPPER",
         purpose="Pepper for web login password hashing.",
         get_url=None,

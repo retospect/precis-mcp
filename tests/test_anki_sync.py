@@ -220,24 +220,46 @@ class TestRetire:
 
     def test_retired_ref_ids_excludes_foreign_projections(self, store) -> None:
         from precis.cli.anki_sync import _retired_ref_ids
+        from precis.users import hash_password
 
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
         authored = store.insert_ref(
             kind="anki",
             slug=None,
             title="{{c1::x}}",
             meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+            owner_login="reto",
         )
         foreign = store.insert_ref(
             kind="anki",
             slug=None,
             title="foreign",
             meta={"source": "anki-foreign", "readonly": True},
+            owner_login="reto",
         )
         store.retire_ref(authored.id)
         store.retire_ref(foreign.id)
-        ids = _retired_ref_ids(store)
+        ids = _retired_ref_ids(store, login="reto")
         assert int(authored.id) in ids
         assert int(foreign.id) not in ids
+
+    def test_retired_ref_ids_scoped_to_owner(self, store) -> None:
+        from precis.cli.anki_sync import _retired_ref_ids
+        from precis.users import hash_password
+
+        store.create_web_user(login="reto", abbrev="rs", password=hash_password("pw"))
+        store.create_web_user(login="alice", abbrev="al", password=hash_password("pw"))
+        mine = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::x}}", owner_login="reto"
+        )
+        theirs = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::y}}", owner_login="alice"
+        )
+        store.retire_ref(mine.id)
+        store.retire_ref(theirs.id)
+        ids = _retired_ref_ids(store, login="reto")
+        assert int(mine.id) in ids
+        assert int(theirs.id) not in ids
 
 
 # ── §A: workers/anki_sync.py — the store-taking core shared with the
@@ -245,41 +267,223 @@ class TestRetire:
 # each react in their own idiom. ──────────────────────────────────────────
 
 
-class TestRunAnkiSync:
-    def test_dry_run_reports_counts_without_touching_ankiweb(self, store) -> None:
-        from types import SimpleNamespace
+def _cfg(mirror_dir=None, **overrides):
+    return SimpleNamespace(
+        anki_mirror_dir=mirror_dir,
+        anki_deck="Precis",
+        anki_fix_enabled=False,
+        anki_project_enabled=False,
+        **overrides,
+    )
 
+
+def _add_user(store, login: str, abbrev: str) -> None:
+    from precis.users import hash_password
+
+    store.create_web_user(login=login, abbrev=abbrev, password=hash_password("pw"))
+
+
+def _configure_creds(monkeypatch: pytest.MonkeyPatch, login: str, email: str) -> None:
+    # env-override-wins is get_secret's documented resolution order (§1) — the
+    # sanctioned way to hand a test a credential without a real vault round trip.
+    monkeypatch.setenv(f"ANKI_USER:{login}", email)
+    monkeypatch.setenv(f"ANKI_PASSWORD:{login}", "hunter2")
+
+
+class TestRunAnkiSyncNoUsers:
+    def test_no_configured_users_returns_a_summary_not_an_exception(
+        self, store
+    ) -> None:
         from precis.workers.anki_sync import run_anki_sync
 
+        summary = run_anki_sync(store, _cfg())
+        assert (
+            summary
+            == "anki-sync: no user has AnkiWeb credentials — add them on /account"
+        )
+
+    def test_explicit_unconfigured_login_raises_misconfigured(self, store) -> None:
+        from precis.workers.anki_sync import AnkiSyncMisconfigured, run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        with pytest.raises(AnkiSyncMisconfigured):
+            run_anki_sync(store, _cfg(), login="reto")
+
+    def test_missing_mirror_dir_raises_once_a_user_is_configured(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers.anki_sync import AnkiSyncMisconfigured, run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        with pytest.raises(AnkiSyncMisconfigured):
+            run_anki_sync(store, _cfg(mirror_dir=None))
+
+
+class TestRunAnkiSyncDryRun:
+    def test_dry_run_reports_counts_for_the_configured_user(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
         store.insert_ref(
             kind="anki",
             slug=None,
             title="{{c1::x}}",
             meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+            owner_login="reto",
         )
-        cfg = SimpleNamespace(
-            anki_user=None,
-            anki_password=None,
-            anki_mirror_dir=None,
-            anki_deck="Precis",
-            anki_fix_enabled=False,
-            anki_project_enabled=False,
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)), dry_run=True)
+        assert "anki-sync[reto] [DRY-RUN]: 1 cloze card(s) would sync" in summary
+
+    def test_dry_run_does_not_call_sync_tick(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+            owner_login="reto",
         )
-        summary = run_anki_sync(store, cfg, dry_run=True)
-        assert "1 cloze card(s) would sync" in summary
+        called = []
+        monkeypatch.setattr(sync_mod, "sync_tick", lambda **kw: called.append(kw))
+        run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)), dry_run=True)
+        assert not called
 
-    def test_misconfigured_raises_instead_of_exiting(self, store) -> None:
-        from types import SimpleNamespace
 
-        from precis.workers.anki_sync import AnkiSyncMisconfigured, run_anki_sync
+class TestRunAnkiSyncClaim:
+    def test_sole_user_claims_unowned_refs_before_syncing(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
 
-        cfg = SimpleNamespace(
-            anki_user=None,
-            anki_password=None,
-            anki_mirror_dir=None,
-            anki_deck="Precis",
-            anki_fix_enabled=False,
-            anki_project_enabled=False,
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        card = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+        )  # unowned — pre-migration legacy row
+        assert card.owner_login is None
+
+        seen_specs = []
+
+        def _fake_sync_tick(*, specs, **kw):
+            seen_specs.append(specs)
+            return SyncResult(pushed=len(specs)), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake_sync_tick)
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+
+        assert store.get_ref(kind="anki", id=card.id).owner_login == "reto"
+        assert "1 unowned ref(s) claimed" in summary
+        # the claim happened BEFORE the ref list was built — the claimed card
+        # rides this same tick, not just the next one.
+        assert len(seen_specs) == 1 and len(seen_specs[0]) == 1
+
+    def test_second_configured_user_disables_the_solo_claim(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _add_user(store, "alice", "al")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        _configure_creds(monkeypatch, "alice", "alice@example.com")
+        card = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+        )  # unowned, and now ambiguous — two configured users
+
+        monkeypatch.setattr(sync_mod, "sync_tick", lambda **kw: (SyncResult(), {}))
+        run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert store.get_ref(kind="anki", id=card.id).owner_login is None
+
+
+class TestRunAnkiSyncFanOut:
+    def test_two_users_get_two_sync_tick_calls_with_their_own_mirror_and_cards(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _add_user(store, "alice", "al")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        _configure_creds(monkeypatch, "alice", "alice@example.com")
+        store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::mine}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::mine}}"}},
+            owner_login="reto",
         )
-        with pytest.raises(AnkiSyncMisconfigured):
-            run_anki_sync(store, cfg)
+        store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::theirs}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::theirs}}"}},
+            owner_login="alice",
+        )
+
+        calls: dict[str, dict] = {}
+
+        def _fake_sync_tick(*, mirror_path, user, password, specs, **kw):
+            login = "reto" if "/reto/" in mirror_path else "alice"
+            calls[login] = {
+                "mirror_path": mirror_path,
+                "user": user,
+                "password": password,
+                "n_specs": len(specs),
+            }
+            return SyncResult(pushed=len(specs)), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake_sync_tick)
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+
+        assert set(calls) == {"reto", "alice"}
+        assert calls["reto"]["n_specs"] == 1
+        assert calls["alice"]["n_specs"] == 1
+        assert calls["reto"]["user"] == "reto@example.com"
+        assert calls["alice"]["user"] == "alice@example.com"
+        assert calls["reto"]["mirror_path"] != calls["alice"]["mirror_path"]
+        assert "anki-sync[reto]:" in summary and "anki-sync[alice]:" in summary
+
+    def test_one_users_failure_does_not_stop_the_other(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import AnkiSyncError, SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _add_user(store, "alice", "al")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        _configure_creds(monkeypatch, "alice", "alice@example.com")
+
+        def _fake_sync_tick(*, mirror_path, **kw):
+            if "/alice/" in mirror_path:
+                raise AnkiSyncError("boom")
+            return SyncResult(pushed=0), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake_sync_tick)
+        with pytest.raises(AnkiSyncError) as exc_info:
+            run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        message = str(exc_info.value)
+        assert "reto" in message and "alice" in message and "boom" in message

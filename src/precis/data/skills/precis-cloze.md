@@ -19,6 +19,9 @@ Reference (verbs, sync, precis-fix): `precis-anki-help`. This is the **craft**:
 how to author cards worth reviewing. Cards are `kind='anki'`, body is cloze
 markup (`{{cN::answer::hint}}`).
 
+Cards are per user (`refs.owner_login`) — a card you author syncs only to
+*your* AnkiWeb account, the one you configured on `/account`.
+
 ## How do I write good anki cards?
 ## Make a set of cloze cards on a topic
 ## Author flashcards for a subject

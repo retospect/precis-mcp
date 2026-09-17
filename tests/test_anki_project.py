@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from precis.anki.project import (
     FOREIGN_SOURCE,
     content_sha,
@@ -17,6 +19,16 @@ from precis.anki.project import (
     title_for,
 )
 from precis.anki.sync import ForeignCard
+from precis.users import hash_password
+
+OWNER = "reto"
+
+
+@pytest.fixture(autouse=True)
+def _owner(store) -> None:
+    """Every projected ref carries `owner_login` (FK to `web_users.login`) —
+    seed the one login these tests project against."""
+    store.create_web_user(login=OWNER, abbrev="rs", password=hash_password("pw"))
 
 
 def _card(
@@ -60,7 +72,9 @@ class TestProjection:
     def test_insert_creates_readonly_ref_with_card(self, store) -> None:
         guid = _uid()
         res = project_cards(
-            store, [_card(guid, {"Front": "Q?", "Back": "A!"}, notetype="Basic")]
+            store,
+            [_card(guid, {"Front": "Q?", "Back": "A!"}, notetype="Basic")],
+            owner_login=OWNER,
         )
         assert res.inserted == 1
         idx = _lookup(store, guid)
@@ -70,6 +84,7 @@ class TestProjection:
         assert ref.meta["readonly"] is True
         assert ref.meta["notetype"] == "Basic"
         assert ref.meta["anki"]["guid"] == guid
+        assert ref.owner_login == OWNER
         # searchable card_combined chunk emitted
         with store.pool.connection() as conn:
             card = conn.execute(
@@ -80,14 +95,18 @@ class TestProjection:
     def test_reproject_unchanged_is_noop(self, store) -> None:
         guid = _uid()
         card = _card(guid, {"Text": "The {{c1::x}} y."})
-        project_cards(store, [card])
-        res = project_cards(store, [card])  # identical content
+        project_cards(store, [card], owner_login=OWNER)
+        res = project_cards(store, [card], owner_login=OWNER)  # identical content
         assert res.unchanged == 1 and res.updated == 0 and res.inserted == 0
 
     def test_reproject_changed_updates(self, store) -> None:
         guid = _uid()
-        project_cards(store, [_card(guid, {"Text": "old {{c1::a}}"})])
-        res = project_cards(store, [_card(guid, {"Text": "new {{c1::b}}"})])
+        project_cards(
+            store, [_card(guid, {"Text": "old {{c1::a}}"})], owner_login=OWNER
+        )
+        res = project_cards(
+            store, [_card(guid, {"Text": "new {{c1::b}}"})], owner_login=OWNER
+        )
         assert res.updated == 1
         idx = _lookup(store, guid)
         assert (
@@ -99,10 +118,11 @@ class TestProjection:
         project_cards(
             store,
             [_card(keep, {"Text": "{{c1::k}}"}), _card(drop, {"Text": "{{c1::d}}"})],
+            owner_login=OWNER,
         )
         drop_id = _lookup(store, drop)
         # next sync: only `keep` present → `drop` disappears from the mirror
-        project_cards(store, [_card(keep, {"Text": "{{c1::k}}"})])
+        project_cards(store, [_card(keep, {"Text": "{{c1::k}}"})], owner_login=OWNER)
         assert _lookup(store, drop) is None  # soft-deleted (not in live index)
         # confirm the row is actually soft-deleted, not hard-deleted
         with store.pool.connection() as conn:
@@ -113,7 +133,9 @@ class TestProjection:
 
     def test_precis_owned_card_skipped(self, store) -> None:
         # a precis-authored note carries guid `precis:<id>` → never re-projected
-        res = project_cards(store, [_card("precis:123", {"Text": "{{c1::mine}}"})])
+        res = project_cards(
+            store, [_card("precis:123", {"Text": "{{c1::mine}}"})], owner_login=OWNER
+        )
         assert res.skipped_own == 1 and res.inserted == 0
 
     def test_projection_stores_stats(self, store) -> None:
@@ -127,6 +149,7 @@ class TestProjection:
                     stats={"lapses_total": 3, "ease_min": 2.1},
                 )
             ],
+            owner_login=OWNER,
         )
         idx = _lookup(store, guid)
         assert (
@@ -139,7 +162,7 @@ class TestProjection:
         shallow jsonb `||` merge would replace meta.anki, wiping the guid the
         projection dedups on, so re-projection would create a duplicate ref."""
         guid = _uid()
-        project_cards(store, [_card(guid, {"Text": "{{c1::x}}"})])
+        project_cards(store, [_card(guid, {"Text": "{{c1::x}}"})], owner_login=OWNER)
         idx = _lookup(store, guid)
         # simulate the CLI stats write-back (the FIXED flat shape)
         store.update_ref(
@@ -153,7 +176,9 @@ class TestProjection:
         assert meta["anki"]["guid"] == guid  # guid survived the write-back
         assert meta["anki_synced_at"] == "2026-07-14"
         # re-projection still dedups — no duplicate ref
-        res = project_cards(store, [_card(guid, {"Text": "{{c1::x}}"})])
+        res = project_cards(
+            store, [_card(guid, {"Text": "{{c1::x}}"})], owner_login=OWNER
+        )
         assert res.inserted == 0 and res.unchanged == 1
         assert _lookup(store, guid) == idx  # same ref, no dupe
 
@@ -161,16 +186,78 @@ class TestProjection:
         # same content, new stats → 'unchanged' (no card re-emit) but stats updated
         guid = _uid()
         project_cards(
-            store, [_card(guid, {"Text": "{{c1::x}}"}, stats={"lapses_total": 1})]
+            store,
+            [_card(guid, {"Text": "{{c1::x}}"}, stats={"lapses_total": 1})],
+            owner_login=OWNER,
         )
         res = project_cards(
-            store, [_card(guid, {"Text": "{{c1::x}}"}, stats={"lapses_total": 5})]
+            store,
+            [_card(guid, {"Text": "{{c1::x}}"}, stats={"lapses_total": 5})],
+            owner_login=OWNER,
         )
         assert res.unchanged == 1 and res.updated == 0
         idx = _lookup(store, guid)
         assert (
             store.get_ref(kind="anki", id=idx).meta["anki_stats"]["lapses_total"] == 5
         )
+
+
+class TestOwnership:
+    def test_insert_sets_owner_login(self, store) -> None:
+        guid = _uid()
+        project_cards(store, [_card(guid, {"Text": "{{c1::x}}"})], owner_login=OWNER)
+        idx = _lookup(store, guid)
+        assert store.get_ref(kind="anki", id=idx).owner_login == OWNER
+
+    def test_legacy_unowned_row_is_claimed_on_content_change(self, store) -> None:
+        """A row projected before per-user ownership existed (`owner_login`
+        NULL) is picked up by `_foreign_index` and claimed the next time its
+        content changes — belt-and-braces alongside `claim_unowned_refs`."""
+        guid = _uid()
+        sha = content_sha({"Text": "old"}, "Cloze")
+        legacy = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="old",
+            meta={
+                "source": FOREIGN_SOURCE,
+                "readonly": True,
+                "notetype": "Cloze",
+                "fields": {"Text": "old"},
+                "anki": {"guid": guid, "note_id": 1, "content_sha": sha},
+            },
+        )
+        assert legacy.owner_login is None
+
+        res = project_cards(
+            store, [_card(guid, {"Text": "new {{c1::x}}"})], owner_login=OWNER
+        )
+        assert res.updated == 1
+        assert store.get_ref(kind="anki", id=legacy.id).owner_login == OWNER
+
+    def test_legacy_unowned_row_is_claimed_on_unchanged_content(self, store) -> None:
+        """Same claim, taken on the cheap unchanged-content path (stats-only
+        refresh) — not just the full-update path."""
+        guid = _uid()
+        card = _card(guid, {"Text": "{{c1::x}}"})
+        sha = content_sha(card.fields, card.notetype)
+        legacy = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="x",
+            meta={
+                "source": FOREIGN_SOURCE,
+                "readonly": True,
+                "notetype": card.notetype,
+                "fields": card.fields,
+                "anki": {"guid": guid, "note_id": 1, "content_sha": sha},
+            },
+        )
+        assert legacy.owner_login is None
+
+        res = project_cards(store, [card], owner_login=OWNER)
+        assert res.unchanged == 1
+        assert store.get_ref(kind="anki", id=legacy.id).owner_login == OWNER
 
 
 def _lookup(store, guid) -> int | None:

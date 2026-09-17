@@ -89,13 +89,11 @@
     {% if inventory_hostname in groups['precis_anki_sync'] %}
     {# §A: the `anki_sync` scheduler cadence is host-pinned to the gateway too
        (same reasoning as dream above) — same PRECIS_ANKI_* block the retired
-       com.precis.anki-sync plist used to carry. #}
+       com.precis.anki-sync plist used to carry, minus the login: each web
+       user's own AnkiWeb credentials now live in the vault
+       (precis.anki.creds, set on /account), never an env var. #}
     <key>PRECIS_ANKI_ENABLED</key>
     <string>1</string>
-    <key>PRECIS_ANKI_USER</key>
-    <string>{{ vault_anki_user | default(anki_user | default('')) }}</string>
-    <key>PRECIS_ANKI_PASSWORD</key>
-    <string>{{ vault_anki_password | default('') }}</string>
     <key>PRECIS_ANKI_MIRROR_DIR</key>
     <string>{{ anki_mirror_dir | default('/opt/mcps/anki-mirror') }}</string>
     <key>PRECIS_ANKI_DECK</key>

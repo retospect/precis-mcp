@@ -17,9 +17,11 @@ release for the node arch — `arm64` under Apple-silicon colima).
   docker CLI the container executor already uses).
 - `PRECIS_REMARKABLE_IMAGE` rides the existing `precis_shared_env` dict, which
   the worker-agent plist already renders in a loop — no template edit needed.
-- `REMARKABLE_RMAPI_CONFIG` (the device credential) lives in the **secrets
-  vault** (ADR 0055); the driver resolves it at run time and passes it into the
-  container **by key**, never on argv. It is never a plist var.
+- The device credential is **per user**: `REMARKABLE_RMAPI_CONFIG:<login>`
+  in the secrets vault (ADR 0055), paired self-service on `/account`. The
+  driver resolves the sending user's entry at run time and passes it into the
+  container **by key** (env `REMARKABLE_RMAPI_CONFIG`), never on argv. It is
+  never a plist var and there is no deployment-wide fallback.
 
 ## Run (on demand — NOT in redeploy-precis.yml)
 
@@ -33,27 +35,28 @@ list in `inventory/group_vars/all/topology.yml`.
 
 ## Arming the send (S0 ops, one-time, Reto-gated)
 
-1. **Register the device** — run `rmapi` anywhere, paste the 8-letter code from
-   <https://my.remarkable.com/device/desktop/connect>.
-2. **Vault it** — pipe the resulting `~/.config/rmapi/rmapi.conf` body into
-   the DB secrets vault: `precis secret set REMARKABLE_RMAPI_CONFIG <
-   ~/.config/rmapi/rmapi.conf` (or use the `/secrets` web editor). The
-   ansible vault holds only deploy-time infra secrets (DB / TLS / tailscale)
-   — app credentials live in `vault.secrets` alone.
+1. **Pair a device** — each user pairs their own tablet on `/account`
+   (one-time code from <https://my.remarkable.com/device/apps/connect>, or
+   paste an `rmapi.conf` body in the advanced box). No ops step: the
+   credential lands in `vault.secrets` as `REMARKABLE_RMAPI_CONFIG:<login>`.
+   The ansible vault holds only deploy-time infra secrets (DB / TLS /
+   tailscale) — app credentials live in `vault.secrets` alone.
+2. (no separate vaulting step — pairing is the vaulting)
 3. **Build the image** — `ansible-playbook playbooks/47-remarkable.yml`.
 4. **Point the worker at it** — add
    `PRECIS_REMARKABLE_IMAGE: precis-remarkable:<sha>` to `precis_shared_env`
    and re-run `playbooks/37-precis-worker-agent.yml` (re-renders the plist +
    restarts the worker).
 
-Until steps 1–2 are done the feature is **dark**: the web button is hidden
-(gated on `remarkable_configured`) and the job reports "no credential". Until
+Until a user has paired, the feature is **dark for that user**: the web
+button is hidden (gated on `remarkable_configured`) and the job reports "no
+device paired". Until
 step 4, the send falls back to on-PATH `rmapi` (absent on the host → a clean
 "not installed" report), so nothing half-works.
 
 ## Rollback
 
 Clear `PRECIS_REMARKABLE_IMAGE` from `precis_shared_env` (send falls back to
-the in-process path) and/or delete the `REMARKABLE_RMAPI_CONFIG` secret (button
-hides, job declines). The image can be removed with
+the in-process path); a user unpairs on `/account` (button hides, job
+declines for that user). The image can be removed with
 `docker rmi {{ remarkable_image }}`.

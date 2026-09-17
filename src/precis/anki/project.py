@@ -6,10 +6,15 @@ feeds the retention knowledge-model. The `.anki2` mirror / AnkiWeb stays the
 source of truth; PG holds a derived, disposable, re-syncable index (like paper
 chunks vs the PDF on disk) — so it can never corrupt the account.
 
-`project_cards(store, cards)` takes plain `ForeignCard`s (from
+`project_cards(store, cards, owner_login=)` takes plain `ForeignCard`s (from
 `sync.read_all_cards`) — no `anki` import — so it tests against a real PG store
 with no wheel and no network. Idempotent + cheap on re-sync: a per-card content
 hash means only *changed* cards re-embed; vanished cards are soft-deleted.
+Each projected ref carries `owner_login` (migration 0164) — the web user whose
+AnkiWeb account the card came from; a pre-existing unowned row (projected
+before per-user ownership existed) is claimed for `owner_login` the next time
+its content changes, belt-and-braces alongside the sync's one-shot
+`claim_unowned_refs` catch-up.
 """
 
 from __future__ import annotations
@@ -74,24 +79,31 @@ class ProjectResult:
         )
 
 
-def _foreign_index(store: Any) -> dict[str, tuple[int, str | None]]:
-    """guid → (ref_id, content_sha) for every live projected foreign ref."""
+def _foreign_index(
+    store: Any, owner_login: str
+) -> dict[str, tuple[int, str | None, str | None]]:
+    """guid → (ref_id, content_sha, owner_login) for every live projected
+    foreign ref that's either already ``owner_login``'s or unowned (a legacy
+    row projected before per-user ownership existed) — an unowned hit is how
+    a legacy card gets claimed on its next content change."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "select ref_id, meta->'anki'->>'guid', meta->'anki'->>'content_sha' "
+            "select ref_id, meta->'anki'->>'guid', meta->'anki'->>'content_sha', "
+            "owner_login "
             "from refs where kind = 'anki' and retired_at is null "
-            "and meta->>'source' = %s",
-            (FOREIGN_SOURCE,),
+            "and meta->>'source' = %s and (owner_login = %s or owner_login is null)",
+            (FOREIGN_SOURCE, owner_login),
         ).fetchall()
-    return {g: (r, sha) for r, g, sha in rows if g}
+    return {g: (r, sha, owner) for r, g, sha, owner in rows if g}
 
 
-def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
-    """Upsert foreign cards into PG as read-only `anki` refs; soft-delete any
-    whose guid vanished from the mirror. precis-authored notes (guid
-    `precis:<id>`) are skipped — they're already authoritative refs."""
+def project_cards(store: Any, cards: list[Any], *, owner_login: str) -> ProjectResult:
+    """Upsert ``owner_login``'s foreign cards into PG as read-only `anki`
+    refs; soft-delete any whose guid vanished from the mirror. precis-authored
+    notes (guid `precis:<id>`) are skipped — they're already authoritative
+    refs."""
     res = ProjectResult()
-    existing = _foreign_index(store)
+    existing = _foreign_index(store, owner_login)
     seen: set[str] = set()
 
     for c in cards:
@@ -108,6 +120,8 @@ def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
             # so no re-embed. Keeps the leech-finder current for free.
             if stats:
                 store.update_ref(prior[0], meta_patch={"anki_stats": stats})
+            if prior[2] is None:
+                store.set_ref_owner(prior[0], owner_login)
             res.unchanged += 1
             continue
 
@@ -125,7 +139,12 @@ def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
         if prior is None:
             with store.tx() as conn:
                 ref = store.insert_ref(
-                    kind="anki", slug=None, title=title, meta=meta, conn=conn
+                    kind="anki",
+                    slug=None,
+                    title=title,
+                    meta=meta,
+                    owner_login=owner_login,
+                    conn=conn,
                 )
                 store.add_tag(ref.id, Tag.flag(FOREIGN_FLAG), conn=conn)
                 store.chunks.upsert_card_combined(ref.id, text, conn=conn)
@@ -134,9 +153,11 @@ def project_cards(store: Any, cards: list[Any]) -> ProjectResult:
             with store.tx() as conn:
                 store.update_ref(prior[0], title=title, meta_patch=meta, conn=conn)
                 store.chunks.upsert_card_combined(prior[0], text, conn=conn)
+                if prior[2] is None:
+                    store.set_ref_owner(prior[0], owner_login, conn=conn)
             res.updated += 1
 
-    for guid, (ref_id, _sha) in existing.items():
+    for guid, (ref_id, _sha, _owner) in existing.items():
         if guid not in seen:
             store.retire_ref(ref_id)
             res.deleted += 1

@@ -137,8 +137,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "source citation as a self-contained footnote (human cite + "
             "bibliography number + the referenced chunk excerpt), compile the "
             "PDF, and upload it to the reMarkable cloud via the rmapi CLI. "
-            "Needs rmapi on PATH and a device credential in the vault/env "
-            "(REMARKABLE_RMAPI_CONFIG or REMARKABLE_TOKEN). --dry-run compiles "
+            "Needs rmapi on PATH and --user's own paired device (vault: "
+            "REMARKABLE_RMAPI_CONFIG:<login>) — the credential is per-user "
+            "only, so --user is required unless --dry-run. --dry-run compiles "
             "the PDF but skips the upload (prints its path)."
         ),
     )
@@ -161,8 +162,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         default=None,
         help=(
             "Web login whose /account device pairing to upload with "
-            "(REMARKABLE_RMAPI_CONFIG:<login> in the vault); default: the "
-            "deployment-wide credential."
+            "(REMARKABLE_RMAPI_CONFIG:<login> in the vault). Required for an "
+            "actual upload — the credential is per-user only, with no "
+            "deployment-wide fallback; not needed with --dry-run."
         ),
     )
     rm.add_argument(
@@ -332,10 +334,18 @@ def _run_remarkable(args: argparse.Namespace) -> None:
         if ref is None:
             print(f"draft remarkable: no draft {args.slug!r}", file=sys.stderr)
             sys.exit(2)
+        if not args.dry_run and not args.user:
+            print(
+                "draft remarkable: --user is required to upload (the "
+                "credential is per-user only — pair a device at /account, "
+                "or use --dry-run to skip the upload).",
+                file=sys.stderr,
+            )
+            sys.exit(3)
         if not args.dry_run and not remarkable_configured(store, login=args.user):
             print(
-                "draft remarkable: no device credential — set "
-                "REMARKABLE_RMAPI_CONFIG or REMARKABLE_TOKEN (or use --dry-run).",
+                f"draft remarkable: no reMarkable device paired for "
+                f"{args.user!r} — pair one at /account.",
                 file=sys.stderr,
             )
             sys.exit(3)

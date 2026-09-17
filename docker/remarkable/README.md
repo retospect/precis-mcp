@@ -21,7 +21,8 @@ version-pinned `rmapi` binary.
 ```
 in : /work/in/doc.pdf         the compiled PDF to upload
      /work/in/params.json     {"folder","name","timeout_s"}
-env: REMARKABLE_RMAPI_CONFIG  the rmapi config body (devicetoken: …), passed
+env: REMARKABLE_RMAPI_CONFIG  the sending user's rmapi config body
+                              (vault REMARKABLE_RMAPI_CONFIG:<login>), passed
                               --env by KEY (value inherited from the worker
                               process, never in argv / ref_events)
 out: /work/out/result.json    {"ok","returncode","output","name","folder"}
@@ -57,22 +58,18 @@ parses `result.json` into a `SendResult`. `send_pdf` dispatches here whenever
 `PRECIS_REMARKABLE_IMAGE` is set; otherwise it falls back to an on-PATH `rmapi`
 (dev + tests, via the `PRECIS_RMAPI_BIN` stub).
 
-## One-time device registration (S0 ops, Reto-gated)
+## Device registration (per user, self-service)
 
-Individual users can now self-service pair their *own* tablet at
-`/account` (`precis.export.remarkable.register_device`, backed by the same
-one-time-code exchange as `rmapi`'s own registration) — that path needs no
-ops work and stores the credential per-login, ahead of the deployment-wide
-device below. This section is about the shared fallback device the
-deployment offers everyone who hasn't paired their own.
+Every user pairs their *own* tablet at `/account`
+(`precis.export.remarkable.register_device`, the same one-time-code exchange
+as `rmapi`'s own registration). The credential is stored per login
+(`REMARKABLE_RMAPI_CONFIG:<login>` in the secrets vault) and there is no
+deployment-wide device: a send without a signed-in, paired user declines.
 
-`rmapi` needs a device token, minted once from an interactive pairing:
-
-1. On any machine, run `rmapi` and paste the 8-letter code from
-   <https://my.remarkable.com/device/desktop/connect>.
-2. Take the resulting config body (`~/.config/rmapi/rmapi.conf`, at minimum
-   `devicetoken: <token>`) and vault it as `vault_remarkable_rmapi_config` →
-   the worker env `REMARKABLE_RMAPI_CONFIG` (ADR 0055).
+1. Sign in at <https://my.remarkable.com/device/apps/connect>, generate a
+   one-time code, paste it on `/account` (or paste an `rmapi.conf` body —
+   at minimum `devicetoken: <token>` — in the advanced box).
+2. Nothing to vault by hand; pairing writes the entry.
 3. A deploy builds this image on the worker node (colima on melchior) and sets
    `PRECIS_REMARKABLE_IMAGE` + `PRECIS_CONTAINER_BIN` in the worker-agent env.
    This rides the same Phase-2 container-executor ops window as the rest of the

@@ -779,10 +779,11 @@ of a held paper) or the export marks a stub + warns.
 - **Word/.docx** — toolchain-free and **synchronous**, with render-time
   acronym first-use expansion + an auto acronyms list.
 - **reMarkable** (`precis draft remarkable`, needs a device credential —
-  the signed-in user's own `/account` pairing (`--user <login>` on the
-  CLI), else the deployment-wide vault secret `REMARKABLE_RMAPI_CONFIG`)
-  uploads a reMarkable-mode PDF: RM2 page geometry, and every citation
-  renders as a numbered `\footnote` instead of a bare `\cite`, so you
+  per-user only, the signed-in user's own `/account` pairing (`--user
+  <login>` on the CLI; required for an actual upload) — there is no
+  deployment-wide fallback) uploads a reMarkable-mode PDF: RM2 page
+  geometry, and every citation renders as a numbered `\footnote` instead
+  of a bare `\cite`, so you
   read the source inline. A paper/patent cite footnotes the human cite +
   bibliography number + the referenced chunk excerpt; a **claim-hub**
   `[fi<id>]` cite footnotes the claim itself — the nanopub statement

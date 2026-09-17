@@ -10,7 +10,8 @@ precis_identity_env_raw:
   # DB-resident `precis.settings` rows 2026-08-22 — no env templating; the
   # settings layer resolves DB → env → compiled default fleet-wide.
   SEMANTIC_SCHOLAR_API_KEY: "{{ vault_semantic_scholar_api_key | default('') }}"
-  PRECIS_ANKI_USER: "{{ vault_anki_user | default('') }}"
+  # AnkiWeb credentials are per web user now (precis.anki.creds, set on
+  # /account) — no deployment-wide login belongs here.
 precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('value', 'equalto', '') | list | items2dict }}"
 
 # Fleet-wide trailing-24h LLM spend ceiling (PRECIS_DAILY_COST_CEILING).

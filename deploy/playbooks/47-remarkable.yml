@@ -10,11 +10,10 @@
 # runs where `inventory_hostname in precis_capabilities.remarkable_send` — the
 # agent host (the gateway) that runs the remarkable_send claude_inproc job.
 #
-# NOT in redeploy-precis.yml / site.yml — run explicitly, and only after the
-# device credential is vaulted (`precis secret set REMARKABLE_RMAPI_CONFIG`,
-# or the /secrets web editor). The send stays dark
-# until PRECIS_REMARKABLE_IMAGE is added to precis_shared_env (re-run
-# playbooks/37-precis-worker-agent.yml):
+# NOT in redeploy-precis.yml / site.yml — run explicitly. The device
+# credential is per user (paired self-service on /account) — nothing to
+# vault here. The send stays dark until PRECIS_REMARKABLE_IMAGE is added to
+# precis_shared_env (re-run playbooks/37-precis-worker-agent.yml):
 #
 #   ansible-playbook playbooks/47-remarkable.yml
 #   # skip the image build once present:

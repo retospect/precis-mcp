@@ -169,9 +169,10 @@ roots) lives with the node that owns the capability — topology:
 ## 7. Secrets / credentials
 
 Per ADR 0055, API keys are **not** env vars on any daemon — they
-resolve from the DB `vault.secrets` table (`get_secret()`). The two
-still set as env are the Anki login (`PRECIS_ANKI_USER` /
-`PRECIS_ANKI_PASSWORD`) and `PRECIS_UNPAYWALL_EMAIL`.
+resolve from the DB `vault.secrets` table (`get_secret()`). AnkiWeb
+credentials are per web user (`precis.anki.creds`, set on `/account`,
+colon-suffixed vault names — never an env var). The one still set as
+env is `PRECIS_UNPAYWALL_EMAIL`.
 
 | Var | Resolves via | Notes |
 |-----|--------------|-------|

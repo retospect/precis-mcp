@@ -16,7 +16,11 @@ replace that one secret. There is no bulk op and no reveal affordance.
 
 Rows are the union of the vault inventory and :data:`secret_status.KNOWN_SECRETS`
 (the registry of secrets this codebase is known to consume) — known secrets
-first in registry order, then any vault-only extras alphabetically.
+first in registry order, then any vault-only extras alphabetically, excluding
+per-user credentials (a vault name containing ``":"`` — the
+``NAME:<login>`` convention, e.g. ``REMARKABLE_RMAPI_CONFIG:<login>``): those
+are managed on ``/account``, not this fleet-wide page, and are counted for a
+short note instead of listed row-by-row.
 """
 
 from __future__ import annotations
@@ -80,10 +84,11 @@ def _build_rows(
     results: dict[str, secret_status.CheckResult],
     *,
     store: Any,
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], int]:
     """Merge the vault inventory with the known-secrets registry into the
     template's row shape — known secrets first (registry order), then any
-    vault-only extras alphabetically."""
+    vault-only extras alphabetically, excluding per-user credentials (a
+    ``NAME:<login>`` vault name). Returns ``(rows, per_user_count)``."""
     vault_by_name = {r["name"]: r for r in vault_rows}
     rows: list[dict[str, object]] = []
     for spec in secret_status.KNOWN_SECRETS:
@@ -109,8 +114,15 @@ def _build_rows(
         )
 
     known_names = {spec.name for spec in secret_status.KNOWN_SECRETS}
+    per_user_count = sum(
+        1 for r in vault_rows if r["name"] not in known_names and ":" in str(r["name"])
+    )
     extras = sorted(
-        (r for r in vault_rows if r["name"] not in known_names),
+        (
+            r
+            for r in vault_rows
+            if r["name"] not in known_names and ":" not in str(r["name"])
+        ),
         key=lambda r: str(r["name"]),
     )
     for v in extras:
@@ -131,7 +143,7 @@ def _build_rows(
                 "dot_title": title,
             }
         )
-    return rows
+    return rows, per_user_count
 
 
 @router.get("", response_class=HTMLResponse)
@@ -141,13 +153,14 @@ async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
     vault_rows = vault.list_secrets(store=store)
     results = await secret_status.get_results(store)
-    rows = _build_rows(vault_rows, results, store=store)
+    rows, per_user_count = _build_rows(vault_rows, results, store=store)
     return templates.TemplateResponse(
         request,
         "secrets/index.html.j2",
         {
             "active_tab": "secrets",
             "rows": rows,
+            "per_user_count": per_user_count,
             "checked_at": secret_status.checked_at(),
         },
     )

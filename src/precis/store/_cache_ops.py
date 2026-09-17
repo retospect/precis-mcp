@@ -397,7 +397,7 @@ _REFS_COLS_FOR_CACHE = (
     "refs.auto_refresh_days, refs.refreshed_at, "
     "refs.parent_id, refs.prio, refs.alert_source, refs.fingerprint, "
     "refs.resolved_at, "
-    "refs.doi_status, refs.doi_validated_at"
+    "refs.doi_status, refs.doi_validated_at, refs.owner_login"
 )
 
 #: Number of ``cache_state`` columns appended after the ref projection

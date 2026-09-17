@@ -138,11 +138,14 @@ removes it from the corpus.
 ## Sync to AnkiWeb
 
 Authoring a card stores it in precis; the **`precis anki-sync`** tick (a cron on
-the one designated runner, gated `PRECIS_ANKI_ENABLED`) pushes precis-authored
-cloze cards to your AnkiWeb account by a stable per-ref guid (re-sync *updates*,
-never duplicates) and reads each card's decay stats (`interval/ease/reps/lapses/
-due`) back into `meta.anki_stats`. The sync is account-safe: it will download to
-resolve a divergence but **refuses any full upload** that would overwrite AnkiWeb.
+the one designated runner, gated `PRECIS_ANKI_ENABLED`) pushes each web user's
+own precis-authored cloze cards to *their own* AnkiWeb account — the
+credentials you set on `/account` — by a stable per-ref guid (re-sync
+*updates*, never duplicates) and reads each card's decay stats
+(`interval/ease/reps/lapses/due`) back into `meta.anki_stats`. Every card
+carries `refs.owner_login`, so one sync tick never touches another user's
+account or mirror. The sync is account-safe: it will download to resolve a
+divergence but **refuses any full upload** that would overwrite AnkiWeb.
 
 ## Fix a card with `precis-fix`
 
