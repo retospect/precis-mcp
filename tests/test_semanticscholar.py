@@ -555,7 +555,7 @@ def test_complete_is_its_own_cache_row_and_rediffs_on_hit(
     """The top-50 page and the complete walk are different artifacts, so
     they cache under different keys; a second complete read is a cache
     hit (no refetch) whose corpus column reflects a paper minted since."""
-    fake = _PagedS2([_author_paper(i, year=2020, doi=f"10.1/w{i}") for i in range(3)])
+    fake = _PagedS2([_author_paper(i, year=2020, doi=f"10.1000/w{i}") for i in range(3)])
     monkeypatch.setattr(s2handler, "_s2_get_json", fake)
     one_page = s2handler.get(id="author:7")
     assert "3 shown" in one_page.body
@@ -565,7 +565,7 @@ def test_complete_is_its_own_cache_row_and_rediffs_on_hit(
     assert "3 works" in full.body and "3 NEW" in full.body
     n_calls = len(fake.calls)
 
-    pid = _mk_paper_with_doi(store, slug="w1", doi="10.1/w1", held=False)
+    pid = _mk_paper_with_doi(store, slug="w1", doi="10.1000/w1", held=False)
     again = s2handler.get(id="author:7", complete=True)
     assert len(fake.calls) == n_calls  # cache hit
     assert f"stub: pa{pid}" in again.body and "2 NEW, 1 stub" in again.body

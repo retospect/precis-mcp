@@ -476,6 +476,10 @@ def test_claim_stamps_this_workers_lease_identity(
     assert meta["lease_boot_id"] == "this-workers-boot-id"
     assert meta["lease_process"] == "ssh_node"
     assert meta["lease_host"] == "spark-claimer"
+    # gr346951: every claim also records which build did the work.
+    from precis.handlers.skill import code_stamp
+
+    assert meta["lease_code"] == code_stamp()
 
 
 def test_null_lease_boot_id_falls_back_to_expiry_only(

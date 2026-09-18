@@ -2112,6 +2112,30 @@ def _collect_build_info() -> list[tuple[str, str]]:
     return rows
 
 
+_CODE_STAMP: str | None = None
+
+
+def code_stamp() -> str:
+    """``<version>@<sha_short>`` of the code THIS process runs — the one
+    line a job row / an enqueue reply needs to say which build did the
+    work (gr346951: four ewod re-routes were read as "fix ineffective"
+    when every one ran the pre-fix router on the cluster while the
+    session's MCP container ran the fixed one). Same collector as
+    ``precis-status`` and the boot banner, so the three can't disagree.
+    Cached after the first call — the git facts are frozen at process
+    start anyway. Never raises."""
+    global _CODE_STAMP
+    if _CODE_STAMP is None:
+        try:
+            fields = dict(_collect_build_info())
+            _CODE_STAMP = (
+                f"{fields.get('version', '?')}@{fields.get('git_sha_short', 'unknown')}"
+            )
+        except Exception:  # pragma: no cover — a stamp must never fail a claim
+            _CODE_STAMP = "unknown"
+    return _CODE_STAMP
+
+
 def _collect_runtime_info() -> list[tuple[str, str]]:
     """Return ``(field, value)`` rows for the **Runtime** section.
 

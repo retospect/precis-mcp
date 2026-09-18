@@ -517,8 +517,13 @@ class PcbHandler(Handler):
             idem_key=f"pcb_{op}:{ref.id}:{digest}",
         )
         status_view = "route-status" if op == "route" else "crossings"
+        from precis.handlers.skill import code_stamp
+
         return (
             f"# {op} {ref.slug} — enqueued\n{job_resp.body}\n\n"
+            f"Runs on the cluster worker's code, not necessarily this "
+            f"session's ({code_stamp()}) — the job's `ran_on:` line records "
+            "which build actually ran.\n"
             f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
             "to check progress once the job lands."
         )
