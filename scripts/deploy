@@ -132,6 +132,15 @@ for _a in "$@"; do
     esac
 done
 REF="${_POSITIONAL[0]:-main}"
+# A short sha is expanded to the full 40-char commit here: the playbook's pin
+# step treats anything that is not ^[0-9a-f]{40}$ as a ref NAME and resolves
+# it with `git ls-remote`, which never matches a bare abbreviated sha, so
+# `scripts/deploy 08f79a3a` died in preflight after the wheel build. Ref
+# names (main, a tag) are left alone; the playbook resolves those itself.
+if [[ "$REF" =~ ^[0-9a-f]{7,39}$ ]]; then
+    _full="$(git rev-parse -q --verify "${REF}^{commit}" 2>/dev/null || true)"
+    [[ -n "$_full" ]] && REF="$_full"
+fi
 EXTRA_ARGS=()
 for _v in ${PRECIS_DEPLOY_EXTRA_VARS:-}; do
     EXTRA_ARGS+=(-e "$_v")
@@ -536,7 +545,10 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
             # from a checkout that actually declares a satisfying version.
             _PROJ_V="$(autocatpath_project_version "${_CATPATH_DIR}/pyproject.toml" || true)"
             [[ -n "$_PROJ_V" ]] || die "autocatpath floor is >=${_FLOOR} but no wheel that new exists in ${_CATPATH_DIR}/dist and there is no catpath checkout there to build one from. Set PRECIS_CATPATH_DIR, or PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 if the hosts are already seeded. (gr263082)"
-            version_ge "$_PROJ_V" "$_FLOOR" || die "autocatpath floor is >=${_FLOOR} but the catpath checkout at ${_CATPATH_DIR} is only ${_PROJ_V} — pull/bump catpath and release the wheel first. (gr263082)"
+            # The checkout's own version is NOT the gate: uv.lock may pin a
+            # newer catpath commit than the checkout has checked out (the
+            # throwaway-worktree path below builds the pin, not HEAD), so the
+            # floor is checked once, after the build source is resolved.
 
             # Only build from a checkout that matches what precis actually
             # depends on. catpath reuses one version number across many
@@ -599,6 +611,8 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
                 [[ "$_BEHIND" == "0" ]] \
                     || die "catpath at ${_CATPATH_DIR} is ${_BEHIND} commit(s) behind its upstream, all still labelled ${_PROJ_V} — building here would ship a wheel that silently differs from the released one. Pull catpath first, or build on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
             fi
+
+            version_ge "$_PROJ_V" "$_FLOOR" || die "autocatpath floor is >=${_FLOOR} but the catpath source to build from (${_BUILD_DIR}) declares only ${_PROJ_V} — pull/bump catpath (or 'uv lock -P autocatpath' so the pin clears the floor) and release the wheel first. (gr263082)"
 
             say "building autocatpath ${_PROJ_V} wheel (floor >=${_FLOOR}, nothing that new in ${_CATPATH_DIR}/dist)"
             # The wheel always lands in the checkout's own dist/ — a worktree
