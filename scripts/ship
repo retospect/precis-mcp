@@ -856,8 +856,10 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             # surface, and a testmon map built mid-red-gate can drop their
             # dependency edge — gr277298 shipped a token-budget overage
             # green because --impacted deselected the budget test right
-            # after the fix cycle that changed the wire shape.
-            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py tests/test_schema_design.py tests/test_token_budget.py tests/test_mcp_verb_kwarg_parity.py tests/test_vocab_lint.py'
+            # after the fix cycle that changed the wire shape. The
+            # `type: ignore` ratchet reads source text, not imports — same
+            # no-edge problem.
+            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0 && uv run pytest -q -n0 tests/test_migration_numbering.py tests/test_schema_baseline.py tests/test_schema_design.py tests/test_token_budget.py tests/test_mcp_verb_kwarg_parity.py tests/test_vocab_lint.py tests/test_type_ignore_ratchet.py'
             say "integration gate (ruff autofix · mypy · import contracts · pytest --impacted + repo invariants) — ${GATE_MODE} gate"
         else
             # Full authoritative path measures coverage too: pytest-cov writes
