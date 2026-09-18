@@ -42,7 +42,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from precis.pcb.drc import _arc_points, _capsule_capsule_gap, _Prim, _via_layer_names
+from precis.pcb.drc import (
+    _arc_points,
+    _capsule_capsule_gap,
+    _Prim,
+    _segments_intersect,
+    _via_layer_names,
+)
+from precis.pcb.geom import Point, dist_point_to_segment, point_in_polygon
 from precis.pcb.planes import point_in_pour
 
 #: Copper closer than this is treated as touching. Pure float-noise slack:
@@ -127,6 +134,80 @@ def _copper_primitives_with_vias(
                 via_groups.setdefault(idx, []).append(len(prims))
                 prims.append(_Prim((x, y), None, r, idx, net, layer))
     return prims, via_groups
+
+
+def _pad_poly(pad: dict[str, Any]) -> tuple[Point, ...] | None:
+    """The pad's authored outline, when it has one — ``None`` for the
+    overwhelming majority (circle/rect/obround pads, whose inscribed disk
+    already IS their reach) so callers fall straight back to the circle
+    :func:`_pad_primitives` builds. Only ``shape == 'polygon'`` pads (the
+    EWOD electrode pads that motivate this at all — gr339236) carry one."""
+    if pad.get("shape") != "polygon":
+        return None
+    poly = pad.get("poly")
+    if not poly or len(poly) < 3:
+        return None
+    return tuple((float(p[0]), float(p[1])) for p in poly)
+
+
+def _prim_polygon_gap(prim: _Prim, poly: tuple[Point, ...]) -> float:
+    """Gap between a circle/capsule primitive and a closed polygon — the
+    polygon-aware sibling of :func:`_capsule_capsule_gap`, used only for
+    the pin/net whose pad is a :func:`_pad_poly` polygon rather than a
+    circle. Same edge-to-edge contract: 0 the instant the primitive's
+    centreline enters or crosses the polygon, else the closed-form
+    distance to the nearest edge minus the primitive's own radius.
+
+    Built from :mod:`precis.pcb.geom`'s point-in-polygon and
+    point-to-segment primitives and :mod:`precis.pcb.drc`'s segment
+    intersection test — the same pieces :func:`_capsule_capsule_gap` and
+    ``drc.py``'s own ``shape == 'polygon'`` pad handling already use,
+    rather than a third distance implementation for one more shape."""
+    edges = list(zip(poly, poly[1:] + poly[:1], strict=True))
+    if prim.b is None:
+        if point_in_polygon(prim.a, list(poly)):
+            return 0.0
+        center = min(dist_point_to_segment(prim.a, a, b) for a, b in edges)
+    else:
+        if (
+            point_in_polygon(prim.a, list(poly))
+            or point_in_polygon(prim.b, list(poly))
+            or any(_segments_intersect(prim.a, prim.b, a, b) for a, b in edges)
+        ):
+            center = 0.0
+        else:
+            center = min(
+                d
+                for a, b in edges
+                for d in (
+                    dist_point_to_segment(prim.a, a, b),
+                    dist_point_to_segment(prim.b, a, b),
+                    dist_point_to_segment(a, prim.a, prim.b),
+                    dist_point_to_segment(b, prim.a, prim.b),
+                )
+            )
+    return max(0.0, center - prim.r)
+
+
+def _touch_gap(
+    pa: _Prim,
+    pb: _Prim,
+    poly_a: tuple[Point, ...] | None,
+    poly_b: tuple[Point, ...] | None,
+) -> float:
+    """Same-layer touch distance between two primitives, honouring either
+    side's :func:`_pad_poly` outline when it has one, else falling back to
+    :func:`_capsule_capsule_gap`'s circle/capsule math unchanged — the
+    seam :func:`connected_pin_pairs` and :func:`fixed_copper_pin_terminals`
+    both call instead of :func:`_capsule_capsule_gap` directly."""
+    gaps = []
+    if poly_a is not None:
+        gaps.append(_prim_polygon_gap(pb, poly_a))
+    if poly_b is not None:
+        gaps.append(_prim_polygon_gap(pa, poly_b))
+    if gaps:
+        return min(gaps)
+    return _capsule_capsule_gap(pa, pb)
 
 
 class _DisjointSet:
@@ -240,6 +321,7 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
     prims, via_groups = _copper_primitives_with_vias(model)
     pad_offset = len(prims)
     pad_keys: list[tuple[str, str] | None] = []
+    pad_polys: dict[int, tuple[Point, ...]] = {}
     for pad in model.get("pads") or []:
         net = str(pad.get("net", ""))
         if not net:
@@ -247,6 +329,7 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
         r = min(w, h) / 2.0
+        pad_index = len(prims)
         prims.append(
             _Prim(
                 (float(pad["x"]), float(pad["y"])),
@@ -257,6 +340,9 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
                 str(pad.get("layer", "")),
             )
         )
+        poly = _pad_poly(pad)
+        if poly is not None:
+            pad_polys[pad_index] = poly
         refdes, pin = pad.get("refdes"), pad.get("pin")
         pad_keys.append(
             (str(refdes), str(pin)) if refdes is not None and pin is not None else None
@@ -290,7 +376,10 @@ def connected_pin_pairs(model: dict[str, Any]) -> set[frozenset[tuple[str, str]]
             pa = prims[members[a_i]]
             for b_i in range(a_i + 1, len(members)):
                 pb = prims[members[b_i]]
-                if _capsule_capsule_gap(pa, pb) <= TOUCH_EPS_MM:
+                gap = _touch_gap(
+                    pa, pb, pad_polys.get(members[a_i]), pad_polys.get(members[b_i])
+                )
+                if gap <= TOUCH_EPS_MM:
                     dsu.union(members[a_i], members[b_i])
 
     by_root: dict[int, list[tuple[str, str]]] = {}
@@ -357,6 +446,7 @@ def fixed_copper_pin_terminals(
         return {}
     pad_offset = n_fixed_prims
     pad_keys: list[tuple[str, str] | None] = []
+    pad_polys: dict[int, tuple[Point, ...]] = {}
     for pad in model.get("pads") or []:
         net = str(pad.get("net", ""))
         if not net:
@@ -364,6 +454,7 @@ def fixed_copper_pin_terminals(
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
         r = min(w, h) / 2.0
+        pad_index = len(prims)
         prims.append(
             _Prim(
                 (float(pad["x"]), float(pad["y"])),
@@ -374,6 +465,9 @@ def fixed_copper_pin_terminals(
                 str(pad.get("layer", "")),
             )
         )
+        poly = _pad_poly(pad)
+        if poly is not None:
+            pad_polys[pad_index] = poly
         refdes, pin = pad.get("refdes"), pad.get("pin")
         pad_keys.append(
             (str(refdes), str(pin)) if refdes is not None and pin is not None else None
@@ -394,7 +488,10 @@ def fixed_copper_pin_terminals(
             pa = prims[members[a_i]]
             for b_i in range(a_i + 1, len(members)):
                 pb = prims[members[b_i]]
-                if _capsule_capsule_gap(pa, pb) <= TOUCH_EPS_MM:
+                gap = _touch_gap(
+                    pa, pb, pad_polys.get(members[a_i]), pad_polys.get(members[b_i])
+                )
+                if gap <= TOUCH_EPS_MM:
                     dsu.union(members[a_i], members[b_i])
 
     fixed_by_root: dict[int, list[int]] = {}

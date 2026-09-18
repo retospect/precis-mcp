@@ -237,20 +237,33 @@ or one sink plus a remainder rule) — a Reto decision, not a build item.
 Slices 1–2 shipped ungated as 74bfc61b + 2b4bbe36; the prod dogfood stays
 8×8 with fabric until that call.
 
-**Real-footprint finding (2026-09-18, prod `ewod-dogfood-2`) — a DESIGN
-DECISION:** with C639448's REAL 80-pad footprint cached (pull via
-`op='footprint'`) and the sink named HVOUT1..64/DIOA/DIOB/VPP, the sink's
-pad ring sits at ±5.2 mm on B.Cu and the plaza rows/cols at {1,4,7} cells
-(-5, 1, 7 mm) cross it: 20 `via_pad_keepout` errors (gr345857) — plaza vias
-drill into HV507 lands. The synthesized grid footprint never showed this.
-Options: (a) place the sink so its ring falls between plaza rows (a
-ring-vs-plaza check at apply time, refuse otherwise); (b) sink-aware plaza
-pattern (skip/move plazas over a fixed instance's pads); (c) per_tiles
-sinks placed outside the array with fabric escapes. Until decided, the
-sink-under-array dogfood cannot pass DRC, so criterion 8 (route against the
-fabric) is measured on a design whose sink is pinned elsewhere. Side
-finding: the same pairs are duplicated as `clearance … on F.Cu`
-(gr345858, wrong layer label on a bottom instance).
+**Real-footprint finding (2026-09-18, prod `ewod-dogfood-2`):** with
+C639448's REAL 80-pad footprint cached (`op='footprint'`, names from the
+schematic symbol — 954f6e03 + c74090de) and the sink wired as
+HVOUT1..64/DIOA/DIOB/VPP/VDD/GND, the sink shows **no synthesized pin**
+(`view='footprints'`), and its PQFP-80 ring (x ±8.5, y ±11.5 mm, B.Cu)
+clears every plaza — no via-vs-sink-pad finding. A first read with 40
+pins still synthesized (start/end anchor bug) had wrongly suggested a
+ring-vs-plaza collision (gr345857, retracted). What DRC run cc0f2ca9 does
+leave on the fabric: the KNOWN −0.025 mm stub-track gap (slice-2 decision
+above), two `via_pad_keepout` rows between the merged RESV pad and the
+adjacent plaza's ring vias (gr346004 — geometry the SVG says should clear
+by ≈0.25 mm), plus a wrong-layer label on synthesized pads of a bottom
+instance (gr345858, low). U_TEMP stays synthesized: C32254 is a transistor,
+not a temp sensor — pick a real I2C sensor C-number when the BOM matters.
+`view='gerber'` now exports dogfood-2 (fabric vias in PTH.drl), but the
+synthesized-pad refusal has a gap for cached-but-unjoined pins (gr346009)
+— criterion 1 is not closed on this evidence.
+
+**Criterion 8 measured (2026-09-18, route job 346003 on dogfood-2):** the
+router sees the fabric, but 59/62 nets fail `no_path`. Root cause (on
+gr339236): `connectivity.fixed_copper_pin_terminals` and
+`connected_pin_pairs` test "fixed copper touches the pad" against the
+pad's inscribed circle, so a stub authored at a polygon pad's corner is
+never a touch and the plaza via is withheld as an island terminal (offered
+for 8/65 segments; all 8 routed). Fix = polygon-aware touch test in those
+two functions only (`_pad_primitives`' circle stays for `net_islands`).
+Side defect gr346033: `ir.pin_point` does not mirror bottom instances.
 
 ## Acceptance criteria
 
