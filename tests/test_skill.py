@@ -1869,3 +1869,44 @@ def test_status_breadcrumb_is_consumed_not_repeated(
 
     second = skill.get(id="precis-status")
     assert "previous server exited" not in second.body
+
+
+def test_categorise_buckets_the_rest_by_tag_not_into_other() -> None:
+    """gr334773: ~120 skills sat in one 'Other' bucket. Everything the
+    curated list doesn't name is grouped by its first recognised
+    ``tags:`` value; a tag-group sharing a curated name folds into it;
+    only untagged skills stay in Other."""
+    from precis.handlers.skill import _categorise_skills
+
+    tags = {
+        "precis-overview": ["orientation"],
+        "precis-se-help": ["design"],
+        "precis-hexfold-help": ["workflow", "design"],
+        "precis-figure-help": ["drafting"],
+        "precis-doctor-help": ["troubleshooting", "workflow"],
+        "precis-cache": [],
+        "precis-mystery": [],
+    }
+    groups, other = _categorise_skills(list(tags), tags_for=lambda s: tags[s])
+    as_dict = dict(groups)
+    assert as_dict["Orientation"] == ["precis-overview"]  # curated wins
+    assert as_dict["Design & engineering"] == ["precis-hexfold-help", "precis-se-help"]
+    assert as_dict["Drafting & figures"] == ["precis-figure-help"]
+    assert as_dict["Troubleshooting"] == ["precis-doctor-help"]
+    assert as_dict["Workflow tools"] == ["precis-cache"]  # curated, untagged
+    assert other == ["precis-mystery"]
+    # Derived groups come after the curated ones, in _TAG_GROUPS order.
+    names = [n for n, _ in groups]
+    assert names.index("Workflow tools") < names.index("Design & engineering")
+    assert names.index("Design & engineering") < names.index("Drafting & figures")
+
+
+def test_toc_other_bucket_is_small(skill: SkillHandler) -> None:
+    """The live catalogue: with tag-derived groups, 'Other' holds only
+    skills lacking a recognised tag — a handful, not a hundred."""
+    import re
+
+    body = skill.get(id="toc").body
+    assert "## Design & engineering" in body
+    m = re.search(r"## Other \((\d+)\)", body)
+    assert m is None or int(m.group(1)) <= 15, m.group(0) if m else None
