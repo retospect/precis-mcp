@@ -1986,8 +1986,13 @@ def _cap_patch(lat: Lattice, n: int, m: int) -> Patch | None:
     Its rim is all-zigzag with 6k dangling atoms, so it seats on a
     ``(6k,0)`` tube end at any registry; the lid itself carries no
     pentagons -- fusing it to a tube produces six pentagons as seam rings
-    at the flake's six corners (SPEC 6.1, 28.3).  Returns None for every
-    other ``(n,m)``.
+    at the flake's six corners (SPEC 6.1, 28.3).  Punching a further
+    ``- hex(r)@...`` hole in that same lid (a plain ``_apply_hole`` call
+    downstream, no change needed here) turns it into a washer: the
+    radius-changing shell steps a narrower neck through the ``hole`` port
+    while a wider bulge seats on the unchanged ``in`` rim, minting six
+    heptagons and six pentagons respectively as seam rings (SPEC 7, 28.3).
+    Returns None for every other ``(n,m)``.
     """
     if (n, m) != (5, 5):
         if m == 0 and n > 0 and n % 6 == 0:

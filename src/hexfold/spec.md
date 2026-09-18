@@ -261,7 +261,7 @@ seams.**
 | `sheet(W, H, rim=…)` | extent in lattice cells or Å; rim edge-word (§10) | flat, χ contribution via rim |
 | `tube(n, m, len=L\|fit, hand=+\|−)` | roll-up `(n,m)`, `0 ≤ m ≤ n`; length in unit cells or `fit` | rotational symmetry order `g = gcd(n,m)`; `hand` only meaningful for `0<m<n`; radius `R = a√(n²+nm+m²)/2π` [S9] |
 | `cone(P)` | `P ∈ 1..5` pentagons at apex | derived opening angle `sin(θ/2) = 1 − P/6` [S10]; `P=6` is a cap, `P=0` a disc |
-| `cap(n, m)` | C60 hemisphere or flat lid, port `in` | Two members. `(5,5)`: C60 cut perpendicular to a C5 axis (30 atoms, 10 dangling, 6 pentagons). `(6k, 0)`, k ≥ 1: the flat lid — the `hex(k−1)` flake (§28.3), the same cell complex a `- hex(k−1)@…` hole removes from a sheet; rim all-zigzag with 6k dangling atoms, `B_expected +6` (a flat disc, §6.1); the lid carries no pentagons itself — fusing it onto a `(6k,0)` tube produces six pentagons as seam rings at the flake's six corners, at any registry. Every other `(n,m)` is `build.kind` — a C3-axis hemisphere is not a cap (its seam is `{5:3,7:6}`, leaving the end over-curved); armchair `(n,n)` lids are open (need the k=1 registry and a corner-arc analysis) |
+| `cap(n, m)` | C60 hemisphere or flat lid, port `in` | Two members. `(5,5)`: C60 cut perpendicular to a C5 axis (30 atoms, 10 dangling, 6 pentagons). `(6k, 0)`, k ≥ 1: the flat lid — the `hex(k−1)` flake (§28.3), the same cell complex a `- hex(k−1)@…` hole removes from a sheet; rim all-zigzag with 6k dangling atoms, `B_expected +6` (a flat disc, §6.1); the lid carries no pentagons itself — fusing it onto a `(6k,0)` tube produces six pentagons as seam rings at the flake's six corners, at any registry. A `cap(6k,0) - hex(r)@…` hole punched in the lid is a **washer**, port `hole` alongside `in`, rule k ≥ r+3 (the washer at least two rings wide, else the hole clips the lid's own rim — `cut.overlap`); fusing a narrower neck into `hole` mints six heptagons, fusing a wider bulge onto `in` mints six pentagons — the radius-changing shell (§28.3). Every other `(n,m)` is `build.kind` — a C3-axis hemisphere is not a cap (its seam is `{5:3,7:6}`, leaving the end over-curved); armchair `(n,n)` lids are open (need the k=1 registry and a corner-arc analysis) |
 | `fullerene(N, iso=k)` | closed cage, 12 pentagons | v1: `C60` only [S11]; general Goldberg later |
 | `junction(k)` `[spec 0.2]` | sphere with k tube holes | χ = 2 − k ⇒ 6(k−2) heptagons (or half as many octagons); k = 3 is the pair of pants [S3]; C3-symmetric Y-junctions per CoNTub v2 [S5] |
 
@@ -416,6 +416,9 @@ atoms, so a 3-path gives 5 and no degree-1 leftovers.
 ring-adjacency radius `r` of the selected hexagon; dangling `6(r+1)`:
 hex(0) = 6, hex(1) = 12, hex(2) = 18. This is the sheet opening for landing
 a tube post: hex(0) seats a `(6,0)` end, hex(1) a `(12,0)` or `(6,6)` end.
+The same cut on a `cap(6k,0)` flat lid instead of an open sheet gives the
+radius-changing washer (§7, §28.3): a `hex(r)` hole seats the narrower
+neck while the lid's own rim seats the wider bulge.
 
 Thin hosts are a hard error, not a residual: if a hole's rim walk
 revisits a vertex under the tube identification the opening spans the
@@ -917,7 +920,11 @@ the symmetric collar, moving charges to reduce local angle error. A smooth
 target turns the search into fitting, which is easier, not solved. §12.1's
 family interface and the budget/placement split are what make the bent
 collar a drop-in; until it exists the solver **refuses a bent case with
-`fit.unsolvable`** rather than producing something quietly wrong.
+`fit.unsolvable`** rather than producing something quietly wrong. Not yet
+implemented, 2026-09-18: today a collar placed on an already-bent host
+(e.g. the radius-changing washer of §7/§28.3 fused onto a sheet that is
+already curved) is solved symmetrically, with no `fit.unsolvable` and no
+warning — the refusal above is the target behaviour, not the current one.
 
 #### 22.3 Composition: chains of constraints
 
@@ -1144,10 +1151,19 @@ drive the order: the box (step 3) and the rotary ratchet valve
    open); **canonical-frame symmetry sources**
    (§14.2 note — a patch's point group, a tube's `C_gcd(n,m)` rotation,
    the fullerene's icosahedral group as candidate frames; today every
-   instance keeps its authored frame; cosmetic, so after the lid);
-   **radius-changing shell** (tube → symmetric `collar{r×k @fit}` → wider
-   tube → collar → tube, holes in the bulge wall; every seam flat, §22.2
-   — the valve shell); **`opening(port=)`**
+   instance keeps its authored frame; cosmetic, so deferred behind the
+   shell — ruled 2026-09-18);
+   **radius-changing shell — done 2026-09-18**: no solver change needed.
+   The step between a neck and a wider bulge is a flat washer,
+   `cap(6k,0) - hex(r)@…`, rule k ≥ r+3 (the washer at least two rings
+   wide, else the hole clips the lid's own rim — `cut.overlap`); fusing
+   the narrower neck into the washer's hole mints six heptagons, fusing
+   the wider bulge onto the washer's rim mints six pentagons, both as
+   seam rings on the same collar (net charge 0, every seam flat, §22.2).
+   `valve_shell.hx` / `valve_shell_lidded.hx` are the first instance
+   ((12,0) necks, a (24,0) bulge with two C2 wall holes). The *tapered*
+   (collar-driven, no discrete washer step) variant is the smooth-layer
+   follow-up (steps 5/6 below), not this slice. **`opening(port=)`**
    (solve a host hole from the target rim; a C5 rim on the C6 lattice meets
    only through an asymmetric seam → the **tilted pill**, `geom.join.angle`);
    **`junction(3)`** = opening + fuse (tee); **elbow + closure → genus-1

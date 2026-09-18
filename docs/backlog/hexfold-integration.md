@@ -84,12 +84,25 @@ development, with the boundary kept clean for a later pip re-export.
    capped pill, `lid_pillbox.hx` the rotor; armchair lids open. It
    unblocked both the pill (this item's acceptance) and the rotary
    ratchet valve's rotor, which is a lid pair (`rotary-ratchet-valve.md`).
-   **Next slice** = the canonical-frame symmetry sources (cosmetic), then
-   the radius-changing shell (valve shell), `opening(port=)`, and the
-   rest of §28.3.
+   **Radius-changing shell** done 2026-09-18, no solver change: the step
+   between a neck and a wider bulge is a flat washer, `cap(6k,0) -
+   hex(r)@…`, rule k ≥ r+3 (else `cut.overlap`); fusing the neck into the
+   washer's hole mints six heptagons, fusing the bulge onto the washer's
+   rim mints six pentagons, both as seam rings. First instance:
+   `valve_shell.hx` / `valve_shell_lidded.hx`, (12,0) necks, a (24,0)
+   bulge with two C2 wall holes, 4.7 Å radial gap to the `lid_pillbox.hx`
+   (12,0) rotor. **Next slice** = `opening(port=)`, then the rest of
+   §28.3 (the cosmetic canonical-frame symmetry sources stay deferred
+   behind it, ruled 2026-09-18).
 6. [ ] Smooth mapper: `precis-surface-kernel.md` holds the ticks for
    spec §28.4–6 and §28.8 (the valve tools); nothing about the order
    lives here.
+
+## Follow-ups
+
+- `check.py` residual skipped for multi-block files with consumed rims
+  (also silently skips `sheet_pill_bump.hx`'s fused sheets) — restrict
+  `consumed` to bond-attached sheets.
 
 ## What builds today (hexfold 0.1, verified with `hexfold check`)
 

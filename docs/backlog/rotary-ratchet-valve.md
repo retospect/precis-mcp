@@ -73,6 +73,17 @@ surfaces with a tolerance and the lattice is snapped on afterwards (spec
 the discrete notation. The first instance ("a few hundred carbons with
 pendant groups", §Drive) sits at that boundary and is a discrete build.
 
+**Built 2026-09-18**: shell = `hexfold/examples/valve_shell.hx`, (12,0)
+necks stepped through a `cap(24,0) - hex(1)` washer to a (24,0) bulge
+with two C2 wall holes (net charge 0, no solver change — spec §28.3);
+rotor = `hexfold/examples/lid_pillbox.hx`, a (12,0) pillbox, giving a
+4.7 Å radial gap to the shell. The two stay separate example files:
+shell and rotor are not fused into one net, and `check.py`'s `consumed`
+heuristic currently drops `euler.residual` for a sheet once any of its
+rims were consumed elsewhere in a multi-block file, so a combined file
+would under-report — tracked as a follow-up in
+`hexfold-integration.md`.
+
 ## Metering and the concentrating cascade
 
 The point of the wheel is a known count per crank. If pockets are only
@@ -338,12 +349,24 @@ candidates cheaply, run energetics only on survivors.
 
 ## Open questions
 
+Decided 2026-09-18 (Reto):
+
+- **Q1 throughput — kHz first.** Size the first instance for kHz
+  rotation: the drag budget is lenient and any light-driven motor
+  generation qualifies. Throughput = pocket count × rate, so MHz is
+  revisited only if the pocket extractor's count cannot meet the
+  throughput wish.
+- **Q3 first-instance scale — discrete.** The first valve is a hexfold
+  build at ~1 nm rotor radius (a few hundred carbons); the smooth mapper
+  is for larger shells only.
+- **Q4 clearance — stub on `stick` atoms + van der Waals radii** until
+  `precis_surface` stage 3 lands. Gated on gr346966 (82–93° cap-seam
+  angles on stick atoms): the stub's numbers near the lid seams are not
+  trusted until that is fixed.
+
 | # | question | severity |
 |---|---|---|
-| Q1 | Throughput sizing: does the valve need MHz rotation or does kHz suffice? Sets which motor generation and the drag budget. | high — decide before the drag/torque check is meaningful |
 | Q2 | Scrubber cadence: is one sweep per main rotation right for every poison species, or does one saturate faster (→ FRET addressing)? | medium — instrument on the first lining |
-| Q3 | First-instance scale: at "a few hundred carbons" the rotor radius is ~1 nm, the discrete/smooth boundary. Build the first one discrete (hexfold) and use the smooth mapper only for larger shells? Leaning yes. | medium |
-| Q4 | Tools 1–2 on the smooth mesh vs on realised atoms: the mesh exists only once `precis_surface` stage 3 lands; before that, clearance from the `stick` atoms + vdW radii is a usable stub. | medium — decides the first build |
 
 ## Sources
 
