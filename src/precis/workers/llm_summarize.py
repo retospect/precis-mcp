@@ -33,11 +33,15 @@ backend — least-busy routing across nodes destroys this locality.
 backend occasionally bleeds chain-of-thought about the *instructions*
 into ``content`` instead of the BRIEF/DETAIL answer. Every candidate is
 checked (:func:`_reject_reason`) for instruction-echo, a leaked
-self-verification tally, quote-wrapping, or gross length overshoot before
-it is ever written; a rejected candidate gets one reinforced retry
-(:func:`_retry_with_reinforcement`), then falls back to a deterministic
-truncation of the chunk text (:func:`_fallback_summary`) — never a raw
-model call's reasoning trace.
+self-verification tally, quote-wrapping, gross length overshoot, or a
+verbatim prefix of its own chunk cut mid-sentence
+(:func:`_is_truncated_copy`) before it is ever written; a rejected
+candidate gets one reinforced retry (:func:`_retry_with_reinforcement`),
+then falls back to a deterministic gist of the chunk text
+(:func:`_fallback_summary`) — never a raw model call's reasoning trace.
+The pass reports the contract's own rate as ``rejected`` alongside
+``ok``/``failed``, so a model drifting off contract is visible as a rate
+rather than as a scatter of per-chunk warnings.
 """
 
 from __future__ import annotations
@@ -1018,7 +1022,36 @@ _TALLY_RE = re.compile(r"\b\w+\(\d+\)")
 _BRIEF_WORD_OVERSHOOT = 2
 
 
-def _reject_reason(candidate: str) -> str | None:
+#: Sentence-final punctuation. A gist that stops on none of these, and is a
+#: verbatim prefix of its own chunk, was cut rather than written.
+_SENTENCE_END: tuple[str, ...] = (".", "!", "?", "…", '."', ".'", '?"', '!"')
+
+#: Below this a "prefix" is not evidence of anything — a short chunk's
+#: heading, or a gist that legitimately opens with the chunk's own words.
+_TRUNCATED_COPY_MIN_CHARS = 20
+
+
+def _is_truncated_copy(candidate: str, chunk_text: str) -> bool:
+    """Is the gist a verbatim prefix of its chunk, stopped mid-sentence?
+
+    Measured on prod 2026-09-18: 1,057 of 121,814 summaries written in a
+    week were a verbatim prefix of their own chunk text, all recorded
+    ``status='ok'`` — nothing retried them and nothing counted them. The
+    reader gets "That said, the new theoretical work that came in overnight
+    is directly on point for" and no more.
+
+    A prefix ending on sentence punctuation is *not* this: promoting a short
+    chunk's first sentence is a legitimate gist, and what
+    :func:`parse_summary` does by design. Only the cut-off case is a failure.
+    """
+    brief = (candidate or "").split("\n\n", 1)[0].strip()
+    source = (chunk_text or "").strip()
+    if len(brief) < _TRUNCATED_COPY_MIN_CHARS or not source.startswith(brief):
+        return False
+    return not brief.endswith(_SENTENCE_END)
+
+
+def _reject_reason(candidate: str, chunk_text: str = "") -> str | None:
     """Cheap, deterministic check for leaked reasoning in a candidate summary.
 
     Runs on :func:`parse_summary`'s output — already normalized to
@@ -1028,6 +1061,10 @@ def _reject_reason(candidate: str) -> str | None:
     rather than discarding). Returns the trip reason, or ``None`` when the
     candidate is clean. Deliberately no LLM judge — string/regex checks only,
     so the check itself can never hallucinate or cost a call.
+
+    ``chunk_text``, when given, additionally rejects a gist that is a
+    verbatim prefix of its own chunk cut mid-sentence
+    (:func:`_is_truncated_copy`) — a copy, not a summary.
     """
     if not candidate:
         return None
@@ -1047,25 +1084,43 @@ def _reject_reason(candidate: str) -> str | None:
     brief_words = brief.split()
     if len(brief_words) > _BRIEF_MAX_WORDS * _BRIEF_WORD_OVERSHOOT:
         return f"brief grossly over budget ({len(brief_words)} words)"
+    if chunk_text and _is_truncated_copy(candidate, chunk_text):
+        return "verbatim prefix of the chunk, cut mid-sentence"
     return None
 
 
+#: The fallback keeps whole sentences, so its ceiling is looser than the
+#: gist budget the *prompt* asks the model for. Capping the fallback at
+#: ``_BRIEF_MAX_WORDS`` instead is what wrote 774 mid-sentence fragments to
+#: prod in the week to 2026-09-18 — a 16-word first sentence came out cut
+#: at word 15, stored ``status='ok'``, and read by humans as a broken row.
+_FALLBACK_MAX_WORDS = _BRIEF_MAX_WORDS * 2
+
+
 def _fallback_summary(chunk_text: str) -> str:
-    """Deterministic truncation used when both the original candidate and its
+    """Deterministic gist used when both the original candidate and its
     reinforced retry fail :func:`_reject_reason`.
 
-    No model call: the chunk's own first sentence, word-capped to the same
-    budget the prompt asks the model for — mirrors this module's own
+    No model call: the chunk's own first sentence, mirroring this module's
     "promote first sentence" idiom in :func:`parse_summary` rather than
-    inventing a new truncation rule.
+    inventing a new rule. A whole sentence slightly over the gist budget
+    beats a fragment inside it, so the word cap is
+    :data:`_FALLBACK_MAX_WORDS` and only a sentence past *that* is cut —
+    at a clause boundary, with a trailing ellipsis marking the elision.
     """
     clean = _sanitize_model_text(chunk_text or "").strip()
     first_line = clean.split("\n", 1)[0]
     first_sentence = first_line.split(". ", 1)[0].strip()
     words = first_sentence.split()
-    if len(words) > _BRIEF_MAX_WORDS:
-        first_sentence = " ".join(words[:_BRIEF_MAX_WORDS])
-    return first_sentence or clean[:120]
+    if len(words) <= _FALLBACK_MAX_WORDS:
+        return first_sentence or clean[:120]
+    # Past even the ceiling: cut at the last clause boundary inside it and
+    # mark the elision, so the row never reads as a finished thought.
+    head = " ".join(words[:_FALLBACK_MAX_WORDS])
+    cut = max(head.rfind(", "), head.rfind("; "), head.rfind(": "))
+    if cut > len(head) // 3:
+        head = head[:cut]
+    return head.rstrip(",;:— ") + " …"
 
 
 #: Reinforcement turn appended for the one contract-violation retry — terse,
@@ -1101,7 +1156,7 @@ def _retry_with_reinforcement(
             claim.chunk_id,
         )
         return None, None
-    if _reject_reason(summary) is not None:
+    if _reject_reason(summary, claim.text) is not None:
         return None, None
     return summary, result.total_tokens
 
@@ -1214,6 +1269,11 @@ class _Outcome:
     summary: str | None
     token_count: int | None
     error: Exception | None
+    #: Trip reason when the output contract caught the first candidate, even
+    #: if the reinforced retry or the fallback then produced a usable gist —
+    #: the pass's own rate signal for "the summarizer is misbehaving", which
+    #: the per-chunk WARNING alone does not aggregate anywhere.
+    rejected: str | None = None
 
 
 def _heartbeat_leases(
@@ -1341,7 +1401,7 @@ def run_llm_summarize_pass(
             try:
                 result = client.complete(messages)
                 summary = parse_summary(result.text)
-                reason = _reject_reason(summary)
+                reason = _reject_reason(summary, claim.text)
                 if reason is None:
                     return _Outcome(
                         claim, prompt_hash, summary, result.total_tokens, None
@@ -1362,7 +1422,7 @@ def run_llm_summarize_pass(
                 )
                 if retry_summary is not None:
                     return _Outcome(
-                        claim, prompt_hash, retry_summary, retry_tokens, None
+                        claim, prompt_hash, retry_summary, retry_tokens, None, reason
                     )
                 fallback = _fallback_summary(claim.text)
                 log.warning(
@@ -1370,7 +1430,7 @@ def run_llm_summarize_pass(
                     "falling back to deterministic truncation",
                     claim.chunk_id,
                 )
-                return _Outcome(claim, prompt_hash, fallback, None, None)
+                return _Outcome(claim, prompt_hash, fallback, None, None, reason)
             except EmptySummaryError as exc:
                 # A model/backend miss, not a bug — no per-chunk ERROR traceback
                 # (it floods the log surface). Recorded below only if *every*
@@ -1494,6 +1554,17 @@ def run_llm_summarize_pass(
             empty,
             len(outcomes),
         )
+    rejected = sum(1 for o in outcomes if o.rejected)
+    if rejected:
+        # The output contract's own rate. Each one is logged per chunk with
+        # its reason above; this is the line that says whether it is a
+        # one-off or the model drifting off contract across the batch.
+        log.warning(
+            "llm_summarize: %d/%d candidates failed the output contract "
+            "(retried or fell back to a deterministic gist)",
+            rejected,
+            len(outcomes),
+        )
     if busy:
         # Same treatment for router.DispatchError.paused (all local serving
         # slots busy) — an expected contention backoff, not a bug; one
@@ -1504,7 +1575,7 @@ def run_llm_summarize_pass(
             busy,
             len(outcomes),
         )
-    return {"claimed": claimed, "ok": ok, "failed": failed}
+    return {"claimed": claimed, "ok": ok, "failed": failed, "rejected": rejected}
 
 
 def _truthy(value: str | None) -> bool:

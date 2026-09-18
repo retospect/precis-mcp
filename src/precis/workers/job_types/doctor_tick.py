@@ -34,6 +34,10 @@ turns a reviewer's plain final-text reply into the tier-tagged digest memory,
 report body (:mod:`precis.workers.doctor_report` owns the per-UTC-day
 ``draft`` ref this lands on) — the model's own tool budget is spent gathering,
 classifying, diagnosing, and filing gripes, not on writing its own artifact.
+Verbatim means the model's sign-off chatter would otherwise open the report,
+so the reply passes through :func:`precis.workers.doctor_report.strip_preamble`
+on the way in — everything before the first ``## Classification`` heading is
+dropped, and a reply with no such heading fails the tick instead of filing.
 
 Same dispatch shape as ``plan_tick`` (a hardcoded ``run`` entry in
 ``claude_inproc._run_one``, not the plugin ``dispatch`` protocol): the
@@ -241,6 +245,27 @@ def run(
             report_ref_id=None,
         )
 
+    # The reply is filed verbatim, so the model's sign-off chatter
+    # ("All writes are done. Filing the report now.") would become the
+    # report's first paragraph — strip it deterministically rather than
+    # re-wording a prompt instruction the model already ignored twice.
+    # No Classification heading at all means no report: fail the tick and
+    # write nothing (the reply is still on the job ref's transcript).
+    body = doctor_report.strip_preamble(text)
+    if body is None:
+        return DoctorTickOutcome(
+            exit_code=1,
+            text=text,
+            raw_text=res.raw_text or "",
+            error=(
+                "doctor_tick: reply has no "
+                f"'{doctor_report.REPORT_FIRST_HEADING}' heading — not a report"
+            ),
+            duration_s=duration,
+            cost_usd=res.cost_usd,
+            report_ref_id=None,
+        )
+
     ref, _created = doctor_report.find_or_create_report(store, date_tag)
     # Same-day re-ticks (the 8h cadence fires up to 3x within one UTC
     # day, per the freshness-window margin) APPEND rather than replace —
@@ -248,12 +273,12 @@ def run(
     # append avoids the retire/cascade edge cases a wholesale
     # replace would need on a single-section draft.
     store.drafts.add_chunks(
-        ref_id=ref.id, chunk_kind="paragraph", text=text, split=True
+        ref_id=ref.id, chunk_kind="paragraph", text=body, split=True
     )
 
     return DoctorTickOutcome(
         exit_code=0,
-        text=text,
+        text=body,
         raw_text=res.raw_text or "",
         error=None,
         duration_s=duration,

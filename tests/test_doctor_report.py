@@ -124,3 +124,47 @@ def test_report_slug_and_date_tag() -> None:
     assert doctor_report.report_slug("2026-08-23") == "doctor-2026-08-23"
     tag = doctor_report.utc_date_tag(datetime(2026, 8, 23, 5, tzinfo=UTC))
     assert tag == "2026-08-23"
+
+
+# ── strip_preamble: the body starts at ## Classification ─────────
+
+
+def test_strip_preamble_drops_the_models_sign_off_chatter() -> None:
+    """The two real 2026-09-18 reports (dr346343, dr345619) both opened with
+    a line addressed to nobody before the required heading."""
+    reply = (
+        "All writes are done. Filing the report now.\n\n"
+        "## Classification\n- nursery: baseline noise\n\n"
+        "## Diagnosis\nnothing to localize\n"
+    )
+
+    body = doctor_report.strip_preamble(reply)
+
+    assert body is not None
+    assert body.startswith("## Classification")
+    assert "Filing the report now" not in body
+    assert "## Diagnosis" in body
+
+
+def test_strip_preamble_leaves_a_clean_report_untouched() -> None:
+    reply = "## Classification\nall green\n\n## Diagnosis\nnothing\n"
+
+    assert doctor_report.strip_preamble(reply) == reply.strip()
+
+
+def test_strip_preamble_tolerates_heading_level_and_case() -> None:
+    body = doctor_report.strip_preamble("chatter\n\n### CLASSIFICATION\nall green\n")
+
+    assert body == "### CLASSIFICATION\nall green"
+
+
+def test_strip_preamble_ignores_a_mid_sentence_mention() -> None:
+    """Line-anchored: the heading has to open a line, so prose that merely
+    names the section is still a preamble — and a reply that is *only* that
+    prose has no report in it."""
+    assert doctor_report.strip_preamble("I will now write the ## Classification") is None
+
+
+def test_strip_preamble_without_the_heading_is_none() -> None:
+    assert doctor_report.strip_preamble("All done, nothing to report today.") is None
+    assert doctor_report.strip_preamble("") is None

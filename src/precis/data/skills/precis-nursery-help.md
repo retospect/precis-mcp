@@ -1,7 +1,7 @@
 ---
 id: precis-nursery-help
 title: precis — nursery detector of todo-tree incoherence
-summary: per-minute tree-incoherence detectors — orphans, stale claims, long waits, stuck doable, spin loops, plan-tick spins, quest-loop failures — raised as alerts
+summary: per-minute tree-incoherence detectors — stale claims, long waits, stuck doable, spin loops, plan-tick spins, quest-loop failures — raised as alerts (orphans are detected but not alerted)
 answers:
   - why did a nursery alert fire on my todo tree?
   - what does an orphan or stale-claim alert mean?
@@ -31,7 +31,7 @@ the push merges dark and everything else stays pull-only.
 
 | Category | Triggers when | Threshold |
 |---|---|---|
-| `orphan` | open todo whose top-level ancestor doesn't carry `meta.rotation_root=true` | — |
+| `orphan` | open todo whose top-level ancestor doesn't carry `meta.rotation_root=true` | — · **detected, never alerted** |
 | `stale-claim` | leaf carries `claimed-by:*` older than threshold | 3 h |
 | `long-wait` | leaf carries `waiting-for:*` older than threshold | 7 d |
 | `stuck-doable` | dispatch-candidate open leaf (`meta.executor` / `meta.llm_tier` / `OPEN:executor:*`), no claim, no doable-exclusion tag (`halt`, `waiting-for:`, `ask-user`, `child-failed:` — the shared registry), no blocker, >threshold old | 24 h |
@@ -46,7 +46,11 @@ the push merges dark and everything else stays pull-only.
 | `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
 
 `orphan` enforces the strategic invariant: every open todo must trace to
-a `rotation_root` ancestor. `stale-claim` catches workers that died
+a `rotation_root` ancestor. It raises **no alert** (`_NO_ALERT`, Reto's
+call 2026-09-18): an orphan todo is project backlog and already sits in
+the todo queue, so republishing it as an alert added a channel without
+adding a reader — 50 of the 55 open alerts that morning were `[orphan]`.
+The detector still runs and logs its count per pass. `stale-claim` catches workers that died
 mid-task — the claim's age is read from `ref_tags.created_at` on the
 open tag row. `stalled-recurring` surfaces a collision-skip pile-up: a
 spawned child stuck open will silently prevent further ticks.
@@ -96,7 +100,8 @@ meta.seen_count=<how many passes have seen it still open>
 ```
 
 Severity: `spin-loop` / `stale-claim` / `stalled-recurring` → `warn`;
-`orphan` / `long-wait` / `stuck-doable` → `info`.
+`long-wait` / `stuck-doable` → `info`. `orphan` keeps an `info` entry for
+the day it is re-armed but raises nothing.
 
 Read the current open set with:
 

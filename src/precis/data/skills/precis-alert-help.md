@@ -1,7 +1,7 @@
 ---
 id: precis-alert-help
 title: precis — the alert kind (machine-detected ops/health conditions)
-summary: kind='alert' — background passes raise deduped, auto-resolving alerts for spin loops, orphans, stalled recurrings; surfaced by the /alerts web tab
+summary: kind='alert' — background passes raise deduped, auto-resolving alerts for spin loops, stale claims, stalled recurrings; surfaced by the /alerts web tab
 answers:
   - what does an alert on kind='alert' mean and who raised it?
   - how do I triage or resolve an open alert?
@@ -16,8 +16,9 @@ kinds: [alert]
 # precis-alert-help — the `alert` kind
 
 An **alert** is a machine-detected operational / health condition —
-a worker spin loop, an orphaned todo, a stalled recurring, a stale
-claim. It is *derived state*: a pure function of the current DB,
+a worker spin loop, a dark host, a stalled recurring, a stale
+claim. Project backlog is *not* one: an orphan todo lives in the todo
+queue, and the nursery stopped alerting on it 2026-09-18. It is *derived state*: a pure function of the current DB,
 raised by a background pass, not hand-authored.
 
 Alerts exist so this telemetry has a home that is **not** the memory
@@ -95,7 +96,6 @@ condition has cleared, so manual resolution is rarely needed.
 | `alert_source` | Raised by | Severity |
 |---|---|---|
 | `nursery:spin-loop` | nursery (`ref_events` > 200/24h on one `(ref_id, source)`) | warn |
-| `nursery:orphan` | nursery (open todo with no strategic ancestor) | info |
 | `nursery:stale-claim` | nursery (`claimed-by:*` > 3h) | warn |
 | `nursery:long-wait` | nursery (`waiting-for:*` > 7d) | info |
 | `nursery:stuck-doable` | nursery (dispatch-candidate leaf idle > 24h) | info |

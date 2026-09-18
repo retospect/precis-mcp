@@ -230,7 +230,9 @@ EMBED_LANE_STALL_WINDOW_MIN = 60
 #: tab, and — for ``critical`` — a one-shot Discord push via
 #: :func:`notify_critical_alert`). Spin loops and stuck claims/recurrings
 #: burn resources or block progress → ``warn``; orphans / long-waits /
-#: stuck-doable are hygiene nudges → ``info``. The worker-health detectors
+#: stuck-doable are hygiene nudges → ``info`` (``orphan`` keeps its entry
+#: here for the day it is re-armed, but :data:`_NO_ALERT` means it raises
+#: nothing today). The worker-health detectors
 #: plus ``orphaned-coordinator`` are ``critical`` — a dead/thrashing worker,
 #: or a coordinator loop nothing is re-minting, is an outage (the planner or
 #: a quest stalls silently), not drift.
@@ -253,6 +255,19 @@ _SEVERITY: dict[str, str] = {
     "host-dark": "critical",
     "embed-lane-stalled": "critical",
 }
+
+
+#: Categories whose detector still runs but whose findings no longer raise
+#: an alert. **Reto's call, 2026-09-18: retire the orphans.** 50 of the 55
+#: open alerts that morning were ``[orphan]`` — hand-fetch this paper, cite
+#: that draft — and they drowned the four real machine conditions. An
+#: orphan todo is project backlog: it already lives in the todo queue, which
+#: is where it is actually read, so re-publishing it as an alert adds a
+#: channel without adding a reader. The detector is deliberately kept (the
+#: count is still logged per pass), so re-arming is one line and no query is
+#: lost. A suppressed category still runs its resolve sweep with an empty
+#: live set, which is what clears the pile already open.
+_NO_ALERT: frozenset[str] = frozenset({"orphan"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,7 +333,9 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
     on ``"<category>:<ref_id>"`` so a repeat just bumps ``seen_count``),
     then resolve any open alert of that source whose fingerprint is no
     longer present. Empty findings still run the resolve sweep, so a
-    fixed problem disappears from the open list on the next pass.
+    fixed problem disappears from the open list on the next pass. A
+    category in :data:`_NO_ALERT` is detected and logged but never raised,
+    and its resolve sweep runs against an empty live set.
     """
     raised = 0
     resolved = 0
@@ -327,6 +344,19 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
         severity = _SEVERITY.get(category, "warn")
         findings = detect(store)
         surfaced = len(findings)
+        if category in _NO_ALERT:
+            # Detection stays; the alert goes (:data:`_NO_ALERT`). The empty
+            # live set makes the resolve sweep clear whatever this source
+            # already has open, so the existing pile drains itself on the
+            # next pass rather than needing a hand-written row edit.
+            if surfaced:
+                log.info(
+                    "nursery: %d %s finding(s) detected, not alerted",
+                    surfaced,
+                    category,
+                )
+            resolved += resolve_stale_alerts(store, source=source, live_fingerprints=[])
+            continue
         live: list[str] = []
         for f in findings:
             fp = f.fingerprint_key or f"{f.category}:{f.ref_id}"

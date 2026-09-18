@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from precis.utils.abbreviations import find, strip_trailing_aside, substitute
+from precis.utils.abbreviations import (
+    find,
+    find_acronyms,
+    strip_trailing_aside,
+    substitute,
+)
 
 # ── find: positive cases ────────────────────────────────────────────
 
@@ -216,3 +221,42 @@ def test_short_form_propagates_to_keyword_summary(
     # With substitution, "MEA" should appear; without, the long form does.
     assert "mea" in summary_with.lower(), summary_with
     assert "membrane electrode assembly" in summary_without.lower(), summary_without
+
+
+# ── find_acronyms: the complaint set, minus the noise ────────────
+
+
+def test_find_acronyms_surfaces_domain_terms_and_the_hyphen_base() -> None:
+    found = find_acronyms("KSJW dosing raised the GNR-FET current.")
+
+    assert found == {"KSJW", "GNR", "GNR-FET"}
+
+
+def test_find_acronyms_skips_household_acronyms() -> None:
+    """The 2026-09-18 doctor report was flagged for UTC, GPU and SSH — a
+    hygiene warning on every operations draft, carrying nothing."""
+    found = find_acronyms("The UTC tick used SSH to reach the GPU host; see the JSON.")
+
+    assert found == set()
+
+
+def test_find_acronyms_skips_ordinary_words_in_caps() -> None:
+    """AUDIT came from a campaign name, not an initialism."""
+    found = find_acronyms("GROUNDING AUDIT: still OPEN — see the NOTE.")
+
+    assert found == set()
+
+
+def test_find_acronyms_still_flags_a_domain_term_next_to_noise() -> None:
+    found = find_acronyms("AUDIT of the UTC run found PEI residue.")
+
+    assert found == {"PEI"}
+
+
+def test_find_acronyms_still_flags_tokens_this_corpus_reads_as_domain_terms() -> None:
+    """CD/OS/IP/ML are household computing acronyms elsewhere and domain
+    terms here (circular dichroism, oxidation state, ionization potential,
+    monolayer), so they stay off the allowlist."""
+    found = find_acronyms("CD spectra, the OS of Nb, an IP of 5.2 eV, 0.3 ML coverage.")
+
+    assert found == {"CD", "OS", "IP", "ML"}

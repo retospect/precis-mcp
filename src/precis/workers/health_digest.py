@@ -1001,6 +1001,15 @@ def _check_hosts_alive(conn: Any) -> CheckResult:
 
 
 def _check_alert_backlog_rot(conn: Any) -> CheckResult:
+    """Open alerts nobody has closed in a week — "the response loop is
+    rotting".
+
+    Excludes ``watchdog:meta``, which is this check's own alert source. Once
+    it fires, its alert ages past seven days and then counts itself, so the
+    condition can never clear no matter what an operator does: ``al187588``
+    sat open from 2026-08-02 with ``seen_count`` 1053 for exactly that
+    reason. A watchdog must not be its own subject.
+    """
     sql = """
         SELECT count(*)::int
           FROM refs r
@@ -1009,6 +1018,7 @@ def _check_alert_backlog_rot(conn: Any) -> CheckResult:
          WHERE r.kind = 'alert' AND r.retired_at IS NULL
            AND t.namespace = 'OPEN' AND t.value = %s
            AND r.created_at < now() - interval '7 days'
+           AND coalesce(r.meta->>'alert_source', '') <> 'watchdog:meta'
     """
     try:
         row = conn.execute(sql, (STATE_OPEN,)).fetchone()

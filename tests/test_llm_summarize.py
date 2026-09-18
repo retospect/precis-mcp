@@ -29,6 +29,7 @@ from precis.workers.llm_summarize import (
     LlmClient,
     LlmConfig,
     _Claimed,
+    _fallback_summary,
     _mark_failed,
     _reject_reason,
     build_messages,
@@ -473,6 +474,71 @@ def test_reject_reason_grossly_over_length() -> None:
     assert _reject_reason(long_brief) is not None
 
 
+# ── the truncated verbatim copy (1,057 such rows on prod, all ok) ──
+
+
+_TRUNCATED_CHUNK = (
+    "That said, the new theoretical work that came in overnight is directly "
+    "on point for the adsorption question, and it changes the ordering."
+)
+
+
+def test_reject_reason_catches_a_prefix_cut_mid_sentence() -> None:
+    cut = "That said, the new theoretical work that came in overnight is directly"
+
+    reason = _reject_reason(cut, _TRUNCATED_CHUNK)
+
+    assert reason == "verbatim prefix of the chunk, cut mid-sentence"
+
+
+def test_reject_reason_ignores_the_prefix_case_without_the_chunk() -> None:
+    """The check is opt-in on ``chunk_text`` — callers that have no source
+    text keep the old behaviour rather than guessing."""
+    cut = "That said, the new theoretical work that came in overnight is directly"
+
+    assert _reject_reason(cut) is None
+
+
+def test_reject_reason_accepts_a_promoted_first_sentence() -> None:
+    """A prefix that ends on a full stop is a legitimate gist, not a cut —
+    promoting a short chunk's first sentence is what parse_summary does."""
+    chunk = "Cobalt triples turnover. The mechanism is unclear at low pH."
+
+    assert _reject_reason("Cobalt triples turnover.", chunk) is None
+
+
+def test_reject_reason_ignores_a_short_coincidental_prefix() -> None:
+    assert _reject_reason("Cobalt", "Cobalt catalysis review") is None
+
+
+def test_fallback_keeps_a_whole_sentence_over_the_gist_budget() -> None:
+    """The gist budget is what the *prompt* asks the model for; capping the
+    deterministic fallback at it wrote 774 mid-sentence fragments to prod."""
+    chunk = (
+        "That said, the new theoretical work that came in overnight is "
+        "directly on point for the adsorption question raised earlier. "
+        "And more follows."
+    )
+
+    fallback = _fallback_summary(chunk)
+
+    # The old cap fired at word 15, storing "... is directly on point for".
+    assert fallback == (
+        "That said, the new theoretical work that came in overnight is "
+        "directly on point for the adsorption question raised earlier"
+    )
+    assert len(fallback.split()) > 15
+
+
+def test_fallback_marks_an_elision_past_its_own_ceiling() -> None:
+    chunk = "alpha beta, " + " ".join(f"word{i}" for i in range(60)) + ". Next."
+
+    fallback = _fallback_summary(chunk)
+
+    assert fallback.endswith("…")
+    assert len(fallback.split()) <= 31
+
+
 def test_run_pass_rejects_leaked_reasoning_then_retries_clean(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -486,7 +552,7 @@ def test_run_pass_rejects_leaked_reasoning_then_retries_clean(
     with caplog.at_level(logging.WARNING):
         result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
     assert len(t.calls) == 2  # original candidate + one reinforced retry
     retry_messages = t.calls[1]["payload"]["messages"]
     assert "output contract" in retry_messages[-1]["content"].lower()
@@ -512,7 +578,7 @@ def test_run_pass_falls_back_to_truncation_when_retry_also_leaks(
         result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
     # The fallback always succeeds (no LLM call), so the chunk still lands ok.
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 1}
     assert len(t.calls) == 2  # original + the one reinforced retry
     (_sql, params), *_ = conn.writes
     stored = params[2]
@@ -538,7 +604,7 @@ def test_run_pass_clean_candidate_stored_untouched() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 0}
     assert len(t.calls) == 1  # no retry needed
     (_sql, params), *_ = conn.writes
     assert params[2] == "cobalt catalyst triples turnover\n\n12,000 h-1."
@@ -559,7 +625,7 @@ def test_run_pass_writes_summary() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 2, "ok": 2, "failed": 0}
+    assert result == {"claimed": 2, "ok": 2, "failed": 0, "rejected": 0}
     assert len(conn.writes) == 2
     # Each write carries the parsed two-part text + the summarizer name.
     for _sql, params in conn.writes:
@@ -581,7 +647,7 @@ def test_run_pass_marks_failed_on_transport_error() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert result == {"claimed": 1, "ok": 0, "failed": 1, "rejected": 0}
     assert conn.leases == {1: 1}  # attempts bumped, lease kept for retry
     assert conn.writes == []  # sub-cap: nothing written to chunk_summaries
 
@@ -607,7 +673,7 @@ def test_run_pass_empty_summary_aggregates_warning(
     with caplog.at_level(logging.WARNING):
         result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 2, "ok": 0, "failed": 2}
+    assert result == {"claimed": 2, "ok": 0, "failed": 2, "rejected": 0}
     # Each chunk was retried in-process before being recorded as a miss.
     assert len(t.calls) == (EMPTY_RETRY_ATTEMPTS + 1) * 2
     warns = [
@@ -654,7 +720,7 @@ def test_run_pass_retries_transient_empty_then_succeeds(
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 0}
     assert len(t.calls) == 3  # 2 empty + 1 good, all in one pass
     assert conn.leases == {}  # success released the claim; no failure recorded
     assert len(conn.writes) == 1  # the recovered summary landed
@@ -721,7 +787,7 @@ def test_run_pass_concurrent_summarizes_all() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10, concurrency=3)
 
-    assert result == {"claimed": 5, "ok": 5, "failed": 0}
+    assert result == {"claimed": 5, "ok": 5, "failed": 0, "rejected": 0}
     assert len(conn.writes) == 5
     assert len(t.calls) == 5  # exactly one completion per chunk
 
@@ -772,7 +838,7 @@ def test_run_pass_concurrent_isolates_failure() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10, concurrency=2)
 
-    assert result == {"claimed": 2, "ok": 1, "failed": 1}
+    assert result == {"claimed": 2, "ok": 1, "failed": 1, "rejected": 0}
     # One successful insert; the sub-cap failure stays on the lease.
     assert sum(1 for sql, _ in conn.writes if "'failed'" in sql) == 0
     assert sum(1 for sql, _ in conn.writes if "'failed'" not in sql) == 1
@@ -789,7 +855,7 @@ def test_run_pass_sanitizes_nul_from_model_output() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 0}
     (_sql, params), *_ = conn.writes
     assert params[2] == "glo\n\nd."
     assert "\x00" not in params[2]
@@ -838,7 +904,7 @@ def test_run_pass_poison_write_does_not_lose_siblings() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 2, "ok": 1, "failed": 1}
+    assert result == {"claimed": 2, "ok": 1, "failed": 1, "rejected": 0}
     # The sibling's summary was recorded despite the poison row.
     assert [params[0] for _sql, params in conn.writes] == [1]
     # The poison chunk went through _mark_failed: attempts bumped, lease kept.
@@ -896,7 +962,7 @@ def test_numeric_dump_tagged_without_llm_call() -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 0}
     assert len(t.calls) == 0  # no LLM call for a numeric dump
     assert any("(tabular data)" in (params[2] or "") for _sql, params in conn.writes)
 
@@ -1046,7 +1112,7 @@ def test_nul_model_output_lands_sanitized(store: Any) -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "rejected": 0}
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT status, text FROM chunk_summaries "
@@ -1078,7 +1144,7 @@ def test_poison_write_isolated_per_chunk(store: Any, monkeypatch: Any) -> None:
 
     result = run_llm_summarize_pass(store, client=client, batch_size=10)
 
-    assert result == {"claimed": 2, "ok": 1, "failed": 1}
+    assert result == {"claimed": 2, "ok": 1, "failed": 1, "rejected": 0}
     with store.pool.connection() as conn:
         summaries = dict(
             conn.execute(

@@ -87,7 +87,12 @@ def test_run_happy_path_writes_report_and_uses_deny_list(
 def test_run_second_tick_same_day_appends_not_duplicates(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls = iter([_clean_result("first tick body"), _clean_result("second tick body")])
+    calls = iter(
+        [
+            _clean_result("## Classification\nfirst tick body"),
+            _clean_result("## Classification\nsecond tick body"),
+        ]
+    )
     monkeypatch.setattr(router, "route", lambda req: next(calls))
 
     first = dt.run(store=store, job_ref_id=1, params={})
@@ -147,3 +152,41 @@ def test_run_missing_prompt_is_a_failure(
     assert outcome.exit_code == 1
     assert outcome.report_ref_id is None
     assert outcome.error is not None
+
+
+def test_run_strips_the_preamble_before_filing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        router,
+        "route",
+        lambda req: _clean_result(
+            text="All writes are done. Filing the report now.\n\n"
+            "## Classification\nall green\n"
+        ),
+    )
+
+    outcome = dt.run(store=store, job_ref_id=1, params={})
+
+    assert outcome.exit_code == 0
+    report = doctor_report.latest_report(store)
+    assert report is not None
+    assert report.body.startswith("## Classification")
+    assert "Filing the report now" not in report.body
+
+
+def test_run_reply_without_a_classification_heading_is_a_failure(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not a report ⇒ nothing is filed and the job fails, so the tick shows up
+    as a failure instead of putting shapeless prose in front of on-call."""
+    monkeypatch.setattr(
+        router, "route", lambda req: _clean_result(text="All done, nothing to report.")
+    )
+
+    outcome = dt.run(store=store, job_ref_id=1, params={})
+
+    assert outcome.exit_code == 1
+    assert outcome.report_ref_id is None
+    assert "Classification" in (outcome.error or "")
+    assert doctor_report.find_report(store, doctor_report.utc_date_tag()) is None

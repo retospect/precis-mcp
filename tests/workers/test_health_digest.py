@@ -38,6 +38,7 @@ from precis.workers.doctor_report import DoctorReport
 from precis.workers.health_digest import (
     CheckResult,
     _cadence_staleness_checks,
+    _check_alert_backlog_rot,
     _check_chunks_extracted,
     _check_claim_hub_dedup_index,
     _check_doctor_report_fresh,
@@ -1178,6 +1179,52 @@ def test_hosts_alive_still_fires_for_named_host_not_marked_ephemeral(store) -> N
         result = _check_hosts_alive(conn)
     assert result.status == "stale"
     assert host in result.detail
+
+
+# ── alert backlog rot ─────────────────────────────────────────────────────
+
+
+def _seed_old_open_alert(store, source: str) -> int:
+    from precis.alerts import raise_alert
+
+    ref_id, _ = raise_alert(
+        store,
+        source=source,
+        fingerprint=f"{source}:{uuid4().hex[:8]}",
+        title=f"[{source}] seeded",
+        detail="seeded for the backlog-rot check",
+        severity="info",
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '30 days' WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.commit()
+    return int(ref_id)
+
+
+def test_alert_backlog_rot_ignores_its_own_alert(store) -> None:
+    """al187588 sat open from 2026-08-02 with seen_count 1053 because the
+    check counted its own alert: once raised, it aged past seven days and
+    kept itself alive no matter what an operator closed."""
+    _seed_old_open_alert(store, "watchdog:meta")
+
+    with store.pool.connection() as conn:
+        result = _check_alert_backlog_rot(conn)
+
+    assert result.status == "ok"
+
+
+def test_alert_backlog_rot_still_fires_for_a_real_stale_alert(store) -> None:
+    _seed_old_open_alert(store, "watchdog:meta")
+    _seed_old_open_alert(store, "nursery:long-wait")
+
+    with store.pool.connection() as conn:
+        result = _check_alert_backlog_rot(conn)
+
+    assert result.status == "stale"
+    assert "1 open alert(s)" in result.detail
 
 
 # ── end-to-end smoke ──────────────────────────────────────────────────────

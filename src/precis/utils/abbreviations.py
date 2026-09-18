@@ -208,20 +208,220 @@ def strip_trailing_aside(long_form: str) -> str:
 # positive (a formula like ``CO2``) is a one-time prompt it dismisses.
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,7}(?:-[A-Z0-9]{1,7})*\b")
 
+#: Acronyms nobody is asked to define. The check exists so a reader meets
+#: a domain term already expanded (``GNR``, ``PEI``); applying it to
+#: ``UTC``/``SSH``/``JSON`` turns every operations draft into a hygiene
+#: warning that carries no information — the 2026-09-18 doctor report was
+#: flagged for ``UTC``, ``GPU`` and ``SSH``. Deliberately conservative:
+#: general computing and publishing vocabulary only, nothing field-specific
+#: (a chemistry or device acronym still has to be defined). Entries kept
+#: OUT on purpose because this corpus reads them the other way: ``CD``
+#: (circular dichroism), ``OS`` (oxidation state), ``IP`` (ionization
+#: potential), ``ML`` (monolayer), ``CI`` (confidence interval), ``AM``
+#: (additive manufacturing), ``PCB`` (both a polychlorinated biphenyl and
+#: this repo's own board kind). Add nothing here without checking how a
+#: materials draft would read it.
+WELL_KNOWN_ACRONYMS: frozenset[str] = frozenset(
+    {
+        # time + units
+        "UTC",
+        "GMT",
+        "KB",
+        "MB",
+        "GB",
+        "TB",
+        # hardware
+        "CPU",
+        "GPU",
+        "RAM",
+        "ROM",
+        "SSD",
+        "HDD",
+        "USB",
+        # network + transport
+        "SSH",
+        "HTTP",
+        "HTTPS",
+        "FTP",
+        "TCP",
+        "UDP",
+        "DNS",
+        "TLS",
+        "SSL",
+        "VPN",
+        "LAN",
+        "WAN",
+        "URL",
+        "URI",
+        "CDN",
+        "DHCP",
+        "NTP",
+        # formats + encodings
+        "JSON",
+        "YAML",
+        "XML",
+        "HTML",
+        "CSS",
+        "CSV",
+        "TSV",
+        "PDF",
+        "PNG",
+        "JPG",
+        "JPEG",
+        "SVG",
+        "GIF",
+        "ZIP",
+        "ASCII",
+        "UTF",
+        "MIME",
+        # software + process
+        "SQL",
+        "API",
+        "CLI",
+        "GUI",
+        "UI",
+        "UX",
+        "SDK",
+        "IDE",
+        "VM",
+        "PR",
+        "RFC",
+        "ADR",
+        "UUID",
+        "REST",
+        "CRUD",
+        "ACL",
+        "ORM",
+        "RPC",
+        "MCP",
+        "DB",
+        "FIFO",
+        "LIFO",
+        "CRC",
+        "PID",
+        "TTL",
+        # identifiers + publishing
+        "DOI",
+        "ISBN",
+        "ISSN",
+        "ORCID",
+        "PMID",
+        "ID",
+        "ISO",
+        "IEEE",
+        "FAQ",
+        # machine learning
+        "LLM",
+        "AI",
+        "NLP",
+        "OCR",
+        "RAG",
+        # misc
+        "OK",
+        "USD",
+        "EUR",
+        "NASA",
+    }
+)
+
+#: Ordinary English words that happen to be shouted in operational prose
+#: — section markers, statuses, emphasis. ``AUDIT`` in the 2026-09-18
+#: report came from a campaign name, not an initialism. A curated set, not
+#: a dictionary: the check only has to stop the words that actually shout
+#: in this corpus, and a real acronym wrongly listed here is a missed
+#: hint, not a wrong one.
+_SHOUTED_WORDS: frozenset[str] = frozenset(
+    {
+        "all",
+        "and",
+        "any",
+        "audit",
+        "begin",
+        "blocked",
+        "but",
+        "closed",
+        "critical",
+        "done",
+        "draft",
+        "end",
+        "error",
+        "fail",
+        "failed",
+        "final",
+        "fix",
+        "fixme",
+        "for",
+        "grounding",
+        "hack",
+        "high",
+        "important",
+        "info",
+        "low",
+        "may",
+        "must",
+        "never",
+        "new",
+        "none",
+        "not",
+        "note",
+        "notes",
+        "old",
+        "only",
+        "open",
+        "pass",
+        "passed",
+        "pending",
+        "ready",
+        "review",
+        "see",
+        "should",
+        "start",
+        "stop",
+        "the",
+        "todo",
+        "urgent",
+        "warn",
+        "warning",
+        "yes",
+    }
+)
+
+
+def _is_noise(token: str) -> bool:
+    """A token the writer should not be nagged about: a household acronym,
+    or an ordinary word in caps for emphasis."""
+    return token in WELL_KNOWN_ACRONYMS or (
+        token.isalpha() and token.lower() in _SHOUTED_WORDS
+    )
+
 
 def find_acronyms(text: str) -> set[str]:
     """Every acronym-shaped token in ``text`` (e.g. ``KSJW``, ``PEI``,
     ``CO2``, ``GNR-FET``). Used to flag undefined abbreviations on a draft
     write. A hyphenated compound surfaces both forms — the whole
-    ``GNR-FET`` and (via a second match) the base ``GNR``."""
+    ``GNR-FET`` and (via a second match) the base ``GNR``.
+
+    Household acronyms (:data:`WELL_KNOWN_ACRONYMS`) and ordinary English
+    words written in caps are filtered out: a hint to define ``UTC`` or
+    ``AUDIT`` is noise, and a check that fires on every operations draft
+    stops being read at all."""
     out: set[str] = set()
     for tok in _ACRONYM_RE.findall(text or ""):
-        out.add(tok)
+        if not _is_noise(tok):
+            out.add(tok)
         # Also surface the base acronym before the first hyphen, so the
         # writer is asked to define ``GNR`` itself, not only ``GNR-FET``.
         if "-" in tok:
-            out.add(tok.split("-", 1)[0])
+            base = tok.split("-", 1)[0]
+            if not _is_noise(base):
+                out.add(base)
     return out
 
 
-__all__ = ["find", "find_acronyms", "strip_trailing_aside", "substitute"]
+__all__ = [
+    "WELL_KNOWN_ACRONYMS",
+    "find",
+    "find_acronyms",
+    "strip_trailing_aside",
+    "substitute",
+]

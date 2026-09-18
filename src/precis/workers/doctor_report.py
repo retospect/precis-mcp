@@ -12,7 +12,9 @@ tagged ``meta.author='doctor'``. Two halves:
   the second day). :mod:`precis.workers.job_types.doctor_tick` calls this
   once per successful tick and appends that tick's reply as a fresh body
   paragraph — the day's report is a running log of the UTC day's ticks,
-  not a single frozen snapshot.
+  not a single frozen snapshot. The reply goes through
+  :func:`strip_preamble` first, which owns the "what counts as a report
+  body" rule this module defines.
 * :func:`latest_report` — the "latest report" read side, a **plain SQL
   lookup** per the spec (``kind='draft' AND meta->>'author'='doctor'
   ORDER BY created_at DESC``), no cache key. Kept dependency-light on
@@ -25,6 +27,7 @@ tagged ``meta.author='doctor'``. Two halves:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -52,6 +55,45 @@ AUTHOR: str = "doctor"
 FRESH_WINDOW: timedelta = timedelta(hours=12)
 
 _SLUG_PREFIX = "doctor"
+
+#: First of the four Markdown section headings a report body must carry
+#: (``data/prompts/doctor-prompt.md`` §END OF TICK). The body is the
+#: agent's final reply *verbatim*, so anything said before this heading is
+#: chit-chat addressed to nobody — :func:`strip_preamble` drops it at
+#: filing time.
+REPORT_FIRST_HEADING: str = "## Classification"
+
+#: Tolerant of the heading level and the case the model actually emits,
+#: but line-anchored: the words "## Classification" inside a preamble
+#: sentence are not a heading.
+_FIRST_HEADING_RE = re.compile(
+    r"^[ \t]{0,3}#{2,4}[ \t]+classification\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def strip_preamble(text: str) -> str | None:
+    """A tick's reply cut back to the report body, or ``None`` when the
+    reply contains no report at all.
+
+    The prompt already says "do not add a preamble"; the model ignored it
+    on both of the first two scheduled ticks after the 2026-09-10
+    recovery, opening the day's report with "All writes are done. Filing
+    the report now." instead of :data:`REPORT_FIRST_HEADING`. Strengthening
+    the wording is not a fix for a model that didn't follow it — strip
+    deterministically here instead: drop everything before the first
+    ``## Classification`` heading, and return ``None`` when that heading
+    is absent so the caller fails the tick rather than filing unstructured
+    prose in front of whoever is on call (the reply survives on the job
+    ref's ``meta.transcript`` either way).
+    """
+    if not text:
+        return None
+    match = _FIRST_HEADING_RE.search(text)
+    if match is None:
+        return None
+    return text[match.start() :].strip()
+
 
 
 def utc_date_tag(when: datetime | None = None) -> str:
@@ -241,11 +283,13 @@ __all__ = [
     "AUTHOR",
     "FOLDER",
     "FRESH_WINDOW",
+    "REPORT_FIRST_HEADING",
     "DoctorReport",
     "ensure_report_folder",
     "find_or_create_report",
     "find_report",
     "latest_report",
     "report_slug",
+    "strip_preamble",
     "utc_date_tag",
 ]

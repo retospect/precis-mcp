@@ -193,8 +193,7 @@ def test_orphans_detector_excludes_recurring_subtree(
 
 def test_orphans_detector_reports_true_total_when_capped(store: Store) -> None:
     """>50 matching orphans: only 50 ``Symptom``s surface, but each one
-    carries the true pre-LIMIT total, and the raised alert's detail says
-    so (gr — alert-triage §A/§B)."""
+    carries the true pre-LIMIT total (gr — alert-triage §A/§B)."""
     for i in range(55):
         store.insert_ref(kind="todo", slug=None, title=f"Orphan {i}")
 
@@ -202,9 +201,40 @@ def test_orphans_detector_reports_true_total_when_capped(store: Store) -> None:
     assert len(findings) == 50
     assert all(f.total == 55 for f in findings)
 
+
+def test_orphans_are_detected_but_never_alerted(store: Store) -> None:
+    """Reto's call, 2026-09-18: an orphan todo is project backlog, so it
+    stays in the todo queue and stops being republished as an alert."""
+    for i in range(3):
+        store.insert_ref(kind="todo", slug=None, title=f"Orphan {i}")
+
+    assert _detect_orphans(store)  # detection is kept
+
     run_nursery_pass(store)
-    alert = next(a for a in list_open_alerts(store) if a["source"] == "nursery:orphan")
-    assert "of 55" in alert["detail"]
+
+    assert [a for a in list_open_alerts(store) if a["source"] == "nursery:orphan"] == []
+
+
+def test_orphan_alerts_already_open_are_resolved_by_the_next_pass(
+    store: Store,
+) -> None:
+    """The ~50 open ``[orphan]`` rows drain themselves — the suppressed
+    category still runs its resolve sweep, against an empty live set."""
+    store.insert_ref(kind="todo", slug=None, title="Orphan")
+    raise_alert(
+        store,
+        source="nursery:orphan",
+        fingerprint="orphan:1",
+        title="[orphan] Orphan",
+        detail="raised before the category was retired",
+        severity="info",
+    )
+    assert [a for a in list_open_alerts(store) if a["source"] == "nursery:orphan"]
+
+    result = run_nursery_pass(store)
+
+    assert [a for a in list_open_alerts(store) if a["source"] == "nursery:orphan"] == []
+    assert result.ok >= 1  # counted as resolved, not as raised
 
 
 # ── stale claims ──────────────────────────────────────────────────
@@ -934,21 +964,23 @@ def _open_alert_count(store: Store) -> int:
 def test_full_pass_raises_alerts_when_findings_appear(
     handler: TodoHandler, store: Store
 ) -> None:
-    # Two orphans + one stale claim → 3 alerts across two sources.
-    handler.put(text="Orphan A")
-    handler.put(text="Orphan B")
+    # One long wait + one stale claim → alerts across two sources.
+    w = handler.put(text="Waiting on owner")
+    wid = _id_of(w.body)
+    store.add_tag(wid, Tag.open("waiting-for:owner"), set_by="agent")
+    _backdate_tag(store, wid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24)
     c = handler.put(text="Claimed")
     cid = _id_of(c.body)
     store.add_tag(cid, Tag.open("claimed-by:asa-worker"), set_by="agent")
     _backdate_tag(store, cid, "claimed-by:asa-worker", STALE_CLAIM_HOURS + 1)
 
     result = run_nursery_pass(store)
-    assert result.claimed >= 3  # findings raised
+    assert result.claimed >= 2  # findings raised
     assert result.failed == 0
 
     alerts = list_open_alerts(store)
     sources = {a["source"] for a in alerts}
-    assert "nursery:orphan" in sources
+    assert "nursery:long-wait" in sources
     assert "nursery:stale-claim" in sources
     # No memory digest is written any more.
     with store.pool.connection() as conn:
@@ -964,14 +996,19 @@ def test_full_pass_raises_alerts_when_findings_appear(
 def test_full_pass_dedups_repeat_findings(handler: TodoHandler, store: Store) -> None:
     """A second pass over the same findings bumps seen_count, not a
     duplicate alert."""
-    handler.put(text="Orphan O")
+    r = handler.put(text="Waiting on owner")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("waiting-for:owner"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24)
     run_nursery_pass(store)
     before = _open_alert_count(store)
     run_nursery_pass(store)
     after = _open_alert_count(store)
     assert after == before  # no duplicate row
     # seen_count incremented on the existing alert.
-    alert = next(a for a in list_open_alerts(store) if a["source"] == "nursery:orphan")
+    alert = next(
+        a for a in list_open_alerts(store) if a["source"] == "nursery:long-wait"
+    )
     assert alert["seen_count"] >= 2
 
 
@@ -980,12 +1017,14 @@ def test_full_pass_auto_resolves_cleared_condition(
 ) -> None:
     """When a finding disappears, its alert flips open → resolved on the
     next pass (the row is kept for history)."""
-    r = handler.put(text="Transient orphan")
+    r = handler.put(text="Transient wait")
     rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("waiting-for:owner"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24)
     run_nursery_pass(store)
     assert _open_alert_count(store) >= 1
 
-    # Resolve the underlying orphan (mark the todo done), then re-run.
+    # Clear the underlying condition (mark the todo done), then re-run.
     handler.tag(id=rid, add=["STATUS:done"])
     result = run_nursery_pass(store)
     assert result.ok >= 1  # at least one alert auto-resolved
@@ -1005,16 +1044,20 @@ def test_full_pass_auto_resolves_cleared_condition(
 def test_full_pass_reopen_is_idempotent(handler: TodoHandler, store: Store) -> None:
     """A condition that clears then recurs raises a fresh open alert
     (the prior one stays resolved) rather than stacking duplicates."""
-    r = handler.put(text="Flapping orphan")
+    r = handler.put(text="Flapping wait")
     rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("waiting-for:owner"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:owner", (LONG_WAIT_DAYS + 1) * 24)
     run_nursery_pass(store)
     handler.tag(id=rid, add=["STATUS:done"])
     run_nursery_pass(store)
     assert _open_alert_count(store) == 0
-    # Reopen the todo → orphan condition returns.
+    # Reopen the todo → the long-wait condition returns.
     handler.tag(id=rid, remove=["STATUS:done"])
     run_nursery_pass(store)
-    open_now = [a for a in list_open_alerts(store) if a["source"] == "nursery:orphan"]
+    open_now = [
+        a for a in list_open_alerts(store) if a["source"] == "nursery:long-wait"
+    ]
     assert len(open_now) == 1
 
 
