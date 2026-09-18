@@ -229,6 +229,18 @@
     {%- if fs.z_key %} · fill colour = {{ fs.z_label }}{% endif %}
     {%- if fs.contour_bands %} · background = interpolated {{ fs.z_label }} (trusted points only){% endif %}
   </p>
+  {% if frontier_axis_docs %}
+  <details class="text-xs text-slate-600 mb-3 max-w-3xl" open>
+    <summary class="cursor-pointer font-semibold text-slate-700">What the axes mean</summary>
+    <dl class="mt-1 space-y-1">
+      {% for d in frontier_axis_docs %}
+      <div><dt class="inline font-semibold">{{ d.axis }} · {{ d.label }} <span class="font-mono text-slate-400">{{ d.key }}</span></dt>
+      <dd class="inline">— {{ d.text if d.text else "no description yet for this measure." }}</dd></div>
+      {% endfor %}
+    </dl>
+    <p class="mt-1 text-slate-500">{{ frontier_axis_note }}</p>
+  </details>
+  {% endif %}
   <script>
   (function () {
     const svg = document.getElementById('fs-svg');

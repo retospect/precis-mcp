@@ -613,6 +613,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     frontier_c = True
     frontier_axis_keys: list[str] = []
     frontier_axis_counts: dict[str, int] = {}
+    frontier_axis_docs: list[dict[str, str]] = []
     try:
         fr = frontier_mod.quest_frontier(store, qid)
         frontier_has_candidates = bool(
@@ -702,6 +703,19 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             z_label=z_label,
             contour=frontier_c,
         )
+        if frontier_scatter is not None:
+            axis_slots = [("x", x_key), ("y", y_key)]
+            if z_key:
+                axis_slots.append(("colour", z_key))
+            frontier_axis_docs = [
+                {
+                    "axis": axis,
+                    "key": key,
+                    "label": frontier_mod.axis_label_for(key),
+                    "text": frontier_mod.axis_description_for(key),
+                }
+                for axis, key in axis_slots
+            ]
     except Exception:
         log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
 
@@ -785,6 +799,8 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "frontier_z": frontier_z,
             "frontier_c": frontier_c,
             "frontier_axis_counts": frontier_axis_counts,
+            "frontier_axis_docs": frontier_axis_docs,
+            "frontier_axis_note": frontier_mod.AXIS_CONDITIONS_NOTE,
             "gaps_text": gaps_text,
             "gaps_error": gaps_error,
             "servers_lite": servers_lite,

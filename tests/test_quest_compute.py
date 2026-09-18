@@ -653,6 +653,34 @@ class TestViridisColor:
         assert viridis_color(5.0) == viridis_color(1.0)
 
 
+class TestAxisDescriptionFor:
+    def test_every_labelled_axis_has_a_description(self) -> None:
+        from precis.quest.frontier import _AXIS_LABELS, axis_description_for
+
+        for key in _AXIS_LABELS:
+            assert axis_description_for(key) != "", key
+
+    def test_unknown_key_returns_empty(self) -> None:
+        from precis.quest.frontier import axis_description_for
+
+        assert axis_description_for("bogus") == ""
+
+    def test_barrier_text_names_single_step(self) -> None:
+        from precis.quest.frontier import axis_description_for
+
+        assert "single-step" in axis_description_for("barrier")
+
+    def test_span_text_names_kozuch(self) -> None:
+        from precis.quest.frontier import axis_description_for
+
+        assert "Kozuch" in axis_description_for("span")
+
+    def test_conditions_note_mentions_298_15(self) -> None:
+        from precis.quest.frontier import AXIS_CONDITIONS_NOTE
+
+        assert "298.15" in AXIS_CONDITIONS_NOTE
+
+
 # ── per-quest scatter axes (kinetics cutover) ──────────────────────────
 
 
