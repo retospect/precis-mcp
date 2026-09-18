@@ -21,6 +21,24 @@ compute history.
   local backend dispatches a ``struct_relax`` job to the GPU node, parented
   on the structure — no todo required.
 
+The detail page takes ``?rev=N`` the design-workbench build (2026-09-18)
+slice 2, the scrubber): the cell is then the scene as of save N
+(``structure_load(version=N)``), the "Revision N" panel diffs it against
+N−1 (atoms added / removed / moved, bonds added / removed), quotes the
+``struct_runs`` energy computed on that version, and lists the recorded
+ops (:func:`precis.design.history.revision`). A non-current ``rev`` is a
+read-only view — the relax / instruct / apply forms are not rendered.
+
+The design chat (slice 3, ``precis_web.design_chat`` + the shared
+``_design_chat.html.j2`` partial): ``POST /structure/{slug}/chat`` (form
+``message`` + ``handles``) runs one tool-less :func:`design_turn.run_turn`
+off the event loop and 303s back with the outcome in the query string —
+every structure op is propose-only, so the reply lands as a proposal;
+``POST /structure/{slug}/chat/apply`` (form ``ops`` JSON + ``turn``) is
+the human Apply: ``StructureHandler.edit`` in place (version +1 on the
+same ref), never ``derive`` — the derive-Apply at ``/apply`` is unchanged.
+Both refuse a ``?rev=`` naming a past revision (409).
+
 The 3D view is interactive: atoms are coloured by element and clickable (label /
 element / position / coordination / constraint), and the **authoritative** bond
 graph — declared bonds, or the inferred covalent bonds for a raw cell — is drawn
@@ -42,6 +60,7 @@ import numpy as np
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from precis.design import history as design_history
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.structure import paper_provenance_rows
@@ -50,6 +69,7 @@ from precis.structure.cache import apply_geometry
 from precis.structure.elements import covalent_radius_A as covalent_radius
 from precis.structure.probe import coordination, detect_bonds
 from precis.structure.scene import FIX_X, FIX_Y, FIX_Z
+from precis_web import design_chat, design_turn
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
 from precis_web.timefmt import ago as _ago
 
@@ -299,10 +319,24 @@ PAGE_HELP: tuple[tuple[str, str], ...] = (
         "actually did. Relax ▸ starts a new one.",
     ),
     (
+        "Revision",
+        "The version slider walks the design's saves. Pick one to see the cell "
+        "as it was then, what changed from the save before (atoms added, "
+        "removed, moved; bonds added, removed), the energy computed on it, and "
+        "the ops that produced it. A past version is read-only.",
+    ),
+    (
         "Further instructions",
         "Describe a change in plain English; an LLM proposes the concrete edit "
         "ops. Nothing is applied until you review and accept, and accepting "
         "makes a new design rather than overwriting this one.",
+    ),
+    (
+        "Design chat",
+        "One turn at a time: click atoms to mention them, describe the change, "
+        "send. The model answers with typed ops only, shown as a proposal; "
+        "Apply edits this design in place as a new revision (the scrubber "
+        "walks back to any earlier one). A rejected reply writes nothing.",
     ),
     (
         "Eyes & measures",
@@ -666,6 +700,7 @@ def _viewer(
     runs: list[dict[str, Any]],
     *,
     pin_run_id: int | None = None,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Build the 3D viewer payload: the input geometry, the optional relaxed
     geometry (newest succeeded run carrying a ``final_geometry``), and a colour
@@ -675,14 +710,22 @@ def _viewer(
     per-run page's "show this geometry in the viewer" link. A pin naming a run
     with no stored geometry simply leaves the relaxed side empty (the page then
     reads as input-only), rather than silently showing a different run's atoms.
+
+    ``version`` is the scrubber: the input geometry is the scene as of save
+    N (``structure_load(version=N)``), and only a run computed *on* that
+    version (``on_version == N``) qualifies as its relaxed side — a newer
+    run relaxed different atoms.
     """
-    scene, _handles = store.structure_load(ref.id)
-    initial = _geom_payload(scene, f"{ref.slug} (input)")
+    scene, _handles = store.structure_load(ref.id, version=version)
+    tag = "input" if version is None else f"v{version}"
+    initial = _geom_payload(scene, f"{ref.slug} ({tag})")
 
     relaxed: dict[str, Any] | None = None
     relaxed_run_id: int | None = None
     for run in runs:  # newest-first
         if pin_run_id is not None and int(run["id"]) != pin_run_id:
+            continue
+        if version is not None and int(run["on_version"]) != version:
             continue
         geom = run.get("final_geometry")
         if run["status"] == "succeeded" and geom:
@@ -756,6 +799,97 @@ def _markers(scene: Any) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+# ── revision scrubber (design-workbench build, slice 2) ──────────────────
+
+#: An atom counts as "moved" between two versions once its minimum-image
+#: displacement exceeds this — below it is float noise from a re-save, not
+#: an edit anyone made.
+_MOVED_MIN_A = 0.05
+
+
+def _bond_key(bond: Any) -> tuple[str, str, tuple[int, int, int]]:
+    """Orientation-free identity of a bond: the labels sorted, the image
+    offset flipped along with them so ``i→j (0,0,1)`` and ``j→i (0,0,-1)``
+    are the same edge."""
+    image = tuple(int(x) for x in bond.image)
+    if bond.i <= bond.j:
+        return bond.i, bond.j, (image[0], image[1], image[2])
+    return bond.j, bond.i, (-image[0], -image[1], -image[2])
+
+
+def _scene_diff(prev: Any, cur: Any) -> dict[str, Any]:
+    """What changed from ``prev`` to ``cur`` — atoms added / removed (by
+    label), atoms that moved more than :data:`_MOVED_MIN_A` (label +
+    displacement, largest first), bonds added / removed (as ``i—j`` text).
+    Displacement is minimum-image in ``cur``'s cell, so a wrap across the
+    boundary is not reported as a move."""
+    added = [lab for lab in cur.atoms if lab not in prev.atoms]
+    removed = [lab for lab in prev.atoms if lab not in cur.atoms]
+    moved: list[dict[str, Any]] = []
+    for lab, atom in cur.atoms.items():
+        before = prev.atoms.get(lab)
+        if before is None:
+            continue
+        d, _img = cur.cell.mic(before.frac, atom.frac)
+        if d > _MOVED_MIN_A:
+            moved.append({"label": lab, "element": atom.element, "delta": round(d, 3)})
+    moved.sort(key=lambda m: m["delta"], reverse=True)
+    prev_bonds = {_bond_key(b) for b in prev.bonds}
+    cur_bonds = {_bond_key(b) for b in cur.bonds}
+    bonds_added = sorted(f"{i}—{j}" for i, j, _ in cur_bonds - prev_bonds)
+    bonds_removed = sorted(f"{i}—{j}" for i, j, _ in prev_bonds - cur_bonds)
+    return {
+        "atoms_added": added,
+        "atoms_removed": removed,
+        "moved": moved,
+        "bonds_added": bonds_added,
+        "bonds_removed": bonds_removed,
+        "n_atoms": len(cur.atoms),
+        "empty": not (added or removed or moved or bonds_added or bonds_removed),
+    }
+
+
+def _revision_panel(
+    store: Store,
+    ref_id: int,
+    rev: int,
+    scene: Any,
+    runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The "Revision N" panel: the diff of ``scene`` (the design at N)
+    against the scene at N−1, the newest succeeded energy computed on
+    version N, and the recorded ops (one pretty-JSON line each) or the
+    honest "no op record" for a version saved before the record existed.
+    Read-only — one ``structure_load`` and one ``design_revisions`` read,
+    never a write."""
+    prev, _ = store.structure_load(ref_id, version=rev - 1)
+    diff = _scene_diff(prev, scene)
+    energy_run = next(
+        (
+            r
+            for r in runs
+            if int(r["on_version"]) == rev
+            and r["status"] == "succeeded"
+            and r["energy"] is not None
+        ),
+        None,
+    )
+    record = design_history.revision(store, ref_id, rev)
+    return {
+        "rev": rev,
+        "diff": diff,
+        "energy": energy_run["energy"] if energy_run else None,
+        "energy_run_id": energy_run["id"] if energy_run else None,
+        "energy_fidelity": energy_run["fidelity"] if energy_run else None,
+        "has_record": record is not None,
+        "ops": [
+            json.dumps(op, sort_keys=True) for op in (record.ops if record else [])
+        ],
+        "turn": record.turn if record else None,
+        "created": _ago(record.created_at) if record and record.created_at else None,
+    }
 
 
 def _slug_of(store: Store, ref_id: int) -> str | None:
@@ -888,9 +1022,24 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
         return _not_found(request, f"no live structure design with slug {slug!r}")
     runs = _run_rows(store, ref.id)
     pin = _int_or_none(request.query_params.get("run"))
-    viewer = _viewer(store, ref, runs, pin_run_id=pin)
-    scene, _handles = store.structure_load(ref.id)
     meta = dict(ref.meta or {})
+    current = int(meta.get("version", 0))
+    # The scrubber (slice 2). ``rev`` outside 1..current is a 404, not a
+    # clamp — a stale link to a version that never existed should say so.
+    # ``rev == current`` is the live page (editable); anything older is a
+    # read-only view built from the versioned rows.
+    rev = _int_or_none(request.query_params.get("rev"))
+    if rev is not None and not (1 <= rev <= current):
+        return _not_found(
+            request, f"design {slug!r} has no revision {rev} (current is {current})"
+        )
+    shown = rev if rev is not None else current
+    read_only = shown != current
+    viewer = _viewer(
+        store, ref, runs, pin_run_id=pin, version=shown if read_only else None
+    )
+    scene, _handles = store.structure_load(ref.id, version=shown if read_only else None)
+    revisions = design_history.list_revisions(store, ref.id)
     return templates.TemplateResponse(
         request,
         "structure/detail.html.j2",
@@ -898,7 +1047,7 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "active_tab": "structure",
             "slug": ref.slug,
             "title": ref.title or ref.slug,
-            "version": int(meta.get("version", 0)),
+            "version": current,
             "pbc": list(meta.get("pbc", (True, True, True))),
             "runs": runs,
             "pending": _pending_jobs(store, ref.id),
@@ -910,10 +1059,28 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "proposal": _latest_proposal(store, ref.id),
             "quest_context": _quest_context(store, ref.id),
             "pinned_run": pin,
+            # Scrubber state: the shown revision, whether the page is a
+            # read-only past view, the slider span (one position — the
+            # current version — for a pre-record design), and the panel.
+            "rev": shown,
+            "read_only": read_only,
+            "rev_min": 1 if revisions else current,
+            "has_record": bool(revisions),
+            "revision": _revision_panel(store, ref.id, shown, scene, runs)
+            if current >= 1
+            else None,
             "page_help": PAGE_HELP,
             "metric_help": METRIC_HELP,
             "rung_info": RUNG_INFO,
             "run_kind_blurb": RUN_KIND_BLURB,
+            # The design chat (slice 3); one read-only line on a past view.
+            "chat": design_chat.panel_context(
+                request,
+                kind="structure",
+                slug=str(ref.slug),
+                read_only=read_only,
+                rev_qs=f"?rev={shown}" if rev is not None else "",
+            ),
         },
     )
 
@@ -1126,3 +1293,104 @@ def _apply_error(request: Request, slug: str, detail: str) -> Any:
         {"title": "Apply failed", "detail": detail, "status": 400},
         status_code=400,
     )
+
+
+# ── design chat (the design-workbench build, slice 3 (2026-09-18)) ───────────
+
+
+def _chat_read_only(ref: Any, rev: int | None) -> str | None:
+    """The refusal when ``rev`` names a past version — a turn or an Apply
+    edits the CURRENT atoms, never the ones on screen — else ``None``."""
+    if rev is None:
+        return None
+    current = int((ref.meta or {}).get("version", 0))
+    if rev != current:
+        return (
+            f"revision {rev} is a past revision (current is {current}) — "
+            "chat on the current revision"
+        )
+    return None
+
+
+@router.post("/structure/{slug}/chat")
+async def structure_chat(
+    request: Request,
+    slug: str,
+    message: str = Form(""),
+    handles: str = Form(""),
+    rev: int | None = None,
+) -> Any:
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="structure", id=slug)
+    except NotFound:
+        return design_chat.chat_error(
+            request,
+            kind="structure",
+            slug=slug,
+            detail=f"no live structure design {slug!r}",
+            status=404,
+        )
+    if not message.strip():
+        return design_chat.chat_error(
+            request, kind="structure", slug=slug, detail="empty message", status=400
+        )
+    refusal = _chat_read_only(ref, rev)
+    if refusal is not None:
+        return design_chat.chat_error(
+            request, kind="structure", slug=slug, detail=refusal, status=409
+        )
+    hub = design_chat.hub_for(request)
+    clicked = design_chat.parse_handles(handles)
+
+    def _run() -> design_turn.TurnResult:
+        return design_turn.run_turn(
+            hub, kind="structure", slug=str(ref.slug), message=message, handles=clicked
+        )
+
+    result = await asyncio.to_thread(_run)
+    return design_chat.redirect_after("structure", str(ref.slug), result)
+
+
+@router.post("/structure/{slug}/chat/apply")
+async def structure_chat_apply(
+    request: Request,
+    slug: str,
+    ops: str = Form(""),
+    turn: str = Form(""),
+    rev: int | None = None,
+) -> Any:
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="structure", id=slug)
+    except NotFound:
+        return design_chat.chat_error(
+            request,
+            kind="structure",
+            slug=slug,
+            detail=f"no live structure design {slug!r}",
+            status=404,
+        )
+    parsed, err = design_chat.parse_ops_form(ops)
+    if parsed is None:
+        return design_chat.chat_error(
+            request, kind="structure", slug=slug, detail=err or "bad ops", status=400
+        )
+    refusal = _chat_read_only(ref, rev)
+    if refusal is not None:
+        return design_chat.chat_error(
+            request, kind="structure", slug=slug, detail=refusal, status=409
+        )
+    hub = design_chat.hub_for(request)
+
+    def _apply() -> design_turn.TurnResult:
+        return design_turn.apply_proposal(
+            hub,
+            kind="structure",
+            slug=str(ref.slug),
+            ops=parsed,
+            turn=turn.strip() or None,
+        )
+
+    result = await asyncio.to_thread(_apply)
+    return design_chat.redirect_after_apply("structure", str(ref.slug), result)

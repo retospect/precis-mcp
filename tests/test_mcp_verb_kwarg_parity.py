@@ -70,7 +70,17 @@ _GUARDED_VERBS = ("put", "edit")
 #: different-but-legitimate door (see docs/backlog/mcp-verb-kwarg-parity.md
 #: §"args= is not actually exempt"). Kept as a real (if empty) set so a
 #: future deliberate exemption has a home that isn't _KNOWN_GAPS.
-_EXEMPT: frozenset[tuple[str, str, str]] = frozenset()
+_EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        # turn= is the design-chat transcript handle stamped on a revision
+        # (precis_web.design_turn mints it: ``design-chat-<slug>~<ordinal>``).
+        # Only the web workbench can hold a valid handle; an agent passing
+        # one through MCP edit would forge provenance, so the kwarg is
+        # deliberately web-only (2026-09-18, design-workbench build).
+        ("se", "edit", "turn"),
+        ("structure", "edit", "turn"),
+    }
+)
 
 #: Ratchet ledger: the 71 pre-existing (kind, verb, param) gaps this guard's
 #: introduction (gr262482/gr250273) surfaced, beyond the four kwargs that

@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
+from precis.design.history import record_revision
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Internal, NotFound, Unsupported
 from precis.format import render_agent_table
@@ -784,15 +785,21 @@ class StructureHandler(Handler):
         # A passing verdict may still carry never-gating domain caveats
         # (gripe 285774) — echoed below, never dropped silently.
         preflight_caveats = _format_preflight_caveats(_run_preflight_gate(scene))
-        ref, created = self.store.structure_save(
-            slug=slug,
-            title=ttl,
-            scene=scene,
-            version=version,
-            card_text=self._card_text(ttl, scene, desc),
-            description=desc,
-            relax_summary=relax_summary,
-        )
+        with self.store.tx() as conn:
+            ref, created = self.store.structure_save(
+                slug=slug,
+                title=ttl,
+                scene=scene,
+                version=version,
+                card_text=self._card_text(ttl, scene, desc),
+                description=desc,
+                relax_summary=relax_summary,
+                conn=conn,
+            )
+            # The revision record (design-workbench slice 2) commits with
+            # the version it describes. A put's ops built the whole scene
+            # from nothing, so they ARE the delta from an empty design.
+            record_revision(self.store, ref.id, rev=version, ops=list(ops), conn=conn)
         self._record_run(ref.id, relax_result, version)
         if dispatch is not None:
             return self._with_echo(
@@ -817,8 +824,12 @@ class StructureHandler(Handler):
         text: str | None = None,
         args: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
+        turn: str | None = None,
         **_kw: Any,
     ) -> Response:
+        """``turn`` is the workbench chat turn this edit came from
+        (``<conv-slug>~<block ordinal>``, :mod:`precis_web.design_turn`),
+        stamped onto the revision row; ``None`` for every other caller."""
         if dry_run:
             # Structure ops mutate the cell/bond IR (and may dispatch a
             # GPU relax). No faithful preview yet — reject rather than
@@ -868,15 +879,27 @@ class StructureHandler(Handler):
         # A passing verdict may still carry never-gating domain caveats
         # (gripe 285774) — echoed below, never dropped silently.
         preflight_caveats = _format_preflight_caveats(_run_preflight_gate(scene))
-        self.store.structure_save(
-            slug=str(ref.slug),
-            title=ttl,
-            scene=scene,
-            version=version,
-            card_text=self._card_text(ttl, scene, desc),
-            description=desc,
-            relax_summary=relax_summary,
-        )
+        with self.store.tx() as conn:
+            self.store.structure_save(
+                slug=str(ref.slug),
+                title=ttl,
+                scene=scene,
+                version=version,
+                card_text=self._card_text(ttl, scene, desc),
+                description=desc,
+                relax_summary=relax_summary,
+                conn=conn,
+            )
+            # Same transaction as the save: the version and its record are
+            # one fact (design-workbench slice 2).
+            record_revision(
+                self.store,
+                ref.id,
+                rev=version,
+                ops=list(op_list),
+                turn=turn,
+                conn=conn,
+            )
         self._record_run(ref.id, relax_result, version)
         if dispatch is not None:
             return self._with_echo(
@@ -923,13 +946,18 @@ class StructureHandler(Handler):
         # too (relax was rejected above, so the returned relax tail is empty).
         _relax_tail, import_echo = self._apply_ops_with_imports(scene, op_list)
         ttl = (title or to_slug).strip() or to_slug
-        ref, _created = self.store.structure_save(
-            slug=to_slug,
-            title=ttl,
-            scene=scene,
-            version=1,
-            card_text=self._card_text(ttl, scene, ""),
-        )
+        with self.store.tx() as conn:
+            ref, _created = self.store.structure_save(
+                slug=to_slug,
+                title=ttl,
+                scene=scene,
+                version=1,
+                card_text=self._card_text(ttl, scene, ""),
+                conn=conn,
+            )
+            # Revision 1 of the new design is the delta from its parent —
+            # the ops the Apply button (or a derive call) handed over.
+            record_revision(self.store, ref.id, rev=1, ops=list(op_list), conn=conn)
         # lineage: the derived design points back to its parent
         self.store.add_link(
             src_ref_id=ref.id, dst_ref_id=parent.id, relation="derived-from"

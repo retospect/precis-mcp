@@ -95,6 +95,7 @@ from precis.cad.export import ExportError, needs_field_backend
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import rotation as cad_rotation
+from precis.design import history as design_history
 from precis.design import scenarios as design_scenarios
 from precis.design import states as design_states
 from precis.dispatch import Hub, InitError
@@ -460,6 +461,7 @@ class SeHandler(Handler):
             # Every block now carries the uid it was saved under — the
             # shared design-core tables' write only becomes possible here.
             _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.put")
+            _record_revision(self.store, ref.id, ops=ops, conn=conn)
             if scenario_id is not None:
                 # Same transaction as the tree: a design and the production
                 # context that decides which physics runs on it are one
@@ -488,8 +490,12 @@ class SeHandler(Handler):
         ops: list[dict[str, Any]] | None = None,
         text: str | None = None,
         args: dict[str, Any] | None = None,
+        turn: str | None = None,
         **_kw: Any,
     ) -> Response:
+        """``turn`` is the workbench chat turn this edit came from
+        (``<conv-slug>~<block ordinal>``, :mod:`precis_web.design_turn`),
+        stamped onto the revision row; ``None`` for every other caller."""
         if id is None or not str(id).strip():
             raise BadInput("edit(kind='se') requires id= (the design slug)")
         ref = self.store.get_ref(kind="se", id=str(id).strip())
@@ -524,6 +530,7 @@ class SeHandler(Handler):
             # has run, so the shared design-core write lands in the same
             # transaction right after it, never before.
             _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.edit")
+            _record_revision(self.store, ref.id, ops=op_list, turn=turn, conn=conn)
         persist.sync_realized_by(self.store, ref.id, tree)
         body = f"# se design '{ref.slug}' edited\n\n" + _render_tree(
             tree, ttl, description
@@ -1546,6 +1553,54 @@ def _scenario_line(store: Any, ref_id: int) -> str:
         )
         bits.append(f"weights: {weights}")
     return " · ".join(bits)
+
+
+def _record_revision(
+    store: Any,
+    ref_id: int,
+    *,
+    ops: list[dict[str, Any]],
+    conn: Any,
+    turn: str | None = None,
+) -> int:
+    """Record this save as the design's next revision (design-workbench-
+    web.md slice 2): a ``design_checkpoints`` snapshot labelled ``rev-<N>``
+    plus a ``design_revisions`` row pointing at it, carrying ``ops``
+    verbatim. Returns N.
+
+    se persists by retire-all/reinsert-all with no version column, so the
+    snapshot IS the scene-at-N — and it is taken by re-reading the rows
+    just written through the save's own ``conn`` rather than serialising
+    the in-memory tree: the rows are canonical where the tree is not
+    (connect endpoints sorted, note timestamps stamped), and a revert
+    (``load_checkpoint`` → :func:`persist.tree_from_json` →
+    :func:`persist.save_tree`) must reproduce exactly what
+    :func:`persist.load_tree` would have shown. N is one past the
+    recorded count, not a column on the design: the ledger is the
+    counter, and ``UNIQUE (ref_id, rev)`` makes two concurrent saves
+    collide loudly rather than share a number. Same transaction as the
+    save — the revision never outlives a rolled-back tree.
+    """
+    rev = len(design_history.list_revisions(store, ref_id, conn=conn)) + 1
+    snapshot = persist.load_tree(store, ref_id, conn=conn)
+    checkpoint = design_history.save_checkpoint(
+        store,
+        ref_id,
+        label=f"rev-{rev}",
+        payload=persist.tree_to_json(snapshot),
+        headline={"rev": rev, "blocks": len(snapshot.blocks)},
+        conn=conn,
+    )
+    design_history.record_revision(
+        store,
+        ref_id,
+        rev=rev,
+        ops=ops,
+        turn=turn,
+        checkpoint_id=checkpoint.id,
+        conn=conn,
+    )
+    return rev
 
 
 def _materialize_states(

@@ -412,6 +412,10 @@ export async function blocktreeViewer3D({
   sceneUrl,
   noteUrls,
   noteEls,
+  // Design chat (design-workbench build, slice 3): called with the block
+  // NAME on every selection (viewer pick or topology click) so the page
+  // can drop it into the chat box as a handle. Optional.
+  onSelectBlock,
 }) {
   // gr338976 — disable mermaid's startOnLoad auto-run BEFORE the first
   // await: the vendored bundle defaults startOnLoad:true and runs on the
@@ -601,6 +605,10 @@ export async function blocktreeViewer3D({
     const blockId = primaryPath.split("/").pop();
     highlightTopologyNode(blockId);
     showNotePanel(primaryPath);
+    if (typeof onSelectBlock === "function") {
+      const part = findPart(data.shapes, primaryPath);
+      if (part && part.name) onSelectBlock(part.name);
+    }
   }
 
   // ── comment on the selection → interview note (slice 2 of

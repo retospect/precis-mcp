@@ -27,6 +27,18 @@ carried-forward uid is what makes the copy diffable block-by-block.
 Copy-on-write structural sharing waits until branch count measurably hurts
 (the spec's own naive-first-and-measure rule), and this module's surface
 doesn't change when it arrives.
+
+A fourth primitive, **revisions** (migration ``0169_design_revisions``,
+the design-workbench build, slice 2 (2026-09-18)), is the record a scrubber
+walks: one :class:`Revision` per saved version of a design, carrying the
+verbatim op list that produced it, the chat ``turn`` it came from (NULL
+for a direct ``edit``/``put``), and — for a renter that does not version
+in rows — the :class:`Checkpoint` holding that save's snapshot. ``rev`` is
+the renter's own number (``structure``: ``refs.meta.version``; ``se``: one
+past the prior row count), and ``UNIQUE (ref_id, rev)`` makes a double
+record a loud failure rather than a duplicate. :func:`record_revision`
+joins the save's transaction through ``conn=`` so a revision never exists
+without its version, or the reverse.
 """
 
 from __future__ import annotations
@@ -49,6 +61,7 @@ _BRANCH_COLS = (
     "id, ref_id, parent_ref_id, parent_branch_id, reason, headline, "
     "envelope_revision, set_by, created_at"
 )
+_REVISION_COLS = "rev, ops, turn, checkpoint_id, created_at"
 
 
 @dataclass(frozen=True)
@@ -78,6 +91,19 @@ class Branch:
     headline: dict[str, Any] = field(default_factory=dict)
     envelope_revision: int = 0
     set_by: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Revision:
+    """One saved version of a design — the ops that produced it and, when
+    the renter snapshots rather than versions in rows, the checkpoint that
+    holds the tree as of this save."""
+
+    rev: int
+    ops: list[dict[str, Any]] = field(default_factory=list)
+    turn: str | None = None
+    checkpoint_id: int | None = None
     created_at: datetime | None = None
 
 
@@ -269,6 +295,84 @@ def _checkpoint_from_row(row: dict[str, Any]) -> Checkpoint:
         payload=dict(row["payload"] or {}),
         reason=row["reason"],
         set_by=row["set_by"],
+        created_at=row["created_at"],
+    )
+
+
+# ── revisions ──────────────────────────────────────────────────────────────
+
+
+def record_revision(
+    store: Any,
+    ref_id: int,
+    *,
+    rev: int,
+    ops: list[dict[str, Any]],
+    turn: str | None = None,
+    checkpoint_id: int | None = None,
+    conn: Connection | None = None,
+) -> int:
+    """Record that ``ref_id`` reached version ``rev`` through ``ops``.
+
+    The caller picks ``rev`` — it is the renter's own version number, and
+    core has no opinion on how a renter counts. Pass the save's ``conn`` so
+    the row lands in the same transaction as the rows it describes; the
+    ``UNIQUE (ref_id, rev)`` index turns a repeat for one version into an
+    IntegrityError rather than a second row. Returns the row id.
+    """
+    if rev < 1:
+        raise ValueError(f"a revision number is 1-based, got {rev}")
+    with write_conn(store, conn) as c:
+        row = c.execute(
+            "INSERT INTO design_revisions (ref_id, rev, ops, turn, checkpoint_id) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (ref_id, rev, Jsonb(list(ops)), turn, checkpoint_id),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def list_revisions(
+    store: Any, ref_id: int, *, conn: Connection | None = None
+) -> list[Revision]:
+    """Every recorded revision of a design, oldest first — the scrubber's
+    axis. Empty for a design saved before the record existed; the reader
+    shows that as one revision ("current, no record"), never as nothing."""
+    with read_conn(store, conn) as c:
+        with c.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"SELECT {_REVISION_COLS} FROM design_revisions "
+                "WHERE ref_id = %s ORDER BY rev ASC",
+                (ref_id,),
+            )
+            rows = cur.fetchall()
+    return [_revision_from_row(r) for r in rows]
+
+
+def revision(
+    store: Any, ref_id: int, rev: int, *, conn: Connection | None = None
+) -> Revision | None:
+    """One revision by number, or None when that version was never
+    recorded."""
+    with read_conn(store, conn) as c:
+        with c.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"SELECT {_REVISION_COLS} FROM design_revisions "
+                "WHERE ref_id = %s AND rev = %s",
+                (ref_id, rev),
+            )
+            row = cur.fetchone()
+    return _revision_from_row(row) if row is not None else None
+
+
+def _revision_from_row(row: dict[str, Any]) -> Revision:
+    return Revision(
+        rev=int(row["rev"]),
+        ops=[dict(o) for o in (row["ops"] or [])],
+        turn=row["turn"],
+        checkpoint_id=(
+            int(row["checkpoint_id"]) if row["checkpoint_id"] is not None else None
+        ),
         created_at=row["created_at"],
     )
 

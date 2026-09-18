@@ -1,5 +1,6 @@
 {% extends "base.html.j2" %}
 {% from "_drive_back.html.j2" import drive_back %}
+{% from "_design_chat.html.j2" import design_chat %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}
 
@@ -7,7 +8,14 @@
   <div class="flex items-center gap-3">
     {{ drive_back('structure', 'Structures') }}
     <h1 class="text-lg font-semibold">{{ title }}</h1>
-    <span class="text-xs text-slate-400">{{ slug }} · v{{ version }} · {{ viewer.n_atoms }} atom{{ '' if viewer.n_atoms == 1 else 's' }} · pbc {{ pbc | join('/') }}</span>
+    <span class="text-xs text-slate-400">{{ slug }} · {% if read_only %}v{{ rev }} of v{{ version }}{% else %}v{{ version }}{% endif %} · {{ viewer.n_atoms }} atom{{ '' if viewer.n_atoms == 1 else 's' }} · pbc {{ pbc | join('/') }}</span>
+    {% if read_only %}
+    <span id="sv-readonly" class="text-[11px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200"
+          title="A past revision — the cell as it was at save {{ rev }}. Nothing here can be edited; go to the current version to relax, instruct or apply.">
+      read-only · revision {{ rev }} of {{ version }} ·
+      <a class="underline" href="/structure/{{ slug }}">current</a>
+    </span>
+    {% endif %}
 
     {# ── what is this page? ──
        Hover to read, click to pin (so you can move the mouse into the panel
@@ -124,6 +132,108 @@
       </div>
     </details>
     {% endif %}
+
+    {# ── revision scrubber (design-workbench build, slice 2) ──
+       A plain GET form: the range input submits itself on change, the
+       prev/next links are ordinary anchors, so the page works with no
+       script at all. A design saved before the record existed spans one
+       position (rev_min == version) and says so. #}
+    {% if revision %}
+    <div id="sv-revision" class="mt-3 rounded-lg border border-slate-200 bg-white">
+      <form method="get" action="/structure/{{ slug }}" class="flex items-center gap-2 px-3 py-2 border-b border-slate-100 text-xs">
+        <span class="font-semibold text-slate-700">Revision</span>
+        {% if rev > rev_min %}
+        <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}?rev={{ rev - 1 }}" title="previous revision">‹ {{ rev - 1 }}</a>
+        {% else %}<span class="text-slate-300">‹</span>{% endif %}
+        <input type="range" name="rev" min="{{ rev_min }}" max="{{ version }}" step="1" value="{{ rev }}"
+               class="w-40" title="drag to a revision — the page reloads at that version"
+               onchange="this.form.submit()">
+        {% if rev < version %}
+        <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}?rev={{ rev + 1 }}" title="next revision">{{ rev + 1 }} ›</a>
+        {% else %}<span class="text-slate-300">›</span>{% endif %}
+        <span class="tabular-nums text-slate-600">{{ rev }} / {{ version }}</span>
+        {% if not has_record %}
+        <span class="text-slate-400">— current, no record</span>
+        {% elif not read_only %}
+        <span class="text-slate-400">— current</span>
+        {% endif %}
+        {% if revision.created %}<span class="ml-auto text-[10px] text-slate-400">{{ revision.created }}</span>{% endif %}
+      </form>
+
+      <div class="px-3 py-2 text-xs space-y-1.5">
+        {# diff vs N−1 — each row's atoms glow in the cell on hover #}
+        {% set d = revision.diff %}
+        <div class="text-[10px] uppercase tracking-wide text-slate-400">Changed since revision {{ rev - 1 }}
+          {% if rev == 1 %}<span class="normal-case">(nothing — first save)</span>{% endif %}</div>
+        {% if d.empty %}
+          <p class="text-slate-400">No atom or bond differs from the previous version.</p>
+        {% else %}
+          {% if d.atoms_added %}
+          <div class="sv-hl rounded px-1 hover:bg-amber-50 cursor-pointer" data-atoms="{{ d.atoms_added | join(',') }}">
+            <span class="text-emerald-700 font-semibold">+{{ d.atoms_added | length }} atom{{ '' if d.atoms_added | length == 1 else 's' }}</span>
+            <code class="text-slate-500">{{ d.atoms_added | join(' ') }}</code>
+          </div>
+          {% endif %}
+          {% if d.atoms_removed %}
+          <div class="rounded px-1">
+            <span class="text-red-700 font-semibold">−{{ d.atoms_removed | length }} atom{{ '' if d.atoms_removed | length == 1 else 's' }}</span>
+            <code class="text-slate-500">{{ d.atoms_removed | join(' ') }}</code>
+          </div>
+          {% endif %}
+          {% if d.moved %}
+          <div>
+            <span class="text-amber-700 font-semibold">{{ d.moved | length }} moved</span>
+            <span class="text-slate-400">(&gt; 0.05 Å)</span>
+            <div class="mt-0.5 max-h-32 overflow-y-auto space-y-0.5">
+              {% for m in d.moved %}
+              <div class="sv-hl flex items-center gap-2 rounded px-1 py-0.5 cursor-pointer hover:bg-amber-50" data-atoms="{{ m.label }}">
+                <code class="text-slate-500 w-16 shrink-0">{{ m.label }}</code>
+                <span class="text-slate-400 w-6">{{ m.element }}</span>
+                <span class="tabular-nums text-slate-600">{{ '%.3f'|format(m.delta) }} Å</span>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+          {% if d.bonds_added %}
+          <div><span class="text-emerald-700 font-semibold">+{{ d.bonds_added | length }} bond{{ '' if d.bonds_added | length == 1 else 's' }}</span>
+            <code class="text-slate-500">{{ d.bonds_added | join(', ') }}</code></div>
+          {% endif %}
+          {% if d.bonds_removed %}
+          <div><span class="text-red-700 font-semibold">−{{ d.bonds_removed | length }} bond{{ '' if d.bonds_removed | length == 1 else 's' }}</span>
+            <code class="text-slate-500">{{ d.bonds_removed | join(', ') }}</code></div>
+          {% endif %}
+        {% endif %}
+
+        {# energy computed ON this version, if any run did #}
+        <div class="pt-1 border-t border-slate-100">
+          <span class="text-[10px] uppercase tracking-wide text-slate-400" title="{{ metric_help.energy }}">Energy on v{{ rev }}</span>
+          {% if revision.energy is not none %}
+          <span class="tabular-nums font-medium text-slate-700">{{ '%.4f'|format(revision.energy) }}</span><span class="text-[10px] text-slate-400"> eV</span>
+          <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}/run/{{ revision.energy_run_id }}">{{ revision.energy_fidelity }} r{{ revision.energy_run_id }}</a>
+          {% else %}
+          <span class="text-slate-400">— no succeeded run on this version</span>
+          {% endif %}
+        </div>
+
+        {# the recorded ops — one per line, verbatim #}
+        <div class="pt-1 border-t border-slate-100">
+          <span class="text-[10px] uppercase tracking-wide text-slate-400">Ops</span>
+          {% if not revision.has_record %}
+          <span class="text-slate-400">no op record</span>
+          {% elif not revision.ops %}
+          <span class="text-slate-400">none recorded (whole-scene save)</span>
+          {% else %}
+          <pre id="sv-revision-ops" class="mt-0.5 max-h-40 overflow-auto rounded bg-slate-50 p-2 font-mono text-[11px] text-slate-700 whitespace-pre">{% for line in revision.ops %}{{ line }}
+{% endfor %}</pre>
+          {% endif %}
+          {% if revision.turn %}
+          <div class="mt-0.5 text-slate-500">from turn <code>{{ revision.turn }}</code></div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
   {# ── right: run-cube panel ── #}
@@ -135,7 +245,11 @@
       {# Relax button — default params; an energy rung with no local backend
          dispatches to the GPU node (no todo needed). Each option carries its
          rung's own gloss, so the picker explains the ladder at the moment you
-         are choosing from it. #}
+         are choosing from it. Not rendered on a past revision: a relax
+         would run on the CURRENT atoms, not the ones on screen. #}
+      {% if read_only %}
+      <span class="ml-auto text-[11px] text-slate-400">relax disabled — viewing revision {{ rev }}</span>
+      {% else %}
       <form method="post" action="/structure/{{ slug }}/relax" class="ml-auto flex items-center gap-1">
         <select name="fidelity"
                 class="rounded border border-slate-300 px-1.5 py-0.5 text-xs bg-white"
@@ -148,6 +262,7 @@
           Relax ▸
         </button>
       </form>
+      {% endif %}
     </div>
 
     {# ── live in-flight jobs (compute lane) — a dispatched relax has
@@ -293,6 +408,12 @@
     <h2 class="text-sm font-semibold text-slate-700 mb-2">Further instructions
       <span class="text-xs font-normal text-slate-400">— an LLM proposes edits; you review &amp; apply to a new design</span>
     </h2>
+    {% if read_only %}
+    {# A past revision: no instruct form, and no proposal box either — the
+       box's poll would render an Apply form against the CURRENT design. #}
+    <p class="text-sm text-slate-500">Read-only — you are viewing revision {{ rev }} of {{ version }}.
+      <a class="text-emerald-700 hover:underline" href="/structure/{{ slug }}#instruct">Go to the current version</a> to propose or apply edits.</p>
+    {% else %}
     <form method="post" action="/structure/{{ slug }}/instruct" class="flex gap-2">
       <input name="instruction" required autocomplete="off"
              placeholder="e.g. add an H to cap the undercoordinated Si, then mark the active site"
@@ -302,6 +423,7 @@
     <div id="sv-proposal" class="mt-3" data-slug="{{ slug }}">
       <span class="text-xs text-slate-400">No proposal yet — type an instruction above.</span>
     </div>
+    {% endif %}
   </div>
 
   {# ── eyes & measures ── #}
@@ -334,6 +456,10 @@
     {% endif %}
   </div>
 </div>
+
+{# ── design chat (design-workbench build, slice 3) — the shared partial;
+   clicking an atom in the cell calls window.designChatAddHandle(label). ── #}
+{{ design_chat(chat, rev, version) }}
 
 {# floating popover — rendered UNDER the pointer #}
 <div id="sv-pop" class="fixed z-50 hidden max-w-xs rounded-md bg-slate-800 text-white text-xs px-2 py-1 shadow-lg pointer-events-none"></div>
@@ -532,7 +658,10 @@
       // clickable atoms — map the model index straight back to our detail dict
       model.setClickable({}, true, (atom) => {
         const k = atom.index != null ? atom.index : atom.serial;
-        showAtom(geom.atoms[k]);
+        const a = geom.atoms[k];
+        showAtom(a);
+        // Design chat (slice 3): a clicked atom is a handle for the turn.
+        if (a && window.designChatAddHandle) { window.designChatAddHandle(a.label); }
       });
       // authoritative bonds as clickable cylinders (declared = slate, inferred = light)
       geom.bonds.forEach((b) => {
