@@ -91,6 +91,11 @@ def test_update_paper_fields_authors_source_and_human_guard(store: Store) -> Non
     )
     rows3 = store.get_paper_authors(ref.id)
     assert rows3 == rows2
+    # ... and the jsonb is re-projected from the human rows, not left
+    # holding the rejected byline update_paper_fields wrote first.
+    fresh = store.get_ref(kind="paper", id=ref.id)
+    assert fresh is not None
+    assert fresh.authors == [{"given": "Cee", "family": "Three"}]
 
 
 def test_draft_write_creates_no_paper_authors_rows(store: Store) -> None:
@@ -190,6 +195,17 @@ def test_find_papers_by_author_table_backed(store: Store) -> None:
     assert store.find_papers_by_author(kind="paper", q="Ronggang Luo") == [luo.id]
     assert store.find_papers_by_author(kind="paper", q="Luo, Ronggang") == [luo.id]
     assert store.find_papers_by_author(kind="paper", q="Aabid Hamid") == [hamid.id]
+
+    # full_name collapses the empty middle: a middle='' row still matches
+    # the single-spaced "Given Family" substring, and a split-middle row
+    # matches with its initial in place.
+    store.update_paper_fields(
+        luo.id,
+        authors=[{"given": "Ronggang X.", "family": "Luo"}],
+        authors_source="crossref",
+    )
+    assert store.get_paper_authors(luo.id)[0]["middle"] == "X."
+    assert store.find_papers_by_author(kind="paper", q="Ronggang X. Luo") == [luo.id]
 
 
 def test_find_papers_by_author_exact_surname_ranks_first(store: Store) -> None:

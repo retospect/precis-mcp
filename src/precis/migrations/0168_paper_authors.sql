@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS paper_authors (
     source              text        NOT NULL,
     verified_at         timestamptz,
     updated_at          timestamptz NOT NULL DEFAULT now(),
+    -- Display form "Given M. Family" with empty parts collapsed (no
+    -- double space when middle = ''); the search expression and its
+    -- trigram index both read this column.
+    full_name           text GENERATED ALWAYS AS (
+        btrim(regexp_replace(given || ' ' || middle || ' ' || family, ' +', ' ', 'g'))
+    ) STORED,
     PRIMARY KEY (ref_id, position),
     CONSTRAINT paper_authors_position_positive CHECK (position >= 1),
     CONSTRAINT paper_authors_source_check CHECK (
@@ -77,9 +83,7 @@ COMMENT ON TABLE paper_authors IS
 CREATE INDEX IF NOT EXISTS paper_authors_family_lc_idx
     ON paper_authors (lower(family));
 CREATE INDEX IF NOT EXISTS paper_authors_fullname_trgm_idx
-    ON paper_authors USING gin (
-        (given || ' ' || middle || ' ' || family) gin_trgm_ops
-    );
+    ON paper_authors USING gin (full_name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS paper_authors_orcid_idx
     ON paper_authors (orcid) WHERE orcid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS paper_authors_openalex_idx

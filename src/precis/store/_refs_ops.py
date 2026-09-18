@@ -143,6 +143,17 @@ def _fetch_paper_author_rows(conn: Connection, ref_id: int) -> list[dict[str, An
     return [_paper_author_row_to_dict(r) for r in rows]
 
 
+def _write_authors_projection(
+    conn: Connection, ref_id: int, rows: list[dict[str, Any]]
+) -> None:
+    """Regenerate ``refs.authors`` jsonb from *rows* (the table is truth)."""
+    projection = [entry_from_author_row(r) for r in rows]
+    conn.execute(
+        "UPDATE refs SET authors = %s::jsonb, updated_at = now() WHERE ref_id = %s",
+        (Jsonb(projection), ref_id),
+    )
+
+
 def project_paper_authors(
     conn: Connection, ref_id: int, authors: Any, *, source: str
 ) -> list[dict[str, Any]]:
@@ -172,6 +183,10 @@ def project_paper_authors(
     """
     existing = _fetch_paper_author_rows(conn, ref_id)
     if source != "human" and any(r["source"] == "human" for r in existing):
+        # The caller (``update_paper_fields``) may already have written
+        # the rejected byline into ``refs.authors``; re-project from the
+        # human rows so table and jsonb never drift.
+        _write_authors_projection(conn, ref_id, existing)
         return existing
 
     if isinstance(authors, str):
@@ -217,11 +232,7 @@ def project_paper_authors(
         )
 
     final_rows = _fetch_paper_author_rows(conn, ref_id)
-    projection = [entry_from_author_row(r) for r in final_rows]
-    conn.execute(
-        "UPDATE refs SET authors = %s::jsonb, updated_at = now() WHERE ref_id = %s",
-        (Jsonb(projection), ref_id),
-    )
+    _write_authors_projection(conn, ref_id, final_rows)
     conn.execute(
         "INSERT INTO ref_events (ref_id, source, event, payload) "
         "VALUES (%s, %s, %s, %s::jsonb)",
@@ -2614,9 +2625,9 @@ class RefsMixin:
         S1 (docs/backlog/paper-authors-1nf.md): matches the
         ``paper_authors`` table (source of truth) rather than the
         ``refs.authors`` jsonb S0 patched over as an interim fix. Three
-        forms per author row: the full name (``given || middle ||
-        family``, the same expression the migration's trigram index is
-        built on), the reversed ``"family, given"`` form (a "Miller, T."
+        forms per author row: ``full_name`` (the generated "Given M.
+        Family" column the migration's trigram index is built on; empty
+        parts collapsed, so no double space when middle is ''), the reversed ``"family, given"`` form (a "Miller, T."
         query still hits a ``{given,family}`` row), and ``name_raw`` (the
         unsplit fallback for a ``{"name"}``-only / legacy row). A name
         matches by substring or ``pg_trgm`` fuzzy hit (threshold 0.35)
@@ -2624,7 +2635,7 @@ class RefsMixin:
         ranks a paper first within its held/unheld bucket, ahead of a
         merely-fuzzy hit; held papers (``pdf_sha256 IS NOT NULL``) sort
         before unheld regardless. Returns ``ref_id`` in rank order."""
-        fullname = "(pa.given || ' ' || pa.middle || ' ' || pa.family)"
+        fullname = "pa.full_name"
         rev = "concat_ws(', ', pa.family, pa.given)"
         clauses = [
             "r.retired_at IS NULL",
