@@ -1,4 +1,8 @@
 # se: print-in-place groups — one build frame and one 3MF for a whole-assembly fdm group
+**Superseded 2026-09-18** by the print `intent` table in
+`structural-solution-space.md` §Slice 4 bridge (`manufacture` = this item
++ fusion + cavities; `model` = fit-test stand-ins). Kept for the test
+sketch below until that slice ships, then delete.
 
 Follow-on filed at the ship of `se-print-implementer` (2026-09-17; the
 per-block chain `realize` → `view='print'` → `view='fab'` is in

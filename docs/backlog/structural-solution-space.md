@@ -3,6 +3,7 @@ status: draft
 title: structural solution space — the axial member, prestress + tensegrity checking, in-tree solvers, SIMP generative fill
 prio: high
 model: opus
+blocked-by: cad-sdf-rounding-and-field-export
 ---
 
 # Structural solution space
@@ -119,16 +120,20 @@ generator/checker split.
   consumer, named: `nm-stick-placement.md` stage 1 rents it topology-only
   (no initial guess) as the skeleton seed for its rigid-body pose relax,
   copying `precis_se/formfind.py`'s write-back contract verbatim.
-- **`simp.py` — 3D density-field SIMP (the nTop leg, slice 4).** Domain = a
-  **cad** keep-in expr voxelized by `cad.relate.component_sdf` sampling
-  (keep-outs the same way); loads/supports from se declarations
-  (`objectives.force`, `objectives.fixed`); 8-node hex FEA with a
-  scipy.sparse CG solve; SIMP penalization + sensitivity/density filtering;
-  density field + compliance history under an iteration budget. **Advisory
-  tier, never a hard DRC** — a compliance number from a voxel model is an
-  estimate, and the honesty header says so. Downstream interpretation of
-  the result as a strut/node graph (thicken to solid, reinterpret as
-  tubes/ribs, collapse to a prism) is named in the multiscale map.
+- **`simp.py` — 3D density-field SIMP (the nTop leg, slice 4; engine
+  shipped).** Domain = a **cad** keep-in expr voxelized by
+  `cad.relate.component_sdf` sampling (keep-outs the same way);
+  loads/supports from se declarations (`objectives.force`,
+  `objectives.fixed`); 8-node hex FEA, matrix-free Jacobi-PCG; SIMP
+  penalization + sensitivity filtering; Langelaar AM filter
+  (`build_dir`); density field + compliance history under an iteration
+  budget. **Advisory tier, never a hard DRC** — a compliance number from
+  a voxel model is an estimate, and the honesty header says so. The
+  result leaves the solver as a density array and enters the cad kernel
+  as a **sampled-field leaf** (`cad-sdf-rounding-and-field-export.md`
+  slice 2, `from_density`) — from there it is ordinary geometry:
+  boolean-able, roundable, exportable. Reinterpretation as a strut/node
+  graph (tubes/ribs/prism) stays a named later step in the multiscale map.
 
 The equilibrium-matrix classifier itself stays in `precis_se/stability.py`
 (one consumer today; extraction into structsolve happens when nm's
@@ -139,13 +144,17 @@ state-dependent stability lands and actually calls it).
 - **Form-found geometry** writes back as ordinary block poses stamped
   `origin: 'proposed'` (the 0005 origins facet) — a human-set pose is
   contract and is never overwritten. No new storage.
-- **SIMP density fields are not blocks.** Store a content-addressed run
-  summary (inputs hash incl. voxel pitch and engine version, compliance,
-  volume fraction, iterations) on the se ref's meta — the pathway
-  `results_json` posture. The field is *recomputable* (structure relax
-  run-cube precedent); render section previews through the existing SVG
-  path. **Open question for Reto:** whether the full field wants a
-  `folder`-kind artifact once the sandbox-harvest slice exists.
+- **SIMP density fields are not blocks.** The run summary
+  (content-addressed inputs hash incl. voxel pitch, `build_dir` and
+  engine version; compliance, volume fraction, iterations, notes) goes on
+  the se ref's meta — the pathway `results_json` posture. The **field
+  itself is stored** as the cad field-leaf artifact (200³ float32 ≈ 32 MB
+  upper bound; recomputing on read is a minutes-long job, not a read)
+  and the block is realized by a cad design whose root holds that leaf —
+  so `view='fab'`/`'print'`/`'bom'` see a realized block and never learn
+  it came from an optimiser. Section previews through the existing SVG
+  path. Artifact table vs `folder`-kind ref: one decision shared with the
+  cad item's slice 2, made there.
 
 ## Solution-space integration
 
@@ -194,11 +203,92 @@ a jig / a tensioning sequence" as a **cost**, never an infeasibility.
 - **Slice 4 — SIMP engine**: ENGINE SHIPPED 2026-09-11
   (`src/precis/structsolve/simp.py` — pure numpy, matrix-free Jacobi-PCG,
   Langelaar AM filter `build_dir='z+'`, `overhang_violations()`,
-  gyroid `lattice_fill()`; FD-gradient-pinned). Still open: the se bridge
-  (cad-domain voxelization, op + view, run-summary storage above), a
-  damped-move/MMA fix for the AM-filtered OC oscillation the engine
-  reports honestly, and volume enforcement on the *printed* (not design)
-  field — MMA-shaped, noted in the engine docstring.
+  gyroid `lattice_fill()`; FD-gradient-pinned; **0 callers** as of
+  2026-09-18). Engine debt, unchanged: damped-move/MMA for the
+  AM-filtered OC oscillation; volume enforcement on the *printed* field.
+  **The se bridge — specced 2026-09-18 with Reto, see §Slice 4 bridge
+  below.** `blocked-by: cad-sdf-rounding-and-field-export` (slice 2, the
+  field leaf the result binds to).
+
+### Slice 4 bridge — `realize(strategy='simp')`, print intents, print-in-place
+
+Decided 2026-09-18 (Reto). The goal is a printed organic unicycle toy;
+the design rules are general.
+
+**`realize(block|group, strategy='simp', ...)`** — a job, not an MCP
+read (100k elements × 60 iterations is minutes on a node).
+
+1. **Domain.** The target's keep-in envelope (the block's own envelope,
+   or the union of a group's member envelopes in world pose) sampled via
+   `cad.relate.component_sdf` at the voxel pitch; minus keep-outs; minus
+   **cavities** (below). Pitch = a house figure (`se_capabilities.json`,
+   new `simp_pitch` field, null until calibrated → the op demands
+   `pitch=`), never a default in code.
+2. **Loads / supports.** `objectives.force` → nodal loads on the nearest
+   grid nodes touching the domain; `objectives.fixed` → supports. A block
+   with neither is refused (the engine's `_check_node` posture, one level
+   up). Nodes adjacent to a load or support are **passive solid** (a
+   loaded face that thins to a skin is the classic SIMP artefact).
+3. **Build direction is a pre-solve decision.** The AM filter bakes
+   `build_dir` in, so `view='print'`'s orientation search cannot run
+   after the fact. `realize` takes `build_dir=` (default: the envelope's
+   largest planar face down, reported); `view='print'` on a
+   SIMP-realized block *verifies* that orientation and skips the search,
+   saying so.
+4. **Result.** `cad.from_density(rho, 0.5, pitch)` → field leaf; optional
+   `round=` / `open=` / `close=` applied on the field (the cad item's
+   morphology, re-distanced — the only place an offset above a boolean is
+   legal); the block is bound to a cad design rooted at that leaf (`cut`
+   by exact bores / keep-outs, `add` designed seats); run summary on
+   meta. Solved geometry is a **proposal**: `realize` on an
+   already-realized block mints a sibling realization linked
+   `realized-by`, never overwrites.
+5. **Loads are declared, never scaled.** A 1:6 toy is not a 1:6 rider —
+   the governing case is a squeeze, a drop, a foot. `set_load` the toy
+   case on the scaled design; scale geometry only. `strength_z_ratio`
+   (null today) is the figure that will matter for toys; calibrate it.
+
+**Print `intent` on a print group** (an ancestor block in an fdm mode;
+membership derived from the tree, no schema change — absorbs
+`se-print-in-place-groups.md`, which becomes the `manufacture` half):
+
+| intent | printed members | purchase members | joints with DOF | rigid joints | SIMP domain |
+|---|---|---|---|---|---|
+| `model` (fit-test, any scale) | print | **printed stand-in**: the catalog solid from `cad/catalog.py` (`_SERIES_FAMILIES` for fasteners; spec dims for bearings/axles), threads dropped, mating hole keeps the compensation | separate parts, one 3MF per group, one object per member | separate parts (fasteners print too — the fit test is the point) | per block |
+| `manufacture` (the real part, print-in-place) | print | stays bought → a **cavity** = component envelope dilated by the fit clearance + an insertion path *or* a mid-print pause at the cavity's top layer | **in-place gap**: each side eroded by `gap/2` in the field; `in_place_clearance` finding when gap < house floor (new `min_clearance` capability, null today → the rule says so instead of guessing) | **fused**: min-union in the field, `blend` at the seam; a fastener whose both members fused is **elided** with a finding (`joint fused, <block> not needed`), the `screw` mechanism demand is satisfied by fusion | the fused group's keep-in minus cavities, one solve |
+
+Same se design, two realizations, siblings under `realized-by`. Analytic
+print-in-place features are not free the way organic members are: a
+revolute bore under the AM rule wants a teardrop/diamond section — a
+`teardrop_cyl` primitive (cad) or an `overhang` finding pointing at the
+bore, not silence.
+
+**Hand-off** (separate rungs, each optional): geometry 3MF as a
+downloadable artifact (the figure/folder precedent) → headless slicer
+(OrcaSlicer / Bambu Studio / PrusaSlicer CLI → `.gcode.3mf`) →
+`bambuuzle` (Reto's `.gcode.3mf` editor: pause/insert injection with MD5
+fix-up — the `manufacture` cavity pause lands here) → printer push
+(Bambu LAN = MQTT + FTP; OctoPrint / PrusaLink = REST; Bambu cloud has no
+public API). The fork print needs only the first rung.
+
+**Atom models** (noted for design, not this slice): se's atomic mode
+already has atoms as blocks and bonds as connects, and relations carry
+`scale`. Every printable representation is a field op the cad item
+already specifies: CPK = min-union of vdW spheres (exact), SAS = that
+union `offset(probe)`, SES = `close(probe)`, ball-and-stick = spheres +
+cylinders under the thin-feature validator, rotatable bonds = in-place
+revolutes. Always `intent='model'`.
+
+Acceptance for the bridge: `realize(strategy='simp')` on a cantilever
+fixture block (load on one face, fixed on the opposite) produces a
+realized block whose `view='print'` passes at the declared `build_dir`
+with zero `overhang` findings; the same block with `intent='manufacture'`
+in a two-member group with a `revolute` connect exports one 3MF whose two
+objects are separated by ≥ gap everywhere (measure on the meshes) and
+reports `in_place_clearance` when the gap is set below the floor; a
+`model`-intent group containing a component-bound fastener exports the
+fastener's stand-in as its own object; re-`realize` leaves the first
+realization in place.
 - **Slice 5 — nm state-dependent stability** (blocked on blocktree slice 2
   states): classify per declared state, plus — added 2026-09-11 from the
   multiscale intake — **sweep the switching pathway**: pose intermediate
@@ -236,7 +326,7 @@ Dynamics/vibration of prestressed structures; cable sag/catenary under
 self-weight (fine for a taut tie, wrong for a slack one — declare the
 assumption); creep and stress relaxation in synthetic rope (a `material`
 question first); buckling FEA; multi-material / multi-load-case SIMP;
-marching-cubes mesh export of the density field; form-finding for
+strut/node-graph reinterpretation of a density field; form-finding for
 non-axial continua; port-offset node positions in the classifier (v1 pins
 nodes at block poses); belt/pulley couplings (already deferred in
 `joints.py`'s unknown-key error text). The physics-layer notes (modal
@@ -250,4 +340,7 @@ derived from one axial class, class-vs-mechanism split resolves the
 `belt`/`chain` naming collision; `translational_dof` ownership moot (needs
 no change); se/nm share the shape not the module (revisit at three
 consumers); classifier built with slice 1 rather than deferred (the
-solution-space programme supplied the consumer).
+solution-space programme supplied the consumer); SIMP result is a cad
+field leaf, not a mesh and not a block (Reto 2026-09-18); print `intent`
+is `model` | `manufacture` on the group, loads declared never scaled
+(Reto 2026-09-18).
