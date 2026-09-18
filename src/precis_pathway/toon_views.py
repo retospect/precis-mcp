@@ -382,16 +382,31 @@ def trust_toon(meta: dict[str, Any]) -> str:
     )
 
 
-def analysis_text(meta: dict[str, Any]) -> str:
+def potential_line(U: float) -> str:
+    """The one-line CHE caveat every U-levered view leads with."""
+    return (
+        f"at U = {U:+.2f} V vs RHE — CHE: state energies shifted by n_H·eU; "
+        "‡ barriers are U-independent (thermodynamic lever only, no solvation)"
+    )
+
+
+def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
+    """The analysis headline + tables; ``U`` (V vs RHE) re-levers the graph
+    first (:func:`analysis.at_potential`) so span and the most endergonic
+    route step are read at that potential."""
     graph = meta.get("graph") or {}
     root, target = _roots(meta)
     r = meta.get("results", {})
     n = r.get("n_samples", "?")
     models = ",".join(r.get("models", [])) or r.get("backend", "?")
 
+    head = [f"{root} → {target}  ({models}, {n} samples)"]
+    if U is not None:
+        graph = analysis.at_potential(graph, U)
+        head.append(potential_line(U))
+    head.append("")
     rl = analysis.rate_limiting(graph, root, target)
     span = analysis.energetic_span(graph, root, target)
-    head = [f"{root} → {target}  ({models}, {n} samples)", ""]
     if rl:
         flag = "  [LOW CONFIDENCE]" if rl["low_confidence"] else ""
         head.append(
@@ -403,7 +418,15 @@ def analysis_text(meta: dict[str, Any]) -> str:
                 "before trusting it."
             )
     if span is not None:
-        head.append(f"energetic span (whole-path apparent barrier): {_b(span)} eV")
+        at = f" at U = {U:+.2f} V" if U is not None else ""
+        head.append(f"energetic span (whole-path apparent barrier){at}: {_b(span)} eV")
+    if U is not None:
+        step = analysis.most_endergonic_step(graph, root, target)
+        if step is not None:
+            head.append(
+                f"most endergonic route step at U: {step['step']}   "
+                f"ΔG = {step['delta_g']:+.2f} eV ({step['kind']} step)"
+            )
     head.append(f"warnings: {_warnings_summary(meta)}   (view='warnings' for detail)")
     head.append("")
 
@@ -549,13 +572,33 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
 
 
 # ── cross-candidate compare (interleaved profile) ───────────────────────
-def compare_toon(candidates: list[dict[str, Any]]) -> str:
+def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
     """`candidates`: [{slug, lever, graph, root, target}]. Rows = candidates.
     When they share a network, columns interleave state(rel eV) + ‡(barrier Eₐ)
     along the reaction coordinate; always: RATE (max step), SPAN, conf. Sorted
-    by RATE ascending (best first)."""
+    by RATE ascending (best first). With ``U`` (V vs RHE) every CHE-stamped
+    candidate is re-levered to that potential and the table ranks by SPAN at
+    U instead (RATE is U-independent); a candidate without ``n_H`` stays
+    unshifted and is named in the header."""
     if not candidates:
         return "no computed candidates to compare."
+
+    notes: list[str] = []
+    if U is not None:
+        levered: list[dict[str, Any]] = []
+        unshifted: list[str] = []
+        for c in candidates:
+            if analysis.has_potential_lever(c["graph"]):
+                levered.append({**c, "graph": analysis.at_potential(c["graph"], U)})
+            else:
+                unshifted.append(str(c["slug"]))
+                levered.append(c)
+        candidates = levered
+        notes.append(f"# {potential_line(U)}; ranked by SPAN at U")
+        if unshifted:
+            notes.append(
+                "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
+            )
 
     profiles: list[dict[str, Any]] = []
     for c in candidates:
@@ -576,11 +619,25 @@ def compare_toon(candidates: list[dict[str, Any]]) -> str:
             "conf": _conf(rl.get("low_confidence")),
         }
 
+    def _sort_key(p: dict[str, Any]) -> tuple[bool, float]:
+        # numeric, not on the 2-dp strings: "10.00" < "9.00" lexically.
+        if U is not None:
+            span = p["summ"]["span"]
+            return (span is None, float(span) if span is not None else 0.0)
+        ea = (p["summ"]["rate_limiting"] or {}).get("ea")
+        return (ea is None, float(ea) if ea is not None else 0.0)
+
+    profiles.sort(key=_sort_key)
+    prefix = "".join(n + "\n" for n in notes)
+
     if not aligned:
         rows = [_row_scalars(p) for p in profiles]
-        rows.sort(key=lambda r: (r["RATE"] == "", r["RATE"]))
         note = "# networks differ — scalar comparison only (RATE = rate-limiting Eₐ)\n"
-        return note + toon.dump(rows, schema=["cand", "lever", "RATE", "SPAN", "conf"])
+        return (
+            prefix
+            + note
+            + toon.dump(rows, schema=["cand", "lever", "RATE", "SPAN", "conf"])
+        )
 
     # aligned: build interleaved columns from the shared coordinate.
     template = profiles[0]["cols"]
@@ -599,7 +656,6 @@ def compare_toon(candidates: list[dict[str, Any]]) -> str:
         for col, name in zip(p["cols"], col_names):
             row[name] = _e(col["value"]) if col["kind"] == "state" else _b(col["value"])
         rows.append(row)
-    rows.sort(key=lambda r: (r["RATE"] == "", r["RATE"]))
 
     head = "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  " + "  ".join(legend)
-    return head + "\n" + toon.dump(rows, schema=schema)
+    return prefix + head + "\n" + toon.dump(rows, schema=schema)

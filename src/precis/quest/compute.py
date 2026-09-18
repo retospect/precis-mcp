@@ -224,6 +224,155 @@ def _geom_hash(scene: Any) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
 
+#: Species an ``add_atom``/``add_atom_site`` op places as a *co-adsorbate*
+#: (surface coverage) rather than as a dopant adatom — the θ axes the
+#: conditions-effects report varies (docs/backlog/
+#: pathway-conditions-effects-report.md Phase 1 item 2). A multi-atom
+#: species (OH, H2O) arrives as one ``add_adsorbate``-style op once that op
+#: exists; until then H/O are what a proposer can actually place.
+_COADSORBATE_SPECIES = frozenset({"H", "O", "OH", "H2O", "N", "NH", "NH2", "NH3"})
+
+#: Site name stamped when an atom was placed by raw fractional coordinates
+#: (``add_atom``) rather than by naming a site (``add_atom_site``) — honest
+#: "placed, site not named", never a guessed hollow/bridge/top.
+_RAW_SITE = "frac"
+
+
+def _adsorbates() -> dict[str, Any]:
+    """:data:`precis.structure.ops.ADSORBATES`, imported lazily — this
+    module is loaded by the tick hot path and ``structure.ops`` pulls numpy
+    in with it."""
+    from precis.structure.ops import ADSORBATES
+
+    return ADSORBATES
+
+
+def _site_name(site: Any) -> str:
+    """The site *type* an ``add_atom_site`` op named — its ``site`` is the
+    object ``{"type": "hollow", "anchors": [...]}``
+    (:func:`precis.structure.ops._op_add_atom_site`), so the type is the
+    part worth carrying into the param space; the anchors are geometry."""
+    if isinstance(site, dict):
+        t = site.get("type")
+        return str(t) if t else _RAW_SITE
+    return str(site) if isinstance(site, str) and site else _RAW_SITE
+
+
+def params_from_spec(
+    spec: dict[str, Any] | None, *, base_element: str | None = None
+) -> dict[str, Any]:
+    """The candidate's point in the quest's named param space, derived from
+    the structure spec's own ``ops`` — ``{dopant, n_dopant, site, coads,
+    coads_site}``, each key present only when the ops establish it.
+
+    This is the writer half of ``meta.params`` (:attr:`precis.quest.frontier.
+    Candidate.params`, the §7.8 named param space): the seam
+    ``quest-data-table-and-formula-discovery`` found read-but-never-fed. It
+    reads the *proposal's* ops rather than the materialised geometry because
+    the ops carry the two things atoms can't: whether a dopant was a
+    substitution or an adatom, and which **named site** a co-adsorbate was
+    placed on (gr345342 — the results table could only ever report a
+    dopant's site, so an H-coverage series showed no site at all).
+
+    ``site`` describes the dopant; ``coads`` maps species → count and
+    ``coads_site`` species → the site each was placed on (``'frac'`` for a
+    raw-coordinate placement, ``'mixed'`` when one species went to several
+    sites). A spec with no ops, or only a ``slab``, yields ``{}``.
+
+    ``base_element`` is the host the slab is made of (the quest's
+    ``reaction_config.slab.element``); a ``slab`` op in the spec overrides
+    it. More host atoms are never a dopant — a spec that builds its slab
+    out of bare ``add_atom`` ops (test fixtures, hand-written specs) would
+    otherwise read as an N-atom self-doping.
+    """
+    ops = (spec or {}).get("ops")
+    if not isinstance(ops, list):
+        return {}
+    host = base_element
+    for op in ops:
+        if isinstance(op, dict) and op.get("op") == "slab":
+            el = op.get("element")
+            if isinstance(el, str) and el:
+                host = el
+    dopants: list[str] = []
+    dopant_sites: list[str] = []
+    coads: dict[str, int] = {}
+    coads_sites: dict[str, set[str]] = {}
+    # ``set_element`` is keyed by atom LABEL and labels are stable
+    # (:func:`precis.structure.ops._no_atom_msg` — a transmuted atom keeps
+    # its mint name), so the same atom can be re-transmuted by a later op.
+    # Only the LAST element each label ends up as counts: "dope aPd4 to Ag,
+    # then to Cu" is one Cu dopant, and "dope aPd4 to Ag, then back to Pd"
+    # is none. Counting per op instead would report two dopants for a
+    # corrected choice.
+    substituted: dict[str, str] = {}
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        name, element = op.get("op"), op.get("element")
+        if not isinstance(element, str) or not element:
+            continue
+        if name == "set_element":
+            atom = op.get("atom")
+            substituted[str(atom) if atom is not None else f"?{len(substituted)}"] = (
+                element
+            )
+        elif name in ("add_atom", "add_atom_site"):
+            if element == host:
+                continue
+            site = _site_name(op.get("site")) if name == "add_atom_site" else _RAW_SITE
+            if element in _COADSORBATE_SPECIES:
+                coads[element] = coads.get(element, 0) + 1
+                coads_sites.setdefault(element, set()).add(site)
+            else:
+                dopants.append(element)
+                dopant_sites.append("adatom")
+    for _label, element in sorted(substituted.items()):
+        if element == host:  # transmuted back to the host: no net doping
+            continue
+        dopants.append(element)
+        dopant_sites.append("subst")
+    # ``add_adsorbate`` places a whole group (OH, H2O, NH2, …) from one named
+    # site — it carries its species directly, no element-sniffing needed.
+    for op in ops:
+        if not isinstance(op, dict) or op.get("op") != "add_adsorbate":
+            continue
+        species = op.get("species")
+        if not isinstance(species, str) or not species:
+            continue
+        coads[species] = coads.get(species, 0) + 1
+        coads_sites.setdefault(species, set()).add(_site_name(op.get("site")))
+    out: dict[str, Any] = {}
+    if dopants:
+        out["dopant"] = ",".join(sorted(set(dopants)))
+        out["n_dopant"] = len(dopants)
+        sites = set(dopant_sites)
+        out["site"] = next(iter(sites)) if len(sites) == 1 else "mixed"
+    if coads:
+        out["coads"] = dict(sorted(coads.items()))
+        out["coads_site"] = {
+            sp: (next(iter(s)) if len(s) == 1 else "mixed")
+            for sp, s in sorted(coads_sites.items())
+        }
+    return out
+
+
+def _quest_slab_element(store: Store, quest_id: int) -> str | None:
+    """The quest's declared host element (``meta.reaction_config.slab.
+    element``), or ``None`` — best-effort context for
+    :func:`params_from_spec`, never fatal to candidate creation."""
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        return None
+    rc = (getattr(ref, "meta", None) or {}).get("reaction_config")
+    if not isinstance(rc, dict):
+        return None
+    slab = rc.get("slab")
+    el = slab.get("element") if isinstance(slab, dict) else None
+    return str(el) if el else None
+
+
 def _candidate_composition(
     scene: Any | None, spec: dict[str, Any] | None
 ) -> dict[str, int] | None:
@@ -264,10 +413,15 @@ def _candidate_composition(
     for op in ops:
         if not isinstance(op, dict):
             continue
+        op_name = op.get("op")
+        if op_name == "add_adsorbate":
+            group = _adsorbates().get(str(op.get("species")))
+            for el, _offset in group[1] if group else ():
+                counts[el] = counts.get(el, 0) + 1
+            continue
         element = op.get("element")
         if not isinstance(element, str) or not element:
             continue
-        op_name = op.get("op")
         if op_name == "slab":
             size = op.get("size")
             n = 1
@@ -494,7 +648,12 @@ def _link_parent_if_present(
 
 
 def _ensure_candidate_detail(
-    store: Store, quest_id: int, proposal: dict[str, Any], *, hub: Any | None = None
+    store: Store,
+    quest_id: int,
+    proposal: dict[str, Any],
+    *,
+    hub: Any | None = None,
+    slab_element: str | None = None,
 ) -> tuple[int | None, bool, str | None]:
     """:func:`ensure_candidate`'s full internals — ``(ref_id, was_duplicate,
     note)``. Split out so :func:`run_compute_step` can count dups + surface
@@ -505,6 +664,11 @@ def _ensure_candidate_detail(
     unresolvable) or — whenever ``ref_id`` is ``None`` — the reason the
     proposal was refused. **Every ``None`` return pairs with a note**, so a
     dropped candidate is never silent; see :func:`_note_rejected_proposal`.
+
+    ``slab_element`` is the quest's declared host (``meta.reaction_config.
+    slab.element``) for :func:`params_from_spec`. A caller looping over a
+    tick's proposals passes the one it already read, so the param stamp
+    costs no extra query per candidate; ``None`` looks it up.
     """
     name = str(proposal.get("name") or "(unnamed)")
     spec = proposal.get("structure")
@@ -653,16 +817,29 @@ def _ensure_candidate_detail(
             src_ref_id=ref.id, dst_ref_id=quest_id, relation="serves", conn=conn
         )
         store.add_tag(ref.id, Tag.open(_CANDIDATE_TAG), set_by="system", conn=conn)
+    # ``meta.params`` — the candidate's point in the named param space,
+    # derived from the ops (:func:`params_from_spec`) and overridden by
+    # anything the proposer stamped itself. Written at creation time so the
+    # results table and the series view read a stamp, not a re-derivation
+    # from atoms that can't see a site or a substitution.
+    if slab_element is None:
+        slab_element = _quest_slab_element(store, quest_id)
+    params = params_from_spec(spec, base_element=slab_element)
+    proposed = proposal.get("params")
+    if isinstance(proposed, dict):
+        params.update(proposed)
+    meta_stamp: dict[str, Any] = {}
     if geom_hash is not None:
-        meta_stamp: dict[str, Any] = {"geom_hash": geom_hash}
+        meta_stamp["geom_hash"] = geom_hash
         if geom_hash_canonical is not None:
             meta_stamp["geom_hash_c"] = geom_hash_canonical
+    if params:
+        meta_stamp["params"] = params
+    if meta_stamp:
         try:
             store.stamp_ref_meta(ref.id, meta_stamp)
         except Exception:
-            log.debug(
-                "ensure_candidate: geom_hash stamp failed for %s", slug, exc_info=True
-            )
+            log.debug("ensure_candidate: meta stamp failed for %s", slug, exc_info=True)
     # atom_cost (slice B): composition-derived, no sim needed — stamped at
     # creation time so a candidate never spends a tick "awaiting" its own
     # cost. `scene` is `None` above when the load just failed (rare); the
@@ -3287,6 +3464,15 @@ def run_compute_step(
     # (the a/b vectors, c-axis/vacuum pinned) so stability is judged on a
     # *relaxed* slab, not one strained by the bulk-derived lattice constant.
     relax_cell = "inplane" if reaction is not None else None
+    # Read once here, not per proposal: `_ensure_candidate_detail` stamps
+    # `meta.params` against the quest's host element, and re-fetching the
+    # quest ref inside the loop would be one redundant query per candidate.
+    slab = (reaction or {}).get("slab")
+    slab_element = (
+        str(slab.get("element"))
+        if isinstance(slab, dict) and slab.get("element")
+        else None
+    )
     # A new candidate's FIRST autocatpath run defaults to the cheap
     # screening tier when the quest opted into the ladder (relax-only
     # thermodynamic ranking before spending a full NEB) — a ladder-off quest
@@ -3302,7 +3488,9 @@ def run_compute_step(
     for p in proposals or []:
         if not isinstance(p, dict):
             continue
-        sid, was_dup, cand_note = _ensure_candidate_detail(store, quest_id, p, hub=hub)
+        sid, was_dup, cand_note = _ensure_candidate_detail(
+            store, quest_id, p, hub=hub, slab_element=slab_element
+        )
         if cand_note is not None:
             # Either a lineage miss on a created candidate, or — when `sid` is
             # None — why the proposal was refused. Both belong in this step's

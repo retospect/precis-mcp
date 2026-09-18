@@ -18,8 +18,11 @@ as data (``format.toon`` tables, ``search``-shaped), never a picture.
 ``put(mode='preview')`` frames a network with no compute; ``view='analysis'``
 is the objective the optimiser reads (rate-limiting Eₐ + selectivity +
 confidence); ``view='compare'`` ranks candidates (rows) along the
-reaction coordinate (columns; ``RATE``/``SPAN`` precomputed). Loop +
-levers: skill ``precis-pathway-help``.
+reaction coordinate (columns; ``RATE``/``SPAN`` precomputed).
+``args={'U': x}`` (V vs RHE) re-levers ``analysis``/``profile``/``compare``
+under CHE (``analysis.at_potential``: states shift by ``n_H·eU``, barriers
+don't; refused on a pre-CHE graph). Loop + levers: skill
+``precis-pathway-help``.
 
 ``results_json``/``graph_json`` are ``autocatpath.pipeline.analyze``'s
 output (>= 0.5.2) verbatim — traps/poisons/selectivity/CHE/``score``

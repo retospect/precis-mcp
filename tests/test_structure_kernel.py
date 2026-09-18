@@ -240,6 +240,104 @@ def test_add_atom_site_wrong_anchor_count_raises() -> None:
     assert "3" in str(exc.value)
 
 
+# -- add_adsorbate (whole-group placement) -----------------------------------
+
+
+def _adsorbate_atoms(scene: Scene) -> list[tuple[str, np.ndarray]]:
+    """The non-anchor atoms of a ``_pd_triangle`` scene, in mint order, as
+    ``(element, cartesian)``."""
+    return [
+        (a.element, scene.cell.frac_to_cart(a.frac))
+        for la, a in scene.atoms.items()
+        if la not in ("aPd1", "aPd2", "aPd3")
+    ]
+
+
+def test_add_adsorbate_places_group_geometry_and_bonds() -> None:
+    scene = _pd_triangle()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_adsorbate",
+                "species": "OH",
+                "site": {"type": "top", "anchors": ["aPd1"]},
+                "height": 2.0,
+            }
+        ],
+    )
+    placed = _adsorbate_atoms(scene)
+    assert [el for el, _c in placed] == ["O", "H"]
+    o_cart, h_cart = placed[0][1], placed[1][1]
+    # the BINDING atom lands exactly where add_atom_site would put a lone O
+    assert o_cart == pytest.approx([0.0, 0.0, 2.0], abs=1e-6)
+    # the H sits one O–H bond above it (gas-phase 0.958 Å), upright
+    assert h_cart == pytest.approx([0.0, 0.0, 2.958], abs=1e-6)
+    assert float(np.linalg.norm(h_cart - o_cart)) == pytest.approx(0.958, abs=1e-6)
+    # and the intra-group bond is declared, surface contact is not
+    assert len(scene.bonds) == 1
+    bond = scene.bonds[0]
+    assert {bond.i, bond.j} == {la for la in scene.atoms if la.startswith(("aO", "aH"))}
+
+
+def test_add_adsorbate_rotate_spins_about_the_surface_normal() -> None:
+    scene = _pd_triangle()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_adsorbate",
+                "species": "H2O",
+                "site": {"type": "top", "anchors": ["aPd1"]},
+                "height": 2.0,
+                "rotate": 90.0,
+            }
+        ],
+    )
+    placed = _adsorbate_atoms(scene)
+    assert [el for el, _c in placed] == ["O", "H", "H"]
+    # Displacements are read minimum-image: the site sits on the cell origin,
+    # so an H at y = -0.757 legitimately wraps to the far wall.
+    o = placed[0][1]
+    disp = [c - o for _el, c in placed[1:]]
+    disp = [d - 20.0 * np.round(d / 20.0) for d in disp]
+    # the two H offsets (±0.757, 0, 0.586) rotate onto ±y, z unchanged
+    for d in disp:
+        assert d[0] == pytest.approx(0.0, abs=1e-6)
+        assert abs(d[1]) == pytest.approx(0.757, abs=1e-6)
+        assert d[2] == pytest.approx(0.586, abs=1e-6)
+    # H–O–H opens to its gas-phase 104.5°
+    v1, v2 = disp
+    cos = float(v1 @ v2 / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    assert np.degrees(np.arccos(cos)) == pytest.approx(104.5, abs=0.5)
+
+
+def test_add_adsorbate_unknown_species_lists_the_catalogue() -> None:
+    from precis.structure import OpError
+
+    scene = _pd_triangle()
+    with pytest.raises(OpError) as exc:
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_adsorbate",
+                    "species": "CO",
+                    "site": {"type": "top", "anchors": ["aPd1"]},
+                }
+            ],
+        )
+    assert "NH3" in str(exc.value) and "add_atom_site" in str(exc.value)
+
+
+def test_add_adsorbate_needs_a_site_object() -> None:
+    from precis.structure import OpError
+
+    scene = _pd_triangle()
+    with pytest.raises(OpError, match="site"):
+        apply_ops(scene, [{"op": "add_adsorbate", "species": "OH", "site": "top"}])
+
+
 def test_add_atom_site_duplicate_anchors_raises() -> None:
     from precis.structure import OpError
 

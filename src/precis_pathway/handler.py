@@ -20,6 +20,7 @@ and need a core edit to extend.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -43,6 +44,34 @@ from .persist import BODY_KIND, pathway_title, persist_result
 #: the GPU node's PRECIS_NODE (e.g. 'spark'); unset → in-process EMT (slice 0).
 _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+#: Views that accept the CHE potential lever ``args={'U': <V vs RHE>}``
+#: (docs/backlog/pathway-conditions-effects-report.md Phase 1 item 1).
+_POTENTIAL_VIEWS = ("analysis", "profile", "compare")
+
+
+def _potential_arg(args: dict[str, Any] | None) -> float | None:
+    """``args['U']`` as a finite float (V vs RHE), or None when absent. Any
+    other key is rejected by name so a typo (``u``, ``potential``) never
+    reads as "no lever"."""
+    if not isinstance(args, dict) or not args:
+        return None
+    unknown = sorted(str(k) for k in args if k != "U")
+    if unknown:
+        raise BadInput(
+            f"pathway get args={unknown!r} not recognised",
+            options=["U"],
+            next="args={'U': -0.3}  (potential, V vs RHE; views analysis|profile|compare)",
+        )
+    raw = args["U"]
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, int | float)
+        or not math.isfinite(raw)
+    ):
+        raise BadInput(f"args={{'U': {raw!r}}}: U must be a finite number (V vs RHE)")
+    return float(raw)
 
 
 def _nf(x: Any) -> float:
@@ -306,6 +335,7 @@ class PathwayHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None:
@@ -313,6 +343,7 @@ class PathwayHandler(Handler):
                 "pathway get needs an id (the pathway slug)",
                 next="get(kind='pathway', id='no_to_no3_pd')",
             )
+        U = _potential_arg(args)
         store = self.hub.live_store
         # A trailing ``~<source>→<target>`` step selector (Simulation step
         # deep-links) — dispatch's universal-handle/slug routing reattaches
@@ -342,6 +373,13 @@ class PathwayHandler(Handler):
                 ),
             )
 
+        if U is not None and view is not None and v not in _POTENTIAL_VIEWS:
+            raise BadInput(
+                f"args={{'U': …}} does not apply to view {view!r}",
+                options=list(_POTENTIAL_VIEWS),
+                next=f"get(kind='pathway', id={id!r}, view='analysis', args={{'U': {U}}})",
+            )
+
         meta = ref.meta or {}
         if meta.get("status") == "computing":
             node = meta.get("route_node", "?")
@@ -358,7 +396,7 @@ class PathwayHandler(Handler):
         if v == "mermaid":
             return Response(body=self._mermaid(meta))
         if v == "compare":
-            return Response(body=self._compare(store, ref, meta))
+            return Response(body=self._compare(store, ref, meta, U=U))
 
         computed = bool(meta.get("graph"))
         if v in ("analysis", "steps", "kinetics", "trust", "warnings") and not computed:
@@ -367,10 +405,28 @@ class PathwayHandler(Handler):
                 f"{meta.get('status', '?')}). Run it (put without mode='preview') "
                 "first, then read this view."
             )
-        if v == "analysis":
+        if U is not None:
+            # analysis / profile / the default view at a stated potential:
+            # the lever needs a computed, CHE-stamped graph — never a silent
+            # zero shift on a pre-CHE run.
+            from . import analysis
+
+            if not computed:
+                raise BadInput(
+                    f"pathway '{id}' not computed yet — args={{'U': …}} needs a "
+                    "computed graph"
+                )
+            if not analysis.has_potential_lever(meta.get("graph") or {}):
+                raise BadInput(
+                    f"pathway '{id}' carries no n_H on its graph (pre-CHE engine "
+                    "run) — the potential lever is unavailable; re-run it on the "
+                    "current engine",
+                    next=f"get(kind='pathway', id={id!r}, view='analysis')",
+                )
+        if v == "analysis" or (v == "" and U is not None):
             from .toon_views import analysis_text
 
-            return Response(body=analysis_text(meta))
+            return Response(body=analysis_text(meta, U=U))
         if v == "steps":
             from .toon_views import steps_toon
 
@@ -396,7 +452,7 @@ class PathwayHandler(Handler):
         if v == "network":
             return Response(body=self._render_network(ref.title, meta))
         if v == "profile":
-            return Response(body=self._render_profile(ref.title, meta))
+            return Response(body=self._render_profile(ref.title, meta, U=U))
         # default (no view): analysis if computed, else the preview/profile text
         if computed:
             from .toon_views import analysis_text
@@ -446,9 +502,13 @@ class PathwayHandler(Handler):
         return Response(body=step_view(meta, pw_handle, edge))
 
     # -- compare (cross-candidate) ---------------------------------------
-    def _compare(self, store: Store, ref: Any, meta: dict[str, Any]) -> str:
+    def _compare(
+        self, store: Store, ref: Any, meta: dict[str, Any], *, U: float | None = None
+    ) -> str:
         """Compare this pathway against every computed sibling sharing the same
-        substrate→target (same reaction), as one interleaved TOON table."""
+        substrate→target (same reaction), as one interleaved TOON table. With
+        ``U`` (V vs RHE) every CHE-stamped candidate is re-levered first and
+        the table ranks by energetic span at that potential."""
         from . import analysis
         from .toon_views import compare_toon
 
@@ -490,7 +550,7 @@ class PathwayHandler(Handler):
                 "compare yet. Run variants (different surface/dopant) to build a "
                 "leaderboard."
             )
-        return compare_toon(candidates)
+        return compare_toon(candidates, U=U)
 
     # -- preview (cheap, no compute) -------------------------------------
     def _preview(
@@ -623,13 +683,29 @@ class PathwayHandler(Handler):
         )
 
     @staticmethod
-    def _render_profile(title: str, meta: dict[str, Any]) -> str:
+    def _render_profile(
+        title: str, meta: dict[str, Any], *, U: float | None = None
+    ) -> str:
         r = meta.get("results", {})
         lines = [f"# {title}", ""]
         ref_name = r.get("pathway", [None])[0]
         lines.append(f"Energy reference: {r.get('energy_reference', '?')}")
+        # ``results.nodes`` holds the pooled estimates (mean/std) but no CHE
+        # stamp; the per-state ``n_H`` lives on the graph node of the same id.
+        n_h: dict[str, Any] = {}
+        if U is not None:
+            from .toon_views import potential_line
+
+            n_h = {
+                str(n.get("id")): n.get("n_H")
+                for n in (meta.get("graph") or {}).get("nodes", [])
+            }
+            lines.append(potential_line(U))
         lines.append("")
-        lines.append("## States (relative energy, eV)")
+        lines.append(
+            "## States (relative energy, eV"
+            + (f", at U = {U:+.2f} V vs RHE)" if U is not None else ")")
+        )
         nodes = r.get("nodes", {})
         for name in r.get("pathway", []):
             est = nodes.get(name, {})
@@ -637,6 +713,13 @@ class PathwayHandler(Handler):
             std = _nf(est.get("std")) if est.get("std") is not None else 0.0
             flag = "  [LOW CONFIDENCE]" if est.get("low_confidence") else ""
             here = "  ←root" if name == ref_name else ""
+            if U is not None:
+                nh = n_h.get(name)
+                if nh is None:
+                    flag += "  [no n_H — unshifted]"
+                else:
+                    rel += float(nh) * U
+                    here += f"  n_H={int(nh) if float(nh).is_integer() else nh}"
             lines.append(f"  {name:<16} {rel:+.3f} ± {std:.3f}{flag}{here}")
         warns = meta.get("warnings") or []
         if warns:

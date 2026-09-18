@@ -1089,6 +1089,11 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         '{"type":"hollow","anchors":["aPd1","aPd2","aPd3"]}} '
         '("type" is top/bridge/hollow with 1/2/3 anchors; code resolves the '
         "exact position from the anchor atoms — prefer this over add_atom)\n"
+        "- add_adsorbate — a whole GROUP on a named site (coverage series, "
+        "explicit-water spectators), placed with its own internal geometry: "
+        '{"op":"add_adsorbate","species":"OH","site":{"type":"top",'
+        '"anchors":["aPd1"]}} (species: H·O·N·OH·H2O·NH·NH2·NH3; add '
+        '"rotate": <degrees> to spin it about the surface normal)\n'
         "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
         f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'
         '"element":"Cu"}\n'

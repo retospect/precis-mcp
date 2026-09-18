@@ -160,6 +160,7 @@ get(kind="quest", id=7, view="dossier")  # the living research synthesis
 get(kind="quest", id=7, view="frontier")  # Pareto frontier of candidate materials
 get(kind="quest", id=7, view="leaderboard")  # ranked servers by deeds contributed
 get(kind="quest", id=7, view="results")  # lineage-ordered results table (all bands)
+get(kind="quest", id=7, view="series")  # controlled series: one axis varied per block
 get(kind="quest", id=7, view="logbook")  # the FULL lab notebook, every entry
 get(
     kind="quest", id=7, view="log"
@@ -169,7 +170,7 @@ get(kind="quest", id="/gaps")  # gaps across ALL active quests
 ```
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
-leaderboard · results · logbook` (quest-specific) plus the generic
+leaderboard · results · series · logbook` (quest-specific) plus the generic
 `links · log · raw`. `view='results'` is one row per candidate across
 *every* band (not just the frontier), grouped by lineage (dopant, then
 what varies) rather than by band — the same table the tick prompt itself
@@ -177,6 +178,16 @@ embeds, so it doubles as "what would the next tick see right now".
 `view='results'` and `view='frontier'` are **budgeted** like the tick's
 copy (2500 tokens; rows drop from the tail, never the newest ten, and the
 body says `(+K … rows omitted)`); `args={'budget': 8000}` widens it.
+`view='series'` re-cuts the same rows as **controlled comparisons**: one
+block per set of candidates that share a base and differ in exactly one
+axis (`dopant · n_dopant · site · coads`), so a difference down a block is
+attributable to that axis. It recognises the series already in the data —
+it never enumerates a grid, and it says plainly when there are none. A
+level's numbers are comparable only where `trusted=yes`. The axes come from
+each candidate's `meta.params`, stamped at proposal time from its structure
+ops (a co-adsorbate carries the named site it was placed on, e.g.
+`H2@hollow`); a candidate that predates the stamp falls back to counting
+its atoms, which cannot see a site.
 Note the trap: this doc says *deeds* constantly, but it isn't a view — a
 *deed* is just the milestone-typed slice of the log. Bare `get(id=N)` shows a
 digest with only the logbook **tail** (last 10 entries, cheap even on a quest

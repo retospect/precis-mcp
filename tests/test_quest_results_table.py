@@ -99,6 +99,28 @@ def _dopant_ops(element: str, n: int, *, h: int = 0) -> list[dict[str, Any]]:
     return ops
 
 
+def _hollow_h(*, height: float = 1.6) -> dict[str, Any]:
+    """An H placed on a NAMED hollow site over three of the Pd fixture's
+    atoms — the ``site`` an ``add_atom_site`` op takes is the object
+    ``{'type', 'anchors'}``, not a bare name. ``height`` distinguishes two
+    otherwise-identical placements so the second doesn't collide."""
+    return {
+        "op": "add_atom_site",
+        "element": "H",
+        "site": {"type": "hollow", "anchors": ["aPd1", "aPd2", "aPd3"]},
+        "height": height,
+    }
+
+
+def _top_h() -> dict[str, Any]:
+    return {
+        "op": "add_atom_site",
+        "element": "H",
+        "site": {"type": "top", "anchors": ["aPd1"]},
+        "height": 1.6,
+    }
+
+
 # ── build_results_rows — bands ──────────────────────────────────────────
 
 
@@ -181,6 +203,240 @@ class TestDopantDerivation:
         assert row["dopant"] == "Ag"
         assert row["n_dopant"] == 1
         assert row["site"] == "subst"  # the stamped value, not the geometry read
+
+
+# ── meta.params writer (Phase 1 item 2, closes gr345342) ─────────────────
+
+
+class TestParamsStamp:
+    def test_ops_stamp_params_with_coadsorbate_site(self, store: Any) -> None:
+        """``ensure_candidate`` stamps ``meta.params`` from the spec's own
+        ops — including the NAMED site a co-adsorbate was placed on, which
+        atoms alone can't report (gr345342)."""
+        qid = _mk_quest(store)
+        sid = _mk_candidate(
+            store,
+            qid,
+            "Ag subst + 2H hollow",
+            [
+                {"op": "set_element", "atom": "aPd4", "element": "Ag"},
+                _hollow_h(),
+                _hollow_h(height=2.4),
+            ],
+        )
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        params = (ref.meta or {}).get("params")
+        assert params == {
+            "dopant": "Ag",
+            "n_dopant": 1,
+            "site": "subst",
+            "coads": {"H": 2},
+            "coads_site": {"H": "hollow"},
+        }
+        row = build_results_rows(store, qid)[0]
+        assert row["coads"] == "H2@hollow"  # the site rides into the table
+        assert row["site"] == "subst"
+
+    def test_host_atoms_are_not_dopants_and_raw_frac_has_no_site_suffix(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store)  # reaction_config.slab.element = Pd
+        sid = _mk_candidate(store, qid, "Ag+2H frac", _dopant_ops("Ag", 1, h=2))
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        params: dict[str, Any] = (ref.meta or {})["params"]
+        # the four bare `add_atom` Pd host atoms are not self-doping
+        assert params["dopant"] == "Ag" and params["n_dopant"] == 1
+        assert params["site"] == "adatom"
+        assert params["coads_site"] == {"H": "frac"}
+        # 'frac' = "placed by coordinates, site not named" — no @suffix
+        assert build_results_rows(store, qid)[0]["coads"] == "H2"
+
+    def test_proposer_params_override_the_derived_ones(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        spec = {
+            "cell": _CELL,
+            "ops": [*_PD_SLAB_OPS, _top_h()],
+        }
+        sid = compute_mod.ensure_candidate(
+            store,
+            qid,
+            {
+                "name": "explicit",
+                "structure": spec,
+                "params": {"coads": {"H": 1}, "coads_site": {"H": "bridge"}},
+            },
+        )
+        assert sid is not None
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        assert (ref.meta or {})["params"]["coads_site"] == {"H": "bridge"}
+
+    def test_add_adsorbate_group_counts_as_its_species(self, store: Any) -> None:
+        """A whole-group ``add_adsorbate`` (Phase 1 item 3) carries its own
+        species name into the param space — OH is one OH, not one O + one H."""
+        qid = _mk_quest(store)
+        sid = _mk_candidate(
+            store,
+            qid,
+            "OH on top",
+            [
+                {
+                    "op": "add_adsorbate",
+                    "species": "OH",
+                    "site": {"type": "top", "anchors": ["aPd1"]},
+                    "height": 2.0,
+                }
+            ],
+        )
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        params: dict[str, Any] = (ref.meta or {})["params"]
+        assert params["coads"] == {"OH": 1}
+        assert params["coads_site"] == {"OH": "top"}
+        assert build_results_rows(store, qid)[0]["coads"] == "OH1@top"
+
+    def test_retransmuting_one_atom_counts_once(self) -> None:
+        """Labels are stable, so a spec may ``set_element`` the same atom
+        twice (a corrected choice). Only the atom's FINAL element counts —
+        counting per op would report two dopants for one doped site, and
+        would report a dopant for an atom put back to the host element."""
+        from precis.quest.compute import params_from_spec
+
+        corrected = params_from_spec(
+            {
+                "ops": [
+                    {"op": "slab", "element": "Pd", "size": [2, 2, 3]},
+                    {"op": "set_element", "atom": "aPd4", "element": "Ag"},
+                    {"op": "set_element", "atom": "aPd4", "element": "Cu"},
+                ]
+            }
+        )
+        assert corrected["dopant"] == "Cu" and corrected["n_dopant"] == 1
+
+        reverted = params_from_spec(
+            {
+                "ops": [
+                    {"op": "slab", "element": "Pd", "size": [2, 2, 3]},
+                    {"op": "set_element", "atom": "aPd4", "element": "Ag"},
+                    {"op": "set_element", "atom": "aPd4", "element": "Pd"},
+                ]
+            }
+        )
+        assert reverted == {}  # back to a clean slab: no doping at all
+
+        two_atoms = params_from_spec(
+            {
+                "ops": [
+                    {"op": "slab", "element": "Pd", "size": [2, 2, 3]},
+                    {"op": "set_element", "atom": "aPd3", "element": "Ag"},
+                    {"op": "set_element", "atom": "aPd4", "element": "Ag"},
+                ]
+            }
+        )
+        assert two_atoms["n_dopant"] == 2
+
+    def test_bare_slab_stamps_no_params(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        sid = _mk_candidate(store, qid, "bare", [])
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        assert "params" not in (ref.meta or {})
+
+
+# ── controlled series view (Phase 1 item 2) ──────────────────────────────
+
+
+class TestSeriesView:
+    def _series_quest(self, store: Any) -> int:
+        qid = _mk_quest(store)
+        # a θ_H series on an Ag-doped base: 0, 1 and 2 co-adsorbed H
+        for h in (0, 1, 2):
+            sid = _mk_candidate(store, qid, f"Ag H{h}", _dopant_ops("Ag", 1, h=h))
+            _converge(store, sid)
+            store.stamp_ref_meta(
+                sid, {"barrier": 0.3 + 0.1 * h, "barrier_trusted": True}
+            )
+        # one lone Cu candidate differing in dopant AND n_dopant from every
+        # Ag row — two axes at once, so it belongs to no controlled series.
+        _mk_candidate(store, qid, "Cu2", _dopant_ops("Cu", 2))
+        return qid
+
+    def test_build_series_groups_one_varied_axis(self, store: Any) -> None:
+        from precis.quest.results_table import build_series
+
+        qid = self._series_quest(store)
+        rows = build_results_rows(store, qid)
+        series = build_series(rows)
+        coads_series = [s for s in series if s["axis"] == "coads"]
+        assert coads_series, series
+        widest = coads_series[0]
+        assert [lv["coads"] for lv in widest["levels"]] == ["-", "H1", "H2"]
+        assert "dopant=Ag" in widest["base"]
+        # the Cu candidate differs in dopant AND coads from every Ag row, so
+        # it is in no series.
+        handles = {lv["handle"] for s in series for lv in s["levels"]}
+        cu_row = next(r for r in rows if r["dopant"] == "Cu")
+        assert cu_row["handle"] not in handles
+
+    def test_view_series_renders_blocks_and_empty_case(self, store: Any) -> None:
+        h = QuestHandler(hub=Hub(store=store))
+        qid = self._series_quest(store)
+        body = h.get(id=qid, view="series").body
+        assert "controlled series" in body
+        assert "── coads varied (3 levels)" in body
+        assert "dopant=Ag" in body
+        assert "span_at_Uopt" in body and "trusted" in body
+
+        lonely = _mk_quest(store, "a quest with one candidate")
+        _mk_candidate(store, lonely, "only", _dopant_ops("Ag", 1))
+        empty = h.get(id=lonely, view="series").body
+        assert "no controlled series yet" in empty
+
+    def test_series_view_budget_drops_blocks(self, store: Any) -> None:
+        """Two series (a θ_H one and a dopant one) under a 1-token budget:
+        the first block is always rendered — an empty view would be worse
+        than an over-budget one — and the rest are named as omitted."""
+        handler = QuestHandler(hub=Hub(store=store))
+        qid = _mk_quest(store, "two-series quest")
+        for ops in (
+            _dopant_ops("Ag", 1),
+            _dopant_ops("Ag", 1, h=1),
+            _dopant_ops("Cu", 1),
+        ):
+            _mk_candidate(store, qid, "cand", ops)
+        body = handler.get(id=qid, view="series").body
+        assert "(2 controlled series" in body
+        tight = handler.get(id=qid, view="series", args={"budget": 1}).body
+        assert "(+1 series omitted — args={'budget': N} widens)" in tight
+
+    def test_numeric_axis_levels_sort_numerically(self) -> None:
+        """``n_dopant`` is an int column — 10 must not sort before 2."""
+        from precis.quest.results_table import build_series
+
+        rows = [
+            {
+                "handle": f"st{n}",
+                "dopant": "Ag",
+                "n_dopant": n,
+                "site": "subst",
+                "coads": "-",
+            }
+            for n in (2, 10, 1)
+        ]
+        series = build_series(rows)
+        assert [lv["n_dopant"] for lv in series[0]["levels"]] == [1, 2, 10]
+
+    def test_series_block_header_counts_distinct_levels(self, store: Any) -> None:
+        """Two candidates at the SAME level are one level measured twice —
+        the header must not read them as two levels."""
+        from precis.quest.results_table import build_series, render_series
+
+        qid = _mk_quest(store, "repeat-level quest")
+        for h_count, height in ((0, None), (1, 1.6), (1, 2.4)):
+            ops = _dopant_ops("Ag", 1)
+            if h_count:
+                ops = [*ops, _hollow_h(height=height or 1.6)]
+            _mk_candidate(store, qid, f"Ag H{h_count}", ops)
+        rows = build_results_rows(store, qid)
+        text = render_series(build_series(rows))
+        assert "── coads varied (2 levels over 3 candidates)" in text
 
 
 # ── lineage ordering ─────────────────────────────────────────────────────

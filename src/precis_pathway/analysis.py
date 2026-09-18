@@ -207,3 +207,78 @@ def summarize(graph: dict[str, Any], root: str, target: str) -> dict[str, Any]:
         "span": span,
         "low_confidence": bool(rl and rl["low_confidence"]),
     }
+
+
+# ── the potential lever (CHE) ────────────────────────────────────────────
+#
+# Under the computational hydrogen electrode every reservoir H is H⁺ + e⁻,
+# so a state that has absorbed ``n_H`` of them relative to the root shifts
+# by ``n_H·eU`` (U vs RHE): ``G(U) = G(0) + n_H·U`` — the same closed form
+# the web explorer applies client-side (``pathway_detail.html.j2`` "potential
+# lever"). Chemical (NEB) steps join states of equal ``n_H``, so their
+# barriers do not move; only the supply (PCET) bridges and hence the state
+# ladder, the energetic span and the most-endergonic step do. A graph catpath
+# never stamped (pre-CHE run) carries no ``n_H`` at all — the lever is then
+# unavailable, not silently zero.
+
+
+def has_potential_lever(graph: dict[str, Any]) -> bool:
+    """True when at least one node carries an ``n_H`` stamp (a CHE-aware run)."""
+    return any(n.get("n_H") is not None for n in graph.get("nodes", []))
+
+
+def at_potential(graph: dict[str, Any], U: float) -> dict[str, Any]:
+    """A copy of ``graph`` re-levered to ``U`` V vs RHE: node ``rel_energy``
+    (and ``energy``, when present) shifted by ``n_H·U``; link ``delta_e``
+    shifted by the endpoints' ``n_H`` difference. Barriers untouched. A
+    node without ``n_H`` shifts by 0 (legacy node inside a stamped graph)."""
+    nodes_out: list[dict[str, Any]] = []
+    n_h: dict[str, float] = {}
+    for n in graph.get("nodes", []):
+        nn = dict(n)
+        shift = _num(n.get("n_H")) * U
+        n_h[str(n.get("id"))] = _num(n.get("n_H"))
+        for key in ("rel_energy", "energy"):
+            if nn.get(key) is not None:
+                nn[key] = float(nn[key]) + shift
+        nodes_out.append(nn)
+    links_out: list[dict[str, Any]] = []
+    for e in graph.get("links", []):
+        ee = dict(e)
+        if ee.get("delta_e") is not None:
+            d_nh = n_h.get(str(e.get("target")), 0.0) - n_h.get(
+                str(e.get("source")), 0.0
+            )
+            ee["delta_e"] = float(ee["delta_e"]) + d_nh * U
+        links_out.append(ee)
+    out = dict(graph)
+    out["nodes"] = nodes_out
+    out["links"] = links_out
+    return out
+
+
+def most_endergonic_step(
+    graph: dict[str, Any], root: str, target: str
+) -> dict[str, Any] | None:
+    """The route step (reaction OR supply bridge) with the largest state-to-
+    state ΔG along the root→target path — the thermodynamic bottleneck at
+    the potential the graph is levered to (at U = 0 its ΔG is ``−U_L`` of
+    the target path when that step is a PCET). None without a clean path."""
+    path = reaction_path(graph, root, target)
+    if len(path) < 2:
+        return None
+    nm = _node_map(graph)
+    best: dict[str, Any] | None = None
+    for a, b in pairwise(path):
+        ea, eb = nm.get(a, {}).get("rel_energy"), nm.get(b, {}).get("rel_energy")
+        if ea is None or eb is None:
+            continue
+        dg = float(eb) - float(ea)
+        if best is None or dg > best["delta_g"]:
+            e = _edge(graph, a, b)
+            best = {
+                "step": f"{a}→{b}",
+                "delta_g": dg,
+                "kind": "supply" if _is_supply(e) else "reaction",
+            }
+    return best

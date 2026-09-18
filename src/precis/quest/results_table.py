@@ -172,9 +172,41 @@ def _dopant_and_site(
     return _dopant_from_atoms(atoms, slab_element)
 
 
-def _coads(atoms: list[tuple[str, float | None]] | None) -> tuple[str, int, int]:
-    """``(display, h_count, o_count)`` — the candidate structure's own H/O
-    co-adsorbate counts (before any reaction network is placed on it)."""
+def _coads(
+    candidate: Candidate, atoms: list[tuple[str, float | None]] | None
+) -> tuple[str, int, int]:
+    """``(display, h_count, o_count)`` — the candidate's co-adsorbate coverage.
+
+    Prefers the proposer/creation-time ``meta.params`` stamp
+    (:func:`precis.quest.compute.params_from_spec`), which carries the
+    **named site** each species was placed on, and renders it as
+    ``H2@hollow``; gr345342 — deriving from atoms alone could only count
+    species, so the table's ``site`` column described the dopant and an
+    H-coverage series showed no site at all. Falls back to counting the
+    structure's own H/O atoms (before any reaction network is placed on it)
+    when the candidate predates the stamp.
+    """
+    params = candidate.params or {}
+    coads = params.get("coads")
+    if isinstance(coads, dict) and coads:
+        sites = params.get("coads_site")
+        sites = sites if isinstance(sites, dict) else {}
+        parts, counts = [], {}
+        for species, n in coads.items():
+            try:
+                n_int = int(n)
+            except (TypeError, ValueError):
+                continue
+            if n_int <= 0:
+                continue
+            counts[str(species)] = n_int
+            site = sites.get(species)
+            # ``frac`` means "placed by raw coordinates, site not named" —
+            # a suffix there would be noise, not information.
+            at = f"@{site}" if isinstance(site, str) and site and site != "frac" else ""
+            parts.append(f"{species}{n_int}{at}")
+        if parts:
+            return " ".join(parts), counts.get("H", 0), counts.get("O", 0)
     if not atoms:
         return "-", 0, 0
     h = sum(1 for el, _z in atoms if el == "H")
@@ -323,7 +355,7 @@ def build_results_rows(
     for candidate, band, measures, untrusted in entries:
         atoms = _structure_atoms(store, candidate.ref_id)
         dopant, n_dopant, site = _dopant_and_site(candidate, slab_element, atoms)
-        coads, h_count, o_count = _coads(atoms)
+        coads, h_count, o_count = _coads(candidate, atoms)
         pw_meta = _linked_pathway_meta(store, candidate.ref_id)
         row: dict[str, Any] = {
             "ref_id": candidate.ref_id,
@@ -435,8 +467,164 @@ def fit_rows_to_budget(
 #: ``ref_id`` ordering/truncation key every row also carries).
 RESULTS_COLUMNS: tuple[str, ...] = _COLUMNS
 
+
+# ── controlled series (Phase 1 item 2) ──────────────────────────────────
+#
+# A *series* is what the conditions-effects report reads: several candidates
+# that share a base and differ along exactly ONE parameter axis, so the
+# measure difference between them is attributable to that axis. Reto's call
+# (backlog decision 4) is that the agent owns which series to run — nothing
+# here enumerates a grid; this only *recognises* the series already in the
+# data and says which one each candidate belongs to.
+
+#: The axes a series can vary, in the order they're reported.
+_SERIES_AXES: tuple[str, ...] = ("dopant", "n_dopant", "site", "coads")
+
+#: Per-level columns of a series block — the measures the report compares
+#: plus the trust flag that says whether the comparison is legitimate.
+SERIES_COLUMNS: tuple[str, ...] = (
+    "level",
+    "handle",
+    "band",
+    "tier",
+    "barrier",
+    "span_at_Uopt",
+    "U_L",
+    "P_side",
+    "trusted",
+)
+
+
+def _level_key(value: Any) -> tuple[int, float, str]:
+    """Sort key for one level of a series axis: numbers in numeric order,
+    everything else alphabetical after them. ``n_dopant`` is an int column,
+    so a plain string sort would read 10 as less than 2 — the same trap the
+    candidate compare table just had."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (0, float(value), "")
+    text = "" if value is None else str(value)
+    try:
+        return (0, float(text), "")
+    except ValueError:
+        return (1, 0.0, text)
+
+
+def build_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Controlled series found among ``rows`` (:func:`build_results_rows`).
+
+    ``[{axis, base, levels: [row, ...]}, ...]``: for each axis in
+    :data:`_SERIES_AXES`, rows that agree on every *other* axis are one
+    group, and a group holding at least two distinct values of the axis is a
+    series. ``base`` is the fixed part, rendered as ``k=v`` pairs. Groups are
+    reported widest-first (most levels), then by axis order, so the richest
+    comparison leads.
+
+    A candidate can appear in several series (one per axis it varies) — that
+    is the point: the same Ag/Pd pair is both a dopant series at θ_H = 0 and
+    a member of two θ_H series.
+    """
+    out: list[dict[str, Any]] = []
+    for axis in _SERIES_AXES:
+        others = [a for a in _SERIES_AXES if a != axis]
+        groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+        for row in rows:
+            key = tuple(str(row.get(a, "")) for a in others)
+            groups.setdefault(key, []).append(row)
+        for key, members in groups.items():
+            if len({str(m.get(axis, "")) for m in members}) < 2:
+                continue
+            out.append(
+                {
+                    "axis": axis,
+                    "base": ", ".join(f"{a}={v}" for a, v in zip(others, key) if v),
+                    "levels": sorted(members, key=lambda m: _level_key(m.get(axis))),
+                }
+            )
+    out.sort(key=lambda s: (-len(s["levels"]), _SERIES_AXES.index(s["axis"])))
+    return out
+
+
+def render_series(
+    series: list[dict[str, Any]], *, token_budget: int = _RESULTS_TABLE_TOKEN_BUDGET
+) -> str:
+    """The series blocks as text — one fixed-width table per series, widest
+    first, truncated at ``token_budget`` (chars/4) with the dropped count
+    named. Empty when no candidate varies exactly one axis."""
+    if not series:
+        return (
+            "(no controlled series yet — a series needs ≥2 candidates that "
+            "differ in exactly one of: " + ", ".join(_SERIES_AXES) + ". Vary one "
+            "axis on a fixed base to build one.)"
+        )
+    blocks: list[str] = []
+    used = 0
+    dropped = 0
+    for s in series:
+        levels = [
+            {**{"level": str(row.get(s["axis"], "-"))}, **row} for row in s["levels"]
+        ]
+        widths = {c: len(c) for c in SERIES_COLUMNS}
+        for row in levels:
+            for c in SERIES_COLUMNS:
+                widths[c] = max(widths[c], len(str(row.get(c, ""))))
+        # "levels" counts DISTINCT values of the axis, not rows: a 51-row
+        # dopant block over 17 elements is a 17-level series measured 51
+        # times, and calling that "51 levels" would overstate the sweep.
+        n_levels = len({row["level"] for row in levels})
+        counted = (
+            f"{n_levels} levels"
+            if n_levels == len(levels)
+            else f"{n_levels} levels over {len(levels)} candidates"
+        )
+        head = (
+            f"── {s['axis']} varied ({counted})"
+            + (f" — base: {s['base']}" if s["base"] else "")
+            + " ──"
+        )
+        lines = [head, "  ".join(c.ljust(widths[c]) for c in SERIES_COLUMNS)]
+        lines += [
+            "  ".join(str(row.get(c, "")).ljust(widths[c]) for c in SERIES_COLUMNS)
+            for row in levels
+        ]
+        block = "\n".join(lines)
+        if used and (used + len(block)) / _CHARS_PER_TOKEN > token_budget:
+            dropped += 1
+            continue
+        # A single block can itself exceed the budget (qu164903's widest is
+        # 51 candidates). Trim ROWS from its tail rather than dropping the
+        # whole comparison — one row per distinct level is the minimum that
+        # still reads as a series, so the trim never goes below that.
+        room = max(0, token_budget * _CHARS_PER_TOKEN - used)
+        if len(block) > room and len(lines) > 2:
+            # lines = [header, column names, one line per level row]; the
+            # first row always survives so a block is never header-only.
+            keep, seen, trimmed = list(lines[:3]), {levels[0]["level"]}, 0
+            for row, line in zip(levels[1:], lines[3:]):
+                head_len = sum(len(x) + 1 for x in keep)
+                first_of_level = row["level"] not in seen
+                if head_len + len(line) > room and not first_of_level:
+                    trimmed += 1
+                    continue
+                seen.add(row["level"])
+                keep.append(line)
+            if trimmed:
+                keep.append(
+                    f"(+{trimmed} candidate(s) omitted — args={{'budget': N}} widens)"
+                )
+                block = "\n".join(keep)
+        blocks.append(block)
+        used += len(block)
+    text = "\n\n".join(blocks)
+    if dropped:
+        text += f"\n\n(+{dropped} series omitted — args={{'budget': N}} widens)"
+    return text
+
+
 __all__ = [
     "RESULTS_COLUMNS",
+    "SERIES_COLUMNS",
     "build_results_rows",
+    "build_series",
     "render_results_table",
+    "render_series",
 ]

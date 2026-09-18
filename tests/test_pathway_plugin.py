@@ -1034,6 +1034,155 @@ def test_compare_view(pathway_store: Store) -> None:
     assert "cmp-pd" in out and "cmp-pt" in out, out  # both candidates present
 
 
+# ── the potential lever: args={'U': x} (Phase 1 item 1 of
+# docs/backlog/pathway-conditions-effects-report.md) ─────────────────────
+
+#: A→B is a PCET supply bridge (B absorbed one reservoir H), B→C a chemical
+#: step with a 0.8 eV barrier. At U = 0 the span is the B-state ladder plus
+#: the barrier (1.3 eV); at U = −0.5 V the B/C states drop by 0.5 eV, so the
+#: span falls to 0.8 eV while the barrier itself does not move.
+_LEVER_GRAPH = {
+    "nodes": [
+        {"id": "A", "rel_energy": 0.0, "n_H": 0},
+        {"id": "B", "rel_energy": 0.5, "n_H": 1},
+        {"id": "C", "rel_energy": 0.2, "n_H": 1},
+    ],
+    "links": [
+        {"source": "A", "target": "B", "kind": "supply", "delta_e": 0.5},
+        {
+            "source": "B",
+            "target": "C",
+            "kind": "reaction",
+            "barrier": 0.8,
+            "delta_e": -0.3,
+        },
+    ],
+}
+
+
+def test_analysis_at_potential_shifts_states_not_barriers() -> None:
+    from precis_pathway import analysis
+
+    assert analysis.has_potential_lever(_LEVER_GRAPH)
+    assert not analysis.has_potential_lever({"nodes": [{"id": "A", "rel_energy": 0.0}]})
+
+    g0 = analysis.at_potential(_LEVER_GRAPH, 0.0)
+    assert [n["rel_energy"] for n in g0["nodes"]] == [0.0, 0.5, 0.2]
+    assert analysis.energetic_span(g0, "A", "C") == pytest.approx(1.3)
+    assert analysis.most_endergonic_step(g0, "A", "C") == {
+        "step": "A→B",
+        "delta_g": pytest.approx(0.5),
+        "kind": "supply",
+    }
+
+    g = analysis.at_potential(_LEVER_GRAPH, -0.5)
+    assert [n["rel_energy"] for n in g["nodes"]] == pytest.approx([0.0, 0.0, -0.3])
+    # the supply (PCET) bridge's ΔE follows the endpoints' n_H difference; the
+    # chemical step (equal n_H) keeps its ΔE and its barrier.
+    by_step = {(e["source"], e["target"]): e for e in g["links"]}
+    assert by_step[("A", "B")]["delta_e"] == pytest.approx(0.0)
+    assert by_step[("B", "C")]["delta_e"] == pytest.approx(-0.3)
+    assert by_step[("B", "C")]["barrier"] == 0.8
+    assert analysis.energetic_span(g, "A", "C") == pytest.approx(0.8)
+    assert analysis.rate_limiting(g, "A", "C") == analysis.rate_limiting(g0, "A", "C")
+    # the input graph is untouched (a copy, never an in-place re-lever)
+    assert _LEVER_GRAPH["nodes"][1]["rel_energy"] == 0.5
+
+
+def test_toon_views_at_potential() -> None:
+    from precis_pathway import analysis, toon_views
+
+    art = runner.run_pathway_from_yaml(BRANCH)  # CHE-stamped: NO+H branch has n_H=1
+    meta: dict[str, Any] = {
+        "graph": art["graph_json"],
+        "results": art["results_json"],
+        "warnings": [],
+    }
+    assert analysis.has_potential_lever(meta["graph"])
+    plain = toon_views.analysis_text(meta)
+    assert "V vs RHE" not in plain and "most endergonic" not in plain
+
+    out = toon_views.analysis_text(meta, U=-0.3)
+    assert "at U = -0.30 V vs RHE" in out
+    assert "‡ barriers are U-independent" in out
+    assert "energetic span (whole-path apparent barrier) at U = -0.30 V" in out
+    assert "most endergonic route step at U:" in out
+
+    g, res = art["graph_json"], art["results_json"]
+    r, t = analysis.roots(g, res)
+    stamped = {"slug": "pd", "lever": "Pd", "graph": g, "root": r, "target": t}
+    legacy_graph = {
+        "nodes": [{k: v for k, v in n.items() if k != "n_H"} for n in g["nodes"]],
+        "links": g["links"],
+    }
+    legacy = {
+        "slug": "old",
+        "lever": "Pd",
+        "graph": legacy_graph,
+        "root": r,
+        "target": t,
+    }
+    cmp_out = toon_views.compare_toon([stamped, legacy], U=0.4)
+    assert "at U = +0.40 V vs RHE" in cmp_out and "ranked by SPAN at U" in cmp_out
+    assert "shown unshifted: old" in cmp_out
+    assert "pd" in cmp_out and "old" in cmp_out
+
+
+def test_get_views_at_potential(pathway_store: Store) -> None:
+    import json
+
+    from precis.errors import BadInput
+
+    h = _handler(pathway_store)
+    h.put(id="lever_pd", text=BRANCH)
+    h.put(id="lever_pt", text=BRANCH.replace("element: Pd", "element: Pt"))
+
+    ana = h.get(id="lever-pd", view="analysis", args={"U": -0.3}).body
+    assert "at U = -0.30 V vs RHE" in ana and "most endergonic route step" in ana
+    # the default view at a stated potential is the analysis at that potential
+    assert h.get(id="lever-pd", args={"U": -0.3}).body == ana
+    assert "V vs RHE" not in h.get(id="lever-pd", view="analysis").body
+
+    prof = h.get(id="lever-pd", view="profile", args={"U": 0.5}).body
+    assert "at U = +0.50 V vs RHE" in prof and "n_H=1" in prof and "n_H=0" in prof
+
+    cmp_out = h.get(id="lever-pd", view="compare", args={"U": 0.5}).body
+    assert "ranked by SPAN at U" in cmp_out
+    assert "lever-pd" in cmp_out and "lever-pt" in cmp_out
+
+    for bad in (
+        {"U": "x"},
+        {"U": True},
+        {"U": float("nan")},
+        {"u": 0.1},
+        {"U": 0.1, "T": 300},
+    ):
+        with pytest.raises(BadInput):
+            h.get(id="lever-pd", view="analysis", args=bad)
+    with pytest.raises(BadInput, match="does not apply"):
+        h.get(id="lever-pd", view="steps", args={"U": 0.1})
+
+    # a pre-CHE graph (no node carries n_H) refuses the lever instead of
+    # silently shifting by zero.
+    ref = pathway_store.get_ref(kind="pathway", id="lever-pd")
+    assert ref is not None
+    meta = dict(ref.meta)
+    meta["graph"] = {
+        **meta["graph"],
+        "nodes": [
+            {k: v for k, v in n.items() if k != "n_H"} for n in meta["graph"]["nodes"]
+        ],
+    }
+    with pathway_store.pool.connection() as c:
+        c.execute(
+            "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+            (json.dumps(meta), ref.id),
+        )
+    with pytest.raises(BadInput, match="no n_H"):
+        h.get(id="lever-pd", view="profile", args={"U": 0.5})
+    assert "States" in h.get(id="lever-pd", view="profile").body  # unlevered still fine
+
+
 def test_native_structure_ingest(pathway_store: Store) -> None:
     h = _handler(pathway_store)
     slug = "ingest-test"

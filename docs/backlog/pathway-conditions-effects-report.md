@@ -64,19 +64,28 @@ lead: the two Ag-subsurface candidates show 1 reconstruction warn each vs
 32–74 elsewhere.
 
 ### Phase 1 — precis views + ops (small, this repo)
-1. `get(kind='pathway', view='analysis'|'profile'|'compare', args={'U': x})`:
-   port the viewer's `G(U)=G(0)+n_H·eU` shift into
-   `precis_pathway/analysis.py` (nodes already carry `n_H`); `compare`
-   at U ranks candidates at a stated potential. Backlog cross-ref
-   `pathway-profile-renderer-unification`.
-2. `meta.params` writer at proposal time: `{dopant, n_dopant, site,
-   coads: {H: n, O: n, OH: n, H2O: n}}` derived from the ops (the seam
-   `quest-data-table-and-formula-discovery` found unfed). Then a
-   `view='series'` (quest or pathway): same base slab, one param varied →
-   table of span_at_Uopt / U_L / P_side / barrier_trusted per level.
-3. `add_adsorbate` structure op: species (H, O, OH, H₂O, NHₓ) + site →
-   group placed with a sane geometry via the engine's `discover_sites`;
-   documented in `precis-structure-help`.
+1. **DONE 2026-09-18** — `get(kind='pathway', view='analysis'|'profile'|'compare',
+   args={'U': x})`: `precis_pathway/analysis.py::at_potential` ports the
+   viewer's `G(U)=G(0)+n_H·eU` shift (+ `most_endergonic_step`); `compare`
+   at U ranks by span at U; a pre-CHE graph (no `n_H`) refuses the lever.
+   Backlog cross-ref `pathway-profile-renderer-unification`.
+2. **DONE 2026-09-18** — `meta.params` writer at proposal time
+   (`quest/compute.py::params_from_spec`, stamped by `ensure_candidate`):
+   `{dopant, n_dopant, site, coads: {species: n}, coads_site}` derived from
+   the ops, proposer-supplied `proposal['params']` overriding. Closes
+   gr345342 (the results table's `coads` now carries the named site,
+   `H2@hollow`). `get(kind='quest', view='series')` groups candidates that
+   differ in exactly one axis (dopant / n_dopant / site / coads) into
+   blocks of span_at_Uopt / U_L / P_side / barrier / trusted per level;
+   it recognises series, it does not enumerate a grid (decision 4).
+3. **DONE 2026-09-18** — `add_adsorbate` structure op: species (H · O · N ·
+   OH · H₂O · NH · NH₂ · NH₃) + a named site (the same `add_atom_site`
+   `{type, anchors}` resolver, not the engine's `discover_sites`) → the
+   whole group placed at its gas-phase internal geometry with intra-group
+   bonds, `rotate` about the surface normal. Documented in
+   `precis-structure-help` + the tick's op menu; the params writer counts a
+   group as its species (`coads: {OH: 1}`). The upright orientation is a
+   pre-relaxation starting guess, stated as such in the op docstring.
 
 ### Phase 2 — the report step (quest layer)
 1. `precis quest report <id>` (+ loop hook every N ticks): reads the
@@ -215,6 +224,11 @@ tree touches pathway/quest.
 
 Order = cheapest correctness fix first; each its own worktree cycle + /go.
 
+**Status 2026-09-18 (later):** all of **Phase 1 (items 1–3) is DONE** — see
+the Phase 1 section above. What remains in this whole item: the catpath-side
+half of fix-plan item 2, then Phase 2 (the report step) and Phase 3
+(engine). Reto's operator steps are unchanged and still his.
+
 **Status 2026-09-18:** items 1–3 LANDED (309766b4, 6cc41ad2 — qlanded, gate
 debt on the next /go). Item 1 was reframed: `label_hi` is `next_label`'s
 label high-water mark by design; the missing piece was a live-element
@@ -254,8 +268,8 @@ via Phase 1, plus the catpath-side half of item 2.
 5. **gr345354 frontier headline "(none converged yet)" with 13 trusted
    barriers** — `quest/frontier.py`; owned by worktree
    imperative-churning-bumblebee until its /go lands; hand over or do after.
-6. **gr345342 results-table `site` dopant-only** — folds into Phase 1 item 2
-   (`meta.params` writer with co-adsorbate site); not a standalone fix.
+6. **gr345342 results-table `site` dopant-only** — CLOSED 2026-09-18 by
+   Phase 1 item 2 (`meta.params` writer with co-adsorbate site).
 
 Then Phase 1 items 1–3 as written above. Pending docs-only qland from
 worktree jaunty-swinging-pixel (runbook promotion + this note) rides after

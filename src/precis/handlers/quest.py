@@ -112,6 +112,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "frontier",
     "leaderboard",
     "results",
+    "series",
     "logbook",
 )
 
@@ -245,7 +246,9 @@ class QuestHandler(NumericRefHandler):
             "the Pareto frontier of candidate materials (banded); "
             "view='leaderboard' the same frontier as a TOON design table; "
             "view='results' a lineage-ordered results table (one row per "
-            "candidate across every band, dopant/site/co-adsorbate columns). "
+            "candidate across every band, dopant/site/co-adsorbate columns); "
+            "view='series' the controlled series among them (one axis varied "
+            "per block). "
             "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
@@ -586,6 +589,9 @@ class QuestHandler(NumericRefHandler):
         if view == "results" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_results(ref, budget=_budget_arg(args)))
+        if view == "series" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_series(ref, budget=_budget_arg(args)))
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_logbook(ref))
@@ -601,7 +607,8 @@ class QuestHandler(NumericRefHandler):
                 options=[*_QUEST_CONCRETE_VIEWS, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, logbook (quest-specific) · links, log, raw (generic)",
+                    "results, series, logbook (quest-specific) · links, log, "
+                    "raw (generic)",
                     "no 'deeds' view — default get(kind='quest', id=N) shows a "
                     "digest with a logbook tail; view='logbook' is the full lab "
                     "notebook; view='log' is the raw ref-events ledger",
@@ -764,6 +771,41 @@ class QuestHandler(NumericRefHandler):
             f"{toon_body}{note}\n\n"
             "## text table (as embedded in the tick prompt)\n"
             f"{text_table}"
+        )
+
+    def _render_series(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
+        """`view='series'` — the *controlled* comparisons among the
+        candidates (:func:`precis.quest.results_table.build_series`): each
+        block holds candidates that share a base and differ along exactly one
+        parameter axis (dopant / n_dopant / site / co-adsorbate coverage), so
+        the measure difference down a block is attributable to that axis.
+
+        Nothing enumerates a grid — the agent owns which series to run
+        (docs/backlog/pathway-conditions-effects-report.md decision 4); this
+        only names the series the data already contains, and says so plainly
+        when there are none. Budgeted like ``view='results'``."""
+        from precis.quest import frontier as frontier_mod
+        from precis.quest.results_table import (
+            build_results_rows,
+            build_series,
+            render_series,
+        )
+
+        fr = frontier_mod.quest_frontier(self.store, ref.id)
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        rows = build_results_rows(self.store, ref.id, fr=fr)
+        if not rows:
+            return (
+                f"# series — quest {ref.id}: {head}\n\n"
+                "no candidate structures serve this quest yet."
+            )
+        series = build_series(rows)
+        body = render_series(series, token_budget=budget)
+        return (
+            f"# series — quest {ref.id}: {head}\n"
+            f"({len(series)} controlled series over {len(rows)} candidates; "
+            "a level's measures are comparable only where trusted=yes)\n\n"
+            f"{body}"
         )
 
     def _render_dossier(self, ref: Ref) -> str:

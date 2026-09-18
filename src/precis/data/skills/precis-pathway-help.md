@@ -119,6 +119,14 @@ computed** — no new relax/NEB, closed-form optima, no search.
   its ranked breakdown); its `limiting_factor` + one-line `worst_problem`
   ride onto quest candidates as naming context ("what do I fix first"),
   never as measures.
+- **Read a pathway at a chosen potential:** `get(kind='pathway', id=…,
+  view='analysis'|'profile'|'compare', args={'U': -0.3})` (V vs RHE) —
+  states re-levered by `n_H·eU`, the span and the most endergonic route
+  step reported at that U; `compare` at U ranks siblings by span at U
+  (`RATE` never moves — NEB barriers are U-independent under CHE; no
+  solvation). A pre-CHE pathway (no `n_H` on its graph) refuses the lever
+  by name rather than shifting by zero. Same closed form the explorer's
+  slider applies; the report's U set is 0 V · mid · `U_opt` · `U_L`.
 - The explorer (`/refs/pathway/{id}`) re-renders the diagram at any `U`
   client-side (slider, `→ U_L` / `→ U_opt` snaps), shows RHE **and** SHE
   (`U_SHE = U_RHE − 0.0592·pH` at 298.15 K; PCET steps are pH-independent on
@@ -175,7 +183,8 @@ Compares this pathway against every computed sibling for the same
 substrate→target, as one table: **candidates are rows** (sorted best-first by
 `RATE`), the **reaction coordinate is the columns** (state energies + `‡`
 barriers). Scan a `‡` column to see which candidate lowers that step; read a row
-for one candidate's whole landscape.
+for one candidate's whole landscape. Add `args={'U': x}` to rank the same
+table at a potential (rows sorted by `SPAN` at U; see the potential lever).
 
 ## Other reads
 

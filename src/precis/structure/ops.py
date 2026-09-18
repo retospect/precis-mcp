@@ -16,6 +16,10 @@ site (top/bridge/hollow over existing atom labels) instead of guessing
 fractional coordinates. :func:`_resolve_site` turns the name into exact
 coordinates and delegates to :func:`_op_add_atom` — one label-minting/
 validation path for both raw and site-symbolic placement.
+``add_adsorbate`` is its multi-atom twin: a catalogued group (H · O · N ·
+OH · H2O · NH · NH2 · NH3) placed from the same named site with its own
+gas-phase internal geometry and bonds, so a coverage/solvation series
+never hand-places an H.
 
 **Fragment-building ops** (built for the molecule-mode fragment library the
 retired ``nm`` kind — now ``se`` atomic mode, docs/backlog/nm-se-merge.md —
@@ -36,6 +40,7 @@ Unit enclave (package docstring): Å-native; every length-valued op argument
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -248,6 +253,137 @@ def _resolve_site(
             ) from exc
     target_cart = np.array([xy[0], xy[1], z_top + h])
     return scene.cell.wrap(scene.cell.cart_to_frac(target_cart))
+
+
+#: Adsorbate species catalogue for :func:`_op_add_adsorbate` — the whole
+#: group placed from ONE named site, so a co-adsorbate campaign can vary
+#: coverage without hand-placing each H (docs/backlog/
+#: pathway-conditions-effects-report.md Phase 1 item 3).
+#:
+#: Each entry is ``(binding_element, [(element, (dx, dy, dz)), ...],
+#: [(i, j), ...])``: the binding atom sits AT the resolved site (index 0,
+#: offset (0,0,0)); every other atom is placed by a Cartesian offset in Å
+#: from it, and the index pairs are the intra-group bonds minted alongside.
+#:
+#: The offsets are **gas-phase equilibrium geometries** (NIST CCCBDB: O–H
+#: 0.958 Å / H–O–H 104.5°, N–H 1.012 Å / H–N–H 106.7°, NH₂ 1.024 Å /
+#: 103.4°), oriented with the binding atom down and the hydrogens up and
+#: away from the surface. That is a **pre-relaxation starting guess**, not
+#: an adsorbed equilibrium geometry — adsorption tilts OH and flattens
+#: NH₃, which only the relax/NEB that follows can find. Placing them
+#: upright is the standard, deliberately unbiased starting point; it is
+#: never reported as a result.
+ADSORBATES: dict[
+    str,
+    tuple[
+        str,
+        list[tuple[str, tuple[float, float, float]]],
+        list[tuple[int, int]],
+    ],
+] = {
+    "H": ("H", [("H", (0.0, 0.0, 0.0))], []),
+    "O": ("O", [("O", (0.0, 0.0, 0.0))], []),
+    "N": ("N", [("N", (0.0, 0.0, 0.0))], []),
+    "OH": ("O", [("O", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 0.958))], [(0, 1)]),
+    "H2O": (
+        "O",
+        [
+            ("O", (0.0, 0.0, 0.0)),
+            ("H", (0.757, 0.0, 0.586)),
+            ("H", (-0.757, 0.0, 0.586)),
+        ],
+        [(0, 1), (0, 2)],
+    ),
+    "NH": ("N", [("N", (0.0, 0.0, 0.0)), ("H", (0.0, 0.0, 1.012))], [(0, 1)]),
+    "NH2": (
+        "N",
+        [
+            ("N", (0.0, 0.0, 0.0)),
+            ("H", (0.803, 0.0, 0.635)),
+            ("H", (-0.803, 0.0, 0.635)),
+        ],
+        [(0, 1), (0, 2)],
+    ),
+    "NH3": (
+        "N",
+        [
+            ("N", (0.0, 0.0, 0.0)),
+            ("H", (0.938, 0.0, 0.381)),
+            ("H", (-0.469, 0.812, 0.381)),
+            ("H", (-0.469, -0.812, 0.381)),
+        ],
+        [(0, 1), (0, 2), (0, 3)],
+    ),
+}
+
+
+def _op_add_adsorbate(scene: Scene, op: dict[str, Any]) -> None:
+    """Place a whole adsorbate group on a NAMED site in one op.
+
+    ``{"op": "add_adsorbate", "species": "OH", "site": {"type": "hollow",
+    "anchors": ["aPd1", "aPd2", "aPd3"]}, "height": <optional Å>,
+    "rotate": <optional degrees about z>}``.
+
+    The group's **binding atom** lands exactly where :func:`_op_add_atom_site`
+    would put a lone atom of that element (same :func:`_resolve_site`, same
+    default covalent-radius height), and the rest of the group follows at
+    the catalogued offsets (:data:`ADSORBATES`), optionally spun about the
+    surface normal by ``rotate`` so two co-adsorbates need not face the same
+    way. Intra-group bonds are minted; the group is NOT bonded to the
+    surface (a surface bond is an inferred contact, not a declared edge —
+    same convention ``add_atom_site`` follows).
+
+    This exists because an OH or H₂O spectator was otherwise a raw-``frac``
+    puzzle: place O by site, then compute H's coordinates by hand. Coverage
+    series (θ_H, θ_O, θ_OH, explicit-water solvation probes) are the whole
+    point of the op.
+    """
+    species = op.get("species")
+    if not isinstance(species, str) or species not in ADSORBATES:
+        raise OpError(
+            f"add_adsorbate 'species' must be one of {sorted(ADSORBATES)}, "
+            f"got {species!r} — build anything else atom-by-atom with "
+            "add_atom_site + add_bond"
+        )
+    site = op.get("site")
+    if not isinstance(site, dict):
+        raise OpError(
+            "add_adsorbate needs a 'site' object: "
+            "{'type': 'top'|'bridge'|'hollow', 'anchors': [labels]}"
+        )
+    binder, atoms, bonds = ADSORBATES[species]
+    origin_frac = _resolve_site(scene, site, binder, op.get("height"))
+
+    rotate = op.get("rotate", 0.0)
+    try:
+        theta = math.radians(float(rotate))
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"add_adsorbate 'rotate' must be a number (degrees), got {rotate!r}"
+        ) from exc
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+
+    labels: list[str] = []
+    for element, (dx, dy, dz) in atoms:
+        x = dx * cos_t - dy * sin_t
+        y = dx * sin_t + dy * cos_t
+        # The offset is converted as a VECTOR and added in fractional space:
+        # round-tripping the origin through cart_to_frac would leave the
+        # binding atom an epsilon off the site (and, at frac 0, wrapped to
+        # the far wall), so it would no longer land exactly where
+        # ``add_atom_site`` puts a lone atom. ``cart_to_frac`` is linear, so
+        # a difference vector converts cleanly.
+        frac = origin_frac + scene.cell.cart_to_frac(np.array([x, y, dz]))
+        label = scene.next_label(element)
+        _op_add_atom(
+            scene,
+            {"op": "add_atom", "element": element, "frac": [*frac], "label": label},
+        )
+        labels.append(label)
+    for i, j in bonds:
+        scene.bonds.append(
+            Bond(i=labels[i], j=labels[j], order=1.0, provenance="declared")
+        )
 
 
 def _default_site_height(anchor_elements: list[str], element: str) -> float:
@@ -950,6 +1086,7 @@ _OPS = {
     "slab": _op_slab,
     "add_atom": _op_add_atom,
     "add_atom_site": _op_add_atom_site,
+    "add_adsorbate": _op_add_adsorbate,
     "set_element": _op_set_element,
     "vacancy": _op_vacancy,
     "displace": _op_displace,
