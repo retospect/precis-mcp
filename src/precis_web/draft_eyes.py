@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
+from precis.utils.timeutil import as_utc
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -84,11 +85,10 @@ def _expired(updated_at: str | None) -> bool:
     ttl = _ttl_hours()
     if ttl <= 0 or not updated_at:
         return True
-    try:
-        age = datetime.now(UTC) - datetime.fromisoformat(updated_at)
-    except ValueError:
+    then = as_utc(updated_at)
+    if then is None:
         return True
-    return age.total_seconds() > ttl * 3600.0
+    return (datetime.now(UTC) - then).total_seconds() > ttl * 3600.0
 
 
 def _empty() -> dict[str, Any]:

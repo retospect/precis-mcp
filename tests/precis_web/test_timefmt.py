@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -15,6 +15,7 @@ from precis_web.timefmt import (
     duration,
     relative,
     span_seconds,
+    utc_date,
 )
 
 
@@ -118,3 +119,21 @@ def test_span_seconds_backwards_span_clamps_to_zero() -> None:
     start = datetime.now(UTC)
     end = start - timedelta(seconds=30)
     assert span_seconds(start, end) == 0.0
+
+
+def test_utc_date_renders_the_utc_day() -> None:
+    assert utc_date(datetime(2026, 9, 18, 11, 30, tzinfo=UTC)) == "2026-09-18"
+
+
+def test_utc_date_crosses_midnight_correctly() -> None:
+    """The case a bare ``.strftime("%Y-%m-%d")`` gets wrong: 2026-09-19 02:00
+    at +05:30 is still 2026-09-18 in UTC. A date has nowhere to hang a "UTC"
+    label, so it has to be converted rather than annotated."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    assert utc_date(datetime(2026, 9, 19, 2, 0, tzinfo=ist)) == "2026-09-18"
+
+
+def test_utc_date_accepts_iso_string_and_empty() -> None:
+    assert utc_date("2026-09-18T23:59:00Z") == "2026-09-18"
+    assert utc_date(None) == ""
+    assert utc_date("nonsense") == ""

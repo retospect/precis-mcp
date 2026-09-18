@@ -88,6 +88,6 @@ acquire_worktree_ship_lock() {
     fi
 
     lock_holder_write "$SHIP_WORKTREE_LOCKDIR"
-    printf 'started=%s\n' "$(date +%H:%M)" >> "$SHIP_WORKTREE_LOCKDIR/holder" 2>/dev/null || true
+    printf 'started=%s\n' "$(date -u +%H:%M)" >> "$SHIP_WORKTREE_LOCKDIR/holder" 2>/dev/null || true
     return 0
 }

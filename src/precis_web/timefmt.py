@@ -22,21 +22,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from precis.utils.timeutil import as_utc
+
 
 def _as_datetime(value: Any) -> datetime | None:
-    """Coerce a datetime / ISO string into a tz-aware datetime, or None."""
-    if isinstance(value, datetime):
-        dt = value
-    elif isinstance(value, str) and value.strip():
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt
+    """Coerce a datetime / ISO string into a tz-aware datetime, or None.
+
+    Thin alias: the implementation moved to ``precis.utils.timeutil`` so the
+    workers and the Discord bridge share one coercion with the web UI. Kept as
+    a module-local name because the formatters below all call it.
+    """
+    return as_utc(value)
 
 
 def age_seconds(value: Any) -> float | None:
@@ -91,6 +87,20 @@ def abs_ts(value: Any) -> str:
     if dt is None:
         return ""
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def utc_date(value: Any) -> str:
+    """Calendar day in UTC (``YYYY-MM-DD``), or ``""``.
+
+    The date-only sibling of :func:`abs_ts`. A bare ``.strftime("%Y-%m-%d")``
+    on a tz-aware value renders the day of whatever zone the process happens
+    to be in, which near midnight is the wrong day — and unlike a time, a
+    date carries nowhere to hang a ``UTC`` label saying which.
+    """
+    dt = _as_datetime(value)
+    if dt is None:
+        return ""
+    return dt.astimezone(UTC).strftime("%Y-%m-%d")
 
 
 def duration(secs: float | None) -> str:

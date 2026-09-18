@@ -60,7 +60,7 @@ def test_ladder_reviewed_marks_climbed_rungs_and_one_current() -> None:
     assert not steps["signed"]["done"] and not steps["signed"]["current"]
     assert not steps["published"]["done"]
     # The since-timestamp rides ONLY the current rung's tip.
-    assert "In this state since 2026-08-27 10:30Z" in steps["reviewed"]["tip"]
+    assert "In this state since 2026-08-27 10:30 UTC" in steps["reviewed"]["tip"]
     assert not any(
         "In this state since" in s["tip"] for n, s in steps.items() if n != "reviewed"
     )

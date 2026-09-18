@@ -248,7 +248,7 @@ def _recent_todo_done(store: Store, limit: int = 5) -> list[dict[str, Any]]:
         ).fetchall()
     return [
         {
-            "ts": r[0].strftime("%Y-%m-%d %H:%M") if r[0] else "",
+            "ts": _abs_ts(r[0]),
             "ago": _ago(r[0]),
             "event": r[1] or "",
             "ref_id": r[2],
@@ -302,7 +302,7 @@ def _recent_agent_activity(store: Store, limit: int = 10) -> list[dict[str, Any]
     return [
         {
             "ago": _ago(r[0]),
-            "ts": r[0].strftime("%Y-%m-%d %H:%M") if r[0] else "",
+            "ts": _abs_ts(r[0]),
             "host": r[1] or "?",
             "pass": r[2] or "?",
             "claimed": int(r[3]),
@@ -380,7 +380,7 @@ def _recent_events(store: Store, limit: int = 20) -> list[dict[str, Any]]:
         ).fetchall()
     return [
         {
-            "ts": r[0].strftime("%Y-%m-%d %H:%M") if r[0] else "",
+            "ts": _abs_ts(r[0]),
             "source": r[1] or "",
             "event": r[2] or "",
             "ref_id": r[3],

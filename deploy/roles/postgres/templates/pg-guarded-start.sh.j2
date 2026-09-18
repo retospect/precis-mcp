@@ -20,7 +20,7 @@ PGBIN="{{ pg_bin }}/postgres"
 PIDFILE="$DATADIR/postmaster.pid"
 
 if [ -f "$PIDFILE" ] && ! /usr/bin/pgrep -f "$PGBIN" >/dev/null 2>&1; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S %Z') [pg-guarded-start] no live postmaster; removing stale $PIDFILE" >&2
+    echo "$(date -u '+%Y-%m-%d %H:%M:%S %Z') [pg-guarded-start] no live postmaster; removing stale $PIDFILE" >&2
     /bin/rm -f "$PIDFILE"
 fi
 

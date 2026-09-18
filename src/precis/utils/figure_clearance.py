@@ -17,7 +17,7 @@ The rule by ``origin``:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
@@ -41,7 +41,7 @@ def figure_status(fig: dict[str, Any]) -> tuple[bool, str]:
         exp = str(perm.get("expires_at") or "").strip()
         if exp:
             try:
-                if date.fromisoformat(exp) < date.today():
+                if date.fromisoformat(exp) < datetime.now(UTC).date():
                     return False, f"third-party permission expired {exp}"
             except ValueError:
                 pass  # unparseable date — don't fail the export on it

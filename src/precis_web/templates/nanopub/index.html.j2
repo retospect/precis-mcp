@@ -63,7 +63,7 @@
     ⚠ {{ stuck|length }} OTS batch{{ 'es' if stuck|length != 1 }} pending past
     threshold:
     {% for b in stuck %}
-    <span class="font-mono">batch {{ b.id }} ({{ b.created_at.strftime('%Y-%m-%d') }})</span>{{ ", " if not loop.last }}
+    <span class="font-mono">batch {{ b.id }} ({{ b.created_at|utc_date }})</span>{{ ", " if not loop.last }}
     {% endfor %}
     — calendar may have lost the commitment; re-stamp via
     <code>precis nanopub re-stamp &lt;batch id&gt;</code>.
@@ -78,7 +78,7 @@
        href="/nanopub/fi{{ r.ref_id }}" data-src="/claim/fi{{ r.ref_id }}"
        title="{{ r.title }}">
       <span class="font-mono">fi{{ r.ref_id }}</span>{% if r.disputed_since %}
-      <span class="text-rose-500">(since {{ r.disputed_since.strftime('%Y-%m-%d') }})</span>{% endif %}</a>{{ " ·" if not loop.last }}
+      <span class="text-rose-500">(since {{ r.disputed_since|utc_date }})</span>{% endif %}</a>{{ " ·" if not loop.last }}
     {% endfor %}
   </div>
   {% endif %}
@@ -92,7 +92,7 @@
     {% elif r.state in ('signed', 'anchored') %}bg-sky-100 text-sky-700
     {% elif r.state %}bg-slate-200 text-slate-700
     {% else %}bg-slate-100 text-slate-400{% endif %}"
-    title="{{ state_tip(key) }}{% if r.updated_at %} In this state since {{ r.updated_at.strftime('%Y-%m-%d %H:%M') }}Z.{% endif %}">
+    title="{{ state_tip(key) }}{% if r.updated_at %} In this state since {{ r.updated_at|abs_ts }}.{% endif %}">
     {%- if r.disputed %}◆ blocked{% else %}{{ r.state or 'unminted' }}{% endif -%}
   </span>
   {# Staged candidate that no longer clears the CURRENT mint gates
@@ -112,7 +112,7 @@
   {% set steps = ['candidate', 'reviewed', 'signed', 'anchored', 'published'] %}
   {% set idx = steps.index(r.state) if r.state in steps else -1 %}
   <span class="np-steps shrink-0 cursor-help"
-        title="{{ steps|join(' → ') }} — at “{{ r.state }}”{% if r.updated_at %} since {{ r.updated_at.strftime('%Y-%m-%d %H:%M') }}Z{% endif %}">
+        title="{{ steps|join(' → ') }} — at “{{ r.state }}”{% if r.updated_at %} since {{ r.updated_at|abs_ts }}{% endif %}">
     {%- for s in steps -%}
     <i class="np-dot{% if idx >= loop.index0 %} on{% endif %}{% if r.state == 'published' %} pub{% endif %}"></i>
     {%- endfor -%}
@@ -216,7 +216,7 @@
             {% for b in batches %}
             <tr class="border-b border-slate-100">
               <td class="py-1 pr-4 font-mono">{{ b.id }}</td>
-              <td class="py-1 pr-4">{{ b.created_at.strftime('%Y-%m-%d') }}</td>
+              <td class="py-1 pr-4">{{ b.created_at|utc_date }}</td>
               <td class="py-1 pr-4">{{ b.leaf_count }}</td>
               <td class="py-1 pr-4">
                 <span class="{% if b.proof_state == 'upgraded' %}text-emerald-600{% elif b.proof_state == 'pending' %}text-amber-600{% else %}text-rose-600{% endif %}">

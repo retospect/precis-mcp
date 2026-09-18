@@ -29,6 +29,8 @@ import re
 import threading
 from typing import Any
 
+from precis_web.timefmt import abs_ts
+
 log = logging.getLogger(__name__)
 
 #: One action per publish state (the state → next-transition map the
@@ -245,16 +247,12 @@ def _ladder(state: str | None, row: Any, *, disputed: bool) -> list[dict[str, An
     transition while the contradicts edge stands)."""
     names = [n for n, _ in _LADDER]
     idx = names.index(state) if state in names else -1
-    when = (
-        row.updated_at.strftime("%Y-%m-%d %H:%M")
-        if row is not None and row.updated_at
-        else None
-    )
+    when = abs_ts(row.updated_at) if row is not None else None
     steps = []
     for i, (name, tip) in enumerate(_LADDER):
         current = i == idx
         if current and when:
-            tip = f"{tip} In this state since {when}Z."
+            tip = f"{tip} In this state since {when}."
         if current and disputed:
             tip = f"{tip} BLOCKED: a live contradicts edge stands — adjudicate first."
         steps.append(

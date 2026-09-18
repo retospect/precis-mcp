@@ -6,7 +6,7 @@ set -euo pipefail
 DEST="{{ shared_mount }}/backups/configs/{{ inventory_hostname }}"
 mkdir -p "${DEST}"
 
-echo "[$(date)] Config pull starting for {{ inventory_hostname }}"
+echo "[$(date -u)] Config pull starting for {{ inventory_hostname }}"
 
 # SSH config
 rsync -a --delete /etc/ssh/sshd_config "${DEST}/sshd_config" 2>/dev/null || true
@@ -37,4 +37,4 @@ rsync -a /Library/LaunchDaemons/com.hermes.* "${DEST}/" 2>/dev/null || true
 rsync -a /Library/LaunchDaemons/com.olla.* "${DEST}/" 2>/dev/null || true
 {% endif %}
 
-echo "[$(date)] Config pull complete for {{ inventory_hostname }}"
+echo "[$(date -u)] Config pull complete for {{ inventory_hostname }}"

@@ -13,6 +13,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from precis.store import Store
+from precis.utils.timeutil import as_utc
 
 
 def refresh_hours(env_var: str, default_hours: float) -> float:
@@ -41,9 +42,8 @@ def due(store: Store, state_key: str, env_var: str, default_hours: float) -> boo
     last = store.get_setting(state_key)
     if not last:
         return True
-    try:
-        last_ts = datetime.fromisoformat(last)
-    except ValueError:
+    last_ts = as_utc(last)
+    if last_ts is None:
         return True
     hours = refresh_hours(env_var, default_hours)
     return datetime.now(UTC) - last_ts >= timedelta(hours=hours)

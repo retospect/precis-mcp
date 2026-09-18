@@ -61,7 +61,7 @@ fi
 run_one() {
   local persona="$1"
   local stamp name log debug meta rendered
-  stamp="$(date +%Y-%m-%d-%H%M%S)"
+  stamp="$(date -u +%Y-%m-%d-%H%M%S)"
   name="${stamp}-${SAFE_HANDLE}-${persona}"
   log="$OUT/${name}.md"
   debug="$OUT/${name}.debug.log"

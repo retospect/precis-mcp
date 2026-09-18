@@ -237,7 +237,7 @@ def main() -> None:
 
     # append a dated trend row to the tracked results log
     log = Path(__file__).resolve().parent / "ROUNDTRIP_RESULTS.md"
-    today = datetime.date.today().isoformat()
+    today = datetime.datetime.now(datetime.UTC).date().isoformat()
     block = [
         f"\n## {today}  ({len(gold)} structures × {TRIALS} trials, same-model round trip)\n"
     ]

@@ -71,6 +71,7 @@ from precis_web.deps import (
 from precis_web.item_view import _OPEN_URL_OVERRIDES
 from precis_web.paper_ident import paper_abstract
 from precis_web.paper_links import doi_url, scholar_title_url
+from precis_web.timefmt import utc_date
 
 if TYPE_CHECKING:
     from precis.store.protocols import LinksStore, PoolStore
@@ -519,7 +520,7 @@ def _render_detail(
         # "Reviewed" sign-off (refs.human_verified_at/by) — the Meta tab's
         # mark-reviewed / undo row.
         "is_reviewed": bool(verified_at),
-        "reviewed_at": verified_at.strftime("%Y-%m-%d") if verified_at else "",
+        "reviewed_at": utc_date(verified_at),
         "reviewed_by": getattr(ref, "human_verified_by", None) or "",
         # "Can't get it" — the acquirability FACT declared on this paper
         # (meta.unacquirable_override {note,by,at}, no mode). Set from the

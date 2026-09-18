@@ -23,11 +23,11 @@ PG_USER="{{ pg_user }}"
 LATEST_DUMP=$(ls -td "${BACKUP_DIR}"/precis_prod_* 2>/dev/null | head -1)
 
 if [ -z "${LATEST_DUMP}" ]; then
-    echo "[$(date)] ERROR: No precis_prod dump found under ${BACKUP_DIR}"
+    echo "[$(date -u)] ERROR: No precis_prod dump found under ${BACKUP_DIR}"
     exit 1
 fi
 
-echo "[$(date)] Testing restore of: ${LATEST_DUMP}"
+echo "[$(date -u)] Testing restore of: ${LATEST_DUMP}"
 
 # Drop and recreate the throwaway test database.
 dropdb -U "${PG_USER}" --if-exists "${TEST_DB}"
@@ -44,8 +44,8 @@ nice -n 19 pg_restore -U "${PG_USER}" -d "${TEST_DB}" --no-owner --no-privileges
 # -X: skip ~/.psqlrc, whose interactive \timing / \pset settings would append
 # a "Time: …" line to this -tAc scalar (same trap that stalled the deploy drain).
 TABLE_COUNT=$(psql -X -U "${PG_USER}" -d "${TEST_DB}" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
-echo "[$(date)] Restore OK — ${TABLE_COUNT} tables found"
+echo "[$(date -u)] Restore OK — ${TABLE_COUNT} tables found"
 
 # Clean up.
 dropdb -U "${PG_USER}" "${TEST_DB}"
-echo "[$(date)] Test database dropped. Restore test PASSED."
+echo "[$(date -u)] Test database dropped. Restore test PASSED."

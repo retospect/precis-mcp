@@ -246,7 +246,7 @@ if [[ -z "${PRECIS_DEPLOY_NO_LOG:-}" ]]; then
     _main_root="$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)")"
     DEPLOY_LOG_DIR="${PRECIS_DEPLOY_LOG_DIR:-${_main_root}/.deploy-logs}"
     mkdir -p "$DEPLOY_LOG_DIR"
-    DEPLOY_LOG="${DEPLOY_LOG_DIR}/$(date +%Y%m%d-%H%M%S)-${REF//\//_}.log"
+    DEPLOY_LOG="${DEPLOY_LOG_DIR}/$(date -u +%Y%m%d-%H%M%S)-${REF//\//_}.log"
     exec > >(tee -a "$DEPLOY_LOG") 2>&1
     say "logging this deploy to ${DEPLOY_LOG}"
     ls -1t "$DEPLOY_LOG_DIR"/*.log 2>/dev/null | tail -n +51 | xargs rm -f 2>/dev/null || true

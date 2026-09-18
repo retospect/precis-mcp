@@ -93,6 +93,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   trees via `git -C`. → `docs/conventions/container-ops.md`
 - Text IO names `encoding="utf-8"` (ruff PLW1514 + AST-walk test; also
   `subprocess(..., text=True)`).
+- **Timestamps are UTC, labelled `Z`/`UTC`** — `date -u`, `datetime.now(UTC)`,
+  never `date.today()`/`utcnow()` (`date +%s` is fine). →
+  `docs/conventions/time.md`
 - `rtk` digests noisy Bash output — you see a filtered digest. →
   `docs/conventions/rtk.md`
 - Never pipe `scripts/ship|deploy|bump` into `tail`/`grep`/`tee` — a pipeline

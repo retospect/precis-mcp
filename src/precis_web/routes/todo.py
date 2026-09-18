@@ -55,7 +55,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
-from precis_web.timefmt import age_seconds, duration, span_seconds
+from precis_web.timefmt import abs_ts, age_seconds, duration, span_seconds
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -1796,7 +1796,7 @@ async def history(request: Request, ref_id: int) -> HTMLResponse:
     for e in store.events_for(ref_id, limit=50):
         events.append(
             {
-                "ts": e.ts.strftime("%Y-%m-%d %H:%M") if e.ts else "",
+                "ts": abs_ts(e.ts),
                 "event": e.event,
                 "source": e.source,
             }

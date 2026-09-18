@@ -8,14 +8,14 @@ SRC="{{ shared_mount }}/"
 DST="${USB_MOUNT}/shared-backup/"
 
 if ! mountpoint -q "${USB_MOUNT}" 2>/dev/null; then
-    echo "[$(date)] ERROR: USB drive not mounted at ${USB_MOUNT}"
+    echo "[$(date -u)] ERROR: USB drive not mounted at ${USB_MOUNT}"
     exit 1
 fi
 
-echo "[$(date)] Starting rsync to USB..."
+echo "[$(date -u)] Starting rsync to USB..."
 rsync -av --delete \
     --exclude='*.tmp' \
     --exclude='.nfs*' \
     "${SRC}" "${DST}"
 
-echo "[$(date)] USB backup complete"
+echo "[$(date -u)] USB backup complete"

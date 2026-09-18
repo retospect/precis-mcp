@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.utils.authors import author_names
+from precis_web.timefmt import utc_date
 
 #: The kinds whose ``/preview`` hover leads with a paper identity header
 #: (title + byline + venue), rather than the generic kind-chip + title.
@@ -145,7 +146,7 @@ def paper_head(ref: Any, *, held: bool, handle: str = "") -> PaperHead:
         last_author=last,
         cite_key=getattr(ref, "slug", None),
         held=held,
-        reviewed_at=verified_at.strftime("%Y-%m-%d") if verified_at else None,
+        reviewed_at=utc_date(verified_at) or None,
         reviewed_by=getattr(ref, "human_verified_by", None) or None,
     )
 

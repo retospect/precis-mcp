@@ -27,6 +27,8 @@ from typing import Any
 from urllib.parse import quote
 from xml.sax.saxutils import escape, quoteattr
 
+from precis.utils.timeutil import as_utc
+
 #: Enclosure MIME by audio extension. Podcast apps key playback off this.
 _MIME_BY_EXT: dict[str, str] = {
     ".mp3": "audio/mpeg",
@@ -126,12 +128,15 @@ def publish_episode(
 def _load_episode(sidecar: Path) -> Episode | None:
     try:
         raw: dict[str, Any] = json.loads(sidecar.read_text(encoding="utf-8"))
+        published_at = as_utc(str(raw["published_at"]))
+        if published_at is None:
+            return None
         return Episode(
             id=str(raw["id"]),
             title=str(raw["title"]),
             description=str(raw.get("description", "")),
             audio_file=str(raw["audio_file"]),
-            published_at=datetime.fromisoformat(str(raw["published_at"])),
+            published_at=published_at,
             bytes=int(raw.get("bytes", 0)),
             mime=str(raw.get("mime", "audio/mpeg")),
             duration_seconds=(

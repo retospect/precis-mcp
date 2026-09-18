@@ -107,7 +107,7 @@ RUNS_DIR="${TMPDIR:-/tmp}/precis-test-runs"
 if [[ "${1:-}" == "--bg" ]]; then
     shift
     mkdir -p "$RUNS_DIR"
-    RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
+    RUN_ID="$(date -u +%Y%m%d-%H%M%S)-$$"
     python3 - "$0" "${RUNS_DIR}/${RUN_ID}" "$@" <<'PY'
 import os
 import subprocess

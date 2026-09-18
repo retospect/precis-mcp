@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING
+
+from precis.utils.timeutil import as_utc
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -80,9 +81,8 @@ def _ceiling_pct(store: Store | None) -> float:
 def _fmt_reset(iso: object) -> str:
     if not isinstance(iso, str) or not iso:
         return "the next window reset"
-    try:
-        dt = datetime.fromisoformat(iso)
-    except ValueError:
+    dt = as_utc(iso)
+    if dt is None:
         return iso
     return dt.strftime("%H:%M UTC")
 

@@ -59,6 +59,7 @@ from precis_web.item_view import display_title
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 from precis_web.pathway_kinetics import kinetics_payload
 from precis_web.routes.structure import _geom_payload
+from precis_web.timefmt import abs_ts
 
 if TYPE_CHECKING:
     from precis.store.protocols import RefsByIdStore
@@ -141,18 +142,18 @@ def _row(ref: Any) -> dict[str, Any]:
         # Single-sourced Drive-wide display cap (item_view.display_title);
         # ``title`` above stays full for the detail-page header.
         "display_title": display_title(title),
-        "updated": updated.strftime("%Y-%m-%d %H:%M") if updated else "",
+        "updated": abs_ts(updated),
         # Extra meta surfaced on the detail page's header strip. The
         # list templates ignore the keys they don't use, so widening
         # the row here is safe for index / consolidated callers too.
-        "created": created.strftime("%Y-%m-%d %H:%M") if created else "",
+        "created": abs_ts(created),
         "set_by": getattr(ref, "set_by", None) or "",
         "prio": getattr(ref, "prio", None),
         # Relevance-decay window (null auto_refresh_days = permanent).
         # Surfaced together so the operator can see "permanent" vs.
         # "decays over N days since <refreshed>".
         "auto_refresh_days": auto_refresh_days,
-        "refreshed": refreshed.strftime("%Y-%m-%d %H:%M") if refreshed else "",
+        "refreshed": abs_ts(refreshed),
     }
 
 
@@ -165,15 +166,7 @@ def _fmt_turn_ts(ts: Any) -> str:
     """
     if not ts:
         return ""
-    if isinstance(ts, datetime):
-        return ts.strftime("%Y-%m-%d %H:%M")
-    s = str(ts)
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime(
-            "%Y-%m-%d %H:%M"
-        )
-    except ValueError:
-        return s
+    return abs_ts(ts) or str(ts)
 
 
 #: Author dot colours for the transcript, picked deterministically by
@@ -402,7 +395,7 @@ def _quest_log_row(block: Any) -> dict[str, Any]:
         "entry_type": meta.get("entry_type", "note"),
         "by": meta.get("by", "?"),
         "cost": cost,
-        "stamp": created.strftime("%Y-%m-%d %H:%M") if created else "",
+        "stamp": abs_ts(created),
         "text": block.text or "",
     }
 
@@ -2666,7 +2659,7 @@ async def _quest_index(request: Request, store: Store) -> HTMLResponse:
             "headline": _quest_headline(r.title, qid),
             "status": statuses[qid],
             "prio": getattr(r, "prio", None),
-            "updated": updated.strftime("%Y-%m-%d %H:%M") if updated else "",
+            "updated": abs_ts(updated),
             "children": [build_node(k, path) for k in kid_ids],
         }
 

@@ -25,6 +25,7 @@ from typing import Any
 from asa_bot.config import PreambleConfig
 from asa_bot.precis_client import PrecisClient
 from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.timeutil import as_utc
 
 log = logging.getLogger(__name__)
 
@@ -472,12 +473,10 @@ def _render_last_turn_signal(blob: str, now: datetime) -> str:
     ts = payload.get("ts")
     elapsed = ""
     if ts:
-        try:
-            then = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        then = as_utc(str(ts))
+        if then is not None:
             mins = int((now - then).total_seconds() / 60)
             elapsed = f", {mins} min ago"
-        except ValueError:
-            pass
     bits = [f"ended: {stop_reason}{elapsed}"]
     cache_read = payload.get("cache_read_tokens")
     cache_create = payload.get("cache_creation_tokens")

@@ -38,7 +38,7 @@ STATUS="$MAIN_ROOT/.nightly-status.md"
 STALE_HOURS=24
 
 # portable "YYYY-MM-DD HH:MM" -> epoch seconds (BSD date on macOS, GNU on Linux)
-epoch_of() { date -j -f "%Y-%m-%d %H:%M" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
+epoch_of() { date -u -j -f "%Y-%m-%d %H:%M" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
 
 # --- --check: read-only cadence + status surface (what /whatneedsdoing runs) ---
 if [[ "${1:-}" == "--check" ]]; then
@@ -67,7 +67,7 @@ fi
 # colima not up) would otherwise record a FALSE red. Record a neutral skip
 # instead — --check still counts it stale, so the next /whatneedsdoing re-delegates.
 if ! docker info >/dev/null 2>&1; then
-    stamp="$(date +'%Y-%m-%d %H:%M')"
+    stamp="$(date -u +'%Y-%m-%d %H:%M')"
     line="- **$stamp** — ⚠ skipped — Docker unavailable (suite not run)"
     echo "nightly: ⚠ skipped — Docker unavailable; not running the suite"
     if [[ ! -f "$STATUS" ]]; then
@@ -151,7 +151,7 @@ elif [[ "$result" == "✗ RED" ]]; then
     [[ -n "$fails" ]] && fails=" — first fails: $fails"
 fi
 
-stamp="$(date +'%Y-%m-%d %H:%M')"
+stamp="$(date -u +'%Y-%m-%d %H:%M')"
 line="- **$stamp** — $result — $summary$fails"
 
 # prepend under the header (newest-first); create the file on first run

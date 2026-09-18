@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from precis.store import Store
+from precis.utils.timeutil import as_utc
 
 log = logging.getLogger(__name__)
 
@@ -122,9 +123,8 @@ def _age_s(state: dict) -> float | None:
     last = state.get("last_at")
     if not isinstance(last, str):
         return None
-    try:
-        then = datetime.fromisoformat(last)
-    except ValueError:
+    then = as_utc(last)
+    if then is None:
         return None
     return (datetime.now(UTC) - then).total_seconds()
 

@@ -37,6 +37,7 @@ from pathlib import Path
 from precis.corpus_layout import corpus_pdf_dest, rebase_onto_local
 from precis.store import Store
 from precis.store._pdf_ops import DuePdf
+from precis.utils.timeutil import as_utc
 from precis.workers import _throttle
 from precis.workers.runner import BatchResult
 
@@ -74,9 +75,8 @@ def _scan_throttled(store: Store, host: str) -> bool:
     last = store.get_setting(_LAST_EMPTY_KEY_PREFIX + host)
     if not last:
         return False
-    try:
-        last_ts = datetime.fromisoformat(last)
-    except ValueError:
+    last_ts = as_utc(last)
+    if last_ts is None:
         return False
     return datetime.now(UTC) - last_ts < timedelta(hours=_refresh_hours())
 

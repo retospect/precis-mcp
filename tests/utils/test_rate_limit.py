@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -60,7 +60,7 @@ def _seed(
                 tokens if tokens is not None else capacity,
                 daily_cap,
                 day_used,
-                day_start if day_start is not None else date.today(),
+                day_start if day_start is not None else datetime.now(UTC).date(),
             ),
         )
         conn.commit()
@@ -177,7 +177,7 @@ class TestQuotaLane:
 
     def test_day_start_rollover_resets_day_used(self, use_store_dsn: Store) -> None:
         provider = "test_rl_rollover"
-        yesterday = date.today() - timedelta(days=1)
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
         _seed(
             use_store_dsn,
             provider,
@@ -195,7 +195,7 @@ class TestQuotaLane:
             assert row is not None
             _tokens, day_used, day_start = row
             assert day_used == 1  # reset to 0, then this acquire consumed 1
-            assert day_start == date.today()
+            assert day_start == datetime.now(UTC).date()
         finally:
             _cleanup(use_store_dsn, provider)
 

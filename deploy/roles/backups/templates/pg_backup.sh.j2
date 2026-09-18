@@ -35,8 +35,8 @@ export PATH="/opt/homebrew/opt/postgresql@17/bin:/opt/homebrew/bin:${PATH}"
 
 LOCAL_BACKUP_DIR="{{ shared_mount }}/backups/postgres"
 NAS_BACKUP_DIR="{{ nas_root }}/backups/postgres"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-DATE_TAG=$(date +%Y-%m-%d)
+TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
+DATE_TAG=$(date -u +%Y-%m-%d)
 
 LOCAL_DUMP_DIR="${LOCAL_BACKUP_DIR}/precis_prod_${TIMESTAMP}"
 NAS_ARCHIVE="${NAS_BACKUP_DIR}/precis_prod_${DATE_TAG}.tar.zst"
@@ -73,25 +73,25 @@ prune_local() {
 DUMP_OK=0
 on_exit() {
   if [ "${DUMP_OK}" -eq 0 ] && [ -n "${LOCAL_DUMP_DIR:-}" ] && [ -d "${LOCAL_DUMP_DIR}" ]; then
-    echo "[$(date)] Reclaiming partial/aborted dump dir ${LOCAL_DUMP_DIR}"
+    echo "[$(date -u)] Reclaiming partial/aborted dump dir ${LOCAL_DUMP_DIR}"
     rm -rf "${LOCAL_DUMP_DIR}" 2>/dev/null || true
   fi
   prune_local
 }
 trap on_exit EXIT
-echo "[$(date)] Pruning local dumps older than ${LOCAL_RETENTION_DAYS} days (pre-flight)..."
+echo "[$(date -u)] Pruning local dumps older than ${LOCAL_RETENTION_DAYS} days (pre-flight)..."
 prune_local
 
 # ── Pre-flight free-space guard ──
 # POSIX `df -Pk` (portable across macOS/Linux): column 4 = available 1K-blocks.
 AVAIL_GB=$(df -Pk "${LOCAL_BACKUP_DIR}" | awk 'NR==2 {print int($4/1024/1024)}')
 if [ "${AVAIL_GB:-0}" -lt "${MIN_FREE_GB}" ]; then
-  echo "[$(date)] [ERROR] only ${AVAIL_GB}GB free on backup volume (< ${MIN_FREE_GB}GB) — SKIPPING dump to avoid DiskFull"
+  echo "[$(date -u)] [ERROR] only ${AVAIL_GB}GB free on backup volume (< ${MIN_FREE_GB}GB) — SKIPPING dump to avoid DiskFull"
   logger -t pg-backup "ABORT: ${AVAIL_GB}GB free < ${MIN_FREE_GB}GB threshold; skipped nightly pg_dump (gripe 191008 guard)"
   exit 1
 fi
 
-echo "[$(date)] Starting pg_dump (directory format, 4 parallel workers, zlib level 6)..."
+echo "[$(date -u)] Starting pg_dump (directory format, 4 parallel workers, zlib level 6)..."
 # precis_prod is the live primary DB (24 GB+, self-migrated by precis-mcp). The
 # old `cluster` monolith was renamed to `openclaw` and is slated for retirement;
 # this nightly job intentionally covers precis_prod only. openclaw is not
@@ -105,18 +105,18 @@ pg_dump -U {{ pg_user }} -d precis_prod \
 DUMP_OK=1  # dump completed — the EXIT trap must NOT reclaim this dir now
 
 LOCAL_SIZE=$(du -sh "${LOCAL_DUMP_DIR}" | cut -f1)
-echo "[$(date)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"
+echo "[$(date -u)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"
 
-echo "[$(date)] Archiving to NAS (tar+zstd)..."
+echo "[$(date -u)] Archiving to NAS (tar+zstd)..."
 tar --use-compress-program='zstd -T0' -cf "${NAS_ARCHIVE}" \
   -C "${LOCAL_BACKUP_DIR}" "precis_prod_${TIMESTAMP}"
 
 NAS_SIZE=$(du -h "${NAS_ARCHIVE}" | cut -f1)
-echo "[$(date)] NAS archive complete: ${NAS_ARCHIVE} (${NAS_SIZE})"
+echo "[$(date -u)] NAS archive complete: ${NAS_ARCHIVE} (${NAS_SIZE})"
 
 # ── NAS retention sweep ── (local prune already ran up-front + on EXIT trap)
-echo "[$(date)] Pruning NAS archives older than ${NAS_RETENTION_DAYS} days..."
+echo "[$(date -u)] Pruning NAS archives older than ${NAS_RETENTION_DAYS} days..."
 find "${NAS_BACKUP_DIR}" -maxdepth 1 -name "precis_prod_*.tar.zst" \
   -mtime "+${NAS_RETENTION_DAYS}" -delete
 
-echo "[$(date)] Backup done."
+echo "[$(date -u)] Backup done."

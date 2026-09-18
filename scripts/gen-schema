@@ -28,7 +28,7 @@ DB_PORT="${PRECIS_SCHEMA_DB_PORT:-6432}"
 DB_USER="${PRECIS_SCHEMA_DB_USER:-agent_rw}"
 DB_NAME="${PRECIS_SCHEMA_DB_NAME:-precis_prod}"
 OUT="${1:-docs/reference/schema.md}"
-DATE="$(date +%Y-%m-%d)"
+DATE="$(date -u +%Y-%m-%d)"
 
 # Single source of truth for the introspection query.
 SQL="$(uv run python -c 'from precis.cli.schema_doc import INTROSPECT_SQL; print(INTROSPECT_SQL)')"

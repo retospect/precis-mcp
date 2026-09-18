@@ -34,7 +34,7 @@ if [[ -z "$last" ]]; then
 fi
 
 # portable YYYY-MM-DD -> epoch seconds (BSD date on macOS, GNU date on CI/Linux)
-epoch_of() { date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
+epoch_of() { date -u -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
 last_e=$(epoch_of "$last" || true)
 now_e=$(date +%s)
 

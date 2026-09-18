@@ -486,7 +486,7 @@ def verify_sim(
             (entry.path / file_diff.rel_file).write_text(
                 file_diff.new_text, encoding="utf-8"
             )
-        day = today or _dt.date.today()
+        day = today or _dt.datetime.now(_dt.UTC).date()
         branch = f"precis-verify/{day.isoformat()}"
         committed = _git_commit(
             entry.path,

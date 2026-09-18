@@ -53,7 +53,7 @@ export MCP_CONNECT_TIMEOUT_MS="${MCP_CONNECT_TIMEOUT_MS:-180000}"
 export MCP_TOOL_TIMEOUT="${MCP_TOOL_TIMEOUT:-120000}"
 
 # Seconds + pid avoids collisions on parallel invocations.
-STAMP="$(date +%Y-%m-%d-%H%M%S)-$$"
+STAMP="$(date -u +%Y-%m-%d-%H%M%S)-$$"
 NAME="$(basename "$PROMPT" .md)"
 LOG="$OUT/${STAMP}-${NAME}.md"
 DEBUG="$OUT/${STAMP}-${NAME}.debug.log"

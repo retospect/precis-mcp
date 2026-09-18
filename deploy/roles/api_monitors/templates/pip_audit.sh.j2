@@ -5,7 +5,7 @@ set -euo pipefail
 
 LOG_DIR="{{ shared_mount }}/logs/pip-audit"
 mkdir -p "${LOG_DIR}"
-TIMESTAMP=$(date +%Y-%m-%d)
+TIMESTAMP=$(date -u +%Y-%m-%d)
 
 echo "=== pip-audit ${TIMESTAMP} ==="
 

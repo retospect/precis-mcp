@@ -88,7 +88,7 @@ if ! docker network inspect "$PRECIS_DOCKER_NETWORK" >/dev/null 2>&1; then
   exit 3
 fi
 
-STAMP="$(date +%Y-%m-%d-%H%M%S)-$$"
+STAMP="$(date -u +%Y-%m-%d-%H%M%S)-$$"
 LOG="$OUT/${STAMP}-audit.md"
 DEBUG="$OUT/${STAMP}-audit.debug.log"
 META="$OUT/${STAMP}-audit.meta.json"

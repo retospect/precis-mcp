@@ -68,7 +68,7 @@ def _make_jinja_env() -> jinja2.Environment:
         render_cloze,
         render_markdown,
     )
-    from precis_web.timefmt import abs_ts, ago, duration, relative
+    from precis_web.timefmt import abs_ts, ago, duration, relative, utc_date
 
     env.filters["linkify_refs"] = linkify_refs
     # Anki cloze bodies ({{c1::answer::hint}}) render as highlighted
@@ -86,6 +86,9 @@ def _make_jinja_env() -> jinja2.Environment:
     # time the same way. Both tolerate a datetime *or* an ISO string.
     env.filters["ago"] = ago
     env.filters["abs_ts"] = abs_ts
+    # Date-only, UTC-anchored — a bare strftime would render the process
+    # zone's calendar day, which near midnight is the wrong one.
+    env.filters["utc_date"] = utc_date
     # Signed ('in 12m' / '3m ago') — for a timestamp that can sit either
     # side of now, like a job lease expiry, where ``ago``'s clamp to
     # "0s ago" would read as "expiring now" for a lease with an hour left.
