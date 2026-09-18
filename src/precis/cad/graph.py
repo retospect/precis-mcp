@@ -58,8 +58,10 @@ class Design:
         return Leaf(iid)
 
     @staticmethod
-    def merge(*parts: Expr) -> Union:
-        return Union(parts=tuple(parts))
+    def merge(*parts: Expr, blend: float = 0.0) -> Union:
+        """Union of ``parts``; ``blend=k`` (a length, > 0) folds them with
+        the smooth-min instead of ``min`` — see :mod:`precis.cad.fold`."""
+        return Union(parts=tuple(parts), blend=float(blend))
 
     @staticmethod
     def subtract(base: Expr, *cutters: Expr) -> Diff:
@@ -109,7 +111,7 @@ class Design:
                 )
                 return Leaf(iid)
             if isinstance(e, Union):
-                return Union(parts=tuple(rebuild(p) for p in e.parts))
+                return Union(parts=tuple(rebuild(p) for p in e.parts), blend=e.blend)
             if isinstance(e, Inter):
                 return Inter(parts=tuple(rebuild(p) for p in e.parts))
             if isinstance(e, Diff):

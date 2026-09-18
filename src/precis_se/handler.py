@@ -89,7 +89,7 @@ from psycopg.types.json import Jsonb
 from precis.blocktree.types import parse_template_ref
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
-from precis.cad.export import ExportError
+from precis.cad.export import ExportError, needs_field_backend
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import rotation as cad_rotation
@@ -977,7 +977,9 @@ class SeHandler(Handler):
             else Path(tempfile.gettempdir()) / f"{ref.slug}-{block}.{fmt}"
         )
         try:
-            path = se_printing.write_mesh(report.printed, report.chosen_down, fmt, out)
+            path = se_printing.write_mesh(
+                report.printed, report.chosen_down, fmt, out, pitch=report.pitch
+            )
         except se_printing.PrintUnsupported as exc:
             raise Unsupported(
                 str(exc), next="pip install --force-reinstall 'precis-mcp'"
@@ -985,9 +987,21 @@ class SeHandler(Handler):
         except ExportError as exc:
             raise BadInput(str(exc)) from exc
         size = path.stat().st_size
+        if needs_field_backend(report.printed.spec):
+            kernel = (
+                "sampled SDF field, marching cubes at pitch "
+                + (
+                    format_quantity(report.pitch, "length")
+                    if report.pitch is not None
+                    else "auto"
+                )
+                + "; blend seams are not exact radii"
+            )
+        else:
+            kernel = "manifold3d mesh"
         error_findings = [f for f in report.findings if f.severity == "error"]
         lines = [
-            f"# exported {ref.slug}:{block} → {fmt.upper()} (manifold3d mesh)",
+            f"# exported {ref.slug}:{block} → {fmt.upper()} ({kernel})",
             f"{path}  ({size:,} bytes)",
             f"build frame: down={se_printing.format_down(report.chosen_down)} "
             f"({'pinned' if report.pinned else 'proposed'})",

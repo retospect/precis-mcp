@@ -58,6 +58,7 @@ import numpy as np
 from precis.cad import dsl as cad_dsl
 from precis.cad import printability as cad_printability
 from precis.cad.export import (
+    _MM_PER_M,
     ExportError,
     _component_meshes,
     _scaled_for_export,
@@ -112,6 +113,11 @@ class BlockPrintReport:
     pinned: bool
     best_other: str | None
     findings: list[ValidationIssue] = field(default_factory=list)
+    #: The house ``layer_height`` (metres) the block's mode resolves to —
+    #: the sample pitch the cad field-export backend meshes an ``rd``/
+    #: ``blend`` design at (:func:`write_mesh`); ``None`` when the
+    #: capability doesn't resolve (export then takes cad's own default).
+    pitch: float | None = None
 
 
 def format_down(v: Vec3) -> str:
@@ -389,7 +395,11 @@ def report_for(
         )
     rules = _rules_for(tree, node)
     policy = se_caps.orientation_policy(node.mode) or {}
-    mesh = _solid_mesh(printed.spec)
+    # An rd/blend design meshes from its SDF at the house layer height —
+    # the resolution the DRC below judges it at; a sharp design's analytic
+    # fold ignores the pitch.
+    pitch = rules.get("layer_height")
+    mesh = _solid_mesh(printed.spec, pitch=pitch)
     loads = _local_loads(node)
     candidates = cad_printability.orient(mesh, rules, policy, loads) if policy else []
 
@@ -451,15 +461,24 @@ def report_for(
         pinned=pinned,
         best_other=best_other,
         findings=findings,
+        pitch=pitch,
     )
 
 
 def write_mesh(
-    printed: PrintedSolid, down: Vec3, fmt: str, out_path: str | Path
+    printed: PrintedSolid,
+    down: Vec3,
+    fmt: str,
+    out_path: str | Path,
+    *,
+    pitch: float | None = None,
 ) -> Path:
     """Write ``printed``'s solid to ``out_path`` (``'stl'``/``'3mf'``) in
     the build frame — rotated so ``down`` is ``-z``, bed at ``z = 0``,
-    millimetres.
+    millimetres. ``pitch`` (metres — the house ``layer_height``,
+    :attr:`BlockPrintReport.pitch`) is the field-backend sample spacing
+    for an ``rd``/``blend`` design; ``None`` takes cad's own default and a
+    sharp design ignores it either way.
 
     Reuses the cad export seam exactly rather than re-scaling or
     re-tessellating (module docstring): mm-scale first
@@ -483,14 +502,15 @@ def write_mesh(
         )
     out = Path(out_path)
     scaled = _scaled_for_export(printed.spec)
+    mm_pitch = None if pitch is None else pitch * _MM_PER_M
     if fmt == "stl":
-        verts, tris = _solid_mesh(scaled)
+        verts, tris = _solid_mesh(scaled, pitch=mm_pitch)
         verts = rotate_to_frame(verts, down)
         _write_binary_stl(out, verts, tris)
     elif fmt == "3mf":
         parts = [
             (name, rotate_to_frame(v, down), t)
-            for name, v, t in _component_meshes(scaled)
+            for name, v, t in _component_meshes(scaled, pitch=mm_pitch)
         ]
         _write_3mf(out, parts)
     else:

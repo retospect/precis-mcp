@@ -213,6 +213,25 @@ based in z: `box:w5mmd5mmh0.3mm @0mm,0mm,0mm` occupies x and y in
 +z — pose it with `@`/`rot:` onto the edge to bevel (patterns apply).
 Exports and the viewer substitute a finite clamped box automatically.
 
+**Rounding.** Add `rd<len>` to any convex solid but the sphere/torus
+(`box:w40mmd20mmh10mmrd2mm`, `cyl:r5mmh10mmrd1mm`) to round **every edge
+and corner** of that node to radius `rd` — exact in the kernel (the shape
+is built shrunk by `rd` and its signed distance offset back out), so the
+bounding box is unchanged, the base stays at `z=0`, and probes see the
+round. `rd >= ½·min dimension` is refused by name (a thin feature would
+vanish — never clamped); a cone/pyramid apex becomes a sphere cap below
+the sharp tip. Rounding only opens *convex* corners: where an `add` node
+meets its part, the inside corner stays sharp — put `blend:<len>` on that
+`add` line (`rib add box:… blend:3mm`) to fold it in with a smooth-min of
+that width, a fillet-*like* seam that is **not an exact radius** (the
+render says so; `cut`/`intersect` and a part's first node refuse it).
+Either key switches `stl`/`3mf` export from the analytic mesh to the
+**sampled-field backend** (narrow-band marching cubes over the exact
+SDF at `args={'pitch': '0.2mm'}` — pass the layer height you'll print
+at; default ≈ 1/256 of the design's diagonal; a pitch whose band would
+exceed the sample budget is refused, never coarsened). Sharp designs
+export exactly as before; `step` has no field route yet.
+
 ## Read the design — `get`
 
 ```python
@@ -297,7 +316,10 @@ get(
 
 - **`scad`** — pure text, zero deps; drop into the OpenSCAD GUI.
 - **`stl` / `3mf`** — in-process mesh (manifold3d CSG, a core dependency —
-  works with no extra). 3MF carries units/metadata; STL is universal.
+  works with no extra). 3MF carries units/metadata; STL is universal. A
+  design with `rd`/`blend:` meshes from its signed-distance field instead
+  (`args={'pitch': '0.2mm'}` sets the sample spacing — see *Rounding*
+  above); the reply names which route ran.
 - **`step`** — *exact* ISO-10303 B-rep via OpenCASCADE (true cylinders/
   cones, not facets) for mechanical CAD (FreeCAD / Fusion / SolidWorks).
   Needs the heavier `precis-mcp[cad-step]` extra.
