@@ -56,26 +56,34 @@ class TestRunCliFailurePath:
 
     def _stage(self, in_dir: Path) -> None:
         in_dir.mkdir(parents=True, exist_ok=True)
-        (in_dir / "POSCAR").write_text(canonical_poscar(bulk("Pt", "fcc", a=3.92)))
-        (in_dir / "params.json").write_text(json.dumps({"dft": {"functional": "RPBE"}}))
+        (in_dir / "POSCAR").write_text(
+            canonical_poscar(bulk("Pt", "fcc", a=3.92)), encoding="utf-8"
+        )
+        (in_dir / "params.json").write_text(
+            json.dumps({"dft": {"functional": "RPBE"}}), encoding="utf-8"
+        )
 
     def test_records_failure_and_returns_1(self, tmp_path: Path) -> None:
         in_dir, out_dir = tmp_path / "in", tmp_path / "out"
         self._stage(in_dir)
         rc = run_cli(str(in_dir), str(out_dir))
         assert rc == 1
-        result = json.loads((out_dir / "result.json").read_text())
+        result = json.loads((out_dir / "result.json").read_text(encoding="utf-8"))
         assert result["ok"] is False
         assert "error" in result and "traceback" in result
 
     def test_bad_mode_is_recorded(self, tmp_path: Path) -> None:
         in_dir, out_dir = tmp_path / "in", tmp_path / "out"
         in_dir.mkdir(parents=True)
-        (in_dir / "POSCAR").write_text(canonical_poscar(bulk("Pt", "fcc", a=3.92)))
-        (in_dir / "params.json").write_text(json.dumps({"dft": {"mode": "pw"}}))
+        (in_dir / "POSCAR").write_text(
+            canonical_poscar(bulk("Pt", "fcc", a=3.92)), encoding="utf-8"
+        )
+        (in_dir / "params.json").write_text(
+            json.dumps({"dft": {"mode": "pw"}}), encoding="utf-8"
+        )
         rc = run_cli(str(in_dir), str(out_dir))
         assert rc == 1
-        result = json.loads((out_dir / "result.json").read_text())
+        result = json.loads((out_dir / "result.json").read_text(encoding="utf-8"))
         assert "mode='lcao' only" in result["error"]
 
 
@@ -85,8 +93,10 @@ class TestRankGating:
 
     def _stage(self, in_dir: Path) -> None:
         in_dir.mkdir(parents=True, exist_ok=True)
-        (in_dir / "POSCAR").write_text(canonical_poscar(bulk("Pt", "fcc", a=3.92)))
-        (in_dir / "params.json").write_text(json.dumps({"dft": {}}))
+        (in_dir / "POSCAR").write_text(
+            canonical_poscar(bulk("Pt", "fcc", a=3.92)), encoding="utf-8"
+        )
+        (in_dir / "params.json").write_text(json.dumps({"dft": {}}), encoding="utf-8")
 
     def test_a_non_zero_rank_writes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -117,7 +127,10 @@ class TestRankGating:
 
         monkeypatch.setattr(gpaw_relax, "_world", lambda: _Rank0())
         run_cli(str(in_dir), str(out_dir))
-        assert json.loads((out_dir / "result.json").read_text())["ranks"] == 4
+        assert (
+            json.loads((out_dir / "result.json").read_text(encoding="utf-8"))["ranks"]
+            == 4
+        )
 
     def test_defaults_to_serial_without_gpaw(self) -> None:
         world = gpaw_relax._world()
@@ -128,8 +141,10 @@ class TestCli:
     def test_routes_gpaw_relax(self, tmp_path: Path) -> None:
         in_dir, out_dir = tmp_path / "in", tmp_path / "out"
         in_dir.mkdir(parents=True)
-        (in_dir / "POSCAR").write_text(canonical_poscar(bulk("Pt", "fcc", a=3.92)))
-        (in_dir / "params.json").write_text(json.dumps({"dft": {}}))
+        (in_dir / "POSCAR").write_text(
+            canonical_poscar(bulk("Pt", "fcc", a=3.92)), encoding="utf-8"
+        )
+        (in_dir / "params.json").write_text(json.dumps({"dft": {}}), encoding="utf-8")
         # Routes to run_cli; GPAW absent ⇒ rc=1 (failure recorded).
         rc = cli.main(["gpaw-relax", "--in", str(in_dir), "--out", str(out_dir)])
         assert rc == 1

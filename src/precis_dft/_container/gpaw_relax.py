@@ -154,8 +154,8 @@ def run_cli(in_dir: str, out_dir: str) -> int:
     if world.rank == 0:
         out.mkdir(parents=True, exist_ok=True)
     try:
-        poscar = (Path(in_dir) / "POSCAR").read_text()
-        params = json.loads((Path(in_dir) / "params.json").read_text())
+        poscar = (Path(in_dir) / "POSCAR").read_text(encoding="utf-8")
+        params = json.loads((Path(in_dir) / "params.json").read_text(encoding="utf-8"))
         atoms = atoms_from_poscar(poscar)
         scalars = relax(atoms, params, out_dir)
 
@@ -172,7 +172,9 @@ def run_cli(in_dir: str, out_dir: str) -> int:
             "ranks": int(world.size),
         }
         if world.rank == 0:
-            (out / "result.json").write_text(json.dumps(result, indent=2))
+            (out / "result.json").write_text(
+                json.dumps(result, indent=2), encoding="utf-8"
+            )
         return 0
     except Exception as exc:
         if world.rank == 0:
@@ -185,7 +187,8 @@ def run_cli(in_dir: str, out_dir: str) -> int:
                         "ranks": int(world.size),
                     },
                     indent=2,
-                )
+                ),
+                encoding="utf-8",
             )
         return 1
 

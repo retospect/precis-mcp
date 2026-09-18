@@ -36,6 +36,8 @@ from precis.workers.nursery import (
     EMBED_LANE_STALL_WINDOW_MIN,
     HOST_DARK_LOOKBACK_DAYS,
     HOST_DARK_SILENCE_MIN,
+    LANE_SKIP_MIN_CANCELLED,
+    LANE_SKIP_WINDOW_H,
     LONG_WAIT_DAYS,
     ORPHANED_COORDINATOR_STALE_HOURS,
     PLAN_TICK_REMINT_24H,
@@ -52,6 +54,7 @@ from precis.workers.nursery import (
     _detect_dispatch_stalls,
     _detect_embed_lane_stalled,
     _detect_host_dark,
+    _detect_lane_skipping,
     _detect_long_waits,
     _detect_nas_denied,
     _detect_orphaned_coordinator,
@@ -1781,6 +1784,74 @@ def test_run_nursery_pass_raises_critical_for_embed_lane_stalled(
     mine = [a for a in alerts if a["source"] == "nursery:embed-lane-stalled"]
     assert len(mine) == 1
     assert mine[0]["severity"] == "critical"
+
+
+# ── lane-skipping: a job_type whose runs are mostly clean skips (gr346813) ──
+
+
+def _mint_typed_job(
+    store: Store, job_type: str, status: str, *, event: str | None = None
+) -> int:
+    ref = store.insert_ref(
+        kind="job", slug=None, title=f"{job_type} job", meta={"job_type": job_type}
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent")
+    if event is not None:
+        from precis.workers.executors._common import append_chunk
+
+        append_chunk(store, ref.id, "job_event", event)
+    return ref.id
+
+
+def test_lane_skipping_flags_a_mostly_cancelled_job_type(store: Store) -> None:
+    """188 cancelled vs 8 succeeded diagnose_gripe on melchior: cancelled is a
+    clean skip, so nothing else alarms — the outcome ratio must."""
+    for _ in range(LANE_SKIP_MIN_CANCELLED - 1):
+        _mint_typed_job(store, "diagnose_gripe", "cancelled")
+    _mint_typed_job(
+        store,
+        "diagnose_gripe",
+        "cancelled",
+        event=(
+            "diagnose_gripe skipped: no containerized agent path available and "
+            "PRECIS_FIX_GRIPE_UNSANDBOXED_ACK is unset (gr179498 fail-closed) — "
+            "`docker info` exceeded 5s."
+        ),
+    )
+    _mint_typed_job(store, "diagnose_gripe", "succeeded")
+
+    findings = _detect_lane_skipping(store)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.category == "lane-skipping"
+    assert f.ref_id is None
+    assert f.fingerprint_key == "lane-skipping:diagnose_gripe"
+    assert f"{LANE_SKIP_MIN_CANCELLED} cancelled vs 1 succeeded" in f.title
+    assert "`docker info` exceeded 5s" in f.detail  # the newest skip's leg
+
+
+def test_lane_skipping_quiet_when_successes_keep_pace(store: Store) -> None:
+    """A lane with skips beside a healthy success rate is not down."""
+    for _ in range(LANE_SKIP_MIN_CANCELLED):
+        _mint_typed_job(store, "diagnose_gripe", "cancelled")
+    for _ in range(3):  # 10 cancelled < 5 × 3 succeeded
+        _mint_typed_job(store, "diagnose_gripe", "succeeded")
+
+    assert _detect_lane_skipping(store) == []
+
+
+def test_lane_skipping_quiet_below_the_floor_and_outside_the_window(
+    store: Store,
+) -> None:
+    """A rarely-run lane with a handful of skips is noise, and old skips
+    outside the window don't count."""
+    for _ in range(LANE_SKIP_MIN_CANCELLED - 1):
+        _mint_typed_job(store, "fix_gripe", "cancelled")
+    assert _detect_lane_skipping(store) == []
+
+    old = _mint_typed_job(store, "fix_gripe", "cancelled")
+    _backdate_status_tag(store, old, LANE_SKIP_WINDOW_H + 1)
+    assert _detect_lane_skipping(store) == []
 
 
 # ── nas-denied (launchd-context NAS lockout) ───────────────────────

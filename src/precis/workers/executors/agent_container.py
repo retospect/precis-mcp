@@ -130,9 +130,10 @@ def trip_container_unhealthy(*, _now: float | None = None) -> None:
 
 def reset_capability_cache() -> None:
     """Clear the probe cache + health latch (tests, or a forced re-probe)."""
-    global _UNHEALTHY_UNTIL
+    global _UNHEALTHY_UNTIL, _LAST_PROBE_FAILURE
     _CAPABILITY_CACHE.clear()
     _UNHEALTHY_UNTIL = 0.0
+    _LAST_PROBE_FAILURE = ""
 
 
 def _auth_token_present(mode: str | None = None) -> bool:
@@ -149,13 +150,46 @@ def _auth_token_present(mode: str | None = None) -> bool:
     return bool(probe_env.get(_oauth.ENV_VAR, "").strip())
 
 
+#: Why the last uncached probe said ``False`` (``""`` while healthy). Read by
+#: the callers that *refuse* rather than fall back (``diagnose_gripe`` /
+#: ``fix_gripe``'s gr179498 gate), so their skip event names the leg instead of
+#: the same "no containerized agent path" text for every cause — melchior ran
+#: ~90% of diagnose_gripe as silent skips for 8 days before anyone could tell
+#: token / daemon / image / timeout apart (gr346813).
+_LAST_PROBE_FAILURE: str = ""
+
+
+def last_probe_failure() -> str:
+    """The leg the most recent uncached capability probe failed on, or ``""``."""
+    return _LAST_PROBE_FAILURE
+
+
+def container_unavailable_reason(*, _now: float | None = None) -> str:
+    """One line saying WHY ``container_agent_enabled() and
+    container_capability_ok()`` is currently ``False`` — for the refuse-path
+    callers' skip events. ``""`` when the container path is available."""
+    if not container_agent_enabled():
+        return "PRECIS_AGENT_CONTAINER is not enabled on this host"
+    now = _now if _now is not None else time.monotonic()
+    if now < _UNHEALTHY_UNTIL:
+        return (
+            f"container path latched unhealthy for another "
+            f"{int(_UNHEALTHY_UNTIL - now)}s after an infra-level run failure"
+        )
+    if container_capability_ok(_now=now):
+        return ""
+    return _LAST_PROBE_FAILURE or "capability probe returned False (cached)"
+
+
 def _probe_container_capability(image: str) -> bool:
     """The uncached probe: an auth token resolvable ∧ ``<bin> info`` exit 0
     (runtime+daemon reachable) ∧ ``<bin> image inspect <image>`` exit 0 (the
     image resident). Short subprocess timeouts; ANY exception → ``False``
-    (fail-safe → in-proc)."""
+    (fail-safe → in-proc). Every ``False`` names its leg once per probe (the
+    60s cache keeps that to ~1 line/min under a sustained outage)."""
+    global _LAST_PROBE_FAILURE
     if not _auth_token_present():
-        return False
+        return _probe_failed(f"no auth token resolvable for mode={agent_run_mode()!r}")
     bin_ = _container_bin()
     try:
         for probe in ([bin_, "info"], [bin_, "image", "inspect", image]):
@@ -166,12 +200,31 @@ def _probe_container_capability(image: str) -> bool:
                 check=False,
             )
             if res.returncode != 0:
-                return False
-    except Exception:
-        # OSError (bin absent), TimeoutExpired (daemon wedged), anything — the
-        # host can't be *verified* to containerize, so it doesn't.
-        return False
+                tail = (
+                    (res.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+                )
+                return _probe_failed(
+                    f"`{' '.join(probe)}` rc={res.returncode}"
+                    + (f": {tail[-1][:160]}" if tail else "")
+                )
+    except subprocess.TimeoutExpired as exc:
+        # The daemon is wedged (or just slow): a 5s cap on `docker info` is
+        # the flap most likely under load, so say which call hit it.
+        return _probe_failed(
+            f"`{' '.join(str(a) for a in exc.cmd)}` exceeded {_CAPABILITY_PROBE_TIMEOUT_S:g}s"
+        )
+    except Exception as exc:  # OSError (bin absent), anything else
+        # The host can't be *verified* to containerize, so it doesn't.
+        return _probe_failed(f"{type(exc).__name__}: {exc}")
+    _LAST_PROBE_FAILURE = ""
     return True
+
+
+def _probe_failed(reason: str) -> bool:
+    global _LAST_PROBE_FAILURE
+    _LAST_PROBE_FAILURE = reason
+    log.warning("agent_container: capability probe failed — %s", reason)
+    return False
 
 
 def container_capability_ok(

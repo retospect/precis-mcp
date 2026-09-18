@@ -73,6 +73,10 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/main-ci-status\" --for-hook || true"
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/docs-index\" || true"
           }
         ]

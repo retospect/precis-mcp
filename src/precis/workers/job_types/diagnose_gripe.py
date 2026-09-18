@@ -381,10 +381,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             "available and unsandboxed run not acked (gr179498)",
             gripe_id,
         )
+        # Name the failing leg (token / daemon / image / timeout / latch): a
+        # uniform skip text hid an 8-day 90% skip rate on melchior (gr346813).
+        why = _agent_container.container_unavailable_reason()
         ctx.append_chunk(
             "job_event",
             "diagnose_gripe skipped: no containerized agent path available "
-            f"and {_UNSANDBOXED_ACK_ENV} is unset (gr179498 fail-closed).",
+            f"and {_UNSANDBOXED_ACK_ENV} is unset (gr179498 fail-closed)"
+            + (f" — {why}" if why else "")
+            + ".",
         )
         ctx.set_status("cancelled")
         return

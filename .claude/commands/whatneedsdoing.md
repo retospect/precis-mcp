@@ -1,7 +1,7 @@
 ---
 description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · backlog lint · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,8 +35,8 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
+Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build ⋅ main on CI:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; scripts/main-ci-status 2>&1 || true`
 
 ## Procedure
 
@@ -183,6 +183,16 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      and records green/red to `.nightly-status.md` for the next `--check`. Do
      **not** run the suite inline here (it would block the report). A fresh
      `✓ green`, or a `DUE` you've just delegated, needs nothing more.
+   - **main on CI** (`scripts/main-ci-status`) — the GitHub read: the newest
+     completed `check` run on main's own post-merge push (cancelled runs are
+     superseded, not verdicts). **🔴 RED** = a sibling merge landed bytes the
+     gated tree never saw (ruff-format drift is the usual case; gr346534).
+     The line names the failing jobs and whether an in-flight worktree has
+     **claimed** it (its `.claude/purpose` says `red main`/`fix main`). Claimed
+     → leave it, sync after their ship. Unclaimed → write the printed purpose
+     line first, then fix and ship; the claim is what stops three trees
+     shipping the same four-file format fix. "newer run in progress" → wait
+     for it before acting. Green needs nothing.
 
 4. **Prod factory queue — todos.** `search(kind='todo', view='attention')`
    (asking-user + failed children) and `search(kind='todo', view='doable')`

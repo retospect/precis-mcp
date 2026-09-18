@@ -642,3 +642,75 @@ def test_auth_token_present_oauth_uses_env_token(monkeypatch) -> None:
     monkeypatch.delenv("PRECIS_AGENT_MODE", raising=False)  # oauth (default)
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
     assert ac._auth_token_present() is True  # env token wins, no file read
+
+
+# ── the probe names its failing leg (gr346813) ─────────────────────
+
+
+def test_probe_failure_names_the_missing_token(
+    monkeypatch, _fresh_capability, caplog
+) -> None:
+    monkeypatch.setattr(ac, "_auth_token_present", lambda mode=None: False)
+    with caplog.at_level("WARNING", logger="precis.workers.executors.agent_container"):
+        assert ac.container_capability_ok() is False
+    assert "no auth token resolvable" in ac.last_probe_failure()
+    assert "capability probe failed" in caplog.text
+
+
+def test_probe_failure_names_the_daemon_leg_with_stderr(
+    monkeypatch, _fresh_capability
+) -> None:
+    def _run(argv, **kw):
+        return subprocess.CompletedProcess(
+            argv, 1, stderr=b"Cannot connect to the Docker daemon at unix:///x.sock\n"
+        )
+
+    monkeypatch.setattr(ac.subprocess, "run", _run)
+    assert ac.container_capability_ok() is False
+    why = ac.last_probe_failure()
+    assert why.startswith("`podman info` rc=1")
+    assert "Cannot connect to the Docker daemon" in why
+
+
+def test_probe_failure_names_the_image_leg(monkeypatch, _fresh_capability) -> None:
+    def _run(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0 if argv[1] == "info" else 125)
+
+    monkeypatch.setattr(ac.subprocess, "run", _run)
+    assert ac.container_capability_ok(image="precis-agent:x") is False
+    assert ac.last_probe_failure() == "`podman image inspect precis-agent:x` rc=125"
+
+
+def test_probe_failure_names_the_timeout(monkeypatch, _fresh_capability) -> None:
+    def _boom(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 5)
+
+    monkeypatch.setattr(ac.subprocess, "run", _boom)
+    assert ac.container_capability_ok() is False
+    assert ac.last_probe_failure() == "`podman info` exceeded 5s"
+
+
+def test_probe_success_clears_the_failure_note(monkeypatch, _fresh_capability) -> None:
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run(1))
+    assert ac.container_capability_ok() is False
+    assert ac.last_probe_failure()
+    ac.reset_capability_cache()
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run(0))
+    assert ac.container_capability_ok() is True
+    assert ac.last_probe_failure() == ""
+
+
+def test_container_unavailable_reason_by_cause(monkeypatch, _fresh_capability) -> None:
+    monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
+    assert "not enabled" in ac.container_unavailable_reason()
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run(1))
+    assert ac.container_unavailable_reason().startswith("`podman info` rc=1")
+
+    ac.reset_capability_cache()
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run(0))
+    assert ac.container_unavailable_reason() == ""
+
+    ac.trip_container_unhealthy(_now=1000.0)
+    assert "latched unhealthy" in ac.container_unavailable_reason(_now=1100.0)

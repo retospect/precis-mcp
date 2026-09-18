@@ -388,12 +388,14 @@ def run(
     )
     if not container_ready and not _unsandboxed_ack():
         wall = time.perf_counter() - t0
+        why = _agent_container.container_unavailable_reason()
         log.warning(
             "fix_gripe: refusing gripe:%d — no containerized agent path "
-            "available and unsandboxed run not acked (gr179498); "
+            "available (%s) and unsandboxed run not acked (gr179498); "
             "fail-closed. Set %s=1 to run unsandboxed anyway, or make the "
             "§13 container available.",
             gripe_id,
+            why or "reason unknown",
             _UNSANDBOXED_ACK_ENV,
         )
         return RunOutcome(
@@ -411,8 +413,9 @@ def run(
             gripe_comment_text=(
                 f"[worker:job:{job_id}] fix attempt skipped: fix_gripe is "
                 f"fail-closed ({_UNSANDBOXED_ACK_ENV} unset, no container "
-                "available) — it would run an unsandboxed agent on this "
-                "gripe's verbatim text (gr179498). No action taken."
+                f"available: {why or 'reason unknown'}) — it would run an "
+                "unsandboxed agent on this gripe's verbatim text "
+                "(gr179498). No action taken."
             ),
             branch=None,
             sha=None,

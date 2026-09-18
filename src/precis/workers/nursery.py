@@ -64,6 +64,11 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
   zero succeeded in :data:`EMBED_LANE_STALL_WINDOW_MIN`
   (``docs/backlog/embedder-wedge-hardening.md``) — job *outcome* tags are
   the only truthful probe; process/``/readyz`` checks pass through a wedge.
+* **lane-skipping** — a job_type with >= :data:`LANE_SKIP_MIN_CANCELLED`
+  ``STATUS:cancelled`` runs in :data:`LANE_SKIP_WINDOW_H` h and cancelled
+  >= :data:`LANE_SKIP_RATIO` × succeeded — a handler's "clean skip" path
+  (the gr179498 container gate) running as the lane's *normal* outcome,
+  invisible to err/warn counts and child-failed bubbles (gr346813).
 
 Each finding → an ``alert`` under ``alert_source = nursery:<category>``,
 deduped on ``fingerprint = "<category>:<ref_id>"`` (:mod:`precis.alerts`);
@@ -226,6 +231,18 @@ DISPATCH_STALL_MINUTES = 15
 #: as "alive" for stretches while nothing was actually completing).
 EMBED_LANE_STALL_WINDOW_MIN = 60
 
+#: ``lane-skipping``: a job_type whose runs are mostly ``STATUS:cancelled``
+#: (a handler's deliberate "clean skip" — e.g. the gr179498 container gate)
+#: is a lane that is DOWN while looking clean — cancelled is not failed, so
+#: no err/warn count, no ``child-failed`` bubble, and the doctor read
+#: melchior's 8-day 90% diagnose_gripe skip rate as "no actual failures"
+#: (gr346813). Fire per job_type when, over the window, at least
+#: :data:`LANE_SKIP_MIN_CANCELLED` runs were cancelled and cancelled
+#: outnumber succeeded by :data:`LANE_SKIP_RATIO`×.
+LANE_SKIP_WINDOW_H = 24
+LANE_SKIP_MIN_CANCELLED = 10
+LANE_SKIP_RATIO = 5
+
 #: Per-category alert severity (drives sort + colour on the /alerts
 #: tab, and — for ``critical`` — a one-shot Discord push via
 #: :func:`notify_critical_alert`). Spin loops and stuck claims/recurrings
@@ -254,6 +271,7 @@ _SEVERITY: dict[str, str] = {
     "nas-denied": "critical",
     "host-dark": "critical",
     "embed-lane-stalled": "critical",
+    "lane-skipping": "warn",
 }
 
 
@@ -315,6 +333,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Symptom]]], ...] = (
     ("host-dark", lambda s: _detect_host_dark(s)),
     ("dispatch-stall", lambda s: _detect_dispatch_stalls(s)),
     ("embed-lane-stalled", lambda s: _detect_embed_lane_stalled(s)),
+    ("lane-skipping", lambda s: _detect_lane_skipping(s)),
 )
 
 
@@ -1691,6 +1710,102 @@ def _detect_embed_lane_stalled(store: Store) -> list[Symptom]:
             ),
         )
     ]
+
+
+def _detect_lane_skipping(store: Store) -> list[Symptom]:
+    """A job_type whose runs are mostly ``STATUS:cancelled`` — down while
+    looking clean (gr346813).
+
+    ``cancelled`` is a handler's *deliberate* skip (``diagnose_gripe`` /
+    ``fix_gripe`` refusing without a containerized agent path; an OSS-backend
+    skip), so it never counts as an error anywhere: no worker-log ERROR, no
+    ``child-failed`` bubble, and a doctor reading err/warn sees a healthy
+    fleet. melchior ran 188 cancelled / 8 succeeded diagnose_gripe jobs over
+    9 days that way before a manual outcome histogram caught it. Outcome
+    tags are the truthful probe, as with ``embed-lane-stalled``; the window
+    is read from ``ref_tags.created_at`` (the transition time).
+
+    Fire per job_type iff, over :data:`LANE_SKIP_WINDOW_H`, cancelled >=
+    :data:`LANE_SKIP_MIN_CANCELLED` and cancelled >= :data:`LANE_SKIP_RATIO`
+    × succeeded — a lane with a few skips beside a healthy success rate is
+    quiet, and so is a rarely-run lane. One ``warn`` alert per job_type
+    (fingerprint ``lane-skipping:<job_type>``); auto-resolves when the ratio
+    recovers. The detail quotes the newest skip's ``job_event`` line so the
+    alert names the leg (token / daemon / image / timeout) when the handler
+    recorded one.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH outcomes AS (
+                SELECT j.ref_id, j.meta->>'job_type' AS job_type, t.value AS status,
+                       rt.created_at AS at
+                  FROM refs j
+                  JOIN ref_tags rt ON rt.ref_id = j.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE j.kind = 'job'
+                   AND j.retired_at IS NULL
+                   AND t.namespace = 'STATUS'
+                   AND t.value IN ('cancelled', 'succeeded')
+                   AND rt.created_at > now() - (%(hours)s || ' hours')::interval
+            ),
+            per_type AS (
+                SELECT job_type,
+                       count(*) FILTER (WHERE status = 'cancelled')::int AS n_cancelled,
+                       count(*) FILTER (WHERE status = 'succeeded')::int AS n_succeeded,
+                       (array_agg(ref_id ORDER BY at DESC)
+                          FILTER (WHERE status = 'cancelled'))[1] AS newest_cancelled
+                  FROM outcomes
+                 WHERE job_type IS NOT NULL
+                 GROUP BY job_type
+            )
+            SELECT p.job_type, p.n_cancelled, p.n_succeeded,
+                   (SELECT c.text FROM chunks c
+                     WHERE c.ref_id = p.newest_cancelled
+                       AND c.retired_at IS NULL
+                       AND c.chunk_kind = 'job_event'
+                     ORDER BY c.created_at DESC LIMIT 1) AS last_event
+              FROM per_type p
+             WHERE p.n_cancelled >= %(min_cancelled)s
+               AND p.n_cancelled >= %(ratio)s * p.n_succeeded
+             ORDER BY p.n_cancelled DESC
+             LIMIT 50
+            """,
+            {
+                "hours": LANE_SKIP_WINDOW_H,
+                "min_cancelled": LANE_SKIP_MIN_CANCELLED,
+                "ratio": LANE_SKIP_RATIO,
+            },
+        ).fetchall()
+
+    out: list[Symptom] = []
+    for job_type, n_cancelled, n_succeeded, last_event in rows:
+        # Not _first_line: its 80-char cut would drop the leg the handler
+        # appended after the fixed skip text.
+        why = (
+            last_event.split("\n", 1)[0][:240]
+            if last_event
+            else "(no job_event on the newest skip)"
+        )
+        out.append(
+            Symptom(
+                category="lane-skipping",
+                ref_id=None,
+                fingerprint_key=f"lane-skipping:{job_type}",
+                title=(
+                    f"{job_type} lane is skipping — {n_cancelled} cancelled vs "
+                    f"{n_succeeded} succeeded in {LANE_SKIP_WINDOW_H}h"
+                ),
+                detail=(
+                    f"{n_cancelled} {job_type} job(s) ended STATUS:cancelled against "
+                    f"{n_succeeded} STATUS:succeeded in the last {LANE_SKIP_WINDOW_H}h — "
+                    "a handler's clean-skip path is the lane's normal outcome, so "
+                    "nothing else (err/warn counts, child-failed) shows it. "
+                    f"Newest skip says: {why}"
+                ),
+            )
+        )
+    return out
 
 
 # ── small helpers ─────────────────────────────────────────────────
