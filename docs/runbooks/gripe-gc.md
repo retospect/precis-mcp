@@ -53,6 +53,7 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
 
 ## Log
 
+- **2026-09-18** — candidate scan: latest-comment regex for a shipped sha over all 137 open (5 hits) + title ILIKE shipped/fixed/resolved/landed (17 hits, mostly false positives). **Closed 2**: gr250455 (gate/CI ruff skew — class closed by 7c46931c ship --remote; residual tracked in gr346534), gr250453 (NAS lockout — resolved 08-25, durable follow-ups = nas-denied detector + fda-grant cadence). Left open: gr245505 (structural:tool-starved, 18 doctor comments, still recurring daily on melchior — chronic, unfixed), gr336604 (pollux job_ssh_node pass-dead, recurring), gr273965 (UniFi DPI — owner queue td345841), gr261537/gr345784 (still live per latest comment), gr336344/336349/336352/343741 (feature asks, never shipped).
 - **2026-09-09** — full sweep over all 73 open gripes (`search(kind='gripe',
   tags=['STATUS:open'], page_size=100)` enumeration, cross-checked with
   targeted `q='shipped'/'fixed in'/'resolved'/'closing'` passes to surface
