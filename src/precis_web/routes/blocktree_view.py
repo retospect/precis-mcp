@@ -57,6 +57,26 @@ docs/backlog/se-topology-cloud-and-surface-notes.md slice 2:
   ``'user'``, ``about=[block]``, verbatim original appended as a
   ``(verbatim: …)`` trailer when the text was rewritten).
 
+The revision scrubber (the design-workbench build, slice 2 (2026-09-18)):
+``?rev=N`` on the 3D page and on ``scene3d.json``. N < current renders
+the tree from the ``rev-N`` ``design_checkpoints`` snapshot the handler
+took at that save (:func:`precis_se.persist.tree_from_json`); the blocks
+that differ from N−1 — added, or with a changed pose/rot/envelope/parent,
+matched by block ``uid`` — come back as ``changed_uids`` and are tinted in
+the Shapes tree (:func:`precis_web.blocktree_3d.tint_blocks`). The page's
+"Revision N" panel lists that diff, the recorded ops and the chat ``turn``;
+a past revision is read-only (no note panel). A design saved before the
+record existed shows one position, "current, no record".
+
+The design chat (slice 3, ``precis_web.design_chat`` + the shared
+``_design_chat.html.j2`` partial): ``POST /se/{slug}/chat`` (form
+``message`` + ``handles``) runs one tool-less :func:`design_turn.run_turn`
+off the event loop and 303s back with the outcome in the query string;
+``POST /se/{slug}/chat/apply`` (form ``ops`` JSON + ``turn``) is the human
+Apply on a store-aware proposal. Both refuse a ``?rev=`` naming a past
+revision (409) — a turn edits the current tree. The panel is hidden on a
+past revision.
+
 Still out of scope (see the gripe): argue-with-points (click → anchor →
 job).
 """
@@ -64,16 +84,18 @@ job).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.blocktree.types import BlockNode, Tree
+from precis.design import history as design_history
 from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
@@ -81,7 +103,8 @@ from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.ops import effective_envelope as se_effective_envelope
-from precis_web.blocktree_3d import Scene3D, build_scene
+from precis_web import design_chat, design_turn
+from precis_web.blocktree_3d import CHANGED_COLOUR, Scene3D, build_scene, tint_blocks
 from precis_web.blocktree_svg import (
     AXES,
     COLOUR_CHANNELS,
@@ -343,6 +366,150 @@ def _valid_overrides_qs(raw: str, tree: Tree[BlockNode, Any]) -> str:
     return ",".join(f"{n}:{lv}" for n, lv in valid.items())
 
 
+# ── revision scrubber (design-workbench build, slice 2) ──────────────────
+
+
+class _NoSuchRevision(Exception):
+    """``rev`` names a version this design never had, or whose snapshot is
+    gone — the route turns it into a 404 with the message."""
+
+
+@dataclass
+class _RevisionAxis:
+    """Where the scrubber stands: the newest recorded revision (``current``
+    — 1 with no record, so the slider still has its one position), the
+    revision on screen (``shown``), and whether that is a past one."""
+
+    current: int
+    shown: int
+    has_record: bool
+
+    @property
+    def read_only(self) -> bool:
+        return self.shown != self.current
+
+
+def _revision_axis(store: Store, ref_id: int, rev: int | None) -> _RevisionAxis:
+    """Resolve ``?rev=`` against the design's ``design_revisions`` rows.
+    ``None`` is the current revision; anything outside ``1..current`` is a
+    404 (never a clamp — a stale link to a version that never existed
+    should say so, not silently show a different one)."""
+    revisions = design_history.list_revisions(store, ref_id)
+    current = max((r.rev for r in revisions), default=1)
+    shown = current if rev is None else rev
+    if not 1 <= shown <= current:
+        raise _NoSuchRevision(f"no revision {shown} (current is {current})")
+    return _RevisionAxis(current=current, shown=shown, has_record=bool(revisions))
+
+
+def _snapshot_tree(store: Store, ref_id: int, rev: int) -> Tree[Any, Any] | None:
+    """The tree as of save ``rev`` from its ``rev-<N>`` checkpoint, or
+    ``None`` when no such snapshot exists (rev 0, a pre-record save, or a
+    deleted checkpoint)."""
+    if rev < 1:
+        return None
+    checkpoint = design_history.load_checkpoint(store, ref_id, f"rev-{rev}")
+    if checkpoint is None:
+        return None
+    return se_persist.tree_from_json(checkpoint.payload, store=store)
+
+
+def _tree_at(
+    store: Store, kind: str, ref_id: int, axis: _RevisionAxis
+) -> Tree[BlockNode, Any]:
+    """The tree the page/scene shows: live for the current revision, the
+    ``rev-N`` snapshot for a past one (a past revision with no snapshot is
+    a 404 — there is nothing honest to draw)."""
+    if not axis.read_only:
+        tree: Tree[BlockNode, Any] = _ADAPTERS[kind].load_tree(store, ref_id)
+        return tree
+    snapshot = _snapshot_tree(store, ref_id, axis.shown)
+    if snapshot is None:
+        raise _NoSuchRevision(f"revision {axis.shown} has no snapshot to show")
+    return snapshot
+
+
+def _uids_of(tree: Tree[BlockNode, Any]) -> dict[str, int]:
+    """``{name: uid}`` off the tree's own blocks — the snapshot path's
+    replacement for :func:`_uid_by_name` (the live-row query would answer
+    for today's blocks, not the snapshot's)."""
+    return {
+        name: int(uid)
+        for name, node in tree.blocks.items()
+        if (uid := getattr(node, "uid", None)) is not None
+    }
+
+
+#: The block fields whose change between two revisions marks the block as
+#: "changed" in the scrubber — the L1 triple plus its place in the tree.
+_BLOCK_DIFF_FIELDS = ("pose", "rot", "envelope", "parent", "name")
+
+
+def _block_diff(
+    prev: Tree[BlockNode, Any] | None, cur: Tree[BlockNode, Any]
+) -> dict[str, Any]:
+    """Blocks that differ between two revisions, matched by ``uid`` (the
+    identity that survives a save — a rename is a change, not an add +
+    remove). ``prev=None`` is "before the first save": everything is
+    added. ``changed_uids`` is what the scene tints — the added and changed
+    blocks, which exist at ``cur``; removed ones have nothing to tint."""
+    before = {u: n for n, u in _uids_of(prev).items()} if prev is not None else {}
+    after = {u: n for n, u in _uids_of(cur).items()}
+    prev_blocks = prev.blocks if prev is not None else {}
+    added = [{"uid": u, "name": after[u]} for u in sorted(after) if u not in before]
+    removed = [{"uid": u, "name": before[u]} for u in sorted(before) if u not in after]
+    changed: list[dict[str, Any]] = []
+    for uid in sorted(after):
+        if uid not in before:
+            continue
+        a, b = prev_blocks[before[uid]], cur.blocks[after[uid]]
+        what = [f for f in _BLOCK_DIFF_FIELDS if getattr(a, f) != getattr(b, f)]
+        if what:
+            changed.append({"uid": uid, "name": after[uid], "what": what})
+    return {
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "changed_uids": [d["uid"] for d in added] + [d["uid"] for d in changed],
+    }
+
+
+def _revision_panel(
+    store: Store, ref_id: int, axis: _RevisionAxis, tree: Tree[BlockNode, Any]
+) -> dict[str, Any]:
+    """The "Revision N" panel: the block diff against N−1, the recorded ops
+    (one pretty-JSON line each) or "no op record", and the chat ``turn``.
+    Reads only."""
+    if axis.has_record:
+        diff = _block_diff(_snapshot_tree(store, ref_id, axis.shown - 1), tree)
+    else:
+        diff = {"added": [], "removed": [], "changed": [], "changed_uids": []}
+    record = design_history.revision(store, ref_id, axis.shown)
+    return {
+        "rev": axis.shown,
+        "current": axis.current,
+        "has_record": record is not None,
+        "diff": diff,
+        "n_blocks": len(tree.blocks),
+        "ops": [
+            json.dumps(op, sort_keys=True) for op in (record.ops if record else [])
+        ],
+        "turn": record.turn if record else None,
+        "created": _ago(record.created_at) if record and record.created_at else None,
+    }
+
+
+def _changed_uids(
+    store: Store, ref_id: int, axis: _RevisionAxis, tree: Any
+) -> set[int]:
+    """The uids the scene tints for revision N — empty for a design with
+    no record (nothing to diff against)."""
+    if not axis.has_record:
+        return set()
+    diff = _block_diff(_snapshot_tree(store, ref_id, axis.shown - 1), tree)
+    return set(diff["changed_uids"])
+
+
 async def _list_page(request: Request, kind: str) -> HTMLResponse:
     store = get_store(request)
     adapter = _ADAPTERS[kind]
@@ -580,6 +747,7 @@ async def _view3d_page(
     level: str,
     isolate: str | None,
     overrides: str,
+    rev: int | None = None,
 ) -> Any:
     store = get_store(request)
     adapter = _ADAPTERS[kind]
@@ -596,7 +764,25 @@ async def _view3d_page(
             },
             status_code=404,
         )
-    tree = await asyncio.to_thread(adapter.load_tree, store, ref.id)
+
+    def _load() -> tuple[_RevisionAxis, Tree[BlockNode, Any], dict[str, Any]]:
+        axis = _revision_axis(store, ref.id, rev)
+        tree = _tree_at(store, kind, ref.id, axis)
+        return axis, tree, _revision_panel(store, ref.id, axis, tree)
+
+    try:
+        axis, tree, revision = await asyncio.to_thread(_load)
+    except _NoSuchRevision as exc:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": f"{adapter.label} design {slug!r}: {exc}",
+                "detail": f"design {slug!r} has {exc}",
+                "status": 404,
+            },
+            status_code=404,
+        )
     block_names = sorted(tree.blocks)
     level = level if level in LEVELS else "refined"
     isolate = isolate if isolate in tree.blocks else None
@@ -613,14 +799,36 @@ async def _view3d_page(
         common_qs += f"&isolate={quote(isolate, safe='')}"
     if valid_overrides_qs:
         common_qs += f"&overrides={quote(valid_overrides_qs, safe='')}"
-    scene_url = f"/{kind}/{quote(slug, safe='')}/scene3d.json?{common_qs}"
+    # The scene carries ``rev`` only when the reader asked for one — the
+    # bare page stays the live tree, untinted, exactly as before.
+    scene_qs = common_qs + (f"&rev={axis.shown}" if rev is not None else "")
+    scene_url = f"/{kind}/{quote(slug, safe='')}/scene3d.json?{scene_qs}"
     # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
     detail_2d_url = f"/{kind}/{quote(slug, safe='')}/2d?{common_qs}"
     # Comment-on-selection (slice 2, se only today — the routes are
     # registered per kind, so a second blocktree kind opts in by adding
-    # its own note routes; the template hides the panel when unset).
-    note_url = f"/{kind}/{quote(slug, safe='')}/note" if kind == "se" else ""
+    # its own note routes; the template hides the panel when unset). A
+    # past revision is read-only: the note op would land on the CURRENT
+    # tree, so the panel is not offered at all.
+    note_url = (
+        f"/{kind}/{quote(slug, safe='')}/note"
+        if kind == "se" and not axis.read_only
+        else ""
+    )
     note_rewrite_url = f"{note_url}/rewrite" if note_url else ""
+    # The design chat (slice 3) — se only, like the note panel; on a past
+    # revision the partial renders one read-only line and reads nothing.
+    chat = (
+        design_chat.panel_context(
+            request,
+            kind="se",
+            slug=str(ref.slug),
+            read_only=axis.read_only,
+            rev_qs=f"?rev={axis.shown}" if rev is not None else "",
+        )
+        if kind == "se"
+        else None
+    )
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",
@@ -639,6 +847,15 @@ async def _view3d_page(
             "detail_2d_url": detail_2d_url,
             "note_url": note_url,
             "note_rewrite_url": note_rewrite_url,
+            # Scrubber state (slice 2): the revision on screen, the axis it
+            # sits on, whether this is a read-only past view, and the panel.
+            "rev": axis.shown,
+            "rev_current": axis.current,
+            "rev_explicit": rev is not None,
+            "read_only": axis.read_only,
+            "has_record": axis.has_record,
+            "revision": revision,
+            "chat": chat,
         },
     )
 
@@ -652,26 +869,41 @@ def _build_scene3d(
     level: str,
     isolate: str | None,
     level_overrides: dict[str, str],
-) -> tuple[Scene3D | None, dict[str, dict[str, Any]], str | None]:
+    rev: int | None = None,
+) -> tuple[Scene3D | None, dict[str, dict[str, Any]], list[int], str | None]:
     """Off the event loop, mirroring :func:`_build_svg`'s shape: the
     round-2a analogue building a :class:`~precis_web.blocktree_3d.Scene3D`
     off the SAME plan instead of an SVG string.
 
-    Returns ``(scene, member facts, error)`` — the facts
+    Returns ``(scene, member facts, changed uids, error)`` — the facts
     (:func:`_se_member_facts`) are the topology panel's hover numbers,
     computed here rather than in the kind-agnostic scene builder because
     they are domain vocabulary (the same reason ``_build_svg`` calls
     ``se_stability`` directly). ``{}`` for a kind without a stability
-    solve, or when the solve itself fails."""
+    solve, or when the solve itself fails.
+
+    ``rev`` (the scrubber) renders the ``rev-N`` snapshot instead of the
+    live rows, with the blocks that changed between N−1 and N tinted
+    (:func:`~precis_web.blocktree_3d.tint_blocks`) and their uids returned;
+    ``None`` is the live tree, untinted, ``[]``."""
     adapter = _ADAPTERS[kind]
-    tree: Tree[BlockNode, Any] = adapter.load_tree(store, ref_id)
+    changed: set[int] = set()
+    if rev is None:
+        tree: Tree[BlockNode, Any] = adapter.load_tree(store, ref_id)
+        uid_by_name = _uid_by_name(store, kind, ref_id)
+    else:
+        axis = _revision_axis(store, ref_id, rev)
+        tree = _tree_at(store, kind, ref_id, axis)
+        # The snapshot's own uids, not today's rows — a block added since
+        # would otherwise be looked up under the wrong identity.
+        uid_by_name = _uids_of(tree)
+        changed = _changed_uids(store, ref_id, axis, tree)
     kids = children_map(tree)
     plan, err = _plan_or_error(
         tree, kids, level=level, isolate=isolate, level_overrides=level_overrides
     )
     if plan is None:
-        return None, {}, err
-    uid_by_name = _uid_by_name(store, kind, ref_id)
+        return None, {}, [], err
     scene = build_scene(
         tree,
         adapter.effective_envelope,
@@ -686,6 +918,7 @@ def _build_scene3d(
         label_fn=adapter.connect_label,
         colour_fn=adapter.connect_colour,
     )
+    tint_blocks(scene.shapes, changed, CHANGED_COLOUR)
     facts: dict[str, dict[str, Any]] = {}
     if adapter.has_stability:
         try:
@@ -695,7 +928,7 @@ def _build_scene3d(
             # honest degrade (the tooltip then says there is no solve),
             # a broken topology panel is not.
             log.exception("member facts failed for %s %s", kind, slug)
-    return scene, facts, None
+    return scene, facts, sorted(changed), None
 
 
 async def _scene3d_response(
@@ -706,6 +939,7 @@ async def _scene3d_response(
     level: str,
     isolate: str | None,
     overrides: str,
+    rev: int | None = None,
 ) -> Response:
     store = get_store(request)
     try:
@@ -718,7 +952,9 @@ async def _scene3d_response(
         )
     level_overrides = _parse_overrides(overrides)
 
-    def _build() -> tuple[Scene3D | None, dict[str, dict[str, Any]], str | None]:
+    def _build() -> tuple[
+        Scene3D | None, dict[str, dict[str, Any]], list[int], str | None
+    ]:
         return _build_scene3d(
             store,
             kind,
@@ -732,14 +968,22 @@ async def _scene3d_response(
             level=level,
             isolate=isolate,
             level_overrides=level_overrides,
+            rev=rev,
         )
 
-    scene, facts, err = await asyncio.to_thread(_build)
+    try:
+        scene, facts, changed_uids, err = await asyncio.to_thread(_build)
+    except _NoSuchRevision as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
     if scene is None:
         return JSONResponse({"error": err}, status_code=400)
     return JSONResponse(
         {
             "shapes": scene.shapes,
+            # The scrubber's diff (slice 2): blocks added or changed at
+            # ``rev`` vs the revision before, by uid — the same uids the
+            # tinted leaves' paths end in. ``[]`` for the live scene.
+            "changed_uids": changed_uids,
             "connections": [
                 {
                     "path": c.path,
@@ -809,10 +1053,11 @@ async def se_detail(
     level: str = "refined",
     isolate: str | None = None,
     overrides: str = "",
+    rev: int | None = None,
 ) -> Any:
     # gr337745: the 3D view is the default landing page now.
     return await _view3d_page(
-        request, "se", slug, level=level, isolate=isolate, overrides=overrides
+        request, "se", slug, level=level, isolate=isolate, overrides=overrides, rev=rev
     )
 
 
@@ -872,9 +1117,10 @@ async def se_scene3d(
     level: str = "refined",
     isolate: str | None = None,
     overrides: str = "",
+    rev: int | None = None,
 ) -> Response:
     return await _scene3d_response(
-        request, "se", slug, level=level, isolate=isolate, overrides=overrides
+        request, "se", slug, level=level, isolate=isolate, overrides=overrides, rev=rev
     )
 
 
@@ -1022,3 +1268,103 @@ async def se_note_save(request: Request, slug: str) -> JSONResponse:
         # renders it as textContent, never markup.
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True, "name": name})
+
+
+# ── design chat (the design-workbench build, slice 3 (2026-09-18)) ───────────
+
+
+def _chat_read_only(store: Store, ref_id: int, rev: int | None) -> str | None:
+    """The refusal message when ``rev`` names a past revision (a turn or an
+    Apply edits the CURRENT tree, never the one on screen), else ``None``."""
+    if rev is None:
+        return None
+    try:
+        axis = _revision_axis(store, ref_id, rev)
+    except _NoSuchRevision as exc:
+        return str(exc)
+    if axis.read_only:
+        return (
+            f"revision {rev} is a past revision (current is {axis.current}) — "
+            "chat on the current revision"
+        )
+    return None
+
+
+@router.post("/se/{slug}/chat")
+async def se_chat(
+    request: Request,
+    slug: str,
+    message: str = Form(""),
+    handles: str = Form(""),
+    rev: int | None = None,
+) -> Any:
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, "se", slug)
+    except NotFound:
+        return design_chat.chat_error(
+            request,
+            kind="se",
+            slug=slug,
+            detail=f"no live se design {slug!r}",
+            status=404,
+        )
+    if not message.strip():
+        return design_chat.chat_error(
+            request, kind="se", slug=slug, detail="empty message", status=400
+        )
+    refusal = _chat_read_only(store, ref.id, rev)
+    if refusal is not None:
+        return design_chat.chat_error(
+            request, kind="se", slug=slug, detail=refusal, status=409
+        )
+    hub = design_chat.hub_for(request)
+    clicked = design_chat.parse_handles(handles)
+
+    def _run() -> design_turn.TurnResult:
+        return design_turn.run_turn(
+            hub, kind="se", slug=str(ref.slug), message=message, handles=clicked
+        )
+
+    result = await asyncio.to_thread(_run)
+    return design_chat.redirect_after("se", str(ref.slug), result)
+
+
+@router.post("/se/{slug}/chat/apply")
+async def se_chat_apply(
+    request: Request,
+    slug: str,
+    ops: str = Form(""),
+    turn: str = Form(""),
+    rev: int | None = None,
+) -> Any:
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, "se", slug)
+    except NotFound:
+        return design_chat.chat_error(
+            request,
+            kind="se",
+            slug=slug,
+            detail=f"no live se design {slug!r}",
+            status=404,
+        )
+    parsed, err = design_chat.parse_ops_form(ops)
+    if parsed is None:
+        return design_chat.chat_error(
+            request, kind="se", slug=slug, detail=err or "bad ops", status=400
+        )
+    refusal = _chat_read_only(store, ref.id, rev)
+    if refusal is not None:
+        return design_chat.chat_error(
+            request, kind="se", slug=slug, detail=refusal, status=409
+        )
+    hub = design_chat.hub_for(request)
+
+    def _apply() -> design_turn.TurnResult:
+        return design_turn.apply_proposal(
+            hub, kind="se", slug=str(ref.slug), ops=parsed, turn=turn.strip() or None
+        )
+
+    result = await asyncio.to_thread(_apply)
+    return design_chat.redirect_after_apply("se", str(ref.slug), result)

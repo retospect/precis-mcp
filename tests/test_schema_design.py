@@ -138,6 +138,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # Decision 3 requirement box: delta/span ranges + open wants keys,
         # read only by compose= (port-pose-and-composition-search.md).
         "design_transitions.requires",
+        #   * ops — the verbatim op list a revision was produced by; an op's
+        #     shape is the renter's own vocabulary (structure op table,
+        #     precis_se.ops.known_ops), stored opaquely like payload.
+        "design_revisions.ops",
         "dream_log.seed_clusters",
         "dream_log.summary",
         "dream_transcripts.transcript",

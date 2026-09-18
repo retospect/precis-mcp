@@ -1,0 +1,101 @@
+{% extends "base.html.j2" %}
+{% block title %}Design{% endblock %}
+{% block content %}
+
+<div class="flex items-center gap-3 mb-4">
+  <h1 class="text-lg font-semibold">Design</h1>
+  <span class="text-xs text-slate-500">
+    {{ total_designs }} design{{ '' if total_designs == 1 else 's' }} ·
+    {{ total_loose }} loose structure{{ '' if total_loose == 1 else 's' }}
+  </span>
+</div>
+
+{% macro levels_badge(levels) %}
+<span class="inline-flex gap-0.5 text-[10px] font-mono">
+  {% for key in ['l0', 'l1', 'l2', 'l3'] %}
+  <span class="px-1 rounded {% if levels[key] %}bg-emerald-100 text-emerald-700{% else %}bg-slate-100 text-slate-300{% endif %}">{{ key|upper }}</span>
+  {% endfor %}
+</span>
+{% endmacro %}
+
+{% macro bound_facts(bound) %}
+{% if bound.href %}
+<a href="{{ bound.href }}" class="text-emerald-700 hover:underline">structure: {{ bound.slug }}</a>
+{% else %}
+<span class="text-slate-400">structure: {{ bound.slug }} (not live)</span>
+{% endif %}
+{% if bound.live %}
+<span class="text-[10px] text-slate-400">
+  v{{ bound.version }}
+  {% if bound.last_relax %} · {{ bound.last_relax.fidelity }} {{ '%.4f'|format(bound.last_relax.energy) }} eV{% endif %}
+  · {{ bound.lineage.parents }} parent{{ '' if bound.lineage.parents == 1 else 's' }} /
+  {{ bound.lineage.children }} child{{ '' if bound.lineage.children == 1 else 'ren' }}
+</span>
+{% endif %}
+{% endmacro %}
+
+{% macro render_node(node) %}
+<li class="my-1">
+  <div class="flex items-center gap-2">
+    <a href="{{ node.href }}" class="text-slate-700 hover:underline">{{ node.name }}</a>
+    {{ levels_badge(node.levels) }}
+    {% if node.bound %}
+    <span class="text-xs">{{ bound_facts(node.bound) }}</span>
+    {% endif %}
+  </div>
+  {% if node.children %}
+  <ul class="pl-4 border-l border-slate-200">
+    {% for child in node.children %}
+    {{ render_node(child) }}
+    {% endfor %}
+  </ul>
+  {% endif %}
+</li>
+{% endmacro %}
+
+{% if not designs and not loose_structures %}
+<p class="text-sm text-slate-500">
+  No live se designs or structures yet. Author one via MCP:
+  <code class="px-1 bg-slate-100 rounded">put(kind='se', id='...', text='{"ops":[...]}')</code>.
+</p>
+{% endif %}
+
+{% for d in designs %}
+<div class="mb-6 rounded-lg border border-slate-200 bg-white p-3">
+  <div class="flex items-center gap-2 mb-2">
+    <a href="{{ d.href }}" class="text-base font-semibold text-emerald-700 hover:underline">{{ d.title }}</a>
+    <span class="text-xs text-slate-400">{{ d.slug }} · {{ d.updated }}</span>
+  </div>
+  {% if d.roots %}
+  <ul>
+    {% for root in d.roots %}
+    {{ render_node(root) }}
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-xs text-slate-400">no blocks yet</p>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if loose_structures %}
+<div class="mt-8">
+  <h2 class="text-sm font-semibold text-slate-600 mb-2">Loose structures</h2>
+  <ul class="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+    {% for s in loose_structures %}
+    <li class="px-3 py-2 flex items-center gap-2">
+      <a href="/structure/{{ s.slug }}" class="text-emerald-700 hover:underline font-medium">{{ s.title }}</a>
+      <span class="text-xs text-slate-400">
+        v{{ s.version }}
+        {% if s.last_relax %} · {{ s.last_relax.fidelity }} {{ '%.4f'|format(s.last_relax.energy) }} eV{% endif %}
+        · {{ s.lineage.parents }} parent{{ '' if s.lineage.parents == 1 else 's' }} /
+        {{ s.lineage.children }} child{{ '' if s.lineage.children == 1 else 'ren' }}
+        · {{ s.updated }}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% endblock %}

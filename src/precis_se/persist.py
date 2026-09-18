@@ -76,6 +76,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
+from dataclasses import asdict, fields
+from datetime import datetime
 from typing import Any
 
 from psycopg import Connection
@@ -156,7 +159,7 @@ def _label(uid_to_name: dict[int, str], uid: int | None, stored: str | None) -> 
     return stored
 
 
-def load_tree(store: Any, ref_id: int) -> SeTree:
+def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeTree:
     """Load a design's live block tree, keyed by name (the display label),
     with its live ports (per owning block) and its uid-keyed
     cross-references resolved back to labels (module docstring).
@@ -168,8 +171,13 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
     reference back into THIS one recognised as the same node — the
     cross-design cycle check, write-time only — sets it itself
     (:class:`precis_se.handler.SeHandler`).
+
+    ``conn`` reads through the caller's connection — inside a save's own
+    transaction that is the only way to see the rows it just wrote, which
+    is how the handler snapshots a revision (:func:`tree_to_json`) as the
+    rows ARE rather than as the in-memory tree was.
     """
-    with store.pool.connection() as conn:
+    with nullcontext(conn) if conn is not None else store.pool.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"SELECT {_BLOCK_COLS} FROM se_blocks "
@@ -362,6 +370,115 @@ def load_tree(store: Any, ref_id: int) -> SeTree:
     # same way, and a new reader cannot forget to (:func:`foreign_resolver`).
     tree.foreign = foreign_resolver(store)
     return tree
+
+
+#: The snapshot format :func:`tree_to_json` writes; bumped only if the
+#: shape changes incompatibly (an added dataclass field is not that — the
+#: reader takes what it knows and defaults the rest).
+TREE_JSON_FORMAT = "se-tree/1"
+
+#: :class:`SeBlock` fields that are NOT design data and never snapshot:
+#: ``derived`` is recomputed from the catalog on every load
+#: (:func:`attach_catalog`), and the ``pending_*`` trio is one call's
+#: not-yet-written state-op payload (the class docstring — cleared by
+#: discarding the tree).
+_BLOCK_TRANSIENT = frozenset(
+    {"derived", "pending_states", "pending_transitions", "pending_current_state"}
+)
+
+
+def tree_to_json(tree: SeTree) -> dict[str, Any]:
+    """Serialise a tree to a JSON-clean dict — the ``payload`` of a
+    ``design_checkpoints`` row (:func:`precis.design.history.
+    save_checkpoint`; design-workbench build, slice 2).
+
+    Design data only: blocks (uid included — that is the identity a
+    restore must carry back), ports, connects, measures, BOM, notes,
+    threading, optics. Transient fields (:data:`_BLOCK_TRANSIENT`,
+    ``own_slug``, ``foreign``, ``from_persistence``) are not design data
+    and are left out. ``created_at`` on a note is ISO 8601 text — the one
+    non-JSON scalar in the tree. Inverse: :func:`tree_from_json`.
+    """
+    blocks = [
+        {k: v for k, v in asdict(node).items() if k not in _BLOCK_TRANSIENT}
+        for node in tree.blocks.values()
+    ]
+    notes = []
+    for note in tree.notes:
+        d = asdict(note)
+        d["created_at"] = (
+            note.created_at.isoformat() if note.created_at is not None else None
+        )
+        notes.append(d)
+    return {
+        "format": TREE_JSON_FORMAT,
+        "blocks": blocks,
+        "connects": [asdict(c) for c in tree.connects],
+        "measures": [asdict(m) for m in tree.measures],
+        "bom": [asdict(b) for b in tree.bom],
+        "notes": notes,
+        "threading": [asdict(t) for t in tree.threading],
+        "optics": dict(tree.optics) if tree.optics is not None else None,
+    }
+
+
+def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
+    """Rebuild a tree from :func:`tree_to_json`'s output.
+
+    The result equals :func:`load_tree`'s for the same rows — the
+    round-trip a revert relies on (``load_checkpoint`` + :func:`save_tree`).
+    ``from_persistence`` is set, since the blocks arrive carrying uids the
+    same way loaded rows do (a uid-less block in a restored tree is, by
+    construction, one that was added since). With ``store`` given the
+    catalog-derived facets and the foreign resolver are wired exactly as
+    :func:`load_tree` wires them; without one the tree is bare design
+    data.
+
+    Unknown keys are dropped and missing ones take the dataclass default,
+    so a snapshot written before a field existed (or after one was
+    removed) still restores.
+    """
+    fmt = payload.get("format")
+    if fmt != TREE_JSON_FORMAT:
+        raise ValueError(f"not an se tree snapshot: format={fmt!r}")
+    tree = SeTree()
+    tree.from_persistence = True
+    for d in payload.get("blocks") or []:
+        ports = {
+            name: PortSpec(**_known(PortSpec, p))
+            for name, p in (d.get("ports") or {}).items()
+        }
+        node = SeBlock(**{**_known(SeBlock, d), "ports": ports})
+        tree.blocks[node.name] = node
+    tree.connects = [
+        ConnectSpec(**_known(ConnectSpec, c)) for c in payload.get("connects") or []
+    ]
+    tree.measures = [
+        MeasureSpec(**_known(MeasureSpec, m)) for m in payload.get("measures") or []
+    ]
+    tree.bom = [BomLine(**_known(BomLine, b)) for b in payload.get("bom") or []]
+    for n in payload.get("notes") or []:
+        d = _known(NoteSpec, n)
+        raw = d.get("created_at")
+        d["created_at"] = datetime.fromisoformat(raw) if isinstance(raw, str) else None
+        tree.notes.append(NoteSpec(**d))
+    tree.threading = [
+        ThreadingSpec(**_known(ThreadingSpec, t))
+        for t in payload.get("threading") or []
+    ]
+    optics = payload.get("optics")
+    tree.optics = dict(optics) if optics is not None else None
+    if store is not None:
+        attach_catalog(store, tree)
+        tree.foreign = foreign_resolver(store)
+    return tree
+
+
+def _known(cls: type, d: dict[str, Any]) -> dict[str, Any]:
+    """``d`` narrowed to ``cls``'s dataclass fields — :func:`tree_from_json`'s
+    forward/backward tolerance."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in d.items() if k in names}
 
 
 def foreign_resolver(store: Any) -> Callable[[str], SeTree | None]:

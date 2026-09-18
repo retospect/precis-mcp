@@ -32,14 +32,46 @@ only other source). Sign-out = 401 with a fresh challenge (evicts cached
 Basic credential) + session-cookie delete.
 
 Nav (template ``templates/base.html.j2``; badges ``nav.py::nav_badges``):
-Daily (Drive, Tags, ToDo) always visible; Browse ▾ (Quests, Schedules,
-Clusters, Structures, CAD, Figures, Mermaid); Attention (Needs you,
-Gripes, Alerts, badged); Manual (top-level, unbadged — the no-idea-where
-tab, so never in a dropdown); Ops ▾ (System, Categorizers, Agent Logs,
-Console, Env, Secrets); 🔍 loupe submits to ``/drive``; "?" tour launcher
-(only on a page whose path matches a tour manifest's ``route`` —
-``routes/manual.py::tour_slug_for_path``, no extra client fetch); Account
-(far right, signed-in user's ``abbrev`` chip) → ``/account``.
+Daily (Drive, Tags, ToDo, Design) always visible; Browse ▾ (Quests,
+Schedules, Clusters, Structures, CAD, Figures, Mermaid); Attention (Needs
+you, Gripes, Alerts, badged); Manual (top-level, unbadged — the
+no-idea-where tab, so never in a dropdown); Ops ▾ (System, Categorizers,
+Agent Logs, Console, Env, Secrets); 🔍 loupe submits to ``/drive``; "?"
+tour launcher (only on a page whose path matches a tour manifest's
+``route`` — ``routes/manual.py::tour_slug_for_path``, no extra client
+fetch); Account (far right, signed-in user's ``abbrev`` chip) →
+``/account``.
+
+**Design (`/design`)** — ``routes/design.py``: the hierarchical
+molecule-design workbench's landing tree (docs/backlog/
+the design-workbench build, slice 1), one tree per live ``se`` design (block
+graph, array nodes collapsed to ``name ×N``, L0–L3 presence badges
+derived from the loaded columns — never geometry) down to the
+``structure`` each atomic-mode leaf is bound to
+(``se_blocks.bound_kind='structure'``/``bound_design``, not a link), plus
+a flat "Loose structures" section for every live ``structure`` no block
+binds. Pure read, ≤ 3 SELECTs per render regardless of design count; a
+node click lands on the existing ``/se/{slug}``/``/structure/{slug}``
+page. Later slices (revision scrubber, chat, realize-in-the-loop) build
+on this same tree.
+
+**Workbench turn** (``design_turn.py``, slice 3's engine; the routes are
+``POST /se/{slug}/chat`` + ``/chat/apply`` in ``routes/blocktree_view.py``
+and ``POST /structure/{slug}/chat`` + ``/chat/apply`` in
+``routes/structure.py``, sharing ``design_chat.py`` and the
+``_design_chat.html.j2`` panel — one blocking POST per turn, 303 back with
+the outcome in the query string, 409 on a past ``?rev=``):
+``run_turn(hub, kind=, slug=, message=, handles=, model_call=)``
+is one tool-less ``Tier.BIG`` ``route()`` call whose prompt is a text
+digest of the design plus the clicked handles; the reply is JSON
+``{ops, rationale}`` vetted against the kind's real roster (unknown op,
+raw coordinates, or no JSON → whole turn rejected, nothing written). Pure
+se ops dry-run then auto-apply via ``SeHandler.edit(turn=…)`` as one
+revision; store-aware se ops and every structure op come back as a
+proposal for ``apply_proposal`` (``StructureHandler.edit`` in place, never
+``derive``). Transcript = one ``conv`` per design (``design-chat-<slug>``,
+linked ``related-to``), one block per accepted turn; the revision's
+``turn`` is ``<conv-slug>~<block ordinal>``.
 
 **Drive (`/drive`)** is the unified seek+manage surface:
 ``routes/drive.py::index`` runs cross-kind chunk search (``q=``, kind/tag

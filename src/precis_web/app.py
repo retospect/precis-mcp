@@ -123,6 +123,7 @@ def create_app(
         clusters,
         console,
         datasheets,
+        design,
         drafts,
         drive,
         env,
@@ -174,6 +175,7 @@ def create_app(
     app.include_router(structure.router)
     app.include_router(cad.router)
     app.include_router(blocktree_view.router)
+    app.include_router(design.router)
     app.include_router(categorizers.router)
     app.include_router(figure.router)
     app.include_router(mermaid.router)

@@ -391,6 +391,39 @@ def _shape_leaf(
 _SHAPE_COLOUR = "#8a9bb0"
 _BOX_COLOUR = "#cbd5e1"
 
+#: The revision scrubber's "this block changed at N" tint
+#: (the design-workbench build, slice 2 (2026-09-18)) — amber, the same hue the
+#: structure page's hover-highlight halo uses, so "changed" reads the same
+#: way on both design pages.
+CHANGED_COLOUR = "#f59e0b"
+
+
+def tint_blocks(shapes: dict[str, Any], uids: set[int], colour: str) -> int:
+    """Recolour every solid leaf whose path ends in one of ``uids`` (the
+    module docstring's leaf-id scheme: the last segment IS the block uid)
+    — in place, on the tree :func:`build_scene` emitted. Returns how many
+    leaves were tinted. Connection leaves are ``edges``-type with a
+    synthetic ``c<i>`` id, so they never match; a collapsed ``box`` whose
+    only change is inside it does not match either (its own uid did not
+    change), which is the honest reading of "changed by uid"."""
+    if not uids:
+        return 0
+    hits = 0
+    stack: list[dict[str, Any]] = [shapes]
+    while stack:
+        node = stack.pop()
+        parts = node.get("parts")
+        if parts:
+            stack.extend(parts)
+            continue
+        if node.get("type") != "shapes":
+            continue
+        tail = str(node.get("id", "")).rsplit("/", 1)[-1]
+        if tail.isdigit() and int(tail) in uids:
+            node["color"] = colour
+            hits += 1
+    return hits
+
 
 def build_shapes_node(
     tree: Tree[BlockNode, Connect],

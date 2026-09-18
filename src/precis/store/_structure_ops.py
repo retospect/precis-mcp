@@ -22,6 +22,7 @@ Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 from __future__ import annotations
 
 import re
+from contextlib import nullcontext
 from typing import Any, TypedDict, cast
 
 import numpy as np
@@ -159,8 +160,16 @@ class StructureMixin:
         card_text: str,
         description: str = "",
         relax_summary: dict[str, Any] | None = None,
+        conn: Connection | None = None,
     ) -> tuple[Any, bool]:
-        """Create-or-replace a design from a Scene. Returns ``(ref, created)``."""
+        """Create-or-replace a design from a Scene. Returns ``(ref, created)``.
+
+        ``conn`` joins an outer transaction (the handler's, which records
+        the design revision alongside — :func:`precis.design.history.
+        record_revision`) so the new version and its record commit or roll
+        back as one; without it the save is its own transaction, as
+        before.
+        """
         existing = self.get_ref(kind="structure", id=slug)
         created = existing is None
         meta: dict[str, Any] = {
@@ -176,7 +185,7 @@ class StructureMixin:
             meta["description"] = description
         if relax_summary is not None:
             meta["last_relax"] = relax_summary
-        with self.tx() as conn:
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
             if created:
                 ref = self.insert_ref(
                     kind="structure", slug=slug, title=title, meta=meta, conn=conn
@@ -233,6 +242,7 @@ class StructureMixin:
                         version,
                     ),
                 ).fetchone()
+                assert row is not None
                 idmap[atom.label] = int(row[0])
             for bond in scene.bonds:
                 conn.execute(
@@ -429,24 +439,49 @@ class StructureMixin:
         return int(inserted[0])
 
     # -- read ------------------------------------------------------------
-    def structure_load(self, ref_id: int) -> tuple[Scene, dict[str, int]]:
-        """Reconstruct the in-memory Scene + a ``{label: atom_id}`` map."""
+    def structure_load(
+        self, ref_id: int, *, version: int | None = None
+    ) -> tuple[Scene, dict[str, int]]:
+        """Reconstruct the in-memory Scene + a ``{label: atom_id}`` map.
+
+        ``version=None`` is the live design. ``version=N`` is the scene as
+        of save N — the row filter ``added_version <= N AND
+        (retired_version IS NULL OR retired_version > N)`` over atoms and
+        bonds (every save stamps ``added_version`` on what it inserts and
+        ``retired_version`` on what it replaces, so the two columns are a
+        complete interval per row). Measures come back live-only in BOTH
+        cases: ``struct_measures`` has no ``added_version`` — markers are
+        re-evaluated against each new geometry (§6.8) rather than
+        versioned with it — so there is no honest "measures as of N" to
+        reconstruct. The cell/lattice comes from ``refs.meta``, which holds
+        only the current one; a scene-at-N therefore carries today's cell,
+        which is exact as long as no op has changed it since N.
+        """
         ref = self.get_ref(kind="structure", id=ref_id)
         meta = dict(ref.meta) if (ref is not None and ref.meta) else {}
         lattice = np.array(meta.get("lattice", np.eye(3) * 10.0), dtype=float)
         pbc = tuple(meta.get("pbc", (True, True, True)))
         scene = Scene(cell=Cell(lattice, pbc), label_hi=dict(meta.get("label_hi", {})))
+        if version is None:
+            live = "retired_version IS NULL"
+            params: tuple[Any, ...] = (ref_id,)
+        else:
+            live = (
+                "added_version <= %s "
+                "AND (retired_version IS NULL OR retired_version > %s)"
+            )
+            params = (ref_id, int(version), int(version))
         with self.pool.connection() as conn:
             arows = conn.execute(
                 "SELECT id, label, element, fa, fb, fc, fixed, magmom, oxidation, "
                 "charge, hybridization FROM struct_atoms "
-                "WHERE ref_id = %s AND retired_version IS NULL ORDER BY id ASC",
-                (ref_id,),
+                f"WHERE ref_id = %s AND {live} ORDER BY id ASC",
+                params,
             ).fetchall()
             brows = conn.execute(
                 "SELECT kind, bond_order, provenance, i, j, image FROM struct_bonds "
-                "WHERE ref_id = %s AND retired_version IS NULL ORDER BY id ASC",
-                (ref_id,),
+                f"WHERE ref_id = %s AND {live} ORDER BY id ASC",
+                params,
             ).fetchall()
             mrows = conn.execute(
                 'SELECT kind, direction, goal, strength, operands, embodiment, "for" '

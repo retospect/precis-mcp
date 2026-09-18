@@ -58,6 +58,22 @@ level-*k* object):
 - **L5 — fabrication plan.** Manufacturing mode, build frame, process
   DRC, export.
 
+**Apply policy by op class** (the web workbench's chat turn,
+:mod:`precis_web.design_turn`, the design-workbench build (2026-09-18): the
+non-destructive pure ops in :func:`precis_se.ops.known_ops` (L0–L2 — cheap
+to redo, claim nothing physical) auto-apply after a dry run as one
+revision; the destructive slice of that same roster
+(:data:`precis_web.design_turn.DESTRUCTIVE_SE_OPS` — ``remove_block``,
+``remove_port``, ``remove_measure``, ``remove_bom``, ``remove_note``,
+``remove_threading``, ``disconnect``, by prefix rule off the live
+roster) and the store-aware ops in
+:data:`precis_se.atomic.apply.HANDLER_LEVEL_OPS`
+(``bind_structure``/``unbind_structure``/``generate``/``realize`` — L3,
+they spend compute or assert chemistry) are proposals until a human
+applies them — undoing a decision, not just redoing one, earns the same
+human-Apply gate as spending compute. ``SeHandler.edit(turn=)`` stamps the
+originating chat turn onto the revision row.
+
 This package (slices 1–3, se-kind.md "Ship order") covers the scaffold,
 the L0/L1 core, and the L2 invariant tier: :mod:`precis_se.handler`
 (``SeHandler``, the ``se`` kind — tree CRUD; tree/block/ports/measures/
