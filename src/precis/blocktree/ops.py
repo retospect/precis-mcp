@@ -62,7 +62,9 @@ The 9 shared ops:
   ``rot`` in the block's local frame — ``set_pose`` one level down. The
   slot is nullable by design and stays null until someone fills it
   (:class:`~precis.blocktree.types.Port`); this op and ``add_port`` are
-  the two that fill it, both stamping ``pose_source='declared'``.
+  the two core ops that fill it, both stamping ``pose_source='declared'``
+  — a ``'bound'`` pose is measured off a realization by a domain op
+  (``se``'s ``bind_structure``), never stated here.
 - ``connect``         — a port↔port intent edge (``a``/``b`` as
   ``'block.port'``, split on the *last* dot). Each endpoint resolves on
   the block itself or — for an instance — its template. Self- and

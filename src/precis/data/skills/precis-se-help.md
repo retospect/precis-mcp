@@ -200,7 +200,10 @@ state; nothing about a plain block's shape changes.
   (`set_pose` one level down). The slot is nullable on purpose — with no
   pose, geometry checks fall back to the block-pose + envelope-extent
   approximation and say so; with one on both ends, `bond_length_sanity`
-  reports the exact port-to-port distance instead.
+  reports the exact port-to-port distance instead. This op and `add_port`
+  write `pose_source='declared'` (intent); `bind_structure` measures
+  `'bound'` off the realization and never overwrites a declared target —
+  `precis-se-atomic-help`.
 - `declare_transitions` — `block`, `transitions` `[{'from_state',
   'to_state', 'driver_kind', 'driver_ref'?, 'params'?}]` (req). DIRECTED
   edges — a ratchet's forward/reverse barriers are two rows, never one

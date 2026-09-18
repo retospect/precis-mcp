@@ -217,8 +217,14 @@ the three store-aware ops :mod:`precis_se.atomic.bind` and
 factory from :mod:`precis_se.atomic.generators` and mints the structure
 design itself — deterministic geometry, no LLM guessing);
 :mod:`precis_se.atomic.apply` intercepts those three before the pure op
-table. Its L4 is :mod:`precis_se.atomic.validate` (the bond capability
-re-check, the binding checks, bond-geometry sanity, and ``envelope_fit``
+table. A bind also *measures*: each mapped port takes the block-local
+position of the atom it resolves to as its own pose
+(``pose_source='bound'``, the measured half of the port pose slot) — into
+an empty slot or over an earlier bind's reading, never over a
+``'declared'`` target, which is the requirement that realization is
+checked against. Its L4 is :mod:`precis_se.atomic.validate` (the bond
+capability re-check, the binding checks, bond-geometry sanity, the
+``port_pose_mismatch`` declared-vs-measured check, and ``envelope_fit``
 — the design(m)↔atomistic(Å) agreement check, whose conversion is the
 one permanent unit crossing, test-pinned) plus
 :mod:`precis_se.atomic.mechanics`'s advisory ceilings, rendered as

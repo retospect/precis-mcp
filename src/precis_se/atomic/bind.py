@@ -21,16 +21,31 @@ column: "this block's realization is that design" is one fact, and se
 already had the slot for it. Per *port* it is
 ``se_ports.bound_design``/``bound_atom`` — the atom-side projection of
 one port fact, which the block-level pair cannot carry.
+
+A bind also *measures*: the atom a port resolves to has block-local
+coordinates, which is exactly what the port pose slot holds, so
+:func:`bind_structure` fills ``pose``/``pose_source='bound'`` on the ports
+it maps (:func:`_measure_port_poses` for what it will and will not
+overwrite) and :func:`unbind_structure` drops what it wrote.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from precis.blocktree.types import OpError
 from precis.errors import BadInput, NotFound
-from precis_se.atomic.validate import FrameMismatch, envelope_fit
-from precis_se.ops import SeTree, effective_envelope
+from precis.structure import Scene as StructScene
+from precis_se.atomic.validate import (
+    PORT_POSE_MISMATCH_FRACTION,
+    FrameMismatch,
+    bound_port_origin,
+    envelope_diag_m,
+    envelope_fit,
+    m_to_A,
+)
+from precis_se.ops import SeBlock, SeTree, effective_envelope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
@@ -63,6 +78,83 @@ def _block_named(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[str,
     return key, tree.blocks[key]
 
 
+def _measure_port_poses(
+    node: SeBlock,
+    scene: StructScene,
+    resolved: dict[str, str],
+    *,
+    block_name: str,
+    design_slug: str,
+    env: str | None,
+    frame_mismatch: bool,
+) -> str:
+    """Fill each freshly-bound port's pose slot from its atom — the
+    ``'bound'`` half of the port pose slot (gr342026,
+    docs/backlog/port-pose-and-composition-search.md §Decision 1). A bound
+    scene's atoms are in the block's own local frame (the identity-pose
+    contract in :func:`precis_se.atomic.validate.envelope_fit`), so the
+    resolved atom's Cartesian position *is* that port's origin there; the
+    only work is the Å→m crossing (:func:`~precis_se.atomic.validate.
+    bound_port_origin`).
+
+    **A measurement never overwrites a declaration.** A port whose pose an
+    agent stated (``pose_source='declared'``) keeps it: that is the target
+    the realization gets checked *against*, and replacing it with what the
+    realization did would destroy the only record of what was asked for —
+    Decision 2's requirement/fact split, applied to the port slot. Where
+    the two disagree by more than
+    :data:`~precis_se.atomic.validate.PORT_POSE_MISMATCH_FRACTION` of the
+    block's own envelope, the gap goes on this echo and, on every later
+    read, into the ``port_pose_mismatch`` finding. An empty slot — or one
+    already holding a ``'bound'`` pose from an earlier bind, which this
+    call's atom supersedes — simply takes the measurement: free
+    information with nothing to conflict with.
+
+    Nothing is measured when the scene doesn't share the block's frame
+    (``envelope_fit``'s :class:`~precis_se.atomic.validate.FrameMismatch`):
+    those coordinates are in some other frame, and reading them as
+    block-local poses would mint numbers that look measured and mean
+    nothing. ``rot`` is never touched either way — an atom has a position,
+    not an orientation."""
+    if not resolved:
+        return ""
+    if frame_mismatch:
+        return (
+            f"\n⚠ port pose: not measured for {len(resolved)} port(s) — "
+            f"{design_slug!r}'s atoms do not share block {block_name!r}'s "
+            "frame (see below), so a pose read off them would be a number "
+            "with no meaning"
+        )
+    diag_m = envelope_diag_m(env) if env else None
+    measured: list[str] = []
+    notes: list[str] = []
+    for port_name, atom_label in sorted(resolved.items()):
+        origin = bound_port_origin(scene, atom_label)
+        if origin is None:  # pragma: no cover - the atom resolved above
+            continue
+        port = node.ports[port_name]
+        if port.pose is not None and port.pose_source == "declared":
+            gap_m = math.dist(origin, [float(c) for c in port.pose])
+            if diag_m is not None and gap_m > PORT_POSE_MISMATCH_FRACTION * diag_m:
+                notes.append(
+                    f"\n⚠ port_pose_mismatch: {block_name}.{port_name} "
+                    f"declares an origin {m_to_A(gap_m):.3g} Å away from "
+                    f"bound atom {atom_label!r} — the declared target is "
+                    "kept (a bind measures, it does not re-state intent); "
+                    "fix whichever is wrong with set_port_pose, or move "
+                    "the atom"
+                )
+            continue
+        port.pose = origin
+        port.pose_source = "bound"
+        measured.append(f"{port_name}→{atom_label}")
+    if measured:
+        notes.insert(
+            0, "\n· port pose measured (source='bound'): " + ", ".join(measured)
+        )
+    return "".join(notes)
+
+
 def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     """``{"op": "bind_structure", "block": <name>, "design": <structure
     slug>, "ports": {<port name>: <atom label>, ...} (optional)}`` — the L5
@@ -90,6 +182,13 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     incremental — an earlier call's port map survives a later call that
     only maps additional (or different) ports, so a design can be filled
     in across several ``bind_structure`` calls.
+
+    **Port poses are measured, declarations are not overwritten**
+    (:func:`_measure_port_poses`): every mapped port whose slot is empty
+    (or holds an earlier bind's measurement) takes the atom's block-local
+    origin as ``pose``/``pose_source='bound'``; a ``'declared'`` target is
+    kept, and a disagreement bigger than the block's own scale is reported
+    here and by the standing ``port_pose_mismatch`` finding.
 
     **``envelope_fit`` preflight** (:func:`precis_se.atomic.validate.
     envelope_fit`, the L1↔L5 agreement check): once the binding above
@@ -173,6 +272,11 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
         for p in node.ports.values():
             p.bound_design = None
             p.bound_atom = None
+            if p.pose_source == "bound":
+                # A measured pose is a fact about the OLD scene; the new
+                # design has said nothing about this port yet, and a
+                # stale measurement reads exactly like a fresh one.
+                p.pose = p.rot = p.pose_source = None
     node.bound_kind = "structure"
     node.bound = design_slug
     for port_name, atom_label in resolved.items():
@@ -188,10 +292,21 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     # view='validate' re-checks this every time the design is read
     # afterward anyway (the same "preflight note now, standing warn-tier
     # finding forever after" split ops.py's op-time gates and the read-time
-    # re-check already use for everything else).
+    # re-check already use for everything else). Its frame verdict is also
+    # what decides whether a port pose can be measured at all, so it runs
+    # before the measurement and both read the one answer.
     env = effective_envelope(tree, node)
+    worst = envelope_fit(env, scene) if env else None
+    msg += _measure_port_poses(
+        node,
+        scene,
+        resolved,
+        block_name=block_name,
+        design_slug=design_slug,
+        env=env,
+        frame_mismatch=isinstance(worst, FrameMismatch),
+    )
     if env:
-        worst = envelope_fit(env, scene)
         if isinstance(worst, FrameMismatch):
             # gripe 334764: an imported (from_smiles) scene carries no
             # alignment to the block's local frame — refuse loudly instead
@@ -220,7 +335,11 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
 def unbind_structure(tree: SeTree, op: dict[str, Any]) -> str:
     """``{"op": "unbind_structure", "block": <name>}`` — clears the block's
     ``structure`` binding (``bound_kind``/``bound``) and every one of its
-    ports' ``bound_design``/``bound_atom``. Refuses a block bound to
+    ports' ``bound_design``/``bound_atom`` — including any port pose the
+    bind itself measured (``pose_source='bound'``): that number was a
+    reading of a binding that no longer exists. A ``'declared'`` pose is
+    an agent's own design intent and survives untouched. Refuses a block
+    bound to
     something that isn't chemistry: ``set_binding`` is the op for those,
     and silently clearing a ``component`` binding through the atomic verb
     would be a surprising write."""
@@ -235,9 +354,16 @@ def unbind_structure(tree: SeTree, op: dict[str, Any]) -> str:
     node.bound_kind = None
     node.bound = None
     cleared = 0
+    unmeasured = 0
     for p in node.ports.values():
         if p.bound_design is not None or p.bound_atom is not None:
             p.bound_design = None
             p.bound_atom = None
             cleared += 1
-    return f"unbound block {block_name!r} ({cleared} port binding(s) cleared)"
+        if p.pose_source == "bound":
+            p.pose = p.rot = p.pose_source = None
+            unmeasured += 1
+    msg = f"unbound block {block_name!r} ({cleared} port binding(s) cleared)"
+    if unmeasured:
+        msg += f", {unmeasured} measured port pose(s) dropped"
+    return msg

@@ -37,7 +37,9 @@ nm's domain modules land here as submodules rather than inline:
   (bond capability, structure bindings, bond geometry sanity, the
   ``envelope_fit`` L1↔L5 agreement check).
 - :mod:`precis_se.atomic.bind` / :mod:`precis_se.atomic.generate` — the
-  **store-aware** ops (``bind_structure``/``unbind_structure`` and
+  **store-aware** ops (``bind_structure``/``unbind_structure``, which
+also measure a mapped port's own pose off the atom it resolves to — the
+``pose_source='bound'`` half of the port pose slot — and
   ``generate``'s prepare/finish pair), and
   :mod:`precis_se.atomic.apply` — the walker that intercepts them for
   ``put``/``edit``.

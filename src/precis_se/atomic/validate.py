@@ -234,6 +234,17 @@ BOND_GAP_FRACTION = 0.5
 #: pointing away from each other — nowhere near anti-parallel).
 BOND_VECTOR_MAX_DEVIATION_RAD = math.radians(60.0)
 
+#: :func:`_port_pose_findings`'s drift threshold — a fraction of the
+#: block's own envelope bbox diagonal, the same governing length the two
+#: above are measured in. A ``'declared'`` port pose is a target an agent
+#: stated at box level ("the far port sits 9 Å along x"); the bound atom
+#: is where the realization actually put it, and the two are allowed to
+#: differ by a bond length or so without either being wrong. A quarter of
+#: the block's own diagonal is about that much on a ~10 Å block and grows
+#: with the block; past it the target and the realization are describing
+#: different points, which is the thing worth saying out loud.
+PORT_POSE_MISMATCH_FRACTION = 0.25
+
 
 def _envelope_diag(prim: Primitive) -> float | None:
     """A primitive's own characteristic size — its local (unposed) AABB
@@ -248,6 +259,44 @@ def _envelope_diag(prim: Primitive) -> float | None:
     if not np.all(np.isfinite(diag)):
         return None
     return float(np.linalg.norm(diag))
+
+
+def envelope_diag_m(envelope: str) -> float | None:
+    """An envelope's characteristic size in metres, from the DSL text —
+    :func:`_envelope_diag` for the callers (:mod:`precis_se.atomic.bind`)
+    that hold the string rather than the built primitive. ``None`` when
+    the text doesn't parse or the AABB is degenerate: the caller skips its
+    threshold rather than dividing by nonsense."""
+    try:
+        prim = cad_dsl.build_config(envelope)
+    except cad_dsl.DslError:
+        return None
+    return _envelope_diag(prim)
+
+
+def bound_port_origin(scene: StructScene, atom_label: str) -> list[float] | None:
+    """The block-local origin, in METRES, of the atom a port is bound to —
+    the measured half of the port pose slot (``pose_source='bound'``,
+    :data:`~precis.blocktree.types.PORT_POSE_SOURCES`). A bound scene's
+    atoms already sit in the block's own local frame by the identity-pose
+    contract (:func:`envelope_fit`'s docstring), so the atom's Cartesian
+    position *is* the port's origin there and this is the enclave crossing
+    (Å → m, :data:`_A_TO_M`) and nothing else. ``None`` when the label is
+    gone — ``dangling_binding`` is the finding for that, not this one's
+    job to raise on."""
+    atom = scene.atoms.get(atom_label)
+    if atom is None:
+        return None
+    cart_A = scene.cell.frac_to_cart(atom.frac)
+    return [float(c) * _A_TO_M for c in cart_A]
+
+
+def m_to_A(value_m: float) -> float:
+    """A design-space length said in the atomistic scale's own unit, for a
+    *message*. The factor lives in this module by the seam allowlist
+    (``tests/test_se_atomic_angstrom_seam.py``), so a caller that needs to
+    report Å borrows this rather than spelling ``1e10`` somewhere new."""
+    return value_m * _M_TO_A
 
 
 def _extent_along(lo: object, hi: object, unit: object) -> float:
@@ -743,6 +792,77 @@ def _envelope_fit_findings(
     return findings
 
 
+def _port_pose_findings(
+    tree: SeTree, bound_full_scenes: dict[str, StructScene]
+) -> list[ValidationIssue]:
+    """``port_pose_mismatch`` (warn) — a port carrying a ``'declared'``
+    target pose whose bound atom sits somewhere else entirely.
+
+    A bind never overwrites a declared target (:func:`precis_se.atomic.
+    bind.bind_structure`: the target is a requirement, the atom is the
+    fact, and the port slot holds one of them — the same split Decision 2
+    makes for the star schema), so a disagreement has to be *reported*
+    rather than resolved. It is, twice: once on the bind echo, and then by
+    this check on every later read, because the bound structure can be
+    edited under a standing binding long after the bind returned (the
+    "preflight note now, standing finding forever after" split
+    ``envelope_fit`` already uses). Warn, never error — a box-level target
+    is a rough statement of intent, and this only ever asks a human to
+    look again.
+
+    Skipped when the scene doesn't share the block's frame at all: the
+    ``envelope_fit`` finding says that once for the whole block, and one
+    of these per port would be that same fact repeated in a worse unit."""
+    findings: list[ValidationIssue] = []
+    for node in tree.blocks.values():
+        if node.template is not None or node.bound_kind != "structure":
+            continue
+        env = effective_envelope(tree, node)
+        if not env or node.bound is None:
+            continue
+        candidates = [
+            p
+            for p in node.ports.values()
+            if p.pose is not None
+            and p.pose_source == "declared"
+            and p.bound_atom is not None
+        ]
+        if not candidates:
+            continue
+        diag_m = envelope_diag_m(env)
+        scene = bound_full_scenes.get(node.bound)
+        if diag_m is None or scene is None:
+            continue
+        if isinstance(envelope_fit(env, scene), FrameMismatch):
+            continue
+        for port in candidates:
+            assert port.bound_atom is not None and port.pose is not None
+            origin = bound_port_origin(scene, port.bound_atom)
+            if origin is None:
+                continue  # dangling_binding owns the vanished label
+            gap_m = math.dist(origin, [float(c) for c in port.pose])
+            if gap_m <= PORT_POSE_MISMATCH_FRACTION * diag_m:
+                continue
+            findings.append(
+                ValidationIssue(
+                    rule="port_pose_mismatch",
+                    subject=f"{node.name}.{port.name}",
+                    detail=(
+                        f"declared origin sits {m_to_A(gap_m):.3g} Å from "
+                        f"bound atom {port.bound_atom!r} (in structure "
+                        f"{node.bound!r}) — more than "
+                        f"{PORT_POSE_MISMATCH_FRACTION:g} of block "
+                        f"{node.name!r}'s own "
+                        f"{m_to_A(diag_m):.3g} Å envelope. The declared "
+                        "target is kept: fix whichever is wrong "
+                        "(set_port_pose, or move the atom)"
+                    ),
+                    severity="warn",
+                )
+            )
+    return findings
+
+
 def validate_atomic(
     tree: SeTree,
     *,
@@ -765,6 +885,7 @@ def validate_atomic(
     findings.extend(_port_capability_findings(tree))
     findings.extend(_binding_findings(tree, bound_scenes or {}))
     findings.extend(_envelope_fit_findings(tree, bound_full_scenes or {}))
+    findings.extend(_port_pose_findings(tree, bound_full_scenes or {}))
     findings.extend(_connect_cycle_findings(tree))
     findings.extend(_bond_length_findings(tree))
     findings.extend(_bond_vector_findings(tree))

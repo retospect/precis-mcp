@@ -46,7 +46,14 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   design first clears every port binding on the block. Both target an
   ordinary block only — bind via the template for an instance.
   `unbind_structure` clears a block's binding and every one of its
-  ports'.
+  ports'. A bind also **measures**: each mapped port takes its atom's
+  block-local position as its own `pose` (`pose_source='bound'`, metres)
+  — but only into an empty slot or over an earlier bind's measurement. A
+  `pose_source='declared'` target is design intent and is never
+  overwritten; a real disagreement is reported instead (echo line +
+  `port_pose_mismatch`). Nothing is measured when the scene doesn't share
+  the block's frame. `unbind_structure` drops the measured poses,
+  keeping declared ones.
 - `generate` — **atomic mode.** `generator` `cnt|fullerene|cone|
   cyclodextrin|hexfold`, `params` (dict), `name` (new block) · `parent`/`pose`/
   `rot` passthrough. One op = a canonical block whose atoms follow from
@@ -157,6 +164,7 @@ is filled exactly when its template is):
 | `envelope_fit` | warn | a bound block's realized atoms protrude beyond its declared envelope + vdW margin — the L1↔L5 agreement has drifted. Or `cannot check — frames do not correspond` when the whole scene sits an envelope-width away (imported structure, no local-frame alignment): re-author the atoms near the envelope's origin (e.g. `from_smiles` `offset=`), do NOT widen |
 | `connect_cycle` | warn | the connect graph closes a loop across the block tree (a macrocycle IS real chemistry — this names the path, never says "forbidden") |
 | `bond_length_sanity` | warn | a `kind='bond'` connect's endpoints are wildly further apart than a plausible bond — the exact port-to-port distance when both ports carry a `pose`, else the block-pose gap approximation (see Scope below). The finding says which |
+| `port_pose_mismatch` | warn | a port's `declared` target pose sits further from its bound atom than a quarter of the block's own envelope — the target is kept, so fix whichever is wrong (`set_port_pose`, or move the atom) |
 | `bond_vector_alignment` | warn | a `kind='bond'` connect's two ports' `direction` vectors are far from anti-parallel (>60° off 180°) |
 
 `bind_structure` also runs an `envelope_fit` **preflight** on bind (never
@@ -178,7 +186,7 @@ size (never an absolute figure — an atomic design spans sub-nm to
 tens-of-nm blocks, so a fixed epsilon is scale-wrong at one end or the
 other).
 
-### Scope limits — stated plainly
+## Atomic mode — scope limits, stated plainly
 
 - A block's clearance envelope is its own config only — no subtree union
   across children.
@@ -191,8 +199,10 @@ other).
   analysis, no torsion scan, no rotational-barrier estimate —
   `declare_dof` records intent only.
 - **A port's own position is optional** (`add_port`/`set_port_pose`
-  `pose`), and usually absent — at box level the displacement from the
-  block's origin to its attachment point is often genuinely unknown.
+  `pose` = `declared`; `bind_structure` = `bound`), and often absent —
+  at box level the displacement from the block's origin to its
+  attachment point is genuinely unknown, and a bind only fills a port it
+  maps.
   Where both ends of a bond have one, `bond_length_sanity` measures the
   real port-to-port distance; where they don't it approximates from the
   two blocks' pose-to-pose gap, so it can read long for a legitimate

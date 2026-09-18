@@ -36,13 +36,36 @@ envelope approximation and says so.
 displacement at the far end. Without the angle the solver below can only
 find series stacking; with it, levers/cranks/scissors are solutions.
 
-**Open — the `bound` half:** the enum value, CHECK and render exist, but
-nothing writes `pose_source='bound'`. Natural writer is `bind_structure`
-(it already resolves each port to an atom; the atom's block-local
-coordinates are the pose). Reto's call: does a bind overwrite a
-`declared` target, or refuse and file a mismatch finding? Waits on
-per-state `bind_structure`. Intervals on a target ("10–12 Å") are
-Decision 3's requirement, not the port slot.
+**The `bound` half — SHIPPED 2026-09-18.** `bind_structure`
+(`src/precis_se/atomic/bind.py::_measure_port_poses`) is the writer: each
+mapped port takes the block-local position of the atom it resolves to as
+its own `pose`, stamped `pose_source='bound'` (Å→m through
+`validate.bound_port_origin`, the one enclave crossing).
+
+Reto's call, settled: **a measurement fills an empty slot but never
+overwrites a `declared` target.** Decision 2's split is the reason — the
+declared pose is the *requirement* the realization gets checked against,
+and a bind that silently restated it would destroy the only record of
+what was asked for. The disagreement is reported instead, twice: an echo
+line at bind time, and the standing `port_pose_mismatch` warn finding on
+every later read (a bound structure can be edited under a live binding
+long after the bind returned). Threshold `PORT_POSE_MISMATCH_FRACTION` =
+a quarter of the block's own envelope diagonal, the same governing-length
+convention `bond_length_sanity` uses.
+
+Three edges, all pinned in `tests/test_se_atomic_bind.py`: a frame
+mismatch (`envelope_fit`'s `FrameMismatch`) measures **nothing** — those
+coordinates are in another frame; a re-target to a different design drops
+the measurements it no longer speaks for; `unbind_structure` drops the
+measured poses and keeps the declared ones. `rot` is never written — an
+atom has a position, not an orientation, so a bound *rotation* still
+waits on a real frame (lever/hinge families, below). Migration `0013`
+restates the column comment 0011 shipped saying there was no writer.
+
+Not in this: per-state `bind_structure` (a bound pose is measured against
+the block's current realization, not per declared state), and intervals
+on a target ("10–12 Å"), which are Decision 3's requirement box, not the
+port slot.
 
 ## Decision 2 — Δ-length facts stay in the star schema
 

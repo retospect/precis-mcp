@@ -1897,3 +1897,225 @@ def test_a_deferred_dof_check_is_skipped_when_a_later_op_undoes_it(
     ]
     handler.put(id="dof_late3", text=json.dumps({"ops": ops}))
     assert "rot" not in handler.get(id="dof_late3", view="topology").body
+
+
+# ── the bound half of the port pose slot (Decision 1) ───────────────────
+# docs/backlog/port-pose-and-composition-search.md §Decision 1 shipped the
+# DECLARED half; these pin the other one. A bind measures — the atom a
+# port resolves to has block-local coordinates, which is what the slot
+# holds — but a measurement fills an empty slot, never overwrites an
+# agent's declared target: the target is the requirement the realization
+# is checked against, and a bind that silently restated it would destroy
+# the only record of what was asked for. The disagreement is reported
+# instead, twice (bind echo, then the standing ``port_pose_mismatch``).
+
+
+#: one port's stored pose slot: ``(pose, pose_source, rot)``.
+_PoseSlot = tuple[list[float] | None, str | None, list[float] | None]
+
+
+def _measured(store: Store, slug: str, block_name: str = "hub") -> dict[str, _PoseSlot]:
+    """Every port's pose slot as persisted — reloaded from the store, so
+    these pin what survived ``save_tree``, not what the in-memory tree
+    happened to hold."""
+    ref = store.get_ref(kind="se", id=slug)
+    assert ref is not None
+    node = persist.load_tree(store, ref.id).blocks[block_name]
+    return {
+        name: (port.pose, port.pose_source, port.rot)
+        for name, port in node.ports.items()
+    }
+
+
+def test_bind_measures_an_empty_port_pose_slot(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """Both ports start with no pose of their own (the slot's normal
+    state); the bind fills each from its atom's block-local position, in
+    metres, stamped ``'bound'``. ``rot`` stays null — an atom has a
+    position, not an orientation."""
+    c_label, n_label = _make_cn_structure(structure, "posefrag1")  # 0 Å, 1.3 Å
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {"op": "add_port", "block": "hub", "name": "p2"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "posefrag1",
+            "ports": {"p1": c_label, "p2": n_label},
+        },
+    ]
+    resp = handler.put(id="posebind1", text=json.dumps({"ops": ops}))
+    assert "port pose measured (source='bound')" in resp.body
+    assert f"p1→{c_label}" in resp.body and f"p2→{n_label}" in resp.body
+
+    ports = _measured(store, "posebind1")
+    p1_pose, p1_src, p1_rot = ports["p1"]
+    p2_pose, p2_src, _ = ports["p2"]
+    assert p1_src == "bound" and p2_src == "bound"
+    assert p1_rot is None
+    assert p1_pose == pytest.approx([0.0, 0.0, 0.0], abs=1e-15)
+    assert p2_pose == pytest.approx([1.3e-10, 0.0, 0.0], abs=1e-15)
+
+    block = handler.get(id="posebind1", view="block", args={"name": "hub"})
+    assert "· bound" in block.body
+
+
+def test_bind_keeps_a_declared_target_and_reports_the_gap(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """The ruling: a measurement never overwrites a declaration. 8 Å of
+    disagreement on a block whose own envelope is ~17 Å across is past
+    ``PORT_POSE_MISMATCH_FRACTION``, so it is said out loud — on the echo
+    now and on every later read as the finding — while the declared target
+    stays exactly as the agent wrote it."""
+    c_label, _n = _make_cn_structure(structure, "posefrag2")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {
+            "op": "add_port",
+            "block": "hub",
+            "name": "p1",
+            "pose": [8e-10, 0.0, 0.0],
+        },
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "posefrag2",
+            "ports": {"p1": c_label},
+        },
+    ]
+    resp = handler.put(id="posebind2", text=json.dumps({"ops": ops}))
+    assert "⚠ port_pose_mismatch: hub.p1" in resp.body
+    assert "the declared target is kept" in resp.body
+    assert "port pose measured" not in resp.body
+
+    pose, source, _rot = _measured(store, "posebind2")["p1"]
+    assert source == "declared"
+    assert pose == pytest.approx([8e-10, 0.0, 0.0], abs=1e-15)
+
+    validate = handler.get(id="posebind2", view="validate")
+    assert "port_pose_mismatch" in validate.body
+    assert "hub.p1" in validate.body
+    assert "# 0 error(s)" in validate.body  # warn tier: it never gates
+
+
+def test_a_declared_target_within_the_block_scale_is_not_flagged(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    """A box-level target is a rough statement of intent — a declared
+    origin 0.1 Å off the atom it binds is the check working, not drift."""
+    _c, n_label = _make_cn_structure(structure, "posefrag3")  # aN1 at 1.3 Å
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {
+            "op": "add_port",
+            "block": "hub",
+            "name": "p1",
+            "pose": [1.4e-10, 0.0, 0.0],
+        },
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "posefrag3",
+            "ports": {"p1": n_label},
+        },
+    ]
+    resp = handler.put(id="posebind3", text=json.dumps({"ops": ops}))
+    assert "port_pose_mismatch" not in resp.body
+    assert "port_pose_mismatch" not in handler.get(id="posebind3", view="validate").body
+
+
+def test_a_retarget_drops_the_measurement_it_no_longer_speaks_for(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """Same collision precondition as the stale-port test above: a measured
+    pose is a fact about the OLD scene, and a stale one reads exactly like
+    a fresh one. The port the new bind maps is re-measured against the new
+    design; the one it doesn't map is emptied, not left lying."""
+    c_a, n_a = _make_cn_structure(structure, "posefragA")
+    c_b, _n_b = _make_cn_structure(structure, "posefragB")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {"op": "add_port", "block": "hub", "name": "p2"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "posefragA",
+            "ports": {"p1": c_a, "p2": n_a},
+        },
+    ]
+    handler.put(id="posebind4", text=json.dumps({"ops": ops}))
+    handler.edit(
+        id="posebind4",
+        ops=[
+            {
+                "op": "bind_structure",
+                "block": "hub",
+                "design": "posefragB",
+                "ports": {"p1": c_b},
+            }
+        ],
+    )
+    ports = _measured(store, "posebind4")
+    p1_pose, p1_src, _ = ports["p1"]
+    p2_pose, p2_src, _ = ports["p2"]
+    assert p1_src == "bound"
+    assert p1_pose == pytest.approx([0.0, 0.0, 0.0], abs=1e-15)
+    assert (p2_pose, p2_src) == (None, None)
+
+
+def test_unbind_drops_measured_poses_and_keeps_declared_ones(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """``unbind_structure`` clears what the bind wrote — that number was a
+    reading of a binding that no longer exists — and leaves an agent's own
+    design intent untouched."""
+    c_label, n_label = _make_cn_structure(structure, "posefrag5")
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1", "pose": [1.4e-10, 0.0, 0.0]},
+        {"op": "add_port", "block": "hub", "name": "p2"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "posefrag5",
+            "ports": {"p1": n_label, "p2": c_label},
+        },
+    ]
+    handler.put(id="posebind5", text=json.dumps({"ops": ops}))
+    resp = handler.edit(
+        id="posebind5", ops=[{"op": "unbind_structure", "block": "hub"}]
+    )
+    assert "1 measured port pose(s) dropped" in resp.body
+
+    ports = _measured(store, "posebind5")
+    p1_pose, p1_src, _ = ports["p1"]
+    assert (p1_src, ports["p2"][1]) == ("declared", None)
+    assert p1_pose == pytest.approx([1.4e-10, 0.0, 0.0], abs=1e-15)
+    assert ports["p2"][0] is None
+
+
+def test_a_frame_mismatched_scene_measures_nothing(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """The same gate ``envelope_fit`` refuses on (gripe 334764): those atom
+    coordinates are in some other frame, so reading them as block-local
+    poses would mint a number that looks measured and means nothing."""
+    c_label = _make_structure(structure, "posefrag_off", carts=[[20.0, 0.0, 0.0]])[0]
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r2e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "posefrag_off",
+            "ports": {"p1": c_label},
+        },
+    ]
+    resp = handler.put(id="posebind6", text=json.dumps({"ops": ops}))
+    assert "⚠ port pose: not measured for 1 port(s)" in resp.body
+    assert "port pose measured" not in resp.body
+    assert _measured(store, "posebind6")["p1"] == (None, None, None)

@@ -96,8 +96,11 @@ ForeignResolver = Callable[[str], "Tree[Any, Any] | None"]
 #: consumers — a declared origin is a target to check a realization
 #: against, a bound one is what the realization actually did — so it is
 #: stored, not inferred. A domain that persists ports mirrors this enum as
-#: a DB CHECK (``se``'s ``se_ports_pose_source_check``); ``'bound'`` has
-#: no writer yet, and exists now so the later one needs no migration.
+#: a DB CHECK (``se``'s ``se_ports_pose_source_check``). The core ops write
+#: only ``'declared'`` — a measurement comes from a domain that knows what
+#: a realization *is* (``se``'s ``bind_structure`` reads it off the bound
+#: structure's atom), and by its rule a measurement fills an empty slot but
+#: never overwrites a declared target.
 PORT_POSE_SOURCES: tuple[str, ...] = ("declared", "bound")
 
 
