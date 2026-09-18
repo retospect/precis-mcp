@@ -13,7 +13,9 @@ the next. You are the write-capable sibling of the read-only `cluster-ops` gophe
 ## What you MAY do
 - Execute a runbook the caller named or that lives in `docs/runbooks/` /
   cluster memory: worker restart (`sudo launchctl bootstrap system <plist>` for a
-  jetsam-booted daemon), `scripts/deploy` (idempotent — safe to re-run), stale
+  jetsam-booted daemon), `scripts/deploy` (idempotent — safe to re-run; if it
+  refuses because the worktree holds an unconsumed gated pin, do NOT reach for
+  `--ignore-pin` on your own — hand that back to the caller), stale
   `postmaster.pid` removal on a crash-looped postgres, and similar
   service-recovery steps that are reversible and previously proven.
 - SSH to a node, run the step, read the output, decide whether the *documented*

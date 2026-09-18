@@ -171,6 +171,13 @@ class Fixture:
             return None
         return marker.read_text(encoding="utf-8").split()[0]
 
+    @property
+    def pin(self) -> Path:
+        return self.repo / ".ship-sha"
+
+    def set_pin(self, sha: str) -> None:
+        self.pin.write_text(f"{sha}\n", encoding="utf-8")
+
 
 @pytest.fixture
 def fx(tmp_path: Path) -> Fixture:
@@ -473,3 +480,128 @@ def test_ship_clears_a_stale_pin_before_it_can_do_anything_else() -> None:
         "the stale-pin removal must precede step 1, not sit inside a path a "
         "failure can skip"
     )
+
+
+# ─────────── the pin as a one-shot token: enforced, then consumed ────────────
+# `--pinned` is only load-bearing if the caller types the pinned sha, and /go
+# is executed by an agent following prose. These cover the mechanism that does
+# not depend on anyone remembering.
+
+
+def test_an_unconsumed_pin_refuses_a_bare_deploy(fx: Fixture, tmp_path: Path) -> None:
+    """The original bug, reproduced at the only place that can still cause it:
+    a bare `scripts/deploy` resolves `main` at deploy time (here: two ungated
+    sibling merges past the gated sha). With a pin pending that must be a hard
+    refusal, not a silent success over untested code."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    fx.set_pin(fx.gated)
+
+    result = _run_deploy(fx, fakebin)
+
+    assert result.returncode != 0, (
+        "a bare deploy while a gated pin is unconsumed must refuse\n"
+        f"stdout: {result.stdout}"
+    )
+    assert fx.gated[:8] in result.stderr
+    assert "--ignore-pin" in result.stderr, "the refusal must name its escape hatch"
+    assert fx.pin.exists(), "a refused deploy must not consume the pin"
+
+
+def test_deploying_the_pin_consumes_it(fx: Fixture, tmp_path: Path) -> None:
+    """Success removes the pin. Without this a spent .ship-sha would block
+    every later ordinary deploy from the tree that shipped it."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    fx.set_pin(fx.gated)
+
+    result = _run_deploy(fx, fakebin, fx.gated, "--pinned")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fx.marker_sha() == fx.gated
+    assert not fx.pin.exists(), "a deployed pin must be consumed, not left to go stale"
+
+
+def test_ignore_pin_allows_a_deliberate_off_pin_deploy(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """Bare `scripts/deploy` stays a documented cluster-admin operation — it
+    just has to be deliberate while a pin is pending. The pin survives: it is
+    still guarding a sha that never went out."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    fx.set_pin(fx.gated)
+
+    result = _run_deploy(fx, fakebin, "--ignore-pin")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fx.marker_sha() == fx.sibling2
+    assert fx.pin.exists(), (
+        "an off-pin deploy must leave the pin in place — that sha is still ungone"
+    )
+
+
+def test_force_rollback_is_not_gated_behind_a_second_flag(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """--force-rollback is the incident hatch. A pending pin must not make an
+    operator discover a second flag mid-incident."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.sibling2)
+    fx.set_pin(fx.gated)
+
+    result = _run_deploy(fx, fakebin, fx.base, "--force-rollback")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fx.marker_sha() == fx.base
+
+
+def test_no_pin_leaves_a_bare_deploy_untouched(fx: Fixture, tmp_path: Path) -> None:
+    """Non-regression: the gate is inert in any worktree that never shipped."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    assert not fx.pin.exists()
+
+    result = _run_deploy(fx, fakebin)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert fx.marker_sha() == fx.sibling2
+
+
+def test_an_unusable_pin_says_what_actually_works(fx: Fixture, tmp_path: Path) -> None:
+    """A pin that does not resolve to a commit here (partial write from a
+    killed ship, a truncation) can never be satisfied. Refuse — an unreadable
+    pin is not evidence that deploying is safe — but print the remedy that
+    works, not the generic one, which would replay the same garbage as REF and
+    die identically while the operator follows instructions in a loop."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    fx.pin.write_text("not-a-sha\n", encoding="utf-8")
+
+    result = _run_deploy(fx, fakebin, "not-a-sha", "--pinned")
+
+    assert result.returncode != 0
+    assert "unusable" in result.stderr
+    assert "rm .ship-sha" in result.stderr, "the printed remedy must be one that works"
+
+
+def test_pinned_with_no_target_refuses_rather_than_defaulting_to_main(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """`scripts/deploy "$(cat .ship-sha)" --pinned` with the pin already
+    consumed expands to a bare `--pinned`. Without this guard REF falls back to
+    `main` — re-resolved at deploy time, with --pinned suppressing the
+    origin/main rollback leg — which is precisely the ungated-substitution bug
+    the pin exists to prevent, arriving through the pin's own retry path."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    assert not fx.pin.exists()
+
+    result = _run_deploy(fx, fakebin, "--pinned")
+
+    assert result.returncode != 0, (
+        "--pinned with no target must refuse, not silently deploy main\n"
+        f"stdout: {result.stdout}"
+    )
+    assert "no target" in result.stderr
+    assert fx.marker_sha() == fx.base, "nothing may have been deployed"

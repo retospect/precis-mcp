@@ -106,6 +106,12 @@ Optional ship message from the user: `$ARGUMENTS`
    closes that window. If `.ship-sha` is missing, the gate was not a full one
    (`--quick`/bare `--impacted`): do not deploy, re-run the gate.
 
+   You do not have to get this right from memory: while `.ship-sha` is
+   unconsumed, `scripts/deploy` **refuses** any other target and prints this
+   exact command. A successful deploy of the pin removes the file. If you
+   genuinely mean to deploy something else, that needs `--ignore-pin` — which
+   in a `/go` means you have gone off-script, so stop and say so.
+
    Run it **in the background, watching the live log**. Never foreground-wait on
    `scripts/deploy`: its stdout reaches you only at exit, minutes of zero
    visibility.

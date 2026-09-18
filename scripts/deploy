@@ -85,6 +85,7 @@ Usage:
   scripts/deploy <ref>                        # deploy a branch/tag/sha
   scripts/deploy <old-sha> --force-rollback   # deliberate rollback
   scripts/deploy "$(cat .ship-sha)" --pinned  # /go: deploy the GATED sha
+  scripts/deploy <ref> --ignore-pin           # deliberately go off-pin
   scripts/deploy --help | -h                  # this message; no reachability
                                                # check, no ansible, no ssh
 
@@ -95,6 +96,10 @@ only for a deliberate rollback.
 the origin/main leg of the rollback guard, keeps the currently-deployed-sha
 leg, and refuses outright when no deploy-state marker exists (fail closed —
 with no marker that leg has nothing to compare against).
+
+A .ship-sha in this worktree is an UNCONSUMED gated pin: any target that is
+not that sha is refused until the pin is deployed (which removes it) or the
+run passes --ignore-pin. --force-rollback also bypasses.
 
 Notable env vars (see the header comment in this script for full docs):
   PRECIS_CLUSTER_DIR, PRECIS_DEPLOY_EXTRA_VARS, PRECIS_DEPLOY_ALLOW_STALE,
@@ -112,12 +117,18 @@ done
 
 FORCE_ROLLBACK=0
 PINNED=0
+IGNORE_PIN=0
+# A scalar, not ${#_POSITIONAL[@]}: bash 3.2 (the macOS system bash) errors on
+# the length of an empty array under `set -u`, which is why the REF line below
+# uses the ${arr[0]:-default} idiom too.
+_HAVE_TARGET=0
 _POSITIONAL=()
 for _a in "$@"; do
     case "$_a" in
         --force-rollback) FORCE_ROLLBACK=1 ;;
         --pinned) PINNED=1 ;;
-        *) _POSITIONAL+=("$_a") ;;
+        --ignore-pin) IGNORE_PIN=1 ;;
+        *) _POSITIONAL+=("$_a"); _HAVE_TARGET=1 ;;
     esac
 done
 REF="${_POSITIONAL[0]:-main}"
@@ -134,6 +145,71 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ── the gated pin is a ONE-SHOT TOKEN: ship mints it, deploy consumes it ───
+# `--pinned` only helps if the caller actually types the pinned sha, and /go
+# is executed by an agent following prose in .claude/commands/go.md. One run
+# that types a bare `scripts/deploy` instead resolves `main` at deploy time
+# and ships whatever ungated sibling qland landed since the gate — silently,
+# reporting success. So the check does not depend on anyone remembering:
+# while an UNCONSUMED .ship-sha sits in this worktree, any target that is not
+# that sha is refused outright. Loud-refuse, never silent-substitute: an
+# operator who asked for `main` and got the pin instead would be the same
+# class of bug pointed the other way.
+#
+# Consumed (removed) once a deploy of that exact sha records success — both
+# at step 3 and at the gr332009 convergence graft, since either can be the
+# write that means "the fleet is on this sha now". Without the removal a
+# spent pin would block every later ordinary `scripts/deploy` from the tree
+# that shipped it.
+#
+# Bypasses: --ignore-pin (deliberate off-pin deploy, e.g. a cluster-admin
+# redeploy from a tree with a pin still pending) and --force-rollback (an
+# incident hatch must not be gated behind a second flag).
+#
+# `--pinned` with no positional is refused outright. The documented recovery
+# command is `scripts/deploy "$(cat .ship-sha)" --pinned`, and a `cat` of a
+# missing/emptied pin expands to nothing — which `REF="${_POSITIONAL[0]:-main}"`
+# would read as "no target given" and silently substitute `main` for, WITH
+# --pinned still set. That is the exact substitution this whole mechanism
+# exists to prevent, arriving through its own retry path.
+if [[ "$PINNED" == 1 && "$_HAVE_TARGET" != 1 ]]; then
+    die "--pinned with no target. It means 'deploy exactly this sha'; there is no default for that. If this came from scripts/deploy \"\$(cat .ship-sha)\" --pinned, the pin file is gone — the deploy that consumed it already put that sha on the fleet, so check the deploy-state marker before re-running anything."
+fi
+
+SHIP_PIN_FILE="${REPO_ROOT}/.ship-sha"
+SHIP_PIN=""
+if [[ -f "$SHIP_PIN_FILE" ]]; then
+    SHIP_PIN="$(tr -d '[:space:]' < "$SHIP_PIN_FILE" 2>/dev/null || true)"
+fi
+# An unusable pin must not become an unrecoverable refusal. If the file holds
+# something this repo cannot resolve to a commit (a partial write from a
+# killed ship, a disk-full truncation), then the target can never equal it and
+# the generic refusal below would print a remedy that replays the same garbage
+# and dies identically — an operator following the instructions loops forever.
+# Still refuse (a pin we cannot read is not evidence that deploying is safe),
+# but say the thing that actually works.
+if [[ -n "$SHIP_PIN" && "$IGNORE_PIN" != 1 && "$FORCE_ROLLBACK" != 1 ]] \
+    && ! git -C "$REPO_ROOT" rev-parse -q --verify "${SHIP_PIN}^{commit}" >/dev/null 2>&1; then
+    die "this worktree's .ship-sha is unusable — it does not resolve to a commit here (contents: '${SHIP_PIN:0:40}'). It cannot be deployed and it is blocking other targets. Delete it (rm .ship-sha) and re-run the gate, or pass --ignore-pin if you know what you are deploying."
+fi
+if [[ -n "$SHIP_PIN" && "$IGNORE_PIN" != 1 && "$FORCE_ROLLBACK" != 1 ]]; then
+    _pin_target="$(git -C "$REPO_ROOT" rev-parse -q --verify "${REF}^{commit}" 2>/dev/null || true)"
+    if [[ "$_pin_target" != "$SHIP_PIN" ]]; then
+        die "this worktree holds an unconsumed gated pin (.ship-sha = ${SHIP_PIN:0:8}) but the target is '${REF}'${_pin_target:+ (${_pin_target:0:8})}. The gate validated ${SHIP_PIN:0:8}; deploying anything else ships code no gate ran against. Deploy the pin:
+    scripts/deploy \"\$(cat .ship-sha)\" --pinned
+or, if going off-pin is deliberate, re-run with --ignore-pin."
+    fi
+fi
+
+# Remove the pin once this exact sha is recorded as deployed. Called from
+# both success-marker writers; a no-op when there is no pin, when the pin is
+# for a different sha, or when the target could not be resolved.
+_consume_ship_pin() {
+    local sha="$1"
+    [[ -n "$SHIP_PIN" && -n "$sha" && "$sha" == "$SHIP_PIN" ]] || return 0
+    rm -f "$SHIP_PIN_FILE" 2>/dev/null || true
+}
 
 # ── gr332009 rollout-convergence graft (on top of the attempt-stamp/no-legacy
 # design above) — write the SUCCESS marker (and clear the attempt stamp) as
@@ -169,6 +245,7 @@ _write_deploy_state_marker() {
     . "${REPO_ROOT}/scripts/lib/deploy-state.sh"
     printf '%s %s %s\n' "$sha" "$(date +%s)" "success" > "$(deploy_state_path "$REPO_ROOT")"
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
+    _consume_ship_pin "$sha"
 }
 
 _rollout_converged() {
@@ -656,4 +733,6 @@ fi
     # Success: clear the attempt stamp so ship stops reporting "uncertain"
     # (gr332009). Unconditional — a deploy that got here ran green.
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
+    # The pin has done its job: this sha is what the fleet runs now.
+    _consume_ship_pin "$DEPLOYED_SHA"
 } || true

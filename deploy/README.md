@@ -33,7 +33,11 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    landing between the gate and the deploy substitutes an ungated tree.
    `--pinned` says the target is deliberately behind `origin/main`: it drops
    that leg of the rollback guard only, keeps the currently-deployed-sha leg,
-   and refuses when no deploy-state marker exists.
+   and refuses when no deploy-state marker exists. The pin is a **one-shot
+   token**: while an unconsumed `.ship-sha` sits in the worktree, any other
+   target is refused (bypass with `--ignore-pin`, or `--force-rollback`), and
+   a successful deploy of that sha removes the file. So a bare `scripts/deploy`
+   keeps working everywhere except the one window where it would be wrong.
 6. App secrets: once the web role is up, load API keys via the `/secrets`
    page or `precis secret set` — **not** the ansible vault (scope boundary:
    `inventory.example/group_vars/all/vault.yml.example`).
