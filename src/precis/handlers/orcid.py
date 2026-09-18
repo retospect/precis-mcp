@@ -168,6 +168,71 @@ def enqueue_authored_works(
     }
 
 
+def store_orcid_record(
+    store: Store,
+    record: dict[str, Any],
+    *,
+    existing_ref_id: int | None,
+    embedder: Any | None = None,
+) -> int:
+    """Insert or refresh the durable author ref + its embedded card.
+
+    Module-level so :mod:`precis.workers.orcid_enrich` (the background
+    ORCID tier) reuses this exact storage path instead of duplicating it
+    — :meth:`OrcidHandler._store_record` is now a thin wrapper over this.
+    Per the append-only rule, a refresh DELETE+INSERTs the card chunk
+    (``replace=True``); there are no body rows to disturb. ``embedder``
+    is optional (``None`` for a caller with no embedder in scope — the
+    embed worker re-claims on a NULL vector, same as an embed failure
+    below).
+    """
+    slug = orcid_api.slug_for(record["orcid_id"])
+    title = record.get("name") or slug
+    meta = {
+        "orcid_id": record["orcid_id"],
+        "given": record.get("given", ""),
+        "family": record.get("family", ""),
+        "credit_name": record.get("credit_name", ""),
+        "biography": record.get("biography", ""),
+        "keywords": record.get("keywords", []),
+        "researcher_urls": record.get("researcher_urls", []),
+        "country": record.get("country", ""),
+        "employments": record.get("employments", []),
+        "work_count": record.get("work_count", 0),
+        "fetched_at": datetime.now(UTC).isoformat(),
+    }
+    card = _card_text(record)
+    embedding = None
+    if embedder is not None:
+        try:
+            embedding = embedder.embed_one(card)
+        except Exception:
+            embedding = None  # embed worker re-claims on a NULL vector
+    card_block = ChunkInsert(
+        ord=-1,
+        text=card,
+        embedding=embedding,
+        meta={"chunk_kind": "card_combined"},
+    )
+
+    with store.tx() as conn:
+        if existing_ref_id is None:
+            ref = store.insert_ref(
+                kind="orcid",
+                slug=slug,
+                title=title,
+                provider="orcid",
+                meta=meta,
+                conn=conn,
+            )
+            ref_id = ref.id
+        else:
+            ref_id = existing_ref_id
+            store.update_ref(ref_id, title=title, meta_patch=meta, conn=conn)
+        store.chunks.insert_chunks(ref_id, [card_block], replace=True, conn=conn)
+    return ref_id
+
+
 def _card_text(record: dict[str, Any]) -> str:
     """Build the embedded ``card_combined`` text: name + bio + keywords +
     affiliations. This is what ``search(kind='orcid', q=…)`` matches."""
@@ -473,56 +538,15 @@ class OrcidHandler(Handler):
     ) -> int:
         """Insert or refresh the durable author ref + its embedded card.
 
-        Per the append-only rule, a refresh DELETE+INSERTs the card chunk
-        (``replace=True``); there are no body rows to disturb.
+        Thin wrapper over the module-level :func:`store_orcid_record`
+        (shared with :mod:`precis.workers.orcid_enrich`).
         """
-        slug = orcid_api.slug_for(record["orcid_id"])
-        title = record.get("name") or slug
-        meta = {
-            "orcid_id": record["orcid_id"],
-            "given": record.get("given", ""),
-            "family": record.get("family", ""),
-            "credit_name": record.get("credit_name", ""),
-            "biography": record.get("biography", ""),
-            "keywords": record.get("keywords", []),
-            "researcher_urls": record.get("researcher_urls", []),
-            "country": record.get("country", ""),
-            "employments": record.get("employments", []),
-            "work_count": record.get("work_count", 0),
-            "fetched_at": datetime.now(UTC).isoformat(),
-        }
-        card = _card_text(record)
-        embedding = None
-        if self.embedder is not None:
-            try:
-                embedding = self.embedder.embed_one(card)
-            except Exception:
-                embedding = None  # embed worker re-claims on a NULL vector
-        card_block = ChunkInsert(
-            ord=-1,
-            text=card,
-            embedding=embedding,
-            meta={"chunk_kind": "card_combined"},
+        return store_orcid_record(
+            self.store,
+            record,
+            existing_ref_id=existing_ref_id,
+            embedder=self.embedder,
         )
-
-        with self.store.tx() as conn:
-            if existing_ref_id is None:
-                ref = self.store.insert_ref(
-                    kind="orcid",
-                    slug=slug,
-                    title=title,
-                    provider=self.provider,
-                    meta=meta,
-                    conn=conn,
-                )
-                ref_id = ref.id
-            else:
-                ref_id = existing_ref_id
-                self.store.update_ref(ref_id, title=title, meta_patch=meta, conn=conn)
-            self.store.chunks.insert_chunks(
-                ref_id, [card_block], replace=True, conn=conn
-            )
-        return ref_id
 
     def _apply_tag_ops_if_any(
         self, ref_id: int, tags: list[str] | None, untags: list[str] | None
@@ -600,4 +624,4 @@ class OrcidHandler(Handler):
         return Response(body="\n".join(lines))
 
 
-__all__ = ["OrcidHandler"]
+__all__ = ["OrcidHandler", "enqueue_authored_works", "store_orcid_record"]

@@ -1556,6 +1556,61 @@ class RefsMixin:
         with self.pool.connection() as c:
             return _fetch_paper_author_rows(c, ref_id)
 
+    def verify_paper_author(
+        self,
+        ref_id: int,
+        position: int,
+        *,
+        given: str | None = None,
+        middle: str | None = None,
+        family: str | None = None,
+        source: str | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """Stamp an ORCID cross-check verification on one ``paper_authors``
+        row (docs/backlog/paper-authors-1nf.md §S3).
+
+        Always sets ``verified_at``/``updated_at`` to ``now()``. The name
+        fields (``given``/``middle``/``family``) and ``source`` are applied
+        only when passed non-``None`` — :mod:`precis.workers.orcid_enrich`
+        calls this with all three + ``source='orcid'`` for a non-human row
+        (the ORCID record's name overwrites the byline) and with none of
+        them for a ``source='human'`` row (verified, names untouched — a
+        human correction survives the cross-check). Regenerates
+        ``refs.authors`` afterwards via :func:`_write_authors_projection` so
+        the table and jsonb never drift (``health_checks.paper_authors_drift``
+        stays 0). Never touches ``cite_key``/``ref_identifiers``.
+        """
+
+        def _do(c: Connection) -> None:
+            sets = ["verified_at = now()", "updated_at = now()"]
+            params: list[Any] = []
+            if given is not None:
+                sets.append("given = %s")
+                params.append(given)
+            if middle is not None:
+                sets.append("middle = %s")
+                params.append(middle)
+            if family is not None:
+                sets.append("family = %s")
+                params.append(family)
+            if source is not None:
+                sets.append("source = %s")
+                params.append(source)
+            params.extend([ref_id, position])
+            c.execute(
+                f"UPDATE paper_authors SET {', '.join(sets)} "
+                "WHERE ref_id = %s AND position = %s",
+                params,
+            )
+            _write_authors_projection(c, ref_id, _fetch_paper_author_rows(c, ref_id))
+
+        if conn is not None:
+            _do(conn)
+            return
+        with self.pool.connection() as c:
+            _do(c)
+
     def set_retraction_status(
         self,
         ref_id: int,

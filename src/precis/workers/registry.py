@@ -518,6 +518,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # docs/backlog/paper-authors-1nf.md §S3: the background ORCID
+        # identity tier. Fetches unvisited kind='orcid' stub nodes (minted
+        # by paper_meta_enrich's per-author ORCID hits), stores the full
+        # record via the same path OrcidHandler.get() uses, links held
+        # works, and cross-checks each authored edge's paper DOI against
+        # the record's works — verifying (or flushing names into) the
+        # matching paper_authors row. Same shape as openalex_enrich just
+        # above; cadence via PRECIS_ORCID_ENRICH_REFRESH_HOURS (default 1).
+        name="orcid_enrich",
+        label="ORCID identity enrich",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        uses_external=("orcid",),
+        one_line="Fetch unvisited ORCID author stubs + cross-check their "
+        "authored papers against paper_authors on a cadence.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         # Stub-ranking pipeline (docs/backlog): S2-enrich + embed + anchor-
         # similarity re-rank paper stubs (title/abstract only, no PDF yet) so
         # `fetch_oa`'s claim query and the stub-backlog surfaces float the
