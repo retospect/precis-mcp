@@ -46,7 +46,10 @@ order"):
   the declared-vs-derived axis-travel probe), the bought-item rollup
   (``view='bom'`` — :mod:`precis_se.bom`: quantities multiplied through
   the tree's array multiplicities, priced and massed from the
-  ``component`` kind's own spec values), the interrogation ledger with
+  ``component`` kind's own spec values), the "what do I order" report
+  (``view='order'`` — :mod:`precis_se.order`: the instanced tree walked to
+  purchasable leaves and bought-whole assemblies, merged with explicit BOM
+  lines, plus a to-make table for the rest), the interrogation ledger with
   open questions first (``view='interview'`` — :mod:`precis_se.notes`),
   or the what-is-still-undecided report (``view='freedom'`` —
   :mod:`precis_se.freedom`, DRC's honest counterpart). The atomic mode
@@ -112,6 +115,7 @@ from precis_se import fret, persist
 from precis_se import library as se_library
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
+from precis_se import order as se_order
 from precis_se import precedent as se_precedent
 from precis_se import printing as se_printing
 from precis_se import stability as se_stability
@@ -608,6 +612,8 @@ class SeHandler(Handler):
             return Response(body=body)
         if v == "bom":
             return Response(body=self._render_bom(tree))
+        if v == "order":
+            return Response(body=self._render_order(tree, ref.id))
         if v == "fasten":
             return Response(body=_render_fasten(tree))
         if v == "interview":
@@ -639,7 +645,10 @@ class SeHandler(Handler):
             "block's declared states, budget-bounded) | view='drc' "
             "(graph tier + DOF "
             "probe) | view='bom' (bought items, multiplied through the "
-            "arrays, with cost/mass) | view='fasten' (screw joints: grip "
+            "arrays, with cost/mass) | view='order' (what to buy — the "
+            "instanced tree walked to purchasable leaves and bought-whole "
+            "assemblies, merged with explicit BOM lines, plus a to-make "
+            "table for the rest) | view='fasten' (screw joints: grip "
             "stack-up, the holes it stamps — clearance, countersink or "
             "counterbore, and whatever the far end's thread_strategy "
             "names — thread lead, and which driver can reach it) "
@@ -827,6 +836,143 @@ class SeHandler(Handler):
             lines.append(
                 f"⚠ target not in the tree: {', '.join(sorted(set(unresolved)))} "
                 "— quantity unknown, excluded from totals"
+            )
+        return "\n".join(lines)
+
+    def _render_order(self, tree: SeTree, ref_id: int) -> str:
+        """``view='order'`` — "what do I order": the instanced tree walked
+        to purchasable leaves and bought-whole assemblies
+        (:mod:`precis_se.order`), merged with the design's explicit BOM
+        lines, plus a to-make table for what's left. Store-aware the same
+        way :meth:`_render_bom` is, but the rollup itself takes the
+        plain ``store`` (:func:`precis_se.order.rollup`'s own docstring —
+        handler ↔ order would cycle otherwise)."""
+        report = se_order.rollup(self.store, tree, ref_id)
+        if not report.has_blocks:
+            return "# view='order' — what to order\n\n(no blocks yet — unfilled)"
+
+        lines = [
+            "# view='order' — what to order (quantities include array multiplicity)"
+        ]
+
+        if not report.purchasable:
+            lines.append("")
+            lines.append(
+                "(nothing to order yet — bind a block to a component or "
+                "part, or add_bom)"
+            )
+            lines.append(f"to make: {len(report.to_make)}")
+        else:
+            rows: list[dict[str, Any]] = []
+            total_cost = 0.0
+            cost_covered = 0
+            total_mass = 0.0
+            mass_covered = 0
+            unknown: list[str] = []
+            for line in report.purchasable:
+                item_display = f"{line.item_kind}:{line.item}"
+                if line.label:
+                    item_display = f"{line.label} ({item_display})"
+                if not line.in_store:
+                    unknown.append(item_display)
+                qty_display = "?" if line.qty is None else f"{line.qty:g}"
+                covered = sum(
+                    c.covers for c in line.contributions if c.covers is not None
+                )
+                if covered:
+                    qty_display += f" (covers {covered} block(s))"
+                cost_display = "—" if line.unit_cost is None else f"{line.unit_cost:g}"
+                mass_display = "—" if line.mass is None else f"{line.mass:g}"
+                # A priced item whose QTY never resolved (e.g. a bom line
+                # naming a block no longer in the tree) is still unpriced
+                # from the totals' point of view — nothing to multiply the
+                # price by (_render_bom's own rule).
+                if line.unit_cost is not None and line.qty is not None:
+                    cost_covered += 1
+                    total_cost += line.qty * line.unit_cost
+                if line.mass is not None and line.qty is not None:
+                    mass_covered += 1
+                    total_mass += line.qty * line.mass
+                used_by = sorted(
+                    {c.label for c in line.contributions if c.source == "binding"}
+                )
+                via = sorted({c.source for c in line.contributions})
+                rows.append(
+                    {
+                        "item": item_display,
+                        "qty": qty_display,
+                        "category": line.category or "—",
+                        "mpn": line.mpn or "—",
+                        "unit_cost": cost_display,
+                        "unit_mass": mass_display,
+                        "used by": ", ".join(used_by) or "—",
+                        "via": ", ".join(via),
+                    }
+                )
+            n = len(rows)
+            lines.append(
+                render_agent_table(
+                    rows,
+                    schema=[
+                        "item",
+                        "qty",
+                        "category",
+                        "mpn",
+                        "unit_cost",
+                        "unit_mass",
+                        "used by",
+                        "via",
+                    ],
+                )
+            )
+            lines.append("")
+            # The P/L pair counts TEMPLATES (one leaf template per binding
+            # contribution — a line merges several templates onto one row,
+            # and a bom-line-only line contributes none); `priced`/`massed`
+            # below stay LINE-based (`n`), the unit the store price/mass
+            # actually attaches to.
+            purchasable_templates = sum(
+                1
+                for line in report.purchasable
+                for c in line.contributions
+                if c.source == "binding"
+            )
+            leaf_total = purchasable_templates + len(report.to_make)
+            lines.append(
+                f"purchasable: {purchasable_templates} of {leaf_total} leaf "
+                f"template(s) · to make: {len(report.to_make)}"
+            )
+            lines.append(f"priced: {cost_covered} of {n} line(s)")
+            lines.append(f"massed: {mass_covered} of {n} line(s)")
+            if cost_covered == n:
+                lines.append(f"total: {total_cost:g}")
+            else:
+                lines.append(
+                    f"total: ≥ {total_cost:g} (partial, {cost_covered} of {n})"
+                )
+            if unknown:
+                lines.append("")
+                lines.append(
+                    f"⚠ not in the store: {', '.join(sorted(set(unknown)))} — "
+                    "priced/massed as unknown (put the component first, or "
+                    "fix the slug)"
+                )
+
+        if report.to_make:
+            lines.append("")
+            lines.append("## to make")
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "block": r.block,
+                            "mode": r.mode or "—",
+                            "qty": f"{r.qty:g}",
+                        }
+                        for r in report.to_make
+                    ],
+                    schema=["block", "mode", "qty"],
+                )
             )
         return "\n".join(lines)
 
