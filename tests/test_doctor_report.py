@@ -162,7 +162,9 @@ def test_strip_preamble_ignores_a_mid_sentence_mention() -> None:
     """Line-anchored: the heading has to open a line, so prose that merely
     names the section is still a preamble — and a reply that is *only* that
     prose has no report in it."""
-    assert doctor_report.strip_preamble("I will now write the ## Classification") is None
+    assert (
+        doctor_report.strip_preamble("I will now write the ## Classification") is None
+    )
 
 
 def test_strip_preamble_without_the_heading_is_none() -> None:

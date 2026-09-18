@@ -95,7 +95,6 @@ def strip_preamble(text: str) -> str | None:
     return text[match.start() :].strip()
 
 
-
 def utc_date_tag(when: datetime | None = None) -> str:
     """The UTC calendar date a report belongs to, ``YYYY-MM-DD``.
 
