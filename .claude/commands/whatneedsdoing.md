@@ -188,6 +188,17 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    (asking-user + failed children) and `search(kind='todo', view='doable')`
    (what the loop picks up next). NB: these are `search(...)` calls, not
    `get(...)`. This is the only substrate that acts on itself.
+4a. **The owner's queue — `waiting-for:<login>`.** Before mining memory or
+   chat for "things Reto still has to do", list the durable queue:
+   `search(kind='todo', tags=['waiting-for:reto'])` (skill
+   `precis-user-queue-help`; the tag value is the person's login exactly as
+   `refs.owner_login` stores it — the same string files and lists). Every
+   decision, credential, approval or chore that only the owner can do
+   belongs there as one row, never as a memory bullet or a chat reminder:
+   file new ones you surface this pass, and shrink any memory "OPEN = Reto:
+   …" bullet to the todo id. Report the queue as its own short section
+   (count + the rows that unblock the most), not merged into either
+   substrate — it is the human's list, the factory never dispatches it.
 5. **Prod system health — worker-log err/warn (is the fleet solid?).** The
    `/status` page footer shows a per-host `N err/warn 24h` count
    (`spark · … · 106`, `melchior · … · 7134`, …); this is the same signal, read
