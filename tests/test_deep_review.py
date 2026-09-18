@@ -120,15 +120,23 @@ def test_build_prompt_has_all_directive_sections(store: Store) -> None:
 def test_build_prompt_includes_recent_reviews(
     handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # An orphan todo → nursery raises a nursery:orphan alert, which the
-    # deep-review prompt surfaces under "Open nursery alerts".
-    handler.put(text="dangling orphan")
-    from precis.workers.nursery import run_nursery_pass
+    # A stale claim → nursery raises a nursery:stale-claim alert, which
+    # the deep-review prompt surfaces under "Open nursery alerts".
+    # (``orphan`` is detected but never alerted — ``_NO_ALERT`` — so it
+    # can't be the fixture here.)
+    from precis.store.types import Tag
+    from precis.workers.nursery import STALE_CLAIM_HOURS, run_nursery_pass
+    from tests.test_nursery import _backdate_tag
+
+    r = handler.put(text="Long-claimed task")
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("claimed-by:asa-worker"), set_by="agent")
+    _backdate_tag(store, rid, "claimed-by:asa-worker", STALE_CLAIM_HOURS + 1)
 
     run_nursery_pass(store)
     prompt = _build_prompt(store)
     assert "Open nursery alerts" in prompt
-    assert "nursery:orphan" in prompt
+    assert "nursery:stale-claim" in prompt
 
 
 # ── full pass with stubbed LLM ───────────────────────────────────
