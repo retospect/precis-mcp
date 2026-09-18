@@ -8,7 +8,12 @@ import pytest
 
 from precis.ingest import paper_meta_enrich
 from precis.store import Store
-from precis.workers.paper_meta_enrich import _STATE_KEY, run_paper_meta_enrich_pass
+from precis.workers.paper_meta_enrich import (
+    _DEFAULT_BATCH_LIMIT,
+    _DEFAULT_REFRESH_HOURS,
+    _STATE_KEY,
+    run_paper_meta_enrich_pass,
+)
 
 
 def _paper(store: Store, *, slug: str, doi: str | None = None) -> int:
@@ -21,6 +26,14 @@ def _paper(store: Store, *, slug: str, doi: str | None = None) -> int:
 def _meta(store: Store, ref_id: int) -> dict[str, Any]:
     ref = store.fetch_refs_by_ids([ref_id])[ref_id]
     return ref.meta or {}
+
+
+class TestDefaults:
+    def test_default_claim_is_400_per_hour(self) -> None:
+        """docs/backlog/paper-authors-1nf.md §S2 — the 33.8K backlog
+        drains in ~4 days at 400 refs/1 h (env overrides unchanged)."""
+        assert _DEFAULT_BATCH_LIMIT == 400
+        assert _DEFAULT_REFRESH_HOURS == 1.0
 
 
 class TestBatchAndThrottle:
