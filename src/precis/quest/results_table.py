@@ -27,6 +27,7 @@ guessing hard.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -36,6 +37,10 @@ if TYPE_CHECKING:
 #: Token budget for the rendered text table (chars/4, same convention as
 #: :data:`precis.quest.tick._LITERATURE_TOKEN_BUDGET`).
 _RESULTS_TABLE_TOKEN_BUDGET = 2500
+#: Public alias — the handler's ``view='results'``/``'frontier'`` default
+#: budget (``args={'budget': N}`` overrides), so the standalone views and
+#: the tick's embedded copy can't drift apart (gr345353).
+RESULTS_TABLE_TOKEN_BUDGET = _RESULTS_TABLE_TOKEN_BUDGET
 
 _CHARS_PER_TOKEN = 4
 
@@ -381,6 +386,27 @@ def render_results_table(
     """
     if not rows:
         return "(no candidates yet)"
+    working, omitted = fit_rows_to_budget(rows, token_budget=token_budget)
+    text = _render_table(working)
+    if omitted:
+        text += f"\n(+{omitted} rows omitted)"
+    return text
+
+
+def fit_rows_to_budget(
+    rows: list[dict[str, Any]],
+    *,
+    token_budget: int,
+    render: Callable[[list[dict[str, Any]]], str] = _render_table,
+) -> tuple[list[dict[str, Any]], int]:
+    """``(kept_rows, omitted)`` — drop rows from the END of ``rows`` (lineage
+    order) until ``render(kept)`` fits ``token_budget`` (chars/4), never
+    dropping one of the newest :data:`_KEEP_NEWEST` candidates by ``ref_id``
+    (the ones most likely to be re-discovered). ``render`` is the text the
+    budget is measured against — the tick's fixed-width table by default;
+    the handler's ``view='results'`` passes its own TOON+text renderer so
+    the budget covers what it actually returns (gr345353).
+    """
     working = list(rows)
     keep_ids = {
         r["ref_id"]
@@ -389,7 +415,7 @@ def render_results_table(
         ]
     }
     omitted = 0
-    text = _render_table(working)
+    text = render(working)
     while len(text) / _CHARS_PER_TOKEN > token_budget:
         drop_idx = None
         for i in range(len(working) - 1, -1, -1):
@@ -400,10 +426,8 @@ def render_results_table(
             break  # everything left is a protected newest-10 row
         working.pop(drop_idx)
         omitted += 1
-        text = _render_table(working)
-    if omitted:
-        text += f"\n(+{omitted} rows omitted)"
-    return text
+        text = render(working)
+    return working, omitted
 
 
 #: Public column order — the handler's ``view='results'`` TOON rendering

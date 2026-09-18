@@ -29,7 +29,10 @@ mirrors the ``autocatpath kinetics`` CLI; feature-detected, engine >= 0.15;
 failure → ``results_json.kinetics_error``, never fails the run).
 ``_dispatch_common`` reduces this to the scalar summary quest harvests:
 barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
-(from ``results_json.score``), trust-gated kinetics scalars
+(from ``results_json.score``), the CHE route scalars ``U_L``/``U_opt``/
+``span_at_UL``/``span_at_Uopt`` gated on the barrier's trust blockers
+(``electro_trusted``/``electro_note``; an untrusted value is stashed as
+``{key}_untrusted_value``), and trust-gated kinetics scalars
 ``tof``/``log_tof``/band, ``kinetics_trusted``/``kinetics_note``/``drc_top``.
 
 Gated on **dependency presence**, not a feature flag: with no

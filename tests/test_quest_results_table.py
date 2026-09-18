@@ -224,6 +224,54 @@ class TestBudgetTruncation:
         assert render_results_table([]) == "(no candidates yet)"
 
 
+# ── handler views honour the budget (gr345353) ───────────────────────────
+
+
+class TestViewBudget:
+    def _fifteen(self, store: Any) -> tuple[int, list[int]]:
+        qid = _mk_quest(store)
+        sids = [
+            _mk_candidate(store, qid, f"Zn n={i}", _dopant_ops("Zn", i + 1))
+            for i in range(15)
+        ]
+        return qid, sids
+
+    def test_results_view_defaults_to_the_tick_budget_and_reports_drops(
+        self, store: Any
+    ) -> None:
+        qid, sids = self._fifteen(store)
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(id=qid, view="results", args={"budget": 1}).body
+        assert "of 15 rows omitted for the 1-token budget" in body
+        rows = build_results_rows(store, qid)
+        newest_ten = set(sorted(sids, reverse=True)[:10])
+        for r in rows:
+            present = r["handle"] in body
+            assert present == (r["ref_id"] in newest_ten), r["handle"]
+        wide = h.get(id=qid, view="results", args={"budget": 100_000}).body
+        assert "rows omitted" not in wide
+        assert all(r["handle"] in wide for r in rows)
+
+    def test_frontier_view_trims_tail_band_first(self, store: Any) -> None:
+        qid, _sids = self._fifteen(store)
+        h = QuestHandler(hub=Hub(store=store))
+        full = h.get(id=qid, view="frontier").body
+        assert "omitted" not in full
+        tight = h.get(id=qid, view="frontier", args={"budget": 30}).body
+        assert "omitted — args={'budget': N} widens" in tight
+        assert tight.startswith("# frontier — quest")
+        assert len(tight) < len(full)
+
+    def test_bad_budget_is_bad_input(self, store: Any) -> None:
+        from precis.errors import BadInput
+
+        qid, _ = self._fifteen(store)
+        h = QuestHandler(hub=Hub(store=store))
+        for bad in ("x", 0, -5, True):
+            with pytest.raises(BadInput):
+                h.get(id=qid, view="results", args={"budget": bad})
+
+
 # ── tick prompt section ──────────────────────────────────────────────────
 
 

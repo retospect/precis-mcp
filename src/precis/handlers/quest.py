@@ -115,6 +115,61 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
 )
 
 
+#: ``view='results'``/``'frontier'`` default token budget — the tick's own
+#: results-table budget (:data:`precis.quest.results_table.RESULTS_TABLE_TOKEN_BUDGET`),
+#: so an agent reading the standalone view gets the same slice the tick sees
+#: instead of a 60 KB paginated dump (gr345353). ``args={'budget': N}``.
+_DEFAULT_VIEW_BUDGET = 2500
+_VIEW_CHARS_PER_TOKEN = 4
+
+
+def _budget_arg(args: dict[str, Any] | None) -> int:
+    """``args['budget']`` as a positive int, default :data:`_DEFAULT_VIEW_BUDGET`."""
+    if not isinstance(args, dict) or "budget" not in args:
+        return _DEFAULT_VIEW_BUDGET
+    raw = args["budget"]
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise BadInput(
+            f"args={{'budget': {raw!r}}}: budget must be a positive int (tokens)"
+        )
+    return raw
+
+
+def _fit_bands(
+    head: list[str], bands: list[tuple[str, list[str]]], *, budget: int
+) -> str:
+    """Join ``head`` + banded row lists into one body under ``budget`` tokens
+    (chars/4). Over budget, rows drop from the tail of the LAST band first
+    (each trimmed band keeps an ``(+K omitted)`` line, bands are never
+    removed), so the first band — the confirmed frontier — loses rows last.
+    """
+    kept = [list(rows) for _, rows in bands]
+    omitted = [0] * len(bands)
+
+    def _render() -> str:
+        out = list(head)
+        for i, (header, _rows) in enumerate(bands):
+            if i:
+                out.append("")
+            out.append(header)
+            out += kept[i]
+            if omitted[i]:
+                out.append(f"  (+{omitted[i]} omitted — args={{'budget': N}} widens)")
+        return "\n".join(out)
+
+    text = _render()
+    while len(text) / _VIEW_CHARS_PER_TOKEN > budget:
+        for i in range(len(bands) - 1, -1, -1):
+            if kept[i]:
+                kept[i].pop()
+                omitted[i] += 1
+                break
+        else:
+            break  # nothing left to drop
+        text = _render()
+    return text
+
+
 class QuestHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="quest",
@@ -449,6 +504,7 @@ class QuestHandler(NumericRefHandler):
         id: str | int | None = None,
         view: str | None = None,
         q: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         # `view='tree'` on a concrete id rolls up the servers + deed ledger +
@@ -467,13 +523,13 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_dossier(ref))
         if view == "frontier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_frontier(ref))
+            return Response(body=self._render_frontier(ref, budget=_budget_arg(args)))
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_leaderboard(ref))
         if view == "results" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_results(ref))
+            return Response(body=self._render_results(ref, budget=_budget_arg(args)))
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_logbook(ref))
@@ -497,8 +553,14 @@ class QuestHandler(NumericRefHandler):
             )
         return super().get(id=id, view=view, q=q, **_kw)
 
-    def _render_frontier(self, ref: Ref) -> str:
-        """`view='frontier'` — the Pareto frontier of candidate materials."""
+    def _render_frontier(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
+        """`view='frontier'` — the Pareto frontier of candidate materials.
+
+        Budgeted to ``budget`` tokens (chars/4; default = the tick's results
+        budget, ``args={'budget': N}`` overrides): rows drop from the tail of
+        the LAST band first (awaiting-a-sim → provisional → dominated →
+        frontier), each band keeping an ``(+K omitted)`` line, so the
+        confirmed frontier is the last thing to lose a row (gr345353)."""
         from precis.quest import frontier as frontier_mod
 
         fr = frontier_mod.quest_frontier(self.store, ref.id)
@@ -528,21 +590,34 @@ class QuestHandler(NumericRefHandler):
         if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
             lines.append("no candidate structures serve this quest yet.")
             return "\n".join(lines)
-        lines.append(f"── Pareto frontier ({len(fr.frontier)}) — current best ──")
-        lines += [_fmt(c) for c in fr.frontier] or ["  (none converged yet)"]
+        bands: list[tuple[str, list[str]]] = [
+            (
+                f"── Pareto frontier ({len(fr.frontier)}) — current best ──",
+                [_fmt(c) for c in fr.frontier] or ["  (none converged yet)"],
+            )
+        ]
         if fr.dominated:
-            lines += ["", f"── dominated ({len(fr.dominated)}) — explored + beaten ──"]
-            lines += [_fmt(c) for c in fr.dominated]
+            bands.append(
+                (
+                    f"── dominated ({len(fr.dominated)}) — explored + beaten ──",
+                    [_fmt(c) for c in fr.dominated],
+                )
+            )
         if fr.provisional:
-            lines += [
-                "",
-                f"── provisional (measured, unconfirmed) ({len(fr.provisional)}) ──",
-            ]
-            lines += [_fmt_provisional(pc) for pc in fr.provisional]
+            bands.append(
+                (
+                    f"── provisional (measured, unconfirmed) ({len(fr.provisional)}) ──",
+                    [_fmt_provisional(pc) for pc in fr.provisional],
+                )
+            )
         if fr.unevaluated:
-            lines += ["", f"── awaiting a sim ({len(fr.unevaluated)}) ──"]
-            lines += [f"  {c.handle} {c.name}" for c in fr.unevaluated]
-        return "\n".join(lines)
+            bands.append(
+                (
+                    f"── awaiting a sim ({len(fr.unevaluated)}) ──",
+                    [f"  {c.handle} {c.name}" for c in fr.unevaluated],
+                )
+            )
+        return _fit_bands(lines, bands, budget=budget)
 
     def _render_leaderboard(self, ref: Ref) -> str:
         """`view='leaderboard'` — the by-total design leaderboard as a TOON table.
@@ -582,19 +657,25 @@ class QuestHandler(NumericRefHandler):
             f"tier: {tier_legend}\n\n{body}"
         )
 
-    def _render_results(self, ref: Ref) -> str:
+    def _render_results(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
         """`view='results'` — the lineage-ordered results table
         (:mod:`precis.quest.results_table`): one row per candidate across
         every Pareto band, dopant/site/co-adsorbate + trust/blocker columns.
         Renders the same rows twice — a TOON table (LLM-legible, same
         ``toon.dump`` helper :func:`_render_leaderboard` uses) followed by
         the fixed-width text table the tick prompt itself embeds — so this
-        view doubles as "what would the tick see right now"."""
+        view doubles as "what would the tick see right now".
+
+        Budgeted to ``budget`` tokens over BOTH renderings together (default
+        = the tick's own 2500; ``args={'budget': N}`` overrides), dropping
+        rows from the lineage tail but never the newest ten, and saying how
+        many were dropped (gr345353)."""
         from precis.format import toon
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
             RESULTS_COLUMNS,
             build_results_rows,
+            fit_rows_to_budget,
             render_results_table,
         )
 
@@ -606,11 +687,25 @@ class QuestHandler(NumericRefHandler):
                 f"# results — quest {ref.id}: {head}\n\n"
                 "no candidate structures serve this quest yet."
             )
-        toon_body = toon.dump(rows, schema=list(RESULTS_COLUMNS))
-        text_table = render_results_table(rows)
+        schema = list(RESULTS_COLUMNS)
+
+        def _both(rs: list[dict[str, Any]]) -> str:
+            return toon.dump(rs, schema=schema) + render_results_table(
+                rs, token_budget=budget
+            )
+
+        kept, omitted = fit_rows_to_budget(rows, token_budget=budget, render=_both)
+        toon_body = toon.dump(kept, schema=schema)
+        text_table = render_results_table(kept, token_budget=budget)
+        note = (
+            f"\n(+{omitted} of {len(rows)} rows omitted for the {budget}-token "
+            "budget — args={'budget': N} widens it)"
+            if omitted
+            else ""
+        )
         return (
             f"# results — quest {ref.id}: {head}\n\n"
-            f"{toon_body}\n\n"
+            f"{toon_body}{note}\n\n"
             "## text table (as embedded in the tick prompt)\n"
             f"{text_table}"
         )

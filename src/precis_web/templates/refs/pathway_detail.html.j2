@@ -166,6 +166,9 @@
     {% if results_electro.P_side is not none %}
     <span>P_side = {{ '%.1f'|format(results_electro.P_side * 100) }}%</span>
     {% endif %}
+    {% if results_electro.blocked_by %}
+    <span class="text-amber-700">U_L/U_opt/span untrusted &mdash; route barrier blocked by {{ results_electro.blocked_by|join(', ') }}</span>
+    {% endif %}
   </div>
   {% endif %}
 

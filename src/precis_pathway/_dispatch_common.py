@@ -32,7 +32,9 @@ def _finite_num(v: Any) -> float | None:
 
 
 #: Electrochemistry (CHE) scalars catpath's ``_apply_electrochemistry`` already
-#: computes onto ``results_json`` top level (the potential-lever pass-through, slice 2) — a straight pass-through, no recompute here.
+#: computes onto ``results_json`` top level (the potential-lever pass-through,
+#: slice 2) — no recompute here; the four route scalars are trust-gated on
+#: the barrier's blockers (:func:`_electro_blockers`).
 #: ``span_target_at_Uopt``/``T`` are deliberately excluded: diagnostics that
 #: stay in ``meta.results`` (the verbatim artifact), never promoted to the
 #: job-meta scalar summary.
@@ -43,6 +45,49 @@ _ELECTRO_KEYS: tuple[str, ...] = (
     "span_at_Uopt",
     "P_side",
 )
+
+#: The route-energetics CHE scalars — every one is a closed-form optimum
+#: over the SAME route edges the barrier trust gate judges, so a fatal
+#: on-route fail (a degenerate 0 eV multistart saddle, a detached endpoint)
+#: makes them meaningless too (gr345341: pw341034 reported U_opt = -41.5 V
+#: off a collapsed OH+H->H2O saddle). ``P_side`` has its own engine-side
+#: gate (``P_side_blockers``) and is deliberately not in this set.
+_ELECTRO_ROUTE_KEYS: tuple[str, ...] = ("U_L", "U_opt", "span_at_UL", "span_at_Uopt")
+
+#: Suffix an untrusted electro scalar is stashed under on the job meta —
+#: the same convention :mod:`precis.quest.compute` uses for untrusted
+#: kinetics (``{key}_untrusted_value``): the raw number survives for
+#: forensics, but never under its real key, so no harvest ranks on it.
+_UNTRUSTED_VALUE_SUFFIX = "_untrusted_value"
+
+
+def _electro_blockers(results: dict[str, Any]) -> list[str]:
+    """Trust-record ids that block the route barrier — and with it the CHE
+    route scalars. Reads the engine's own verdict first
+    (``trust_summary.barrier.available`` / ``blocked_by``, trust_schema >= 1)
+    and falls back to the structured ``trust`` records (fatal ``fail`` on a
+    ``route_steps`` step; every fatal fail when ``route_steps`` is absent —
+    the same rule :mod:`precis_pathway.toon_views` renders as *blocking*).
+    Empty on a pre-trust-schema artifact: no gate is fabricated."""
+    ts = results.get("trust_summary")
+    barrier = ts.get("barrier") if isinstance(ts, dict) else None
+    if isinstance(barrier, dict) and "available" in barrier:
+        if barrier.get("available") is not False:
+            return []
+        ids = [str(x) for x in (barrier.get("blocked_by") or []) if x]
+        if ids:
+            return ids
+    records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
+    steps = results.get("route_steps")
+    route = set(steps) if isinstance(steps, list) else None
+    out: list[str] = []
+    for r in records:
+        if r.get("verdict") != "fail" or r.get("severity") != "fatal":
+            continue
+        if route is not None and r.get("step") not in route:
+            continue
+        out.append(str(r.get("id") or f"{r.get('step')}#{r.get('check')}"))
+    return out
 
 
 def _selectivity_scalars(results: dict[str, Any]) -> dict[str, Any]:
@@ -215,10 +260,20 @@ def summarize(artifact: PathwayArtifact) -> dict[str, Any]:
             out["span"] = float(span)
         if "low_confidence" in summ:
             out["low_confidence"] = bool(summ["low_confidence"])
+        blockers = _electro_blockers(results)
         for k in _ELECTRO_KEYS:
             v = _finite_num(results.get(k))
-            if v is not None:
+            if v is None:
+                continue
+            if blockers and k in _ELECTRO_ROUTE_KEYS:
+                out[f"{k}{_UNTRUSTED_VALUE_SUFFIX}"] = v
+            else:
                 out[k] = v
+        if blockers:
+            out["electro_trusted"] = False
+            out["electro_note"] = "CHE route scalars blocked by: " + ", ".join(blockers)
+        elif any(k in out for k in _ELECTRO_ROUTE_KEYS):
+            out["electro_trusted"] = True
         out.update(_selectivity_scalars(results))
         # Isolated: a kinetics-reduction bug must cost only the kinetics
         # scalars, never the long-established barrier/span/electro summary.

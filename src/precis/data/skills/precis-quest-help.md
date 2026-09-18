@@ -174,6 +174,9 @@ leaderboard · results · logbook` (quest-specific) plus the generic
 *every* band (not just the frontier), grouped by lineage (dopant, then
 what varies) rather than by band — the same table the tick prompt itself
 embeds, so it doubles as "what would the next tick see right now".
+`view='results'` and `view='frontier'` are **budgeted** like the tick's
+copy (2500 tokens; rows drop from the tail, never the newest ten, and the
+body says `(+K … rows omitted)`); `args={'budget': 8000}` widens it.
 Note the trap: this doc says *deeds* constantly, but it isn't a view — a
 *deed* is just the milestone-typed slice of the log. Bare `get(id=N)` shows a
 digest with only the logbook **tail** (last 10 entries, cheap even on a quest

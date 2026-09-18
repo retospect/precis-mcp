@@ -97,6 +97,13 @@ computed** — no new relax/NEB, closed-form optima, no search.
   fractions ∝ `exp(−ΔEa/kT)`; `null` = insufficient data — a fork with any
   missing or untrustworthy competitor barrier is never scored), and `T`
   (default **298.15 K**).
+- **Trust gate.** `U_L`/`U_opt`/`span_at_UL`/`span_at_Uopt` are optima over
+  the same route edges the barrier gate judges: when `view='warnings'`
+  shows a *blocking* record (`trust_summary.barrier.available: false`),
+  the harvested summary drops them (`electro_trusted: false`,
+  `electro_note` names the blockers; the raw number survives only as
+  `<key>_untrusted_value`). `meta.results` still holds the engine's
+  verbatim value — read `view='warnings'` before quoting it.
 - engine >= 0.6.0 also carries `meta.results.score` (the four-axis
   scorecard) — `selectivity_margin_eV` > 0 means side products are
   kinetically disfavored at the worst branch point, `trap.margin_eV` > 0

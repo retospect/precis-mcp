@@ -1112,6 +1112,21 @@ def _pathway_trust_blocking(
     return blocking
 
 
+def _pathway_electro_blockers(results: dict[str, Any]) -> list[str]:
+    """Ids of the fatal on-route trust records that block the route barrier
+    (and so the CHE route scalars, gr345341) — the readout strip's inline
+    marker. Empty on a pre-trust-schema artifact."""
+    records = [r for r in (results.get("trust") or []) if isinstance(r, dict)]
+    steps = results.get("route_steps")
+    route = set(steps) if isinstance(steps, list) else None
+    ts = results.get("trust_summary")
+    ts = ts if isinstance(ts, dict) else {}
+    return [
+        str(r.get("id") or f"{r.get('step')}#{r.get('check')}")
+        for r in _pathway_trust_blocking(records, route, ts)
+    ]
+
+
 def _pathway_warnings_sections(
     results: dict[str, Any], warnings_list: list[str]
 ) -> dict[str, Any]:
@@ -2121,6 +2136,11 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
         "span_at_Uopt": results.get("span_at_Uopt"),
         "P_side": results.get("P_side"),
         "T": results.get("T"),
+        # gr345341: the route scalars above are meaningless when the route
+        # barrier is blocked — name the blocking trust records inline (same
+        # re-derive-don't-import rule as _pathway_warnings_sections; the
+        # harvest side is precis_pathway._dispatch_common._electro_blockers).
+        "blocked_by": _pathway_electro_blockers(results),
     }
 
     # Interactive explorer — the

@@ -329,6 +329,12 @@ def test_summarize_passes_through_che_electro_scalars() -> None:
             "span_target_at_Uopt": 1.05,
             "P_side": None,
             "T": 298.15,
+            # The smoke run's toy NEB carries a fatal on-route
+            # ``neb_convergence`` fail, which the trust gate (gr345341, next
+            # test) would rightly turn into ``<key>_untrusted_value`` — this
+            # test is about the pass-through SHAPE, so declare the barrier
+            # available.
+            "trust_summary": {"barrier": {"available": True}},
         },
     }
     out = summarize(art)
@@ -339,6 +345,77 @@ def test_summarize_passes_through_che_electro_scalars() -> None:
     assert "P_side" not in out  # null -> skipped, not stamped as 0.0
     assert "span_target_at_Uopt" not in out  # diagnostic-only, stays in meta.results
     assert "T" not in out  # diagnostic-only, stays in meta.results
+
+
+def test_summarize_gates_che_route_scalars_on_barrier_blockers() -> None:
+    """gr345341 (pw341034: U_opt = -41.5 V off a collapsed 0 eV OH+H->H2O
+    saddle). When the engine's trust summary says the route barrier is
+    blocked, the four route scalars leave the ranked summary (stashed as
+    ``<key>_untrusted_value``) and ``electro_note`` names the blockers;
+    ``P_side`` keeps its own engine-side gate and passes through."""
+    from precis_pathway._dispatch_common import summarize
+
+    art = runner.run_pathway_from_yaml(SMOKE)
+    blocked = {
+        "U_L": -0.105,
+        "U_opt": -41.5,
+        "span_at_UL": 2.0,
+        "span_at_Uopt": 1.6,
+        "P_side": 0.12,
+        "trust_summary": {
+            "barrier": {
+                "available": False,
+                "blocked_by": [
+                    "OH+H->H2O#s0#multistart",
+                    "OH+H->H2O#s0#saddle_verified",
+                ],
+            }
+        },
+    }
+    out = summarize({**art, "results_json": {**art["results_json"], **blocked}})
+    for k in ("U_L", "U_opt", "span_at_UL", "span_at_Uopt"):
+        assert k not in out
+    assert out["U_opt_untrusted_value"] == -41.5
+    assert out["electro_trusted"] is False
+    assert "OH+H->H2O#s0#multistart" in out["electro_note"]
+    assert out["P_side"] == 0.12
+
+    # engine verdict available -> trusted, values under their real keys
+    ok = {**blocked, "trust_summary": {"barrier": {"available": True}}}
+    out = summarize({**art, "results_json": {**art["results_json"], **ok}})
+    assert out["U_opt"] == -41.5 and out["electro_trusted"] is True
+
+    # no trust_summary (older engine): fall back to the structured records —
+    # a fatal fail on a route step blocks, an off-route one does not
+    trust: list[dict[str, str]] = [
+        {
+            "id": "NO@N->NO@O#wb",
+            "step": "NO@N->NO@O",
+            "check": "wrong_binder",
+            "severity": "fatal",
+            "verdict": "fail",
+        },
+    ]
+    recs = {
+        **blocked,
+        "trust_summary": None,
+        "route_steps": ["*->NO@N", "OH+H->H2O"],
+        "trust": trust,
+    }
+    out = summarize({**art, "results_json": {**art["results_json"], **recs}})
+    assert out["U_opt"] == -41.5 and out["electro_trusted"] is True
+    trust.append(
+        {
+            "id": "OH+H->H2O#s0#multistart",
+            "step": "OH+H->H2O",
+            "check": "multistart",
+            "severity": "fatal",
+            "verdict": "fail",
+        }
+    )
+    out = summarize({**art, "results_json": {**art["results_json"], **recs}})
+    assert "U_opt" not in out
+    assert out["electro_note"].endswith("OH+H->H2O#s0#multistart")
 
 
 def test_summarize_stamps_a_non_null_p_side() -> None:
