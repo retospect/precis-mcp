@@ -398,6 +398,73 @@ def test_literal_sha_deploy_notes_a_checkout_ahead_of_the_target(
     assert "rendering deploy/ templates from HEAD" in result.stdout
 
 
+# ─────────────────── canary path resolves a literal sha (gr346747) ───────────
+
+
+def test_canary_path_pins_a_local_sha(fx: Fixture, tmp_path: Path) -> None:
+    """`git ls-remote <url> <sha>` matches ref names only, so the canary
+    phase used to die on exactly the target /go hands it. A sha the local
+    checkout contains (and a remote branch reaches) is pinned directly; the
+    run then proceeds into phase 1 (fake ansible) and on to the heartbeat
+    verify, which fails here for want of prod — past the resolution."""
+    fx.set_marker(fx.base)
+    env_bin = _make_fake_bin(tmp_path)
+    env = _test_env(
+        PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_FROM_TREE="",
+        PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
+        PRECIS_DEPLOY_NO_LOG="1",
+        PRECIS_DEPLOY_ALLOW_STALE="1",
+        PRECIS_DEPLOY_CANARY="gateway",
+        PRECIS_DEPLOY_CANARY_TIMEOUT_S="0",
+    )
+    env["PATH"] = f"{env_bin}:{env['PATH']}"
+    result = subprocess.run(
+        ["bash", str(fx.repo / "scripts" / "deploy"), fx.gated, "--pinned"],
+        cwd=str(fx.repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert "could not resolve" not in result.stderr
+    assert f"is a commit this checkout contains — pinned {fx.gated[:8]}" in result.stdout
+    assert f"phase 1 — gateway only (pinned {fx.gated[:8]})" in result.stdout
+    # Past resolution and phase 1; the heartbeat verify has no prod to ask.
+    assert result.returncode != 0
+    assert "canary verify" in result.stderr
+
+
+def test_canary_path_refuses_a_sha_no_remote_branch_reaches(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """The hosts install precis-mcp@<sha> from GitHub — a local-only commit
+    would fail on every host, so it is refused up front."""
+    fx.set_marker(fx.base)
+    local_only = _commit(fx.repo, "unpushed.txt")
+    env_bin = _make_fake_bin(tmp_path)
+    env = _test_env(
+        PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_FROM_TREE="",
+        PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
+        PRECIS_DEPLOY_NO_LOG="1",
+        PRECIS_DEPLOY_ALLOW_STALE="1",
+        PRECIS_DEPLOY_CANARY="gateway",
+    )
+    env["PATH"] = f"{env_bin}:{env['PATH']}"
+    result = subprocess.run(
+        ["bash", str(fx.repo / "scripts" / "deploy"), local_only, "--pinned"],
+        cwd=str(fx.repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode != 0
+    assert "not on any remote-tracking branch" in result.stderr
+    assert "phase 1" not in result.stdout
+
+
 # ──────────────────────── scripts/ship writes the pin (g) ────────────────────
 
 
