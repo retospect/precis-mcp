@@ -1705,17 +1705,18 @@ class StructureHandler(Handler):
             # parent todo we dispatch it to the GPU node (§23.12); otherwise
             # the caller turns this into an Unsupported with the exact call.
             #
-            # Except with dispersion on: the precis-dft container contract
-            # (POSCAR + params.json) has no dispersion field, and that
-            # container is built from another repo — so a dispatched job would
-            # compute D3-*free* and sink it into the run-cube under a
-            # dispersion=True cache key, quietly poisoning every later hit.
-            # Refuse rather than dispatch a lie.
+            # Except with dispersion on: the dispatch contract (the
+            # ``struct_relax`` params schema, and the container's POSCAR +
+            # params.json under it) carries no dispersion field, so a
+            # dispatched job would compute D3-*free* and sink it into the
+            # run-cube under a dispersion=True cache key, quietly poisoning
+            # every later hit. Refuse rather than dispatch a lie — the same
+            # rule the dispatcher's own fidelity gate enforces (gr346449).
             if dispersion:
                 raise Unsupported(
-                    f"{exc} — dispersion=True runs locally only; the GPU "
-                    "container contract does not carry a dispersion flag, so "
-                    "this relax cannot be dispatched",
+                    f"{exc} — dispersion=True runs locally only; the "
+                    "struct_relax dispatch contract carries no dispersion "
+                    "flag, so this relax cannot be dispatched",
                     next="install the [dft-ml] extra locally, or re-run with "
                     "dispersion omitted to use the cluster",
                 ) from exc

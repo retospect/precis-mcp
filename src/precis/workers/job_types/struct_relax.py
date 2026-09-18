@@ -14,13 +14,28 @@ Slice 2). So a converged relax becomes a zero-compute cache hit for the next
 identical ``(structure_sha, fidelity, model, params, code_version)`` request, on
 this design or any other sharing the input geometry.
 
+**Two backends, routed by rung (gr346449).** The precis-dft image exposes
+exactly one subcommand, ``precis-dft-run gpaw-relax``, so it can only compute a
+GPAW rung (:data:`_CONTAINER_FIDELITIES`). The MLIP rung
+(:data:`_INPROC_FIDELITIES`) runs **in this process** on the node via
+:func:`_default_ml_runner`, reusing
+:func:`precis.structure.relax._ml_calculator` — the same backend a local
+``relax(fidelity='ml')`` would use, already installed on the DFT node with
+torch + CUDA. A rung in neither set fails the job: this dispatcher used to send
+*every* fidelity to ``gpaw-relax``, so an ``ml`` request silently ran a
+spin-polarized RPBE DFT relax and, if it ever finished inside the wall-clock
+cap, recorded DFT energies in the run-cube under a MACE label. Running
+different physics than was asked for is worse than not running.
+
 **Self-contained on purpose.** precis-mcp does not depend on precis-dft (the
 dependency runs the other way), so this module mirrors precis-dft's *container
-contract* — the same ``precis-dft-run gpaw-relax`` argv, the same staged
-``POSCAR`` + ``params.json``, the same ``result.json`` shape — rather than
-importing its host-side helpers. The one execution boundary (``ssh node
-<container> run …``) is the module-level :data:`RUNNER` hook, swapped for a stub
-in tests so the orchestration + write-back is exercised without a cluster.
+contract* — the same argv, the same staged ``POSCAR`` + ``params.json``, the
+same ``result.json`` shape — rather than importing its host-side helpers. Both
+backends produce that same result shape and land on the one write-back,
+:func:`_record_run`. The container execution boundary (``ssh node <container>
+run …``) is the module-level :data:`RUNNER` hook and the in-process one is
+:data:`ML_RUNNER`; both are swapped for stubs in tests so the orchestration +
+write-back is exercised without a cluster.
 
 **Container runtime.** The original design anticipated podman + CDI, but the deployed
 spark node runs ``docker`` with the NVIDIA Container Toolkit and the
@@ -62,6 +77,7 @@ import json
 import logging
 import os
 import shlex
+import socket
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,7 +95,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # view='runs'); the cache lookup itself is global by cache_key.
         "structure_ref_id": {"type": "integer"},
         "on_version": {"type": "integer"},
-        "fidelity": {"type": "string"},  # 'ml' | 'gpaw' | 'dft-fast' | …
+        # 'ml' (in-process MLIP) | 'gpaw' (container). Anything else has no
+        # backend and the dispatcher fails the job — see _CONTAINER_FIDELITIES.
+        "fidelity": {"type": "string"},
         "model": {"type": ["string", "null"]},
         "steps": {"type": "integer"},
         # The §23.16 content address + the relaxed-geometry write-back ordering.
@@ -153,6 +171,46 @@ _STALE_CONTAINER_HOURS_DEFAULT = 6.0
 #: genuinely long CPU relax. ``PRECIS_DFT_RELAX_TIMEOUT_S``.
 _RELAX_TIMEOUT_S_DEFAULT = 4 * 3600
 
+#: Rungs the ``precis-dft`` container actually implements. Its CLI exposes
+#: exactly one subcommand (``precis-dft-run gpaw-relax``), and the staged
+#: ``params.json`` carries no per-rung DFT settings, so one rung is the whole
+#: of what a container run can honestly compute. ``dft-fast``/``dft-tight``
+#: are deliberately absent: routing them here would run byte-identical GPAW
+#: defaults and file the results under two different rung labels — the same
+#: class of lie as sending ``ml`` to ``gpaw-relax``. Adding them means
+#: teaching the contract their settings first.
+_CONTAINER_FIDELITIES = frozenset({"gpaw"})
+
+#: Rungs this worker computes **in-process** on the node, with no container at
+#: all — the MLIP backend is an ordinary precis dependency
+#: (:func:`precis.structure.relax._ml_calculator`), already installed on the
+#: DFT node alongside torch/CUDA.
+_INPROC_FIDELITIES = frozenset({"ml"})
+
+#: Force-convergence target for the in-process MLIP rung, matching the floor
+#: :func:`precis.structure.relax._relax_ml` applies to its ``tol`` so a
+#: dispatched ``ml`` relax converges on the same criterion as a local one.
+#: The run-cube address does not carry it, so it must not drift per host.
+_ML_FMAX = 0.05
+
+#: ``-e OMP_NUM_THREADS=<n>`` for the container run (gr346449). The image bakes
+#: ``OMP_NUM_THREADS=1``, and its GPAW is built without OpenMP, so this only
+#: threads the BLAS calls — measured ~5x on a 4000^2 dgemm, worth having and
+#: not worth a rebuild. Deliberately a small default rather than "all cores":
+#: the node runs other work, and ``PRECIS_JOB_CPUSET`` may already have fenced
+#: this container into a subset. ``0``/empty passes no flag (the image default).
+_OMP_THREADS_DEFAULT = 4
+
+
+def _omp_threads() -> int:
+    raw = os.environ.get("PRECIS_DFT_OMP_THREADS")
+    if raw is None:
+        return _OMP_THREADS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _OMP_THREADS_DEFAULT
+
 
 def _stale_container_hours() -> float:
     raw = os.environ.get("PRECIS_DFT_STALE_CONTAINER_HOURS")
@@ -190,9 +248,15 @@ def build_run_argv(
     """The container ``run`` argv ssh'd to the node (pure). Deterministic
     ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6;
     see :func:`kill_container` / :func:`reap_stale_containers`, gripe 50905).
-    ``gpus=0`` omits the GPU flag (CPU fallback — same image)."""
+    ``gpus=0`` omits the GPU flag (CPU fallback — same image). ``-e
+    OMP_NUM_THREADS`` (:func:`_omp_threads`) overrides the image's baked ``1``
+    so the run threads its BLAS calls; the image's GPAW is built without
+    OpenMP, so this is a BLAS-only speedup, not parallel DFT."""
     argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
     argv += container_limit_flags()
+    threads = _omp_threads()
+    if threads:
+        argv += ["-e", f"OMP_NUM_THREADS={threads}"]
     if gpus:
         argv += _gpu_flags(container_cmd)
     argv += [
@@ -583,6 +647,176 @@ def _final_geometry(
     return {"frac": [by_label[lbl] for lbl in order], "lattice": None}
 
 
+class _RelaxDeadline(RuntimeError):
+    """The in-process relax blew its wall-clock cap (see :func:`_relax_timeout_s`)."""
+
+
+def _default_ml_runner(
+    *,
+    poscar: str,
+    model: str,
+    steps: int,
+    cell: str | None,
+    timeout: float,
+) -> dict[str, Any]:
+    """Relax at the MLIP rung **in this process**, returning the container
+    contract's ``result.json`` shape (gr346449).
+
+    There is no ML container: the precis-dft image implements ``gpaw-relax``
+    and nothing else, so before this existed a ``fidelity='ml'`` job ran a
+    spin-polarized RPBE DFT relax and recorded the answer under a MACE label.
+    The MLIP backend is an ordinary precis dependency, already on the DFT node
+    with torch + CUDA, so the honest fix is to compute the rung here rather
+    than ship a second image.
+
+    The calculator comes from :func:`precis.structure.relax._ml_calculator` so
+    the model routing and the "[dft-ml] not installed" message have exactly one
+    definition; a missing backend surfaces as ``RelaxUnsupported`` for the
+    caller to class as infra. Constraints ride in on the POSCAR's *Selective
+    dynamics* block, which is how the fixed-atom mask reached the container
+    too, so a slab's frozen bottom layers stay frozen.
+    """
+    import io
+    import time
+
+    from ase.io import write as ase_write
+    from ase.io.vasp import read_vasp
+    from ase.optimize import BFGS
+
+    from precis.structure.relax import _cell_filter, _ml_calculator
+
+    # read_vasp, not the generic ase.io.read: the generic reader's return type
+    # is a frame-or-list union (it honours an ``index`` slice), which no
+    # single-structure caller here can use.
+    atoms = read_vasp(io.StringIO(poscar))
+    before = atoms.get_positions().copy()
+    atoms.calc = _ml_calculator(model)
+
+    curve: list[float] = []
+    deadline = time.monotonic() + timeout
+
+    def _record() -> None:
+        f = atoms.get_forces()
+        curve.append(round(float((f**2).sum(axis=1).max() ** 0.5), 4))
+        if time.monotonic() > deadline:
+            raise _RelaxDeadline(f"exceeded {timeout:.0f}s after {len(curve)} steps")
+
+    target = _cell_filter(atoms, cell) if cell else atoms
+    opt = BFGS(target, logfile=None)
+    opt.attach(_record, interval=1)
+    converged = bool(opt.run(fmax=_ML_FMAX, steps=steps))
+
+    forces = atoms.get_forces()
+    max_force = float((forces**2).sum(axis=1).max() ** 0.5)
+    disp = atoms.get_positions() - before
+    max_disp = float((disp**2).sum(axis=1).max() ** 0.5) if len(atoms) else 0.0
+    buf = io.StringIO()
+    ase_write(buf, atoms, format="vasp", direct=True)
+    return {
+        "ok": True,
+        "scalars": {
+            "E_tot": float(atoms.get_potential_energy()),
+            "max_force": max_force,
+            "max_disp": max_disp,
+            "n_steps": int(opt.get_number_of_steps()),
+            "converged": converged,
+        },
+        "curve": curve,
+        "relaxed_poscar": buf.getvalue(),
+    }
+
+
+#: Swapped for a stub in tests, mirroring :data:`RUNNER` for the container path.
+ML_RUNNER = _default_ml_runner
+
+
+def _dispatch_inproc(
+    ctx: Any,
+    *,
+    fidelity: str,
+    model: str,
+    steps: int,
+    cell: str | None,
+    poscar: str,
+    structure_ref_id: int,
+    on_version: int,
+    cache_key: str,
+    structure_sha: str,
+    order: list[str],
+    poscar_labels: list[str],
+) -> None:
+    """Compute an :data:`_INPROC_FIDELITIES` rung here on the node and sink it.
+
+    No container, so none of the container machinery applies: no NFS staging,
+    no deterministic-name mutex, no GPU reset. The wall-clock cap is enforced
+    from inside the optimiser loop (:class:`_RelaxDeadline`) instead of by
+    :data:`RUNNER`'s subprocess timeout.
+
+    A missing MLIP backend is an **infra** failure, not a verdict on the
+    candidate: the geometry is fine, this host just isn't provisioned. The
+    quest loop reads ``failure_class`` to decide whether a candidate is ruled
+    out, and ruling a structure out because a node lacked a wheel would be a
+    lie it never revisits.
+    """
+    from precis.structure.relax import RelaxUnsupported
+
+    timeout = _relax_timeout_s()
+    ctx.append_chunk(
+        "job_event",
+        f"relax[{fidelity}] in-process on "
+        f"{os.environ.get('PRECIS_NODE') or socket.gethostname()}: "
+        f"model={model} steps={steps} fmax={_ML_FMAX} cap={timeout:.0f}s",
+    )
+    try:
+        result = ML_RUNNER(
+            poscar=poscar, model=model, steps=steps, cell=cell, timeout=timeout
+        )
+    except RelaxUnsupported as exc:
+        ctx.record_failure(
+            f"struct_relax: rung {fidelity!r} has no backend on this host ({exc}) "
+            "-- the job was routed here by the claim gate but the MLIP wheel is "
+            "missing; install the [dft-ml] extra on the node",
+            failure_class="infra",
+        )
+        return
+    except _RelaxDeadline as exc:
+        # Honest and specific (gr346449): the old container-path text blamed
+        # the GPU and prescribed a reboot for what was a physics/throughput
+        # problem, which is why eleven auto-filed gripes never reached a cause.
+        ctx.append_chunk(
+            "job_event",
+            f"relax[{fidelity}] in-process: {exc} -- self-aborted, nothing to "
+            "reap (no container, no GPU reset attempted)",
+        )
+        ctx.record_failure(
+            f"struct_relax: relax[{fidelity}] model={model} exceeded the "
+            f"{timeout:.0f}s wall-clock cap ({exc}) -- raise "
+            "PRECIS_DFT_RELAX_TIMEOUT_S, lower steps, or shrink the cell",
+            failure_class="infra",
+        )
+        return
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("struct_relax: in-process relax raised", exc_info=True)
+        ctx.record_failure(
+            f"struct_relax: in-process relax[{fidelity}] failed: {exc}",
+            failure_class="infra",
+        )
+        return
+
+    _record_run(
+        ctx,
+        result,
+        fidelity=fidelity,
+        model=model,
+        structure_ref_id=structure_ref_id,
+        on_version=on_version,
+        cache_key=cache_key,
+        structure_sha=structure_sha,
+        order=order,
+        poscar_labels=poscar_labels,
+    )
+
+
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``ssh_node`` for a claimed job. Stages the
     geometry, runs the relax in the container on the GPU node, parses the
@@ -606,6 +840,41 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     model = params.get("model") or "mace_mp"
     steps = int(params.get("steps", 200))
     cell = params.get("cell") or None
+
+    # Fidelity routing (gr346449). The precis-dft image exposes exactly one
+    # subcommand -- ``precis-dft-run gpaw-relax`` -- so a container run can only
+    # ever compute a GPAW rung. Before this gate every rung took that argv:
+    # a ``fidelity='ml'`` request ran a spin-polarized RPBE LCAO DFT relax
+    # (~47h on 37 atoms, never inside the wall-clock cap) and, when one did
+    # finish, sank DFT numbers into the run-cube under a MACE label. Running
+    # different physics than was asked for is worse than not running: an
+    # unroutable rung fails loudly here instead.
+    if fidelity in _INPROC_FIDELITIES:
+        _dispatch_inproc(
+            ctx,
+            fidelity=fidelity,
+            model=model,
+            steps=steps,
+            cell=cell,
+            poscar=poscar,
+            structure_ref_id=structure_ref_id,
+            on_version=on_version,
+            cache_key=cache_key,
+            structure_sha=structure_sha,
+            order=order,
+            poscar_labels=poscar_labels,
+        )
+        return
+    if fidelity not in _CONTAINER_FIDELITIES:
+        ctx.record_failure(
+            f"struct_relax: no backend for fidelity {fidelity!r} -- the "
+            f"precis-dft container implements {sorted(_CONTAINER_FIDELITIES)} "
+            f"and this worker computes {sorted(_INPROC_FIDELITIES)} in-process. "
+            "Refusing to run a different rung than was requested",
+            failure_class="infra",
+        )
+        return
+
     node = params.get("target_node") or _NODE
     if node is None:
         ctx.record_failure(
@@ -650,7 +919,16 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     in_dir, out_dir = STAGER(structure_ref_id)
     Path(in_dir, "POSCAR").write_text(poscar, encoding="utf-8")
-    run_params: dict[str, Any] = {"fidelity": fidelity, "model": model, "steps": steps}
+    # ``max_steps`` is the name the container's relax driver actually reads;
+    # ``steps`` alone silently left it on its own 200 default, so the step cap
+    # never crossed the contract (gr346449). Both are written -- the container
+    # is built from another repo and may be an older build that reads neither.
+    run_params: dict[str, Any] = {
+        "fidelity": fidelity,
+        "model": model,
+        "steps": steps,
+        "max_steps": steps,
+    }
     # Variable-cell relax mode passes through to the container contract (absent
     # ⇒ atoms-only, the historical default the container already assumes).
     if cell:
@@ -701,9 +979,13 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             f"wall-clock cap — self-aborted ({container_note}; {gpu_note})",
         )
         ctx.record_failure(
-            f"struct_relax: relax exceeded {_relax_timeout_s():.0f}s wall-clock cap — "
-            f"self-aborted ({container_note}; {gpu_note}); nightly reboot is the last "
-            "resort",
+            f"struct_relax: relax[{fidelity}] model={model} on {node} exceeded the "
+            f"{_relax_timeout_s():.0f}s wall-clock cap — self-aborted "
+            f"({container_note}; {gpu_note}). A cap overrun is usually the run "
+            f"being too big for the rung (atoms/k-points/steps), not wedged "
+            f"hardware — check {_CONTAINER_OUT}/gpaw.txt for cores and the "
+            f"per-step time, and nvidia-smi for actual GPU use, before treating "
+            f"this as a GPU fault",
             failure_class="infra",
         )
         return
@@ -740,6 +1022,36 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             failure_class="non-convergence",
         )
         return
+    _record_run(
+        ctx,
+        result,
+        fidelity=fidelity,
+        model=model,
+        structure_ref_id=structure_ref_id,
+        on_version=on_version,
+        cache_key=cache_key,
+        structure_sha=structure_sha,
+        order=order,
+        poscar_labels=poscar_labels,
+    )
+
+
+def _record_run(
+    ctx: Any,
+    result: dict[str, Any],
+    *,
+    fidelity: str,
+    model: str,
+    structure_ref_id: int,
+    on_version: int,
+    cache_key: str,
+    structure_sha: str,
+    order: list[str],
+    poscar_labels: list[str],
+) -> None:
+    """Sink a finished relax into the run-cube — the one write-back both
+    backends (container and in-process MLIP) land on, so a rung cannot acquire
+    a second, subtly different recording path."""
     scalars = result.get("scalars") or {}
     if "E_tot" not in scalars:
         ctx.record_failure(
@@ -802,6 +1114,7 @@ def load() -> JobTypeSpec:
 
 
 __all__ = [
+    "ML_RUNNER",
     "SPEC",
     "build_run_argv",
     "kill_container",

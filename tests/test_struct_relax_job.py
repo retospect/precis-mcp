@@ -63,18 +63,26 @@ def _fake_ctx(store, params: dict[str, Any]) -> tuple[DispatchContext, list]:
     return ctx, events
 
 
-def _build_params(structure, ident: str = "pd_pair") -> dict[str, Any]:
-    """The job params the handler (Part B) will mint — built here directly."""
+def _build_params(
+    structure, ident: str = "pd_pair", fidelity: str = "gpaw"
+) -> dict[str, Any]:
+    """The job params the handler (Part B) will mint — built here directly.
+
+    Defaults to the **container** rung: since gr346449 only a GPAW fidelity
+    takes the ``precis-dft-run gpaw-relax`` argv, so a test that stubs
+    :data:`RUNNER` must ask for a rung that actually routes there. The ``ml``
+    rung runs in-process and is driven through :data:`ML_RUNNER` instead.
+    """
     ref = structure.store.get_ref(kind="structure", id=ident)
     scene, _ = structure.store.structure_load(ref.id)
     return {
         "structure_ref_id": ref.id,
         "on_version": structure.store.structure_version(ref.id),
-        "fidelity": "ml",
+        "fidelity": fidelity,
         "model": "mace_mp",
         "steps": 200,
         "cache_key": relax_cache.run_cache_key(
-            scene, fidelity="ml", model="mace_mp", params={"steps": 200}
+            scene, fidelity=fidelity, model="mace_mp", params={"steps": 200}
         ),
         "structure_sha": relax_cache.structure_sha(scene),
         "order": relax_cache.canonical_order(scene),
@@ -120,6 +128,41 @@ def _stub_runner(relaxed_poscar: str, *, ok: bool = True, e_tot: float = -3.21):
         return 0, "SCF converged\n"
 
     return runner
+
+
+def _stub_ml_runner(relaxed_poscar: str, *, e_tot: float = -3.21):
+    """An ML_RUNNER that returns the container contract's result shape."""
+    calls: list[dict[str, Any]] = []
+
+    def runner(*, poscar, model, steps, cell, timeout):
+        calls.append(
+            {
+                "poscar": poscar,
+                "model": model,
+                "steps": steps,
+                "cell": cell,
+                "timeout": timeout,
+            }
+        )
+        return {
+            "ok": True,
+            "scalars": {
+                "E_tot": e_tot,
+                "max_force": 0.04,
+                "max_disp": 0.2,
+                "n_steps": 7,
+                "converged": True,
+            },
+            "relaxed_poscar": relaxed_poscar,
+            "curve": [0.5, 0.1, 0.04],
+        }
+
+    runner.calls = calls  # type: ignore[attr-defined]
+    return runner
+
+
+def _exploding_runner(*a: Any, **kw: Any):
+    raise AssertionError("the container RUNNER must not be called for this rung")
 
 
 def test_build_run_argv_docker_vs_podman():
@@ -169,14 +212,12 @@ def test_seam_a_later_handler_relax_is_a_zero_compute_hit(
     ml relax on the same design returns from cache — no backend, no Unsupported,
     and the relaxed geometry lands on the design."""
     structure.put(id="pd_pair", text=_PD)
-    params = _build_params(structure)
-    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    params = _build_params(structure, fidelity="ml")
     monkeypatch.setattr(
         struct_relax,
-        "RUNNER",
-        _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
+        "ML_RUNNER",
+        _stub_ml_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
     )
-    _no_stale_container(monkeypatch)
     ctx, _ = _fake_ctx(structure.store, params)
     struct_relax._dispatch(ctx, struct_relax.SPEC)
 
@@ -775,6 +816,233 @@ def test_reap_stale_containers_rc_gated_not_just_no_exception(
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
     assert struct_relax.reap_stale_containers(max_age_hours=6.0) == 0
+
+
+class TestFidelityRouting:
+    """gr346449 — a rung is computed by the backend that implements it, or not
+    at all.
+
+    The defect: ``_dispatch`` built one argv regardless of fidelity, and the
+    precis-dft image exposes only ``gpaw-relax``. So ``fidelity='ml'`` ran a
+    spin-polarized RPBE LCAO DFT relax — ~47h on 37 atoms against a 4h cap, and
+    on the rare run that did land, a DFT energy stored in the run-cube under
+    ``model='mace_mp'``. Eleven auto-filed gripes over a week blamed the GPU,
+    because the timeout text did.
+    """
+
+    def test_ml_never_reaches_the_gpaw_container(
+        self, structure, tmp_path, monkeypatch
+    ):
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="ml")
+        ml = _stub_ml_runner(_relaxed_poscar(structure, "pd_pair", 0.24))
+        monkeypatch.setattr(struct_relax, "ML_RUNNER", ml)
+        monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+        ctx, events = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        assert ("status", "succeeded") in events
+        assert ml.calls and ml.calls[0]["model"] == "mace_mp"
+        # and it is recorded as the rung that was actually computed
+        hit = structure.store.structure_find_cached_run(params["cache_key"])
+        assert hit is not None and hit["energy"] == pytest.approx(-3.21)
+
+    def test_unroutable_fidelity_fails_fast_running_nothing(
+        self, structure, tmp_path, monkeypatch
+    ):
+        """No backend implements it ⇒ an honest infra failure, not a
+        substitution. Nothing is staged and no container is started."""
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="dft-tight-plus-u")
+        monkeypatch.setattr(struct_relax, "RUNNER", _exploding_runner)
+        monkeypatch.setattr(struct_relax, "ML_RUNNER", _exploding_runner)
+        monkeypatch.setattr(
+            struct_relax,
+            "STAGER",
+            lambda rid: pytest.fail("nothing may be staged for an unroutable rung"),
+        )
+        ctx, events = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        fails = [e for e in events if e[0] == "fail"]
+        assert len(fails) == 1
+        assert fails[0][1]["failure_class"] == "infra"
+        assert "no backend for fidelity" in fails[0][1]["reason"]
+        assert structure.store.structure_find_cached_run(params["cache_key"]) is None
+
+    def test_missing_mlip_wheel_is_infra_not_a_verdict_on_the_candidate(
+        self, structure, monkeypatch
+    ):
+        """An unprovisioned node must not rule a structure out: the quest loop
+        reads ``failure_class``, and ``non-convergence`` means "this geometry
+        is bad" — which it isn't."""
+        from precis.structure.relax import RelaxUnsupported
+
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="ml")
+
+        def _no_backend(**kw: Any):
+            raise RelaxUnsupported("needs the [dft-ml] extra")
+
+        monkeypatch.setattr(struct_relax, "ML_RUNNER", _no_backend)
+        ctx, events = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        fails = [e for e in events if e[0] == "fail"]
+        assert len(fails) == 1 and fails[0][1]["failure_class"] == "infra"
+        assert "dft-ml" in fails[0][1]["reason"]
+
+    def test_inproc_deadline_self_aborts_without_blaming_the_gpu(
+        self, structure, monkeypatch
+    ):
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="ml")
+
+        def _too_slow(**kw: Any):
+            raise struct_relax._RelaxDeadline("exceeded 14400s after 17 steps")
+
+        monkeypatch.setattr(struct_relax, "ML_RUNNER", _too_slow)
+        ctx, events = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        reason = [e for e in events if e[0] == "fail"][0][1]["reason"]
+        assert "wall-clock cap" in reason and "17 steps" in reason
+        # the old text prescribed a GPU reset / nightly reboot for this
+        assert "gpu-reset" not in reason.lower() and "reboot" not in reason.lower()
+
+    def test_container_timeout_text_names_the_rung_not_a_gpu_fault(
+        self, structure, tmp_path, monkeypatch
+    ):
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="gpaw")
+        params["target_node"] = "spark"
+        monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+        _no_stale_container(monkeypatch)
+
+        def _timeout(argv, *, node, in_dir, out_dir, timeout=None):
+            raise subprocess.TimeoutExpired(argv, timeout or 0)
+
+        monkeypatch.setattr(struct_relax, "RUNNER", _timeout)
+        monkeypatch.setattr(struct_relax, "kill_container", lambda *a, **kw: True)
+        monkeypatch.setattr(struct_relax, "reset_gpu", lambda *a, **kw: False)
+        ctx, events = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        reason = [e for e in events if e[0] == "fail"][0][1]["reason"]
+        assert "relax[gpaw]" in reason and "model=mace_mp" in reason
+        assert "not wedged" in reason and "gpaw.txt" in reason
+
+    def test_params_json_carries_the_step_cap_under_the_name_the_container_reads(
+        self, structure, tmp_path, monkeypatch
+    ):
+        """The host wrote ``steps``; the container's driver reads
+        ``max_steps``, so every run silently kept the container's own default
+        instead of the requested cap."""
+        structure.put(id="pd_pair", text=_PD)
+        params = _build_params(structure, fidelity="gpaw")
+        params["steps"] = 37
+        params["target_node"] = "spark"
+        monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+        monkeypatch.setattr(
+            struct_relax,
+            "RUNNER",
+            _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24)),
+        )
+        _no_stale_container(monkeypatch)
+        ctx, _ = _fake_ctx(structure.store, params)
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+        in_dir, _ = _stage(tmp_path, params["structure_ref_id"])
+        staged = json.loads(Path(in_dir, "params.json").read_text(encoding="utf-8"))
+        assert staged["max_steps"] == 37 and staged["steps"] == 37
+
+
+def _use_emt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swap the MLIP for ASE's built-in EMT inside the real runner.
+
+    Patched on the module object out of ``sys.modules``, not by dotted path:
+    ``precis.structure.__init__`` re-exports the *function* ``relax``, so the
+    name ``precis.structure.relax`` resolves to that function rather than the
+    module, and an attribute set there would silently land on the wrong object.
+    """
+    import sys
+
+    from ase.calculators.emt import EMT
+
+    monkeypatch.setattr(
+        sys.modules["precis.structure.relax"],
+        "_ml_calculator",
+        lambda *a, **kw: EMT(),
+    )
+
+
+def test_default_ml_runner_round_trips_a_poscar(structure, monkeypatch):
+    """The real in-process runner, driven with ASE's built-in EMT in place of
+    the MLIP: POSCAR in → BFGS → POSCAR out, in the row order
+    :func:`_final_geometry` maps back onto canonical labels.
+
+    EMT is not the rung's physics, but it is the only calculator guaranteed
+    present, and what is under test here is the plumbing the MLIP rides on —
+    the parse, the constraint carry-over, the result shape, the write-back.
+    """
+    from precis.structure import export
+
+    if not export.ase_available():
+        pytest.skip("ASE not installed in this environment")
+    _use_emt(monkeypatch)
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+
+    result = struct_relax._default_ml_runner(
+        poscar=params["poscar"], model="mace_mp", steps=20, cell=None, timeout=120.0
+    )
+    assert result["ok"] is True
+    scalars = result["scalars"]
+    assert set(scalars) >= {"E_tot", "max_force", "max_disp", "n_steps", "converged"}
+    assert len(result["curve"]) == scalars["n_steps"] + 1
+    geom = struct_relax._final_geometry(
+        result["relaxed_poscar"], params["poscar_labels"], params["order"]
+    )
+    assert geom is not None and len(geom["frac"]) == 2
+
+
+def test_default_ml_runner_honours_the_wall_clock_cap(structure, monkeypatch):
+    from precis.structure import export
+
+    if not export.ase_available():
+        pytest.skip("ASE not installed in this environment")
+    _use_emt(monkeypatch)
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+    with pytest.raises(struct_relax._RelaxDeadline):
+        struct_relax._default_ml_runner(
+            poscar=params["poscar"],
+            model="mace_mp",
+            steps=200,
+            cell=None,
+            timeout=-1.0,
+        )
+
+
+def test_omp_threads_env_reaches_the_container_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The image bakes ``OMP_NUM_THREADS=1``; its GPAW has no OpenMP, so this
+    threads BLAS only — measured ~5x on a 4000^2 dgemm (gr346449)."""
+    monkeypatch.delenv("PRECIS_DFT_OMP_THREADS", raising=False)
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert (
+        "-e" in argv and f"OMP_NUM_THREADS={struct_relax._OMP_THREADS_DEFAULT}" in argv
+    )
+
+    monkeypatch.setenv("PRECIS_DFT_OMP_THREADS", "12")
+    assert "OMP_NUM_THREADS=12" in struct_relax.build_run_argv(
+        ref_id=7, in_dir="/i", out_dir="/o"
+    )
+    # 0 opts out entirely — the image default stands.
+    monkeypatch.setenv("PRECIS_DFT_OMP_THREADS", "0")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert not any(a.startswith("OMP_NUM_THREADS") for a in argv)
 
 
 def _stage(tmp_path, ref_id: int) -> tuple[str, str]:
