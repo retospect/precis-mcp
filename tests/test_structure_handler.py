@@ -242,11 +242,13 @@ def test_relax_ml_rung_dispatches_without_a_todo(structure, no_local_mlip):
 def test_relax_dispatch_pins_to_env_dft_node(
     structure, store, no_local_mlip, monkeypatch
 ):
-    """The mint pins ``target_node`` to PRECIS_DFT_NODE verbatim — the value
-    deploy renders from topology (precis_capabilities.dft), never a node
-    literal baked into code (the 2026-08-29 spark retirement made that a
-    4-day silent wedge)."""
+    """With no MLIP group rendered, the mint pins ``target_node`` to
+    PRECIS_DFT_NODE verbatim — the value deploy renders from topology
+    (precis_capabilities.dft), never a node literal baked into code (the
+    2026-08-29 spark retirement made that a 4-day silent wedge)."""
     monkeypatch.setenv("PRECIS_DFT_NODE", "dft-twin")
+    for env in ("PRECIS_MLIP_NODES", "PRECIS_AUTOCATPATH_ROUTE_NODE"):
+        monkeypatch.delenv(env, raising=False)
     structure.put(id="pd_pair", text=_PD)
     structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
@@ -255,12 +257,30 @@ def test_relax_dispatch_pins_to_env_dft_node(
     assert jobs[-1]["params"]["target_node"] == "dft-twin"
 
 
+def test_relax_dispatch_spreads_an_ml_rung_over_the_mlip_group(
+    structure, store, no_local_mlip, monkeypatch
+):
+    """An ``ml`` rung relaxes in-process on the claiming worker (gr346449), so
+    it is not tied to the DFT node's image/GPU/NFS — the mint pins it into the
+    compute group instead."""
+    monkeypatch.setenv("PRECIS_DFT_NODE", "dft-twin")
+    monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha,beta")
+    structure.put(id="pd_pair", text=_PD)
+    structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
+    ref = structure.store.get_ref(kind="structure", id="pd_pair")
+    jobs = _child_jobs2(store, ref.id)
+    assert jobs, "relax dispatch minted no job"
+    assert jobs[-1]["params"]["target_node"] in {"alpha", "beta"}
+
+
 def test_relax_dispatch_refuses_without_dft_node(structure, no_local_mlip, monkeypatch):
     """Unset PRECIS_DFT_NODE refuses the mint loudly instead of pinning a
     ghost node the job would wait on forever."""
     from precis.errors import Internal
 
     monkeypatch.delenv("PRECIS_DFT_NODE", raising=False)
+    for env in ("PRECIS_MLIP_NODES", "PRECIS_AUTOCATPATH_ROUTE_NODE"):
+        monkeypatch.delenv(env, raising=False)
     structure.put(id="pd_pair", text=_PD)
     with pytest.raises(Internal, match="PRECIS_DFT_NODE"):
         structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])

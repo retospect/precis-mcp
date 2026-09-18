@@ -1045,6 +1045,99 @@ def test_omp_threads_env_reaches_the_container_argv(
     assert not any(a.startswith("OMP_NUM_THREADS") for a in argv)
 
 
+def test_mpi_ranks_wrap_the_container_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GPAW parallelises over MPI ranks, not threads. Off by default: an image
+    built before the OpenMPI rebuild has no ``mpirun``, so switching this on
+    early would fail every run instead of speeding one up."""
+    monkeypatch.delenv("PRECIS_DFT_MPI_RANKS", raising=False)
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert "mpirun" not in argv
+    assert argv[argv.index(struct_relax._IMAGE) + 1] == "precis-dft-run"
+
+    monkeypatch.setenv("PRECIS_DFT_MPI_RANKS", "4")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    # mpirun runs INSIDE the container: it must follow the image name, never
+    # precede it (that would try to mpirun docker itself).
+    assert argv[argv.index(struct_relax._IMAGE) + 1] == "mpirun"
+    assert argv[argv.index("mpirun") : argv.index("precis-dft-run")] == [
+        "mpirun",
+        "--allow-run-as-root",
+        "-np",
+        "4",
+    ]
+    assert argv[-4:] == ["--in", "/work/in", "--out", "/work/out"]
+
+
+class TestNodePin:
+    """Which host a rung pins itself to (gr346449 follow-up).
+
+    The container rung has hard ties to one box (image, GPU, the NFS scratch
+    the stager writes into). The in-process rung has none of them, so pinning
+    it to that same box is a scheduling accident, not a requirement.
+    """
+
+    @staticmethod
+    def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
+        for env in ("PRECIS_MLIP_NODES", "PRECIS_AUTOCATPATH_ROUTE_NODE"):
+            monkeypatch.delenv(env, raising=False)
+
+    def test_container_rung_stays_on_the_dft_node(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_DFT_NODE", "dft-twin")
+        monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha,beta,gamma")
+        for key in ("k1", "k2", "k3", "k4"):
+            assert struct_relax.target_node_for("gpaw", key=key) == "dft-twin"
+
+    def test_inproc_rung_spreads_over_the_mlip_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_DFT_NODE", "dft-twin")
+        monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha,beta,gamma")
+        picks = {
+            struct_relax.target_node_for("ml", key=f"cache-{i}") for i in range(40)
+        }
+        assert picks == {"alpha", "beta", "gamma"}
+
+    def test_the_same_geometry_lands_on_the_same_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deterministic on the cache key so a re-dispatch reuses that host's
+        warm model cache instead of bouncing around the group."""
+        monkeypatch.setenv("PRECIS_MLIP_NODES", "alpha,beta,gamma")
+        first = struct_relax.target_node_for("ml", key="cache-7")
+        assert first is not None
+        for _ in range(5):
+            assert struct_relax.target_node_for("ml", key="cache-7") == first
+        # …and independent of how the list was ordered in the env.
+        monkeypatch.setenv("PRECIS_MLIP_NODES", "gamma,alpha,beta")
+        assert struct_relax.target_node_for("ml", key="cache-7") == first
+
+    def test_falls_back_to_the_autocatpath_group_then_the_dft_node(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No explicit override ⇒ the compute group deploy already renders
+        (those hosts run the job_ssh_node lane and carry the MLIP); nothing
+        rendered at all ⇒ the historical single-node pin, unchanged."""
+        monkeypatch.setenv("PRECIS_DFT_NODE", "dft-twin")
+        monkeypatch.delenv("PRECIS_MLIP_NODES", raising=False)
+        monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "alpha,beta")
+        assert struct_relax.target_node_for("ml", key="cache-7") in {"alpha", "beta"}
+
+        self._clear(monkeypatch)
+        assert struct_relax.target_node_for("ml", key="cache-7") == "dft-twin"
+
+    def test_nothing_configured_returns_none_so_the_mint_can_refuse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clear(monkeypatch)
+        monkeypatch.delenv("PRECIS_DFT_NODE", raising=False)
+        assert struct_relax.target_node_for("ml", key="k") is None
+        assert struct_relax.target_node_for("gpaw", key="k") is None
+
+
 def _stage(tmp_path, ref_id: int) -> tuple[str, str]:
     base = Path(tmp_path) / f"job-{ref_id}"
     (base / "in").mkdir(parents=True, exist_ok=True)

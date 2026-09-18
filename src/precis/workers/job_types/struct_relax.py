@@ -73,6 +73,7 @@ infra event instead of colliding with ``docker run`` (gripe 310809).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -193,6 +194,52 @@ _INPROC_FIDELITIES = frozenset({"ml"})
 #: The run-cube address does not carry it, so it must not drift per host.
 _ML_FMAX = 0.05
 
+#: Hosts an :data:`_INPROC_FIDELITIES` rung may pin to. The in-process path
+#: needs only the MLIP wheel — no image, no GPU, no NFS staging — so it is not
+#: confined to the single DFT node a ``gpaw`` run is. Comma-separated, first
+#: non-empty wins: ``PRECIS_MLIP_NODES`` (ops override) →
+#: ``PRECIS_AUTOCATPATH_ROUTE_NODE`` (already rendered on the minting daemons
+#: from ``precis_capabilities.autocatpath``, which *is* the ``compute`` group:
+#: every host running the ``job_ssh_node`` lane, each carrying torch + the MLIP
+#: because autocatpath needs the same backend) → ``PRECIS_DFT_NODE`` alone,
+#: i.e. exactly the historical behaviour on a host where neither is rendered.
+_MLIP_NODES_ENV = "PRECIS_MLIP_NODES"
+_AUTOCATPATH_NODES_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
+
+
+def mlip_nodes() -> list[str]:
+    """Hosts an in-process rung may pin to, sorted — the stable ordering is
+    what makes :func:`target_node_for` reproducible across minting hosts.
+    Empty ⇒ nothing is configured and the caller must refuse the mint."""
+    for env in (_MLIP_NODES_ENV, _AUTOCATPATH_NODES_ENV):
+        hosts = [h.strip() for h in (os.environ.get(env) or "").split(",") if h.strip()]
+        if hosts:
+            return sorted(hosts)
+    node = os.environ.get("PRECIS_DFT_NODE") or ""
+    return [node] if node else []
+
+
+def target_node_for(fidelity: str, *, key: str) -> str | None:
+    """The host to pin a relax of ``fidelity`` to; ``None`` ⇒ nothing is
+    configured and the mint must refuse rather than name a ghost node.
+
+    A container rung pins to ``PRECIS_DFT_NODE``: the image, the GPU and the
+    NFS scratch the stager writes into all live on that one box. An in-process
+    rung has none of those ties (gr346449), so it spreads over
+    :func:`mlip_nodes` — deterministically on ``key`` (the run-cube cache key),
+    so a re-dispatch of the same geometry lands back on the same host and its
+    warm model cache instead of bouncing around the group.
+    """
+    dft = os.environ.get("PRECIS_DFT_NODE") or None
+    if fidelity not in _INPROC_FIDELITIES:
+        return dft
+    hosts = mlip_nodes()
+    if not hosts:
+        return dft
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    return hosts[int.from_bytes(digest[:4], "big") % len(hosts)]
+
+
 #: ``-e OMP_NUM_THREADS=<n>`` for the container run (gr346449). The image bakes
 #: ``OMP_NUM_THREADS=1``, and its GPAW is built without OpenMP, so this only
 #: threads the BLAS calls — measured ~5x on a 4000^2 dgemm, worth having and
@@ -200,6 +247,28 @@ _ML_FMAX = 0.05
 #: the node runs other work, and ``PRECIS_JOB_CPUSET`` may already have fenced
 #: this container into a subset. ``0``/empty passes no flag (the image default).
 _OMP_THREADS_DEFAULT = 4
+
+
+#: ``mpirun -np <n>`` for the container run. GPAW's parallelism is MPI
+#: (domain / k-point decomposition), not threads, so this — not
+#: ``OMP_NUM_THREADS`` — is what makes a genuine ``gpaw`` rung use more than
+#: one core. ``PRECIS_DFT_MPI_RANKS``; default **0 = off**, because an image
+#: built before the OpenMPI rebuild has no ``mpirun`` and no MPI-capable
+#: ``_gpaw``: turning this on against the old image would fail every run.
+#: Flip it once the rebuilt image is on the node (precis-dft
+#: docker/Dockerfile asserts MPI at build time, and ``result.json`` reports
+#: the rank count it actually ran with).
+_MPI_RANKS_DEFAULT = 0
+
+
+def _mpi_ranks() -> int:
+    raw = os.environ.get("PRECIS_DFT_MPI_RANKS")
+    if raw is None:
+        return _MPI_RANKS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _MPI_RANKS_DEFAULT
 
 
 def _omp_threads() -> int:
@@ -250,8 +319,10 @@ def build_run_argv(
     see :func:`kill_container` / :func:`reap_stale_containers`, gripe 50905).
     ``gpus=0`` omits the GPU flag (CPU fallback — same image). ``-e
     OMP_NUM_THREADS`` (:func:`_omp_threads`) overrides the image's baked ``1``
-    so the run threads its BLAS calls; the image's GPAW is built without
-    OpenMP, so this is a BLAS-only speedup, not parallel DFT."""
+    so the run threads its BLAS calls; GPAW itself has no OpenMP, so that is a
+    BLAS-only speedup. Actual parallel DFT is MPI: :func:`_mpi_ranks` > 0
+    wraps the command in ``mpirun -np <n>``, which requires the MPI-enabled
+    image (precis-dft) — hence off by default."""
     argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
     argv += container_limit_flags()
     threads = _omp_threads()
@@ -265,6 +336,13 @@ def build_run_argv(
         "-v",
         f"{out_dir}:{_CONTAINER_OUT}",
         image,
+    ]
+    ranks = _mpi_ranks()
+    if ranks:
+        # --allow-run-as-root: the container's only user IS root, and OpenMPI
+        # refuses to launch as root without it.
+        argv += ["mpirun", "--allow-run-as-root", "-np", str(ranks)]
+    argv += [
         "precis-dft-run",
         "gpaw-relax",
         "--in",
@@ -1119,6 +1197,8 @@ __all__ = [
     "build_run_argv",
     "kill_container",
     "load",
+    "mlip_nodes",
     "reap_stale_containers",
     "reset_gpu",
+    "target_node_for",
 ]

@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -1955,17 +1954,24 @@ class StructureHandler(Handler):
         if nd.requester_id is not None:
             todo_guards.check_parent_exists(self.store, nd.requester_id)
 
-        # Resolve the DFT node before minting: deploy renders PRECIS_DFT_NODE
-        # from topology (precis_capabilities.dft) into every minting daemon's
-        # env. Deliberately no node-literal fallback — a hardcoded default
-        # outlives the node it names (the 2026-08-29 spark retirement left
-        # jobs minting against a ghost for days), so unset refuses loudly.
-        dft_node = os.environ.get("PRECIS_DFT_NODE")
-        if not dft_node:
+        # Resolve the node pin before minting. A container rung goes to the one
+        # DFT node (image + GPU + the NFS scratch the stager writes into); an
+        # in-process MLIP rung needs none of those and spreads over the compute
+        # group instead (gr346449) — see struct_relax.target_node_for. Deploy
+        # renders both lists from topology (precis_capabilities.dft /
+        # .autocatpath) into every minting daemon's env. Deliberately no
+        # node-literal fallback — a hardcoded default outlives the node it names
+        # (the 2026-08-29 spark retirement left jobs minting against a ghost for
+        # days), so unset refuses loudly.
+        from precis.workers.job_types.struct_relax import target_node_for
+
+        target = target_node_for(nd.fidelity, key=nd.cache_key)
+        if not target:
             raise Internal(
-                "no DFT node configured: PRECIS_DFT_NODE is unset on this "
-                "host, so a struct_relax job would have nowhere to run — "
-                "deploy renders it from topology (precis_capabilities.dft)"
+                "no compute node configured: neither PRECIS_DFT_NODE nor "
+                "PRECIS_MLIP_NODES is set on this host, so a struct_relax job "
+                "would have nowhere to run — deploy renders them from topology "
+                "(precis_capabilities.dft / .autocatpath)"
             )
 
         # self.hub is set at registration; a hand-constructed handler (tests)
@@ -1986,9 +1992,10 @@ class StructureHandler(Handler):
             "order": nd.order,
             "poscar_labels": nd.poscar_labels,
             "poscar": nd.poscar,
-            # Pin to the DFT node so its worker claims the job (§23 #3) — the
-            # stager + container then share one host's NFS view.
-            "target_node": dft_node,
+            # Pin the job so exactly one host's worker claims it (§23 #3) —
+            # for a container rung that means the stager and the container
+            # share one host's NFS view.
+            "target_node": target,
         }
         job_resp = hub.sibling("job").put(
             job_type="struct_relax",
