@@ -65,7 +65,7 @@
 \subtitle{Grounded, untiring research collaboration --- status}
 \author{Reto Stamm}
 \institute{University of Limerick}
-\date{August 2026}
+\date{September 2026}
 
 \begin{document}
 
@@ -720,6 +720,145 @@
   \end{itemize}
 \end{frame}
 
+% ---------- 9e · se: the space plan ----------
+\begin{frame}{Mechanical design: one space plan, atoms to buildings}
+  \citefield{src/precis\_se/ --- ops.py, validate.py, measures.py, datums.py}
+  \begin{columns}[T]
+    \begin{column}{0.58\textwidth}
+      \begin{itemize}\itemsep0.25ex
+        \item[\sdone] \emph{One} scale-agnostic design kind: float64 metres
+              throughout, so a photoswitch and a footbridge are the same
+              object --- the one unit crossing in the system is the \AA{}
+              multiply where an atomic block binds real atoms
+        \item[\sdone] A design is deliberately \emph{suggestive} and hardens
+              monotonically --- ``a fork about this size, on a hub that goes
+              through a wheel so the wheel can turn''. Every field past a name
+              is optional; absence is \emph{reported}, never rejected
+        \item[\sdone] Six levels, each valid alone: drop everything above
+              level $k$ and what is left still checks
+        \item[\sdone] Invariants are \emph{declared}, never reverse-engineered
+              from geometry --- joints as kinematic class $\times$ mechanism,
+              tolerances as relations between named measures on a pinned
+              datum, loads as objectives
+        \item[\sdone] Arrays and instances stay a tree; realization never
+              flattens it
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.39\textwidth}
+      \scriptsize
+      {\color{LightText}%
+      \begin{tabular}{@{}ll@{}}
+        \toprule
+        \textbf{L0} & block graph, ports, intent \\
+        \textbf{L1} & envelopes + pose (metres) \\
+        \textbf{L2} & joints, tolerances, loads \\
+        \textbf{L3} & realized solids \emph{or} atoms \\
+        \textbf{L4} & fit, stack-up, DRC \\
+        \textbf{L5} & fabrication plan, export \\
+        \bottomrule
+      \end{tabular}}
+
+      \vspace{1ex}
+      {\color{LightText}%
+      \begin{tabular}{@{}l@{}}
+        \toprule
+        \textbf{read} \\
+        \midrule
+        \texttt{view='tree'|'block'|'ports'} \\
+        \texttt{view='validate'|'drc'|'clearance'} \\
+        \texttt{view='stability'|'sweep'|'fret'} \\
+        \texttt{view='bom'|'fasten'|'print'|'fab'} \\
+        \bottomrule
+      \end{tabular}}
+
+      \vspace{0.6ex}
+      \tiny\textcolor{MutedGray}{Discrete block states carry a photoswitch and
+      a macro bistable on one mechanism; \texttt{view='sweep'} asks whether
+      anything collides in \emph{any} of them.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------- 9f · se: what it has to answer for ----------
+\begin{frame}{What the structure has to answer for}
+  \citefield{src/precis\_se/stability.py, fasten.py, printing.py, library.py \(\cdot\) src/precis/structsolve/}
+  \small
+  \begin{itemize}\itemsep0.2ex
+    \item[\sdone] A verdict, not a picture: one SVD of the equilibrium matrix
+          gives Maxwell--Calladine $m-s$, self-stress sign-checked against
+          each member's tension/compression capacity, then the
+          Pellegrino--Calladine second-order test ---
+          \emph{rigid} / \emph{mechanism} / \emph{prestress-stabilized}
+    \item[\sdone] Dogfood: a printed unicycle, 12 tension-only spokes at
+          600\,N verified as a self-stress state --- and the checker still
+          called the wheel a first-order mechanism, correctly: radial lacing
+          transmits no torque
+    \item[\sdone] Generators kept apart from checkers: force-density form
+          finding solves the equilibrium geometry and writes poses back
+          stamped \emph{proposed}; a human-set pose is contract and moves
+          only under explicit authorization
+    \item[\sdone] Down to the shop: ISO\,273 clearance and tapped holes with
+          the grip stack-up walked along the screw axis; a printed boss
+          refuses a cut thread and names the four strategies; a swept driver
+          envelope says \emph{which} tool reaches; printed solid +
+          build-frame search, STL/3MF only at the edge
+    \item[\sdone] The library answers back: \texttt{wants=\{\dots\}} ranks
+          every block against a wishlist (Pareto tie-break, never a filter
+          --- each row shows its misses); \texttt{compose=\{\dots\}}
+          enumerates switch\,+\,spacer stacks into a stroke/span box
+    \item[\srough] Engines ahead of their callers: 3D SIMP topology
+          optimization (overhang filter, gyroid fill), active-set
+          tension-only/contact equilibrium, and nonlinear continuation that
+          reports a \emph{real} snap-through barrier --- all tested, all
+          screening-tier by construction, none yet wired to a view
+  \end{itemize}
+\end{frame}
+
+% ---------- 9g · hexfold ----------
+\begin{frame}{Curved carbon by notation, not atom lists}
+  \citefield{src/hexfold/ (format 0.2) \(\cdot\) precis\_se/atomic/generators/hexfold\_spec.py}
+  \small
+  \begin{columns}[T]
+    \begin{column}{0.56\textwidth}
+      \begin{itemize}\itemsep0.25ex
+        \item[\sdone] A \texttt{.hx} file is a string you can paste into a
+              paper: sp$^2$ carbon as \emph{defect placement on a hexagonal
+              lattice} --- sheets, $(n,m)$ tubes, cones, C$_{60}$, holes,
+              fused seams, nanobuds --- atoms derived deterministically
+        \item[\sdone] The topology carries its own proof:
+              $\sum_n (6-n)P_n + B = 6\chi$ per sheet component, so a shape
+              that cannot close is an \emph{error at compile time}, not a
+              relaxation that quietly fails
+        \item[\sdone] Checks before atoms --- valence, ring sizes, port
+              symmetry, overlapping cuts --- and \texttt{fidelity='check'}
+              reports without minting: the agent's edit/check loop
+        \item[\sdone] Wired in as an \texttt{se} atomic generator: the spec
+              text is the regeneration input, the coordinates a declared
+              preview --- physics is the tier above
+        \item[\sidea] Next: \emph{negative} curvature --- junctions, tori,
+              periodic P/D/G cells, schwarzites as tubes on a skeletal net
+              --- the counting law already carries them
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.41\textwidth}
+      \fcolorbox{MutedGray}{DarkBG}{\begin{minipage}{0.94\textwidth}\scriptsize\ttfamily
+      \textcolor{MutedGray}{\# a post fused into a sheet}\\
+      lattice: element=C sigma=1.42\\[0.4ex]
+      substrate: sheet(20,20)\\
+      \phantom{xx}- hex(0)@(9,9,A):0\\
+      post: tube(6,0,len=4)\\[0.4ex]
+      substrate.hole --fuse k=0--> post.in\\
+      registry: post.in == post.out\\
+      terminate: substrate.rim = H
+      \end{minipage}}
+
+      \vspace{0.8ex}
+      \tiny\textcolor{MutedGray}{Twelve worked examples ship with the
+      notation.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
 % ---------- 9b · corpus to manuscript ----------
 \begin{frame}{From corpus to manuscript}
   \citefield{src/precis/export/endnote.py}
@@ -1215,6 +1354,9 @@
         \item[\sdone] Morning / evening briefs
         \item[\sdone] Citation export incl.\ EndNote traveling library
         \item[\sdone] Slab structure kind (ops, probes, diff)
+        \item[\sdone] \texttt{se}: one design kind atoms-to-buildings
+              (stability, fasteners, print, library search)
+        \item[\sdone] hexfold: curved sp$^2$ carbon from notation
       \end{itemize}
     \end{column}
     \begin{column}{0.5\textwidth}
@@ -1223,6 +1365,10 @@
         \item[\srough] Argument graph \(\cdot\) categorizers \(\cdot\) Anki
         \item[\srough] Catalysis-DB import \(\cdot\) sim containers
         \item[\srough] Economics instrumentation
+        \item[\srough] Topology-optimization engines (SIMP, snap-through)
+              --- tested, not yet wired to a view
+        \item[\sidea] Negative-curvature carbon: junctions, tori,
+              periodic cells, schwarzites
         \item[\srough] ICHEC national HPC: LLM burst (built, dark);
               sim / ML-potentials / DFT to follow
         \item[\sidea] Coverage audit \(\cdot\) evaluation suite

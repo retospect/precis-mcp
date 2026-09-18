@@ -1,7 +1,7 @@
-# Status deck — working notes (v26, 2026-08-29)
+# Status deck — working notes (v27, 2026-09-18)
 
 Deck for Reto's boss (delivered 2026-08-13; now maintained as the living
-status deck). `slides.tex` = the deliverable (46 frames, compiles clean).
+status deck). `slides.tex` = the deliverable (50 frames, compiles clean).
 Paper draft (Digital Discovery) is phase 2.
 
 - v20→v21: fisheye sample box replaced with a real prod drill (honesty ledger).
@@ -32,6 +32,20 @@ Paper draft (Digital Discovery) is phase 2.
   2nd reference board 74390332, gerber bundle 88fb3d77, datasheet =
   paper-pipeline evidence kind (handlers/datasheet.py). "First ordered
   board" deliberately \srough — no fab order has been claimed/verified.
+
+- v26→v27 (2026-09-18, Reto's ask: "the schwarzite generator and the 3d
+  multidimensional things, se"): three frames added after the PCB frame —
+  p26 "Mechanical design: one space plan, atoms to buildings" (the `se`
+  kind: one metres-everywhere design kind, the L0–L5 ladder, declared
+  invariants, view list), p27 "What the structure has to answer for"
+  (stability verdict, form finding, fasteners/printing, library +
+  composition search, engines-ahead-of-callers), p28 "Curved carbon by
+  notation, not atom lists" (hexfold `.hx`, the counting law, the `se`
+  atomic generator, negative curvature as the target). 50 frames. Title
+  date bumped to September 2026; scoreboard gained `se` + hexfold \sdone
+  lines, a \srough topology-optimization line and a \sidea
+  negative-curvature line. Residual 1.4 pt overfull on p26 (right column,
+  visually clean) — everything else compiles without an overfull box.
 
 ## Build
 
@@ -171,6 +185,43 @@ route. Gotcha: gs numbers `-o check-%d.png` from 1 regardless of -dFirstPage.
   nanopub/evidence.py::load_bundle drops edgar/datasheet evidence, so a
   contradicts edge from those kinds misses the mint gate
   (docs/backlog/nanopub-bundle-drops-edgar-datasheet-evidence.md).
+
+- **se + hexfold frames (v27, 2026-09-18)** — sourced from a code+prod sweep:
+  · `se` prod substrate: **6 live refs, 455 blocks, 1,164 ports**
+    (`unicycle-printed-v1` 377 · `unicycle-mk2` 57 · `boxel-3nm` 17 ·
+    `zz-probe-schema` 2 · two single-block library units). The deck does not
+    quote a block count — `precis-se-design-help.md` documents *mk2* as
+    "29 blocks, 12 tension-only `axial` spokes at 600 N verified as a
+    self-stress state … correctly reports it **first-order mobile**", and
+    prod has since grown to 57, so the slide quotes only the 12 spokes /
+    600 N / first-order-mobile verdict. `unicycle-printed-v1` is real but
+    **undocumented in the repo** — not cited.
+  · ⚠ **`azo-stick-5nm` does not exist** (older memory says it does). The
+    real artifacts are two single-block library refs (azobenzene unit,
+    dsDNA base-pair spacer) seeded for the composition search. Don't claim
+    a 5 nm azo assembly.
+  · SIMP, complementarity and continuation are **built + tested with zero
+    callers / no view** (`structural-solution-space.md`: "0 callers as of
+    2026-09-18"); the `realize(strategy='simp')` bridge was specced
+    2026-09-18 and is blocked on the cad field leaf. Hence the deliberate
+    \srough "engines ahead of their callers" bullet — don't flip it \sdone
+    until a view exposes them.
+  · No `pathway`/`catpath` wiring exists in `src/precis_se/` — the deck
+    makes no such claim.
+  · ⚠ **The schwarzite generator is NOT built**: zero occurrences of
+    `schwarz|gyroid|tpms|minimal surface` in hexfold's Python. It is the
+    tail of spec.md §28.3, blocked behind the `cap(n,m)` flat-lid family,
+    `opening(port=)` and `junction(k)`. The slide marks it \sidea on
+    purpose. (The gyroid *lattice fill* that does exist is macro-scale,
+    in `structsolve/simp.py` — a different thing; don't merge them.)
+  · Built in hexfold and safe to claim: `sheet`/`tube(n,m)`/`cone`/
+    `cap(5,5)`/`fullerene(C60)`/`stack`, `bond`/`fuse`/`seam k≥3`/
+    collars/registry closure/nanobud menus, the per-sheet-component
+    counting law Σ(6−n)Pₙ + B = 6χ enforced with tests, opt-in geometry
+    checks, and the `se` generator bridge with `fidelity='check'`. The
+    stick relaxation is a preview — its own docstring: "This is a preview,
+    not physics."
+  · The p28 sample box is `examples/pillar.hx` verbatim (minus one comment).
 
 ## Open ideas filed on slides as \sidea (candidates for docs/backlog/)
 
