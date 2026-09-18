@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: cad — rounding at the SDF leaf, a sampled-field leaf, and a field → marching-cubes export backend (no work on the mesh, ever)
 prio: high
 model: opus
@@ -56,6 +56,27 @@ edits it.
   field leaf (slice 2, exact).
 
 ## Slice 1 — `round` on leaves + field export backend
+
+**Status: built 2026-09-18** (worktree `sorted-enchanting-finch`):
+`rd` key + parse-time validator (`cad/dsl.py`), `primitives.Rounded`
+(shrink-in-the-parameters + `−r`, base lifted, unshrunk AABB, convex
+ray hits), `blend:` on `add` nodes (`fold.smooth_min`, refused on
+`cut`/`intersect`/base node), vectorised `distance_local_np` twins, the
+narrow-band marching-cubes backend (`cad/fieldmesh.py` + `_mc_tables.py`,
+`MAX_BAND_CELLS = 50 M`), auto-selected by `export.needs_field_backend`;
+`pitch=` on `export_mesh`/`args.pitch` on the cad handler, se passes the
+house `layer_height`. Tests: `tests/test_cad_rounding.py`. Found and
+fixed in passing: `PolyFrustum` cap rings were wound clockwise about
+their outward normal, so the exact outside distance above/below any
+box/prism/pyramid read as the distance to the cap's *edge*.
+
+Left open from slice 1: STEP export of an `rd`/`blend` design is refused
+(no OCCT route); the web viewer's per-node preview still draws the
+sharp envelope (solid mode meshes the field); the ray probe classifies a
+blend seam only at leaf crossings; `blend:` persists on
+`refs.meta['blends']` (no `cad_nodes` column — revisit if a per-node
+option table ever appears); dual contouring / adaptive octrees when the
+budget refusal fires on real parts.
 
 In scope:
 

@@ -36,6 +36,7 @@ from precis.cad.export import (
     export_mesh,
     export_step,
     manifold_available,
+    needs_field_backend,
     step_available,
     to_openscad,
 )
@@ -158,6 +159,20 @@ def _printability_rules(args: dict[str, Any]) -> tuple[dict[str, Any], list[str]
         value = parse_quantity(raw, dim, arg_name=f"args.{key}")
         rules[key] = float(np.degrees(value)) if dim == "angle" else value
     return rules, skipped
+
+
+def _pitch_arg(args: dict[str, Any]) -> float | None:
+    """``args.pitch`` (a length with an explicit unit) → metres, or
+    ``None`` when absent. The sample spacing of the field export backend
+    (:mod:`precis.cad.fieldmesh`) for a design carrying ``rd``/``blend``;
+    a sharp design's analytic export ignores it. Callers that pass nothing
+    fall back the way each site documents (printability: the layer
+    height; export: :data:`precis.cad.export.FIELD_PITCH_DIAG_FRACTION` of
+    the design's diagonal)."""
+    raw = args.get("pitch")
+    if raw is None:
+        return None
+    return parse_quantity(raw, "length", arg_name="args.pitch")
 
 
 #: view='sweep' samples per joint (args.n overrides, clamped here).
@@ -298,7 +313,9 @@ class CadHandler(Handler):
             "joint travel; view='printability': build-orientation search + "
             "process DRC over the tessellated solid, args={'down', "
             "'max_overhang', 'max_bridge', 'layer_height', "
-            "'min_bed_contact', 'sweep_deg'} — the one probe that meshes); "
+            "'min_bed_contact', 'sweep_deg', 'pitch'} — the one probe that "
+            "meshes; a design with rd/blend meshes from its SDF at 'pitch', "
+            "default layer_height); "
             "search over names; delete soft-retires; link "
             "rel='analyzed-by' target='finding:N' attaches an analysis "
             "result, pinning the design version (stale analyses are "
@@ -1006,12 +1023,17 @@ class CadHandler(Handler):
                 next="pip install --force-reinstall 'precis-mcp'",
             )
         built = self._expand(spec, state=self._state_arg(args, spec))
+        rules, rule_skipped = _printability_rules(args)
+        # Field-backend pitch (rd/blend designs only — the analytic route
+        # ignores it): args.pitch, else the layer height the DRC itself
+        # runs at, else export.py's diagonal-fraction default.
+        pitch = _pitch_arg(args)
+        if pitch is None:
+            pitch = rules.get("layer_height")
         try:
-            mesh = _solid_mesh(built)
+            mesh = _solid_mesh(built, pitch=pitch)
         except ExportError as exc:
             raise BadInput(str(exc)) from exc
-
-        rules, rule_skipped = _printability_rules(args)
         policy = {
             "weights": dict(_PRINTABILITY_FLAT_WEIGHTS),
             "sweep_deg": float(args.get("sweep_deg", _PRINTABILITY_SWEEP_DEG_DEFAULT)),
@@ -1172,7 +1194,12 @@ class CadHandler(Handler):
         or ``step`` (exact B-rep, via OpenCASCADE). Path defaults to a temp
         file named after the design; override with ``args={'path': '...'}``.
         Each backend is an optional extra — a missing one is reported as
-        Unsupported with the install hint, not a crash."""
+        Unsupported with the install hint, not a crash. A design with
+        ``rd``/``blend`` meshes from its signed-distance field at
+        ``args.pitch`` (a length; default
+        :data:`precis.cad.export.FIELD_PITCH_DIAG_FRACTION` of the design's
+        diagonal — pass the target layer height for a print) — the
+        sampled route says so in its reply; STEP has no field route yet."""
         if fmt in ("stl", "3mf") and not manifold_available():
             raise Unsupported(
                 f"{fmt.upper()} export needs the manifold3d backend",
@@ -1189,16 +1216,34 @@ class CadHandler(Handler):
             if raw
             else Path(tempfile.gettempdir()) / f"{slug}.{fmt}"
         )
+        field = fmt != "step" and needs_field_backend(spec)
+        pitch = _pitch_arg(args)
+        if fmt == "step" and needs_field_backend(spec):
+            raise Unsupported(
+                "STEP export of a design with rd/blend is not available — the "
+                "OpenCASCADE route has no rounded/blended leaves (slice 1 "
+                "ships the STL/3MF field backend only)",
+                next="export view='stl' or '3mf' (args={'pitch': '0.2mm'})",
+            )
         try:
             path = (
                 export_step(spec, out)
                 if fmt == "step"
-                else export_mesh(spec, out, fmt=fmt)
+                else export_mesh(spec, out, fmt=fmt, pitch=pitch)
             )
         except ExportError as exc:
             raise BadInput(str(exc)) from exc
         size = path.stat().st_size
-        kernel = "OpenCASCADE B-rep" if fmt == "step" else "manifold3d mesh"
+        if fmt == "step":
+            kernel = "OpenCASCADE B-rep"
+        elif field:
+            kernel = (
+                "sampled SDF field, marching cubes at pitch "
+                + (format_quantity(pitch, "length") if pitch is not None else "auto")
+                + "; blend seams are not exact radii"
+            )
+        else:
+            kernel = "manifold3d mesh"
         return Response(
             body=(
                 f"# exported {slug} → {fmt.upper()} ({kernel})\n"
@@ -1566,12 +1611,15 @@ class CadHandler(Handler):
             handle = (
                 handle_registry.format_handle("cad", cid, chunk=True) if cid else "—"
             )
+            op = node.op
+            if node.blend > 0.0:
+                op = f"{op} blend:{format_quantity(node.blend, 'length')}"
             rows.append(
                 {
                     "handle": handle,
                     "name": node.name,
                     "part": node.component,
-                    "op": node.op,
+                    "op": op,
                     "config": node.config,
                     "pose": self._pose(node),
                 }
@@ -1579,6 +1627,13 @@ class CadHandler(Handler):
         out = render_agent_table(
             rows, schema=["handle", "name", "part", "op", "config", "pose"]
         )
+        if any(n.blend > 0.0 for n in spec.nodes):
+            out += (
+                "\nblend: = smooth-min union of that node into its part — a "
+                "fillet-like seam, not an exact radius; rd in a config rounds "
+                "that node's own edges exactly. Either routes stl/3mf export "
+                "through the sampled-field backend (args={'pitch': …})."
+            )
         return out + self._interfaces_block(spec)
 
     def _interfaces_block(self, spec: Any) -> str:

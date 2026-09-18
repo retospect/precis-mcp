@@ -7,7 +7,12 @@ the analytic IR. Three routes, in order of fidelity vs weight:
    primitive (:mod:`precis.cad.tessellate`), folds the boolean DAG with
    ``manifold3d`` (the same robust CSG kernel OpenSCAD uses, in-process —
    no external binary), then precis hand-writes the mesh. Gated on the
-   ``[cad-export]`` extra (:func:`manifold_available`).
+   ``[cad-export]`` extra (:func:`manifold_available`). A design with a
+   rounded leaf (``rd``) or a blended union (``blend:``) has no analytic
+   tessellation, so :func:`needs_field_backend` routes it through the
+   **field backend** instead (:mod:`precis.cad.fieldmesh`: narrow-band
+   marching cubes over the exact folded SDF, at ``pitch=``); a design
+   without either takes the analytic route byte-for-byte as before.
 3. :func:`export_step` — **exact** STEP (ISO 10303) B-rep interchange for
    mechanical CAD. A mesh kernel fundamentally cannot emit STEP, so this
    delegates to the OpenCASCADE backend (:mod:`precis.cad._occt`), gated
@@ -27,7 +32,11 @@ from typing import Any
 
 import numpy as np
 
-from precis.cad.dsl import ShapeSpec, format_spec, parse
+from precis.cad.dsl import ROUND_KEY, ShapeSpec, format_spec, parse
+from precis.cad.fieldmesh import FieldMeshError, field_mesh
+from precis.cad.fold import Union
+from precis.cad.graph import Design
+from precis.cad.relate import _bounds, _positive_bounds, component_sdf_np
 from precis.cad.scene import (
     LinearPattern,
     NodeSpec,
@@ -35,6 +44,7 @@ from precis.cad.scene import (
     SceneSpec,
     _node_xform,
     _pattern_transforms,
+    build_design,
 )
 from precis.cad.tessellate import design_aabb, halfspace_clamp_params, node_meshes
 from precis.cad.vec import Transform, Vec3
@@ -51,6 +61,12 @@ _MM_PER_M = 1000.0
 
 #: Shape-DSL param keys that are never a length — never rescaled.
 _NON_LENGTH_KEYS = frozenset({"n", "angle"})
+
+#: Field-backend pitch when the caller passes none: this fraction of the
+#: design's AABB diagonal (≈ 0.27 mm on a 40×20×10 mm part). Callers with
+#: a real process resolution pass ``pitch=`` explicitly — the cad handler
+#: from ``args.pitch``/``layer_height``, se from the house layer height.
+FIELD_PITCH_DIAG_FRACTION = 1.0 / 256.0
 
 
 def _scaled_for_export(spec: SceneSpec) -> SceneSpec:
@@ -90,7 +106,15 @@ def _scaled_for_export(spec: SceneSpec) -> SceneSpec:
                     dy=pattern["dy"] * _MM_PER_M,
                     dz=pattern["dz"] * _MM_PER_M,
                 )
-        scaled_nodes.append(replace(node, config=mm_config, loc=loc, pattern=pattern))
+        scaled_nodes.append(
+            replace(
+                node,
+                config=mm_config,
+                loc=loc,
+                pattern=pattern,
+                blend=node.blend * _MM_PER_M,
+            )
+        )
     return SceneSpec(
         nodes=scaled_nodes, components=list(spec.components), meta=dict(spec.meta)
     )
@@ -320,13 +344,93 @@ def _mesh_of(solid: object) -> tuple[np.ndarray, np.ndarray]:
     return verts, tris
 
 
-def _solid_mesh(spec: SceneSpec) -> tuple[np.ndarray, np.ndarray]:
-    """Fold the design and return its final welded ``(verts, tris)`` mesh."""
+# --- field backend: rd / blend designs -----------------------------------
+
+
+def needs_field_backend(spec: SceneSpec) -> bool:
+    """True iff ``spec`` (fully expanded — shape nodes only) carries a
+    rounded leaf (``rd`` in a config) or a blended union (``blend > 0``):
+    the analytic tessellate + manifold3d fold cannot represent either, so
+    :func:`export_mesh` and the shared mesh helpers take the sampled-field
+    route (:mod:`precis.cad.fieldmesh`) instead."""
+    for node in spec.nodes:
+        if node.blend > 0.0:
+            return True
+        if ROUND_KEY in parse(node.config).params:
+            return True
+    return False
+
+
+def _field_pitch(design: Design, pitch: float | None) -> float:
+    """The export pitch: the caller's, else :data:`FIELD_PITCH_DIAG_FRACTION`
+    of the whole design's **positive-material** AABB diagonal (in the
+    spec's own unit) — :func:`_positive_bounds`, not :func:`_bounds`, so an
+    oversized subtractive tool (a huge cutting cylinder on a small part)
+    can't inflate the box and starve a round of resolution."""
+    if pitch is not None:
+        if not pitch > 0.0:
+            raise ExportError(f"pitch must be a positive length, got {pitch}")
+        return float(pitch)
+    box = _positive_bounds(design, design.whole())
+    if box is None:
+        raise ExportError("design has no bounded geometry to size a pitch from")
+    return float(np.linalg.norm(box[1] - box[0])) * FIELD_PITCH_DIAG_FRACTION
+
+
+def _field_mesh_of(
+    design: Design, spec: SceneSpec, comps: list[str], pitch: float, name: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Mesh the (min-)union of components ``comps`` from the folded field."""
+    exprs = [design.components[c] for c in comps if c in design.components]
+    if not exprs:
+        raise ExportError(f"{name}: no solid geometry to export")
+    expr = exprs[0] if len(exprs) == 1 else Union(parts=tuple(exprs))
+    box = _bounds(design, expr)
+    if box is None:
+        raise ExportError(f"{name}: unbounded — nothing finite to mesh")
+    # A smooth-min adds material only inside the seam, never more than
+    # k/4 beyond the hard union; pad by k/2 so the band sees all of it.
+    pad = 0.5 * max((n.blend for n in spec.nodes if n.component in comps), default=0.0)
+    lo, hi = box[0] - pad, box[1] + pad
+
+    def sdf(pts: np.ndarray) -> np.ndarray:
+        return component_sdf_np(design, expr, pts)
+
+    try:
+        return field_mesh(sdf, lo, hi, pitch, name=name)
+    except FieldMeshError as exc:
+        raise ExportError(str(exc)) from exc
+
+
+def _solid_mesh(
+    spec: SceneSpec, *, pitch: float | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fold the design and return its final welded ``(verts, tris)`` mesh.
+
+    ``pitch`` (the spec's own length unit) only matters when
+    :func:`needs_field_backend`: it is the field sample spacing; ``None``
+    takes the :data:`FIELD_PITCH_DIAG_FRACTION` default. The analytic
+    route ignores it."""
+    if needs_field_backend(spec):
+        design = build_design(spec)
+        p = _field_pitch(design, pitch)
+        return _field_mesh_of(design, spec, list(spec.components), p, "design")
     return _mesh_of(_design_solid(spec))
 
 
-def _component_meshes(spec: SceneSpec) -> list[tuple[str, np.ndarray, np.ndarray]]:
-    """One ``(name, verts, tris)`` per component (parts kept separate)."""
+def _component_meshes(
+    spec: SceneSpec, *, pitch: float | None = None
+) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """One ``(name, verts, tris)`` per component (parts kept separate).
+    ``pitch`` as in :func:`_solid_mesh`."""
+    if needs_field_backend(spec):
+        design = build_design(spec)
+        p = _field_pitch(design, pitch)
+        return [
+            (comp, *_field_mesh_of(design, spec, [comp], p, f"component {comp!r}"))
+            for comp in spec.components
+            if comp in design.components
+        ]
     return [(name, *_mesh_of(solid)) for name, solid in _component_solids(spec)]
 
 
@@ -400,7 +504,11 @@ _MESH_FORMATS = ("stl", "3mf")
 
 
 def export_mesh(
-    spec: SceneSpec, out_path: str | Path, *, fmt: str | None = None
+    spec: SceneSpec,
+    out_path: str | Path,
+    *,
+    fmt: str | None = None,
+    pitch: float | None = None,
 ) -> Path:
     """Fold ``spec`` to a watertight mesh and write it as STL or 3MF.
 
@@ -408,15 +516,24 @@ def export_mesh(
     parts, so a multi-component assembly is welded into one body. **3MF**
     carries each component as its own object, so the assembly stays
     separable in the slicer. Raises :class:`ExportError` if ``manifold3d``
-    is missing or the format is unknown."""
+    is missing or the format is unknown.
+
+    ``pitch`` (**metres**) is the field-backend sample spacing, used only
+    when :func:`needs_field_backend` (an ``rd`` or ``blend:`` in the
+    design); ``None`` takes :data:`FIELD_PITCH_DIAG_FRACTION` of the
+    design's diagonal. A pitch whose narrow band would exceed
+    :data:`precis.cad.fieldmesh.MAX_BAND_CELLS` is refused with
+    :class:`ExportError` (never coarsened silently). Designs without
+    ``rd``/``blend`` ignore it and take the analytic route unchanged."""
     spec = _scaled_for_export(spec)
+    mm_pitch = None if pitch is None else pitch * _MM_PER_M
     out = Path(out_path)
     f = (fmt or out.suffix.lstrip(".")).lower()
     if f == "stl":
-        verts, tris = _solid_mesh(spec)
+        verts, tris = _solid_mesh(spec, pitch=mm_pitch)
         _write_binary_stl(out, verts, tris)
     elif f == "3mf":
-        _write_3mf(out, _component_meshes(spec))
+        _write_3mf(out, _component_meshes(spec, pitch=mm_pitch))
     else:
         raise ExportError(
             f"unknown mesh format {f!r}; supported: {list(_MESH_FORMATS)}"
@@ -448,6 +565,15 @@ def export_step(spec: SceneSpec, out_path: str | Path) -> Path:
         raise ExportError(
             "OpenCASCADE not installed — exact STEP export needs it. "
             "Install the extra:  pip install 'precis-mcp[cad-step]'"
+        )
+    if needs_field_backend(spec):
+        # The OCCT builder reads the sharp parameters only — it would
+        # silently drop every rd/blend. Refuse rather than ship the wrong
+        # solid; the field backend (stl/3mf) is the route for these.
+        raise ExportError(
+            "STEP export of a design with rd/blend is not available — the "
+            "OpenCASCADE route has no rounded or blended leaves; export "
+            "stl/3mf (field backend) instead"
         )
     return _occt.export_step(_scaled_for_export(spec), Path(out_path))
 

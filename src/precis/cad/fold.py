@@ -16,11 +16,29 @@ The expression operates over *instances* — primitives already placed in
 the world frame and carrying a display ``label`` (``plate``, ``bolt#3``).
 Patterns expand to a union of labelled instances upstream, so the fold
 sees only leaves and the three boolean ops.
+
+**Signed distance** lives here too (:func:`expr_sdf` / :func:`expr_sdf_np`
+— the scalar and ``(N, 3)``-vectorised folds ``relate.component_sdf`` and
+the field-export backend read): union → ``min``, intersect → ``max``,
+subtract → ``max(d_base, -d_cutter)``. Sign exact everywhere, magnitude
+exact on the governing surface. A :class:`Union` may carry ``blend=k``
+(``blend:`` on an ``add`` node): the fold then uses the quadratic
+smooth-min (:func:`smooth_min`) instead of ``min``, which adds material in
+the concave seam where the two fields are within ``k`` of each other —
+a fillet-*like* blend, **not an exact radius** (the contract's stated
+limit; an exact concave fillet is the slice-2 field leaf's closing).
+Membership (:func:`classify`) follows the same field for a blended union
+so a point probe and the exported mesh agree; the ray fold still splits
+on leaf boundaries, so a ray through a blend seam is classified at leaf
+crossings only (the seam's extra material has no ray endpoint of its own).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+import numpy as np
+from numpy.typing import NDArray
 
 from precis.cad.interval import Intervals, merge_intervals
 from precis.cad.primitives import Placed
@@ -47,7 +65,12 @@ class Leaf(Expr):
 
 @dataclass(frozen=True)
 class Union(Expr):
+    """``parts`` merged; ``blend > 0`` folds them with :func:`smooth_min`
+    (width ``blend``, a length) instead of a hard ``min`` — see the module
+    docstring's "not an exact radius" caveat."""
+
     parts: tuple[Expr, ...]
+    blend: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -78,6 +101,105 @@ class Class:
     blocker: str | None
 
 
+def smooth_min(a: float, b: float, k: float) -> float:
+    """Quadratic polynomial smooth-min of two signed distances with blend
+    width ``k`` (Quilez): equals ``min(a, b)`` wherever ``|a - b| >= k``,
+    and dips below it by at most ``k/4`` in the seam. Never above
+    ``min(a, b)``, so it only ever *adds* material — and only inside the
+    concave seam between the two bodies."""
+    if k <= 0.0:
+        return min(a, b)
+    h = max(k - abs(a - b), 0.0) / k
+    return min(a, b) - h * h * k * 0.25
+
+
+def smooth_min_np(
+    a: NDArray[np.float64], b: NDArray[np.float64], k: float
+) -> NDArray[np.float64]:
+    """Element-wise :func:`smooth_min`."""
+    if k <= 0.0:
+        return np.minimum(a, b)
+    h = np.maximum(k - np.abs(a - b), 0.0) / k
+    return np.minimum(a, b) - h * h * k * 0.25
+
+
+def expr_sdf(expr: Expr, p: Vec3, instances: dict[str, Instance]) -> float:
+    """Exact-sign CSG signed distance of a world point to ``expr``'s
+    material (negative inside). Module docstring has the fold rules."""
+    p = as_vec3(p)
+    if isinstance(expr, Leaf):
+        return float(instances[expr.iid].placed.distance(p))
+    if isinstance(expr, Union):
+        ds = [expr_sdf(part, p, instances) for part in expr.parts]
+        if expr.blend > 0.0:
+            cur = ds[0]
+            for d in ds[1:]:
+                cur = smooth_min(cur, d, expr.blend)
+            return cur
+        return min(ds)
+    if isinstance(expr, Inter):
+        return max(expr_sdf(part, p, instances) for part in expr.parts)
+    if isinstance(expr, Diff):
+        d = expr_sdf(expr.base, p, instances)
+        for c in expr.cutters:
+            d = max(d, -expr_sdf(c, p, instances))
+        return d
+    raise TypeError(f"unknown expr node: {expr!r}")
+
+
+def expr_sdf_np(
+    expr: Expr, pts: NDArray[np.float64], instances: dict[str, Instance]
+) -> NDArray[np.float64]:
+    """:func:`expr_sdf` for an ``(N, 3)`` array of world points at once —
+    the same fold, evaluated through each leaf's ``distance_np``."""
+    if isinstance(expr, Leaf):
+        return instances[expr.iid].placed.distance_np(pts)
+    if isinstance(expr, Union):
+        cur = expr_sdf_np(expr.parts[0], pts, instances)
+        for part in expr.parts[1:]:
+            d = expr_sdf_np(part, pts, instances)
+            cur = (
+                smooth_min_np(cur, d, expr.blend)
+                if expr.blend > 0.0
+                else np.minimum(cur, d)
+            )
+        return cur
+    if isinstance(expr, Inter):
+        cur = expr_sdf_np(expr.parts[0], pts, instances)
+        for part in expr.parts[1:]:
+            cur = np.maximum(cur, expr_sdf_np(part, pts, instances))
+        return cur
+    if isinstance(expr, Diff):
+        cur = expr_sdf_np(expr.base, pts, instances)
+        for c in expr.cutters:
+            cur = np.maximum(cur, -expr_sdf_np(c, pts, instances))
+        return cur
+    raise TypeError(f"unknown expr node: {expr!r}")
+
+
+def _nearest_leaf(expr: Expr, p: Vec3, instances: dict[str, Instance]) -> str | None:
+    """The leaf instance whose surface is nearest ``p`` — attribution for
+    material a blend seam adds where no leaf contains the point."""
+    best: tuple[float, str] | None = None
+
+    def walk(e: Expr) -> None:
+        nonlocal best
+        if isinstance(e, Leaf):
+            d = float(instances[e.iid].placed.distance(p))
+            if best is None or d < best[0]:
+                best = (d, e.iid)
+        for child in getattr(e, "parts", ()):
+            walk(child)
+        base = getattr(e, "base", None)
+        if base is not None:
+            walk(base)
+        for c in getattr(e, "cutters", ()):
+            walk(c)
+
+    walk(expr)
+    return None if best is None else best[1]
+
+
 def classify(expr: Expr, p: Vec3, instances: dict[str, Instance]) -> Class:
     """Classify a world point against a CSG expression."""
     p = as_vec3(p)
@@ -95,6 +217,11 @@ def classify(expr: Expr, p: Vec3, instances: dict[str, Instance]) -> Class:
                 owner = c.owner
             elif c.inside:
                 any_in = True
+        if not any_in and expr.blend > 0.0 and expr_sdf(expr, p, instances) <= 0.0:
+            # Seam material the smooth-min adds between the parts: inside
+            # per the same field the export meshes, attributed to the
+            # nearest leaf.
+            return Class(True, True, _nearest_leaf(expr, p, instances), None)
         return Class(any_in, any_add, owner, None)
     if isinstance(expr, Inter):
         all_in = all_add = True
