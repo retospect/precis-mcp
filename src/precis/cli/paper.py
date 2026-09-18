@@ -83,14 +83,30 @@ def resplit_legacy_authors(
     tests can call it directly.
 
     Selects every distinct ``ref_id`` with a ``source='legacy'``
-    ``paper_authors`` row, then (unless ``dry_run``) re-runs
+    ``paper_authors`` row, plus every paper whose ``refs.authors`` is
+    non-empty but has zero rows (shapes the migration's SQL projection
+    skipped), then (unless ``dry_run``) re-runs
     ``store.set_paper_authors(ref_id, ref.authors, source='legacy')`` for
     each — the current ``refs.authors`` jsonb IS the table's own
     projection, so this just re-applies the Python split heuristics on
     top of it. Returns the count of refs selected (dry-run) or
     successfully re-projected.
     """
-    sql = "SELECT DISTINCT ref_id FROM paper_authors WHERE source = 'legacy' ORDER BY ref_id"
+    # Two populations: rows the migration minted as 'legacy' (re-apply the
+    # Python split on top), and papers the SQL projection could not mint
+    # any row for — a semicolon-packed string, non-object elements — whose
+    # jsonb is non-empty but whose table is empty (normalize_authors
+    # handles every legacy shape).
+    sql = """
+        SELECT ref_id FROM paper_authors WHERE source = 'legacy'
+        UNION
+        SELECT r.ref_id FROM refs r
+         WHERE r.kind = 'paper' AND r.retired_at IS NULL
+           AND r.authors IS NOT NULL
+           AND r.authors::text NOT IN ('[]', '""', 'null')
+           AND NOT EXISTS (SELECT 1 FROM paper_authors pa WHERE pa.ref_id = r.ref_id)
+        ORDER BY ref_id
+    """
     params: tuple[object, ...] = ()
     if limit is not None:
         sql += " LIMIT %s"

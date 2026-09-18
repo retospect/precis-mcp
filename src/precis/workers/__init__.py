@@ -167,7 +167,7 @@ Notable pass mechanics
   (abstract fill + card rebuild), and ``paper_meta_enrich`` (Crossref/
   OpenAlex author/entry_type/retraction re-resolve) each self-throttle via
   an ``app_state`` marker + a single-runner advisory lock.
-* ``orcid_enrich`` (precis.utils.authors module docstring) — background
+* ``orcid_enrich`` (tiers: :mod:`precis.utils.authors` docstring) — background
   ORCID identity tier: fetches unvisited ``kind='orcid'`` stub nodes,
   links held works, cross-checks each authored edge's paper DOI against
   the fresh record and verifies/overwrites the matching ``paper_authors``

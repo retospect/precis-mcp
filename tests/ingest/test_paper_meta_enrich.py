@@ -287,6 +287,56 @@ class TestOpenAlexAuthorMerge:
         # Crossref order/entries are preserved regardless of match order.
         assert [a["family"] for a in ref.authors] == ["Goldsmith", "Doe"]
 
+    def test_shared_family_name_is_not_paired(self, store: Store) -> None:
+        # Two co-authors named Wang: pairing by surname would stamp one
+        # author's identity on the other, so neither gets an id; the
+        # unique surname still pairs.
+        rid = _paper(store, slug="oa4", doi="10.1234/oa4")
+        msg = _crossref_msg(doi="10.1234/oa4")
+        msg["author"] = [
+            {"given": "Li", "family": "Wang"},
+            {"given": "Wei", "family": "Wang"},
+            {"given": "Jane", "family": "Doe"},
+        ]
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "Li Wang",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A2",
+                        "display_name": "Wei Wang",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A3",
+                        "display_name": "Jane Doe",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A9",
+                        "display_name": "Extra One",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa4",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
+        assert [r["openalex_author_id"] for r in rows] == [None, None, "A3"]
+
     def test_existing_crossref_orcid_is_not_overwritten(self, store: Store) -> None:
         rid = _paper(store, slug="oa3", doi="10.1234/oa3")
         msg = _crossref_msg(doi="10.1234/oa3", orcid=_VALID_ORCID)

@@ -113,6 +113,41 @@ def test_draft_write_creates_no_paper_authors_rows(store: Store) -> None:
 # ── migration backfill projection + authors-resplit ────────────────
 
 
+def test_migration_projects_bare_string_elements_and_resplit_sweeps_packed(
+    store: Store,
+) -> None:
+    # A bare-string array element projects as {name}; a semicolon-packed
+    # string (not an array) mints no row in SQL and is swept by resplit.
+    bare = store.insert_ref(kind="paper", slug="legacy-bare", title="T")
+    packed = store.insert_ref(kind="paper", slug="legacy-packed", title="T")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET authors = %s::jsonb WHERE ref_id = %s",
+            ('["Miller, T. J.", {"name": "Ada Lovelace"}]', bare.id),
+        )
+        conn.execute(
+            "UPDATE refs SET authors = %s::jsonb WHERE ref_id = %s",
+            ('"Smith, Jane; Jones, Bob"', packed.id),
+        )
+        conn.execute(
+            "DELETE FROM paper_authors WHERE ref_id = ANY(%s)", ([bare.id, packed.id],)
+        )
+        with conn.cursor() as cur:
+            _execute_dump_sql(cur, _migration_projection_sql())
+
+    rows = store.get_paper_authors(bare.id)
+    assert [(r["family"], r["given"]) for r in rows] == [("Miller", "T. J."), ("", "")]
+    assert rows[1]["name_raw"] == "Ada Lovelace"
+    assert store.get_paper_authors(packed.id) == []
+
+    assert resplit_legacy_authors(store, dry_run=True) >= 2
+    resplit_legacy_authors(store)
+    swept = store.get_paper_authors(packed.id)
+    assert [r["family"] for r in swept] == ["Smith", "Jones"]
+    assert [r["source"] for r in swept] == ["legacy", "legacy"]
+    assert store.find_papers_by_author(kind="paper", q="Jones") == [packed.id]
+
+
 def test_migration_projection_then_resplit(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="legacy-proj", title="T")
     with store.pool.connection() as conn:

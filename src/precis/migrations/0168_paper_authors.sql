@@ -92,6 +92,9 @@ CREATE INDEX IF NOT EXISTS paper_authors_person_idx
     ON paper_authors (person_ref_id) WHERE person_ref_id IS NOT NULL;
 
 -- Project existing bylines. Each jsonb element becomes one row; the
+-- semicolon-packed-string shape (authors not an array) and anything the
+-- SQL split can't handle is left to `precis paper authors-resplit`, which
+-- also sweeps every paper with a non-empty jsonb and zero rows. The
 -- element's display string is kept verbatim in name_raw.
 INSERT INTO paper_authors
     (ref_id, position, given, middle, family, name_raw, orcid, person_ref_id, source)
@@ -132,7 +135,14 @@ SELECT
       LIMIT 1),
     'legacy'
 FROM refs r
-CROSS JOIN LATERAL jsonb_array_elements(r.authors) WITH ORDINALITY AS e(elem, ord)
+CROSS JOIN LATERAL jsonb_array_elements(r.authors) WITH ORDINALITY AS raw(elem, ord)
+-- A bare-string element (legacy writers) is the {name} shape.
+CROSS JOIN LATERAL (
+    SELECT CASE WHEN jsonb_typeof(raw.elem) = 'string'
+                THEN jsonb_build_object('name', raw.elem #>> '{}')
+                ELSE raw.elem END AS elem,
+           raw.ord
+) AS e
 WHERE r.kind = 'paper'
   AND jsonb_typeof(r.authors) = 'array'
   AND jsonb_typeof(e.elem) = 'object'

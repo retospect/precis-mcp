@@ -222,17 +222,27 @@ def _merge_openalex_author_ids(
     if len(crossref_authors) == len(authorships):
         pairs = list(zip(crossref_authors, authorships, strict=True))
     else:
-        by_family: dict[str, dict[str, str]] = {}
+        # Family-name pairing is only safe when the surname is unique on
+        # BOTH sides — two co-authors sharing a family name would otherwise
+        # get one author's orcid/openalex id stamped on the other.
+        by_family: dict[str, list[dict[str, str]]] = {}
         for a in authorships:
             tokens = str(a.get("name") or "").split()
             if tokens:
-                by_family.setdefault(tokens[-1].strip().lower(), a)
+                by_family.setdefault(tokens[-1].strip().lower(), []).append(a)
+        crossref_family_counts: dict[str, int] = {}
+        for entry in crossref_authors:
+            family = str(entry.get("family") or "").strip().lower()
+            if family:
+                crossref_family_counts[family] = (
+                    crossref_family_counts.get(family, 0) + 1
+                )
         pairs = []
         for entry in crossref_authors:
             family = str(entry.get("family") or "").strip().lower()
-            match = by_family.get(family) if family else None
-            if match is not None:
-                pairs.append((entry, match))
+            candidates = by_family.get(family, []) if family else []
+            if len(candidates) == 1 and crossref_family_counts.get(family) == 1:
+                pairs.append((entry, candidates[0]))
     for entry, a in pairs:
         oa_id = str(a.get("openalex_author_id") or "").strip()
         if oa_id and not entry.get("openalex_author_id"):

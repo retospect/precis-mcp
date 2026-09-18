@@ -135,6 +135,13 @@ def _claim_batch(store: Store, *, limit: int) -> list[int]:
          WHERE o.kind = 'orcid'
            AND o.retired_at IS NULL
            AND o.meta->>'fetched_at' IS NULL
+           -- a node with no iD can never be fetched: leave it out rather
+           -- than re-claim + fail it every pass
+           AND (coalesce(o.meta->>'orcid_id', '') <> ''
+                OR EXISTS (SELECT 1 FROM ref_identifiers ri
+                            WHERE ri.ref_id = o.ref_id
+                              AND ri.id_kind = 'cite_key'
+                              AND ri.id_value LIKE 'orcid:%%'))
          ORDER BY (
              SELECT max(l.dst_ref_id) FROM links l
               WHERE l.src_ref_id = o.ref_id AND l.relation = 'authored'

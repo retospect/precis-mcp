@@ -1069,6 +1069,15 @@ class PaperHandler(Handler):
         ref_id = self._resolve_paper_ref_id(id)
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         new_authors = normalize_authors(authors) if authors else None
+        if authors and not new_authors:
+            # An all-junk list must not reach the store: ``[]`` is a real
+            # write there (wipes every paper_authors row + the jsonb).
+            raise BadInput(
+                "authors= contains no usable author names (each entry was "
+                "junk-guarded: an email, a heading, an over-long string)",
+                next="pass names as 'Family, Given M. [orcid]' lines or "
+                "{given, family} dicts; omit authors= to leave the byline",
+            )
         meta_patch: dict[str, Any] = {}
         if isinstance(abstract, str) and abstract.strip():
             meta_patch["abstract"] = abstract.strip()
