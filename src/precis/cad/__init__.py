@@ -4,7 +4,14 @@ A small, self-contained analytic geometry kernel: rigid-transform-only
 primitives (frustum / sphere / torus / half-space-chamfer) that answer
 membership, ray-intersection, distance, and face queries in closed form,
 plus a boolean DAG fold that keeps subtraction *visible* without ever
-computing the merged solid.
+computing the merged solid. Edge rounding is a leaf wrapper
+(:class:`~precis.cad.primitives.Rounded`: the shape built shrunk, its
+exact signed distance offset back out — never a mesh operation) and a
+union may ``blend`` with a smooth-min (:mod:`precis.cad.fold`); a design
+carrying either exports through the sampled-field backend
+(:mod:`precis.cad.fieldmesh`, narrow-band marching cubes over the folded
+SDF) while every sharp design still takes the analytic tessellate +
+manifold3d route unchanged.
 
 This package deliberately imports **nothing** from the rest of precis
 (no DB, no handler, no store) so it stays unit-testable in isolation and

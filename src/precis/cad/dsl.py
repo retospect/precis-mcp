@@ -21,10 +21,30 @@ A single string names a primitive and its dimensions, e.g.
                             local frame (no anchor face) — see
                             :func:`build`.
 
+Optional ``rd<len>`` on every convex solid but the sphere — ``box``,
+``cyl``, ``cone``, ``tcone``, ``hex``, ``ngon``, ``frustum``, ``pyramid``
+— rounds **every edge and corner** to radius ``rd``
+(``box:w40mmd20mmh10mmrd2mm``). Rounding is the leaf-shrink + field-
+offset rule of ``docs/backlog/cad-sdf-rounding-and-field-export.md``:
+:func:`build` shrinks the shape by ``rd`` on every side (:func:`shrunk`)
+and wraps it in :class:`~precis.cad.primitives.Rounded`, whose SDF is the
+shrunk shape's exact distance minus ``rd``. Bounding dimensions are
+unchanged for the box/cylinder/prism family (the base is lifted by ``rd``
+so it stays at ``z=0``); a cone/pyramid apex becomes a sphere cap and the
+solid ends short of the sharp apex (the offset lateral line meets the
+axis below it). Refused at parse, naming the shape and the dimension,
+when ``rd >= ½·min_dimension`` (a thin feature would vanish — never
+clamped), and when a cone/pyramid's shrunk body would close up at its
+slant (the ½ rule alone keeps a ``tcone``/``frustum``'s caps, not an
+apex). ``sphere`` and ``torus`` refuse ``rd`` (already round — a no-op
+would only route the export through the sampled field backend for
+nothing); ``chamfer`` has no extent to shrink and its special grammar
+cannot carry it.
+
 Grammar: ``<alias>:<tokens>`` where each token is a ``<key><number><unit>``
 triple (``<key><number>`` for the dimensionless ``n``). Keys are matched
-longest-first so ``rb`` / ``rt`` win over ``r``; ``R`` (major radius) is
-distinct from ``r``. ``chamfer`` uses the special
+longest-first so ``rb`` / ``rt`` / ``rd`` win over ``r``; ``R`` (major
+radius) is distinct from ``r``. ``chamfer`` uses the special
 ``<size><unit>x<angle><unit>`` form — a length unit on ``size``, an angle
 unit (``deg``/``rad``) on ``angle``. The kernel this module builds against
 (:mod:`precis.cad.primitives`) is unit-agnostic float64 — it has no
@@ -82,6 +102,7 @@ from precis.cad.primitives import (
     CircularFrustum,
     HalfSpace,
     Primitive,
+    Rounded,
     Sphere,
     Torus,
     box,
@@ -127,13 +148,13 @@ class ShapeSpec:
     params: dict[str, float]
 
 
-#: ``<key><number>`` — keys longest-first so ``rb``/``rt`` beat ``r``.
+#: ``<key><number>`` — keys longest-first so ``rb``/``rt``/``rd`` beat ``r``.
 #: Numbers take an optional exponent (``3e-9``) — unambiguous since no
 #: DSL key is ``e``; nm-scale dims are unreadable otherwise (gr332020).
 #: Canonical/storage-mode grammar (``require_units=False``) — bare
 #: numbers only, unchanged since before the units cutover.
 _NUM = r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
-_TOKEN_RE = re.compile(rf"(rb|rt|R|r|w|d|h|n)({_NUM})")
+_TOKEN_RE = re.compile(rf"(rb|rt|rd|R|r|w|d|h|n)({_NUM})")
 _CHAMFER_RE = re.compile(rf"^({_NUM})x({_NUM})$")
 
 #: Boundary-mode grammar (``require_units=True``) — every key's number
@@ -143,7 +164,7 @@ _CHAMFER_RE = re.compile(rf"^({_NUM})x({_NUM})$")
 #: matches (letting :func:`parse` raise the structured
 #: :class:`~precis.utils.units.UnitRequiredError` instead of a generic
 #: syntax error).
-_UNIT_TOKEN_RE = re.compile(rf"(rb|rt|R|r|w|d|h|n)({_NUM})({LENGTH_UNIT_TOKEN})?")
+_UNIT_TOKEN_RE = re.compile(rf"(rb|rt|rd|R|r|w|d|h|n)({_NUM})({LENGTH_UNIT_TOKEN})?")
 _UNIT_CHAMFER_RE = re.compile(
     rf"^({_NUM})({LENGTH_UNIT_TOKEN})?x({_NUM})({ANGLE_UNIT_TOKEN})?$"
 )
@@ -161,6 +182,21 @@ _ALIAS_KEYS: dict[str, tuple[str, ...]] = {
     "frustum": ("n", "rb", "rt", "h"),
     "pyramid": ("n", "r", "h"),
     "chamfer": ("size", "angle"),
+}
+
+#: The edge-rounding key (:class:`~precis.cad.primitives.Rounded`).
+ROUND_KEY = "rd"
+
+#: Aliases that accept ``rd``: every bounded convex solid with edges.
+ROUNDABLE: frozenset[str] = frozenset(
+    {"box", "cyl", "cone", "tcone", "hex", "ngon", "frustum", "pyramid"}
+)
+
+#: Aliases that refuse ``rd`` by name, with the reason the refusal quotes.
+_ROUND_REFUSED: dict[str, str] = {
+    "sphere": "a sphere is already round — drop rd (it would be a no-op)",
+    "torus": "a torus is already round — drop rd (it would be a no-op)",
+    "chamfer": "a chamfer is an unbounded half-space with no extent to shrink",
 }
 
 
@@ -262,7 +298,11 @@ def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
         raise DslError(
             f"{alias} needs {sorted(required)}, missing {sorted(missing)} in {config!r}"
         )
-    extra = params.keys() - required
+    if ROUND_KEY in params and alias not in ROUNDABLE:
+        raise DslError(
+            f"{alias} does not take rd: {_ROUND_REFUSED.get(alias, 'not roundable')}"
+        )
+    extra = params.keys() - required - {ROUND_KEY}
     if extra:
         raise DslError(f"{alias} got unexpected key(s) {sorted(extra)}")
 
@@ -270,7 +310,122 @@ def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
         n = params["n"]
         if n != int(n) or int(n) < 3:
             raise DslError(f"n must be an integer >= 3, got {n}")
+    if ROUND_KEY in params:
+        shrunk(alias, params)  # validates; raises DslError naming the dimension
     return ShapeSpec(alias, params)
+
+
+def _round_limit(alias: str, params: dict[str, float]) -> tuple[float, str]:
+    """The largest ``rd`` the ½·min-dimension rule allows and the name of
+    the dimension that sets it (``"h"``, ``"r"``, ``"w"`` …)."""
+    p = params
+    limits: list[tuple[float, str]] = []
+    if alias == "box":
+        limits = [(p["w"] / 2, "w"), (p["d"] / 2, "d"), (p["h"] / 2, "h")]
+    elif alias in ("cyl", "cone"):
+        limits = [(p["r"], "r (the diameter 2r)"), (p["h"] / 2, "h")]
+    elif alias == "tcone":
+        limits = [(p["rb"], "rb"), (p["rt"], "rt"), (p["h"] / 2, "h")]
+    elif alias in ("hex", "ngon", "pyramid"):
+        n = 6 if alias == "hex" else int(p["n"])
+        apothem = p["r"] * math.cos(math.pi / n)
+        limits = [(apothem, f"r (across-flats 2·r·cos(π/{n}))"), (p["h"] / 2, "h")]
+    elif alias == "frustum":
+        n = int(p["n"])
+        c = math.cos(math.pi / n)
+        limits = [
+            (p["rb"] * c, f"rb (across-flats 2·rb·cos(π/{n}))"),
+            (p["rt"] * c, f"rt (across-flats 2·rt·cos(π/{n}))"),
+            (p["h"] / 2, "h"),
+        ]
+    return min(limits)
+
+
+def _shrunk_slant(
+    ab: float, at: float, h: float, rd: float
+) -> tuple[float, float, float]:
+    """Inward parallel body of the meridian trapezoid ``(ab, 0)–(at, h)``
+    at offset ``rd`` — the shrunk bottom/top radii (or apothems) and
+    height. Caps move in by ``rd``; the lateral edge moves by ``rd``
+    along its own normal, which changes the radii by ``rd·(L ∓ (at−ab))/h``
+    (``L`` the slant length) — exactly ``rd`` only for a cylinder. When
+    the top closes up (``at' <= 0``: a cone, or a steep taper) the shrunk
+    body is the cone the offset lateral line makes with the base, height
+    from where that line meets the axis. Returns ``(ab', at', h')``."""
+    slant = math.hypot(at - ab, h)
+    ab2 = ab - rd * (slant - (at - ab)) / h
+    at2 = at - rd * (slant + (at - ab)) / h
+    h2 = h - 2 * rd
+    if at2 <= 0.0 and ab2 > 0.0:
+        # apex case: the offset lateral line meets the axis below h - rd
+        h2 = ab2 * h2 / (ab2 - at2)
+        at2 = 0.0
+    return ab2, at2, h2
+
+
+def shrunk(alias: str, params: dict[str, float]) -> dict[str, float]:
+    """The parameters of ``alias`` shrunk by ``params['rd']`` on every side
+    — what :func:`build` wraps in :class:`~precis.cad.primitives.Rounded`.
+
+    Raises :class:`DslError` (naming the shape and the dimension) when
+    ``rd >= ½·min_dimension`` — the thin-feature rule: the shrunk shape
+    would be empty or a face would vanish, and the kernel never clamps —
+    or when a cone/pyramid's shrunk body closes up at its slant (the
+    offset lateral line meets the axis below ``z = rd``; the ½ rule alone
+    does not exclude that for an apex shape, whereas it does keep both
+    caps of a ``tcone``/``frustum``).
+    """
+    rd = params[ROUND_KEY]
+    if not rd > 0.0:
+        raise DslError(f"{alias}: rd must be > 0 (got {rd}); drop rd for sharp edges")
+    limit, dim = _round_limit(alias, params)
+    if rd >= limit:
+        raise DslError(
+            f"{alias}: rd={format_dsl_number(rd)} >= ½·min dimension — the "
+            f"round would erase {dim}; rd must be < {format_dsl_number(limit)}"
+        )
+    p = params
+    out: dict[str, float]
+    if alias == "box":
+        out = {"w": p["w"] - 2 * rd, "d": p["d"] - 2 * rd, "h": p["h"] - 2 * rd}
+    elif alias == "cyl":
+        out = {"r": p["r"] - rd, "h": p["h"] - 2 * rd}
+    elif alias == "cone":
+        rb2, _rt2, h2 = _shrunk_slant(p["r"], 0.0, p["h"], rd)
+        out = {"r": rb2, "h": h2}
+    elif alias == "tcone":
+        rb2, rt2, h2 = _shrunk_slant(p["rb"], p["rt"], p["h"], rd)
+        out = {"rb": rb2, "rt": rt2, "h": h2}
+    elif alias in ("hex", "ngon"):
+        n = 6 if alias == "hex" else int(p["n"])
+        c = math.cos(math.pi / n)
+        out = {"r": p["r"] - rd / c, "h": p["h"] - 2 * rd}
+        if alias == "ngon":
+            out["n"] = p["n"]
+    elif alias == "pyramid":
+        n = int(p["n"])
+        c = math.cos(math.pi / n)
+        a2, _t2, h2 = _shrunk_slant(p["r"] * c, 0.0, p["h"], rd)
+        out = {"n": p["n"], "r": a2 / c, "h": h2}
+    elif alias == "frustum":
+        n = int(p["n"])
+        c = math.cos(math.pi / n)
+        ab2, at2, h2 = _shrunk_slant(p["rb"] * c, p["rt"] * c, p["h"], rd)
+        out = {"n": p["n"], "rb": ab2 / c, "rt": at2 / c, "h": h2}
+    else:  # pragma: no cover - parse guards alias
+        raise DslError(f"{alias} does not take rd")
+    # Only an apex shape can still close up here: for a tcone/frustum the
+    # ½ rule provably keeps both cap faces (rd < min(rb, rt, h/2) ⇒
+    # rb', rt' > 0 for every slant), but a cone/pyramid's offset lateral
+    # line can meet the axis below z = rd, leaving no shrunk body at all.
+    for key, value in out.items():
+        if key != "n" and not value > 0.0 and key != "rt":
+            raise DslError(
+                f"{alias}: rd={format_dsl_number(rd)} closes the shrunk shape "
+                f"up at its slant ({key} would be {format_dsl_number(value)}) "
+                "— use a smaller rd"
+            )
+    return out
 
 
 def build(spec: ShapeSpec) -> Primitive:
@@ -290,6 +445,12 @@ def build(spec: ShapeSpec) -> Primitive:
     """
     p = spec.params
     a = spec.alias
+    if ROUND_KEY in p:
+        rd = p[ROUND_KEY]
+        inner = build(ShapeSpec(a, shrunk(a, p)))
+        # Every roundable shape is base-at-z=0; lift the shrunk body by rd
+        # so the rounded solid's base plane stays at z=0 (contract).
+        return Rounded(inner=inner, r=rd, lift=rd)
     if a == "box":
         return box(p["w"], p["d"], p["h"])
     if a == "cyl":
@@ -352,8 +513,11 @@ def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
             f"chamfer:{format_dsl_number(spec.params['size'])}{suffix}"
             f"x{format_dsl_number(spec.params['angle'])}{angle_suffix}"
         )
+    keys: tuple[str, ...] = _ALIAS_KEYS[spec.alias]
+    if ROUND_KEY in spec.params:
+        keys = (*keys, ROUND_KEY)
     parts = "".join(
         f"{key}{format_dsl_number(spec.params[key])}{'' if key == 'n' else suffix}"
-        for key in _ALIAS_KEYS[spec.alias]
+        for key in keys
     )
     return f"{spec.alias}:{parts}"

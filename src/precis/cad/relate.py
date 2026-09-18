@@ -53,8 +53,9 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 
-from precis.cad.fold import Diff, Expr, Inter, Leaf, Union
+from precis.cad.fold import Diff, Expr, Inter, Leaf, Union, expr_sdf, expr_sdf_np
 from precis.cad.graph import Design
 from precis.cad.vec import Vec3, as_vec3, normalize, vec3
 
@@ -97,20 +98,17 @@ _STARTS = 4
 
 
 def component_sdf(design: Design, expr: Expr, p: Vec3) -> float:
-    """Exact-sign CSG signed distance of a point to a component's material."""
-    p = as_vec3(p)
-    if isinstance(expr, Leaf):
-        return float(design.instances[expr.iid].placed.distance(p))
-    if isinstance(expr, Union):
-        return min(component_sdf(design, part, p) for part in expr.parts)
-    if isinstance(expr, Inter):
-        return max(component_sdf(design, part, p) for part in expr.parts)
-    if isinstance(expr, Diff):
-        d = component_sdf(design, expr.base, p)
-        for c in expr.cutters:
-            d = max(d, -component_sdf(design, c, p))
-        return d
-    raise TypeError(f"unknown expr node: {expr!r}")
+    """Exact-sign CSG signed distance of a point to a component's material
+    (:func:`precis.cad.fold.expr_sdf` over the design's instances — one
+    fold, shared with the field-export backend)."""
+    return expr_sdf(expr, as_vec3(p), design.instances)
+
+
+def component_sdf_np(
+    design: Design, expr: Expr, pts: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """:func:`component_sdf` for an ``(N, 3)`` point array at once."""
+    return expr_sdf_np(expr, np.asarray(pts, dtype=np.float64), design.instances)
 
 
 def _grad(f, p: Vec3, eps: float) -> Vec3:
@@ -157,6 +155,38 @@ def _bounds(design: Design, expr: Expr) -> tuple[Vec3, Vec3] | None:
             walk(base)
         for c in getattr(e, "cutters", ()):
             walk(c)
+
+    walk(expr)
+    if not los:
+        return None
+    return np.min(np.array(los), axis=0), np.max(np.array(his), axis=0)
+
+
+def _positive_bounds(design: Design, expr: Expr) -> tuple[Vec3, Vec3] | None:
+    """Union AABB of one expr's **positive material** only: ``Union`` parts
+    and ``Diff`` bases, never a ``Diff`` cutter or an ``Inter`` part beyond
+    the first — those can only *remove* material, so including them can
+    only shrink the true extent, and an oversized subtractive tool (a huge
+    cutting cylinder on a small part) must not be allowed to inflate this
+    box. Unlike :func:`_bounds`, this is a conservative superset of the
+    material, not the tight union of every leaf — good enough (and only
+    used) for sizing the field-export auto pitch."""
+    los: list[Vec3] = []
+    his: list[Vec3] = []
+
+    def walk(e: Expr) -> None:
+        if isinstance(e, Leaf):
+            lo, hi = design.instances[e.iid].placed.aabb()
+            if np.all(np.isfinite(lo)):
+                los.append(lo)
+                his.append(hi)
+        elif isinstance(e, Union):
+            for part in e.parts:
+                walk(part)
+        elif isinstance(e, Diff):
+            walk(e.base)
+        elif isinstance(e, Inter):
+            walk(e.parts[0])
 
     walk(expr)
     if not los:
