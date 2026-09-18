@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: a claim hub cannot cite a computed pathway as evidence
 prio: normal
 ---
@@ -86,3 +86,52 @@ landing.
 - Should the pathway's `config_snapshot_yaml` be part of what a citation pins,
   or is the content key (which already folds it) sufficient? Key is probably
   enough; the snapshot is for humans reading the audit trail.
+
+## Status 2026-09-17
+
+Slice 1 (evidence edge + tier + content-key pin) implemented in
+`src/precis/taproot/hub.py`: `attach_evidence` now accepts a `pathway` src
+(new `PATHWAY_EVIDENCE_KINDS`, deliberately separate from
+`EVIDENCE_SRC_KINDS` — the latter still feeds `taproot/seniority.py`'s
+citation-graph originator derivation, meaningless for compute) and writes
+the edge with the existing `corroborates` role only (never `establishes` —
+enforced), reusing `store.add_link`, no new relation, no migration. Edge
+`meta` gains `{"tier": "computed", "content_key": ..., "pathway_ref_id":
+...}`. Guards (`_pathway_evidence_meta`, reading `meta['results']
+['trust_summary']['barrier']['available']` per
+`precis_pathway/persist.py::pathway_meta`): refuses a `meta.status ==
+"superseded"` pathway naming `superseded_by`; refuses when
+`trust_summary.barrier.available` isn't truthy, naming the field; refuses a
+pathway with no `meta.content_key` to pin. Chunk-grounding and the
+Crossref retraction check are both skipped for a pathway src (no text, no
+DOI) — the existing `check_retraction and kind == "paper"` gate already
+excludes it.
+
+Still open, not touched this slice:
+
+- **Read-time staleness surfacing.** `quest/compute.py::dispatch_autocatpath`
+  only stamps a prior pathway `superseded` when it was still `"computing"` —
+  a `"ready"` prior pathway that a citation already pinned is left alone
+  even after a fresher re-dispatch, so a citation can go stale without the
+  write-time guard ever seeing it. Needs a read-time check (rendering the
+  hub, or an audit pass) that compares a pinned `content_key` against the
+  candidate's current pathway, not just attach-time.
+- **Magnitude re-check.** No verbatim-quote analogue yet: a claim's stated
+  barrier value is not re-checked against `results.graph.links[].barrier` /
+  `barrier_std` at attach time or read time.
+- **Nanopub bundle visibility.** `src/precis/nanopub/evidence.py`'s
+  `_EVIDENCE_KINDS` is still paper/patent only, so a pathway-sourced
+  evidence edge is invisible to nanopub assembly even once attached here.
+
+Also downstream of `attach_evidence` (not edited, listed for the next
+slice): `precis/taproot/seniority.py`'s evidence queries filter
+`p.kind = ANY(_EVIDENCE_SRC_KINDS)`, so a pathway edge is silently excluded
+from `derive_evidence`/`derive_evidence_bulk` — a pathway-sourced hub shows
+no originators/corroborators on the claim page today, even though the edge
+is durably written. `precis/taproot/repair_evidence.py` filters
+`s.kind IN ('paper', 'patent')` (narrower still). `precis_web/routes/
+nanopub.py`'s evidence-attach form only parses `pa`/`pt` source-ref
+prefixes. `precis/taproot/cite.py` and `precis_web/claim_render.py` build
+citation/rendering handles via `handle_registry.format_handle("paper",
+...)`, unreachable for a pathway edge today because seniority.py already
+filters it out upstream.

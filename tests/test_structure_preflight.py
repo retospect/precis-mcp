@@ -113,6 +113,25 @@ class TestClash:
         assert any({r.atom} & set(labels) for r in clashes)
         assert verdict.ok is False
 
+    def test_an_overlap_the_settle_can_repair_still_fails(self) -> None:
+        """qu164903 st339059: a 'subsurface' H 0.53 Å under a top-layer Pd.
+        The classical settle pushes it clear, so the settled-geometry clash
+        check saw nothing — but nothing persists the settled positions, and
+        the overlapping template is what reached the NEB. The proposed
+        geometry itself is judged."""
+        scene = _pd_slab()
+        top = max(scene.atoms.values(), key=lambda a: a.frac[2])
+        below = top.frac.copy()
+        below[2] -= 0.53 / float(np.linalg.norm(scene.cell.lattice[2]))
+        label = scene.next_label("H")
+        scene.atoms[label] = Atom(label=label, element="H", frac=below)
+
+        verdict = pf.preflight(scene)
+        clashes = [r for r in verdict.reasons if r.code == "clash"]
+        assert verdict.ok is False
+        assert any(r.atom == label or top.label in r.message for r in clashes)
+        assert any("proposed" in r.message for r in clashes)
+
 
 class TestPorous:
     def test_sparse_arrangement_flagged_as_porous(self) -> None:

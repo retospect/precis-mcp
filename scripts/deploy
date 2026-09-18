@@ -422,12 +422,35 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
             # change the wheel, and refusing them would be the same false
             # alarm in a new place; src/ plus pyproject.toml (metadata, deps,
             # packaging config) is what a build actually reads.
+            _BUILD_DIR="$_CATPATH_DIR"
+            _PIN_WT=""
             _LOCKED="$(autocatpath_locked_sha "${REPO_ROOT}/uv.lock" || true)"
             if [[ -n "$_LOCKED" ]]; then
                 git -C "$_CATPATH_DIR" cat-file -e "${_LOCKED}^{commit}" 2>/dev/null \
                     || die "uv.lock pins autocatpath at ${_LOCKED}, but that commit is not in ${_CATPATH_DIR} even after a fetch — the checkout is on a different remote, or the pin references an unpushed commit. Fix the checkout, or build on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
-                git -C "$_CATPATH_DIR" diff --quiet "$_LOCKED" HEAD -- src pyproject.toml 2>/dev/null \
-                    || die "catpath at ${_CATPATH_DIR} would build packaged code that differs from the commit uv.lock pins (${_LOCKED}) — and both builds are labelled ${_PROJ_V}, so nothing downstream could tell them apart. Either check that commit out, or run 'uv lock -P autocatpath' here to depend on the newer code deliberately. (gr263082)"
+                if ! git -C "$_CATPATH_DIR" diff --quiet "$_LOCKED" HEAD -- src pyproject.toml 2>/dev/null; then
+                    # The checkout is clean but its packaged code is not the
+                    # pinned commit's: catpath moved ahead of the pin, or the
+                    # operator is mid-work on another branch. Refusing here
+                    # was the first answer, and it turned every deploy after
+                    # a catpath release into a "check the pin out, deploy,
+                    # check main back out" dance done by hand. The pin IS
+                    # what precis depends on, so build exactly that from a
+                    # throwaway detached worktree and remove it afterwards.
+                    # The dirty-tree check above still applies — a worktree
+                    # cannot rescue code nobody has committed.
+                    _PIN_WT="$(mktemp -d "${TMPDIR:-/tmp}/autocatpath-pin.XXXXXX")"
+                    git -C "$_CATPATH_DIR" worktree add --detach -q "$_PIN_WT" "$_LOCKED" 2>/dev/null \
+                        || die "could not check the pinned autocatpath commit ${_LOCKED} out into a throwaway worktree at ${_PIN_WT}. (gr263082)"
+                    _BUILD_DIR="$_PIN_WT"
+                    _PIN_V="$(autocatpath_project_version "${_PIN_WT}/pyproject.toml" || true)"
+                    if [[ -z "$_PIN_V" ]] || ! version_ge "$_PIN_V" "$_FLOOR"; then
+                        git -C "$_CATPATH_DIR" worktree remove --force "$_PIN_WT" 2>/dev/null || rm -rf "$_PIN_WT"
+                        die "uv.lock pins autocatpath at ${_LOCKED}, which declares version ${_PIN_V:-?} — below the floor >=${_FLOOR} this repo's pyproject demands. Run 'uv lock -P autocatpath' here so the lock and the floor agree. (gr263082)"
+                    fi
+                    _PROJ_V="$_PIN_V"
+                    say "catpath at ${_CATPATH_DIR} is not at the pinned commit — building ${_PROJ_V} from a throwaway worktree at ${_LOCKED:0:12}"
+                fi
             else
                 # No git pin to check against (autocatpath resolved from an
                 # index, or a stale lock). Fall back to the weaker signal
@@ -438,8 +461,18 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
             fi
 
             say "building autocatpath ${_PROJ_V} wheel (floor >=${_FLOOR}, nothing that new in ${_CATPATH_DIR}/dist)"
-            (cd "$_CATPATH_DIR" && uv build --wheel --out-dir dist) \
-                || die "autocatpath wheel build failed in ${_CATPATH_DIR} — the cluster cannot resolve autocatpath>=${_FLOOR} without it. (gr263082)"
+            # The wheel always lands in the checkout's own dist/ — a worktree
+            # build's dist/ would vanish with the worktree.
+            if (cd "$_BUILD_DIR" && uv build --wheel --out-dir "${_CATPATH_DIR}/dist"); then
+                _BUILD_RC=0
+            else
+                _BUILD_RC=$?
+            fi
+            if [[ -n "$_PIN_WT" ]]; then
+                git -C "$_CATPATH_DIR" worktree remove --force "$_PIN_WT" 2>/dev/null || rm -rf "$_PIN_WT"
+            fi
+            [[ "$_BUILD_RC" == "0" ]] \
+                || die "autocatpath wheel build failed in ${_BUILD_DIR} — the cluster cannot resolve autocatpath>=${_FLOOR} without it. (gr263082)"
             _WHEEL="$(newest_autocatpath_wheel "${_CATPATH_DIR}/dist" || true)"
             [[ -n "$_WHEEL" ]] && version_ge "$(autocatpath_wheel_version "$_WHEEL")" "$_FLOOR" \
                 || die "built autocatpath in ${_CATPATH_DIR} but still no wheel >=${_FLOOR} in dist/. (gr263082)"

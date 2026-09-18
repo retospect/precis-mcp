@@ -275,11 +275,20 @@ def preflight(
 
     try:
         atoms, labels = _scene_to_ase(scene)
+        # The proposed geometry is what gets persisted and dispatched, so an
+        # overlap is judged BEFORE the settle has a chance to hide it.
+        proposed = _clash_reasons(scene, atoms, labels, settled=False)
         _settle(atoms)
     except Exception:  # any ASE/conversion/settle failure ⇒ nothing to judge
         return PreflightVerdict(ok=not reasons, reasons=reasons, caveats=caveats)
 
-    reasons.extend(_geometry_checks(scene, atoms, labels))
+    reasons.extend(proposed)
+    seen = {(r.atom, r.message.split(" are ")[0]) for r in proposed}
+    reasons.extend(
+        r
+        for r in _geometry_checks(scene, atoms, labels)
+        if not (r.code == "clash" and (r.atom, r.message.split(" are ")[0]) in seen)
+    )
     return PreflightVerdict(ok=not reasons, reasons=reasons, caveats=caveats)
 
 
@@ -509,39 +518,60 @@ def _vacuum_gaps(scaled: np.ndarray, axis: int) -> list[tuple[float, float]]:
     return gaps
 
 
+def _clash_reasons(
+    scene: Scene, atoms, labels: list[str], *, settled: bool
+) -> list[PreflightReason]:
+    """Every non-frozen pair closer than ``MIN_BOND`` — one reason per pair.
+
+    Runs twice: on the PROPOSED geometry (``settled=False``) and on the
+    settled one. The proposed pass is the one that gates: nothing persists
+    the settled positions, so an overlap the settle can push apart still
+    reaches the MLIP and the NEB as proposed. qu164903 st339059 is the case
+    — a "subsurface" H 0.53 Å under a top-layer Pd settled clear, passed,
+    and every reconstruction record on the pathway was then graded on a
+    0.55 Å lattice scale.
+    """
+    from ase.neighborlist import neighbor_list
+
+    reasons: list[PreflightReason] = []
+    if len(labels) < 2:
+        return reasons
+    is_frozen = [scene.atoms[la].fixed == FIX_ALL for la in labels]
+    when = "even after settling" if settled else "in the proposed geometry"
+    i_idx, j_idx, d = neighbor_list("ijd", atoms, MIN_BOND)
+    for i, j, dist in zip(i_idx, j_idx, d):
+        if i >= j:
+            continue  # dedupe the symmetric (i,j)/(j,i) pair
+        if is_frozen[i] and is_frozen[j]:
+            continue  # both part of the rigid pre-existing lattice
+        la, lb = labels[i], labels[j]
+        reasons.append(
+            PreflightReason(
+                code="clash",
+                atom=la,
+                element=scene.atoms[la].element,
+                message=(
+                    f"atom {la} ({scene.atoms[la].element}) and {lb} "
+                    f"({scene.atoms[lb].element}) are {dist:.2f} Å "
+                    f"apart — below the {MIN_BOND:.2f} Å clash floor "
+                    f"{when}; separate them (add_atom_site names a real "
+                    "site) or remove one."
+                ),
+            )
+        )
+    return reasons
+
+
 def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightReason]:
     reasons: list[PreflightReason] = []
     n = len(labels)
     if n == 0:
         return reasons
 
-    is_frozen = [scene.atoms[la].fixed == FIX_ALL for la in labels]
+    from ase.data import atomic_numbers, covalent_radii
 
     # -- clash: any non-frozen-frozen pair still sub-``MIN_BOND`` apart -----
-    from ase.data import atomic_numbers, covalent_radii
-    from ase.neighborlist import neighbor_list
-
-    if n > 1:
-        i_idx, j_idx, d = neighbor_list("ijd", atoms, MIN_BOND)
-        for i, j, dist in zip(i_idx, j_idx, d):
-            if i >= j:
-                continue  # dedupe the symmetric (i,j)/(j,i) pair
-            if is_frozen[i] and is_frozen[j]:
-                continue  # both part of the rigid pre-existing lattice
-            la, lb = labels[i], labels[j]
-            reasons.append(
-                PreflightReason(
-                    code="clash",
-                    atom=la,
-                    element=scene.atoms[la].element,
-                    message=(
-                        f"atom {la} ({scene.atoms[la].element}) and {lb} "
-                        f"({scene.atoms[lb].element}) are {dist:.2f} Å "
-                        f"apart — below the {MIN_BOND:.2f} Å clash floor "
-                        "even after settling; separate them or remove one."
-                    ),
-                )
-            )
+    reasons.extend(_clash_reasons(scene, atoms, labels, settled=True))
 
     # -- detached: an adsorbate atom too far from every slab atom ----------
     slab_idx, ads_idx = _slab_adsorbate_indices(scene, atoms, labels)

@@ -111,6 +111,21 @@ EVIDENCE_SRC_KINDS: frozenset[str] = frozenset(
     {"paper", "patent", "edgar", "datasheet"}
 )
 
+#: A second, SEPARATE evidence-source set for a ``pathway`` src
+#: (docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md) —
+#: deliberately never folded into :data:`EVIDENCE_SRC_KINDS`. That set is
+#: pinned by ``tests/test_kind_totality.py`` against the corpus_role
+#: derivation and re-exported to :mod:`precis.taproot.seniority`'s
+#: citation-graph originator derivation, which walks ``cites`` edges among
+#: supporters — meaningless for a compute artifact that cites nothing. A
+#: pathway is content-addressed, not provenance-addressed: it earns
+#: citability from its OWN trust summary (:func:`_pathway_evidence_meta`),
+#: not from a citation graph, and it attaches at an explicitly weaker tier
+#: (``meta.tier == "computed"``) than a paper/patent measurement — never as
+#: an ``establishes`` originator. Guarded separately in
+#: :func:`attach_evidence`, below.
+PATHWAY_EVIDENCE_KINDS: frozenset[str] = frozenset({"pathway"})
+
 
 class TitleRoundTripError(RuntimeError):
     """Raised when a just-written ``refs.title`` doesn't read back
@@ -591,6 +606,94 @@ def refine_claim_sentence(
         return _do(c)
 
 
+def _pathway_trust_summary(meta: dict[str, Any]) -> dict[str, Any]:
+    """A pathway ref's ``trust_summary`` dict, wherever it landed.
+
+    :func:`precis_pathway.persist.pathway_meta` stores catpath's
+    ``results.json`` verbatim under ``meta['results']`` — the shape every
+    pathway persisted today carries, so ``trust_summary`` lives at
+    ``meta['results']['trust_summary']`` (see also
+    :func:`precis.quest.compute._pathway_quality_v1`, the other reader of
+    this exact path). Also checked directly at ``meta['trust_summary']``,
+    defensively, in case a future persist shape promotes it to the top
+    level. ``{}`` when neither location holds a dict.
+    """
+    top = meta.get("trust_summary")
+    if isinstance(top, dict):
+        return top
+    results = meta.get("results")
+    if isinstance(results, dict):
+        nested = results.get("trust_summary")
+        if isinstance(nested, dict):
+            return nested
+    return {}
+
+
+def _pathway_evidence_meta(
+    *, pathway_ref_id: int, src_meta: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate a ``pathway`` src is citable evidence for a claim hub and
+    return the edge ``meta`` to merge in.
+
+    Policy (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
+    evidence.md): a computed pathway becomes citable evidence once its own
+    trust summary says the barrier is available, at an explicitly weaker
+    tier than a measurement. Raises :class:`BadInput` naming the
+    missing/false field otherwise:
+
+    * ``meta.status == "superseded"`` — a re-dispatch (content-key change)
+      already produced a fresher pathway; names ``meta.superseded_by``.
+    * ``trust_summary.barrier.available`` not truthy (see
+      :func:`_pathway_trust_summary`).
+    * no (string) ``meta.content_key`` — the citation pins
+      ``(pathway_ref_id, content_key)``, so a pathway that predates
+      content-key stamping has nothing to pin.
+
+    Returns ``{"tier": "computed", "content_key": ..., "pathway_ref_id":
+    ...}`` to merge into the evidence edge's ``meta``.
+    """
+    if src_meta.get("status") == "superseded":
+        superseded_by = src_meta.get("superseded_by")
+        raise BadInput(
+            f"pathway ref_id={pathway_ref_id} is superseded"
+            + (f" by ref_id={superseded_by}" if superseded_by is not None else ""),
+            next=(
+                "attach the superseding pathway instead — a superseded "
+                "pathway's content key is stale evidence"
+            ),
+        )
+
+    trust_summary = _pathway_trust_summary(src_meta)
+    barrier = trust_summary.get("barrier")
+    barrier = barrier if isinstance(barrier, dict) else {}
+    if not barrier.get("available"):
+        raise BadInput(
+            f"pathway ref_id={pathway_ref_id} trust_summary.barrier.available "
+            f"is {barrier.get('available')!r}, not truthy",
+            next=(
+                "a pathway is citable evidence only once its own trust "
+                "summary reports the barrier available — rerun or wait for "
+                "the compute to converge"
+            ),
+        )
+
+    content_key = src_meta.get("content_key")
+    if not content_key or not isinstance(content_key, str):
+        raise BadInput(
+            f"pathway ref_id={pathway_ref_id} carries no meta.content_key",
+            next=(
+                "this pathway predates content-key stamping — re-dispatch it "
+                "so the evidence edge can pin (pathway_ref_id, content_key)"
+            ),
+        )
+
+    return {
+        "tier": "computed",
+        "content_key": content_key,
+        "pathway_ref_id": pathway_ref_id,
+    }
+
+
 def run_retraction_checks(
     store: Store, paper_ref_ids: list[int], *, hub_ref_id: int | None = None
 ) -> None:
@@ -632,10 +735,13 @@ def attach_evidence(
     ``role`` must be one of :data:`HUB_ROLES` and a registered relation
     (:func:`validate_relation`). ``hub_ref_id`` must be a ``TAPROOT:claim``
     finding, NOT a **compound** hub (raises otherwise); the source must be
-    an evidence-source ref (:data:`EVIDENCE_SRC_KINDS`). Directed **paper
-    -> hub**; the hub reads evidence via ``links_for(direction='in',
-    relation=role)``. ``meta`` carries the chase verdict
-    (``support``/``support_reason``/``caveats``/``char_offset``/
+    an evidence-source ref (:data:`EVIDENCE_SRC_KINDS`) OR a computed
+    ``pathway`` (:data:`PATHWAY_EVIDENCE_KINDS`; docs/backlog/computed-
+    pathways-cannot-be-cited-as-claim-evidence.md — see
+    :func:`_pathway_evidence_meta` for that branch's own guards and edge
+    meta). Directed **paper -> hub**; the hub reads evidence via
+    ``links_for(direction='in', relation=role)``. ``meta`` carries the chase
+    verdict (``support``/``support_reason``/``caveats``/``char_offset``/
     ``source_handle``). Also the single mechanical choke point for the
     prophetic-example caveat: a patent source whose grounding chunk
     carries ``PATENT_EXAMPLE:prophetic`` gets
@@ -698,14 +804,53 @@ def attach_evidence(
         src = store.fetch_refs_by_ids([paper_ref_id], include_deleted=True).get(
             paper_ref_id
         )
-        if src is None or src.kind not in EVIDENCE_SRC_KINDS:
-            kind_desc = "unknown" if src is None else src.kind
+        if src is None:
             raise BadInput(
-                f"paper_ref_id={paper_ref_id} is a {kind_desc!r} ref, not a "
+                f"paper_ref_id={paper_ref_id} does not exist",
+                next=(
+                    "evidence edges attach only from a paper/patent/pathway source ref"
+                ),
+            )
+        src_kind_box["kind"] = src.kind
+
+        if src.kind in PATHWAY_EVIDENCE_KINDS:
+            # Compute evidence (docs/backlog/computed-pathways-cannot-be-
+            # cited-as-claim-evidence.md) — a wholly separate branch from
+            # the paper/patent path below: no text chunk to ground at, no
+            # DOI to check retraction against (the check_retraction gate
+            # below already excludes any non-"paper" kind), and the caveat
+            # this attaches is its own trust-summary guard rather than the
+            # prophetic-example one.
+            if role != "corroborates":
+                raise BadInput(
+                    f"pathway evidence attaches only as role='corroborates', "
+                    f"not {role!r}",
+                    next=(
+                        "a computed pathway is never a claim's citation-graph "
+                        "originator — attach it with role='corroborates'"
+                    ),
+                )
+            pathway_extra = _pathway_evidence_meta(
+                pathway_ref_id=paper_ref_id, src_meta=dict(src.meta or {})
+            )
+            pathway_edge_meta = dict(meta or {})
+            pathway_edge_meta.update(pathway_extra)
+            store.add_link(
+                src_ref_id=paper_ref_id,
+                dst_ref_id=hub_ref_id,
+                relation=validated,
+                meta=pathway_edge_meta,
+                set_by=set_by,
+                conn=c,
+            )
+            return
+
+        if src.kind not in EVIDENCE_SRC_KINDS:
+            raise BadInput(
+                f"paper_ref_id={paper_ref_id} is a {src.kind!r} ref, not a "
                 "paper/patent",
                 next="evidence edges attach only from a paper/patent source ref",
             )
-        src_kind_box["kind"] = src.kind
         # Ground the edge at the specific supporting passage when the
         # verdict/spec named one (meta.source_handle → src_chunk_id), so the
         # edge is pc<id>-granular. Falls back to a ref-level (pa<id>) edge

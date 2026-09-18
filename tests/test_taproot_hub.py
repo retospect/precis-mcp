@@ -707,6 +707,127 @@ def test_attach_evidence_prophetic_caveat_not_duplicated(store: Any) -> None:
     assert _link_meta(store, patent, hub)["caveats"] == [PROPHETIC_EXAMPLE_CAVEAT]
 
 
+# ── attach_evidence — computed pathway sources ──────────────────────────
+# (docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md
+# slice 1: a pathway attaches as weaker-tier evidence once its own trust
+# summary says the barrier is available.)
+
+
+def _seed_pathway_kind(store: Any) -> None:
+    """Idempotently seed the ``pathway`` ref kind (+ its ``pathway_body``
+    chunk kind) directly, mirroring
+    ``src/precis_pathway/migrations/0001_pathway_kind.sql`` verbatim.
+
+    The plain ``store`` fixture only carries the precis-core migration
+    ledger — ``pathway`` is a plugin kind (``precis_pathway``'s own
+    migration namespace), same as ``tests/test_pathway_plugin.py``'s
+    ``pathway_store`` fixture applies. Inlined here (rather than importing
+    ``precis_pathway`` and globbing its migrations dir) so this hub.py-only
+    test file doesn't take on the plugin's heavier import surface just to
+    seed one vocabulary row.
+    """
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO kinds (slug, is_numeric, title, description) "
+            "VALUES ('pathway', FALSE, 'Reaction pathway (autocatpath)', "
+            "'A catalyst reaction-network exploration (autocatpath).') "
+            "ON CONFLICT (slug) DO NOTHING"
+        )
+        conn.execute(
+            "INSERT INTO chunk_kinds (slug, is_card, description) "
+            "VALUES ('pathway_body', FALSE, "
+            "'autocatpath pathway methods paragraph.') "
+            "ON CONFLICT (slug) DO NOTHING"
+        )
+        conn.commit()
+
+
+def _seed_pathway(
+    store: Any,
+    *,
+    slug: str = "probe-rx-abc123",
+    content_key: str | None = "sha-abc123",
+    barrier_available: bool = True,
+    status: str = "ready",
+    extra_meta: dict[str, Any] | None = None,
+) -> int:
+    """Insert a minimal ``pathway`` ref carrying a catpath-shaped ``meta``
+    (:func:`precis_pathway.persist.pathway_meta`'s output shape:
+    ``content_key``/``status`` top-level, ``trust_summary`` nested under
+    ``results``)."""
+    _seed_pathway_kind(store)
+    meta: dict[str, Any] = {
+        "status": status,
+        "results": {"trust_summary": {"barrier": {"available": barrier_available}}},
+    }
+    if content_key is not None:
+        meta["content_key"] = content_key
+    if extra_meta:
+        meta.update(extra_meta)
+    ref = store.insert_ref(
+        kind="pathway", slug=slug, title=f"pathway {slug}", meta=meta
+    )
+    return int(ref.id)
+
+
+def test_attach_evidence_pathway_with_barrier_available_corroborates(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="probe-rx-aaa111", content_key="sha-aaa111")
+
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
+
+    assert _edge(store, pathway, hub) == "corroborates"
+    edge_meta = _link_meta(store, pathway, hub)
+    assert edge_meta["tier"] == "computed"
+    assert edge_meta["content_key"] == "sha-aaa111"
+    assert edge_meta["pathway_ref_id"] == pathway
+
+
+def test_attach_evidence_pathway_barrier_unavailable_refuses(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="probe-rx-bbb222",
+        content_key="sha-bbb222",
+        barrier_available=False,
+    )
+
+    with pytest.raises(BadInput, match="barrier.available"):
+        attach_evidence(
+            store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates"
+        )
+
+
+def test_attach_evidence_pathway_superseded_refuses_naming_superseded_by(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(
+        store,
+        slug="probe-rx-ccc333",
+        content_key="sha-ccc333",
+        status="superseded",
+        extra_meta={"superseded_by": 999999},
+    )
+
+    with pytest.raises(BadInput, match="999999"):
+        attach_evidence(
+            store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates"
+        )
+
+
+def test_attach_evidence_pathway_without_content_key_refuses(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="probe-rx-ddd444", content_key=None)
+
+    with pytest.raises(BadInput, match="content_key"):
+        attach_evidence(
+            store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates"
+        )
+
+
 # ── apply_placement — routes every place() action ───────────────────────
 
 

@@ -218,6 +218,34 @@ def test_deploy_refuses_to_build_from_a_stale_or_dirty_checkout() -> None:
         assert at < build_at, f"{guard!r} must gate the build, not follow it"
 
 
+def test_deploy_builds_the_pinned_commit_when_the_checkout_has_moved_on() -> None:
+    """A clean checkout that is not at the commit uv.lock pins used to be a
+    hard refusal, which made every deploy after a catpath release a manual
+    "check the pin out, deploy, check main back out" dance. The pin is what
+    precis depends on, so deploy now builds exactly that from a throwaway
+    worktree — and removes it again, on success or failure — while the
+    dirty-tree and missing-commit refusals stay in front of the build.
+    """
+    deploy = (REPO_ROOT / "scripts" / "deploy").read_text(encoding="utf-8")
+    preflight_at = deploy.index("autocatpath_floor")
+    build_at = deploy.index("uv build --wheel")
+
+    assert "would build packaged code that differs" not in deploy, (
+        "the pin mismatch must be built from, not refused"
+    )
+    worktree_add = deploy.index("worktree add --detach", preflight_at)
+    assert worktree_add < build_at, "the pinned worktree must exist before the build"
+    for guard in ("status --porcelain", "cat-file -e"):
+        assert deploy.index(guard, preflight_at) < worktree_add, (
+            f"{guard!r} must still gate the worktree build"
+        )
+    # Removed on both paths — once for a pin below the floor, once after the build.
+    assert deploy.count("worktree remove --force", preflight_at) >= 2
+    assert '--out-dir "${_CATPATH_DIR}/dist"' in deploy, (
+        "a worktree's own dist/ vanishes with it; the wheel must land in the checkout"
+    )
+
+
 _LOCK_OTHER = (
     "[[package]]\n"
     'name = "aaa-other"\n'

@@ -301,6 +301,15 @@ never `tracing`/`established`), and the default cohort unions hubs in by
 their `TAPROOT:claim` tag alongside `established` findings. Drill one with
 `view='evidence'` (above).
 
+**A computed `pathway` can be evidence too, at a weaker tier.** A pathway
+whose own trust summary reports the barrier available attaches to a hub as
+`corroborates` only (never `establishes`), and the edge carries
+`tier: computed` plus the pathway's content key, so a re-dispatch that
+supersedes it makes the citation visibly stale instead of silently wrong.
+A pathway with the barrier unavailable, already `superseded`, or minted
+before content-key stamping is refused with the field named — a simulation
+is not the world, and the edge says so.
+
 ### Read a hub as its neighborhood — the eye ladder
 
 `view=` also takes the extent ladder
