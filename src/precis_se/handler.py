@@ -24,9 +24,10 @@ order"):
 - ``edit``   — apply more ops (``ops=`` or ``text=`` JSON) to an existing
   design's live tree.
 - ``get``    — list designs (no ``id``), a design's nested tree TOC
-  (``id=slug``, the default view), one block's full record
-  (``view='block'``, ``args={'name': ...}``), every block's ports
-  (``view='ports'``), measures + stack-up (``view='measures'`` —
+  (``id=slug``, the default view — siblings in connect order when
+  any connect joins them, else alphabetical), one block's full record
+  (``view='block'``, ``args={'name': ...}``), every block's ports with
+  each port's connect peer (``view='ports'``), measures + stack-up (``view='measures'`` —
   :mod:`precis_se.measures`), the deterministic datum ranking and which
   measures hang off each datum (``view='datums'`` —
   :mod:`precis_se.datums`), feasibility findings with the
@@ -1668,6 +1669,58 @@ def _block_line(tree: SeTree, node: SeBlock) -> str:
     return "  ".join(parts)
 
 
+def _sibling_order(tree: SeTree, names: list[str]) -> list[str]:
+    """Order one sibling group along its connects, not the alphabet
+    (gr334772: a linear chain printed anchor_a, anchor_b, azo, rod_a,
+    rod_b and left the reader to re-derive the physical order from
+    poses). Connects between two blocks of the group are edges; each
+    connected component is walked from its lowest-pose end (a chain's
+    degree-1 endpoint when it has one), neighbours by pose; components
+    come out lowest-pose first; blocks with no connect in the group
+    follow alphabetically. Alphabetical when nothing connects."""
+    group = set(names)
+    adj: dict[str, set[str]] = {n: set() for n in names}
+    for c in tree.connects:
+        if c.a_block in group and c.b_block in group and c.a_block != c.b_block:
+            adj[c.a_block].add(c.b_block)
+            adj[c.b_block].add(c.a_block)
+    if not any(adj.values()):
+        return sorted(names)
+
+    def _pos(n: str) -> tuple[float, float, float, str]:
+        x, y, z = tree.blocks[n].pose
+        return (float(x), float(y), float(z), n)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    connected = sorted((n for n in names if adj[n]), key=_pos)
+    for start in connected:
+        if start in seen:
+            continue
+        component = {start}
+        frontier = [start]
+        while frontier:
+            n = frontier.pop()
+            for m in adj[n]:
+                if m not in component:
+                    component.add(m)
+                    frontier.append(m)
+        ends = [n for n in component if len(adj[n]) == 1]
+        head = min(ends or component, key=_pos)
+        stack = [head]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            ordered.append(n)
+            stack.extend(
+                sorted((m for m in adj[n] if m not in seen), key=_pos, reverse=True)
+            )
+    ordered.extend(sorted(n for n in names if n not in seen))
+    return ordered
+
+
 def _render_tree(tree: SeTree, title: str, description: str) -> str:
     lines = [f"# se design '{title}'  (units: metres)"]
     if description:
@@ -1678,8 +1731,16 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
     children: dict[str | None, list[str]] = {}
     for name, node in tree.blocks.items():
         children.setdefault(node.parent, []).append(name)
-    for kids in children.values():
-        kids.sort()
+    reordered = False
+    for parent, kids in children.items():
+        ordered = _sibling_order(tree, kids)
+        if ordered != sorted(kids):
+            reordered = True
+        children[parent] = ordered
+    if reordered:
+        lines.append(
+            "(siblings listed in connect order — see view='ports' for each peer)"
+        )
 
     def _walk(name: str, depth: int, path: tuple[str, ...]) -> None:
         node = tree.blocks[name]
@@ -1701,7 +1762,7 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
             _walk(child, depth + 1, (*path, source))
 
     lines.append("")
-    for root in sorted(children.get(None, [])):
+    for root in children.get(None, []):
         _walk(root, 0, ())
     return "\n".join(lines)
 
@@ -1951,10 +2012,17 @@ def _binding_line(tree: SeTree, node: SeBlock) -> str:
 
 def _render_ports(tree: SeTree) -> str:
     """``view='ports'`` — every block's live ports; an instance's/array's
-    row resolves from its template (:func:`effective_ports`), marked."""
+    row resolves from its template (:func:`effective_ports`), marked. The
+    ``peer`` column is the other end of every connect on that port
+    (gr334772: reconstructing a chain used to cost one view='block' call
+    per block)."""
     by_block = {
         name: effective_ports(tree, tree.blocks[name]) for name in sorted(tree.blocks)
     }
+    peers: dict[tuple[str, str], list[str]] = {}
+    for c in tree.connects:
+        peers.setdefault((c.a_block, c.a_port), []).append(f"{c.b_block}.{c.b_port}")
+        peers.setdefault((c.b_block, c.b_port), []).append(f"{c.a_block}.{c.a_port}")
     # One design-wide decision, not one per block: a table whose rows had
     # different column sets would be unreadable (and the JSON backend
     # ignores ``schema``, so a stray key would simply appear).
@@ -1972,13 +2040,17 @@ def _render_ports(tree: SeTree) -> str:
         block_label = f"{name} (via {node.template})" if node.template else name
         for p in ports.values():
             rows.append(
-                {"block": block_label, **_port_cells(p, atomic=atomic, posed=posed)}
+                {
+                    "block": block_label,
+                    **_port_cells(p, atomic=atomic, posed=posed),
+                    "peer": ", ".join(sorted(peers.get((name, p.name), []))) or "—",
+                }
             )
     if not rows:
         return "# se ports\n\n(no ports declared yet)"
     return f"# {len(rows)} port(s)\n" + render_agent_table(
         rows,
-        schema=["block", "port", "roles", "direction", "annotations", *extra],
+        schema=["block", "port", "peer", "roles", "direction", "annotations", *extra],
     )
 
 
