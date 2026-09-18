@@ -649,8 +649,10 @@ def search(
     # search(kind='se', compose={'delta': [lo, hi], 'span': [lo, hi]}) —
     # the composition proposer (port-pose-and-composition-search.md):
     # enumerates n switches + m spacers over the library against a
-    # requirement box, scored like wants=. Same one-dict rationale.
-    compose: dict[str, Any] | None = None,
+    # requirement box, scored like wants=. Same one-dict rationale. Also
+    # takes the string form '<design>#<block>' (Decision 3), which reads
+    # the box off a block's declared transition requires= instead.
+    compose: dict[str, Any] | str | None = None,
     # See ``get`` — FastMCP injects the live per-request ``Context``
     # here (excluded from the wire schema); used only to key the skill
     # serve ledger off the real MCP session for this call.

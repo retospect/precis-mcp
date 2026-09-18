@@ -331,6 +331,258 @@ def test_directed_transition_pair_survives_round_trip_with_different_params(
     assert "0.3" in body and "1.8" in body
 
 
+# ── requires — Decision 3's declared box ───────────────────────────────────
+
+
+def test_declare_transitions_requires_round_trips_through_edit_then_get(
+    handler: SeHandler, store: Store
+) -> None:
+    """``requires`` is the DECLARED target Decision 3's ``compose=`` box
+    reads back (port-pose-and-composition-search.md) — distinct from
+    ``params``, the realization's own measured numbers. Round-trips
+    through ``put`` → read, then ``edit`` (``set_transitions`` deletes +
+    reinserts the whole block, so a re-declare REPLACES it) → read, and
+    is rendered as its own column."""
+    handler.put(
+        id="azoreq1",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "switch",
+                        "envelope": "box:w0.002d0.002h0.002",
+                    },
+                    {
+                        "op": "declare_states",
+                        "block": "switch",
+                        "states": [{"name": "trans"}, {"name": "cis"}],
+                    },
+                    {
+                        "op": "declare_transitions",
+                        "block": "switch",
+                        "transitions": [
+                            {
+                                "from_state": "trans",
+                                "to_state": "cis",
+                                "driver_kind": "light",
+                                "params": {"quantum_yield": 0.3},
+                                "requires": {
+                                    "delta": [10, 12],
+                                    "span": [40, 50],
+                                    "bistable": True,
+                                },
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+    )
+    ref = store.get_ref(kind="se", id="azoreq1")
+    assert ref is not None
+    uid = _block_uid(store, "azoreq1", "switch")
+    transitions = design_states.transitions_for(store, ref.id, uid)
+    assert transitions[0].requires == {
+        "delta": [10.0, 12.0],
+        "span": [40.0, 50.0],
+        "bistable": True,
+    }
+    assert transitions[0].params == {"quantum_yield": 0.3}
+    body = handler.get(id="azoreq1", view="block", args={"name": "switch"}).body
+    assert "requires" in body
+    assert "[10.0, 12.0]" in body and "[40.0, 50.0]" in body
+
+    handler.edit(
+        id="azoreq1",
+        ops=[
+            {
+                "op": "declare_transitions",
+                "block": "switch",
+                "transitions": [
+                    {
+                        "from_state": "trans",
+                        "to_state": "cis",
+                        "driver_kind": "light",
+                        "requires": {"delta": [8, 9]},
+                    }
+                ],
+            }
+        ],
+    )
+    transitions = design_states.transitions_for(store, ref.id, uid)
+    assert transitions[0].requires == {"delta": [8.0, 9.0]}
+    body = handler.get(id="azoreq1", view="block", args={"name": "switch"}).body
+    assert "[8.0, 9.0]" in body
+
+
+def test_declare_transitions_requires_rejects_stimulus_key(handler: SeHandler) -> None:
+    """``stimulus`` IS the transition's ``driver_kind`` — a declared
+    ``requires={'stimulus': ...}`` is refused, naming the op."""
+    with pytest.raises(BadInput) as exc:
+        handler.put(
+            id="azoreqbad1",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "add_block",
+                            "name": "switch",
+                            "envelope": "box:w0.002d0.002h0.002",
+                        },
+                        {
+                            "op": "declare_states",
+                            "block": "switch",
+                            "states": [{"name": "trans"}, {"name": "cis"}],
+                        },
+                        {
+                            "op": "declare_transitions",
+                            "block": "switch",
+                            "transitions": [
+                                {
+                                    "from_state": "trans",
+                                    "to_state": "cis",
+                                    "driver_kind": "light",
+                                    "requires": {"stimulus": "light"},
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ),
+        )
+    msg = str(exc.value)
+    assert "declare_transitions" in msg
+    assert "stimulus" in msg
+    assert "driver_kind" in msg
+
+
+def test_declare_transitions_requires_rejects_malformed_range(
+    handler: SeHandler,
+) -> None:
+    with pytest.raises(BadInput) as exc:
+        handler.put(
+            id="azoreqbad2",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "add_block",
+                            "name": "switch",
+                            "envelope": "box:w0.002d0.002h0.002",
+                        },
+                        {
+                            "op": "declare_states",
+                            "block": "switch",
+                            "states": [{"name": "trans"}, {"name": "cis"}],
+                        },
+                        {
+                            "op": "declare_transitions",
+                            "block": "switch",
+                            "transitions": [
+                                {
+                                    "from_state": "trans",
+                                    "to_state": "cis",
+                                    "driver_kind": "light",
+                                    "requires": {"delta": "wide"},
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ),
+        )
+    msg = str(exc.value)
+    assert "declare_transitions" in msg
+    assert "delta" in msg
+
+
+def test_declare_transitions_requires_rejects_a_range_less_box(
+    handler: SeHandler,
+) -> None:
+    """A ``requires=`` naming neither ``delta`` nor ``span`` (wants-only
+    keys like ``bistable``) must be refused HERE, at declare time — not
+    later at ``compose=``, where ``parse_compose({})`` would raise the
+    generic "needs at least one of 'delta' … or 'span'" with no block or
+    transition named."""
+    with pytest.raises(BadInput) as exc:
+        handler.put(
+            id="azoreqbad3",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "add_block",
+                            "name": "switch",
+                            "envelope": "box:w0.002d0.002h0.002",
+                        },
+                        {
+                            "op": "declare_states",
+                            "block": "switch",
+                            "states": [{"name": "trans"}, {"name": "cis"}],
+                        },
+                        {
+                            "op": "declare_transitions",
+                            "block": "switch",
+                            "transitions": [
+                                {
+                                    "from_state": "trans",
+                                    "to_state": "cis",
+                                    "driver_kind": "light",
+                                    "requires": {"bistable": True},
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ),
+        )
+    msg = str(exc.value)
+    assert "declare_transitions" in msg
+    assert "delta" in msg and "span" in msg
+
+
+def test_declare_transitions_requires_error_rolls_back_the_whole_edit(
+    handler: SeHandler, store: Store
+) -> None:
+    """A malformed ``requires=`` fails inside ``declare_transitions``
+    itself, before ``self.store.tx()`` even opens — so an unrelated,
+    individually-valid ``add_block`` bundled in the same ``edit()`` call
+    must not land either (same posture as
+    ``test_edit_rolls_back_the_whole_unit_when_one_op_fails``)."""
+    handler.put(id="azoreqrollback1", text=json.dumps({"ops": _SWITCH_OPS}))
+    ref = store.get_ref(kind="se", id="azoreqrollback1")
+    assert ref is not None
+
+    with pytest.raises(BadInput, match="declare_transitions"):
+        handler.edit(
+            id="azoreqrollback1",
+            ops=[
+                {
+                    "op": "add_block",
+                    "name": "bracket",
+                    "envelope": "box:w0.01d0.01h0.01",
+                },
+                {
+                    "op": "declare_transitions",
+                    "block": "switch",
+                    "transitions": [
+                        {
+                            "from_state": "trans",
+                            "to_state": "cis",
+                            "driver_kind": "light",
+                            "requires": {"stimulus": "light"},
+                        }
+                    ],
+                },
+            ],
+        )
+    reloaded = persist.load_tree(store, ref.id)
+    assert "bracket" not in reloaded.blocks
+    uid = _block_uid(store, "azoreqrollback1", "switch")
+    assert design_states.transitions_for(store, ref.id, uid) == []
+
+
 def test_transitions_precede_dependent_states_in_the_same_call(
     handler: SeHandler, store: Store
 ) -> None:

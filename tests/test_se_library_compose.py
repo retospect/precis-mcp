@@ -69,6 +69,7 @@ def _unit(
     lp: float | None = None,
     roles: tuple[str, ...] = (),
     thermal: bool = False,
+    requires: dict[str, Any] | None = None,
 ) -> None:
     """One library block ``<slug>#u`` whose facts live on a material the
     design is ``made-of`` (scoped to the block) — the star-schema path
@@ -100,7 +101,7 @@ def _unit(
                 "states": [{"name": "trans"}, {"name": "cis"}],
             }
         )
-        transitions = [
+        transitions: list[dict[str, Any]] = [
             {"from_state": "trans", "to_state": "cis", "driver_kind": "light"},
             {
                 "from_state": "cis",
@@ -108,6 +109,8 @@ def _unit(
                 "driver_kind": "thermal" if thermal else "light",
             },
         ]
+        if requires is not None:
+            transitions[0]["requires"] = requires
         ops.append(
             {"op": "declare_transitions", "block": "u", "transitions": transitions}
         )
@@ -272,13 +275,131 @@ def test_compose_kwarg_reaches_the_handler_over_the_mcp_door(
     assert "1 × azo#u" in body
 
 
+# ── string form: compose='<design>#<block>' (Decision 3) ────────────────
+
+
+def test_compose_string_form_scores_the_same_as_the_equivalent_dict(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _unit(
+        handler, material, store, "azo",
+        delta=3.4, length=1.0, pss=0.8, half_life=172800.0,
+        roles=("azide",), thermal=True,
+        requires={"delta": [8, 9], "span": [20, 30]},
+    )  # fmt: skip
+    _unit(handler, material, store, "rod", length=10.0, lp=15.0, roles=("alkyne",))
+
+    # The string form always derives a `stimulus` wants key from the
+    # edge's driver_kind — its true dict equivalent carries it explicitly.
+    dict_body = handler.search(
+        compose={"delta": [8, 9], "span": [20, 30]}, wants={"stimulus": "light"}
+    ).body
+    str_body = handler.search(compose="azo#u").body
+    assert _row_lines(dict_body) == _row_lines(str_body)
+    assert "box from se:azo#u trans->cis (light)" in str_body
+
+
+def test_compose_string_form_derives_stimulus(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _unit(
+        handler, material, store, "azo",
+        delta=3.4, length=1.0, requires={"delta": [3, 4]},
+    )  # fmt: skip
+    top = _row_lines(handler.search(compose="azo#u").body)[0]
+    assert "✓stimulus: light" in top
+
+
+def test_compose_string_form_zero_addressable_edges_refused(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """Neither declared transition carries a ``requires=`` box — a
+    pointer at ``declare_transitions``, not a silent empty result."""
+    _unit(handler, material, store, "azo", delta=3.4, length=1.0)
+    with pytest.raises(BadInput, match="no transition with a requires= box") as exc:
+        handler.search(compose="azo#u")
+    assert "declare_transitions" in str(exc.value.next)
+
+
+def test_compose_string_form_several_addressable_edges_need_the_selector(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _unit(handler, material, store, "azo", delta=3.4, length=1.0)
+    handler.edit(
+        id="azo",
+        ops=[
+            {
+                "op": "declare_transitions",
+                "block": "u",
+                "transitions": [
+                    {
+                        "from_state": "trans",
+                        "to_state": "cis",
+                        "driver_kind": "light",
+                        "requires": {"delta": [3, 4]},
+                    },
+                    {
+                        "from_state": "cis",
+                        "to_state": "trans",
+                        "driver_kind": "light",
+                        "requires": {"span": [1, 2]},
+                    },
+                ],
+            }
+        ],
+    )
+    with pytest.raises(BadInput, match=r"azo#u/trans->cis"):
+        handler.search(compose="azo#u")
+    # the `/<from>-><to>` segment picks one.
+    body = handler.search(compose="azo#u/trans->cis").body
+    assert "box from se:azo#u trans->cis (light)" in body
+    body = handler.search(compose="azo#u/cis->trans").body
+    assert "box from se:azo#u cis->trans (light)" in body
+
+
+def test_compose_string_form_wants_collision_and_derived_stimulus_override(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _unit(
+        handler, material, store, "azo",
+        delta=3.4, length=1.0,
+        requires={"delta": [3, 4], "bistable": True},
+    )  # fmt: skip
+    # A declared (non-stimulus) requires key: the block's requirement owns it.
+    with pytest.raises(BadInput, match="requirement owns that key"):
+        handler.search(compose="azo#u", wants={"bistable": False})
+    # stimulus is DERIVED, not declared — an explicit caller value wins.
+    top = _row_lines(handler.search(compose="azo#u", wants={"stimulus": "light"}).body)[
+        0
+    ]
+    assert "✓stimulus: light" in top
+
+
+def test_compose_string_form_mcp_door_takes_a_string(
+    mounted_runtime: PrecisRuntime, store: Store
+) -> None:
+    handler = SeHandler(hub=Hub(store=store))
+    material = MaterialHandler(hub=Hub(store=store))
+    _unit(
+        handler, material, store, "azo",
+        delta=3.4, length=1.0, requires={"delta": [3, 4]},
+    )  # fmt: skip
+    out = tools_core.search(kind="se", compose="azo#u")
+    body = _body(out)
+    assert "composition(s) ranked for compose='azo#u'" in body
+    assert "1 × azo#u" in body
+
+
 # ── parser refusals (pure, no store) ────────────────────────────────────
 
 
 @pytest.mark.parametrize(
     ("compose", "match"),
     [
-        ("mydesign#box", "not shipped yet"),
+        # The string form is `resolve_compose` (needs `store`), not this —
+        # `parse_compose` stays dict-only and refuses a bare string like any
+        # other non-dict.
+        ("mydesign#box", "must be a JSON object"),
         ([1, 2], "must be a JSON object"),
         ({}, "needs at least one of"),
         ({"n_max": 3}, "needs at least one of"),

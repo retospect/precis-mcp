@@ -63,7 +63,9 @@ DRIVER_KINDS: tuple[str, ...] = (
 )
 
 _STATE_COLS = "block_uid, name, envelope, port_pose_overrides, descr"
-_TRANSITION_COLS = "block_uid, from_state, to_state, driver_kind, driver_ref, params"
+_TRANSITION_COLS = (
+    "block_uid, from_state, to_state, driver_kind, driver_ref, params, requires"
+)
 
 
 class StateError(ValueError):
@@ -95,7 +97,13 @@ class Transition:
     ``driver_ref`` points at whatever drives it — an ``rxn`` slug for a
     reaction, a wavelength for light, a named actuator for mechanical —
     and ``params`` carries the per-driver numbers (quantum yield, barrier
-    height, snap force).
+    height, snap force). ``requires`` is the declared target a
+    realization is checked against instead (delta between ports, span,
+    stimulus, bistable, cycles, ...) — same declared/bound split as the
+    port pose slot; nothing in validate/drc/clearance reads it, the sole
+    consumer is ``search(kind='se', compose='<design>#<block>')``
+    (:mod:`precis_se.compose`, port-pose-and-composition-search.md
+    Decision 3).
     """
 
     block_uid: int
@@ -104,6 +112,7 @@ class Transition:
     driver_kind: str
     driver_ref: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
+    requires: dict[str, Any] = field(default_factory=dict)
 
 
 def validate_driver_kind(value: Any) -> str:
@@ -292,7 +301,7 @@ def set_transitions(
             c.execute(
                 "INSERT INTO design_transitions "
                 "(ref_id, block_uid, from_state, to_state, driver_kind, "
-                " driver_ref, params) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                " driver_ref, params, requires) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     ref_id,
                     block_uid,
@@ -301,6 +310,7 @@ def set_transitions(
                     t.driver_kind,
                     t.driver_ref,
                     Jsonb(t.params or {}),
+                    Jsonb(t.requires or {}),
                 ),
             )
 
@@ -328,6 +338,7 @@ def _transition_from_row(row: dict[str, Any]) -> Transition:
         driver_kind=row["driver_kind"],
         driver_ref=row["driver_ref"],
         params=dict(row["params"] or {}),
+        requires=dict(row["requires"] or {}),
     )
 
 

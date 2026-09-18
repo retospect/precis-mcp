@@ -135,6 +135,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "design_branches.headline",
         "design_states.port_pose_overrides",
         "design_transitions.params",
+        # Decision 3 requirement box: delta/span ranges + open wants keys,
+        # read only by compose= (port-pose-and-composition-search.md).
+        "design_transitions.requires",
         "dream_log.seed_clusters",
         "dream_log.summary",
         "dream_transcripts.transcript",

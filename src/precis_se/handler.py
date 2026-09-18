@@ -1179,7 +1179,7 @@ class SeHandler(Handler):
         mode: str | None = None,
         page_size: int = 20,
         wants: dict[str, Any] | None = None,
-        compose: dict[str, Any] | None = None,
+        compose: dict[str, Any] | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Ranked library search (blocktree-library-build-plan.md §Slice 4)
@@ -1442,6 +1442,7 @@ def _materialize_states(
                     driver_kind=t["driver_kind"],
                     driver_ref=t["driver_ref"],
                     params=t["params"],
+                    requires=t.get("requires") or {},
                 )
                 for t in node.pending_transitions
             ]
@@ -1819,10 +1820,18 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
                             "driver_kind": t.driver_kind,
                             "driver_ref": t.driver_ref or "—",
                             "params": json.dumps(t.params) if t.params else "—",
+                            "requires": json.dumps(t.requires) if t.requires else "—",
                         }
                         for t in transitions
                     ],
-                    schema=["from", "to", "driver_kind", "driver_ref", "params"],
+                    schema=[
+                        "from",
+                        "to",
+                        "driver_kind",
+                        "driver_ref",
+                        "params",
+                        "requires",
+                    ],
                 )
             )
 

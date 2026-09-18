@@ -205,10 +205,14 @@ state; nothing about a plain block's shape changes.
   `'bound'` off the realization and never overwrites a declared target —
   `precis-se-atomic-help`.
 - `declare_transitions` — `block`, `transitions` `[{'from_state',
-  'to_state', 'driver_kind', 'driver_ref'?, 'params'?}]` (req). DIRECTED
-  edges — a ratchet's forward/reverse barriers are two rows, never one
-  shared undirected edge. `driver_kind` is closed: `light | reaction |
-  redox | ph | thermal | mechanical`.
+  'to_state', 'driver_kind', 'driver_ref'?, 'params'?, 'requires'?}]`
+  (req). DIRECTED edges — a ratchet's forward/reverse barriers are two
+  rows, never one shared undirected edge. `driver_kind` is closed:
+  `light | reaction | redox | ph | thermal | mechanical`. `requires`
+  (e.g. `{'delta': [10, 12], 'span': [40, 50], 'bistable': True}`) is a
+  DECLARED target — the box `compose='<design>#<block>'` reads back —
+  distinct from `params`, the realization's own measured numbers;
+  `stimulus` is refused there (it's `driver_kind`, read automatically).
 - `set_current_state` — `block`, `state` (req). PERSISTENTLY poses a
   block into one of its declared states — the write-time counterpart of
   the transient `args={'state': ...}` read below.
@@ -317,8 +321,13 @@ search(kind='se', compose={'delta': [8, 9], 'span': [20, 30]},
 The Next line is the top row's ops script: `instance_block` × n +
 spacers, alternating, joined by `connect` through the complementary
 ports — paste it into `edit(kind='se', id=<yours>, ops=[…])` and run
-DRC on the composed tree. `compose='<design>#<block>'` (reading the box
-off a block's declared transition ranges) is not shipped yet.
+DRC on the composed tree. `compose='<design>#<block>'` (or
+`'<design>#<block>/<from>-><to>'`) reads the box off that block's own
+declared transition `requires=` instead of a literal dict — its
+`stimulus` comes from `driver_kind`. Exactly one of the block's
+transitions may carry a `requires=` box; with none, declare one
+(`declare_transitions … requires=`); with several, add the
+`/<from>-><to>` selector to pick one.
 
 ## Optical (FRET) ops — energy transfer as a comm channel
 

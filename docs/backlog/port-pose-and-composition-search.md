@@ -79,7 +79,61 @@ the two.
 
 Declare a block with two ports and a state pair; on the transition put
 ranges: Δ between ports ∈ [10, 12] Å, span ∈ [40, 50] nm, stimulus
-`light`, bistable preferred, cycles ≥ N. Declared intent only.
+`light`, bistable preferred, cycles ≥ N. Declared intent only — nothing
+in validate/drc/clearance reads it; the only consumer is `compose=`.
+
+**Storage — a `requires` column, not a `params` key.** `params` is the
+realization's per-driver numbers (quantum yield, barrier, the 436 nm PSS
+on `se:azo-unit`); a requirement is the target the realization is checked
+against. Same declared/bound split the port pose slot made: a reader must
+be able to tell a measured figure from a wanted one without a naming
+convention inside one JSON blob. Core migration `0167` adds
+`design_transitions.requires jsonb NOT NULL DEFAULT '{}'` (forward-only;
+0162 is sealed). `precis.design.states.Transition` gains `requires:
+dict[str, Any]` (default `{}`), written by `set_transitions`, read by
+`transitions_for` (`_TRANSITION_COLS`).
+
+**Write path.** `declare_transitions` entries take an optional
+`requires` object, vetted at op time by one shared vetter
+(`precis_se.compose.parse_requires`, imported locally inside the op —
+`ops.py → compose.py → library.py → ops.py` cycles at module level) so a box that fails here fails the
+same way `compose=` would: `delta` `[lo, hi]` Å, `span` `[lo, hi]` nm,
+`n_max`, `m_max` (the compose box keys, same `_range`/`_count` rules), plus
+any *wants* key in the `parse_wants` value shapes (scalar, `[lo, hi]`, or
+`{target, min, max, tol, weight}`) — `bistable: True`, `cycles: {'min':
+1000}`. `stimulus` is refused with a pointer: the stimulus IS the
+transition's `driver_kind`. An empty object and an absent key both mean
+"no requirement". Rendered in `get(kind='se')`'s `## transitions` table as a
+`requires` column (`—` when empty).
+
+**Read path — `compose='<design>#<block>'`.** `<design>` is the design's
+slug — `se` is a slug-only kind (`KindSpec.is_numeric=False`), resolved
+exactly as `get(kind='se', id=)` does through `store.get_ref(kind='se',
+id=slug)`; there is no numeric handle form to accept. The block resolves
+through `Tree.resolve_key` (name or `#<uid>`) on `persist.load_tree`;
+`<design>#<block>/<from>-><to>` names one transition. The transitions of that block carrying a non-empty
+`requires`: exactly one → that box; none → `BadInput` pointing at
+`declare_transitions … requires=`; several without the `/<from>-><to>`
+segment → `BadInput` listing the addressable edges. Box keys become the
+`ComposeBox`; the remaining keys become `wants` entries; `stimulus` is
+added as a wants key from `driver_kind` unless the caller's `wants=`
+already carries one (derived, so explicit wins). A caller `wants=` key
+that collides with a declared `requires` key is the existing clash
+`BadInput` ("the block's requirement owns that key") — an override is a
+re-declare, not a search-time argument. The rendered header names the
+source: `box from se:<slug>#<block> <from>-><to> (<driver_kind>)`. The
+`search` verb's `compose` annotation widens to `dict | str` at
+`tools/core.py` and `SeHandler.search`.
+
+Tests: `tests/test_se_block_states.py` (requires round-trips through
+edit→get; `stimulus` key and a malformed range rejected at op time with
+the op name in the message; the whole edit rolls back) and
+`tests/test_se_library_compose.py` (string form resolves and scores the
+same as the equivalent dict; zero-box and multi-box refusals; the
+`/<from>-><to>` selector; derived stimulus; the collision rule; MCP door
+carries a string `compose`). Skill `precis-se-help`: the
+`declare_transitions` bullet gains `requires?`, and the compose paragraph's
+"not shipped yet" sentence becomes the string form's usage.
 
 ## Composition proposer — **SHIPPED** 2026-09-17 as `compose=`
 
@@ -124,9 +178,11 @@ proposer"; tests `tests/test_se_library_compose.py`.
   stroke 8×. Worked around by keeping only the actuating row on the
   material — the 436 nm figure lives on `se:azo-unit`'s cis→trans
   transition params, where its wavelength can't be lost.
-- `compose='<design>#<block>'` reading the box off a block's declared
-  transition ranges — needs Decision 3 (a transition carrying interval
-  constraints). Today the string form refuses with a pointer.
+- `compose='<slug>#<block>[/<from>-><to>]'` reading the box off a
+  block's declared transition `requires` — **BUILT 2026-09-18** per
+  Decision 3 above (migration 0167, `declare_transitions … requires=`,
+  `compose.resolve_compose`); a requires box must carry `delta` and/or
+  `span`, wants-only keys are refused at declare time.
 - Lever/hinge families once ports carry rotation (the pose slot's `rot`
   is declared but no composition uses it).
 - Selection with human-set weights through quest's rubric machinery, and
@@ -170,3 +226,13 @@ held or queued in prod:
   extracted Table 1 lost its column header for.
 - azobenzene cis thermal half-life: pa51091~pc1706125 (2 days,
   unmodified azobenzene, reported secondhand from that paper's ref 43).
+
+## Open questions / decisions log
+
+- 2026-09-18 readiness pass on Decision 3: one blocker (the read path
+  claimed an `se<N>` numeric handle form; `se` is slug-only — fixed to
+  slug-only above) and one advisory (`ops.py` → `compose.py` →
+  `library.py` → `ops.py` cycles at module level; the op imports the
+  vetter locally — folded in above). Migration 0167 free in every
+  worktree; the derived-`stimulus` carve-out and the clash rule cover
+  disjoint cases (`stimulus` is refused as a stored `requires` key).

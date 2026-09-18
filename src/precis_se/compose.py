@@ -42,8 +42,9 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.errors import BadInput
-from precis_se import library
+from precis.design import states as design_states
+from precis.errors import BadInput, NotFound
+from precis_se import library, persist
 from precis_se.atomic.vocab import JOINING_HALVES, role_halves
 from precis_se.library import (
     AttrResult,
@@ -78,7 +79,9 @@ _ALLOWED_KEYS = frozenset({"delta", "span", "n_max", "m_max"})
 @dataclass(frozen=True)
 class ComposeBox:
     """The parsed requirement box — Decision 3's "box with interval
-    constraints" as a kwarg until transitions carry ranges."""
+    constraints", whether it arrived as a literal ``compose={...}`` dict
+    (:func:`parse_compose`) or read back off a block's declared
+    transition ``requires`` (:func:`resolve_compose`)."""
 
     delta: WantSpec | None
     span: WantSpec | None
@@ -95,19 +98,14 @@ class ComposeBox:
         return out
 
 
-def parse_compose(compose: Any) -> ComposeBox:
-    """Vet + canonicalise ``compose=``. :class:`BadInput` for a non-dict,
-    an unknown key, a box with neither ``delta`` nor ``span``, a
+def parse_compose(compose: dict[str, Any]) -> ComposeBox:
+    """Vet + canonicalise a dict ``compose=``. :class:`BadInput` for a
+    non-dict, an unknown key, a box with neither ``delta`` nor ``span``, a
     non-numeric range, or an out-of-range count — never for what the
-    library holds (that is scored and reported)."""
+    library holds (that is scored and reported). The string form
+    (``'<design>#<block>'``) is :func:`resolve_compose`, not this — it
+    needs ``store`` to read a block's declared transition."""
     example = "compose={'delta': [10, 12], 'span': [40, 50]}"
-    if isinstance(compose, str):
-        raise BadInput(
-            f"compose={compose!r}: reading the box off a block's declared "
-            "transition ranges is not shipped yet (port-pose-and-composition-"
-            "search.md Decision 3) — pass the box as a dict",
-            next=example,
-        )
     if not isinstance(compose, dict):
         raise BadInput(
             f"search(kind='se', compose=...) must be a JSON object, got {compose!r}",
@@ -154,6 +152,186 @@ def _count(compose: dict[str, Any], key: str, default: int, *, lo: int) -> int:
             f"compose[{key!r}] must be an integer in {lo}..{_HARD_MAX}, got {raw!r}"
         )
     return raw
+
+
+def parse_requires(requires: Any, *, opname: str) -> dict[str, Any]:
+    """Vet + canonicalise a declared transition's ``requires=`` object
+    (``declare_transitions``, Decision 3, port-pose-and-composition-
+    search.md) — the one shared vetter so a box that fails here fails the
+    same way ``compose=`` would: ``delta``/``span``/``n_max``/``m_max``
+    run through the same :func:`_range`/:func:`_count` rules as
+    ``compose=`` and land canonicalised (``[lo, hi]`` floats for
+    ``delta``/``span``, a plain int for the counts); any other key is a
+    ``wants=`` entry, vetted (not reshaped) through
+    :func:`~precis_se.library._parse_one_want`'s value shapes — a scalar,
+    a ``[lo, hi]`` list, or ``{target, min, max, tol, weight}``.
+    ``stimulus`` is refused: it is derived from the transition's own
+    ``driver_kind`` at read time, never a declared target. An empty
+    object and an absent key both mean "no requirement" — pass ``{}`` for
+    either; a NON-empty one must name ``delta`` or ``span`` (the same
+    invariant :func:`parse_compose` enforces at read time) — a
+    ``wants=``-only box would otherwise fail later, at
+    ``compose=``, with no block or transition named. :class:`BadInput`
+    always names ``opname`` (the caller's op, e.g.
+    ``'declare_transitions'``), so a malformed box fails at write time
+    the same way it would fail at ``compose=`` read time."""
+    if not isinstance(requires, dict):
+        raise BadInput(f"{opname}: requires must be a JSON object, got {requires!r}")
+    if not requires:
+        return {}
+    if "stimulus" in requires:
+        raise BadInput(
+            f"{opname}: requires may not declare 'stimulus' — the stimulus "
+            "IS the transition's driver_kind, read back automatically by "
+            "compose='<slug>#<block>'"
+        )
+    if "delta" not in requires and "span" not in requires:
+        raise BadInput(
+            f"{opname}: requires= needs at least one of 'delta' (Å) or "
+            "'span' (nm); wants-only keys belong in search(wants=)"
+        )
+    out: dict[str, Any] = {}
+    for key, unit in (("delta", "Å"), ("span", "nm")):
+        if key not in requires:
+            continue
+        try:
+            spec = _range(requires, key, unit)
+        except BadInput as exc:
+            raise BadInput(f"{opname}: {exc.cause}", next=exc.next) from exc
+        assert spec is not None
+        lo = spec.min if spec.min is not None else spec.target
+        hi = spec.max if spec.max is not None else spec.target
+        out[key] = [float(lo), float(hi)]
+    for key in ("n_max", "m_max"):
+        if key not in requires:
+            continue
+        try:
+            out[key] = _count(requires, key, 0, lo=1 if key == "n_max" else 0)
+        except BadInput as exc:
+            raise BadInput(f"{opname}: {exc.cause}", next=exc.next) from exc
+    for key, value in requires.items():
+        if key in _ALLOWED_KEYS:
+            continue
+        try:
+            library._parse_one_want(key, value)
+        except BadInput as exc:
+            raise BadInput(f"{opname}: {exc.cause}", next=exc.next) from exc
+        out[key] = value
+    return out
+
+
+def resolve_compose(store: Any, compose: str) -> tuple[ComposeBox, dict[str, Any], str]:
+    """Read the requirement box off a block's declared transition —
+    Decision 3's ``compose='<design>#<block>'`` /
+    ``'<design>#<block>/<from>-><to>'`` string form.
+
+    ``<design>`` is the design's slug (``se`` is slug-only, resolved
+    exactly as ``get(kind='se', id=)`` does); the block resolves through
+    :meth:`~precis_se.ops.SeTree.resolve_key` (name or ``#<uid>``). Among
+    that block's transitions, the ones carrying a non-empty ``requires``
+    are the addressable edges: exactly one → that box; none → a pointer
+    at ``declare_transitions … requires=``; several without the
+    ``/<from>-><to>`` segment → a list of the addressable edges; with the
+    segment → that edge (:class:`BadInput` if it has no ``requires``).
+
+    Returns ``(box, wants_from_requires, source_note)`` — the parsed
+    :class:`ComposeBox`, a ``wants=`` overlay built from the requires'
+    non-box keys plus a derived ``stimulus`` (the edge's ``driver_kind``),
+    and a header line naming the source."""
+    design_part, sep, rest = compose.partition("#")
+    example = "compose='<design-slug>#<block>' or '<design-slug>#<block>/<from>-><to>'"
+    if not sep or not design_part.strip() or not rest.strip():
+        raise BadInput(f"compose={compose!r}: string form is {example}", next=example)
+    slug = design_part.strip()
+    block_token, _sep2, selector = rest.partition("/")
+    block_token = block_token.strip()
+    from_state: str | None = None
+    to_state: str | None = None
+    if selector:
+        from_part, arrow, to_part = selector.partition("->")
+        if not arrow or not from_part.strip() or not to_part.strip():
+            raise BadInput(
+                f"compose={compose!r}: the selector must be '<from>-><to>'",
+                next=example,
+            )
+        from_state, to_state = from_part.strip(), to_part.strip()
+    ref = store.get_ref(kind="se", id=slug)
+    if ref is None:
+        raise NotFound(f"se design {slug!r} not found")
+    tree = persist.load_tree(store, ref.id)
+    key = tree.resolve_key(block_token)
+    if key is None:
+        raise NotFound(f"se design {slug!r} has no block {block_token!r}")
+    node = tree.blocks[key]
+    assert node.uid is not None, "a saved design's blocks carry a uid"
+    edges = [
+        t for t in design_states.transitions_for(store, ref.id, node.uid) if t.requires
+    ]
+    if from_state is not None:
+        edges = [
+            t for t in edges if t.from_state == from_state and t.to_state == to_state
+        ]
+        if not edges:
+            raise BadInput(
+                f"compose={compose!r}: no transition {from_state!r}->{to_state!r} "
+                f"on se:{slug}#{key} carries a requires= box",
+                next=f"declare_transitions … requires={{'delta': [lo, hi]}} "
+                f"on se:{slug}#{key}",
+            )
+    elif not edges:
+        raise BadInput(
+            f"compose={compose!r}: se:{slug}#{key} has no transition with a "
+            "requires= box",
+            next=f"declare_transitions … requires={{'delta': [lo, hi]}} "
+            f"on se:{slug}#{key}",
+        )
+    elif len(edges) > 1:
+        addressable = ", ".join(
+            f"'{slug}#{key}/{t.from_state}->{t.to_state}'" for t in edges
+        )
+        raise BadInput(
+            f"compose={compose!r}: se:{slug}#{key} has {len(edges)} "
+            f"transitions with a requires= box — address one: {addressable}",
+            next=f"compose='{slug}#{key}/{edges[0].from_state}->{edges[0].to_state}'",
+        )
+    transition = edges[0]
+    box_payload = {k: v for k, v in transition.requires.items() if k in _ALLOWED_KEYS}
+    box = parse_compose(box_payload)
+    wants_from_requires = {
+        k: v for k, v in transition.requires.items() if k not in _ALLOWED_KEYS
+    }
+    wants_from_requires["stimulus"] = transition.driver_kind
+    source_note = (
+        f"box from se:{slug}#{key} {transition.from_state}->{transition.to_state} "
+        f"({transition.driver_kind})"
+    )
+    return box, wants_from_requires, source_note
+
+
+def _merge_requires_wants(
+    wants: Any, wants_from_requires: dict[str, Any]
+) -> dict[str, Any]:
+    """Layer a caller's explicit ``wants=`` over a resolved block's own
+    ``requires`` (:func:`resolve_compose`). ``stimulus`` is derived from
+    the edge's ``driver_kind`` — an explicit caller value silently wins;
+    any other overlap is the block's declared requirement owning that
+    key, same as a caller trying to override a ``compose=`` box key."""
+    if wants is not None and not isinstance(wants, dict):
+        raise BadInput(
+            f"search(kind='se', wants=...) must be a JSON object, got {wants!r}",
+            next="wants={'stimulus': 'light', 'bistable': True}",
+        )
+    caller = wants or {}
+    clash = sorted(k for k in caller if k in wants_from_requires and k != "stimulus")
+    if clash:
+        raise BadInput(
+            f"wants{clash} collides with requires{clash} — the block's "
+            "requirement owns that key",
+            next="drop it from wants= — the block's requires= already sets it",
+        )
+    merged = dict(wants_from_requires)
+    merged.update(caller)
+    return merged
 
 
 # ── per-unit facts ─────────────────────────────────────────────────────────
@@ -550,6 +728,7 @@ def render_compositions(
     unknown: list[str],
     capped: bool,
     narrow_note: str = "",
+    source_note: str = "",
     page_size: int = 20,
 ) -> str:
     header = f"# {len(rows)} composition(s) ranked for compose={compose_repr!r}"
@@ -558,6 +737,8 @@ def render_compositions(
     if narrow_note:
         header += f"  {narrow_note}"
     lines = [header]
+    if source_note:
+        lines.append(source_note)
     facts = (
         f"{counts['switches']} switch(es) × {counts['spacers']} spacer(s) from "
         f"{counts['blocks']} library block(s)"
@@ -606,8 +787,19 @@ def render_compose(
     page_size: int = 20,
 ) -> str:
     """The whole ``search(kind='se', compose=...)`` read — the entry
-    :func:`precis_se.library.render_search` dispatches to."""
-    box = parse_compose(compose)
+    :func:`precis_se.library.render_search` dispatches to. ``compose`` is
+    a dict box or Decision 3's string form (``'<design>#<block>'`` /
+    ``'<design>#<block>/<from>-><to>'``, :func:`resolve_compose`), which
+    reads the box off a block's declared transition and layers its own
+    ``requires`` under ``wants=`` (explicit ``wants=`` wins on the
+    derived ``stimulus`` key; any other overlap is the block's
+    requirement owning that key)."""
+    source_note = ""
+    if isinstance(compose, str):
+        box, wants_from_requires, source_note = resolve_compose(store, compose)
+        wants = _merge_requires_wants(wants, wants_from_requires)
+    else:
+        box = parse_compose(compose)
     want_specs = library.parse_wants(wants) if wants is not None else {}
     clash = sorted(set(want_specs) & set(box.specs))
     if clash:
@@ -661,6 +853,7 @@ def render_compose(
         unknown=library.unknown_keys(store, want_specs, cache) if want_specs else [],
         capped=capped,
         narrow_note=narrow_note,
+        source_note=source_note,
         page_size=page_size,
     )
 
@@ -672,8 +865,10 @@ __all__ = [
     "enumerate_compositions",
     "ops_script",
     "parse_compose",
+    "parse_requires",
     "render_compose",
     "render_compositions",
+    "resolve_compose",
     "resolve_unit",
     "score_compositions",
 ]

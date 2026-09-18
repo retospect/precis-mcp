@@ -250,6 +250,7 @@ from typing import Any, cast
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
 from precis.design.states import StateError, validate_driver_kind
+from precis.errors import BadInput
 from precis_se import capabilities as se_caps
 from precis_se import joints as se_joints
 from precis_se.atomic.vocab import (
@@ -2156,13 +2157,17 @@ def _op_declare_states(tree: SeTree, op: dict[str, Any]) -> None:
 
 def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
     """Replace a block's transitions — ``transitions=[{'from_state',
-    'to_state', 'driver_kind', 'driver_ref'?, 'params'?}, ...]`` (``[]``
-    clears them). Directed: a ratchet's forward and reverse edges are two
-    separate entries here, never collapsed into one unordered pair —
-    declare both when both exist. ``driver_kind`` is the closed enum
-    (:func:`~precis.design.states.validate_driver_kind`); a self-edge
-    (``from_state == to_state``) is rejected outright, the same as the
-    shared table's own CHECK constraint."""
+    'to_state', 'driver_kind', 'driver_ref'?, 'params'?, 'requires'?},
+    ...]`` (``[]`` clears them). Directed: a ratchet's forward and reverse
+    edges are two separate entries here, never collapsed into one
+    unordered pair — declare both when both exist. ``driver_kind`` is the
+    closed enum (:func:`~precis.design.states.validate_driver_kind`); a
+    self-edge (``from_state == to_state``) is rejected outright, the same
+    as the shared table's own CHECK constraint. ``requires`` is the
+    declared target this transition is checked against (Decision 3,
+    port-pose-and-composition-search.md) — vetted by
+    :func:`~precis_se.compose.parse_requires`, imported locally (``ops.py
+    -> compose.py -> library.py -> ops.py`` cycles at module level)."""
     node = _template_owned(
         tree,
         _require_name(op, "block", "declare_transitions"),
@@ -2175,6 +2180,11 @@ def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
             "declare_transitions needs 'transitions' — a list of transition "
             "objects ([] clears them)"
         )
+    # Imported locally: ops.py -> compose.py -> library.py -> ops.py cycles
+    # at module level (docs/backlog/port-pose-and-composition-search.md
+    # Decision 3, 2026-09-18 readiness pass).
+    from precis_se.compose import parse_requires
+
     parsed: list[dict[str, Any]] = []
     for entry in raw:
         if not isinstance(entry, dict):
@@ -2204,6 +2214,12 @@ def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
                 f"declare_transitions: transition {from_state!r} -> "
                 f"{to_state!r} 'params' must be a JSON object, got {params!r}"
             )
+        try:
+            requires = parse_requires(
+                entry.get("requires") or {}, opname="declare_transitions"
+            )
+        except BadInput as exc:
+            raise OpError(str(exc)) from exc
         parsed.append(
             {
                 "from_state": from_state,
@@ -2211,6 +2227,7 @@ def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
                 "driver_kind": driver_kind,
                 "driver_ref": _opt_str(entry.get("driver_ref")),
                 "params": params or {},
+                "requires": requires,
             }
         )
     node.pending_transitions = parsed
