@@ -39,7 +39,23 @@
 # Neither guard changes what `scripts/inflight` computes — they only decide
 # whether THIS reaper acts on a `safe_remove` verdict right now.
 #
-# Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op.
+# Second job, same "regular cleaning" lane: ORPHANED REMOTE GATE REFS.
+# `scripts/ship --remote` pushes the tree to a throwaway `ci/<branch>` for
+# check.yml to gate, and deletes it again on a completed ship (scripts/ship,
+# step 4) — but only on that path. A red gate the session then /qland's, a
+# ship killed mid-run, an abandoned --remote attempt: each leaks the ref, and
+# nothing else on this machine ever looks at it. They accumulated to 12 stale
+# ci/* refs before anyone noticed. `sweep_ci_refs` below deletes a ci/<X>
+# once BOTH hold: no local branch <X> exists (so no tree is still working on
+# it), and the ref is older than PRECIS_CI_REF_MAX_AGE_SECONDS (default 24h).
+# The age floor is what makes this safe against a gate that is still running:
+# a check.yml run takes ~12 min, and a tree whose work a sibling qlanded can
+# be reaped while its own gate is still in flight — deleting that ref would
+# kill the run. 24h is far clear of both.
+#
+# Escape hatches: PRECIS_NO_AUTOREAP=1 → no-op. PRECIS_NO_CI_REF_REAP=1 →
+# worktrees still reaped, remote refs left alone (also the switch for a
+# machine that should never touch the remote).
 # Usage: scripts/reap-worktrees [--dry-run]
 #
 # Wired in .claude/settings.json (SessionStart), after `inflight --for-hook`.
@@ -52,6 +68,7 @@ DRY_RUN=0
 
 GRACE_SECONDS="${PRECIS_REAP_GRACE_SECONDS:-60}"
 PURPOSE_FRESH_SECONDS="${PRECIS_REAP_PURPOSE_FRESH_SECONDS:-21600}"  # 6h
+CI_REF_MAX_AGE_SECONDS="${PRECIS_CI_REF_MAX_AGE_SECONDS:-86400}"  # 24h
 
 cd "$(dirname "$0")/.." || exit 0
 command -v git >/dev/null 2>&1 || exit 0
@@ -106,6 +123,63 @@ for wt in data.get("worktrees", []):
         print(wt.get("bucket", ""))
         break
 '
+}
+
+# sweep_ci_refs — delete remote gate refs nothing is using any more (see the
+# header). Deliberately independent of the worktree bucketing above: by the
+# time a ci/<X> is orphaned, the tree that pushed it is usually long gone, so
+# there is no bucket left to hang the decision on. Two conditions, both
+# required, both cheap to state: no local branch <X>, and the ref older than
+# CI_REF_MAX_AGE_SECONDS.
+#
+# Network-guarded throughout. A SessionStart hook must never hang or fail on
+# a machine that is offline, unauthenticated, or behind a dead remote: the
+# fetch runs under a timeout when one is available and every failure path is
+# a silent return, leaving the refs for the next session.
+sweep_ci_refs() {
+    [ -n "${PRECIS_NO_CI_REF_REAP:-}" ] && return 0
+    git remote get-url origin >/dev/null 2>&1 || return 0
+
+    # `timeout` is not on a stock macOS; use it when present (coreutils, or
+    # gtimeout via brew) and accept the git default otherwise.
+    local runner=()
+    if command -v timeout >/dev/null 2>&1; then
+        runner=(timeout 30)
+    elif command -v gtimeout >/dev/null 2>&1; then
+        runner=(gtimeout 30)
+    fi
+    # `${runner[@]}` alone is an unbound-variable error under `set -u` on
+    # bash 3.2 (stock macOS) when the array is empty — the +expansion form is
+    # what makes "no timeout available" a no-op instead of a hook crash.
+    "${runner[@]+"${runner[@]}"}" git fetch -q --prune origin \
+        "+refs/heads/ci/*:refs/remotes/origin/ci/*" 2>/dev/null || return 0
+
+    local now deleted=() ref ts branch age
+    now=$(date -u +%s)
+    while IFS=$'\t' read -r ref ts; do
+        [ -z "$ref" ] && continue
+        [ -z "$ts" ] && continue
+        branch="${ref#origin/ci/}"
+        # A live local branch means a tree is still on this work and its gate
+        # may be queued or running — never touch that ref.
+        git show-ref --verify --quiet "refs/heads/${branch}" && continue
+        age=$(( now - ts ))
+        [ "$age" -lt "$CI_REF_MAX_AGE_SECONDS" ] && continue
+        if [ "$DRY_RUN" = 1 ]; then
+            deleted+=("ci/${branch}")
+        elif git push -q origin --delete "ci/${branch}" 2>/dev/null; then
+            deleted+=("ci/${branch}")
+        fi
+    done < <(git for-each-ref \
+        --format='%(refname:short)'$'\t''%(committerdate:unix)' \
+        refs/remotes/origin/ci)
+
+    [ "${#deleted[@]}" -eq 0 ] && return 0
+    if [ "$DRY_RUN" = 1 ]; then
+        echo "reap-worktrees --dry-run: would delete ${#deleted[@]} orphaned gate ref(s): ${deleted[*]}"
+    else
+        echo "reap-worktrees: deleted ${#deleted[@]} orphaned gate ref(s): ${deleted[*]}"
+    fi
 }
 
 JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
@@ -197,6 +271,8 @@ else
         fi
     done
 fi
+
+sweep_ci_refs
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
     echo "reap-worktrees: nothing to reap"

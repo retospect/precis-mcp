@@ -42,6 +42,18 @@ name can't be inverted, `compose_project_for` is not injective — and tears
 down the ones whose tree is gone. A tree that still exists is never touched,
 so it can't race a parked session or an in-flight gate. First run reaped 13.
 
+The remote side leaks the same way. `scripts/ship --remote` pushes the tree to
+a throwaway `ci/<branch>` for check.yml, and deletes it again only on a
+completed ship — a red gate you then `/qland`, or a ship killed mid-run, leaves
+the ref on GitHub forever (12 had accumulated before anyone looked).
+`sweep_ci_refs` in `scripts/reap-worktrees` deletes a `ci/<X>` once no local
+branch `<X>` exists *and* the ref is older than `PRECIS_CI_REF_MAX_AGE_SECONDS`
+(default 24h). The age floor is the safety property, not politeness: a tree
+whose work a sibling qlanded can be reaped while its own gate is still running,
+and deleting that ref kills the run. Escape hatch `PRECIS_NO_CI_REF_REAP=1`
+(remote untouched, worktrees still reaped); offline or unauthenticated is a
+silent skip, never a hook failure.
+
 All gate/test containers still share **one Docker VM memory ceiling**, so
 `scripts/test` and the `scripts/ship` gate take a fleet-wide **gate slot**
 (`scripts/lib/gate-slot.sh`, default 2 concurrent, `PRECIS_GATE_SLOTS`

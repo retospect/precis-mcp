@@ -93,6 +93,7 @@ SESSION_LOCK_LIB_SRC = REPO_ROOT / "scripts" / "lib" / "session-lock.sh"
 def _test_env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop("PRECIS_NO_AUTOREAP", None)  # the escape hatch must be OFF here
+    env.pop("PRECIS_NO_CI_REF_REAP", None)  # ditto, for the gate-ref sweep
     env.update(
         {
             "GIT_AUTHOR_NAME": "Test",
@@ -1566,3 +1567,174 @@ def test_reap_test_dbs_carve_out_dry_run_lists_without_downing(
     assert log == "", "dry-run must never actually down anything"
     assert "precis-test-b" in result.stdout
     assert "would reap" in result.stdout.lower()
+
+
+# ── orphaned remote gate refs (ci/<branch>) ──────────────────────────────
+#
+# scripts/ship --remote pushes ci/<branch> for check.yml and deletes it again
+# only when the ship COMPLETES. A red gate the session then /qland's, or a
+# ship killed mid-run, leaks the ref forever — twelve of them accumulated on
+# the real remote before anyone looked. These pin the two conditions that
+# make deleting one safe, and the two that must not.
+
+
+def _commit_at(repo: Path, message: str, *, days_ago: int) -> None:
+    """Commit with a committer date <days_ago> in the past — the sweep reads
+    committerdate as its proxy for when the ref was pushed."""
+    stamp = datetime.now(UTC) - timedelta(days=days_ago)
+    iso = stamp.strftime("%Y-%m-%dT%H:%M:%S+0000")
+    env = _test_env()
+    env["GIT_COMMITTER_DATE"] = iso
+    env["GIT_AUTHOR_DATE"] = iso
+    result = subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", message],
+        cwd=str(repo),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture
+def gate_ref_repo(tmp_path: Path) -> dict[str, Path]:
+    """A repo with a real (bare, on-disk) ``origin`` carrying four gate refs:
+
+    - ``ci/worktree-stale`` — 30 days old, no local branch: the leak.
+    - ``ci/worktree-fresh`` — pushed today, no local branch: a gate that may
+      still be running (a tree can be reaped while its own run is in flight,
+      if a sibling landed the work).
+    - ``ci/worktree-live`` — 30 days old, but ``worktree-live`` still exists
+      locally: a tree is still on this work.
+    - ``ci/feat/nested-name`` — 30-day-old orphan whose name carries a slash,
+      so the ``ci/`` prefix strip is exercised on a real shape
+      (``ci/feat/se-datum-measure-eval`` existed on the real remote).
+    """
+    origin = tmp_path / "origin.git"
+    _run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], tmp_path)
+
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+    scripts_dir = primary / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    (scripts_dir / "inflight").chmod(0o755)
+    (scripts_dir / "reap-worktrees").chmod(0o755)
+    (primary / ".gitignore").write_text(".claude/*\n", encoding="utf-8")
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "initial")
+    _git(primary, "remote", "add", "origin", str(origin))
+    _git(primary, "push", "-q", "origin", "main")
+
+    for name, days in (
+        ("ci/worktree-stale", 30),
+        ("ci/worktree-fresh", 0),
+        ("ci/worktree-live", 30),
+        ("ci/feat/nested-name", 30),
+    ):
+        _git(primary, "checkout", "-q", "-b", "_tmp_gate", "main")
+        _commit_at(primary, f"gate push for {name}", days_ago=days)
+        _git(primary, "push", "-q", "origin", f"_tmp_gate:refs/heads/{name}")
+        _git(primary, "checkout", "-q", "main")
+        _git(primary, "branch", "-q", "-D", "_tmp_gate")
+
+    # Only this one keeps a local branch — the tree that is still working.
+    _git(primary, "branch", "-q", "worktree-live", "main")
+    _git(primary, "fetch", "-q", "origin")
+
+    return {"primary": primary, "origin": origin}
+
+
+def _origin_gate_refs(origin: Path) -> set[str]:
+    out = _run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/ci"], origin
+    ).stdout
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def test_sweep_deletes_only_the_stale_orphaned_gate_refs(
+    gate_ref_repo: dict[str, Path],
+) -> None:
+    primary, origin = gate_ref_repo["primary"], gate_ref_repo["origin"]
+
+    assert _origin_gate_refs(origin) == {
+        "ci/worktree-stale",
+        "ci/worktree-fresh",
+        "ci/worktree-live",
+        "ci/feat/nested-name",
+    }
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    # The two protections are the point: a ref pushed today may be a running
+    # gate, and a live local branch means a tree is still on that work.
+    assert _origin_gate_refs(origin) == {"ci/worktree-fresh", "ci/worktree-live"}
+    assert "ci/worktree-stale" in result.stdout
+    assert "ci/feat/nested-name" in result.stdout
+
+
+def test_sweep_dry_run_reports_without_deleting(
+    gate_ref_repo: dict[str, Path],
+) -> None:
+    primary, origin = gate_ref_repo["primary"], gate_ref_repo["origin"]
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees"), "--dry-run"],
+        cwd=str(primary),
+        env=_reap_env(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "would delete" in result.stdout, result.stdout
+    assert len(_origin_gate_refs(origin)) == 4
+
+
+def test_sweep_honours_its_own_escape_hatch(
+    gate_ref_repo: dict[str, Path],
+) -> None:
+    """PRECIS_NO_CI_REF_REAP=1 leaves the remote alone WITHOUT disabling the
+    worktree reaping the script exists for — the two jobs are separately
+    switchable (a machine that should never touch the remote still wants its
+    shipped worktrees cleaned up)."""
+    primary, origin = gate_ref_repo["primary"], gate_ref_repo["origin"]
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_NO_CI_REF_REAP="1", PRECIS_REAP_GRACE_SECONDS="1"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert len(_origin_gate_refs(origin)) == 4
+    assert "gate ref" not in result.stdout
+
+
+def test_sweep_is_silent_when_the_remote_is_unreachable(
+    gate_ref_repo: dict[str, Path],
+) -> None:
+    """A SessionStart hook must never fail or hang on an offline machine: a
+    dead origin is a silent skip, and the refs wait for the next session."""
+    primary = gate_ref_repo["primary"]
+    _git(primary, "remote", "set-url", "origin", str(primary / "does-not-exist.git"))
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "gate ref" not in result.stdout
