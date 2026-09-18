@@ -44,7 +44,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS paper_authors (
     ref_id              bigint      NOT NULL REFERENCES refs (ref_id) ON DELETE CASCADE,
-    position            smallint    NOT NULL,
+    position            integer     NOT NULL,
     given               text        NOT NULL DEFAULT '',
     middle              text        NOT NULL DEFAULT '',
     family              text        NOT NULL DEFAULT '',
@@ -100,7 +100,7 @@ INSERT INTO paper_authors
     (ref_id, position, given, middle, family, name_raw, orcid, person_ref_id, source)
 SELECT
     r.ref_id,
-    e.ord::smallint,
+    e.ord::integer,
     -- given: canonical key wins; a single-comma {name} splits "Family, Given".
     CASE
         WHEN e.elem ? 'given' OR e.elem ? 'family' THEN coalesce(e.elem->>'given', '')
