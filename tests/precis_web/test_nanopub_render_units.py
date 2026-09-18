@@ -553,3 +553,63 @@ def test_answer_model_label_env_chain(monkeypatch) -> None:
     assert answer_model_label() == "haiku"
     monkeypatch.setenv("PRECIS_FOLLOWUP_MODEL", "opus")
     assert answer_model_label() == "opus"
+
+
+# ── _mint_dryrun: source_text carries evidence chunks only ────────────────
+# docs/backlog/claim-terms-absent-from-quotes.md: a sibling finding's prose
+# is not a source. Measured 2026-09-18, letting finding chunks into
+# `source_text` cleared `C60` for fi191121 out of another finding's text.
+
+
+def _dryrun_advisories(monkeypatch: Any, bundle: Any) -> list[str]:
+    from precis.nanopub import evidence, gates
+
+    monkeypatch.setattr(gates, "run_mint_gates", lambda *a, **k: [])
+    monkeypatch.setattr(gates, "resolve_artifact_type", lambda *a, **k: "claim")
+    monkeypatch.setattr(evidence, "hub_body", lambda *a, **k: "")
+    out = _nanopub_render._mint_dryrun(None, 1, bundle, {}, "{}")
+    assert out is not None
+    return [w for w in out["advisories"] if w.startswith("unsupported-term")]
+
+
+def _bundle(
+    *, chunks: list[Any], sources: list[Any], contradicts: list[Any] | None = None
+) -> Any:
+    return SimpleNamespace(
+        sentence="DFT shows a C60 nanobud on a (10,0) nanotube conducts above 1.0 V.",
+        grounding_chunks=chunks,
+        sources=sources,
+        contradicts=contradicts or [],
+    )
+
+
+def test_mint_dryrun_counts_a_contradictors_chunk_as_source(monkeypatch: Any) -> None:
+    # A contradictor is a real paper too; its pinned passage clears terms.
+    # Role is not the criterion, evidence kind is.
+    contradictor = SimpleNamespace(ref_id=77, title="A dissenting transport study")
+    chunk = SimpleNamespace(ref_id=77, text="no C60 on (10,0) tubes conducts at all")
+    assert not _dryrun_advisories(
+        monkeypatch, _bundle(chunks=[chunk], sources=[], contradicts=[contradictor])
+    )
+
+
+def test_mint_dryrun_ignores_a_sibling_findings_chunk(monkeypatch: Any) -> None:
+    paper = SimpleNamespace(ref_id=498, title="Transport properties of nanobuds")
+    paper_chunk = SimpleNamespace(
+        ref_id=498, text="the current can flow apparently in the CNB100 system"
+    )
+    finding_chunk = SimpleNamespace(
+        ref_id=7, text="Another hub about C60 on a (10,0) nanotube."
+    )
+    hits = _dryrun_advisories(
+        monkeypatch, _bundle(chunks=[paper_chunk, finding_chunk], sources=[paper])
+    )
+    assert len(hits) == 1 and "'C60'" in hits[0] and "'(10,0)'" in hits[0]
+
+
+def test_mint_dryrun_threads_the_source_title(monkeypatch: Any) -> None:
+    paper = SimpleNamespace(ref_id=498, title="C60 nanobuds on (10,0) nanotubes")
+    paper_chunk = SimpleNamespace(ref_id=498, text="the CNB100 system conducts")
+    assert not _dryrun_advisories(
+        monkeypatch, _bundle(chunks=[paper_chunk], sources=[paper])
+    )

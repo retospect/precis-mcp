@@ -188,15 +188,28 @@ def _mint_dryrun(
     # gr245768: the grounding passage(s), when this hub has any resolved --
     # sharpens `all-caps-artifact` from allowlist-only to also clearing a
     # token genuinely capitalized in the source ("The GLYMPHATIC system...").
+    # Only chunks of real evidence sources count — supporters AND
+    # contradictors (`bundle.sources` + `bundle.contradicts` are both
+    # restricted to evidence kinds; role is not the criterion, kind is). A
+    # sibling finding's prose is not a source: letting it in cleared
+    # `unsupported-term`'s `C60` for fi191121 out of another finding's text
+    # (docs/backlog/claim-terms-absent-from-quotes.md).
+    evidence_sources = [*bundle.sources, *bundle.contradicts]
+    evidence_ref_ids = {s.ref_id for s in evidence_sources}
+    evidence_chunks = [
+        c for c in bundle.grounding_chunks if c.ref_id in evidence_ref_ids
+    ]
     source_text = (
-        "\n".join(c.text for c in bundle.grounding_chunks)
-        if bundle.grounding_chunks
-        else None
+        "\n".join(c.text for c in evidence_chunks) if evidence_chunks else None
     )
+    source_title = "\n".join(s.title for s in evidence_sources if s.title) or None
     return {
         "violations": violations,
         "advisories": gates.advisory_lint(
-            bundle.sentence, artifact_type=artifact_type, source_text=source_text
+            bundle.sentence,
+            artifact_type=artifact_type,
+            source_text=source_text,
+            source_title=source_title,
         ),
     }
 

@@ -236,3 +236,44 @@ def test_inadmissible_hypothesis_still_blocks_at_run_mint_gates(
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, _ONE_VIOLATION_PER_CODE["author-name"], paper, chunk)
     assert "claim-sentence" in _gate_slugs(store, hub, _hypothesis_payload())
+
+
+# ── unsupported-term is advisory, never blocking ──────────────────────────
+# docs/backlog/claim-terms-absent-from-quotes.md: a claim that generalizes
+# past a quote's literal wording is sometimes exactly right, so the
+# reviewer must see the flag, never be stopped by it.
+
+_CNB100_SENTENCE = (
+    "DFT shows a C60 nanobud on a semiconducting (10,0) nanotube has a "
+    "threshold bias near 1.0 V."
+)
+_CNB100_QUOTE = (
+    "When the bias is larger than a certain threshold bias (around 1.0 V), "
+    "the current can flow apparently in the CNB100 system."
+)
+
+
+def test_unsupported_term_never_blocks() -> None:
+    assert "unsupported-term" not in gates._BLOCKING_LINT_CODES
+    assert gates.check_claim_sentence(_CNB100_SENTENCE) == []
+
+
+def test_unsupported_term_reaches_the_advisory_channel_with_source_text() -> None:
+    codes = [
+        w.split(":", 1)[0]
+        for w in gates.advisory_lint(_CNB100_SENTENCE, source_text=_CNB100_QUOTE)
+    ]
+    assert "unsupported-term" in codes
+    # The source title clears a term the passages lack.
+    cleared = gates.advisory_lint(
+        _CNB100_SENTENCE,
+        source_text=_CNB100_QUOTE,
+        source_title="Transport in C60 nanobuds on (10,0) nanotubes",
+    )
+    assert not any(w.startswith("unsupported-term") for w in cleared)
+
+
+def test_hub_carrying_an_unsupported_term_still_mints(store: Any) -> None:
+    paper, chunk, _sha = _seed_paper(store, chunk_text=_CNB100_QUOTE)
+    hub = _seed_hub(store, _CNB100_SENTENCE, paper, chunk)
+    assert "claim-sentence" not in _gate_slugs(store, hub, _payload(chunk))

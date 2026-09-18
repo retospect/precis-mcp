@@ -90,7 +90,12 @@ META_PROPOSED_PAYLOAD = "proposed_payload"
 #: machine-undecidable which reading applies, per
 #: ``sentence_lint``'s tense docstring; ``past-passive`` is the one tense
 #: code blocked, since a bare "study happened" passive with no result
-#: stated is never a claim).
+#: stated is never a claim), and ``unsupported-term`` (a notation-shaped
+#: claim term absent from every quoted passage and the source title —
+#: ``docs/backlog/claim-terms-absent-from-quotes.md``; a claim that
+#: generalizes past a quote's literal wording is sometimes exactly right,
+#: so the reviewer must see the flag, never be stopped by it. This code
+#: NEVER joins the blocking set.)
 _BLOCKING_LINT_CODES: frozenset[str] = frozenset(
     {
         # lint_claim_sentence — admissibility + grammar
@@ -597,7 +602,11 @@ def check_claim_sentence(
 
 
 def advisory_lint(
-    sentence: str, *, artifact_type: str = "claim", source_text: str | None = None
+    sentence: str,
+    *,
+    artifact_type: str = "claim",
+    source_text: str | None = None,
+    source_title: str | None = None,
 ) -> list[str]:
     """The NON-blocking half of the sentence lints — every
     ``lint_notation`` / ``lint_claim_sentence`` warning whose code is
@@ -613,8 +622,11 @@ def advisory_lint(
     text, when a caller has it (e.g. the review page's pre-approve dry-run,
     which has ``bundle.grounding_chunks`` in hand), sharpens
     ``all-caps-artifact`` from allowlist-only to also clearing a token that
-    is genuinely capitalized in the source. Omitting it changes nothing for
-    every other lint code."""
+    is genuinely capitalized in the source, and enables ``unsupported-term``
+    (silent without a passage). For that rule the text must be evidence
+    chunks only — never a sibling finding's prose. ``source_title`` (the
+    evidence source titles) clears a term the title carries. Omitting
+    either changes nothing for every other lint code."""
     if not sentence:
         return []
     blocking = _BLOCKING_LINT_CODES - _ARTIFACT_LINT_EXEMPTIONS.get(
@@ -623,7 +635,7 @@ def advisory_lint(
     out: list[str] = []
     seen: set[str] = set()
     for w in lint_notation(sentence) + lint_claim_sentence(
-        sentence, source_text=source_text
+        sentence, source_text=source_text, source_title=source_title
     ):
         code = w.split(":", 1)[0].strip()
         if code in blocking or code in seen:

@@ -989,6 +989,137 @@ def _allcaps_artifact_hit(sentence: str, source_text: str | None) -> str | None:
     return None
 
 
+# ── unsupported-term (docs/backlog/claim-terms-absent-from-quotes.md) ─────
+#
+# A claim can assert something in vocabulary the evidence never uses, and
+# nothing between extraction and signature notices. fi191121 (signed
+# 2026-09-17) reads "...a C60 nanobud on a semiconducting (10,0)
+# single-walled carbon nanotube..."; both frozen grounding quotes say only
+# `CNB100`, the label paper 498 coins for that system. The definition lives
+# at ords 12/14 of the same paper, unquoted. This rule flags a
+# notation-shaped term in the claim that appears in neither the quoted
+# passages nor the source's title, so the reviewer sees the gap and the
+# minter (per `precis-taproot-mint-help`) quotes the defining passage as
+# additional grounding. The bridge is a quoted passage, never a house
+# translation table: an equivalence asserted on our authority is unsigned,
+# unsourced, and silently wrong the first time a second paper reuses the
+# label. Advisory only, never blocking -- a claim that generalizes past a
+# quote's literal wording is sometimes exactly right.
+#
+# The token class and normalizer were DECIDED 2026-09-18 against the prod
+# claim corpus (all 2373 `finding` claim sentences, 1463 grounded by a real
+# evidence kind); see the backlog item for the per-arm hit table. Under
+# this class 72% of claim sentences extract zero tokens and 7.3% of
+# grounded findings flag. Exclusions below are corpus-evidenced, not
+# invented -- do not grow them from intuition.
+
+#: Four extraction arms, unioned. Each is anchored so a letter/digit
+#: adjoining the match blocks it (``C60`` inside ``C600`` is not a hit on
+#: its own; the whole ``C600`` is).
+_TERM_ARM_RES: tuple[re.Pattern[str], ...] = (
+    # index pair -- chirality / Miller-style: (10,0), (5,5), (8, 8)
+    re.compile(r"\(\s*\d+\s*,\s*-?\d+\s*\)"),
+    # subscript formula -- C₆₀, C₅₀, g-C₃N₄ (the arm lands on the whole run
+    # C₃N₄, so the boundary-anchored clearing below can find it in `g-c3n4`)
+    re.compile(
+        r"(?<![A-Za-z0-9₀-₉])[A-Z][A-Za-z₀-₉]*[₀-₉][A-Za-z₀-₉]*(?![A-Za-z0-9₀-₉])"
+    ),
+    # hyphen-number label -- UiO-66, ZIF-8, group-13
+    re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,}-\d+[A-Za-z0-9]*(?![A-Za-z0-9])"),
+    # mixed alphanumeric -- CNB100, C60, CO2, B3LYP (letters AND digits)
+    re.compile(
+        r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)"
+        r"[A-Za-z0-9]{2,}(?![A-Za-z0-9])"
+    ),
+)
+
+#: Corpus-evidenced exclusions (normalized form): dimensionality labels
+#: (``3D``x30 and ``2D``x23 were the two loudest false positives) and a
+#: leading ``sub-<digit>`` (``sub-10 nm``).
+_TERM_EXCLUDE_RE = re.compile(r"^(?:[0-4]d|sub-\d+[a-z0-9]*)$")
+
+#: Small-molecule formulae and a group label the corpus writes in a claim
+#: without the passage repeating them -- the ``_CAPS_ARTIFACT_ALLOWLIST``
+#: analogue, same "corpus evidence, not invention" bar (measured
+#: 2026-09-18). DFT functionals (``B3LYP``, ``BP86``, ``M06``) are
+#: deliberately NOT here: a claim naming a method the passage never names
+#: is flagged correctly. Entries are in normalized form (see
+#: :func:`_normalize_term_text`).
+_UNSUPPORTED_TERM_ALLOWLIST: frozenset[str] = frozenset(
+    {"co2", "o2", "cl2", "nh3", "group-13"}
+)
+
+#: TeX residue the normalizer strips *after* ``snip.normalize_text``:
+#: paper 498 writes the fullerene ``$C_{60}$`` at ord 12 -- the very
+#: passage that defines CNB100 -- so without this every TeX-bearing
+#: passage reads as omitting the term. Removes ~50 corpus false positives.
+_TEX_RESIDUE_RE = re.compile(r"[${}\\_^]")
+
+#: Intra-token whitespace in an index pair: ``(8, 8)`` occurs beside
+#: ``(8,8)`` in this corpus.
+_INDEX_PAIR_WS_RE = re.compile(r"\(\s*(\d+)\s*,\s*(-?\d+)\s*\)")
+
+
+def _normalize_term_text(text: str) -> str:
+    """``nanopub.snip.normalize_text`` (soft-hyphen strip, ligature unfold,
+    NFKD, casefold, whitespace collapse -- NFKD already folds ``C₆₀`` to
+    ``c60``) plus two steps decided for this rule: strip TeX residue and
+    close up index pairs. One normalizer, both sides of the comparison;
+    accepting casefold cost 2 tokens of 188 measured and is not worth a
+    second normalizer."""
+    from precis.nanopub.snip import normalize_text  # local: nanopub imports taproot
+
+    out = _TEX_RESIDUE_RE.sub("", normalize_text(text))
+    return _INDEX_PAIR_WS_RE.sub(r"(\1,\2)", out)
+
+
+def extract_claim_terms(sentence: str) -> list[str]:
+    """Notation-shaped terms of ``sentence``, as written, first-occurrence
+    order, deduplicated on normalized form. Ordinary words never qualify:
+    every arm requires a digit, a subscript digit, or an index pair."""
+    seen: set[str] = set()
+    hits: list[tuple[int, str]] = []
+    for arm in _TERM_ARM_RES:
+        for m in arm.finditer(sentence):
+            token = m.group(0)
+            key = _normalize_term_text(token)
+            if not key or key in seen or _TERM_EXCLUDE_RE.match(key):
+                continue
+            seen.add(key)
+            hits.append((m.start(), token))
+    return [token for _, token in sorted(hits)]
+
+
+def _unsupported_terms(
+    sentence: str, source_text: str | None, source_title: str | None
+) -> list[str]:
+    """Terms of ``sentence`` (as written) found in neither ``source_text``
+    nor ``source_title`` after normalization. ``[]`` when ``source_text``
+    is ``None`` -- with no passage to clear against, every term would
+    flag, which is noise, not signal (unlike ``all-caps-artifact``, this
+    rule has no allowlist-only mode)."""
+    if source_text is None:
+        return []
+    haystack = _normalize_term_text(f"{source_text}\n{source_title or ''}")
+    return [
+        token
+        for token in extract_claim_terms(sentence)
+        if (key := _normalize_term_text(token)) not in _UNSUPPORTED_TERM_ALLOWLIST
+        and not _term_in_haystack(key, haystack)
+    ]
+
+
+def _term_in_haystack(key: str, haystack: str) -> bool:
+    """Boundary-anchored containment on the normalized side, matching the
+    anchoring of the extraction arms: ``c60`` is not cleared by ``c600``,
+    ``n4`` not by ``sin40`` (raw substring containment would clear both --
+    the ``snip.count_matches`` lesson). Anchors are alphanumeric only, so
+    an index pair ``(10,0)`` still clears inside ``(10,0)-nanotube``."""
+    return (
+        re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", haystack) is not None
+    )
+
+
 # ── author-name ───────────────────────────────────────────────────────────
 
 _AUTHOR_NAME_RE = re.compile(
@@ -1005,7 +1136,9 @@ _AUTHOR_NAME_RE = re.compile(
 _OVER_LONG_CHARS = 250
 
 
-def lint_claim_sentence(sentence: str, *, source_text: str | None = None) -> list[str]:
+def lint_claim_sentence(
+    sentence: str, *, source_text: str | None = None, source_title: str | None = None
+) -> list[str]:
     """Return human-readable admissibility/grammar warnings about
     ``sentence``.
 
@@ -1017,9 +1150,16 @@ def lint_claim_sentence(sentence: str, *, source_text: str | None = None) -> lis
     passage the sentence was extracted from, when a caller has it in hand
     (mint/approve time: :func:`~precis.nanopub.gates.advisory_lint`'s
     caller can pass ``bundle.grounding_chunks`` text). It powers
-    ``all-caps-artifact``'s second check only -- every other rule in this
-    function ignores it, and every existing caller that doesn't pass it
-    keeps working unchanged.
+    ``all-caps-artifact``'s second check and ``unsupported-term`` only --
+    every other rule in this function ignores it, and every existing
+    caller that doesn't pass it keeps working unchanged. For
+    ``unsupported-term`` it must carry only chunks of real evidence kinds
+    (paper/patent): a sibling finding's prose is not a source, and letting
+    it in cleared ``C60`` for fi191121 out of *another finding's* text.
+
+    ``source_title`` (optional) is the evidence source's title; a term the
+    title carries counts as supported for ``unsupported-term``. Ignored by
+    every other rule.
     """
     if not sentence:
         return []
@@ -1160,6 +1300,17 @@ def lint_claim_sentence(sentence: str, *, source_text: str | None = None) -> lis
                 "likely a Tier.SMALL extraction artifact (gr245768) -- "
                 "check against the source before approving."
             )
+
+    missing_terms = _unsupported_terms(sentence, source_text, source_title)
+    if missing_terms:
+        listed = ", ".join(repr(t) for t in missing_terms)
+        warnings.append(
+            f"unsupported-term: {listed} found in no quoted passage or source "
+            "title -- if the paper coins its own label for this, quote the "
+            "passage where it defines the term as additional grounding "
+            "(precis-taproot-mint-help); if the claim deliberately "
+            "generalizes past the quote's wording, leave it."
+        )
 
     m = _AUTHOR_NAME_RE.search(sentence)
     if m:

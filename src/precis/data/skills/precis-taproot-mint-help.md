@@ -6,6 +6,8 @@ answers:
   - how do I turn a sourced claim into a citable hub?
   - why isn't my sentence admissible as a claim?
   - how do I check for a near-duplicate hub before minting a new one?
+  - the paper calls it X but my claim says Y — what do I quote?
+  - what does the unsupported-term advisory mean and how do I clear it?
 applies-to: put(kind='finding') hub-authoring door; precis taproot mint (CLI equivalent)
 status: active
 tags: workflow, design
@@ -62,8 +64,8 @@ deterministically-fixable notation code,
 including `past-passive` (tense with no result — `precis-nanopub-help`'s
 claim-sentence grammar); judgment-only codes (`two-denominator-solidus`,
 `approx-spacing`, `tilde-approximation`, `past-tense`, `present-perfect`,
-`formula-ascii-subscript`, `scope-*`) stay advisory even at approve —
-nothing mechanical can resolve them. The line is *measured*, not
+`formula-ascii-subscript`, `scope-*`, `unsupported-term`) stay advisory
+even at approve — nothing mechanical can resolve them. The line is *measured*, not
 assumed: a code earns blocking status by dry-running over the whole
 corpus at a zero false-positive rate. `hyphen-numeric-range` and
 `ascii-x-multiplier` cleared that bar and block; `formula-ascii-subscript`
@@ -327,6 +329,55 @@ corpus, so a rare token (a compound name, a number, a DOI) ranks high —
 quote the most distinctive phrase you have. [[precis-check-source-help]]
 is the full find → read-surrounds → judge loop; run it before attaching,
 not after.
+
+## The paper calls it X, your claim says Y — quote the definition too
+
+A signed hub carries only its quoted passages. If your claim uses a term
+the passages don't, a third party reading the artifact cannot get from
+one to the other. fi191121 reads "…a C60 nanobud on a semiconducting
+(10,0) single-walled carbon nanotube…"; both grounding quotes say only
+**CNB100**, the label the paper coins for exactly that system. The
+equivalence is real and the claim is correct — but the sentence that
+says so sits two paragraphs earlier, unquoted, so the artifact cannot
+show it.
+
+**The bridge is a quoted passage, not a table.** Do not keep a
+synonym list or translation table anywhere: "CNB100 = C60 on (10,0)
+SWCNT" asserted on our authority is unsigned, unsourced, and silently
+wrong the first time another paper uses the label differently. The
+paper's own definition sentence *is* the evidence for the equivalence;
+quoting it makes the claim carry its translation, signed and scoped to
+the paper that coined it.
+
+The advisory `unsupported-term` lint (approve page, beside a passing
+claim-sentence gate) names each notation-shaped claim term — a label
+like `CNB100`, an index pair like `(10,0)`, a formula like `C₆₀`, a
+hyphenated label like `UiO-66` — that appears in no quoted passage and
+not in the source's title. Ordinary words never trigger it. It never
+blocks: a claim that deliberately generalizes past the quote's literal
+wording is sometimes exactly right, and the reviewer decides. When it
+fires and the term is the paper's own coinage:
+
+1. Find where the paper first uses the label — the definition is at
+   first use, often a figure caption or the methods opening. Search on
+   the label, not the claim wording:
+   `search(kind='paper', q='<label>', scope='pa<id>')`, then read the
+   hit (`get(id='pc<id>')`). Search, don't scan: the same paper may
+   write `$C_{60}$` in one passage and `C60` in another.
+2. Attach that passage as a further grounding of the same paper —
+   another supporter entry with the same `paper` and the defining
+   `source_handle`, or `link(kind='finding', id='fi<id>',
+   rel='corroborates', target='pc<id>')` on an existing hub.
+3. Re-run the dry-run; the advisory clears once the defining passage is
+   in the grounding set.
+
+If the term is a community synonym with no defining passage (SWCNT vs
+SWNT), reword the claim to the paper's own spelling — the hub is read
+alone, and the source's spelling is the one a reader can check.
+
+(This is the upstream direction — a claim being minted against its
+passages. `precis-claim-fidelity-help` governs the downstream one, draft
+prose restating an existing hub.)
 
 ## Mint a claim hub — link what you find, and the batch CLI
 

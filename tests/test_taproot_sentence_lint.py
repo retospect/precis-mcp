@@ -730,3 +730,126 @@ def test_all_caps_artifact_ignores_three_letter_acronyms() -> None:
         w.startswith("all-caps-artifact")
         for w in lint_claim_sentence(_CLEAN_SENTENCE, source_text="unrelated text")
     )
+
+
+# ── unsupported-term (docs/backlog/claim-terms-absent-from-quotes.md) ─────
+# fi191121's real regression case: the live claim sentence and the two
+# frozen grounding quotes (pc35908, pc35909 of paper 498), which name the
+# system only by the paper's own label CNB100. The definition passage
+# (pc35887, Fig. 1 caption) writes the fullerene as TeX `$C_{60}$`.
+
+_FI191121_SENTENCE = (
+    "DFT-based non-equilibrium Green's-function (NEGF) transport calculations "
+    "on a C60 nanobud on a single-walled carbon nanotube sidewall find a "
+    "threshold bias near 1.0 V in the semiconducting (10,0)-nanotube junction."
+)
+_FI191121_QUOTES = (
+    "From Fig. 5, we can see clearly that when the bias is larger than a "
+    "certain threshold bias (around 1.0 V), the current can flow apparently "
+    "in the CNB100 system, which indicates that this system is of "
+    "semiconducting characteristics.\n"
+    "In contrast, there is no such threshold bias in the CNB55 system, which "
+    "indicates that this system is of metallic characteristics. As a result, "
+    "we can conclude that CNBs do not change the metallic/semiconducting "
+    "characteristics of their pristine SWCNT base."
+)
+_PAPER_498_DEFINITION = (
+    "(b) The hh C–C bond in  $C_{60}$  and the P type C–C bond in the zigzag "
+    "(10,0) SWCNT form a quadrilateral ring, labeled by CNB100."
+)
+
+
+def _unsupported(warnings: list[str]) -> list[str]:
+    return [w for w in warnings if w.startswith("unsupported-term")]
+
+
+def test_unsupported_term_names_both_c60_and_the_index_pair() -> None:
+    hits = _unsupported(
+        lint_claim_sentence(_FI191121_SENTENCE, source_text=_FI191121_QUOTES)
+    )
+    assert len(hits) == 1
+    assert "'C60'" in hits[0] and "'(10,0)'" in hits[0]
+    assert "quote the passage where it defines the term" in hits[0]
+
+
+def test_unsupported_term_clears_once_the_definition_passage_is_quoted() -> None:
+    # The definition writes `$C_{60}$` -- TeX residue must fold to `c60`.
+    source = f"{_FI191121_QUOTES}\n{_PAPER_498_DEFINITION}"
+    assert not _unsupported(lint_claim_sentence(_FI191121_SENTENCE, source_text=source))
+
+
+def test_unsupported_term_ignores_ordinary_prose() -> None:
+    sentence = (
+        "DFT shows the semiconducting film's measured band gap narrows under "
+        "tensile strain."
+    )
+    assert not _unsupported(lint_claim_sentence(sentence, source_text="nothing here"))
+
+
+def test_unsupported_term_clears_against_the_source_title() -> None:
+    hits = _unsupported(
+        lint_claim_sentence(
+            _FI191121_SENTENCE,
+            source_text=_FI191121_QUOTES,
+            source_title="Electronic transport in C60 nanobuds on (10,0) tubes",
+        )
+    )
+    assert not hits
+
+
+def test_unsupported_term_is_silent_without_source_text() -> None:
+    # No passage to clear against -> every term would flag; that is noise.
+    assert not _unsupported(lint_claim_sentence(_FI191121_SENTENCE))
+
+
+def test_unsupported_term_normalizes_both_sides() -> None:
+    # Subscript formula folds via NFKD; index pair closes up whitespace;
+    # casefold applies. Each pair below is the same term in two spellings.
+    for claim_form, passage_form in (
+        ("C₆₀", "C60"),
+        ("C60", "$C_{60}$"),
+        ("(8,8)", "(8, 8)"),
+        ("(8, 8)", "(8,8)"),
+        ("UiO-66", "uio-66"),
+    ):
+        sentence = f"DFT shows {claim_form} tubes conduct."
+        assert not _unsupported(
+            lint_claim_sentence(sentence, source_text=f"About {passage_form} here.")
+        ), (claim_form, passage_form)
+
+
+def test_unsupported_term_clears_on_token_boundaries_only() -> None:
+    # `c60` is not cleared by `c600`, `n4` not by `sin40` -- the extraction
+    # arms are boundary-anchored and so is the clearing side.
+    hits = _unsupported(
+        lint_claim_sentence("DFT shows C60 conducts.", source_text="C600 and SiN40.")
+    )
+    assert len(hits) == 1 and "'C60'" in hits[0]
+    # A whole subscript compound is one token and clears against its
+    # ASCII spelling, hyphen prefix and all.
+    assert not _unsupported(
+        lint_claim_sentence(
+            "DFT shows g-C₃N₄ conducts.", source_text="on g-C3N4 sheets"
+        )
+    )
+    # An index pair still clears when hyphenated onto a following word.
+    assert not _unsupported(
+        lint_claim_sentence(
+            "DFT shows (10,0) tubes conduct.", source_text="the (10,0)-nanotube base"
+        )
+    )
+
+
+def test_unsupported_term_corpus_exclusions_and_allowlist() -> None:
+    # 2D/3D dimensionality labels, `sub-10`, and the small-molecule
+    # allowlist are corpus-evidenced non-terms and never flag.
+    sentence = "DFT shows 2D and 3D sub-10 nm CO2 and NH3 adsorption is weak."
+    assert not _unsupported(lint_claim_sentence(sentence, source_text="unrelated"))
+    # A DFT functional the passage never names IS flagged (deliberately
+    # not allowlisted).
+    hits = _unsupported(
+        lint_claim_sentence(
+            "B3LYP calculations show the gap is 2 eV.", source_text="unrelated"
+        )
+    )
+    assert len(hits) == 1 and "'B3LYP'" in hits[0]
