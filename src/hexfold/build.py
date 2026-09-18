@@ -334,6 +334,54 @@ def _hexagon_sites(radius: int) -> list[Site]:
     return out
 
 
+def _hex_flake_sites(lat: Lattice, r: int) -> list[Site]:
+    """The ``hex(r)`` flake: the hexagonal cluster of rings within
+    ring-adjacency radius ``r`` of the hexagon closest to the origin
+    (r=0 is one hexagon, 6(r+1)**2 atoms).
+
+    Ring-adjacency BFS on a large sheet patch -- the same algorithm the
+    ``hex(r)`` hole cut uses (``build.kind`` ring_size <= -10) -- so the
+    flat-lid patch and a ``- hex(r)@...`` hole are the identical cell
+    complex, just centred on the nearest ring instead of an authored site.
+    """
+    big = Patch(lat, _hexagon_sites(2 * r + 3))
+    rings, _rims = big.rings_and_rims()
+    hexrings = [rr for rr in rings if len(rr) == 6]
+    centre = min(
+        hexrings,
+        key=lambda rr: (
+            round(
+                float(np.linalg.norm(np.mean([big.flatpos[v] for v in rr], axis=0))),
+                6,
+            ),
+            _ring_canon(rr),
+        ),
+    )
+    edge_rings: dict[frozenset[Vid], list[int]] = {}
+    for ri, rr in enumerate(rings):
+        for ei in range(len(rr)):
+            edge_rings.setdefault(
+                frozenset((rr[ei], rr[(ei + 1) % len(rr)])), []
+            ).append(ri)
+    centre_i = next(i for i, rr in enumerate(rings) if rr is centre)
+    cluster = {centre_i}
+    frontier = {centre_i}
+    for _ in range(r):
+        nxt: set[int] = set()
+        for ri in frontier:
+            rr = rings[ri]
+            for ei in range(len(rr)):
+                for adj in edge_rings.get(
+                    frozenset((rr[ei], rr[(ei + 1) % len(rr)])), ()
+                ):
+                    if adj not in cluster:
+                        nxt.add(adj)
+        cluster |= nxt
+        frontier = nxt
+    sites = sorted({v for ri in cluster for v in rings[ri]}, key=str)
+    return cast(list[Site], sites)
+
+
 def _tube_patch(lat: Lattice, n: int, m: int, length: int, seam: float = 0.0) -> Patch:
     """Patch on the rolled strip: identification along C_h is exact.
 
@@ -669,6 +717,8 @@ def _assemble(
                 b_exp = 6
             elif kind == "cone":
                 b_exp = 6 - (patch.cone_p or 0)
+            elif patch.flat_lid:
+                b_exp = 6
             else:
                 b_exp = 0
             ords_list = tuple(ords[(key, v)] for v in rim)
@@ -1164,7 +1214,8 @@ def build(
                         Finding(
                             "build.kind",
                             Severity.ERROR,
-                            f"cap({cn},{cm}) v0.1: only (5,5)",
+                            f"cap({cn},{cm}): supported are (5,5) (C60 "
+                            "hemisphere) and (6k,0) flat lids, k >= 1",
                             where=inst.name,
                             span=inst.span,
                         )
@@ -1924,13 +1975,26 @@ def _c60_patch(lat: Lattice) -> Patch:
 
 
 def _cap_patch(lat: Lattice, n: int, m: int) -> Patch | None:
-    """Fullerene cap: C60 cut along a rim perpendicular to a face axis.
+    """``cap(n,m)``: the C60 hemisphere ``(5,5)``, or a ``(6k,0)`` flat lid.
 
-    ``cap(5,5)`` cuts perpendicular to a C5 axis (30 atoms, 10 dangling,
+    ``cap(5,5)`` cuts C60 perpendicular to a C5 axis (30 atoms, 10 dangling,
     6 pentagons).  The kept hemisphere is the one containing the lex-min
-    atom.  Returns None for other (n,m).
+    atom.
+
+    ``cap(6k,0)``, k >= 1, is the flat lid: the ``hex(k-1)`` flake (§28.3),
+    the same cell complex a ``- hex(k-1)@...`` hole removes from a sheet.
+    Its rim is all-zigzag with 6k dangling atoms, so it seats on a
+    ``(6k,0)`` tube end at any registry; the lid itself carries no
+    pentagons -- fusing it to a tube produces six pentagons as seam rings
+    at the flake's six corners (SPEC 6.1, 28.3).  Returns None for every
+    other ``(n,m)``.
     """
     if (n, m) != (5, 5):
+        if m == 0 and n > 0 and n % 6 == 0:
+            flake_r = n // 6 - 1
+            p = Patch(lat, _hex_flake_sites(lat, flake_r))
+            p.flat_lid = True
+            return p
         return None
     full = _c60_patch(lat)
     pos3 = full.pos3
@@ -3188,23 +3252,43 @@ def _apply_connects(
         else a
         for a in atoms
     ]
+    # sheet partition (SPEC 6.3): needed both to scope the fused-rim B
+    # remainder below (per sheet, not per net -- a k>=3 seam can leave
+    # several disjoint sheets in one spec) and for the final Net.sheet_atoms.
+    sheet_atoms = _compute_sheets(atoms, bonds, set(attach_bonds), seam_atom_ords)
     if fused_edges:
-        # consumed rims carried their hole_b away; recompute the merged
-        # surface's combinatorial B total and give outer rims the remainder
-        sigma_terms = sum(6 - len(r) for r in set(rings))
-        chi_n = len(atoms) - len(bonds) + len(set(rings))
-        hole_sum = sum(p.b for _, p in ports.items() if p.normal == "hole")
-        rem = 6 * chi_n - sigma_terms - hole_sum
-        outer = sorted(nm for nm, p in ports.items() if p.normal != "hole")
-        for oi, nm in enumerate(outer):
-            ports[nm] = replace(ports[nm], b=rem if oi == 0 else 0)
+        # consumed rims carried their hole_b away; recompute the
+        # combinatorial B total of each *affected* sheet (one that
+        # actually absorbed a consumed rim) and give its outer rims the
+        # remainder.  A fuse elsewhere in the net -- or a sheet with no
+        # fuse at all, e.g. one only touched by a k>=3 seam -- must not
+        # have its ports' B overwritten.
+        rings_set = set(rings)
+        for _name, comp_ords in sheet_atoms:
+            comp = set(comp_ords)
+            if not any(set(rim) <= comp for rim in consumed_rims):
+                continue
+            comp_rings = [r for r in rings_set if set(r) <= comp]
+            comp_bonds = sum(1 for i, j, _ in bonds if i in comp and j in comp)
+            sigma_terms = sum(6 - len(r) for r in comp_rings)
+            chi_n = len(comp) - comp_bonds + len(comp_rings)
+            hole_sum = sum(
+                p.b
+                for nm, p in ports.items()
+                if p.normal == "hole" and set(p.atoms) <= comp
+            )
+            rem = 6 * chi_n - sigma_terms - hole_sum
+            outer = sorted(
+                nm
+                for nm, p in ports.items()
+                if p.normal != "hole" and set(p.atoms) <= comp
+            )
+            for oi, nm in enumerate(outer):
+                ports[nm] = replace(ports[nm], b=rem if oi == 0 else 0)
     atoms_t = tuple(sorted(atoms, key=lambda a: a.ord))
     bonds_t = tuple(sorted(bonds))
     rings_t = tuple(sorted(set(rings)))
     attach_t = tuple(sorted(set(attach_bonds)))
-    sheet_atoms = _compute_sheets(
-        list(atoms_t), list(bonds_t), set(attach_t), seam_atom_ords
-    )
     sheets = tuple(
         (name, tuple(i for i, r in enumerate(rings_t) if set(r) <= set(ords)))
         for name, ords in sheet_atoms

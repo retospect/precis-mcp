@@ -166,7 +166,9 @@ Two boundary terms are carried per rim. `B` (combinatorial) is the
 attribution that makes the law hold by construction on the net as built —
 an internal consistency value. `B_expected` is what the rim's primitive
 says the rim bounds: a sheet outer rim +6 (flat disc), a tube end 0
-(cylinder), a cone base 6 − P, a cap rim 0; a hole rim carries the term
+(cylinder), a cone base 6 − P, a hemisphere cap rim 0, a flat-lid rim +6
+(it is a flat disc; the six pentagons are seam rings of its fuse); a hole
+rim carries the term
 of the cell complex that was removed (`−(6χ_S − Σ_S(6−n))`, so −ring size
 for a single ring, −6 for a flat-disc opening of any radius). Rims
 consumed by a fuse are no longer rims; terminated rims keep their
@@ -259,7 +261,7 @@ seams.**
 | `sheet(W, H, rim=…)` | extent in lattice cells or Å; rim edge-word (§10) | flat, χ contribution via rim |
 | `tube(n, m, len=L\|fit, hand=+\|−)` | roll-up `(n,m)`, `0 ≤ m ≤ n`; length in unit cells or `fit` | rotational symmetry order `g = gcd(n,m)`; `hand` only meaningful for `0<m<n`; radius `R = a√(n²+nm+m²)/2π` [S9] |
 | `cone(P)` | `P ∈ 1..5` pentagons at apex | derived opening angle `sin(θ/2) = 1 − P/6` [S10]; `P=6` is a cap, `P=0` a disc |
-| `cap(n, m)` | C60 hemisphere cut perpendicular to a face axis, port `in` | v0.1: `cap(5,5)` only (30 atoms, 10 dangling, 6 pentagons; C5 axis). Any other `(n,m)` is `build.kind` — a C3-axis hemisphere is not a cap (its seam is `{5:3,7:6}`, leaving the end over-curved). 0.2 roadmap: flat-lid family (§28) |
+| `cap(n, m)` | C60 hemisphere or flat lid, port `in` | Two members. `(5,5)`: C60 cut perpendicular to a C5 axis (30 atoms, 10 dangling, 6 pentagons). `(6k, 0)`, k ≥ 1: the flat lid — the `hex(k−1)` flake (§28.3), the same cell complex a `- hex(k−1)@…` hole removes from a sheet; rim all-zigzag with 6k dangling atoms, `B_expected +6` (a flat disc, §6.1); the lid carries no pentagons itself — fusing it onto a `(6k,0)` tube produces six pentagons as seam rings at the flake's six corners, at any registry. Every other `(n,m)` is `build.kind` — a C3-axis hemisphere is not a cap (its seam is `{5:3,7:6}`, leaving the end over-curved); armchair `(n,n)` lids are open (need the k=1 registry and a corner-arc analysis) |
 | `fullerene(N, iso=k)` | closed cage, 12 pentagons | v1: `C60` only [S11]; general Goldberg later |
 | `junction(k)` `[spec 0.2]` | sphere with k tube holes | χ = 2 − k ⇒ 6(k−2) heptagons (or half as many octagons); k = 3 is the pair of pants [S3]; C3-symmetric Y-junctions per CoNTub v2 [S5] |
 
@@ -1136,8 +1138,10 @@ drive the order: the box (step 3) and the rotary ratchet valve
    (dev-DB dogfood done 2026-09-17: `sheet_bud_22.hx`,
    `capped_tube_da_neck.hx`); **`cap(n,m)` flat-lid family** (six
    pentagons in a ring; the box lid; unblocks the pill *and* the valve
-   rotor, which is a lid pair — recommended next slice 2026-09-17,
-   Reto to confirm); **canonical-frame symmetry sources**
+   rotor, which is a lid pair — done 2026-09-18: zigzag `(6k,0)` family
+   = the `hex(k−1)` flake, pentagons as seam rings; `sheet_pill_bump.hx`
+   is now the capped pill, `lid_pillbox.hx` the rotor; armchair lids
+   open); **canonical-frame symmetry sources**
    (§14.2 note — a patch's point group, a tube's `C_gcd(n,m)` rotation,
    the fullerene's icosahedral group as candidate frames; today every
    instance keeps its authored frame; cosmetic, so after the lid);

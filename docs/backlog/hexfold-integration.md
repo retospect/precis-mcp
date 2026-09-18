@@ -78,13 +78,15 @@ development, with the boundary kept clean for a later pip re-export.
    digit symbols (`55`→`52`, re-read as one symbol) → digit runs stay
    `5.5`; (d) the generate echo dumped every topology value (kilobytes
    of ordinals) → keys/lengths only.
-5. [ ] hexgen roadmap items in spec §28.3's order. **Next slice =
-   `cap(n,m)` flat-lid family** (recommended 2026-09-17, Reto to
-   confirm): it unblocks both the pill (this item's acceptance) and the
-   rotary ratchet valve's rotor, which is a lid pair
-   (`rotary-ratchet-valve.md`); the canonical-frame symmetry sources are
-   cosmetic and follow it. Then the radius-changing shell (valve shell),
-   `opening(port=)`, and the rest of §28.3.
+5. [ ] hexgen roadmap items in spec §28.3's order. **`cap(n,m)` flat-lid
+   family** done 2026-09-18: zigzag `(6k,0)` family = the `hex(k−1)`
+   flake, pentagons as seam rings; `sheet_pill_bump.hx` is now the
+   capped pill, `lid_pillbox.hx` the rotor; armchair lids open. It
+   unblocked both the pill (this item's acceptance) and the rotary
+   ratchet valve's rotor, which is a lid pair (`rotary-ratchet-valve.md`).
+   **Next slice** = the canonical-frame symmetry sources (cosmetic), then
+   the radius-changing shell (valve shell), `opening(port=)`, and the
+   rest of §28.3.
 6. [ ] Smooth mapper: `precis-surface-kernel.md` holds the ticks for
    spec §28.4–6 and §28.8 (the valve tools); nothing about the order
    lives here.
@@ -95,9 +97,9 @@ sheet(12,12) + C60 `[2+2]` (residual 0); tube(5,5) + `cap(5,5)` + `[2+2]`
 flank (residual 0, all-hexagon cap seam; ~85° warnings at sp³ atoms —
 fixed by step 2's 109.5° ideal); pillar (sheet `hex(0)` → `tube(6,0)`,
 native `{7:6}` seam); nanobuds 9-6, 8-7, DA/DB necks; cone(P); C60 hole;
-tube_fuse. **Fails:** pill on a sheet — `hex(r)` seats a zigzag
-`(6(r+1),0)` post and `cap` exists only for `(5,5)` → `port.mismatch
-6 != 10` (unblocked by step 5's lid family).
+tube_fuse; pill on a sheet — a capped pill above and a bump below, seamed
+at the pill's foot ring, each tube top closed by a `cap(6,0)` flat lid
+(`sheet_pill_bump.hx`, residual 0, no ERROR).
 
 ## Standalone-repo state (for the eventual re-export)
 

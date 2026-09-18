@@ -1,8 +1,11 @@
 """``seam`` -- a k>=3 rim identification (SPEC 11.3) and its consequences:
 per-sheet Euler accounting (SPEC 6.3) and the ``sheets`` partition (SPEC
-6.3/18).  ``sheet_pill_bump.hx`` is the 0.2 stand-in for SPEC 6.4's
-capped-pill acceptance example (see its header comment: caps that size
-need the roadmap ``cap(n,m)`` flat-lid family, not in 0.2).
+6.3/18).  ``sheet_pill_bump.hx`` is SPEC 6.4's capped-pill acceptance
+example: a sheet with a capped pill above and a bump below, seamed at
+the pill's foot ring, each tube top closed by a ``cap(6,0)`` flat lid
+(SPEC 28.3).  Each lid fuse (a two-rim identification, ``k=2`` in its
+``seam.rings`` record) merges the tube with its lid into one sheet, so the
+partition is ``{s, up+its lid, down+its lid}``, not ``{s, up, down}``.
 """
 
 from __future__ import annotations
@@ -174,28 +177,38 @@ def test_example_has_no_error() -> None:
 
 
 def test_example_has_three_sheets() -> None:
+    # up/down are each fused (two-rim identification) to a cap(6,0) flat
+    # lid (SPEC 28.3): a
+    # fuse merges sheets (SPEC 6.3), so the partition is {s, up+its lid,
+    # down+its lid} -- the merged sheets are multi-instance and take a
+    # generated "sheet<i>" name (i by ascending min atom ordinal), not
+    # "up"/"down".
     net = _net(_EXAMPLE)
-    assert {name for name, _ in net.sheet_atoms} == {"s", "up", "down"}
+    names = {name for name, _ in net.sheet_atoms}
     assert len(net.sheet_atoms) == 3
+    assert "s" in names
+    assert all(n == "s" or n.startswith("sheet") for n in names)
 
 
 def test_example_sheets_key_in_to_dict() -> None:
     net = _net(_EXAMPLE)
     d = net.to_dict()
-    assert set(d["sheets"]) == {"s", "up", "down"}
+    assert "s" in d["sheets"]
+    assert len(d["sheets"]) == 3
     for faces in d["sheets"].values():
         assert faces  # every sheet has at least one face
 
 
 def test_example_per_sheet_chi_and_residual() -> None:
-    # a disc with one hole (a hex(0) opening) is an annulus: chi=0; each
-    # open tube is a cylinder: chi=0.  B_expected balances exactly (SPEC
-    # 6.3: the seam is invisible to each sheet's own law) -> residual 0
-    # on all three, computed by running check() over the built net (the
-    # hex(0) hole's rim is an 18-atom walk with 6 dangling, not a plain
-    # hexagon, so its arc lengths are not the sort one derives by eye;
-    # this is the algorithm's actual output, cross-checked against the
-    # spec formulas in the report, not a guess).
+    # a disc with one hole (a hex(0) opening) is an annulus: chi=0 for
+    # s.  Each capped tube (up+its lid, down+its lid) is a disc with one
+    # remaining rim (the foot end, consumed into the seam): chi=1, six
+    # pentagons at the lid corners.  Those two sheets each absorbed a
+    # fuse-consumed rim (the cap seat), so check.py treats them as
+    # "consumed" and skips their own euler.residual report (SPEC 6.3);
+    # only s -- untouched by any fuse -- gets one, and it is 0
+    # (B_expected balances exactly; the seam is invisible to each
+    # sheet's own law).
     rep = check(_EXAMPLE)
     chi = {f.where: dict(f.data)["chi"] for f in rep.findings if f.code == "euler.chi"}
     res = {
@@ -203,8 +216,10 @@ def test_example_per_sheet_chi_and_residual() -> None:
         for f in rep.findings
         if f.code == "euler.residual"
     }
-    assert chi == {"s": 0, "up": 0, "down": 0}
-    assert res == {"s": 0, "up": 0, "down": 0}
+    assert len(chi) == 3
+    assert chi["s"] == 0
+    assert all(v == 1 for k, v in chi.items() if k != "s")
+    assert res == {"s": 0}
 
 
 def test_example_seam_rings_finding() -> None:
@@ -212,12 +227,15 @@ def test_example_seam_rings_finding() -> None:
     # the hex(0) hole is an 18-atom/6-dangling rim, each tube end a
     # 12-atom/6-dangling rim; the AB/CA families (hole-tube) arc 4+3
     # atoms per period (a nonagon with the two seam atoms), the BC
-    # family (tube-tube) arcs 3+3 (an octagon) -- 6 periods each.
+    # family (tube-tube) arcs 3+3 (an octagon) -- 6 periods each.  The
+    # two cap fuses also emit seam.rings findings (two-rim records,
+    # k=2); filter on k=3 to isolate the foot seam.
     rep = check(_EXAMPLE)
-    seam = [f for f in rep.findings if f.code == "seam.rings"]
+    seam = [
+        f for f in rep.findings if f.code == "seam.rings" and dict(f.data)["k"] == 3
+    ]
     assert len(seam) == 1
     data = dict(seam[0].data)
-    assert data["k"] == 3
     assert data["rings"] == {8: 6, 9: 12}
 
 
@@ -269,6 +287,10 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
         [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)],
     ),
     "cone5.hx": (True, [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)]),
+    "lid_pillbox.hx": (
+        True,
+        [("euler.chi", "INFO", 2), ("euler.residual", "INFO", 0)],
+    ),
     "nanobud_22.hx": (
         True,
         [

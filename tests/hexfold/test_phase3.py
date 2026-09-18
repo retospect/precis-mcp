@@ -77,7 +77,8 @@ a.out --fuse k=0--> b.in
 
 def test_cap90_rejected() -> None:
     # cap(9,0)'s hemisphere is not a cap: it leaves the end over-curved
-    # (3 pentagons + a {5:3,7:6} seam -> euler.residual -6); removed in v0.1
+    # (3 pentagons + a {5:3,7:6} seam -> euler.residual -6); 9 is not a
+    # multiple of 6 either, so it is not a flat-lid family member
     net = _net(
         """hexfold 0.1
 origin b
@@ -86,7 +87,7 @@ b: cap(9,0)
     )
     assert "build.kind" in _codes(net)
     kind = next(f for f in net.report.findings if f.code == "build.kind")
-    assert "only (5,5)" in kind.message
+    assert "(5,5)" in kind.message and "(6k,0)" in kind.message
 
 
 def test_cap_other_chiralities_rejected() -> None:

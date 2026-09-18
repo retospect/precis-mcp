@@ -79,6 +79,10 @@ class Patch:
         self.pos3: dict[Vid, np.ndarray] | None = None
         self.tube_nm: tuple[int, int] | None = None
         self.cone_p: int | None = None
+        # cap(6k,0) flat lid: a flat disc (the hex(k-1) flake), so its rim
+        # expects B_expected +6 like a sheet outer rim, not a cap's 0
+        # (SPEC 6.1); the C60 hemisphere cap keeps flat_lid False.
+        self.flat_lid: bool = False
         self.seam: float = 0.0
         self.edges: set[frozenset[Vid]] = set()
         self.dirs: dict[tuple[Vid, Vid], np.ndarray] = {}
