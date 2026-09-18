@@ -1072,6 +1072,7 @@ def _linear_chain(handler: SeHandler) -> None:
             "pose": [0.1, 0, 0],
         }
     )
+    ops.append({"op": "add_port", "block": "loose", "name": "l", "roles": ["mates"]})
     for (a, _), (b, _) in pairwise(blocks):
         ops.append({"op": "connect", "a": f"{a}.r", "b": f"{b}.l"})
     handler.put(id="chain1", text=json.dumps({"ops": ops}))
