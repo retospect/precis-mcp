@@ -331,6 +331,25 @@ class RxnMixin:
             ).fetchall()
         return [(r[0], r[1], r[2], r[3] or {}) for r in rows]
 
+    def rxn_precedent_count(self, reaction_class: str) -> tuple[int, int]:
+        """``(yield row count, distinct rxn ref count)`` precedent for one
+        RXNO ``reaction_class`` — the count half of
+        :meth:`rxn_search_values`'s own join (``property_id='yield'``, no
+        ``limit``: the blocktree slice-5 precedent DRC
+        (:mod:`precis_se.precedent`) needs the TRUE count, not a capped
+        page, to say "0 precedent" honestly rather than "0 shown"."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT rv.rxn_ref_id) "
+                "FROM rxn_values rv "
+                "JOIN refs r ON r.ref_id = rv.rxn_ref_id AND r.retired_at IS NULL "
+                "WHERE rv.property_id = 'yield' "
+                "  AND r.meta ->> 'reaction_class' = %s",
+                (reaction_class,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0]), int(row[1])
+
     def rxn_search_values(
         self,
         *,
