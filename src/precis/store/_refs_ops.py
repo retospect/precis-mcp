@@ -2383,10 +2383,22 @@ class RefsMixin:
         """Paper-level author lookup — ``search(kind='paper', author=…)``.
         Matches the structured ``refs.authors`` jsonb byline (source of
         truth) rather than the diluted combined card the block path uses
-        (which surfaces other papers' bibliography lines instead). A name
-        matches by substring or ``pg_trgm`` fuzzy hit; a paper scores on
-        its best-matching author. Held papers sort first, then by
-        similarity. Returns ``ref_id`` in rank order."""
+        (which surfaces other papers' bibliography lines instead). The
+        byline holds two entry shapes (see ``utils/authors.py``): legacy
+        ``{name}`` and canonical ``{given, family}`` — ``elem->>'name'``
+        alone is NULL for the latter, so the matched expression is a
+        display form (``coalesce(name, "given family")``), plus the
+        reversed ``"family, given"`` form so a "Miller, T." query still
+        hits a ``{given,family}`` row. A name matches by substring or
+        ``pg_trgm`` fuzzy hit against either form; a paper scores on its
+        best-matching author (greatest of the two forms' similarity).
+        Held papers sort first, then by similarity. Returns ``ref_id`` in
+        rank order."""
+        disp = (
+            "coalesce(ae.elem->>'name', "
+            "concat_ws(' ', ae.elem->>'given', ae.elem->>'family'))"
+        )
+        rev = "concat_ws(', ', ae.elem->>'family', ae.elem->>'given')"
         clauses = [
             "r.retired_at IS NULL",
             # Defensive superseded-duplicate exclusion (see
@@ -2395,17 +2407,21 @@ class RefsMixin:
             "r.kind = %s",
             "r.authors IS NOT NULL",
             "jsonb_typeof(r.authors) = 'array'",
-            "(ae.elem->>'name' ILIKE '%%' || %s || '%%' "
-            "OR similarity(ae.elem->>'name', %s) >= 0.35)",
+            f"({disp} ILIKE '%%' || %s || '%%' "
+            f"OR similarity({disp}, %s) >= 0.35 "
+            f"OR {rev} ILIKE '%%' || %s || '%%' "
+            f"OR similarity({rev}, %s) >= 0.35)",
         ]
-        # %s order: sim-in-SELECT, kind, ILIKE-q, sim-in-WHERE, exclude, limit.
-        params: list[Any] = [q, kind, q, q]
+        # %s order: sim-in-SELECT (disp, rev), kind, ILIKE-disp, sim-disp,
+        # ILIKE-rev, sim-rev, exclude, limit.
+        params: list[Any] = [q, q, kind, q, q, q, q]
         if exclude_ref_ids:
             clauses.append("r.ref_id <> ALL(%s)")
             params.append(list(exclude_ref_ids))
         params.append(limit)
         sql = (
-            "SELECT r.ref_id, max(similarity(ae.elem->>'name', %s)) AS sim "
+            "SELECT r.ref_id, "
+            f"max(greatest(similarity({disp}, %s), similarity({rev}, %s))) AS sim "
             "FROM refs r "
             "CROSS JOIN LATERAL jsonb_array_elements(r.authors) ae(elem) "
             f"WHERE {' AND '.join(clauses)} "

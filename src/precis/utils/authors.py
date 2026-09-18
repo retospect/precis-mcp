@@ -54,14 +54,37 @@ import re
 from typing import Any
 
 __all__ = [
+    "AUTHOR_SOURCES",
     "author_display",
     "author_names",
+    "author_row_from_entry",
     "build_byline",
+    "entry_from_author_row",
     "is_junk_author_name",
     "normalize_authors",
+    "normalize_orcid",
+    "split_middle",
     "to_author_dicts",
     "to_name_dicts",
 ]
+
+#: ``paper_authors.source`` vocabulary — which tier wrote the row. Mirrors
+#: the CHECK constraint in migration 0168; keep both in sync.
+AUTHOR_SOURCES: frozenset[str] = frozenset(
+    {"orcid", "crossref", "openalex", "s2", "pdf", "legacy", "llm", "human"}
+)
+
+#: Dashed ORCID iD (the last char may be the ``X`` check digit).
+_ORCID_RE = re.compile(r"^[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]$")
+
+#: Trailing run of initials on a ``given`` string — ``"Bryan R."``,
+#: ``"John T. J."``, ``"Mary A"`` — the part :func:`split_middle` peels
+#: off as ``middle``. A token is an initial when it is one letter with an
+#: optional dot; hyphenated initials (``"A.-K."``) are deliberately NOT
+#: matched (they're a first name, cf. ``_tidy_initials``), and the run
+#: never consumes the first token (a leading initial is a first name:
+#: ``"J. Robert"`` keeps its shape).
+_TRAILING_INITIALS_RE = re.compile(r"^(?P<given>\S.*?)((?:\s+[A-Z]\.?)+)$")
 
 # A lone all-caps token ("REFERENCES", "OECD") — used together with the
 # stopword list below; a single all-caps *word* is virtually never a
@@ -284,6 +307,95 @@ def _normalize_one_author(a: Any) -> dict[str, Any] | None:
     if not name or is_junk_author_name(name):
         return None
     return _split_author_name(name)
+
+
+def split_middle(given: str) -> tuple[str, str]:
+    """Peel trailing initials off a ``given`` string → ``(given, middle)``.
+
+    The ``paper_authors.middle`` column is real but no registry delivers
+    it separately, so it is derived here at write time: ``"Bryan R."`` →
+    ``("Bryan", "R.")``, ``"John T. J."`` → ``("John", "T. J.")``,
+    ``"J. Robert"`` → ``("J. Robert", "")`` (a leading initial is a first
+    name), ``"Mary Anne"`` → ``("Mary Anne", "")`` (only single-letter
+    tokens move), ``"A.-K."`` → ``("A.-K.", "")``. ``middle`` is ``""``
+    when there is nothing to peel — never ``None``. Pure — never raises.
+    """
+    given = " ".join(str(given or "").split())
+    m = _TRAILING_INITIALS_RE.match(given)
+    if not m:
+        return given, ""
+    head = m.group("given").strip()
+    middle = " ".join(given[len(m.group("given")) :].split())
+    return head, middle
+
+
+def normalize_orcid(raw: Any) -> str | None:
+    """A dashed ORCID iD or ``None`` — strips a ``https://orcid.org/``
+    prefix and rejects anything that isn't well-formed. Pure."""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    s = s.rsplit("orcid.org/", 1)[-1].strip().strip("/").upper()
+    return s if _ORCID_RE.match(s) else None
+
+
+def author_row_from_entry(
+    entry: Any, position: int, *, source: str
+) -> dict[str, Any] | None:
+    """One ``refs.authors`` element → one ``paper_authors`` row dict.
+
+    Runs the entry through :func:`_normalize_one_author` first (junk
+    guard, initials spacing, single-comma split), then applies
+    :func:`split_middle`. A ``{"name"}``-only entry (unsplittable) keeps
+    its string in ``name_raw`` with empty name columns. ``name_raw`` is
+    always the *received* display string, before any split. Returns
+    ``None`` for junk/empty entries (they get no row). Pure.
+    """
+    if source not in AUTHOR_SOURCES:
+        raise ValueError(f"unknown author source {source!r}")
+    raw_display = author_display(entry)
+    norm = _normalize_one_author(entry)
+    if norm is None or not raw_display:
+        return None
+    given, middle = split_middle(norm.get("given") or "")
+    row: dict[str, Any] = {
+        "position": int(position),
+        "given": given,
+        "middle": middle,
+        "family": norm.get("family") or "",
+        "name_raw": raw_display,
+        "orcid": normalize_orcid(norm.get("orcid")),
+        "openalex_author_id": None,
+        "source": source,
+    }
+    if isinstance(entry, dict):
+        oa = str(entry.get("openalex_author_id") or "").strip()
+        if oa:
+            row["openalex_author_id"] = oa
+    return row
+
+
+def entry_from_author_row(row: dict[str, Any]) -> dict[str, Any]:
+    """The projection back: one ``paper_authors`` row → one canonical
+    ``refs.authors`` element. ``given`` re-absorbs ``middle`` (CSL keeps
+    initials inside ``given``); an unsplit row (both name columns empty)
+    projects as ``{"name": name_raw}``. ``orcid`` and
+    ``openalex_author_id`` ride along when set. Pure.
+    """
+    given = " ".join(p for p in (row.get("given") or "", row.get("middle") or "") if p)
+    family = row.get("family") or ""
+    entry: dict[str, Any] = {}
+    if given:
+        entry["given"] = given
+    if family:
+        entry["family"] = family
+    if not entry:
+        entry["name"] = _tidy_initials(_scrub_name(row.get("name_raw") or ""))
+    if row.get("orcid"):
+        entry["orcid"] = row["orcid"]
+    if row.get("openalex_author_id"):
+        entry["openalex_author_id"] = row["openalex_author_id"]
+    return entry
 
 
 def _split_author_name(name: str) -> dict[str, Any]:

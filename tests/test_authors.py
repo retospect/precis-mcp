@@ -6,12 +6,18 @@ citation generation, provenance report and bib generation all now share.
 
 from __future__ import annotations
 
+import pytest
+
 from precis.utils.authors import (
     author_display,
     author_names,
+    author_row_from_entry,
     build_byline,
+    entry_from_author_row,
     is_junk_author_name,
     normalize_authors,
+    normalize_orcid,
+    split_middle,
     to_author_dicts,
     to_name_dicts,
 )
@@ -304,3 +310,115 @@ class TestNormalizeAuthors:
         crossref_style = normalize_authors([{"family": "Smith", "given": "John"}])
         s2_style = normalize_authors([{"name": "John Smith"}])
         assert author_names(crossref_style) == author_names(s2_style) == ["John Smith"]
+
+
+class TestSplitMiddle:
+    """``paper_authors.middle`` derivation — the rule decided 2026-09-18."""
+
+    def test_trailing_initials_peel_off(self) -> None:
+        assert split_middle("Bryan R.") == ("Bryan", "R.")
+        assert split_middle("John T. J.") == ("John", "T. J.")
+        assert split_middle("Mary A") == ("Mary", "A")
+
+    def test_leading_initial_is_a_first_name(self) -> None:
+        assert split_middle("J. Robert") == ("J. Robert", "")
+        # the first token is never consumed, so "K. S." keeps K. as given
+        assert split_middle("K. S.") == ("K.", "S.")
+
+    def test_multi_word_given_and_hyphenated_initials_stay(self) -> None:
+        assert split_middle("Mary Anne") == ("Mary Anne", "")
+        assert split_middle("A.-K.") == ("A.-K.", "")
+        assert split_middle("Ronggang") == ("Ronggang", "")
+
+    def test_empty_never_none(self) -> None:
+        assert split_middle("") == ("", "")
+        assert split_middle(None) == ("", "")  # type: ignore[arg-type]
+
+
+class TestNormalizeOrcid:
+    def test_strips_url_and_validates(self) -> None:
+        assert (
+            normalize_orcid("https://orcid.org/0000-0002-1825-0097")
+            == "0000-0002-1825-0097"
+        )
+        assert normalize_orcid("0000-0002-1825-009x") == "0000-0002-1825-009X"
+
+    def test_rejects_garbage(self) -> None:
+        assert normalize_orcid("") is None
+        assert normalize_orcid(None) is None
+        assert normalize_orcid("junk") is None
+        assert normalize_orcid("0000-0002-1825") is None
+
+
+class TestAuthorRowMapping:
+    """jsonb element ↔ ``paper_authors`` row, both directions."""
+
+    def test_canonical_entry_splits_middle_and_carries_orcid(self) -> None:
+        e = {
+            "given": "Bryan R.",
+            "family": "Goldsmith",
+            "orcid": "https://orcid.org/0000-0002-1825-0097",
+        }
+        row = author_row_from_entry(e, 2, source="crossref")
+        assert row == {
+            "position": 2,
+            "given": "Bryan",
+            "middle": "R.",
+            "family": "Goldsmith",
+            "name_raw": "Bryan R. Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+            "openalex_author_id": None,
+            "source": "crossref",
+        }
+        # projection back re-absorbs middle into given (CSL shape)
+        assert entry_from_author_row(row) == {
+            "given": "Bryan R.",
+            "family": "Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+        }
+
+    def test_single_comma_name_splits(self) -> None:
+        row = author_row_from_entry({"name": "Zywucka, N."}, 1, source="legacy")
+        assert row is not None
+        assert (row["given"], row["middle"], row["family"]) == ("N.", "", "Zywucka")
+        assert row["name_raw"] == "Zywucka, N."
+        assert entry_from_author_row(row) == {"given": "N.", "family": "Zywucka"}
+
+    def test_ambiguous_name_keeps_name_raw_only(self) -> None:
+        row = author_row_from_entry({"name": "A.K. Geim"}, 1, source="pdf")
+        assert row is not None
+        assert (row["given"], row["middle"], row["family"]) == ("", "", "")
+        assert row["name_raw"] == "A.K. Geim"  # the received string, untouched
+        # the projection renders the tidied {name} shape
+        assert entry_from_author_row(row) == {"name": "A. K. Geim"}
+
+    def test_junk_gets_no_row(self) -> None:
+        assert author_row_from_entry("REFERENCES", 1, source="pdf") is None
+        assert author_row_from_entry({"name": ""}, 1, source="pdf") is None
+
+    def test_openalex_author_id_rides_along(self) -> None:
+        e = {"given": "Jane", "family": "Smith", "openalex_author_id": "A123"}
+        row = author_row_from_entry(e, 1, source="openalex")
+        assert row is not None
+        assert row["openalex_author_id"] == "A123"
+        assert entry_from_author_row(row)["openalex_author_id"] == "A123"
+
+    def test_unknown_source_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown author source"):
+            author_row_from_entry({"name": "Jane Smith"}, 1, source="magic")
+
+    def test_round_trip_matches_normalize_authors(self) -> None:
+        """Acceptance (S1): projecting a row back yields exactly what
+        ``normalize_authors`` would have stored for the same entry."""
+        fixtures: list[object] = [
+            {"given": "Bryan R.", "family": "Goldsmith"},
+            {"name": "Zywucka, N."},
+            {"name": "Christoph Dellago"},
+            "Smith, Jane",
+            {"family": "Aristotle"},
+            {"name": "A.K. Geim"},
+        ]
+        for e in fixtures:
+            row = author_row_from_entry(e, 1, source="legacy")
+            assert row is not None
+            assert entry_from_author_row(row) == normalize_authors([e])[0], e
