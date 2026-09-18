@@ -26,9 +26,15 @@ from precis_se.atomic.generate import PendingGenerate, finish_generate, prepare_
 from precis_se.atomic.vocab import check_dof_axis_ports
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
+from precis_se.simp_bridge import SimpRequest, prepare_simp
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
+
+#: ``realize`` strategies. ``analytic`` (the default) is the envelope seed
+#: (:mod:`precis_se.realize`); ``simp`` is the enqueued topology solve
+#: (:mod:`precis_se.simp_bridge`).
+REALIZE_STRATEGIES = ("analytic", "simp")
 
 #: The store-aware ops intercepted in :func:`apply_ops_with_atomic` — they
 #: never reach :func:`precis_se.ops.apply_ops`, so
@@ -49,7 +55,12 @@ def all_op_names() -> frozenset[str]:
 
 
 def apply_ops_with_atomic(
-    store: Store, tree: SeTree, ops: list[dict[str, Any]], *, design_slug: str
+    store: Store,
+    tree: SeTree,
+    ops: list[dict[str, Any]],
+    *,
+    design_slug: str,
+    pending_jobs: list[SimpRequest] | None = None,
 ) -> str | None:
     """Walk ``ops`` in order, applying the store-aware ops here (the
     atomic mode's 3 plus ``realize``) and everything else through the
@@ -93,6 +104,18 @@ def apply_ops_with_atomic(
     "never re-validate something a later op already undid" rule
     ``finish_generate`` follows for its own deferred half).
 
+    **``realize(strategy='simp')`` is validated here and enqueued by the
+    caller** (docs/backlog/structural-solution-space.md slice 4 bridge):
+    :func:`precis_se.simp_bridge.prepare_simp` runs the op's whole
+    refusal set against the in-memory tree, and the resulting
+    :class:`~precis_se.simp_bridge.SimpRequest` is appended to
+    ``pending_jobs`` — the handler enqueues one ``se_simp`` job per entry
+    *after* its own ``save_tree`` commits, so the job's ``load_tree`` sees
+    exactly the tree this call wrote (a job enqueued mid-walk could run
+    against the previous save). The block itself is untouched until the
+    job binds it. A caller that passes no ``pending_jobs`` list refuses
+    the strategy rather than dropping the request on the floor.
+
     Returns a compact echo of every atomic store-aware op (for the caller's
     response), or ``None`` when there were none."""
     roster = all_op_names()
@@ -119,6 +142,25 @@ def apply_ops_with_atomic(
                 pending_generates.append(pending)
             continue
         if name == "realize":
+            strategy = str(op.get("strategy") or "analytic").strip().lower()
+            if strategy not in REALIZE_STRATEGIES:
+                raise BadInput(
+                    f"realize: unknown strategy {strategy!r}; known: "
+                    f"{', '.join(REALIZE_STRATEGIES)}"
+                )
+            if strategy == "simp":
+                if pending_jobs is None:
+                    raise BadInput(
+                        "realize(strategy='simp') needs a caller that can enqueue "
+                        "the se_simp job (put/edit on kind='se')"
+                    )
+                try:
+                    echo, request = prepare_simp(tree, op)
+                except OpError as exc:
+                    raise BadInput(str(exc)) from exc
+                echoes.append(echo)
+                pending_jobs.append(request)
+                continue
             try:
                 echo, realize_pending = prepare_realize(store, tree, op, design_slug)
             except OpError as exc:

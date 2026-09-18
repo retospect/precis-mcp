@@ -575,3 +575,29 @@ def test_overhang_predicate_counts_the_45_degree_rule() -> None:
 
     with pytest.raises(ValueError, match="3D"):
         overhang_violations(np.zeros((4, 4)))
+
+
+# --------------------------------------------------------------------------
+# passive solid (the se bridge's loaded/supported faces)
+# --------------------------------------------------------------------------
+
+
+def test_passive_elements_stay_solid_and_count_against_the_budget() -> None:
+    """Elements under the load and the clamp are pinned at 1 in the design
+    field for the whole run; the achieved volume fraction still lands on
+    the target (the pin comes out of the budget, not on top of it)."""
+    domain, loads, supports = _cantilever()
+    passive = np.zeros_like(domain)
+    passive[0, :, :] = True  # the clamped face's element layer
+    passive[-1, :, :] = True  # the loaded face's element layer
+    res = simp_optimize(domain, loads, supports, volfrac=0.4, passive=passive)
+    assert np.all(res.design_density[passive] == 1.0)
+    assert res.volume_fraction == pytest.approx(0.4, abs=0.02)
+    assert any("passive solid: 32" in note for note in res.notes)
+    # a passive set that eats the whole budget is refused, not over-filled
+    with pytest.raises(ValueError, match="passive solid"):
+        simp_optimize(
+            domain, loads, supports, volfrac=0.1, passive=np.ones_like(domain)
+        )
+    with pytest.raises(ValueError, match="passive must match"):
+        simp_optimize(domain, loads, supports, volfrac=0.4, passive=passive[:2])

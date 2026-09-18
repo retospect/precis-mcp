@@ -60,7 +60,9 @@ class RakeLemmaHandler(WorkerHandler):
     #     like "na na na na" (see the deng10 MTV-MOF case study).
     #     Table content is still searchable via tsvector + bge-m3; we
     #     just skip the keyword summary.
-    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references", "table")
+    #   * ``field`` — a cad sampled-SDF grid's carrier chunk (one-line
+    #     geometry blurb over a binary blob); nothing to summarize.
+    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references", "table", "field")
 
     def __init__(
         self,

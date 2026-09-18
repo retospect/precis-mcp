@@ -70,6 +70,7 @@ from precis.cad.export import (
 from precis.cad.printability import BuildCandidate, rotate_to_frame
 from precis.cad.vec import Vec3, as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis.structsolve.simp import overhang_violations
 from precis_se import capabilities as se_caps
 from precis_se import fasten as se_fasten
 from precis_se import modes as se_modes
@@ -79,6 +80,13 @@ from precis_se.validate import ValidationIssue
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
+
+#: ``build_frame.origin`` of a SIMP-realized block — the AM filter baked
+#: the direction in at solve time (:mod:`precis_se.simp_bridge`), so the
+#: view verifies that frame instead of searching. Spelled here rather than
+#: imported so this module stays free of the bridge (which imports the
+#: engine and the store-facing halves this read path never needs).
+SIMP_FRAME_ORIGIN = "simp"
 
 #: ``view='print' args={'block': ...}``'s candidate-table depth — the same
 #: top-N the cad kind's own ``view='printability'`` renders
@@ -118,6 +126,11 @@ class BlockPrintReport:
     #: ``blend`` design at (:func:`write_mesh`); ``None`` when the
     #: capability doesn't resolve (export then takes cad's own default).
     pitch: float | None = None
+    #: Set on a SIMP-realized block (``build_frame.origin == 'simp'``): why
+    #: no orientation search ran and what the overhang verification on
+    #: the stored field measured — rendered as its own line, so the
+    #: report never reads as a search that happened to agree.
+    search_skipped: str | None = None
 
 
 def format_down(v: Vec3) -> str:
@@ -322,6 +335,39 @@ def _layer_vs_load_finding(
     )
 
 
+_AXIS_PERM = {"x": (1, 2, 0), "y": (2, 0, 1), "z": (0, 1, 2)}
+
+
+def _simp_field_overhangs(
+    printed: PrintedSolid, build_dir: str, cad_store_reader: Store
+) -> int | None:
+    """The 45° voxel rule (:func:`precis.structsolve.simp.
+    overhang_violations`) on the STORED field a SIMP-realized block is
+    bound to, in the build frame ``build_dir`` names — the same rule the
+    AM filter enforced at solve time, re-measured on what was actually
+    stored (morphology runs after the solve and could re-open a gap). The
+    root field leaf only: stamped cuts are not in the count. ``None`` when
+    the bound design's root is not a field leaf or the grid cannot be
+    loaded — then the mesh-based ``overhang`` rule runs as usual."""
+    if not printed.spec.nodes:
+        return None
+    config = str(printed.spec.nodes[0].config or "")
+    if not config.startswith("field:"):
+        return None
+    try:
+        _header, fld = cad_store_reader.get_field(config[len("field:") :])
+    except Exception:
+        return None
+    axis, sign = build_dir[0], build_dir[1:]
+    perm = _AXIS_PERM.get(axis)
+    if perm is None or sign not in ("+", "-"):
+        return None
+    solid = np.transpose((np.asarray(fld.grid) <= 0.0).astype(float), perm)
+    if sign == "-":
+        solid = solid[:, :, ::-1]
+    return overhang_violations(np.ascontiguousarray(solid), plate_at_first_solid=True)
+
+
 def report_for(
     tree: SeTree, block: str, *, cad_store_reader: Store
 ) -> BlockPrintReport | None:
@@ -401,7 +447,54 @@ def report_for(
     pitch = rules.get("layer_height")
     mesh = _solid_mesh(printed.spec, pitch=pitch)
     loads = _local_loads(node)
-    candidates = cad_printability.orient(mesh, rules, policy, loads) if policy else []
+
+    # A SIMP-realized block: the AM filter baked build_dir in before the
+    # solve, so an orientation search after the fact would be proposing a
+    # frame the field was never optimised for. Verify the declared frame
+    # instead — the 45° voxel rule on the stored field replaces the mesh
+    # `overhang` rule (a marching-cubes surface over a coarse staircase
+    # has facets on both sides of 45° whatever the voxels did).
+    simp_frame = (
+        node.build_frame
+        if pinned and (node.build_frame or {}).get("origin") == SIMP_FRAME_ORIGIN
+        else None
+    )
+    search_skipped: str | None = None
+    if simp_frame is not None:
+        candidates = []
+        build_dir = str(simp_frame.get("build_dir") or "?")
+        voxels = _simp_field_overhangs(printed, build_dir, cad_store_reader)
+        if voxels is not None:
+            rules = {k: v for k, v in rules.items() if k != "max_overhang"}
+            if voxels > 0:
+                findings.append(
+                    ValidationIssue(
+                        rule="overhang",
+                        subject=block,
+                        detail=(
+                            f"{voxels} voxel(s) of the stored SIMP field are "
+                            "unsupported under the 45° rule in the declared "
+                            f"build frame ({build_dir}) — a post-solve "
+                            "morphology re-opened a gap the AM filter had closed"
+                        ),
+                        severity="warn",
+                        measured=f"{voxels} unsupported voxel(s)",
+                        expected="0 (the AM filter's own rule)",
+                        suggested_fix="re-realize without open=/close=, or coarser",
+                    )
+                )
+            verified = f"{voxels} unsupported voxel(s) on the stored field"
+        else:
+            verified = "stored field unreadable — mesh overhang rule ran instead"
+        search_skipped = (
+            f"orientation search skipped: build_dir {build_dir!r} was baked in "
+            "by the SIMP AM filter at solve time; verified at that frame — "
+            f"{verified}"
+        )
+    else:
+        candidates = (
+            cad_printability.orient(mesh, rules, policy, loads) if policy else []
+        )
 
     best_other: str | None = None
     chosen_down: Vec3 | None = None
@@ -462,6 +555,7 @@ def report_for(
         best_other=best_other,
         findings=findings,
         pitch=pitch,
+        search_skipped=search_skipped,
     )
 
 

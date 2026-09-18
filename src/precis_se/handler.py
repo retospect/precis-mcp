@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import math
 import tempfile
 import time
@@ -112,7 +113,7 @@ from precis_se import datums as se_datums
 from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import freedom as se_freedom
-from precis_se import fret, persist
+from precis_se import fret, persist, simp_bridge
 from precis_se import library as se_library
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
@@ -136,6 +137,9 @@ from precis_se.ops import (
     effective_ports,
     resolve_template,
 )
+from precis_se.simp_bridge import SimpRequest
+
+log = logging.getLogger(__name__)
 
 
 class SeHandler(Handler):
@@ -259,7 +263,14 @@ class SeHandler(Handler):
             "block (unbind first) or an envelope-less one (set_envelope "
             "first); an array/template member realizes through its "
             "template. It never mints fasteners — which hardware to buy "
-            "is a design decision. "
+            "is a design decision. realize strategy='simp' volfrac= "
+            "load_at= fixed_at= [pitch= build_dir= round=|open=|close= "
+            "max_iter=] instead enqueues an se_simp job: a SIMP topology "
+            "solve over the block's envelope (its objectives.force/fixed "
+            "as loads/supports, placed at a face token x+..z- or a posed "
+            "port), bound back as a cad design rooted at a field leaf, "
+            "build_dir pinned; re-realize mints a sibling cad design, "
+            "never overwrites (advisory tier — see precis-se-print-help). "
             "view='print' is the fdm implementer: omit args for one "
             "section per fdm block (mode, realized/unrealized, proposed/"
             "pinned build frame + score, findings); args={'block':...} "
@@ -342,7 +353,10 @@ class SeHandler(Handler):
         id_required=False,
         placement="artifact",
         corpus_role="none",
-        can_own_jobs=False,
+        # The compute lane: realize(strategy='simp') parents its se_simp job
+        # on the se design (the artifact owns its derived build step, the
+        # same posture as pcb's place/route jobs).
+        can_own_jobs=True,
         views=(
             "tree",
             "block",
@@ -375,7 +389,12 @@ class SeHandler(Handler):
         self.embedder = hub.embedder
 
     def _apply(
-        self, tree: SeTree, ops: list[dict[str, Any]], *, slug: str
+        self,
+        tree: SeTree,
+        ops: list[dict[str, Any]],
+        *,
+        slug: str,
+        pending_jobs: list[SimpRequest],
     ) -> str | None:
         """Walk one ``put``/``edit``'s ops list. Delegates to
         :func:`~precis_se.atomic.apply.apply_ops_with_atomic` rather than
@@ -384,9 +403,65 @@ class SeHandler(Handler):
         ``generate``, plus ``realize``) are intercepted before the pure
         table ever sees them, and ``add_block``'s deferred ``dof``
         axis-port check runs once the whole list has been walked (that
-        function's docstring for both). Returns the store-aware ops'
-        echo, or ``None``."""
-        return apply_ops_with_atomic(self.store, tree, ops, design_slug=slug)
+        function's docstring for both). ``realize(strategy='simp')``
+        requests land in ``pending_jobs`` for :meth:`_enqueue_simp` once
+        the tree is saved. Returns the store-aware ops' echo, or
+        ``None``."""
+        return apply_ops_with_atomic(
+            self.store, tree, ops, design_slug=slug, pending_jobs=pending_jobs
+        )
+
+    def _enqueue_simp(self, ref: Any, tree: SeTree, requests: list[SimpRequest]) -> str:
+        """Enqueue one ``se_simp`` job per validated
+        ``realize(strategy='simp')`` — after the tree is saved, never
+        inline (a solve is minutes; :mod:`precis_se.simp_bridge`'s
+        docstring). Idempotent per (design, block, inputs): the idem key
+        is :func:`precis_se.simp_bridge.inputs_sha` (request + envelope +
+        objectives + pose + effective ports), so a re-submit of the same
+        problem collapses onto the in-flight job, while a changed load, a
+        moved port or a finished job mints a fresh one (a finished run's
+        re-realize is the sibling the spec asks for)."""
+        bodies: list[str] = []
+        for req in requests:
+            # The SAME hash the job re-checks before binding
+            # (simp_bridge.inputs_sha: envelope, objectives, pose, effective
+            # ports incl. a load_at/fixed_at port's pose) — one function, so
+            # the dedupe key and the staleness check can never drift.
+            digest = (simp_bridge.inputs_sha(tree, req) or "gone")[:16]
+            params: dict[str, Any] = {
+                "se_ref_id": int(ref.id),
+                "slug": str(ref.slug),
+                **req.to_params(),
+            }
+            try:
+                job_resp = self.hub.sibling("job").put(
+                    job_type=simp_bridge.JOB_TYPE,
+                    executor="job_inproc",
+                    parent_id=int(ref.id),
+                    params=params,
+                    idem_key=f"{simp_bridge.JOB_TYPE}:{ref.id}:{req.block}:{digest}",
+                )
+            except Exception as exc:
+                # The tree tx has already committed: a failed enqueue must
+                # not turn a saved edit into a raised call. Say so, loudly,
+                # and let the caller re-run the realize op alone.
+                log.warning(
+                    "se_simp: enqueue failed for %s.%s: %s", ref.slug, req.block, exc
+                )
+                bodies.append(
+                    f"## se_simp — {req.block} NOT queued\n"
+                    f"simp solve NOT queued for {req.block!r}: {exc} — the tree "
+                    "edits in this call were saved; re-run "
+                    f"realize(block={req.block!r}, strategy='simp', ...) on its own"
+                )
+                continue
+            bodies.append(
+                f"## se_simp — {req.block} enqueued\n{job_resp.body}\n\n"
+                f"Next: get(kind='se', id={str(ref.slug)!r}, view='print', "
+                f"args={{'block': {req.block!r}}}) once the job lands "
+                "(the block reads unrealized until then)."
+            )
+        return "\n\n".join(bodies)
 
     def _foreign_resolver(self) -> Callable[[str], SeTree | None]:
         """One cross-design ``template`` resolver
@@ -434,11 +509,21 @@ class SeHandler(Handler):
         # design (cross-design cycle detection, ops._find_instance_cycle).
         tree.own_slug = slug
         tree.foreign = self._foreign_resolver()
-        echo = self._apply(tree, ops, slug=slug)
+        pending_jobs: list[SimpRequest] = []
+        echo = self._apply(tree, ops, slug=slug, pending_jobs=pending_jobs)
         ttl = (title or slug).strip() or slug
         existing = self.store.get_ref(kind="se", id=slug)
         meta = {"description": description}
-        with self.store.tx() as conn:
+        # A replace is a whole-tree write: serialize it against every other
+        # load->mutate->save of this design (persist.tree_mutation — an edit,
+        # or the se_simp job binding its result). A brand-new slug has no
+        # ref to lock on yet and nothing stored to race with.
+        lock = (
+            self.store.tx()
+            if existing is None
+            else persist.tree_mutation(self.store, existing.id)
+        )
+        with lock as conn:
             if existing is None:
                 ref = self.store.insert_ref(
                     kind="se", slug=slug, title=ttl, meta=meta, conn=conn
@@ -480,6 +565,8 @@ class SeHandler(Handler):
         body = f"# se design '{slug}' {verb}\n\n" + _render_tree(tree, ttl, description)
         if echo:
             body += f"\n\n{echo}"
+        if pending_jobs:
+            body += "\n\n" + self._enqueue_simp(ref, tree, pending_jobs)
         return Response(body=body)
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -512,13 +599,21 @@ class SeHandler(Handler):
                 f"{str(ref.slug)!r}, "
                 "ops=[{'op':'add_block','name':'hub','parent':'fork'}])",
             )
-        tree = persist.load_tree(self.store, ref.id)
-        tree.own_slug = str(ref.slug)
-        tree.foreign = self._foreign_resolver()
-        echo = self._apply(tree, op_list, slug=str(ref.slug))
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
-        with self.store.tx() as conn:
+        pending_jobs: list[SimpRequest] = []
+        # load -> apply -> save under the design's per-ref lock
+        # (persist.tree_mutation's invariant): the retire-all/reinsert-all
+        # save would otherwise silently drop a concurrent edit or the
+        # se_simp job's bind, whichever committed first. A failing op
+        # raises before anything is written and the tx rolls back.
+        with persist.tree_mutation(self.store, ref.id) as conn:
+            tree = persist.load_tree(self.store, ref.id)
+            tree.own_slug = str(ref.slug)
+            tree.foreign = self._foreign_resolver()
+            echo = self._apply(
+                tree, op_list, slug=str(ref.slug), pending_jobs=pending_jobs
+            )
             persist.save_tree(
                 self.store,
                 ref_id=ref.id,
@@ -537,6 +632,8 @@ class SeHandler(Handler):
         )
         if echo:
             body += f"\n\n{echo}"
+        if pending_jobs:
+            body += "\n\n" + self._enqueue_simp(ref, tree, pending_jobs)
         return Response(body=body)
 
     # ── get ──────────────────────────────────────────────────────────
@@ -2727,6 +2824,15 @@ def _findings_table(findings: list[se_validate.ValidationIssue]) -> str:
     )
 
 
+def _frame_origin(report: se_printing.BlockPrintReport) -> str:
+    """``pinned`` / ``proposed`` / ``simp`` — the last when the frame was
+    baked in by a SIMP solve (:attr:`~precis_se.printing.BlockPrintReport.
+    search_skipped`), which is a pin the block did not choose by hand."""
+    if report.search_skipped:
+        return "simp"
+    return "pinned" if report.pinned else "proposed"
+
+
 def _render_print_summary(report: se_printing.BlockPrintReport) -> str:
     """One ``## block`` section of ``view='print'``'s no-args summary —
     mode, realized/unrealized, the proposed/pinned frame with its score,
@@ -2740,7 +2846,7 @@ def _render_print_summary(report: se_printing.BlockPrintReport) -> str:
             f"({len(report.printed.features)} stamped feature(s))"
         )
         if report.chosen_down is not None:
-            origin = "pinned" if report.pinned else "proposed"
+            origin = _frame_origin(report)
             score_bit = (
                 f", score {report.chosen_score.total:.4g}"
                 if report.chosen_score is not None
@@ -2752,6 +2858,8 @@ def _render_print_summary(report: se_printing.BlockPrintReport) -> str:
             )
             if report.best_other:
                 lines.append(f"vs best: {report.best_other}")
+            if report.search_skipped:
+                lines.append(report.search_skipped)
     if report.findings:
         lines.append(_findings_table(report.findings))
     else:
@@ -2777,13 +2885,15 @@ def _render_print_block(report: se_printing.BlockPrintReport) -> str:
         f"{len(report.printed.features)} stamped feature(s)"
     )
     if report.chosen_down is not None:
-        origin = "pinned" if report.pinned else "proposed"
+        origin = _frame_origin(report)
         lines.append("")
         lines.append(
             f"build frame ({origin}): down={se_printing.format_down(report.chosen_down)}"
         )
         if report.best_other:
             lines.append(f"vs best: {report.best_other}")
+        if report.search_skipped:
+            lines.append(report.search_skipped)
         if report.candidates:
             top = report.candidates[: se_printing.CANDIDATE_TABLE_N]
             term_keys = sorted(top[0].terms.keys())

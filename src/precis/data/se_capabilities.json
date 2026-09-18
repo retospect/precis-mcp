@@ -1,5 +1,5 @@
 {
-  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c (hole_diameter_compensation/min_wall/min_boss_wall only). WIDENED on 2026-09-16 by docs/backlog/se-print-implementer.md rung 1 with the full process-figure set for the printed-solid/orientation/process-DRC implementer: layer_height, line_width, max_overhang, max_bridge, min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build — every widened field carries `unit` (`mm` default | `deg` | `ratio`), `retrieved`, and a `source` naming se-kind.md's 2026-09-02 validation (`perplexity-reasoning:292746`) or, honestly, that no figure was published there. A null field is null, with a source saying so, NEVER a figure carried over from a neighbouring material's row — three of the new fields (layer_height, line_width, max_overhang) are process/nozzle-class figures the validated section gives ONE number for across every fdm material; the rest (min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build) have no published figure at all yet and are null in every row. Every length is MILLIMETRES unless `unit` says otherwise. TWO TIERS per field: `physical` is the floor/ceiling the process cannot beat whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through `precis_se.capabilities.resolve()` (block override -> load-derived, unimplemented -> this file's house tier), which clamps to `physical` for `min_*`/`max_*`-named fields only — a field named neither way carries `physical` as information, not a clamp direction (see that function's docstring). CONFIDENCE: these are community/slicer-doc FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override (`set_process_override`), which is why every row says so in its own source. Separately, the top-level `orientation` block carries the FAMILY-level (not per-material) build-orientation-search weights for Engine 2 (`precis/cad/printability.py`) — a house judgment, not a measured figure, read through `capabilities.orientation_policy(mode)`.",
+  "_note": "se MANUFACTURING CAPABILITIES — versioned DATA, one row per (process, material), the file se-kind.md's 'Manufacturing modes' section specifies. SEEDED NARROWLY on 2026-09-15 by docs/backlog/se-off-the-shelf-fabrication.md rung 3c (hole_diameter_compensation/min_wall/min_boss_wall only). WIDENED on 2026-09-16 by docs/backlog/se-print-implementer.md rung 1 with the full process-figure set for the printed-solid/orientation/process-DRC implementer: layer_height, line_width, max_overhang, max_bridge, min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build — every widened field carries `unit` (`mm` default | `deg` | `ratio`), `retrieved`, and a `source` naming se-kind.md's 2026-09-02 validation (`perplexity-reasoning:292746`) or, honestly, that no figure was published there. A null field is null, with a source saying so, NEVER a figure carried over from a neighbouring material's row — three of the new fields (layer_height, line_width, max_overhang) are process/nozzle-class figures the validated section gives ONE number for across every fdm material; the rest (min_bed_contact, min_feature, min_hole, strength_z_ratio, max_build) have no published figure at all yet and are null in every row. Every length is MILLIMETRES unless `unit` says otherwise. TWO TIERS per field: `physical` is the floor/ceiling the process cannot beat whatever anyone declares, `house` is what we actually build to, at a margin. A consumer reads through `precis_se.capabilities.resolve()` (block override -> load-derived, unimplemented -> this file's house tier), which clamps to `physical` for `min_*`/`max_*`-named fields only — a field named neither way carries `physical` as information, not a clamp direction (see that function's docstring). CONFIDENCE: these are community/slicer-doc FDM practice for a 0.4 mm nozzle at 0.2 mm layers, NOT measurements from this shop's printers — the honest thing to do with them is calibrate once and override (`set_process_override`), which is why every row says so in its own source. Separately, the top-level `orientation` block carries the FAMILY-level (not per-material) build-orientation-search weights for Engine 2 (`precis/cad/printability.py`) — a house judgment, not a measured figure, read through `capabilities.orientation_policy(mode)`. WIDENED on 2026-09-18 by docs/backlog/structural-solution-space.md slice 4 bridge with `simp_pitch` (mm, the voxel pitch `realize(strategy='simp')` samples the block's envelope at) — null in every fdm row with a source saying why; the op demands `pitch=` while it is null.",
   "rows": [
     {
       "mode": "fdm/pla",
@@ -88,6 +88,14 @@
           "confidence": "unknown",
           "retrieved": "2026-09-02",
           "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
+        },
+        "simp_pitch": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-09-18",
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         }
       }
     },
@@ -178,6 +186,14 @@
           "confidence": "unknown",
           "retrieved": "2026-09-02",
           "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
+        },
+        "simp_pitch": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-09-18",
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         }
       }
     },
@@ -268,6 +284,14 @@
           "confidence": "unknown",
           "retrieved": "2026-09-02",
           "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
+        },
+        "simp_pitch": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-09-18",
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         }
       }
     },
@@ -358,6 +382,14 @@
           "confidence": "unknown",
           "retrieved": "2026-09-02",
           "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
+        },
+        "simp_pitch": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-09-18",
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         }
       }
     },
@@ -448,6 +480,14 @@
           "confidence": "unknown",
           "retrieved": "2026-09-02",
           "source": "Printer-specific (bed/gantry size), deliberately null in the generic rows — docs/backlog/se-print-implementer.md's own scope note. A house-tier refinement for a named printer is a later, data-only addition."
+        },
+        "simp_pitch": {
+          "physical": null,
+          "house": null,
+          "unit": "mm",
+          "confidence": "unknown",
+          "retrieved": "2026-09-18",
+          "source": "Voxel pitch for realize(strategy='simp') (docs/backlog/structural-solution-space.md slice 4 bridge). A house figure is a trade-off between solve time (elements ~ volume / pitch^3, minutes at ~1e5-1e6 elements) and the smallest strut the field can carry (>= 2-3 pitches; compare min_wall) — not a process figure anyone has published, and this shop has not calibrated one yet. Null on purpose: the op demands pitch= (or a set_process_override on the block) until a calibrated house figure lands here; never a default in code."
         }
       }
     }

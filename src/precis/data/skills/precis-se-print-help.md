@@ -1,10 +1,11 @@
 ---
 id: precis-se-print-help
 title: precis — turning a block into a printed part (realize, build orientation, process DRC, STL/3MF)
-summary: mint a block's first cad implementation (realize), let view='print' pick and pin a build orientation, read the process-DRC findings (overhang, bridge, bed contact, undersize hole, thin feature, load vs layer), write the STL/3MF a slicer opens, and read view='fab' for the whole design's fabrication plan across every source
+summary: mint a block's first cad implementation (realize — the envelope seed, or strategy='simp' for an enqueued topology solve bound back as a field leaf), let view='print' pick and pin a build orientation, read the process-DRC findings (overhang, bridge, bed contact, undersize hole, thin feature, load vs layer), write the STL/3MF a slicer opens, and read view='fab' for the whole design's fabrication plan across every source
 answers:
   - how do I print a block I've designed in se?
   - how do I turn an abstract requirements block into something I can export?
+  - how do I let a topology solver (SIMP) shape a printed member from its loads?
   - which way up should this part print, and can I pick it myself?
   - why does view='print' say a block is unrealized?
   - what does abstract_joint mean, and how do I clear it?
@@ -50,6 +51,66 @@ template, the same way instancing already works. **`realize` never mints
 fasteners** — a `screw`/`press`/`bearing`/`magnet`/`cable` connect naming
 no real hardware yet stays an `abstract_joint` finding (below); which
 screw to buy is a design decision, not something this op guesses.
+
+## 1b — `realize(strategy='simp')`: solve the material instead of seeding it
+
+```python
+edit(kind="se", id="unicycle-mk2", ops=[
+  {"op": "set_load", "block": "fork", "force": [0, 0, -40], "fixed": true},
+  {"op": "realize", "block": "fork", "mode": "fdm/pla", "strategy": "simp",
+   "pitch": 0.001, "volfrac": 0.35, "load_at": "z+", "fixed_at": "axle",
+   "build_dir": "z+", "close": 0.002, "max_iter": 80},
+])
+```
+
+A SIMP topology solve over the block's envelope (its keep-in, voxelised
+in the block frame at `pitch=` metres): `objectives.force` becomes the
+load, `objectives.fixed` the support, and the density comes back as a
+NEW cad design rooted at a sampled-field leaf (`field:<sha>`), which the
+block is bound to — from there it is ordinary geometry (`cut` bores,
+`add` seats, export). The op only **validates and enqueues** an
+`se_simp` job (the response carries the job handle; the block reads
+`unrealized` until it lands, minutes at a real pitch). Args:
+
+- `pitch=` m — required while the house `simp_pitch` capability is null
+  (it is, in every fdm row; a `set_process_override(field='simp_pitch',
+  value=<mm>)` on the block also satisfies it). Elements ≈ volume /
+  pitch³; more than 500 000 is refused with the count.
+- `volfrac=` — required, strictly inside (0, 1): the material fraction.
+- `load_at=` / `fixed_at=` — required: WHERE on the block the load acts
+  and the support holds. `set_load`'s vector carries no position, so name
+  an envelope face (`x+`,`x-`,`y+`,`y-`,`z+`,`z-` — the force is shared
+  over that face's nodes) or a port that has a pose in the block frame
+  (a port without one is refused). The elements under both are passive
+  solid, so a loaded face never thins to a skin.
+- `build_dir=` — one of the six axis tokens; the AM overhang filter bakes
+  it into the solve. Default: the envelope box's largest face down
+  (`z+` on a tie), and the echo says which it chose.
+- `round=` | `open=`/`close=` m — grid morphology after the solve
+  (`open` rounds convex edges and reports every strut thinner than 2r it
+  erased; `close` fills necks; `round` = both at one radius). At least
+  half a pitch.
+- `max_iter=` — 1..300, default 60. An unconverged run says so in its
+  notes; it is a snapshot of a descent, not a design.
+
+When the job lands: the block is bound (`kind='cad'`) and moded, its
+`build_frame` is pinned with `origin: simp`, and the run summary sits on
+the design's `meta.simp` (`last` + `runs`: inputs hash incl. pitch/
+build_dir/volfrac/engine version, compliance first→last, achieved
+volume fraction, iterations, converged, overhang count, notes). A block
+with no `force` **and** `fixed` is refused pointing at `set_load`; a
+block bound to a `component` is refused (unbind first). **Re-realize
+mints a sibling**: a new cad design (`-2`, `-3`… suffix), the binding
+switches to it, the previous design is left in place — named in
+`meta.simp.runs[*].cad` and linked `derived-from` the se design.
+
+Advisory tier: the compliance is an estimate from a voxel model under
+one linear-elastic load case (the engine's notes spell out what was and
+was not checked); it screens layouts against each other, never
+certifies one. `view='print'` on a SIMP-realized block **verifies** the
+declared `build_dir` (the 45° voxel rule on the stored field) and skips
+the orientation search, saying so; `set_build_frame` overrides the pin
+and brings the search back.
 
 ## 2a — read `view='print'`: the report
 

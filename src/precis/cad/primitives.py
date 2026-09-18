@@ -34,6 +34,12 @@ zero set is the Minkowski sum of the shrunk solid with a ball of radius
 ``r`` (edges → cylinders, corners → sphere caps, planar faces where they
 were). See ``docs/backlog/cad-sdf-rounding-and-field-export.md`` for the
 contract; :func:`precis.cad.dsl.build` does the per-shape shrink.
+
+**Sampled field** (:class:`Field`) is the one non-analytic leaf: a
+float32 signed-distance grid answering the same card through trilinear
+lookup inside its box (and box distance + boundary value outside, where
+it is not trusted). Its grid-side operations — exact re-distance,
+morphology, the SIMP bridge — live in :mod:`precis.cad.fieldops`.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -1021,6 +1028,177 @@ class Rounded(Primitive):
                     lo_t = mid
             t_out = lo_t
         return [(t_in, t_out)]
+
+
+# ---------------------------------------------------------------------------
+# Field — a sampled signed-distance grid (the slice-2 leaf)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, eq=False)
+class Field(Primitive):
+    """A sampled signed-distance grid: ``grid[i, j, k]`` is the signed
+    distance (negative inside, in the caller's length unit) at local point
+    ``origin + (i, j, k) · pitch``; ``pitch`` is isotropic.
+
+    Inside the grid box the distance is the **trilinear interpolant** of
+    the eight surrounding samples. Outside it, it is the Euclidean
+    distance to the grid box plus the interpolant at the nearest box
+    point — positive by construction when the boundary samples are, and
+    Lipschitz ≤ √3 either way (an axis-wise slope of at most 1 per sample
+    step when the samples are an exact SDF), so the field-export band
+    test (:data:`precis.cad.fieldmesh.BAND_SAFETY`) still holds. **The
+    field is only trusted inside its own AABB**: its zero set must lie
+    inside the grid box (:func:`precis.cad.fieldops.redistance` and
+    ``from_density`` pad for this); the outside formula exists so a
+    boolean against an analytic leaf is defined everywhere, not to
+    extrapolate geometry.
+
+    ``exact`` records whether the samples are an exact Euclidean SDF (the
+    output of :func:`precis.cad.fieldops.redistance`) or merely sign-
+    correct with the right zero set (an offset, a boolean fold sampled
+    onto a grid) — the morphology ops re-distance before offsetting a
+    field that is not flagged exact. It is metadata: no query reads it.
+
+    A field is not convex and has no named planar faces (``faces_local``
+    is empty — draft analysis sees nothing to report), and rounding it is
+    ``fieldops.open``/``close``/``offset``, never ``Rounded`` (refused at
+    parse). ``ray_hits_local`` marches the ray through the grid box at
+    steps of at most one pitch and bisects each sign change — a feature
+    thinner than a pitch between two samples is not resolved, which is
+    the same limit the grid itself has.
+    """
+
+    grid: NDArray[np.floating[Any]]
+    pitch: float
+    origin: Vec3
+    exact: bool = False
+
+    def __post_init__(self) -> None:
+        arr = np.asarray(self.grid)
+        if arr.ndim != 3 or min(arr.shape) < 2:
+            raise ValueError(
+                f"a field grid must be (nx, ny, nz) with every axis >= 2, got "
+                f"shape {arr.shape}"
+            )
+        if not (self.pitch > 0.0 and math.isfinite(self.pitch)):
+            raise ValueError(f"field pitch must be a positive length, got {self.pitch}")
+        if not np.all(np.isfinite(arr)):
+            raise ValueError("a field grid must be finite everywhere")
+        object.__setattr__(self, "grid", np.ascontiguousarray(arr, dtype=np.float32))
+        object.__setattr__(self, "origin", as_vec3(self.origin))
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        nx, ny, nz = self.grid.shape
+        return int(nx), int(ny), int(nz)
+
+    @property
+    def _eps(self) -> float:
+        lo, hi = self.aabb_local()
+        return _linear_eps(float(np.max(np.abs(np.concatenate([lo, hi])))))
+
+    def scaled(self, k: float) -> Field:
+        """The same field in another length unit (every length × ``k``)."""
+        return Field(
+            grid=self.grid * np.float32(k),
+            pitch=self.pitch * k,
+            origin=self.origin * k,
+            exact=self.exact,
+        )
+
+    def aabb_local(self) -> tuple[Vec3, Vec3]:
+        n = np.array(self.grid.shape, dtype=np.float64) - 1.0
+        return self.origin.copy(), self.origin + n * self.pitch
+
+    def faces_local(self) -> list[Face]:
+        return []
+
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        n = np.array(self.grid.shape, dtype=np.int64)
+        q = (arr - self.origin) / self.pitch  # continuous grid coordinates
+        qc = np.clip(q, 0.0, (n - 1).astype(np.float64))
+        # distance from the point to the grid box (0 inside), in length units
+        outside = np.linalg.norm((q - qc) * self.pitch, axis=1)
+        i0 = np.minimum(np.floor(qc).astype(np.int64), n - 2)
+        f = qc - i0
+        g = self.grid
+        ix, iy, iz = i0[:, 0], i0[:, 1], i0[:, 2]
+        fx, fy, fz = f[:, 0], f[:, 1], f[:, 2]
+        c00 = g[ix, iy, iz] * (1 - fx) + g[ix + 1, iy, iz] * fx
+        c10 = g[ix, iy + 1, iz] * (1 - fx) + g[ix + 1, iy + 1, iz] * fx
+        c01 = g[ix, iy, iz + 1] * (1 - fx) + g[ix + 1, iy, iz + 1] * fx
+        c11 = g[ix, iy + 1, iz + 1] * (1 - fx) + g[ix + 1, iy + 1, iz + 1] * fx
+        c0 = c00 * (1 - fy) + c10 * fy
+        c1 = c01 * (1 - fy) + c11 * fy
+        inner = c0 * (1 - fz) + c1 * fz
+        return np.asarray(inner, dtype=np.float64) + outside
+
+    def distance_local(self, p: Vec3) -> float:
+        return float(self.distance_local_np(as_vec3(p)[None, :])[0])
+
+    def contains_local(self, p: Vec3) -> bool:
+        return self.distance_local(p) <= self._eps
+
+    def ray_hits_local(self, o: Vec3, d: Vec3) -> Intervals:
+        o = as_vec3(o)
+        d = as_vec3(d)
+        eps = self._eps
+        dir_eps = _dir_eps(d)
+        lo, hi = self.aabb_local()
+        # Clip to the grid box: outside it the distance is >= the boundary
+        # value, which the contract keeps positive, so no material there.
+        t0, t1 = NEG_INF, POS_INF
+        for i in range(3):
+            oi, di = float(o[i]), float(d[i])
+            if abs(di) <= dir_eps:
+                if oi < lo[i] - eps or oi > hi[i] + eps:
+                    return []
+                continue
+            ta = (lo[i] - eps - oi) / di
+            tb = (hi[i] + eps - oi) / di
+            t0 = max(t0, min(ta, tb))
+            t1 = min(t1, max(ta, tb))
+        if t0 > t1 or not (math.isfinite(t0) and math.isfinite(t1)):
+            return []
+        dnorm = float(np.linalg.norm(d))
+        if dnorm <= 0.0:
+            return []
+        t_tol = eps / dnorm
+        # March at <= one pitch per step (in space), all samples at once.
+        steps = max(2, math.ceil((t1 - t0) * dnorm / self.pitch) + 1)
+        ts = np.linspace(t0, t1, steps)
+        vals = self.distance_local_np(o[None, :] + ts[:, None] * d[None, :])
+        inside = vals <= 0.0
+
+        def f(t: float) -> float:
+            return self.distance_local(o + t * d)
+
+        def bisect(ta: float, tb: float, entering: bool) -> float:
+            # f(ta) > 0 >= f(tb) when entering, the reverse when leaving
+            lo_t, hi_t = ta, tb
+            for _ in range(256):
+                if hi_t - lo_t <= t_tol:
+                    break
+                mid = 0.5 * (lo_t + hi_t)
+                if (f(mid) > 0.0) == entering:
+                    lo_t = mid
+                else:
+                    hi_t = mid
+            return 0.5 * (lo_t + hi_t)
+
+        spans: Intervals = []
+        t_in: float | None = float(ts[0]) if inside[0] else None
+        for k in range(1, steps):
+            if inside[k] and t_in is None:
+                t_in = bisect(float(ts[k - 1]), float(ts[k]), True)
+            elif not inside[k] and t_in is not None:
+                spans.append((t_in, bisect(float(ts[k - 1]), float(ts[k]), False)))
+                t_in = None
+        if t_in is not None:
+            spans.append((t_in, float(ts[-1])))
+        return merge_intervals(spans, eps=t_tol)
 
 
 # ---------------------------------------------------------------------------

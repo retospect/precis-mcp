@@ -289,6 +289,45 @@ reports `in_place_clearance` when the gap is set below the floor; a
 `model`-intent group containing a component-bound fastener exports the
 fastener's stand-in as its own object; re-`realize` leaves the first
 realization in place.
+
+### Slice 4 bridge — round A built 2026-09-18
+
+Landed (points 1–5 + the cantilever half of the acceptance):
+`realize(block, mode, strategy='simp', volfrac, load_at, fixed_at,
+pitch?, build_dir?, round?|open?/close?, max_iter?)` validates at op
+time and enqueues an `se_simp` job (`precis_se/simp_job.py`,
+`job_inproc`; `se` now `can_own_jobs`); the job body
+`precis_se/simp_bridge.py::run_simp` (also the in-process test path)
+voxelises the block's own envelope in its local frame
+(`component_sdf_np`, element-centred), places `objectives.force`/`fixed`
+at the named face token or posed port (se has no position on a load and
+no keep-out on a block — both are stated, not invented; keep-outs skipped),
+pins the elements under them passive (new `simp_optimize(passive=)`),
+permutes the problem so any of the six axis tokens is the engine's `+z`
+(default `build_dir` = the envelope box's largest face down, echoed),
+`from_density` → optional morphology → `put_field` → a new cad design
+rooted at `field:<sha>` → `set_binding` + `set_mode` + `build_frame
+{origin: simp, build_dir}`; run summary on the se ref's `meta.simp`
+(`last` + `runs`), each minted cad design linked `derived-from` the se
+design. A block holds one binding, so re-realize mints `<design>-<block>-N`
+and switches to it, leaving the previous design in place (`realized-by`
+is component-only, so lineage is `derived-from` + `meta.simp.runs`).
+`view='print'` on a `build_frame.origin == 'simp'` block skips the
+orientation search (says so), reports the 45° voxel rule on the stored
+field in place of the mesh `overhang` rule (`overhang_violations(...,
+plate_at_first_solid=True)`). `simp_pitch` added null to every fdm
+capability row (a `set_process_override` on the block also satisfies it).
+Tests: `tests/test_se_simp_bridge.py`.
+
+Left for round B: print `intent` (`model`/`manufacture`) on a print
+group — cavities, in-place gaps + `min_clearance`, fusion + `blend` at
+the seam, fastener elision, stand-ins, one 3MF per group — and the rest
+of the acceptance paragraph (the two-member revolute group, the
+`model`-intent fastener stand-in). Also open: `strength_z_ratio`
+calibration (point 5's figure for toys), a house `simp_pitch`, the
+cantilever's `objectives` still carry no position (`load_at`/`fixed_at`
+live only on the realize op and in the run summary).
+
 - **Slice 5 — nm state-dependent stability** (blocked on blocktree slice 2
   states): classify per declared state, plus — added 2026-09-11 from the
   multiscale intake — **sweep the switching pathway**: pose intermediate

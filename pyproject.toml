@@ -457,7 +457,7 @@ hexfold = "hexfold.cli:main"
 # `precis_se` is the fourth keystone kind (docs/backlog/se-kind.md): the
 # `se` (structural envelope) kind — scale-agnostic block trees with
 # cad-DSL envelopes in metres, first-class arrays, manufacturing modes,
-# and the `se_propose_atomic` job_type. It absorbed the retired `nm`
+# and the `se_propose_atomic`/`se_simp` job_types. It absorbed the retired `nm`
 # (nanomachine) kind as its `atomic` mode (docs/backlog/nm-se-merge.md):
 # `precis_nm`'s handler/ops/persist/migrations and its one `nm_propose`
 # job type are gone — the domain layer lives in `precis_se.atomic`, and
@@ -480,6 +480,10 @@ autocatpath_explore = "precis_pathway.job:SPEC"
 autocatpath_seed = "precis_pathway.seed_job:SPEC"
 autocatpath_aggregate = "precis_pathway.aggregate_job:SPEC"
 se_propose_atomic = "precis_se.atomic.propose:SPEC"
+# se_simp: the enqueued half of realize(kind='se', strategy='simp') — a
+# SIMP topology solve over one block's envelope, bound back as a cad
+# field-leaf design (docs/backlog/structural-solution-space.md slice 4).
+se_simp = "precis_se.simp_job:SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"

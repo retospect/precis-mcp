@@ -105,7 +105,10 @@ class EmbedHandler(WorkerHandler):
     # weight. We tag them ``chunk_kind='references'`` at ingest (see
     # ``precis.ingest.pipeline._retag_references``) so the worker
     # claim query can drop them before they ever reach the embedder.
-    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references",)
+    # ``field`` — a cad sampled-SDF grid's carrier chunk
+    # (``store/_cad_ops.py::put_field``): structured geometry, never
+    # embedded, same treatment as ``cad_nodes``.
+    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references", "field")
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder

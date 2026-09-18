@@ -252,7 +252,8 @@ def mesh_shape(spec: ShapeSpec) -> Mesh:
     if a == "pyramid":
         return _cone(_ngon_xy(int(p["n"]), p["r"]), p["h"])
     raise TessellationError(
-        f"shape {a!r} has no finite mesh (chamfer is an unbounded half-space)"
+        f"shape {a!r} has no analytic mesh (chamfer is an unbounded half-space; "
+        "a field leaf is meshed only by the field backend)"
     )
 
 

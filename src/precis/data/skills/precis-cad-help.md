@@ -213,6 +213,8 @@ based in z: `box:w5mmd5mmh0.3mm @0mm,0mm,0mm` occupies x and y in
 +z — pose it with `@`/`rot:` onto the edge to bevel (patterns apply).
 Exports and the viewer substitute a finite clamped box automatically.
 
+## Round it — `rd<len>`, `blend:<len>`, `field:<sha256>`
+
 **Rounding.** Add `rd<len>` to any convex solid but the sphere/torus
 (`box:w40mmd20mmh10mmrd2mm`, `cyl:r5mmh10mmrd1mm`) to round **every edge
 and corner** of that node to radius `rd` — exact in the kernel (the shape
@@ -231,6 +233,23 @@ SDF at `args={'pitch': '0.2mm'}` — pass the layer height you'll print
 at; default ≈ 1/256 of the design's diagonal; a pitch whose band would
 exceed the sample budget is refused, never coarsened). Sharp designs
 export exactly as before; `step` has no field route yet.
+
+**Sampled field.** `field:<sha256>` is a leaf whose shape is a stored
+signed-distance grid — the way an optimiser's result (SIMP density,
+`realize(strategy='simp')`) or any voxel body enters a design; it has no
+dims, poses like any node, and folds into `add`/`cut`/`intersect` with
+analytic nodes exactly at the surface (`body add field:3f9a…` then
+`bore cut cyl:…` gives a bore at the exact radius). The grid is never in
+the source: a Python caller stores it (`store.put_field(ref_id, field)`
+→ the sha), the DSL names it, `>= 12` hex chars resolve on `put` and
+the full hash is what the design keeps. The tree row shows shape @
+pitch (`~` = sign-correct, not re-distanced); the field is trusted only
+inside its own box. Rounding a field is done on the grid before it is
+stored — `precis.cad.fieldops`: `redistance` (exact Euclidean SDF),
+`open(r)` (rounds convex edges; **reports** every strut/blob thinner
+than `2r` it erased, never silently), `close(r)` (exact concave fillet,
+fills necks), `from_density(rho, pitch=…, origin=…)`. `rd` on a field is
+refused; export is always the field backend; `step` refuses it.
 
 ## Read the design — `get`
 
@@ -317,9 +336,9 @@ get(
 - **`scad`** — pure text, zero deps; drop into the OpenSCAD GUI.
 - **`stl` / `3mf`** — in-process mesh (manifold3d CSG, a core dependency —
   works with no extra). 3MF carries units/metadata; STL is universal. A
-  design with `rd`/`blend:` meshes from its signed-distance field instead
-  (`args={'pitch': '0.2mm'}` sets the sample spacing — see *Rounding*
-  above); the reply names which route ran.
+  design with `rd`/`blend:`/`field:` meshes from its signed-distance field
+  instead (`args={'pitch': '0.2mm'}` sets the sample spacing — see
+  *Rounding* above); the reply names which route ran.
 - **`step`** — *exact* ISO-10303 B-rep via OpenCASCADE (true cylinders/
   cones, not facets) for mechanical CAD (FreeCAD / Fusion / SolidWorks).
   Needs the heavier `precis-mcp[cad-step]` extra.

@@ -86,6 +86,12 @@ import numpy as np
 #: Poisson's ratio whose element stiffness is derived once at import.
 _DEFAULT_NU = 0.3
 
+#: Bumped whenever a change here alters the field a given problem produces
+#: (the method, the filter, the AM sweep, the OC step). A run summary that
+#: hashes its inputs (the se bridge's ``inputs_sha``) folds this in, so a
+#: re-run after an engine change never collides with a stale summary.
+ENGINE_VERSION = "simp/1"
+
 #: Langelaar smooth-maximum exponent and offset, and the 3×3 stencil size.
 #: ``Q`` is fixed by the requirement that an all-void stencil map to exactly
 #: zero: ``(n ε^P)^(1/Q) = ε`` ⟺ ``Q = P + ln(n)/ln(ε)``.
@@ -332,7 +338,9 @@ def _am_backward(
     return out
 
 
-def overhang_violations(density: np.ndarray, *, threshold: float = 0.5) -> int:
+def overhang_violations(
+    density: np.ndarray, *, threshold: float = 0.5, plate_at_first_solid: bool = False
+) -> int:
     """Count elements that a ``+z`` build could not have printed.
 
     An element above the build plate violates the 45° rule when it is solid
@@ -340,11 +348,22 @@ def overhang_violations(density: np.ndarray, *, threshold: float = 0.5) -> int:
     is solid. Layer ``k = 0`` sits on the plate and never violates. Cubic
     voxels make that stencil exactly 45°; nothing here knows about bridging,
     so the count is conservative.
+
+    ``plate_at_first_solid=True`` puts the plate under the lowest layer that
+    holds any material instead of at ``k = 0`` — for a grid padded with void
+    below the part (a stored signed-distance field, whose box is wider than
+    the body), where counting from ``k = 0`` would read the whole bottom
+    layer as floating.
     """
     rho = np.asarray(density, dtype=float)
     if rho.ndim != 3:
         raise ValueError(f"density must be a 3D (nx, ny, nz) array, got {rho.shape}")
     solid = rho > threshold
+    if plate_at_first_solid:
+        layers = np.flatnonzero(solid.any(axis=(0, 1)))
+        if layers.size == 0:
+            return 0
+        solid = solid[:, :, int(layers[0]) :]
     count = 0
     for k in range(1, solid.shape[2]):
         below = solid[:, :, k - 1]
@@ -694,10 +713,17 @@ def _sensitivity_filter(
 
 
 def _oc_update(
-    x: np.ndarray, dc: np.ndarray, domain: np.ndarray, volfrac: float
+    x: np.ndarray,
+    dc: np.ndarray,
+    domain: np.ndarray,
+    volfrac: float,
+    pinned: np.ndarray | None = None,
 ) -> np.ndarray:
     """Optimality-criteria step: bisect the volume multiplier until the design
-    field hits the target volume, with a per-element move limit of 0.2."""
+    field hits the target volume, with a per-element move limit of 0.2.
+    ``pinned`` elements (passive solid) are held at 1 inside the bisection,
+    so the volume they occupy comes out of the designable budget rather
+    than being added on top of it."""
     target = volfrac * float(np.count_nonzero(domain))
     drive = np.maximum(-dc, 0.0)
     lo, hi = 1e-12, 1e12
@@ -708,6 +734,8 @@ def _oc_update(
         cand = np.clip(cand, x - _OC_MOVE, x + _OC_MOVE)
         cand = np.clip(cand, 0.0, 1.0)
         cand = np.where(domain, cand, 0.0)
+        if pinned is not None:
+            cand = np.where(pinned, 1.0, cand)
         best = cand
         if float(cand[domain].sum()) > target:
             lo = mid
@@ -788,6 +816,7 @@ def simp_optimize(
     max_iter: int = 60,
     tol: float = 0.01,
     build_dir: str | None = None,
+    passive: np.ndarray | None = None,
 ) -> SimpResult:
     """Minimise compliance over a voxel domain at a fixed volume fraction.
 
@@ -801,6 +830,14 @@ def simp_optimize(
     ``build_dir='z+'`` turns on the AM overhang filter described in the module
     docstring; ``None`` leaves the design unconstrained and reports the
     overhang violations it happens to have.
+
+    ``passive`` is an optional ``(nx, ny, nz)`` bool array of **passive
+    solid**: active elements held at density 1 for the whole run (the
+    elements under a load or a support, so a loaded face never thins to a
+    skin — the classic SIMP artefact). They count against the volume
+    budget, so a passive set larger than ``volfrac`` × the active count is
+    refused rather than silently over-filling. Passive elements outside
+    the domain are ignored.
 
     Refuses loudly rather than guessing: no supports, a load or support node
     that touches no active element, a load that nothing survives, ``volfrac``
@@ -833,10 +870,31 @@ def simp_optimize(
         build_dir=build_dir,
     )
     mask = problem.domain
+    pinned: np.ndarray | None = None
+    if passive is not None:
+        pas = np.asarray(passive, dtype=bool)
+        if pas.shape != mask.shape:
+            raise ValueError(
+                f"passive must match the domain shape {mask.shape}, got {pas.shape}"
+            )
+        pinned = pas & mask
+        n_pinned = int(np.count_nonzero(pinned))
+        budget = volfrac * float(np.count_nonzero(mask))
+        if n_pinned >= budget:
+            raise ValueError(
+                f"passive solid ({n_pinned} elements) already meets or exceeds "
+                f"the volume budget volfrac x active = {budget:.1f} elements — "
+                "nothing would be left to design; raise volfrac or shrink the "
+                "passive set"
+            )
+        if n_pinned == 0:
+            pinned = None
     offsets = _filter_offsets(rmin)
     weight_sums = _filter_weight_sums(mask, offsets)
 
     x = np.where(mask, volfrac, 0.0)
+    if pinned is not None:
+        x = np.where(pinned, 1.0, x)
     history: list[float] = []
     warm: np.ndarray | None = None
     change = math.inf
@@ -850,7 +908,7 @@ def simp_optimize(
         warm = ev.displacement
         cg_capped_any = cg_capped_any or ev.cg_capped
         dc = _sensitivity_filter(ev.dc, x, mask, offsets, weight_sums)
-        x_next = _oc_update(x, dc, mask, volfrac)
+        x_next = _oc_update(x, dc, mask, volfrac, pinned)
         change = float(np.max(np.abs(x_next - x)[mask]))
         x = x_next
         if change < tol:
@@ -877,6 +935,12 @@ def simp_optimize(
         f"SIMP: penal={penal}, e0={e0}, emin={emin}, nu={nu}, voxel pitch h={h}; "
         f"grid {problem.shape}, {int(np.count_nonzero(mask))} active elements"
     )
+    if pinned is not None:
+        notes.append(
+            f"passive solid: {int(np.count_nonzero(pinned))} active element(s) "
+            "held at density 1 for the whole run (under the loads/supports), "
+            "counted inside the volume budget"
+        )
     if converged:
         notes.append(
             f"converged after {iterations} iterations (max density change "

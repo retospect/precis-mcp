@@ -388,6 +388,11 @@ def printed_solid(
         nodes=[*expanded.nodes, *cut_nodes],
         components=list(expanded.components),
         meta=dict(expanded.meta),
+        # A field-rooted design (realize strategy='simp') resolves its
+        # ``field:<sha>`` leaf through the loader ``cad_load`` attached;
+        # the export/mesh path rebuilds the design from this spec and
+        # would otherwise refuse the leaf.
+        field_loader=expanded.field_loader,
     )
     return PrintedSolid(
         design=design,

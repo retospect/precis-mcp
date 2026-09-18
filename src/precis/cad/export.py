@@ -12,7 +12,9 @@ the analytic IR. Three routes, in order of fidelity vs weight:
    tessellation, so :func:`needs_field_backend` routes it through the
    **field backend** instead (:mod:`precis.cad.fieldmesh`: narrow-band
    marching cubes over the exact folded SDF, at ``pitch=``); a design
-   without either takes the analytic route byte-for-byte as before.
+   without either takes the analytic route byte-for-byte as before. A
+   sampled-field leaf (``field:<sha>``, slice 2) takes the same backend —
+   it has no tessellation at all.
 3. :func:`export_step` — **exact** STEP (ISO 10303) B-rep interchange for
    mechanical CAD. A mesh kernel fundamentally cannot emit STEP, so this
    delegates to the OpenCASCADE backend (:mod:`precis.cad._occt`), gated
@@ -32,7 +34,7 @@ from typing import Any
 
 import numpy as np
 
-from precis.cad.dsl import ROUND_KEY, ShapeSpec, format_spec, parse
+from precis.cad.dsl import FIELD_ALIAS, ROUND_KEY, format_spec, parse
 from precis.cad.fieldmesh import FieldMeshError, field_mesh
 from precis.cad.fold import Union
 from precis.cad.graph import Design
@@ -86,7 +88,7 @@ def _scaled_for_export(spec: SceneSpec) -> SceneSpec:
             key: (value * _MM_PER_M if key not in _NON_LENGTH_KEYS else value)
             for key, value in node_spec.params.items()
         }
-        mm_config = format_spec(ShapeSpec(node_spec.alias, mm_params))
+        mm_config = format_spec(replace(node_spec, params=mm_params))
         loc = (
             node.loc[0] * _MM_PER_M,
             node.loc[1] * _MM_PER_M,
@@ -115,8 +117,15 @@ def _scaled_for_export(spec: SceneSpec) -> SceneSpec:
                 blend=node.blend * _MM_PER_M,
             )
         )
+    # A field leaf's config is a content address — unit-free — but the grid
+    # it names is in metres: scale it on the way through the loader.
+    loader = spec.field_loader
+    mm_loader = None if loader is None else (lambda ref: loader(ref).scaled(_MM_PER_M))
     return SceneSpec(
-        nodes=scaled_nodes, components=list(spec.components), meta=dict(spec.meta)
+        nodes=scaled_nodes,
+        components=list(spec.components),
+        meta=dict(spec.meta),
+        field_loader=mm_loader,
     )
 
 
@@ -170,6 +179,11 @@ def _scad_primitive(config: str) -> str:
         return (
             f"rotate_extrude($fn={_FN}) translate([{_g(p['R'])},0,0]) "
             f"circle(r={_g(p['r'])}, $fn={_FN});"
+        )
+    if a == FIELD_ALIAS:
+        raise ExportError(
+            "a sampled field leaf has no OpenSCAD form — export stl/3mf (the "
+            "field backend meshes it) instead"
         )
     raise ExportError(f"shape {a!r} has no OpenSCAD export")
 
@@ -349,14 +363,16 @@ def _mesh_of(solid: object) -> tuple[np.ndarray, np.ndarray]:
 
 def needs_field_backend(spec: SceneSpec) -> bool:
     """True iff ``spec`` (fully expanded — shape nodes only) carries a
-    rounded leaf (``rd`` in a config) or a blended union (``blend > 0``):
-    the analytic tessellate + manifold3d fold cannot represent either, so
-    :func:`export_mesh` and the shared mesh helpers take the sampled-field
-    route (:mod:`precis.cad.fieldmesh`) instead."""
+    rounded leaf (``rd`` in a config), a blended union (``blend > 0``) or
+    a sampled-field leaf (``field:``): the analytic tessellate + manifold3d
+    fold cannot represent any of them, so :func:`export_mesh` and the
+    shared mesh helpers take the sampled-field route
+    (:mod:`precis.cad.fieldmesh`) instead."""
     for node in spec.nodes:
         if node.blend > 0.0:
             return True
-        if ROUND_KEY in parse(node.config).params:
+        shape = parse(node.config)
+        if shape.alias == FIELD_ALIAS or ROUND_KEY in shape.params:
             return True
     return False
 
@@ -519,12 +535,12 @@ def export_mesh(
     is missing or the format is unknown.
 
     ``pitch`` (**metres**) is the field-backend sample spacing, used only
-    when :func:`needs_field_backend` (an ``rd`` or ``blend:`` in the
-    design); ``None`` takes :data:`FIELD_PITCH_DIAG_FRACTION` of the
-    design's diagonal. A pitch whose narrow band would exceed
+    when :func:`needs_field_backend` (an ``rd``, ``blend:`` or ``field:``
+    in the design); ``None`` takes :data:`FIELD_PITCH_DIAG_FRACTION` of
+    the design's diagonal. A pitch whose narrow band would exceed
     :data:`precis.cad.fieldmesh.MAX_BAND_CELLS` is refused with
-    :class:`ExportError` (never coarsened silently). Designs without
-    ``rd``/``blend`` ignore it and take the analytic route unchanged."""
+    :class:`ExportError` (never coarsened silently). Designs without any
+    of the three ignore it and take the analytic route unchanged."""
     spec = _scaled_for_export(spec)
     mm_pitch = None if pitch is None else pitch * _MM_PER_M
     out = Path(out_path)
@@ -561,19 +577,20 @@ def export_step(spec: SceneSpec, out_path: str | Path) -> Path:
     one that can)."""
     from precis.cad import _occt
 
+    if needs_field_backend(spec):
+        # The OCCT builder reads the sharp parameters only — it would
+        # silently drop every rd/blend and has no field leaf at all. Refuse
+        # rather than ship the wrong solid (installed or not — the design
+        # is the reason); the field backend (stl/3mf) is the route.
+        raise ExportError(
+            "STEP export of a design with rd/blend/field is not available — "
+            "the OpenCASCADE route has no rounded, blended or sampled-field "
+            "leaves; export stl/3mf (field backend) instead"
+        )
     if not _occt.available():
         raise ExportError(
             "OpenCASCADE not installed — exact STEP export needs it. "
             "Install the extra:  pip install 'precis-mcp[cad-step]'"
-        )
-    if needs_field_backend(spec):
-        # The OCCT builder reads the sharp parameters only — it would
-        # silently drop every rd/blend. Refuse rather than ship the wrong
-        # solid; the field backend (stl/3mf) is the route for these.
-        raise ExportError(
-            "STEP export of a design with rd/blend is not available — the "
-            "OpenCASCADE route has no rounded or blended leaves; export "
-            "stl/3mf (field backend) instead"
         )
     return _occt.export_step(_scaled_for_export(spec), Path(out_path))
 

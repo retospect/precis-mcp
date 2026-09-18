@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import math
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -31,6 +32,8 @@ import numpy as np
 from precis.cad import catalog
 from precis.cad.bulk import expr_aabb
 from precis.cad.bulk import volume as cad_volume
+from precis.cad.dsl import FIELD_ALIAS, DslError
+from precis.cad.dsl import parse as parse_shape
 from precis.cad.export import (
     ExportError,
     export_mesh,
@@ -340,6 +343,54 @@ class CadHandler(Handler):
         self.store = hub.store
         self.embedder = hub.embedder
         self._resolve = design_resolver(self.store)
+
+    def _parse_design(self, text: str) -> SceneSpec:
+        """``parse_source`` for a fresh ``put``/``derive`` body, plus the two
+        things a stored design needs that the kernel cannot do alone: the
+        store's field loader is attached (so ``build_design`` can resolve
+        ``field:`` leaves), and every ``field:<prefix>`` is canonicalised to
+        the full sha256 the design stores — an unknown or ambiguous prefix
+        is a ``BadInput`` naming it, before anything is saved."""
+        try:
+            spec = parse_source(text)
+        except SceneError as exc:
+            raise BadInput(f"cad source error: {exc}") from exc
+        spec.field_loader = self.store.field_loader()
+        nodes = []
+        for node in spec.nodes:
+            if node.config.startswith(f"{FIELD_ALIAS}:"):
+                ref = parse_shape(node.config).ref or ""
+                try:
+                    sha = self.store.field_sha(ref)
+                except NotFound as exc:
+                    raise BadInput(
+                        f"node {node.name!r}: {exc}",
+                        next="store the grid with put_field, then reference its sha256",
+                    ) from exc
+                node = replace(node, config=f"{FIELD_ALIAS}:{sha}")
+            nodes.append(node)
+        spec.nodes = nodes
+        return spec
+
+    def _config_cell(self, node: Any) -> str:
+        """The node tree's ``config`` column: the stored config, except a
+        field leaf shows its shape / pitch / sha prefix rather than 64 hex
+        chars (the header read never de-TOASTs the samples)."""
+        config = str(node.config)
+        if not config.startswith(f"{FIELD_ALIAS}:"):
+            return config
+        try:
+            ref = parse_shape(config).ref or ""
+        except DslError:  # pragma: no cover - stored configs are canonical
+            return config
+        head = self.store.field_header(ref)
+        short = f"{FIELD_ALIAS}:{ref[:12]}"
+        if not head:
+            return f"{short} (grid missing)"
+        nx, ny, nz = (int(x) for x in head.get("shape", (0, 0, 0)))
+        pitch = format_quantity(float(head.get("pitch_m", 0.0)), "length")
+        flag = "" if head.get("exact") else " ~"
+        return f"{short} {nx}×{ny}×{nz} @{pitch}{flag}"
 
     def _expand(
         self,
@@ -736,10 +787,7 @@ class CadHandler(Handler):
                     "hub_bore cut cyl:r8mmh10mm @0mm,0mm,-1mm\\n''')"
                 ),
             )
-        try:
-            spec = parse_source(str(text))
-        except SceneError as exc:
-            raise BadInput(f"cad source error: {exc}") from exc
+        spec = self._parse_design(str(text))
         if not spec.nodes:
             raise BadInput("cad design has no nodes")
         # Build eagerly so a bad config / geometry surfaces on put.
@@ -795,10 +843,7 @@ class CadHandler(Handler):
             )
         if text is None or not str(text).strip():
             raise BadInput("derive requires text= (the new design source)")
-        try:
-            spec = parse_source(str(text))
-        except SceneError as exc:
-            raise BadInput(f"cad source error: {exc}") from exc
+        spec = self._parse_design(str(text))
         if not spec.nodes:
             raise BadInput("derived cad design has no nodes")
         built = self._expand(spec, own_slug=to_slug)
@@ -1620,7 +1665,7 @@ class CadHandler(Handler):
                     "name": node.name,
                     "part": node.component,
                     "op": op,
-                    "config": node.config,
+                    "config": self._config_cell(node),
                     "pose": self._pose(node),
                 }
             )
@@ -1633,6 +1678,13 @@ class CadHandler(Handler):
                 "fillet-like seam, not an exact radius; rd in a config rounds "
                 "that node's own edges exactly. Either routes stl/3mf export "
                 "through the sampled-field backend (args={'pitch': …})."
+            )
+        if any(n.config.startswith(f"{FIELD_ALIAS}:") for n in spec.nodes):
+            out += (
+                "\nfield: = a stored signed-distance grid (shape @ pitch; ~ = "
+                "sign-correct, not re-distanced), trusted only inside its own "
+                "box; booleans against analytic nodes are exact at the surface, "
+                "and stl/3mf export goes through the sampled-field backend."
             )
         return out + self._interfaces_block(spec)
 
@@ -2069,7 +2121,8 @@ class CadHandler(Handler):
         if not hit:
             return ""
         names = {n.name for n in hit}
-        kept = SceneSpec(
+        kept = replace(
+            spec,
             nodes=[n for n in spec.nodes if n.name not in names],
             components=list(spec.components),
             meta=dict(spec.meta),

@@ -20,6 +20,17 @@ A single string names a primitive and its dimensions, e.g.
                             radians). Built entirely in the node's own
                             local frame (no anchor face) — see
                             :func:`build`.
+* ``field:<sha256>``      — a sampled signed-distance grid
+                            (:class:`~precis.cad.primitives.Field`), by
+                            the content address of its stored payload
+                            (``chunk_blobs``; :func:`precis.cad.fieldops.
+                            encode_field`). ``>= 12`` hex chars of the
+                            hash are accepted on the boundary; the stored
+                            canonical form is the full 64. Building one
+                            needs a ``field_loader`` (see :func:`build`)
+                            — the DSL never inlines a grid. Takes no
+                            dims and no ``rd`` (rounding a field is
+                            ``fieldops.open``/``close``/``offset``).
 
 Optional ``rd<len>`` on every convex solid but the sphere — ``box``,
 ``cyl``, ``cone``, ``tcone``, ``hex``, ``ngon``, ``frustum``, ``pyramid``
@@ -96,10 +107,12 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from precis.cad.primitives import (
     CircularFrustum,
+    Field,
     HalfSpace,
     Primitive,
     Rounded,
@@ -146,6 +159,25 @@ class ShapeSpec:
 
     alias: str
     params: dict[str, float]
+    #: ``field`` only: the grid's content address as written (``>= 12`` hex
+    #: chars; the full sha256 once canonicalised). ``None`` for every shape.
+    ref: str | None = None
+
+
+#: The sampled-field leaf's alias — no dims, a content address instead.
+FIELD_ALIAS = "field"
+
+#: ``field:`` accepts a sha256 or a unique prefix of at least this many
+#: hex chars (the store resolves the prefix; the canonical stored form is
+#: the full 64).
+FIELD_REF_MIN = 12
+_FIELD_REF_RE = re.compile(rf"^[0-9a-f]{{{FIELD_REF_MIN},64}}$")
+
+#: Resolves a ``field:`` reference (full sha256 or accepted prefix) to the
+#: loaded :class:`~precis.cad.primitives.Field`. Injected — the kernel
+#: never reaches for the store; the one production loader is built by
+#: ``Store.cad_load`` and rides on :attr:`precis.cad.scene.SceneSpec.field_loader`.
+FieldLoader = Callable[[str], Field]
 
 
 #: ``<key><number>`` — keys longest-first so ``rb``/``rt``/``rd`` beat ``r``.
@@ -182,6 +214,7 @@ _ALIAS_KEYS: dict[str, tuple[str, ...]] = {
     "frustum": ("n", "rb", "rt", "h"),
     "pyramid": ("n", "r", "h"),
     "chamfer": ("size", "angle"),
+    FIELD_ALIAS: (),
 }
 
 #: The edge-rounding key (:class:`~precis.cad.primitives.Rounded`).
@@ -197,6 +230,10 @@ _ROUND_REFUSED: dict[str, str] = {
     "sphere": "a sphere is already round — drop rd (it would be a no-op)",
     "torus": "a torus is already round — drop rd (it would be a no-op)",
     "chamfer": "a chamfer is an unbounded half-space with no extent to shrink",
+    FIELD_ALIAS: (
+        "rounding a sampled field is fieldops.open (convex) / close (concave) "
+        "/ offset, applied to the grid before it is stored — not rd"
+    ),
 }
 
 
@@ -224,6 +261,17 @@ def parse(config: str, *, require_units: bool = False) -> ShapeSpec:
     if alias not in _ALIAS_KEYS:
         known = ", ".join(sorted(_ALIAS_KEYS))
         raise DslError(f"unknown shape {alias!r}; known: {known}")
+
+    if alias == FIELD_ALIAS:
+        ref = rest.lower()
+        if not _FIELD_REF_RE.match(ref):
+            hint = f"; {_ROUND_REFUSED[FIELD_ALIAS]}" if ROUND_KEY in ref else ""
+            raise DslError(
+                f"field config must be 'field:<sha256>' — the stored grid's "
+                f"content address, {FIELD_REF_MIN}..64 hex chars (got {rest!r})"
+                f"{hint}"
+            )
+        return ShapeSpec(alias, {}, ref=ref)
 
     if alias == "chamfer":
         if require_units:
@@ -428,8 +476,14 @@ def shrunk(alias: str, params: dict[str, float]) -> dict[str, float]:
     return out
 
 
-def build(spec: ShapeSpec) -> Primitive:
+def build(spec: ShapeSpec, *, field_loader: FieldLoader | None = None) -> Primitive:
     """Build a kernel :class:`Primitive` from a :class:`ShapeSpec`.
+
+    A ``field:<sha>`` spec is resolved through ``field_loader`` (a
+    :data:`FieldLoader`); without one it is a :class:`DslError` naming the
+    reference — the grid lives in the store, and this module never does.
+    The loader's own ``LookupError``/``ValueError`` (unknown or ambiguous
+    reference) is re-raised as a ``DslError`` carrying its text.
 
     ``chamfer:SxA`` builds a :class:`~precis.cad.primitives.HalfSpace`
     cutting tool entirely in the node's own local frame — there is no
@@ -445,6 +499,18 @@ def build(spec: ShapeSpec) -> Primitive:
     """
     p = spec.params
     a = spec.alias
+    if a == FIELD_ALIAS:
+        ref = spec.ref or ""
+        if field_loader is None:
+            raise DslError(
+                f"field:{ref} needs a field loader to build — load the design "
+                "through the store (cad_load) or pass field_loader= to "
+                "build_design/build_config; the grid is never inlined in the DSL"
+            )
+        try:
+            return field_loader(ref)
+        except (LookupError, ValueError) as exc:
+            raise DslError(f"field:{ref}: {exc}") from exc
     if ROUND_KEY in p:
         rd = p[ROUND_KEY]
         inner = build(ShapeSpec(a, shrunk(a, p)))
@@ -483,10 +549,16 @@ def build(spec: ShapeSpec) -> Primitive:
     )  # pragma: no cover - parse guards alias
 
 
-def build_config(config: str, *, require_units: bool = False) -> Primitive:
+def build_config(
+    config: str,
+    *,
+    require_units: bool = False,
+    field_loader: FieldLoader | None = None,
+) -> Primitive:
     """Convenience: ``parse`` then ``build``. See :func:`parse` for
-    ``require_units``'s two-mode contract."""
-    return build(parse(config, require_units=require_units))
+    ``require_units``'s two-mode contract and :func:`build` for
+    ``field_loader``."""
+    return build(parse(config, require_units=require_units), field_loader=field_loader)
 
 
 def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
@@ -508,6 +580,8 @@ def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
     """
     suffix = "m" if units else ""
     angle_suffix = "rad" if units else ""
+    if spec.alias == FIELD_ALIAS:
+        return f"{FIELD_ALIAS}:{spec.ref or ''}"
     if spec.alias == "chamfer":
         return (
             f"chamfer:{format_dsl_number(spec.params['size'])}{suffix}"

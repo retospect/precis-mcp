@@ -124,7 +124,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypedDict
 
 from precis.cad import catalog
-from precis.cad.dsl import build, build_config, format_spec, parse
+from precis.cad.dsl import (
+    FIELD_ALIAS,
+    FieldLoader,
+    build,
+    build_config,
+    format_spec,
+    parse,
+)
 from precis.cad.fold import Expr
 from precis.cad.graph import Design
 from precis.cad.vec import (
@@ -397,11 +404,21 @@ class NodeSpec:
 
 @dataclass
 class SceneSpec:
-    """A whole design: ordered nodes grouped into named components."""
+    """A whole design: ordered nodes grouped into named components.
+
+    ``field_loader`` resolves the ``field:<sha>`` leaves
+    (:data:`~precis.cad.dsl.FieldLoader`); it is runtime plumbing, not
+    design content — never persisted, excluded from equality, attached by
+    whoever produced the spec (``Store.cad_load`` binds the store's
+    loader; the cad handler attaches it to a freshly parsed source) and
+    carried through every spec-to-spec transform here (``replace`` keeps
+    it) so ``build_design`` finds it wherever the spec ends up.
+    """
 
     nodes: list[NodeSpec] = field(default_factory=list)
     components: list[str] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=lambda: {"units": "mm"})
+    field_loader: FieldLoader | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -1302,7 +1319,8 @@ def parse_source(text: str) -> SceneSpec:
             # author's unit-suffixed source (which the canonical/storage
             # parse mode used on every reload could not re-parse).
             node_spec = parse(config, require_units=True)
-            build(node_spec)
+            if node_spec.alias != FIELD_ALIAS:
+                build(node_spec)  # a field builds only through its loader
             alias = node_spec.alias
             config = format_spec(node_spec)
         if alias == "chamfer":
@@ -1634,7 +1652,7 @@ def _resolve_node_dims(spec: SceneSpec) -> SceneSpec:
         else n
         for n in spec.nodes
     ]
-    return SceneSpec(nodes=nodes, components=list(spec.components), meta=spec.meta)
+    return replace(spec, nodes=nodes, components=list(spec.components))
 
 
 def _fmt_num(x: float) -> str:
@@ -2136,7 +2154,9 @@ def _pose_component_joints(spec: SceneSpec, cworld: dict[str, Transform]) -> Sce
         for name, local in _placements(node):
             loc, rot = _decompose(w.compose(local))
             out.append(replace(node, name=name, loc=loc, rot=rot, pattern=None))
-    return SceneSpec(nodes=out, components=list(spec.components), meta=dict(spec.meta))
+    return replace(
+        spec, nodes=out, components=list(spec.components), meta=dict(spec.meta)
+    )
 
 
 def _solve_mates(
@@ -2444,7 +2464,9 @@ def _solve_mates(
     # geometry folds first and the payload adds/cuts apply to the finished
     # body (build_design folds a component's nodes in list order).
     out.extend(spliced)
-    return SceneSpec(nodes=out, components=list(spec.components), meta=dict(spec.meta))
+    return replace(
+        spec, nodes=out, components=list(spec.components), meta=dict(spec.meta)
+    )
 
 
 def expand_instances(
@@ -2545,7 +2567,7 @@ def expand_instances(
         merged = {**sub_materials, **(meta.get("materials") or {})}
         if merged:
             meta["materials"] = merged
-    return SceneSpec(nodes=out, components=components, meta=meta)
+    return replace(spec, nodes=out, components=components, meta=meta)
 
 
 def build_design(
@@ -2553,19 +2575,23 @@ def build_design(
     *,
     resolve: Resolver | None = None,
     state: dict[str, Any] | None = None,
+    field_loader: FieldLoader | None = None,
 ) -> Design:
     """Build a live :class:`Design` from a :class:`SceneSpec`.
 
     ``resolve`` is required only when ``spec`` instances another design;
     ``state=`` poses its joints — both are threaded through
-    :func:`expand_instances`.
+    :func:`expand_instances`. ``field_loader`` resolves ``field:<sha>``
+    leaves; ``None`` falls back to :attr:`SceneSpec.field_loader`, and a
+    field leaf with neither is a :class:`~precis.cad.dsl.DslError`.
     """
+    loader = field_loader or spec.field_loader
     spec = expand_instances(spec, resolve, state)
     design = Design()
     per_component: dict[str, Expr] = {}
 
     for node in spec.nodes:
-        prim = build_config(node.config)
+        prim = build_config(node.config, field_loader=loader)
         if node.pattern is not None:
             node_expr: Expr = design.pattern(node.name, prim, _pattern_transforms(node))
         else:

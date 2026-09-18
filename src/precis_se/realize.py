@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 from precis.blocktree.types import parse_template_ref
 from precis.cad.scene import NodeSpec, SceneSpec
 from precis_se.modes import ModeError, parse_mode
-from precis_se.ops import OpError, SeTree, apply_ops, effective_envelope
+from precis_se.ops import OpError, SeBlock, SeTree, apply_ops, effective_envelope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
@@ -73,13 +73,12 @@ def _unique_cad_slug(store: Store, base: str) -> tuple[str, str | None]:
     return slug, f"{base!r} was already taken — minted {slug!r} instead"
 
 
-def prepare_realize(
-    store: Store, tree: SeTree, op: dict[str, Any], design_slug: str
-) -> tuple[str, PendingRealize]:
-    """``{"op": "realize", "block": <name>, "mode": <mode key>}`` — the
-    pure/in-memory half (module docstring). ``design_slug`` is the se
-    design's own slug, threaded through the same way ``generate`` takes
-    it: ``put`` knows it before the ref row exists."""
+def resolve_realize_target(tree: SeTree, op: dict[str, Any]) -> tuple[str, SeBlock]:
+    """The ``(key, node)`` a ``realize`` op actually implements — the named
+    block, or, for an array/template member, its template (module
+    docstring). Shared by the analytic seed here and the ``simp`` strategy
+    (:mod:`precis_se.simp_bridge`), so both resolve the target by one
+    rule."""
     name = op.get("block")
     if not name or not str(name).strip():
         raise OpError("realize needs 'block'")
@@ -107,6 +106,19 @@ def prepare_realize(
                 "exists in this design"
             )
         key, node = block_name, template_node
+    return key, node
+
+
+def prepare_realize(
+    store: Store, tree: SeTree, op: dict[str, Any], design_slug: str
+) -> tuple[str, PendingRealize]:
+    """``{"op": "realize", "block": <name>, "mode": <mode key>}`` — the
+    pure/in-memory half (module docstring). ``design_slug`` is the se
+    design's own slug, threaded through the same way ``generate`` takes
+    it: ``put`` knows it before the ref row exists. ``strategy='simp'``
+    never reaches here — :func:`precis_se.atomic.apply.apply_ops_with_atomic`
+    routes it to :mod:`precis_se.simp_bridge` first."""
+    key, node = resolve_realize_target(tree, op)
     if node.bound_kind is not None:
         raise OpError(
             f"realize: block {key!r} is already bound (kind={node.bound_kind!r}, "

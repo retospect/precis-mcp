@@ -76,7 +76,13 @@ sharp envelope (solid mode meshes the field); the ray probe classifies a
 blend seam only at leaf crossings; `blend:` persists on
 `refs.meta['blends']` (no `cad_nodes` column — revisit if a per-node
 option table ever appears); dual contouring / adaptive octrees when the
-budget refusal fires on real parts.
+budget refusal fires on real parts; the narrow-band soundness rests on
+`fieldmesh.BAND_SAFETY = 2` bounding the folded field's Lipschitz constant
+— provably 1 for min/max, only *asserted* ~1.5 for `blend` smooth-min
+(opus review 2026-09-18); a miss surfaces as a `FieldMeshError`, never a
+leaky mesh, and the tangent-spheres-at-pitch stress test passes — an
+adversarial case (blend width < pitch, near-parallel gradients) or a
+derived bound is still owed.
 
 In scope:
 
@@ -129,6 +135,60 @@ Acceptance:
 
 ## Slice 2 — sampled-field leaf + re-distance + open/close
 
+**Status: built 2026-09-18** (worktree `sorted-enchanting-finch`):
+`primitives.Field` (float32 grid + pitch + origin + `exact` flag;
+trilinear inside, box distance + boundary value outside, marched +
+bisected ray hits, no faces, `scaled()` for the mm export boundary);
+`cad/fieldops.py` — `redistance` (exact Euclidean EDT both sides,
+Felzenszwalb–Huttenlocher per axis vectorised across every line of the
+grid, `±0.5·pitch` on the straddling samples, pads a bool input by
+`REDISTANCE_PAD`), `offset`/`open`/`close` (open returns `OpenResult`
+with the vanished pieces — components of the removed material beyond
+`(√3−1)·r` of the opened body, so edge-rounding slivers don't count —
+as data + `FieldFinding`s; an erosion that leaves nothing is returned
+with `empty=True` and every component at severity `error`, not raised;
+close refuses an `r` whose dilation would touch the grid box),
+`from_density`, `label_components` (6-connected, label propagation +
+pointer jumping), and the `chunk_blobs` payload codec
+(`encode_field`/`decode_field`, `PSDF` magic + JSON header + raw `<f4`).
+DSL: `field:<sha256>` (`ShapeSpec.ref`; `>= 12` hex on the boundary,
+full hash canonical; `rd` refused naming fieldops), `dsl.build(...,
+field_loader=)`; `SceneSpec.field_loader` (runtime plumbing, never
+persisted, carried by every spec transform via `replace`) is what
+`build_design` falls back to. Store: `put_field(ref_id, field,
+provenance=)` → sha (dedupes on the payload sha; a changed grid is a new
+`chunk_kind='field'` chunk + blob, never an UPDATE), `get_field`,
+`field_sha` (prefix → full), `field_header` (meta read, no de-TOAST),
+`field_loader()`; `cad_load` binds it. Migration `0170` registers the
+chunk kind (the sha256 index existed since 0035). Handler: `put`/`derive`
+attach the loader and canonicalise prefixes (unknown/ambiguous → BadInput
+naming it, before save); the node tree renders `field:<12> nx×ny×nz
+@pitch`; export routes through the field backend (`_scaled_for_export`
+scales the loader's grid to mm). Tests: `tests/test_cad_fieldops.py`.
+
+Left open from slice 2: no agent-facing verb puts a grid (the se
+`realize(strategy='simp')` bridge is the first caller — Python-level
+`store.put_field` + DSL is the surface); the web viewer's per-node
+preview skips a field leaf (solid mode meshes it); a 1-voxel-thin sheet
+sampled by the export grid at exactly its own pitch can straddle every
+sample on the zero set — export finer than the field pitch (the
+cantilever test does; a pitch guard in `export` is the obvious follow-up);
+`open`'s vanished-piece test uses the `(√3−1)·r` margin heuristic
+(documented on `VanishedComponent`) rather than a per-feature thickness
+measure; `label_components` is O(rounds × N) with pointer jumping — fine
+at 200³, not profiled beyond; `cad_propose` dry-runs still build without
+a field loader (an LLM cannot propose a grid anyway); the field's outside
+formula is Lipschitz ≤ √3 (documented), inside `BAND_SAFETY = 2`, but the
+zero set must stay inside the box — `close` enforces it, nothing else
+does. `open`'s erode/dilate leave `exact=False` by design (the offset is
+exact on one side only); a caller wanting an exact field again calls
+`redistance` on the result. Reviewer (opus, 2026-09-18): `put_field`'s
+`ord = MAX(ord)+1` subselect is the codebase's usual pattern and races
+under two concurrent same-ref writers (unique-key failure on one) — the
+first caller likely to hit it is parallel SIMP runs; move to a retry or
+an advisory lock when the bridge lands. `field` chunks are excluded from
+the embed/summarize cascades (`skip_chunk_kinds`, pinned by test).
+
 In scope:
 
 - A `field` primitive: `(nx,ny,nz)` float32 signed-distance grid, pitch,
@@ -178,9 +238,11 @@ Acceptance:
 `src/precis/cad/{dsl,primitives,relate,export,tessellate}.py`,
 `precis.handlers.cad` (`view='printability'`, export verbs), `precis_se`
 `view='print'` (pitch argument), `docs/reference` cad DSL table, skill
-`precis-cad-help` (the `rd`/`blend` keys, the field leaf). No migration
-(the DSL string and an artifact reference carry everything). Sibling
-consumer: `structural-solution-space.md` slice 4.
+`precis-cad-help` (the `rd`/`blend` keys, the field leaf). One
+migration after all (`0170`): `chunks.chunk_kind` is FK'd to
+`chunk_kinds`, so the dedicated `field` chunk kind had to be registered
+(the sha256 index on `chunk_blobs` already existed). Sibling consumer:
+`structural-solution-space.md` slice 4.
 
 ## Open questions / decisions log
 
@@ -189,6 +251,14 @@ consumer: `structural-solution-space.md` slice 4.
   re-distanced field — decided, this item is the record.
 - 2026-09-18: `rd` as the DSL key for round (not `r`) — mine, because `r`
   is taken; rename if a better one turns up before slice 1 ships.
-- Open: whether the field artifact should be a `folder`-kind ref or a new
-  small artifact table. Slice 2 picks whatever the SIMP run-summary
-  storage in `structural-solution-space.md` picks; the two must agree.
+- 2026-09-18 (decided for slice 2, mine — overturn if wrong): the field
+  grid lives in **`chunk_blobs`** (ADR 0034: chunk-keyed bytea, TOASTed,
+  `sha256` content address) on a dedicated chunk of the cad ref (a
+  `chunk_kind='field'` row whose `text` is the one-line human summary:
+  shape, pitch, origin, source). The DSL carries `field:<sha256>` — content
+  addressed, so a copied design keeps working and identical grids dedupe.
+  Payload = a small JSON header (shape, pitch_m, origin_m, dtype, byte
+  order, provenance) + raw float32. If lookup by sha256 needs an index,
+  that is one migration (next free number — check the ledger for
+  collisions first). The SIMP run summary on the se ref's meta names the
+  same sha256, which is how the two stay tied.

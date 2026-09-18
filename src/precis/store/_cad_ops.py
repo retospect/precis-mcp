@@ -16,7 +16,20 @@ Storage splits by what is actually a search target:
   ``{node_name: metres}`` — written from the nodes on every save
   (:func:`_blends_meta`), re-attached to the nodes on load — the same
   design-level home ``materials``/``dims`` already use, so the rounding
-  slice shipped without a migration.
+  slice shipped without a migration;
+- a **sampled-field grid** (a ``field:<sha256>`` leaf,
+  :class:`~precis.cad.primitives.Field`) is a ``chunk_blobs`` payload
+  (ADR 0034: chunk-keyed bytea, TOASTed, content-addressed) on a dedicated
+  ``chunk_kind='field'`` chunk of the ref that produced it — ``text`` is
+  the one-line human summary (shape, pitch, origin, source), ``meta.field``
+  the same JSON header the payload starts with, so shape/pitch reads never
+  de-TOAST the bytes. The DSL carries the payload's sha256, so a copied
+  design keeps working and an identical grid (same samples, same header)
+  is stored once; :meth:`CadMixin.put_field` returns the existing address
+  instead of writing a twin. A changed grid is a **new** chunk + blob —
+  the old row is never updated (the chunks rule), which is what keeps an
+  older design's ``field:`` reference valid. :meth:`CadMixin.cad_load`
+  binds a store-backed :data:`~precis.cad.dsl.FieldLoader` onto the spec.
 
 Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 ``self.insert_ref`` / ``self.get_ref``.
@@ -29,8 +42,44 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from precis.cad.dsl import FIELD_REF_MIN, FieldLoader
+from precis.cad.fieldops import (
+    FIELD_MIME,
+    decode_field,
+    encode_field,
+    payload_sha256,
+)
+from precis.cad.fieldops import field_header as _wire_header
+from precis.cad.primitives import Field
 from precis.cad.scene import NodeSpec, SceneSpec, coerce_pattern, spec_to_source
 from precis.cad.vec import as_float3
+from precis.errors import NotFound
+from precis.utils.units import format_quantity
+
+
+class FieldNotFound(NotFound, LookupError):
+    """No stored field grid matches the reference — a ``NotFound`` for the
+    dispatcher and a ``LookupError`` for :func:`precis.cad.dsl.build`,
+    which turns it into a ``DslError`` naming the reference."""
+
+
+class FieldAmbiguous(NotFound, LookupError):
+    """A ``field:`` prefix matches more than one stored grid."""
+
+
+def _field_summary(fld: Field, provenance: dict[str, Any]) -> str:
+    """The field chunk's ``text`` — the one line a human (or search) sees."""
+    nx, ny, nz = fld.shape
+    o = fld.origin
+    src = provenance.get("source") or provenance.get("kind") or ""
+    tail = f", source: {src}" if src else ""
+    return (
+        f"sdf field {nx}×{ny}×{nz} @ {format_quantity(fld.pitch, 'length')} pitch, "
+        f"origin ({format_quantity(float(o[0]), 'length')}, "
+        f"{format_quantity(float(o[1]), 'length')}, "
+        f"{format_quantity(float(o[2]), 'length')}), "
+        f"{'exact' if fld.exact else 'sign-correct'}{tail}"
+    )
 
 
 def cad_source_sha(spec: SceneSpec) -> str:
@@ -173,7 +222,141 @@ class CadMixin:
             if component not in components:
                 components.append(str(component))
         spec.components = components or ["part"]
+        spec.field_loader = self.field_loader()
         return spec, handles
+
+    # -- sampled-field grids (chunk_blobs) --------------------------------
+    def put_field(
+        self,
+        ref_id: int,
+        fld: Field,
+        *,
+        provenance: dict[str, Any] | None = None,
+    ) -> str:
+        """Store a :class:`~precis.cad.primitives.Field` grid as a
+        ``chunk_kind='field'`` chunk + ``chunk_blobs`` payload on ``ref_id``
+        (the cad ref it belongs to, or the ref whose run produced it — the
+        se design a SIMP result came from — when the cad design does not
+        exist yet; lookup is by content address, not by ref). Returns the
+        payload's sha256, the ``field:<sha256>`` the DSL carries.
+
+        Content-addressed: if a payload with this sha is already stored
+        (same samples, same header — ``provenance`` included) nothing is
+        written and the existing address comes back. A different grid is
+        always a new chunk; an existing one is never updated in place."""
+        prov = dict(provenance or {})
+        payload = encode_field(fld, prov)
+        sha = payload_sha256(payload)
+        header = _wire_header(fld, prov)
+        with self.tx() as conn:
+            hit = conn.execute(
+                "SELECT 1 FROM chunk_blobs WHERE sha256 = %s AND mime = %s",
+                (sha, FIELD_MIME),
+            ).fetchone()
+            if hit is not None:
+                return sha
+            row = conn.execute(
+                """
+                INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta)
+                VALUES (
+                    %s, 'agent',
+                    (SELECT COALESCE(MAX(ord), -1) + 1 FROM chunks WHERE ref_id = %s),
+                    'field', %s, %s
+                )
+                RETURNING chunk_id
+                """,
+                (ref_id, ref_id, _field_summary(fld, prov), Jsonb({"field": header})),
+            ).fetchone()
+            assert row is not None
+            conn.execute(
+                "INSERT INTO chunk_blobs (chunk_id, bytes, mime, sha256, size_bytes) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (int(row[0]), payload, FIELD_MIME, sha, len(payload)),
+            )
+        return sha
+
+    @staticmethod
+    def _field_ref(ref: str) -> str:
+        r = str(ref).strip().lower()
+        if (
+            len(r) < FIELD_REF_MIN
+            or len(r) > 64
+            or any(c not in "0123456789abcdef" for c in r)
+        ):
+            raise FieldNotFound(
+                f"field reference {ref!r} is not a sha256 or a >= {FIELD_REF_MIN}-char "
+                "hex prefix of one"
+            )
+        return r
+
+    def field_sha(self, ref: str) -> str:
+        """The full sha256 of the one stored field grid ``ref`` (a sha256 or
+        a ``>= 12``-char prefix) names — how a boundary prefix becomes the
+        canonical ``field:<sha256>`` the design stores. Raises
+        :class:`FieldNotFound` / :class:`FieldAmbiguous` naming ``ref``."""
+        r = self._field_ref(ref)
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT sha256 FROM chunk_blobs "
+                "WHERE mime = %s AND sha256 LIKE %s LIMIT 2",
+                (FIELD_MIME, r + "%"),
+            ).fetchall()
+        if not rows:
+            raise FieldNotFound(
+                f"no stored field grid matches {ref!r} — put_field it first "
+                "(the design references a grid by content address)"
+            )
+        if len(rows) > 1:
+            raise FieldAmbiguous(
+                f"field reference {ref!r} matches more than one stored grid — "
+                "give more of the sha256"
+            )
+        return str(rows[0][0])
+
+    def field_header(self, ref: str) -> dict[str, Any] | None:
+        """The stored grid's JSON header (shape, pitch_m, origin_m, exact,
+        provenance) without de-TOASTing the samples — ``None`` when ``ref``
+        names nothing. Ambiguous prefixes also read as ``None``."""
+        try:
+            sha = self.field_sha(ref)
+        except NotFound:
+            return None
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT c.meta FROM chunk_blobs b JOIN chunks c ON c.chunk_id = b.chunk_id"
+                " WHERE b.sha256 = %s AND b.mime = %s LIMIT 1",
+                (sha, FIELD_MIME),
+            ).fetchone()
+        if row is None:
+            return None
+        header = dict((row[0] or {}).get("field") or {})
+        header.setdefault("sha256", sha)
+        return header
+
+    def get_field(self, ref: str) -> tuple[dict[str, Any], Field]:
+        """Load a stored grid → ``(header, field)``; the field's samples are
+        byte-identical to what :meth:`put_field` stored. ``ref`` as in
+        :meth:`field_sha`, whose errors this raises."""
+        sha = self.field_sha(ref)
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT bytes FROM chunk_blobs WHERE sha256 = %s AND mime = %s LIMIT 1",
+                (sha, FIELD_MIME),
+            ).fetchone()
+        if row is None:  # pragma: no cover - field_sha just saw it
+            raise FieldNotFound(f"no stored field grid matches {ref!r}")
+        header, fld = decode_field(bytes(row[0]))
+        header["sha256"] = sha
+        return header, fld
+
+    def field_loader(self) -> FieldLoader:
+        """A :data:`~precis.cad.dsl.FieldLoader` bound to this store —
+        what :meth:`cad_load` attaches to every spec it returns."""
+
+        def _load(ref: str) -> Field:
+            return self.get_field(ref)[1]
+
+        return _load
 
     def cad_node(self, node_id: int) -> tuple[int, str, dict[str, Any]] | None:
         """A single live cad node by node_id → (ref_id, name, meta-dict)."""

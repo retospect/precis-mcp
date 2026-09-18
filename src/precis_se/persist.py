@@ -70,13 +70,25 @@ a relabel like every other cross-reference; a **cross-design** one cannot
 yet, because :func:`precis.blocktree.ops.resolve_template` walks foreign
 trees by slug and there is no uid→design index to walk instead — that
 conversion is its own slice.
+
+**Every load→mutate→save of a tree runs inside :func:`tree_mutation`**
+(the invariant, 2026-09-18). Retire-all/reinsert-all means two
+read-modify-write cycles on one design that overlap in time silently
+lose one of them: whichever saves second retires the other's rows and
+reinserts its own stale copy. ``put``/``edit`` and the ``se_simp`` job's
+bind step therefore all take a per-ref ``pg_advisory_xact_lock`` before
+they load, and save on the same connection before it commits — a
+concurrent writer either committed before the lock was granted (so the
+load sees it) or waits. The lock is transaction-scoped, so no failure
+path can leak it. Long work (a solve) happens OUTSIDE the lock on a
+snapshot and re-validates its inputs against a fresh load inside it.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, fields
 from datetime import datetime
 from typing import Any
@@ -157,6 +169,34 @@ def _label(uid_to_name: dict[int, str], uid: int | None, stored: str | None) -> 
         if resolved is not None:
             return resolved
     return stored
+
+
+#: Advisory-lock namespace for :func:`tree_mutation` — the ``(int4, int4)``
+#: overload keyed ``(namespace, ref_id)``; distinct from the draft store's
+#: ``hashtextextended`` keys, so an se lock can never collide with one.
+TREE_LOCK_NAMESPACE = 0x5E7EE  # "se tree"
+
+
+@contextmanager
+def tree_mutation(store: Any, ref_id: int) -> Iterator[Connection]:
+    """Open ``store.tx()`` and take the design's per-ref advisory lock,
+    held to commit/rollback (module docstring's invariant). Load the tree
+    *after* entering, save it on the yielded connection: ::
+
+        with persist.tree_mutation(store, ref.id) as conn:
+            tree = persist.load_tree(store, ref.id)
+            ...mutate...
+            persist.save_tree(store, ref_id=ref.id, tree=tree, ..., conn=conn)
+
+    ``load_tree`` reads on its own pooled connection; that is correct
+    here because every writer commits before releasing this lock, so a
+    read issued after the lock is granted sees the latest committed
+    tree."""
+    with store.tx() as conn:
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(%s, %s)", (TREE_LOCK_NAMESPACE, int(ref_id))
+        )
+        yield conn
 
 
 def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeTree:

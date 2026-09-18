@@ -372,6 +372,30 @@ implementation-bearing block, any source (purchase/fdm/atomic/
 unimplemented), pointing at each row's own handle; it never exports
 itself. ``MODE_FAMILIES['fdm'].implemented`` flips to ``True``.
 
+**``realize(strategy='simp')``** (docs/backlog/structural-solution-space.md
+"Slice 4 bridge", round A, 2026-09-18) is the second realize strategy:
+instead of seeding the cad design from the envelope,
+:mod:`precis_se.simp_bridge` voxelises the block's effective envelope in
+its local frame at ``pitch=`` (metres — demanded while the house
+``simp_pitch`` capability is null), turns ``objectives.force``/``fixed``
+into nodal loads/supports at ``load_at=``/``fixed_at=`` (an envelope
+face ``x+..z-`` or a posed port; the elements under them are passive
+solid), runs :func:`precis.structsolve.simp.simp_optimize` at
+``volfrac=`` with the AM filter for ``build_dir=`` (default: the
+envelope box's largest face down, echoed), and binds the block to a NEW
+cad design rooted at the density's ``field:<sha>`` leaf (optional
+``round=``/``open=``/``close=`` morphology on the grid first). The op
+only validates and enqueues an ``se_simp`` job (:mod:`precis_se.
+simp_job`, ``job_inproc``) — the solve is minutes; the block reads
+unrealized until it lands. The job pins ``build_frame`` with
+``origin='simp'``, so ``view='print'`` verifies that frame (the 45°
+voxel rule on the stored field) and skips the orientation search,
+saying so. The run summary sits on the se ref's ``meta.simp``
+(``last`` + ``runs``); a re-realize mints a sibling cad design and
+switches the one binding a block holds — the previous design stays,
+named in ``runs`` and linked ``derived-from`` the se design. Advisory
+tier: the compliance is a voxel estimate, never a DRC verdict.
+
 **Blocktree slice 4 — ranked library search** (docs/backlog/
 blocktree-library-build-plan.md §Slice 4, port-pose-and-composition-
 search.md Decision 2) lands ``search(kind='se', wants={...})``:
