@@ -452,6 +452,46 @@ edit(
 )
 ```
 
+## Search, don't guess — `struct_search`
+
+A `struct_search` job runs an AGOX/GOFEE surrogate search — in-process
+on the GPU node, MACE as the oracle — over a confined box on a seed
+slab, instead of a hand-placed adatom. It returns the lowest-energy
+distinct configurations it found, not the one you guessed. Submit it
+as an ad-hoc job parented on the seed (see `precis-job-help`):
+
+```python
+put(
+    kind="job",
+    job_type="struct_search",
+    executor="ssh_node",
+    parent_id=<seed structure ref id>,
+    params={
+        "seed_ref_id": <seed structure ref id>,
+        "on_version": <seed's current version>,
+        "box": [[0.0, 1.0], [0.0, 1.0], [0.5, 0.65]],  # fractional [[fx0,fx1],[fy0,fy1],[fz0,fz1]]
+        "add": {"Pd": 2, "N": 1, "O": 1},  # fixed stoichiometry placed inside the box
+        "algo": "gofee",  # or "basin_hopping" / "random" — cheaper baselines
+        "budget": 200,  # oracle single-point evaluations, capped at 1000
+        "top_k": 10,
+        "timeout_s": 7200,
+    },
+)
+```
+
+The **whole seed slab is frozen** for the search — only the `add`
+atoms move. Relax a returned candidate afterward (the ladder above)
+for a real equilibrium; this search never does that itself. `box`/
+`add` need a slab seed periodic in both in-plane axes — a free
+(non-periodic) cluster is rejected.
+
+Returns up to `top_k` new `structure` rows, `derived-from` the seed,
+each tagged `search:agox` and carrying `meta.search` (`algo`, `model`,
+`budget_used`, `iteration`, `oracle_energy_eV`, `rank`, …). Each
+candidate's `ml` energy is already on its run-cube (`view='runs'`)
+like any relax — but these oracle calls never touch the relax cache,
+so re-running the identical search re-evaluates rather than hitting it.
+
 ## Import from an external catalyst DB (ADR 0053)
 
 `get(kind='structure', args={'source': 'catalysis-hub', ...})` hydrates a
