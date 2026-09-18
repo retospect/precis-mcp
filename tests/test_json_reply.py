@@ -53,9 +53,7 @@ def test_extract_json_object_still_parses_clean_json() -> None:
     the strict pass alone must keep winning without ever reaching the
     strict=False fallback."""
     assert extract_json_object('{"a": 1}') == {"a": 1}
-    assert (
-        extract_json_object('prose before {"a": 1} prose after') == {"a": 1}
-    )
+    assert extract_json_object('prose before {"a": 1} prose after') == {"a": 1}
 
 
 def test_extract_json_object_no_json_at_all_stays_none() -> None:

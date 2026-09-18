@@ -230,9 +230,7 @@ def test_result_from_agent_usage_defaults_none() -> None:
 def test_result_from_agent_quota_text_pauses_with_quota_kind(
     quota_text: str,
 ) -> None:
-    raw = AgentResult(
-        final_text=quota_text, cost_usd=0.0, duration_s=0.5, turns_used=1
-    )
+    raw = AgentResult(final_text=quota_text, cost_usd=0.0, duration_s=0.5, turns_used=1)
     got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
     assert got.paused is True
     assert got.quota_exhausted is True
