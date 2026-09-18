@@ -861,9 +861,7 @@ class DraftHandler(Handler):
                 c.handle, new_text, base_sha=content_sha(c.text or "")
             )
             if res is not None:
-                self.sync_draft_links(
-                    res.ref_id, restamp_chunk_ids={res.chunk_id}
-                )
+                self.sync_draft_links(res.ref_id, restamp_chunk_ids={res.chunk_id})
                 self._attribute_touch([res.chunk_id])
                 written += 1
         body = (
@@ -2146,7 +2144,9 @@ class DraftHandler(Handler):
             # currently-live edge's meta, keyed the same way as ``wanted``
             # plus its relation — the stamping loop below needs to tell a
             # brand-new edge from one that already carries a pin.
-            existing_meta: dict[tuple[int | None, int, int | None, str], dict[str, Any]] = {}
+            existing_meta: dict[
+                tuple[int | None, int, int | None, str], dict[str, Any]
+            ] = {}
             for relation in ("cites", "related-to"):
                 for link in self.store.links_for(
                     ref_id, direction="out", relation=relation
@@ -2190,7 +2190,9 @@ class DraftHandler(Handler):
                 if pub_id is not None:
                     prior = existing_meta.get((src_ord, dst, pos, relation))
                     is_new_edge = prior is None or "cited_pub_id" not in prior
-                    src_chunk_id = chunk_id_by_ord.get(src_ord) if src_ord is not None else None
+                    src_chunk_id = (
+                        chunk_id_by_ord.get(src_ord) if src_ord is not None else None
+                    )
                     touched = (
                         restamp_chunk_ids is not None
                         and src_chunk_id in restamp_chunk_ids

@@ -646,7 +646,9 @@ def test_drift_stamped_title_none_for_a_legacy_pub_id_only_edge(
     assert drifted[0].stamped_pub_id == old_pub_id
 
 
-def test_unrelated_chunk_write_does_not_clear_drift(draft: DraftHandler, hub: Hub) -> None:
+def test_unrelated_chunk_write_does_not_clear_drift(
+    draft: DraftHandler, hub: Hub
+) -> None:
     """ADVERSARIAL: drift means *this passage's prose* was written against
     an older hub sentence. A write to a DIFFERENT chunk must not advance
     this chunk's stamp — doing so silently erases the drift signal while

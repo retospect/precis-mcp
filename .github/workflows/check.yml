@@ -15,8 +15,17 @@ on:
   # Nightly FULL matrix (both Pythons + macOS + Windows) on main. The ship
   # gate below runs only the 3.13 Linux legs; the platform/3.12 legs are
   # scheduled so a break there surfaces the next morning, not weeks later.
+  #
+  # 05:23 UTC is this fleet's quietest hour: over the 14 days to 2026-09-18,
+  # main took 6 squash-merges in the 05:00 hour and 5 in the 06:00 hour,
+  # against 27 in the busiest (19:00). The full shape is 18 of the account's
+  # 20 concurrent job slots, so a ship gate starting inside the nightly
+  # queues behind it (~40 min) — the concurrency note below explains why
+  # that is now a wait instead of the nightly being cancelled. Keep the
+  # minute off :00: GitHub drops scheduled events under load, and the top of
+  # the hour is where that load is.
   schedule:
-    - cron: '23 3 * * *'
+    - cron: '23 5 * * *'
   # Manual lever for the check-asynchronously model: re-run on the current
   # ref without an empty commit — needed in practice because a push event
   # dropped during a GitHub incident is never replayed (scripts/ship uses it
@@ -42,8 +51,21 @@ permissions:
 # fully; a third queues behind them rather than failing. Adding shards or
 # legs to the gate shape past ~10 jobs costs that second slot — reshape,
 # don't grow.
+#
+# The group key carries the run's SHAPE, not just the ref, so the nightly
+# gets its own lane on main. Keying on the ref alone put the 18-job full
+# matrix and every main push in one group, and a push cancels in progress —
+# so one sibling ship landing during the nightly silently wiped that day's
+# entire 3.12/macOS/Windows coverage, which is the exact failure the
+# schedule above exists to prevent (gr346455; latent, never observed —
+# ships cluster hours earlier). `workflow_dispatch` with full=true rides the
+# same lane, so a deliberately-dispatched full run is likewise un-cancellable
+# by a push. Cost of the split: the two shapes now coexist and 18 + 8 > 20,
+# so a gate starting inside the nightly waits rather than pre-empting it
+# (~40 min, well inside ship's 150 min CI timeout, and a CAS race lost while
+# queued re-runs CI per gr343941).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:

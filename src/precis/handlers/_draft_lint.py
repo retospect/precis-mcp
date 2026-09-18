@@ -963,9 +963,7 @@ class DriftedCite:
     current_title: str
 
 
-def find_drifted_cites(
-    store: Store, draft: str | int
-) -> tuple[list[DriftedCite], int]:
+def find_drifted_cites(store: Store, draft: str | int) -> tuple[list[DriftedCite], int]:
     """Every ``cites`` edge from ``draft``'s chunks to a finding hub whose
     stamped ``cited_pub_id`` (``handlers/draft.py::sync_draft_links``) no
     longer matches the hub's live pub_id
@@ -998,7 +996,9 @@ def find_drifted_cites(
     dst_ids = {link.dst_ref_id for link in links}
     refs_by_id = store.fetch_refs_by_ids(list(dst_ids), include_deleted=False)
     hub_ids = {
-        rid for rid, ref in refs_by_id.items() if ref is not None and ref.kind == "finding"
+        rid
+        for rid, ref in refs_by_id.items()
+        if ref is not None and ref.kind == "finding"
     }
     if not hub_ids:
         return [], 0

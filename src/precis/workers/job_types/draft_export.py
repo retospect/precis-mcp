@@ -163,7 +163,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 if d.stamped_title is not None
                 else "old statement not recorded"
             )
-            parts.append(f'{d.dc} (fi{d.hub_ref_id}: was {old}, now "{d.current_title}")')
+            parts.append(
+                f'{d.dc} (fi{d.hub_ref_id}: was {old}, now "{d.current_title}")'
+            )
         ctx.record_failure(
             f"draft_export: {len(drifted)} cite(s) drifted from the hub they "
             f"cite — {'; '.join(parts)}. Re-check the passage against the "
