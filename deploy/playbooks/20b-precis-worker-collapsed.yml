@@ -327,11 +327,21 @@
     # `clones_dir` capability probe advertise on this host, so the
     # capability-routed diagnose/fix jobs become hard-routable instead of
     # soft-falling back and dying on the missing env. ──
+    # Piece C (diagnosis -> fix wiring, docs/backlog rulings 2026-09-18):
+    # PRECIS_DIAGNOSE_AUTOPROMOTE arms diagnose_gripe's confidence-gated
+    # OPEN:auto-fix tagging; PRECIS_BACKLOG_GROOM_ENABLED arms the groomer
+    # that turns an auto-fix-tagged gripe into a dispatchable fix_gripe
+    # todo (backlog_groom.py — now selection-gated on that tag + a
+    # PRECIS_BACKLOG_GROOM_MAX_MINTS-capped mint budget, not every open
+    # gripe). Same gate as the clone plumbing above: without a fix lane
+    # armed on this host, there is nothing for either flag to feed.
     _l_b_fix_env: >-
       {{ (
         {
           'PRECIS_FIX_WORK_DIR': precis_fix_work_dir | default('/Users/deploy/precis-fix-work'),
           'PRECIS_FIX_REPO_DIR': precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'),
+          'PRECIS_DIAGNOSE_AUTOPROMOTE': '1',
+          'PRECIS_BACKLOG_GROOM_ENABLED': '1',
         } if (precis_fix_lane_enabled | default(false)) else {}
       ) if inventory_hostname in groups['gateway'] else {} }}
     # ── tts render (darwin only, gated on topology.yml tts_render — the

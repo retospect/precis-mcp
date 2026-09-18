@@ -42,10 +42,15 @@ autocatpath_wheelhouse: /opt/precis/wheels
 autocatpath_wheel: ""
 
 # The precis-mcp extra to install, derived from the topology in ONE expression:
-# 'catalyst-gpu' (→ autocatpath[mace], the torch/MACE backend) on autocatpath_mace
-# nodes; else 'catalyst' (→ pure autocatpath, EMT-only, dependency-light). Exactly
-# one ML backend per env — autocatpath's mace/chgnet/… extras conflict — so the
-# GPU node takes catalyst-gpu and nothing else. Single expression on purpose (a
+# 'catalyst-gpu,struct-search' (→ autocatpath[mace] + AGOX, the torch/MACE
+# backend + the global-structure-search job) on autocatpath_mace nodes; else
+# 'catalyst' (→ pure autocatpath, EMT-only, dependency-light). Exactly one ML
+# backend per env — autocatpath's mace/chgnet/… extras conflict — so the GPU
+# node takes catalyst-gpu (+ struct-search) and nothing else; the plain
+# catalyst branch stays untouched (struct_search is pinned to the same
+# has_gpaw/GPU node as struct_relax, never a catalyst-only node). A comma
+# list here renders straight into `precis-mcp[<extras>]`, which pip/uv treat
+# as ordinary multi-extra syntax. Single expression on purpose (a
 # folded-scalar intermediate mis-rendered on fresh nodes before).
 autocatpath_extras: >-
-  {{ 'catalyst-gpu' if inventory_hostname in (precis_capabilities.autocatpath_mace | default([])) else 'catalyst' }}
+  {{ 'catalyst-gpu,struct-search' if inventory_hostname in (precis_capabilities.autocatpath_mace | default([])) else 'catalyst' }}

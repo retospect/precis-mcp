@@ -17,6 +17,23 @@ the transform is rigid).
 
 ``section`` (plane ∩ solid → loops) is part of the contract but lands in
 the section-probe step; it is intentionally absent here.
+
+**Vectorised distance.** Every primitive also answers
+``distance_local_np(P)`` for an ``(N, 3)`` point array — the same signed
+distance as the scalar ``distance_local`` (they agree to float64 round-
+off; ``tests/test_cad_rounding.py`` pins it), evaluated once for the
+whole array. The field-export backend (:mod:`precis.cad.fieldmesh`)
+samples millions of points through it; the probe layer keeps the scalar
+form. The base class falls back to a Python loop over the scalar method
+so a new primitive is correct before it is fast.
+
+**Rounding** (:class:`Rounded`) is a leaf wrapper, not a field trick:
+the wrapped primitive is *built shrunk* by ``r`` on every side and its
+exact SDF is offset by ``-r`` — ``d(p) = sd(p, params - r) - r`` — so the
+zero set is the Minkowski sum of the shrunk solid with a ball of radius
+``r`` (edges → cylinders, corners → sphere caps, planar faces where they
+were). See ``docs/backlog/cad-sdf-rounding-and-field-export.md`` for the
+contract; :func:`precis.cad.dsl.build` does the per-shape shrink.
 """
 
 from __future__ import annotations
@@ -26,6 +43,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 
 from precis.cad.interval import (
     POS_INF,
@@ -104,6 +122,13 @@ class Primitive(ABC):
 
     @abstractmethod
     def faces_local(self) -> list[Face]: ...
+
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Signed distance of every row of ``pts`` (``(N, 3)``) — the
+        vectorised twin of :meth:`distance_local`. Subclasses override
+        with a true array evaluation; this fallback loops."""
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        return np.array([self.distance_local(row) for row in arr], dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +244,58 @@ def signed_dist_frustum_meridian(
     return -min_edge if inside else min_edge
 
 
+def _seg_dist_2d_np(
+    pts: NDArray[np.float64], a: np.ndarray, b: np.ndarray, *, eps: float
+) -> NDArray[np.float64]:
+    """Row-wise :func:`_seg_dist_2d` — distance from every ``(N, 2)`` row
+    of ``pts`` to segment ``ab``."""
+    ab = b - a
+    denom = float(ab @ ab)
+    if denom <= eps * eps:
+        return np.linalg.norm(pts - a, axis=1)
+    t = np.clip(((pts - a) @ ab) / denom, 0.0, 1.0)
+    proj = a + t[:, None] * ab
+    return np.linalg.norm(pts - proj, axis=1)
+
+
+def _signed_dist_frustum_meridian_np(
+    rho: NDArray[np.float64],
+    z: NDArray[np.float64],
+    rb: float,
+    rt: float,
+    h: float,
+    *,
+    eps: float,
+) -> NDArray[np.float64]:
+    """Row-wise :func:`signed_dist_frustum_meridian` — same edges, same
+    inside test, same three real surfaces, over ``(N,)`` arrays."""
+    poly = [(0.0, 0.0), (rb, 0.0), (rt, h), (0.0, h)]
+    pts = np.stack([rho, z], axis=1)
+    inside = np.ones(len(pts), dtype=bool)
+    for i in range(len(poly)):
+        a = np.array(poly[i], dtype=np.float64)
+        b = np.array(poly[(i + 1) % len(poly)], dtype=np.float64)
+        edge = b - a
+        outward = np.array([edge[1], -edge[0]], dtype=np.float64)
+        elen = float(np.linalg.norm(outward))
+        if elen > eps:
+            inside &= ~(((pts - a) @ outward) > eps * elen)
+    real_edges = ((poly[0], poly[1]), (poly[1], poly[2]), (poly[2], poly[3]))
+    min_edge = np.full(len(pts), np.inf)
+    for a2, b2 in real_edges:
+        np.minimum(
+            min_edge,
+            _seg_dist_2d_np(
+                pts,
+                np.array(a2, dtype=np.float64),
+                np.array(b2, dtype=np.float64),
+                eps=eps,
+            ),
+            out=min_edge,
+        )
+    return np.where(inside, -min_edge, min_edge)
+
+
 def _dist_point_to_convex_polygon_3d(
     p: Vec3, verts: list[Vec3], normal: Vec3, *, eps: float | None = None
 ) -> float:
@@ -269,6 +346,50 @@ def _dist_point_to_convex_polygon_3d(
     return best
 
 
+def _dist_points_to_convex_polygon_3d_np(
+    pts: NDArray[np.float64],
+    verts: list[Vec3],
+    normal: Vec3,
+    *,
+    eps: float | None = None,
+) -> NDArray[np.float64]:
+    """Row-wise :func:`_dist_point_to_convex_polygon_3d` over ``(N, 3)``
+    ``pts`` — same projection, same inward-edge test, same nearest-edge
+    fallback, so the two agree to float64 round-off."""
+    if eps is None:
+        extent = max((float(np.max(np.abs(as_vec3(v)))) for v in verts), default=0.0)
+        eps = _linear_eps(extent)
+    a0 = verts[0]
+    signed = (pts - a0) @ normal
+    proj = pts - signed[:, None] * normal
+    n = len(verts)
+    inside = np.ones(len(pts), dtype=bool)
+    for i in range(n):
+        a = verts[i]
+        b = verts[(i + 1) % n]
+        inward_test = np.cross(normal, b - a)
+        elen = float(np.linalg.norm(inward_test))
+        if elen > eps:
+            inside &= ~(((proj - a) @ inward_test) < -eps * elen)
+    out = np.abs(signed)
+    if not np.all(inside):
+        q = pts[~inside]
+        best = np.full(len(q), np.inf)
+        for i in range(n):
+            a = verts[i]
+            b = verts[(i + 1) % n]
+            ab = b - a
+            denom = float(ab @ ab)
+            if denom <= eps * eps:
+                d = np.linalg.norm(q - a, axis=1)
+            else:
+                t = np.clip(((q - a) @ ab) / denom, 0.0, 1.0)
+                d = np.linalg.norm(q - (a + t[:, None] * ab), axis=1)
+            np.minimum(best, d, out=best)
+        out[~inside] = best
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Sphere
 # ---------------------------------------------------------------------------
@@ -299,6 +420,10 @@ class Sphere(Primitive):
 
     def distance_local(self, p: Vec3) -> float:
         return float(np.linalg.norm(as_vec3(p))) - self.r
+
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        return np.linalg.norm(arr, axis=1) - self.r
 
     def aabb_local(self) -> tuple[Vec3, Vec3]:
         r = self.r
@@ -378,6 +503,13 @@ class CircularFrustum(Primitive):
         z = float(p[2])
         return signed_dist_frustum_meridian(
             rho, z, self.rb, self.rt, self.h, eps=self._eps
+        )
+
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        rho = np.hypot(arr[:, 0], arr[:, 1])
+        return _signed_dist_frustum_meridian_np(
+            rho, arr[:, 2], self.rb, self.rt, self.h, eps=self._eps
         )
 
     def aabb_local(self) -> tuple[Vec3, Vec3]:
@@ -470,7 +602,17 @@ class PolyFrustum(Primitive):
                 return
             normal = normal / nlen
             if float(normal @ (centroid - ring[0])) > 0:
+                # Flipping the normal to face outward turns the ring
+                # clockwise about it; reverse the ring too, because the
+                # exact-distance routine (_dist_point_to_convex_polygon_3d)
+                # assumes CCW-about-normal for its inward-edge test. Left
+                # as-is, every cap's interior read as "outside the
+                # polygon" and an outside point above/below a box got the
+                # distance to the cap's *edge* (8× too large for a point
+                # 1 mm under a 36×16 mm box's centre) — masked until
+                # rounding made the outside magnitude load-bearing.
                 normal = -normal
+                ring = list(reversed(ring))
             planes.append(_Plane(n=normal, d=float(normal @ ring[0])))
             faces.append(Face(normal=normal, tag=tag))
             face_polys.append((normal, ring))
@@ -539,6 +681,26 @@ class PolyFrustum(Primitive):
             _dist_point_to_convex_polygon_3d(p, ring, normal)
             for normal, ring in self._face_polys
         )
+
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        normals = np.array([pl.n for pl in self._planes])  # (F, 3)
+        offs = np.array([pl.d for pl in self._planes])  # (F,)
+        slack = offs[None, :] - arr @ normals.T  # (N, F): d - n·p
+        inside = np.all(slack >= -self._eps, axis=1)
+        out = np.empty(len(arr), dtype=np.float64)
+        out[inside] = -slack[inside].min(axis=1)
+        if not np.all(inside):
+            outside = arr[~inside]
+            best = np.full(len(outside), np.inf)
+            for normal, ring in self._face_polys:
+                np.minimum(
+                    best,
+                    _dist_points_to_convex_polygon_3d_np(outside, ring, normal),
+                    out=best,
+                )
+            out[~inside] = best
+        return out
 
     def aabb_local(self) -> tuple[Vec3, Vec3]:
         arr = np.array(self._verts)
@@ -637,6 +799,10 @@ class HalfSpace(Primitive):
     def distance_local(self, p: Vec3) -> float:
         return float(self._unit() @ (as_vec3(p) - as_vec3(self.point)))
 
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        return (arr - as_vec3(self.point)) @ self._unit()
+
     def aabb_local(self) -> tuple[Vec3, Vec3]:
         return vec3(NEG_INF, NEG_INF, NEG_INF), vec3(POS_INF, POS_INF, POS_INF)
 
@@ -704,12 +870,157 @@ class Torus(Primitive):
         rho = math.hypot(float(p[0]), float(p[1]))
         return math.hypot(rho - self.R, float(p[2])) - self.r
 
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        rho = np.hypot(arr[:, 0], arr[:, 1])
+        return np.hypot(rho - self.R, arr[:, 2]) - self.r
+
     def aabb_local(self) -> tuple[Vec3, Vec3]:
         outer = self.R + self.r
         return vec3(-outer, -outer, -self.r), vec3(outer, outer, self.r)
 
     def faces_local(self) -> list[Face]:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Rounded — a convex leaf with every edge/corner rounded to radius r
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Rounded(Primitive):
+    """A convex primitive with every edge and corner rounded to radius ``r``.
+
+    ``inner`` is the primitive **already built shrunk** by ``r`` on every
+    side (the caller — :func:`precis.cad.dsl.build` — does the per-shape
+    shrink, because "shrunk by ``r``" means different parameter arithmetic
+    for a box, a slanted frustum and an n-gon prism); ``lift`` is the local
+    ``z`` offset that puts the shrunk shape where the sharp one's base was
+    (``r`` for the base-at-``z=0`` family, ``0`` for a centred shape).
+    The rounded solid is then exactly
+
+        d(p) = inner.distance_local(p - (0, 0, lift)) - r
+
+    — the Minkowski sum of ``inner`` with a ball of radius ``r``. Because
+    ``inner``'s SDF is an *exact* Euclidean distance the offset is exact
+    too: planar faces stay where the sharp solid's were, edges become
+    cylinder patches, corners sphere caps, and the bounding box equals
+    the sharp solid's (``aabb_local`` reports the *unshrunk* extents).
+
+    Every query goes through :meth:`distance_local` (membership is
+    ``d <= eps``); ``ray_hits_local`` exploits convexity — the signed
+    distance to a convex body is a convex function along a line, so a
+    golden-section minimum followed by two bisections finds the single
+    inside interval to the primitive's linear tolerance.
+    """
+
+    inner: Primitive
+    r: float
+    lift: float = 0.0
+
+    def _shift(self) -> Vec3:
+        return vec3(0.0, 0.0, self.lift)
+
+    @property
+    def _eps(self) -> float:
+        lo, hi = self.aabb_local()
+        return _linear_eps(float(np.max(np.abs(np.concatenate([lo, hi])))))
+
+    def distance_local(self, p: Vec3) -> float:
+        return self.inner.distance_local(as_vec3(p) - self._shift()) - self.r
+
+    def distance_local_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        return self.inner.distance_local_np(arr - self._shift()) - self.r
+
+    def contains_local(self, p: Vec3) -> bool:
+        return self.distance_local(p) <= self._eps
+
+    def aabb_local(self) -> tuple[Vec3, Vec3]:
+        lo, hi = self.inner.aabb_local()
+        s = self._shift()
+        return lo + s - self.r, hi + s + self.r
+
+    def faces_local(self) -> list[Face]:
+        return self.inner.faces_local()
+
+    def ray_hits_local(self, o: Vec3, d: Vec3) -> Intervals:
+        o = as_vec3(o)
+        d = as_vec3(d)
+        eps = self._eps
+        dir_eps = _dir_eps(d)
+        lo, hi = self.aabb_local()
+        # Clip the ray to the (padded) bounding box first: outside it the
+        # distance is positive by construction, and the box gives the
+        # finite bracket the 1-D search below needs.
+        t0, t1 = NEG_INF, POS_INF
+        for i in range(3):
+            oi, di = float(o[i]), float(d[i])
+            if abs(di) <= dir_eps:
+                if oi < lo[i] - eps or oi > hi[i] + eps:
+                    return []
+                continue
+            ta = (lo[i] - eps - oi) / di
+            tb = (hi[i] + eps - oi) / di
+            t0 = max(t0, min(ta, tb))
+            t1 = min(t1, max(ta, tb))
+        if t0 > t1 or not (math.isfinite(t0) and math.isfinite(t1)):
+            return []
+
+        def f(t: float) -> float:
+            return self.distance_local(o + t * d)
+
+        dnorm = float(np.linalg.norm(d))
+        t_tol = eps / dnorm if dnorm > 0.0 else eps
+        # Golden-section search for the minimum of the convex f on [t0, t1].
+        invphi = (math.sqrt(5.0) - 1.0) / 2.0
+        a, b = t0, t1
+        c = b - invphi * (b - a)
+        e = a + invphi * (b - a)
+        fc, fe = f(c), f(e)
+        for _ in range(256):
+            if b - a <= t_tol:
+                break
+            if fc < fe:
+                b, e, fe = e, c, fc
+                c = b - invphi * (b - a)
+                fc = f(c)
+            else:
+                a, c, fc = c, e, fe
+                e = a + invphi * (b - a)
+                fe = f(e)
+        tm = c if fc <= fe else e
+        if min(fc, fe) > eps:
+            return []
+        # Entry root on [t0, tm] (f goes + → ≤0), exit root on [tm, t1].
+        if f(t0) <= 0.0:
+            t_in = t0
+        else:
+            lo_t, hi_t = t0, tm
+            for _ in range(256):
+                if hi_t - lo_t <= t_tol:
+                    break
+                mid = 0.5 * (lo_t + hi_t)
+                if f(mid) > 0.0:
+                    lo_t = mid
+                else:
+                    hi_t = mid
+            t_in = hi_t
+        if f(t1) <= 0.0:
+            t_out = t1
+        else:
+            lo_t, hi_t = tm, t1
+            for _ in range(256):
+                if hi_t - lo_t <= t_tol:
+                    break
+                mid = 0.5 * (lo_t + hi_t)
+                if f(mid) > 0.0:
+                    hi_t = mid
+                else:
+                    lo_t = mid
+            t_out = lo_t
+        return [(t_in, t_out)]
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +1050,15 @@ class Placed:
 
     def distance(self, p: Vec3) -> float:
         return self.prim.distance_local(self.xform.to_local_point(as_vec3(p)))
+
+    def distance_np(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Signed distance of every row of ``pts`` (``(N, 3)`` world
+        points) — the vectorised twin of :meth:`distance`. The rigid
+        inverse is applied to the whole array at once
+        (``(P - t) @ R`` is ``R.T @ (p - t)`` row-wise)."""
+        arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+        local = (arr - self.xform.t) @ self.xform.R
+        return self.prim.distance_local_np(local)
 
     def faces(self) -> list[Face]:
         out: list[Face] = []

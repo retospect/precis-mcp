@@ -2140,14 +2140,24 @@ def _boxed_scenario(*, gap_mm: float | None) -> tuple:
     # single-layer (`stackup=[{"name": "F.Cu", ...}]`), so every pad here
     # is `(0,)`, the SMD single-layer shape `_realize_maze` builds.
     wall_layers = (0,)
+
+    def _wall_shape(x: float, y: float) -> pcb_maze.PadShape:
+        # A plain enclosing-circle claim -- `_pad_shape` is not needed
+        # here, this scenario only cares about a wall of foreign copper
+        # at a known radius, same as the pre-gripe-346962 disk this test
+        # built directly.
+        return pcb_maze.PadShape("circle", x, y, 2.0 * radius, 2.0 * radius)
+
     pads: list = []
     for y in _frange(cy - half, cy + half, pitch):
-        pads.append(((cx - half, y), wall_net, radius, wall_layers))
+        pads.append(((cx - half, y), wall_net, _wall_shape(cx - half, y), wall_layers))
         if gap_mm is None or abs(y - cy) > gap_mm / 2.0:
-            pads.append(((cx + half, y), wall_net, radius, wall_layers))
+            pads.append(
+                ((cx + half, y), wall_net, _wall_shape(cx + half, y), wall_layers)
+            )
     for x in _frange(cx - half, cx + half, pitch):
-        pads.append(((x, cy - half), wall_net, radius, wall_layers))
-        pads.append(((x, cy + half), wall_net, radius, wall_layers))
+        pads.append(((x, cy - half), wall_net, _wall_shape(x, cy - half), wall_layers))
+        pads.append(((x, cy + half), wall_net, _wall_shape(x, cy + half), wall_layers))
 
     graph = {
         "instances": [
@@ -2818,7 +2828,6 @@ def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
     move it off, proving the config knob actually reaches
     ``grid.route``'s surcharge and not just that the maze module accepts
     one in isolation."""
-    import math
 
     import numpy as np
 
@@ -2844,19 +2853,20 @@ def test_route_pass_via_body_cost_mm_pushes_the_via_off_a_masked_body_strip():
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     config = RealizeConfig()
     pad_geoms = pad_geometry(ir)
-    pads: list[tuple[tuple[float, float], int, float, tuple[int, ...]]] = []
+    pads: list[tuple[tuple[float, float], int, pcb_maze.PadShape, tuple[int, ...]]] = []
     for pid in range(ir.n_pins):
         point = pin_point(ir, pid)
         assert point is not None  # every instance above is placed
         geom = pad_geoms[pid]
-        radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
+        inst_rot = float(ir.inst_rot[int(ir.pin_instance[pid])])
+        shape = pcb_realize._pad_shape(geom, point, inst_rot)
         # 4th element: this pad's claimed layer(s), `_realize_maze`'s own
         # shape (`_side_layer` -- both instances above are top-mounted, so
         # this is `(0,)` for each; neither pin has a real footprint here,
         # so `geom.drill_mm` is always `None` and nothing needs the
         # THT/all-layer branch).
         layers = (pcb_realize._side_layer(ir, int(ir.pin_instance[pid]), [0, 1]),)
-        pads.append((point, int(ir.pin_net[pid]), radius, layers))
+        pads.append((point, int(ir.pin_net[pid]), shape, layers))
     rules_by_net = {
         n: pcb_realize._resolve_track_rules(ir, n, PAD_LAYER, config)
         for n in range(ir.n_nets)

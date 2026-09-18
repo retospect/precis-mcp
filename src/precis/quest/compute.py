@@ -907,6 +907,168 @@ def dispatch_relax(
     return f"relax[{fidelity}] dispatched for {ref.slug}"
 
 
+def _job_status(tags: list[Any]) -> str | None:
+    """The ``STATUS:`` value off a job's tag list — mirrors
+    :func:`precis.handlers.job._status_of` (duplicated rather than imported,
+    same call as :mod:`precis.workers.job_types.struct_search`'s own
+    ``_CANDIDATE_TAG`` copy: a `quest/` module importing back from
+    `handlers/job.py` risks the cycle the registry's lazy loading otherwise
+    avoids)."""
+    for t in tags:
+        s = str(t)
+        if s.startswith("STATUS:"):
+            return s[len("STATUS:") :]
+    return None
+
+
+def _find_job_by_idem_key(store: Store, idem_key: str) -> tuple[int, str | None] | None:
+    """The live ``job`` ref (ANY status) carrying ``meta.idem_key ==
+    idem_key``, or ``None`` — ``(job_id, status)``.
+
+    Unlike :meth:`precis.handlers.job.JobHandler._lookup_idem` (which only
+    sees **non-terminal** jobs — the retry contract every other job_type
+    wants), a ``struct_search`` dispatch must also see a *terminal*
+    (succeeded/failed) job: slice 1 dispatches at most one search per
+    (quest, config) ever — a failed search is not auto-retried
+    (:func:`dispatch_search`'s docstring) — so the terminal-status exclusion
+    that lets ``JobHandler.put`` mint a fresh attempt on retry would let this
+    caller mint a second search job for the identical config.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND retired_at IS NULL "
+            "AND meta->>'idem_key' = %s ORDER BY ref_id DESC LIMIT 1",
+            (idem_key,),
+        ).fetchone()
+    if row is None:
+        return None
+    job_id = int(row[0])
+    return job_id, _job_status(store.tags_for(job_id))
+
+
+def dispatch_search(
+    store: Store, quest_id: int, *, hub: Any | None = None
+) -> str | None:
+    """Spend the tick's WIP slot on an AGOX/GOFEE surrogate search instead of
+    an LLM-authored structure — item 4 of
+    `docs/backlog/global-structure-search-gofee-agox.md`.
+
+    Opt-in via the quest ref's ``meta.search`` (a dict): ``seed`` (a
+    structure slug/id/handle that must already ``serve`` this quest — the
+    same lineage check :func:`_link_parent_if_present` uses via
+    :func:`_resolve_parent_structure`), ``box``/``add`` (required, the same
+    shape ``struct_search``'s params schema takes), and optional
+    ``algo``/``model``/``budget``/``top_k``/``timeout_s``, passed straight
+    through to the job.
+
+    Returns ``None`` when the quest hasn't opted in (no ``meta.search``
+    dict) — :func:`~precis.quest.tick._TickRun._stage_compute` then spends
+    the whole WIP slot on the LLM's own proposals, unchanged from today.
+    Otherwise always returns a one-line note:
+
+    * ``"search skipped: ..."`` — the seed doesn't resolve/serve, or the
+      config is missing ``box``/``add``. Not logged here: ``_stage_compute``
+      writes every non-``None`` note to the quest logbook as an
+      ``observation`` (one writer, so a misconfigured quest that ticks
+      forever doesn't double its logbook growth).
+    * ``"search: idem_key already exists as job <id> (...)"`` — one search
+      per (quest, seed, box, add, algo, model, budget) ever; changing
+      ``box``/``add``/... re-arms it (a fresh idem key). A **failed**
+      existing job is NOT retried automatically in this slice — the note
+      says so, so a human edits ``meta.search`` to re-arm deliberately.
+    * ``"search[<algo>] dispatched for <seed slug> (budget <n>)"`` — a fresh
+      ``struct_search`` job was minted. This is the only shape
+      ``_stage_compute`` reads back to know the slot was spent.
+
+    Never raises past param/spec validation errors it can turn into a note;
+    the caller (``_stage_compute``) additionally wraps the call itself, same
+    convention as ``run_compute_step``'s own defensive wrapping.
+    """
+    quest_ref = store.get_ref(kind="quest", id=quest_id)
+    search_cfg = (getattr(quest_ref, "meta", None) or {}).get("search")
+    if not isinstance(search_cfg, dict):
+        return None
+
+    seed_ident = search_cfg.get("seed")
+    seed_ref = (
+        _resolve_parent_structure(store, quest_id, seed_ident) if seed_ident else None
+    )
+    if seed_ref is None:
+        return f"search skipped: seed {seed_ident!r} does not serve this quest"
+
+    box = search_cfg.get("box")
+    add = search_cfg.get("add")
+    if not box or not add:
+        return "search skipped: meta.search needs both box and add"
+
+    algo = str(search_cfg.get("algo") or "gofee")
+    model = search_cfg.get("model") or None
+    budget = int(search_cfg.get("budget") or 200)
+    top_k = int(search_cfg.get("top_k") or 10)
+    timeout_s = search_cfg.get("timeout_s")
+
+    try:
+        seed_scene, _handles = store.structure_load(seed_ref.id)
+    except Exception as exc:
+        return f"search skipped: seed {seed_ref.slug} failed to load ({exc})"
+
+    from precis.structure import cache as relax_cache
+
+    seed_sha = relax_cache.structure_sha(seed_scene)
+    config_key = _canonical_spec(
+        {"box": box, "add": add, "algo": algo, "model": model, "budget": budget}
+    )
+    idem_key = f"struct_search:{quest_id}:{seed_sha}:{config_key}"
+
+    existing = _find_job_by_idem_key(store, idem_key)
+    if existing is not None:
+        job_id, status = existing
+        if status == "failed":
+            return (
+                f"search: idem_key already exists as job {job_id} "
+                "(failed — edit meta.search to re-arm)"
+            )
+        return (
+            f"search: idem_key already exists as job {job_id} "
+            f"(status {status or 'unknown'})"
+        )
+
+    params: dict[str, Any] = {
+        "seed_ref_id": seed_ref.id,
+        "on_version": store.structure_version(seed_ref.id),
+        "box": box,
+        "add": add,
+        "algo": algo,
+        "budget": budget,
+        "top_k": top_k,
+        "quest_id": quest_id,
+    }
+    if model:
+        params["model"] = model
+    if timeout_s is not None:
+        params["timeout_s"] = timeout_s
+    # Same DFT-node pin struct_relax's own dispatch reads
+    # (handlers/structure.py::_dispatch_relax) — deploy renders it from
+    # topology; unset just leaves the claim gate to route by capability
+    # alone (`has_gpaw`) rather than failing this dispatch synchronously.
+    dft_node = os.environ.get("PRECIS_DFT_NODE")
+    if dft_node:
+        params["target_node"] = dft_node
+
+    hub = hub or _hub_for(store)
+    try:
+        hub.sibling("job").put(
+            job_type="struct_search",
+            executor="ssh_node",
+            parent_id=seed_ref.id,
+            params=params,
+            idem_key=idem_key,
+        )
+    except Exception as exc:
+        return f"search dispatch failed for {seed_ref.slug}: {exc}"
+    return f"search[{algo}] dispatched for {seed_ref.slug} (budget {budget})"
+
+
 #: Env pin for the node(s) that run autocatpath (have the plugin + an ML backend).
 #: Comma-separated list → the seed fan-out round-robins across them. When unset
 #: the routed set comes from the `gpu` resource_slots map; no GPU hosts at all →
@@ -3552,6 +3714,7 @@ __all__ = [
     "ComputeStep",
     "dispatch_autocatpath",
     "dispatch_relax",
+    "dispatch_search",
     "ensure_candidate",
     "harvest_measures",
     "promote_tiers",

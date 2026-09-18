@@ -10,7 +10,13 @@ Storage splits by what is actually a search target:
   embedding search. One vector per design;
 - the **nodes** live in the dedicated ``cad_nodes`` table — structured
   geometry, never embedded. Re-authoring retires the old node rows and
-  the old card, then writes the new set (soft-delete model).
+  the old card, then writes the new set (soft-delete model). A node's
+  ``blend:`` (smooth-min width, :attr:`~precis.cad.scene.NodeSpec.blend`)
+  has no column of its own: it rides on ``refs.meta['blends']`` as
+  ``{node_name: metres}`` — written from the nodes on every save
+  (:func:`_blends_meta`), re-attached to the nodes on load — the same
+  design-level home ``materials``/``dims`` already use, so the rounding
+  slice shipped without a migration.
 
 Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 ``self.insert_ref`` / ``self.get_ref``.
@@ -38,6 +44,19 @@ def cad_source_sha(spec: SceneSpec) -> str:
     return hashlib.sha256(spec_to_source(spec).encode("utf-8")).hexdigest()[:16]
 
 
+def _blends_meta(spec: SceneSpec) -> dict[str, Any]:
+    """``spec.meta`` with ``blends`` derived from the nodes (dropped when no
+    node blends) — the nodes are the source of truth, the meta key only
+    the persistence vehicle."""
+    meta = dict(spec.meta)
+    blends = {n.name: float(n.blend) for n in spec.nodes if n.blend > 0.0}
+    if blends:
+        meta["blends"] = blends
+    else:
+        meta.pop("blends", None)
+    return meta
+
+
 class CadMixin:
     pool: Any
     tx: Any
@@ -57,13 +76,14 @@ class CadMixin:
         """Create-or-replace a design. Returns ``(ref, created, n_nodes)``."""
         existing = self.get_ref(kind="cad", id=slug)
         created = existing is None
+        meta = _blends_meta(spec)
         with self.tx() as conn:
             if created:
                 ref = self.insert_ref(
                     kind="cad",
                     slug=slug,
                     title=title,
-                    meta=dict(spec.meta),
+                    meta=meta,
                     conn=conn,
                 )
             else:
@@ -76,7 +96,7 @@ class CadMixin:
                 conn.execute(
                     "UPDATE refs SET title = %s, meta = %s, updated_at = now() "
                     "WHERE ref_id = %s",
-                    (title, Jsonb(dict(spec.meta)), ref.id),
+                    (title, Jsonb(meta), ref.id),
                 )
             n = 0
             for ordi, node in enumerate(spec.nodes):
@@ -132,6 +152,8 @@ class CadMixin:
         spec = SceneSpec()
         if ref is not None and ref.meta:
             spec.meta = dict(ref.meta)
+        blends_raw = spec.meta.pop("blends", None) or {}
+        blends = {str(k): float(v) for k, v in dict(blends_raw).items()}
         handles: dict[str, int] = {}
         components: list[str] = []
         for node_id, name, component, op, config, loc, rot, pattern in rows:
@@ -144,6 +166,7 @@ class CadMixin:
                     loc=as_float3(loc),
                     rot=as_float3(rot),
                     pattern=coerce_pattern(pattern),
+                    blend=blends.get(str(name), 0.0),
                 )
             )
             handles[str(name)] = int(node_id)
@@ -172,6 +195,10 @@ class CadMixin:
         }
         if pattern:
             meta["pattern"] = dict(pattern)
+        ref = self.get_ref(kind="cad", id=int(ref_id))
+        blend = ((ref.meta or {}).get("blends") or {}).get(str(name)) if ref else None
+        if blend:
+            meta["blend"] = float(blend)
         return int(ref_id), str(name), meta
 
     # -- delete ----------------------------------------------------------

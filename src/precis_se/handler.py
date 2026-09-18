@@ -46,7 +46,10 @@ order"):
   the declared-vs-derived axis-travel probe), the bought-item rollup
   (``view='bom'`` — :mod:`precis_se.bom`: quantities multiplied through
   the tree's array multiplicities, priced and massed from the
-  ``component`` kind's own spec values), the interrogation ledger with
+  ``component`` kind's own spec values), the "what do I order" report
+  (``view='order'`` — :mod:`precis_se.order`: the instanced tree walked to
+  purchasable leaves and bought-whole assemblies, merged with explicit BOM
+  lines, plus a to-make table for the rest), the interrogation ledger with
   open questions first (``view='interview'`` — :mod:`precis_se.notes`),
   or the what-is-still-undecided report (``view='freedom'`` —
   :mod:`precis_se.freedom`, DRC's honest counterpart). The atomic mode
@@ -88,7 +91,7 @@ from psycopg.types.json import Jsonb
 from precis.blocktree.types import parse_template_ref
 from precis.cad import dsl as cad_dsl
 from precis.cad import relate as cad_relate
-from precis.cad.export import ExportError
+from precis.cad.export import ExportError, needs_field_backend
 from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
 from precis.cad.vec import rotation as cad_rotation
@@ -112,6 +115,8 @@ from precis_se import fret, persist
 from precis_se import library as se_library
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
+from precis_se import order as se_order
+from precis_se import precedent as se_precedent
 from precis_se import printing as se_printing
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
@@ -595,7 +600,9 @@ class SeHandler(Handler):
         if v == "sweep":
             return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "drc":
-            body = _render_drc(tree, _scenario_line(self.store, ref.id))
+            body = _render_drc(
+                tree, self.store, ref.id, _scenario_line(self.store, ref.id)
+            )
             try:
                 body += self._fdm_drc_pointer(tree)
             except se_printing.PrintUnsupported as exc:
@@ -605,6 +612,8 @@ class SeHandler(Handler):
             return Response(body=body)
         if v == "bom":
             return Response(body=self._render_bom(tree))
+        if v == "order":
+            return Response(body=self._render_order(tree, ref.id))
         if v == "fasten":
             return Response(body=_render_fasten(tree))
         if v == "interview":
@@ -636,7 +645,10 @@ class SeHandler(Handler):
             "block's declared states, budget-bounded) | view='drc' "
             "(graph tier + DOF "
             "probe) | view='bom' (bought items, multiplied through the "
-            "arrays, with cost/mass) | view='fasten' (screw joints: grip "
+            "arrays, with cost/mass) | view='order' (what to buy — the "
+            "instanced tree walked to purchasable leaves and bought-whole "
+            "assemblies, merged with explicit BOM lines, plus a to-make "
+            "table for the rest) | view='fasten' (screw joints: grip "
             "stack-up, the holes it stamps — clearance, countersink or "
             "counterbore, and whatever the far end's thread_strategy "
             "names — thread lead, and which driver can reach it) "
@@ -827,6 +839,143 @@ class SeHandler(Handler):
             )
         return "\n".join(lines)
 
+    def _render_order(self, tree: SeTree, ref_id: int) -> str:
+        """``view='order'`` — "what do I order": the instanced tree walked
+        to purchasable leaves and bought-whole assemblies
+        (:mod:`precis_se.order`), merged with the design's explicit BOM
+        lines, plus a to-make table for what's left. Store-aware the same
+        way :meth:`_render_bom` is, but the rollup itself takes the
+        plain ``store`` (:func:`precis_se.order.rollup`'s own docstring —
+        handler ↔ order would cycle otherwise)."""
+        report = se_order.rollup(self.store, tree, ref_id)
+        if not report.has_blocks:
+            return "# view='order' — what to order\n\n(no blocks yet — unfilled)"
+
+        lines = [
+            "# view='order' — what to order (quantities include array multiplicity)"
+        ]
+
+        if not report.purchasable:
+            lines.append("")
+            lines.append(
+                "(nothing to order yet — bind a block to a component or "
+                "part, or add_bom)"
+            )
+            lines.append(f"to make: {len(report.to_make)}")
+        else:
+            rows: list[dict[str, Any]] = []
+            total_cost = 0.0
+            cost_covered = 0
+            total_mass = 0.0
+            mass_covered = 0
+            unknown: list[str] = []
+            for line in report.purchasable:
+                item_display = f"{line.item_kind}:{line.item}"
+                if line.label:
+                    item_display = f"{line.label} ({item_display})"
+                if not line.in_store:
+                    unknown.append(item_display)
+                qty_display = "?" if line.qty is None else f"{line.qty:g}"
+                covered = sum(
+                    c.covers for c in line.contributions if c.covers is not None
+                )
+                if covered:
+                    qty_display += f" (covers {covered} block(s))"
+                cost_display = "—" if line.unit_cost is None else f"{line.unit_cost:g}"
+                mass_display = "—" if line.mass is None else f"{line.mass:g}"
+                # A priced item whose QTY never resolved (e.g. a bom line
+                # naming a block no longer in the tree) is still unpriced
+                # from the totals' point of view — nothing to multiply the
+                # price by (_render_bom's own rule).
+                if line.unit_cost is not None and line.qty is not None:
+                    cost_covered += 1
+                    total_cost += line.qty * line.unit_cost
+                if line.mass is not None and line.qty is not None:
+                    mass_covered += 1
+                    total_mass += line.qty * line.mass
+                used_by = sorted(
+                    {c.label for c in line.contributions if c.source == "binding"}
+                )
+                via = sorted({c.source for c in line.contributions})
+                rows.append(
+                    {
+                        "item": item_display,
+                        "qty": qty_display,
+                        "category": line.category or "—",
+                        "mpn": line.mpn or "—",
+                        "unit_cost": cost_display,
+                        "unit_mass": mass_display,
+                        "used by": ", ".join(used_by) or "—",
+                        "via": ", ".join(via),
+                    }
+                )
+            n = len(rows)
+            lines.append(
+                render_agent_table(
+                    rows,
+                    schema=[
+                        "item",
+                        "qty",
+                        "category",
+                        "mpn",
+                        "unit_cost",
+                        "unit_mass",
+                        "used by",
+                        "via",
+                    ],
+                )
+            )
+            lines.append("")
+            # The P/L pair counts TEMPLATES (one leaf template per binding
+            # contribution — a line merges several templates onto one row,
+            # and a bom-line-only line contributes none); `priced`/`massed`
+            # below stay LINE-based (`n`), the unit the store price/mass
+            # actually attaches to.
+            purchasable_templates = sum(
+                1
+                for line in report.purchasable
+                for c in line.contributions
+                if c.source == "binding"
+            )
+            leaf_total = purchasable_templates + len(report.to_make)
+            lines.append(
+                f"purchasable: {purchasable_templates} of {leaf_total} leaf "
+                f"template(s) · to make: {len(report.to_make)}"
+            )
+            lines.append(f"priced: {cost_covered} of {n} line(s)")
+            lines.append(f"massed: {mass_covered} of {n} line(s)")
+            if cost_covered == n:
+                lines.append(f"total: {total_cost:g}")
+            else:
+                lines.append(
+                    f"total: ≥ {total_cost:g} (partial, {cost_covered} of {n})"
+                )
+            if unknown:
+                lines.append("")
+                lines.append(
+                    f"⚠ not in the store: {', '.join(sorted(set(unknown)))} — "
+                    "priced/massed as unknown (put the component first, or "
+                    "fix the slug)"
+                )
+
+        if report.to_make:
+            lines.append("")
+            lines.append("## to make")
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "block": r.block,
+                            "mode": r.mode or "—",
+                            "qty": f"{r.qty:g}",
+                        }
+                        for r in report.to_make
+                    ],
+                    schema=["block", "mode", "qty"],
+                )
+            )
+        return "\n".join(lines)
+
     def _spec_number(self, ref_id: int, spec_id: str) -> float | None:
         """One component's current numeric value for ``spec_id``, through
         the component store's own single "current value" authority
@@ -976,7 +1125,9 @@ class SeHandler(Handler):
             else Path(tempfile.gettempdir()) / f"{ref.slug}-{block}.{fmt}"
         )
         try:
-            path = se_printing.write_mesh(report.printed, report.chosen_down, fmt, out)
+            path = se_printing.write_mesh(
+                report.printed, report.chosen_down, fmt, out, pitch=report.pitch
+            )
         except se_printing.PrintUnsupported as exc:
             raise Unsupported(
                 str(exc), next="pip install --force-reinstall 'precis-mcp'"
@@ -984,9 +1135,21 @@ class SeHandler(Handler):
         except ExportError as exc:
             raise BadInput(str(exc)) from exc
         size = path.stat().st_size
+        if needs_field_backend(report.printed.spec):
+            kernel = (
+                "sampled SDF field, marching cubes at pitch "
+                + (
+                    format_quantity(report.pitch, "length")
+                    if report.pitch is not None
+                    else "auto"
+                )
+                + "; blend seams are not exact radii"
+            )
+        else:
+            kernel = "manifold3d mesh"
         error_findings = [f for f in report.findings if f.severity == "error"]
         lines = [
-            f"# exported {ref.slug}:{block} → {fmt.upper()} (manifold3d mesh)",
+            f"# exported {ref.slug}:{block} → {fmt.upper()} ({kernel})",
             f"{path}  ({size:,} bytes)",
             f"build frame: down={se_printing.format_down(report.chosen_down)} "
             f"({'pinned' if report.pinned else 'proposed'})",
@@ -1434,6 +1597,28 @@ def _materialize_states(
             except design_states.StateError as exc:
                 raise BadInput(f"declare_states: {exc}") from exc
         if node.pending_transitions is not None:
+            # Slice 5 (blocktree-library-build-plan.md): a 'reaction'
+            # transition's driver_ref is a claim about a bonded-state
+            # PRODUCT — the whole point of pointing it at an rxn slug is
+            # the precedent read (precis_se.precedent). A slug that does
+            # not resolve is refused here, loudly, in the same transaction
+            # as the rest of this edit — never stored as a dangling label.
+            for t in node.pending_transitions:
+                if t["driver_kind"] != "reaction":
+                    continue
+                slug = t["driver_ref"]
+                if not slug:
+                    raise BadInput(
+                        "declare_transitions: a driver_kind='reaction' "
+                        "transition needs driver_ref=<rxn slug> — "
+                        "put(kind='rxn', id=<slug>, rxn_smiles=...) first"
+                    )
+                if store.get_ref(kind="rxn", id=slug) is None:
+                    raise BadInput(
+                        f"declare_transitions: driver_ref {slug!r} does not "
+                        f"resolve to an rxn — put(kind='rxn', id={slug!r}, "
+                        "rxn_smiles=...) first"
+                    )
             transitions = [
                 design_states.Transition(
                     block_uid=uid,
@@ -1818,7 +2003,11 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
                             "from": t.from_state,
                             "to": t.to_state,
                             "driver_kind": t.driver_kind,
-                            "driver_ref": t.driver_ref or "—",
+                            "driver_ref": (
+                                f"rxn:{t.driver_ref}"
+                                if t.driver_kind == "reaction" and t.driver_ref
+                                else (t.driver_ref or "—")
+                            ),
                             "params": json.dumps(t.params) if t.params else "—",
                             "requires": json.dumps(t.requires) if t.requires else "—",
                         }
@@ -2387,15 +2576,24 @@ def _render_freedom(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
-def _render_drc(tree: SeTree, scenario_line: str = "") -> str:
+def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") -> str:
     """``view='drc'`` — the graph-tier report (:mod:`precis_se.drc`):
     findings under the filled-fraction header (same honesty rule as
     validate — a clean empty design is unfilled, not done) and the
     governing-scenario line (``scenario_line``, the design core rental —
     the handler resolves it; this stays store-free), then the DOF probe
     outcomes (including honest skips) and any stack-up problems' full
-    rows."""
+    rows.
+
+    ``se_drc.drc(tree)`` itself stays store-free by contract (its own
+    docstring says so); the joining-precedent findings
+    (:mod:`precis_se.precedent`, blocktree slice 5) need the store (an
+    rxn's ``reaction_class`` + precedent count, a foreign template's
+    design ref id) so they are read here, the one place in this render
+    that already has ``store``/``ref_id`` on hand, and appended AFTER
+    ``drc()``'s own findings — never inside it."""
     report = se_drc.drc(tree)
+    report.findings.extend(se_precedent.findings(store, tree, ref_id))
     fill_line = _fill_fraction_line(tree)
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"

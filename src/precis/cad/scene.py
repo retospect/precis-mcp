@@ -96,13 +96,22 @@ exist only at this text boundary, converted exactly once.
 - Posing: ``expand_instances(..., state={'<joint>': q})`` — a joint's name
   is its subject instance / component. Defaults to 0 (clamped into
   ``limits:``); an *explicit* out-of-limits state is an error.
-- ``<name> <op> <config> [@x,y,z] [rot:rx,ry,rz] [polar:nNrR] [linear:nNdx..dy..dz..]``
+- ``<name> <op> <config> [@x,y,z] [rot:rx,ry,rz] [polar:nNrR] [linear:nNdx..dy..dz..] [blend:<len>]``
   — ``op`` ∈ {``add``, ``cut``, ``intersect``}; ``config`` is the §11
   mini-DSL (:mod:`precis.cad.dsl`). The first node in a part is its base;
   later ``add`` merges, ``cut`` subtracts, ``intersect`` intersects.
   ``chamfer:`` nodes are unbounded half-space tools, so they may only be
   ``cut``/``intersect`` (never ``add``, which would leave the component an
   infinite solid) and may never be a component's first (base) node.
+  ``blend:<len>`` on an ``add`` node folds it into the component with the
+  smooth-min of width ``<len>`` instead of a hard union — a fillet-*like*
+  blend of the concave seam, **not an exact radius** (the v1 rule of
+  ``docs/backlog/cad-sdf-rounding-and-field-export.md``: blend is a union-
+  only option; ``cut``/``intersect`` refuse it, and so does a component's
+  base node, which has nothing to blend against). Edge/corner rounding of
+  a single node is the config's own ``rd`` key (:mod:`precis.cad.dsl`).
+  Either one switches the mesh export to the sampled-field backend
+  (:mod:`precis.cad.fieldmesh`).
 """
 
 from __future__ import annotations
@@ -195,6 +204,7 @@ _OF_RE = re.compile(r"^of:([A-Za-z_][A-Za-z0-9_-]*)$")
 _AT_RE = re.compile(r"^at:([A-Za-z_][A-Za-z0-9_-]*)$")
 _LIMITS_RE = re.compile(rf"^limits:{_LIMIT}\.\.{_LIMIT}$")
 _PITCH_RE = re.compile(rf"^pitch:{_LEN}$")
+_BLEND_RE = re.compile(rf"^blend:{_LEN}$")
 _RATIO_RE = re.compile(rf"^ratio:({_NUM})$")
 _DIM_RE = re.compile(rf"^dim\s+([A-Za-z_][A-Za-z0-9_-]*)\s*(=|>=|<=)\s*{_LEN}$")
 _CONSTRAIN_RE = re.compile(
@@ -350,6 +360,8 @@ class NodeSpec:
     loc: tuple[float, float, float] = (0.0, 0.0, 0.0)
     rot: tuple[float, float, float] = (0.0, 0.0, 0.0)
     pattern: NodePattern | None = None
+    #: smooth-min width (metres) for an ``add`` node; ``0`` = hard union.
+    blend: float = 0.0
 
     def to_meta(self) -> dict[str, Any]:
         """The ``chunks.meta`` payload for this node."""
@@ -362,6 +374,8 @@ class NodeSpec:
         }
         if self.pattern is not None:
             m["pattern"] = dict(self.pattern)
+        if self.blend > 0.0:
+            m["blend"] = self.blend
         return m
 
     @classmethod
@@ -377,6 +391,7 @@ class NodeSpec:
             loc=(loc[0], loc[1], loc[2]),
             rot=(rot[0], rot[1], rot[2]),
             pattern=coerce_pattern(meta.get("pattern")),
+            blend=float(meta.get("blend") or 0.0),
         )
 
 
@@ -1304,7 +1319,31 @@ def parse_source(text: str) -> SceneSpec:
                     "finite solid; add a bounded base node before chamfering it"
                 )
 
-        loc, rot, pattern = _parse_placement(toks[3:], lineno)
+        blend = 0.0
+        rest_toks: list[str] = []
+        for tok in toks[3:]:
+            if bm := _BLEND_RE.match(tok):
+                if op != "add":
+                    raise SceneError(
+                        f"line {lineno}: blend: on node {name!r} with op {op!r} "
+                        "— v1 rule: blend is a union-only option (smooth-min "
+                        "of an 'add' node against the component); a "
+                        "'cut'/'intersect' blend is not defined"
+                    )
+                if current not in components_with_nodes:
+                    raise SceneError(
+                        f"line {lineno}: blend: on node {name!r}, the first "
+                        f"node of component {current!r} — the base has "
+                        "nothing to blend against"
+                    )
+                blend = _length(bm[1], bm[2], f"line {lineno}: blend")
+                if blend <= 0.0:
+                    raise SceneError(
+                        f"line {lineno}: blend: must be > 0 (drop it for a hard union)"
+                    )
+            else:
+                rest_toks.append(tok)
+        loc, rot, pattern = _parse_placement(rest_toks, lineno)
 
         if current not in seen_components:
             seen_components.append(current)
@@ -1318,6 +1357,7 @@ def parse_source(text: str) -> SceneSpec:
                 loc=loc,
                 rot=rot,
                 pattern=pattern,
+                blend=blend,
             )
         )
 
@@ -1670,6 +1710,8 @@ def _node_line(node: NodeSpec) -> str:
         parts.append(_fmt_rot(node.rot))
     if node.pattern is not None:
         parts.append(_pattern_token(node.pattern))
+    if node.blend > 0.0:
+        parts.append(f"blend:{_fmt_len(node.blend)}")
     return " ".join(parts)
 
 
@@ -2533,7 +2575,9 @@ def build_design(
         if cur is None:
             per_component[node.component] = node_expr
         elif node.op == "add":
-            per_component[node.component] = design.merge(cur, node_expr)
+            per_component[node.component] = design.merge(
+                cur, node_expr, blend=node.blend
+            )
         elif node.op == "cut":
             per_component[node.component] = design.subtract(cur, node_expr)
         elif node.op == "intersect":

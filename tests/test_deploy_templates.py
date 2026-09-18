@@ -281,15 +281,22 @@ def test_sandbox_worker_env_sets_precis_root() -> None:
 
 
 def test_collapsed_worker_fix_lane_env_is_gated() -> None:
-    """The fix-lane env (PRECIS_FIX_WORK_DIR / PRECIS_FIX_REPO_DIR) renders
-    ONLY on a gateway host with ``precis_fix_lane_enabled`` set — everywhere
-    else the block must be empty, so an unarmed host neither advertises the
-    ``clones_dir`` capability nor lets a soft-fallback-routed diagnose job
-    half-run (docs/backlog/dark-factory-arming.md, gripe 210007)."""
+    """The fix-lane env (PRECIS_FIX_WORK_DIR / PRECIS_FIX_REPO_DIR plus the
+    two lane-arming flags PRECIS_DIAGNOSE_AUTOPROMOTE /
+    PRECIS_BACKLOG_GROOM_ENABLED) renders ONLY on a gateway host with
+    ``precis_fix_lane_enabled`` set — everywhere else the block must be
+    empty, so an unarmed host neither advertises the ``clones_dir``
+    capability, nor lets a soft-fallback-routed diagnose job half-run, nor
+    grooms auto-fix gripes into fix_gripe todos
+    (docs/backlog/dark-factory-arming.md, gripe 210007)."""
     armed = _render_collapsed_worker_fix_env(gateway=True, enabled=True)
+    # 367779ca arms the groomer + diagnose auto-promote on the same gate:
+    # both ride the fix lane, so an unarmed host renders neither.
     assert armed == {
         "PRECIS_FIX_WORK_DIR": "/Users/deploy/precis-fix-work",
         "PRECIS_FIX_REPO_DIR": "/Users/deploy/precis-fix-repo",
+        "PRECIS_DIAGNOSE_AUTOPROMOTE": "1",
+        "PRECIS_BACKLOG_GROOM_ENABLED": "1",
     }
     assert _render_collapsed_worker_fix_env(gateway=True, enabled=False) == {}
     assert _render_collapsed_worker_fix_env(gateway=False, enabled=True) == {}

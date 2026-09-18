@@ -170,6 +170,25 @@ written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
 - `add_bom` / `remove_bom` — `block` | `a`+`b`, `item_kind`
   `component|part`, `item` (slug/C-number) · `qty` · `uom` · `reason`.
   Slugs aren't vetted at write time; `view='bom'` flags dangling ones.
+
+`view='order'` answers "what do I order": the instanced tree walked to
+purchasable leaves (`bound_kind='component'`/`'part'`, quantities
+multiplied through the arrays exactly like `view='bom'`), merged with any
+explicit `add_bom` lines naming the same item (never double-counted), plus
+a to-make table (`block · mode · qty`) for every unbound **leaf** block —
+an unbound block with children is a plain assembly of the things below
+it, not itself a thing to buy or make, so it gets no row; only a BOUND
+non-leaf gets the opposite treatment: one purchasable line saying `covers
+N block(s)`, with its children never separately ordered or listed. A
+cross-design instance (`template='<slug>#<block>'`) counts for the
+*borrowing* design at its own local quantity, resolving the binding
+through the foreign design. The honesty header mirrors `bom`'s:
+`purchasable: P of L leaf template(s) · to make: M` — `P`/`M`/`L` count
+TEMPLATES (a merged line can carry several), while the `priced`/`massed`
+lines below count purchasable LINES — and a `total: ≥ … (partial, N of
+P)` line whenever not every purchasable line's price AND quantity both
+resolved; `part` lines never price (no store record exists for a
+C-number).
 - `add_note` — `name`, `kind` `question|answer|decision`, `text` ·
   `re` · `about` [anchors] · `origin`
 - `formfind` — force-density form-finding over the axial subgraph:
@@ -212,7 +231,10 @@ state; nothing about a plain block's shape changes.
   (e.g. `{'delta': [10, 12], 'span': [40, 50], 'bistable': True}`) is a
   DECLARED target — the box `compose='<design>#<block>'` reads back —
   distinct from `params`, the realization's own measured numbers;
-  `stimulus` is refused there (it's `driver_kind`, read automatically).
+  `stimulus` is refused there (it's `driver_kind`, read automatically). A
+  `reaction` `driver_ref` must be an existing rxn slug
+  (`put(kind='rxn', id=..., rxn_smiles=...)` first) — it fails the whole
+  edit otherwise, and renders as `rxn:<slug>`.
 - `set_current_state` — `block`, `state` (req). PERSISTENTLY poses a
   block into one of its declared states — the write-time counterpart of
   the transient `args={'state': ...}` read below.
@@ -388,7 +410,7 @@ efficiency read in isolation overstates the link.
 ## Views (`get(kind='se', id=…, view=…)`)
 
 `tree · block · ports · topology · measures · datums · validate · clearance · sweep ·
-drc · bom · fasten · interview · freedom · stability · mechanics ·
+drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
 elicits what's missing — lead with it. `mechanics`/`literature` are
@@ -434,7 +456,16 @@ along its axis), and `axis_not_coaxial`/`axis_not_radially_contained`
 (`bearing` mechanism or `revolute`/`cylindrical` class whose two
 envelopes' own axes — circular envelopes only — aren't lined up or
 nested). All warn tier; a bearing/press fit's declared interference is
-expected and stays clean.
+expected and stays clean. **Joining precedent** (a `bonded`-state
+transition's `driver_ref` names the reaction, blocktree slice 5): a
+connect whose ports declare a known joining (`CuAAC`, ...) but no
+`reaction` transition names an rxn is `joining_unnamed` (info); a named
+rxn with no `reaction_class` is `joining_class_unknown` (warn); a
+`reaction_class` with zero recorded yield rows is `joining_unprecedented`
+(warn); one or more yield rows is `joining_precedent` (info, with the
+row/rxn counts) — `search(kind='rxn', property='yield',
+reaction_class=...)` is the underlying read. The header's error/warning
+counts ignore `info` rows.
 `view='fasten'` refuses a stack-up with no screw-form component bound. It
 also decides **nothing** about what a printed member's far end threads into
 — `params.thread_strategy` (`nut | nut-trap | insert | thread-forming |

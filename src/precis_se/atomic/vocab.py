@@ -106,6 +106,38 @@ def role_halves(role: str) -> tuple[str, str] | None:
     return None
 
 
+def _joining_name(a: str, b: str) -> str:
+    """`` (<name>)`` when ``{a, b}`` is a named joining in
+    :data:`JOINING_HALVES` (e.g. ``' (CuAAC)'``), else ``''`` — the label
+    suffix :mod:`precis_se.compose`'s composition notes append after a
+    ``role↔role`` pair; :mod:`precis_se.precedent`'s DRC findings strip the
+    parens/space back off for a bare name (both read the same table, so
+    neither can drift from the other)."""
+    for name, halves in JOINING_HALVES.items():
+        if {a, b} == set(halves):
+            return f" ({name})"
+    return ""
+
+
+def _complementary_pair(a_roles: set[str], b_roles: set[str]) -> tuple[str, str] | None:
+    """A ``(role on A, role on B)`` pair slice 3 lets bond — complementary
+    halves first, then a symmetric role both afford. Shared by
+    :mod:`precis_se.compose` (composition search) and
+    :mod:`precis_se.precedent` (the joining-precedent DRC read) — the one
+    place either asks "do these two role sets bond"."""
+    for role in sorted(a_roles):
+        halves = role_halves(role)
+        if halves is None:
+            continue
+        other = halves[1] if halves[0] == role else halves[0]
+        if other in b_roles:
+            return role, other
+    for role in sorted(a_roles & b_roles):
+        if role_halves(role) is None:
+            return role, role
+    return None
+
+
 def connect_role(kind: str | None, objectives: dict[str, Any]) -> str | None:
     """The role a ``kind='bond'`` connect's endpoints must both afford —
     ``objectives={'role': ...}`` overrides the default ``'covalent'``.

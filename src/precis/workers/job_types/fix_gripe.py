@@ -319,6 +319,7 @@ def run(
     job_id: int,
     gripe_id: int,
     config: FixGripeConfig | None = None,
+    params: dict[str, Any] | None = None,
 ) -> RunOutcome:
     """Execute one fix_gripe attempt.
 
@@ -327,6 +328,14 @@ def run(
     runs claude, pushes on success. Returns the structured
     outcome — the caller (executor runner) is responsible for
     writing chunks / tags / events back to the DB.
+
+    ``params['diagnosis_job_id']`` (set by ``backlog_groom`` when it groomed
+    the gripe off an on-record ``diagnose_gripe`` success — see
+    :func:`backlog_groom._latest_succeeded_diagnosis_job_id`), when present
+    and resolvable, narrows the agent's brief to the gripe body + that one
+    DIAGNOSIS comment (see :func:`_find_diagnosis_comment`) instead of the
+    full comment timeline. Absent, unresolvable, or malformed, behaviour is
+    unchanged — the full timeline brief.
     """
     import time
 
@@ -435,7 +444,10 @@ def run(
     blocks = store.chunks.list_chunks_for_ref(gripe_id)
     if not blocks:
         raise RuntimeError(f"fix_gripe: gripe id={gripe_id} has no body chunk")
-    prompt = _compose_prompt(ref_title=ref.title, blocks=blocks)
+    diagnosis_comment = _resolve_diagnosis_comment(store, gripe_id, params)
+    prompt = _compose_prompt(
+        ref_title=ref.title, blocks=blocks, diagnosis_comment=diagnosis_comment
+    )
 
     clone_dir = cfg.work_dir / "clones" / f"gripe_{gripe_id}"
     branch = f"gripe_{gripe_id}"
@@ -623,22 +635,96 @@ def run(
 
 # ── Prompt composition ────────────────────────────────────────────
 
+#: Mirrors ``job_types.diagnose_gripe._DIAGNOSIS_PREFIX`` verbatim
+#: (format()-templated with a job id). Duplicated rather than imported —
+#: ``diagnose_gripe`` already imports from this module, so importing back
+#: would be circular.
+_DIAGNOSIS_COMMENT_PREFIX = "DIAGNOSIS (auto, job {job_id}):"
 
-def _compose_prompt(*, ref_title: str, blocks: list[Any]) -> str:
-    """Build the prompt fed to ``claude -p`` from the gripe timeline."""
+
+def _find_diagnosis_comment(
+    store: Any, gripe_id: int, diagnosis_job_id: int
+) -> str | None:
+    """The DIAGNOSIS comment ``diagnose_gripe`` job ``diagnosis_job_id`` left
+    on ``gripe_id``, or ``None`` when it isn't there.
+
+    Matches on the comment text's own job-id stamp rather than trusting
+    ``diagnosis_job_id`` blindly — the comment is the durable record, the
+    param is just a pointer into it, and a stale/wrong pointer (job never
+    ran, ran against a different gripe, or the comment was retired) should
+    degrade to "no diagnosis found", not raise.
+    """
+    prefix = _DIAGNOSIS_COMMENT_PREFIX.format(job_id=diagnosis_job_id)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks "
+            "WHERE ref_id = %s AND chunk_kind = 'gripe_comment' "
+            "AND retired_at IS NULL AND text LIKE %s "
+            "ORDER BY ord LIMIT 1",
+            (gripe_id, f"{prefix}%"),
+        ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def _resolve_diagnosis_comment(
+    store: Any, gripe_id: int, params: dict[str, Any] | None
+) -> str | None:
+    """``params['diagnosis_job_id']`` resolved to its DIAGNOSIS comment, or
+    ``None`` when the param is absent, malformed, or unresolvable.
+
+    Never raises — a bad param must not crash the fix attempt; it just
+    falls back to the full-timeline brief (see :func:`_compose_prompt`).
+    """
+    raw = (params or {}).get("diagnosis_job_id")
+    if raw is None:
+        return None
+    try:
+        diagnosis_job_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return _find_diagnosis_comment(store, gripe_id, diagnosis_job_id)
+
+
+def _compose_prompt(
+    *, ref_title: str, blocks: list[Any], diagnosis_comment: str | None = None
+) -> str:
+    """Build the prompt fed to ``claude -p`` from the gripe timeline.
+
+    When ``diagnosis_comment`` is given (the job was dispatched with a
+    resolvable ``params.diagnosis_job_id`` — see
+    :func:`_resolve_diagnosis_comment`), the brief narrows to the gripe body
+    + that one diagnosis instead of the full comment timeline: the
+    diagnosis already distilled the timeline into a root cause + evidence +
+    fix sketch, so replaying every intervening comment back at the fix
+    agent is redundant. ``None`` (the default) keeps the original
+    behaviour — full BODY + numbered COMMENT timeline.
+    """
     lines: list[str] = []
     lines.append(
         "You are an autonomous engineer assigned a bug fix in the "
         "precis-mcp repository."
     )
     lines.append("")
-    lines.append("BUG REPORT (gripe body + comments, in timeline order):")
-    lines.append("")
-    for i, block in enumerate(blocks):
-        if i == 0:
-            lines.append(f"BODY: {block.text}")
-        else:
-            lines.append(f"COMMENT {i}: {block.text}")
+    if diagnosis_comment is not None:
+        body = blocks[0].text if blocks else ""
+        lines.append("BUG REPORT:")
+        lines.append("")
+        lines.append(f"BODY: {body}")
+        lines.append("")
+        lines.append(
+            "PRIOR DIAGNOSIS (an automated read-only pass already "
+            "investigated this bug — use it as your starting point):"
+        )
+        lines.append("")
+        lines.append(diagnosis_comment)
+    else:
+        lines.append("BUG REPORT (gripe body + comments, in timeline order):")
+        lines.append("")
+        for i, block in enumerate(blocks):
+            if i == 0:
+                lines.append(f"BODY: {block.text}")
+            else:
+                lines.append(f"COMMENT {i}: {block.text}")
     lines.append("")
     lines.append("CONSTRAINTS:")
     lines.append("- You are on a fresh branch named gripe_<id>.")

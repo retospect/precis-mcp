@@ -220,6 +220,8 @@ bound). Options for Reto: (a) raise the default `gap` to ≥ ~0.27 mm
 the chamfer corridor from the fab rules (`trace_width + 2 × spacing`) and
 re-solve the zigzag wall against the wider chamfer; (c) accept the
 finding for the dogfood and fab at a house with tighter rules.
+**RULED 2026-09-18: (b)** — build item; full ruling in
+`pcb-ewod-multitile.md` § "Rulings 2026-09-18" item 1.
 
 **Slice 3 — resize the dogfood to 9×9** and re-run the full path: apply →
 DRC → `view='gerber'`. Constraint found at build: `sink_grid.per_tiles`
@@ -234,6 +236,9 @@ near-empty HV507s); with `per_tiles: 9` (one whole-field sink) the generator
 **refuses** with a named 64-channel overflow. Neither is the 9×9 board we
 want. Resizing prod to 9×9 needs a channel-packing rule (two sinks, 36 each,
 or one sink plus a remainder rule) — a Reto decision, not a build item.
+**RULED 2026-09-18: balanced by chain order** (`channels_per_sink`
+replaces `per_tiles`; 72 → 36 + 36) — build item; ruling in
+`pcb-ewod-multitile.md` § "Rulings 2026-09-18" item 2.
 Slices 1–2 shipped ungated as 74bfc61b + 2b4bbe36; the prod dogfood stays
 8×8 with fabric until that call.
 
@@ -250,7 +255,8 @@ above), two `via_pad_keepout` rows between the merged RESV pad and the
 adjacent plaza's ring vias (gr346004 — geometry the SVG says should clear
 by ≈0.25 mm), plus a wrong-layer label on synthesized pads of a bottom
 instance (gr345858, low). U_TEMP stays synthesized: C32254 is a transistor,
-not a temp sensor — pick a real I2C sensor C-number when the BOM matters.
+not a temp sensor — pick a real I2C sensor C-number when the BOM matters. **RULED
+2026-09-18: TI TMP117** (ruling item 5 there).
 `view='gerber'` now exports dogfood-2 (fabric vias in PTH.drl), but the
 synthesized-pad refusal has a gap for cached-but-unjoined pins (gr346009)
 — criterion 1 is not closed on this evidence.

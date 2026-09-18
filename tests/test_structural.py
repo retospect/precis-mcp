@@ -535,7 +535,14 @@ def test_tool_starved_pass_raises_alert_not_digest(
         duration_s=9.0,
         turns_used=4,
         tool_calls=1,
-        raw_stdout=_stream(_assistant_tool_use("Read")),
+        raw_stdout=_stream(
+            {
+                "type": "system",
+                "subtype": "init",
+                "mcp_servers": [{"name": "precis", "status": "failed"}],
+            },
+            _assistant_tool_use("Read"),
+        ),
     )
     result = run_structural_pass(store)
     assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
@@ -544,6 +551,13 @@ def test_tool_starved_pass_raises_alert_not_digest(
     assert len(alerts) == 1
     assert alerts[0]["severity"] == "warn"
     assert _empty_alerts(store) == []  # the silent-empty alert is distinct
+    # The alert carries the evidence that tells the two causes apart
+    # (gr245505): the init event's precis status, the unscoped tool-call
+    # total, turns/cost, and the head of what the pass wrote.
+    detail = str(alerts[0]["detail"])
+    assert "mcp init: precis=failed" in detail
+    assert "tool_calls(all)=1; turns=4; cost=$0.11" in detail
+    assert 'text head: "No structural issues found this pass."' in detail
 
 
 def test_pass_using_precis_tool_writes_digest_no_starvation_alert(

@@ -266,7 +266,7 @@ apply.
 
 ---
 
-## Slice 5 — rxn-driven transitions + precedent DRC
+## Slice 5 — rxn-driven transitions + precedent DRC — **SHIPPED**
 
 The `bonded` state's geometry is the *product of a reaction*. Point the
 transition's `driver_ref` at a `rxn` slug, then the precedent read shipped
@@ -278,14 +278,180 @@ precedent** is flagged — the same "unprecedented step" signal
 `reaction-kind-and-synthesis-cost.md` already defines for routes. Not an
 error; a flag with the evidence count.
 
+**SHIPPED 2026-09-18** (4971b13e, gated with slice 6 in 6d1cf0b3):
+`src/precis_se/precedent.py`, `rxn_precedent_count`, write-time rxn
+resolution in the handler flush; tests `tests/test_se_precedent.py`.
+
+**Spec (2026-09-18).** Two vocabularies meet here and are NOT the same
+string: a port pair's joining *name* (`CuAAC`, `precis_se.atomic.vocab.
+JOINING_HALVES`) and an `rxn` record's `reaction_class` (an RXNO id such
+as `RXNO:0000024`, `refs.meta`). The bridge is the transition: a block's
+`driver_kind='reaction'` transition names the `rxn` by slug, and that
+record carries the class. No table maps joining names to RXNO ids in this
+slice — the name stays a label, the rxn is the claim.
+
+*Rxn-driven transitions (write half).* In `SeHandler`'s pending-transitions
+flush (the one place with a store), a `driver_kind='reaction'` entry whose
+`driver_ref` does not resolve through `store.get_ref(kind='rxn', id=slug)`
+fails the edit with `BadInput` naming the op and the slug (`put(kind='rxn',
+…)` first) — the whole edit rolls back like any op error. A missing
+`driver_ref` on a reaction transition is the same refusal. Other driver
+kinds are untouched (a wavelength is not a ref). The `## transitions`
+render shows the resolved rxn as `rxn:<slug>` in the `driver_ref` column,
+unchanged text otherwise.
+
+*Precedent DRC (read half).* New module `src/precis_se/precedent.py`,
+`findings(store, tree, ref_id) -> list[ValidationIssue]`, appended by the
+handler's `view='drc'` path (`_render_drc`) AFTER `se_drc.drc(tree)` —
+`drc()` itself stays store-free by contract (its docstring says so), the
+way the governing-scenario line is already resolved by the handler. The
+same findings join `view='validate'` only if that view already merges drc
+findings; otherwise drc only. For every live connect (`tree.connects`,
+endpoints looked up by name as `geometry_plausibility.findings` does):
+
+- Transitions are template-owned (`declare_transitions` goes through
+  `_template_owned`; an instance/array node's own uid never carries
+  `design_transitions` rows). So for each endpoint, when `node.template
+  is not None` resolve to `tree.blocks[node.template]` (foreign templates
+  through `tree.foreign`, as `resolve_template` does) and read
+  `design_states.transitions_for(store, ref_id, <template uid>)` — for a
+  foreign template, that template's own design ref id. Collect the
+  `driver_kind='reaction'` transitions of BOTH endpoints, dedupe by rxn
+  slug.
+- None, and the port pair is a known joining (`vocab.role_halves` /
+  `JOINING_HALVES`): `joining_unnamed`, severity `info` — "joining CuAAC
+  declared by roles only; no reaction transition names an rxn — declare
+  one with `driver_ref=<rxn slug>` for a precedent read". None and no
+  joining either: nothing (a plain mechanical connect).
+- For each rxn: read `reaction_class` off the ref meta. Absent →
+  `joining_class_unknown`, `warn`: "rxn <slug> has no reaction_class;
+  precedent read impossible — `edit(kind='rxn', id=<slug>,
+  reaction_class='RXNO:…')`". Present → count precedent through a new
+  store helper `rxn_precedent_count(reaction_class) -> tuple[int, int]`
+  (yield rows, distinct rxn refs) in `_rxn_ops.py` — one SQL COUNT over
+  the same join `rxn_search_values` uses with `property_id='yield'`, no
+  `limit`. Zero rows → `joining_unprecedented`, `warn`: "no precedent: 0
+  yield rows for <class> (rxn <slug>) — unprecedented step, see
+  `search(kind='rxn', property='yield', reaction_class='<class>')`". N>0
+  → `joining_precedent`, `info`: "<n> yield row(s) across <m> rxn(s) for
+  <class> (rxn <slug>)". The evidence count is always on the row; the
+  header's error/warn counts are unchanged by info rows (the `info`
+  severity already exists in `validate.py`).
+- One connect, one finding per rxn; subject is the connect's
+  `blockA.port↔blockB.port` label already used by
+  `connect_envelope_disjoint`.
+
+*Not in this slice:* a joining-name→RXNO map, substrate/functional-group
+filtering of the precedent read (the rxn precedent verb has no such
+facet yet), and slice 6's component wiring.
+
+*Tests.* `tests/test_se_block_states.py`: reaction transition with an
+unknown slug refused with op name + slug and the edit rolls back; with a
+minted rxn (`RxnHandler(hub=Hub(store=store)).put(id=..., rxn_smiles=...)`
+as `tests/test_rxn.py` does) it round-trips and renders `rxn:<slug>`.
+New `tests/test_se_precedent.py`: the four findings (unnamed / class
+unknown / unprecedented / precedent with counts) over a two-block
+connect, the same finding when one endpoint is an INSTANCE of a template
+that declares the reaction transition (the template-resolution rule
+above — the adversarial test for this slice), the
+plain-mechanical-connect silence, and the drc header counts
+ignoring info rows; `tests/test_rxn.py`: `rxn_precedent_count` on 0, 1
+and 2 rxns of one class. Skill `precis-se-help`: the
+`declare_transitions` bullet says a `reaction` driver_ref must be an
+existing rxn slug; the DRC section lists the four rules in one paragraph.
+
 ---
 
-## Slice 6 — `realized-by` → `component`
+## Slice 6 — `realized-by` → `component` — **SHIPPED**
 
 Block → the purchasable thing. The edge already exists (`se` uses it), so this
 is wiring plus a `view` that answers "what do I order" by walking the
 instanced tree to purchasable leaves. Mirrors the BOM rollup, including its
 honesty line ("priced: N of M").
+
+**SHIPPED 2026-09-18** (6d1cf0b3, remote gate green): `src/precis_se/order.py`,
+`view='order'`, tests `tests/test_se_order.py`. Review-driven rulings now
+in the code: the honesty line counts templates while `priced` counts
+lines; a priced line with unresolved qty is unpriced; to-make lists leaf
+templates only.
+
+**Spec (2026-09-18, revised after the readiness pass).** `view='order'`
+on `get(kind='se')`, new module `src/precis_se/order.py`,
+`rollup(store, tree, ref_id) -> OrderReport` — takes the plain `store`
+and calls `store.component_current_spec_value(ref_id, spec_id)` itself
+(the handler's `_spec_number` is a bound method; importing it would cycle
+handler ↔ order). Rendered by the handler next to `_render_bom`; the
+unknown-view help text that enumerates every view grows `order` too. The
+`realized-by` link is already derived on every save
+(`persist.sync_realized_by`, component bindings only), so nothing new is
+written; the walk reads the binding that link mirrors,
+`block.bound_kind`/`block.bound`, never the link table.
+
+*The walk — the `_render_fab` algorithm (handler.py), not a per-node
+scan.* `bound_kind`, `bound` and `mode` live ONLY on ordinary/template
+blocks (`_template_owned` refuses `set_binding`/`set_mode` on instance
+and array nodes), and `bom.design_occurrences(tree)` already folds every
+instance's and array's count into its template's total. So: iterate the
+live blocks, `continue` past any node with `node.template is not None`
+(exactly as `_render_fab` does), read binding/mode off the template, and
+take `qty = design_occurrences[template_name]`. Cross-design: a
+foreign-templated instance (`<slug>#<block>`) has no local template
+block — resolve it through `resolve_template`/`tree.foreign` to the
+foreign design's block for its binding and mode, while the occurrence
+count stays the LOCAL instance's (its own array multiplicity along its
+parents); `design_occurrences` never touches `tree.foreign`, so the
+foreign leg of the count is order.py's own small addition, keyed on the
+qualified template name. A template is a **leaf** when no live local
+block has it as `parent`.
+
+- `bound_kind='component'` → **purchasable**: one order line per distinct
+  component slug, `qty` = summed occurrences, `used by` = the template
+  names (deduped, sorted), `unit_cost` / `mass` via
+  `store.component_current_spec_value(<component ref_id>, 'unit_cost' |
+  'mass')` with the ref resolved by `store.get_ref(kind='component',
+  id=slug)` (canonical store value, never copied), plus `category` and
+  `mpn` from the component ref's `meta` when present.
+- `bound_kind='part'` → **purchasable**, LCSC/JLC C-number line (`bound`
+  holds the C-number), cost and mass `—` (no store value exists for
+  parts; the honesty line says so rather than pricing it as zero).
+- explicit `tree.bom` lines → included through the existing
+  `bom.rollup(tree)` so fasteners declared as BOM lines appear once, on
+  the same table, tagged `via: bom line`; a bom line and a bound leaf
+  naming the same slug merge into one line (qty summed, both provenances
+  shown), never two.
+- anything else (`cad`, `structure`, unbound) → **to make**: a second
+  table `block · mode · qty`, with the template's `mode` when declared,
+  else `—`.
+
+A non-leaf template that is itself bound to a component (an assembly
+bought whole) is purchasable and its subtree is NOT walked — its
+descendants are covered by the purchase; the line says `covers N
+block(s)`.
+
+*Honesty lines*, same shape as bom's: `purchasable: P of L leaf
+template(s) · to make: M` then `priced: N of P line(s)` / `massed: …`;
+the total cost prints only when every purchasable line is priced,
+otherwise `total: ≥ <sum of priced> (partial, N of P)`. Empty cases have
+their own wording, not bom's: no live blocks → `(no blocks yet —
+unfilled)` (the `view='tree'` line); blocks but nothing purchasable and
+no bom lines → `(nothing to order yet — bind a block to a component or
+part, or add_bom)`.
+
+*Not in this slice:* supplier/lead-time fields (the component kind has
+none), a purchase-order export, and pricing of `part` items.
+
+*Tests.* New `tests/test_se_order.py` (mint components with
+`ComponentHandler(hub=hub).put(id=…, category=…, spec='unit_cost',
+value=…, unit=…)` as `tests/test_component.py` does): a leaf template bound to a
+component, instanced through an array, appears ONCE with the
+array-multiplied qty (instance nodes are skipped, not classified); two blocks bound to the
+same slug merge into one line with both names; a bought assembly hides
+its children and says `covers N`; a `part` line is unpriced and the
+honesty line says so; the partial-total rule; a foreign template's bound
+component is counted for the borrowing design (adversarial test — the
+cross-design walk); an explicit bom line and a bound leaf for the same
+slug do NOT double count. Skill `precis-se-help`: one paragraph under the
+BOM section for `view='order'`.
 
 ---
 
@@ -321,7 +487,7 @@ things:
 
 Slices 1 and 2 are shipped; in the event slice 1 took its own migration and
 slice 2 took none, its tables having ridden design-core's. 3–6 are
-independently shippable. **Do not bundle 7–9 into any of them** — a
+independently shippable (all six shipped as of 2026-09-18). **Do not bundle 7–9 into any of them** — a
 refactor or schema change that also alters behaviour cannot be verified by
 "the tests still pass", which is the whole reason the earlier blocktree work
 stayed behaviour-neutral.
@@ -369,3 +535,25 @@ the spine exists once, not fewer lines. What survives as durable law:
   and block trees are invisible to the links graph. Possibly the right
   trade (a links row per block is heavy), but it is undocumented —
   `docs/codebase.md` says nothing about this kind family.
+
+## Open questions / decisions log
+
+- 2026-09-18 readiness pass on slice 5: blocker — the precedent walk read
+  transitions off the connect endpoint's own uid, which is empty for any
+  instanced/array endpoint (transitions are template-owned); fixed above
+  (resolve `node.template` first, adversarial test added). Verified clean:
+  `store.get_ref` returns None for a missing rxn slug; `_render_drc` has one
+  caller; validate does not merge drc findings; `info` severity exists and
+  the drc header counts only error/warn; `'yield'` is the seeded prop_id;
+  no import cycle for `precedent.py`.
+- 2026-09-18 readiness pass on slice 6: three blockers, all folded into
+  the revised spec — the walk must skip instance/array nodes and read
+  binding/mode off templates with `design_occurrences` for qty (the
+  `_render_fab` algorithm), resolving foreign templates through
+  `tree.foreign` for the binding while keeping the local count;
+  `order.rollup` takes the plain store (handler ↔ order would cycle);
+  the empty cases get their own wording (bom's "nothing bought yet" line
+  is gated on explicit bom lines, a different condition). Verified clean:
+  `bound_kind`/`bound`/`mode` field names, component `category`/`mpn` in
+  ref meta, `sync_realized_by` component-only, `bom.rollup(tree)`
+  single-arg, occurrence helpers never touch `tree.foreign`.

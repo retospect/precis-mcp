@@ -58,11 +58,20 @@ your own report write. A condition whose freshness budget your own success
 resets will still read as stale here — say "as of tick start" rather than
 asserting a still-broken pass you are in the act of clearing.
 
+**`worker_logs` — you CAN read it.** `get(kind='job', id='/logs?handler=<name>
+&since=24&level=WARNING')` is a read-only view over the centralised
+`worker_logs` table (same table `precis logs` gives an operator on the CLI),
+newest-first, with a `host=`/`q=`/`limit=` filter set besides. Consult it
+before writing "could not confirm" or "no worker_logs/Bash access this tick"
+— that gap is closed. `handler=` takes either the short pass name
+(`'dispatch'`, `'embed'`, …) or the full dotted logger; omit it to see every
+pass at once for a host/window.
+
 Skim `search(kind='skill', q='<surface you need>')` for anything not listed
-above (scheduler-lease staleness, per-host `worker_logs` rates, claim-
-registry forensics) — the skill docs describe what's checked even where no
-direct query exists; note "no queryable surface for X" as a finding rather
-than guessing. Never fabricate a number you didn't read.
+above (scheduler-lease staleness, claim-registry forensics) — the skill docs
+describe what's checked even where no direct query exists; note "no
+queryable surface for X" as a finding rather than guessing. Never fabricate a
+number you didn't read.
 
 ## Step 2 — classify by ratio, not count
 
@@ -139,7 +148,13 @@ Structure it as exactly these four Markdown sections, in this order:
   of it. Say "nothing to report" rather than inventing activity.
 - **Needs a human** — anything you couldn't act on: a gripe you filed or
   annotated (name it by `gr<id>`), a surface with no queryable tool, a
-  finding you're not confident enough in to call.
+  finding you're not confident enough in to call. One bullet per ask.
+  The bullet's first line is the imperative title (≤ 120 chars) — what
+  you need Reto to do or decide, not a restatement of the symptom — then
+  the why on the following line(s). These bullets are converted
+  automatically into `waiting-for:reto` todos after you reply; do not
+  also `put` a todo yourself for anything you list here (you have no
+  `kind='todo'` write this tick anyway — see Step 4).
 
 Keep it terse — this is a status report read by whoever's on call, not an
 essay. If everything gathered was baseline noise, say so plainly in one
