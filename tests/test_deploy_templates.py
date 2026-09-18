@@ -290,6 +290,10 @@ def test_collapsed_worker_fix_lane_env_is_gated() -> None:
     assert armed == {
         "PRECIS_FIX_WORK_DIR": "/Users/deploy/precis-fix-work",
         "PRECIS_FIX_REPO_DIR": "/Users/deploy/precis-fix-repo",
+        # Piece C (367779ca): the diagnose→fix flags ride the same gate —
+        # nothing for them to feed on a host without a fix lane.
+        "PRECIS_DIAGNOSE_AUTOPROMOTE": "1",
+        "PRECIS_BACKLOG_GROOM_ENABLED": "1",
     }
     assert _render_collapsed_worker_fix_env(gateway=True, enabled=False) == {}
     assert _render_collapsed_worker_fix_env(gateway=False, enabled=True) == {}

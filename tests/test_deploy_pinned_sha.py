@@ -428,7 +428,9 @@ def test_canary_path_pins_a_local_sha(fx: Fixture, tmp_path: Path) -> None:
         timeout=60,
     )
     assert "could not resolve" not in result.stderr
-    assert f"is a commit this checkout contains — pinned {fx.gated[:8]}" in result.stdout
+    assert (
+        f"is a commit this checkout contains — pinned {fx.gated[:8]}" in result.stdout
+    )
     assert f"phase 1 — gateway only (pinned {fx.gated[:8]})" in result.stdout
     # Past resolution and phase 1; the heartbeat verify has no prod to ask.
     assert result.returncode != 0
@@ -484,7 +486,14 @@ def _ship_pin_block() -> str:
     [
         ("0", "0", "0", "0", True, "/go: full local gate"),
         ("1", "0", "0", "0", False, "/qland: nothing was gated at all"),
-        ("0", "1", "0", "0", False, "/land: testmon-narrowed subset, not a deploy warrant"),
+        (
+            "0",
+            "1",
+            "0",
+            "0",
+            False,
+            "/land: testmon-narrowed subset, not a deploy warrant",
+        ),
         (
             "0",
             "1",
@@ -502,7 +511,14 @@ def _ship_pin_block() -> str:
             False,
             "docs-only local lane ran ruff + doc pointers, never pytest (gr347014)",
         ),
-        ("0", "0", "1", "1", False, "docs-only remote lane ran GitHub's fast set, not the shards"),
+        (
+            "0",
+            "0",
+            "1",
+            "1",
+            False,
+            "docs-only remote lane ran GitHub's fast set, not the shards",
+        ),
         ("1", "0", "0", "1", False, "docs-only --quick: doubly ungated"),
     ],
 )
