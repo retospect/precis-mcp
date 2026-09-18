@@ -116,6 +116,11 @@ class FrontierResult:
     #: wants the newly-surfaced candidates reads this list too.
     provisional: list[ProvisionalCandidate] = field(default_factory=list)
     unevaluated: list[Candidate] = field(default_factory=list)  # no measures yet
+    #: Objective keys the split treated as optional (``rubric_objectives``
+    #: items flagged ``"optional": true``) — additive, so a renderer can say
+    #: WHICH required axis an unevaluated-but-converged candidate lacks
+    #: instead of "(none converged yet)" (gr345354).
+    optional: frozenset[str] = frozenset()
 
 
 #: Quest hub v2 / Cycle C J4 — the Pareto-scatter axis choice. A starter pick
@@ -938,6 +943,7 @@ def pareto_split(
         frontier=frontier,
         dominated=dominated,
         unevaluated=unevaluated,
+        optional=optional,
     )
 
 

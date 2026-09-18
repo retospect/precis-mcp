@@ -272,6 +272,41 @@ class TestViewBudget:
                 h.get(id=qid, view="results", args={"budget": bad})
 
 
+class TestFrontierEmptyHeadline:
+    """gr345354: an empty confirmed frontier names the missing required
+    objective instead of claiming nothing converged."""
+
+    def test_names_missing_required_axis_and_optional_ones(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "span_at_Uopt", "sense": "min"},
+                    {"key": "energy", "sense": "min"},
+                    {"key": "P_side", "sense": "min", "optional": True},
+                ]
+            },
+        )
+        a = _mk_candidate(store, qid, "Zn n=1", _dopant_ops("Zn", 1))
+        b = _mk_candidate(store, qid, "Zn n=2", _dopant_ops("Zn", 2))
+        _converge(store, a, energy=-1.0)
+        _converge(store, b, energy=-1.2)
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert "(none converged yet)" not in body
+        assert (
+            "2 converged candidate(s) lack a required objective: span_at_Uopt ×2"
+            in body
+        )
+        assert "optional (not required): P_side" in body
+
+    def test_none_converged_stays_honest(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        _mk_candidate(store, qid, "Zn n=1", _dopant_ops("Zn", 1))
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert "(none converged yet)" in body
+
+
 # ── tick prompt section ──────────────────────────────────────────────────
 
 

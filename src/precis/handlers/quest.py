@@ -37,6 +37,7 @@ queue.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
@@ -133,6 +134,61 @@ def _budget_arg(args: dict[str, Any] | None) -> int:
             f"args={{'budget': {raw!r}}}: budget must be a positive int (tokens)"
         )
     return raw
+
+
+def _frontier_empty_lines(fr: Any) -> list[str]:
+    """Why the confirmed frontier is empty — the headline under the band.
+
+    An empty frontier means NO candidate is *evaluated* (converged + every
+    required objective present), which is not the same as "none converged":
+    a quest ranking on an axis the candidates don't carry yet (qu164903's
+    13 trusted barriers with no ``span_at_Uopt``, gr345354) read as no
+    results. Name the missing required axes with counts, and the optional
+    ones so the reader knows which flag already relaxes the split.
+    """
+    # A converged candidate that lacks a required key sits in ``provisional``
+    # (measured, unconfirmed — reasons name the gap) or, with no measures at
+    # all, in ``unevaluated``; both are "converged but not evaluated".
+    converged = [c for c in fr.unevaluated if c.converged]
+    provisional = [pc for pc in fr.provisional if pc.candidate.converged]
+    if not converged and not provisional:
+        return ["  (none converged yet)"]
+    optional: frozenset[str] = getattr(fr, "optional", frozenset())
+    required = [k for k, _ in fr.objectives if k not in optional]
+    missing: Counter[str] = Counter()
+    untrusted: Counter[str] = Counter()
+    for c in converged:
+        for k in required:
+            if c.measures.get(k) is None:
+                missing[k] += 1
+    for pc in provisional:
+        for k in required:
+            if k in pc.untrusted_keys:
+                untrusted[k] += 1
+            elif pc.measures.get(k) is None:
+                missing[k] += 1
+    n = len(converged) + len(provisional)
+    why: list[str] = []
+    if missing:
+        why.append(
+            "lack a required objective: "
+            + " · ".join(f"{k} ×{c}" for k, c in missing.most_common())
+        )
+    if untrusted:
+        why.append(
+            "carry it untrusted: "
+            + " · ".join(f"{k} ×{c}" for k, c in untrusted.most_common())
+        )
+    # split invariant: converged + every required key present ⇒ evaluated
+    if not why:  # pragma: no cover
+        return ["  (none evaluated yet)"]
+    opt = (
+        f"; optional (not required): {', '.join(sorted(optional))}" if optional else ""
+    )
+    return [
+        f"  (none evaluated yet — {n} converged candidate(s) {'; '.join(why)}{opt}; "
+        'flag an axis {"optional": true} in rubric_objectives to rank without it)'
+    ]
 
 
 def _fit_bands(
@@ -593,7 +649,7 @@ class QuestHandler(NumericRefHandler):
         bands: list[tuple[str, list[str]]] = [
             (
                 f"── Pareto frontier ({len(fr.frontier)}) — current best ──",
-                [_fmt(c) for c in fr.frontier] or ["  (none converged yet)"],
+                [_fmt(c) for c in fr.frontier] or _frontier_empty_lines(fr),
             )
         ]
         if fr.dominated:

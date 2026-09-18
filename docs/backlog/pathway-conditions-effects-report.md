@@ -215,6 +215,22 @@ tree touches pathway/quest.
 
 Order = cheapest correctness fix first; each its own worktree cycle + /go.
 
+**Status 2026-09-18:** items 1–3 LANDED (309766b4, 6cc41ad2 — qlanded, gate
+debt on the next /go). Item 1 was reframed: `label_hi` is `next_label`'s
+label high-water mark by design; the missing piece was a live-element
+rollup, now `meta.composition`. Item 2's engine-side half is still open:
+catpath should not emit `U_opt`/`span_at_Uopt` over a route whose barrier
+is blocked (or should emit the blocker ids alongside) — do it in the next
+catpath bump. Item 4 (gr345336) is owned by the gripe-fix loop
+(root-caused to a third Anthropic quota wording; fix landed as 7da34dae) —
+not part of this thread. Item 5 (gr345354) LANDED with this note: the
+frontier headline now says which required objective the converged
+candidates lack (and which axes are optional) instead of "(none converged
+yet)". Note qu164903 already flags P_side optional; its empty frontier is
+the trusted-barrier candidates lacking `span_at_Uopt`/`U_L_abs` (pre-CHE
+harvests) — re-harvest or a fresh aggregate fills them. Remaining: item 6
+via Phase 1, plus the catpath-side half of item 2.
+
 1. **gr345340 `label_hi` after `set_element`** — `store/_structure_ops.py`
    `_label_hi(scene)` is not re-derived by the substitution op, so a doped
    slab summarises as clean. Recompute from atoms after every element-changing
