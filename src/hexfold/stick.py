@@ -97,6 +97,10 @@ def stick_info(net: Net) -> tuple[np.ndarray, float]:
     if net.seed3 is not None:
         # primitives with a known embedding (closed-form, cylinder, cone,
         # flat lattice) seed from it; the spring stage is identical
+        if len(net.seed3) != len(net.atoms):
+            raise ValueError(
+                f"seed3 has {len(net.seed3)} rows for {len(net.atoms)} atoms"
+            )
         pos = np.array(net.seed3, dtype=np.float64)
     else:
         pos = _spectral_seed(net)

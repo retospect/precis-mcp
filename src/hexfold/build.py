@@ -3097,6 +3097,11 @@ def _apply_connects(
     seam_rims: list[tuple[tuple[int, ...], int, int]] = []
     seam_atom_ords: set[int] = set()
     seam_registry_edges: list[tuple[str, str, int, int]] = []
+    # ord -> rim ords it bonds to, in minted order -- used below to seed
+    # each seam atom's 3D position from its rim neighbours once
+    # _place_seeds has placed those (gr347187: seam atoms have no seed
+    # of their own, since they don't exist in the pre-seam net).
+    seam_nbrs: dict[int, list[int]] = {}
     for seam in spec.seams:
         missing = [r for r in seam.rims if r not in ports]
         if missing:
@@ -3177,12 +3182,14 @@ def _apply_connects(
             )
             path_to_ord[path] = o
             new_ords.append(o)
+            seam_nbrs[o] = []
         for i in range(n):
             for j, port in enumerate(resolved):
                 rim_ord = port.dangling[_idx(j, i)]
                 a, b = new_ords[i], rim_ord
                 bonds.append((min(a, b), max(a, b), 1))
                 annot(min(a, b), max(a, b), seam.name)
+                seam_nbrs[new_ords[i]].append(rim_ord)
         seam_atom_ords.update(new_ords)
         faces = _seam_faces_k(
             [p.atoms for p in resolved],
@@ -3225,6 +3232,22 @@ def _apply_connects(
         seam_records.append(SeamRecord(seam.name, seam.rims, seam.k, tuple(new_ords)))
 
     seed3, seed_kind = _place_seeds(spec, net, fuse_frames, bond_links)
+    if seed3 is not None and seam_nbrs:
+        # gr347187: _place_seeds works from the pre-seam net, so seed3
+        # has no rows for the seam atoms minted above -- append one row
+        # per seam atom, in ordinal order (they're contiguous after the
+        # pre-seam atoms), placed at the mean of its rim neighbours'
+        # already-placed seed positions.
+        pos = np.array(seed3, dtype=np.float64)
+        extra = [tuple(pos[seam_nbrs[o]].mean(axis=0)) for o in sorted(seam_nbrs)]
+        seed3 = tuple(seed3) + tuple(
+            (float(r0), float(r1), float(r2)) for r0, r1, r2 in extra
+        )
+        seed_kind = "mixed"
+    if seed3 is not None:
+        assert len(seed3) == len(atoms), (
+            f"seed3 has {len(seed3)} rows for {len(atoms)} atoms"
+        )
     # part-graph edges for registry closure (SPEC 12.2) -- resolve each
     # fuse/bond endpoint to its owning instance while atoms still carry
     # their pre-hybridisation identity (ord -> instance is unaffected by

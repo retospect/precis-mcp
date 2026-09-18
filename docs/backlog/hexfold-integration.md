@@ -103,6 +103,9 @@ development, with the boundary kept clean for a later pip re-export.
 - `check.py` residual skipped for multi-block files with consumed rims
   (also silently skips `sheet_pill_bump.hx`'s fused sheets) — restrict
   `consumed` to bond-attached sheets.
+- seam-atom path IDs (`<seam>/s<i>`, spec §9, e.g. `outer/s0`) are not
+  resolvable by `--bond-->` ops yet (`op.dangling`) — needed to
+  functionalise `flanged_doughnut.hx`'s Y carbons.
 
 ## What builds today (hexfold 0.1, verified with `hexfold check`)
 
@@ -112,7 +115,11 @@ fixed by step 2's 109.5° ideal); pillar (sheet `hex(0)` → `tube(6,0)`,
 native `{7:6}` seam); nanobuds 9-6, 8-7, DA/DB necks; cone(P); C60 hole;
 tube_fuse; pill on a sheet — a capped pill above and a bump below, seamed
 at the pill's foot ring, each tube top closed by a `cap(6,0)` flat lid
-(`sheet_pill_bump.hx`, residual 0, no ERROR).
+(`sheet_pill_bump.hx`, residual 0, no ERROR); flanged doughnut — two
+`cap(24,0)` washers joined through a `(12,0)` tube wall and closed at the
+outer equator by a `cap(36,0)` annulus in a k=3 seam, whose 24 seam atoms
+are the trivalent Y-carbon functionalisation sites of
+`rotary-ratchet-valve.md` (`flanged_doughnut.hx`, residual 0, no ERROR).
 
 ## Standalone-repo state (for the eventual re-export)
 

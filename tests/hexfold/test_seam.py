@@ -287,6 +287,14 @@ _PRE_SEAM_EULER_SNAPSHOT: dict[str, tuple[bool, list[tuple[str, str, int]]]] = {
         [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)],
     ),
     "cone5.hx": (True, [("euler.chi", "INFO", 1), ("euler.residual", "INFO", 0)]),
+    "flanged_doughnut.hx": (
+        True,
+        [
+            ("euler.chi", "INFO", 0),
+            ("euler.chi", "INFO", 0),
+            ("euler.residual", "INFO", 0),
+        ],
+    ),
     "lid_pillbox.hx": (
         True,
         [("euler.chi", "INFO", 2), ("euler.residual", "INFO", 0)],
@@ -388,6 +396,11 @@ def test_pre_seam_fuse_only_examples_are_one_sheet(name: str) -> None:
         # bond-attach examples (the nanobud menus) are already
         # multi-sheet pre-0.2 -- this guard is for the fuse-only ones.
         pytest.skip("bond-attach example, not fuse-only")
+    if net.seams:
+        # a k>=3 seam never merges sheets (SPEC 6.3) -- flanged_doughnut
+        # is a k=3-seamed multi-sheet net, like sheet_pill_bump; this
+        # guard is for the fuse-only ones.
+        pytest.skip("seam-bearing example, not fuse-only")
     assert len(net.sheet_atoms) == 1
 
 
