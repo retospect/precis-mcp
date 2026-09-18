@@ -646,6 +646,11 @@ def search(
     # signature. Declared at the verb level so strict-schema MCP clients
     # don't strip it.
     wants: dict[str, Any] | None = None,
+    # search(kind='se', compose={'delta': [lo, hi], 'span': [lo, hi]}) —
+    # the composition proposer (port-pose-and-composition-search.md):
+    # enumerates n switches + m spacers over the library against a
+    # requirement box, scored like wants=. Same one-dict rationale.
+    compose: dict[str, Any] | None = None,
     # See ``get`` — FastMCP injects the live per-request ``Context``
     # here (excluded from the wire schema); used only to key the skill
     # serve ledger off the real MCP session for this call.
@@ -673,8 +678,8 @@ def search(
 
     `uncited=<draft>` drops sources it already cites.
 
-    `wants=` (se): ranked library search, never a strict filter
-    (precis-se-help).
+    `wants=` (se): ranked library search, never a strict filter;
+    `compose=` (se): composition proposer over it (precis-se-help).
 
     Full docs: get(kind='skill', id='precis-search-help').
     """
@@ -934,6 +939,8 @@ def search(
     # optional kwarg above.
     if wants is not None:
         payload["wants"] = wants
+    if compose is not None:
+        payload["compose"] = compose
 
     # See ``get`` for the ``str | CallToolResult`` return contract, and
     # for why the serve-ledger session binds only around the dispatch

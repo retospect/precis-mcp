@@ -272,6 +272,51 @@ ops=[{'op':'instance_block','name':'<new>','template':'switch1#dye'}])`
 — `template` takes the qualified `<design>#<block>` spelling cross-design
 instancing already supports (slice 1).
 
+## Composition proposer — search(kind='se', compose=…)
+
+`search(kind='se', compose={'delta': [10, 12], 'span': [40, 50]})`
+enumerates **n switches in series + m spacers** over the ranked-search
+library and scores each composition against the box exactly like a
+`wants=` row — never a strict filter, never empty while one switch
+exists (the nearest misses show with their distances). `delta` (Å,
+port-to-port stroke) and `span` (nm, long-state length) take the same
+scalar / `[lo, hi]` / dict shapes as `wants`; at least one is required.
+`n_max` (default 6) and `m_max` (default 4) bound the enumeration (cap
+2 000 compositions, said in the header). `wants=` may ride along: its
+keys score on the **switch** block; `q=` narrows designs as before.
+
+Facts are star-schema rows, never on the block — five ordinary
+`material`/`component` properties (an unknown one mints `proposed`-tier
+on first `put(kind='material', …, property=…)`, no migration):
+`delta_length` (Å; a block with a row is a *switch*), `unit_length`
+(nm; with no `delta_length` the block is a *spacer*),
+`pss_short_fraction` (0–1, photostationary conversion; conditions carry
+the wavelength), `thermal_half_life` (s), `persistence_length` (nm).
+Blocks with neither length row are skipped and counted in the header.
+
+Every row surfaces what a stroke estimate must not hide: the PSS-scaled
+Δ beside the ideal one (`Δ 10.2 Å (8.16 Å at PSS 80 % short)`, or
+`PSS unknown`), the bistability verdict with τ½ (`bistable ✗ (T-type
+(thermal reverse), τ½ 2 d)`), `floppy: span 23 nm > Lp 15 nm (rod#u)`
+when the span exceeds the spacer's (or, without one, the switch's)
+persistence length — `stiffness unknown` when there is no row — and
+the switch↔spacer port complementarity from the slice 3 halves
+(`azide↔alkyne (CuAAC)`).
+
+```python
+search(kind='se', compose={'delta': [8, 9], 'span': [20, 30]},
+       wants={'stimulus': 'light'})
+# 1. 3 × azo#u + 2 × rod#u  3/3  ✓delta: 10.2 Å (8.16 Å at PSS 80 % short)
+#    ✓span: 23 nm  ✓stimulus: light  · bistable ✗ (…, τ½ 2 d)
+#    · floppy: span 23 nm > Lp 15 nm (rod#u) · joining: azide↔alkyne (CuAAC)
+```
+
+The Next line is the top row's ops script: `instance_block` × n +
+spacers, alternating, joined by `connect` through the complementary
+ports — paste it into `edit(kind='se', id=<yours>, ops=[…])` and run
+DRC on the composed tree. `compose='<design>#<block>'` (reading the box
+off a block's declared transition ranges) is not shipped yet.
+
 ## Optical (FRET) ops — energy transfer as a comm channel
 
 Use these when blocks talk to each other by **Förster resonance energy

@@ -1179,16 +1179,18 @@ class SeHandler(Handler):
         mode: str | None = None,
         page_size: int = 20,
         wants: dict[str, Any] | None = None,
+        compose: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        # Ranked library search (blocktree-library-build-plan.md §Slice 4):
-        # `wants=` makes `q=` optional — with one, the card search narrows
-        # the CANDIDATE designs; a narrow to zero falls back to the whole
-        # library and says so, rather than reading as "no matches" (this
-        # surface is never a strict filter). Checked before the q-only
-        # BadInput below, on purpose — that guard is unchanged for the
-        # plain-search caller.
-        if wants is not None:
+        # Ranked library search (blocktree-library-build-plan.md §Slice 4)
+        # and the composition proposer (port-pose-and-composition-search.md,
+        # precis_se.compose): `wants=` / `compose=` make `q=` optional —
+        # with one, the card search narrows the CANDIDATE designs; a narrow
+        # to zero falls back to the whole library and says so, rather than
+        # reading as "no matches" (this surface is never a strict filter).
+        # Checked before the q-only BadInput below, on purpose — that guard
+        # is unchanged for the plain-search caller.
+        if wants is not None or compose is not None:
             narrowed_slugs: set[str] | None = None
             narrow_note = ""
             if q is not None and str(q).strip():
@@ -1207,6 +1209,7 @@ class SeHandler(Handler):
                 body=se_library.render_search(
                     self.store,
                     wants=wants,
+                    compose=compose,
                     q=q,
                     narrowed_slugs=narrowed_slugs,
                     narrow_note=narrow_note,

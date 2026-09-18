@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from precis.design import states as design_states
 from precis.errors import BadInput
@@ -569,6 +569,54 @@ class LibraryRow:
     sum_distance: float = 0.0
     on_frontier: bool = False
 
+    @property
+    def handle(self) -> str:
+        return f"{self.design_slug}#{self.block_name}"
+
+
+class Rankable(Protocol):
+    """What :func:`order_rows` needs of a row — a slice 4 block row or a
+    :mod:`precis_se.compose` composition row, ranked by the one order."""
+
+    attrs: dict[str, AttrResult]
+    score: float
+    sum_distance: float
+    on_frontier: bool
+
+    @property
+    def handle(self) -> str: ...
+
+
+def order_rows[R: Rankable](rows: list[R], numeric_keys: list[str]) -> list[R]:
+    """The one ranking order, in place: score desc, then :mod:`precis.
+    quest.frontier`'s Pareto split over the numeric keys' miss distances
+    (frontier first), then Σ distance, then handle — never a second
+    dominance rule (docs/backlog/blocktree-library-build-plan.md §Slice 4
+    "Reuse quest's selection machinery")."""
+    fcands = [
+        frontier.Candidate(
+            ref_id=idx,
+            handle=row.handle,
+            name=row.handle,
+            # Every numeric key always carries a finite-or-inf distance
+            # (never None) — see AttrResult.distance's contract — but a
+            # defensive filter keeps the type honest for Candidate.measures.
+            measures={
+                k: d for k in numeric_keys if (d := row.attrs[k].distance) is not None
+            },
+            converged=True,
+        )
+        for idx, row in enumerate(rows)
+    ]
+    result = frontier.pareto_split(fcands, [(k, "min") for k in numeric_keys])
+    frontier_idx = {c.ref_id for c in result.frontier}
+    for idx, row in enumerate(rows):
+        row.on_frontier = idx in frontier_idx
+    rows.sort(
+        key=lambda r: (-r.score, 0 if r.on_frontier else 1, r.sum_distance, r.handle)
+    )
+    return rows
+
 
 def rank_rows(
     store: Any,
@@ -587,52 +635,23 @@ def rank_rows(
     cache = cache or _ReadCache(store)
 
     rows: list[LibraryRow] = []
-    fcands: list[frontier.Candidate] = []
-    for idx, cand in enumerate(candidates):
+    for cand in candidates:
         attrs = resolve_block_attrs(store, cand, want_specs, cache)
-        score = sum(a.weight for a in attrs.values() if a.matched)
-        # Every numeric key always carries a finite-or-inf distance (never
-        # None) — see AttrResult.distance's contract — but a defensive
-        # filter keeps the type honest for frontier.Candidate.measures.
-        measures: dict[str, float] = {
-            k: d for k in numeric_keys if (d := attrs[k].distance) is not None
-        }
-        sum_distance = sum(measures.values()) if measures else 0.0
         rows.append(
             LibraryRow(
                 design_slug=cand.design_slug,
                 block_name=cand.block_name,
                 attrs=attrs,
-                score=score,
+                score=sum(a.weight for a in attrs.values() if a.matched),
                 max_score=max_score,
-                sum_distance=sum_distance,
+                sum_distance=sum_distances(attrs, numeric_keys),
             )
         )
-        fcands.append(
-            frontier.Candidate(
-                ref_id=idx,
-                handle=f"{cand.design_slug}#{cand.block_name}",
-                name=cand.block_name,
-                measures=measures,
-                converged=True,
-            )
-        )
+    return order_rows(rows, numeric_keys)
 
-    objectives = [(k, "min") for k in numeric_keys]
-    result = frontier.pareto_split(fcands, objectives)
-    frontier_idx = {c.ref_id for c in result.frontier}
-    for idx, row in enumerate(rows):
-        row.on_frontier = idx in frontier_idx
 
-    rows.sort(
-        key=lambda r: (
-            -r.score,
-            0 if r.on_frontier else 1,
-            r.sum_distance,
-            f"{r.design_slug}#{r.block_name}",
-        )
-    )
-    return rows
+def sum_distances(attrs: dict[str, AttrResult], numeric_keys: list[str]) -> float:
+    return sum(d for k in numeric_keys if (d := attrs[k].distance) is not None)
 
 
 # ── rendering ────────────────────────────────────────────────────────────
@@ -688,10 +707,32 @@ _EMPTY_LIBRARY_BODY = (
 )
 
 
+def narrow_candidates(
+    candidates: list[_Candidate],
+    narrowed_slugs: set[str] | None,
+    q: str | None,
+    narrow_note: str,
+) -> tuple[list[_Candidate], str]:
+    """Apply the handler's ``q=`` pre-pass: an empty/``None`` set means
+    "the whole library"; a narrow whose designs hold no library block of
+    their own (instances only) also falls back, and the note says that
+    instead of the handler's "narrowed to N"."""
+    if not narrowed_slugs:
+        return candidates, narrow_note
+    scoped = [c for c in candidates if c.design_slug in narrowed_slugs]
+    if scoped:
+        return scoped, narrow_note
+    return candidates, (
+        f"(q={q!r} matched {len(narrowed_slugs)} design(s) with no "
+        "library blocks of their own — showing the whole library)"
+    )
+
+
 def render_search(
     store: Any,
     *,
     wants: Any,
+    compose: Any = None,
     q: str | None = None,
     narrowed_slugs: set[str] | None = None,
     narrow_note: str = "",
@@ -700,24 +741,29 @@ def render_search(
     """The whole ``search(kind='se', wants=...)`` read: parse, walk the
     library, score, rank, render. ``narrowed_slugs``/``narrow_note`` are
     the handler's ``q=`` pre-pass (:meth:`precis_se.handler.SeHandler.
-    search`) — an empty/``None`` set here means "the whole library", per
-    the spec's fall-back-and-say-so rule. A narrow whose designs hold no
-    library block of their own (instances only) also falls back, and the
-    header says that instead of the handler's "narrowed to N" note."""
+    search`) — see :func:`narrow_candidates`. With ``compose=`` the same
+    walk feeds the composition proposer (:mod:`precis_se.compose`) and
+    ``wants=`` becomes optional."""
+    if compose is not None:
+        from precis_se import compose as compose_mod
+
+        return compose_mod.render_compose(
+            store,
+            compose=compose,
+            wants=wants,
+            q=q,
+            narrowed_slugs=narrowed_slugs,
+            narrow_note=narrow_note,
+            page_size=page_size,
+        )
     want_specs = parse_wants(wants)
     cache = _ReadCache(store)
     candidates = iter_candidates(store)
     if not candidates:
         return _EMPTY_LIBRARY_BODY
-    if narrowed_slugs:
-        scoped = [c for c in candidates if c.design_slug in narrowed_slugs]
-        if scoped:
-            candidates = scoped
-        else:
-            narrow_note = (
-                f"(q={q!r} matched {len(narrowed_slugs)} design(s) with no "
-                "library blocks of their own — showing the whole library)"
-            )
+    candidates, narrow_note = narrow_candidates(
+        candidates, narrowed_slugs, q, narrow_note
+    )
     unknown = unknown_keys(store, want_specs, cache)
     rows = rank_rows(store, candidates, want_specs, cache)
     return render_rows(
@@ -733,12 +779,16 @@ def render_search(
 __all__ = [
     "AttrResult",
     "LibraryRow",
+    "Rankable",
     "WantSpec",
     "iter_candidates",
+    "narrow_candidates",
+    "order_rows",
     "parse_wants",
     "rank_rows",
     "render_rows",
     "render_search",
     "resolve_block_attrs",
+    "sum_distances",
     "unknown_keys",
 ]

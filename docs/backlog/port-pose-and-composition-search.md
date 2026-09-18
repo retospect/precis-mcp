@@ -58,80 +58,39 @@ Declare a block with two ports and a state pair; on the transition put
 ranges: Δ between ports ∈ [10, 12] Å, span ∈ [40, 50] nm, stimulus
 `light`, bistable preferred, cycles ≥ N. Declared intent only.
 
-## New item — composition proposer (se atomic `propose` mode)
+## Composition proposer — **SHIPPED** 2026-09-17 as `compose=`
 
-Reads slice 4's rows and enumerates compositions that satisfy the
-requirement: series of n switches + spacers (n·Δ_unit ∈ Δ-range,
-n·L_switch + spacers ∈ span-range), and lever/hinge families once ports
-carry rotation. Small integer enumeration. Output = slice 4's response
-shape extended to compositions, ranked, never empty:
+`search(kind='se', compose={delta: [lo, hi] Å, span: [lo, hi] nm, n_max?,
+m_max?}, wants=…)` — `src/precis_se/compose.py`, a deterministic
+enumerator on slice 4's read path (NOT `se_propose_atomic`, the per-block
+LLM fragment job; `se_propose` stays reserved for the whole-design LLM
+proposer). n switches + m spacers, scored like a slice 4 row through the
+same `_match_value_row`/`order_rows`, never empty; per-unit facts are the
+proposed-tier properties `delta_length` (Å), `unit_length` (nm),
+`pss_short_fraction`, `thermal_half_life` (s), `persistence_length` (nm)
+resolved through the star schema. Every row surfaces the PSS-scaled
+stroke (or `PSS unknown`), the T-type verdict with τ½, `floppy` /
+`stiffness unknown` against the persistence length, and the
+switch↔spacer port complementarity; the Next line is the
+`instance_block` × n + `connect` ops script. Skill H2 "Composition
+proposer"; tests `tests/test_se_library_compose.py`.
 
-    3 × azobenzene in series + 2 × spacer: Δ 10.2 Å (8.2 Å at PSS 80 % cis)
-    span 44 nm · opto ✓ · bistable ✗ (T-type, τ½ 2 d) · CuAAC ✓
+**Left open:**
 
-A chosen row instantiates as an se tree of library instances joined by
-complementary click ports (slice 3 makes azide↔alkyne legal and
-azide–azide refused); unit states compose into chain states the sweep
-view already enumerates; selection reuses quest's rubric machinery with
-human-set weights. DRC (slices 5/6) then runs on the composed tree.
-
-**Must surface, never hide:** PSS conversion < 100 % (expected Δ =
-n·Δ·p_cis, shown per row); a 40–50 nm span exceeds rigid small-organic
-struts, so the spacer library (DNA / peptide / OPE rods with stiffness
-rows) decides whether a series stroke survives.
-
-### Design — enumeration over slice 4's rows (2026-09-17, unshipped)
-
-**Surface.** `search(kind='se', wants={...}, compose={...})` — a second
-dict kwarg beside `wants=` (same rationale: the vocabulary is star-schema
-data, not a flat signature). NOT `se_propose_atomic`: that job
-(`src/precis_se/atomic/propose.py`) is the tool-less LLM fragment fill
-for ONE block, and `se_propose` is reserved for the whole-design LLM
-proposer; this proposer is a deterministic enumerator, so it lives in
-`precis_se/library.py`'s read path, not a job. `compose` is the Decision-3
-requirement box until transitions carry ranges: `{delta: [lo, hi]` (Å,
-port-to-port stroke), `span: [lo, hi]` (nm, long-state length), `n_max?`
-(default 6 switches), `m_max?` (default 4 spacers)`}`. When Decision 3
-ships, `compose='<design>#<block>'` reads the same box off that block's
-declared transition ranges.
-
-**Per-unit facts** come through `resolve_block_attrs` with these property
-keys (minted `proposed`-tier on first write per the material skill — no
-migration): `delta_length` (Å, long→short state Δ end-to-end),
-`unit_length` (nm, long-state port-to-port), `pss_short_fraction` (0–1,
-conditions carry the wavelength), `thermal_half_life` (s),
-`persistence_length` (nm). A block with a `delta_length` row is a switch;
-a block with `unit_length` and no `delta_length` is a spacer. Blocks
-with neither are skipped and counted in the header ("N blocks carry no
-length facts — put(kind='material', property='unit_length', …)").
-
-**Enumeration.** For each switch S, n ∈ 1..n_max, each spacer P (or
-none), m ∈ 0..m_max: Δ_ideal = n·Δ_S; Δ_pss = Δ_ideal·p_short (only when a
-`pss_short_fraction` row exists; else Δ_ideal with a "PSS unknown" mark);
-span = n·L_S + m·L_P. Cap at 2 000 compositions, largest n first is
-NOT the order — feasibility is. Each composition is scored exactly like a
-slice 4 row: synthesize value rows `{value_num: Δ_pss}` / `{value_num:
-span}` and run them through `_match_value_row` against the box's
-intervals; `wants=` keys (stimulus, bistable, joining, any star key)
-evaluate on the switch block and pass through unchanged. Rank with
-`rank_rows`' order (score, Pareto frontier on the two miss distances,
-Σ distance, id). Never empty: with no feasible composition the nearest
-misses show with their distances.
-
-**Must surface, per row:** `Δ 10.2 Å (8.2 Å at PSS 80 % cis)`;
-`bistable ✗ (T-type, τ½ …)` from `thermal_half_life`; `floppy: span 44 nm
-> Lp 15 nm (OPE)` whenever span exceeds the spacer's `persistence_length`
-(or `stiffness unknown` when the spacer has no row); `joining` from the
-switch↔spacer port roles (slice 3's complementarity). Next-line = the
-`instance_block` × n + spacer ops script joining alternating units via
-complementary ports.
-
-**Tests** (tests/test_se_library_compose.py): enumeration arithmetic incl.
-PSS scaling and the "PSS unknown" mark; never-empty nearest-miss; the
-floppy flag and the stiffness-unknown mark; a block without length rows is
-skipped and counted; `compose=` reaches the handler over the MCP door
-(the verb signature IS the schema, memory `mcp_verb_kwarg_silent_drop`);
-`wants=` keys still score on the switch block.
+- **Seed the prod facts** the proposer reads — no prod block carries a
+  `delta_length`/`unit_length` row yet, so `compose=` on prod returns
+  "nothing to compose" until azobenzene (Δ 9.0 → 5.5 Å, PSS), a dsDNA
+  spacer (Lp 49.9 nm) and an OPE rod are written as `material` property
+  rows citing the sources below (`source=` on each `put`). Wait for the
+  OPE stubs to land first; the dsDNA/azobenzene rows can go now.
+- `compose='<design>#<block>'` reading the box off a block's declared
+  transition ranges — needs Decision 3 (a transition carrying interval
+  constraints). Today the string form refuses with a pointer.
+- Lever/hinge families once ports carry rotation (the pose slot's `rot`
+  is declared but no composition uses it).
+- Selection with human-set weights through quest's rubric machinery, and
+  DRC (slices 5/6) on the composed tree, are the build plan's later
+  slices, not this item.
 
 ## Order
 
@@ -143,7 +102,8 @@ skipped and counted; `compose=` reaches the handler over the MCP door
    blocktree-library-build-plan.md §Slice 4's shipped note for the
    `wants=` shape, join order and the structure-bound-block gap it leaves
    open.
-3. Composition proposer.
+3. Composition proposer — **SHIPPED** 2026-09-17 (`compose=`); seed the
+   prod facts next (see the item above).
 
 Sources for the proposer (cite-sources rule) — resolved 2026-09-17, all
 held or queued in prod:

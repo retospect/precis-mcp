@@ -362,6 +362,19 @@ reached through a binding or a ``made-of`` link), and ranks with
 dominance rule. Never a strict filter: every row shows its per-attribute
 match/miss with the actual value, and the result set is empty only when
 the library itself is.
+
+**Composition proposer** (port-pose-and-composition-search.md "New item
+— composition proposer") lands ``search(kind='se', compose={...})``:
+:mod:`precis_se.compose` enumerates n switches + m spacers over the same
+library rows against a requirement box (``delta`` Å / ``span`` nm
+intervals), scores each composition like a slice 4 row (per-unit facts
+are the star-schema properties ``delta_length``/``unit_length``/
+``pss_short_fraction``/``thermal_half_life``/``persistence_length``)
+and ranks with the same order — a deterministic enumerator on the read
+path, not the LLM ``se_propose_atomic`` job. Every row surfaces the
+PSS-scaled stroke, the T-type verdict with τ½, a ``floppy``/``stiffness
+unknown`` mark against the persistence length, and the switch↔spacer
+port complementarity; the Next line is the ops script that realises it.
 """
 
 from __future__ import annotations
