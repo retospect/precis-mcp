@@ -21,7 +21,12 @@ On a lint violation
 the pass regenerates ONCE; a second violation drops the sentence entirely
 ("no sentence beats a bad one") and stamps
 ``refs.meta['context_sentence_failed']`` so the paper converges rather
-than being re-billed every sweep.
+than being re-billed every sweep. Only a *model verdict* (decline, or two
+lint violations) earns that stamp: a sweep where the model never answered
+(dispatch failure, empty completion — e.g. the cloud rung rate-limited)
+raises :class:`TransientFailure` and leaves the paper untouched for the
+next sweep. Prod stamped three papers permanently failed on 2026-09-17
+during a rate-limit window before this distinction existed.
 
 **The input can be the wrong paper.** Few held papers have a
 ``card_abstract``, so the usual input is the first body chunk — and in a
@@ -77,6 +82,7 @@ __all__ = [
     "META_FAILED_KEY",
     "META_KEY",
     "NO_CONTEXT",
+    "TransientFailure",
     "backfill_candidate_ref_ids",
     "is_decline",
     "lint_violation",
@@ -120,11 +126,15 @@ _BLOCKLIST_RE = re.compile(
 #: Attribution-preamble openers the sentence must never lead with — the
 #: reader already knows the sentence is about the paper, so "The authors
 #: report ..." / "This paper presents ..." / "We show ..." is pure filler.
-#: Anchored at the START of the sentence (past optional leading punctuation/
-#: quote chars), case-insensitive, word-boundary after the phrase.
+#: The first alternative catches the dodge prod produced once the plain
+#: forms were banned ("NEC Corporation researchers observed ..."): an
+#: attribution noun anywhere in the first five words. Anchored at the
+#: START of the sentence (past optional leading punctuation/quote chars),
+#: case-insensitive, word-boundary after the phrase.
 _PREAMBLE_RE = re.compile(
     r"^\W*(?:"
-    r"the\ authors?"
+    r"(?:[^\s.,;:]+\s+){0,4}(?:researchers|scientists|investigators|co-?workers)"
+    r"|the\ authors?"
     r"|this\ (?:paper|study|work|article|report|letter)"
     r"|the\ (?:paper|study|work|article|report|letter)"
     r"|the\ present\ (?:paper|study|work)"
@@ -154,8 +164,10 @@ _SYS = (
     "'Helical microtubules of graphitic carbon were observed by "
     "transmission electron microscopy.' Never open with attribution filler "
     "such as 'The authors report', 'This paper presents', 'This study "
-    "describes', 'We show', or 'Here we report' -- the reader already "
-    "knows the sentence is about the paper. Never use words like proof, "
+    "describes', 'We show', 'Here we report', or 'X researchers observed' "
+    "-- no attribution subject at all, not the authors, not a group or "
+    "institution name; the reader already knows the sentence is about "
+    "the paper. Never use words like proof, "
     "definitive, confirms, demonstrates, proves, or establishes. At most "
     "35 words, ONE sentence, no preamble, no markdown. Reply with ONLY "
     "the sentence and nothing else.\n\n"
@@ -244,10 +256,19 @@ def is_decline(sentence: str) -> bool:
     return sentence.strip().rstrip(".").upper() == NO_CONTEXT
 
 
+class TransientFailure(RuntimeError):
+    """The model never delivered a verdict this sweep (dispatch failure or
+    empty completion on the attempts that mattered). The caller must NOT
+    stamp :data:`META_FAILED_KEY` — the paper stays claimable and the next
+    sweep retries; only a decline or two real lint violations converge."""
+
+
 def _generate_with_lint(client: Any, title: str, abstract: str) -> str | None:
     """Propose + lint; on a violation, regenerate ONCE; a second violation
-    drops the sentence ("no sentence beats a bad one" — spec). Never
-    raises."""
+    drops the sentence ("no sentence beats a bad one" — spec) by returning
+    ``None``. Raises :class:`TransientFailure` when neither attempt was a
+    model verdict — a ``None`` from :func:`propose_context_sentence` is an
+    outage, not an opinion, and must not converge the paper."""
     sentence = propose_context_sentence(client, title, abstract)
     if sentence is not None and is_decline(sentence):
         return None
@@ -258,7 +279,9 @@ def _generate_with_lint(client: Any, title: str, abstract: str) -> str | None:
         return None
     if retry is not None and lint_violation(retry) is None:
         return retry
-    return None
+    if sentence is not None and retry is not None:
+        return None  # two real lint violations — the model's verdict
+    raise TransientFailure("no model reply this sweep")
 
 
 # ── DB: backfill cohort + claim + write ──────────────────────────────────
@@ -367,10 +390,14 @@ def run_context_sentence_pass(
     if not rows:
         return {"claimed": 0, "ok": 0, "failed": 0}
 
-    ok = failed = 0
+    ok = failed = deferred = 0
     for ref_id, title, abstract in rows:
         try:
-            sentence = _generate_with_lint(client, title, abstract)
+            try:
+                sentence = _generate_with_lint(client, title, abstract)
+            except TransientFailure:
+                deferred += 1
+                continue
             if sentence is None:
                 store.update_ref(ref_id, meta_patch={META_FAILED_KEY: True})
                 failed += 1
@@ -380,4 +407,10 @@ def run_context_sentence_pass(
         except Exception:
             log.exception("context_sentence: failed ref_id=%s", ref_id)
             failed += 1
+    if deferred:
+        log.warning(
+            "context_sentence: %d paper(s) deferred — no model reply "
+            "(rate limit / dispatch failure); left unstamped for the next sweep",
+            deferred,
+        )
     return {"claimed": len(rows), "ok": ok, "failed": failed}

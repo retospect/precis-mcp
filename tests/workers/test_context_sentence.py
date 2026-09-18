@@ -20,6 +20,7 @@ from precis.workers.context_sentence import (
     META_FAILED_KEY,
     META_KEY,
     NO_CONTEXT,
+    TransientFailure,
     _generate_with_lint,
     backfill_candidate_ref_ids,
     is_decline,
@@ -103,6 +104,9 @@ class TestLint:
             "Here we report Z.",
             "In this study, Z was measured.",
             "the study describes Z.",
+            "NEC Corporation researchers observed helical microtubules by TEM.",
+            "Researchers at NEC observed helical microtubules by TEM.",
+            "Scientists measured Z by AFM.",
         ],
     )
     def test_attribution_preamble_is_rejected(self, sentence: str) -> None:
@@ -184,6 +188,25 @@ class TestGenerateWithLint:
         )
         assert _generate_with_lint(client, "T", "A") is None
         assert len(client.calls) == 2
+
+    def test_dispatch_failure_twice_raises_transient(self) -> None:
+        """No model reply is an outage, not a verdict — the caller must not
+        converge the paper on it (prod stamped three papers failed during a
+        rate-limit window on 2026-09-17)."""
+        with pytest.raises(TransientFailure):
+            _generate_with_lint(_BoomClient(), "T", "A")
+
+    def test_dispatch_failure_then_clean_uses_the_retry(self) -> None:
+        client = _FakeClient(["", "Computational study; DFT-only, no synthesis."])
+        out = _generate_with_lint(client, "T", "A")
+        assert out == "Computational study; DFT-only, no synthesis."
+        assert len(client.calls) == 2
+
+    def test_violation_then_dispatch_failure_is_transient(self) -> None:
+        """One real violation plus an outage is not two violations."""
+        client = _FakeClient(["This proves the mechanism beyond doubt.", ""])
+        with pytest.raises(TransientFailure):
+            _generate_with_lint(client, "T", "A")
 
     def test_decline_drops_the_paper_without_a_retry(self) -> None:
         """A decline means the supplied text wasn't this paper (prod wrote an
@@ -376,6 +399,18 @@ class TestRunPass:
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert META_KEY not in (ref.meta or {})
         assert ref.meta.get(META_FAILED_KEY) is True
+
+    def test_transient_failure_leaves_the_paper_unstamped(self, store: Any) -> None:
+        ref_id, _chunk = _seed_paper(store, title="A paper")
+
+        result = run_context_sentence_pass(
+            store, client=_BoomClient(), ref_ids=[ref_id]
+        )
+
+        assert result == {"claimed": 1, "ok": 0, "failed": 0}
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert META_KEY not in (ref.meta or {})
+        assert META_FAILED_KEY not in (ref.meta or {})
 
     def test_skips_a_paper_that_already_has_a_sentence(self, store: Any) -> None:
         ref_id, _chunk = _seed_paper(store, title="Already sentenced")
