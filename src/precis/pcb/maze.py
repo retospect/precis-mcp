@@ -322,6 +322,101 @@ def _dilate(mask: np.ndarray, r_cells: int) -> np.ndarray:
     return out
 
 
+def _point_in_polygon(gx: np.ndarray, gy: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """Vectorised ray-casting point-in-polygon test (even-odd rule).
+    ``gx``/``gy`` are same-shape coordinate grids; ``poly`` is an
+    ``(n, 2)`` vertex ring — the wrap edge (last vertex back to the
+    first) is always included, so callers never repeat the first point.
+    ``O(n_vertices)`` python-level iterations, each a vectorised op over
+    the whole window — the window is bounded to one pad's own bounding
+    box (:meth:`OccupancyGrid.stamp_shape`), so this stays linear in pad
+    count even for an EWOD electrode's ~1000-vertex crenellated ring
+    (gripe 346962)."""
+    inside = np.zeros(gx.shape, dtype=bool)
+    n = len(poly)
+    x1, y1 = poly[-1]
+    for i in range(n):
+        x2, y2 = poly[i]
+        if y1 != y2:
+            cond = (y1 > gy) != (y2 > gy)
+            x_at_y = (x2 - x1) * (gy - y1) / (y2 - y1) + x1
+            inside ^= cond & (gx < x_at_y)
+        x1, y1 = x2, y2
+    return inside
+
+
+def _dist_to_polygon_edges(
+    gx: np.ndarray, gy: np.ndarray, poly: np.ndarray
+) -> np.ndarray:
+    """Per-point Euclidean distance to the nearest EDGE of ``poly`` (same
+    vertex convention as :func:`_point_in_polygon`) — the margin test
+    :meth:`OccupancyGrid.stamp_shape` folds in for its dilated (CONTESTED
+    pre-pass) claim: "inside the polygon OR within ``margin_mm`` of its
+    boundary" is the correct buffer, not an approximation of one."""
+    best = np.full(gx.shape, np.inf)
+    n = len(poly)
+    x1, y1 = poly[-1]
+    for i in range(n):
+        x2, y2 = poly[i]
+        ex, ey = x2 - x1, y2 - y1
+        seg_len2 = ex * ex + ey * ey
+        if seg_len2 < 1e-12:
+            d = np.hypot(gx - x1, gy - y1)
+        else:
+            t = np.clip(((gx - x1) * ex + (gy - y1) * ey) / seg_len2, 0.0, 1.0)
+            d = np.hypot(gx - (x1 + t * ex), gy - (y1 + t * ey))
+        best = np.minimum(best, d)
+        x1, y1 = x2, y2
+    return best
+
+
+@dataclass(frozen=True, slots=True)
+class PadShape:
+    """A pad's TRUE footprint, in board coordinates, for
+    :meth:`OccupancyGrid.stamp_shape`/:meth:`OccupancyGrid.stamp_pad_shape`
+    — the shape-aware claim gripe 346962 exists to add. An enclosing
+    CIRCLE (``kind="circle"``) was, until this change, the only shape
+    :mod:`precis.pcb.maze` could claim at all; at fine pitch (0.8mm QFP
+    pins) that circle is wider than the pitch, so a neighbouring pad's
+    claim stole a pad's own centre cell and :meth:`OccupancyGrid.route`
+    refused before ever searching. Three kinds:
+
+    - ``"circle"``: a disc of radius ``max(w_mm, h_mm) / 2`` — real round
+      pads, AND the conservative fallback for anything this router
+      cannot represent exactly (see ``kind="rect"``'s own note).
+    - ``"rect"``: an axis-aligned ``w_mm`` x ``h_mm`` box centred on
+      ``(x, y)`` — a real rect/obround pad whose board-space rotation is
+      an exact multiple of 90 degrees (:mod:`precis.pcb.padplace`'s own
+      "aperture-less writer" limit for anything else — a caller with an
+      oblique rotation must build a ``"circle"`` instead, at
+      ``max(w_mm, h_mm) = hypot(true_w, true_h)`` to keep the OLD
+      conservative enclosing-circle radius).
+    - ``"poly"``: a closed board-space vertex ring — an EWOD electrode's
+      crenellated pad, or any other polygon pad, claimed at its true
+      outline rather than an enclosing circle.
+    """
+
+    kind: str
+    x: float
+    y: float
+    w_mm: float = 0.0
+    h_mm: float = 0.0
+    poly: tuple[tuple[float, float], ...] = ()
+
+    @property
+    def enclosing_radius_mm(self) -> float:
+        """The conservative circle this shape still records into
+        :attr:`OccupancyGrid.pads` via :meth:`OccupancyGrid.
+        stamp_pad_shape` — that consumer (the via keep-out,
+        :meth:`OccupancyGrid.via_clears_pads`/``_pad_keepout_mask``)
+        stays layer-blind-conservative ON PURPOSE (see
+        :meth:`OccupancyGrid.stamp_pad`'s own docstring); a shaped CLAIM
+        does not change that, it only makes the claim itself tighter."""
+        if self.kind == "poly" and self.poly:
+            return max(math.hypot(px - self.x, py - self.y) for px, py in self.poly)
+        return math.hypot(self.w_mm, self.h_mm) / 2.0
+
+
 class OccupancyGrid:
     """The shared claim map: which net's copper CORE covers each cell.
 
@@ -507,6 +602,124 @@ class OccupancyGrid:
         """
         self.stamp_disk(layers, x, y, radius_mm, net_id, contest=contest)
         self._pads.append((x, y, radius_mm))
+
+    def stamp_shape(
+        self,
+        layers: Iterable[int],
+        shape: PadShape,
+        margin_mm: float,
+        net_id: int,
+        *,
+        contest: bool = False,
+    ) -> None:
+        """The shape-aware sibling of :meth:`stamp_disk` (gripe 346962):
+        claim every cell whose centre lies within ``margin_mm`` of
+        ``shape``'s TRUE footprint (disc/axis-aligned rect/polygon), not
+        just its enclosing circle. Same :data:`CONTESTED`/
+        nearest-cell-fallback semantics as :meth:`stamp_disk` — a shape
+        too small to cover any cell centre still claims the one cell
+        nearest its own centre, and with ``contest=True`` a cell already
+        owned by a DIFFERENT net becomes CONTESTED rather than stolen.
+
+        ``layers`` is drained into a list up front — a drilled pad spans
+        every board layer, and the ``inside`` mask below is the same for
+        each of them, computed ONCE and only the write repeated per
+        layer; a bare one-shot ``Iterable`` would silently claim nothing
+        past the first layer once consumed."""
+        layer_list = list(layers)
+        spec = self.spec
+        if shape.kind == "poly" and shape.poly:
+            xs_v = [p[0] for p in shape.poly]
+            ys_v = [p[1] for p in shape.poly]
+            bx0, bx1 = min(xs_v) - margin_mm, max(xs_v) + margin_mm
+            by0, by1 = min(ys_v) - margin_mm, max(ys_v) + margin_mm
+        elif shape.kind == "rect":
+            hx = shape.w_mm / 2.0 + margin_mm
+            hy = shape.h_mm / 2.0 + margin_mm
+            bx0, bx1 = shape.x - hx, shape.x + hx
+            by0, by1 = shape.y - hy, shape.y + hy
+        else:  # "circle" (also the fallback for an empty/unknown shape)
+            r = max(shape.w_mm, shape.h_mm) / 2.0 + margin_mm
+            bx0, bx1 = shape.x - r, shape.x + r
+            by0, by1 = shape.y - r, shape.y + r
+        lo_x = max(0, math.floor((bx0 - spec.x0) / spec.pitch))
+        hi_x = min(spec.nx - 1, math.ceil((bx1 - spec.x0) / spec.pitch))
+        lo_y = max(0, math.floor((by0 - spec.y0) / spec.pitch))
+        hi_y = min(spec.ny - 1, math.ceil((by1 - spec.y0) / spec.pitch))
+        if lo_x > hi_x or lo_y > hi_y:
+            return
+        px = spec.x0 + np.arange(lo_x, hi_x + 1) * spec.pitch
+        py = spec.y0 + np.arange(lo_y, hi_y + 1) * spec.pitch
+        if shape.kind == "poly" and shape.poly:
+            poly = np.asarray(shape.poly, dtype=np.float64)
+            gx, gy = np.meshgrid(px, py)
+            inside = _point_in_polygon(gx, gy, poly)
+            if margin_mm > 0:
+                inside |= _dist_to_polygon_edges(gx, gy, poly) <= margin_mm
+        elif shape.kind == "rect":
+            dx = px[None, :] - shape.x
+            dy = py[:, None] - shape.y
+            inside = (np.abs(dx) <= shape.w_mm / 2.0 + margin_mm) & (
+                np.abs(dy) <= shape.h_mm / 2.0 + margin_mm
+            )
+        else:
+            dx = px[None, :] - shape.x
+            dy = py[:, None] - shape.y
+            r = max(shape.w_mm, shape.h_mm) / 2.0 + margin_mm
+            inside = (dx**2 + dy**2) <= r**2
+        if not inside.any():
+            # Same "a shape smaller than half a cell diagonal can miss
+            # every cell centre" fallback :meth:`stamp_disk` uses — claim
+            # the single cell nearest the shape's own centre so its net
+            # is never left with nothing to start a route from.
+            cx, cy = spec.to_cell(shape.x, shape.y)
+            iy_hit, ix_hit = cy - lo_y, cx - lo_x
+            if not (0 <= iy_hit < inside.shape[0] and 0 <= ix_hit < inside.shape[1]):
+                return  # the shape's own centre cell isn't even in this window
+            inside[iy_hit, ix_hit] = True
+        for layer in layer_list:
+            window = self._owner[layer, lo_y : hi_y + 1, lo_x : hi_x + 1]
+            if contest:
+                clash = inside & (window != FREE) & (window != net_id)
+                window[inside] = net_id
+                window[clash] = CONTESTED
+            else:
+                window[inside] = net_id
+
+    def stamp_pad_shape(
+        self,
+        layers: Iterable[int],
+        shape: PadShape,
+        net_id: int,
+        *,
+        contest: bool = False,
+    ) -> None:
+        """:meth:`stamp_shape` at zero margin, plus remembering
+        ``(x, y, enclosing_radius_mm)`` as a PAD — the shape-aware
+        sibling of :meth:`stamp_pad`, for the same reason: a via keep-out
+        query (:meth:`via_clears_pads`/``_pad_keepout_mask``) needs this
+        pad in :attr:`pads` regardless of whether its CLAIM is a circle,
+        a rect or a polygon (see :attr:`PadShape.enclosing_radius_mm`'s
+        own docstring for why that record stays the conservative circle
+        even here)."""
+        self.stamp_shape(layers, shape, 0.0, net_id, contest=contest)
+        self._pads.append((shape.x, shape.y, shape.enclosing_radius_mm))
+
+    def claim_centre(
+        self, layers: Iterable[int], x: float, y: float, net_id: int
+    ) -> None:
+        """Force this pad's own NEAREST cell to ``net_id``, unconditionally
+        — even over a foreign claim or :data:`CONTESTED`. See
+        :func:`precis.pcb.realize._stamp_pads`'s docstring (pass 3) for
+        why every pad needs this: a shaped claim a tight neighbour can
+        legitimately CONTEST away is still the right outcome for the
+        copper in general, but the one cell a route must start or end on
+        can never be allowed to lose that race — the exact defect gripe
+        346962 opened against (a 0.8mm-pitch neighbour's disc claiming a
+        pad's own centre cell before this pass existed)."""
+        ix, iy = self.spec.to_cell(x, y)
+        for layer in layers:
+            self._owner[layer, iy, ix] = net_id
 
     def disk_is_free(
         self, layers: Iterable[int], x: float, y: float, radius_mm: float, net_id: int

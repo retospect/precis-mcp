@@ -865,3 +865,37 @@ def test_residual_crossing_entries_carry_a_reason_for_the_note() -> None:
 
     src = inspect.getsource(pcb_route._residual_crossings)
     assert '"reason": "same-layer-crossing"' in src
+
+
+def test_routed_net_is_never_failed_by_a_gap_capacity_warning(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gap-capacity channel (`realize._gap_usage`) is the SAME
+    placement-time chord geometry as the crossing sweep above — instance
+    courtyard gaps, side-blind — so it must be gated the same way: a net
+    the maze router actually routed has real copper proving the path,
+    and the warning stays in the job summary only. Found on
+    ewod-dogfood-2 (gr346962's verification): a bottom-mounted sink under
+    a top-mounted array reads as a 0 mm gap, and every fabric net that
+    DID route was written 'failed' on that one warning. Forcing a warning
+    that names every net makes the regression deterministic."""
+    from precis.pcb import realize as pcb_realize
+
+    def _always_over_capacity(
+        ir: Any, seg_ids: list[int], config: Any
+    ) -> list[pcb_realize.CongestionWarning]:
+        nets = tuple(str(ir.net_name[n]) for n in range(ir.n_nets))
+        return [pcb_realize.CongestionWarning((0, 1), 0.0, 0.3, 0, len(nets), nets)]
+
+    monkeypatch.setattr(pcb_realize, "_gap_usage", _always_over_capacity)
+    ref_id = _seed(store, "route-gap-phantom", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+
+    assert not ctx.failures
+    status_rows = store.pcb_route_status(ref_id)
+    assert len(status_rows) == 1
+    assert status_rows[0]["status"] == "realized"  # not "failed"
+    # The warning is still reported — in the summary, not as the net's fate.
+    summary = "\n".join(t for k, t in ctx.summaries if k == "job_summary")
+    assert "1 congestion warning" in summary
