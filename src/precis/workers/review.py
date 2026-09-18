@@ -323,13 +323,17 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         # $-spending digests reasoned from the bare prompt alone. Back the
         # pass off (marker) and raise a visible alert instead of storing the
         # digest as a normal healthy pass.
+        evidence = _tool_starved_evidence(res)
         log.error(
             "review[%s]: tool-starved pass (mcp_config set, non-empty text, "
-            "0 mcp__precis__* tool calls) — raising alert, not writing digest",
+            "0 mcp__precis__* tool calls) — raising alert, not writing digest; %s",
             reviewer.name,
+            evidence,
         )
-        _write_failure_marker(store, reviewer, "tool-starved: precis MCP never used")
-        _raise_tool_starved_alert(store, reviewer)
+        _write_failure_marker(
+            store, reviewer, f"tool-starved: precis MCP never used — {evidence}"
+        )
+        _raise_tool_starved_alert(store, reviewer, evidence=evidence)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
     # The FULL assembled prompt INPUT, the twin of the
@@ -450,6 +454,35 @@ def _mcp_precis_tool_calls(res: LlmResult) -> int | None:
     return count_tool_use_events(res.raw_text, name_prefix="mcp__precis__")
 
 
+def _tool_starved_evidence(res: LlmResult) -> str:
+    """One line that tells the two tool-starved causes apart (gr245505).
+
+    The alert alone says only *that* a pass never called precis; 16 doctor
+    ticks then re-flagged gr245505 for 26 days with "no evidence" because
+    the digest text was discarded and nothing recorded whether the precis
+    MCP server had even registered. Four facts settle it: the ``init``
+    event's per-server status (``precis=failed`` ⇒ host config/credential
+    defect, gr197478's shape; ``connected`` ⇒ the model had the tools and
+    declined them — a prompt problem), the unscoped tool-call total (built-in
+    tools used, precis not?), turns/cost, and the head of what it wrote.
+    """
+    from precis.utils.claude_agent import stream_mcp_server_status
+
+    servers = stream_mcp_server_status(res.raw_text or "")
+    if servers is None:
+        mcp = "mcp init: no init event in stream"
+    elif not servers:
+        mcp = "mcp init: NO servers listed — mcp_config not applied"
+    else:
+        mcp = "mcp init: " + ", ".join(f"{k}={v}" for k, v in sorted(servers.items()))
+    head = " ".join((res.text or "").split())[:200]
+    return (
+        f"{mcp}; tool_calls(all)={res.tool_calls}; turns={res.turns_used}; "
+        f"cost=${res.cost_usd if res.cost_usd is not None else '?'}; "
+        f'text head: "{head}"'
+    )
+
+
 def _is_tool_starved(res: LlmResult, mcp_config: Path | None) -> bool:
     """True when tools were on offer but the pass never touched precis (gr197478).
 
@@ -523,8 +556,15 @@ def _tool_starved_alert_source(reviewer: Reviewer) -> str:
     return f"review:tool-starved:{reviewer.name}"
 
 
-def _raise_tool_starved_alert(store: Store, reviewer: Reviewer) -> None:
-    """Surface a tool-starved pass as a ``warn`` alert (gr197478)."""
+def _raise_tool_starved_alert(
+    store: Store, reviewer: Reviewer, *, evidence: str = ""
+) -> None:
+    """Surface a tool-starved pass as a ``warn`` alert (gr197478).
+
+    ``evidence`` is :func:`_tool_starved_evidence`'s line — it goes into the
+    detail so the alert names its cause class instead of restating the
+    2026-08-02 hypothesis for every occurrence (gr245505).
+    """
     host = _resolve_host_name()
     # Fingerprint is per-reviewer, NOT per-host — symmetric with the resolve,
     # same reasoning as :func:`_raise_empty_pass_alert`.
@@ -536,13 +576,13 @@ def _raise_tool_starved_alert(store: Store, reviewer: Reviewer) -> None:
     detail = (
         f"The {reviewer.name} reviewer dispatched with an MCP config, "
         "produced non-empty text, but made zero mcp__precis__* tool calls — "
-        "it reviewed nothing but its own prompt. This is the failure mode "
-        "behind gr197478 (2026-08-02: a dropped inline DB password left "
-        "`precis serve` unable to authenticate, so no tool ever registered "
-        "and 21 consecutive passes over ~4.6 days went undetected). Check "
-        "that the precis MCP server actually registered its tools for this "
-        "host/transport (DB auth, PGPASSFILE, container health). The pass "
-        "is backed off for its normal interval and will retry."
+        "it reviewed nothing but its own prompt. Evidence from this pass: "
+        f"{evidence or 'n/a'}. Read it as: precis=failed/needs-auth ⇒ the MCP "
+        "server never registered on this host (gr197478's shape — DB auth, "
+        "PGPASSFILE, container health); precis=connected ⇒ the tools were "
+        "there and the model declined them (prompt/model problem, not "
+        "infra). The pass is backed off for its normal interval and will "
+        "retry."
     )
     raise_alert(
         store,

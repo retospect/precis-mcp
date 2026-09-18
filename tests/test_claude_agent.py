@@ -1005,6 +1005,43 @@ def test_count_tool_use_events_zero_and_robust() -> None:
     assert _count_tool_use_events("not json\n{broken") == 0
 
 
+def test_stream_mcp_server_status_reads_the_init_event() -> None:
+    """The ``system``/``init`` event's per-server status is the only place
+    the transport says whether the precis MCP server registered — the
+    discriminator a tool-starved review pass needs (gr245505)."""
+    import json
+
+    from precis.utils.claude_agent import stream_mcp_server_status
+
+    init = {
+        "type": "system",
+        "subtype": "init",
+        "mcp_servers": [
+            {"name": "precis", "status": "failed"},
+            {"name": "other", "status": "connected"},
+        ],
+        "tools": ["Read", "mcp__other__ping"],
+    }
+    stdout = "\n".join(
+        [
+            json.dumps(init),
+            json.dumps({"type": "result", "result": "done", "num_turns": 1}),
+        ]
+    )
+    assert stream_mcp_server_status(stdout) == {
+        "precis": "failed",
+        "other": "connected",
+    }
+    # init present but no servers ⇒ the mcp_config never applied: {} not None.
+    assert (
+        stream_mcp_server_status(json.dumps({"type": "system", "subtype": "init"}))
+        == {}
+    )
+    # No init event at all (text path / stub) ⇒ None, never a false "no servers".
+    assert stream_mcp_server_status("plain text\n{broken") is None
+    assert stream_mcp_server_status("") is None
+
+
 def test_stream_usage_reads_trailing_result_event_only() -> None:
     """The trailing ``result`` event's ``usage`` is already a cumulative
     total for the whole run (empirically confirmed), so an earlier
