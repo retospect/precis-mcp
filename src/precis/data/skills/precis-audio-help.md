@@ -67,13 +67,21 @@ for Mandarin. See `precis-voice` (the vocab-drill recipe).
 A `{surface: respelling}` map, applied whole-word before TTS, so "precis",
 "arXiv", names and jargon come out right. **Two levels** (per-draft wins over
 a personal, cross-draft base maintained by the deployment). Set the per-draft
-override — a *free* lexicon covering words that aren't glossary terms — when
-you create the draft:
+override — a *free* lexicon covering words that aren't glossary terms — at
+creation or any time after:
 
 ```python
 put(kind='draft', id='mydraft', title='…', project=<todo_id>,
     meta={'pronunciation': {'boxel': 'BOX-ell'}})
+edit(kind='draft', id='mydraft',
+    meta={'pronunciation': {'boxel': 'BOX-ell', 'precis': 'PRAY-see'}})
 ```
+
+`edit`'s `meta=` here replaces the **whole** `pronunciation` dict (it isn't
+merged entry-by-entry) — pass every entry you want kept; `meta={'pronunciation':
+None}` clears it. `id=` must be the draft's slug (or ref id), not a `dc<id>`
+chunk handle — that addresses a *chunk's* metadata instead (a registry term's
+attribute bag), a different op.
 
 Write a **respelling** ("pray-see") — author-friendly; the narrator speaks
 it. Unlike an abbreviation's *expansion* (contextual, per-document), a

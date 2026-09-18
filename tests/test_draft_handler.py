@@ -2432,3 +2432,97 @@ def test_title_edit_refuses_when_root_headings_tie_on_position(
 
     with pytest.raises(BadInput, match="ambiguous"):
         draft.edit(id="nt", title="New Title")
+
+
+# ── edit meta=: ref-level patch (gr345334) vs chunk-level term-attrs ────
+
+
+def test_edit_meta_at_slug_patches_ref_pronunciation_lexicon(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``edit(kind='draft', id=<slug>, meta={'pronunciation': …})`` now has
+    an in-place edit — previously ``put``'s ``meta=`` only set it at
+    creation. Top-level key merge: the whole ``pronunciation`` dict is
+    replaced; a sibling ref.meta key set separately is untouched."""
+    proj = _proj(hub)
+    draft.put(
+        id="nt",
+        title="T",
+        project=proj,
+        meta={"pronunciation": {"boxel": "BOX-ell"}},
+    )
+    # A sibling ref.meta key, set through an unrelated existing op — must
+    # survive the pronunciation patch below untouched.
+    draft.edit(id="nt", authoring="on")
+
+    r = draft.edit(
+        id="nt", meta={"pronunciation": {"boxel": "BOX-ell", "precis": "PRAY-see"}}
+    )
+    assert "nt" in r.body and "pronunciation" in r.body
+
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    assert ref.meta["pronunciation"] == {"boxel": "BOX-ell", "precis": "PRAY-see"}
+    assert ref.meta["authoring_enabled"] is True  # untouched by the patch
+
+
+def test_edit_meta_at_slug_null_value_deletes_key(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A key set to ``None`` in the ref-level ``meta=`` patch DELETES it —
+    the same clear-a-key convention as the chunk-level term-attrs patch
+    (``set_term_attrs``), not a stored JSON null."""
+    proj = _proj(hub)
+    draft.put(
+        id="nt",
+        title="T",
+        project=proj,
+        meta={"pronunciation": {"boxel": "BOX-ell"}},
+    )
+    draft.edit(id="nt", meta={"pronunciation": None})
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    assert "pronunciation" not in ref.meta
+
+
+def test_edit_meta_at_slug_rejects_unknown_ref_meta_key(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Only the allowlisted ref-meta keys (``pronunciation``) are reachable
+    through ``edit(kind='draft', id=<slug>, meta=…)`` — an arbitrary key
+    is refused, naming the accepted set, rather than silently landing in
+    refs.meta as an untyped side door."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    with pytest.raises(BadInput, match="not_a_real_key") as exc:
+        draft.edit(id="nt", meta={"not_a_real_key": "x"})
+    assert "pronunciation" in (exc.value.next or "")
+
+
+def test_edit_meta_at_chunk_handle_still_routes_to_term_attrs(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Regression pin: ``edit(kind='draft', id='dc<id>', meta=…)`` (a
+    chunk handle) is UNCHANGED by gr345334 — it still patches the
+    ``term`` leaf's attribute bag, never the ref-level path above.
+    ``test_edit_meta_patches_term_attribute_bag``
+    (tests/test_term_registry_store.py) covers the same op from the
+    registry-store side; this pins it from the handler-dispatch side."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    r = draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="metal-organic framework",
+        meta={"short": "MOF"},
+    )
+    dc = _dc(r.body)
+    resp = draft.edit(id=dc, meta={"manufacturer": "Acme"})
+    assert "term attributes" in resp.body
+    leaf = hub.live_store.drafts.get_draft_chunk(dc)
+    assert leaf is not None
+    assert leaf.meta["manufacturer"] == "Acme"
+    # A key an agent tries to slip into a term leaf that only makes sense
+    # at ref level (``pronunciation``) is simply ignored by
+    # set_term_attrs's own allowlist — no crossover between the two paths.
+    assert "pronunciation" not in leaf.meta

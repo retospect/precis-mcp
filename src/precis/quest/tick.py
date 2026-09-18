@@ -321,7 +321,15 @@ class QuestTickOutcome:
     #: * ``"timeout"`` — the rung's LLM call hit a wall-clock ceiling
     #:   (:attr:`~precis.utils.llm.router.LlmResult.timed_out`).
     #: * ``"window"`` — a wait-for-window pause: breaker trip, dollar cap,
-    #:   OAuth quota, worker drain, 429/5xx.
+    #:   worker drain, 429/5xx.
+    #: * ``"quota"`` — the model's own CLEAN final text was nothing but an
+    #:   account-quota-exhaustion notice
+    #:   (:attr:`~precis.utils.llm.router.LlmResult.quota_exhausted`,
+    #:   gr345336) — Anthropic gives no structural signal for this (exit 0,
+    #:   no error subtype), so without this the tick misread it as an
+    #:   unparseable-model-output *failure*. Free-retry like ``"window"``
+    #:   (the quota resets at a known instant); split out only so the
+    #:   record reads "quota", not a generic breaker/dollar-cap guess.
     #:
     #: The coordinator (:mod:`precis.workers.job_types.quest_tick`) splits its
     #: give-up budget on this: a window pause retries for free, a timeout pause
@@ -2325,7 +2333,18 @@ class _TickRun:
                 # Split the pause by *cause* for the coordinator's give-up budget
                 # (see QuestTickOutcome.pause_kind): a wall-clock timeout is not a
                 # window that will roll off — the same prompt on the same rung
-                # re-burns the same ceiling — so it must not retry for free.
+                # re-burns the same ceiling — so it must not retry for free. A
+                # quota exhaustion (LlmResult.quota_exhausted, gr345336) IS a
+                # window that rolls off (the reset instant) — same free-retry
+                # treatment as "window", just labeled distinctly so it's
+                # legible on the record instead of reading as a generic
+                # breaker/dollar-cap trip.
+                if getattr(res, "timed_out", False):
+                    kind = "timeout"
+                elif getattr(res, "quota_exhausted", False):
+                    kind = "quota"
+                else:
+                    kind = "window"
                 return self._finalize(
                     QuestTickOutcome(
                         quest_id,
@@ -2334,9 +2353,7 @@ class _TickRun:
                         False,
                         cost,
                         f"paused: {res.error}",
-                        pause_kind=(
-                            "timeout" if getattr(res, "timed_out", False) else "window"
-                        ),
+                        pause_kind=kind,
                     ),
                     res=res,
                     partial=salvage,

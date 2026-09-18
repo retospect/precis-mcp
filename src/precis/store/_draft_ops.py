@@ -2852,6 +2852,57 @@ class DraftStore(_AbbrevMixin):
             )
         return self.get_draft_chunk(handle)
 
+    def patch_ref_meta(
+        self,
+        ref_id: int,
+        patch: dict[str, Any],
+        *,
+        source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Merge ``patch`` into a draft REF's ``meta`` JSONB — the
+        ref-level twin of :meth:`set_term_attrs` (which patches a
+        *chunk*'s attribute bag). Top-level key merge: each key in
+        ``patch`` is set — or, when its value is ``None``, POPPED, same
+        clear-a-key convention as :meth:`set_term_attrs` — in the
+        existing ``meta`` dict; every other key (``authoring_enabled``,
+        registry bookkeeping, …) is left untouched. gr345334: this is
+        what gives ``meta={'pronunciation': {...}}`` (creation-only
+        until now, ``create_draft``'s ``meta=``) an in-place edit.
+
+        Logs a ``meta_patched`` ``ref_events`` row (old→new per touched
+        key), mirroring :meth:`set_draft_title`'s ``title_changed`` row —
+        metadata-only, no re-embed, no ``chunk_events`` involved (there's
+        no chunk). Raises ``NotFound`` on a missing/retired ref. Returns
+        the merged ``meta`` dict."""
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no draft ref {ref_id}")
+            meta = dict(row[0] or {})
+            old_vals = {k: meta.get(k) for k in patch}
+            for key, val in patch.items():
+                if val is None:
+                    meta.pop(key, None)
+                else:
+                    meta[key] = val
+            conn.execute(
+                "UPDATE refs SET meta = %s, updated_at = now() WHERE ref_id = %s",
+                (Jsonb(meta), ref_id),
+            )
+            conn.execute(
+                """INSERT INTO ref_events (ref_id, source, event, payload)
+                   VALUES (%s, %s, 'meta_patched', %s::jsonb)""",
+                (
+                    ref_id,
+                    (source or {}).get("actor") or "draft-edit",
+                    Jsonb({"old": old_vals, "new": dict(patch)}),
+                ),
+            )
+        return meta
+
     def set_list_kind(
         self,
         handle: str,

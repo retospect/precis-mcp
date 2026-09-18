@@ -335,6 +335,14 @@ class DraftHandler(Handler):
     #: can serve a quest").
     _GENERIC_LINK_RELS: ClassVar[frozenset[str]] = frozenset({"serves"})
 
+    #: ref.meta keys ``edit(kind='draft', id=<slug>, meta=…)`` may patch
+    #: at the REF level (``id`` names the draft, not a chunk) — gr345334.
+    #: Narrow by design: everything else in ref.meta is either internal
+    #: (``authoring_enabled``) or already has its own dedicated edit
+    #: kwarg (``title=``, ``authors=``) and shouldn't gain a second,
+    #: untyped door through here.
+    _REF_META_EDITABLE_KEYS: ClassVar[frozenset[str]] = frozenset({"pronunciation"})
+
     # ── link: placement + the narrow generic-link allowlist ─────────
 
     def link(  # type: ignore[override]
@@ -1565,6 +1573,38 @@ class DraftHandler(Handler):
                 _sub_target = self.store.drafts.get_draft_chunk(str(id).strip())
             if _sub_target is None or _sub_target.chunk_kind != "table":
                 return self._substitute(id, sub, apply=bool(apply))
+        # ``meta=`` is overloaded, disambiguated by what ``id=`` addresses:
+        # a chunk handle (``dc<id>``/``¶…``) patches a ``term`` leaf's
+        # attribute bag (below, near the end of this method, unchanged);
+        # a draft slug or numeric ref id here is a draft-LEVEL op that
+        # patches the ref's own ``meta`` JSONB — gr345334, restoring an
+        # in-place edit for ``put(kind='draft', meta={'pronunciation': …})``,
+        # which was previously creation-only. Top-level key merge:
+        # ``meta={'pronunciation': {...}}`` replaces the WHOLE
+        # pronunciation dict; other ref.meta keys are untouched; a key set
+        # to ``None`` deletes it (same convention as the term-attrs patch).
+        if meta is not None and not _is_draft_chunk_handle(str(id or "").strip()):
+            _reject_dry_run("meta")
+            unknown = sorted(set(meta) - self._REF_META_EDITABLE_KEYS)
+            if unknown:
+                raise BadInput(
+                    f"edit(kind='draft', id=<slug>, meta=…) doesn't patch "
+                    f"{unknown} at the ref level",
+                    next=(
+                        "ref-level meta= accepts "
+                        f"{sorted(self._REF_META_EDITABLE_KEYS)} (e.g. "
+                        "meta={'pronunciation': {'boxel': 'BOX-ell'}}); to "
+                        "patch a TERM chunk's attribute bag instead, address "
+                        "the chunk: edit(kind='draft', id='dc<id>', meta={...})"
+                    ),
+                )
+            ref = self._resolve_draft_any(id)
+            self.store.drafts.patch_ref_meta(
+                ref.id, meta, source={"actor": "draft-edit"}
+            )
+            return Response(
+                body=f"updated {ref.slug or ref.id} meta: {', '.join(sorted(meta))}"
+            )
         handle = self._require_chunk_id(id, verb="edit")
         # Normalize a ``dc<id>`` address to the legacy base-58 anchor the
         # store mutators still key on; the agent-facing emit uses ``.dc``.

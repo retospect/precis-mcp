@@ -57,6 +57,7 @@ def _fake_dispatch(
     cost: float | None = 0.01,
     paused: bool = False,
     timed_out: bool = False,
+    quota_exhausted: bool = False,
 ) -> Any:
     """A stand-in for router.route returning a canned LlmResult-shaped obj."""
 
@@ -68,6 +69,7 @@ def _fake_dispatch(
             cost_usd=cost,
             paused=paused,
             timed_out=timed_out,
+            quota_exhausted=quota_exhausted,
         )
 
     return _d
@@ -1072,6 +1074,35 @@ class TestQuestTick:
         )
         assert out.status == "paused"
         assert out.pause_kind == "timeout"
+
+    def test_quota_exhaustion_pauses_not_unparseable_failure(self, store: Any) -> None:
+        # gr345336: the model's own CLEAN final text was nothing but an
+        # account-quota-exhaustion notice — result_from_agent flags
+        # paused + quota_exhausted (this fake stands in for that already-
+        # normalized LlmResult). Before the fix, a clean completion with no
+        # `error` fell straight through to `_payload_from_result`, and a
+        # quota notice never parses as a tick action, so it read as
+        # "unparseable model output" — a FAILED tick charged against the
+        # give-up budget, not a free-retry pause.
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(
+                None,
+                error="account quota exhausted: You've hit your weekly limit "
+                "· resets 11am (UTC)",
+                paused=True,
+                quota_exhausted=True,
+            ),
+        )
+        assert out.status == "paused"
+        assert out.pause_kind == "quota"
+        assert not [
+            b
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
 
     def test_partial_output_persists_to_agentlog_on_error(self, store: Any) -> None:
         # A streamed rung that dies mid-generation returns its partial

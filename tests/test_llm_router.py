@@ -208,6 +208,91 @@ def test_result_from_agent_usage_defaults_none() -> None:
     assert got.cache_creation_tokens is None
 
 
+# ── result_from_agent: account-quota-exhaustion final text (gr345336) ──
+#
+# Anthropic gives this no structural signal — a quota-exhausted run exits
+# 0 with a completely ordinary-looking stream-json result event; the
+# model's own final text just happens to BE the quota notice. Before this
+# fix, result_from_agent passed that text through untouched, so every
+# caller (quest_tick, plan_tick, …) treated a paused account exactly like
+# a model that produced unparseable prose.
+
+
+@pytest.mark.parametrize(
+    "quota_text",
+    [
+        "Claude AI usage limit reached|1757203200",
+        "You've hit your weekly limit · resets 11am (UTC)",
+        "You've hit your session limit · resets 3:40pm (America/Los_Angeles)",
+        "You're out of extra usage · resets 11am (UTC)",
+    ],
+)
+def test_result_from_agent_quota_text_pauses_with_quota_kind(
+    quota_text: str,
+) -> None:
+    raw = AgentResult(
+        final_text=quota_text, cost_usd=0.0, duration_s=0.5, turns_used=1
+    )
+    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    assert got.paused is True
+    assert got.quota_exhausted is True
+    assert got.error is not None and quota_text in got.error
+
+
+def test_result_from_agent_quota_wording_drift_still_pauses() -> None:
+    """A fourth, never-seen-before wording that still anchors on one of the
+    known lead-in phrases ("usage limit" / "out of extra usage") is caught
+    too — the detector is deliberately wording-loose, not an exact-string
+    match against the three known messages."""
+    raw = AgentResult(
+        final_text="Your account's usage limit was reached for today.",
+        cost_usd=0.0,
+        duration_s=0.5,
+        turns_used=1,
+    )
+    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    assert got.paused is True
+    assert got.quota_exhausted is True
+
+
+def test_result_from_agent_long_answer_quoting_quota_phrase_not_paused() -> None:
+    """A long, legitimate answer that merely QUOTES a quota-exhaustion
+    phrase (e.g. summarizing what the error looked like) must not be
+    swallowed as a pause — only a final text that IS (close to) just the
+    notice classifies."""
+    long_answer = (
+        "Here's a summary of today's work. At one point the sandbox agent "
+        "hit a rate limit and printed 'You've hit your weekly limit · "
+        "resets 11am (UTC)' before I retried it manually and it went "
+        "through fine. " + ("Additional legitimate analysis follows. " * 5)
+    )
+    raw = AgentResult(
+        final_text=long_answer, cost_usd=1.0, duration_s=3.0, turns_used=2
+    )
+    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    assert got.paused is False
+    assert got.quota_exhausted is False
+    assert got.error is None
+    assert got.text == long_answer
+
+
+def test_result_from_agent_quota_text_on_abnormal_exit_not_paused() -> None:
+    """The quota check only fires on a CLEAN run — an abnormal exit
+    (``terminal_reason`` set) already has its own handling; a coincidental
+    quota-looking fragment in a max-turns cutoff's partial text must not
+    be reclassified out from under that path."""
+    raw = AgentResult(
+        final_text="You've hit your weekly limit · resets 11am (UTC)",
+        cost_usd=0.1,
+        duration_s=1.0,
+        turns_used=1,
+        terminal_reason="max_turns",
+    )
+    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    assert got.quota_exhausted is False
+    assert got.paused is False
+
+
 def test_result_from_claude_p() -> None:
     raw = ClaudePResult(
         data={"verdict": "ok"},

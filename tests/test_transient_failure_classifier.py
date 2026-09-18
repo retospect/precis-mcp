@@ -102,6 +102,32 @@ def test_classify_transient_backoff_hours_quota_reset_missing_falls_back() -> No
     assert classify_transient_backoff_hours(reason) == 6.0
 
 
+def test_classify_transient_backoff_hours_extra_usage_reset_parses() -> None:
+    """gr345336: the pay-as-you-go "out of extra usage" wording shares the
+    weekly/session quota shape's "resets <clock> (<tz>)" clause and must
+    classify (and parse the reset instant) the same way, not fall through
+    to the generic 429/usage-limit horizons."""
+    now = datetime.now(UTC)
+    target = now + timedelta(hours=3, minutes=25)
+    clock = target.strftime("%-I:%M%p").lower()
+    reason = f"You're out of extra usage · resets {clock} (UTC)"
+
+    hours = classify_transient_backoff_hours(reason)
+
+    assert hours is not None
+    computed_reset = datetime.now(UTC) + timedelta(hours=hours)
+    assert abs((computed_reset - target).total_seconds()) < 60
+
+
+def test_classify_transient_backoff_hours_extra_usage_reset_missing_falls_back() -> (
+    None
+):
+    """No parseable reset clause still classifies as quota-limit (not the
+    generic 2.0h "usage limit" bucket) via the fixed fallback horizon —
+    the wording alone is enough to know a fresh attempt won't help soon."""
+    assert classify_transient_backoff_hours("You're out of extra usage") == 6.0
+
+
 def test_classify_transient_backoff_hours_plain_429_unaffected() -> None:
     """A non-quota 429 (no 'hit your … limit' wording) keeps the generic
     15-minute rate-limit classification — the quota case must not

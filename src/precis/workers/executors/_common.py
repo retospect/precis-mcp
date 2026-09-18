@@ -37,6 +37,7 @@ from precis.store._resource_slots_ops import (
     reserve_resource_slots,
 )
 from precis.store.types import ChunkInsert, Tag
+from precis.utils.llm.quota import QUOTA_RESET_PATTERN
 from precis.workers.executors import suspended_job_types
 from precis.workers.nursery import HOST_DARK_SILENCE_MIN
 from precis.workers.registry import SERVICES_BY_NAME
@@ -1155,13 +1156,15 @@ _TRANSIENT_FAILURE_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
     ),
 )
 
-#: The Claude CLI's own weekly/session quota-exhaustion message, e.g.
-#: "You've hit your weekly limit · resets 11am (UTC)" or "...hit your
-#: session limit · resets 3:40pm (America/Los_Angeles)" (gr344988). This is
-#: a 429 under the hood (``api_error_status=429``) but reads nothing like
-#: an ordinary per-minute rate limit above: the window doesn't clear in
-#: minutes, it clears at one specific wall-clock instant that can be up to
-#: a week away. Checked BEFORE :data:`_TRANSIENT_FAILURE_PATTERNS` in
+#: The Claude CLI's own weekly/session/pay-as-you-go quota-exhaustion
+#: message, e.g. "You've hit your weekly limit · resets 11am (UTC)",
+#: "...hit your session limit · resets 3:40pm (America/Los_Angeles)"
+#: (gr344988), or "You're out of extra usage · resets 11am (UTC)"
+#: (gr345336). This is a 429 under the hood (``api_error_status=429``) but
+#: reads nothing like an ordinary per-minute rate limit above: the window
+#: doesn't clear in minutes, it clears at one specific wall-clock instant
+#: that can be up to a week away. Checked BEFORE
+#: :data:`_TRANSIENT_FAILURE_PATTERNS` in
 #: :func:`classify_transient_backoff_hours` so a reason naming both (e.g.
 #: it also contains the literal "429") classifies here, not there — the
 #: bare-429 15-minute horizon would have the sweeper burn through
@@ -1169,14 +1172,16 @@ _TRANSIENT_FAILURE_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
 #: the leaf ``child-failed-final``, exactly the failure this exists to
 #: prevent. The optional "resets <clock> (<tz>)" clause is parsed by
 #: :func:`_parse_quota_reset_at`; an ordinary per-minute 429 (no "hit your
-#: … limit" wording) never matches this and keeps falling through to the
-#: generic 0.25h pattern above unchanged.
-_QUOTA_LIMIT_PATTERN = re.compile(
-    r"hit your (?:weekly|session) limit"
-    r"(?:.*?resets\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
-    r"(?P<meridiem>am|pm)(?:\s*\(\s*(?P<tz>[^)]+?)\s*\))?)?",
-    re.IGNORECASE | re.DOTALL,
-)
+#: … limit"/"out of extra usage" wording) never matches this and keeps
+#: falling through to the generic 0.25h pattern above unchanged. Shared
+#: with :mod:`precis.utils.llm.router`'s live final-text quota detection —
+#: see :mod:`precis.utils.llm.quota` for the wording family (a fourth
+#: variant is one edit there, not here). The CLI's OTHER legacy shape,
+#: "Claude AI usage limit reached|<epoch>", names an epoch rather than
+#: this clause and is deliberately left to the generic "usage limit"
+#: pattern above (fixed 2.0h) — this pattern's reset-clause parse has
+#: nothing to extract from an epoch.
+_QUOTA_LIMIT_PATTERN = QUOTA_RESET_PATTERN
 
 #: Fallback backoff when a quota-limit message's "resets …" clause is
 #: missing or doesn't parse (unrecognised tz name, malformed clock). Well

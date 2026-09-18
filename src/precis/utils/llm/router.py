@@ -59,6 +59,7 @@ from precis.utils.claude_agent import (
     call_claude_agent_async,
 )
 from precis.utils.claude_p import ClaudePResult, call_claude_p
+from precis.utils.llm.quota import is_quota_exhaustion_text
 
 if TYPE_CHECKING:
     from precis.utils.llm.openai_tools import AgentLoopResult
@@ -893,6 +894,20 @@ class LlmResult:
       unlike a timeout/breaker/rate-limit). Read by
       :func:`~precis.quest.tick.run_quest_tick` to stamp
       :attr:`~precis.quest.tick.QuestTickOutcome.failure_kind` (gr335087).
+    * ``quota_exhausted`` — ``True`` when a ``claude_agent`` run exited
+      CLEANLY (exit 0, no ``error_*`` stream-json subtype) but its final
+      text is nothing but an account-quota-exhaustion notice
+      (:func:`~precis.utils.llm.quota.is_quota_exhaustion_text` —
+      gr345336). Anthropic surfaces this with no structural signal
+      whatsoever: it reads exactly like a normal completed turn, so
+      :func:`result_from_agent` has to recognize the wording and flip
+      ``paused``/``error`` itself rather than leaving it to look like an
+      ordinary (but unparseable) model answer. Read by
+      :func:`~precis.quest.tick.run_quest_tick` to stamp
+      :attr:`~precis.quest.tick.QuestTickOutcome.pause_kind` as
+      ``"quota"`` — a free-retry window pause like a breaker trip, never
+      charged to a give-up budget the way a deterministic ``timed_out``
+      pause is.
     """
 
     text: str
@@ -907,6 +922,7 @@ class LlmResult:
     interrupted: bool = False
     timed_out: bool = False
     cli_unavailable: bool = False
+    quota_exhausted: bool = False
     #: OpenAI ``usage.total_tokens`` for the local/openai-compat transports
     #: (``None`` for claude, which reports cost not tokens). Kept so a
     #: direct-``LlmClient`` pass folded through :class:`DispatchClient` still
@@ -948,8 +964,16 @@ class LlmResult:
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
-    """Normalize a :class:`~precis.utils.claude_agent.AgentResult`."""
-    return LlmResult(
+    """Normalize a :class:`~precis.utils.claude_agent.AgentResult`.
+
+    A CLEAN run (``terminal_reason`` ``None`` — no ``error_*`` stream-json
+    subtype, exit 0) whose final text is nothing but an account-quota-
+    exhaustion notice (gr345336) is reported ``paused``/``quota_exhausted``
+    instead of as an ordinary answer — see :attr:`LlmResult.quota_exhausted`.
+    Anthropic gives this no structural signal (it looks exactly like a
+    completed turn); text is all there is to key on.
+    """
+    result = LlmResult(
         text=res.final_text,
         cost_usd=res.cost_usd,
         turns_used=res.turns_used,
@@ -964,6 +988,14 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
         cache_read_tokens=res.cache_read_tokens,
         cache_creation_tokens=res.cache_creation_tokens,
     )
+    if res.terminal_reason is None and is_quota_exhaustion_text(res.final_text):
+        result = _replace(
+            result,
+            paused=True,
+            quota_exhausted=True,
+            error=f"account quota exhausted: {res.final_text.strip()}",
+        )
+    return result
 
 
 def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmResult:

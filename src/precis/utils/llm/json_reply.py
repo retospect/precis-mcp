@@ -45,27 +45,40 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     """Parse ``text`` as a JSON object, tolerating surrounding prose/fences.
 
     Tries the whole string first (the common well-behaved reply), then falls
-    back to the last balanced ``{...}`` block. ``None`` on no text, no
-    parseable block, or a parse that yields something other than a dict
-    (a JSON list, string, or number is never mistaken for the requested
-    object).
+    back to the last balanced ``{...}`` block — both in *strict* mode first.
+    A model reply that's otherwise well-formed JSON but carries a raw
+    (unescaped) control character inside a string value — a literal
+    newline instead of ``\\n``, seen in prod quest-tick output (gr345336) —
+    gets a SECOND chance at both candidates with ``json.loads(...,
+    strict=False)``, which permits exactly that and nothing more: it is
+    NOT a bracket-repair heuristic, so a truncated/unbalanced candidate (no
+    balanced block to begin with) or one with genuinely invalid syntax (a
+    stray unmatched ``]`` after a string field, also seen in prod) still
+    fails and returns ``None`` — loosening either of those would silently
+    launder a truncated generation into a "successful" parse instead of
+    surfacing the real fault. ``None`` on no text, no parseable block, or a
+    parse that yields something other than a dict (a JSON list, string, or
+    number is never mistaken for the requested object).
     """
     if not text:
         return None
-    try:
-        obj = json.loads(text)
-        if isinstance(obj, dict):
-            return obj
-    except Exception:
-        pass
     block = _last_balanced_block(text, "{", "}")
-    if block is None:
-        return None
-    try:
-        obj = json.loads(block)
-    except Exception:
-        return None
-    return obj if isinstance(obj, dict) else None
+    candidates = [c for c in (text, block) if c is not None]
+    # Pass 1 (strict): the whole string, then the last balanced block —
+    # same order/behavior as before this fix. Pass 2 (strict=False) only
+    # runs if pass 1 found nothing, retrying the SAME candidates — no new
+    # candidate is invented, so a candidate with no balanced block at all
+    # (truncated/unbalanced input) never gets a second chance it didn't
+    # already have.
+    for strict in (True, False):
+        for candidate in candidates:
+            try:
+                obj = json.loads(candidate, strict=strict)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    return None
 
 
 def extract_json_array(text: str) -> list[Any] | None:
