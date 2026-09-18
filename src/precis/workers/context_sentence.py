@@ -42,6 +42,20 @@ the text can't belong to a paper of that title — a decline is terminal
 is the exact failure the hatch exists to stop. A wrong context line is
 worse than none: it rides along with someone's literal quote as fact.
 
+**The input can also be no paper at all.** The same fallback usually
+yields the paper's MASTHEAD — title, byline, affiliations — which has no
+method content to characterize: on prod, 788 of the 841 grounding-source
+papers have no ``card_abstract`` chunk, and the mastheads score 0.08-0.23
+on the prose measure where real abstracts score 0.76-0.94. Asked to
+describe one anyway, the model supplies the method from background recall
+("NEC Corporation researchers observed helical microtubules ... using
+transmission electron microscopy", written from a name and a postal
+address), and ``NO_CONTEXT`` does not fire because the text *does* belong
+to the paper — it is just empty. :func:`usable_context` therefore refuses
+to call the model at all on such a block and stamps the NON-terminal
+:data:`META_NO_ABSTRACT_KEY`: the paper needs an abstract, not a retry
+(gr346458).
+
 Self-contained ref-pass (shaped like ``paper_glossary``/``hub_tagline`` —
 DB reads + one outbound LLM call per paper, not a pure ``WorkerHandler``).
 
@@ -81,6 +95,7 @@ __all__ = [
     "MAX_WORDS",
     "META_FAILED_KEY",
     "META_KEY",
+    "META_NO_ABSTRACT_KEY",
     "NO_CONTEXT",
     "TransientFailure",
     "backfill_candidate_ref_ids",
@@ -88,6 +103,7 @@ __all__ = [
     "lint_violation",
     "propose_context_sentence",
     "run_context_sentence_pass",
+    "usable_context",
 ]
 
 #: ``refs.meta`` key the finished sentence is written to.
@@ -99,12 +115,38 @@ META_KEY = "context_sentence"
 #: every backfill/scheduler sweep.
 META_FAILED_KEY = "context_sentence_failed"
 
+#: ``refs.meta`` key stamped when the paper's context block carried no
+#: paper prose to characterize (:func:`usable_context`) — the model was
+#: never called, so this is deliberately NOT :data:`META_FAILED_KEY`,
+#: which asserts a model verdict. Non-terminal by intent: an abstract
+#: backfill that gives the paper real text must clear this key to make it
+#: claimable again.
+META_NO_ABSTRACT_KEY = "context_sentence_no_abstract"
+
 #: Hard word cap (spec: "≤ ~35 words") — enforced in code, not just prompted.
 MAX_WORDS = 35
 
 #: Abstract/body-chunk context handed to the model — a header, not the
 #: whole paper (mirrors ``paper_glossary._ABSTRACT_CHARS``).
 _ABSTRACT_CHARS = 1500
+
+#: Minimum words the context block must carry BEYOND the paper's own title
+#: for a method sentence to be groundable in it, and the minimum share of
+#: those words that must be ordinary lowercase prose. A masthead (title +
+#: byline + affiliations) clears neither: it is proper nouns, initials and
+#: postcodes. Calibrated on the 841 prod grounding-source papers
+#: (2026-09-18) — the 53 with a real ``card_abstract`` chunk score 0.76 to
+#: 0.94, the first-body-chunk fallbacks have a median of 0.38, and the four
+#: mastheads that triggered gr346458 score 0.08 to 0.23. 0.45 sits in that
+#: gap, well clear of every genuine abstract in the cohort.
+_MIN_CONTEXT_WORDS = 25
+_MIN_PROSE_FRACTION = 0.45
+
+#: Markup stripped before the prose measurement — the ``<sup>`` runs around
+#: author affiliation marks otherwise read as lowercase prose words and
+#: score a byline as an abstract (observed on ref 42558, 0.08 -> 0.40).
+_TAG_RE = re.compile(r"<[^>]{1,40}>")
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
 #: Claim-strength words the sentence must never carry — endorsing the
 #: finding is a different pass's job (and never this one's); this sentence
@@ -180,6 +222,43 @@ _SYS = (
     "text that contradicts the title -- a wrong context line is worse than "
     "none, because it is attached to someone's quote as fact."
 )
+
+
+# ── input guard (the model is only as good as what it is fed) ────────────
+
+
+def usable_context(title: str, abstract: str) -> bool:
+    """True when ``abstract`` plausibly carries paper prose a method
+    sentence could be grounded in; False for a content-free block.
+
+    :func:`_claim` falls back to the paper's FIRST BODY CHUNK when it has
+    no ``card_abstract``, and on prod that fallback is a masthead — the
+    title, the byline, the affiliations — for ~94% of the grounding cohort
+    (gr346458). A sentence written from a byline is the model's background
+    recall, not the paper: prod produced "NEC Corporation researchers
+    observed helical microtubules ... using transmission electron
+    microscopy" from an input whose only content was the author's name and
+    the NEC Tsukuba address. Not calling the model is the only honest
+    answer, and it belongs in code rather than the prompt because the
+    model's own :data:`NO_CONTEXT` escape hatch — which asks for exactly
+    this judgement — demonstrably does not fire on a masthead.
+
+    Heuristic, deliberately conservative: words beyond the title, and the
+    share of them that are ordinary lowercase prose (calibration in
+    :data:`_MIN_PROSE_FRACTION`). Passing is not a promise the text IS an
+    abstract — it only rules out blocks that certainly are not;
+    ``NO_CONTEXT`` stays the second line of defence for prose that belongs
+    to a different paper."""
+    title_words = {w.lower() for w in _WORD_RE.findall(title or "")}
+    words = [
+        w
+        for w in _WORD_RE.findall(_TAG_RE.sub(" ", (abstract or "")[:_ABSTRACT_CHARS]))
+        if w.lower() not in title_words
+    ]
+    if len(words) < _MIN_CONTEXT_WORDS:
+        return False
+    prose = sum(1 for w in words if w.islower() and len(w) >= 2)
+    return prose / len(words) >= _MIN_PROSE_FRACTION
 
 
 # ── lint (belt over the LLM) ─────────────────────────────────────────────
@@ -263,23 +342,50 @@ class TransientFailure(RuntimeError):
     sweep retries; only a decline or two real lint violations converge."""
 
 
-def _generate_with_lint(client: Any, title: str, abstract: str) -> str | None:
+def _generate_with_lint(
+    client: Any, title: str, abstract: str, *, ref_id: int | None = None
+) -> str | None:
     """Propose + lint; on a violation, regenerate ONCE; a second violation
     drops the sentence ("no sentence beats a bad one" — spec) by returning
     ``None``. Raises :class:`TransientFailure` when neither attempt was a
     model verdict — a ``None`` from :func:`propose_context_sentence` is an
-    outage, not an opinion, and must not converge the paper."""
+    outage, not an opinion, and must not converge the paper.
+
+    Every drop is logged with the rejected text. Without that the pass
+    emits only a batch count, and diagnosing a converging paper means
+    replaying the claim query and the model call by hand against prod
+    (gr346458)."""
     sentence = propose_context_sentence(client, title, abstract)
     if sentence is not None and is_decline(sentence):
+        log.info("context_sentence: ref_id=%s model declined (NO_CONTEXT)", ref_id)
         return None
     if sentence is not None and lint_violation(sentence) is None:
         return sentence
+    if sentence is not None:
+        log.info(
+            "context_sentence: ref_id=%s lint rejected %r (%s); regenerating",
+            ref_id,
+            sentence,
+            lint_violation(sentence),
+        )
     retry = propose_context_sentence(client, title, abstract)
     if retry is not None and is_decline(retry):
+        log.info(
+            "context_sentence: ref_id=%s model declined (NO_CONTEXT) on retry", ref_id
+        )
         return None
     if retry is not None and lint_violation(retry) is None:
         return retry
     if sentence is not None and retry is not None:
+        log.warning(
+            "context_sentence: ref_id=%s dropped — lint rejected both attempts "
+            "(%r: %s | %r: %s)",
+            ref_id,
+            sentence,
+            lint_violation(sentence),
+            retry,
+            lint_violation(retry),
+        )
         return None  # two real lint violations — the model's verdict
     raise TransientFailure("no model reply this sweep")
 
@@ -332,8 +438,9 @@ def _claim(
     live papers. ``ref_ids``, when given, IS the candidate set (the lazy
     single-paper enqueue, or a targeted backfill/test run); ``None``
     sweeps :func:`backfill_candidate_ref_ids`. Excludes a paper already
-    carrying a sentence, or one that converged on "no sentence"
-    (:data:`META_FAILED_KEY`)."""
+    carrying a sentence, one that converged on "no sentence"
+    (:data:`META_FAILED_KEY`), and one whose context block had nothing to
+    work with (:data:`META_NO_ABSTRACT_KEY`)."""
     candidates = ref_ids if ref_ids is not None else backfill_candidate_ref_ids(conn)
     if not candidates:
         return []
@@ -355,6 +462,7 @@ def _claim(
            AND r.retired_at IS NULL
            AND r.meta->>%(key)s IS NULL
            AND r.meta->>%(failed_key)s IS DISTINCT FROM 'true'
+           AND r.meta->>%(no_abstract_key)s IS DISTINCT FROM 'true'
          ORDER BY r.ref_id
          LIMIT %(limit)s
         """,
@@ -362,6 +470,7 @@ def _claim(
             "ids": list(candidates),
             "key": META_KEY,
             "failed_key": META_FAILED_KEY,
+            "no_abstract_key": META_NO_ABSTRACT_KEY,
             "limit": limit,
         },
     ).fetchall()
@@ -383,18 +492,30 @@ def run_context_sentence_pass(
     :func:`backfill_candidate_ref_ids` — the live-publish-row grounding
     cohort. Never raises on a single paper's failure; a dropped/lint-failed
     sentence bumps ``failed`` and stamps :data:`META_FAILED_KEY` so the
-    paper is not re-claimed forever."""
+    paper is not re-claimed forever.
+
+    Two outcomes converge a paper WITHOUT a model verdict and so stay out
+    of ``failed``, which counts verdicts: a content-free context block
+    (:func:`usable_context`) stamps :data:`META_NO_ABSTRACT_KEY` before any
+    call, and a sweep the model never answered
+    (:class:`TransientFailure`) stamps nothing at all. Both are logged."""
     with store.pool.connection() as conn:
         rows = _claim(conn, limit=batch_size, ref_ids=ref_ids)
         conn.commit()
     if not rows:
         return {"claimed": 0, "ok": 0, "failed": 0}
 
-    ok = failed = deferred = 0
+    ok = failed = deferred = no_abstract = 0
     for ref_id, title, abstract in rows:
         try:
+            if not usable_context(title, abstract):
+                # No paper prose to characterize — calling the model here
+                # buys background recall dressed as provenance (gr346458).
+                store.update_ref(ref_id, meta_patch={META_NO_ABSTRACT_KEY: True})
+                no_abstract += 1
+                continue
             try:
-                sentence = _generate_with_lint(client, title, abstract)
+                sentence = _generate_with_lint(client, title, abstract, ref_id=ref_id)
             except TransientFailure:
                 deferred += 1
                 continue
@@ -412,5 +533,12 @@ def run_context_sentence_pass(
             "context_sentence: %d paper(s) deferred — no model reply "
             "(rate limit / dispatch failure); left unstamped for the next sweep",
             deferred,
+        )
+    if no_abstract:
+        log.info(
+            "context_sentence: %d paper(s) skipped — context block carries no "
+            "paper prose (masthead/front matter); needs an abstract backfill, "
+            "not a retry",
+            no_abstract,
         )
     return {"claimed": len(rows), "ok": ok, "failed": failed}

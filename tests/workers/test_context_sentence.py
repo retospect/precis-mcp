@@ -19,6 +19,7 @@ from precis.taproot.hub import mint_hub
 from precis.workers.context_sentence import (
     META_FAILED_KEY,
     META_KEY,
+    META_NO_ABSTRACT_KEY,
     NO_CONTEXT,
     TransientFailure,
     _generate_with_lint,
@@ -27,6 +28,7 @@ from precis.workers.context_sentence import (
     lint_violation,
     propose_context_sentence,
     run_context_sentence_pass,
+    usable_context,
 )
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -238,9 +240,32 @@ class TestGenerateWithLint:
 # ── backfill selection (real PG) ───────────────────────────────────────
 
 
-def _seed_paper(store: Any, title: str = "Paper") -> tuple[int, int]:
+#: Ordinary abstract prose — enough words beyond the title, mostly
+#: lowercase, so ``usable_context`` lets the model be called. The pass
+#: refuses to spend a call on a block thinner than this, so a fixture with
+#: a placeholder body would exercise only the guard.
+_ABSTRACT = (
+    "We measured the elastic response of suspended monolayer films by "
+    "indenting them with an atomic force microscope tip, and fitted the "
+    "resulting force-displacement curves to a nonlinear elastic model to "
+    "extract the second-order elastic stiffness and the breaking strength "
+    "of the material under test."
+)
+
+#: The masthead shape the first-body-chunk fallback yields for ~94% of the
+#: prod grounding cohort: the title, a byline, an affiliation, no prose.
+_MASTHEAD = (
+    "Helical microtubules of graphitic carbon\n\nSumio Iijima\n\n"
+    "NEC Corporation, Fundamental Research Laboratories, 34 Miyukigaoka, "
+    "Tsukuba, Ibaraki 305, Japan"
+)
+
+
+def _seed_paper(
+    store: Any, title: str = "Paper", body: str = _ABSTRACT
+) -> tuple[int, int]:
     ref_id = seed_ref(store, title=title)
-    chunk_id = seed_chunk(store, ref_id=ref_id, text="Body text.", ord=0)
+    chunk_id = seed_chunk(store, ref_id=ref_id, text=body, ord=0)
     return ref_id, chunk_id
 
 
@@ -258,6 +283,57 @@ def _live_publish_row(store: Any, *, chunk_id: int, sentence: str) -> int:
     )
     assert ok
     return hub
+
+
+class TestUsableContext:
+    """The guard that decides whether the block is worth a model call at
+    all (gr346458) — every shape below is a real prod block."""
+
+    def test_an_abstract_is_usable(self) -> None:
+        assert usable_context("Measurement of the Elastic Properties", _ABSTRACT)
+
+    def test_a_masthead_is_not(self) -> None:
+        assert not usable_context("Helical microtubules of graphitic carbon", _MASTHEAD)
+
+    def test_sup_markup_does_not_score_a_byline_as_prose(self) -> None:
+        """``<sup>`` runs read as lowercase words and scored ref 42558's
+        byline at 0.40 before the tags were stripped."""
+        byline = (
+            "**Electric Field Effect in Atomically Thin Carbon Films**\n\n"
+            "K.S. Novoselov<sup>1</sup>, A.K. Geim<sup>1</sup>, "
+            "S.V. Morozov<sup>2</sup>, D. Jiang<sup>1</sup>, "
+            "Y. Zhang<sup>1</sup>, S.V. Dubonos<sup>2</sup>, "
+            "I.V.Grigorieva<sup>1</sup>, A.A. Firsov<sup>2</sup>\n\n"
+            "<sup>1</sup>Department of Physics, University of Manchester, "
+            "M13 9PL, Manchester, UK\n\n"
+            "<sup>2</sup>Institute for Microelectronics Technology, "
+            "142432 Chernogolovka, Russia"
+        )
+        assert not usable_context(
+            "Electric Field Effect in Atomically Thin Films", byline
+        )
+
+    def test_a_reference_list_tail_is_not_usable(self) -> None:
+        """Ref 563's ord-0 chunk: someone else's bibliography plus an
+        acknowledgement fragment."""
+        refs = (
+            "- 21. V. Randle, Scr. Mater. 54, 1011 (2006).\n"
+            "- 22. S. R. Ortner, Acta Metall. Mater. 39, 341 (1991).\n"
+            "- 23. Y. Z. Huang, J. M. Titchmarsh, Acta Mater. 54, 635 (2006).\n"
+            "- 24. A.K. and G.J. wish to acknowledge funding received from the "
+            "Engineering and Physical Sciences Research Council (U.K.)"
+        )
+        assert not usable_context("Measurement of the Elastic Properties", refs)
+
+    def test_empty_and_title_only_blocks_are_not_usable(self) -> None:
+        assert not usable_context("A paper", "")
+        assert not usable_context("A paper", "A paper")
+
+    def test_title_words_do_not_count_toward_the_floor(self) -> None:
+        """A block that merely repeats a long title has nothing new to
+        say about the method."""
+        title = " ".join(f"word{i}" for i in range(40))
+        assert not usable_context(title, title)
 
 
 class TestBackfillSelection:
@@ -411,6 +487,38 @@ class TestRunPass:
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert META_KEY not in (ref.meta or {})
         assert META_FAILED_KEY not in (ref.meta or {})
+
+    def test_a_masthead_is_stamped_without_spending_a_model_call(
+        self, store: Any
+    ) -> None:
+        """The guard runs before the client, so a content-free block costs
+        nothing and converges non-terminally (gr346458)."""
+        ref_id, _chunk = _seed_paper(
+            store, title="Helical microtubules", body=_MASTHEAD
+        )
+        client = _FakeClient(["Never asked."])
+
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert client.calls == []
+        assert result == {"claimed": 1, "ok": 0, "failed": 0}
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert meta.get(META_NO_ABSTRACT_KEY) is True
+        assert META_KEY not in meta
+        # NOT the terminal stamp: no model ever gave a verdict here.
+        assert META_FAILED_KEY not in meta
+
+    def test_a_no_abstract_paper_is_not_reclaimed(self, store: Any) -> None:
+        ref_id, _chunk = _seed_paper(
+            store, title="Helical microtubules", body=_MASTHEAD
+        )
+        run_context_sentence_pass(store, client=_FakeClient(["x"]), ref_ids=[ref_id])
+
+        again = run_context_sentence_pass(
+            store, client=_FakeClient(["x"]), ref_ids=[ref_id]
+        )
+
+        assert again["claimed"] == 0
 
     def test_skips_a_paper_that_already_has_a_sentence(self, store: Any) -> None:
         ref_id, _chunk = _seed_paper(store, title="Already sentenced")
