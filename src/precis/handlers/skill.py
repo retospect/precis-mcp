@@ -2189,7 +2189,7 @@ def code_stamp() -> str:
                 f"{fields.get('version', '?')}@{fields.get('git_sha_short', 'unknown')}"
             )
         except Exception:  # pragma: no cover — a stamp must never fail a claim
-            _CODE_STAMP = "unknown"
+            _CODE_STAMP = "unknown@unknown"
     return _CODE_STAMP
 
 
