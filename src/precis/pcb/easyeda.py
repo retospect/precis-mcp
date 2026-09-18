@@ -216,10 +216,14 @@ def _symbol_pin_names(result: dict[str, Any]) -> dict[str, str]:
     (``result.dataStr``, docType 2), names only — geometry is never read
     from it. A symbol pin primitive is ``P~display~electric~NUMBER~x~y~
     rot~id~locked^^<dot>^^<path>^^1~x~y~rot~NAME~start~...^^1~x~y~rot~
-    NUMBER~end~...^^...`` (spike-verified 2026-09-17 against C639448's
-    cached raw doc: pin 1 carries ``HVOUT41``). Anything that does not
-    parse is skipped, never fatal; a name equal to the number (or empty)
-    is dropped so the caller's number fallback stays the single default.
+    NUMBER~end~...^^...`` — but the ``start``/``end`` anchors follow the
+    pin's ROTATION, not its role: a pin drawn on the symbol's other side
+    (rot 0 vs 180) carries the NUMBER in the ``start`` segment and the
+    NAME in ``end`` (C639448 pins 41..80 on prod, 2026-09-18: keying on
+    ``start`` alone named pads 1..40 only). So the name is whichever text
+    segment's label is NOT the pin number. Anything that does not parse
+    is skipped, never fatal; a name equal to the number (or empty) is
+    dropped so the caller's number fallback stays the single default.
     """
     data = result.get("dataStr")
     if not isinstance(data, dict):
@@ -239,10 +243,13 @@ def _symbol_pin_names(result: dict[str, Any]) -> dict[str, str]:
         name = ""
         for seg in segments[1:]:
             fields = seg.split("~")
-            if len(fields) >= 6 and fields[5] == "start":
-                name = fields[4].strip()
+            if len(fields) < 6 or fields[5] not in ("start", "end"):
+                continue
+            label = fields[4].strip()
+            if label and label != number:
+                name = label
                 break
-        if number and name and name != number:
+        if number and name:
             names[number] = name
     return names
 

@@ -237,6 +237,21 @@ or one sink plus a remainder rule) — a Reto decision, not a build item.
 Slices 1–2 shipped ungated as 74bfc61b + 2b4bbe36; the prod dogfood stays
 8×8 with fabric until that call.
 
+**Real-footprint finding (2026-09-18, prod `ewod-dogfood-2`) — a DESIGN
+DECISION:** with C639448's REAL 80-pad footprint cached (pull via
+`op='footprint'`) and the sink named HVOUT1..64/DIOA/DIOB/VPP, the sink's
+pad ring sits at ±5.2 mm on B.Cu and the plaza rows/cols at {1,4,7} cells
+(-5, 1, 7 mm) cross it: 20 `via_pad_keepout` errors (gr345857) — plaza vias
+drill into HV507 lands. The synthesized grid footprint never showed this.
+Options: (a) place the sink so its ring falls between plaza rows (a
+ring-vs-plaza check at apply time, refuse otherwise); (b) sink-aware plaza
+pattern (skip/move plazas over a fixed instance's pads); (c) per_tiles
+sinks placed outside the array with fabric escapes. Until decided, the
+sink-under-array dogfood cannot pass DRC, so criterion 8 (route against the
+fabric) is measured on a design whose sink is pinned elsewhere. Side
+finding: the same pairs are duplicated as `clearance … on F.Cu`
+(gr345858, wrong layer label on a bottom instance).
+
 ## Acceptance criteria
 
 1. `view='gerber'` on `ewod-dogfood-1` **stops refusing** — no "synthesized

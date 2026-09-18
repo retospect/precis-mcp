@@ -32,6 +32,14 @@ _SYMBOL_PIN_2 = (
     "P~show~0~2~335~115~180~gge42~0^^335~115^^M335,115h10~#880000"
     "^^1~348.7~119~0~DIN~start~~~#0000FF^^1~344.5~114~0~2~end~~~#0000FF"
 )
+#: A pin on the symbol's OTHER side (rot 0): the ``start`` segment carries
+#: the NUMBER and the ``end`` segment the NAME (C639448 pin 41 on prod,
+#: 2026-09-18) — the anchors follow rotation, not role.
+_SYMBOL_PIN_41_MIRRORED = (
+    "P~show~0~41~465~495~0~gge441~0^^465~495^^M465,495h-10~#880000"
+    "^^1~451.3~499~0~HVOUT1~end~~~#0000FF^^1~455.5~494~0~41~start~~~#0000FF"
+    "^^0~458~495^^0~M 455 492 L 452 495 L 455 498"
+)
 
 
 def _doc_with_symbol(pins: list[object]) -> dict:
@@ -43,6 +51,14 @@ def _doc_with_symbol(pins: list[object]) -> dict:
 def test_symbol_pin_names_parses_number_to_name():
     result = _doc_with_symbol([_SYMBOL_PIN_1, _SYMBOL_PIN_2, "TRACK~1~x", 42])["result"]
     assert easyeda._symbol_pin_names(result) == {"1": "HVOUT41", "2": "DIN"}
+
+
+def test_symbol_pin_names_reads_the_name_from_end_when_start_holds_the_number():
+    # Regression: pads 41..80 of C639448 stayed numbered on prod because the
+    # first cut keyed on the ``start`` anchor, which on a rot-0 pin is the
+    # NUMBER segment — the name is whichever label is not the number.
+    result = _doc_with_symbol([_SYMBOL_PIN_41_MIRRORED, _SYMBOL_PIN_1])["result"]
+    assert easyeda._symbol_pin_names(result) == {"41": "HVOUT1", "1": "HVOUT41"}
 
 
 def test_symbol_pin_names_skips_unnamed_and_malformed_pins():
