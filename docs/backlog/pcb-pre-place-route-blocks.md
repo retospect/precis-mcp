@@ -263,7 +263,17 @@ pad's inscribed circle, so a stub authored at a polygon pad's corner is
 never a touch and the plaza via is withheld as an island terminal (offered
 for 8/65 segments; all 8 routed). Fix = polygon-aware touch test in those
 two functions only (`_pad_primitives`' circle stays for `net_islands`).
-Side defect gr346033: `ir.pin_point` does not mirror bottom instances.
+**Re-measured after that fix (route job 346439): unchanged, 59/62
+`no_path`.** The touch fix is verified on the real geometry (the real
+ARR1 pads + fixed copper pulled from prod: terminals offered 54/54, was
+30/54); the remaining blocker is gr346033 — `ir.pin_point` passes no
+`mirrored=` to `landpattern.rotate_offset`, so on the bottom-mounted
+sink every HVOUTn goal the router chases is the mirror image of the
+fabricated pad (17 mm across the ring), and the maze has to cross the
+zero-slack electrode field. Fix = mirror in `pin_point` (one caller);
+criterion 8 is re-measured once more after it lands. The ring fixture in
+`tests/test_pcb_island_terminal_polygon.py` is top-side only, which is
+why it reported improvement the real board could not show.
 
 ## Acceptance criteria
 

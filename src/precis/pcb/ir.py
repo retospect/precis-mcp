@@ -1712,7 +1712,9 @@ def pin_point(ir: PcbIR, pin_id: int) -> tuple[float, float] | None:
     if dx == 0.0 and dy == 0.0:
         return (x, y)
     rot = float(ir.inst_rot[inst])
-    rdx, rdy = landpattern.rotate_offset(dx, dy, 0.0 if math.isnan(rot) else rot)
+    rdx, rdy = landpattern.rotate_offset(
+        dx, dy, 0.0 if math.isnan(rot) else rot, mirrored=bool(ir.inst_bottom[inst])
+    )
     return (x + rdx, y + rdy)
 
 
