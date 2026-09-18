@@ -100,12 +100,30 @@ proposer"; tests `tests/test_se_library_compose.py`.
 
 **Left open:**
 
-- **Seed the prod facts** the proposer reads — no prod block carries a
-  `delta_length`/`unit_length` row yet, so `compose=` on prod returns
-  "nothing to compose" until azobenzene (Δ 9.0 → 5.5 Å, PSS), a dsDNA
-  spacer (Lp 49.9 nm) and an OPE rod are written as `material` property
-  rows citing the sources below (`source=` on each `put`). Wait for the
-  OPE stubs to land first; the dsDNA/azobenzene rows can go now.
+- **Seed the prod facts** — azobenzene and dsDNA **DONE 2026-09-18**;
+  the OPE rod is still open. `material:azobenzene` carries
+  `delta_length` 3.5 Å (trans 9.0 → cis 5.5), `unit_length` 0.9 nm,
+  `pss_short_fraction` 0.8 at 313 nm and `thermal_half_life` 172 800 s;
+  `material:dsdna` carries `unit_length` 0.34 nm/bp and three sourced
+  `persistence_length` rows (42.5 (30–55) nm review band, 49.89 low
+  salt, 33.16 at 250 mM NaCl). Each hangs off a one-block design linked
+  `made-of` it — `se:azo-unit` (the switch) and `se:dsdna-bp` (the
+  spacer). **Two designs, not one mixed design:** a design-level
+  `made-of` link is scoped to a block only through the link's
+  `meta.block`, and no verb writes that (`link()` has no `meta=`), so a
+  mixed design would resolve every block to whichever material the
+  first link named. The OPE rod waits on stubs pa345576/pa345577, which
+  still have zero body chunks.
+- **A multi-row material property resolves by write order** — gr346735.
+  `_material_hit` takes the first row and the store orders
+  `created_at DESC`, so the honest spread the `material` kind invites
+  (several conditions, several sources) collapses to the newest sample
+  with nothing on the rendered row saying a choice was made. Seeding hit
+  this: azobenzene's 436 nm PSS row (the reset channel, ~10 % cis)
+  outranked the 313 nm actuating one and would have understated the
+  stroke 8×. Worked around by keeping only the actuating row on the
+  material — the 436 nm figure lives on `se:azo-unit`'s cis→trans
+  transition params, where its wavelength can't be lost.
 - `compose='<design>#<block>'` reading the box off a block's declared
   transition ranges — needs Decision 3 (a transition carrying interval
   constraints). Today the string form refuses with a pointer.
@@ -125,8 +143,11 @@ proposer"; tests `tests/test_se_library_compose.py`.
    blocktree-library-build-plan.md §Slice 4's shipped note for the
    `wants=` shape, join order and the structure-bound-block gap it leaves
    open.
-3. Composition proposer — **SHIPPED** 2026-09-17 (`compose=`); seed the
-   prod facts next (see the item above).
+3. Composition proposer — **SHIPPED** 2026-09-17 (`compose=`); prod
+   facts seeded 2026-09-18 (see the item above). Note the seed is
+   **unexercised**: the deployed prod build predates slice 4, so its
+   `search` verb has neither `wants=` nor `compose=`. The first real
+   `compose=` run over these rows happens after the next `/go` deploys.
 
 Sources for the proposer (cite-sources rule) — resolved 2026-09-17, all
 held or queued in prod:
@@ -140,6 +161,12 @@ held or queued in prod:
   33 nm at 250 mM NaCl) and pa1564 (Smith/Cui/Bustamante 1996, primary).
 - OPE / PPE persistence length: stubs pa345576 (Cotts, Swager, Zhao 1996,
   doi 10.1021/ma9602583) and pa345577 (Bunz 2000 review, doi
-  10.1021/cr990257j) — minted 2026-09-17, fetching; cite their chunks
-  once landed. The spacer stiffness rows in the example above stay
-  illustrative until then.
+  10.1021/cr990257j) — minted 2026-09-17, **still zero body chunks as of
+  2026-09-18**; cite their chunks once landed. The spacer stiffness rows
+  in the example above stay illustrative until then.
+- dsDNA rise + the persistence-length band, both explicitly labelled in
+  one table: pa49952~pc1707101 (`L_bp` 0.34 nm B-DNA, `l_p` ≈ 30–55 nm).
+  This is what the seeded rows cite for the quantities pa2832's
+  extracted Table 1 lost its column header for.
+- azobenzene cis thermal half-life: pa51091~pc1706125 (2 days,
+  unmodified azobenzene, reported secondhand from that paper's ref 43).
