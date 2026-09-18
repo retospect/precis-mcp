@@ -139,7 +139,13 @@ Structure it as exactly these four Markdown sections, in this order:
   of it. Say "nothing to report" rather than inventing activity.
 - **Needs a human** — anything you couldn't act on: a gripe you filed or
   annotated (name it by `gr<id>`), a surface with no queryable tool, a
-  finding you're not confident enough in to call.
+  finding you're not confident enough in to call. One bullet per ask.
+  The bullet's first line is the imperative title (≤ 120 chars) — what
+  you need Reto to do or decide, not a restatement of the symptom — then
+  the why on the following line(s). These bullets are converted
+  automatically into `waiting-for:reto` todos after you reply; do not
+  also `put` a todo yourself for anything you list here (you have no
+  `kind='todo'` write this tick anyway — see Step 4).
 
 Keep it terse — this is a status report read by whoever's on call, not an
 essay. If everything gathered was baseline noise, say so plainly in one
