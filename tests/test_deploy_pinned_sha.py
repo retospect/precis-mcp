@@ -413,31 +413,48 @@ def _ship_pin_block() -> str:
 
 
 @pytest.mark.parametrize(
-    ("quick", "impacted", "remote", "expect_pin", "why"),
+    ("quick", "impacted", "remote", "docs_only", "expect_pin", "why"),
     [
-        ("0", "0", "0", True, "/go: full local gate"),
-        ("1", "0", "0", False, "/qland: nothing was gated at all"),
-        ("0", "1", "0", False, "/land: testmon-narrowed subset, not a deploy warrant"),
+        ("0", "0", "0", "0", True, "/go: full local gate"),
+        ("1", "0", "0", "0", False, "/qland: nothing was gated at all"),
+        ("0", "1", "0", "0", False, "/land: testmon-narrowed subset, not a deploy warrant"),
         (
             "0",
             "1",
             "1",
+            "0",
             True,
             "--remote --impacted: the impacted run is only a pre-gate ahead of GitHub's full matrix",
         ),
-        ("0", "0", "1", True, "--remote: GitHub's full matrix"),
+        ("0", "0", "1", "0", True, "--remote: GitHub's full matrix"),
+        (
+            "0",
+            "0",
+            "0",
+            "1",
+            False,
+            "docs-only local lane ran ruff + doc pointers, never pytest (gr347014)",
+        ),
+        ("0", "0", "1", "1", False, "docs-only remote lane ran GitHub's fast set, not the shards"),
+        ("1", "0", "0", "1", False, "docs-only --quick: doubly ungated"),
     ],
 )
 def test_ship_pins_the_gated_sha_only_after_a_full_gate(
-    tmp_path: Path, quick: str, impacted: str, remote: str, expect_pin: bool, why: str
+    tmp_path: Path,
+    quick: str,
+    impacted: str,
+    remote: str,
+    docs_only: str,
+    expect_pin: bool,
+    why: str,
 ) -> None:
-    """Case (g): the four-input decision. A pin written after a --quick or
-    bare --impacted ship would let /go deploy a tree the full suite never
-    ran."""
+    """Case (g): the five-input decision. A pin written after a --quick,
+    bare --impacted or docs-only-lane ship would let /go deploy a tree the
+    full suite never ran."""
     pin = tmp_path / ".ship-sha"
     script = (
         "say() { :; }\n"
-        f"QUICK={quick}\nIMPACTED={impacted}\nREMOTE={remote}\n"
+        f"QUICK={quick}\nIMPACTED={impacted}\nREMOTE={remote}\nDOCS_ONLY={docs_only}\n"
         'GATED_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"\n'
         f'SHIP_SHA_FILE="{pin}"\n' + _ship_pin_block() + "\n"
     )
@@ -459,7 +476,7 @@ def test_ship_never_pins_an_empty_sha(tmp_path: Path) -> None:
     pin = tmp_path / ".ship-sha"
     script = (
         "say() { :; }\n"
-        'QUICK=0\nIMPACTED=0\nREMOTE=0\nGATED_SHA=""\n'
+        'QUICK=0\nIMPACTED=0\nREMOTE=0\nDOCS_ONLY=0\nGATED_SHA=""\n'
         f'SHIP_SHA_FILE="{pin}"\n' + _ship_pin_block() + "\n"
     )
     result = subprocess.run(
@@ -467,6 +484,18 @@ def test_ship_never_pins_an_empty_sha(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert not pin.exists()
+
+
+def test_ship_full_flag_forces_the_local_suite_on_a_docs_only_diff() -> None:
+    """/go passes --full: the docs-only classification must be overridable
+    so a docs-only /go still ends in a deploy pin, and /go must pass it."""
+    text = SHIP_SRC.read_text(encoding="utf-8")
+    assert "--full)     FULL=1; shift ;;" in text
+    override_at = text.index('if [[ "$FULL" == 1 && "$DOCS_ONLY" == 1 ]]; then')
+    pin_at = text.index('if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1')
+    assert override_at < pin_at
+    go = (REPO_ROOT / ".claude" / "commands" / "go.md").read_text(encoding="utf-8")
+    assert "scripts/ship --mutate --full" in go
 
 
 def test_ship_clears_a_stale_pin_before_it_can_do_anything_else() -> None:

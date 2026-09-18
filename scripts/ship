@@ -44,7 +44,8 @@
 # A full-gate run also writes `.ship-sha` (gitignored, per-worktree): the exact
 # sha the gate validated, for `scripts/deploy "$(cat .ship-sha)" --pinned` so a
 # sibling's --quick ship can't substitute an ungated tree between ship and
-# deploy. Not written by --quick (nothing gated) or bare --impacted (subset).
+# deploy. Not written by --quick (nothing gated), bare --impacted (subset), or
+# a docs-only diff (the light lane — no pytest — unless --full forces the suite).
 #
 # Usage:  scripts/ship "fix(x): one-line summary of the branch"
 #         scripts/ship            # falls back to a generated message
@@ -53,6 +54,11 @@
 #         scripts/ship --mutate "…"     # /go: additionally record per-test coverage
 #                                        # contexts for scripts/mutate-diff (also via
 #                                        # PRECIS_SHIP_MUTATE=1)
+#         scripts/ship --full "…"       # /go: run the full local suite even when
+#                                        # the diff classifies as docs-only, so the
+#                                        # deploy pin is always written (also via
+#                                        # PRECIS_SHIP_FULL=1). Local gate only —
+#                                        # GitHub picks its own lane.
 #         scripts/ship --quick "…"      # /qland: NO gate at all — commit → sync →
 #                                        # squash-merge only (also via
 #                                        # PRECIS_SHIP_QUICK=1). For burst-landing
@@ -114,6 +120,11 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # Flags accepted in any order.
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
+# --full (or PRECIS_SHIP_FULL=1): never take the docs-only light lane — run
+# the whole local suite so the gated-sha pin is written. /go passes it: a
+# docs-only /go that skipped pytest used to pin a sha the suite never ran on
+# top of (gr347014), and the pin is a deploy warrant.
+FULL="${PRECIS_SHIP_FULL:-0}"
 # --remote (/land, or PRECIS_SHIP_REMOTE=1): the correctness gate is GitHub's
 # full check.yml matrix instead of the local container. Push the synced branch
 # to ci/<branch>, poll the check run to conclusion, then do the ordinary CAS
@@ -146,12 +157,13 @@ while :; do
         --mutate)   MUTATE=1; shift ;;
         --quick)    QUICK=1; shift ;;
         --remote)   REMOTE=1; shift ;;
+        --full)     FULL=1; shift ;;
         # git-commit muscle memory: accept -m/--message rather than letting
         # the literal "-m" become the shipped subject and the real message
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote --full -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
@@ -736,6 +748,33 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     git fetch -q origin main
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
 
+    # Classify the change: a docs/config-only ship can't break the test
+    # suite, so the local gate skips the ~3-min mypy+pytest and runs only
+    # ruff + the doc-pointer test (seconds); check.yml makes the same call
+    # for --remote (docs/ + root *.md — a subset of this set, so a local
+    # "docs-only" verdict is never narrower than GitHub's). Heuristic:
+    # `merge-base..HEAD` shows only HEAD's own changes, so a
+    # misclassification can only under-scope toward "not docs-only" (safe →
+    # full gate). Either way the sha is NOT pinned for deploy — the suite did
+    # not run on this tree; --full opts the local gate back into the suite.
+    DOCS_ONLY=1
+    [[ -z "$CHANGED" ]] && DOCS_ONLY=0   # empty diff → play safe, full gate
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        case "$f" in
+            *.md | docs/* | .claude/* | .gitignore | LICENSE | CITATION.cff | SECURITY.md) ;;
+            *) DOCS_ONLY=0; break ;;
+        esac
+    done <<< "$CHANGED"
+    if [[ "$FULL" == 1 && "$DOCS_ONLY" == 1 ]]; then
+        if [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]]; then
+            say "--full: docs-only diff — GitHub picks the docs lane regardless; no deploy pin from this ship (certify the landed tree with /go)"
+        else
+            say "--full: docs-only diff, running the whole suite anyway (deploy pin wanted)"
+            DOCS_ONLY=0
+        fi
+    fi
+
     # Pre-ship advisories (never block the ship — `|| true`): a migration-number
     # collision across worktrees when this ship touches migrations, and orphaned
     # Both are also in
@@ -775,21 +814,6 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         say "remote ship — no local gate; the GitHub matrix below is the gate"
     else
         setup_gate_infra
-
-    # Classify the change: a docs/config-only ship can't break the test
-    # suite, so it skips the ~3-min mypy+pytest gate and runs only ruff + the
-    # doc-pointer test (seconds). Heuristic: `merge-base..HEAD` shows only
-    # HEAD's own changes, so a misclassification can only under-scope toward
-    # "not docs-only" (safe → full gate).
-    DOCS_ONLY=1
-    [[ -z "$CHANGED" ]] && DOCS_ONLY=0   # empty diff → play safe, full gate
-    while IFS= read -r f; do
-        [[ -z "$f" ]] && continue
-        case "$f" in
-            *.md | docs/* | .claude/* | .gitignore | LICENSE | CITATION.cff | SECURITY.md) ;;
-            *) DOCS_ONLY=0; break ;;
-        esac
-    done <<< "$CHANGED"
 
     # One gate invocation for the whole check. `ruff --fix`/`format` normalise
     # the source in-place (the mount in bind mode, the container's native copy
@@ -947,14 +971,18 @@ done
 [[ "$shipped" == 1 ]] || die "could not ship after ${MAX_ATTEMPTS} attempts — main kept moving under us. Re-run scripts/ship."
 
 # Write the gated-sha pin (see SHIP_SHA_FILE above). Full-gate runs only:
-# --quick gated nothing; --impacted gated a testmon subset. --remote counts as
-# full even alongside --impacted, because the impacted run there is only a
-# pre-gate ahead of GitHub's complete matrix. A hybrid-race fallback has
-# already forced IMPACTED=0 by this point (the integrated tree took the full
-# local suite), so it lands here as full too.
-if [[ "$QUICK" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" ]]; then
+# --quick gated nothing; --impacted gated a testmon subset; a docs-only diff
+# took the light lane (local: ruff + doc pointers; GitHub: the fast set) —
+# no pytest ran on that tree, so it is no deploy warrant either (gr347014).
+# --remote counts as full even alongside --impacted, because the impacted
+# run there is only a pre-gate ahead of GitHub's complete matrix. A
+# hybrid-race fallback has already forced IMPACTED=0 by this point (the
+# integrated tree took the full local suite), so it lands here as full too.
+if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" ]]; then
     printf '%s\n' "$GATED_SHA" > "$SHIP_SHA_FILE"
     say "gated sha pinned → ${SHIP_SHA_FILE##*/} (${GATED_SHA:0:8}); deploy it with: scripts/deploy \"\$(cat .ship-sha)\" --pinned"
+elif [[ "$QUICK" != 1 && "$DOCS_ONLY" == 1 && -n "$GATED_SHA" ]]; then
+    say "docs-only lane — no deploy pin written (the suite did not run on ${GATED_SHA:0:8}); to certify it for deploy run scripts/ship --full (/go) on the landed tree"
 fi
 git push origin --delete "$BRANCH" 2>/dev/null || true
 if [[ "$REMOTE" == 1 ]]; then
