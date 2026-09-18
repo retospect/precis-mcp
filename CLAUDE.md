@@ -18,9 +18,9 @@ gate on GitHub (`scripts/ship --remote`: commit WIP → sync main → push
 docs-only diffs get a ~5 min docs lane; 3.12/macOS/Windows run nightly — run
 ship in background, output to a log) → atomic CAS squash-merge to `main` —
 main only advances through a tree the gate tested against the then-current
-main; if main moves meanwhile, the hybrid race policy re-syncs and validates
-the integrated tree with the full LOCAL gate (~10 min) instead of a second CI
-run. Squawk on new
+main; if main moves meanwhile, ship drops the lock, re-syncs and re-runs CI
+(up to 2×), then falls back to the hybrid policy (lock held, full LOCAL
+gate ~10 min) so a burst can't loop forever. Squawk on new
 migration SQL stays host-side. `--remote --impacted` = opt-in local impacted
 pre-gate first; bare `--impacted` = legacy local-only gate). **`/go`** = ship
 with the full LOCAL suite + diff-coverage gate (changed src lines need

@@ -65,9 +65,11 @@ Optional ship message from the user: `$ARGUMENTS`
    a green run reaches
    `main` — via the same atomic CAS squash-push, so main only ever advances
    through a tree the gate tested against the then-current main. If main
-   moves during the wait, the hybrid race policy engages automatically:
-   ship keeps the lock, re-syncs, and validates the integrated tree with
-   the full LOCAL container gate (~10 min) instead of a second CI run.
+   moves during the wait, ship drops the lock, re-syncs, and re-runs CI
+   on the integrated tree (~12 min, up to 2×, siblings keep landing
+   meanwhile); only after that does the hybrid race policy engage: ship
+   keeps the lock and validates the integrated tree with the full LOCAL
+   container gate (~10 min) so the retry loop terminates.
    Opt-in belt for risky diffs: `scripts/ship --remote --impacted` runs the
    local impacted container gate FIRST, before spending a CI cycle.
    (`scripts/ship --impacted` without `--remote` is the legacy local-gate

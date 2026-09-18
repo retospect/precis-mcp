@@ -32,8 +32,9 @@
 #                    · ship   squash `commit-tree` onto origin/main + a
 #                             `--force-with-lease` CAS push. If main advanced
 #                             during the gate (ancestor check) or the lease is
-#                             rejected, re-sync + re-gate + re-push (≤3×) — never
-#                             force a stale tree over a moved main.
+#                             rejected, re-sync + re-gate + re-push (≤3×; remote
+#                             mode: two fresh CI runs, then one hybrid local
+#                             gate) — never force a stale tree over a moved main.
 #   5. reset       — reset the feature branch to the shipped main: zero
 #                    divergence, so the next sync is a clean fast-forward and no
 #                    phantom squash-artifact conflict on already-shipped work.
@@ -62,16 +63,18 @@
 #                                        # wait for the full check.yml matrix
 #                                        # (Linux+db, macOS, Windows), then the same
 #                                        # atomic CAS squash-push. If main moves
-#                                        # during the CI wait, the HYBRID race
-#                                        # policy engages: keep the ship lock,
-#                                        # re-sync, validate the integrated tree
-#                                        # with the full LOCAL gate (~10 min), push
-#                                        # (never a second CI hour — three green
-#                                        # runs starved during one burst afternoon,
-#                                        # 2026-09-13). Add --impacted for an
-#                                        # opt-in local impacted gate BEFORE burning
-#                                        # a CI cycle. (also via PRECIS_SHIP_REMOTE=1)
-#                                        # Env: PRECIS_REMOTE_CI_TIMEOUT_MIN (150).
+#                                        # during the CI wait, the race is lost:
+#                                        # drop the ship lock, re-sync, and run a
+#                                        # FRESH CI cycle on the integrated tree
+#                                        # (~12 min), up to PRECIS_REMOTE_CI_RETRIES
+#                                        # (2) times; only then the HYBRID fallback
+#                                        # (keep the lock, full LOCAL gate ~10 min)
+#                                        # so a burst can't loop forever. Add
+#                                        # --impacted for an opt-in local impacted
+#                                        # gate BEFORE burning a CI cycle. (also
+#                                        # via PRECIS_SHIP_REMOTE=1) Env:
+#                                        # PRECIS_REMOTE_CI_TIMEOUT_MIN (150),
+#                                        # PRECIS_REMOTE_CI_RETRIES (2).
 #
 # The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
 # pytest runs under pytest-cov in the container, then diff-cover on the HOST
@@ -121,16 +124,21 @@ QUICK="${PRECIS_SHIP_QUICK:-0}"
 # staleness steal and starve sibling ships) — it's taken only around the
 # final CAS section.
 REMOTE="${PRECIS_SHIP_REMOTE:-0}"
-# Hybrid race policy (user-decided 2026-09-13): when a GREEN remote gate
-# loses the CAS race (main moved during the matrix — measured when it took
-# ~1h: three consecutive green runs starved during one burst afternoon; the
-# gate is ~12 min since the 2026-09-16 shard + single-leg reshape, see
-# gr343941 for whether this fallback still pays), do NOT burn
-# another CI run. Keep the ship lock, re-sync, and validate the integrated
-# tree with the FULL LOCAL container gate (~10 min) instead, then push. The
-# change itself still had a full pre-merge matrix; only the merge-integration
-# delta (siblings' already-shipped commits) gets the local-suite check.
+# Remote race policy (user-decided 2026-09-17, gr343941 option 1): when a
+# GREEN remote gate loses the CAS race (main moved during the CI wait),
+# RELEASE the ship lock, re-sync, and run a fresh CI cycle on the
+# integrated tree — up to PRECIS_REMOTE_CI_RETRIES (default 2) times. A CI
+# retry costs ~12 min of free public-repo minutes and touches no local
+# Docker, so siblings are never starved behind it. Only when the retries
+# are exhausted (a burst where main moves every few minutes) does the
+# 2026-09-13 HYBRID fallback engage as the terminating step: keep the ship
+# lock, re-sync, and validate the integrated tree with the FULL LOCAL
+# container gate (~10 min) instead, then push. That fallback was the
+# default while a CI run took ~1h; it needs one of the two fleet-wide gate
+# slots, whose first-come admission starved a lock-holding ship for hours
+# (gr343941 — the FIFO slot ticket is that gripe's remaining scope).
 REMOTE_FALLBACK=0
+REMOTE_CI_RETRIES=0
 MSG=""
 while :; do
     case "${1:-}" in
@@ -575,7 +583,8 @@ acquire_ship_lock() {
     local _waited=0 holder holder_desc holder_pid _reason
     # Re-entrant: the hybrid race fallback keeps the lock across its retry
     # iteration — a second acquire from the same pid is a no-op, not a
-    # self-deadlock.
+    # self-deadlock. (A CI-retry iteration released it first, so its
+    # re-acquire below is a real, contended acquire.)
     holder_pid="$(lock_holder_pid "$LOCKDIR")"
     [[ "$holder_pid" == "$$" ]] && return 0
     while ! mkdir "$LOCKDIR" 2>/dev/null; do
@@ -614,6 +623,24 @@ acquire_ship_lock() {
 if [[ "$REMOTE" != 1 ]]; then
     acquire_ship_lock
 fi
+
+# Remote mode lost the race (main moved during the CI wait, or the CAS lease
+# was rejected). Policy header near REMOTE_FALLBACK= above: first
+# PRECIS_REMOTE_CI_RETRIES fresh CI cycles with the lock RELEASED (siblings
+# keep landing meanwhile), then one hybrid local gate with the lock held so
+# the retry loop terminates. No-op outside remote mode or once in fallback.
+_remote_race_lost() {
+    [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]] || return 0
+    local budget="${PRECIS_REMOTE_CI_RETRIES:-2}"
+    if (( REMOTE_CI_RETRIES < budget )); then
+        REMOTE_CI_RETRIES=$(( REMOTE_CI_RETRIES + 1 ))
+        say "race lost — releasing the ship lock; the re-synced tree gets a FRESH CI run (CI retry ${REMOTE_CI_RETRIES}/${budget}; hybrid local gate after that)"
+        _release_ship_lock
+    else
+        REMOTE_FALLBACK=1; IMPACTED=0
+        say "race lost ${budget}× — hybrid fallback: lock stays held; the integrated tree gets the FULL LOCAL gate (~10 min) instead of another CI run"
+    fi
+}
 
 # ── 3b. remote gate (--remote): push ci/<branch>, wait for check.yml ─────
 # The branch (already synced with origin/main by the loop below) goes to the
@@ -677,12 +704,17 @@ remote_gate_wait() {
 # a few times, so we never squash a stale base. Merge conflicts and red gates
 # are NOT retryable — they abort immediately for a human to resolve.
 shipped=0
+# Remote mode budgets one first CI run + PRECIS_REMOTE_CI_RETRIES fresh CI
+# runs + one terminating hybrid local gate; classic modes keep the 3 local
+# re-gates.
+MAX_ATTEMPTS=3
+[[ "$REMOTE" == 1 ]] && MAX_ATTEMPTS=$(( 2 + ${PRECIS_REMOTE_CI_RETRIES:-2} ))
 # The sha this run actually gated — $NEW on a real squash, $OLD_MAIN when the
 # tree was already landed (see the nothing-new guard below). Written to
 # $SHIP_SHA_FILE after the loop, full gate only.
 GATED_SHA=""
-for attempt in 1 2 3; do
-    [[ "$attempt" -gt 1 ]] && say "main moved under us — re-syncing + re-gating (attempt ${attempt}/3)"
+for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
+    [[ "$attempt" -gt 1 ]] && say "main moved under us — re-syncing + re-gating (attempt ${attempt}/${MAX_ATTEMPTS})"
 
     say "syncing origin/main"
     git fetch -q origin main || die "git fetch failed — check the network/remote and re-run scripts/ship."
@@ -857,15 +889,14 @@ for attempt in 1 2 3; do
     # In remote mode a retry means a FRESH CI cycle on the re-synced tree
     # (that's the contract: main only advances through an exactly-tested
     # tree), and the lock is dropped first so siblings aren't starved
-    # through the CI wait (~12 min green, unbounded when queued).
+    # through the CI wait (~12 min green, unbounded when queued). After
+    # PRECIS_REMOTE_CI_RETRIES lost races the hybrid local gate takes over
+    # (lock held) so the loop terminates — see _remote_race_lost.
     say "shipping to main"
     git fetch -q origin main
     if ! git merge-base --is-ancestor origin/main HEAD; then
         say "origin/main advanced during the gate — re-syncing"
-        if [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]]; then
-            REMOTE_FALLBACK=1; IMPACTED=0
-            say "hybrid race policy — lock stays held; the integrated tree gets the FULL LOCAL gate (~10 min) instead of another CI hour"
-        fi
+        _remote_race_lost
         continue
     fi
     OLD_MAIN="$(git rev-parse origin/main)"
@@ -899,12 +930,9 @@ EOF
         break
     fi
     say "CAS push rejected — origin/main moved from elsewhere; re-syncing and retrying"
-    if [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]]; then
-        REMOTE_FALLBACK=1; IMPACTED=0
-        say "hybrid race policy — lock stays held; the integrated tree gets the FULL LOCAL gate (~10 min) instead of another CI hour"
-    fi
+    _remote_race_lost
 done
-[[ "$shipped" == 1 ]] || die "could not ship after 3 attempts — main kept moving under us. Re-run scripts/ship."
+[[ "$shipped" == 1 ]] || die "could not ship after ${MAX_ATTEMPTS} attempts — main kept moving under us. Re-run scripts/ship."
 
 # Write the gated-sha pin (see SHIP_SHA_FILE above). Full-gate runs only:
 # --quick gated nothing; --impacted gated a testmon subset. --remote counts as
