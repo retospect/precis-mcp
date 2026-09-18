@@ -1,11 +1,12 @@
 ---
 id: precis-review-citation-faithfulness
 title: precis — one-pass citation-faithfulness review
-summary: For each claim in a draft, check it is cited (sufficiency), the cite supports it (correctness), and prefer the living [fi<hub>] form over a frozen paper cite (living-cite preference) — existence is pre-checked, not this pass's job
+summary: For each claim in a draft, check it is cited (sufficiency), the cite supports it (correctness), and prefer the living [fi<hub>] form over a frozen paper cite (living-cite preference); a claim the source contradicts gets corrected when you may write, flagged with exact replacement text when you may not
 answers:
   - how do I check that every claim in a draft is cited and the citation actually supports it?
   - what counts as 'support' for a citation faithfulness check?
   - how do I file a finding for each faithfulness problem I find?
+  - the cited chunk contradicts the draft claim — do I fix the draft or flag it?
 applies-to: get (kind='draft'|'paper'), put (kind='finding'|'todo')
 tags: troubleshooting, workflow
 kinds: draft, paper, finding, todo
@@ -75,6 +76,28 @@ check. The author never types `\cite{}`; that is export-only output. A
 `[me<id>]`/`[dc<id>]` reference is a **link, not a citation** (it
 points at our own notes, not the literature) — it is out of scope
 here; skip it.
+
+## The source wins — correct the draft when you are allowed to write
+
+Cases 4, 5 and 6 are **defects in the draft, not authorial intent**. A
+draft is a record of what is known; a number a held source does not
+support does not become true by surviving review.
+
+- **If your task carries `meta.author`** (the authoring variant of this
+  pass, [[precis-review-authoring]]) — **fix it in place**: reword the
+  sentence to what the source states, delete an unsupported quantity
+  rather than keep it, write both readings when two held sources
+  disagree, and cite the `[fi<id>]` hub grounded on the passage you
+  read. Never substitute a value you did not read in a source. Keep the
+  author's argument intact, and say in your tick conclusion when the
+  argument depended on the wrong number.
+- **If it does not** — you are read-only, so file the finding below, but
+  **carry the exact replacement sentence in the body**. A finding that
+  says only "this is wrong" costs the human a second pass; one that ends
+  with the corrected sentence and its hub handle is a single re-tick.
+
+Either way the human signs off before anything publishes, so the
+correction is cheap and the silent flag backlog is not.
 
 ## Output: one finding per problem
 
@@ -148,6 +171,12 @@ chunk does not have to echo the sentence. What breaks support:
 
 When in doubt, write the finding. False positives are cheap; an
 unsupported citation that survives review is expensive.
+
+**Weak support is not the same as under-qualification.** Prose is allowed
+to lean on its section for scope and on the cite popover for the rest —
+judge it by whether a reader who believed the sentence would be surprised
+by the hub's sentence, not by whether every condition is restated inline.
+The rule you are reviewing against is [[precis-claim-fidelity-help]].
 
 ## Anti-patterns
 

@@ -145,6 +145,59 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
 
+    # Cite-drift gate (docs/backlog/cite-pins-hub-version.md): a citing
+    # passage's pinned hub version no longer matches the hub's live
+    # version — the paraphrase may no longer say what the hub says today.
+    # Blocking, same precedent as the figure clearance gate above.
+    # Unstamped (pre-pin) cites are unknown, not drift, and never block —
+    # ``find_drifted_cites`` already excludes them from its ``drifted``
+    # list.
+    from precis.handlers._draft_lint import find_drifted_cites
+
+    drifted, _unstamped = find_drifted_cites(ctx.store, ref.id)
+    if drifted:
+        parts = []
+        for d in drifted:
+            old = (
+                f'"{d.stamped_title}"'
+                if d.stamped_title is not None
+                else "old statement not recorded"
+            )
+            parts.append(f'{d.dc} (fi{d.hub_ref_id}: was {old}, now "{d.current_title}")')
+        ctx.record_failure(
+            f"draft_export: {len(drifted)} cite(s) drifted from the hub they "
+            f"cite — {'; '.join(parts)}. Re-check the passage against the "
+            "hub's current statement and rewrite it (which re-stamps the "
+            "pin), then re-export."
+        )
+        return
+
+    # Unsigned-hub advisory (same backlog item): counted only, never
+    # blocking — most cited hubs are ``candidate``, so a hard fail here
+    # would block nearly every export in the corpus. "Signed" is the same
+    # publish-state ladder ``trust='signed'`` already tests
+    # (``handlers/finding.py::_SIGNED_STATES`` — signed/anchored/
+    # published), read off the same batched ``hub_rows`` the hygiene view
+    # uses for posture.
+    from precis.handlers.finding import _SIGNED_STATES
+    from precis.nanopub.overview import draft_cited_hub_ids, hub_rows
+
+    cited_hub_ids = draft_cited_hub_ids(ctx.store, ref.id)
+    if cited_hub_ids:
+        unsigned = sum(
+            1
+            for row in hub_rows(ctx.store, ref_ids=sorted(cited_hub_ids))
+            if row.state not in _SIGNED_STATES
+        )
+        if unsigned:
+            ctx.append_chunk(
+                "job_event",
+                f"advisory: {unsigned} cited claim hub(s) rest on an "
+                "unsigned publish state (not yet signed/anchored/"
+                "published) — see get(kind='draft', id=<slug>, "
+                "view='hygiene').",
+            )
+
     include_sources = bool(params.get("include_sources"))
     # The route already decided (and blocked, if not overridden) — recompute
     # the same no-network read here so the appendix records exactly which

@@ -1,7 +1,7 @@
 ---
 id: precis-draft-reviewer
 title: precis — draft-section reviewer persona
-summary: draft-section reviewer persona — read-only pass that files anchored change-request todos, never rewrites prose itself
+summary: draft-section reviewer persona — read-only pass that files anchored change-request todos carrying exact replacement text, never rewrites prose itself
 answers:
   - which persona should I adopt to review one draft section without rewriting it myself?
   - how do I file a review finding as an actionable change request?
@@ -56,8 +56,14 @@ Rules that make a finding actionable:
   complaint; "Open dc41 with the result it argues for: the ball stops
   the clip piercing paper" is a change request.
 - **Be specific and bounded.** Quote the offending span. If a claim
-  lacks support, say which claim and that it needs a `[pc…]` citation or
-  a `[citation pending]` placeholder with a finding chasing it.
+  lacks support, say which claim and that it needs a `[fi<id>]` hub cite
+  or a finding chasing the source.
+- **A claim the evidence contradicts gets the replacement text.** If you
+  read the grounding passage and it disagrees with the draft (different
+  number, unit, sign, or a claim the source simply does not carry), the
+  draft is wrong — write the corrected sentence verbatim in the change
+  request, with the hub handle to cite. The editor applies it in one
+  tick; a bare "this looks unsupported" costs a second pass.
 - **Reference chunks in prose by their handle** — `[dc41]`, `[dc42]` —
   never "the second paragraph".
 

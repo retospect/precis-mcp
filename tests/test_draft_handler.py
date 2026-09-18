@@ -1561,6 +1561,164 @@ def test_hygiene_view_returns_full_lists_unelided(
     assert "## Work in progress" not in out
 
 
+# ── drift check (docs/backlog/cite-pins-hub-version.md, task 2) ─────
+
+
+def test_hygiene_flags_drifted_cite_with_both_statements(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A reworded cited hub shows up in ``view='hygiene'`` as drifted,
+    quoting BOTH statements and the citing ``dc<id>`` — the acceptance
+    criterion: a flag that can't say what the claim used to say costs the
+    reader a second pass."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub, refine_claim_sentence
+    from precis.utils import handle_registry
+
+    old_sentence = "Graphene has a tensile strength of 130 GPa."
+    hub_id = mint_hub(hub.live_store, CanonicalClaim(sentence=old_sentence, scope={}))
+    fi = handle_registry.format_handle("finding", hub_id)
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"as shown in [{fi}], the effect holds",
+        at={"after": "¶" + th},
+    )
+    dc = _order(hub, "nt")[1].dc
+
+    result = refine_claim_sentence(
+        hub.live_store,
+        hub_id,
+        "Nanoindentation measurements show graphene has a tensile strength of 130 GPa.",
+    )
+
+    out = draft.get(id="nt", view="hygiene").body
+    assert "drifted cite" in out
+    assert dc in out
+    assert old_sentence in out
+    assert result["new_title"] in out
+
+
+def test_hygiene_drift_cleared_by_rewriting_the_citing_chunk(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Rewriting the citing chunk's prose clears the drift line without
+    any hub-side change (the pin re-stamps)."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub, refine_claim_sentence
+    from precis.utils import handle_registry
+
+    hub_id = mint_hub(
+        hub.live_store,
+        CanonicalClaim(
+            sentence="Graphene has a tensile strength of 130 GPa.", scope={}
+        ),
+    )
+    fi = handle_registry.format_handle("finding", hub_id)
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"as shown in [{fi}], the effect holds",
+        at={"after": "¶" + th},
+    )
+    para_h = _order(hub, "nt")[1].handle
+
+    refine_claim_sentence(
+        hub.live_store,
+        hub_id,
+        "Nanoindentation measurements show graphene has a tensile strength of 130 GPa.",
+    )
+    assert "drifted cite" in draft.get(id="nt", view="hygiene").body
+
+    draft.edit(id=f"¶{para_h}", text=f"as reported in [{fi}], the effect still holds")
+    assert "drifted cite" not in draft.get(id="nt", view="hygiene").body
+
+
+def test_hygiene_unstamped_cite_never_reads_as_drifted_or_clean(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A pre-pin (unstamped) cite must never appear as drifted, and its
+    unknown status is surfaced separately from drift — never folded into
+    the drifted list, never silently swallowed as 'clean'."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    hub_id = mint_hub(
+        hub.live_store,
+        CanonicalClaim(
+            sentence="Graphene has a tensile strength of 130 GPa.", scope={}
+        ),
+    )
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    # Hand-write a legacy cites edge, bypassing sync_draft_links — the
+    # shape every edge had before the pin existed.
+    hub.live_store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=hub_id,
+        relation="cites",
+        src_pos=0,
+        set_by="agent",
+        meta={"auto": "mention"},
+    )
+
+    out = draft.get(id="nt", view="hygiene").body
+    assert "drifted cite" not in out
+    assert "predate version pinning" in out
+    assert "1 cite(s)" in out or "1 cite" in out
+
+
+def test_hygiene_drift_degrades_when_old_title_not_recorded(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """An edge stamped before the title pin existed (``cited_pub_id`` but
+    no ``cited_title``) must degrade to a clear 'not recorded' phrasing —
+    never crash, never claim the old title was empty."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub, refine_claim_sentence
+
+    hub_id = mint_hub(
+        hub.live_store,
+        CanonicalClaim(
+            sentence="Graphene has a tensile strength of 130 GPa.", scope={}
+        ),
+    )
+    old_pub_id = hub.live_store.current_pub_ids([hub_id])[hub_id]
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    hub.live_store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=hub_id,
+        relation="cites",
+        src_pos=0,
+        set_by="agent",
+        meta={"auto": "mention", "cited_pub_id": old_pub_id},
+    )
+
+    refine_claim_sentence(
+        hub.live_store,
+        hub_id,
+        "Nanoindentation measurements show graphene has a tensile strength of 130 GPa.",
+    )
+
+    out = draft.get(id="nt", view="hygiene").body
+    assert "drifted cite" in out
+    assert "old statement not recorded" in out
+
+
 # ── Fix C: dangling [finding #slug] markers are flagged on read ─────
 
 

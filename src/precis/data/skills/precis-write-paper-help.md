@@ -79,6 +79,17 @@ doesn't survive a serious reader.
    excitation density". "Improved stability" → "<5% drift over 30
    days at 20°C".
 
+## How precisely must the prose restate the hub?
+
+Hub sentences are self-contained and heavily qualified by design; prose
+leans on its section and on the cite popover, which shows the grounding
+passage verbatim. So do not paste the hub's sentence in. Two floors:
+never strip a qualification that is load-bearing *where the sentence
+sits*, and never let your verb assert more than the hub does. The test —
+**would a reader who believed your sentence be surprised by the hub's
+sentence?** Full rule, including verb strength per trust state:
+[[precis-claim-fidelity-help]].
+
 ## Prose craft — structure, diction, and tells to avoid
 
 A research write-up is *flowing prose*, not a slide deck. One paragraph,

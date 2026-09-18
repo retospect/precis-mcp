@@ -181,6 +181,121 @@ def test_dispatch_fails_on_uncleared_figure(hub: Hub) -> None:
     assert any("not cleared" in f for f in ctx.failures), ctx.failures
 
 
+# ── cite-drift gate (docs/backlog/cite-pins-hub-version.md, task 3) ─────
+
+
+def _cite_hub_in_draft(hub: Hub, slug: str, sentence: str) -> tuple[int, str]:
+    """Mint a claim hub with ``sentence`` and cite it (``[fi<id>]``) from a
+    fresh paragraph appended to draft ``slug``. Returns ``(hub_ref_id,
+    fi_handle)``."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+    from precis.utils import handle_registry
+
+    hub_id = mint_hub(hub.live_store, CanonicalClaim(sentence=sentence, scope={}))
+    fi = handle_registry.format_handle("finding", hub_id)
+    DraftHandler(hub=hub).put(
+        id=slug,
+        chunk_kind="paragraph",
+        text=f"as shown in [{fi}], the effect holds",
+        at={"last": True},
+    )
+    return hub_id, fi
+
+
+def test_dispatch_fails_on_drifted_cite(hub: Hub) -> None:
+    """A drifted cite (the hub was reworded since the citing prose was
+    written) BLOCKS the export — same precedent as the figure clearance
+    gate — and the failure names the offending chunk and both
+    statements."""
+    from precis.taproot.hub import refine_claim_sentence
+
+    _pid, slug = _make_project_and_draft(hub)
+    old_sentence = "Graphene has a tensile strength of 130 GPa."
+    hub_id, _fi = _cite_hub_in_draft(hub, slug, old_sentence)
+
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    dc = hub.live_store.drafts.reading_order(ref.id)[-1].dc
+
+    result = refine_claim_sentence(
+        hub.live_store,
+        hub_id,
+        "Nanoindentation measurements show graphene has a tensile strength of 130 GPa.",
+    )
+
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+
+    assert any("drifted" in f for f in ctx.failures), ctx.failures
+    failure = next(f for f in ctx.failures if "drifted" in f)
+    assert dc in failure
+    assert old_sentence in failure
+    assert result["new_title"] in failure
+    # Blocking: nothing exported.
+    assert not ctx.meta_set
+
+
+def test_dispatch_succeeds_with_unsigned_hub_advisory_only(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """A cite resting on an unsigned hub (the common case — most hubs are
+    ``candidate``) is advisory only: the export succeeds and reports a
+    count, never blocks."""
+    import precis.export.compile as _compile
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
+    _pid, slug = _make_project_and_draft(hub)
+    _cite_hub_in_draft(hub, slug, "Graphene has a tensile strength of 130 GPa.")
+
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+
+    assert not ctx.failures, ctx.failures
+    assert any("unsigned" in t for _k, t in ctx.events)
+    assert any("1 cited claim hub" in t for _k, t in ctx.events)
+
+
+def test_dispatch_unstamped_cite_never_blocks(hub: Hub, monkeypatch: Any) -> None:
+    """A pre-pin (unstamped) cite must never block an export — only true
+    drift (a stamped version that has since moved) does."""
+    import precis.export.compile as _compile
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
+    _pid, slug = _make_project_and_draft(hub)
+    hub_id = mint_hub(
+        hub.live_store,
+        CanonicalClaim(
+            sentence="Graphene has a tensile strength of 130 GPa.", scope={}
+        ),
+    )
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    # Hand-write a legacy cites edge, bypassing sync_draft_links — the
+    # shape every edge had before the pin existed.
+    hub.live_store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=hub_id,
+        relation="cites",
+        src_pos=0,
+        set_by="agent",
+        meta={"auto": "mention"},
+    )
+
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+
+    assert not any("drifted" in f for f in ctx.failures), ctx.failures
+
+
 def test_put_rejects_traversal_slug(hub: Hub) -> None:
     """A draft slug becomes an export path segment (draft_export writes
     <export-root>/<slug>/main.tex), so path separators / `.`/`..` are rejected

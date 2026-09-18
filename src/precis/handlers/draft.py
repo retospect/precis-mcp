@@ -861,7 +861,9 @@ class DraftHandler(Handler):
                 c.handle, new_text, base_sha=content_sha(c.text or "")
             )
             if res is not None:
-                self.sync_draft_links(res.ref_id)
+                self.sync_draft_links(
+                    res.ref_id, restamp_chunk_ids={res.chunk_id}
+                )
                 self._attribute_touch([res.chunk_id])
                 written += 1
         body = (
@@ -1836,7 +1838,7 @@ class DraftHandler(Handler):
                         "matched, text inserted at each" if insert_mode else "replaced"
                     )
                     body += f" ({occurrences} occurrences of find= {suffix})"
-                self.sync_draft_links(c.ref_id)
+                self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
                 self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
@@ -1867,7 +1869,7 @@ class DraftHandler(Handler):
             )
             body = f"edited {c.dc}" if c else "edited"
             if c is not None:
-                self.sync_draft_links(c.ref_id)
+                self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
                 self._attribute_touch([c.chunk_id])
                 ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
                 slug = ref.slug if ref and ref.slug else str(c.ref_id)
@@ -2047,7 +2049,9 @@ class DraftHandler(Handler):
     #: links (a memory, another draft) are to our own notes.
     _CITABLE_KINDS: ClassVar[frozenset[str]] = frozenset({"paper", "patent", "finding"})
 
-    def sync_draft_links(self, ref_id: int) -> None:
+    def sync_draft_links(
+        self, ref_id: int, *, restamp_chunk_ids: set[int] | None = None
+    ) -> None:
         """Materialise graph edges from this draft to every ref its chunks
         reference — the superset grammar (``kind:ref`` mentions, ``¶``
         cross-refs, ``§``/``[pc<id>]`` citations). A reference to a
@@ -2069,6 +2073,43 @@ class DraftHandler(Handler):
         loses its edge. Best-effort: a resolution failure never fails the
         write — mirrors the note autolinker
         (`_numeric_ref._sync_mention_links`).
+
+        A ``cites`` edge to a ``finding`` hub additionally carries
+        ``cited_pub_id`` in ``meta`` — the hub's ``pub_id``
+        (:meth:`~precis.store._identifiers_ops.IdentifiersMixin.
+        current_pub_ids`) *at the moment the citing prose was written* —
+        and ``cited_title``, the hub's title string at that same moment.
+        That pair is the version pin ``_draft_lint.find_drifted_cites``
+        compares against the hub's live pub_id/title to surface a
+        rewording (docs/backlog/cite-pins-hub-version.md); ``cited_title``
+        is what lets the drift report quote the old sentence, not just say
+        it moved. Because this function recomputes over the whole draft on
+        every write, it re-runs ``add_link`` on every existing edge too,
+        not just ones a caller actually just wrote prose for — so
+        **advancing the stamp unconditionally is wrong, not just
+        imprecise**: the stamp means "this passage's prose was checked
+        against this version of the hub", and moving it without the prose
+        changing erases the drift signal while the stale paraphrase stays
+        on the page. There is no safe direction to over-advance in.
+        ``cited_title`` rides the exact same gate as ``cited_pub_id`` —
+        it is only ever written in the same branch that writes the pub_id,
+        never independently, or the pair could go inconsistent and the
+        "was/now" message would lie about what the old sentence said.
+
+        ``restamp_chunk_ids`` is how a caller that DOES know which
+        chunk's text it just wrote scopes the stamp: a brand-new edge
+        (no ``cited_pub_id`` yet — prose being written right now) is
+        always stamped; an existing edge only advances if its source
+        chunk is in ``restamp_chunk_ids``. ``None`` (the default, used by
+        callers that recompute links as a side effect of something other
+        than a known text write) stamps new edges and never advances an
+        existing one — the safe direction, since a missed re-stamp only
+        leaves a drift signal the author can clear with one edit, while a
+        wrong re-stamp silently destroys a real one. Written with
+        ``merge_meta=True`` either way, so a meta dict that omits
+        ``cited_pub_id`` (an edge that isn't advancing) leaves the
+        existing stamp untouched instead of wiping it via the
+        ``ON CONFLICT DO UPDATE`` path.
         """
         from precis.utils import draft_markup
 
@@ -2101,11 +2142,18 @@ class DraftHandler(Handler):
                 wanted[(src_ord, t.dst_ref_id, t.dst_pos)] = rel
             # Drop stale auto-mention edges in BOTH relations (a removed
             # reference, one whose routed relation changed, or one that
-            # moved to a different source chunk).
+            # moved to a different source chunk). Also record every
+            # currently-live edge's meta, keyed the same way as ``wanted``
+            # plus its relation — the stamping loop below needs to tell a
+            # brand-new edge from one that already carries a pin.
+            existing_meta: dict[tuple[int | None, int, int | None, str], dict[str, Any]] = {}
             for relation in ("cites", "related-to"):
                 for link in self.store.links_for(
                     ref_id, direction="out", relation=relation
                 ):
+                    existing_meta[
+                        (link.src_ord, link.dst_ref_id, link.dst_ord, relation)
+                    ] = link.meta or {}
                     if (link.meta or {}).get("auto") != "mention":
                         continue
                     key = (link.src_ord, link.dst_ref_id, link.dst_ord)
@@ -2117,7 +2165,48 @@ class DraftHandler(Handler):
                             dst_pos=link.dst_ord,
                             relation=relation,
                         )
+            # Version-pin cites to a finding hub (docs/backlog/
+            # cite-pins-hub-version.md): batch-fetch the current pub_id
+            # for every finding hub this draft cites, so the write loop
+            # below stamps ``cited_pub_id`` without a lookup per edge.
+            # Non-finding cites (paper/patent) and every ``related-to``
+            # edge get no pin — out of scope, meta stays just ``auto``.
+            finding_hub_ids = {
+                dst
+                for (_src_ord, dst, _pos), relation in wanted.items()
+                if relation == "cites"
+                and (tref := refs_by_id.get(dst)) is not None
+                and tref.kind == "finding"
+            }
+            current_pub_ids = self.store.current_pub_ids(finding_hub_ids)
+            # ord → chunk_id (the inverse of ``ord_by_chunk``, built above)
+            # to test a resolved edge's source chunk against
+            # ``restamp_chunk_ids`` below. ``ord`` is 1:1 with chunk_id for
+            # live body chunks, so this is a safe inversion.
+            chunk_id_by_ord = {v: k for k, v in ord_by_chunk.items()}
             for (src_ord, dst, pos), relation in wanted.items():
+                meta: dict[str, Any] = {"auto": "mention"}
+                pub_id = current_pub_ids.get(dst)
+                if pub_id is not None:
+                    prior = existing_meta.get((src_ord, dst, pos, relation))
+                    is_new_edge = prior is None or "cited_pub_id" not in prior
+                    src_chunk_id = chunk_id_by_ord.get(src_ord) if src_ord is not None else None
+                    touched = (
+                        restamp_chunk_ids is not None
+                        and src_chunk_id in restamp_chunk_ids
+                    )
+                    # A brand-new edge is prose being written right now —
+                    # always stamp it. An edge that already carries a pin
+                    # only advances if the write that triggered this sync
+                    # is known to have touched its source chunk; otherwise
+                    # an unrelated edit elsewhere in the draft would erase
+                    # a real drift signal while the stale paraphrase stays
+                    # on the page (see the class docstring above).
+                    if is_new_edge or touched:
+                        meta["cited_pub_id"] = pub_id
+                        hub_ref = refs_by_id.get(dst)
+                        if hub_ref is not None:
+                            meta["cited_title"] = hub_ref.title
                 self.store.add_link(
                     src_ref_id=ref_id,
                     src_pos=src_ord,
@@ -2125,7 +2214,8 @@ class DraftHandler(Handler):
                     dst_pos=pos,
                     relation=relation,
                     set_by="agent",
-                    meta={"auto": "mention"},
+                    meta=meta,
+                    merge_meta=True,
                 )
         except Exception:
             log.warning(
@@ -2483,7 +2573,7 @@ class DraftHandler(Handler):
         c = self.store.drafts.edit_text(handle, md, base_sha=base_sha, meta_patch=patch)
         if c is not None:
             self._attribute_touch([c.chunk_id])
-            self.sync_draft_links(c.ref_id)
+            self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
         rows, cols = len(norm["rows"]), len(norm["header"])
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
@@ -2643,7 +2733,7 @@ class DraftHandler(Handler):
         )
         if c is not None:
             self._attribute_touch([c.chunk_id])
-            self.sync_draft_links(c.ref_id)
+            self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
             body=f"edited table {(c or chunk).dc}{extra}; patched the raw "
@@ -2750,16 +2840,26 @@ class DraftHandler(Handler):
           visible rather than filtering them out, so this is the
           cite-time backstop — a writer sees the signal without leaving
           the draft.
+        * **drifted cites** — a ``cites`` edge whose pinned hub version
+          (``cited_pub_id``/``cited_title``, ``handlers/draft.py::
+          sync_draft_links``) no longer matches the hub's live version —
+          the hub was reworded since this passage's prose was written
+          against it, so the paraphrase may no longer match what the hub
+          says today (docs/backlog/cite-pins-hub-version.md). See
+          :meth:`_hygiene_drift_lines`. Distinct from the ``drifted``
+          posture flag above, which only fires post-publication; this
+          fires on a ``candidate`` hub too, which is exactly when rewords
+          happen.
 
-        A fourth, informational-only line (never a ``⚠``) scoreboards how
+        A fifth, informational-only line (never a ``⚠``) scoreboards how
         many of the draft's cited passages have a Taproot claim hub
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
 
-        A fifth line — DOI completeness/validity over the same cited
+        A sixth line — DOI completeness/validity over the same cited
         papers (docs/backlog/draft-doi-completeness-check.md), advisory
         only — see :meth:`_hygiene_doi_line`.
 
-        A sixth line — cited papers whose byline never came from
+        A seventh line — cited papers whose byline never came from
         Crossref despite carrying a DOI, advisory only — see
         :meth:`_hygiene_author_source_line`. Both share one batched
         identifier/ref fetch done here.
@@ -2814,6 +2914,8 @@ class DraftHandler(Handler):
 
         hub_posture = self._hygiene_hub_posture_lines(ref_id, limit=limit)
         out.extend(hub_posture)
+
+        out.extend(self._hygiene_drift_lines(ref_id, limit=limit))
 
         cited_ref_ids = self._cited_paper_ref_ids(chunks)
 
@@ -2928,6 +3030,56 @@ class DraftHandler(Handler):
         return [
             f"⚠ {len(entries)} cited claim hub(s) with a bad posture: {shown}{tail}."
         ]
+
+    def _hygiene_drift_lines(self, ref_id: int, *, limit: int | None) -> list[str]:
+        """The fourth hygiene check (docs/backlog/cite-pins-hub-version.md):
+        ``cites`` edges whose pinned hub version has moved on since the
+        citing prose was written — :func:`~precis.handlers._draft_lint.
+        find_drifted_cites`. One ``⚠`` line per drifted cite, each naming
+        the citing ``dc<id>`` and quoting both statements — ``was "<old>",
+        now "<new>"`` — so a reader doesn't need a second pass to see what
+        changed. An edge stamped before the title pin existed carries a
+        pub_id but no title (:attr:`~precis.handlers._draft_lint.
+        DriftedCite.stamped_title` is ``None``): that degrades to "old
+        statement not recorded", never a crash and never a claimed-empty
+        old title.
+
+        Same elide-with-a-pointer convention as the other checks in
+        :meth:`_hygiene_lines`: ``limit`` truncates the *rendered* line
+        count to 8 for the outline footer, with a trailing ``ℹ`` pointer to
+        ``view='hygiene'`` for the rest; ``None`` (the hygiene view) prints
+        every drifted cite.
+
+        The unstamped count (cites to a hub predating version pinning) is
+        NOT drift — it's unknown, not stale — so it renders as its own
+        ``ℹ`` line, never folded into the drifted list or counted against
+        it. ``[]`` when the draft has no drifted or unstamped cites."""
+        drifted, unstamped = _draft_lint.find_drifted_cites(self.store, ref_id)
+        out: list[str] = []
+        if drifted:
+            shown = drifted if limit is None else drifted[:limit]
+            for d in shown:
+                old = (
+                    f'"{d.stamped_title}"'
+                    if d.stamped_title is not None
+                    else "old statement not recorded"
+                )
+                out.append(
+                    f'⚠ drifted cite at {d.dc}: was {old}, now "{d.current_title}" '
+                    f"(fi{d.hub_ref_id} was reworded since this passage was "
+                    "written against it)."
+                )
+            if limit is not None and len(drifted) > limit:
+                out.append(
+                    f"ℹ +{len(drifted) - limit} more drifted cite(s) — see "
+                    "get(kind='draft', id=<slug>, view='hygiene') for the full list."
+                )
+        if unstamped:
+            out.append(
+                f"ℹ {unstamped} cite(s) to a claim hub predate version pinning "
+                "(stamped before this check existed) — drift status unknown."
+            )
+        return out
 
     def _taproot_hub_scoreboard(self, cited_ref_ids: list[int]) -> tuple[int, int]:
         """``(grounded, total)`` over ``cited_ref_ids``

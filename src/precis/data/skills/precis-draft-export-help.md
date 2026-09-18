@@ -15,6 +15,30 @@ kinds: [draft]
 
 # precis-draft-export-help — export a draft
 
+## What blocks an export, and what only warns
+
+**Blocking** — the export refuses and reports:
+
+- An uncleared figure (licensing), unless waived per the figure gate below.
+- A **drifted cite**: the claim hub was reworded after the citing passage
+  was written, so the prose may no longer say what the hub says. The
+  failure names the chunk and quotes both statements. Clear it by
+  re-checking the passage against the hub's current sentence and
+  rewriting it — the rewrite re-pins the cite. See
+  [[precis-claim-fidelity-help]] for how closely the prose must track it.
+
+**Advisory** — reported, never blocking:
+
+- Cites resting on hubs that are not yet signed/anchored/published,
+  as a count. Most hubs are `candidate`; blocking on this would block
+  every export in the corpus.
+- Cites written before version pinning existed: status unknown, not
+  drift.
+
+Pull the same lists any time without exporting:
+`get(kind='draft', id=<slug>, view='hygiene')`.
+
+
 ## Export — LaTeX, PDF, Word, reMarkable
 
 ```

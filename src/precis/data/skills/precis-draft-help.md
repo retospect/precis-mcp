@@ -526,10 +526,18 @@ hub is grounded on it. See
 
 ## Audit the draft — hygiene checks & the gap-finder
 
-Two things the runtime flags before export: an undefined abbreviation
-(see *Define an abbreviation*, above) and a citation that resolves to
-nothing (see *References in prose*, above — cite a `[fi<id>]` hub
-grounded on the exact chunk, never the paper). Neither needs a hand-maintained
+Things the runtime flags before export: an undefined abbreviation (see
+*Define an abbreviation*, above), a citation that resolves to nothing
+(see *References in prose*, above — cite a `[fi<id>]` hub grounded on the
+exact chunk, never the paper), and a **drifted cite** — the hub was
+reworded after this passage was written, so the prose paraphrases a
+sentence that no longer exists. The cite still resolves (the old
+`pub_id` is kept as an alias), which is exactly why it needs flagging:
+nothing else makes it visible. The line quotes both statements — `was
+"<old>", now "<new>"` — so the fix is one edit. **Rewriting the citing
+chunk re-pins it**; a write elsewhere in the draft does not, and does not
+clear the flag. A drifted cite **blocks export**; cites written before
+version pinning existed are reported as unknown, never as drift. Neither needs a hand-maintained
 bibliography footer — citation handles resolve to one entry per paper at
 export. Skim the **outline** (`get(kind='draft', id=…)`) first — cheapest
 place to catch both; its hygiene footer truncates each list to 8 entries.
@@ -557,12 +565,17 @@ written by the process that owns it; `put`/`edit`/`delete` on one raises
 `Unsupported`. Read it freely — if such a draft looks wrong, the fix
 belongs in the process that writes it, not in the document.
 
-## Steer prose changes rather than hand-edit
+## Steer prose changes; correct unsupported claims directly
 
 Prose craft (structure, diction, LLM tells to avoid) lives in
 [[precis-write-paper-help]]. Here, steering:
 
-**You usually don't rewrite prose directly; you steer:**
+**Steer for craft; correct directly for evidence.** A claim a held
+source contradicts is a defect, not authorial intent — reword it to what
+the source states (or delete an unsupported quantity; write both when two
+held sources disagree), cite the `[fi<id>]` hub grounded on the passage
+you read, and never substitute a number you did not read in a source.
+Taste-level changes — voice, structure, framing — you steer instead:
 
 ```python
 edit(id='nanotrans', meta={'workspace': {'brief': '…updated brief…'}})

@@ -72,6 +72,15 @@ write is direct). If the new wording's `pub_id` already belongs to a
 naming that ref rather than silently fusing it; see "Merge duplicate
 hubs" below.
 
+**A reword surfaces downstream.** Every draft cite records the hub's
+`pub_id` at the moment its prose was written, so retitling marks each
+citing passage as **drifted**: it shows in that draft's
+`view='hygiene'` quoting both statements, and it **blocks the draft's
+export** until the passage is re-checked and rewritten. The old
+`pub_id` keeps resolving throughout — nothing breaks, it becomes
+visible. Reword freely; just expect the citing prose to need a look,
+and prefer one deliberate reword over several cosmetic ones.
+
 **Not this door for a materially sharper/narrower claim** — that's a new
 mint + `refines` link, below, not a retitle.
 

@@ -554,6 +554,41 @@ class IdentifiersMixin:
             bucket.setdefault(str(scheme), str(value))
         return out
 
+    def current_pub_ids(self, ref_ids: Iterable[int]) -> dict[int, str]:
+        """Batch lookup of each ref's **current** ``pub_id`` alias.
+
+        A hub can carry more than one ``id_kind='pub_id'`` row —
+        :func:`~precis.taproot.hub.refine_claim_sentence` INSERTs a new
+        one on every reworded sentence and deliberately keeps the old
+        one so a draft already citing it keeps resolving (see that
+        function's docstring). ``created_at`` is the only column that
+        orders them — there's no serial id on ``ref_identifiers`` — and
+        it's reliable here because the INSERT always happens at write
+        time with ``DEFAULT now()``, never backdated or bulk-loaded out
+        of order for this id_kind. ``DISTINCT ON (ref_id) ... ORDER BY
+        ref_id, created_at DESC`` therefore picks the most-recently
+        minted pub_id, i.e. the hub's live version.
+
+        Used both to stamp a fresh ``cites`` edge
+        (``handlers/draft.py::sync_draft_links``) and to detect drift on
+        an existing one (``handlers/_draft_lint.py::find_drifted_cites``)
+        — both need "the version right now", not "a version". Missing
+        ids (no ``pub_id`` yet — not citable) are simply absent from the
+        result.
+        """
+        ids = list({int(r) for r in ref_ids})
+        if not ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (ref_id) ref_id, id_value "
+                "FROM ref_identifiers "
+                "WHERE ref_id = ANY(%s) AND id_kind = 'pub_id' "
+                "ORDER BY ref_id, created_at DESC",
+                (ids,),
+            ).fetchall()
+        return {int(r[0]): str(r[1]) for r in rows}
+
     def list_ref_identifiers(
         self,
         ref_id: int,

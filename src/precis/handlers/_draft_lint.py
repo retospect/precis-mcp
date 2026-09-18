@@ -944,3 +944,119 @@ def dangling_edit_hint(store: Store, new_text: str, old_text: str) -> str:
         "`finding:<pub_id>`), or drop the reference. Only refs *this edit* "
         "broke are flagged; pre-existing dead refs elsewhere are left alone."
     )
+
+
+@dataclass(frozen=True, slots=True)
+class DriftedCite:
+    """One ``cites`` edge whose stamped hub version has moved on —
+    docs/backlog/cite-pins-hub-version.md. Enough to render "was X, now
+    Y, cited at dc<id>": ``stamped_title`` is the title the citing prose
+    was written against and ``current_title`` is the hub's title today;
+    ``stamped_title`` is ``None`` when it can't be recovered (see
+    :func:`find_drifted_cites`)."""
+
+    dc: str  # citing chunk handle, e.g. "dc4821" (or "pe4821" for a plan)
+    hub_ref_id: int
+    stamped_pub_id: str
+    current_pub_id: str
+    stamped_title: str | None
+    current_title: str
+
+
+def find_drifted_cites(
+    store: Store, draft: str | int
+) -> tuple[list[DriftedCite], int]:
+    """Every ``cites`` edge from ``draft``'s chunks to a finding hub whose
+    stamped ``cited_pub_id`` (``handlers/draft.py::sync_draft_links``) no
+    longer matches the hub's live pub_id
+    (:meth:`~precis.store._identifiers_ops.IdentifiersMixin.
+    current_pub_ids`) — i.e. the hub was reworded since this passage cited
+    it. Returns ``(drifted, unstamped)``: ``unstamped`` is the count of
+    ``cites`` edges to a finding hub carrying no ``cited_pub_id`` at all
+    (every edge written before this feature existed) — **not** drift,
+    just unknown, so it's reported as a separate count rather than mixed
+    into the list.
+
+    ``draft`` accepts a numeric ref id, a numeric string, or a slug —
+    resolved the same way :meth:`Store.get_ref` resolves any other
+    slug-addressed kind. Raises :class:`~precis.errors.NotFound` if it
+    doesn't resolve to a live draft.
+
+    Each :class:`DriftedCite` carries both titles for the "was X, now Y"
+    message. ``stamped_title`` is the ``cited_title`` pinned alongside
+    ``cited_pub_id`` at stamp time (``handlers/draft.py::
+    sync_draft_links``) — present for every edge stamped since that pin
+    was added. An edge stamped *before* the title pin existed carries a
+    ``cited_pub_id`` but no ``cited_title``; for those, ``stamped_title``
+    is ``None`` and a caller must say the cite is stale without quoting
+    the old text, never invent an empty string for "what it used to say".
+    """
+    ref_id = _resolve_draft_ref_id(store, draft)
+    links = store.links_for(ref_id, direction="out", relation="cites")
+    if not links:
+        return [], 0
+    dst_ids = {link.dst_ref_id for link in links}
+    refs_by_id = store.fetch_refs_by_ids(list(dst_ids), include_deleted=False)
+    hub_ids = {
+        rid for rid, ref in refs_by_id.items() if ref is not None and ref.kind == "finding"
+    }
+    if not hub_ids:
+        return [], 0
+    current_pub_ids = store.current_pub_ids(hub_ids)
+
+    drifted: list[DriftedCite] = []
+    unstamped = 0
+    for link in links:
+        if link.dst_ref_id not in hub_ids or link.src_chunk_id is None:
+            continue
+        stamped_pub_id = (link.meta or {}).get("cited_pub_id")
+        if not stamped_pub_id:
+            unstamped += 1
+            continue
+        current_pub_id = current_pub_ids.get(link.dst_ref_id)
+        if current_pub_id is None or current_pub_id == stamped_pub_id:
+            continue
+        hub_ref = refs_by_id.get(link.dst_ref_id)
+        stamped_title = (link.meta or {}).get("cited_title")
+        drifted.append(
+            DriftedCite(
+                dc=handle_registry.format_handle(
+                    "draft", link.src_chunk_id, chunk=True
+                ),
+                hub_ref_id=link.dst_ref_id,
+                stamped_pub_id=str(stamped_pub_id),
+                current_pub_id=current_pub_id,
+                stamped_title=(
+                    str(stamped_title) if isinstance(stamped_title, str) else None
+                ),
+                current_title=(hub_ref.title if hub_ref is not None else ""),
+            )
+        )
+    return drifted, unstamped
+
+
+def _resolve_draft_ref_id(store: Store, draft: str | int) -> int:
+    """``draft`` (ref id / numeric string / slug) → live draft ref_id, for
+    :func:`find_drifted_cites`. Mirrors the ``isinstance``-then-slug
+    dispatch :meth:`Store.get_ref` already documents; kept private here
+    since every other draft-resolution helper is handler-layer
+    (``DraftHandler._resolve_draft_any``, which additionally enforces the
+    machine-owned-target guard that this pure read has no business
+    applying)."""
+    from precis.errors import NotFound
+
+    ref_id: int | None
+    if isinstance(draft, int):
+        ref_id = draft
+    else:
+        s = str(draft).strip()
+        ref_id = int(s) if s.isdigit() else None
+    if ref_id is not None:
+        ref = store.get_ref(kind="draft", id=ref_id)
+        if ref is None:
+            raise NotFound(f"no draft with ref_id={ref_id}")
+        return ref.id
+    ref = store.get_ref(kind="draft", id=str(draft).strip())
+    if ref is None:
+        raise NotFound(f"no draft {draft!r}")
+    return ref.id
