@@ -1726,6 +1726,34 @@ def test_paper_meta_tab_shows_linked_extra_identifiers(client, runtime) -> None:
     assert "https://openalex.org/W2100000000" in resp.text
 
 
+def test_paper_meta_tab_authors_table_shows_orcid_and_scholar_links(
+    client, runtime
+) -> None:
+    """docs/backlog/paper-authors-1nf.md §S4 — the Meta tab's author
+    table (replacing the flat ``authors_display`` line once
+    ``author_rows`` is non-empty) links each author's ORCID iD and a
+    Google Scholar name search, plus the paper-level Scholar lookup
+    (DOI-keyed, ref 10 carries one). The edit-form textarea also
+    prefills with the bracketed-ORCID line grammar."""
+    ref = next(r for r in runtime.store.papers if r.id == 10)
+    ref.authors = [
+        {
+            "given": "Bryan R.",
+            "family": "Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+            "openalex_author_id": "A123",
+        }
+    ]
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "https://orcid.org/0000-0002-1825-0097" in resp.text
+    assert "https://openalex.org/A123" in resp.text
+    assert "scholar.google.com/scholar?q=" in resp.text
+    assert "scholar_lookup?doi=10.1234" in resp.text
+    # Edit-form textarea prefill round-trips the row grammar.
+    assert "Goldsmith, Bryan R. [0000-0002-1825-0097]" in resp.text
+
+
 def test_paper_edit_form_offers_document_type_select_with_current_value(
     client, runtime
 ) -> None:

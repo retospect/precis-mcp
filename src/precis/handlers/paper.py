@@ -68,8 +68,14 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils import handle_registry
+from precis.utils.authors import (
+    author_display,
+    author_links,
+    entry_from_author_row,
+    normalize_authors,
+    paper_scholar_link,
+)
 from precis.utils.authors import author_names as _shared_author_names
-from precis.utils.authors import normalize_authors
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
 from precis.utils.next_block import render_next_section
@@ -108,6 +114,7 @@ _SUPPORTED_VIEWS = (
     "abbrevs",
     "links",
     "claims",
+    "authors",
 )
 
 
@@ -1029,11 +1036,20 @@ class PaperHandler(Handler):
         passed are changed; a ``None`` / blank field is left as-is
         (the web form's "leave blank to keep" contract).
 
-        ``authors`` accepts any tolerated shape (name strings,
-        ``{family, given}`` or ``{name}`` dicts) and is canonicalised
-        via :func:`precis.utils.authors.normalize_authors` — a flat
-        "Family, Given" string splits to ``{given, family}``; anything
-        ambiguous or junk-flagged stays ``{"name"}`` or is dropped.
+        ``authors`` accepts any tolerated shape (name strings — including
+        the ``get(view='authors')``/web textarea grammar ``"Family,
+        Given M. [0000-0002-1825-0097]"``, its bracketed ORCID iD parsed
+        off by :func:`precis.utils.authors._strip_orcid_bracket` —
+        ``{family, given}`` or ``{name}`` dicts) and is canonicalised via
+        :func:`precis.utils.authors.normalize_authors` — a flat "Family,
+        Given" string splits to ``{given, family}``; anything ambiguous
+        or junk-flagged stays ``{"name"}`` or is dropped. This always
+        writes ``paper_authors.source='human'`` (the
+        ``_default_author_source`` mapping for this door) and — as long
+        as at least one author survived normalisation — stamps
+        ``human_verified_at`` (:meth:`Store.set_human_verified`), a
+        human byline fix being exactly the kind of review that stamp
+        exists to record.
         ``abstract`` / ``journal`` / ``entry_type`` merge into ``meta``
         (``entry_type`` verbatim, matching what
         :mod:`precis.ingest.paper_meta_enrich` writes — see
@@ -1096,6 +1112,16 @@ class PaperHandler(Handler):
                 source="edit",
                 conn=conn,
             )
+            if new_authors:
+                # A human byline correction (source='human', see
+                # ``_default_author_source``) also signs off the paper's
+                # metadata as reviewed — the same stamp the web Meta
+                # tab's "Mark reviewed" toggle sets
+                # (``precis_web/routes/papers.py::reviewed``), so a
+                # deliberate author fix doesn't leave the paper looking
+                # unreviewed. Not double-stamped: nothing else on this
+                # write path touches ``human_verified_at``.
+                self.store.set_human_verified(ref_id, by="agent", conn=conn)
             for scheme, value in (("doi", doi), ("arxiv", arxiv)):
                 if (
                     value
@@ -1551,6 +1577,9 @@ class PaperHandler(Handler):
             # name, no collision since views are scoped per kind).
             return self._render_claims(ref)
 
+        if view == "authors":
+            return self._render_authors(ref)
+
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
             # had no links view at all — ``related-to`` / ``cites`` /
@@ -1776,6 +1805,99 @@ class PaperHandler(Handler):
                 (
                     f"get(kind='finding', id='{hub_handles[0]}')",
                     "read one hub's full evidence graph",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def _render_authors(self, ref: Ref) -> Response:
+        """``view='authors'`` — the ``paper_authors`` byline table
+        (docs/backlog/paper-authors-1nf.md §S4): position, display name,
+        source tier chip, a ``✓ verified <date>`` mark when ORCID has
+        cross-checked the row, and the three per-author links (ORCID —
+        iD + the ``oi<id>`` node handle when a ``kind='orcid'`` node is
+        linked, OpenAlex, Google Scholar name search), plus the
+        paper-level Scholar lookup (DOI-keyed when a DOI is on file).
+
+        Tier ladder (highest wins on a subsequent write, `human` always
+        wins): ``orcid`` > ``crossref``/``openalex``/``s2`` >
+        ``pdf``/``legacy`` > ``human`` (human is not "highest tier" by
+        provenance quality — it wins by the write-time guard in
+        :func:`~precis.store._refs_ops.project_paper_authors`, not by
+        rank here). Empty table (no byline on file) renders a one-line
+        hint pointing at the edit affordance instead of a bare table.
+        """
+        slug = ref.slug or "???"
+        rows = self.store.get_paper_authors(ref.id)
+        doi: str | None = None
+        try:
+            for scheme, value, _src in self.store.list_ref_identifiers(ref.id):
+                if scheme == "doi" and value:
+                    doi = value
+                    break
+        except Exception:
+            doi = None
+
+        if not rows:
+            body = f"# {slug} — no authors on file"
+            body += render_next_section(
+                [
+                    (
+                        f"edit(kind='paper', id='{_pa(ref)}', "
+                        "authors=['Family, Given'])",
+                        "add the byline (one 'Family, Given [ORCID]' line per author)",
+                    ),
+                ]
+            )
+            return Response(body=body)
+
+        table_rows: list[dict[str, str]] = []
+        for row in rows:
+            name = author_display(entry_from_author_row(row)) or row.get("name_raw", "")
+            verified = ""
+            if row.get("verified_at"):
+                verified = f"✓ verified {row['verified_at'].date().isoformat()}"
+            links = author_links(row, doi=doi, title=ref.title)
+            node = ""
+            if row.get("person_ref_id") is not None:
+                node = handle_registry.format_handle("orcid", row["person_ref_id"])
+            table_rows.append(
+                {
+                    "pos": str(row["position"]),
+                    "name": name,
+                    "source": row.get("source") or "",
+                    "verified": verified,
+                    "orcid": links.get("orcid", ""),
+                    "node": node,
+                    "openalex": links.get("openalex", ""),
+                    "scholar": links.get("scholar", ""),
+                }
+            )
+        head = f"# {slug} — {len(table_rows)} author(s)"
+        table = render_agent_table(
+            table_rows,
+            schema=[
+                "pos",
+                "name",
+                "source",
+                "verified",
+                "orcid",
+                "node",
+                "openalex",
+                "scholar",
+            ],
+        )
+        body = f"{head}\n\n{table}"
+        scholar = paper_scholar_link(doi, ref.title)
+        if scholar:
+            body += f"\n\nPaper-level Scholar lookup: {scholar}"
+        body += render_next_section(
+            [
+                (
+                    f"edit(kind='paper', id='{_pa(ref)}', "
+                    "authors=['Family, Given M. [0000-0002-1825-0097]', ...])",
+                    "correct the byline (human edits always win over a later "
+                    "tier's re-resolution)",
                 ),
             ]
         )

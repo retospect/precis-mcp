@@ -525,6 +525,72 @@ class TestViews:
 
 
 # ---------------------------------------------------------------------------
+# view='authors' — the paper_authors byline table (docs/backlog/
+# paper-authors-1nf.md §S4)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthorsView:
+    def test_no_authors_on_file_hints_edit(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = store.insert_ref(kind="paper", slug="noauthors2024", title="T")
+        out = handler.get(id=ref.id, view="authors").body
+        assert "no authors on file" in out
+        assert "edit(kind='paper'" in out
+        assert "authors=" in out
+
+    def test_renders_orcid_openalex_scholar_links_and_verified_tick(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        # The oi<id> ORCID node the author row's ``orcid`` cross-links to
+        # via ``ref_identifiers`` (cite_key = 'orcid:<iD>').
+        orcid_node = store.insert_ref(
+            kind="orcid",
+            slug="orcid:0000-0002-1825-0097",
+            title="Bryan R. Goldsmith",
+        )
+        ref_id = _seed_paper(
+            store,
+            slug="goldsmith2024",
+            doi="10.1234/goldsmith",
+            authors=[
+                {
+                    "given": "Bryan R.",
+                    "family": "Goldsmith",
+                    "orcid": "0000-0002-1825-0097",
+                    "openalex_author_id": "A123",
+                },
+            ],
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE paper_authors SET verified_at = now() "
+                "WHERE ref_id = %s AND position = 1",
+                (ref_id,),
+            )
+
+        out = handler.get(id=ref_id, view="authors").body
+
+        assert "Bryan R. Goldsmith" in out
+        assert "https://orcid.org/0000-0002-1825-0097" in out
+        node_handle = handle_registry.format_handle("orcid", orcid_node.id)
+        assert node_handle in out
+        assert "https://openalex.org/A123" in out
+        assert "scholar.google.com/scholar?q=" in out
+        assert "verified" in out
+        # Paper-level Scholar lookup prefers the DOI.
+        assert "scholar_lookup?doi=10.1234" in out
+
+    def test_unsplit_row_falls_back_to_name_raw(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, slug="hamid2024", authors=[{"name": "Aabid Hamid"}])
+        out = handler.get(id=ref_id, view="authors").body
+        assert "Aabid Hamid" in out
+
+
+# ---------------------------------------------------------------------------
 # Chunk selectors
 # ---------------------------------------------------------------------------
 
@@ -1666,6 +1732,23 @@ class TestPaperEdit:
         assert ref.meta["journal"] == "New Journal"
         assert ref.meta["entry_type"] == "proceedings-article"
         assert "authors_source" not in ref.meta
+
+    def test_edit_authors_bracketed_orcid_writes_human_row_and_verifies(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The web-textarea grammar's bracketed ORCID iD is parsed off
+        onto the row, the write is ``source='human'`` (docs/backlog
+        paper-authors-1nf.md §S4), and — since an author byline was
+        passed — the paper's ``human_verified_at`` sign-off stamp is
+        also set (once, not doubled by any other write on this path)."""
+        ref_id = _seed_paper(store, slug="luo2024ronggang")
+        handler.edit(id=ref_id, authors=["Luo, Ronggang [0000-0002-1825-0097]"])
+        rows = store.get_paper_authors(ref_id)
+        assert len(rows) == 1
+        assert rows[0]["orcid"] == "0000-0002-1825-0097"
+        assert rows[0]["source"] == "human"
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.human_verified_at is not None
 
     def test_edit_dry_run_previews_journal_and_entry_type(
         self, store: Store, handler: PaperHandler

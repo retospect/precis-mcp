@@ -1,8 +1,8 @@
 {# Metadata edit / triage / delete affordances for the paper detail
    sidebar. Split out of detail.html.j2 so the two-pane layout stays
    readable; relies on the detail context (paper, prefill, is_triage,
-   triage_msg, slug_default, suggested_slug, author_lines, abstract,
-   journal, entry_type, entry_type_choices, entry_type_is_known). #}
+   triage_msg, slug_default, suggested_slug, author_lines, author_rows,
+   abstract, journal, entry_type, entry_type_choices, entry_type_is_known). #}
 
 {% if is_triage %}
 <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs">
@@ -145,9 +145,11 @@
       </label>
     </div>
     <label class="block">
-      <span class="text-slate-500">Authors (one per line)</span>
-      <textarea name="authors" rows="3" placeholder="Smith, Jane&#10;Jones, Bob"
-                class="w-full rounded border border-slate-300 px-2 py-1 font-mono">{% if prefill %}{{ prefill.authors }}{% else %}{% for line in author_lines -%}
+      <span class="text-slate-500">Authors (one per line — "Family, Given M. [ORCID iD]", the iD optional)</span>
+      <textarea name="authors" rows="3" placeholder="Goldsmith, Bryan R. [0000-0002-1825-0097]&#10;Zywucka, N."
+                class="w-full rounded border border-slate-300 px-2 py-1 font-mono">{% if prefill %}{{ prefill.authors }}{% elif author_rows %}{% for a in author_rows -%}
+{{ a.line }}
+{% endfor -%}{% else %}{% for line in author_lines -%}
 {{ line }}
 {% endfor -%}{% endif %}</textarea>
     </label>
