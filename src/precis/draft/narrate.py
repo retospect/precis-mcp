@@ -74,6 +74,15 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\((?:[^)]*)\)")
 _BARE_URL = re.compile(r"https?://\S+")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
 _BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
+# A list-item *line* (same marker grammar, anchored per line): a markdown list
+# block is split into one segment per item so the stitcher's inter-segment
+# silence lands between items. Without this the whole list collapsed into one
+# run-on paragraph — wire headlines carry no terminal punctuation, so the voice
+# ran "…ahead of the UN General Assembly The US will allow…" straight through.
+_LIST_LINE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+# Closing quotes/brackets a sentence may legitimately end on; the character
+# before them decides whether the item still needs a terminal period.
+_TRAILING_CLOSERS = "'\"”’)]"
 
 # Any Unicode letter or digit (\w minus underscore — covers CJK/kana too via
 # Python's re). A block/segment with none of these has nothing for a voice to
@@ -129,6 +138,57 @@ def speakable_markdown(text: str) -> str:
     t = _HEADING.sub("", t)
     t = _BULLET.sub("", t)
     return speakable(t)
+
+
+def close_sentence(text: str) -> str:
+    """Give a spoken span a terminal period when it ends on a word/digit (or a
+    closing quote/bracket right after one). A headline-style list item —
+    ``…ahead of the UN General Assembly`` — otherwise reads with a rising,
+    unfinished cadence and no sentence break; the period lets the voice drop
+    and pause before the next item. Spans already ending in punctuation (``.``
+    ``!`` ``?`` ``:`` ``;`` ``,`` ``…``) are returned unchanged."""
+    stripped = text.strip()
+    core = stripped.rstrip(_TRAILING_CLOSERS)
+    if core and (core[-1].isalnum() or core[-1] == "%"):
+        return stripped + ("。" if _is_cjk(core[-1]) else ".")
+    return stripped
+
+
+def markdown_blocks(text: str) -> list[tuple[str, str]]:
+    """Split markdown prose into ``(kind, block)`` narration units.
+
+    Blocks split on blank lines; a block whose first line is a heading (``#``)
+    is a ``heading``. A block containing list-item lines is further split into
+    one ``item`` per bullet/number (continuation lines that don't open a new
+    item stay with theirs); any lines *before* the first item — a
+    ``**Lead-in:**`` line glued to its list — form their own ``para``. Every
+    other block is a ``para``. Markup is left intact; :func:`markdown_segments`
+    strips it."""
+    out: list[tuple[str, str]] = []
+    for raw in re.split(r"\n\s*\n", text.strip()):
+        block = raw.strip()
+        if not block:
+            continue
+        if block.startswith("#"):
+            out.append(("heading", block))
+            continue
+        lines = block.split("\n")
+        if not any(_LIST_LINE.match(ln) for ln in lines):
+            out.append(("para", block))
+            continue
+        preamble: list[str] = []
+        items: list[list[str]] = []
+        for ln in lines:
+            if _LIST_LINE.match(ln):
+                items.append([ln])
+            elif items:
+                items[-1].append(ln)
+            else:
+                preamble.append(ln)
+        if preamble:
+            out.append(("para", "\n".join(preamble).strip()))
+        out.extend(("item", "\n".join(item).strip()) for item in items)
+    return out
 
 
 #: Fullwidth ASCII (U+FF01–FF5E) → ASCII (U+21–7E) is a constant −0xFEE0 shift.
@@ -291,24 +351,26 @@ def markdown_segments(
     cjk_lang: str | None = None,
     kana_voice: str | None = None,
 ) -> list[NarrationSegment]:
-    """Split markdown prose into speakable narration segments — one per block.
+    """Split markdown prose into speakable narration segments — one per block,
+    and one per *list item* inside a list block.
 
-    Blocks split on blank lines; a block whose first line is a heading (``#``)
-    becomes a ``heading`` segment (longer leading pause), the rest ``para``.
-    Markup is stripped via :func:`speakable_markdown` and the lexicon applied;
-    empty blocks and blocks with nothing speakable (no letter/digit left after
-    stripping — e.g. a ``---`` horizontal rule) drop out. Single-voice base (no
-    per-chunk meta, unlike a draft), but a block mixing scripts is split by
+    Units come from :func:`markdown_blocks`: a heading (``#``) block becomes a
+    ``heading`` segment (longer leading pause), each bullet/numbered line an
+    ``item`` segment (so the stitcher's inter-segment silence separates wire
+    headlines, and :func:`close_sentence` gives an unpunctuated item its
+    terminal period), the rest ``para``. Markup is stripped via
+    :func:`speakable_markdown` and the lexicon applied; empty blocks and blocks
+    with nothing speakable (no letter/digit left after stripping — e.g. a
+    ``---`` horizontal rule) drop out. Single-voice base (no per-chunk meta,
+    unlike a draft), but a block mixing scripts is split by
     :func:`split_by_script` so a Japanese span inside an English cast is voiced
     natively — the news-briefing producer and the Japanese reading cast both
     render through this."""
     segments: list[NarrationSegment] = []
-    for raw in re.split(r"\n\s*\n", text.strip()):
-        block = raw.strip()
-        if not block:
-            continue
-        kind = "heading" if block.lstrip().startswith("#") else "para"
+    for kind, block in markdown_blocks(text):
         spoken = speak_chemistry(apply_lexicon(speakable_markdown(block), lexicon))
+        if kind == "item":
+            spoken = close_sentence(spoken)
         if not _HAS_VOICE.search(spoken):
             continue
         for seg_text, seg_voice, seg_lang in split_by_script(

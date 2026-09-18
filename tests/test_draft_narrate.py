@@ -8,7 +8,9 @@ from typing import Any
 
 from precis.draft.narrate import (
     apply_lexicon,
+    close_sentence,
     load_personal_lexicon,
+    markdown_blocks,
     markdown_segments,
     render_narration,
     resolve_lexicon,
@@ -208,7 +210,7 @@ def test_markdown_segments_splits_blocks_and_flags_headings():
     )
     segs = markdown_segments(text, voice="af_heart", lang="en-us")
     kinds = [s.kind for s in segs]
-    assert kinds == ["heading", "para", "para", "heading", "para"]
+    assert kinds == ["heading", "para", "item", "heading", "para"]
     assert segs[0].text == "Top stories"
     assert segs[1].text == "Rates held steady today."
     assert segs[2].text == "Chip deal closes."
@@ -232,6 +234,62 @@ def test_markdown_segments_drops_horizontal_rule():
     text = "First para.\n\n---\n\nSecond para."
     segs = markdown_segments(text, voice="af_heart", lang="en-us")
     assert [s.text for s in segs] == ["First para.", "Second para."]
+
+
+def test_markdown_segments_one_segment_per_list_item_with_terminal_period():
+    # The morning-brief wire: a lead-in line glued to a bullet list whose
+    # headline items carry no terminal punctuation. Collapsed into one block
+    # the voice ran "…UN General Assembly The US will allow…" straight
+    # through; now each item is its own segment (so the stitcher's silence
+    # lands between them) and ends in a period (so the voice drops).
+    text = (
+        "**What the government is actually doing:**\n"
+        "- [Visas denied to Palestinian officials](https://x/a) ahead of the "
+        "UN General Assembly\n"
+        "- [The US will allow an Iran delegation](https://x/b) to attend\n"
+        "- Courts: [a sentence was handed down](https://x/c), and "
+        "[another](https://x/d) too.\n"
+        "  a continuation line stays with its item\n"
+        "3. Numbered items split the same way"
+    )
+    segs = markdown_segments(text, voice="af_heart", lang="en-us")
+    assert [s.kind for s in segs] == ["para", "item", "item", "item", "item"]
+    assert [s.text for s in segs] == [
+        "What the government is actually doing:",
+        "Visas denied to Palestinian officials ahead of the UN General Assembly.",
+        "The US will allow an Iran delegation to attend.",
+        "Courts: a sentence was handed down, and another too. "
+        "a continuation line stays with its item.",
+        "Numbered items split the same way.",
+    ]
+
+
+def test_markdown_blocks_plain_paragraphs_unchanged():
+    # No list lines → the block is one para, exactly as before; a paragraph
+    # without terminal punctuation is NOT re-punctuated (only items are).
+    assert markdown_blocks("plain para\nhard-wrapped line") == [
+        ("para", "plain para\nhard-wrapped line")
+    ]
+    segs = markdown_segments("no period here", voice="af_heart", lang="en-us")
+    assert [s.text for s in segs] == ["no period here"]
+
+
+def test_close_sentence():
+    assert close_sentence("ends on a word") == "ends on a word."
+    assert close_sentence("ends on a digit 42") == "ends on a digit 42."
+    assert close_sentence("rates held at 3.75%") == "rates held at 3.75%."
+    assert close_sentence('their "friend at the White House"') == (
+        'their "friend at the White House".'
+    )
+    assert close_sentence("already closed.") == "already closed."
+    assert close_sentence("a question?") == "a question?"
+    assert close_sentence("a lead-in:") == "a lead-in:"
+    assert close_sentence("trailing comma,") == "trailing comma,"
+    assert close_sentence("an ellipsis…") == "an ellipsis…"
+    assert close_sentence("  padded  ") == "padded."
+    assert close_sentence("") == ""
+    # A CJK span closes with the ideographic full stop, not a Latin period.
+    assert close_sentence("こんにちは") == "こんにちは。"
 
 
 def test_markdown_segments_keeps_cjk_only_block():
