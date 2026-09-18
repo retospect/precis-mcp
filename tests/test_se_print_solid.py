@@ -27,6 +27,10 @@ from typing import Any
 import pytest
 
 import precis_se
+from precis.cad import bulk as cad_bulk
+from precis.cad.graph import Design as CadDesign
+from precis.cad.scene import NodeSpec, SceneSpec, build_design
+from precis.cad.vec import identity
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.component import ComponentHandler
@@ -35,6 +39,7 @@ from precis_se import fasten as se_fasten
 from precis_se import persist, printsolid
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
+from precis_se.validate import ValidationIssue
 from tests.test_se_fasten_seatclamp import _ensure_fastener_specs, _seat_clamp
 
 _MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
@@ -363,3 +368,119 @@ class TestAbstractJoints:
         handler.put(id="print2-abstract-bound", text=_seat_clamp(screw_slug))
         tree_bound = _load(handler, "print2-abstract-bound")
         assert se_fasten.abstract_joints(tree_bound) == []
+
+
+class TestMultiComponentCuts:
+    """gr344816: a hole is cut from the component it lands in, and a hole
+    that lands in no component is a ``feature_not_cut`` finding — never a
+    cut applied to ``components[0]`` that the union then re-fills."""
+
+    @staticmethod
+    def _two_boxes() -> CadDesign:
+        # Two 20 mm cubes: ``left`` centred on the origin, ``right`` 50 mm
+        # along +x — well apart, so a hole can only meet one of them.
+        spec = SceneSpec(
+            nodes=[
+                NodeSpec(
+                    name="l", op="add", config="box:w0.02d0.02h0.02", component="left"
+                ),
+                NodeSpec(
+                    name="r",
+                    op="add",
+                    config="box:w0.02d0.02h0.02",
+                    component="right",
+                    loc=(0.05, 0.0, 0.0),
+                ),
+            ],
+            components=["left", "right"],
+        )
+        return build_design(spec)
+
+    @staticmethod
+    def _hole(name: str, x: float) -> se_fasten.Hole:
+        # 4 mm through hole down -z, entering at the cube's top face (z=h).
+        return se_fasten.Hole(
+            name=name,
+            block="asm",
+            kind="clearance",
+            diameter_m=0.004,
+            depth_m=0.02,
+            origin=[x, 0.0, 0.02],
+            axis=[0.0, 0.0, -1.0],
+            through=True,
+        )
+
+    def test_a_hole_in_the_second_component_is_cut_from_it(self) -> None:
+        design = self._two_boxes()
+        before_right = cad_bulk.volume(design, component="right").volume
+        before_left = cad_bulk.volume(design, component="left").volume
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [self._hole("h-right", 0.05)], identity(), findings
+        )
+        assert cut_any and names == ["h-right"] and findings == []
+        assert [n.component for n in nodes] == ["right"]
+        removed = before_right - cad_bulk.volume(design, component="right").volume
+        assert removed == pytest.approx(math.pi * 0.002**2 * 0.02, rel=0.02)
+        assert cad_bulk.volume(design, component="left").volume == pytest.approx(
+            before_left
+        )
+
+    def test_a_hole_spanning_two_parts_cuts_both_with_unique_node_names(
+        self,
+    ) -> None:
+        """A fastener through two mated parts: the tool removes material
+        from both, both get a cut node, and the node names stay unique
+        (SceneSpec's parser refuses duplicates)."""
+        spec = SceneSpec(
+            nodes=[
+                NodeSpec(
+                    name="l", op="add", config="box:w0.02d0.02h0.02", component="left"
+                ),
+                NodeSpec(
+                    name="r",
+                    op="add",
+                    config="box:w0.02d0.02h0.02",
+                    component="right",
+                    loc=(0.02, 0.0, 0.0),  # faces touching at x = 0.01
+                ),
+            ],
+            components=["left", "right"],
+        )
+        design = build_design(spec)
+        before = {
+            c: cad_bulk.volume(design, component=c).volume for c in ("left", "right")
+        }
+        hole = se_fasten.Hole(
+            name="bolt-through",
+            block="asm",
+            kind="clearance",
+            diameter_m=0.004,
+            depth_m=0.04,
+            origin=[-0.01, 0.0, 0.01],
+            axis=[1.0, 0.0, 0.0],
+            through=True,
+        )
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [hole], identity(), findings
+        )
+        assert cut_any and names == ["bolt-through"] and findings == []
+        assert sorted(n.component for n in nodes) == ["left", "right"]
+        assert len({n.name for n in nodes}) == 2
+        for c in ("left", "right"):
+            removed = before[c] - cad_bulk.volume(design, component=c).volume
+            assert removed == pytest.approx(math.pi * 0.002**2 * 0.02, rel=0.02)
+
+    def test_a_hole_in_air_is_a_feature_not_cut(self) -> None:
+        design = self._two_boxes()
+        before = cad_bulk.volume(design).volume
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [self._hole("h-air", 0.025)], identity(), findings
+        )
+        assert not cut_any and nodes == [] and names == []
+        (finding,) = findings
+        assert finding.rule == "feature_not_cut"
+        assert "cuts air" in finding.detail and "'h-air'" in finding.detail
+        assert cad_bulk.volume(design).volume == pytest.approx(before)

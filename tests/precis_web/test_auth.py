@@ -627,3 +627,199 @@ def test_malformed_tokens_are_refused_not_crashed() -> None:
     assert tokens.verify("abc.x.y") is None  # non-numeric expiry
     assert tokens.verify(f"{2**33}.x.") is None  # empty login
     assert tokens.verify(f"{2**33}.x") is None  # missing login field
+
+
+# ── failed attempts leave a trace, and repeat offenders get locked (gr343746)
+
+
+def _ok(resp) -> bool:
+    """Past the gate: ``/`` redirects to the landing page for a signed-in user."""
+    return resp.status_code in (302, 303, 307)
+
+
+def _failure_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if "precis-web auth: 401" in r.getMessage()
+    ]
+
+
+@pytest.mark.parametrize(
+    ("login", "password", "disabled", "detail"),
+    [
+        ("mallory", "pw", False, "invalid credentials"),
+        ("reto", "nope", False, "invalid credentials"),
+        ("reto", "pw", True, "account disabled"),
+    ],
+)
+def test_each_401_branch_logs_login_and_remote(
+    caplog: pytest.LogCaptureFixture,
+    login: str,
+    password: str,
+    disabled: bool,
+    detail: str,
+) -> None:
+    """Unknown login, wrong password, disabled account: one warning each,
+    naming the login and the peer address — the trace a stuffing run
+    against the funnel used to leave nowhere."""
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(disabled=disabled), record=rec))
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        assert client.get("/", headers=_basic(login, password)).status_code == 401
+    (line,) = _failure_lines(caplog)
+    assert detail in line
+    assert f"login={login!r}" in line
+    assert "from testclient" in line
+    assert "(basic)" in line
+
+
+def test_a_bare_challenge_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """No credential presented is every first page load — not a failure."""
+    client = _client(FakeUserStore(user=_user(), record=hash_password("pw")))
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        assert client.get("/").status_code == 401
+    assert _failure_lines(caplog) == []
+
+
+def test_a_stale_cookie_for_a_disabled_user_is_logged_as_cookie(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rec = hash_password("pw")
+    store = FakeUserStore(user=_user(), record=rec)
+    client = _client(store)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    assert SESSION_COOKIE in client.cookies
+    store.user = _user(disabled=True)  # `precis users disable`, another process
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 401
+    (line,) = _failure_lines(caplog)
+    assert "account disabled" in line and "(cookie)" in line
+
+
+def test_repeated_failures_lock_the_login_before_scrypt(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Past the threshold the gate answers 429 + Retry-After without
+    reading the row or spending a scrypt; a locked login's correct
+    password is refused too, until the window slides."""
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    rec = hash_password("pw")
+    store = FakeUserStore(user=_user(), record=rec)
+    client = _client(store)
+    for _ in range(_LOCKOUT_FAILURES):
+        assert client.get("/", headers=_basic("reto", "nope")).status_code == 401
+    reads = store.credential_reads
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        resp = client.get("/", headers=_basic("reto", "pw"))
+    assert resp.status_code == 429
+    assert int(resp.headers["retry-after"]) >= 1
+    assert store.credential_reads == reads
+    assert store.touched == []
+    assert any("locked out login='reto'" in r.getMessage() for r in caplog.records)
+
+
+def test_the_lock_is_per_address_too_at_a_higher_threshold() -> None:
+    """Rotating the login on one address is the other half of a stuffing
+    run — the address bucket catches it, but only past a threshold several
+    times the per-login one: one person mistyping must never lock out
+    everyone behind the same address."""
+    from precis_web.auth import _LOCKOUT_ADDR_FAILURES, _LOCKOUT_FAILURES
+
+    assert _LOCKOUT_ADDR_FAILURES >= 3 * _LOCKOUT_FAILURES
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    for i in range(_LOCKOUT_FAILURES):
+        assert client.get("/", headers=_basic(f"user{i}", "pw")).status_code == 401
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    for i in range(_LOCKOUT_FAILURES, _LOCKOUT_ADDR_FAILURES):
+        assert client.get("/", headers=_basic(f"user{i}", "pw")).status_code == 401
+    assert client.get("/", headers=_basic("reto", "pw")).status_code == 429
+
+
+def test_behind_the_loopback_proxy_the_address_is_the_last_forwarded_hop() -> None:
+    """In production the socket peer is tailscale serve on loopback for
+    EVERY caller; the address bucket keys on the hop the local proxy
+    appended to X-Forwarded-For, and ignores the header entirely when the
+    peer is not loopback (attacker-supplied)."""
+    from precis_web.auth import _remote_addr
+
+    loop = {"client": ("127.0.0.1", 5555)}
+    xff = {b"x-forwarded-for": b"192.0.2.1, 198.51.100.7"}  # RFC 5737 TEST-NETs
+    assert _remote_addr(loop, xff) == "198.51.100.7"
+    assert _remote_addr(loop, {}) == "127.0.0.1"
+    assert _remote_addr({"client": ("203.0.113.9", 1)}, xff) == "203.0.113.9"
+    assert _remote_addr({}, xff) == "-"
+
+
+def test_an_unresolvable_peer_gets_no_address_bucket() -> None:
+    from precis_web.auth import BasicAuthMiddleware
+
+    mw = BasicAuthMiddleware(lambda *a: None)  # type: ignore[arg-type]
+    assert mw.failures.locked_for() == 0.0  # no keys → never locked
+
+
+def test_tracker_memory_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every failed attempt inserts an attacker-chosen login key; the
+    tracker evicts the stalest keys past maxsize, keeping a live lock."""
+    from precis_web.auth import FailureTracker
+
+    clock = [1000.0]
+    monkeypatch.setattr("precis_web.auth.time.monotonic", lambda: clock[0])
+    tracker = FailureTracker(failures=2, window=600.0, maxsize=8)
+    for _ in range(2):
+        tracker.record("login:target")  # locked, and the freshest key below
+    for i in range(50):
+        clock[0] += 1
+        tracker.record(f"login:bogus{i}")
+        tracker.record("login:target")
+    assert len(tracker._hits) <= 8
+    assert tracker.locked_for("login:target") > 0.0
+
+
+def test_lockout_keys_on_the_canonical_login() -> None:
+    """Case variants of one login share one bucket (the roster is
+    lower-cased), so a run can't buy 3x the attempts by re-casing, and a
+    success clears the bucket the failures were counted under."""
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    rec = hash_password("pw")
+    client = _client(FakeUserStore(user=_user(), record=rec))
+    variants = ["reto", "Reto", "RETO", " reto "]
+    for i in range(_LOCKOUT_FAILURES):
+        v = variants[i % len(variants)]
+        assert client.get("/", headers=_basic(v, "nope")).status_code == 401
+    assert client.get("/", headers=_basic("reto", "pw")).status_code == 429
+
+
+def test_a_success_clears_the_login_window_but_not_the_address() -> None:
+    """A correct password forgets that login's failures (a user who
+    fumbled a few times is not locked out by their own success), while
+    the address bucket keeps counting — a shared NAT address may carry
+    both the legitimate user and the run targeting them."""
+    from precis_web.auth import FailureTracker
+
+    tracker = FailureTracker(failures=3, addr_failures=3, window=60.0)
+    for _ in range(2):
+        tracker.record("login:reto", "addr:1.2.3.4")
+    tracker.clear("login:reto")
+    tracker.record("login:reto", "addr:1.2.3.4")
+    assert tracker.locked_for("login:reto") == 0.0
+    assert tracker.locked_for("addr:1.2.3.4") > 0.0
+
+
+def test_the_window_slides(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis_web.auth import FailureTracker
+
+    clock = [1000.0]
+    monkeypatch.setattr("precis_web.auth.time.monotonic", lambda: clock[0])
+    tracker = FailureTracker(failures=3, window=60.0)
+    for _ in range(3):
+        tracker.record("login:x")
+        clock[0] += 10
+    assert tracker.locked_for("login:x") == pytest.approx(30.0)
+    clock[0] += 31
+    assert tracker.locked_for("login:x") == 0.0
+    assert tracker.locked_for("login:other") == 0.0

@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pylatexenc.latexencode import (
     RULE_CALLABLE,
@@ -1353,11 +1354,19 @@ def _paper_context_sentence(
 def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
     """reMarkable mode: render a Taproot claim-hub cite as ONE self-contained
     footnote — the nanopub statement, the publish ladder with the current
-    rung bolded, every supporting citation (grounding ``pc<id>`` handles +
-    the source paper's title in bold + its bibliography number), and any
-    validation issues on record (trust label, citation misses, disputed /
-    integrity-flagged sources) — so the claim's full standing reads offline
-    on the tablet.
+    rung bolded, every supporting citation (the source paper's title in
+    bold + its DOI URL + its bibliography number, then each grounding
+    passage as "excerpt N" in reading order with a text-fragment deep link
+    when the frozen ``searchSnip`` exists), and any validation issues on
+    record (trust label, citation misses, disputed / integrity-flagged
+    sources) — so the claim's full standing reads offline on the tablet.
+
+    The internal ``pc<id>`` chunk handles never appear (gr345703): chunking
+    is our segmentation, not a fact about the paper, and a handle means
+    nothing to an external reader — the same universal-anchors-only rule the
+    signed nanopub artifact follows. Page numbers are deliberately NOT used
+    as anchors (``chunks.page_first`` is wrong on a measurable share of
+    body chunks).
 
     Follows the ``_source_footnote`` degrade policy: any per-part store
     hiccup drops that part rather than aborting an export that previously
@@ -1384,6 +1393,11 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
 
     frozen_contiguity = _frozen_contiguity_flags(pk, ctx)
     frozen_context = _frozen_context_sentences(pk, ctx)
+    frozen_snips = _frozen_snips(pk, ctx)
+    dois = _paper_dois(
+        {e.paper_ref_id for e in (*evidence.originators, *evidence.corroborators)},
+        ctx,
+    )
     lines: list[str] = []
     issues: list[str] = []
     seen_papers: set[int] = set()
@@ -1391,12 +1405,12 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         if edge.paper_ref_id in seen_papers:
             continue
         seen_papers.add(edge.paper_ref_id)
-        handles = handles_by_paper.get(edge.paper_ref_id) or (
-            [edge.source_handle] if edge.source_handle else []
+        handles = _reading_order(
+            handles_by_paper.get(edge.paper_ref_id)
+            or ([edge.source_handle] if edge.source_handle else []),
+            ctx,
         )
         parts = []
-        if handles:
-            parts.append(_tex(", ".join(handles)) + " — ")
         title_tex = _render_gap(edge.title or f"paper {edge.paper_ref_id}", ctx)
         title_tex += _tex(
             _paper_contiguity_label(edge.paper_ref_id, handles, frozen_contiguity, ctx)
@@ -1404,6 +1418,9 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         parts.append(f"\\textbf{{{title_tex}}}")
         if edge.year:
             parts.append(f" ({edge.year})")
+        doi = dois.get(edge.paper_ref_id)
+        if doi:
+            parts.append(", " + _tex_url(f"https://doi.org/{doi}"))
         key = _hub_paper_cite_key(edge.paper_ref_id, ctx)
         if key:
             parts.append(f"~\\cite{{{key}}}")
@@ -1417,12 +1434,21 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         )
         if sentence:
             lines.append(f"Context: {_render_gap(' '.join(sentence.split()), ctx)}")
-        # The full grounding passage under each pc handle — the tablet
-        # reader sees the exact supporting text, not just its address.
-        for h in handles:
-            passage = _hub_passage_text(h, ctx)
-            if passage:
-                lines.append(f"\\emph{{{_tex(h)}: ``{_render_gap(passage, ctx)}''}}")
+        # The full grounding passage per excerpt, in reading order — the
+        # tablet reader sees the exact supporting text, labelled by an
+        # ordinal (never the chunk handle) and deep-linked by the frozen
+        # snip where one exists: the DOI URL + a text fragment is the
+        # locator the snip contract was designed for.
+        passages = [(h, _hub_passage_text(h, ctx)) for h in handles]
+        passages = [(h, text) for h, text in passages if text]
+        for n_excerpt, (h, passage) in enumerate(passages, start=1):
+            label = f"excerpt {n_excerpt}" if len(passages) > 1 else "excerpt"
+            chunk_id = _chunk_id_of(h)
+            snip = frozen_snips.get(chunk_id) if chunk_id is not None else None
+            link = ""
+            if doi and snip:
+                link = " " + _tex_url(f"https://doi.org/{doi}#:~:text={snip}")
+            lines.append(f"\\emph{{{label}: ``{_render_gap(passage, ctx)}''}}{link}")
         # Per-edge chase *caveats* are scope notes, not validation issues —
         # a well-supported hub carries a dozen and they'd drown the real
         # flags below, so they stay out of the footnote.
@@ -1464,6 +1490,106 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
     if issues:
         body += "\\\\ \\emph{Issues:} " + "; ".join(issues)
     return f"\\footnote{{{body}}}\x02"  # \x02: adjacency sentinel, see _render_inline
+
+
+def _tex_url(url: str) -> str:
+    """A clickable, visibly-printed URL that survives being INSIDE another
+    macro's argument (the hub footnote): ``\\href`` with ``#``/``%``
+    escaped and ``~`` as ``\\string~`` in the target (hyperref re-reads
+    them as the literal characters — a bare ``#`` already tokenised inside
+    ``\\footnote{…}`` is a parameter token and a compile error), the
+    visible text escaped as prose. Verified by compile: the PDF's link
+    annotation carries the raw ``…#:~:text=…`` fragment.
+
+    A DOI suffix is not a LaTeX-safe charset (``_``, ``&``, ``$``, ``^``
+    and non-ASCII all occur in the wild): everything outside the URL's
+    own unreserved/delimiter set is percent-encoded first, and the
+    survivors TeX would still choke on inside a macro argument (``_``,
+    ``&``) get the same backslash treatment as ``#``/``%`` — the escapes
+    hyperref documents for a URL in a moving argument (``\\$`` is NOT one
+    of them: it renders as ``\\protect\\textdollar``, hence the encoding).
+    """
+    encoded = quote(url, safe="/:#?=&@~!*()',;-._")
+    target = (
+        encoded.replace("%", "\\%")
+        .replace("#", "\\#")
+        .replace("~", "\\string~")
+        .replace("_", "\\_")
+        .replace("&", "\\&")
+    )
+    return f"\\href{{{target}}}{{{_tex(url)}}}"
+
+
+def _chunk_id_of(handle: str) -> int | None:
+    """The ``chunks.chunk_id`` a ``pc<id>`` grounding handle names, else
+    ``None`` (a legacy ``slug~ord`` handle)."""
+    parsed = handle_registry.parse(handle)
+    if parsed is not None and parsed[0] == "paper" and parsed[1]:
+        return int(parsed[2])
+    return None
+
+
+def _reading_order(handles: list[str], ctx: _Ctx) -> list[str]:
+    """``handles`` sorted by their chunk's ``ord`` — the order the passages
+    appear in the paper — so "excerpt 1" precedes "excerpt 2" on the page
+    (gr345703 printed them in reverse edge order). A handle this host can't
+    resolve keeps its incoming position, after the resolvable ones."""
+    drafts = getattr(ctx.store, "drafts", None)
+    fn = getattr(drafts, "universal_chunk", None)
+    if not callable(fn) or len(handles) < 2:
+        return list(handles)
+    keyed: list[tuple[int, int, str]] = []
+    for i, h in enumerate(handles):
+        try:
+            uc = fn(h) or {}
+        except Exception:  # pragma: no cover — store hiccup / legacy handle
+            uc = {}
+        ordn = uc.get("ord")
+        keyed.append(
+            (0 if ordn is not None else 1, int(ordn) if ordn is not None else i, h)
+        )
+    return [h for _rank, _ord, h in sorted(keyed, key=lambda t: (t[0], t[1]))]
+
+
+def _frozen_snips(pk: int, ctx: _Ctx) -> dict[int, str]:
+    """``{chunk_id: searchSnip}`` off the hub's live ``nanopub_publish``
+    row's frozen grounding payload — the URL-safe locator the signed
+    artifact carries. Empty when there is no publish row, or its passages
+    carry no snip. Same degrade policy as the other frozen-payload reads."""
+    fn = getattr(ctx.store, "nanopub_publish_row", None)
+    if not callable(fn):
+        return {}
+    try:
+        row = fn(pk)
+    except Exception:  # pragma: no cover — store hiccup
+        return {}
+    if row is None:
+        return {}
+    out: dict[int, str] = {}
+    for p in (row.grounding or {}).get("passages") or []:
+        chunk_id, snip = p.get("chunk_id"), p.get("snip")
+        if chunk_id is not None and isinstance(snip, str) and snip.strip():
+            out[int(chunk_id)] = snip.strip()
+    return out
+
+
+def _paper_dois(paper_ref_ids: set[int], ctx: _Ctx) -> dict[int, str]:
+    """``{paper_ref_id: doi}`` for the supporters that have one — the same
+    identifier read the bibliography uses (``identifiers_for_refs``), so
+    the footnote's URL and the bib entry's ``doi`` field can't disagree.
+    Empty on a fake store or a hiccup."""
+    fn = getattr(ctx.store, "identifiers_for_refs", None)
+    if not callable(fn) or not paper_ref_ids:
+        return {}
+    try:
+        aliases = fn(sorted(paper_ref_ids)) or {}
+    except Exception:  # pragma: no cover — store hiccup
+        return {}
+    return {
+        int(rid): str(alias["doi"]).strip()
+        for rid, alias in aliases.items()
+        if isinstance(alias, dict) and alias.get("doi")
+    }
 
 
 def _hub_passage_text(handle: str, ctx: _Ctx) -> str:

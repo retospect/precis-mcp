@@ -209,6 +209,19 @@ fi
 # can't start, fall back to whatever PRECIS_TEST_PG_URL the container carries.
 # --fast runs `-m 'not db'`, so no DB test is selected — skip the DB startup
 # entirely (a real time saver and it makes the fast path Docker-DB-independent).
+# One BLAS/OpenMP thread per xdist worker. Uncapped, every worker that
+# touches torch/numpy sizes its pool to all container cores (15 on the M-series
+# hosts), so `-n 6` runs ~190 runnable threads on 15 cores and a torch test
+# that takes seconds alone crawls for tens of minutes under coverage tracing —
+# the "wedged gate" that never names a wedged test (gr345784). Set here, in
+# the container env, so every runtime (libgomp, OpenBLAS, MKL, numexpr) reads
+# it at load, before any test module imports torch. The same keys sit on the
+# warm precis-gate service in docker/dev/compose.yaml.
+THREAD_CAP_ENV=(
+    -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1
+    -e NUMEXPR_NUM_THREADS=1 -e VECLIB_MAXIMUM_THREADS=1
+)
+
 TEST_DB_ENV=()
 if [[ "$FAST" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
@@ -284,6 +297,7 @@ done
 # before pytest starts, naming the missing module(s) and the fix. One extra
 # `uv run` in the same container — no second container spin-up.
 compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
+    "${THREAD_CAP_ENV[@]}" \
     "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
     "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
     -v "${WORKTREE}":/app precis-dev \

@@ -128,6 +128,15 @@ services:
       PRECIS_TEST_PG_URL: postgresql://postgres@precis-test-db:5432/precis_test
       MYPY_CACHE_DIR: /home/precis/.cache/mypy
       RUFF_CACHE_DIR: /home/precis/.cache/ruff
+      # One BLAS/OpenMP thread per xdist worker — uncapped, six torch-touching
+      # workers each size a pool to all 15 cores and the gate "wedges" for an
+      # hour with no wedged test to name (gr345784). Mirrors scripts/test's
+      # THREAD_CAP_ENV; the gate execs here without passing that array.
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
     volumes:
       - gate-cache:/home/precis/.cache
     healthcheck:

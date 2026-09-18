@@ -1514,6 +1514,20 @@ def _card_text(title: str, description: str, tree: SeTree) -> str:
     )
 
 
+def _fmt_envelope(env: str) -> str:
+    """Listing form of a stored envelope: same cad-DSL text, every number
+    trimmed to 6 significant digits. Storage keeps full ``repr`` precision
+    (lossless re-parse), which leaks Å→m float noise into the view —
+    ``h3.3329300000000004e-09`` next to ``r1.41053e-09`` (gr345300). A
+    non-DSL envelope (or an unparseable one) is shown verbatim."""
+    try:
+        spec = cad_dsl.parse(env)
+    except Exception:
+        return env
+    trimmed = {k: float(f"{v:.6g}") for k, v in spec.params.items()}
+    return cad_dsl.format_spec(cad_dsl.ShapeSpec(spec.alias, trimmed))
+
+
 def _fmt3(v: list[float]) -> str:
     return ", ".join(f"{x:g}" for x in v)
 
@@ -1637,7 +1651,7 @@ def _block_line(tree: SeTree, node: SeBlock) -> str:
     env = effective_envelope(tree, node)
     if env:
         marker = f" (from {node.template})" if node.template else ""
-        parts.append(f"env={env}{marker}")
+        parts.append(f"env={_fmt_envelope(env)}{marker}")
     parts.append(f"pose=[{_fmt3(node.pose)}]")
     if any(node.rot):
         parts.append(f"rot=[{_fmt_rot3(node.rot)}]")
@@ -1710,9 +1724,11 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
         # marked as inherited.
         env = effective_envelope(tree, node)
         marker = f" (from {node.template})" if env else ""
-        lines.append(f"envelope: {env or '—'}{marker}")
+        lines.append(f"envelope: {_fmt_envelope(env) if env else '—'}{marker}")
     else:
-        lines.append(f"envelope: {node.envelope or '— (unfilled)'}")
+        lines.append(
+            f"envelope: {_fmt_envelope(node.envelope) if node.envelope else '— (unfilled)'}"
+        )
     lines.append(f"desc: {node.descr or '—'}")
     lines.append(f"use: {node.use or '—'}")
     if node.objectives:

@@ -233,3 +233,23 @@ def test_parse_error_has_span() -> None:
     with pytest.raises(ParseError) as ei:
         parse("hexfold 0.1\norigin s\nthis is not valid\n")
     assert ei.value.span is not None and ei.value.span[0] == 3
+
+
+def test_round_trip_with_a_nanobud_menu() -> None:
+    """gr345343: a menu's generated instance (the neck), holes and fuses
+    carry ``source`` and are NOT re-emitted next to the live menu line —
+    the text is the authored spec, and re-parsing re-expands the menu."""
+    src = (
+        "hexfold 0.2\norigin h\nh: sheet(16,16) + 57@(3,3,A):0\n"
+        "b: fullerene(C60)\nb @ h/(9,9,A):0 [DA-neck(3)]\n"
+    )
+    j1 = canonical_json(src)
+    t1 = text_of(j1)
+    assert "neck" not in t1.replace("DA-neck(3)", "")
+    assert "--fuse" not in t1 and "path3" not in t1
+    assert "b @ h/(9,9,A):0 [DA-neck(3)]" in t1
+    assert canonical_json(t1) == j1
+    # The generated connects are still in the JSON, tagged with their menu.
+    generated = [c for c in json.loads(j1)["connects"] if c.get("source")]
+    assert {c["source"] for c in generated} == {"DA-neck(3)"}
+    assert len(generated) == 2

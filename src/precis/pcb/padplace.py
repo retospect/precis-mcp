@@ -228,6 +228,12 @@ def place_footprint_pads(
             "x": round(bx, 4),
             "y": round(by, 4),
             "w": round(w, 4),
+            # Identity, the same two keys `realize.pads_for_ir` emits: which
+            # pin of which part this flash is. The gerber view needs it to
+            # tell "this placed pin has a real pad" from "this pin's name
+            # never joined the cached footprint" (gr346009).
+            "refdes": str(inst.get("refdes") or ""),
+            "pin": pin_name,
         }
         if shape != "circle":
             base["h"] = round(h, 4)

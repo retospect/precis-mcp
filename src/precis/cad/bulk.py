@@ -43,7 +43,16 @@ class BulkResult:
 
 
 def expr_aabb(design: Design, expr: Expr) -> tuple[Vec3, Vec3]:
-    """Union AABB over every leaf reachable from ``expr`` (additive bound)."""
+    """Union AABB over every leaf reachable from ``expr`` (additive bound).
+
+    A ``Diff``'s cutters are NOT walked: a cut only removes material, so
+    the base's bound already bounds the result, and letting an over-long
+    cutting tool (a bolt hole drilled through from outside the part)
+    widen the box shifted :func:`volume`'s ray grid off the part's own
+    edges — a 40 mm tool through a 20 mm part mis-measured the PART by
+    ±1 % (one grid column at each face), which read as a ±30 % error on
+    the hole it was cutting.
+    """
     los: list[Vec3] = []
     his: list[Vec3] = []
 
@@ -58,8 +67,6 @@ def expr_aabb(design: Design, expr: Expr) -> tuple[Vec3, Vec3]:
         base = getattr(e, "base", None)
         if base is not None:
             walk(base)
-        for c in getattr(e, "cutters", ()):
-            walk(c)
 
     walk(expr)
     if not los:
@@ -133,6 +140,7 @@ def volume(
     design: Design,
     *,
     component: str | None = None,
+    expr: Expr | None = None,
     grid: int | None = None,
     samples: int = 200_000,
     seed: int = 0,  # accepted for back-compat; quadrature is deterministic
@@ -145,8 +153,15 @@ def volume(
     exactly along the ray). ``grid`` overrides the resolution; otherwise it is
     derived from the legacy ``samples`` budget. ``rel_err`` is a Richardson
     estimate against a coarser grid.
+
+    ``expr`` measures an arbitrary expression over ``design``'s instances
+    (a probe such as ``intersect(component, tool)``) instead of a named
+    component or the whole; the two selectors are mutually exclusive.
     """
-    expr = design.components[component] if component else design.whole()
+    if expr is not None and component is not None:
+        raise ValueError("volume(): pass component= or expr=, not both")
+    if expr is None:
+        expr = design.components[component] if component else design.whole()
     lo, hi = expr_aabb(design, expr)
     n = grid if grid is not None else _grid_for(samples)
 

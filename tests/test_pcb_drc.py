@@ -523,7 +523,7 @@ def test_check_clearance_fires_for_two_overlapping_foreign_net_pads():
     # "copper then pads" index convention, not just check_clearance's output.
     pairs = drc.clearance_pairs_indexed(model, required_mm=1.0)
     assert len(pairs) == 1
-    i, j, _gap = pairs[0]
+    i, j, _gap, _layer = pairs[0]
     assert min(i, j) >= len(model["copper"])
 
 
@@ -1529,7 +1529,9 @@ def test_clearance_oracle_matches_strtree_engine_over_random_layouts():
         }
         indexed = {
             (i, j): gap
-            for i, j, gap in drc.clearance_pairs_indexed(model, required_mm=required_mm)
+            for i, j, gap, _layer in drc.clearance_pairs_indexed(
+                model, required_mm=required_mm
+            )
         }
         assert set(naive) == set(indexed), (trial, model, set(naive) ^ set(indexed))
         for key, gap in naive.items():
@@ -1613,7 +1615,9 @@ def test_clearance_oracle_matches_strtree_engine_on_real_realized_vias():
         # itself is covered directly in the pad-vs-copper tests above.
         indexed = {
             (i, j): gap
-            for i, j, gap in drc.clearance_pairs_indexed(model, required_mm=required_mm)
+            for i, j, gap, _layer in drc.clearance_pairs_indexed(
+                model, required_mm=required_mm
+            )
             if i < n_copper and j < n_copper
         }
         assert set(naive) == set(indexed), (trial, set(naive) ^ set(indexed))
@@ -1724,7 +1728,9 @@ def test_clearance_oracle_matches_on_dense_close_layout():
         )
         indexed = set(
             (i, j)
-            for i, j, _ in drc.clearance_pairs_indexed(model, required_mm=required_mm)
+            for i, j, _, _layer in drc.clearance_pairs_indexed(
+                model, required_mm=required_mm
+            )
         )
         assert naive == indexed, (trial, model, naive ^ indexed)
 
@@ -1775,3 +1781,19 @@ def test_check_octilinear_quiet_on_axis_diagonal_and_arcs():
         ],
     }
     assert drc.check_octilinear(model) == []
+
+
+def test_clearance_finding_names_the_layer_the_pair_met_on():
+    """gr345858: a through via's row carries a nominal ``layer`` (F.Cu)
+    whatever it spans, so a via against a BOTTOM-side pad used to be
+    reported "on F.Cu" — the pad has no F.Cu copper — while
+    via_pad_keepout said B.Cu for the same pair. The label is the layer
+    the STRtree pass matched the pair on."""
+    via = _via("A", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    via["layers"] = ["F.Cu", "B.Cu"]
+    pad = _pad("B", "B.Cu", 0.35, 0.0, w=0.2, h=0.2)  # 0.05 mm off the via ring
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [via], "pads": [pad]}
+    findings = [f for f in drc.check_clearance(model, _CAP4) if f.rule == "clearance"]
+    assert len(findings) == 1
+    assert findings[0].where.endswith("on B.Cu")
+    assert "on F.Cu" not in findings[0].where

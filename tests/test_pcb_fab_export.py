@@ -10,6 +10,7 @@ flashes, copper, drills and an outline -- not just files that exist.
 from __future__ import annotations
 
 import zipfile
+from typing import Any, cast
 
 import pytest
 
@@ -347,6 +348,45 @@ def test_export_fab_refuses_a_mixed_design_with_one_uncached_part(pcb, tmp_path)
     slug = _seed(pcb, skip=frozenset({"CTHT1"}))
     with pytest.raises(BadInput, match="synthesized"):
         pcb.get(id=slug, view="gerber", args={"dir": str(tmp_path)})
+
+
+def test_export_fab_refuses_a_cached_footprint_whose_pin_name_does_not_join(
+    pcb, tmp_path
+):
+    """gr346009: coverage is per PIN, not per cache row. U1's cache row
+    exists (so the old per-instance ``missing`` set called it real), but
+    the design wires a pin the footprint's ``pin_map`` never names —
+    ``board_pads`` emits nothing for it, and the fab set used to simply
+    lack that pad, so ``export_fab``'s synthesized-pad refusal never
+    saw it. Now the unjoined pin is filled in synthesized, the view
+    names the part, and the export refuses."""
+    components = cast(list[dict[str, Any]], _DESIGN["components"])
+    connections = cast(list[dict[str, Any]], _DESIGN["connections"])
+    misnamed = _DESIGN | {
+        "components": [
+            components[0]
+            | {"pins": [{"name": "VDD"}, {"name": "GND"}, {"name": "SDA"}]},
+            *components[1:],
+        ],
+        "connections": [
+            *connections,
+            {"net": "GND", "refdes": "U1", "pin": "SDA"},
+        ],
+    }
+    pcb.put(id="fabtest-misnamed", args=misnamed)
+    for lcsc, fp in (
+        ("C2838500", _QFN_FOOTPRINT),
+        ("C1525", _CAP_FOOTPRINT),
+        ("CTHT1", _THT_FOOTPRINT),
+    ):
+        pcb.store.part_footprint_put(lcsc, fp)
+    with pytest.raises(BadInput, match="synthesized"):
+        pcb.get(id="fabtest-misnamed", view="gerber", args={"dir": str(tmp_path)})
+    # The footprints view counts the same gap per pin — not "no" just
+    # because the cache row exists.
+    view = pcb.get(id="fabtest-misnamed", view="footprints").body
+    assert "1/3 pins" in view
+    assert "3/3 catalog-part instance(s) cached" in view
 
 
 def test_drc_pads_real_for_cached_parts_synthesized_for_the_rest(pcb):

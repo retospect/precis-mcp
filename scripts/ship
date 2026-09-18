@@ -445,9 +445,11 @@ sync_to_container() {
 # mode it edits the container's native copy). Only src/ + tests/ — the trees
 # ruff rewrites — and never __pycache__/.pyc noise.
 sync_from_container() {
+    # `set -o pipefail` (top of file) makes a dead `compose exec` fail the
+    # pipeline even when the receiving tar exits 0 on a truncated stream.
     compose exec -T precis-gate \
         tar -C /app --exclude='*/__pycache__' --exclude='*.pyc' -cf - src tests \
-        | tar -C "$WORKTREE" --no-same-owner -xf -
+        | tar -C "$WORKTREE" --no-same-owner -xf - || return 1
 }
 
 # Carry the testmon map (./.testmondata*, gitignored → NOT in `git archive`, so
@@ -529,7 +531,17 @@ run_gate() {
         fi
         [[ "$IMPACTED" == 1 ]] && testmon_into_container
         compose exec -T precis-gate bash -lc "$1" || rc=$?
-        sync_from_container || true
+        # A failed sync-back is fatal on a green gate: ruff's autofixes stayed
+        # in the container, so the tree about to be amended is not the tree
+        # that passed lint (gr346536). On a red gate it is only noise.
+        if ! sync_from_container; then
+            if [[ "$rc" == 0 ]]; then
+                gate_slot_release
+                echo "✖ gate passed but could not sync src/tests back out of precis-gate" >&2
+                return 91
+            fi
+            echo "⚠ could not sync src/tests back out of precis-gate (gate already red)" >&2
+        fi
         [[ "$IMPACTED" == 1 ]] && testmon_from_container
     else
         compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \

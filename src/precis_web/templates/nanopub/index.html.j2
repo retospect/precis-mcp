@@ -338,6 +338,25 @@
     runScripts(node);
   };
 
+  // The one way a pane takes new markup. Alpine's MutationObserver also
+  // initialises whatever an innerHTML replace adds, so afterSwap's explicit
+  // initTree on top used to initialise every x-data component in the
+  // fragment TWICE (Alpine 3.14.3 has no already-initialised guard): two
+  // reactive scopes, x-show and listeners bound to the dead one (gr345400,
+  // the same trap smartdraft's swapFrom had — gr335590). mutateDom() pauses
+  // the observer around the replace so afterSwap's initTree is the only
+  // one; destroyTree() first runs the old components' cleanups the observer
+  // would otherwise have run.
+  const swapPane = (pane, html) => {
+    if (window.Alpine && window.Alpine.mutateDom) {
+      window.Alpine.destroyTree(pane);
+      window.Alpine.mutateDom(() => { pane.innerHTML = html; });
+    } else {
+      pane.innerHTML = html;
+    }
+    afterSwap(pane);
+  };
+
   // One loader for every way a pane gets content. Dims the pane while the
   // request is in flight so a slow claim reads as "loading", not as a dead
   // click — the failure mode this whole refactor is chasing.
@@ -356,8 +375,8 @@
     document.querySelectorAll("body > .ref-popover").forEach(el => el.remove());
     return fetch(src, { headers: { "HX-Request": "true" }, credentials: "same-origin", cache: "no-store" })
       .then(r => r.text())
-      .then(html => { pane.innerHTML = html; afterSwap(pane); })
-      .catch(() => { pane.innerHTML = '<p class="np-hint">could not load — try again</p>'; })
+      .then(html => swapPane(pane, html))
+      .catch(() => swapPane(pane, '<p class="np-hint">could not load — try again</p>'))
       .finally(() => pane.classList.remove("np-loading"));
   };
 
@@ -442,8 +461,8 @@
       credentials: "same-origin",
     })
       .then(r => r.text())
-      .then(html => { pane.innerHTML = html; afterSwap(pane); })
-      .catch(() => { pane.innerHTML = '<p class="np-hint">could not submit — try again</p>'; })
+      .then(html => swapPane(pane, html))
+      .catch(() => swapPane(pane, '<p class="np-hint">could not submit — try again</p>'))
       .finally(() => pane.classList.remove("np-loading"));
   });
 

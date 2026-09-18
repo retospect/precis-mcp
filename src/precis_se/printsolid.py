@@ -38,11 +38,12 @@ wider cyl" the module docstring above describes, already expressed as an
 ordinary ``Hole`` with a bigger diameter and shallower depth than the
 shank clearance hole underneath it — the two just happen to share an axis.
 
-Only the **first** of the bound design's top-level components is cut —
-today's fixtures (and ``realize``'s own seed) are single-component
-designs; a multi-part ``use``-based binding cuts its first part only and
-leaves the rest whole, a known, undocumented-elsewhere limitation left for
-whichever rung first needs a multi-part printed assembly.
+Every top-level component the tool's bounding box meets is cut — a
+multi-part ``use``-based binding (one block bound to an assembly) gets
+the hole in whichever part it lands in, not in the first part regardless
+(gr344816). A hole whose tool meets no part, or meets one and still
+removes nothing (it sits in a bounding-box corner's air), is a
+``feature_not_cut`` finding: the cut is never allowed to succeed on air.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ import numpy as np
 
 from precis.cad import bulk as cad_bulk
 from precis.cad import dsl as cad_dsl
+from precis.cad.fold import Expr
 from precis.cad.graph import Design as CadDesign
 from precis.cad.scene import (
     NodeSpec,
@@ -141,6 +143,114 @@ def _feature_not_cut(block_name: str, hole: Hole, why: str) -> ValidationIssue:
         ),
         severity="error",
     )
+
+
+#: Ray grid for the per-hole "did this cut remove anything" probe —
+#: quadrature over the tool's own (small) AABB, so a coarse grid is exact
+#: enough to tell air from material.
+_CUT_PROBE_GRID = 24
+
+
+def _components_met(design: CadDesign, cutter: Expr) -> list[str]:
+    """The components whose AABB overlaps the cutting tool's — the parts a
+    hole can possibly cut, in the design's component order."""
+    lo, hi = cad_bulk.expr_aabb(design, cutter)
+    met: list[str] = []
+    for name, expr in design.components.items():
+        clo, chi = cad_bulk.expr_aabb(design, expr)
+        if all(lo[i] <= chi[i] and hi[i] >= clo[i] for i in range(3)):
+            met.append(name)
+    return met
+
+
+def _apply_cuts(
+    design: CadDesign,
+    block_name: str,
+    holes: list[Hole],
+    inv: Transform,
+    findings: list[ValidationIssue],
+) -> tuple[list[NodeSpec], list[str], bool]:
+    """Subtract every stamped hole from the component(s) it lands in.
+
+    Each hole's tool is cut from every top-level component whose bounding
+    box it meets, and the cut must remove material from at least one of
+    them — a hole that meets no part, or only a part's bounding-box air,
+    is a ``feature_not_cut`` finding rather than a silently whole solid
+    (gr344816: cutting ``components[0]`` regardless put a later part's
+    hole into the first part, and the union re-filled it). Returns the
+    ``cut`` node specs (one per component actually cut), the names of the
+    holes cut, and whether any component changed.
+    """
+    cutters_by_component: dict[str, list[Expr]] = {}
+    cut_nodes: list[NodeSpec] = []
+    feature_names: list[str] = []
+    for hole in holes:
+        # A stamped hole that cannot be cut is never dropped silently: the
+        # solid would leave without a screw hole and nobody would know —
+        # exactly what process DRC exists to catch (pre-ship review).
+        if hole.diameter_m <= 0.0 or hole.depth_m <= 0.0:
+            findings.append(
+                _feature_not_cut(
+                    block_name,
+                    hole,
+                    f"non-positive size (d={hole.diameter_m:g} m, "
+                    f"depth={hole.depth_m:g} m)",
+                )
+            )
+            continue
+        try:
+            config = _cut_config(hole)
+            primitive = cad_dsl.build_config(config)
+        except (cad_dsl.DslError, ValueError) as exc:
+            findings.append(
+                _feature_not_cut(block_name, hole, f"unbuildable tool geometry: {exc}")
+            )
+            continue
+        xform, loc, rot = _cut_placement(hole, inv)
+        cutter = design.prim(_safe_node_name(hole.name), primitive, xform)
+        removing = [
+            name
+            for name in _components_met(design, cutter)
+            if cad_bulk.volume(
+                design,
+                expr=design.intersect(design.components[name], cutter),
+                grid=_CUT_PROBE_GRID,
+            ).volume
+            > 0.0
+        ]
+        if not removing:
+            findings.append(
+                _feature_not_cut(
+                    block_name,
+                    hole,
+                    "the tool meets no material — it cuts air (hole origin "
+                    "or axis outside every component of the bound design)",
+                )
+            )
+            continue
+        for name in removing:
+            cutters_by_component.setdefault(name, []).append(cutter)
+            # Node names are unique per SceneSpec (the parser refuses a
+            # duplicate); a fastener spanning two mated parts cuts both, so
+            # the second and later cut nodes carry their component's name.
+            node_name = _safe_node_name(hole.name)
+            if len(removing) > 1:
+                node_name = _safe_node_name(f"{hole.name}_{name}")
+            cut_nodes.append(
+                NodeSpec(
+                    name=node_name,
+                    op="cut",
+                    config=config,
+                    component=name,
+                    loc=loc,
+                    rot=rot,
+                )
+            )
+        feature_names.append(hole.name)
+
+    for name, cutters in cutters_by_component.items():
+        design.add_component(name, design.subtract(design.components[name], *cutters))
+    return cut_nodes, feature_names, bool(cutters_by_component)
 
 
 def _cut_config(hole: Hole) -> str:
@@ -249,50 +359,15 @@ def printed_solid(
 
     world_xform = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
     inv = world_xform.inverse()
-    component_name = expanded.components[0] if expanded.components else "part"
 
-    cutter_exprs = []
-    cut_nodes: list[NodeSpec] = []
-    feature_names: list[str] = []
-    for hole in se_fasten.features_for(tree, block_name):
-        # A stamped hole that cannot be cut is never dropped silently: the
-        # solid would leave without a screw hole and nobody would know —
-        # exactly what process DRC exists to catch (pre-ship review).
-        if hole.diameter_m <= 0.0 or hole.depth_m <= 0.0:
-            findings.append(
-                _feature_not_cut(
-                    block_name,
-                    hole,
-                    f"non-positive size (d={hole.diameter_m:g} m, "
-                    f"depth={hole.depth_m:g} m)",
-                )
-            )
-            continue
-        try:
-            config = _cut_config(hole)
-            primitive = cad_dsl.build_config(config)
-        except (cad_dsl.DslError, ValueError) as exc:
-            findings.append(
-                _feature_not_cut(block_name, hole, f"unbuildable tool geometry: {exc}")
-            )
-            continue
-        xform, loc, rot = _cut_placement(hole, inv)
-        cutter_exprs.append(design.prim(_safe_node_name(hole.name), primitive, xform))
-        cut_nodes.append(
-            NodeSpec(
-                name=_safe_node_name(hole.name),
-                op="cut",
-                config=config,
-                component=component_name,
-                loc=loc,
-                rot=rot,
-            )
-        )
-        feature_names.append(hole.name)
-
-    if cutter_exprs:
-        design.add_component(component_name, design.subtract(base_expr, *cutter_exprs))
-    volume_after = cad_bulk.volume(design).volume if cutter_exprs else volume_before
+    cut_nodes, feature_names, cut_any = _apply_cuts(
+        design,
+        block_name,
+        se_fasten.features_for(tree, block_name),
+        inv,
+        findings,
+    )
+    volume_after = cad_bulk.volume(design).volume if cut_any else volume_before
 
     if volume_after <= 0.0:
         findings.append(

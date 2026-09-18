@@ -63,6 +63,7 @@ class Connect:
     order: int | None = None
     expanded: dict[str, Any] | None = None  # menu/collar expansion record
     span: Span = (0, 0)
+    source: str | None = None  # menu that generated this connect (None = authored)
 
 
 @dataclass(frozen=True)
@@ -409,7 +410,14 @@ def _defect_text(d: SiteDefect) -> str:
 
 
 def to_text(spec: Spec) -> str:
-    """Emit the canonical-ish text form of a parsed spec."""
+    """Emit the canonical-ish text form of a parsed spec.
+
+    Authored content only: an instance, hole or connect a menu generated
+    (``source`` set) is skipped, because the menu line that made it is
+    emitted and re-expands on parse — emitting both would duplicate the
+    neck/holes/fuses and leaves ``k=-1`` (the internal fit marker) in
+    text the grammar refuses (gr345343).
+    """
     lines = [f"hexfold {spec.version}"]
     if spec.prov:
         kv = " ".join(f"{k}={v}" for k, v in spec.prov if k != "_")
@@ -422,8 +430,12 @@ def to_text(spec: Spec) -> str:
     if spec.origin:
         lines.append(f"origin {spec.origin}")
     for inst in spec.instances:
+        if inst.source is not None:
+            continue
         line = f"{inst.name}: {inst.kind}({_fmt_params(inst)})"
         for h in inst.holes:
+            if h.source is not None:
+                continue
             line += f"  {_hole_text(h)}"
         for d in inst.defects:
             line += f"  {_defect_text(d)}"
@@ -432,9 +444,10 @@ def to_text(spec: Spec) -> str:
         lines.append(line)
     for f in spec.frags:
         lines.append(f"frag: {f.line}")
-    if spec.connects:
+    authored = [c for c in spec.connects if c.source is None]
+    if authored:
         lines.append("")
-        for c in spec.connects:
+        for c in authored:
             if c.verb == "menu":
                 dst, site = c.dst.split("/", 1)
                 lines.append(f"{c.src} @ {dst}/{site} [{c.menu}]")
@@ -504,6 +517,7 @@ def spec_from_dict(d: dict) -> Spec:
             k=c.get("k"),
             order=c.get("order"),
             expanded=c.get("expanded"),
+            source=c.get("source"),
         )
         for c in d.get("connects", [])
     )

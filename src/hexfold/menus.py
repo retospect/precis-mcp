@@ -215,5 +215,7 @@ def expand(spec: Spec) -> Spec:
             gen = []
 
         connects.append(replace(c, expanded=exp))
-        connects.extend(gen)
+        # Generated connects carry the menu that made them, like the
+        # holes/instances above — to_text emits the menu line only.
+        connects.extend(replace(g, source=menu) for g in gen)
     return replace(spec, instances=tuple(insts), connects=tuple(connects))

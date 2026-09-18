@@ -232,6 +232,7 @@ class Net:
                         "k": c.k,
                         "menu": c.menu,
                         "order": c.order,
+                        "source": c.source,
                         "src": c.src,
                         "verb": c.verb,
                     }.items()

@@ -153,6 +153,34 @@ def test_sibling_unknown_kind_raises_key_error(store: Store) -> None:
         r.sibling("nosuchkind")
 
 
+def test_every_sibling_call_site_kind_has_a_lazy_mapping() -> None:
+    """gr343754: ``_SIBLING_HANDLERS`` is a hand-maintained allowlist with
+    nothing coupling it to the call sites. On a booted hub every kind is
+    already in ``handlers``, so a call site for a kind the map lacks
+    works in production and KeyErrors only on a bare/test hub or when
+    that kind's handler failed boot — silently, later. Pin the coupling:
+    every literal ``sibling("<kind>")`` in the source tree must be
+    lazily constructible, and every mapped class must import."""
+    import importlib
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src"
+    pattern = re.compile(r"""\.sibling\(\s*["']([a-z_]+)["']\s*\)""")
+    requested: dict[str, set[str]] = {}
+    for path in src.rglob("*.py"):
+        for kind in pattern.findall(path.read_text(encoding="utf-8")):
+            requested.setdefault(kind, set()).add(str(path.relative_to(src)))
+    assert requested, "no sibling() call sites found — the regex rotted"
+    unmapped = {k: v for k, v in requested.items() if k not in Hub._SIBLING_HANDLERS}
+    assert not unmapped, (
+        "Hub.sibling() is called for kinds _SIBLING_HANDLERS cannot lazily "
+        f"construct — extend the map in precis.dispatch: {unmapped}"
+    )
+    for kind, (module, cls) in Hub._SIBLING_HANDLERS.items():
+        assert hasattr(importlib.import_module(module), cls), (kind, module, cls)
+
+
 # ---------------------------------------------------------------------------
 # _try failure semantics
 # ---------------------------------------------------------------------------

@@ -2713,3 +2713,16 @@ def test_links_view_empty_shows_add_hint(handler: SeHandler) -> None:
     handler.put(id="caster_l5", text=_CASTER)
     view = handler.get(id="caster_l5", view="links")
     assert "no links" in view.body and "related-to" in view.body
+
+
+def test_listing_envelope_trims_float_noise() -> None:
+    """gr345300: storage keeps repr precision (Å→m noise included); the
+    listing shows 6 significant digits per field, both fields alike."""
+    from precis_se.handler import _fmt_envelope
+
+    assert (
+        _fmt_envelope("cyl:r1.41053e-09h3.3329300000000004e-09")
+        == "cyl:r1.41053e-09h3.33293e-09"
+    )
+    assert _fmt_envelope("cyl:r0.008h0.03") == "cyl:r0.008h0.03"
+    assert _fmt_envelope("not-a-dsl-envelope") == "not-a-dsl-envelope"

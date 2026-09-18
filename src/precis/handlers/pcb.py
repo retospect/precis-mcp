@@ -1748,38 +1748,49 @@ class PcbHandler(Handler):
                 + ("…" if len(missing) > 8 else "")
                 + " (fetch via precis.pcb.footprint first)"
             )
-            # `board_pads` (module docstring, verbatim) "contributes nothing"
-            # for an instance with no cached footprint — an honest gap for
-            # ITS own caller, but left as-is here that gap silently dropped
-            # the missing part's pads from the fab set ENTIRELY rather than
-            # marking them synthesized: a mixed design (the realistic case,
-            # some parts cached, some not) came out looking clean because
-            # export_fab's synthesized-pad check saw NOTHING to refuse, not
-            # because the board was real. Fill in exactly the missing
-            # refdes' pins from the SAME synthesized-or-real merge point
-            # `_drc_pads`/DRC already uses (`pads_for_ir` -> `pad_geometry`)
-            # so those pads carry `synthesized: True` and export_fab's
-            # refusal actually fires. `placed_pin_ids` replays
-            # `pads_for_ir`'s own "skip an unplaced pin" filter so the
-            # zip stays index-aligned without a second geometry pass.
-            footprints_by_refdes = pcb_session.footprints_by_refdes(
-                ir,
-                footprints,
-                local_footprints_by_name=local_footprints,
-                local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(
-                    graph
-                ),
+        # `board_pads` (module docstring, verbatim) "contributes nothing"
+        # for an instance with no cached footprint, and — per PIN — nothing
+        # for a design pin whose name never joins the cached footprint's
+        # `pin_map` (gr346009: a pre-symbol-name sink wired OUT0..63 against
+        # a cache row naming its pins differently). Left as-is either gap
+        # silently dropped those pads from the fab set ENTIRELY rather than
+        # marking them synthesized: the board came out looking clean
+        # because export_fab's synthesized-pad check saw NOTHING to refuse,
+        # not because the geometry was real. So coverage is decided per
+        # placed PIN, never per instance: every placed pin `board_pads` did
+        # not produce is filled in from the SAME synthesized-or-real merge
+        # point `_drc_pads`/DRC already uses (`pads_for_ir` ->
+        # `pad_geometry`), so those pads carry `synthesized: True` and
+        # export_fab's refusal actually fires.
+        covered = {(str(p.get("refdes")), str(p.get("pin"))) for p in pads}
+        footprints_by_refdes = pcb_session.footprints_by_refdes(
+            ir,
+            footprints,
+            local_footprints_by_name=local_footprints,
+            local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
+        )
+        ir_pads = pcb_realize.pads_for_ir(ir, layer_names, footprints_by_refdes)
+        unjoined: dict[str, int] = {}
+        filled: list[dict[str, Any]] = []
+        for pad in ir_pads:
+            key = (str(pad["refdes"]), str(pad["pin"]))
+            if key in covered:
+                continue
+            filled.append(pad)
+            if key[0] not in missing:
+                unjoined[key[0]] = unjoined.get(key[0], 0) + 1
+        pads = pads + filled
+        if unjoined:
+            named = sorted(unjoined)
+            warnings.append(
+                f"{sum(unjoined.values())} placed pin(s) of {len(unjoined)} "
+                "part(s) have a cached footprint whose pin names do not join "
+                "the design's — those pads are SYNTHESIZED (bounds, not the "
+                "real part): "
+                + ", ".join(f"{r} ({unjoined[r]})" for r in named[:8])
+                + ("…" if len(named) > 8 else "")
+                + " (rename the pins to the footprint's pin_map names)"
             )
-            ir_pads = pcb_realize.pads_for_ir(ir, layer_names, footprints_by_refdes)
-            placed_pin_ids = [
-                pid for pid in range(ir.n_pins) if pcb_ir.pin_point(ir, pid) is not None
-            ]
-            missing_set = set(missing)
-            pads = pads + [
-                pad
-                for pid, pad in zip(placed_pin_ids, ir_pads, strict=True)
-                if str(ir.instance_refdes[int(ir.pin_instance[pid])]) in missing_set
-            ]
         if not pads:
             # No placed instance contributed a pad at all (nothing above
             # could have added one either — `missing` would itself be
@@ -2033,6 +2044,23 @@ class PcbHandler(Handler):
             lcsc: self.store.part_footprint_get(lcsc)
             for lcsc in sorted({str(i["part_lcsc"]).strip().upper() for i in catalog})
         }
+        # Per PIN, not per cache row: a cached footprint whose pin names do
+        # not join the design's still leaves those pins synthesized
+        # (gr346009 — dogfood-1 read "synthesized: no" with 56 synthesized
+        # pins). Same merge point DRC and the gerber view use.
+        graph = self.store.pcb_graph(ref_id)
+        ir = self._build_ir(ref_id, graph)
+        geoms = pcb_realize.pad_geometry(
+            ir,
+            pcb_session.footprints_by_refdes(ir, self.store.pcb_footprints_for(ref_id)),
+        )
+        synth_by_refdes: dict[str, list[int]] = {}
+        for pid, geom in enumerate(geoms):
+            refdes = str(ir.instance_refdes[int(ir.pin_instance[pid])])
+            tally = synth_by_refdes.setdefault(refdes, [0, 0])
+            tally[1] += 1
+            if geom.synthesized:
+                tally[0] += 1
         rows = []
         n_cached = 0
         for i in sorted(catalog, key=lambda x: str(x["refdes"])):
@@ -2041,6 +2069,13 @@ class PcbHandler(Handler):
             if row is not None:
                 n_cached += 1
             summary = self._footprint_summary_row(lcsc, row, error=None)
+            n_synth, n_pins = synth_by_refdes.get(str(i["refdes"]), [0, 0])
+            if row is None:
+                synthesized = "yes"
+            elif n_synth == 0:
+                synthesized = "no"
+            else:
+                synthesized = f"{n_synth}/{n_pins} pins"
             rows.append(
                 {
                     "refdes": str(i["refdes"]),
@@ -2048,7 +2083,7 @@ class PcbHandler(Handler):
                     "cached": summary["cached"],
                     "source": summary["source"],
                     "n_pads": summary["n_pads"],
-                    "synthesized": "no" if row is not None else "yes",
+                    "synthesized": synthesized,
                 }
             )
         head = (

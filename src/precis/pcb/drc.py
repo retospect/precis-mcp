@@ -422,8 +422,8 @@ def _tagged_pads(model: dict[str, Any]) -> list[dict[str, Any]]:
 
 def clearance_pairs_indexed(
     model: dict[str, Any], *, required_mm: float
-) -> list[tuple[int, int, float]]:
-    """``(item_i, item_j, gap_mm)`` for every same-layer, different-net
+) -> list[tuple[int, int, float, str]]:
+    """``(item_i, item_j, gap_mm, layer)`` for every same-layer, different-net
     copper-item pair (tracks/vias/pours/PADS) whose true edge-to-edge gap
     is below ``required_mm`` — the STRtree-accelerated engine. Indices are
     positions in :func:`_clearance_items`'s combined list —
@@ -496,9 +496,9 @@ def clearance_pairs_indexed(
     for local_i, (_src, _net, layer, _poly) in enumerate(entries):
         by_layer.setdefault(layer, []).append(local_i)
 
-    out: list[tuple[int, int, float]] = []
+    out: list[tuple[int, int, float, str]] = []
     seen_src: set[tuple[int, int]] = set()
-    for locals_ in by_layer.values():
+    for layer, locals_ in by_layer.items():
         if len(locals_) < 2:
             continue
         layer_polys = [entries[i][3] for i in locals_]
@@ -521,7 +521,7 @@ def clearance_pairs_indexed(
                 gap = poly_i.distance(poly_j)
                 if gap < required_mm - _EPS:
                     seen_src.add(src_key)
-                    out.append((src_key[0], src_key[1], gap))
+                    out.append((src_key[0], src_key[1], gap, layer))
     return out
 
 
@@ -595,7 +595,7 @@ def check_clearance(
     pairs = clearance_pairs_indexed(model, required_mm=query_radius)
     items = _clearance_items(model)
     findings: list[DrcFinding] = []
-    for i, j, gap in pairs:
+    for i, j, gap, layer in pairs:
         a, b = items[i], items[j]
         required = house
         if net_rules:
@@ -613,9 +613,14 @@ def check_clearance(
         if result is None:
             continue
         severity, margin = result
+        # The layer the pair actually met on — never `a["layer"]`: a via
+        # (or THT pad) spans several layers and its row's nominal `layer`
+        # is F.Cu regardless, so a via against a bottom-side pad used to
+        # read "on F.Cu" while via_pad_keepout said B.Cu for the same
+        # pair (gr345858).
         where = (
             f"{a.get('ctype')}[{a.get('net')}] <-> {b.get('ctype')}[{b.get('net')}] "
-            f"on {a.get('layer')}"
+            f"on {layer}"
         )
         findings.append(
             DrcFinding(

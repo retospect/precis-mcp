@@ -190,6 +190,26 @@ def test_a_swapped_fragments_own_scripts_still_run(
     assert "ranScriptSrcs" in shell.text
 
 
+def test_pane_swap_initialises_alpine_exactly_once(client: TestClient) -> None:
+    """gr345400: a bare ``innerHTML`` + ``initTree`` initialises every
+    x-data component in the fragment twice (Alpine's own MutationObserver
+    queues the same nodes). Every pane load goes through ``swapPane``,
+    which pauses the observer around the replace (``mutateDom``) and runs
+    the old tree's cleanups first (``destroyTree``) — smartdraft's fix for
+    gr335590."""
+    shell = client.get("/nanopub").text
+    assert "const swapPane" in shell
+    assert "window.Alpine.destroyTree(pane)" in shell
+    assert "window.Alpine.mutateDom(() => { pane.innerHTML = html; })" in shell
+    # No pane assigns innerHTML and then calls afterSwap by hand any more.
+    assert "pane.innerHTML = html; afterSwap(pane)" not in shell
+    assert shell.count("swapPane(pane, html)") == 2
+    # The failure fallbacks go through the same door (reviewer finding on
+    # gr345400: a failed reload leaked the previous pane's Alpine scope).
+    assert shell.count('swapPane(pane, \'<p class="np-hint">') == 2
+    assert "pane.innerHTML = '<p" not in shell
+
+
 def test_hub_page_shows_state_and_action(
     client: TestClient, runtime_with_store
 ) -> None:

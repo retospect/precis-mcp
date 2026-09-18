@@ -169,6 +169,35 @@ def _session_cookie_value(headers: dict[bytes, bytes]) -> str | None:
     return morsel.value if morsel is not None else None
 
 
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _remote_addr(scope: Scope, headers: dict[bytes, bytes]) -> str:
+    """The client address for the auth log and the per-address lockout.
+
+    In production precis-web sits behind ``tailscale serve``/``funnel``
+    on the same host, so the ASGI ``client`` tuple is the loopback proxy
+    for *every* caller — keyed on that, the address bucket would be one
+    global lockout. The proxy appends the real client to
+    ``X-Forwarded-For``, so when the peer IS loopback the LAST entry of
+    that header (the hop the trusted local proxy added — earlier entries
+    are whatever the client sent) is the address. A non-loopback peer
+    (local dev, a direct bind) is taken as-is and the header ignored: an
+    attacker-supplied ``X-Forwarded-For`` must never pick the bucket.
+    ``"-"`` when nothing is known — the caller then skips the address
+    bucket rather than lumping every unknown peer together.
+    """
+    client = scope.get("client")
+    host = str(client[0]) if client else ""
+    if host in _LOOPBACK:
+        raw = headers.get(b"x-forwarded-for")
+        if raw:
+            forwarded = raw.decode("latin-1", "replace").split(",")[-1].strip()
+            if forwarded:
+                return forwarded
+    return host or "-"
+
+
 #: Methods that don't change state, and so don't need the cross-site
 #: check. HEAD/OPTIONS ride along with GET.
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -240,14 +269,131 @@ class CredentialCache:
         self._entries.clear()
 
 
+#: Sliding-window lockout for failed credential presentations (gr343746).
+#: ``_LOCKOUT_FAILURES`` 401s for one login inside ``_LOCKOUT_WINDOW``
+#: seconds locks that login for the rest of the window — 429 before any
+#: scrypt is spent. The per-ADDRESS bucket is the wide net for a run that
+#: rotates logins, so its threshold is deliberately several times higher:
+#: one person mistyping their password must never lock out everyone who
+#: shares their address (or, when the address can't be resolved, the
+#: whole site). Process-local, like the credential cache: a web restart
+#: forgets it, which is fine (the goal is to stop a stuffing run from
+#: getting a free scrypt-bounded rate, not to persist a ban).
+_LOCKOUT_FAILURES = 10
+_LOCKOUT_ADDR_FAILURES = 50
+_LOCKOUT_WINDOW = 15 * 60.0
+#: Distinct keys the tracker holds before evicting the stalest — every
+#: failed attempt inserts an attacker-chosen login string, so growth must
+#: be bounded (same reason ``CredentialCache`` has ``_CACHE_MAX``).
+_LOCKOUT_MAX_KEYS = 4096
+#: One "still locked" warning per key per this many seconds — a locked
+#: key that keeps hammering shouldn't fill the log at the attacker's rate.
+_LOCKED_LOG_EVERY = 60.0
+
+
+class FailureTracker:
+    """Per-login and per-address sliding window of failed credentials.
+
+    ``record`` after every 401 on a *presented* credential (Basic header
+    or session cookie); ``locked_for`` before verifying one, so a locked
+    key is refused ahead of the scrypt. A success ``clear``s the login's
+    window (not the address's — a shared NAT address may carry both a
+    legitimate user and the run targeting them).
+    """
+
+    def __init__(
+        self,
+        *,
+        failures: int = _LOCKOUT_FAILURES,
+        addr_failures: int = _LOCKOUT_ADDR_FAILURES,
+        window: float = _LOCKOUT_WINDOW,
+        maxsize: int = _LOCKOUT_MAX_KEYS,
+    ) -> None:
+        self._failures = failures
+        self._addr_failures = addr_failures
+        self._window = window
+        self._maxsize = maxsize
+        self._hits: dict[str, list[float]] = {}
+        self._last_locked_log: dict[str, float] = {}
+
+    def _limit(self, key: str) -> int:
+        return self._addr_failures if key.startswith("addr:") else self._failures
+
+    def _live(self, key: str, now: float) -> list[float]:
+        hits = [t for t in self._hits.get(key, ()) if t > now - self._window]
+        if hits:
+            self._hits[key] = hits
+        else:
+            self._hits.pop(key, None)
+        return hits
+
+    def record(self, *keys: str) -> None:
+        now = time.monotonic()
+        for key in keys:
+            hits = self._live(key, now)
+            hits.append(now)
+            self._hits[key] = hits
+        if len(self._hits) > self._maxsize:
+            self._evict(now)
+
+    def _evict(self, now: float) -> None:
+        """Drop expired windows, then the stalest keys, down to ``maxsize``.
+        Bounded memory against a run that presents a fresh bogus login per
+        request; a key evicted early only means that login's count restarts
+        — never that a live lock lifts on a key still being hammered (its
+        window is the freshest and survives)."""
+        for key in list(self._hits):
+            self._live(key, now)
+        overflow = len(self._hits) - self._maxsize
+        if overflow > 0:
+            stalest = sorted(self._hits, key=lambda k: self._hits[k][-1])[:overflow]
+            for key in stalest:
+                self._hits.pop(key, None)
+                self._last_locked_log.pop(key, None)
+
+    def clear(self, key: str) -> None:
+        self._hits.pop(key, None)
+        self._last_locked_log.pop(key, None)
+
+    def locked_for(self, *keys: str) -> float:
+        """Seconds until the earliest-unlocking key among *keys* frees up,
+        or ``0.0`` when none is locked."""
+        now = time.monotonic()
+        retry = 0.0
+        for key in keys:
+            hits = self._live(key, now)
+            limit = self._limit(key)
+            if len(hits) >= limit:
+                # The window slides: the lock lifts when the oldest hit
+                # that still counts ages out.
+                retry = max(retry, hits[-limit] + self._window - now)
+        return retry
+
+    def should_log_locked(self, key: str) -> bool:
+        now = time.monotonic()
+        last = self._last_locked_log.get(key)
+        if last is not None and now - last < _LOCKED_LOG_EVERY:
+            return False
+        self._last_locked_log[key] = now
+        return True
+
+
 class AuthError(Exception):
     """Internal signal carrying the status + body the gate should emit."""
 
-    def __init__(self, status: int, detail: str, *, challenge: bool = False) -> None:
+    def __init__(
+        self,
+        status: int,
+        detail: str,
+        *,
+        challenge: bool = False,
+        retry_after: float | None = None,
+    ) -> None:
         super().__init__(detail)
         self.status = status
         self.detail = detail
         self.challenge = challenge
+        self.retry_after = retry_after
 
 
 def parse_basic_header(value: str | None) -> tuple[str, str] | None:
@@ -434,6 +580,7 @@ class BasicAuthMiddleware:
         self.app = app
         self.cache = CredentialCache()
         self.sessions = SessionTokens()
+        self.failures = FailureTracker()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -449,6 +596,12 @@ class BasicAuthMiddleware:
         creds = parse_basic_header(raw.decode("latin-1") if raw else None)
         store = self._store(scope)
         fresh_cookie: str | None = None
+        remote = _remote_addr(scope, headers)
+        # An unresolvable peer is not one bucket — it is no bucket.
+        addr_keys = (f"addr:{remote}",) if remote != "-" else ()
+        # The login this request is vouching for — what a 401 is logged
+        # and counted against. None until a credential is parsed.
+        presented: str | None = None
 
         try:
             import anyio
@@ -459,6 +612,37 @@ class BasicAuthMiddleware:
             if store is None:
                 raise AuthError(503, "precis-web has no database connection")
             session_login = self.sessions.verify(_session_cookie_value(headers))
+            presented = creds[0] if creds is not None else session_login
+            if presented is not None:
+                # The lockout key is the CANONICAL login (the roster's
+                # lower+strip form), so case variants of one login share
+                # one bucket and a success clears the bucket it was
+                # counted under. %r in the log lines below escapes control
+                # characters, so a crafted login can't forge a second log
+                # record; the cap keeps one request from writing a
+                # kilobyte per line.
+                presented = normalize_login(presented)[:128]
+            if presented is not None:
+                # Locked keys are refused before the row read and the
+                # scrypt — the whole point of the counter (gr343746).
+                retry = self.failures.locked_for(f"login:{presented}", *addr_keys)
+                if retry > 0:
+                    for key in (f"login:{presented}", *addr_keys):
+                        if self.failures.should_log_locked(key):
+                            log.warning(
+                                "precis-web auth: locked out login=%r from %s "
+                                "(too many failures in %.0f s) — retry in %.0f s",
+                                presented,
+                                remote,
+                                _LOCKOUT_WINDOW,
+                                retry,
+                            )
+                            break
+                    raise AuthError(
+                        429,
+                        "too many failed sign-in attempts — try again later",
+                        retry_after=retry,
+                    )
             if creds is not None:
                 # Basic wins when both are presented: it re-verifies the
                 # password, and (re)mints the cookie when the one sent is
@@ -486,8 +670,25 @@ class BasicAuthMiddleware:
                 await anyio.to_thread.run_sync(lambda: require_roster(store))
                 raise AuthError(401, "authentication required", challenge=True)
         except AuthError as exc:
+            if exc.status == 401 and presented is not None:
+                # A rejected *presented* credential (unknown login, disabled
+                # account, wrong password, stale cookie) — the one event a
+                # stuffing run leaves behind. The bare challenge (no
+                # credential at all) is every first page load and is not
+                # logged. Bounded per key by the lockout: at most
+                # _LOCKOUT_FAILURES lines per window, then one per minute.
+                log.warning(
+                    "precis-web auth: 401 %s for login=%r from %s (%s)",
+                    exc.detail,
+                    presented,
+                    remote,
+                    "basic" if creds is not None else "cookie",
+                )
+                self.failures.record(f"login:{presented}", *addr_keys)
             await _send_error(send, exc, websocket=scope["type"] == "websocket")
             return
+        if creds is not None:
+            self.failures.clear(f"login:{user.login}")
 
         scope.setdefault("state", {})
         scope["state"]["web_user"] = user
@@ -560,6 +761,8 @@ async def _send_error(send: Send, exc: AuthError, *, websocket: bool = False) ->
     headers["content-length"] = str(len(body))
     if exc.challenge:
         headers["www-authenticate"] = f'Basic realm="{REALM}", charset="UTF-8"'
+    if exc.retry_after is not None:
+        headers["retry-after"] = str(max(1, int(exc.retry_after + 0.999)))
     start: Message = {
         "type": "http.response.start",
         "status": exc.status,
@@ -575,6 +778,7 @@ __all__ = [
     "AuthError",
     "BasicAuthMiddleware",
     "CredentialCache",
+    "FailureTracker",
     "SessionTokens",
     "authenticate",
     "authorize_session_login",

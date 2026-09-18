@@ -17,7 +17,11 @@ Origin/Referer mismatch on a state-changing request → 403 (Basic's
 ambient header carries no ``SameSite`` CSRF defense). A signed
 ``SameSite=Lax`` session cookie rides alongside Basic (minted on
 Basic-authenticated responses, accepted as an alternative) because Safari
-won't replay Basic credentials into iframe subnavigations. Clickjack
+won't replay Basic credentials into iframe subnavigations. Every 401 on a
+*presented* credential logs login + peer address, and ``FailureTracker``
+locks a login or an address after 10 failures in 15 min (429 +
+``Retry-After``, refused before the scrypt); a success clears the login's
+window only. Clickjack
 defense is ``security_headers.py`` (outermost, rides the 401 too):
 framing is same-origin, not ``DENY``/``'none'`` (the UI frames its own
 PDF.js viewer). ``PRECIS_WEB_AUTH=off`` disables the gate — local dev

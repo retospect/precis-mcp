@@ -1056,11 +1056,13 @@ def test_footnote_mode_hub_renders_rich_claim_footnote(store) -> None:
     assert "Pd/C catalyzes Suzuki coupling" in out  # the nanopub statement
     assert r"\textbf{Original report}" in out and "(2001)" in out
     assert r"\textbf{Follow-up study}" in out and "(2005)" in out
-    assert origin_pc in out and "pc9002" in out
-    # The held grounding chunk's FULL passage is quoted under its handle;
+    # gr345703: internal chunk handles never reach a reader-facing export —
+    # the passage is labelled by ordinal, not by ``pc<id>``.
+    assert origin_pc not in out and "pc9002" not in out
+    # The held grounding chunk's FULL passage is quoted under its label;
     # a handle this host has no chunk for quotes nothing (no empty shell).
-    assert "Coupling proceeds at room temperature." in out
-    assert "pc9002: ``''" not in out
+    assert "\\emph{excerpt: ``Coupling proceeds at room temperature.''}" in out
+    assert "excerpt: ``''" not in out
     assert r"\cite{latxh01}" in out and r"\cite{latxh02}" in out
     assert set(ctx.cited) == {"latxh01", "latxh02"}
 
@@ -1193,7 +1195,9 @@ def test_footnote_adjacent_quotes_label_contiguous_live_fallback(store) -> None:
 
     out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
 
-    assert f"{pc1}" in out and f"{pc2}" in out
+    assert f"{pc1}" not in out and f"{pc2}" not in out
+    assert "excerpt 1: ``First passage text.''" in out
+    assert "excerpt 2: ``Second passage text.''" in out
     assert "(contiguous excerpt)" in out
     assert "(non-contiguous excerpts)" not in out
 
@@ -1210,9 +1214,52 @@ def test_footnote_non_adjacent_quotes_label_non_contiguous_live_fallback(
 
     out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
 
-    assert f"{pc1}" in out and f"{pc2}" in out
+    assert f"{pc1}" not in out and f"{pc2}" not in out
     assert "(non-contiguous excerpts)" in out
     assert "(contiguous excerpt)" not in out
+
+
+def test_footnote_excerpts_read_in_paper_order_with_doi_and_deep_links(store) -> None:
+    """gr345703: passages are numbered in READING order (chunk ``ord``
+    ascending — the prod footnote printed pc35909 before pc35908), the
+    paper line carries its DOI URL, and each frozen passage gets a
+    text-fragment deep link built from the signed ``searchSnip`` — the
+    locators a third party can act on. Chunk handles stay out entirely."""
+    hub, paper, pc1, pc2 = _two_chunk_hub(store, ord2=1)
+    store.set_ref_identifier(paper, "doi", "10.1021/nn303526r")
+    # Attach order is pc1 then pc2 (ord 0, 1); reverse the edge order the
+    # footnote sees by re-attaching pc2 first on a fresh hub would need a
+    # second fixture — instead assert on the rendered order directly.
+    chunk1_id, chunk2_id = int(pc1[2:]), int(pc2[2:])
+    row = store.nanopub_create_publish_row(hub)
+    assert store.nanopub_approve(
+        row.id,
+        approved_title="Frozen claim sentence.",
+        claim_sha="0" * 64,
+        aida_uri="http://purl.org/aida/y",
+        grounding={
+            "passages": [
+                {"chunk_id": chunk2_id, "snip": "second-passage-text"},
+                {"chunk_id": chunk1_id, "snip": "first-passage-text"},
+            ]
+        },
+    )
+
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
+
+    assert pc1 not in out and pc2 not in out
+    first = out.index("excerpt 1: ``First passage text.''")
+    second = out.index("excerpt 2: ``Second passage text.''")
+    assert first < second
+    assert "\\href{https://doi.org/10.1021/nn303526r}" in out
+    assert (
+        "\\href{https://doi.org/10.1021/nn303526r\\#:\\string~:text=first-passage-text}"
+        in out
+    )
+    assert (
+        "\\href{https://doi.org/10.1021/nn303526r\\#:\\string~:text=second-passage-text}"
+        in out
+    )
 
 
 def test_footnote_single_quote_carries_no_contiguity_label(store) -> None:
@@ -1243,7 +1290,7 @@ def test_footnote_single_quote_carries_no_contiguity_label(store) -> None:
 
     out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
 
-    assert pc in out
+    assert pc not in out and "excerpt: ``Only passage text.''" in out
     assert "contiguous excerpt" not in out  # neither the singular nor plural form
 
 
