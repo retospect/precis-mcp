@@ -70,6 +70,10 @@ answer.
 **Tests.** view returns rows filtered by each param; cap honoured; empty
 window says so; the deny list still blocks nothing on `get`.
 
+- follow-up: `worker_logs` has only a partial level index
+  (WARNING/ERROR); `/logs?level=INFO` without host/handler scans
+  unindexed — add a btree on `ts` if it shows in pg_stat_statements.
+
 ### Piece B — "Needs a human" bullets become `waiting-for:reto` todos
 
 **Now.** The section is prose the model writes and nothing parses

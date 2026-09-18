@@ -8,6 +8,7 @@ answers:
   - how do I check what jobs are currently running or queued?
   - how do I cancel a job that's taking too long?
   - how do I submit a job idempotently so a retry doesn't double-run it?
+  - how do I read worker_logs / what is the cluster doing right now?
 applies-to: get/search/put/tag (kind='job')
 tags: workflow, verbs, troubleshooting
 kinds: job, todo
@@ -342,6 +343,30 @@ you've decided. This is the job-level sibling of the todo-level
 `ask-user`/`ask-user:<question>` open tag a dispatched agent tags on
 its own todo to yield the same way — see `precis-todo-tree-help`,
 `precis-decomposition-help` for that path.
+
+## Read raw worker logs
+## What is the cluster actually doing right now?
+## Confirm a pass ran / failed without Bash
+
+```python
+get(kind='job', id='/logs')
+# → last 24h, WARNING+, newest first — the default "what's wrong?" view
+
+get(kind='job', id='/logs?handler=dispatch&since=24&level=WARNING')
+# handler= takes either the short pass name ('dispatch', 'embed', ...)
+# or the full dotted logger ('precis.workers.dispatch')
+
+get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&limit=50')
+# host=, q= (substring on message), since= (hours, max 168),
+# limit= (default 100, cap 200) all compose
+```
+
+Read-only view over the centralised `worker_logs` table (migration
+0015) — the same table an operator reads via `precis logs` on the
+CLI. Header line states the resolved filter + UTC cutoff; each row is
+`ts host handler LEVEL message`; the trailer says `N rows shown of M
+matching`. No queryable surface exists for this table anywhere else
+in the agent surface (no Bash, no raw SQL) — this is it.
 
 ## See also
 

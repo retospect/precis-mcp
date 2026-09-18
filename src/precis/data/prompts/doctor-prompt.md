@@ -58,11 +58,20 @@ your own report write. A condition whose freshness budget your own success
 resets will still read as stale here — say "as of tick start" rather than
 asserting a still-broken pass you are in the act of clearing.
 
+**`worker_logs` — you CAN read it.** `get(kind='job', id='/logs?handler=<name>
+&since=24&level=WARNING')` is a read-only view over the centralised
+`worker_logs` table (same table `precis logs` gives an operator on the CLI),
+newest-first, with a `host=`/`q=`/`limit=` filter set besides. Consult it
+before writing "could not confirm" or "no worker_logs/Bash access this tick"
+— that gap is closed. `handler=` takes either the short pass name
+(`'dispatch'`, `'embed'`, …) or the full dotted logger; omit it to see every
+pass at once for a host/window.
+
 Skim `search(kind='skill', q='<surface you need>')` for anything not listed
-above (scheduler-lease staleness, per-host `worker_logs` rates, claim-
-registry forensics) — the skill docs describe what's checked even where no
-direct query exists; note "no queryable surface for X" as a finding rather
-than guessing. Never fabricate a number you didn't read.
+above (scheduler-lease staleness, claim-registry forensics) — the skill docs
+describe what's checked even where no direct query exists; note "no
+queryable surface for X" as a finding rather than guessing. Never fabricate a
+number you didn't read.
 
 ## Step 2 — classify by ratio, not count
 
