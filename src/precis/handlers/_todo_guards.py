@@ -67,10 +67,10 @@ MAX_DEPTH = 10
 #: behaviour). The 2×2 space maps the 3 real tiers plus one unused
 #: combination:
 #:
-#:   rotation_root=True,  worker_mintable=False  → strategic (owner-only root)
+#:   rotation_root=True,  worker_mintable=True   → strategic (owner-only root; workers mint under it)
 #:   rotation_root=False, worker_mintable=False  → tactical  (owner-only, non-root)
 #:   rotation_root=False, worker_mintable=True   → subtask   (default; worker-mintable)
-#:   rotation_root=True,  worker_mintable=True   → (unused)
+#:   rotation_root=True,  worker_mintable=False  → (unused)
 #:
 #: ``level:recurring`` is dropped outright — it was redundant with
 #: ``meta.schedule`` (Slice 4); readers now key on schedule presence
