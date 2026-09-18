@@ -560,6 +560,52 @@ Decision (Reto, 2026-09-13): build now and dogfood. Board
 
 ## Open questions / decisions log
 
+**Rulings 2026-09-18 (Reto, walked one by one) — five open items closed;
+each is now a build item, not a question:**
+
+1. **Stub-vs-electrode clearance → (b) rule-derived corridor.** Chamfer
+   only the plaza-adjacent corners back until the escape corridor is
+   `trace_width + 2 × trace_spacing` from the fab capability row
+   (0.27 mm at JLC 4-layer), and re-solve the zigzag wall against that
+   chamfer. `gap` stays 0.10 mm everywhere else; plaza-adjacent
+   electrodes lose a small corner triangle (ledger-visible). Rejected:
+   raising `gap` to 0.27 (changes the droplet physics) and accepting the
+   finding / tighter fab house. The earlier "widen the margin" regression
+   was a constant bump without re-solving the wall — this is the re-solve.
+2. **9×9 sink packing → balanced by chain order.** `sink_grid.per_tiles`
+   (square cell blocks) is replaced by `channels_per_sink` (default = the
+   part's 64); sink count = ceil(driven / channels_per_sink), electrodes
+   assigned in serpentine chain order in equal shares (72 → 36 + 36), each
+   sink placed under its own share. Same rule at any size. Rejected:
+   greedy 64 + 8 (one chip at 12 %, all escapes converge), trimming to 64
+   driven (not the 9×9).
+3. **HV separation → per-copper-class IPC-2221B Table 6-1 rows, valid
+   for ANY actuation pattern.** Electrode gaps (top, under parylene +
+   oil) stay advisory — the dielectric stack owns them. Plaza internals
+   and B.Cu escapes / sink fan (under mask, coated) take the external-
+   coated row (B4); inner-layer heaters (slice 3) take the internal row
+   (B1). Derived from `drive_voltage_v` + layer + coated, replacing the
+   0.002 mm/V placeholder slope. The table values quoted in the session
+   (B4 ≈ 0.4 mm, B1 ≈ 0.25 mm at 101–300 V) are FROM MEMORY — verify
+   against the table before they land in `pcb_capabilities.json`.
+   Explicitly rejected: relying on sequential-neighbour switching (a
+   stuck droplet, a test pattern or a firmware bug puts any two
+   electrodes at full differential; a board rule must not depend on
+   software behaviour).
+4. **Top-plate terminal → no pogo pin at all.** The top plate is hinged
+   along one board edge with conductive copper tape (3M 1181 class): the
+   tape bridges the plate's ITO to a bare, mask-open ENIG landing strip
+   on the board edge AND is the hinge, so the plate folds open for
+   loading/cleaning. Generator: the THT "pogo" ring becomes a
+   `role: tape_land` strip (mask open, no paste, no drill) with a length
+   param (tape contact resistance scales with overlap). Rejected:
+   overhang + pogo, depth-milled pocket, spring clip.
+5. **U_TEMP → TI TMP117** (WSON-6 2×2 mm with exposed pad, ±0.1 °C,
+   4 addresses, ALERT). Board temperature under the array, not droplet
+   temperature — a heater-loop sensor. Intake: `op='footprint'` on the
+   chosen C-number, verify `view='footprints'` shows no synthesized pin;
+   the exposed pad needs paste/stencil care on B.Cu under the array.
+
 Decided 2026-09-13 (Reto): no via-in-pad anywhere (fab cost) → padless
 via plazas; plaza vias plain tented, maybe bare — no fill; sticker
 cut-file export deferred to a future laminar-laser/Cricut output tool;
@@ -1000,26 +1046,12 @@ Resolved 2026-09-14 (round 8, real per-pin positions + the routed dogfood):
 
 Still open:
 
-- **Which HV separation row applies**: adjacent-electrode gaps are
-  insulated by parylene/oil (advisory only), but plaza internals and
-  B.Cu escapes carry the full drive voltage (70–300 V PCB-class) under
-  soldermask/coating — pick the IPC-2221-style coated row and its
-  source, and decide whether sequential-neighbour switching (never full
-  differential across one gap?) is a claim we may rely on or not.
-- **Low-profile recessed through-hole pogo pin**: find the part for
-  the top-plate terminal (design-review item 1), and settle the
-  geometry — no pogo compresses to the ~100 µm gap, so "recessed"
-  means a depth-milled pocket in the board, or the pins contact an
-  overhanging region of the top plate outside the gasket; candidates
-  + LCSC numbers.
-- **Sink granularity and part choice**: which serial-chained HV switch
-  IC (e.g. HV507-class shift register), `sink_grid` density (one per
-  how many tiles?), whether the sink footprints are this generator's
-  emission or a sibling pre-place-route block, and how array pins bind
-  to switch-channel order along the chain (auto-assignment vs explicit
-  map) — decide with the block spec. (Strategy itself is decided:
-  distributed bottom routing, serial bus + switching on the bottom,
-  3 lower layers, local termination.)
+- **HV separation row, pogo pin, sink granularity/part**: RULED
+  2026-09-18 — see "Rulings 2026-09-18" at the top of this log (per-
+  class IPC rows / copper-tape hinge, no pogo / HV507 balanced by chain
+  order). What remains of the sink item is only how array pins bind to
+  switch-channel order along the chain (auto-assignment vs explicit
+  map) — decide with the block spec.
 - **Suppression-map schema**: how a CROSS-generator consumer (heater
   legs, spare GND) names and claims reserved slots is still part of the
   block-spec round. Round 2 shipped a slot-id scheme good enough for

@@ -290,6 +290,8 @@ def test_collapsed_worker_fix_lane_env_is_gated() -> None:
     grooms auto-fix gripes into fix_gripe todos
     (docs/backlog/dark-factory-arming.md, gripe 210007)."""
     armed = _render_collapsed_worker_fix_env(gateway=True, enabled=True)
+    # 367779ca arms the groomer + diagnose auto-promote on the same gate:
+    # both ride the fix lane, so an unarmed host renders neither.
     assert armed == {
         "PRECIS_FIX_WORK_DIR": "/Users/deploy/precis-fix-work",
         "PRECIS_FIX_REPO_DIR": "/Users/deploy/precis-fix-repo",
