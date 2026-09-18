@@ -854,6 +854,28 @@ class TestStoreOpsDirect:
         assert rows[0]["value_num"] == 80
         assert rows[0]["rxn_title"]
 
+    def test_precedent_count_on_zero_rxns_of_the_class(self, store: Any) -> None:
+        assert store.rxn_precedent_count("RXNO:0000024") == (0, 0)
+
+    def test_precedent_count_on_one_rxn_with_one_yield_row(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="rxn-a", rxn_smiles=_FISCHER, reaction_class="RXNO:0000024")
+        h.put(id="rxn-a", property="yield", value=80, unit="%")
+        assert store.rxn_precedent_count("RXNO:0000024") == (1, 1)
+
+    def test_precedent_count_on_two_rxns_of_the_class(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="rxn-a", rxn_smiles=_FISCHER, reaction_class="RXNO:0000024")
+        h.put(id="rxn-a", property="yield", value=80, unit="%")
+        h.put(id="rxn-a", property="yield", value=90, unit="%")
+        h.put(id="rxn-c", rxn_smiles="CCO.CCBr>>CCOCC", reaction_class="RXNO:0000024")
+        h.put(id="rxn-c", property="yield", value=70, unit="%")
+        h.put(id="rxn-b", rxn_smiles="CCN.CCCl>>CCNCC", reaction_class="RXNO:9999999")
+        h.put(id="rxn-b", property="yield", value=50, unit="%")
+        # 3 yield rows across 2 distinct rxns of RXNO:0000024 — rxn-b's row
+        # is a different class and must not be counted.
+        assert store.rxn_precedent_count("RXNO:0000024") == (3, 2)
+
 
 # ── wire-level: search(kind='rxn', reaction_class=…) through precis.tools.core
 # ---------------------------------------------------------------------------

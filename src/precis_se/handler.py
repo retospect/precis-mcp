@@ -113,6 +113,7 @@ from precis_se import fret, persist
 from precis_se import library as se_library
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
+from precis_se import precedent as se_precedent
 from precis_se import printing as se_printing
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
@@ -596,7 +597,9 @@ class SeHandler(Handler):
         if v == "sweep":
             return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "drc":
-            body = _render_drc(tree, _scenario_line(self.store, ref.id))
+            body = _render_drc(
+                tree, self.store, ref.id, _scenario_line(self.store, ref.id)
+            )
             try:
                 body += self._fdm_drc_pointer(tree)
             except se_printing.PrintUnsupported as exc:
@@ -1449,6 +1452,28 @@ def _materialize_states(
             except design_states.StateError as exc:
                 raise BadInput(f"declare_states: {exc}") from exc
         if node.pending_transitions is not None:
+            # Slice 5 (blocktree-library-build-plan.md): a 'reaction'
+            # transition's driver_ref is a claim about a bonded-state
+            # PRODUCT — the whole point of pointing it at an rxn slug is
+            # the precedent read (precis_se.precedent). A slug that does
+            # not resolve is refused here, loudly, in the same transaction
+            # as the rest of this edit — never stored as a dangling label.
+            for t in node.pending_transitions:
+                if t["driver_kind"] != "reaction":
+                    continue
+                slug = t["driver_ref"]
+                if not slug:
+                    raise BadInput(
+                        "declare_transitions: a driver_kind='reaction' "
+                        "transition needs driver_ref=<rxn slug> — "
+                        "put(kind='rxn', id=<slug>, rxn_smiles=...) first"
+                    )
+                if store.get_ref(kind="rxn", id=slug) is None:
+                    raise BadInput(
+                        f"declare_transitions: driver_ref {slug!r} does not "
+                        f"resolve to an rxn — put(kind='rxn', id={slug!r}, "
+                        "rxn_smiles=...) first"
+                    )
             transitions = [
                 design_states.Transition(
                     block_uid=uid,
@@ -1893,7 +1918,11 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
                             "from": t.from_state,
                             "to": t.to_state,
                             "driver_kind": t.driver_kind,
-                            "driver_ref": t.driver_ref or "—",
+                            "driver_ref": (
+                                f"rxn:{t.driver_ref}"
+                                if t.driver_kind == "reaction" and t.driver_ref
+                                else (t.driver_ref or "—")
+                            ),
                             "params": json.dumps(t.params) if t.params else "—",
                             "requires": json.dumps(t.requires) if t.requires else "—",
                         }
@@ -2473,15 +2502,24 @@ def _render_freedom(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
-def _render_drc(tree: SeTree, scenario_line: str = "") -> str:
+def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") -> str:
     """``view='drc'`` — the graph-tier report (:mod:`precis_se.drc`):
     findings under the filled-fraction header (same honesty rule as
     validate — a clean empty design is unfilled, not done) and the
     governing-scenario line (``scenario_line``, the design core rental —
     the handler resolves it; this stays store-free), then the DOF probe
     outcomes (including honest skips) and any stack-up problems' full
-    rows."""
+    rows.
+
+    ``se_drc.drc(tree)`` itself stays store-free by contract (its own
+    docstring says so); the joining-precedent findings
+    (:mod:`precis_se.precedent`, blocktree slice 5) need the store (an
+    rxn's ``reaction_class`` + precedent count, a foreign template's
+    design ref id) so they are read here, the one place in this render
+    that already has ``store``/``ref_id`` on hand, and appended AFTER
+    ``drc()``'s own findings — never inside it."""
     report = se_drc.drc(tree)
+    report.findings.extend(se_precedent.findings(store, tree, ref_id))
     fill_line = _fill_fraction_line(tree)
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"

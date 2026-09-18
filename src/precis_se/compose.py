@@ -45,7 +45,7 @@ from typing import Any
 from precis.design import states as design_states
 from precis.errors import BadInput, NotFound
 from precis_se import library, persist
-from precis_se.atomic.vocab import JOINING_HALVES, role_halves
+from precis_se.atomic.vocab import _complementary_pair, _joining_name
 from precis_se.library import (
     AttrResult,
     WantSpec,
@@ -524,29 +524,6 @@ def _stiffness_note(comp: Composition, unit: str) -> str | None:
             f"({bearer.handle})"
         )
     return f"stiff: Lp {bearer.lp:g} {unit} ≥ span ({bearer.handle})"
-
-
-def _joining_name(a: str, b: str) -> str:
-    for name, halves in JOINING_HALVES.items():
-        if {a, b} == set(halves):
-            return f" ({name})"
-    return ""
-
-
-def _complementary_pair(a_roles: set[str], b_roles: set[str]) -> tuple[str, str] | None:
-    """A ``(role on A, role on B)`` pair slice 3 lets bond — complementary
-    halves first, then a symmetric role both afford."""
-    for role in sorted(a_roles):
-        halves = role_halves(role)
-        if halves is None:
-            continue
-        other = halves[1] if halves[0] == role else halves[0]
-        if other in b_roles:
-            return role, other
-    for role in sorted(a_roles & b_roles):
-        if role_halves(role) is None:
-            return role, role
-    return None
 
 
 def _joining_note(comp: Composition) -> str | None:

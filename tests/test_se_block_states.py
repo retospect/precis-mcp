@@ -30,6 +30,7 @@ import precis_se
 from precis.design import states as design_states
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
+from precis.handlers.rxn import RxnHandler
 from precis.store import Store
 from precis_se import persist
 from precis_se.handler import SeHandler
@@ -277,7 +278,12 @@ def test_directed_transition_pair_survives_round_trip_with_different_params(
 ) -> None:
     """Forward and reverse are two rows, each carrying its own params — a
     ratchet's barriers differ by direction, and neither may collapse into
-    (or overwrite) the other."""
+    (or overwrite) the other. Slice 5: a ``driver_kind='reaction'`` entry
+    needs a minted rxn — ``click-cu1`` is put first, same as
+    ``tests/test_rxn.py``."""
+    RxnHandler(hub=Hub(store=store)).put(
+        id="click-cu1", rxn_smiles="CC(=O)O.OCC>>CC(=O)OCC.O"
+    )
     handler.put(
         id="ratchet1",
         text=json.dumps(
@@ -329,6 +335,94 @@ def test_directed_transition_pair_survives_round_trip_with_different_params(
     body = handler.get(id="ratchet1", view="block", args={"name": "pawl"}).body
     assert "## transitions" in body
     assert "0.3" in body and "1.8" in body
+    assert "rxn:click-cu1" in body
+
+
+# ── rxn-driven transitions (slice 5) ─────────────────────────────────────
+
+
+def test_reaction_transition_with_unknown_rxn_slug_is_refused_and_rolls_back(
+    handler: SeHandler, store: Store
+) -> None:
+    """A ``driver_kind='reaction'`` ``driver_ref`` that does not resolve
+    through ``store.get_ref(kind='rxn', ...)`` fails the whole edit — the
+    flush runs inside the same transaction as ``persist.save_tree``
+    (:func:`precis_se.handler._materialize_states`), so an unrelated,
+    individually-valid ``add_block`` bundled in the same call must not
+    land either."""
+    with pytest.raises(BadInput, match="declare_transitions") as exc:
+        handler.put(
+            id="rxnbad1",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "add_block",
+                            "name": "pawl",
+                            "envelope": "box:w0.01d0.01h0.01",
+                        },
+                        {
+                            "op": "declare_states",
+                            "block": "pawl",
+                            "states": [{"name": "loaded"}, {"name": "bonded"}],
+                        },
+                        {
+                            "op": "declare_transitions",
+                            "block": "pawl",
+                            "transitions": [
+                                {
+                                    "from_state": "loaded",
+                                    "to_state": "bonded",
+                                    "driver_kind": "reaction",
+                                    "driver_ref": "no-such-rxn",
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ),
+        )
+    msg = str(exc.value)
+    assert "no-such-rxn" in msg
+    assert store.get_ref(kind="se", id="rxnbad1") is None
+
+
+def test_reaction_transition_with_no_driver_ref_is_refused(
+    handler: SeHandler, store: Store
+) -> None:
+    with pytest.raises(BadInput, match="declare_transitions") as exc:
+        handler.put(
+            id="rxnnoref1",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {
+                            "op": "add_block",
+                            "name": "pawl",
+                            "envelope": "box:w0.01d0.01h0.01",
+                        },
+                        {
+                            "op": "declare_states",
+                            "block": "pawl",
+                            "states": [{"name": "loaded"}, {"name": "bonded"}],
+                        },
+                        {
+                            "op": "declare_transitions",
+                            "block": "pawl",
+                            "transitions": [
+                                {
+                                    "from_state": "loaded",
+                                    "to_state": "bonded",
+                                    "driver_kind": "reaction",
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ),
+        )
+    assert "driver_ref" in str(exc.value)
+    assert store.get_ref(kind="se", id="rxnnoref1") is None
 
 
 # ── requires — Decision 3's declared box ───────────────────────────────────
