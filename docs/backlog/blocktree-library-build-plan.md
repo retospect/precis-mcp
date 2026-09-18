@@ -266,7 +266,7 @@ apply.
 
 ---
 
-## Slice 5 — rxn-driven transitions + precedent DRC
+## Slice 5 — rxn-driven transitions + precedent DRC — **SHIPPED**
 
 The `bonded` state's geometry is the *product of a reaction*. Point the
 transition's `driver_ref` at a `rxn` slug, then the precedent read shipped
@@ -277,6 +277,10 @@ at what yield": `search(kind='rxn', property='yield', reaction_class=…)`.
 precedent** is flagged — the same "unprecedented step" signal
 `reaction-kind-and-synthesis-cost.md` already defines for routes. Not an
 error; a flag with the evidence count.
+
+**SHIPPED 2026-09-18** (4971b13e, gated with slice 6 in 6d1cf0b3):
+`src/precis_se/precedent.py`, `rxn_precedent_count`, write-time rxn
+resolution in the handler flush; tests `tests/test_se_precedent.py`.
 
 **Spec (2026-09-18).** Two vocabularies meet here and are NOT the same
 string: a port pair's joining *name* (`CuAAC`, `precis_se.atomic.vocab.
@@ -358,12 +362,18 @@ existing rxn slug; the DRC section lists the four rules in one paragraph.
 
 ---
 
-## Slice 6 — `realized-by` → `component`
+## Slice 6 — `realized-by` → `component` — **SHIPPED**
 
 Block → the purchasable thing. The edge already exists (`se` uses it), so this
 is wiring plus a `view` that answers "what do I order" by walking the
 instanced tree to purchasable leaves. Mirrors the BOM rollup, including its
 honesty line ("priced: N of M").
+
+**SHIPPED 2026-09-18** (6d1cf0b3, remote gate green): `src/precis_se/order.py`,
+`view='order'`, tests `tests/test_se_order.py`. Review-driven rulings now
+in the code: the honesty line counts templates while `priced` counts
+lines; a priced line with unresolved qty is unpriced; to-make lists leaf
+templates only.
 
 **Spec (2026-09-18, revised after the readiness pass).** `view='order'`
 on `get(kind='se')`, new module `src/precis_se/order.py`,
@@ -477,7 +487,7 @@ things:
 
 Slices 1 and 2 are shipped; in the event slice 1 took its own migration and
 slice 2 took none, its tables having ridden design-core's. 3–6 are
-independently shippable. **Do not bundle 7–9 into any of them** — a
+independently shippable (all six shipped as of 2026-09-18). **Do not bundle 7–9 into any of them** — a
 refactor or schema change that also alters behaviour cannot be verified by
 "the tests still pass", which is the whole reason the earlier blocktree work
 stayed behaviour-neutral.
