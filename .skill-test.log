@@ -1,0 +1,17 @@
+ Container precis-test-gleaming-toasting-nest-precis-dev-run-e54b3c2924a7 Creating 
+ Container precis-test-gleaming-toasting-nest-precis-dev-run-e54b3c2924a7 Created 
+/opt/venv/lib/python3.12/site-packages/pysbd/segmenter.py:66: SyntaxWarning: invalid escape sequence '\s'
+  for match in re.finditer('{0}\s*'.format(re.escape(sent)), self.original_text):
+/opt/venv/lib/python3.12/site-packages/pysbd/lang/arabic.py:29: SyntaxWarning: invalid escape sequence '\.'
+  txt = re.sub('(?<={0})\.'.format(am), '∯', txt)
+/opt/venv/lib/python3.12/site-packages/pysbd/lang/persian.py:29: SyntaxWarning: invalid escape sequence '\.'
+  txt = re.sub('(?<={0})\.'.format(am), '∯', txt)
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 61%]
+........................................................................ [ 81%]
+................................................................         [100%]
+352 passed in 4.14s

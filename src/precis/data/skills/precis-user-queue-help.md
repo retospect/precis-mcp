@@ -77,11 +77,12 @@ chat for "things the owner still has to do".
 
 ## Close an item once the person answered
 
-Record the answer in the item's details body (`text=` would replace
-the title), then release it:
+Record the answer in the item's details body, then release it. Use
+`edit` for the update: `put` with an `id=` on a todo does not update,
+it creates a fresh todo.
 
 ```python
-put(kind="todo", id=<N>, body="Answer: lift the tags on td1, td2; leave the rest.")
+edit(kind="todo", id=<N>, mode="replace", body="Answer: lift the tags on td1, td2; leave the rest.")
 tag(kind="todo", id=<N>, remove=["waiting-for:<user>"])   # real work → re-enters doable
 tag(kind="todo", id=<N>, add=["STATUS:done"])              # pure decision → done
 ```
