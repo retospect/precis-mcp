@@ -145,3 +145,9 @@ docs/codebase-map.md
 .ship.log
 .deploy-run.log
 .mutate-run.log
+
+# scripts/ship's gated-sha pin: the exact sha a FULL gate validated, so /go can
+# deploy THAT tree instead of re-resolving the branch name `main` (which a
+# sibling --quick ship may have moved meanwhile). Per-worktree, rewritten every
+# ship — state, not source.
+.ship-sha

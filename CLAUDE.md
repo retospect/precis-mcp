@@ -24,7 +24,9 @@ run. Squawk on new
 migration SQL stays host-side. `--remote --impacted` = opt-in local impacted
 pre-gate first; bare `--impacted` = legacy local-only gate). **`/go`** = ship
 with the full LOCAL suite + diff-coverage gate (changed src lines need
-tests) + `scripts/deploy`, plus a budgeted advisory mutation pass
+tests) + `scripts/deploy` of the **gated sha** (`--pinned`, never bare —
+bare re-resolves `main` and can ship an ungated sibling qland), plus a
+budgeted advisory mutation pass
 (`scripts/mutate-diff`). **`/qland`** = ungated burst-land
 (`scripts/ship --quick`: commit WIP → sync → squash-merge, NO gate) for when
 many trees are in flight — qland them one by one, then one

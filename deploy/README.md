@@ -27,6 +27,13 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    playbooks in order.
 5. Ongoing code pushes: `scripts/deploy [ref]` (wraps `redeploy-precis.yml`;
    ping-gate + report — see ["Canary-staged deploys"](#canary-staged-deploys-opt-in)).
+   `/go` does not use the bare form: it deploys the **gated sha**,
+   `scripts/deploy "$(cat .ship-sha)" --pinned`. Bare `scripts/deploy`
+   resolves the branch name `main` at deploy time, so a sibling `/qland`
+   landing between the gate and the deploy substitutes an ungated tree.
+   `--pinned` says the target is deliberately behind `origin/main`: it drops
+   that leg of the rollback guard only, keeps the currently-deployed-sha leg,
+   and refuses when no deploy-state marker exists.
 6. App secrets: once the web role is up, load API keys via the `/secrets`
    page or `precis secret set` — **not** the ansible vault (scope boundary:
    `inventory.example/group_vars/all/vault.yml.example`).

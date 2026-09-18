@@ -34,6 +34,17 @@
 # missing marker (first-ever deploy) is not a refusal. Deliberate rollback:
 # pass --force-rollback (anywhere in argv).
 #
+# --pinned (anywhere in argv): the target is deliberately behind origin/main.
+# /go pins the deploy to the sha its gate actually validated (scripts/ship
+# writes it to .ship-sha), because `main` is a BRANCH NAME resolved at deploy
+# time — a sibling --quick ship landing in between substitutes an ungated tree
+# for the gated one, and the deploy reports success over code nobody ran the
+# suite against. Being behind origin/main is therefore the expected steady
+# state, not a rollback, so --pinned drops that leg of the guard only; the
+# deployed-sha leg stays (it is the one that catches the real gr338201 shape)
+# and an absent marker refuses outright. Expect a nonzero deploy-lag footer
+# from the next scripts/ship: that count IS the ungated backlog on main.
+#
 # PRECIS_DEPLOY_EXTRA_VARS — optional extra `-e key=value` pairs passed through
 # to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
 # the gr172390 pass-1 diagnosis runbook). Playbook-run only, never persisted.
@@ -73,12 +84,17 @@ Usage:
   scripts/deploy                              # deploy main (default)
   scripts/deploy <ref>                        # deploy a branch/tag/sha
   scripts/deploy <old-sha> --force-rollback   # deliberate rollback
+  scripts/deploy "$(cat .ship-sha)" --pinned  # /go: deploy the GATED sha
   scripts/deploy --help | -h                  # this message; no reachability
                                                # check, no ansible, no ssh
 
 <ref> is a positional git ref (branch/tag/sha); default 'main'.
 --force-rollback bypasses the ancestor-sha rollback guard (gr338201) — use
 only for a deliberate rollback.
+--pinned says "this target is deliberately behind origin/main": it drops ONLY
+the origin/main leg of the rollback guard, keeps the currently-deployed-sha
+leg, and refuses outright when no deploy-state marker exists (fail closed —
+with no marker that leg has nothing to compare against).
 
 Notable env vars (see the header comment in this script for full docs):
   PRECIS_CLUSTER_DIR, PRECIS_DEPLOY_EXTRA_VARS, PRECIS_DEPLOY_ALLOW_STALE,
@@ -95,10 +111,12 @@ for _a in "$@"; do
 done
 
 FORCE_ROLLBACK=0
+PINNED=0
 _POSITIONAL=()
 for _a in "$@"; do
     case "$_a" in
         --force-rollback) FORCE_ROLLBACK=1 ;;
+        --pinned) PINNED=1 ;;
         *) _POSITIONAL+=("$_a") ;;
     esac
 done
@@ -244,6 +262,24 @@ if [[ -z "${PRECIS_DEPLOY_ALLOW_STALE:-}" ]]; then
     if [[ -n "$_remote" ]] && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_remote" HEAD; then
         die "local tree does not contain origin/${REF} ($(git -C "$REPO_ROOT" rev-parse --short HEAD) vs ${_remote:0:8}) — templates would render stale. Sync this checkout (git merge origin/${REF}) or set PRECIS_DEPLOY_ALLOW_STALE=1."
     fi
+    # REF given as a literal sha (or a tag): `origin/<sha>` does not resolve, so
+    # the branch comparison above no-ops ENTIRELY and a sha deploy gets no skew
+    # check at all — the hole the gr338201 header calls out, and now the normal
+    # path since /go pins the gated sha. Compare the target commit against this
+    # checkout directly instead: ansible renders deploy/ templates from HEAD
+    # while the venvs install the target, so HEAD must at minimum CONTAIN the
+    # target. Any divergence beyond that is said out loud rather than refused —
+    # deploying an older-than-HEAD sha is exactly what --pinned is for.
+    if [[ -z "$_remote" ]]; then
+        _fr_target="$(git -C "$REPO_ROOT" rev-parse -q --verify "${REF}^{commit}" 2>/dev/null || true)"
+        _fr_head="$(git -C "$REPO_ROOT" rev-parse -q --verify HEAD 2>/dev/null || true)"
+        if [[ -n "$_fr_target" ]]; then
+            git -C "$REPO_ROOT" merge-base --is-ancestor "$_fr_target" HEAD 2>/dev/null \
+                || die "local tree does not contain ${REF} (${_fr_target:0:8}; HEAD is ${_fr_head:0:8}) — templates would render from a tree that never saw this commit. Sync this checkout, or set PRECIS_DEPLOY_ALLOW_STALE=1."
+            [[ "$_fr_target" == "$_fr_head" ]] \
+                || echo "NOTE: installing ${_fr_target:0:8} but rendering deploy/ templates from HEAD ${_fr_head:0:8} — fine when the delta touches no template, otherwise check out the target sha first."
+        fi
+    fi
     _dirty="$(git -C "$REPO_ROOT" status --porcelain -- deploy/ 2>/dev/null || true)"
     [[ -z "$_dirty" ]] || die "deploy/ tree has uncommitted changes — templates would render unshipped state. Commit/ship first, or set PRECIS_DEPLOY_ALLOW_STALE=1."
 fi
@@ -269,13 +305,40 @@ if [[ "$FORCE_ROLLBACK" != 1 ]]; then
         git -C "$REPO_ROOT" fetch -q origin main 2>/dev/null || true
         _rb_origin_main="$(git -C "$REPO_ROOT" rev-parse -q --verify origin/main 2>/dev/null || true)"
 
+        # --pinned: the target is deliberately behind origin/main (it is the sha
+        # a full gate validated; siblings have qlanded ungated commits on top
+        # since). Drop ONLY the origin/main leg — the deployed-sha leg below
+        # still catches the actual gr338201 incident shape, which was a stale
+        # worktree deploying an ancestor of WHAT WAS ALREADY LIVE. With no
+        # marker that leg has nothing to compare against, so fail closed rather
+        # than let --pinned degrade into a guard-free deploy.
+        if [[ "$PINNED" == 1 && -z "$_rb_deployed" ]]; then
+            die "--pinned needs the deploy-state marker to check direction, and there is none (no successful deploy on record). Deploy the branch normally first, or pass --force-rollback if you know this target is correct."
+        fi
+
         _rb_against=""
         if [[ -n "$_rb_deployed" && "$_rb_target" != "$_rb_deployed" ]] \
             && git -C "$REPO_ROOT" merge-base --is-ancestor "$_rb_target" "$_rb_deployed" 2>/dev/null; then
             _rb_against="the currently-deployed sha ${_rb_deployed:0:8} (deploy-state marker)"
-        elif [[ -n "$_rb_origin_main" && "$_rb_target" != "$_rb_origin_main" ]] \
+        elif [[ "$PINNED" != 1 ]] && [[ -n "$_rb_origin_main" && "$_rb_target" != "$_rb_origin_main" ]] \
             && git -C "$REPO_ROOT" merge-base --is-ancestor "$_rb_target" "$_rb_origin_main" 2>/dev/null; then
             _rb_against="origin/main (${_rb_origin_main:0:8})"
+        fi
+
+        # Say how much ungated trunk this pin is leaving behind — the whole
+        # point of pinning is that main moved on, and the operator should see
+        # by how much rather than infer it from a silent success.
+        if [[ "$PINNED" == 1 && -z "$_rb_against" && -n "$_rb_origin_main" && "$_rb_target" != "$_rb_origin_main" ]]; then
+            _rb_behind="$(git -C "$REPO_ROOT" rev-list --count "${_rb_target}..${_rb_origin_main}" 2>/dev/null || true)"
+            # An `if`, not a trailing `[[ … ]] && echo`: nothing behind main is
+            # an ordinary pin (a /go that won the CAS race cleanly, or a target
+            # ahead of origin/main), and as the last command of this block the
+            # AND-list form returns non-zero on that path. Harmless where this
+            # sits today — `set -e` exempts it at top level — but it exits the
+            # moment anyone wraps this code in a function.
+            if [[ -n "$_rb_behind" && "$_rb_behind" != 0 ]]; then
+                echo "NOTE: --pinned — deploying the gated ${_rb_target:0:8}, which is ${_rb_behind} commit(s) behind origin/main (${_rb_origin_main:0:8}). Those commits are NOT going out; the next full gate certifies them."
+            fi
         fi
 
         if [[ -n "$_rb_against" ]]; then

@@ -40,6 +40,11 @@
 #   6. local main  — fast-forward the primary's main to the shipped sha
 #   7. report      — print the new main sha
 #
+# A full-gate run also writes `.ship-sha` (gitignored, per-worktree): the exact
+# sha the gate validated, for `scripts/deploy "$(cat .ship-sha)" --pinned` so a
+# sibling's --quick ship can't substitute an ungated tree between ship and
+# deploy. Not written by --quick (nothing gated) or bare --impacted (subset).
+#
 # Usage:  scripts/ship "fix(x): one-line summary of the branch"
 #         scripts/ship            # falls back to a generated message
 #         scripts/ship --impacted "…"   # /land: testmon-selected pytest, not the
@@ -153,6 +158,23 @@ CO_AUTHOR="Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ── gated-sha pin ───────────────────────────────────────────────────────
+# `scripts/deploy` defaults to the BRANCH NAME `main` and resolves it at
+# deploy time, so a sibling --quick ship landing between this ship's CAS
+# push and that resolution silently substitutes an UNGATED tree for the one
+# the gate just validated — the ship reports green over tree A while the
+# cluster receives tree B. Record the exact sha this run gated, so /go can
+# pin the deploy to it (`scripts/deploy "$(cat .ship-sha)" --pinned`).
+# Per-worktree and gitignored: a sibling ship writes its own, never this one.
+#
+# Written ONLY after a FULL gate. --quick validated nothing, and --impacted
+# ran a testmon-narrowed subset — fine as a /land inner loop, not a warrant
+# to push code at the fleet. A non-full run REMOVES any stale pin up front
+# rather than merely skipping the write, so an older /go's sha in this
+# worktree can never be mistaken for what this tree actually gated.
+SHIP_SHA_FILE="${WORKTREE}/.ship-sha"
+rm -f "$SHIP_SHA_FILE"
 
 # ── deploy-lag helper (best-effort; NEVER blocks or fails a ship — every git
 # call below is guarded) ─────────────────────────────────────────────────
@@ -655,6 +677,10 @@ remote_gate_wait() {
 # a few times, so we never squash a stale base. Merge conflicts and red gates
 # are NOT retryable — they abort immediately for a human to resolve.
 shipped=0
+# The sha this run actually gated — $NEW on a real squash, $OLD_MAIN when the
+# tree was already landed (see the nothing-new guard below). Written to
+# $SHIP_SHA_FILE after the loop, full gate only.
+GATED_SHA=""
 for attempt in 1 2 3; do
     [[ "$attempt" -gt 1 ]] && say "main moved under us — re-syncing + re-gating (attempt ${attempt}/3)"
 
@@ -850,6 +876,11 @@ for attempt in 1 2 3; do
     # in full mode the gate above still validated the integrated main.
     if [[ "$TREE" == "$(git rev-parse "${OLD_MAIN}^{tree}")" ]]; then
         say "nothing new to ship — tree identical to origin/main (already landed); skipping the push"
+        # No new commit, but the gate above DID validate this tree — and it is
+        # byte-identical to origin/main's. That makes OLD_MAIN the gated sha,
+        # which is exactly the /go-after-a-qland-burst case: the whole point of
+        # the run is to certify the trunk for deploy.
+        GATED_SHA="$OLD_MAIN"
         shipped=1
         break
     fi
@@ -860,6 +891,10 @@ ${CO_AUTHOR}
 EOF
 )"
     if git push --force-with-lease=main:"$OLD_MAIN" origin "${NEW}:refs/heads/main"; then
+        # Capture the pin HERE, not from origin/main at report time: steps 6-7
+        # re-fetch, so by then origin/main may already be a sibling's newer,
+        # ungated commit — the very substitution this pin exists to prevent.
+        GATED_SHA="$NEW"
         shipped=1
         break
     fi
@@ -870,6 +905,17 @@ EOF
     fi
 done
 [[ "$shipped" == 1 ]] || die "could not ship after 3 attempts — main kept moving under us. Re-run scripts/ship."
+
+# Write the gated-sha pin (see SHIP_SHA_FILE above). Full-gate runs only:
+# --quick gated nothing; --impacted gated a testmon subset. --remote counts as
+# full even alongside --impacted, because the impacted run there is only a
+# pre-gate ahead of GitHub's complete matrix. A hybrid-race fallback has
+# already forced IMPACTED=0 by this point (the integrated tree took the full
+# local suite), so it lands here as full too.
+if [[ "$QUICK" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" ]]; then
+    printf '%s\n' "$GATED_SHA" > "$SHIP_SHA_FILE"
+    say "gated sha pinned → ${SHIP_SHA_FILE##*/} (${GATED_SHA:0:8}); deploy it with: scripts/deploy \"\$(cat .ship-sha)\" --pinned"
+fi
 git push origin --delete "$BRANCH" 2>/dev/null || true
 if [[ "$REMOTE" == 1 ]]; then
     git push origin --delete "ci/${BRANCH}" 2>/dev/null || true

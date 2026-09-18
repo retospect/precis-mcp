@@ -1,7 +1,7 @@
 ---
 description: Implement the agreed spec, ship to main, and deploy to the cluster — the dark-factory one-keystroke. Run from inside a feature worktree.
 argument-hint: "[optional ship/commit message]"
-allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(scripts/mutate-diff:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
+allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(cat:*), Bash(scripts/mutate-diff:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
 ---
 
 You said **go**. Turn the spec we've established this session into shipped,
@@ -92,12 +92,30 @@ Optional ship message from the user: `$ARGUMENTS`
    - A `WARNING:` about the primary main not fast-forwarding is best-effort,
      not a failure — relay it and continue to deploy.
 
-7. **Deploy.** Only after a green ship, push the new `main` to the cluster —
-   **in the background, watching the live log**. Never foreground-wait on
+7. **Deploy — the GATED sha, not the branch name.** Only after a green ship,
+   push **exactly the tree the gate validated** to the cluster:
+
+   ```
+   scripts/deploy "$(cat .ship-sha)" --pinned
+   ```
+
+   `scripts/ship` wrote `.ship-sha` on its way out (full-gate runs only). Bare
+   `scripts/deploy` resolves the *branch* `main` at deploy time, so a sibling
+   `/qland` landing between your CAS push and that resolution silently sends an
+   **ungated** tree to the fleet while your ship reports green — pinning is what
+   closes that window. If `.ship-sha` is missing, the gate was not a full one
+   (`--quick`/bare `--impacted`): do not deploy, re-run the gate.
+
+   Run it **in the background, watching the live log**. Never foreground-wait on
    `scripts/deploy`: its stdout reaches you only at exit, minutes of zero
    visibility.
-   - Launch `scripts/deploy` via Bash `run_in_background: true`. Its exit
-     (code + task notification) is the authoritative completion signal.
+   - Launch it via Bash `run_in_background: true`. Its exit (code + task
+     notification) is the authoritative completion signal.
+   - Two informational lines are **expected**, not failures: a `NOTE: --pinned
+     — deploying … N commit(s) behind origin/main` (that N is the ungated
+     backlog your pin is correctly leaving behind), and, from the next
+     `scripts/ship`, a matching `📦 N commit(s) on main not yet deployed`.
+     Relay the number; it is the signal, not a bug.
    - It tees every run live to the MAIN checkout's
      `.deploy-logs/<ts>-<ref>.log` — the path is announced on the script's
      first `▶` line (read it from the background task's output file). Arm a
@@ -110,7 +128,7 @@ Optional ship message from the user: `$ARGUMENTS`
      working (e.g. step 9's issue-closer prep) between events.
    The script pings all hosts first (aborts on any unreachable — a partial
    deploy mixes versions), then runs the ansible redeploy (reinstalls
-   `precis-mcp@main` into every venv, bounces every daemon, auto-applies
+   `precis-mcp@<the pinned sha>` into every venv, bounces every daemon, auto-applies
    pending migrations via the precis-web role). If it exits non-zero,
    surface the failing ansible task verbatim — the cluster may be on mixed
    versions; do not declare success.
