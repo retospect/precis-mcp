@@ -1,0 +1,23 @@
+id: reaction:her_volmer_heyrovsky
+name: "HER, Volmer–Heyrovsky"
+
+species:
+  - {id: H2,   formula: "H2",    phase: gas,  charge:  0, adsorbed: false}
+  - {id: Hp,   formula: "H+",    phase: aq,   charge:  1, adsorbed: false}
+  - {id: e,    formula: "e-",    phase: el,   charge: -1, adsorbed: false}
+  - {id: "*",  formula: "site",  phase: surf, charge:  0, adsorbed: false}
+  - {id: "*H", formula: "H",     phase: surf, charge:  0, adsorbed: true}
+
+steps:
+  - {id: 1, reactants: {Hp: 1, e: 1, "*": 1}, products: {"*H": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true, notes: "Volmer"}
+  - {id: 2, reactants: {"*H": 1, Hp: 1, e: 1}, products: {"*": 1, H2: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true, notes: "Heyrovsky"}
+
+references:
+  - "10.1149/1.1856988"
+
+competing_her: false
+branch_selectivity:
+  alternative: reaction:her_volmer_tafel
+  governed_by: "coverage_dependent_*H_*H_distance"

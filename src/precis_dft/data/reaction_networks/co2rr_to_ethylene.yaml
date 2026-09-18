@@ -1,0 +1,44 @@
+id: reaction:co2rr_to_ethylene
+name: "CO2RR → C2H4 (12-electron via *CO dimerization)"
+
+# C-C coupling between two adjacent *CO species is the headline step.
+# v1 collapses subsequent hydrogenation into single PCET steps; refine
+# with explicit *OCH2CH2 / *CHCH2 intermediates in a follow-up network.
+
+species:
+  - {id: CO2,    formula: "CO2",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: C2H4,   formula: "C2H4",  phase: gas,  charge:  0, adsorbed: false}
+  - {id: H2O,    formula: "H2O",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: Hp,     formula: "H+",    phase: aq,   charge:  1, adsorbed: false}
+  - {id: e,      formula: "e-",    phase: el,   charge: -1, adsorbed: false}
+  - {id: "*",    formula: "site",  phase: surf, charge:  0, adsorbed: false}
+  - {id: "*COOH",formula: "COOH",  phase: surf, charge:  0, adsorbed: true}
+  - {id: "*CO",  formula: "CO",    phase: surf, charge:  0, adsorbed: true}
+  - {id: "*OCCO",formula: "OCCO",  phase: surf, charge:  0, adsorbed: true,
+     notes: "C-C coupled dimer"}
+  - {id: "*C2",  formula: "C2_red",phase: surf, charge:  0, adsorbed: true,
+     notes: "collapsed downstream C2 intermediates"}
+
+steps:
+  - {id: 1, reactants: {CO2: 1, "*": 1, Hp: 1, e: 1}, products: {"*COOH": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 2, reactants: {"*COOH": 1, Hp: 1, e: 1}, products: {"*CO": 1, H2O: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 3, reactants: {"*CO": 2}, products: {"*OCCO": 1, "*": 1},
+     n_e: 0, n_H: 0, pH_dep: false, U_dep: false,
+     notes: "C-C coupling — RDS on Cu in most reports"}
+  - {id: 4, reactants: {"*OCCO": 1, 8: {Hp: 1, e: 1}},
+     products: {"*C2": 1, 2: {H2O: 1}},
+     n_e: 8, n_H: 8, pH_dep: true, U_dep: true,
+     notes: "lumped 8e PCET; refine with explicit intermediates"}
+  - {id: 5, reactants: {"*C2": 1, 2: {Hp: 1, e: 1}}, products: {"*": 1, C2H4: 1},
+     n_e: 2, n_H: 2, pH_dep: true, U_dep: true}
+
+references:
+  - "10.1021/cs5018343"
+  - "10.1021/jacs.0c08147"  # *CO dimerization on Cu
+
+competing_her: true
+branch_selectivity:
+  alternatives: [reaction:co2rr_to_co, reaction:co2rr_to_methanol]
+  governed_by: "*CO_coverage_and_*CO-*CO_distance"

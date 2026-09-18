@@ -1,0 +1,32 @@
+id: reaction:orr_4step_dissociative
+name: "ORR, 4-step dissociative (acid)"
+
+# O2 dissociates on the surface before any PCET — the *OOH intermediate
+# is skipped. Relevant for surfaces with strong *O binding (early
+# transition metals).
+
+species:
+  - {id: H2O,   formula: "H2O",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: O2,    formula: "O2",    phase: gas,  charge:  0, adsorbed: false}
+  - {id: Hp,    formula: "H+",    phase: aq,   charge:  1, adsorbed: false}
+  - {id: e,     formula: "e-",    phase: el,   charge: -1, adsorbed: false}
+  - {id: "*",   formula: "site",  phase: surf, charge:  0, adsorbed: false}
+  - {id: "*OH", formula: "OH",    phase: surf, charge:  0, adsorbed: true}
+  - {id: "*O",  formula: "O",     phase: surf, charge:  0, adsorbed: true}
+
+steps:
+  - {id: 1, reactants: {O2: 1, "*": 2}, products: {"*O": 2},
+     n_e: 0, n_H: 0, pH_dep: false, U_dep: false,
+     notes: "dissociative O-O cleavage on the surface"}
+  - {id: 2, reactants: {"*O": 1, Hp: 1, e: 1}, products: {"*OH": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 3, reactants: {"*OH": 1, Hp: 1, e: 1}, products: {"*": 1, H2O: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+
+references:
+  - "10.1149/1.2204957"
+
+competing_her: false
+branch_selectivity:
+  alternative: reaction:orr_4step_associative
+  governed_by: "O2_binding_mode_end-on_vs_side-on"

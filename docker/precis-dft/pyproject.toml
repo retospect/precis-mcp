@@ -1,0 +1,40 @@
+# Build metadata for the precis-dft COMPUTE IMAGE only — not for the monorepo.
+#
+# `docker/precis-dft/Dockerfile` installs this project (with --no-deps) so the
+# image gets the `precis-dft-run` entry point and the `precis_dft` package on
+# sys.path. The image exercises exactly three modules — `_container/cli.py`,
+# `_container/gpaw_relax.py` and `structures/` — and none of them import
+# precis-mcp, psycopg or pymatgen, so the rest of `src/precis_dft` rides along
+# as dead files rather than as a dependency graph.
+#
+# precis-mcp's own pyproject builds the same source into the precis-mcp wheel
+# (`[tool.hatch.build.targets.wheel] packages`); this file exists so the
+# container does NOT pull precis-mcp in behind it.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "precis-dft"
+version = "0.1.0"
+description = "precis-dft container subset: the GPAW relax entry point that runs inside precis-dft:cpu."
+readme = "README.md"
+# The CUDA base image ships Ubuntu 22.04's python3 (3.10). The container
+# subset is 3.10-clean; the rest of src/precis_dft is only ever imported by
+# precis-mcp, which runs 3.13.
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Reto Stamm" }]
+
+# Installed with --no-deps: the Dockerfile's own pip install already put these
+# in the venv, and GPAW has to be built from source there rather than resolved.
+dependencies = [
+    "ase>=3.22",
+    "numpy>=1.26",
+]
+
+[project.scripts]
+precis-dft-run = "precis_dft._container.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/precis_dft"]

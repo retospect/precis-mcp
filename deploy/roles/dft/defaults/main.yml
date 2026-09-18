@@ -26,4 +26,6 @@ dft_worker_user: deploy
 # the image is already present; flip on to (re)build:
 #   ansible-playbook playbooks/42-dft.yml -e dft_build_image=true
 dft_build_image: false
-dft_src_dir: "{{ lookup('env', 'HOME') }}/work/projects/code/precis-dft"
+# Repo root — the image source lives in-tree (docker/precis-dft/ +
+# src/precis_dft/) since the standalone precis-dft repo was folded in.
+dft_src_dir: "{{ playbook_dir }}/../.."

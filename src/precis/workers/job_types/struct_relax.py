@@ -27,12 +27,13 @@ spin-polarized RPBE DFT relax and, if it ever finished inside the wall-clock
 cap, recorded DFT energies in the run-cube under a MACE label. Running
 different physics than was asked for is worse than not running.
 
-**Self-contained on purpose.** precis-mcp does not depend on precis-dft (the
-dependency runs the other way), so this module mirrors precis-dft's *container
-contract* — the same argv, the same staged ``POSCAR`` + ``params.json``, the
-same ``result.json`` shape — rather than importing its host-side helpers. Both
-backends produce that same result shape and land on the one write-back,
-:func:`_record_run`. The container execution boundary (``ssh node <container>
+**Self-contained on purpose.** The image source now lives in this repo
+(``src/precis_dft`` + ``docker/precis-dft``), but this module still does not
+import it: it mirrors the *container contract* — the same argv, the same
+staged ``POSCAR`` + ``params.json``, the same ``result.json`` shape — so the
+host side stays honest about the boundary and keeps working against an image
+built from any revision. Both backends produce that same result shape and land
+on the one write-back, :func:`_record_run`. The container execution boundary (``ssh node <container>
 run …``) is the module-level :data:`RUNNER` hook and the in-process one is
 :data:`ML_RUNNER`; both are swapped for stubs in tests so the orchestration +
 write-back is exercised without a cluster.
@@ -136,7 +137,7 @@ DESCRIPTION = (
     "Relax a structure at an energy rung on the GPU node; sink to the run-cube."
 )
 
-# ── container contract (mirrors precis-dft.jobs.gpaw_relax) ──────────────
+# ── container contract (mirrors src/precis_dft/_container/gpaw_relax.py) ──
 #: Deploy renders PRECIS_DFT_NODE from topology (precis_capabilities.dft);
 #: deliberately no node-literal default — a hardcoded node outlives the node
 #: it names (2026-08-29 spark retirement). ``None`` ⇒ this host can't resolve
@@ -255,8 +256,9 @@ _OMP_THREADS_DEFAULT = 4
 #: one core. ``PRECIS_DFT_MPI_RANKS``; default **0 = off**, because an image
 #: built before the OpenMPI rebuild has no ``mpirun`` and no MPI-capable
 #: ``_gpaw``: turning this on against the old image would fail every run.
-#: Flip it once the rebuilt image is on the node (precis-dft
-#: docker/Dockerfile asserts MPI at build time, and ``result.json`` reports
+#: Flip it once the rebuilt image is on the node
+#: (``docker/precis-dft/Dockerfile`` asserts MPI at build time, and
+#: ``result.json`` reports
 #: the rank count it actually ran with).
 _MPI_RANKS_DEFAULT = 0
 

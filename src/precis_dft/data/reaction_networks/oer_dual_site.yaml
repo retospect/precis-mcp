@@ -1,0 +1,34 @@
+id: reaction:oer_dual_site
+name: "OER, dual-site mechanism (O-O coupling between adjacent sites)"
+
+# Two adjacent surface sites each carry *O; the rate-determining step
+# is direct O-O coupling rather than going through *OOH. Relevant for
+# dimer catalysts and some binary oxides. Emerging in 2025+ literature.
+
+species:
+  - {id: H2O,    formula: "H2O",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: O2,     formula: "O2",    phase: gas,  charge:  0, adsorbed: false}
+  - {id: Hp,     formula: "H+",    phase: aq,   charge:  1, adsorbed: false}
+  - {id: e,      formula: "e-",    phase: el,   charge: -1, adsorbed: false}
+  - {id: "*",    formula: "site",  phase: surf, charge:  0, adsorbed: false}
+  - {id: "*OH",  formula: "OH",    phase: surf, charge:  0, adsorbed: true}
+  - {id: "*O",   formula: "O",     phase: surf, charge:  0, adsorbed: true}
+  - {id: "*O+*O",formula: "O+O",   phase: surf, charge:  0, adsorbed: true,
+     notes: "two adjacent *O on neighbouring sites"}
+
+steps:
+  - {id: 1, reactants: {H2O: 1, "*": 2}, products: {"*OH": 2, 2: {Hp: 1, e: 1}},
+     n_e: 2, n_H: 2, pH_dep: true, U_dep: true,
+     notes: "concerted; treat as one PCET step with n_e=2 in v1"}
+  - {id: 2, reactants: {"*OH": 2}, products: {"*O+*O": 1, 2: {Hp: 1, e: 1}},
+     n_e: 2, n_H: 2, pH_dep: true, U_dep: true}
+  - {id: 3, reactants: {"*O+*O": 1}, products: {O2: 1, "*": 2},
+     n_e: 0, n_H: 0, pH_dep: false, U_dep: false,
+     notes: "direct O-O coupling — the headline step of this mechanism"}
+
+references:
+  - "10.1038/s41929-021-00578-1"
+  - "10.1021/jacs.1c09140"
+
+competing_her: false
+branch_selectivity: null

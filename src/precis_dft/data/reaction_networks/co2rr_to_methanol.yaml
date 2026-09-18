@@ -1,0 +1,41 @@
+id: reaction:co2rr_to_methanol
+name: "CO2RR → CH3OH (6-electron via *CO)"
+
+# Single representative pathway through *CO → *CHO → *CH2O → *CH3O.
+# The alternative *COH branch is not modelled in v1; document and
+# add as a separate network later if needed.
+
+species:
+  - {id: CO2,     formula: "CO2",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: CH3OH,   formula: "CH3OH", phase: gas,  charge:  0, adsorbed: false}
+  - {id: H2O,     formula: "H2O",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: Hp,      formula: "H+",    phase: aq,   charge:  1, adsorbed: false}
+  - {id: e,       formula: "e-",    phase: el,   charge: -1, adsorbed: false}
+  - {id: "*",     formula: "site",  phase: surf, charge:  0, adsorbed: false}
+  - {id: "*COOH", formula: "COOH",  phase: surf, charge:  0, adsorbed: true}
+  - {id: "*CO",   formula: "CO",    phase: surf, charge:  0, adsorbed: true}
+  - {id: "*CHO",  formula: "CHO",   phase: surf, charge:  0, adsorbed: true}
+  - {id: "*CH2O", formula: "CH2O",  phase: surf, charge:  0, adsorbed: true}
+  - {id: "*OCH3", formula: "OCH3",  phase: surf, charge:  0, adsorbed: true}
+
+steps:
+  - {id: 1, reactants: {CO2: 1, "*": 1, Hp: 1, e: 1}, products: {"*COOH": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 2, reactants: {"*COOH": 1, Hp: 1, e: 1}, products: {"*CO": 1, H2O: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 3, reactants: {"*CO": 1, Hp: 1, e: 1}, products: {"*CHO": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 4, reactants: {"*CHO": 1, Hp: 1, e: 1}, products: {"*CH2O": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 5, reactants: {"*CH2O": 1, Hp: 1, e: 1}, products: {"*OCH3": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 6, reactants: {"*OCH3": 1, Hp: 1, e: 1}, products: {"*": 1, CH3OH: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+
+references:
+  - "10.1021/cs5018343"
+
+competing_her: true
+branch_selectivity:
+  alternatives: [reaction:co2rr_to_co, reaction:co2rr_to_ethylene]
+  governed_by: "*CO_binding_strength"

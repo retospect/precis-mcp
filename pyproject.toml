@@ -544,7 +544,7 @@ dev = [
 autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_estimate", "src/precis_se", "src/hexfold"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
@@ -751,6 +751,8 @@ module = [
     "epo_ops",
     "epo_ops.*",
     "fitz",
+    "gpaw",
+    "gpaw.*",
     "habanero",
     "manifold3d",
     "marker.*",

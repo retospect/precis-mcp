@@ -1,0 +1,42 @@
+id: reaction:nrr_distal
+name: "NRR distal (one N hydrogenated to NH3 before the other)"
+
+# All three hydrogenations go to the same (distal) N atom; first NH3
+# leaves before the other N is touched. Competing with alternating
+# pathway (see reaction:nrr_alternating).
+
+species:
+  - {id: N2,     formula: "N2",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: NH3,    formula: "NH3",  phase: gas,  charge:  0, adsorbed: false}
+  - {id: Hp,     formula: "H+",   phase: aq,   charge:  1, adsorbed: false}
+  - {id: e,      formula: "e-",   phase: el,   charge: -1, adsorbed: false}
+  - {id: "*",    formula: "site", phase: surf, charge:  0, adsorbed: false}
+  - {id: "*N2",  formula: "N2",   phase: surf, charge:  0, adsorbed: true}
+  - {id: "*NNH", formula: "NNH",  phase: surf, charge:  0, adsorbed: true}
+  - {id: "*NNH2",formula: "NNH2", phase: surf, charge:  0, adsorbed: true}
+  - {id: "*N",   formula: "N",    phase: surf, charge:  0, adsorbed: true}
+  - {id: "*NH",  formula: "NH",   phase: surf, charge:  0, adsorbed: true}
+  - {id: "*NH2", formula: "NH2",  phase: surf, charge:  0, adsorbed: true}
+
+steps:
+  - {id: 1, reactants: {N2: 1, "*": 1}, products: {"*N2": 1}, n_e: 0, n_H: 0}
+  - {id: 2, reactants: {"*N2": 1, Hp: 1, e: 1}, products: {"*NNH": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 3, reactants: {"*NNH": 1, Hp: 1, e: 1}, products: {"*NNH2": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 4, reactants: {"*NNH2": 1, Hp: 1, e: 1}, products: {"*N": 1, NH3: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true, notes: "first NH3 released"}
+  - {id: 5, reactants: {"*N": 1, Hp: 1, e: 1}, products: {"*NH": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 6, reactants: {"*NH": 1, Hp: 1, e: 1}, products: {"*NH2": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 7, reactants: {"*NH2": 1, Hp: 1, e: 1}, products: {"*": 1, NH3: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+
+references:
+  - "10.1021/ja402761r"
+
+competing_her: true
+branch_selectivity:
+  alternative: reaction:nrr_alternating
+  governed_by: "first_PCET_N-N_vs_N-end"

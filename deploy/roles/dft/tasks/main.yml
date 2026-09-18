@@ -60,18 +60,22 @@
 - name: (Re)build the precis-dft image
   when: dft_build_image | bool
   block:
+    # Only two subtrees of the repo are the build context, and the
+    # Dockerfile's COPY paths are relative to the repo root — so sync them
+    # into the same layout rather than shipping the whole monorepo.
     - name: Sync the precis-dft build context to the node
       ansible.posix.synchronize:
-        src: "{{ dft_src_dir }}/"
-        dest: /tmp/precis-dft-build/
+        src: "{{ dft_src_dir }}/{{ item }}/"
+        dest: "/tmp/precis-dft-build/{{ item }}/"
         rsync_opts:
           - "--exclude=__pycache__"
-          - "--exclude=.git"
-          - "--exclude=.venv"
+      loop:
+        - docker/precis-dft
+        - src/precis_dft
 
     - name: docker build the precis-dft image
       ansible.builtin.command:
-        cmd: "docker build -t {{ dft_image }} -f docker/Dockerfile ."
+        cmd: "docker build -t {{ dft_image }} -f docker/precis-dft/Dockerfile ."
         chdir: /tmp/precis-dft-build
       become: true
       register: dft_build
@@ -85,7 +89,7 @@
   changed_when: false
   failed_when: dft_img.rc != 0
   # Fails when the image is absent: (re)build with -e dft_build_image=true, or
-  # build by hand per precis-dft/docker/README.md.
+  # build by hand per docker/precis-dft/README.md.
 
 # ── worker env (systemd drop-in — leaves the precis_worker unit untouched) ──
 - name: Ensure the precis env dir

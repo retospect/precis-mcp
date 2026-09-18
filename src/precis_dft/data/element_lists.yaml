@@ -1,0 +1,66 @@
+# Element lists used by physics defaults and the annotator.
+#
+# - magnetic_elements: triggers `magnetic_init.scheme='auto'` sweep
+#   over the auto_sweep list (default ['nm', 'fm']) when any of these
+#   are present.
+# - soc_recommended: when any 5d/heavier element is in the structure,
+#   the annotator emits a warning suggesting `soc: true`.
+# - soc_required: stricter — annotator emits an error rather than a
+#   warning. (No element is in this set today; reserved for future
+#   policy.)
+# - vdw_strongly_recommended: when these are involved (CO2RR, NRR
+#   substrates with weak physisorption), default `dispersion='D3'` is
+#   often insufficient; annotator suggests `vdW-DF`.
+
+magnetic_elements:
+  - Cr
+  - Mn
+  - Fe
+  - Co
+  - Ni
+  - Cu       # weakly magnetic in some phases; included to be safe
+  - Mo
+  - Ru
+  - Rh
+  - Gd       # rare-earth f-electron, but spans 4f magnetism
+
+soc_recommended:
+  - Hf
+  - Ta
+  - W
+  - Re
+  - Os
+  - Ir
+  - Pt
+  - Au
+  - Hg
+
+soc_required: []
+
+vdw_strongly_recommended:
+  - C
+  - N
+  - O        # for CO2 / NRR weakly-bound intermediates
+
+# Adsorbate species library — kept here so the annotator can detect
+# adsorbates without hard-coding the list in code. Each entry maps the
+# canonical id used in ops (e.g. '*OH') to a plain formula.
+adsorbate_species:
+  "*H":   "H"
+  "*O":   "O"
+  "*OH":  "OH"
+  "*OOH": "OOH"
+  "*N":   "N"
+  "*NH":  "NH"
+  "*NH2": "NH2"
+  "*NH3": "NH3"
+  "*CO":  "CO"
+  "*COOH": "COOH"
+  "*CHO": "CHO"
+  "*COH": "COH"
+  "*CH":  "CH"
+  "*CH2": "CH2"
+  "*CH3": "CH3"
+  "*CH2OH": "CH2OH"
+  "*CH3OH": "CH3OH"
+  "*OCH3":  "OCH3"

@@ -1,0 +1,31 @@
+id: reaction:co2rr_to_co
+name: "CO2RR → CO (2-electron)"
+
+species:
+  - {id: CO2,    formula: "CO2",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: CO,     formula: "CO",    phase: gas,  charge:  0, adsorbed: false}
+  - {id: H2O,    formula: "H2O",   phase: gas,  charge:  0, adsorbed: false}
+  - {id: Hp,     formula: "H+",    phase: aq,   charge:  1, adsorbed: false}
+  - {id: e,      formula: "e-",    phase: el,   charge: -1, adsorbed: false}
+  - {id: "*",    formula: "site",  phase: surf, charge:  0, adsorbed: false}
+  - {id: "*COOH",formula: "COOH",  phase: surf, charge:  0, adsorbed: true}
+  - {id: "*HCOO",formula: "HCOO",  phase: surf, charge:  0, adsorbed: true,
+     notes: "alternative branch — leads to formate"}
+  - {id: "*CO",  formula: "CO",    phase: surf, charge:  0, adsorbed: true}
+
+steps:
+  - {id: 1, reactants: {CO2: 1, "*": 1, Hp: 1, e: 1}, products: {"*COOH": 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true,
+     notes: "*COOH branch leads to CO; *HCOO branch leads to formate"}
+  - {id: 2, reactants: {"*COOH": 1, Hp: 1, e: 1}, products: {"*CO": 1, H2O: 1},
+     n_e: 1, n_H: 1, pH_dep: true, U_dep: true}
+  - {id: 3, reactants: {"*CO": 1}, products: {CO: 1, "*": 1},
+     n_e: 0, n_H: 0, pH_dep: false, U_dep: false}
+
+references:
+  - "10.1021/cs5018343"   # Peterson + Nørskov CO2RR
+
+competing_her: true
+branch_selectivity:
+  alternatives: [reaction:co2rr_to_methanol, reaction:co2rr_to_ethylene]
+  governed_by: "*CO_binding_strength"
