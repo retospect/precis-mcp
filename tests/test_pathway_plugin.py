@@ -19,6 +19,7 @@ Skips cleanly (whole module) if ``autocatpath`` isn't installed.
 
 from __future__ import annotations
 
+import copy
 import io
 import math
 from pathlib import Path
@@ -42,6 +43,7 @@ from precis.workers import job_types as jt
 from precis_pathway import job as pathway_job
 from precis_pathway import runner
 from precis_pathway.handler import PathwayHandler
+from precis_pathway.persist import pathway_title, persist_result
 from precis_pathway.types import DetachedHandle, PathwayArtifact, PollResult
 
 SMOKE = """
@@ -1059,6 +1061,61 @@ _LEVER_GRAPH = {
     ],
 }
 
+#: The results envelope `_LEVER_GRAPH` is read with. `analysis.roots` resolves
+#: (root, target) from the topological `pathway` order and `target`;
+#: `analysis_text`'s headline reads `models`/`n_samples`; `_compare`'s sibling
+#: query keys on `substrate`/`target`. A real run carries a few dozen more keys
+#: the potential-lever views never touch.
+_LEVER_RESULTS: dict[str, Any] = {
+    "substrate": "NO",
+    "target": "C",
+    "pathway": ["A", "B", "C"],
+    "models": ["emt"],
+    "n_samples": 1,
+}
+
+
+def _lever_meta() -> dict[str, Any]:
+    """A pathway `meta` shaped like a stored run, with no run behind it —
+    the views read only `graph`/`results`/`warnings`. Deep-copied so a test
+    that re-levers in place can't leak into the next one."""
+    return {
+        "graph": copy.deepcopy(_LEVER_GRAPH),
+        "results": dict(_LEVER_RESULTS),
+        "warnings": [],
+    }
+
+
+def _store_synthetic_pathway(store: Store, slug: str, *, element: str) -> int:
+    """Store a `ready` pathway ref with no EMT pipeline behind it (gr346717).
+
+    `handler.get` resolves the ref and reads `refs.meta` and nothing else, so a
+    synthetic `PathwayArtifact` pushed through the *real* `persist_result` is
+    indistinguishable from a computed run for every view — at ~0s instead of
+    the ~60s a `run_pathway_from_yaml` costs. `ingest=False`: there are no
+    structures to ingest and the geometry-less warning would be noise."""
+    artifact: PathwayArtifact = {
+        "content_key": f"synthetic-{slug}",
+        "autocatpath_version": "test",
+        "config": {"slab": {"element": element}},
+        "config_snapshot_yaml": "",
+        "results_json": dict(_LEVER_RESULTS),
+        "graph_json": copy.deepcopy(_LEVER_GRAPH),
+        "methods_md": "synthetic fixture — no pipeline run",
+        "structures_extxyz": {},
+        "warnings": [],
+    }
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="pathway",
+            slug=slug,
+            title=pathway_title(artifact),
+            meta={"status": "computing"},
+            conn=conn,
+        )
+    persist_result(store, ref.id, artifact, pathway_slug=slug, ingest=False)
+    return int(ref.id)
+
 
 def test_analysis_at_potential_shifts_states_not_barriers() -> None:
     from precis_pathway import analysis
@@ -1092,12 +1149,7 @@ def test_analysis_at_potential_shifts_states_not_barriers() -> None:
 def test_toon_views_at_potential() -> None:
     from precis_pathway import analysis, toon_views
 
-    art = runner.run_pathway_from_yaml(BRANCH)  # CHE-stamped: NO+H branch has n_H=1
-    meta: dict[str, Any] = {
-        "graph": art["graph_json"],
-        "results": art["results_json"],
-        "warnings": [],
-    }
+    meta = _lever_meta()
     assert analysis.has_potential_lever(meta["graph"])
     plain = toon_views.analysis_text(meta)
     assert "V vs RHE" not in plain and "most endergonic" not in plain
@@ -1108,8 +1160,8 @@ def test_toon_views_at_potential() -> None:
     assert "energetic span (whole-path apparent barrier) at U = -0.30 V" in out
     assert "most endergonic route step at U:" in out
 
-    g, res = art["graph_json"], art["results_json"]
-    r, t = analysis.roots(g, res)
+    g = meta["graph"]
+    r, t = analysis.roots(g, meta["results"])
     stamped = {"slug": "pd", "lever": "Pd", "graph": g, "root": r, "target": t}
     legacy_graph = {
         "nodes": [{k: v for k, v in n.items() if k != "n_H"} for n in g["nodes"]],
@@ -1134,8 +1186,8 @@ def test_get_views_at_potential(pathway_store: Store) -> None:
     from precis.errors import BadInput
 
     h = _handler(pathway_store)
-    h.put(id="lever_pd", text=BRANCH)
-    h.put(id="lever_pt", text=BRANCH.replace("element: Pd", "element: Pt"))
+    _store_synthetic_pathway(pathway_store, "lever-pd", element="Pd")
+    _store_synthetic_pathway(pathway_store, "lever-pt", element="Pt")
 
     ana = h.get(id="lever-pd", view="analysis", args={"U": -0.3}).body
     assert "at U = -0.30 V vs RHE" in ana and "most endergonic route step" in ana
