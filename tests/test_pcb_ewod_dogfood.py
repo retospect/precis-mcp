@@ -17,21 +17,21 @@ LCSC C-numbers are the spec's own choice (HV507PG-G = C639448) or a
 documented placeholder for an unverified "any in-stock I2C temp sensor"
 pick — see each constant's own comment.
 
-**One known engine gap this board still sits on** (a second, the
-bottom-side-pads-checked-as-top-side gap, was CLOSED gr341516 — see
-below):
+**Engine gaps this board found, all closed** (each is pinned by a test
+below so it stays closed):
 
-1. **The IR carries one position per PIN**, so an electrode's three
-   authored pads (body + neck stub + plaza via) collapse to the body
-   alone: the router never sees the plaza via, which is precisely the
-   escape this design is built around, and every electrode escape comes
-   back unrouted (``test_dogfood_route_op_routes_real_geometry_and_
-   reports_the_escape_gap`` — it asserts the failure stays VISIBLE, with
-   a reason, rather than reporting a silently-"realized" board).
-   Round-8 finding; see docs/backlog/pcb-ewod-multitile.md's decisions
-   log.
+1. **The escape gap (round 8 → closed by island terminals + gripe
+   346962).** The IR carries one position per PIN, so an electrode's
+   authored plaza VIA — the escape this design is built around — was
+   invisible to the router; island terminals from fixed copper made it
+   a terminal, and then the maze's enclosing-DISC pad claims (wider
+   than the pitch) still walled every F.Cu cell off until true-shape
+   claims replaced them. ``test_dogfood_route_op_routes_real_geometry_
+   and_reports_the_escape_gap`` asserts escapes now route through the
+   fabric and that any remaining failure (the congestion race, gripe
+   347037) keeps a recorded reason.
 
-**gr341516, closed:** the sink sits directly under the array by design
+2. **gr341516, closed:** the sink sits directly under the array by design
 (the whole point of ``sink_grid``) and used to be checked as if it were
 on top — ``rules.py::PAD_LAYER`` forced every pad's IR layer to 0
 regardless of the instance's real ``layer='bottom'`` side, so courtyard/
@@ -630,26 +630,22 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
        routing form — the assertion that would have failed loudly before
        the fix, since the board's pads and the router's idea of them were
        ~10mm apart).
-    2. **The escape claim does NOT hold as written, and the failure is
-       architectural, not a tuning miss** (round 8 finding, filed as its
-       own gripe; see docs/backlog/pcb-ewod-multitile.md's round-8
-       decisions log). The escape route an ``ewod_pad_array`` is designed
-       around is the authored plaza VIA — footprint copper that drops the
-       electrode to B.Cu with no router involvement. The IR carries ONE
-       position per PIN, so an electrode's three pads (body + neck stub +
-       via) collapse to the body alone: the router never sees the via, and
-       has to invent its own layer change from the electrode body — inside
-       a field where every F.Cu cell is already claimed by a neighbouring
-       electrode's own pad disc (a 1.9mm pad's enclosing circle is wider
-       than the 2.0mm pitch by construction). So every escape net comes
-       back UNROUTED, with a recorded reason.
+    2. **The escape claim now holds**: electrode escapes route through
+       the authored plaza fabric (the plaza VIA that drops the electrode
+       to B.Cu). Two engine fixes got it there, and this assertion was
+       their inverse until the second landed: island terminals from fixed
+       copper (docs/backlog/pcb-pre-place-route-blocks.md) made the via a
+       terminal the router can see, and gripe 346962 stopped the maze
+       claiming every pad as its ENCLOSING DISC — at a pitch narrower
+       than the disc every F.Cu cell was walled off by a neighbour, so
+       zero escapes could route even with the via visible. The escapes
+       that still fail lose a congestion race (gripe 347037) and must
+       keep a recorded reason.
 
-    That second result is asserted, not merely tolerated: an unrouted
-    escape must stay VISIBLE (status + reason), never silently
-    ``'realized'`` — a board that reports success while its electrodes
-    connect to nothing is the failure mode this fixture exists to prevent.
-    When the multi-pad-per-pin work lands, this test flips: it should then
-    fail here, which is the point."""
+    Both halves guard the same failure mode: a board that reports
+    success while its electrodes connect to nothing. (1) catches copper
+    that ends nowhere real; (2) catches the wall coming back (zero
+    escapes) and a failure with no reason."""
     import collections
 
     slug = _seed(pcb)
@@ -793,21 +789,31 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
                 "signature / layer-blind pad claim)"
             )
 
-    # (2) The escape gap, stated out loud rather than silently passed.
+    # (2) The escape gap is CLOSED: electrode escapes route through the
+    # authored plaza fabric. This assertion was its inverse until gripe
+    # 346962 — island terminals made the plaza via a real terminal, but
+    # every F.Cu cell was still walled off by the neighbours' enclosing
+    # pad DISCS (wider than the pitch by construction), so zero escapes
+    # could route and the test pinned that visibly. True-shape pad claims
+    # lifted the wall; the floor here is half of what seed=1 realizes so
+    # a tuning wobble can't redden it, while a regression to the disc
+    # claim (0 realized) or a silently-'realized' escape that assertion
+    # (1) would catch both still fail loudly. The escapes that still fail
+    # lose a congestion race (gripe 347037) and must keep a recorded
+    # reason — a failure with no reason is the silent board this fixture
+    # exists to prevent.
     escape_nets = [n for n in status_by_net if n.startswith("ARR1_R")]
     assert len(escape_nets) >= 50
-    assert not [n for n in escape_nets if status_by_net[n] == "realized"], (
-        "an electrode escape net reports 'realized' — with the plaza via "
-        "invisible to the IR (one position per pin) none of them can be; a "
-        "silently-'realized' escape is a board that reports success while its "
-        f"electrodes connect to nothing. {diag}"
+    realized_escapes = [n for n in escape_nets if status_by_net[n] == "realized"]
+    assert len(realized_escapes) >= 8, (
+        "electrode escapes no longer route through the plaza fabric — the "
+        f"gripe-346962 wall (enclosing pad discs) is back? {diag}"
     )
-    reasons = {
-        str(problem.get("kind") or problem.get("reason"))
-        for net in escape_nets
-        for problem in ((routes.get(net) or {}).get("fail") or {}).get("problems") or []
-    }
-    assert reasons, "escape nets failed to route with NO recorded reason"
+    for net in escape_nets:
+        if status_by_net[net] == "realized":
+            continue
+        problems = ((routes.get(net) or {}).get("fail") or {}).get("problems") or []
+        assert problems, f"escape net {net} failed to route with NO recorded reason"
 
     # Post-route DRC is the FULL check now (routed copper exists), not the
     # pads-only scope an un-routed board reports.

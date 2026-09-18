@@ -22,15 +22,26 @@ tagged ``meta.author='doctor'``. Two halves:
   selection and ``briefing_cast.py``'s health line, and importing FROM
   either of those here would be the wrong direction — this module must
   stay importable by both without a cycle.
+* :func:`convert_needs_a_human` — piece B of ``docs/backlog/doctor-
+  report-and-alert-channel-quality.md``: turns each bullet of the body's
+  ``## Needs a human`` section into (or bumps) a ``waiting-for:reto``
+  todo, and rewrites the section with ``- td<id>: ...`` lines so the
+  filed report links into Reto's queue. Runs between
+  :func:`strip_preamble` and the body append in
+  :func:`precis.workers.job_types.doctor_tick.run`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+
+from precis.handlers.todo import _BODY_KIND
+from precis.store.types import ChunkInsert, Tag
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -93,6 +104,270 @@ def strip_preamble(text: str) -> str | None:
     if match is None:
         return None
     return text[match.start() :].strip()
+
+
+#: Meta marker on the schedule-less container every minted "needs a
+#: human" ask parents under — the same ``meta.builtin`` idiom
+#: ``schedule.seed.ensure_watches_root`` uses for the Watches umbrella
+#: (a folder, not a schedule row), so the nursery's orphan detector
+#: (``_detect_orphans`` in ``workers/nursery.py``) treats the subtree as
+#: recurring and skips it. Deliberately NOT ``meta.rotation_root`` — the
+#: 2026-09-18 ruling on the pre-existing ``waiting-for:reto`` rows says
+#: these asks are not rotation units (``docs/backlog/doctor-report-and-
+#: alert-channel-quality.md``).
+_ASKS_ROOT_BUILTIN = "doctor-asks-root"
+_ASKS_ROOT_TITLE = "Doctor — needs a human"
+
+#: The report-section heading :func:`convert_needs_a_human` looks for.
+#: Tolerant of heading level and case, same posture as
+#: :data:`REPORT_FIRST_HEADING`'s regex.
+NEEDS_A_HUMAN_HEADING: str = "## Needs a human"
+
+_NEEDS_A_HUMAN_RE = re.compile(
+    r"^[ \t]{0,3}#{1,6}[ \t]+needs a human\b.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+#: Any Markdown heading line — used to find where the section ends.
+_ANY_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+#: A top-level bullet start: ``- ``, ``* ``, ``1.`` or ``1)`` at column 0
+#: only — no leading whitespace tolerated, so an indented sub-bullet
+#: (``  - saw it fail twice more``) does NOT start a new item; it joins
+#: the preceding one like any other continuation line.
+_BULLET_START_RE = re.compile(r"^(?:[-*][ \t]+|\d+[.)][ \t]+)")
+
+#: gripe/alert/todo/draft/job id tokens stripped before hashing, so a
+#: bullet that only differs in which id it names (or a restated "still N
+#: hours") still dedups to the same key.
+_ASK_ID_PREFIX_RE = re.compile(r"\b(?:gr|al|td|dr|jo)\d+\b", re.IGNORECASE)
+_ASK_DIGIT_RE = re.compile(r"\d+")
+_ASK_WS_RE = re.compile(r"\s+")
+
+#: Title clip, mirrors ``backlog_groom``'s 160-char guard on a minted
+#: todo's title.
+_ASK_TITLE_MAX = 160
+
+
+def _normalize_ask_text(text: str) -> str:
+    """Lowercase, id/number-stripped form of an ask's text — the input to
+    :func:`_doctor_ask_key`."""
+    out = text.lower()
+    out = _ASK_ID_PREFIX_RE.sub(" ", out)
+    out = _ASK_DIGIT_RE.sub(" ", out)
+    return _ASK_WS_RE.sub(" ", out).strip()
+
+
+def _doctor_ask_key(text: str) -> str:
+    """``meta.doctor_ask_key`` for a bullet's full text (title +
+    continuation lines) — the dedup key a same-day re-tick or a
+    restated-with-a-fresher-number ask still resolves to."""
+    return hashlib.sha1(
+        _normalize_ask_text(text).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
+
+
+def _parse_needs_a_human_bullets(body: str) -> tuple[list[str], int, int] | None:
+    """The section's bullet texts plus its ``(start, end)`` offsets in
+    ``body``, or ``None`` when :data:`NEEDS_A_HUMAN_HEADING` is absent.
+
+    Each column-0 bullet is one item; any other line — a plain
+    continuation, or an indented sub-bullet — joins the preceding item
+    (blank lines preserved inside an item, trimmed at its ends). Text
+    before the first bullet inside the section (malformed prose instead
+    of a list) is silently dropped — the caller treats an empty item
+    list as "nothing to convert" rather than raising.
+    """
+    heading = _NEEDS_A_HUMAN_RE.search(body)
+    if heading is None:
+        return None
+    section_start = heading.end()
+    next_heading = _ANY_HEADING_RE.search(body, section_start)
+    section_end = next_heading.start() if next_heading else len(body)
+    section_text = body[section_start:section_end]
+
+    items: list[str] = []
+    current: list[str] = []
+
+    def _flush() -> None:
+        joined = "\n".join(current).strip()
+        if joined:
+            items.append(joined)
+        current.clear()
+
+    for line in section_text.splitlines():
+        if _BULLET_START_RE.match(line):
+            _flush()
+            current.append(_BULLET_START_RE.sub("", line, count=1))
+        elif current:
+            current.append(line.strip())
+        # else: stray text before any bullet — ignored.
+    _flush()
+    return items, section_start, section_end
+
+
+def _ensure_asks_root(store: Store) -> int | None:
+    """Find (or create) the schedule-less container every minted ask
+    parents under. Mirrors :func:`precis.workers.schedule.seed.ensure_watches_root`'s
+    find-then-create-under-lock shape. Best-effort — ``None`` on any
+    failure so a DB hiccup degrades to a parentless mint with a logged
+    warning rather than losing the ask.
+    """
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind='todo' AND retired_at IS NULL "
+                "AND meta->>'builtin' = %s LIMIT 1",
+                (_ASKS_ROOT_BUILTIN,),
+            ).fetchone()
+        if row is not None:
+            return int(row[0])
+        with store.tx() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind='todo' AND retired_at IS NULL "
+                "AND meta->>'builtin' = %s LIMIT 1 FOR UPDATE",
+                (_ASKS_ROOT_BUILTIN,),
+            ).fetchone()
+            if row is not None:
+                return int(row[0])
+            ref = store.insert_ref(
+                kind="todo",
+                slug=None,
+                title=_ASKS_ROOT_TITLE,
+                meta={"builtin": _ASKS_ROOT_BUILTIN},
+                conn=conn,
+            )
+            return int(ref.id)
+    except Exception:  # pragma: no cover - defensive, see docstring
+        log.warning(
+            "doctor_report: could not resolve/mint the asks root", exc_info=True
+        )
+        return None
+
+
+def _find_open_ask(store: Store, key: str) -> tuple[int, int] | None:
+    """``(ref_id, seen_count)`` of a live, not-done ``waiting-for:reto``
+    ask carrying ``meta.doctor_ask_key == key``, or ``None``."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id, COALESCE((r.meta->>'seen_count')::int, 1)
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND r.meta ->> 'doctor_ask_key' = %s
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
+                       WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', %s, %s)
+             ORDER BY r.ref_id DESC
+             LIMIT 1
+            """,
+            (key, "won't-do", "auto-timeout"),
+        ).fetchone()
+    if row is None:
+        return None
+    return int(row[0]), int(row[1])
+
+
+def _mint_ask_todo(
+    store: Store,
+    *,
+    parent_id: int | None,
+    key: str,
+    title: str,
+    detail: str | None,
+    report_ref_id: int | None,
+) -> int:
+    """Mint one ``waiting-for:reto`` todo for a fresh ask."""
+    meta: dict[str, Any] = {"doctor_ask_key": key, "seen_count": 1}
+    if report_ref_id is not None:
+        meta["doctor_report_id"] = report_ref_id
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta=meta,
+            parent_id=parent_id,
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.open("waiting-for:reto"), set_by="system", conn=conn)
+        if detail:
+            store.chunks.insert_chunks(
+                ref.id,
+                [ChunkInsert(ord=0, text=detail, meta={"chunk_kind": _BODY_KIND})],
+                conn=conn,
+            )
+    return int(ref.id)
+
+
+def convert_needs_a_human(
+    store: Store,
+    body: str,
+    *,
+    report_ref_id: int | None = None,
+) -> str:
+    """Turn each bullet of the report's :data:`NEEDS_A_HUMAN_HEADING`
+    section into (or bump) a ``waiting-for:reto`` todo, rewriting the
+    section in the returned body as ``- td<id>: <first line>`` lines so
+    the filed report links into Reto's queue (``search(kind='todo',
+    tags=['waiting-for:reto'])``) instead of leaving the ask stranded in
+    prose (``docs/backlog/doctor-report-and-alert-channel-quality.md``
+    piece B).
+
+    Called from :func:`precis.workers.job_types.doctor_tick.run` after
+    :func:`strip_preamble`, before the body is appended to the day's
+    report draft. No section is a no-op; a parse problem or a DB
+    surprise logs at WARNING and returns ``body`` unchanged — converting
+    the section is a nicety, never a reason to fail a tick that would
+    otherwise have filed a clean report.
+    """
+    try:
+        parsed = _parse_needs_a_human_bullets(body)
+        if parsed is None:
+            return body
+        items, section_start, section_end = parsed
+        if not items:
+            return body
+
+        parent_id = _ensure_asks_root(store)
+        if parent_id is None:
+            log.warning(
+                "doctor_report: no asks root resolved; minting needs-a-human "
+                "todo(s) parentless"
+            )
+
+        rendered: list[str] = []
+        for item in items:
+            lines = item.splitlines()
+            first_line = lines[0].strip()
+            detail = "\n".join(lines[1:]).strip() or None
+            title = first_line
+            if len(title) > _ASK_TITLE_MAX:
+                title = title[: _ASK_TITLE_MAX - 1].rstrip() + "…"
+            key = _doctor_ask_key(item)
+
+            existing = _find_open_ask(store, key)
+            if existing is not None:
+                ref_id, seen_count = existing
+                seen_count += 1
+                store.stamp_ref_meta(ref_id, {"seen_count": seen_count})
+                rendered.append(f"- td{ref_id}: {first_line} (seen {seen_count}×)")
+            else:
+                ref_id = _mint_ask_todo(
+                    store,
+                    parent_id=parent_id,
+                    key=key,
+                    title=title,
+                    detail=detail,
+                    report_ref_id=report_ref_id,
+                )
+                rendered.append(f"- td{ref_id}: {first_line}")
+
+        new_section = "\n" + "\n".join(rendered) + "\n"
+        return body[:section_start] + new_section + body[section_end:]
+    except Exception:  # pragma: no cover - defensive, see docstring
+        log.warning("doctor_report: needs-a-human conversion failed", exc_info=True)
+        return body
 
 
 def utc_date_tag(when: datetime | None = None) -> str:
@@ -282,8 +557,10 @@ __all__ = [
     "AUTHOR",
     "FOLDER",
     "FRESH_WINDOW",
+    "NEEDS_A_HUMAN_HEADING",
     "REPORT_FIRST_HEADING",
     "DoctorReport",
+    "convert_needs_a_human",
     "ensure_report_folder",
     "find_or_create_report",
     "find_report",

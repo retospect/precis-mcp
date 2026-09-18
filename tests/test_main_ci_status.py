@@ -73,6 +73,7 @@ def test_red_unclaimed_prints_the_purpose_line(
 ) -> None:
     mod = _load()
     monkeypatch.setattr(mod, "latest_main_run", lambda: (RED_RUN, None))
+    monkeypatch.setattr(mod, "main_head_sha", lambda: RED_RUN["headSha"])
     monkeypatch.setattr(
         mod, "failing_jobs", lambda _id: ["lint", "test-linux (3.13, 5)"]
     )
@@ -94,6 +95,7 @@ def test_red_claimed_names_the_owner_and_pending_run(
 ) -> None:
     mod = _load()
     monkeypatch.setattr(mod, "latest_main_run", lambda: (RED_RUN, PENDING_RUN))
+    monkeypatch.setattr(mod, "main_head_sha", lambda: RED_RUN["headSha"])
     monkeypatch.setattr(mod, "failing_jobs", lambda _id: ["lint"])
     monkeypatch.setattr(
         mod,
@@ -118,6 +120,34 @@ def test_green_is_silent_under_for_hook(
     monkeypatch.setattr(sys, "argv", ["main-ci-status"])
     assert mod.main() == 0
     assert "✓ main green on CI (8b881979, run 2" in capsys.readouterr().out
+
+
+def test_old_red_on_a_sha_main_left_behind_is_a_stale_listing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The list endpoint once returned a 6-day-old failure first. A red
+    older than 12h whose sha is no longer main's head is reported as a
+    stale listing — never as a RED to claim and fix."""
+    mod = _load()
+    old = {**RED_RUN, "databaseId": 7, "createdAt": "2026-09-12T16:54:37Z"}
+    monkeypatch.setattr(mod, "latest_main_run", lambda: (old, None))
+    monkeypatch.setattr(mod, "main_head_sha", lambda: "3fdae04c0000")
+    monkeypatch.setattr(mod, "failing_jobs", lambda _id: ["lint"])
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "looks stale" in out
+    assert "RED" not in out and "UNCLAIMED" not in out
+
+
+def test_runs_are_sorted_newest_first_before_picking_a_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load()
+    old_red = {**RED_RUN, "databaseId": 7, "createdAt": "2026-09-12T16:54:37Z"}
+    monkeypatch.setattr(mod, "_gh", lambda *a: json.dumps([old_red, GREEN_RUN]))
+    verdict, _ = mod.latest_main_run()
+    assert verdict is not None and verdict["databaseId"] == 2
 
 
 def test_cancelled_runs_are_skipped_not_verdicts(

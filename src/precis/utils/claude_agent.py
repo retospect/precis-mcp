@@ -1258,6 +1258,46 @@ def count_tool_use_events(stdout: str, *, name_prefix: str | None = None) -> int
 _count_tool_use_events = count_tool_use_events
 
 
+def stream_mcp_server_status(stdout: str) -> dict[str, str] | None:
+    """``{server name: status}`` from the stream's ``system``/``init`` event,
+    or ``None`` when no init event is present (text path, stub output).
+
+    ``claude -p --output-format stream-json`` opens with one
+    ``{"type":"system","subtype":"init",...,"mcp_servers":[{"name","status"}]}``
+    event; ``status`` is ``connected`` / ``failed`` / ``needs-auth`` /
+    ``pending``. This is the only place the transport says whether the
+    precis MCP server actually *registered* — the discriminator a
+    tool-starved review pass (gr197478 / gr245505) needs: ``precis=failed``
+    is a config/credential defect on the host, ``precis=connected`` with
+    zero ``mcp__precis__*`` calls is the model declining tools it had.
+    """
+    import json as _json
+
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if (
+            not isinstance(ev, dict)
+            or ev.get("type") != "system"
+            or ev.get("subtype") != "init"
+        ):
+            continue
+        servers = ev.get("mcp_servers")
+        if not isinstance(servers, list):
+            return {}
+        return {
+            str(s.get("name")): str(s.get("status") or "?")
+            for s in servers
+            if isinstance(s, dict) and s.get("name")
+        }
+    return None
+
+
 def count_successful_tool_results(
     stdout: str, *, name_prefix: str | None = None
 ) -> int:

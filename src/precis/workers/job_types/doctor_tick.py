@@ -38,6 +38,11 @@ Verbatim means the model's sign-off chatter would otherwise open the report,
 so the reply passes through :func:`precis.workers.doctor_report.strip_preamble`
 on the way in — everything before the first ``## Classification`` heading is
 dropped, and a reply with no such heading fails the tick instead of filing.
+The reply's ``## Needs a human`` bullets then go through
+:func:`precis.workers.doctor_report.convert_needs_a_human`, which mints (or
+bumps) a ``waiting-for:reto`` todo per bullet and rewrites the section into
+``- td<id>: ...`` lines before the body is filed — the model files gripes,
+not todos; the conversion is deterministic, not a model write.
 
 Same dispatch shape as ``plan_tick`` (a hardcoded ``run`` entry in
 ``claude_inproc._run_one``, not the plugin ``dispatch`` protocol): the
@@ -267,6 +272,11 @@ def run(
         )
 
     ref, _created = doctor_report.find_or_create_report(store, date_tag)
+    # Turn each "## Needs a human" bullet into (or bump) a
+    # waiting-for:reto todo, rewriting the section into `- td<id>: ...`
+    # lines, before the body is filed — best-effort, never raises (see
+    # convert_needs_a_human's docstring).
+    body = doctor_report.convert_needs_a_human(store, body, report_ref_id=ref.id)
     # Same-day re-ticks (the 8h cadence fires up to 3x within one UTC
     # day, per the freshness-window margin) APPEND rather than replace —
     # the day's report is a running log of this UTC day's ticks, and

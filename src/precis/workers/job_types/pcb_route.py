@@ -13,7 +13,10 @@ ACTUALLY clean** — no residual same-layer crossing on its segments (a
 straight-line sweep at L3, :func:`precis.pcb.geom.segments_cross`, mirrors
 ``ir.same_layer_crossing_count``'s own admissibility direction: zero here
 means zero routed crossings) and no over-capacity gap the realizer flagged
-it in. Both failure modes name the blocking participants in
+it in — both PLACEMENT-time chord estimates, so both are applied only to a
+net the maze router left without copper; a routed net's copper is the proof
+(the gap warning still reaches the job summary). Both failure modes name the
+blocking participants in
 ``pcb_routes.fail`` (backlog: "fail legibly") rather than just flipping a
 bit — this is what lets ``route_complete`` (the gate evaluator) stay a
 cheap status read instead of re-deriving any of this itself. A dangling
@@ -485,9 +488,20 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         chord_crossings = (
             [] if net_id in routed_nets else crossing_fail.get(net_name, [])
         )
+        # Same rule for the gap-capacity warnings: `_gap_usage` is the
+        # SAME placement-time chord geometry (instance-courtyard gaps,
+        # side-blind — a bottom-mounted sink directly under a top-mounted
+        # array reads as a 0 mm gap that "56 strands want through"), and
+        # the maze router's own copper is the proof that the path exists.
+        # Before this gate every fabric net on ewod-dogfood-2 that DID
+        # route came back 'failed' on that one phantom warning
+        # (gr346962's verification run). A net with no copper keeps the
+        # warning as its reason; a routed net keeps it only in the job
+        # summary's warning list.
+        congestion = [] if net_id in routed_nets else congestion_fail.get(net_name, [])
         problems = (
             chord_crossings
-            + congestion_fail.get(net_name, [])
+            + congestion
             + unrouted_fail.get(net_name, [])
             + unstitched_fail.get(net_name, [])
         )
