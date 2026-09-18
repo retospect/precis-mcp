@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from precis.store import Store
 from precis.utils.claude_agent import ContainerRequiredError
 from precis.workers.job_types import fix_gripe
 from precis.workers.job_types.fix_gripe import (
@@ -173,6 +174,114 @@ class TestComposePrompt:
         # process pushes on its behalf (it has no push creds/network route).
         assert "Do NOT push" in prompt
         assert "trusted process pushes" in prompt
+
+    def test_diagnosis_comment_narrows_the_brief(self) -> None:
+        """A resolvable ``diagnosis_job_id`` swaps the full comment timeline
+        for the gripe body + the one DIAGNOSIS comment (Piece C part 3)."""
+        prompt = _compose_prompt(
+            ref_title="bug",
+            blocks=[
+                _FakeBlock("the bug body"),
+                _FakeBlock("a human comment that should NOT appear"),
+            ],
+            diagnosis_comment=(
+                "DIAGNOSIS (auto, job 99):\nRoot cause: the thing.\nConfidence: 0.90"
+            ),
+        )
+        assert "BODY: the bug body" in prompt
+        assert "PRIOR DIAGNOSIS" in prompt
+        assert "Root cause: the thing." in prompt
+        assert "a human comment that should NOT appear" not in prompt
+        assert "COMMENT 1" not in prompt
+
+    def test_no_diagnosis_comment_keeps_full_timeline(self) -> None:
+        """``diagnosis_comment=None`` (the default) is byte-for-byte the old
+        behaviour — full BODY + numbered COMMENT timeline."""
+        prompt = _compose_prompt(
+            ref_title="bug",
+            blocks=[_FakeBlock("the bug body"), _FakeBlock("a comment")],
+        )
+        assert "BODY: the bug body" in prompt
+        assert "COMMENT 1: a comment" in prompt
+        assert "PRIOR DIAGNOSIS" not in prompt
+
+
+# ── _resolve_diagnosis_comment / _find_diagnosis_comment ───────────
+
+
+class TestResolveDiagnosisComment:
+    def test_no_params_returns_none(self) -> None:
+        assert fix_gripe._resolve_diagnosis_comment(_FakeStoreUnused(), 1, None) is None
+
+    def test_no_diagnosis_job_id_key_returns_none(self) -> None:
+        assert (
+            fix_gripe._resolve_diagnosis_comment(_FakeStoreUnused(), 1, {"gripe_id": 1})
+            is None
+        )
+
+    def test_malformed_diagnosis_job_id_returns_none(self) -> None:
+        params = {"diagnosis_job_id": "not-an-int"}
+        assert (
+            fix_gripe._resolve_diagnosis_comment(_FakeStoreUnused(), 1, params) is None
+        )
+
+    def test_finds_the_matching_comment(self, store: Store) -> None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT public.file_gripe_readonly(%s)", ("a bug",)
+            ).fetchone()
+            assert row is not None
+            gripe_id = int(row[0])
+            conn.commit()
+        from precis.workers.executors._common import append_chunk
+
+        with store.pool.connection() as conn:
+            append_chunk(
+                store,
+                gripe_id,
+                "gripe_comment",
+                "DIAGNOSIS (auto, job 7):\nRoot cause: the actual bug.\n"
+                "Confidence: 0.85",
+                conn=conn,
+            )
+            conn.commit()
+
+        found = fix_gripe._resolve_diagnosis_comment(
+            store, gripe_id, {"diagnosis_job_id": 7}
+        )
+        assert found is not None
+        assert "Root cause: the actual bug." in found
+
+    def test_wrong_job_id_finds_nothing(self, store: Store) -> None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT public.file_gripe_readonly(%s)", ("a bug",)
+            ).fetchone()
+            assert row is not None
+            gripe_id = int(row[0])
+            conn.commit()
+        from precis.workers.executors._common import append_chunk
+
+        with store.pool.connection() as conn:
+            append_chunk(
+                store,
+                gripe_id,
+                "gripe_comment",
+                "DIAGNOSIS (auto, job 7):\nRoot cause: the actual bug.",
+                conn=conn,
+            )
+            conn.commit()
+
+        assert (
+            fix_gripe._resolve_diagnosis_comment(
+                store, gripe_id, {"diagnosis_job_id": 8}
+            )
+            is None
+        )
+
+
+class _FakeStoreUnused:
+    """Stand-in for params-shape tests that never reach a DB call."""
 
 
 @dataclass(frozen=True)

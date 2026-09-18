@@ -1285,7 +1285,12 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
 
     t0 = time.perf_counter()
     try:
-        outcome = spec.run(store=store, job_id=ref_id, gripe_id=gripe_id)
+        outcome = spec.run(
+            store=store,
+            job_id=ref_id,
+            gripe_id=gripe_id,
+            params=_job_params(store, ref_id),
+        )
     except Exception as exc:
         wall = time.perf_counter() - t0
         with store.pool.connection() as conn:

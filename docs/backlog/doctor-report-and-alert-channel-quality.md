@@ -93,9 +93,9 @@ with same bullets → zero new, seen_count bumped; a bullet whose only change
 is a gr-id/number dedups; section rewritten with td ids; no section → no
 todos.
 
-### Piece C — wire diagnosis → fix
+### Piece C — wire diagnosis → fix — **SHIPPED** 2026-09-18
 
-**Now.** `diagnose_scan` mints `diagnose_gripe` per open undiagnosed gripe;
+**Now (pre-ship).** `diagnose_scan` mints `diagnose_gripe` per open undiagnosed gripe;
 on success it appends a `DIAGNOSIS (auto, job …)` comment and, only if
 `PRECIS_DIAGNOSE_AUTOPROMOTE=1` and confidence ≥ 0.8, tags `OPEN:auto-fix`.
 The ONLY minter of `fix_gripe` todos is `backlog_groom`
