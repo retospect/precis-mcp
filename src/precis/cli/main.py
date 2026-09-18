@@ -47,6 +47,7 @@ from precis.cli import (
     migrate,
     migrate_refs,
     nanopub,
+    paper,
     patent,
     pcb,
     perplexity,
@@ -218,6 +219,10 @@ def main() -> None:
         draft.run(args)
         return
 
+    if args.cmd == "paper":
+        paper.run(args)
+        return
+
     if args.cmd == "verify":
         verify.run(args)
         return
@@ -369,6 +374,7 @@ def _build_parser() -> argparse.ArgumentParser:
     stats.add_parser(sub)
     resolve.add_parser(sub)
     draft.add_parser(sub)
+    paper.add_parser(sub)
     verify.add_parser(sub)
     tools.add_parser(sub)
     repl.add_parser(sub)

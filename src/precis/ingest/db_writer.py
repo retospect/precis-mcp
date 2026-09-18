@@ -32,6 +32,8 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.identity import normalize_arxiv, normalize_doi
+from precis.store._refs_ops import project_paper_authors
+from precis.utils.authors import AUTHOR_SOURCES
 
 log = logging.getLogger(__name__)
 
@@ -376,6 +378,19 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     ref_id_value = row[0]
     assert isinstance(ref_id_value, int)
     ref_id: int = ref_id_value
+
+    # 3b. paper_authors projection (docs/backlog/paper-authors-1nf.md
+    # §S1) — right after RETURNING ref_id. This module deliberately
+    # keeps Store *mixins* out of its loop (see the module docstring),
+    # but ``project_paper_authors`` is a bare-``Connection`` function,
+    # not a Store method, so it's the one Store-adjacent import this
+    # writer takes. ``paper.provider`` doubles as the authors'
+    # provenance when it names a lookup tier already in
+    # ``AUTHOR_SOURCES`` (``crossref``/``s2``); every other provider
+    # (``markup``/``arxiv``/``embedded``/None) falls back to ``pdf``.
+    if paper.kind == "paper" and paper.authors:
+        author_source = paper.provider if paper.provider in AUTHOR_SOURCES else "pdf"
+        project_paper_authors(conn, ref_id, paper.authors, source=author_source)
 
     # 4. ref_identifiers rows
     identifiers: dict[str, str] = {}

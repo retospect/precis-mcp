@@ -389,12 +389,21 @@ def enrich_paper(
     if outcome.authors_source:
         meta_patch[SOURCE_KEY] = outcome.authors_source
 
+    # paper_authors.source (docs/backlog/paper-authors-1nf.md §S1):
+    # the Crossref replacement is tier 'crossref'; the comma-split
+    # heuristic over the existing byline is no better than what a PDF
+    # scrape would have given, so it lands as 'pdf'.
+    authors_table_source = {"crossref": "crossref", "heuristic": "pdf"}.get(
+        outcome.authors_source or ""
+    )
+
     with store.tx() as conn:
         store.update_paper_fields(
             ref_id,
             authors=new_authors,
             meta_patch=meta_patch,
             source="paper-meta-enrich",
+            authors_source=authors_table_source,
             conn=conn,
         )
         if extra_ids:
