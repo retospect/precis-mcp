@@ -29,6 +29,22 @@ file and move on, not re-litigate.
   actions; baseline staleness + migration-prefix uniqueness gated in
   `tests/test_schema_baseline.py`.
 
+## Rejected designs (dated; the alternative, not just the choice)
+
+- **A release/ship branch** — cut a rev of `main`, gate and deploy
+  *that*, merge back "like any other branch" (proposed + rejected
+  2026-09-18). The merge-back step is unavailable: `scripts/ship`
+  squash-merges the **whole worktree tree** onto `origin/main`, so a
+  branch cut N commits ago reverts every sibling that landed since;
+  returning only hotfixes means cherry-pick, not squash-merge. A
+  lagging branch on a flat squash-merged trunk is also a conflict
+  factory, and its tip never appears in `main`'s history, which breaks
+  the deploy-lag count in `scripts/ship`. One cluster, continuous
+  deploy, no versioned consumers — there is no release to *maintain*,
+  only one to *identify*, which is what `.ship-sha` + `--pinned` do at
+  no merge cost. **Revisit trigger:** a second deploy target, or
+  consumers pinned to a version.
+
 ## Accepted risks (dated; revisit on the named trigger only)
 
 - **No web auth / CSRF** (accepted 2026-08-02: local, single-user,
