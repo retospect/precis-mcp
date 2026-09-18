@@ -106,7 +106,7 @@ def test_find_papers_by_author_no_match(store: Store) -> None:
 def test_find_papers_by_author_given_family_shape(store: Store) -> None:
     """A canonical {given,family}-only byline (no 'name' key) is invisible
     to a bare ``elem->>'name'`` match — S0 fix: matched on the display
-    form + the reversed "family, given" form (docs/backlog/paper-authors-1nf.md §S0)."""
+    form + the reversed "family, given" form (precis.utils.authors module docstring)."""
     rid = _seed_paper_entries(
         store,
         slug="luo-ge",

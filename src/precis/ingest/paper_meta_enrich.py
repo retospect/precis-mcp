@@ -207,7 +207,7 @@ def _merge_openalex_author_ids(
     """Merge OpenAlex identity onto the already-normalized Crossref author
     list, in place: ``openalex_author_id`` always, ``orcid`` only when the
     Crossref entry doesn't already carry one (docs/backlog/
-    paper-authors-1nf.md §S2).
+    precis.utils.authors module docstring).
 
     Paired by position when the two lists are the same length (the common
     case — both sources parsed the same byline); otherwise by
@@ -444,7 +444,7 @@ def enrich_paper(
     if outcome.authors_source:
         meta_patch[SOURCE_KEY] = outcome.authors_source
 
-    # paper_authors.source (docs/backlog/paper-authors-1nf.md §S1):
+    # paper_authors.source (precis.utils.authors module docstring):
     # the Crossref replacement is tier 'crossref'; the comma-split
     # heuristic over the existing byline is no better than what a PDF
     # scrape would have given, so it lands as 'pdf'.

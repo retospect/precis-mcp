@@ -194,7 +194,7 @@ class TestWritePaper:
         )
 
     def test_s2_provider_projects_paper_authors_source(self, store):
-        """docs/backlog/paper-authors-1nf.md §S2 — the Semantic Scholar
+        """precis.utils.authors module docstring — the Semantic Scholar
         lookup path (``pipeline.py::_paper_from_lookup(...,
         provider='s2')``) needs no separate write; ``write_paper`` already
         maps ``paper.provider`` through ``AUTHOR_SOURCES`` onto

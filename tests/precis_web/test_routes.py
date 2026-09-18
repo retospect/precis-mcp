@@ -1729,7 +1729,7 @@ def test_paper_meta_tab_shows_linked_extra_identifiers(client, runtime) -> None:
 def test_paper_meta_tab_authors_table_shows_orcid_and_scholar_links(
     client, runtime
 ) -> None:
-    """docs/backlog/paper-authors-1nf.md §S4 — the Meta tab's author
+    """precis.utils.authors module docstring — the Meta tab's author
     table (replacing the flat ``authors_display`` line once
     ``author_rows`` is non-empty) links each author's ORCID iD and a
     Google Scholar name search, plus the paper-level Scholar lookup

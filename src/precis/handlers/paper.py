@@ -1812,7 +1812,7 @@ class PaperHandler(Handler):
 
     def _render_authors(self, ref: Ref) -> Response:
         """``view='authors'`` — the ``paper_authors`` byline table
-        (docs/backlog/paper-authors-1nf.md §S4): position, display name,
+        (precis.utils.authors module docstring): position, display name,
         source tier chip, a ``✓ verified <date>`` mark when ORCID has
         cross-checked the row, and the three per-author links (ORCID —
         iD + the ``oi<id>`` node handle when a ``kind='orcid'`` node is

@@ -525,7 +525,7 @@ def _render_detail(
         "tags": tags,
         "authors_display": _authors_str(ref),
         "author_lines": _author_edit_lines(ref),
-        # paper_authors 1NF table rows (docs/backlog/paper-authors-1nf.md
+        # paper_authors 1NF table rows (precis.utils.authors module docstring
         # §S4), each augmented with its rendered ``line`` (textarea
         # prefill grammar) and ``links`` (ORCID/OpenAlex/Scholar) — the
         # template falls back to ``authors_display`` when this is empty

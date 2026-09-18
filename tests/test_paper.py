@@ -526,7 +526,7 @@ class TestViews:
 
 # ---------------------------------------------------------------------------
 # view='authors' — the paper_authors byline table (docs/backlog/
-# paper-authors-1nf.md §S4)
+# precis.utils.authors module docstring)
 # ---------------------------------------------------------------------------
 
 
@@ -1738,7 +1738,7 @@ class TestPaperEdit:
     ) -> None:
         """The web-textarea grammar's bracketed ORCID iD is parsed off
         onto the row, the write is ``source='human'`` (docs/backlog
-        paper-authors-1nf.md §S4), and — since an author byline was
+        precis.utils.authors module docstring), and — since an author byline was
         passed — the paper's ``human_verified_at`` sign-off stamp is
         also set (once, not doubled by any other write on this path)."""
         ref_id = _seed_paper(store, slug="luo2024ronggang")

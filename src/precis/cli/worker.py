@@ -2211,7 +2211,7 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_paper_meta_enrich_pass)
 
         # ORCID identity enrich — the background ORCID tier
-        # (docs/backlog/paper-authors-1nf.md §S3). Fetches unvisited
+        # (precis.utils.authors module docstring). Fetches unvisited
         # kind='orcid' stub nodes, stores the full record, links held
         # works, and cross-checks each authored edge's paper DOI against
         # the record's works. Same throttle shape as openalex_enrich /

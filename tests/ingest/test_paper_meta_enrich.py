@@ -181,7 +181,7 @@ class TestCrossrefAuthorReplace:
 
 
 class TestOpenAlexAuthorMerge:
-    """docs/backlog/paper-authors-1nf.md §S2 — the OpenAlex leg (fetched
+    """precis.utils.authors module docstring — the OpenAlex leg (fetched
     only when Crossref resolved) merges ``openalex_author_id`` (and a
     missing ``orcid``) onto the Crossref author entries, never reordering
     or dropping one."""

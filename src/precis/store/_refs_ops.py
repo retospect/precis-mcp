@@ -158,7 +158,7 @@ def project_paper_authors(
     conn: Connection, ref_id: int, authors: Any, *, source: str
 ) -> list[dict[str, Any]]:
     """The one write choke point for a paper's byline table + jsonb
-    projection (docs/backlog/paper-authors-1nf.md §S1): DELETE+INSERT
+    projection (precis.utils.authors module docstring): DELETE+INSERT
     ``paper_authors`` from *authors* (any ``refs.authors``-shaped input —
     a list of dict/str entries, or a semicolon-packed string, same
     tolerance as :func:`~precis.utils.authors.normalize_authors`), then
@@ -1511,7 +1511,7 @@ class RefsMixin:
         conn: Connection | None = None,
     ) -> list[dict[str, Any]]:
         """The one write choke point for a paper's byline
-        (docs/backlog/paper-authors-1nf.md §S1) — every ``authors``
+        (precis.utils.authors module docstring) — every ``authors``
         writer (``update_paper_fields``, ``insert_ref``,
         ``ingest/db_writer.py``'s raw insert) routes through this (or its
         bare-``Connection`` twin, :func:`project_paper_authors`, when no
@@ -1568,7 +1568,7 @@ class RefsMixin:
         conn: Connection | None = None,
     ) -> None:
         """Stamp an ORCID cross-check verification on one ``paper_authors``
-        row (docs/backlog/paper-authors-1nf.md §S3).
+        row (precis.utils.authors module docstring).
 
         Always sets ``verified_at``/``updated_at`` to ``now()``. The name
         fields (``given``/``middle``/``family``) and ``source`` are applied
@@ -2677,7 +2677,7 @@ class RefsMixin:
     ) -> list[int]:
         """Paper-level author lookup — ``search(kind='paper', author=…)``.
 
-        S1 (docs/backlog/paper-authors-1nf.md): matches the
+        S1 (precis.utils.authors module docstring): matches the
         ``paper_authors`` table (source of truth) rather than the
         ``refs.authors`` jsonb S0 patched over as an interim fix. Three
         forms per author row: ``full_name`` (the generated "Given M.

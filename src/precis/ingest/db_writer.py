@@ -379,7 +379,7 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     assert isinstance(ref_id_value, int)
     ref_id: int = ref_id_value
 
-    # 3b. paper_authors projection (docs/backlog/paper-authors-1nf.md
+    # 3b. paper_authors projection (precis.utils.authors module docstring
     # §S1) — right after RETURNING ref_id. This module deliberately
     # keeps Store *mixins* out of its loop (see the module docstring),
     # but ``project_paper_authors`` is a bare-``Connection`` function,

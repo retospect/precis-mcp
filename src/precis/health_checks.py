@@ -253,7 +253,7 @@ _PAPER_AUTHORS_DRIFT_EXAMPLES = 5
 
 def paper_authors_drift(conn: Any) -> dict[str, Any]:
     """Papers whose ``refs.authors`` jsonb length disagrees with their
-    ``paper_authors`` row count (docs/backlog/paper-authors-1nf.md §S1).
+    ``paper_authors`` row count (precis.utils.authors module docstring).
 
     ``paper_authors`` is the source of truth; every sanctioned writer
     goes through ``store.set_paper_authors``, which regenerates

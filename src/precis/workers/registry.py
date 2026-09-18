@@ -518,7 +518,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
-        # docs/backlog/paper-authors-1nf.md §S3: the background ORCID
+        # precis.utils.authors module docstring: the background ORCID
         # identity tier. Fetches unvisited kind='orcid' stub nodes (minted
         # by paper_meta_enrich's per-author ORCID hits), stores the full
         # record via the same path OrcidHandler.get() uses, links held

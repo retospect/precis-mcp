@@ -1,5 +1,5 @@
 """ORCID identity tier — background worker + cross-check
-(docs/backlog/paper-authors-1nf.md §S3).
+(precis.utils.authors module docstring).
 
 12,008 ``kind='orcid'`` nodes exist in prod, almost all as name+iD stubs
 minted by :mod:`precis.ingest.paper_meta_enrich` (a Crossref/OpenAlex
@@ -79,7 +79,7 @@ _STATE_KEY = "orcid_enrich:last_run"
 _DEFAULT_BATCH_LIMIT = 100
 _BATCH_ENV_VAR = "PRECIS_ORCID_ENRICH_BATCH"
 
-#: Gentle-by-decision pacing (docs/backlog/paper-authors-1nf.md §S3): the
+#: Gentle-by-decision pacing (precis.utils.authors module docstring): the
 #: ORCID public API allows far more, but this tier deliberately trickles.
 _MAX_FETCHES_PER_SECOND = 2.0
 _MIN_INTERVAL_S = 1.0 / _MAX_FETCHES_PER_SECOND
@@ -175,7 +175,7 @@ def _cross_check_node(
 ) -> None:
     """Verify each ``authored`` edge of *node_ref_id* against *record*'s
     works DOIs, updating the matching ``paper_authors`` row (or flagging
-    the edge unconfirmed) per docs/backlog/paper-authors-1nf.md §S3."""
+    the edge unconfirmed) per precis.utils.authors module docstring."""
     works = record.get("works") or []
     work_dois = {normalize_doi(w.get("doi")) for w in works if w.get("doi")}
     work_dois.discard(None)

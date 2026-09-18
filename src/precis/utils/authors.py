@@ -31,6 +31,40 @@ still ambiguous, or recognizably junk (see :func:`is_junk_author_name`
 — an email, a bare section heading, an over-long non-name string),
 stays ``{"name"}`` or is dropped outright.
 
+**The table is the truth (migration 0168).** Since ``paper_authors``,
+``refs.authors`` on a ``kind='paper'`` ref is a *projection*: one row per
+byline position with ``given`` / ``middle`` / ``family`` / ``name_raw``
+(the string as received, never rewritten) / ``orcid`` /
+``openalex_author_id`` / ``person_ref_id`` (the ``kind='orcid'`` node) /
+``source`` / ``verified_at``. Every paper byline write goes through
+``store.set_paper_authors`` (``insert_ref``, ``update_paper_fields`` and
+``ingest/db_writer.py`` route there by kind), which DELETE+INSERTs the
+rows and regenerates the jsonb from them; ``health_checks.
+paper_authors_drift`` catches anything that wrote the jsonb directly.
+Non-paper kinds (draft/patent/datasheet) stay jsonb-only. Neither path
+ever touches ``cite_key`` — it is coupled to the corpus PDF path.
+
+The middle column: :func:`split_middle` peels the trailing run of
+single-letter tokens off ``given`` (``"Bryan R."`` → ``("Bryan",
+"R.")``); the first token is never consumed (``"K. S."`` → given ``K.``,
+middle ``S.``) and hyphenated initials stay in ``given``. Rows are
+rebuilt as a "Given Middle Family" entry by :func:`entry_from_author_row`.
+
+``source`` records the tier that wrote the row (:data:`AUTHOR_SOURCES`):
+``orcid`` (background ``workers/orcid_enrich.py`` cross-check — paper DOI
+in the person's ORCID works stamps ``verified_at`` and takes the ORCID
+names) > ``crossref`` / ``openalex`` / ``s2`` (lookup tiers; ``openalex``
+also contributes ``openalex_author_id`` and any missing ``orcid``) >
+``pdf`` / ``legacy`` (scraped, or projected from pre-0168 jsonb) with
+``llm`` reserved for a future residual pass. ``human`` wins: a paper
+holding any ``source='human'`` row ignores later non-human writes (the
+store re-projects the human rows), while the ORCID cross-check may still
+stamp ``verified_at`` on it. Humans write the textarea/edit grammar
+``Family, Given M. [0000-0002-1825-0097]`` (:func:`author_line` renders
+it, the string branch of :func:`normalize_authors` parses it). Google
+Scholar is links-only (:func:`author_links`, :func:`paper_scholar_link`)
+— it has no API.
+
 ``to_name_dicts`` predates :func:`normalize_authors` and is kept for
 the paths that still want the old squash-everything-to-``{"name"}``
 behaviour (metadata re-resolution / backfill enrichment, out of scope

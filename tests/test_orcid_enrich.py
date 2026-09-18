@@ -1,5 +1,5 @@
 """The ORCID identity tier — background fetch + cross-check pass
-(docs/backlog/paper-authors-1nf.md §S3).
+(precis.utils.authors module docstring).
 
 DB-backed via the ``store`` fixture (skips without a reachable test
 Postgres). ``fetch_record`` is always stubbed (``fetch_fn=``) so these

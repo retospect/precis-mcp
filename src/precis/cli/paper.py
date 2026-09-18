@@ -3,7 +3,7 @@
 Subcommands:
 
 * ``precis paper authors-resplit [--limit N] [--dry-run]`` — one-time
-  post-deploy pass (docs/backlog/paper-authors-1nf.md §S1): migration
+  post-deploy pass (precis.utils.authors module docstring): migration
   0168's SQL backfill projected every legacy ``refs.authors`` byline
   into ``paper_authors`` (``source='legacy'``), but SQL can't apply the
   Python split heuristics (:func:`precis.utils.authors.split_middle`,

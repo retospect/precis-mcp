@@ -71,7 +71,7 @@ class TestHelpers:
     def test_authorships_captures_openalex_author_id(self) -> None:
         """``author.id`` (an OpenAlex ``A…`` URL) lands as
         ``openalex_author_id`` in the short form — docs/backlog/
-        paper-authors-1nf.md §S2."""
+        precis.utils.authors module docstring."""
         work = {
             "authorships": [
                 {

@@ -794,7 +794,7 @@ class FakeStore(_FakeStoreBase):
         call via the same :func:`~precis.utils.authors.author_row_from_entry`
         the real store's migration/insert path uses. Good enough for the
         Meta panel author-table route tests (docs/backlog/
-        paper-authors-1nf.md §S4); real DB-backed behaviour (verified_at,
+        precis.utils.authors module docstring); real DB-backed behaviour (verified_at,
         person_ref_id, the human-source guard) is covered in
         ``tests/test_paper_authors.py``."""
         from precis.utils.authors import author_row_from_entry
