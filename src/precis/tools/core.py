@@ -658,28 +658,19 @@ def search(
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
-    `page_size` ≤ 100 (aliases: `k=`/`limit=`); `page=N` paginates.
-    Omit `kind` (or `'*'`) for cross-kind fan-out; `exclude=` skips
-    slugs; `reach=` ('local'|'remote'|'both'; patent/edgar);
-    `folder=` scopes to a subtree.
+    `page_size` ≤ 100 (aliases `k=`/`limit=`); `page=N` paginates. Omit
+    `kind` (or `'*'`) for cross-kind fan-out; `exclude=` skips slugs;
+    `reach=` ('local'|'remote'|'both'; patent/edgar); `folder=` scopes.
 
-    `mode=` `'hybrid'` (default) / `'lexical'` (exact string) /
-    `'semantic'` / `'verbatim'` (all query words present as chunk
-    keywords). `angle=`+`like=` spray `n` diverse hits;
-    `view='dreamable'`/`'stubs'`: special browses.
+    `mode=` 'hybrid' (default) / 'lexical' (exact) / 'semantic' /
+    'verbatim' (all query words as chunk keywords). `angle=`+`like=`
+    spray `n` diverse hits; `view='dreamable'`/`'stubs'` browse.
 
-    Broad retrieval (paper): `queries=`/`answers=` (HyDE) fuse ranked
-    legs; `per_paper=` spreads across papers; `good=True` queues a deep
-    search; `title=`/`author=` look up by byline.
-
-    Claims (finding): `trust='verified'` = evidence-backed + unopposed;
-    `'signed'` = provenance; also `'disputed'`/`'any'`. `status=`:
-    chase lifecycle.
-
-    `uncited=<draft>` drops sources it already cites.
-
-    `wants=` (se): ranked library search, never a strict filter;
-    `compose=` (se): composition proposer over it (precis-se-help).
+    paper: `queries=`/`answers=` (HyDE) fuse legs; `per_paper=` spreads;
+    `good=True` queues a deep search; `title=`/`author=` by byline.
+    finding: `trust='verified'|'signed'|'disputed'|'any'`; `status=`.
+    `uncited=<draft>` drops already-cited sources. se: `wants=` ranked
+    library search (never a filter); `compose=` proposer over it.
 
     Full docs: get(kind='skill', id='precis-search-help').
     """

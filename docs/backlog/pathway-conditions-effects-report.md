@@ -50,6 +50,19 @@ section — which views were insufficient, which numbers untrusted, which
 effects have zero data. File the tool gaps as gripes. Output feeds Phases
 1–2 with evidence instead of guesses.
 
+**DONE 2026-09-17** (Sonnet, read-only, against the e91c791e deploy):
+`~/precis-experiments/qu164903-effects/report-2026-09-17.md`, 25 pathways
+/ 15 structures. Findings: no clean H-effect read (the two H-bearing
+candidates also differ in dopant count); zero O/OH/H₂O co-adsorbates
+anywhere (gap audit confirmed exactly); 11/24 barriers untrusted, nearly
+all the `wrong_binder` shape catpath 0.21.0 fixes (data predates it);
+pw341034's U_opt (−41.5 V) is a degenerate 0 eV off-route NEB saddle the
+CHE scalars never cross-check. Gripes: gr345340 (`label_hi` drops a
+`set_element` dopant), gr345341 (U_opt/span not gated by the barrier's
+trust checks), gr345342 (results-table `site` is dopant-only). Unverified
+lead: the two Ag-subsurface candidates show 1 reconstruction warn each vs
+32–74 elsewhere.
+
 ### Phase 1 — precis views + ops (small, this repo)
 1. `get(kind='pathway', view='analysis'|'profile'|'compare', args={'U': x})`:
    port the viewer's `G(U)=G(0)+n_H·eU` shift into
@@ -197,3 +210,37 @@ tree touches pathway/quest.
 
 - **Results table N+1 on the tick hot path.** `quest/results_table.py::build_results_rows` does one `structure_load` plus one `links_for` + `fetch_refs_by_ids` per candidate, every tick and every `view=results`. ~150 round trips at 50 candidates — tolerable today (ticks are minutes apart), but wants a batch structure/links fetch before quests grow. Not fixed: needs a store API, a design call.
 - **Web vs TOON on a legacy pathway with zero prose warnings.** `warnings_toon` always prints the "pre-trust-schema artifact" note; the web detail page hides the whole block when prose, blocking and counts are all empty. Left as is: on the web page an empty block reads as noise, and the LLM surface (TOON) is the one that must be explicit. No web-side test covers `_pathway_warnings_sections`; add one when the template next changes.
+
+## Fix plan after Phase 0 (2026-09-17 evening; synthesis stopped, fixes first)
+
+Order = cheapest correctness fix first; each its own worktree cycle + /go.
+
+1. **gr345340 `label_hi` after `set_element`** — `store/_structure_ops.py`
+   `_label_hi(scene)` is not re-derived by the substitution op, so a doped
+   slab summarises as clean. Recompute from atoms after every element-changing
+   op; test = set_element on a Pd slab → label_hi carries the dopant. Small.
+2. **gr345341 CHE scalars not trust-gated** — `U_L`/`U_opt`/`span_at_Uopt`
+   arrive from the engine's aggregate (`precis_pathway/_dispatch_common.py`
+   harvest contract) and are stored regardless of the supplying edge's trust.
+   Precis-side gate first: null the scalars (+ a `blocked_by` note) when the
+   route edge that sets them has a fatal-fail record or a 0 eV saddle; the
+   engine-side fix (catpath, don't emit them) follows in the next catpath
+   bump. pw341034 (U_opt −41.5 V) is the regression fixture. Medium.
+3. **gr345353 unbudgeted `view='results'`/`'frontier'`** —
+   `handlers/quest.py` `_render_results` passes no budget; default to the
+   tick's 2500-token budget, accept `args={'budget': N}`, print the dropped
+   row count. Frontier rendering (`_render_frontier`) gets the same cap.
+   Small; mine.
+4. **gr345336 tick output "unparseable"** — `utils/llm/json_reply.py`
+   `extract_json_object` rejects a reply ending in a bare `}` with no fence;
+   root-cause pass first (truncation vs format), then fix + fixture from a
+   real failed job transcript. Small–medium.
+5. **gr345354 frontier headline "(none converged yet)" with 13 trusted
+   barriers** — `quest/frontier.py`; owned by worktree
+   imperative-churning-bumblebee until its /go lands; hand over or do after.
+6. **gr345342 results-table `site` dopant-only** — folds into Phase 1 item 2
+   (`meta.params` writer with co-adsorbate site); not a standalone fix.
+
+Then Phase 1 items 1–3 as written above. Pending docs-only qland from
+worktree jaunty-swinging-pixel (runbook promotion + this note) rides after
+bumblebee's deploy.

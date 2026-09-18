@@ -99,7 +99,15 @@ _SLUG_UNSAFE_RE = re.compile(r"[^a-z0-9]+")
 #: ``quest_autocatpath_harvested_upto``/``params`` stamped externally via
 #: ``stamp_ref_meta``) must survive an edit, not be wholesale-replaced.
 _STRUCTURE_OWNED_META_KEYS = frozenset(
-    {"lattice", "pbc", "version", "label_hi", "description", "last_relax"}
+    {
+        "lattice",
+        "pbc",
+        "version",
+        "label_hi",
+        "composition",
+        "description",
+        "last_relax",
+    }
 )
 
 
@@ -115,7 +123,14 @@ def _import_slug(dataset: str, config_id: str) -> str:
 
 
 def _label_hi(scene: Scene) -> dict[str, int]:
-    """Per-element high-water mark over live atoms, merged with the seed."""
+    """Per-element LABEL high-water mark over live atoms, merged with the seed.
+
+    This is label-minting bookkeeping (``Scene.next_label`` never reissues a
+    label after a vacancy), keyed by the label *prefix* — which is stable
+    across ``set_element`` by design. It is NOT the composition: a Pd slab
+    with ``aPd19`` transmuted to Ag still reads ``{"Pd": 36}`` here. The
+    live-element rollup is ``meta["composition"]`` (gr345340).
+    """
     hi = dict(scene.label_hi)
     for label in scene.atoms:
         m = _LABEL_RE.match(label)
@@ -153,6 +168,9 @@ class StructureMixin:
             "pbc": list(scene.cell.pbc),
             "version": version,
             "label_hi": _label_hi(scene),
+            # Live-element counts (what a doped slab actually is); label_hi
+            # above is label bookkeeping and keeps the pre-dopant prefix.
+            "composition": scene.composition(),
         }
         if description:
             meta["description"] = description

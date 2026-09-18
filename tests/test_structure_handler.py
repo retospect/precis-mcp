@@ -122,6 +122,23 @@ def test_externally_stamped_meta_survives_an_edit(structure, store):
     assert meta.get("version", 0) >= 1
 
 
+def test_set_element_stamps_live_composition_not_label_hi(structure, store):
+    # gr345340: label_hi is label-minting bookkeeping keyed by the (stable)
+    # label prefix, so a doped slab kept reading as clean Pd there. The
+    # live-element rollup lives in meta.composition; label_hi stays as-is so
+    # a later vacancy + add_atom can never reissue aPd1.
+    structure.put(id="pd_pair", text=_PD)
+    before = store.get_ref(kind="structure", id="pd_pair").meta or {}
+    assert before.get("composition") == {"Pd": 2}
+    structure.edit(
+        id="pd_pair",
+        ops=[{"op": "set_element", "atom": "aPd1", "element": "Ag"}],
+    )
+    meta = store.get_ref(kind="structure", id="pd_pair").meta or {}
+    assert meta.get("composition") == {"Pd": 1, "Ag": 1}
+    assert meta.get("label_hi") == {"Pd": 2}
+
+
 def test_validate_view_flags_overlap(structure):
     bad = json.dumps(
         {
