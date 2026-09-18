@@ -13,14 +13,44 @@ same day (doctor-report preamble strip, truncated-summary rejection,
 abbreviation allowlist, orphan-alert retirement + the `alert_backlog_rot`
 self-count fix); what follows is what is left.
 
-## gr225018 — work the campaigns down, do not bulk-close
+## gr225018 — the orphan invariant is the question, not the campaigns
 
-**Reto's call, 2026-09-18: work them down.** `gr225018` blames three
-chronic campaigns for the orphan pile: the Parkinson draft (`dr43014`)
-citation grounding, the CNT/nanobud chunk series, and the GROUNDING AUDIT
-campaign. These are real work, not gunk — they get drained, not deleted.
-Retiring the orphan alerts removed the noise; this removes the cause. Size
-it before starting; it is a campaign, not a session.
+**Reto's 2026-09-18 "work them down" was given under a wrong diagnosis
+and needs re-ruling.** `gr225018` comment 18 re-measured the 50 open
+`nursery:orphan` alerts against their *subject todos* rather than the
+alert titles: the three named campaigns are ~10 of the 50 (Parkinson
+`dr43014` 4, GROUNDING AUDIT ~6, CNT/nanobud `dc2445xxx` 0 — none of
+`al236409`–`al236469` is still open). The other ~40 are live work sketched
+this month (AIxMAT abstract, se+hexfold paper `td344088`, pcb place+route
+preprint, glass-foam buoyancy study, photonic arm dossier, EWOD-in-oil
+sourcing, …); 31 of the 50 are newer than 7 days. Draining the campaigns
+clears a fifth of the pile; "triaging" the rest would close this week's
+work. The ~10 campaign leaves are a short triage, not a campaign.
+
+**Mechanism.** `_detect_orphans` (`workers/nursery.py`) flags any open todo
+whose topmost todo ancestor lacks `meta.rotation_root=true`. That facet is
+owner-only (`handlers/_todo_guards.py` `_facet_violation`) and the `put()`
+default tier is subtask, so a top-level todo minted the normal way is an
+orphan by construction until someone stamps `tier='strategic'` on its
+root. The nursery count is silent since 2026-09-18, but the strategic
+view and the picks-7d rotation (`handlers/_todo_views.py`) list only
+`rotation_root` roots, so those ~40 trees are invisible there.
+
+**Options — Reto to pick one:**
+
+1. Keep the invariant, stamp the roots: one pass over the live top-level
+   roots with `tag(kind='todo', id=…, meta={'tier': 'strategic'})`. No
+   code. Steady state: every new top-level tree needs the stamp or stays
+   out of the rotation.
+2. Auto-stamp: a parentless todo minted by a non-worker source gets
+   `rotation_root=true` (the `meta.workspace` auto-stamp in
+   `precis-todo-tree-help` is the precedent). Small code change; loses
+   the "owner explicitly chose this as strategic" signal.
+3. Drop the invariant: retire the orphan detector; the strategic
+   view/rotation then needs another membership rule.
+
+Recommended: 1 now for the current pile, then rule on 2 by whether
+"top-level tree" and "strategic" are the same thing in practice.
 
 ## Doctor-report design (proposed, NOT yet approved — Reto to rule)
 
