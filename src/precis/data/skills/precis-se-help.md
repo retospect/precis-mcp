@@ -170,6 +170,25 @@ written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
 - `add_bom` / `remove_bom` — `block` | `a`+`b`, `item_kind`
   `component|part`, `item` (slug/C-number) · `qty` · `uom` · `reason`.
   Slugs aren't vetted at write time; `view='bom'` flags dangling ones.
+
+`view='order'` answers "what do I order": the instanced tree walked to
+purchasable leaves (`bound_kind='component'`/`'part'`, quantities
+multiplied through the arrays exactly like `view='bom'`), merged with any
+explicit `add_bom` lines naming the same item (never double-counted), plus
+a to-make table (`block · mode · qty`) for every unbound **leaf** block —
+an unbound block with children is a plain assembly of the things below
+it, not itself a thing to buy or make, so it gets no row; only a BOUND
+non-leaf gets the opposite treatment: one purchasable line saying `covers
+N block(s)`, with its children never separately ordered or listed. A
+cross-design instance (`template='<slug>#<block>'`) counts for the
+*borrowing* design at its own local quantity, resolving the binding
+through the foreign design. The honesty header mirrors `bom`'s:
+`purchasable: P of L leaf template(s) · to make: M` — `P`/`M`/`L` count
+TEMPLATES (a merged line can carry several), while the `priced`/`massed`
+lines below count purchasable LINES — and a `total: ≥ … (partial, N of
+P)` line whenever not every purchasable line's price AND quantity both
+resolved; `part` lines never price (no store record exists for a
+C-number).
 - `add_note` — `name`, `kind` `question|answer|decision`, `text` ·
   `re` · `about` [anchors] · `origin`
 - `formfind` — force-density form-finding over the axial subgraph:
@@ -391,7 +410,7 @@ efficiency read in isolation overstates the link.
 ## Views (`get(kind='se', id=…, view=…)`)
 
 `tree · block · ports · topology · measures · datums · validate · clearance · sweep ·
-drc · bom · fasten · interview · freedom · stability · mechanics ·
+drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
 elicits what's missing — lead with it. `mechanics`/`literature` are
