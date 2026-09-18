@@ -489,16 +489,21 @@ class OccupancyGrid:
         one pad as two.
 
         ``_pads`` deliberately does not record ``layers`` — a stated
-        simplification, not a silent one. Today's only caller
-        (``_stamp_pads``) claims every pad on ``PAD_LAYER`` alone (an SMD
-        assumption, that function's own docstring), and every via this
-        grid ever places spans ``PAD_LAYER`` at one end (``layer_lo/hi``
-        is always ``min/max(PAD_LAYER, track.layer)``), so a layer-blind
-        keep-out and a layer-aware one agree on every case this grid can
-        construct today. It would stop agreeing the day a THT (through,
-        every-layer) pad is claimed on more than one layer with a via
-        that does NOT reach all of them — worth a ``layers`` field on
-        ``_pads`` at that point, not before.
+        simplification, not a silent one, and still a SAFE one now that a
+        pad's claim can span one layer (SMD) or every board layer (a
+        drilled/THT pad, :mod:`precis.pcb.realize`'s ``_stamp_pads``): a
+        layer-blind keep-out is strictly the CONSERVATIVE direction — it
+        can only refuse a via candidate a layer-aware check would have
+        allowed near an off-layer SMD pad, never permit one a real
+        drilled hole's full-layer span would have refused — the same
+        "conservative costs a little routability, never a clearance
+        violation" trade this module's other pad-radius claims already
+        make. Precise enough to fix would mean this recording ``layers``
+        too and :meth:`via_clears_pads`/:meth:`_pad_keepout_mask` (below)
+        checking a candidate via's own layer span against it — a real
+        routability gain near a fine-pitch SMD field, just not a
+        correctness one, so it stays future work rather than part of this
+        change.
         """
         self.stamp_disk(layers, x, y, radius_mm, net_id, contest=contest)
         self._pads.append((x, y, radius_mm))
@@ -640,6 +645,8 @@ class OccupancyGrid:
         width_mm: float,
         via_dia_mm: float | None = None,
         pad_layer: int | None = None,
+        start_layer: int | None = None,
+        goal_layer: int | None = None,
         attach: bool = True,
         via_cost_mm: float = VIA_COST_MM,
         via_body_cost_mm: float = 0.0,
@@ -668,6 +675,15 @@ class OccupancyGrid:
         breaking A*'s admissibility guarantee for a search that is
         supposed to stay optimal-under-weighting, not just fast.
 
+        ``start_layer``/``goal_layer`` let the two ends sit on DIFFERENT
+        pad layers — a bottom-mounted pin's pad is not on the same copper
+        as a top-mounted one's, so a segment between them has no single
+        honest ``pad_layer``. Each defaults independently to ``pad_layer``
+        (``allowed[0]`` if that too is ``None``) — the prior single-``entry``
+        behaviour, unchanged for every caller that does not pass them.
+        Either landing outside ``layers`` refuses the whole call the same
+        way an out-of-range ``pad_layer`` always has.
+
         ``extra_start_terminals``/``extra_goal_terminals`` are additional
         ``((x, y), layer)`` candidates the search may begin/end on, ON TOP
         OF ``start``/``goal`` — never instead of them (precis.pcb.realize's
@@ -693,11 +709,19 @@ class OccupancyGrid:
         layer_set = set(allowed)
         # Both endpoints are pads, and a pad lives on exactly one layer —
         # the search enters and leaves there, and buys a via (twice) if it
-        # wants an inner layer in between.
+        # wants an inner layer in between. `start_layer`/`goal_layer` let
+        # the two ends disagree (a segment between a top- and a
+        # bottom-mounted pin has no single honest `entry`); each falls
+        # back to `pad_layer`'s resolution independently, so the OLD
+        # single-`entry` behaviour is exactly what a caller supplying
+        # neither still gets.
         entry = allowed[0] if pad_layer is None else pad_layer
-        if entry not in layer_set:
+        if start_layer is None:
+            start_layer = entry
+        if goal_layer is None:
+            goal_layer = entry
+        if start_layer not in layer_set or goal_layer not in layer_set:
             return None
-        start_layer = goal_layer = entry
 
         foreign = (self._owner != FREE) & (self._owner != net_id)
         r_cells = math.ceil((width_mm / 2.0) / spec.pitch) + 1

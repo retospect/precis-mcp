@@ -270,10 +270,20 @@ ARR1 pads + fixed copper pulled from prod: terminals offered 54/54, was
 `mirrored=` to `landpattern.rotate_offset`, so on the bottom-mounted
 sink every HVOUTn goal the router chases is the mirror image of the
 fabricated pad (17 mm across the ring), and the maze has to cross the
-zero-slack electrode field. Fix = mirror in `pin_point` (one caller);
-criterion 8 is re-measured once more after it lands. The ring fixture in
-`tests/test_pcb_island_terminal_polygon.py` is top-side only, which is
-why it reported improvement the real board could not show.
+zero-slack electrode field. That mirror fix landed and route job 346718
+was STILL 59/62 `no_path`: the third pass, an instrumented offline
+reproduction of the whole route, found the actual blocker — gr346744,
+the maze router is layer-blind: every pad was stamped and searched on
+`PAD_LAYER` (F.Cu) and `OccupancyGrid.route` forced start and goal onto
+one layer, so the HVOUTn goal cell was "walled in" by a neighbouring
+electrode on F.Cu while free on B.Cu, the sink's real layer. The same
+defect silently reported I2C_SCL/I2C_SDA as realized with copper on the
+wrong side. Fix (Reto's rule: a trace may run under an SMD pad on another
+layer, never through a via or drilled pad): per-pad layer sets in the
+router's pad list, `_stamp_pads` claims SMD pads on their own layer and
+drilled pads on every layer, `route()` takes independent
+`start_layer`/`goal_layer`; the dogfood assertion is now layer-aware.
+Criterion 8 is re-measured on prod after that lands.
 
 ## Acceptance criteria
 

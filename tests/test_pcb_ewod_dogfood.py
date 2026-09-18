@@ -681,43 +681,112 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # docs/backlog/pcb-pre-place-route-blocks.md): a net whose escape IS
     # the authored plaza via ends there by design, not by disagreement.
     # An endpoint near NEITHER is still the gripe-338983 failure.
+    #
+    # **Layer-aware, not (x, y)-only** (gr341516's sibling defect,
+    # bottom-mounted-pad routing): a track ending at the RIGHT coordinate
+    # on the WRONG copper layer is disconnected, not connected — exactly
+    # what a layer-blind router that claims every pad on F.Cu regardless
+    # of mount side produces for a bottom-mounted part (U_TEMP's I2C
+    # pads). So each candidate target below carries the LAYER(S) it is
+    # real copper on (a pad: its one `pads_for_ir` layer; a fixed/routed
+    # via: every layer its span covers), and a track endpoint only counts
+    # as reaching a target when their layer sets overlap — either the
+    # track's OWN layer, or a layer its own capping via (this net's routed
+    # via landing within the same match radius) extends it to.
     layer_names = [str(layer["name"]) for layer in design["board"]["stackup"]]
-    pads_by_net: dict[str, list[tuple[float, float]]] = {}
+
+    def _span_layers(span: list[Any]) -> frozenset[str]:
+        lo, hi = layer_names.index(str(span[0])), layer_names.index(str(span[1]))
+        lo, hi = min(lo, hi), max(lo, hi)
+        return frozenset(layer_names[lo : hi + 1])
+
+    pads_by_net: dict[str, list[tuple[float, float, frozenset[str]]]] = {}
     for pad in pcb._drc_pads(ref.id, layer_names):
         net = str(pad.get("net") or "")
         if net:
-            pads_by_net.setdefault(net, []).append((float(pad["x"]), float(pad["y"])))
-    fixed_by_net: dict[str, list[tuple[float, float]]] = {}
+            pads_by_net.setdefault(net, []).append(
+                (float(pad["x"]), float(pad["y"]), frozenset({str(pad["layer"])}))
+            )
+    fixed_by_net: dict[str, list[tuple[float, float, frozenset[str]]]] = {}
     for row in store.pcb_fixed_copper_list(int(design["board"]["board_id"])):
         net = str(row.get("net") or "")
         if not net:
             continue
-        pts: list[tuple[float, float]] = []
+        pts: list[tuple[float, float, frozenset[str]]] = []
         if row.get("ctype") == "via" and row.get("x") is not None:
-            pts.append((float(row["x"]), float(row["y"])))
+            span = row.get("span")
+            via_layers = _span_layers(span) if span else frozenset(layer_names)
+            pts.append((float(row["x"]), float(row["y"]), via_layers))
         elif row.get("ctype") == "track":
+            track_layers = frozenset({str(row.get("layer"))})
             for seg in row.get("segments") or []:
-                pts.append((float(seg["start"][0]), float(seg["start"][1])))
-                pts.append((float(seg["end"][0]), float(seg["end"][1])))
+                pts.append(
+                    (float(seg["start"][0]), float(seg["start"][1]), track_layers)
+                )
+                pts.append((float(seg["end"][0]), float(seg["end"][1]), track_layers))
         fixed_by_net.setdefault(net, []).extend(pts)
+    vias_by_net: dict[str, list[tuple[float, float, frozenset[str]]]] = {}
+    for c in copper:
+        if c.get("ctype") != "via":
+            continue
+        net = str(c.get("net") or "")
+        span = c.get("span")
+        if not net or not span:
+            continue
+        vias_by_net.setdefault(net, []).append(
+            (float(c["x"]), float(c["y"]), _span_layers(span))
+        )
     for track in tracks:
         if track.get("is_dogbone"):
             continue  # a plane fan-out stub ends at its drop via, not a pad
         segs = track["segments"]
         net = str(track["net"])
+        track_layer = str(track.get("layer"))
         targets = pads_by_net.get(net, []) + fixed_by_net.get(net, [])
         assert targets, f"routed net {track['net']} has no pads at all — {diag}"
         for end in (
             (float(segs[0]["start"][0]), float(segs[0]["start"][1])),
             (float(segs[-1]["end"][0]), float(segs[-1]["end"][1])),
         ):
-            assert (
-                min(math.hypot(end[0] - tx, end[1] - ty) for tx, ty in targets) < 1.0
+            # Every layer this endpoint's copper actually reaches: its own
+            # drawn layer, widened by any of this net's ROUTED vias
+            # landing within the same match radius (a track capped by a
+            # via reaches every layer that via's barrel spans, not just
+            # the layer it was drawn on).
+            own_vias_here = [
+                (vx, vy)
+                for vx, vy, _ in vias_by_net.get(net, [])
+                if math.hypot(end[0] - vx, end[1] - vy) < 1.0
+            ]
+            reachable = {track_layer} | {
+                layer
+                for vx, vy, vlayers in vias_by_net.get(net, [])
+                if (vx, vy) in own_vias_here
+                for layer in vlayers
+            }
+            # A track ending on one of THIS NET's own routed vias is
+            # itself real, placed copper -- sufficient proof of
+            # connectivity on its own, with no pad match required. This
+            # is the plane-stitching jumper's own shape (module docstring
+            # / `_stitch_plane_fragments`/`_try_plane_jumper`): a jumper's
+            # two ends are via centres dropped into two GND pour
+            # FRAGMENTS, never a pin's pad, so "ends near a pad" is simply
+            # the wrong question for it. Before this fix's own change to
+            # per-instance pad layers, GND's pour never fragmented on this
+            # fixture (every claim sat on one shared, if wrong, layer), so
+            # this path never fired here; the fix's more accurate
+            # per-side pad claims now legitimately split GND's pour and
+            # this pass legitimately bridges it.
+            assert own_vias_here or any(
+                math.hypot(end[0] - tx, end[1] - ty) < 1.0 and (reachable & tlayers)
+                for tx, ty, tlayers in targets
             ), (
-                f"{track['net']}: track end {end} is nowhere near any of its own "
-                f"pads or fixed copper {targets} — the router and the board "
+                f"{track['net']}: track end {end} on {track_layer} (reachable: "
+                f"{sorted(reachable)}) is nowhere near any of its own pads, "
+                f"fixed copper, or own routed vias ON A LAYER ITS COPPER "
+                f"ACTUALLY REACHES {targets} — the router and the board "
                 "disagree about where this net's copper is (gripe 338983's "
-                "signature)"
+                "signature / layer-blind pad claim)"
             )
 
     # (2) The escape gap, stated out loud rather than silently passed.

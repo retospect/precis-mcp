@@ -119,7 +119,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -961,6 +961,23 @@ def _signal_layers(ir: PcbIR) -> list[int]:
     return routable_layers(ir) or [PAD_LAYER]
 
 
+def _side_layer[T](ir: PcbIR, inst_id: int, layers: Sequence[T]) -> T:
+    """Which end of ``layers`` one instance's pads sit on, driven by
+    :attr:`PcbIR.inst_bottom` — bottom-mounted lands on the LAST entry,
+    top-mounted on the FIRST (gr341516's rule). **The one implementation**,
+    generic over ``layers``' element type so both existing hand-copies of
+    this ternary collapse onto it: :func:`pads_for_ir` walks a stackup
+    NAME list (``layers[-1] if bottom else layers[0]``, for the gerber/DRC
+    pad dict's own ``"layer"`` key) and :func:`_realize_maze` below walks
+    :func:`_signal_layers`' routable INDEX list (for the router's
+    occupancy grid, which only ever speaks in indices) — two different
+    element types answering the identical "which side does this instance
+    mount on" question, which is exactly the kind of drift this module's
+    own docstring warns "One rule, two call sites" about (see
+    :func:`pads_for_ir`'s docstring, gr341516)."""
+    return layers[-1] if bool(ir.inst_bottom[inst_id]) else layers[0]
+
+
 def _layer_preferences(ir: PcbIR, signal_layers: list[int]) -> dict[int, str]:
     """Per-group H/V/diagonal axis assignment
     (:func:`precis.pcb.maze.preferred_directions`), computed separately
@@ -1111,12 +1128,32 @@ def _realize_maze(
     cannot introduce an overlap a single pass would have refused.
     """
     signal_layers = _signal_layers(ir)
+    # Every board layer, not just the routable ones -- what a DRILLED pad's
+    # claim spans below (same "a hole is a physical fact on every layer,
+    # routable or not" convention `_claim_mounting_holes`/
+    # `_claim_fixed_copper`'s via handling already use, `range(0,
+    # grid.spec.n_layers)`, and what `maze.grid_for` is given as
+    # `n_layers` a few lines down -- this is that same count, read once).
+    n_board_layers = len(ir.stackup) or 1
     # Each pad's own keep-out radius, not one flat constant for every pin
     # regardless of package — see PcbIR.pin_w's docstring for the defect
     # this closes. `pad_geometry` is the ONE place that decides real vs
     # synthesized per pin; the router only ever asks it for a size.
     pad_geoms = pad_geometry(ir, footprints)
-    pads: list[tuple[Point, int, float]] = []
+    # 4th element: the LAYERS this pad's claim spans. **A trace may
+    # legally run on a DIFFERENT layer under an SMD pad** (the pad's
+    # copper is a flash on ONE side; the board under it is real routable
+    # space on every other layer) **but never through a drilled hole**,
+    # which is physical copper on every layer it plates, exactly like a
+    # via (`drc.py::clearance_pairs_indexed`'s own "a drilled pad has no
+    # single `item['layer']` either" note, gr341516, is the same fact
+    # this router-side claim now honours). So an SMD pad claims one entry
+    # -- `_side_layer`'s bottom/top resolution within `signal_layers`,
+    # the same rule `pads_for_ir` applies over the stackup NAME list --
+    # and a drilled (THT/plated) pad claims every board layer, keyed off
+    # `PadGeom.drill_mm` truthy (`geom.drill_mm`), the SAME "drilled"
+    # signal `drc.py` already reads off a pad dict's own `"drill"` key.
+    pads: list[tuple[Point, int, float, tuple[int, ...]]] = []
     for pid in range(ir.n_pins):
         point = pin_point(ir, pid)
         if point is not None:
@@ -1147,7 +1184,12 @@ def _realize_maze(
                 # either (each is its own island of copper that nothing,
                 # including another NC pad, may route through).
                 net = ir.n_nets + pid
-            pads.append((point, net, radius))
+            layers = (
+                tuple(range(n_board_layers))
+                if geom.drill_mm
+                else (_side_layer(ir, int(ir.pin_instance[pid]), signal_layers),)
+            )
+            pads.append((point, net, radius, layers))
     if not pads:
         return [], [], list(ids), [], [], [], {}
 
@@ -1196,7 +1238,7 @@ def _realize_maze(
     )
     edge_inset = max(clearance, edge_min) + widest / 2.0
     spec = maze.grid_for(
-        [p for p, _, _ in pads],
+        [p for p, _, _, _ in pads],
         n_layers=len(ir.stackup) or 1,
         bounds=_outline_clip(ir, edge_inset),
     )
@@ -1354,7 +1396,7 @@ def _diagnose_all(
     extra_unrouted: list[int],
     plane_id_set: set[int],
     spec: maze.GridSpec,
-    pads: list[tuple[Point, int, float]],
+    pads: list[tuple[Point, int, float, tuple[int, ...]]],
     clearance: float,
     signal_layers: list[int],
     rules_by_net: dict[int, NetRules],
@@ -1623,22 +1665,37 @@ def _claim_fixed_copper(
             )
 
 
-def _stamp_pads(grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float]]) -> None:
+def _stamp_pads(
+    grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float, tuple[int, ...]]]
+) -> None:
     """Claim every pad on ``grid`` — the router's static baseline, factored
     out so a diagnostic probe (:func:`_diagnose_unrouted`) can build the
     SAME starting grid a real route pass would, minus every other net's
     ROUTED copper, rather than hand-rolling a second copy of this.
 
-    Pads are claimed on the PAD LAYER only — an SMD pad is copper on one
-    layer, and blocking all four would make every inner layer unusable
-    underneath exactly the fine-pitch parts that need the escape. (A
-    through-hole pad does block every layer; the IR carries no SMD/THT
-    distinction yet, so this picks the assumption that keeps inner layers
-    routable rather than the one that silently doesn't.) Two passes: the
-    core first, where two nets' pads collide the cell goes to NEITHER
+    **Which layer(s) is per-pad, not a shared constant** (``pads``' 4th
+    element — an SMD pad claims one, a drilled/THT pad claims every board
+    layer, see :func:`_realize_maze`'s own comment on how that element is
+    built). An SMD pad is copper on ONE layer only, so a trace on a
+    DIFFERENT layer may legally run underneath it — blocking every layer
+    under a fine-pitch part's own pads would make the layers under it
+    unusable for the escape that needs them. A drilled (through-hole)
+    pad's plated land is real copper on every layer it passes through,
+    physically indistinguishable from a via for this purpose (``drc.py::
+    clearance_pairs_indexed``'s identical "a drilled pad has no single
+    ``item['layer']`` either" note): a trace may never cross through the
+    hole regardless of which layer it is drawn on, so it claims every
+    entry in ``pads``' layer tuple, not just one. Before per-pad layers at
+    all it was :data:`PAD_LAYER` for every pad regardless of mount side,
+    which claimed a bottom-mounted part's copper on F.Cu — a layer it was
+    never on — leaving the cell it actually occupies, on B.Cu, unclaimed
+    (any OTHER net free to route straight through it) and the real pad
+    itself invisible to :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
+    ``pad_layer``/``start_layer``/``goal_layer`` entry test. Two passes:
+    the core first, where two nets' pads collide the cell goes to NEITHER
     (``maze.CONTESTED``), then each pad's inner disk is re-asserted so its
     owner always has a cell to start a route from. Each pad brings its OWN
-    radius (``pads``' third element, from :func:`pad_geometry` — real
+    radius (``pads``' 3rd element, from :func:`pad_geometry` — real
     footprint size where supplied, package-family synthesis otherwise)
     rather than every pad on the board claiming the same disc.
 
@@ -1666,17 +1723,17 @@ def _stamp_pads(grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float]]) 
     collision marker, not a pad's true footprint, and recording it in
     ``_pads`` too would double-count one pad as two keep-out entries.
     """
-    for point, net, radius in pads:
+    for point, net, radius, layers in pads:
         grid.stamp_disk(
-            (PAD_LAYER,),
+            layers,
             point[0],
             point[1],
             grid.core_radius_mm(2.0 * radius),
             net,
             contest=True,
         )
-    for point, net, radius in pads:
-        grid.stamp_pad((PAD_LAYER,), point[0], point[1], radius, net)
+    for point, net, radius, layers in pads:
+        grid.stamp_pad(layers, point[0], point[1], radius, net)
 
 
 def _via_group_extent(
@@ -1715,7 +1772,7 @@ def _diagnose_unrouted(
     ir: PcbIR,
     seg_id: int,
     spec: maze.GridSpec,
-    pads: list[tuple[Point, int, float]],
+    pads: list[tuple[Point, int, float, tuple[int, ...]]],
     clearance: float,
     signal_layers: list[int],
     rules: NetRules,
@@ -1755,6 +1812,14 @@ def _diagnose_unrouted(
             "no_path",
             "this connection's endpoint has no placed (x, y) yet — nothing to route",
         )
+    # This segment's OWN two pad layers (`_side_layer`, same rule
+    # `_realize_maze`'s `pads` list and `_route_pass` resolve by), never
+    # a shared `PAD_LAYER` — a probe pinned to the top layer at both ends
+    # can never find the corridor a bottom-mounted pin's pad actually
+    # needs, and would misreport a real `no_path` as though the width or
+    # congestion diagnosis even applied.
+    start_layer = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
+    goal_layer = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
     probe = maze.OccupancyGrid(spec, clearance_mm=clearance)
     _claim_fixed_copper(probe, ir, fixed_copper)
     _claim_fiducial_keepouts(probe, ir)
@@ -1767,7 +1832,8 @@ def _diagnose_unrouted(
         layers=signal_layers,
         width_mm=rules.track_width_mm,
         via_dia_mm=group_extent,
-        pad_layer=PAD_LAYER,
+        start_layer=start_layer,
+        goal_layer=goal_layer,
         attach=False,
         max_expansions=max_expansions,
     )
@@ -1792,7 +1858,8 @@ def _diagnose_unrouted(
         layers=signal_layers,
         width_mm=spec.pitch * _PROBE_WIDTH_FRACTION_OF_PITCH,
         via_dia_mm=None,
-        pad_layer=PAD_LAYER,
+        start_layer=start_layer,
+        goal_layer=goal_layer,
         attach=False,
         max_expansions=max_expansions,
     )
@@ -1827,7 +1894,7 @@ def _route_pass(
     grid: maze.OccupancyGrid,
     config: RealizeConfig,
     rules_by_net: dict[int, NetRules],
-    pads: list[tuple[Point, int, float]],
+    pads: list[tuple[Point, int, float, tuple[int, ...]]],
     clearance: float,
     signal_layers: list[int],
     spec: maze.GridSpec,
@@ -1898,6 +1965,13 @@ def _route_pass(
         # fits.
         n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
         terms = (island_terminals or {}).get(seg_id)
+        # This segment's OWN two pad layers, never a shared `PAD_LAYER` —
+        # `_side_layer` is the same bottom/top rule `pads` above was built
+        # with, so a route between a top- and a bottom-mounted pin enters
+        # and leaves on the copper its own pads actually sit on instead of
+        # both ends being pinned to the top layer regardless of mount side.
+        start_layer = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
+        goal_layer = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
         path = grid.route(
             net_id,
             start,
@@ -1905,7 +1979,8 @@ def _route_pass(
             layers=signal_layers,
             width_mm=rules.track_width_mm,
             via_dia_mm=group_extent,
-            pad_layer=PAD_LAYER,
+            start_layer=start_layer,
+            goal_layer=goal_layer,
             via_body_cost_mm=config.via_body_cost_mm,
             max_expansions=config.max_expansions,
             layer_prefs=(
@@ -3655,7 +3730,7 @@ def _stitch_plane_fragments(
     *,
     spec: maze.GridSpec,
     clearance: float,
-    pads: list[tuple[Point, int, float]],
+    pads: list[tuple[Point, int, float, tuple[int, ...]]],
     rules_by_net: dict[int, NetRules],
     config: RealizeConfig,
 ) -> tuple[list[RealizedVia], list[RealizedTrack], list[UnstitchedNet]]:
@@ -5311,7 +5386,11 @@ def pads_for_ir(
         # so this single-entry `layer` value stays honest as "this pad's
         # OUTER copper flash lands here" without this function needing a
         # second, per-layer pad-dict shape only THT pins would use.
-        pad_layer = layers[-1] if bool(ir.inst_bottom[inst_id]) else layers[0]
+        # `_side_layer` (module-level, shared with `_realize_maze`'s
+        # router-side pad list) is the one implementation of this
+        # ternary now -- see its own docstring for why a second hand
+        # copy over a different `layers` element type stayed a live risk.
+        pad_layer = _side_layer(ir, inst_id, layers)
         pad: dict[str, Any] = {
             "layer": pad_layer,
             "net": "" if net_id == NO_NET else str(ir.net_name[net_id]),

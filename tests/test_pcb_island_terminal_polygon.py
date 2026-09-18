@@ -357,7 +357,19 @@ def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
         f"before: {dict(collections.Counter(before.values()))}; "
         f"after: {dict(collections.Counter(after.values()))}"
     )
-    assert after_realized > before_realized, (
+    # A COUNT comparison, not a strict-superset one. The ring sink is a
+    # bottom-side component (``generators.py``'s own ``sink_grid`` emits
+    # it with ``layer='bottom'``), so this fixture also exercises the
+    # maze router's own per-pad layer claim (gr341516's router-side
+    # sibling, closed the same day this file's docstring was last
+    # touched: a bottom-mounted pin's pad now claims/searches on its real
+    # B.Cu cell instead of a shared F.Cu one). That shifts the WHOLE
+    # board's occupancy-grid congestion, and this module's own docstring
+    # is explicit that congestion outcomes are order/claim-dependent, not
+    # monotonic in any one input: more nets realize overall (asserted
+    # below), but the exact SET need not be a superset -- one net can
+    # lose a race it used to win even as the aggregate strictly improves.
+    assert len(after_realized) > len(before_realized), (
         f"the polygon-aware touch test realized no MORE escape nets than "
         f"the old circle-only test — {diag}"
     )
