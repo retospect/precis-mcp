@@ -327,6 +327,20 @@ proposal per tick**
 (`PRECIS_QUEST_MAX_PROPOSALS`, default 1) and waits for its sims before
 the next.
 
+## Skip the guesswork — opt a quest into a structure search
+
+Set the quest's `meta.search = {seed, box, add, algo?, model?, budget?,
+top_k?, timeout_s?}` (`seed` a structure that already `serves` this
+quest — see `precis-structure-help`'s `struct_search`) to spend the
+tick's one proposal slot on a surrogate search instead of an
+LLM-authored candidate. One search per `(seed, box, add, algo, model,
+budget)` — changing any of them re-arms it; a failed search is not
+retried automatically, edit `meta.search` to try again. The returned
+candidates land as ordinary `serves`-linked `structure` rows with an
+`ml` energy already measured, so the next tick's proposer sees and
+argues them like any other candidate — it never sees the search
+internals.
+
 The autonomous *scheduling* of ticks (a perpetual per-quest coordinator
 loop, not a single step) is dark by default: nothing mints a loop
 automatically, and compute is off unless you pass `--compute`

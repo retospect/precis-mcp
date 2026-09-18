@@ -333,6 +333,14 @@ def _load_struct_relax() -> JobTypeSpec:
     return struct_relax.SPEC
 
 
+def _load_struct_search() -> JobTypeSpec:
+    # AGOX/GOFEE surrogate search on the GPU node via ssh_node, in-process
+    # (no container). Runs via plugin dispatch.
+    from precis.workers.job_types import struct_search
+
+    return struct_search.SPEC
+
+
 def _load_structure_propose() -> JobTypeSpec:
     # LLM turns an instruction into proposed structure ops (tool-less claude,
     # propose-only) under claude_inproc. Runs via plugin dispatch.
@@ -630,6 +638,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "struct_relax":
         _REGISTRY["struct_relax"] = _load_struct_relax()
         return _REGISTRY["struct_relax"]
+    if name == "struct_search":
+        _REGISTRY["struct_search"] = _load_struct_search()
+        return _REGISTRY["struct_search"]
     if name == "structure_propose":
         _REGISTRY["structure_propose"] = _load_structure_propose()
         return _REGISTRY["structure_propose"]
@@ -698,6 +709,7 @@ def known_job_types() -> list[str]:
         "meditation",
         "card_forge",
         "struct_relax",
+        "struct_search",
         "structure_propose",
         "cad_propose",
         "diagram_propose",
