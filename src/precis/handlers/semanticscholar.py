@@ -116,8 +116,19 @@ _PAPER_AUTHORS_FIELDS = "name,externalIds,hIndex,affiliations"
 #: Fields for ``/author/{id}/papers`` — the outbound BFS frontier.
 _AUTHOR_PAPERS_FIELDS = "title,year,externalIds,venue,citationCount,authors.name"
 
-#: Page size for an author's paper list.
+#: Page size for an author's paper list — the whole list on a bare
+#: ``author:<id>`` read (S2 sorts it recent + highly-cited, so the back
+#: catalogue falls off), one request per page under ``complete=True``.
 _AUTHOR_PAPERS_LIMIT = 50
+
+#: Hard ceiling on the ``complete=True`` walk, in pages — 20 × 50 = 1000
+#: works is past any single author's S2 record worth tabulating; the
+#: render says when it tripped.
+_AUTHOR_PAPERS_MAX_PAGES = 20
+
+#: Canonical-key suffix that makes the complete walk its own cache row
+#: (a different artifact from the top-50 page, not a refresh of it).
+_COMPLETE_SUFFIX = ":complete"
 
 #: Bare-arXiv-id shape (new-style ``2401.00001`` with optional ``vN``).
 #: Used to auto-prefix a path id when the caller passes a naked id.
@@ -153,6 +164,11 @@ class SemanticScholarHandler(CacheBackedHandler):
     #: through to ``_render`` without changing the base class's contract.
     _pending_exclude: list[str] | None = None
 
+    #: Same convention: ``complete=True`` on an ``author:<id>`` read, seen
+    #: by :meth:`_canonical_key` (which runs inside the base ``get()``) so
+    #: the walk caches under its own key.
+    _pending_complete: bool = False
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="semanticscholar",
         title="Semantic Scholar paper search",
@@ -171,8 +187,12 @@ class SemanticScholarHandler(CacheBackedHandler):
             "author graph: id='authors:<paper-id>' lists that paper's "
             "authors (each with their ORCID — the key into kind='orcid' — "
             "h-index, affiliations, senior author flagged), "
-            "id='author:<authorId>' that author's top papers. One chunk "
-            "per row after the base-class auto-chunker splits it."
+            "id='author:<authorId>' that author's top 50 papers — add "
+            "args={'complete': True} for the WHOLE bibliography as one "
+            "compact table (year, cited, title, venue, DOI, corpus "
+            "held/stub/NEW), grouped so the works not yet held read off "
+            "in one block. One chunk per row after the base-class "
+            "auto-chunker splits it."
         ),
         supports_get=True,
         supports_search=True,
@@ -229,7 +249,21 @@ class SemanticScholarHandler(CacheBackedHandler):
                         f"semanticscholar {prefix} needs {needs}",
                         next=f"get(kind='semanticscholar', id='{example}')",
                     )
+                if self._pending_complete and mode != "author":
+                    raise BadInput(
+                        "complete=True applies to id='author:<authorId>' only",
+                        next="get(kind='semanticscholar', id='author:<id>', "
+                        "args={'complete': True})",
+                    )
+                if self._pending_complete and not ident.endswith(_COMPLETE_SUFFIX):
+                    ident += _COMPLETE_SUFFIX
                 return f"{prefix}{ident}"
+        if self._pending_complete:
+            raise BadInput(
+                "complete=True applies to id='author:<authorId>' only",
+                next="get(kind='semanticscholar', id='author:<id>', "
+                "args={'complete': True})",
+            )
         return low
 
     @staticmethod
@@ -288,6 +322,7 @@ class SemanticScholarHandler(CacheBackedHandler):
         id: str | int | None = None,
         q: str | None = None,
         exclude: list[str] | None = None,
+        complete: bool = False,
         view: str | None = None,
         tags: list[str] | None = None,
         untags: list[str] | None = None,
@@ -305,8 +340,15 @@ class SemanticScholarHandler(CacheBackedHandler):
         Meaningless (silently ignored) on the ``refs:``/``cites:``/
         ``authors:``/``author:`` graph-walk modes, which carry no
         per-paper corpus-diff render to filter.
+
+        ``complete=True`` (``args={'complete': True}`` over MCP) on an
+        ``author:<id>`` read walks every page of the author's papers and
+        renders one compact table with a corpus column — gr346833: the
+        top-50 page hides an established author's back catalogue, and
+        paging is never the goal ("show me everything, I'll pick").
         """
         self._pending_exclude = exclude
+        self._pending_complete = bool(complete)
         try:
             return super().get(
                 id=id,
@@ -323,25 +365,89 @@ class SemanticScholarHandler(CacheBackedHandler):
             )
         finally:
             self._pending_exclude = None
+            self._pending_complete = False
 
     def _render(self, ref: Ref, cache: CacheEntry, *, hit: bool) -> Response:
-        """Corpus-diff render for a plain topic-search ref; everything
-        else (graph-walk modes, the injection-withheld/suspect banners)
-        defers to the base class unchanged.
+        """Corpus-diff render for a plain topic-search ref and the
+        complete author table; everything else (graph-walk modes, the
+        injection-withheld/suspect banners) defers to the base class
+        unchanged.
 
-        Discriminator: only :meth:`_fetch_search` stamps ``meta['papers']``
-        — the graph-walk fetchers (`_fetch_graph` / `_fetch_paper_authors`
-        / `_fetch_author_papers`) never do, so they always fall through to
-        ``super()._render()``. A ``high`` injection verdict also defers to
-        the base class, which withholds the body — that gate must apply
-        regardless of which render path would otherwise run.
+        Discriminator: only :meth:`_fetch_search` and the ``complete``
+        branch of :meth:`_fetch_author_papers` stamp ``meta['papers']`` —
+        the other graph-walk fetchers (`_fetch_graph` /
+        `_fetch_paper_authors` / the one-page author read) never do, so
+        they always fall through to ``super()._render()``. A ``high``
+        injection verdict also defers to the base class, which withholds
+        the body — that gate must apply regardless of which render path
+        would otherwise run.
         """
         meta = cache.meta or {}
         inject = meta.get("inject") or {}
         papers = meta.get("papers")
         if inject.get("verdict") == "high" or not papers:
             return super()._render(ref, cache, hit=hit)
+        if meta.get("complete"):
+            return self._render_author_table(ref, cache, papers, hit=hit)
         return self._render_topic_search(ref, cache, papers, hit=hit)
+
+    def _render_author_table(
+        self,
+        ref: Ref,
+        cache: CacheEntry,
+        papers: list[dict[str, Any]],
+        *,
+        hit: bool,
+    ) -> Response:
+        """The whole bibliography as one worklist: a tab-separated row per
+        paper, grouped NEW → stub → held (the missing ones first, in one
+        block) and newest-first inside each group. The corpus column is
+        re-diffed on every call, cache hit included, same as the topic
+        search — a paper minted since the walk shows up as held/stub here
+        without a refetch."""
+        meta = cache.meta or {}
+        flags = self._corpus_flags_bulk(papers)
+        order = {"NEW": 0, "stub": 1, "held": 2}
+        rows = sorted(
+            zip(papers, flags, strict=True),
+            key=lambda pf: (
+                order.get(pf[1][0].split(":", 1)[0], 3),
+                -(pf[0].get("year") or 0),
+                -(pf[0].get("citationCount") or 0),
+            ),
+        )
+        counts = {"NEW": 0, "stub": 0, "held": 0}
+        lines = [f"# {ref.title}", "", "{year\tcited\ttitle\tvenue\tdoi\tcorpus}"]
+        last_group = None
+        for p, (flag, _rid) in rows:
+            group = flag.split(":", 1)[0]
+            counts[group] = counts.get(group, 0) + 1
+            if last_group is not None and group != last_group:
+                lines.append("")
+            last_group = group
+            lines.append(_author_table_row(p, flag))
+        lines.append("")
+        summary = (
+            f"_{len(papers)} works ({counts['NEW']} NEW, {counts['stub']} stub, "
+            f"{counts['held']} held) in {meta.get('requests', '?')} S2 request(s)"
+        )
+        if meta.get("capped"):
+            summary += (
+                f"; walk stopped at the {_AUTHOR_PAPERS_MAX_PAGES}-page ceiling — "
+                "the list is NOT complete"
+            )
+        lines.append(summary + "._")
+        if counts["NEW"]:
+            lines.append(
+                "\nAccept a NEW row: `put(kind='paper', doi='<doi>')` — mints a "
+                "DREAM:acquire stub the fetch_oa worker picks up automatically."
+            )
+        lines.append("")
+        lines.append(f"- {self.attribution}")
+        cite = _cite_pointer(self.spec.kind, ref.id)
+        if cite:
+            lines.append(cite)
+        return Response(body="\n".join(lines), cost=self._cost_str(cache, hit=hit))
 
     def _render_topic_search(
         self,
@@ -522,8 +628,14 @@ class SemanticScholarHandler(CacheBackedHandler):
         )
 
     def _fetch_author_papers(self, key: str, ident: str) -> FetchResult:
-        """List an author's top papers — the BFS frontier."""
+        """List an author's top papers — the BFS frontier — or, under the
+        ``:complete`` key suffix, walk every page and cache the raw hits
+        for the table render."""
         author_id = ident.strip()
+        complete = author_id.endswith(_COMPLETE_SUFFIX)
+        if complete:
+            author_id = author_id[: -len(_COMPLETE_SUFFIX)].strip()
+            return self._fetch_author_papers_complete(key, author_id)
         url = f"{_S2_AUTHOR_BASE}/{author_id}/papers"
         data = self._s2_get_json(
             url, {"fields": _AUTHOR_PAPERS_FIELDS, "limit": _AUTHOR_PAPERS_LIMIT}
@@ -547,6 +659,19 @@ class SemanticScholarHandler(CacheBackedHandler):
         ]
         capped = len(papers) >= _AUTHOR_PAPERS_LIMIT
         suffix = f" ({len(papers)} shown" + (", capped" if capped else "") + ")"
+        if capped:
+            blocks.append(
+                ChunkInsert(
+                    ord=len(blocks),
+                    text=(
+                        "_Capped at the top 50 (S2 ranks recent + highly-cited, so "
+                        "the back catalogue is what falls off). Whole bibliography "
+                        "as one table: "
+                        f"get(kind='semanticscholar', id='author:{author_id}', "
+                        "args={'complete': True})._"
+                    ),
+                )
+            )
         return FetchResult(
             title=f"S2 papers by author {author_id}{suffix}",
             body_blocks=blocks,
@@ -557,6 +682,71 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "author": author_id,
                 "result_count": len(papers),
                 "capped": capped,
+            },
+        )
+
+    def _fetch_author_papers_complete(self, key: str, author_id: str) -> FetchResult:
+        """Walk ``/author/{id}/papers`` on ``offset`` until a short page (or
+        the page ceiling), one request per page against the public tier —
+        ``complete=True`` being explicit opt-in is the cost gate."""
+        url = f"{_S2_AUTHOR_BASE}/{author_id}/papers"
+        papers: list[dict[str, Any]] = []
+        offset = 0
+        requests = 0
+        capped = False
+        while True:
+            data = self._s2_get_json(
+                url,
+                {
+                    "fields": _AUTHOR_PAPERS_FIELDS,
+                    "limit": _AUTHOR_PAPERS_LIMIT,
+                    "offset": offset,
+                },
+            )
+            requests += 1
+            page = data.get("data") or []
+            papers.extend(p for p in page if isinstance(p, dict))
+            if len(page) < _AUTHOR_PAPERS_LIMIT or data.get("next") is None:
+                break
+            if requests >= _AUTHOR_PAPERS_MAX_PAGES:
+                capped = True
+                break
+            offset = int(data["next"])
+        if not papers:
+            text = f"No papers found for author {author_id} on Semantic Scholar."
+            return FetchResult(
+                title=f"S2 author papers: {author_id}",
+                body_blocks=[ChunkInsert(ord=0, text=text)],
+                cost_usd=None,
+                meta={
+                    "key": key,
+                    "nav": "author",
+                    "author": author_id,
+                    "complete": True,
+                    "result_count": 0,
+                    "requests": requests,
+                },
+            )
+        # One terse block per row: the block-level search surface stays
+        # per-paper, and the agent-facing render (``_render_author_table``)
+        # reads ``meta['papers']`` so the corpus column stays live.
+        blocks = [
+            ChunkInsert(ord=i, text=_author_table_row(p, ""))
+            for i, p in enumerate(papers)
+        ]
+        return FetchResult(
+            title=f"S2 works by author {author_id} ({len(papers)} works, complete)",
+            body_blocks=blocks,
+            cost_usd=None,
+            meta={
+                "key": key,
+                "nav": "author",
+                "author": author_id,
+                "complete": True,
+                "result_count": len(papers),
+                "requests": requests,
+                "capped": capped,
+                "papers": papers,
             },
         )
 
@@ -773,6 +963,30 @@ def _format_paper(p: dict[str, Any]) -> str:
         lines.append("")
         lines.append(abstract)
     return "\n".join(lines)
+
+
+def _author_table_row(p: dict[str, Any], flag: str) -> str:
+    """One tab-separated ``year  cited  title  venue  doi  corpus`` row for
+    the complete author table — no author list (it is one author's page),
+    no abstract: every wasted column multiplies by the row count."""
+    title = " ".join(str(p.get("title") or "(untitled)").split())
+    venue = " ".join(str(p.get("venue") or "").split())
+    ext = p.get("externalIds") or {}
+    doi = str(ext.get("DOI") or "").strip()
+    if not doi and ext.get("ArXiv"):
+        doi = f"arXiv:{ext['ArXiv']}"
+    year = p.get("year")
+    cite_n = p.get("citationCount")
+    cells = [
+        str(year) if year is not None else "?",
+        str(cite_n) if cite_n is not None else "?",
+        title,
+        venue or "-",
+        doi or "-",
+    ]
+    if flag:
+        cells.append(flag)
+    return "\t".join(cells)
 
 
 def _format_paper_with_flag(p: dict[str, Any], flag: str) -> str:

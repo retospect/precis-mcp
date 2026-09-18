@@ -47,6 +47,14 @@ search(kind="paper", q="your topic")
 # 4. Widen the frontier with the author's top S2 papers (each row's
 #    DOI feeds another put(kind='paper', doi=...) / authors: hop).
 get(kind="semanticscholar", id="author:1741101")
+
+# 4b. That page is the top 50 by recency + citations — an established
+#     PI's back catalogue falls off it. When the author matters, read the
+#     WHOLE bibliography as one table (year, cited, title, venue, DOI,
+#     corpus held/stub/NEW; NEW rows grouped first = the worklist). One
+#     S2 request per 50 works; a cheaper substitute when their ORCID
+#     record is empty.
+get(kind="semanticscholar", id="author:1741101", args={"complete": True})
 ```
 
 ## Frontier scoring

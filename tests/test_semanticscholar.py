@@ -465,3 +465,129 @@ def test_topic_search_cache_hit_rediffs_on_state_change(
     assert f"pa{rediff_id}" not in third.body
     assert "Rediff Target" not in third.body
     assert "Always Unrelated" in third.body
+
+
+# ---------------------------------------------------------------------------
+# author:<id> complete=True — the whole bibliography as one worklist table
+# (gr346833). The one-page read hid an established author's back
+# catalogue (S2 ranks recent + highly-cited) and offered no way past it.
+# ---------------------------------------------------------------------------
+
+
+def _author_paper(i: int, *, year: int, doi: str | None = None, cited: int = 0) -> dict:
+    return {
+        "paperId": f"p{i}",
+        "title": f"Work {i}",
+        "year": year,
+        "venue": "J. Test",
+        "citationCount": cited,
+        "externalIds": {"DOI": doi} if doi else {},
+        "authors": [{"name": "M. Pryce"}],
+    }
+
+
+class _PagedS2:
+    """Fake ``/author/{id}/papers`` honouring limit/offset + ``next``."""
+
+    def __init__(self, papers: list[dict]) -> None:
+        self.papers = papers
+        self.calls: list[dict] = []
+
+    def __call__(self, url: str, params: dict) -> dict:
+        self.calls.append(dict(params))
+        assert url.endswith("/papers")
+        off = int(params.get("offset", 0))
+        lim = int(params["limit"])
+        page = self.papers[off : off + lim]
+        out: dict = {"offset": off, "data": page}
+        if off + lim < len(self.papers):
+            out["next"] = off + lim
+        return out
+
+
+def test_complete_walks_every_page_and_renders_one_table(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    held_id = _mk_paper_with_doi(
+        store, slug="motor", doi="10.1021/ja8037245", held=True
+    )
+    stub_id = _mk_paper_with_doi(store, slug="early", doi="10.1000/early", held=False)
+    papers = [_author_paper(i, year=2024 - i // 10) for i in range(123)]
+    # The 2008 motor paper sits deep in the list — exactly what the top-50
+    # page dropped.
+    papers[110] = _author_paper(110, year=2008, doi="10.1021/ja8037245", cited=190)
+    papers[120] = _author_paper(120, year=2005, doi="10.1000/early")
+    fake = _PagedS2(papers)
+    monkeypatch.setattr(s2handler, "_s2_get_json", fake)
+
+    resp = s2handler.get(id="author:8890863", complete=True)
+    body = resp.body
+    # ceil(123/50) = 3 requests, offsets 0/50/100.
+    assert [c.get("offset", 0) for c in fake.calls] == [0, 50, 100]
+    assert "123 works" in body and "3 S2 request(s)" in body
+    assert "{year\tcited\ttitle\tvenue\tdoi\tcorpus}" in body
+    assert f"2008\t190\tWork 110\tJ. Test\t10.1021/ja8037245\theld: pa{held_id}" in body
+    assert f"2005\t0\tWork 120\tJ. Test\t10.1000/early\tstub: pa{stub_id}" in body
+    assert "121 NEW, 1 stub, 1 held" in body
+    # Grouped NEW → stub → held: the missing ones read off in one block.
+    assert body.index("\tNEW") < body.index("\tstub: ") < body.index("\theld: ")
+    assert "put(kind='paper', doi=" in body
+    assert "NOT complete" not in body
+
+
+def test_complete_stops_at_the_page_ceiling_and_says_so(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    from precis.handlers import semanticscholar as mod
+
+    monkeypatch.setattr(mod, "_AUTHOR_PAPERS_MAX_PAGES", 2)
+    fake = _PagedS2([_author_paper(i, year=2020) for i in range(130)])
+    monkeypatch.setattr(s2handler, "_s2_get_json", fake)
+    resp = s2handler.get(id="author:1", complete=True)
+    assert len(fake.calls) == 2
+    assert "100 works" in resp.body
+    assert "NOT complete" in resp.body
+
+
+def test_complete_is_its_own_cache_row_and_rediffs_on_hit(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """The top-50 page and the complete walk are different artifacts, so
+    they cache under different keys; a second complete read is a cache
+    hit (no refetch) whose corpus column reflects a paper minted since."""
+    fake = _PagedS2([_author_paper(i, year=2020, doi=f"10.1/w{i}") for i in range(3)])
+    monkeypatch.setattr(s2handler, "_s2_get_json", fake)
+    one_page = s2handler.get(id="author:7")
+    assert "3 shown" in one_page.body
+    assert "args={'complete': True}" not in one_page.body  # under the cap
+
+    full = s2handler.get(id="author:7", complete=True)
+    assert "3 works" in full.body and "3 NEW" in full.body
+    n_calls = len(fake.calls)
+
+    pid = _mk_paper_with_doi(store, slug="w1", doi="10.1/w1", held=False)
+    again = s2handler.get(id="author:7", complete=True)
+    assert len(fake.calls) == n_calls  # cache hit
+    assert f"stub: pa{pid}" in again.body and "2 NEW, 1 stub" in again.body
+
+
+def test_one_page_capped_read_points_at_complete(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    fake = _PagedS2([_author_paper(i, year=2020) for i in range(50)])
+    monkeypatch.setattr(s2handler, "_s2_get_json", fake)
+    resp = s2handler.get(id="author:9")
+    assert "capped" in resp.body
+    assert "id='author:9', args={'complete': True}" in resp.body
+    assert len(fake.calls) == 1
+
+
+def test_complete_rejected_off_the_author_path(
+    s2handler: SemanticScholarHandler,
+) -> None:
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput):
+        s2handler.get(id="refs:10.1/x", complete=True)
+    with pytest.raises(BadInput):
+        s2handler.get(id="molecular motors", complete=True)
