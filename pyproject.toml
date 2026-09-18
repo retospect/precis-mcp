@@ -77,12 +77,12 @@ dependencies = [
     # antipad subtraction, sliver detection, weighted-Voronoi expansion.
     # CORE, not an extra, deliberately — DRC/plane reads run inline in serve,
     # so extras-gating would repeat the asa-venv silent-fail trap (a feature
-    # that is simply absent in prod until someone notices). Confined to
-    # tiling.py / planes.py / realize.py; `pcb/geom.py` keeps its
-    # "no dependencies" convention untouched. NOTE the justification is the
-    # TILING pass specifically — clearance queries do NOT need it (our
-    # geometry alphabet is small and those distances are closed-form), so if
-    # tiling is ever cut this dep should be re-examined, not inherited.
+    # that is simply absent in prod until someone notices). Imported at
+    # module top across the pcb copper path (drc, generators, gerber, ir,
+    # planes, realize, tiling — see pcb/__init__.py); only `pcb/geom.py`
+    # keeps the "no dependencies" convention, for its closed-form
+    # primitives. Originally justified by the TILING pass alone; that
+    # confinement is gone, so cutting tiling would no longer free the dep.
     "shapely>=2.0",
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",

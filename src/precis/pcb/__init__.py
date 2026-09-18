@@ -1,18 +1,60 @@
-"""The PCB *eyes* — pure-Python analysis over the netlist + placement
-graph: the ratsnest + crossing count (the pre-routing objective),
-proximity, DRC-lite, the logical signal trace, and the measure (measuring-
-tape) evaluators.
+"""The PCB kernel — the whole place-and-route pipeline in pure Python,
+from a netlist to gerbers, over one progressively-enriched IR.
 
 The keystone-kind philosophy (shared with cad and structure): own a
 legible IR the LLM reads as structure — a circuit is already a graph, a
-board already placed rectangles — and rent the heavy kernel (Freerouting,
-gerber generation) only at export time. Export is the one place a design
-leaves the relational graph.
+board already placed rectangles — and keep every stage a pure function
+over it so each is unit-testable in isolation. Export is the one place a
+design leaves the relational graph. Freerouting (:mod:`~precis.pcb.route`)
+is the one rented kernel, and it is no longer the critical path: the
+in-house realizer + maze router produce the copper the gerbers are cut
+from.
 
-No GL, no meshing, no embedder — exact geometry / graph folds over the data
-the store hands up (:meth:`precis.store._pcb_ops.PcbMixin.pcb_graph`). The
-handler renders the results as TOON; this package owns the algorithms so they
-are unit-testable in isolation.
+Map, in pipeline order (design doc:
+``docs/backlog/pcb-guided-place-route.md``):
+
+* **IR** — :mod:`~precis.pcb.ir` (L0-L5 enrichment levels, per-net rules
+  via :mod:`~precis.pcb.rules`, objective vectors in
+  :mod:`~precis.pcb.objectives`).
+* **Eyes** — :mod:`~precis.pcb.eyes` / :mod:`~precis.pcb.ratsnest`:
+  ratsnest + crossing count, proximity, signal trace, measures — the
+  pre-routing objective, folded over
+  :meth:`precis.store._pcb_ops.PcbMixin.pcb_graph`.
+* **Parts + footprints** — :mod:`~precis.pcb.catalog` (jlcparts dump),
+  :mod:`~precis.pcb.jlc_api` (live stock), :mod:`~precis.pcb.easyeda` +
+  :mod:`~precis.pcb.footprint` (pad geometry), :mod:`~precis.pcb.padplace`
+  (pads in board coordinates), :mod:`~precis.pcb.landpattern`
+  (synthesized pads when no footprint is cached),
+  :mod:`~precis.pcb.escape` (footprint-intrinsic escape precompute),
+  :mod:`~precis.pcb.capabilities` (fab rules as versioned data).
+* **Place + route** — :mod:`~precis.pcb.place` (force-directed seed),
+  :mod:`~precis.pcb.optimize` (the joint place+route annealer, the
+  package's largest engine), :mod:`~precis.pcb.cost` (its one cost
+  function), :mod:`~precis.pcb.pinswap`, :mod:`~precis.pcb.generators`
+  (computed components such as EWOD arrays), :mod:`~precis.pcb.session`
+  (IR↔DB glue for the ``pcb_place``/``pcb_route`` jobs).
+* **Copper** — :mod:`~precis.pcb.realize` (sketch → copper geometry),
+  :mod:`~precis.pcb.maze` (grid router that cannot violate clearance),
+  :mod:`~precis.pcb.planes` (pours), :mod:`~precis.pcb.tiling` (a net
+  owns a region on a layer), :mod:`~precis.pcb.silk` +
+  :mod:`~precis.pcb.stroke_font` (silkscreen), :mod:`~precis.pcb.geom`
+  (segment/fillet/quantization primitives).
+* **Checks** — :mod:`~precis.pcb.drc` (geometric DRC on realized copper;
+  its graph-level half lives in ``ir.py``), :mod:`~precis.pcb.connectivity`
+  (is each net's copper one piece).
+* **Out** — :mod:`~precis.pcb.gerber` (Gerber X2 + Excellon),
+  :mod:`~precis.pcb.svg`, :mod:`~precis.pcb.gerber_view` (render the board
+  from its gerbers), :mod:`~precis.pcb.schematic`, :mod:`~precis.pcb.export`
+  (the text/dict exporters), :mod:`~precis.pcb.route` (Freerouting via
+  Specctra, optional).
+
+Dependencies: shapely is imported at module top by ``drc``, ``generators``,
+``gerber``, ``ir``, ``planes``, ``realize`` and ``tiling`` — it is a core
+dependency (pyproject), not confined to the tiling pass any more.
+``geom.py`` stays dependency-free by convention because its primitives
+are closed-form, not because the package as a whole is. No GL, no
+meshing, no embedder. The handler (:mod:`precis.handlers.pcb`) renders
+results as TOON; this package owns the algorithms.
 """
 
 from __future__ import annotations
