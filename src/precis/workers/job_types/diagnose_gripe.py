@@ -31,8 +31,9 @@ mitigation.
 
 **Auto-promotion bridge, shipped dark.** When ``PRECIS_DIAGNOSE_AUTOPROMOTE=1``
 and the model's self-reported confidence is >= 0.8, the gripe gets tagged
-``OPEN:auto-fix`` — the key the (separate, dark) ``fixer-gripe-intake``
-lane reads. Unset (the default), diagnosis never tags anything.
+``OPEN:auto-fix`` — the key ``workers.backlog_groom``'s selection filter
+reads to mint a dispatchable ``fix_gripe`` todo. Unset (the default),
+diagnosis never tags anything.
 
 Registered as a dispatch-protocol plugin (``spec.dispatch``) under
 ``claude_inproc`` — see ``precis.workers.job_types`` for the protocol.
@@ -97,10 +98,12 @@ _DIAGNOSIS_PREFIX = "DIAGNOSIS (auto, job {job_id}):"
 _CONFIDENCE_RE = re.compile(r"Confidence:\s*([01](?:\.\d+)?)", re.IGNORECASE)
 
 #: Iff PRECIS_DIAGNOSE_AUTOPROMOTE=1 AND confidence >= this threshold, the
-#: gripe gets tagged OPEN:auto-fix (fixer-gripe-intake's read key).
+#: gripe gets tagged OPEN:auto-fix (backlog_groom's selection-filter key).
 _AUTOPROMOTE_ENV = "PRECIS_DIAGNOSE_AUTOPROMOTE"
 _AUTOPROMOTE_THRESHOLD = 0.8
-_AUTOFIX_TAG = "auto-fix"
+#: Public — backlog_groom imports this to build its OPEN:auto-fix selection
+#: filter, so the tag string has exactly one owner.
+AUTOFIX_TAG = "auto-fix"
 
 
 def _autopromote_enabled() -> bool:
@@ -442,7 +445,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         if confidence >= _AUTOPROMOTE_THRESHOLD and _autopromote_enabled():
             from precis.store.types import Tag
 
-            ctx.store.add_tag(gripe_id, Tag.open(_AUTOFIX_TAG), set_by="system")
+            ctx.store.add_tag(gripe_id, Tag.open(AUTOFIX_TAG), set_by="system")
 
     ctx.append_chunk(
         "job_summary",

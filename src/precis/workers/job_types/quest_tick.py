@@ -117,6 +117,7 @@ _SIM_JOB_TYPES = (
     "autocatpath_seed",  # barrier lane — per-(model, seed) compute (the fan-out)
     "autocatpath_aggregate",  # barrier lane — the rollup that closes the eval
     "struct_relax",  # stability lane
+    "struct_search",  # search lane — one job mints N candidates
 )
 
 

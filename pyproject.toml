@@ -340,6 +340,13 @@ catalyst-gpu = [
     "autocatpath[mace]>=0.22.0",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
+# Global structure search (docs/backlog/global-structure-search-gofee-agox.md
+# slice 1): AGOX's GOFEE/basin-hopping/random search over a confined box,
+# oracle = the `ml` rung's own MACE calculator (no dep of its own here — see
+# `dft-ml` above). A separate extra from `catalyst-gpu` on purpose: AGOX
+# pulls ray, dscribe, ase-ga, scikit-learn, h5py, matplotlib — kept out of
+# the pathway compute stack's own resolve and out of `[all]`.
+struct-search = ["agox>=3.11,<4"]
 # NOTE: [external] and [patent] were promoted into core (2026-08-16) —
 # light pure-Python network clients; see the promotion note in
 # ``dependencies``. The extras no longer exist.
@@ -743,6 +750,8 @@ mypy_path = "scripts"
 module = [
     "acatome_extract.*",
     "acatome_store.*",
+    "agox",
+    "agox.*",
     "anki",
     "anki.*",
     "autocatpath",

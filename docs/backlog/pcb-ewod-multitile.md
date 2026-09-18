@@ -20,16 +20,19 @@ electrode-gap net classes, `view='capability'` (SVG + ledger), pads-only
 test fixture (`tests/test_pcb_ewod_dogfood.py`) that applies, places,
 exports a loadable gerber zip, renders, and is DRC-clean array-internally.
 
-**Two engine gaps block the acceptance criteria and each needs its own
-round** (both kind-wide, not EWOD-specific): `rules.py::PAD_LAYER` still
-forces every pad onto layer 0, so bottom-side parts are checked as if
-they were on top (slice 3 owns it); and the IR carries ONE position per
-PIN, so an electrode's plaza via is invisible to the router and the
-designed B.Cu escape does not route at all (gripe 339236 — criterion 1's
-"routes escapes on B.Cu" is UNMET). **Next**: the pre-place-route block
-spec round (the multi-pad/pre-routed-copper question is the same one),
-then slice 3. Full mechanism for both: the round-8 decisions-log entry
-below.
+**Both engine gaps that blocked the acceptance criteria are closed on
+`main`** (both were kind-wide, not EWOD-specific): `rules.py::PAD_LAYER`
+forcing every pad onto layer 0 (gr341516, closed); and the plaza-via
+escape — the IR carries ONE position per PIN so the via was invisible to
+the router (fixed by island terminals from fixed copper,
+`pcb-pre-place-route-blocks.md`), and once visible every F.Cu cell was
+still walled off by neighbours' enclosing-DISC pad claims at a pitch
+narrower than the disc (gripe 346962, true-shape claims; 2026-09-18).
+The dogfood fixture now routes escapes through the fabric; the
+remaining escapes lose a congestion race (gripe 347037). **Criterion
+1's "routes escapes on B.Cu" is met on the fixture; gripe 339236 closes
+on the PROD observation after the next deploy** (cluster predates every
+fix). Full mechanism: the round-8 decisions-log entry below.
 
 Target board (Reto, 2026-09-13): top copper is a field of EWOD drive
 electrode pads (e.g. **9×9**) tiled as 3×3 multitiles — 8 driven outer
@@ -974,7 +977,12 @@ Resolved 2026-09-14 (round 8, real per-pin positions + the routed dogfood):
   spec, which has the same "a block owns pre-routed copper the annealer
   never enters" shape). `ewod-dogfood-1` asserts the honest state: an
   unrouted escape stays VISIBLE (non-`realized` status + a recorded
-  reason), never silently green.
+  reason), never silently green. **Closed 2026-09-18**: island
+  terminals made the via visible; the enclosing-circle claim was then
+  the sole remaining wall and is gone (gripe 346962, true rect/polygon
+  claims + contest + centre-cell invariant). The fixture assertion
+  flipped to "escapes route; failures keep a reason"; the residue is
+  gripe 347037 (congestion race).
 - **What slices 1-2 delivered, end to end** (rounds 1-8): authored local
   footprints + polygon pads + role/mask/paste through store, padplace,
   DRC, SVG and gerber; the `ewod_pad_array` generator (derived sizing

@@ -170,3 +170,122 @@ def test_strip_preamble_ignores_a_mid_sentence_mention() -> None:
 def test_strip_preamble_without_the_heading_is_none() -> None:
     assert doctor_report.strip_preamble("All done, nothing to report today.") is None
     assert doctor_report.strip_preamble("") is None
+
+
+# ── convert_needs_a_human: bullets become waiting-for:reto todos ─────
+
+
+def _body_with_asks(*bullets: str) -> str:
+    lines = "\n".join(f"- {b}" for b in bullets)
+    return (
+        f"## Classification\n- nursery: baseline noise\n\n## Needs a human\n{lines}\n"
+    )
+
+
+def test_convert_needs_a_human_mints_one_todo_per_bullet(store: Store) -> None:
+    body = _body_with_asks(
+        "Confirm the nursery fix landed (gr111)",
+        "Decide whether to raise PRECIS_BACKLOG_GROOM_REFRESH_HOURS",
+        "Look at worker_logs for host melchior",
+    )
+
+    new_body = doctor_report.convert_needs_a_human(store, body)
+
+    todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+    assert len(todos) == 3
+    root_id = doctor_report._ensure_asks_root(store)
+    for todo in todos:
+        assert int(todo.parent_id or -1) == root_id
+        assert store.has_tag(int(todo.id), "OPEN", "waiting-for:reto")
+        assert todo.meta.get("seen_count") == 1
+        assert todo.meta.get("doctor_ask_key")
+    ids = sorted(int(t.id) for t in todos)
+    for todo_id in ids:
+        assert f"- td{todo_id}:" in new_body
+    assert "## Needs a human" in new_body
+
+
+def test_convert_needs_a_human_nested_sub_bullet_joins_the_parent(store: Store) -> None:
+    """A sub-bullet indented under an ask is a continuation, not a new
+    top-level item — only a column-0 marker starts a fresh ask."""
+    body = (
+        "## Classification\n- nursery: baseline noise\n\n"
+        "## Needs a human\n"
+        "- Confirm the retry landed\n"
+        "  - saw it fail twice more since\n"
+        "- Second ask\n"
+    )
+
+    doctor_report.convert_needs_a_human(store, body)
+
+    todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+    assert len(todos) == 2
+    first = next(t for t in todos if t.title == "Confirm the retry landed")
+    chunks = store.chunks.list_chunks_for_ref(int(first.id))
+    assert any("saw it fail twice more since" in (c.text or "") for c in chunks)
+
+
+def test_convert_needs_a_human_dedups_and_bumps_seen_count(store: Store) -> None:
+    body = _body_with_asks("Confirm the nursery fix landed (gr111)")
+
+    first_body = doctor_report.convert_needs_a_human(store, body)
+    before = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+    assert len(before) == 1
+
+    second_body = doctor_report.convert_needs_a_human(store, body)
+    after = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+
+    assert len(after) == 1, "same bullet re-run must not mint a second todo"
+    bumped = store.get_ref(kind="todo", id=int(after[0].id))
+    assert bumped is not None
+    assert bumped.meta.get("seen_count") == 2
+    assert f"td{after[0].id}" in first_body
+    assert "seen 2×" in second_body
+
+
+def test_convert_needs_a_human_dedups_across_a_changed_id_or_number(
+    store: Store,
+) -> None:
+    body_a = _body_with_asks("Still waiting 6 hours on gr111 to be confirmed")
+    body_b = _body_with_asks("Still waiting 9 hours on gr222 to be confirmed")
+
+    doctor_report.convert_needs_a_human(store, body_a)
+    doctor_report.convert_needs_a_human(store, body_b)
+
+    todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+    assert len(todos) == 1
+    assert todos[0].meta.get("seen_count") == 2
+
+
+def test_convert_needs_a_human_no_section_is_a_no_op(store: Store) -> None:
+    body = "## Classification\n- nursery: baseline noise\n\n## Diagnosis\nnothing\n"
+
+    new_body = doctor_report.convert_needs_a_human(store, body)
+
+    assert new_body == body
+    assert store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20) == []
+
+
+def test_convert_needs_a_human_malformed_section_leaves_body_untouched(
+    store: Store,
+) -> None:
+    body = (
+        "## Classification\n- nursery: baseline noise\n\n"
+        "## Needs a human\nJust some prose, no bullets at all.\n"
+    )
+
+    new_body = doctor_report.convert_needs_a_human(store, body)
+
+    assert new_body == body
+    assert store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20) == []
+
+
+def test_convert_needs_a_human_carries_the_report_ref_id(store: Store) -> None:
+    ref, _ = doctor_report.find_or_create_report(store, "2026-09-18")
+    body = _body_with_asks("Confirm the nursery fix landed (gr111)")
+
+    doctor_report.convert_needs_a_human(store, body, report_ref_id=int(ref.id))
+
+    todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+    assert len(todos) == 1
+    assert todos[0].meta.get("doctor_report_id") == int(ref.id)

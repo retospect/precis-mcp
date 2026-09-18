@@ -1275,6 +1275,23 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
 
     raw_params = meta.get("params")
     params = dict(raw_params) if isinstance(raw_params, dict) else {}
+    # A struct_search-minted candidate (backlog item 4/6,
+    # `docs/backlog/global-structure-search-gofee-agox.md`) carries
+    # `meta.search` (algo/model/budget_used/iteration/rank/...) rather than
+    # `meta.params` — surfaced here as a synthetic `origin` param row so the
+    # rendered params table (`_param_rows`) distinguishes it from the
+    # default LLM-proposal origin (no `origin` key at all), without adding a
+    # dedicated column this generic table doesn't otherwise have. Fill-only,
+    # same convention as the rest of this function: never overwrites an
+    # explicit `origin` the proposer itself stamped into `meta.params`.
+    search_meta = meta.get("search")
+    if (
+        isinstance(search_meta, dict)
+        and "origin" not in params
+        and search_meta.get("algo")
+        and search_meta.get("rank") is not None
+    ):
+        params["origin"] = f"search:{search_meta['algo']}#{search_meta['rank']}"
 
     flags: dict[str, Any] = {}
     if "barrier_trusted" in meta:

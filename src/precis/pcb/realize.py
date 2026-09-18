@@ -1093,6 +1093,57 @@ def _seg_span_mm(ir: PcbIR, seg_id: int) -> float:
     return dist(pa, pb)
 
 
+def _pad_shape(geom: PadGeom, point: Point, inst_rot: float) -> maze.PadShape:
+    """One pin's TRUE footprint as a :class:`~precis.pcb.maze.PadShape`
+    (gripe 346962) — the router's fine-pitch fix: an enclosing circle for
+    every pad let a neighbour's claim steal a pad's own centre cell at
+    0.8mm QFP pitch (``docs/backlog`` — HV507, C639448).
+
+    - ``shape == "polygon"``: the true ring, rotated by ``inst_rot`` about
+      ``point`` — the SAME transform :func:`pads_for_ir` applies to
+      ``geom.poly`` (no mirror — see that function's own comment; a
+      polygon pad's authored ring already carries any footprint-local
+      pose it needs, only the instance's own rotation is left to apply).
+    - ``shape == "circle"``: a disc, radius ``max(w, h) / 2`` — orientation
+      never matters for a round pad.
+    - ``shape in ("rect", "obround")`` and axis-aligned in board space: an
+      axis-aligned rect at ``geom.w_mm`` x ``geom.h_mm``. A REAL pad's
+      w/h are already board-oriented when ``geom.axis_aligned`` (its own
+      docstring); a SYNTHESIZED pad's are footprint-local (the IR carries
+      no per-pin rotation, see :func:`~precis.pcb.ir.
+      instance_courtyard_polygon`'s own note), so this swaps them itself
+      off ``inst_rot`` when that instance sits at a 90°-multiple.
+    - Anything else — an oblique (non-90°-multiple) rotation, or an
+      unrecognised shape word — falls back to the OLD conservative
+      enclosing circle every pad used before this change (the same limit
+      :func:`~precis.pcb.padplace.place_footprint_pads`'s own
+      aperture-less writer already has for a non-90° rotation, module
+      docstring)."""
+    inst_rot = 0.0 if math.isnan(inst_rot) else inst_rot
+    if geom.shape == "polygon" and geom.poly:
+        poly = tuple(
+            (point[0] + rvx, point[1] + rvy)
+            for rvx, rvy in (
+                landpattern.rotate_offset(vx, vy, inst_rot) for vx, vy in geom.poly
+            )
+        )
+        return maze.PadShape("poly", point[0], point[1], poly=poly)
+    if geom.shape == "circle":
+        return maze.PadShape("circle", point[0], point[1], geom.w_mm, geom.h_mm)
+    if geom.shape in ("rect", "obround"):
+        w, h = geom.w_mm, geom.h_mm
+        if geom.synthesized:
+            axis_aligned = padplace.pad_axis_aligned(inst_rot)
+            if axis_aligned and padplace.rect_swaps_wh(inst_rot):
+                w, h = h, w
+        else:
+            axis_aligned = geom.axis_aligned
+        if axis_aligned:
+            return maze.PadShape("rect", point[0], point[1], w, h)
+    diameter = math.hypot(geom.w_mm, geom.h_mm)
+    return maze.PadShape("circle", point[0], point[1], diameter, diameter)
+
+
 def _realize_maze(
     ir: PcbIR,
     ids: list[int],
@@ -1153,20 +1204,13 @@ def _realize_maze(
     # and a drilled (THT/plated) pad claims every board layer, keyed off
     # `PadGeom.drill_mm` truthy (`geom.drill_mm`), the SAME "drilled"
     # signal `drc.py` already reads off a pad dict's own `"drill"` key.
-    pads: list[tuple[Point, int, float, tuple[int, ...]]] = []
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]] = []
     for pid in range(ir.n_pins):
         point = pin_point(ir, pid)
         if point is not None:
             geom = pad_geoms[pid]
-            # A conservative ENCLOSING circle, not the true (possibly
-            # rectangular) footprint — the router's occupancy grid only
-            # ever queries/claims disks (see maze.OccupancyGrid), and a
-            # real rect-vs-rect keep-out would need a second geometry
-            # engine inside the grid for a gain that doesn't matter here:
-            # a claim slightly larger than the true copper costs a little
-            # routability, never a clearance violation, which is the safe
-            # direction to be conservative in.
-            radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
+            inst_rot = float(ir.inst_rot[int(ir.pin_instance[pid])])
+            shape = _pad_shape(geom, point, inst_rot)
             net = int(ir.pin_net[pid])
             if net == NO_NET:
                 # LATENT DEFECT, found while testing this change (not part
@@ -1189,7 +1233,7 @@ def _realize_maze(
                 if geom.drill_mm
                 else (_side_layer(ir, int(ir.pin_instance[pid]), signal_layers),)
             )
-            pads.append((point, net, radius, layers))
+            pads.append((point, net, shape, layers))
     if not pads:
         return [], [], list(ids), [], [], [], {}
 
@@ -1396,7 +1440,7 @@ def _diagnose_all(
     extra_unrouted: list[int],
     plane_id_set: set[int],
     spec: maze.GridSpec,
-    pads: list[tuple[Point, int, float, tuple[int, ...]]],
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
     clearance: float,
     signal_layers: list[int],
     rules_by_net: dict[int, NetRules],
@@ -1666,7 +1710,8 @@ def _claim_fixed_copper(
 
 
 def _stamp_pads(
-    grid: maze.OccupancyGrid, pads: list[tuple[Point, int, float, tuple[int, ...]]]
+    grid: maze.OccupancyGrid,
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
 ) -> None:
     """Claim every pad on ``grid`` — the router's static baseline, factored
     out so a diagnostic probe (:func:`_diagnose_unrouted`) can build the
@@ -1676,64 +1721,45 @@ def _stamp_pads(
     **Which layer(s) is per-pad, not a shared constant** (``pads``' 4th
     element — an SMD pad claims one, a drilled/THT pad claims every board
     layer, see :func:`_realize_maze`'s own comment on how that element is
-    built). An SMD pad is copper on ONE layer only, so a trace on a
-    DIFFERENT layer may legally run underneath it — blocking every layer
-    under a fine-pitch part's own pads would make the layers under it
-    unusable for the escape that needs them. A drilled (through-hole)
-    pad's plated land is real copper on every layer it passes through,
-    physically indistinguishable from a via for this purpose (``drc.py::
-    clearance_pairs_indexed``'s identical "a drilled pad has no single
-    ``item['layer']`` either" note): a trace may never cross through the
-    hole regardless of which layer it is drawn on, so it claims every
-    entry in ``pads``' layer tuple, not just one. Before per-pad layers at
-    all it was :data:`PAD_LAYER` for every pad regardless of mount side,
-    which claimed a bottom-mounted part's copper on F.Cu — a layer it was
-    never on — leaving the cell it actually occupies, on B.Cu, unclaimed
-    (any OTHER net free to route straight through it) and the real pad
-    itself invisible to :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
-    ``pad_layer``/``start_layer``/``goal_layer`` entry test. Two passes:
-    the core first, where two nets' pads collide the cell goes to NEITHER
-    (``maze.CONTESTED``), then each pad's inner disk is re-asserted so its
-    owner always has a cell to start a route from. Each pad brings its OWN
-    radius (``pads``' 3rd element, from :func:`pad_geometry` — real
-    footprint size where supplied, package-family synthesis otherwise)
-    rather than every pad on the board claiming the same disc.
+    built): a trace on a DIFFERENT layer may legally run under an SMD
+    pad, never through a drilled hole's plated land, physically
+    indistinguishable from a via for this purpose (``drc.py::
+    clearance_pairs_indexed``'s identical note).
 
-    **The second pass calls :meth:`~precis.pcb.maze.OccupancyGrid.
-    stamp_pad`, never plain ``stamp_disk``** — found 2026-08-29 as a live,
-    currently-reproducible defect (gripe 269811 comment 2): this loop used
-    to call ``stamp_disk`` directly, which claims the SAME copper on
-    ``grid._owner`` but never appends to ``grid._pads``. Every consumer of
-    a pad's true footprint as a KEEP-OUT rather than an occupancy claim —
-    :meth:`~precis.pcb.maze.OccupancyGrid.via_clears_pads` (called by
-    :func:`_drop_via_site`, the plane fan-out's own drop-via search) and
-    :meth:`~precis.pcb.maze.OccupancyGrid._pad_keepout_mask` (folded into
-    :meth:`~precis.pcb.maze.OccupancyGrid.route`'s own via candidate mask)
-    — reads ONLY ``grid._pads``. With that list permanently empty, both
-    guards were vacuously true for every pad on every board this module
-    has ever routed: ``via_clears_pads`` allowed a drop via to land
-    directly on (or well inside) its own pin's pad, or a neighbour's,
-    because it had nothing to check against. Measured on the ESP32-C3
-    reference fixture with GND/VCC3V3 plane-promoted: 55 of 57
-    ``via_pad_keepout`` DRC findings were exactly this — the fix is this
-    one entry-point swap, not a new keep-out rule (the rule already
-    existed and was already correct; it just never received any data).
-    The first (CONTESTED) pass stays on plain ``stamp_disk`` unchanged —
-    :meth:`stamp_pad`'s own docstring is explicit that the pre-pass is a
-    collision marker, not a pad's true footprint, and recording it in
-    ``_pads`` too would double-count one pad as two keep-out entries.
+    **Three passes, each pad bringing its own TRUE shape** (``pads``' 3rd
+    element, a :class:`~precis.pcb.maze.PadShape` — real footprint where
+    supplied, package-family synthesis otherwise; see
+    :func:`_pad_shape`). An enclosing circle for EVERY pad (this
+    function's pre-gripe-346962 behaviour) is wider than a 0.8mm QFP
+    pitch, so a neighbour's disc could steal a pad's own centre cell
+    before the search ever ran — the exact defect this shape/pass split
+    closes:
+
+    1. The dilated (``clearance_mm`` margin) shape, ``contest=True`` —
+       where two pads' outer keep-outs overlap the cell goes to NEITHER
+       (:data:`~precis.pcb.maze.CONTESTED`), never to whichever pad
+       happened to stamp last.
+    2. The TRUE shape at zero margin, via :meth:`~precis.pcb.maze.
+       OccupancyGrid.stamp_pad_shape` (never plain ``stamp_shape`` —
+       gripe 269811's fix: only ``stamp_pad``/``stamp_pad_shape`` append
+       to ``grid._pads``, which :meth:`~precis.pcb.maze.OccupancyGrid.
+       via_clears_pads`/``_pad_keepout_mask`` read as the via keep-out;
+       an empty ``_pads`` made both vacuously true on every board this
+       module ever routed). Also ``contest=True`` now — two pads' TRUE
+       copper actually overlapping is a real collision, not a race to
+       resolve by stamp order.
+    3. Every pad's own NEAREST cell, forced via :meth:`~precis.pcb.maze.
+       OccupancyGrid.claim_centre` — unconditionally, bypassing CONTEST.
+       Passes 1-2 can legitimately lose a tight neighbour's contest, but
+       the one cell a route must start/end on must never be able to —
+       gripe 346962's own repro (HV507, 0.8mm pitch, C639448).
     """
-    for point, net, radius, layers in pads:
-        grid.stamp_disk(
-            layers,
-            point[0],
-            point[1],
-            grid.core_radius_mm(2.0 * radius),
-            net,
-            contest=True,
-        )
-    for point, net, radius, layers in pads:
-        grid.stamp_pad(layers, point[0], point[1], radius, net)
+    for _point, net, shape, layers in pads:
+        grid.stamp_shape(layers, shape, grid.clearance_mm, net, contest=True)
+    for _point, net, shape, layers in pads:
+        grid.stamp_pad_shape(layers, shape, net, contest=True)
+    for point, net, _shape, layers in pads:
+        grid.claim_centre(layers, point[0], point[1], net)
 
 
 def _via_group_extent(
@@ -1772,7 +1798,7 @@ def _diagnose_unrouted(
     ir: PcbIR,
     seg_id: int,
     spec: maze.GridSpec,
-    pads: list[tuple[Point, int, float, tuple[int, ...]]],
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
     clearance: float,
     signal_layers: list[int],
     rules: NetRules,
@@ -1894,7 +1920,7 @@ def _route_pass(
     grid: maze.OccupancyGrid,
     config: RealizeConfig,
     rules_by_net: dict[int, NetRules],
-    pads: list[tuple[Point, int, float, tuple[int, ...]]],
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
     clearance: float,
     signal_layers: list[int],
     spec: maze.GridSpec,
@@ -2568,10 +2594,17 @@ def _plane_fanout(
             # the grid still refuses to let the stub overlap anything.
             ux, uy = (dx / norm, dy / norm) if norm > 1e-9 else (1.0, 0.0)
             lo, hi = span_lo, span_hi
-            # Same conservative enclosing-circle radius `_realize_maze`'s own
-            # pad-claim loop uses (see its docstring) — the drop via has to
-            # clear THIS pin's own pad, whatever its real (possibly
-            # rectangular) footprint.
+            # Deliberately the conservative ENCLOSING circle, not
+            # `_pad_shape`'s true (possibly rect/poly) claim
+            # `_realize_maze`'s own pad-claim loop now stamps (gripe
+            # 346962) — `_drop_via_site` picks a placer-chosen SITE by
+            # scanning outward from the pad, not asking the grid a
+            # shape-exact query, so it stays on the same circle-radius
+            # arithmetic `disk_is_free`/`via_clears_pads` already use
+            # elsewhere; kept as its own read here (not `_pad_shape`'s
+            # `enclosing_radius_mm`) so this call site and the maze
+            # claim's true shape can never silently drift onto different
+            # numbers for the same pad.
             geom = pad_geoms[pid]
             pad_radius = math.hypot(geom.w_mm, geom.h_mm) / 2.0
             stub_end = _drop_via_site(
@@ -3730,7 +3763,7 @@ def _stitch_plane_fragments(
     *,
     spec: maze.GridSpec,
     clearance: float,
-    pads: list[tuple[Point, int, float, tuple[int, ...]]],
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
     rules_by_net: dict[int, NetRules],
     config: RealizeConfig,
 ) -> tuple[list[RealizedVia], list[RealizedTrack], list[UnstitchedNet]]:
@@ -5071,7 +5104,19 @@ class PadGeom:
     footprint or authored local footprint) actually set them. ``None``
     for every synthesized pad (no real footprint at all — there is no
     fact to carry, the same "no key" default a bare real pad with none of
-    these authored gets from ``place_footprint_pads`` itself)."""
+    these authored gets from ``place_footprint_pads`` itself).
+
+    ``axis_aligned`` (gripe 346962) is ``True`` only for a REAL pad whose
+    total rotation (instance + the source footprint's own per-pad
+    ``rot``) landed on an exact 90°-multiple — the one case
+    :func:`~precis.pcb.padplace.place_footprint_pads` already swapped
+    ``w_mm``/``h_mm`` into true board orientation for, so ``w_mm``/
+    ``h_mm`` are only trustworthy as an axis-aligned board-space rect
+    when this is ``True``. Defaults ``True`` (a synthesized pad's w/h are
+    footprint-local, never board-rotated by this field at all — see
+    :func:`_realize_maze`'s own pad-shape builder, which resolves a
+    synthesized rect pad's board orientation from the instance's own
+    rotation directly rather than through this flag)."""
 
     w_mm: float
     h_mm: float
@@ -5082,6 +5127,7 @@ class PadGeom:
     mask: str | None = None
     paste: str | None = None
     drill_mm: float | None = None
+    axis_aligned: bool = True
 
 
 def _real_pad_sizes(
@@ -5097,6 +5143,7 @@ def _real_pad_sizes(
         str | None,
         str | None,
         float | None,
+        bool,
     ],
 ]:
     """This one instance's REAL per-pin pad size (plus
@@ -5127,6 +5174,16 @@ def _real_pad_sizes(
     once, at final placement) — matched to the same pin name via the same
     ``pin_map`` indirection, offset to be relative to the pad's own
     center.
+
+    **``axis_aligned`` (gripe 346962)** is the one fact the probe's own
+    output cannot answer: ``place_footprint_pads`` already swapped w/h
+    into board orientation when the pad's total rotation (instance +
+    the raw pad's own ``rot``) is a 90°-multiple, but its return dict
+    carries no rotation, so a caller cannot tell "already swapped, exact"
+    apart from "any other angle, left alone, inexact" without asking the
+    SAME question again here — read straight off the raw pad (mirroring
+    ``raw_poly_by_name`` right below), never re-derived from the probe's
+    transformed output.
     """
     pin_names = {
         str(ir.pin_label[p])
@@ -5136,7 +5193,8 @@ def _real_pad_sizes(
     if not pin_names:
         return {}
     rot = float(ir.inst_rot[inst_id])
-    probe_inst = {"x": 0.0, "y": 0.0, "rot": 0.0 if math.isnan(rot) else rot}
+    inst_rot = 0.0 if math.isnan(rot) else rot
+    probe_inst = {"x": 0.0, "y": 0.0, "rot": inst_rot}
     pads, _drills = padplace.place_footprint_pads(
         fp.get("pads") or [],
         probe_inst,
@@ -5184,6 +5242,24 @@ def _real_pad_sizes(
         raw_poly_by_name[name] = [
             (float(vx) - cx, float(vy) - cy) for vx, vy in raw["poly"]
         ]
+    # `total_rot` (instance + this raw pad's own ``rot``) per pin name --
+    # the SAME figure `place_footprint_pads` used internally to decide
+    # whether a rect/obround pad's w/h needed swapping, re-derived here
+    # (not threaded out of it) because its own return dict carries no
+    # rotation. "First raw pad per pin name wins", same convention as
+    # `raw_poly_by_name`/`out[name]` below -- for a THT pad every
+    # layer-entry shares one raw pad so this cannot disagree with itself.
+    raw_rot_by_name: dict[str, float] = {}
+    for raw in fp.get("pads") or []:
+        entry = pin_map.get(str(raw.get("number")))
+        name = (
+            str(entry.get("name"))
+            if isinstance(entry, dict) and entry.get("name") is not None
+            else str(raw.get("number") or "")
+        )
+        if name in raw_rot_by_name:
+            continue
+        raw_rot_by_name[name] = float(raw.get("rot") or 0.0)
     out: dict[
         str,
         tuple[
@@ -5195,6 +5271,7 @@ def _real_pad_sizes(
             str | None,
             str | None,
             float | None,
+            bool,
         ],
     ] = {}
     for pad in pads:
@@ -5213,6 +5290,7 @@ def _real_pad_sizes(
         mask = pad.get("mask")
         paste = pad.get("paste")
         drill = pad.get("drill")
+        total_rot = inst_rot + raw_rot_by_name.get(name, 0.0)
         out[name] = (
             w,
             float(pad.get("h", w)),
@@ -5222,6 +5300,7 @@ def _real_pad_sizes(
             str(mask) if mask is not None else None,
             str(paste) if paste is not None else None,
             float(drill) if drill is not None else None,
+            padplace.pad_axis_aligned(total_rot),
         )
     return out
 
@@ -5265,6 +5344,7 @@ def pad_geometry(
                 str | None,
                 str | None,
                 float | None,
+                bool,
             ],
         ],
     ] = {}
@@ -5278,7 +5358,7 @@ def pad_geometry(
         inst_id = int(ir.pin_instance[pid])
         real = real_by_inst.get(inst_id, {}).get(str(ir.pin_label[pid]))
         if real is not None:
-            w, h, shape, poly, role, mask, paste, drill = real
+            w, h, shape, poly, role, mask, paste, drill, axis_aligned = real
             out.append(
                 PadGeom(
                     w,
@@ -5290,6 +5370,7 @@ def pad_geometry(
                     mask=mask,
                     paste=paste,
                     drill_mm=drill,
+                    axis_aligned=axis_aligned,
                 )
             )
         else:

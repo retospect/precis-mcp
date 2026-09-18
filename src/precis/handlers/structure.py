@@ -644,6 +644,25 @@ def paper_provenance_rows(store: LinksStore, ref_id: int) -> list[dict[str, str]
     return rows
 
 
+def card_text(title: str, scene: Scene, description: str = "") -> str:
+    """The one embeddable summary per design — title + composition + the
+    LLM's own description, so search(kind='structure') lands on intent.
+
+    Module-level (not just :meth:`StructureHandler._card_text`, which
+    delegates here) so a write-back path with no live handler instance —
+    e.g. ``struct_search``'s candidate write-back — builds the same card
+    text the handler's own ``put``/edit paths do, rather than growing a
+    second, driftable definition."""
+    t = probe.toc(scene)
+    pbc = "".join("T" if p else "F" for p in scene.cell.pbc)
+    elements = ", ".join(sorted(scene.composition()))
+    intent = f" {description}" if description else ""
+    return (
+        f"{title} (atomistic structure).{intent} Composition: {t['formula']} "
+        f"({elements}); {t['natoms']} atoms, {t['nbonds']} bonds; pbc[{pbc}]."
+    )
+
+
 class StructureHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="structure",
@@ -2568,16 +2587,10 @@ class StructureHandler(Handler):
         return "".join(f"{el}{comp[el]}" for el in sorted(comp))
 
     def _card_text(self, title: str, scene: Scene, description: str = "") -> str:
-        """The one embeddable summary per design — title + composition + the
-        LLM's own description, so search(kind='structure') lands on intent."""
-        t = probe.toc(scene)
-        pbc = "".join("T" if p else "F" for p in scene.cell.pbc)
-        elements = ", ".join(sorted(scene.composition()))
-        intent = f" {description}" if description else ""
-        return (
-            f"{title} (atomistic structure).{intent} Composition: {t['formula']} "
-            f"({elements}); {t['natoms']} atoms, {t['nbonds']} bonds; pbc[{pbc}]."
-        )
+        """Delegates to the module-level :func:`card_text` (see its
+        docstring) — kept as a method so every existing call site here reads
+        unchanged."""
+        return card_text(title, scene, description)
 
     # ── search ───────────────────────────────────────────────────────
     def search(

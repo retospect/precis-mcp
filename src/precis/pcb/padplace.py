@@ -124,6 +124,27 @@ def _swap_wh(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
     return abs(r - 90.0) <= tol_deg
 
 
+def pad_axis_aligned(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
+    """True when ``rot_deg`` (mod 90) is within ``tol_deg`` of a multiple
+    of 90° — the SUPERSET of :func:`_swap_wh`'s own 90°/270° test (0°/180°
+    need no swap, 90°/270° do; both land a rect/obround pad's true extent
+    exactly on the board axes). Exposed for callers outside this module
+    that need to know "can this pad's board-space extent be represented
+    by an axis-aligned box at all" without re-deriving the tolerance
+    arithmetic a third time (:mod:`precis.pcb.maze`'s pad-shape router
+    claim, gripe 346962)."""
+    r = rot_deg % 90.0
+    return r <= tol_deg or r >= 90.0 - tol_deg
+
+
+def rect_swaps_wh(rot_deg: float, *, tol_deg: float = 0.05) -> bool:
+    """Public wrapper on :func:`_swap_wh`, for a caller outside this
+    module that needs the IDENTICAL 90°/270° swap decision
+    (:mod:`precis.pcb.realize`'s synthesized-pad board-space sizing,
+    gripe 346962) rather than reaching into a private helper."""
+    return _swap_wh(rot_deg, tol_deg=tol_deg)
+
+
 def _effective_layer(pad_layer: str, *, bottom: bool) -> str:
     if not bottom:
         return pad_layer

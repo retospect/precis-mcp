@@ -2626,14 +2626,42 @@ class _TickRun:
             self.st["stage"] = "finish"
             return None
 
-        from precis.quest.compute import run_compute_step
+        from precis.quest.compute import dispatch_search, run_compute_step
 
         store, quest_id, by = self.store, self.quest_id, self.by
         proposals = _tick_proposals(self.payload())
 
-        # WIP cap — dispatch at most max_proposals_per_tick() (default 1);
-        # the rest were already logged as `hypothesis` leads by `apply`.
-        capped = proposals[: max_proposals_per_tick()]
+        # Structure search slot ("search, don't guess" — backlog item 4):
+        # an opt-in `meta.search` on the quest spends this tick's WIP slot
+        # on a struct_search job instead of an LLM-authored proposal. Own
+        # try/except (mirrors run_compute_step's below) — a raise here must
+        # never crash the tick.
+        search_dispatched = 0
+        try:
+            search_note = dispatch_search(store, quest_id)
+        except Exception:
+            log.exception(
+                "run_quest_tick: dispatch_search raised for quest %s — "
+                "skipping this tick's search slot",
+                quest_id,
+            )
+            search_note = None
+        if search_note:
+            if search_note.startswith("search["):
+                search_dispatched = 1
+            append_entry(
+                store,
+                quest_id,
+                text=search_note,
+                entry_type="observation",
+                by=MEASURED_BY,
+            )
+
+        # WIP cap — dispatch at most max_proposals_per_tick() (default 1),
+        # minus one slot per struct_search dispatched above; the rest were
+        # already logged as `hypothesis` leads by `apply`.
+        cap = max(0, max_proposals_per_tick() - search_dispatched)
+        capped = proposals[:cap]
         if len(proposals) > len(capped):
             append_entry(
                 store,
@@ -2666,10 +2694,16 @@ class _TickRun:
             step = None
         if step is not None:
             self.st["created"] = step.candidates_created
-            self.st["dispatched"] = step.sims_dispatched
+            self.st["dispatched"] = step.sims_dispatched + search_dispatched
             self.st["harvested"] = step.results_harvested
             self.st["ruled"] = step.ruled_out
             self.st["graduated"] = step.graduated
+        elif search_dispatched:
+            # run_compute_step itself raised (degraded to `step = None`
+            # above) but the search slot still landed a real job — don't
+            # lose that signal, or the stall counter would advance despite
+            # a genuine dispatch this tick.
+            self.st["dispatched"] = search_dispatched
 
         # Commit re-prompt + tier-escalation ladder: a structural guarantee
         # that the AGENT is asked to act — never a code-chosen dispatch. A

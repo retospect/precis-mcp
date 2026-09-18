@@ -1,8 +1,12 @@
 """Tests for the backlog groomer (``workers/backlog_groom.py``).
 
-Covers: minting a dispatchable ``fix_gripe`` todo per open gripe, the
-strategic root (find-or-create + reuse), dedup (no re-mint), the
-``no-groom`` human opt-out, the cadence throttle, batch_size bounding, and
+Covers: the ``OPEN:auto-fix`` selection gate (Piece C, 2026-09-18 —
+replaced the old every-open-gripe behaviour), the strategic root
+(find-or-create + reuse), dedup on a LIVE ``job_type='fix_gripe'`` todo
+(scoped so an unrelated todo minter reusing the ``params.gripe_id`` shape
+can't starve a re-mint), the ``no-groom`` human opt-out, the cadence
+throttle, batch_size bounding, the per-pass mint cap
+(``PRECIS_BACKLOG_GROOM_MAX_MINTS``), ``diagnosis_job_id`` threading, and
 the end-to-end hand-off — the minted todo is a valid ``dispatch`` candidate
 that mints a ``fix_gripe`` job.
 """
@@ -11,9 +15,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.backlog_groom import (
+    _MAX_MINTS_ENV_VAR,
     _ROOT_MARKER,
     _STATE_KEY,
     run_backlog_groom_pass,
@@ -21,11 +28,35 @@ from precis.workers.backlog_groom import (
 from precis.workers.dispatch import run_dispatch_pass
 
 
-def _open_gripe(store: Store, title: str, *, prio: int | None = None) -> int:
-    """Insert a live gripe tagged STATUS:open; return its id."""
+def _open_gripe(
+    store: Store, title: str, *, prio: int | None = None, auto_fix: bool = True
+) -> int:
+    """Insert a live gripe tagged STATUS:open (and OPEN:auto-fix by
+    default — the groomer's selection gate); return its id."""
     ref = store.insert_ref(kind="gripe", slug=None, title=title, meta={}, prio=prio)
     store.add_tag(
         ref.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
+    )
+    if auto_fix:
+        store.add_tag(ref.id, Tag.open("auto-fix"), set_by="agent")
+    return int(ref.id)
+
+
+def _succeeded_diagnosis_job(store: Store, gripe_id: int) -> int:
+    """Insert a succeeded ``diagnose_gripe`` job for ``gripe_id``; return
+    its id (feeds :func:`_latest_succeeded_diagnosis_job_id`)."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title=f"diagnose_gripe (gripe:{gripe_id})",
+        meta={
+            "job_type": "diagnose_gripe",
+            "executor": "claude_inproc",
+            "params": {"gripe_id": gripe_id},
+        },
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", "succeeded"), set_by="agent", replace_prefix=True
     )
     return int(ref.id)
 
@@ -52,10 +83,20 @@ def _force_due(store: Store) -> None:
     store.set_setting(_STATE_KEY, (datetime.now(UTC) - timedelta(days=1)).isoformat())
 
 
-# ── minting ──────────────────────────────────────────────────────
+# ── selection: OPEN:auto-fix gate ───────────────────────────────────
 
 
-def test_mints_dispatchable_todo_for_open_gripe(store: Store) -> None:
+def test_skips_open_gripe_without_auto_fix_tag(store: Store) -> None:
+    _open_gripe(store, "no diagnosis yet", auto_fix=False)
+
+    result = run_backlog_groom_pass(store)
+
+    assert result.claimed == 0
+    assert result.ok == 0
+    assert _groomer_todos(store) == []
+
+
+def test_mints_dispatchable_todo_for_auto_fix_gripe(store: Store) -> None:
     gid = _open_gripe(store, "embedder health signals lie")
 
     result = run_backlog_groom_pass(store)
@@ -113,26 +154,52 @@ def test_minted_todo_defaults_prio_when_gripe_unscored(store: Store) -> None:
     assert _groomer_todos(store)[0]["prio"] == 4
 
 
-# ── dedup ────────────────────────────────────────────────────────
+# ── dedup: a live fix todo blocks a re-mint ─────────────────────────
 
 
-def test_no_remint_for_already_groomed_gripe(store: Store) -> None:
+def test_no_remint_while_fix_todo_live(store: Store) -> None:
     _open_gripe(store, "already groomed")
     run_backlog_groom_pass(store)
     assert len(_groomer_todos(store)) == 1
 
-    # Force the cadence open and run again: the gripe is already groomed, so
-    # no second todo is minted.
+    # Force the cadence open and run again: the fix todo is still live
+    # (STATUS:open by default), so no second todo is minted.
     _force_due(store)
     result = run_backlog_groom_pass(store)
     assert result.ok == 0
     assert len(_groomer_todos(store)) == 1
 
 
-def test_no_remint_even_after_todo_done(store: Store) -> None:
-    """Dedup keys on the todo's existence, not its status — a done fix todo
-    still suppresses a re-mint (the fix shipped or a human is on it)."""
-    _open_gripe(store, "done fix")
+def test_non_fix_todo_with_same_gripe_id_does_not_block_mint(store: Store) -> None:
+    """Dedup is scoped to ``job_type='fix_gripe'`` — a differently-typed
+    todo that happens to reuse the ``params.gripe_id`` shape (e.g. a future
+    minter) must not starve this pass's re-mint."""
+    gid = _open_gripe(store, "shadowed by another minter")
+    other = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="unrelated todo, same gripe_id shape",
+        meta={"job_type": "some_other_job", "params": {"gripe_id": gid}},
+    )
+    store.add_tag(
+        other.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
+    )
+
+    result = run_backlog_groom_pass(store)
+
+    assert result.ok == 1
+    fix_todos = [
+        t for t in _groomer_todos(store) if t["meta"].get("job_type") == "fix_gripe"
+    ]
+    assert len(fix_todos) == 1
+    assert fix_todos[0]["meta"]["params"]["gripe_id"] == gid
+
+
+def test_remint_allowed_once_fix_todo_done(store: Store) -> None:
+    """Unlike the old every-gripe groomer, a DONE fix todo no longer blocks
+    a re-mint — the fix shipped (or a human closed it), and the gripe only
+    reaches selection again if something re-tags it auto-fix."""
+    gid = _open_gripe(store, "done fix")
     run_backlog_groom_pass(store)
     todo_id = _groomer_todos(store)[0]["id"]
     store.add_tag(
@@ -140,8 +207,11 @@ def test_no_remint_even_after_todo_done(store: Store) -> None:
     )
 
     _force_due(store)
-    run_backlog_groom_pass(store)
-    assert len(_groomer_todos(store)) == 1
+    result = run_backlog_groom_pass(store)
+    assert result.ok == 1
+    todos = _groomer_todos(store)
+    assert len(todos) == 2
+    assert {t["meta"]["params"]["gripe_id"] for t in todos} == {gid}
 
 
 # ── opt-out ──────────────────────────────────────────────────────
@@ -183,6 +253,64 @@ def test_batch_size_bounds_mints_per_pass(store: Store) -> None:
     assert result.claimed == 2
     assert result.ok == 2
     assert len(_groomer_todos(store)) == 2
+
+
+# ── mint cap (PRECIS_BACKLOG_GROOM_MAX_MINTS) ───────────────────────
+
+
+def test_mint_cap_bounds_mints_and_logs_skipped(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """4 eligible gripes, cap=3 -> 3 minted, 1 skipped (logged)."""
+    monkeypatch.setenv(_MAX_MINTS_ENV_VAR, "3")
+    for i in range(4):
+        _open_gripe(store, f"gripe {i}")
+
+    with caplog.at_level("INFO"):
+        result = run_backlog_groom_pass(store)
+
+    assert result.claimed == 4
+    assert result.ok == 3
+    assert result.failed == 0
+    assert len(_groomer_todos(store)) == 3
+    assert any("1 eligible gripe(s) skipped" in rec.message for rec in caplog.records)
+
+
+def test_mint_cap_defaults_to_three(store: Store) -> None:
+    for i in range(5):
+        _open_gripe(store, f"gripe {i}")
+
+    result = run_backlog_groom_pass(store)
+    assert result.ok == 3
+    assert len(_groomer_todos(store)) == 3
+
+
+# ── diagnosis_job_id threading ───────────────────────────────────
+
+
+def test_diagnosis_job_id_lands_in_params(store: Store) -> None:
+    gid = _open_gripe(store, "diagnosed bug")
+    diag_job_id = _succeeded_diagnosis_job(store, gid)
+
+    run_backlog_groom_pass(store)
+
+    todos = _groomer_todos(store)
+    assert len(todos) == 1
+    assert todos[0]["meta"]["params"] == {
+        "gripe_id": gid,
+        "diagnosis_job_id": diag_job_id,
+    }
+
+
+def test_no_diagnosis_job_omits_the_param(store: Store) -> None:
+    """A gripe hand-tagged auto-fix with no diagnose_gripe job on record
+    mints without diagnosis_job_id — fix_gripe falls back to the full brief."""
+    gid = _open_gripe(store, "hand-tagged bug")
+
+    run_backlog_groom_pass(store)
+
+    todos = _groomer_todos(store)
+    assert todos[0]["meta"]["params"] == {"gripe_id": gid}
 
 
 # ── end-to-end hand-off ──────────────────────────────────────────

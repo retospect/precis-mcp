@@ -1242,6 +1242,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-structure-help",
     ),
     ServiceSpec(
+        name="struct_search",
+        label="Structure search (AGOX/GOFEE)",
+        category="compute",
+        kind=ServiceKind.COMPUTE,
+        requires=frozenset({"gpu"}),
+        one_line=(
+            "AGOX/GOFEE surrogate structure search on the GPU node; write "
+            "back the top-K distinct candidates as structure rows."
+        ),
+        doc_skill="precis-structure-help",
+    ),
+    ServiceSpec(
         name="fold",
         label="AlphaFold3 fold",
         category="compute",

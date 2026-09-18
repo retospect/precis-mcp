@@ -76,7 +76,10 @@ def latest_main_run() -> tuple[dict | None, dict | None]:
     )
     if not out:
         return None, None
-    runs = json.loads(out)
+    # Sort ourselves: the list endpoint has returned a page with a 6-day-old
+    # run first (2026-09-18, right after a 5-merge burst), which read as a
+    # stale RED. Newest-first by createdAt, not by trust in the API's order.
+    runs = sorted(json.loads(out), key=lambda r: r.get("createdAt", ""), reverse=True)
     verdict = next(
         (
             r
@@ -100,10 +103,31 @@ def failing_jobs(run_id: int) -> list[str]:
     ]
 
 
-def age(iso: str) -> str:
+def age_minutes(iso: str) -> int:
     then = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    mins = int((datetime.now(UTC) - then).total_seconds() // 60)
+    return int((datetime.now(UTC) - then).total_seconds() // 60)
+
+
+def age(iso: str) -> str:
+    mins = age_minutes(iso)
     return f"{mins}m ago" if mins < 120 else f"{mins // 60}h ago"
+
+
+STALE_AFTER_MIN = 12 * 60
+
+
+def main_head_sha() -> str | None:
+    out = _gh("api", "repos/{owner}/{repo}/commits/main", "--jq", ".sha")
+    return out.strip() if out else None
+
+
+def is_stale_listing(verdict: dict) -> bool:
+    """True when a red verdict is old AND main has moved past it with no
+    newer run listed — a stale API page, not a standing red."""
+    if age_minutes(verdict["createdAt"]) < STALE_AFTER_MIN:
+        return False
+    head = main_head_sha()
+    return bool(head) and not str(head).startswith(verdict["headSha"])
 
 
 def inflight_trees() -> list[dict]:
@@ -152,6 +176,20 @@ def main() -> int:
             )
         return 0
 
+    if is_stale_listing(verdict):
+        # A red verdict >12h old on a sha that is no longer main's head, with
+        # nothing newer listed: the page was stale (seen once), not a red main.
+        print(
+            f"main-ci-status: gh listing looks stale — newest completed run is a "
+            f"{age(verdict['createdAt'])} failure on {sha}, not main's head"
+            + (
+                f"; a run is {pending['status']} on {pending['headSha'][:8]}"
+                if pending
+                else ""
+            )
+            + " — re-run scripts/main-ci-status before acting"
+        )
+        return 0
     jobs = ", ".join(failing_jobs(verdict["databaseId"])) or "(jobs unavailable)"
     print(
         f"🔴 main is RED on CI: {sha} run {verdict['databaseId']} ({age(verdict['createdAt'])}) — "
