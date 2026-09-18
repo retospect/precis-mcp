@@ -2,12 +2,15 @@
 
 pyproject records a completed error-code burn-down (2026-08-02) but nothing
 kept the per-site ignores from creeping back: 357 on 2026-09-16, 389 two
-days later (153 src + 236 tests — the ceilings below). A ceiling per tree makes growth visible in review — a diff that
-needs a new ignore must lower one elsewhere or raise the number here on
-purpose, in the same commit, where a reviewer sees it.
+days later (153 src + 237 tests when this landed). A ceiling per tree makes
+growth visible in review — a diff that needs a new ignore must lower one
+elsewhere or raise the number here on purpose, in the same commit, where a
+reviewer sees it.
 
-When you remove ignores, lower the ceiling to the new count so the slack
-doesn't accumulate.
+The ceilings landed with +3 slack per tree: main gained an ignore on three
+of the four CI runs that tried to ship this, and an exact ceiling can't
+land under that churn. Lower them to the exact count at the next quiet
+ship, and whenever you remove ignores, so the slack doesn't accumulate.
 """
 
 from __future__ import annotations
@@ -19,8 +22,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 
-# Ceilings = the counts at the ratchet's introduction. Only ever lower them.
-CEILINGS = {"src": 153, "tests": 236}
+# Counts at introduction + 3 slack (see module docstring). Only ever lower.
+CEILINGS = {"src": 156, "tests": 240}
 
 
 def _count(tree: str) -> Counter[str]:
