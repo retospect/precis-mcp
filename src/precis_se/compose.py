@@ -70,7 +70,7 @@ _DEFAULT_M_MAX = 4
 _HARD_MAX = 50
 #: Named cap on compositions one call scores (the backlog's 2 000).
 _MAX_COMPOSITIONS = 2_000
-_ALLOWED_KEYS = frozenset({"delta", "span", "n_max", "m_max"})
+_ALLOWED_KEYS = frozenset({"delta", "span", "n_max", "m_max", "conditions"})
 
 
 # ── compose= parsing ─────────────────────────────────────────────────────
@@ -87,6 +87,12 @@ class ComposeBox:
     span: WantSpec | None
     n_max: int = _DEFAULT_N_MAX
     m_max: int = _DEFAULT_M_MAX
+    #: Filter (gr346735) applied to every per-unit fact read
+    #: (:func:`resolve_unit`/:func:`_fact`) — same rule as
+    #: ``wants[key]['conditions']`` (:func:`~precis_se.library.
+    #: pick_material_row`), vetted by :func:`~precis_se.library.
+    #: parse_conditions`.
+    conditions: dict[str, Any] | None = None
 
     @property
     def specs(self) -> dict[str, WantSpec]:
@@ -125,11 +131,17 @@ def parse_compose(compose: dict[str, Any]) -> ComposeBox:
             "or 'span' (nm, long-state length)",
             next=example,
         )
+    conditions = None
+    if "conditions" in compose:
+        conditions = library.parse_conditions(
+            "compose['conditions']", compose["conditions"]
+        )
     return ComposeBox(
         delta=delta,
         span=span,
         n_max=_count(compose, "n_max", _DEFAULT_N_MAX, lo=1),
         m_max=_count(compose, "m_max", _DEFAULT_M_MAX, lo=0),
+        conditions=conditions,
     )
 
 
@@ -158,11 +170,12 @@ def parse_requires(requires: Any, *, opname: str) -> dict[str, Any]:
     """Vet + canonicalise a declared transition's ``requires=`` object
     (``declare_transitions``, Decision 3, port-pose-and-composition-
     search.md) — the one shared vetter so a box that fails here fails the
-    same way ``compose=`` would: ``delta``/``span``/``n_max``/``m_max``
-    run through the same :func:`_range`/:func:`_count` rules as
-    ``compose=`` and land canonicalised (``[lo, hi]`` floats for
-    ``delta``/``span``, a plain int for the counts); any other key is a
-    ``wants=`` entry, vetted (not reshaped) through
+    same way ``compose=`` would: ``delta``/``span``/``n_max``/``m_max``/
+    ``conditions`` run through the same :func:`_range`/:func:`_count`/
+    :func:`~precis_se.library.parse_conditions` rules as ``compose=`` and
+    land canonicalised (``[lo, hi]`` floats for ``delta``/``span``, a
+    plain int for the counts, an unchanged dict for ``conditions``); any
+    other key is a ``wants=`` entry, vetted (not reshaped) through
     :func:`~precis_se.library._parse_one_want`'s value shapes — a scalar,
     a ``[lo, hi]`` list, or ``{target, min, max, tol, weight}``.
     ``stimulus`` is refused: it is derived from the transition's own
@@ -207,6 +220,13 @@ def parse_requires(requires: Any, *, opname: str) -> dict[str, Any]:
             continue
         try:
             out[key] = _count(requires, key, 0, lo=1 if key == "n_max" else 0)
+        except BadInput as exc:
+            raise BadInput(f"{opname}: {exc.cause}", next=exc.next) from exc
+    if "conditions" in requires:
+        try:
+            out["conditions"] = library.parse_conditions(
+                "requires['conditions']", requires["conditions"]
+            )
         except BadInput as exc:
             raise BadInput(f"{opname}: {exc.cause}", next=exc.next) from exc
     for key, value in requires.items():
@@ -381,9 +401,13 @@ def _number(row: dict[str, Any]) -> float | None:
 
 
 def _fact(
-    cand: _Candidate, key: str, cache: _ReadCache
+    cand: _Candidate,
+    key: str,
+    cache: _ReadCache,
+    *,
+    conditions: dict[str, Any] | None = None,
 ) -> tuple[float, dict[str, Any]] | None:
-    hit = library._resolve_star_value(cand, key, cache)
+    hit = library._resolve_star_value(cand, key, cache, conditions=conditions)
     if hit is None:
         return None
     row, _unit, _prov = hit
@@ -392,16 +416,17 @@ def _fact(
 
 
 def _conditions(row: dict[str, Any] | None) -> str:
-    conditions = (row or {}).get("conditions") or {}
-    return ", ".join(f"{k}={v}" for k, v in conditions.items())
+    return library.format_conditions((row or {}).get("conditions"))
 
 
-def resolve_unit(cand: _Candidate, cache: _ReadCache) -> Unit:
-    delta = _fact(cand, DELTA_KEY, cache)
-    length = _fact(cand, LENGTH_KEY, cache)
-    pss = _fact(cand, PSS_KEY, cache)
-    half_life = _fact(cand, HALF_LIFE_KEY, cache)
-    lp = _fact(cand, LP_KEY, cache)
+def resolve_unit(
+    cand: _Candidate, cache: _ReadCache, *, conditions: dict[str, Any] | None = None
+) -> Unit:
+    delta = _fact(cand, DELTA_KEY, cache, conditions=conditions)
+    length = _fact(cand, LENGTH_KEY, cache, conditions=conditions)
+    pss = _fact(cand, PSS_KEY, cache, conditions=conditions)
+    half_life = _fact(cand, HALF_LIFE_KEY, cache, conditions=conditions)
+    lp = _fact(cand, LP_KEY, cache, conditions=conditions)
     return Unit(
         cand=cand,
         delta=None if delta is None else delta[0],
@@ -795,7 +820,7 @@ def render_compose(
     spacers: list[Unit] = []
     skipped = 0
     for cand in candidates:
-        unit = resolve_unit(cand, cache)
+        unit = resolve_unit(cand, cache, conditions=box.conditions)
         if unit.is_switch:
             switches.append(unit)
         elif unit.is_spacer:

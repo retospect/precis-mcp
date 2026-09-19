@@ -541,6 +541,10 @@ def test_q_narrows_candidates_and_zero_match_falls_back_to_the_whole_library(
         {"k": {"bogus": 1}},
         {"k": {"min": 5, "max": 1}},
         {"k": None},
+        {"k": {"conditions": "not-a-dict"}},
+        {"k": {"conditions": {}}},
+        {"k": {"conditions": {"salt": [1, 2]}}},
+        {"k": {"conditions": {"salt": None}}},
     ],
 )
 def test_bad_wants_shapes_raise_bad_input(handler: SeHandler, bad_wants: Any) -> None:
@@ -709,3 +713,212 @@ def test_q_narrowing_to_instance_only_designs_falls_back_and_says_so(
     assert "narrowed to" not in body
     assert "narrow-src#tmpl" in body
     assert "narrow-inst-only#inst" not in body
+
+
+# ── (k) multi-row material property pick (gr346735) ────────────────────────
+
+
+def _design_made_of(store: Store, slug: str, block: str, mat_ref_id: int) -> None:
+    design_ref = store.get_ref(kind="se", id=slug)
+    assert design_ref is not None
+    store.add_link(
+        src_ref_id=design_ref.id,
+        dst_ref_id=mat_ref_id,
+        relation="made-of",
+        meta={"block": block},
+    )
+
+
+def test_multi_row_property_picks_newest_and_lists_the_others_passed_over(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    material.put(id="pick-mat-1", title="pick mat 1")
+    material.put(id="pick-mat-1", property="persistence_length", value=10.0, unit="nm")
+    material.put(id="pick-mat-1", property="persistence_length", value=20.0, unit="nm")
+    material.put(id="pick-mat-1", property="persistence_length", value=30.0, unit="nm")
+    _put(
+        handler,
+        "pick-d1",
+        [{"op": "add_block", "name": "u", "envelope": "sphere:r0.005"}],
+    )
+    mat_ref = store.get_ref(kind="material", id="pick-mat-1")
+    assert mat_ref is not None
+    _design_made_of(store, "pick-d1", "u", mat_ref.id)
+
+    body = handler.search(wants={"persistence_length": 30.0}).body
+    line = next(ln for ln in _row_lines(body) if "pick-d1#u" in ln)
+    assert "✓persistence_length: 30 nm" in line
+    assert "sample 1 of 3 (newest)" in line
+    assert "others:" in line
+    assert "20 nm" in line
+    assert "10 nm" in line
+
+
+def test_single_row_property_provenance_unchanged(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """The single-row case must render exactly as before gr346735 — no
+    ``sample`` / ``others`` note."""
+    material.put(id="pick-mat-solo", title="pick mat solo")
+    material.put(
+        id="pick-mat-solo", property="persistence_length", value=15.0, unit="nm"
+    )
+    _put(
+        handler,
+        "pick-d-solo",
+        [{"op": "add_block", "name": "u", "envelope": "sphere:r0.005"}],
+    )
+    mat_ref = store.get_ref(kind="material", id="pick-mat-solo")
+    assert mat_ref is not None
+    _design_made_of(store, "pick-d-solo", "u", mat_ref.id)
+
+    body = handler.search(wants={"persistence_length": 15.0}).body
+    line = next(ln for ln in _row_lines(body) if "pick-d-solo#u" in ln)
+    assert "sample" not in line
+    assert "others:" not in line
+
+
+def test_band_row_wins_over_point_rows(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    material.put(id="pick-mat-2", title="pick mat 2")
+    material.put(id="pick-mat-2", property="persistence_length", value=10.0, unit="nm")
+    material.put(
+        id="pick-mat-2",
+        property="persistence_length",
+        value_low=18.0,
+        value_high=22.0,
+        unit="nm",
+    )
+    _put(
+        handler,
+        "pick-d2",
+        [{"op": "add_block", "name": "u", "envelope": "sphere:r0.005"}],
+    )
+    mat_ref = store.get_ref(kind="material", id="pick-mat-2")
+    assert mat_ref is not None
+    _design_made_of(store, "pick-d2", "u", mat_ref.id)
+
+    body = handler.search(wants={"persistence_length": 20.0}).body
+    line = next(ln for ln in _row_lines(body) if "pick-d2#u" in ln)
+    assert "18.0–22.0 nm" in line
+    assert "sample 1 of 2 (band)" in line
+    assert "others:" in line and "10 nm" in line
+
+
+def test_conditions_filter_selects_the_matching_row(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    material.put(id="pick-mat-3", title="pick mat 3")
+    material.put(
+        id="pick-mat-3",
+        property="persistence_length",
+        value=33.0,
+        unit="nm",
+        conditions={"salt": "250 mM NaCl"},
+    )
+    material.put(
+        id="pick-mat-3",
+        property="persistence_length",
+        value=10.0,
+        unit="nm",
+        conditions={"salt": "50 mM NaCl"},
+    )
+    _put(
+        handler,
+        "pick-d3",
+        [{"op": "add_block", "name": "u", "envelope": "sphere:r0.005"}],
+    )
+    mat_ref = store.get_ref(kind="material", id="pick-mat-3")
+    assert mat_ref is not None
+    _design_made_of(store, "pick-d3", "u", mat_ref.id)
+
+    wants = {
+        "persistence_length": {"target": 33, "conditions": {"salt": "250 mM NaCl"}}
+    }
+    body = handler.search(wants=wants).body
+    line = next(ln for ln in _row_lines(body) if "pick-d3#u" in ln)
+    assert "✓persistence_length: 33 nm" in line
+    assert "conditions match" in line
+
+
+def test_conditions_filter_falls_back_when_nothing_matches(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    material.put(id="pick-mat-4", title="pick mat 4")
+    material.put(
+        id="pick-mat-4",
+        property="persistence_length",
+        value=15.0,
+        unit="nm",
+        conditions={"salt": "50 mM NaCl"},
+    )
+    material.put(
+        id="pick-mat-4",
+        property="persistence_length",
+        value=25.0,
+        unit="nm",
+        conditions={"salt": "100 mM NaCl"},
+    )
+    _put(
+        handler,
+        "pick-d4",
+        [{"op": "add_block", "name": "u", "envelope": "sphere:r0.005"}],
+    )
+    mat_ref = store.get_ref(kind="material", id="pick-mat-4")
+    assert mat_ref is not None
+    _design_made_of(store, "pick-d4", "u", mat_ref.id)
+
+    wants = {"persistence_length": {"target": 25, "conditions": {"salt": "9 M NaCl"}}}
+    body = handler.search(wants=wants).body
+    line = next(ln for ln in _row_lines(body) if "pick-d4#u" in ln)
+    assert "no sample matches conditions" in line
+    assert "sample 1 of 2 (newest)" in line
+
+
+def test_conditions_filter_narrows_then_band_still_wins_over_newest(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """Reviewer follow-up: a ``conditions`` filter that narrows to more
+    than one survivor must still run the unique-band tie-break over
+    those survivors, not just take the newest matching row — the three
+    rows are (oldest→newest) a non-matching point, a matching band, and
+    a matching newer point; the band wins."""
+    material.put(id="pick-mat-5", title="pick mat 5")
+    material.put(
+        id="pick-mat-5",
+        property="persistence_length",
+        value=5.0,
+        unit="nm",
+        conditions={"wavelength_nm": 436},
+    )
+    material.put(
+        id="pick-mat-5",
+        property="persistence_length",
+        value_low=28.0,
+        value_high=32.0,
+        unit="nm",
+        conditions={"wavelength_nm": 313},
+    )
+    material.put(
+        id="pick-mat-5",
+        property="persistence_length",
+        value=10.0,
+        unit="nm",
+        conditions={"wavelength_nm": 313},
+    )
+    _put(
+        handler,
+        "pick-d5",
+        [{"op": "add_block", "name": "u", "envelope": "sphere:r0.005"}],
+    )
+    mat_ref = store.get_ref(kind="material", id="pick-mat-5")
+    assert mat_ref is not None
+    _design_made_of(store, "pick-d5", "u", mat_ref.id)
+
+    wants = {"persistence_length": {"target": 30, "conditions": {"wavelength_nm": 313}}}
+    body = handler.search(wants=wants).body
+    line = next(ln for ln in _row_lines(body) if "pick-d5#u" in ln)
+    assert "28.0–32.0 nm" in line
+    assert "conditions match, band" in line
+    assert "✓persistence_length" in line

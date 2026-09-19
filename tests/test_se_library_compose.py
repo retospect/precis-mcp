@@ -237,6 +237,76 @@ def test_wants_keys_score_on_the_switch_block_and_bistable_carries_tau(
         handler.search(compose={"delta": [3, 4]}, wants={"delta": 3.4})
 
 
+# ── conditions box key (gr346735) ────────────────────────────────────────
+
+
+def test_compose_conditions_selects_the_313nm_pss_row_over_a_newer_436nm_one(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """The gripe's own case: two ``pss_short_fraction`` rows on one
+    switch — the newer at 436 nm (~0.1), the older at 313 nm (0.8).
+    Without a filter the newest (436 nm) wins; ``conditions=
+    {'wavelength_nm': 313}`` picks the older, matching row instead."""
+    mat = "mat-pss-cond"
+    material.put(id=mat, title=mat)
+    material.put(id=mat, property=se_compose.DELTA_KEY, value=3.4, unit="Å")
+    material.put(id=mat, property=se_compose.LENGTH_KEY, value=1.0, unit="nm")
+    material.put(
+        id=mat,
+        property=se_compose.PSS_KEY,
+        value=0.8,
+        conditions={"wavelength_nm": 313},
+    )
+    material.put(
+        id=mat,
+        property=se_compose.PSS_KEY,
+        value=0.1,
+        conditions={"wavelength_nm": 436},
+    )
+    handler.put(
+        id="pss-cond",
+        text=json.dumps(
+            {"ops": [{"op": "add_block", "name": "u", "envelope": "sphere:r0.005"}]}
+        ),
+    )
+    design_ref = store.get_ref(kind="se", id="pss-cond")
+    mat_ref = store.get_ref(kind="material", id=mat)
+    assert design_ref is not None and mat_ref is not None
+    store.add_link(
+        src_ref_id=design_ref.id,
+        dst_ref_id=mat_ref.id,
+        relation="made-of",
+        meta={"block": "u"},
+    )
+
+    default_top = _row_lines(
+        handler.search(compose={"delta": [3, 4], "n_max": 1}).body
+    )[0]
+    assert "PSS 10 % short" in default_top  # newest (436 nm) by default
+
+    filtered_top = _row_lines(
+        handler.search(
+            compose={
+                "delta": [3, 4],
+                "n_max": 1,
+                "conditions": {"wavelength_nm": 313},
+            }
+        ).body
+    )[0]
+    assert "PSS 80 % short" in filtered_top
+    assert "wavelength_nm=313" in filtered_top
+
+
+def test_compose_conditions_malformed_rejected(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _unit(handler, material, store, "azo", delta=3.4, length=1.0)
+    with pytest.raises(BadInput):
+        handler.search(compose={"delta": [3, 4], "conditions": "nope"})
+    with pytest.raises(BadInput):
+        handler.search(compose={"delta": [3, 4], "conditions": {}})
+
+
 # ── the MCP door ────────────────────────────────────────────────────────
 
 

@@ -284,8 +284,14 @@ Three keys are built in, read off the block/tree itself: `stimulus`
 `made-of` material's property values, then the design's own `made-of`
 material (optionally scoped to one block via the link's
 `meta.block`) — first hit wins, and the row names the entity + source
-+ conditions it came from. An unrecognised key (not a spec, not a
-property, not a built-in) still scores as a plain miss; the header
++ conditions it came from. When a material property carries several
+sourced rows, the pick is a band row (the spread summary) if exactly one
+survives, else the newest — never a silent, unexplained newest — and the
+row's provenance says which and lists the samples passed over; a dict
+want `{'target'?, ..., 'conditions'?: {...}}` narrows to the row(s)
+whose own `conditions` match every given key/value first (falling back,
+and saying so, when nothing matches). An unrecognised key (not a spec,
+not a property, not a built-in) still scores as a plain miss; the header
 notes it once, never a refusal.
 
 ```python
@@ -312,7 +318,10 @@ port-to-port stroke) and `span` (nm, long-state length) take the same
 scalar / `[lo, hi]` / dict shapes as `wants`; at least one is required.
 `n_max` (default 6) and `m_max` (default 4) bound the enumeration (cap
 2 000 compositions, said in the header). `wants=` may ride along: its
-keys score on the **switch** block; `q=` narrows designs as before.
+keys score on the **switch** block; `q=` narrows designs as before. A
+`conditions` box key (same shape as `wants[key]['conditions']`) filters
+every per-unit fact read — e.g. pick the row logged at one wavelength
+over a newer one at another.
 
 Facts are star-schema rows, never on the block — five ordinary
 `material`/`component` properties (an unknown one mints `proposed`-tier

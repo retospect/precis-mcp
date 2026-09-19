@@ -47,7 +47,9 @@ log = logging.getLogger(__name__)
 _BUILTIN_KEYS = frozenset({"stimulus", "bistable", "joining"})
 
 #: The only keys an explicit ``{...}`` want form may carry.
-_ALLOWED_WANT_DICT_KEYS = frozenset({"target", "min", "max", "tol", "weight"})
+_ALLOWED_WANT_DICT_KEYS = frozenset(
+    {"target", "min", "max", "tol", "weight", "conditions"}
+)
 
 _DEFAULT_TOL_REL = 0.1
 _DEFAULT_WEIGHT = 1.0
@@ -78,6 +80,13 @@ class WantSpec:
     max: float | None = None
     tol: float = _DEFAULT_TOL_REL
     weight: float = _DEFAULT_WEIGHT
+    #: Optional material-value-row filter (gr346735) — every given
+    #: key/value pair must appear on a row's own ``conditions`` (compared
+    #: as ``str(v).strip().lower()`` on both sides) for that row to
+    #: survive the filter before :func:`pick_material_row` picks one. Only
+    #: consulted for star-schema (material) keys — see
+    #: :func:`_resolve_star_value`.
+    conditions: dict[str, Any] | None = None
 
     @property
     def is_interval(self) -> bool:
@@ -116,6 +125,23 @@ def parse_wants(wants: Any) -> dict[str, WantSpec]:
     return {key: _parse_one_want(key, raw) for key, raw in wants.items()}
 
 
+def parse_conditions(context: str, raw: Any) -> dict[str, Any]:
+    """Vet a ``conditions=`` filter — a non-empty JSON object of scalars,
+    :class:`BadInput` otherwise. Shared by ``wants[key]['conditions']``
+    (:func:`_parse_one_want`) and the ``compose=``/``requires=`` box's
+    ``conditions`` key (:mod:`precis_se.compose`) so both fail the same
+    way. ``context`` names the offending path, e.g.
+    ``"wants['persistence_length']['conditions']"``."""
+    if not isinstance(raw, dict) or not raw:
+        raise BadInput(
+            f"{context} must be a non-empty JSON object of scalars, got {raw!r}"
+        )
+    bad = {k: v for k, v in raw.items() if v is None or isinstance(v, (dict, list))}
+    if bad:
+        raise BadInput(f"{context} values must be str/number/bool, got {bad!r}")
+    return raw
+
+
 def _parse_one_want(key: str, raw: Any) -> WantSpec:
     if isinstance(raw, dict):
         unknown = sorted(set(raw) - _ALLOWED_WANT_DICT_KEYS)
@@ -127,12 +153,18 @@ def _parse_one_want(key: str, raw: Any) -> WantSpec:
         lo, hi = raw.get("min"), raw.get("max")
         if lo is not None and hi is not None and lo > hi:
             raise BadInput(f"wants[{key!r}]: min={lo!r} > max={hi!r}")
+        conditions = None
+        if "conditions" in raw:
+            conditions = parse_conditions(
+                f"wants[{key!r}]['conditions']", raw["conditions"]
+            )
         return WantSpec(
             target=raw.get("target"),
             min=None if lo is None else float(lo),
             max=None if hi is None else float(hi),
             tol=float(raw.get("tol", _DEFAULT_TOL_REL)),
             weight=float(raw.get("weight", _DEFAULT_WEIGHT)),
+            conditions=conditions,
         )
     if isinstance(raw, list):
         if len(raw) != 2 or any(
@@ -378,7 +410,7 @@ def _miss_reason(cand: _Candidate) -> str:
 def _eval_star_key(
     cand: _Candidate, key: str, spec: WantSpec, cache: _ReadCache
 ) -> AttrResult:
-    hit = _resolve_star_value(cand, key, cache)
+    hit = _resolve_star_value(cand, key, cache, conditions=spec.conditions)
     if hit is None:
         return AttrResult(
             matched=False,
@@ -438,8 +470,122 @@ def _display_source(store: Any, row: dict[str, Any]) -> str | None:
     return None
 
 
+def _row_value_repr(row: dict[str, Any]) -> str:
+    """A bare display string for one value row — no unit, no spec-relative
+    match info (that's :func:`_match_value_row`'s job); used only to list
+    the samples a pick passed over in :func:`_provenance`."""
+    if row.get("value_bool") is not None:
+        return str(bool(row["value_bool"]))
+    if row.get("value_text") is not None:
+        return str(row["value_text"])
+    num, low, high = row.get("value_num"), row.get("value_low"), row.get("value_high")
+    if low is not None and high is not None:
+        return f"{low}–{high}"
+    if num is not None:
+        return f"{num:g}"
+    return "—"
+
+
+def format_conditions(conditions: dict[str, Any] | None) -> str:
+    """``"k1=v1, k2=v2"`` for a value row's ``conditions`` dict — the one
+    shared formatter for :func:`_provenance`, :func:`_others_str`, and
+    :func:`precis_se.compose._conditions` (gr346735 review — three
+    copies of the same join collapsed into this). ``""`` for
+    ``None``/empty."""
+    if not conditions:
+        return ""
+    return ", ".join(f"{k}={v}" for k, v in conditions.items())
+
+
+def _others_str(rows: list[dict[str, Any]], unit: str | None) -> str:
+    """``others: <value>[<unit>] @ <conditions or —>``, capped at 3 with
+    a ``+M more`` tail — the samples :func:`pick_material_row` passed
+    over, for :func:`_provenance`."""
+    cap = 3
+    unit_suffix = f" {unit}" if unit else ""
+    parts = []
+    for row in rows[:cap]:
+        cond_str = format_conditions(row.get("conditions")) or "—"
+        parts.append(f"{_row_value_repr(row)}{unit_suffix} @ {cond_str}")
+    out = ", ".join(parts)
+    if len(rows) > cap:
+        out += f", +{len(rows) - cap} more"
+    return out
+
+
+def _conditions_match(row: dict[str, Any], conditions: dict[str, Any]) -> bool:
+    row_conditions = row.get("conditions") or {}
+    for key, want in conditions.items():
+        have = row_conditions.get(key)
+        if have is None:
+            return False
+        if str(have).strip().lower() != str(want).strip().lower():
+            return False
+    return True
+
+
+def pick_material_row(
+    rows: list[dict[str, Any]], conditions: dict[str, Any] | None
+) -> tuple[dict[str, Any], str]:
+    """Pick ONE row from a property's value rows and say why (gr346735 —
+    the star-schema read used to silently take ``rows[0]``, the newest,
+    even when several sourced samples disagreed).
+
+    ``rows`` arrives in :meth:`~precis.store.Store.material_values_for_ref`
+    order: newest first within the property. Rule: if ``conditions`` is
+    given, keep only rows whose own ``conditions`` contain every given
+    key/value pair (``str(v).strip().lower()`` compared both sides); an
+    empty match set falls back to the *unfiltered* rows instead of
+    erroring (a documented near-miss). Among the surviving rows — filtered
+    or not — a single row carrying a band (``value_low`` AND
+    ``value_high`` both set — the spread summary) wins; otherwise the
+    newest survivor wins. A ``conditions`` filter that actually narrowed
+    the set doesn't override that tie-break, it only says so in the
+    ``why`` label (``"conditions match, band"`` / ``"conditions match,
+    newest"``).
+
+    Returns ``(row, note)`` — ``note`` is ``""`` for a single-row property
+    (the pre-existing, unchanged case), else ``"[no sample matches
+    conditions {...}; took ]sample k of N (<why>)"`` for
+    :func:`_provenance` to surface."""
+    if len(rows) == 1:
+        return rows[0], ""
+    indexed = list(enumerate(rows, start=1))
+    survivors = indexed
+    prefix = ""
+    why_prefix = ""
+    if conditions:
+        matched = [pair for pair in indexed if _conditions_match(pair[1], conditions)]
+        if matched:
+            survivors = matched
+            if len(matched) < len(indexed):
+                why_prefix = "conditions match, "
+        else:
+            prefix = f"no sample matches conditions {conditions!r}; took "
+    bands = [
+        pair
+        for pair in survivors
+        if pair[1].get("value_low") is not None
+        and pair[1].get("value_high") is not None
+    ]
+    if len(bands) == 1:
+        idx, picked = bands[0]
+        why = f"{why_prefix}band"
+    else:
+        idx, picked = survivors[0]
+        why = f"{why_prefix}newest"
+    return picked, f"{prefix}sample {idx} of {len(rows)} ({why})"
+
+
 def _provenance(
-    store: Any, entity_kind: str, entity_ref: Any, row: dict[str, Any]
+    store: Any,
+    entity_kind: str,
+    entity_ref: Any,
+    row: dict[str, Any],
+    *,
+    unit: str | None = None,
+    pick_note: str = "",
+    other_rows: list[dict[str, Any]] | None = None,
 ) -> str:
     bits = [f"{entity_kind}:{entity_ref.slug}"]
     source = _display_source(store, row)
@@ -448,34 +594,62 @@ def _provenance(
     label = " ".join(bits)
     conditions = row.get("conditions") or {}
     if conditions:
-        cond_str = ", ".join(f"{k}={v}" for k, v in conditions.items())
-        label += f"; conditions: {cond_str}"
+        label += f"; conditions: {format_conditions(conditions)}"
+    if pick_note:
+        label += f"; {pick_note}"
+        if other_rows:
+            label += f"; others: {_others_str(other_rows, unit)}"
     return f"({label})"
 
 
 def _material_hit(
-    mat_ref_id: int, key: str, cache: _ReadCache
+    mat_ref_id: int,
+    key: str,
+    cache: _ReadCache,
+    *,
+    conditions: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str | None, str] | None:
     hit = cache.material(mat_ref_id)
     if hit is None:
         return None
     mat_ref, rows = hit
-    for row in rows:
-        if row["property_id"] == key:
-            prop = cache.prop_row(key)
-            unit = prop["canonical_unit"] if prop else None
-            return row, unit, _provenance(cache.store, "material", mat_ref, row)
-    return None
+    matching = [row for row in rows if row["property_id"] == key]
+    if not matching:
+        return None
+    row, note = pick_material_row(matching, conditions)
+    prop = cache.prop_row(key)
+    unit = prop["canonical_unit"] if prop else None
+    others = [r for r in matching if r is not row]
+    return (
+        row,
+        unit,
+        _provenance(
+            cache.store,
+            "material",
+            mat_ref,
+            row,
+            unit=unit,
+            pick_note=note,
+            other_rows=others,
+        ),
+    )
 
 
 def _resolve_star_value(
-    cand: _Candidate, key: str, cache: _ReadCache
+    cand: _Candidate,
+    key: str,
+    cache: _ReadCache,
+    *,
+    conditions: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str | None, str] | None:
     """Order: bound component's own spec values, then that component's
     ``made-of`` materials, then the design-level ``made-of`` materials
     (scoped to this block when the link's ``meta.block`` names one) —
     first hit wins. See the module docstring / blocktree-library-build-
-    plan.md §Slice 4 "Attribute resolution per block"."""
+    plan.md §Slice 4 "Attribute resolution per block". ``conditions``
+    (gr346735) filters a *material* property's value rows before
+    :func:`pick_material_row` picks one — it has no effect on a bound
+    component's own spec value, which carries no ``conditions``."""
     node = cand.node
     if node.bound_kind == "component" and node.bound:
         comp = cache.component(node.bound)
@@ -490,14 +664,14 @@ def _resolve_star_value(
                     _provenance(cache.store, "component", comp_ref, dict(specs[key])),
                 )
             for link in made_of:
-                hit = _material_hit(link.dst_ref_id, key, cache)
+                hit = _material_hit(link.dst_ref_id, key, cache, conditions=conditions)
                 if hit is not None:
                     return hit
     for link in cache.design_links(cand.ref_id):
         block_scope = (link.meta or {}).get("block")
         if block_scope is not None and block_scope != cand.block_name:
             continue
-        hit = _material_hit(link.dst_ref_id, key, cache)
+        hit = _material_hit(link.dst_ref_id, key, cache, conditions=conditions)
         if hit is not None:
             return hit
     return None
@@ -781,10 +955,13 @@ __all__ = [
     "LibraryRow",
     "Rankable",
     "WantSpec",
+    "format_conditions",
     "iter_candidates",
     "narrow_candidates",
     "order_rows",
+    "parse_conditions",
     "parse_wants",
+    "pick_material_row",
     "rank_rows",
     "render_rows",
     "render_search",
