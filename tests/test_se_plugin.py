@@ -10,6 +10,7 @@ seeds the plugin's own migration directly — same fixture shape as
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -1039,6 +1040,79 @@ def _wheel_on_hub(handler: SeHandler) -> None:
             }
         ),
     )
+
+
+def _linear_chain(handler: SeHandler) -> None:
+    """anchor_a — rod_a — azo — rod_b — anchor_b along +x, declared in an
+    order the alphabet scrambles (gr334772's azo-stick-5nm shape)."""
+    blocks = [
+        ("anchor_a", 0.0),
+        ("rod_a", 0.01),
+        ("azo", 0.02),
+        ("rod_b", 0.03),
+        ("anchor_b", 0.04),
+    ]
+    ops: list[dict] = []
+    for name, x in blocks:
+        ops.append(
+            {
+                "op": "add_block",
+                "name": name,
+                "envelope": "box:w0.005d0.005h0.005",
+                "pose": [x, 0, 0],
+            }
+        )
+        ops.append({"op": "add_port", "block": name, "name": "l", "roles": ["mates"]})
+        ops.append({"op": "add_port", "block": name, "name": "r", "roles": ["mates"]})
+    ops.append(
+        {
+            "op": "add_block",
+            "name": "loose",
+            "envelope": "box:w0.005d0.005h0.005",
+            "pose": [0.1, 0, 0],
+        }
+    )
+    ops.append({"op": "add_port", "block": "loose", "name": "l", "roles": ["mates"]})
+    for (a, _), (b, _) in pairwise(blocks):
+        ops.append({"op": "connect", "a": f"{a}.r", "b": f"{b}.l"})
+    handler.put(id="chain1", text=json.dumps({"ops": ops}))
+
+
+def test_tree_lists_siblings_in_connect_order(handler: SeHandler) -> None:
+    """A connected sibling group prints along its connects from the
+    lowest-pose end, unconnected siblings after, alphabetically — the
+    reader no longer re-derives the chain from poses (gr334772)."""
+    _linear_chain(handler)
+    body = handler.get(id="chain1").body
+    names = [ln.split()[1] for ln in body.splitlines() if ln.startswith("- ")]
+    assert names == ["anchor_a", "rod_a", "azo", "rod_b", "anchor_b", "loose"]
+    assert "connect order" in body
+
+
+def test_tree_without_connects_stays_alphabetical(handler: SeHandler) -> None:
+    _wheel_on_hub(handler)
+    body = handler.get(id="cart1").body
+    names = [ln.split()[1] for ln in body.splitlines() if ln.startswith("- ")]
+    assert names == ["hub", "wheel"]
+    assert "connect order" not in body
+
+
+def test_ports_view_names_the_connect_peer(handler: SeHandler) -> None:
+    """Every port row carries the other end of its connect, so a chain
+    reads off one ports table instead of N view='block' calls."""
+    _linear_chain(handler)
+    body = handler.get(id="chain1", view="ports").body
+    header = next(ln for ln in body.splitlines() if ln.startswith("{"))
+    assert header.startswith("{block\tport\tpeer\t")
+    rows = {
+        ln.split("\t")[:3][0] + "." + ln.split("\t")[1]: ln.split("\t")[2]
+        for ln in body.splitlines()
+        if "\t" in ln and not ln.startswith("{")
+    }
+    assert rows["azo.l"] == "rod_a.r"
+    assert rows["azo.r"] == "rod_b.l"
+    assert rows["anchor_a.l"] == "—"
+    assert rows["loose.l"] == "—"
 
 
 def test_ports_view_lists_roles_and_annotations(handler: SeHandler) -> None:

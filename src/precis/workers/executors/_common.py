@@ -675,10 +675,17 @@ def claim_executor_jobs(
         row concurrently regardless of which side of the heartbeat gap
         either read landed on.
         """
+        # Lazy: handlers.skill is the build-info owner (precis-status);
+        # workers import it at call time only (workers→handlers layering).
+        from precis.handlers.skill import code_stamp
+
         fields: dict[str, Any] = {
             "lease_boot_id": lease_boot_id,
             "lease_process": lease_process,
             "lease_host": lease_host,
+            # Which build ran it — re-stamped on every (re)claim, since the
+            # reclaiming worker's code is what runs from here (gr346951).
+            "lease_code": code_stamp(),
             # Wall-clock instant of the FIRST claim — the only durable
             # record of when a job started running. ``STATUS:running`` is
             # written with ``replace_prefix=True``, so the moment a job
@@ -718,6 +725,7 @@ def claim_executor_jobs(
         meta["lease_boot_id"] = lease_boot_id
         meta["lease_process"] = lease_process
         meta["lease_host"] = lease_host
+        meta["lease_code"] = fields["lease_code"]
         meta["started_at"] = fields["started_at"]
 
     def _finish_claim(

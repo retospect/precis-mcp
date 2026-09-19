@@ -56,8 +56,9 @@
 #
 # PRECIS_DEPLOY_CANARY=<ansible-host-name> — opt-in canary staging (unset ⇒
 # byte-identical single-pass behavior, the default). When set: resolve the
-# target sha once (git ls-remote, the same resolution the playbook's step-0
-# pin does), run the playbook against `--limit <canary>` ONLY first, poll
+# target sha once (a literal sha this checkout contains is taken as-is;
+# a ref name goes through git ls-remote, the same resolution the playbook's
+# step-0 pin does), run the playbook against `--limit <canary>` ONLY first, poll
 # `scripts/prod-psql` for that host's `host_heartbeat` row to freshen (proof
 # the deployed worker came up on the new code), then fan out to the rest of
 # the fleet with `--limit '!<canary>'` — same explicit sha pins on both
@@ -676,9 +677,26 @@ else
     # explicit `-e` wins over the playbook's own set_fact pin, so both
     # ansible-playbook invocations below install the identical sha even if
     # main advances between phase 1 and phase 2.
-    say "canary deploy: resolving '${REF}' to a single commit (git ls-remote)"
-    _target_sha="$(git ls-remote https://github.com/retospect/precis-mcp "$REF" | awk 'NR==1{print $1}')"
-    [[ ${#_target_sha} -eq 40 ]] || die "could not resolve '${REF}' to a commit via git ls-remote (got '${_target_sha:-empty}') — refusing to deploy an unpinned/unresolvable ref."
+    #
+    # `git ls-remote` matches ref NAMES, so a literal commit sha — the COMMON
+    # target since /go deploys `$(cat .ship-sha) --pinned` — never resolved
+    # and the canary path died before touching a host (gr346747). A REF this
+    # checkout already contains as a commit is taken from the local object
+    # store instead; it must also be reachable from a remote-tracking branch,
+    # since the hosts install precis-mcp@<sha> from GitHub.
+    _target_sha=""
+    if [[ "$REF" =~ ^[0-9a-f]{7,40}$ ]]; then
+        _target_sha="$(git -C "$REPO_ROOT" rev-parse -q --verify "${REF}^{commit}" 2>/dev/null || true)"
+    fi
+    if [[ ${#_target_sha} -eq 40 ]]; then
+        [[ -n "$(git -C "$REPO_ROOT" branch -r --contains "$_target_sha" 2>/dev/null)" ]] \
+            || die "'${REF}' (${_target_sha:0:8}) is not on any remote-tracking branch — the hosts install from GitHub, so it must be pushed first."
+        say "canary deploy: '${REF}' is a commit this checkout contains — pinned ${_target_sha:0:8}"
+    else
+        say "canary deploy: resolving '${REF}' to a single commit (git ls-remote)"
+        _target_sha="$(git ls-remote https://github.com/retospect/precis-mcp "$REF" | awk 'NR==1{print $1}')"
+        [[ ${#_target_sha} -eq 40 ]] || die "could not resolve '${REF}' to a commit via git ls-remote (got '${_target_sha:-empty}') — refusing to deploy an unpinned/unresolvable ref."
+    fi
     SHA_ARGS=(-e precis_worker_git_ref="$_target_sha" -e precis_web_git_ref="$_target_sha" -e precis_embedder_git_ref="$_target_sha")
     _rollback_hint="rollback: scripts/deploy <previous-sha> with PRECIS_DEPLOY_CANARY=${CANARY} (targets just the canary)."
 

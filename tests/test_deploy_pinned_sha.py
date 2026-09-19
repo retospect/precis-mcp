@@ -398,6 +398,75 @@ def test_literal_sha_deploy_notes_a_checkout_ahead_of_the_target(
     assert "rendering deploy/ templates from HEAD" in result.stdout
 
 
+# ─────────────────── canary path resolves a literal sha (gr346747) ───────────
+
+
+def test_canary_path_pins_a_local_sha(fx: Fixture, tmp_path: Path) -> None:
+    """`git ls-remote <url> <sha>` matches ref names only, so the canary
+    phase used to die on exactly the target /go hands it. A sha the local
+    checkout contains (and a remote branch reaches) is pinned directly; the
+    run then proceeds into phase 1 (fake ansible) and on to the heartbeat
+    verify, which fails here for want of prod — past the resolution."""
+    fx.set_marker(fx.base)
+    env_bin = _make_fake_bin(tmp_path)
+    env = _test_env(
+        PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_FROM_TREE="",
+        PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
+        PRECIS_DEPLOY_NO_LOG="1",
+        PRECIS_DEPLOY_ALLOW_STALE="1",
+        PRECIS_DEPLOY_CANARY="gateway",
+        PRECIS_DEPLOY_CANARY_TIMEOUT_S="0",
+    )
+    env["PATH"] = f"{env_bin}:{env['PATH']}"
+    result = subprocess.run(
+        ["bash", str(fx.repo / "scripts" / "deploy"), fx.gated, "--pinned"],
+        cwd=str(fx.repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert "could not resolve" not in result.stderr
+    assert (
+        f"is a commit this checkout contains — pinned {fx.gated[:8]}" in result.stdout
+    )
+    assert f"phase 1 — gateway only (pinned {fx.gated[:8]})" in result.stdout
+    # Past resolution and phase 1; the heartbeat verify has no prod to ask.
+    assert result.returncode != 0
+    assert "canary verify" in result.stderr
+
+
+def test_canary_path_refuses_a_sha_no_remote_branch_reaches(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """The hosts install precis-mcp@<sha> from GitHub — a local-only commit
+    would fail on every host, so it is refused up front."""
+    fx.set_marker(fx.base)
+    local_only = _commit(fx.repo, "unpushed.txt")
+    env_bin = _make_fake_bin(tmp_path)
+    env = _test_env(
+        PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_FROM_TREE="",
+        PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
+        PRECIS_DEPLOY_NO_LOG="1",
+        PRECIS_DEPLOY_ALLOW_STALE="1",
+        PRECIS_DEPLOY_CANARY="gateway",
+    )
+    env["PATH"] = f"{env_bin}:{env['PATH']}"
+    result = subprocess.run(
+        ["bash", str(fx.repo / "scripts" / "deploy"), local_only, "--pinned"],
+        cwd=str(fx.repo),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode != 0
+    assert "not on any remote-tracking branch" in result.stderr
+    assert "phase 1" not in result.stdout
+
+
 # ──────────────────────── scripts/ship writes the pin (g) ────────────────────
 
 
@@ -413,31 +482,62 @@ def _ship_pin_block() -> str:
 
 
 @pytest.mark.parametrize(
-    ("quick", "impacted", "remote", "expect_pin", "why"),
+    ("quick", "impacted", "remote", "docs_only", "expect_pin", "why"),
     [
-        ("0", "0", "0", True, "/go: full local gate"),
-        ("1", "0", "0", False, "/qland: nothing was gated at all"),
-        ("0", "1", "0", False, "/land: testmon-narrowed subset, not a deploy warrant"),
+        ("0", "0", "0", "0", True, "/go: full local gate"),
+        ("1", "0", "0", "0", False, "/qland: nothing was gated at all"),
+        (
+            "0",
+            "1",
+            "0",
+            "0",
+            False,
+            "/land: testmon-narrowed subset, not a deploy warrant",
+        ),
         (
             "0",
             "1",
             "1",
+            "0",
             True,
             "--remote --impacted: the impacted run is only a pre-gate ahead of GitHub's full matrix",
         ),
-        ("0", "0", "1", True, "--remote: GitHub's full matrix"),
+        ("0", "0", "1", "0", True, "--remote: GitHub's full matrix"),
+        (
+            "0",
+            "0",
+            "0",
+            "1",
+            False,
+            "docs-only local lane ran ruff + doc pointers, never pytest (gr347014)",
+        ),
+        (
+            "0",
+            "0",
+            "1",
+            "1",
+            False,
+            "docs-only remote lane ran GitHub's fast set, not the shards",
+        ),
+        ("1", "0", "0", "1", False, "docs-only --quick: doubly ungated"),
     ],
 )
 def test_ship_pins_the_gated_sha_only_after_a_full_gate(
-    tmp_path: Path, quick: str, impacted: str, remote: str, expect_pin: bool, why: str
+    tmp_path: Path,
+    quick: str,
+    impacted: str,
+    remote: str,
+    docs_only: str,
+    expect_pin: bool,
+    why: str,
 ) -> None:
-    """Case (g): the four-input decision. A pin written after a --quick or
-    bare --impacted ship would let /go deploy a tree the full suite never
-    ran."""
+    """Case (g): the five-input decision. A pin written after a --quick,
+    bare --impacted or docs-only-lane ship would let /go deploy a tree the
+    full suite never ran."""
     pin = tmp_path / ".ship-sha"
     script = (
         "say() { :; }\n"
-        f"QUICK={quick}\nIMPACTED={impacted}\nREMOTE={remote}\n"
+        f"QUICK={quick}\nIMPACTED={impacted}\nREMOTE={remote}\nDOCS_ONLY={docs_only}\n"
         'GATED_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"\n'
         f'SHIP_SHA_FILE="{pin}"\n' + _ship_pin_block() + "\n"
     )
@@ -459,7 +559,7 @@ def test_ship_never_pins_an_empty_sha(tmp_path: Path) -> None:
     pin = tmp_path / ".ship-sha"
     script = (
         "say() { :; }\n"
-        'QUICK=0\nIMPACTED=0\nREMOTE=0\nGATED_SHA=""\n'
+        'QUICK=0\nIMPACTED=0\nREMOTE=0\nDOCS_ONLY=0\nGATED_SHA=""\n'
         f'SHIP_SHA_FILE="{pin}"\n' + _ship_pin_block() + "\n"
     )
     result = subprocess.run(
@@ -467,6 +567,18 @@ def test_ship_never_pins_an_empty_sha(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert not pin.exists()
+
+
+def test_ship_full_flag_forces_the_local_suite_on_a_docs_only_diff() -> None:
+    """/go passes --full: the docs-only classification must be overridable
+    so a docs-only /go still ends in a deploy pin, and /go must pass it."""
+    text = SHIP_SRC.read_text(encoding="utf-8")
+    assert "--full)     FULL=1; shift ;;" in text
+    override_at = text.index('if [[ "$FULL" == 1 && "$DOCS_ONLY" == 1 ]]; then')
+    pin_at = text.index('if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1')
+    assert override_at < pin_at
+    go = (REPO_ROOT / ".claude" / "commands" / "go.md").read_text(encoding="utf-8")
+    assert "scripts/ship --mutate --full" in go
 
 
 def test_ship_clears_a_stale_pin_before_it_can_do_anything_else() -> None:

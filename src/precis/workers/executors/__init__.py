@@ -61,7 +61,10 @@ Claim substrate (``_common.py``)
 * **Crash recovery, boot-epoch** — every worker mints a
   ``worker_boot_id`` at startup, advertised via
   ``host_heartbeat.meta.boot_ids``; every claim stamps
-  ``meta.lease_boot_id``/``lease_host``/``lease_process``. With
+  ``meta.lease_boot_id``/``lease_host``/``lease_process``, plus
+  ``lease_code`` (``<version>@<sha>`` of the claiming worker — the job
+  view's ``ran_on:`` line, so a job ≠ session-container mismatch is
+  visible). With
   ``reclaim_stale_running=True`` (``ssh_node``, ``claude_inproc``,
   ``claude_docker``) a ``STATUS:running`` row is reclaimable on lease
   **expiry** or on **epoch** mismatch (the holder was provably replaced,

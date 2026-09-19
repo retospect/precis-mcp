@@ -654,6 +654,10 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
 
     resp = pcb.put(id=slug, args={"op": "route", "seed": 1})
     assert "enqueued" in resp.body
+    # gr346951: the reply names the session's build and says the job runs
+    # on the cluster's, so a stale-cluster re-route can't be misread.
+    assert "Runs on the cluster worker's code" in resp.body
+    assert "`ran_on:` line" in resp.body
     _drain_one_job(store, ref.id)
 
     design = store.pcb_load(ref.id)

@@ -42,6 +42,7 @@ import socket
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
@@ -239,6 +240,25 @@ _SKILL_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+#: Second layer of the catalogue, derived from each skill's ``tags:``
+#: frontmatter for everything :data:`_SKILL_CATEGORIES` doesn't name
+#: (gr334773: the hand-curated list covered ~50 of 169 skills and the
+#: rest sat in one undifferentiated "Other" bucket). First matching tag
+#: in this order wins; a group named like a curated category appends to
+#: it, the others render after the curated ones in this order. Only a
+#: skill with no recognised tag lands in "Other".
+_TAG_GROUPS: tuple[tuple[str, str], ...] = (
+    ("design", "Design & engineering"),
+    ("drafting", "Drafting & figures"),
+    ("external-sources", "External sources"),
+    ("troubleshooting", "Troubleshooting"),
+    ("orientation", "Orientation"),
+    ("verbs", "Core verbs"),
+    ("addressing", "Core verbs"),
+    ("workflow", "Workflow tools"),
+)
+
+
 # Inline aliases shown next to the canonical slug — keeps the index
 # from listing two rows for the same skill. ``toc`` is the only one
 # today; new aliases land here.
@@ -274,19 +294,23 @@ def _pagination_alt_hint(slug: str) -> str:
 
 def _categorise_skills(
     slugs: list[str],
+    *,
+    tags_for: Callable[[str], list[str]] | None = None,
 ) -> tuple[list[tuple[str, list[str]]], list[str]]:
     """Group ``slugs`` into the top-layer categories.
 
     Returns ``(groups, uncategorised)``:
 
     * ``groups`` — ``[(category_name, [slug, slug, ...]), ...]`` in
-      the order defined by ``_SKILL_CATEGORIES``. Categories with
-      zero matching slugs are dropped from the output entirely;
-      they'd be visual noise.
-    * ``uncategorised`` — slugs not listed under any category,
-      preserving input order. Render these into a trailing "Other"
-      bucket so new skills don't silently disappear from the
-      catalogue.
+      the order defined by ``_SKILL_CATEGORIES``, then the tag-derived
+      groups of :data:`_TAG_GROUPS` (a derived group whose name matches
+      a curated category is folded into it, alphabetically after the
+      curated members). Categories with zero matching slugs are dropped
+      from the output entirely; they'd be visual noise.
+    * ``uncategorised`` — slugs under no category and (when ``tags_for``
+      is given) with no recognised tag, preserving input order. Render
+      these into a trailing "Other" bucket so new skills don't silently
+      disappear from the catalogue.
 
     ``slugs`` may contain any slugs — synth, file-backed, or aliases.
     Skills aliased via :data:`_SKILL_ALIASES_INLINE` are dropped from
@@ -307,8 +331,41 @@ def _categorise_skills(
             groups.append((category, in_category))
             placed.update(in_category)
 
+    if tags_for is not None:
+        derived: dict[str, list[str]] = {}
+        for slug in remaining:
+            if slug in placed:
+                continue
+            tags = {t.strip().lower() for t in (tags_for(slug) or [])}
+            for tag, group in _TAG_GROUPS:
+                if tag in tags:
+                    derived.setdefault(group, []).append(slug)
+                    placed.add(slug)
+                    break
+        by_name = {name: members for name, members in groups}
+        for _tag, group in _TAG_GROUPS:
+            extra = derived.pop(group, None)
+            if not extra:
+                continue
+            if group in by_name:
+                by_name[group].extend(sorted(extra))
+            else:
+                groups.append((group, sorted(extra)))
+                by_name[group] = groups[-1][1]
+
     uncategorised = [s for s in remaining if s not in placed]
     return groups, uncategorised
+
+
+def _skill_tags(slug: str) -> list[str]:
+    """A file-backed skill's ``tags:`` frontmatter (``[]`` for synth
+    skills or no frontmatter) — the second-layer catalogue axis."""
+    if slug in SkillHandler._SYNTHESIZED_SKILLS:
+        return []
+    text = _load_skill(slug)
+    if text is None:
+        return []
+    return list(parse_frontmatter(text).tags or [])
 
 
 #: Score pinned on a skill whose title / H1 contains the full query
@@ -1403,7 +1460,7 @@ class SkillHandler(Handler):
                 continue
             active.append(slug)
 
-        groups, uncategorised = _categorise_skills(active)
+        groups, uncategorised = _categorise_skills(active, tags_for=_skill_tags)
 
         # Grammatical pluralisation in the headline — the MCP critic
         # flagged ``# 9 oracle(s)`` and ``# 22 skill(s)`` as
@@ -1549,7 +1606,7 @@ class SkillHandler(Handler):
             else:
                 active.append(slug)
 
-        groups, uncategorised = _categorise_skills(active)
+        groups, uncategorised = _categorise_skills(active, tags_for=_skill_tags)
         total_active = sum(len(members) for _, members in groups) + len(uncategorised)
 
         lines = [
@@ -2110,6 +2167,30 @@ def _collect_build_info() -> list[tuple[str, str]]:
     rows.append(("git_source", git_source))
     rows.append(("source_path", _SOURCE_GIT_INFO.get("source_path", "unknown")))
     return rows
+
+
+_CODE_STAMP: str | None = None
+
+
+def code_stamp() -> str:
+    """``<version>@<sha_short>`` of the code THIS process runs — the one
+    line a job row / an enqueue reply needs to say which build did the
+    work (gr346951: four ewod re-routes were read as "fix ineffective"
+    when every one ran the pre-fix router on the cluster while the
+    session's MCP container ran the fixed one). Same collector as
+    ``precis-status`` and the boot banner, so the three can't disagree.
+    Cached after the first call — the git facts are frozen at process
+    start anyway. Never raises."""
+    global _CODE_STAMP
+    if _CODE_STAMP is None:
+        try:
+            fields = dict(_collect_build_info())
+            _CODE_STAMP = (
+                f"{fields.get('version', '?')}@{fields.get('git_sha_short', 'unknown')}"
+            )
+        except Exception:  # pragma: no cover — a stamp must never fail a claim
+            _CODE_STAMP = "unknown@unknown"
+    return _CODE_STAMP
 
 
 def _collect_runtime_info() -> list[tuple[str, str]]:

@@ -58,7 +58,7 @@ Optional ship message from the user: `$ARGUMENTS`
    `--mutate` additionally records per-test coverage contexts for step 7's
    background mutation pass.
    ```
-   scripts/ship --mutate "<message>"
+   scripts/ship --mutate --full "<message>"
    ```
    This is also the settle-up step after a `/qland` burst: those merges were
    ungated, so this full gate validates the *integrated* `main`. When the

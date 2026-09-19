@@ -776,6 +776,14 @@ class JobHandler(NumericRefHandler):
             lines.append(f"branch: {meta['branch']}")
         if meta.get("sha"):
             lines.append(f"sha: {meta['sha']}")
+        # Which worker build did the work — a job runs on the CLUSTER's
+        # code, which is not necessarily the code behind this MCP call
+        # (dev-stdio bind-mount vs deployed sha, gr346951).
+        if meta.get("lease_host") or meta.get("lease_code"):
+            ran_on = meta.get("lease_host") or "?"
+            lines.append(
+                f"ran_on: {ran_on} (code {meta.get('lease_code') or 'unstamped'})"
+            )
         lines.append("")
         if ref.title:
             lines.append(ref.title)
