@@ -577,12 +577,23 @@ class PcbMixin:
                 courtyard = (
                     courtyard if courtyard is not None else resolved.get("courtyard")
                 )
+        # `pin_swap_groups` (docs/backlog/pcb-ewod-multitile.md "Rulings
+        # 2026-09-19" item 6) rides `meta` the same way `pcb_instances.meta`
+        # already carries `group`/`pattern` — a caller-declared admissible
+        # pin-swap set (a generator's sink instance, or a hand-authored
+        # component in `put(kind='pcb')`), read back verbatim by
+        # `pcb_graph` and hoisted onto the component's instance dict for
+        # `pcb_route`'s job to resolve into real `pinswap.PinSwapGroup`s.
+        # This module never interprets the admissible-set judgment itself
+        # (same "never inferred" contract as `precis.pcb.pinswap`) — it
+        # only stores and returns exactly what was authored.
+        component_meta = {k: c[k] for k in ("pin_swap_groups",) if c.get(k) is not None}
         row = conn.execute(
             """
             INSERT INTO pcb_components
                 (ref_id, label, part_lcsc, footprint, courtyard, centroid,
-                 height_mm, note)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 height_mm, note, meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING component_id
             """,
             (
@@ -594,6 +605,7 @@ class PcbMixin:
                 _jsonb_or_none(c.get("centroid")),
                 height_mm,
                 c.get("note"),
+                Jsonb(component_meta),
             ),
         ).fetchone()
         assert row is not None
@@ -1139,6 +1151,16 @@ class PcbMixin:
                         )
                         if k in (r[12] or {})
                     },
+                    # `pin_swap_groups` (Rulings 2026-09-19 item 6) hoisted
+                    # from `c.meta` (a component-TYPE fact, unlike the
+                    # `i.meta` block above) the same way — `pcb_route`
+                    # reads it straight off the instance dict, never the
+                    # raw meta blob.
+                    **(
+                        {"pin_swap_groups": (r[14] or {})["pin_swap_groups"]}
+                        if "pin_swap_groups" in (r[14] or {})
+                        else {}
+                    ),
                 }
                 for r in conn.execute(
                     "SELECT i.refdes, i.x, i.y, i.layer, i.roles, c.label, "
@@ -1157,7 +1179,8 @@ class PcbMixin:
                     # multiply instance rows; a non-catalog part yields NULL
                     # -> false, matching `extended_part`'s documented
                     # "unknown is never silently promoted to a fee".
-                    "       COALESCE(NOT pt.basic, false), i.meta, c.footprint "
+                    "       COALESCE(NOT pt.basic, false), i.meta, c.footprint, "
+                    "       c.meta "
                     "FROM pcb_instances i JOIN pcb_components c "
                     "  ON c.component_id = i.component_id "
                     "  LEFT JOIN parts pt ON pt.lcsc = c.part_lcsc "

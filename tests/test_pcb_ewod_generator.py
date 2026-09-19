@@ -283,6 +283,26 @@ def test_sink_grid_channels_bind_to_the_electrode_escape_nets(pcb):
         assert ("ARR1", elec_pin) in members
 
 
+def test_sink_grid_declares_its_channel_pins_freely_swappable(pcb):
+    """Rulings 2026-09-19 item 6: any electrode a sink drives may sit on
+    any of ITS OWN channel pins (firmware's problem, not placement's), so
+    every sink instance carries one admissible set naming every channel
+    pin it actually wired -- ``pcb_route`` resolves this into a real
+    ``pinswap.PinSwapGroup``; the generator's own job is only to state the
+    judgment, never the geometry."""
+    pcb.put(id="ewod-sink-1", args=_sink_args())
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-sink-1")
+    assert ref is not None
+    graph = pcb.store.pcb_graph(ref.id)
+    by_refdes = {i["refdes"]: i for i in graph["instances"]}
+    gens = pcb.store.pcb_generators_for(ref.id)
+    ledger = gens["ARR1"]["ledger"]["sink_grid"]
+    for refdes in ("ARR1_SINK_0", "ARR1_SINK_1", "ARR1_SINK_2", "ARR1_SINK_3"):
+        channels = ledger[refdes]["channels"]
+        groups = by_refdes[refdes]["pin_swap_groups"]
+        assert groups == [list(channels)]
+
+
 def test_sink_grid_daisy_chains_din_dout_across_sinks(pcb):
     pcb.put(id="ewod-sink-1", args=_sink_args())
     ref = pcb.store.get_ref(kind="pcb", id="ewod-sink-1")
@@ -453,5 +473,29 @@ def test_electrode_nets_get_a_dedicated_gap_net_class(pcb):
     # margin (precis.pcb.generators._GEOMETRY_ROUNDING_SLACK_MM) — never
     # the raw authored value (see that constant's own docstring).
     assert design["net_classes"]["ewod_ARR1"]["clearance_mm"] == pytest.approx(0.119)
+    # Rulings 2026-09-19 item 7: every pin in a 3x3 full array has a plaza
+    # via/stub (one centre plaza, all 8 electrodes usable), so EVERY
+    # electrode net is actually tagged with the ESCAPE class (same
+    # clearance floor, plus the B.Cu layer lock), not the plain
+    # electrode-gap class this test used to check directly.
+    assert design["net_classes"]["ewod_ARR1_escape"]["clearance_mm"] == pytest.approx(
+        0.119
+    )
+    assert design["net_classes"]["ewod_ARR1_escape"]["layers"] == ["B.Cu"]
     nets_by_name = {n["name"]: n for n in pcb.store.pcb_graph(ref.id)["nets"]}
-    assert nets_by_name["ARR1_R0C0"]["net_class"] == "ewod_ARR1"
+    assert nets_by_name["ARR1_R0C0"]["net_class"] == "ewod_ARR1_escape"
+
+
+def test_a_pin_with_no_via_stays_on_the_plain_gap_class(pcb):
+    """Rulings 2026-09-19 item 7: the B.Cu layer lock only makes sense for
+    a pin that actually got a plaza via/stub — one that didn't (here,
+    reserved out of its only slot, same fixture as
+    ``test_reserve_marks_a_plaza_slot_unusable``) has no B.Cu track to
+    lock and must stay on the plain electrode-gap class, never the escape
+    one."""
+    pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3], reserve=["P1_1:N"]))
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-gen-1")
+    assert ref is not None
+    nets_by_name = {n["name"]: n for n in pcb.store.pcb_graph(ref.id)["nets"]}
+    assert nets_by_name["ARR1_R0C1"]["net_class"] == "ewod_ARR1"
+    assert nets_by_name["ARR1_R0C0"]["net_class"] == "ewod_ARR1_escape"

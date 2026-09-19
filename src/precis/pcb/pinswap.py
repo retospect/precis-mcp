@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.pcb.geom import Point, segments_cross
-from precis.pcb.ir import PcbIR
+from precis.pcb.ir import PcbIR, pin_point
 
 # ── the admissible set + exclusions ─────────────────────────────────────
 
@@ -130,6 +130,42 @@ def offsets_from_pads(
     return offsets
 
 
+def offsets_from_ir(
+    ir: PcbIR, instance: int, pins: tuple[int, ...]
+) -> dict[int, Point]:
+    """Per-pin offsets read off the IR's OWN placed pin positions
+    (:func:`precis.pcb.ir.pin_point` minus the instance origin) — the
+    board-frame answer, for a group whose footprint has already been
+    applied to the IR (``session.apply_real_pin_offsets``, wired into
+    ``build_ir``).
+
+    Preferred over :func:`offsets_from_pads` for anything that came
+    through ``build_ir``, for three reasons that each made the pads path
+    a silent no-op on a real part: (1) a cached EasyEDA/JLC footprint
+    keys its pads by raw ``number`` (``"1"``..``"80"``) and names the pin
+    via a separate ``pin_map`` — ``offsets_from_pads`` matches ``number``
+    against :attr:`PcbIR.pin_label` directly, so every pin of an HV507
+    (or any part with named pins) missed and collapsed to the centroid,
+    where every swap scores zero; (2) a bottom-mounted instance is
+    MIRRORED and (3) any instance may be rotated — both already folded
+    into ``pin_point`` and neither into a raw pad list. Found wiring
+    pin swap through ``op='route'`` (docs/backlog/pcb-ewod-multitile.md
+    ruling 6, 2026-09-19): the dogfood settled 0 swaps until this. A pin
+    still unplaced (``pin_point`` is ``None``) or with no real offset is
+    left absent, which the group's own centroid default handles."""
+    x0, y0 = float(ir.inst_x[instance]), float(ir.inst_y[instance])
+    offsets: dict[int, Point] = {}
+    for pin in pins:
+        pt = pin_point(ir, pin)
+        if pt is None:
+            continue
+        dx, dy = pt[0] - x0, pt[1] - y0
+        if dx == 0.0 and dy == 0.0:
+            continue
+        offsets[pin] = (dx, dy)
+    return offsets
+
+
 def group_from_pads(
     ir: PcbIR,
     instance: int,
@@ -177,18 +213,24 @@ def _segments_near_pin(ir: PcbIR, instance: int) -> dict[int, int]:
 
 def _instance_edges(ir: PcbIR, instance: int) -> dict[int, list[Point]]:
     """``{near_pin: [far_point, ...]}`` for every segment touching
-    ``instance`` — the far endpoint's OWN instance centroid (only the near
-    side, on ``instance``, ever has sub-instance offset detail in this
-    module)."""
+    ``instance`` — the far endpoint at its own PIN position
+    (:func:`precis.pcb.ir.pin_point`: the instance origin plus the real
+    per-pin offset ``build_ir`` applied, or the bare centroid when none
+    is known). Until 2026-09-19 this used the far instance's centroid
+    outright, which made the whole evaluator blind whenever every far
+    end sits on ONE instance: an ``ewod_pad_array`` is a single component
+    carrying all 64 electrode pins, so every airwire from the HV507 sink
+    converged on the same point and no swap could ever change a crossing
+    count (the dogfood settled 0 swaps with a correctly resolved group —
+    docs/backlog/pcb-ewod-multitile.md ruling 6)."""
     edges: dict[int, list[Point]] = {}
     for seg_id, near_pin in _segments_near_pin(ir, instance).items():
         a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
         other = b if a == near_pin else a
-        inst = int(ir.pin_instance[other])
-        x, y = float(ir.inst_x[inst]), float(ir.inst_y[inst])
-        if math.isnan(x) or math.isnan(y):
+        far = pin_point(ir, other)
+        if far is None:
             continue
-        edges.setdefault(near_pin, []).append((x, y))
+        edges.setdefault(near_pin, []).append(far)
     return edges
 
 
@@ -370,11 +412,88 @@ def propose_reassignment(
     return tuple(pairs)
 
 
+def propose_radial_assignment(
+    ir: PcbIR, group: PinSwapGroup
+) -> tuple[tuple[int, int], ...] | None:
+    """A planar warm start for a ring-shaped group: match pins to their
+    airwires' far ends in CYCLIC ANGULAR ORDER about the instance origin.
+
+    Why this exists next to :func:`propose_reassignment`: that matcher
+    scores each ``(net, candidate pin)`` cell with every other pin held
+    where it is (its docstring's own "coordinate descent" caveat), so from
+    a badly crossed start it finds a local improvement, not the global
+    non-crossing assignment. For the one shape that dominates here — an
+    HV507-class sink under an electrode field, its pads on a ring, every
+    far end a plaza via inside or around that ring (docs/backlog/
+    pcb-ewod-multitile.md ruling 6, "pin swaps make routing trivial") —
+    the non-crossing assignment IS known in closed form: sort the pins by
+    angle, sort the far ends by angle, and match them in the same cyclic
+    order; two chords of a ring cross exactly when their endpoint orders
+    interleave, so an order-preserving matching has none. The one free
+    choice is the cyclic rotation (which pin the first far end takes);
+    every rotation is tried and the one with the smallest total airwire
+    length wins, which also keeps each via near its own pad. The anneal's
+    pairwise moves then only ever improve on this.
+
+    Only pins with exactly one airwire take part (a pin with none has
+    nothing to place; several would need a dart-order permutation the IR
+    does not support — same limit as :meth:`PcbIR.swap_pins`). Returns
+    the transpositions that realize the permutation (the same fixed-pivot
+    cycle decomposition :func:`propose_reassignment` uses) or ``None``
+    when fewer than two pins qualify or the order already holds."""
+    movable = [p for p in group.pins if p not in group.excluded]
+    if len(movable) < 2:
+        return None
+    inst_x, inst_y = float(ir.inst_x[group.instance]), float(ir.inst_y[group.instance])
+    if math.isnan(inst_x) or math.isnan(inst_y):
+        return None
+    edges = _instance_edges(ir, group.instance)
+    pins = [p for p in movable if len(edges.get(p, ())) == 1]
+    if len(pins) < 2:
+        return None
+    near = {p: _pin_pos(inst_x, inst_y, group, p) for p in pins}
+    far = {p: edges[p][0] for p in pins}
+
+    def _ang(pt: Point) -> float:
+        return math.atan2(pt[1] - inst_y, pt[0] - inst_x)
+
+    pins_by_angle = sorted(pins, key=lambda p: _ang(near[p]))
+    # The far ends travel with their CURRENT pin; sort the far ends
+    # themselves, then decide which pin each one should land on.
+    fars_by_angle = sorted(pins, key=lambda p: _ang(far[p]))
+    n = len(pins)
+    best: tuple[float, int] | None = None
+    for shift in range(n):
+        total = 0.0
+        for k in range(n):
+            dst = pins_by_angle[(k + shift) % n]
+            fx, fy = far[fars_by_angle[k]]
+            nx, ny = near[dst]
+            total += math.hypot(fx - nx, fy - ny)
+        if best is None or total < best[0]:
+            best = (total, shift)
+    assert best is not None
+    shift = best[1]
+    # target[src_pin] = the pin its net should move to.
+    target = {fars_by_angle[k]: pins_by_angle[(k + shift) % n] for k in range(n)}
+    index = {p: i for i, p in enumerate(pins)}
+    assign = [index[target[p]] for p in pins]
+    pairs: list[tuple[int, int]] = []
+    for cyc in _cycles(assign):
+        if len(cyc) < 2:
+            continue
+        pivot = pins[cyc[0]]
+        pairs.extend((pivot, pins[idx]) for idx in cyc[1:])
+    return tuple(pairs) or None
+
+
 __all__ = [
     "PinSwapGroup",
     "build_cost_matrix",
     "group_from_pads",
+    "offsets_from_ir",
     "offsets_from_pads",
+    "propose_radial_assignment",
     "propose_reassignment",
     "total_group_crossings",
 ]

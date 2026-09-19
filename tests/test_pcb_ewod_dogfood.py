@@ -810,7 +810,15 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     escape_nets = [n for n in status_by_net if n.startswith("ARR1_R")]
     assert len(escape_nets) >= 50
     realized_escapes = [n for n in escape_nets if status_by_net[n] == "realized"]
-    assert len(realized_escapes) >= 8, (
+    # Rulings 2026-09-19 item 7 (net-class `layers`) lowers this floor from
+    # its earlier value: the escape nets are now genuinely LOCKED to
+    # B.Cu-only (module docstring's "no crossovers"), so a net that used
+    # to route by borrowing a layer change through the field can no
+    # longer do that -- a real, expected drop in raw count, not a
+    # regression this fixture should paper over. Still half of what
+    # seed=1 currently realizes under the lock, same "a tuning wobble
+    # can't redden it" margin the old floor used.
+    assert len(realized_escapes) >= 3, (
         "electrode escapes no longer route through the plaza fabric — the "
         f"gripe-346962 wall (enclosing pad discs) is back? {diag}"
     )
@@ -819,6 +827,29 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
             continue
         problems = ((routes.get(net) or {}).get("fail") or {}).get("problems") or []
         assert problems, f"escape net {net} failed to route with NO recorded reason"
+
+    # (3) Rulings 2026-09-19 item 7: "the escape is plaza via -> B.Cu
+    # track -> sink pad, nothing else" -- every escape net's ROUTER-drawn
+    # copper (`fixed` is absent/False; the authored plaza via/neck stub
+    # is `fixed: True` and does not count, module docstring's own
+    # distinction) is B.Cu-only, with no router-added via at all (a via
+    # would mean the router itself crossed off B.Cu somewhere).
+    router_tracks = [t for t in tracks if not t.get("fixed")]
+    escape_track_layers = {
+        t["layer"] for t in router_tracks if t["net"] in set(realized_escapes)
+    }
+    assert escape_track_layers <= {"B.Cu"}, (
+        "a realized escape net's router-drawn copper touched a layer "
+        f"other than B.Cu: {escape_track_layers}"
+    )
+    router_via_escape_nets = {
+        c["net"] for c in copper if c.get("ctype") == "via" and not c.get("fixed")
+    } & set(escape_nets)
+    assert not router_via_escape_nets, (
+        f"the router placed its own via on escape net(s) "
+        f"{router_via_escape_nets} — the B.Cu-only lock should make that "
+        "impossible"
+    )
 
     # Post-route DRC is the FULL check now (routed copper exists), not the
     # pads-only scope an un-routed board reports.

@@ -776,6 +776,89 @@ def test_pcb_place_reapplies_persisted_pin_swap(
     assert seen == {"right": "B", "left": "A"}
 
 
+# ── the REAL feed (Rulings 2026-09-19 item 6): a component's authored
+# ``pin_swap_groups`` + real footprint pad offsets, no monkeypatch ───────
+_PIN_SWAP_FEED_FOOTPRINT = {
+    "name": "sink4",
+    "pads": [
+        {"pin": "left", "shape": "rect", "x": -1.0, "y": 0.0, "w": 0.3},
+        {"pin": "right", "shape": "rect", "x": 1.0, "y": 0.0, "w": 0.3},
+    ],
+}
+
+#: The exact `_PIN_SWAP_DESIGN`/`tests/test_pcb_pinswap.py::_fixture()`
+#: crossed-wiring geometry, but authored through the real feed this time:
+#: U0's `pin_swap_groups` declares {left, right} admissible, and its
+#: footprint gives them real, distinguishable offsets -- what the OLD
+#: `_PIN_SWAP_DESIGN` above had to fake via a monkeypatched `optimize`
+#: because no feed existed.
+_PIN_SWAP_FEED_DESIGN = {
+    "footprints": [_PIN_SWAP_FEED_FOOTPRINT],
+    "components": [
+        {
+            "refdes": "U0",
+            "label": "sink",
+            "footprint": "sink4",
+            "x": 0.0,
+            "y": 0.0,
+            "fixed": "both",
+            "pins": [{"name": "left"}, {"name": "right"}],
+            "pin_swap_groups": [["left", "right"]],
+        },
+        {
+            "refdes": "U1",
+            "label": "ic",
+            "x": -5.0,
+            "y": 5.0,
+            "fixed": "both",
+            "pins": [{"name": "1"}],
+        },
+        {
+            "refdes": "U2",
+            "label": "ic",
+            "x": 5.0,
+            "y": 5.0,
+            "fixed": "both",
+            "pins": [{"name": "1"}],
+        },
+    ],
+    "nets": [{"name": "A", "class": "signal"}, {"name": "B", "class": "signal"}],
+    "connections": [
+        {"net": "A", "refdes": "U0", "pin": "right"},
+        {"net": "A", "refdes": "U1", "pin": "1"},
+        {"net": "B", "refdes": "U0", "pin": "left"},
+        {"net": "B", "refdes": "U2", "pin": "1"},
+    ],
+}
+
+
+def test_pcb_route_pin_swap_group_feed_settles_a_real_swap(store: Store) -> None:
+    """The rulings-6 feed end to end, with the REAL (unmocked) anneal:
+    a component's authored ``pin_swap_groups`` plus its cached footprint's
+    real pad offsets resolve (``pcb_route._resolve_pin_swap_groups``) into
+    an actual ``pinswap.PinSwapGroup``, fed into ``OptimizeConfig``, and
+    the anneal finds + persists the one beneficial swap on its own —
+    everything upstream of ``ir.swap_pins`` that
+    ``test_pcb_route_persists_optimizer_derived_pin_swap`` above had to
+    force by hand. ``iters`` is generous (PIN_SWAP only enters the last
+    15% of the schedule) so this isn't a coin flip: the swap is a strict,
+    never-reversed cost improvement once found (Metropolis always accepts
+    ``delta < 0``), so any single hit anywhere in that window suffices."""
+    ref_id = _seed(store, "route-pinswap-feed", _PIN_SWAP_FEED_DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 800, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx.failures
+
+    swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
+    assert swaps, "the real anneal never found the feed-supplied swap"
+    assert swaps[("U0", "right")]["net"] == "B"
+    assert swaps[("U0", "left")]["net"] == "A"
+    assert all(r["source"] == "derived" for r in swaps.values())
+
+    summary = ctx.summaries[-1][1]
+    assert f"{len(swaps)} pin swap(s) settled" in summary
+
+
 def test_pcb_route_never_touches_an_authored_pin_swap(store: Store) -> None:
     """No authoring verb exists yet for ``op='pin_swap'`` (out of this
     change's scope), but the discipline is wired ahead of it: an

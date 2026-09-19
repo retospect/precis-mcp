@@ -29,8 +29,10 @@ row (which reads as ``'unrouted'`` forever and wedges ``route_complete``).
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
+from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
 from precis.pcb.capabilities import capability_for
@@ -139,6 +141,78 @@ def _residual_crossings(
                         }
                     )
     return failing
+
+
+def _resolve_pin_swap_groups(
+    ir: PcbIR,
+    graph: dict[str, Any],
+    warnings: list[str],
+) -> tuple[pcb_pinswap.PinSwapGroup, ...]:
+    """The missing feed for ``OptimizeConfig.pin_swap_groups`` (docs/backlog
+    /pcb-ewod-multitile.md "Rulings 2026-09-19" item 6): an instance's
+    authored ``pin_swap_groups`` (``Store.pcb_graph``'s ``c.meta`` hoist —
+    a generator's sink instance, or a hand-authored ``put(kind='pcb')``
+    component) resolved into real :class:`precis.pcb.pinswap.PinSwapGroup`
+    objects, with real per-pin offsets read off the IR's own placed pins
+    (:func:`precis.pcb.pinswap.offsets_from_ir` — pin_map-named, rotated
+    and mirrored, which the raw pad list is not). Never invents an admissible set of its
+    own — an instance with nothing declared contributes nothing, the same
+    "caller supplies, engine consumes" contract :mod:`precis.pcb.pinswap`'s
+    module docstring states.
+
+    :meth:`~precis.pcb.ir.PcbIR.swap_pins` requires equal rotation-CSR
+    degree between the two pins it swaps (that method's own contract) — a
+    declared group is normally homogeneous (every HV507 channel pin
+    carries exactly one net, degree 1), but a member that genuinely isn't
+    (a mis-declared pin name, or one this design left unconnected) is
+    dropped from its OWN group (never the whole group, never the whole
+    run) with a note appended to ``warnings`` for the job summary, keyed
+    against the group's own majority degree.
+    """
+    groups: list[pcb_pinswap.PinSwapGroup] = []
+    refdes_to_instance = {str(ir.instance_refdes[i]): i for i in range(ir.n_instances)}
+    for inst_dict in graph.get("instances") or []:
+        declared = inst_dict.get("pin_swap_groups")
+        if not declared:
+            continue
+        refdes = str(inst_dict["refdes"])
+        instance = refdes_to_instance.get(refdes)
+        if instance is None:
+            continue
+        pin_by_label: dict[str, int] = {}
+        for pin_id in range(ir.n_pins):
+            if int(ir.pin_instance[pin_id]) == instance:
+                pin_by_label[str(ir.pin_label[pin_id])] = pin_id
+        for admissible in declared:
+            pins = [pin_by_label[n] for n in admissible if n in pin_by_label]
+            if len(pins) < 2:
+                continue
+            degree = {
+                p: int(ir.rotation_index[p + 1]) - int(ir.rotation_index[p])
+                for p in pins
+            }
+            ref_degree = Counter(degree.values()).most_common(1)[0][0]
+            kept = tuple(p for p in pins if degree[p] == ref_degree)
+            for p in pins:
+                if degree[p] != ref_degree:
+                    warnings.append(
+                        f"pin_swap: {refdes}.{ir.pin_label[p]} dropped from its "
+                        f"admissible set (degree {degree[p]} != the group's own "
+                        f"{ref_degree})"
+                    )
+            if len(kept) < 2:
+                continue
+            # Offsets off the IR's own placed pins, not the raw pad list:
+            # pin_map-named, rotated and mirrored (offsets_from_ir's
+            # docstring — the pads path scored every real-part swap 0).
+            groups.append(
+                pcb_pinswap.PinSwapGroup(
+                    instance=instance,
+                    pins=kept,
+                    offsets=pcb_pinswap.offsets_from_ir(ir, instance, kept),
+                )
+            )
+    return tuple(groups)
 
 
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
@@ -259,11 +333,50 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # proximity/separation measure had just pulled into shape (one rule,
     # one call site short).
     measures = resolve_measures(ctx.store.pcb_measures_list(pcb_ref_id))
+    # part_lcsc -> Store.pcb_footprints_for (LCSC-keyed) -> refdes-keyed,
+    # via PcbIR.instance_part_lcsc (the join pcb_graph/from_graph now
+    # carry). Without it every pad on every routed board reads as a
+    # land-pattern BOUND regardless of what is actually cached, and
+    # gerber.export_fab therefore refuses EVERY routed board — including
+    # one whose parts are all real. The two ends of this path both
+    # existed; only the join key was missing, the same shape as the
+    # write-only `inst_rot` defect.
+    # Local (authored) footprints join the same dict: an instance with no
+    # LCSC part at all — every `footprints[]`-authored component and every
+    # generator-emitted one (pcb-ewod-multitile Slice 1/2) — otherwise
+    # reserves a landpattern-BOUND pad on the occupancy grid instead of its
+    # real electrode/via copper, and `export_fab` then refuses the board as
+    # synthesized. Same two-source join `handlers/pcb.py::_drc_pads` and
+    # `session.build_ir` already do; this call site was one source short.
+    #
+    # Computed HERE (rather than right before `realize()`, its other
+    # consumer) because `_resolve_pin_swap_groups` below needs the exact
+    # same cached pad geometry to give PIN_SWAP real footprint offsets —
+    # one fetch, two consumers, not a second round-trip.
+    footprints = pcb_session.footprints_by_refdes(
+        ir,
+        ctx.store.pcb_footprints_for(pcb_ref_id),
+        local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+        local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
+    )
+    pin_swap_warnings: list[str] = []
+    pin_swap_groups = _resolve_pin_swap_groups(ir, graph, pin_swap_warnings)
+    # Planar warm start BEFORE the anneal: each group's pins matched to
+    # their far ends in cyclic angular order (pinswap.propose_radial_
+    # assignment — the closed-form non-crossing assignment for a ring of
+    # pads facing a field of vias, which the anneal's pairwise move
+    # cannot reach from a crossed start). The anneal only improves on it,
+    # and the settled result still goes through the same pin_swap_diff
+    # write-back below, so persistence is unchanged.
+    for group in pin_swap_groups:
+        for pin_a, pin_b in pcb_pinswap.propose_radial_assignment(ir, group) or ():
+            ir.swap_pins(pin_a, pin_b)
     config = OptimizeConfig(
         iters=iters,
         seed=seed,
         locked_plane_nets=locked_plane_nets,
         measures=measures,
+        pin_swap_groups=pin_swap_groups,
     )
     result = optimize(ir, config)
 
@@ -324,27 +437,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps, class_rules=graph.get("net_classes")
     )
-    # part_lcsc -> Store.pcb_footprints_for (LCSC-keyed) -> refdes-keyed,
-    # via PcbIR.instance_part_lcsc (the join pcb_graph/from_graph now
-    # carry). Without it every pad on every routed board reads as a
-    # land-pattern BOUND regardless of what is actually cached, and
-    # gerber.export_fab therefore refuses EVERY routed board — including
-    # one whose parts are all real. The two ends of this path both
-    # existed; only the join key was missing, the same shape as the
-    # write-only `inst_rot` defect.
-    # Local (authored) footprints join the same dict: an instance with no
-    # LCSC part at all — every `footprints[]`-authored component and every
-    # generator-emitted one (pcb-ewod-multitile Slice 1/2) — otherwise
-    # reserves a landpattern-BOUND pad on the occupancy grid instead of its
-    # real electrode/via copper, and `export_fab` then refuses the board as
-    # synthesized. Same two-source join `handlers/pcb.py::_drc_pads` and
-    # `session.build_ir` already do; this call site was one source short.
-    footprints = pcb_session.footprints_by_refdes(
-        ir,
-        ctx.store.pcb_footprints_for(pcb_ref_id),
-        local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
-        local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
-    )
+    # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
+    # above also used) was resolved earlier, before the anneal — see that
+    # block's own comment for why.
     # Authored fixed copper (pcb-pre-place-route-blocks Slice 1, "Realize
     # seam"): claimed on the occupancy grid as real obstacles for every
     # OTHER net, and short-circuits any ratsnest segment its own two pins
@@ -654,12 +749,15 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             }
         },
     )
+    pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
     ctx.append_chunk(
         "job_summary",
         f"routed {len(rows)} net(s): {n_realized} realized, "
         f"{n_failed} failed, {n_dangling} dangling (<2-member, nothing to "
         f"route), {len(rres.vias)} via(s) placed, "
-        f"{len(rres.warnings)} congestion warning(s)\n\n" + digest_toon(result),
+        f"{len(rres.warnings)} congestion warning(s), "
+        f"{len(pin_swap_overrides)} pin swap(s) settled"
+        f"{pin_swap_summary}\n\n" + digest_toon(result),
     )
 
 

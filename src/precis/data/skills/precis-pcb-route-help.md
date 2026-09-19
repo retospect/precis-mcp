@@ -144,11 +144,24 @@ by the realizer or the optimizer — no term consumes `clearance_mm` /
 appear in the design TOC); using them to size traces or set clearance is
 a documented gap, not a current effect.
 
-## Inert move classes — say so plainly
+**Net-class `layers` IS consumed (Rulings 2026-09-19 item 7, gr347037).**
+A class's `rules` may name `"layers": ["B.Cu", ...]` (stackup layer names)
+— every net tagged with that class routes ONLY on the intersection of
+those names with the board's own routable signal layers
+(`precis.pcb.realize._net_class_layers`), never silently widened back to
+the full set. A net whose lock resolves to nothing routable (a name
+absent from the stackup, or one with no routable member at all) fails
+with `UnroutedReason.kind == "layer_lock"`, naming the class and the
+offending layer(s), rather than routing anyway. This is the one net-class
+key the realizer reads today; `clearance_mm`/`track_width_mm` remain the
+documented gap above.
+
+## Inert (or conditional) move classes — say so plainly
 
 The joint optimizer's move set is documented in full in
-`precis.pcb.optimize`; two are worth calling out here because their
-inertness is easy to miss from the tool surface alone:
+`precis.pcb.optimize`; a few are worth calling out here because their
+inertness — or, for `PIN_SWAP`, its data-dependent conditionality — is
+easy to miss from the tool surface alone:
 
 - **`SIDE_FLIP` has no cost effect.** The `crossings` term (the only term
   that could plausibly respond to a side choice) is a straight-line sweep
@@ -157,14 +170,26 @@ inertness is easy to miss from the tool surface alone:
   `inst_rot`. The move still runs (its dirty-cascade bookkeeping is
   exercised so the plumbing is ready), it just never changes `total()`.
   This is why `op='pin_side'` is a seed, not a lock (see above).
-- **`PIN_SWAP` needs footprint pad-offset + admissible-pin data this tool
-  surface does not supply.** The move class exists and its own crossing
-  evaluator (`precis.pcb.pinswap`) is real when a caller supplies
-  `pin_swap_groups` + real per-pin footprint offsets directly to
-  `OptimizeConfig` — but `op='route'`'s job never populates either, so in
-  practice `PIN_SWAP` never fires through this tool surface today
-  (`_gen_pin_swap` returns `None` with no groups configured). Wiring pin-
-  equivalence data through `op='route'`'s params is a documented gap.
+- **`PIN_SWAP` now fires — declare `pin_swap_groups` on a component
+  (Rulings 2026-09-19 item 6, gr347037).** A `put(kind='pcb')` component
+  dict (hand-authored, or emitted by a generator — `ewod_pad_array`'s own
+  sink instances do this) may carry a `"pin_swap_groups"` key: a list of
+  admissible sets, each a list of that SAME component's own pin names
+  that are freely interchangeable (no partial-exclusion syntax yet — a
+  set names every candidate pin, nothing more). It rides `pcb_components
+  .meta` and round-trips through `Store.pcb_graph`. `op='route'`'s job
+  (`pcb_route._resolve_pin_swap_groups`) resolves every declared set into
+  a real `precis.pcb.pinswap.PinSwapGroup` — pin ids off the instance's
+  own `PcbIR.pin_label`, real per-pin offsets off the SAME cached
+  footprint pads the realizer uses — and feeds it to `OptimizeConfig
+  .pin_swap_groups`, so the anneal's `PIN_SWAP` move (previously always
+  `None` with no groups configured) actually runs. A declared pin whose
+  rotation-CSR degree doesn't match the rest of its own group (a
+  datasheet mismatch, or one this design left unconnected) is dropped
+  from that group alone, noted in the job summary, never failing the
+  run. The settled swap persists exactly as before (`pcb_pin_swaps`,
+  `source: 'derived'`) — only the FEED was missing; the persistence and
+  re-application path was already real.
 - **`ROTATE` is cost-neutral too**, for the same structural reason as
   `SIDE_FLIP` — no term reads `inst_rot`. `op='move'`'s `rot=` still
   writes a real rotation to the database (useful for footprint/courtyard

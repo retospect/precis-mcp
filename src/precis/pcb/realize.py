@@ -873,6 +873,13 @@ class UnroutedReason:
       generic ``unrouted`` bucket with no distinguishing cause at all —
       see docs/backlog/pcb-engine-plan.md's "BOARD TWO" finding 2's
       sibling note.
+    - ``'layer_lock'`` — this net's class names a ``"layers"`` restriction
+      (Rulings 2026-09-19 item 7, e.g. the EWOD escape nets' ``["B.Cu"]``)
+      that resolves to NO usable layer on this board — a name absent from
+      the stackup, or one that intersects this board's routable signal
+      layers to nothing. Never silently widened back to the full signal-
+      layer set; the segment never reaches ``grid.route`` at all
+      (:func:`_net_class_layers`, checked in :func:`_route_pass`).
     """
 
     seg_id: int
@@ -1010,6 +1017,78 @@ def _layer_preferences(ir: PcbIR, signal_layers: list[int]) -> dict[int, str]:
     outer = [layer for layer in signal_layers if layer_is_outer(ir, layer)]
     inner = [layer for layer in signal_layers if not layer_is_outer(ir, layer)]
     return {**maze.preferred_directions(outer), **maze.preferred_directions(inner)}
+
+
+def _net_class_layers(
+    ir: PcbIR, net_id: int, config: RealizeConfig, signal_layers: list[int]
+) -> tuple[list[int], str | None]:
+    """Rulings 2026-09-19 item 7's per-net layer lock: a
+    ``pcb_net_classes.rules`` entry may name ``"layers"`` (stackup layer
+    NAMES, e.g. ``["B.Cu"]`` for the EWOD escape nets) — resolved here to
+    stackup INDICES and intersected with ``signal_layers``, the routable
+    set every OTHER net still gets whole. No ``"layers"`` key (the
+    overwhelming common case) returns ``signal_layers`` itself, unchanged —
+    this function is a no-op for every net that doesn't opt in.
+
+    The second return value is ``None`` for a clean resolution, or a
+    human-legible reason naming the offending class/layer — a name this
+    stackup doesn't carry, or one that intersects ``signal_layers`` to
+    nothing (e.g. a plane-only or otherwise non-routable layer) — for a
+    caller (:func:`_realize_maze`) to fail the net LEGIBLY as
+    ``UnroutedReason(kind="layer_lock")`` rather than silently routing on
+    the full set anyway (module-wide "fail legibly" discipline, same as
+    every other :class:`UnroutedReason` kind)."""
+    net_class = str(ir.net_class[net_id])
+    names = ((config.class_rules or {}).get(net_class) or {}).get("layers")
+    if not names:
+        return signal_layers, None
+    layer_name_to_idx = {
+        str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
+    }
+    missing = [n for n in names if n not in layer_name_to_idx]
+    if missing:
+        return [], (
+            f"net class {net_class!r} names layer(s) {missing} that are not "
+            "in this board's stackup"
+        )
+    allowed = [
+        layer_name_to_idx[n] for n in names if layer_name_to_idx[n] in signal_layers
+    ]
+    if not allowed:
+        return [], (
+            f"net class {net_class!r}'s layers {list(names)} have no "
+            "routable member among this board's signal layers"
+        )
+    return allowed, None
+
+
+def _resolve_route_end(
+    native_layer: int,
+    native_point: Point,
+    candidates: _EndTerminals,
+    allowed_set: set[int],
+) -> tuple[Point | None, int | None, _EndTerminals]:
+    """One segment END's actual search terminal, honouring a net-class
+    layer lock (Rulings 2026-09-19 item 7): the pin's own native pad wins
+    when its layer is already ``allowed_set`` — the overwhelming common
+    case, and the ONLY case before a lock could ever exclude a pin's own
+    mount side. Otherwise the first real fixed-copper island terminal
+    (``candidates``, :func:`_island_terminals_by_pin`'s per-pin answer)
+    that IS on an allowed layer substitutes as the PRIMARY point instead
+    — the plaza via's own B.Cu landing, for the EWOD escape case — never
+    a fabricated point on bare board where this pin has no real copper.
+    ``(None, None, candidates)`` when neither the native pad nor any
+    candidate lands on an allowed layer: this end genuinely has no legal
+    way to route on the locked layer set, for :func:`_route_pass`'s own
+    caller to fail the whole segment on rather than force an illegal
+    ``grid.route`` call (``start_layer``/``goal_layer`` outside its own
+    ``layers=`` set refuses unconditionally)."""
+    if native_layer in allowed_set:
+        return native_point, native_layer, candidates
+    for i, (term, layer) in enumerate(candidates):
+        if layer in allowed_set:
+            return term.point, layer, candidates[:i] + candidates[i + 1 :]
+    return None, None, candidates
 
 
 def _outline_clip(
@@ -1242,6 +1321,19 @@ def _realize_maze(
     }
     if not rules_by_net:
         return [], [], list(ids), [], [], [], {}
+    # Rulings 2026-09-19 item 7 — per-net layer lock, resolved ONCE
+    # (net-class-derived, not attempt-derived, same "built once outside
+    # the retry loop" reasoning as `rules_by_net` itself). A net absent
+    # from `net_layer_lock_fail` routes on `net_layers[net_id]`, which is
+    # `signal_layers` itself for the overwhelming majority with no
+    # `"layers"` override.
+    net_layers: dict[int, list[int]] = {}
+    net_layer_lock_fail: dict[int, str] = {}
+    for n in rules_by_net:
+        layers_n, problem = _net_class_layers(ir, n, config, signal_layers)
+        net_layers[n] = layers_n
+        if problem is not None:
+            net_layer_lock_fail[n] = problem
     clearance = max(
         config.clearance_mm, max(r.clearance_mm for r in rules_by_net.values())
     )
@@ -1329,6 +1421,7 @@ def _realize_maze(
             ink_field=ink_field,
             fixed_copper=fixed_copper,
             island_terminals=island_terminals,
+            net_layers=net_layers,
         )
         if best is None or len(outcome[2]) < len(best[2]):
             best = outcome
@@ -1422,6 +1515,7 @@ def _realize_maze(
         rules_by_net,
         config.max_expansions,
         fixed_copper=fixed_copper,
+        net_layer_lock_fail=net_layer_lock_fail,
     )
     return (
         tracks,
@@ -1447,14 +1541,30 @@ def _diagnose_all(
     max_expansions: int,
     *,
     fixed_copper: list[dict[str, Any]] | None = None,
+    net_layer_lock_fail: dict[int, str] | None = None,
 ) -> list[UnroutedReason]:
     """One :class:`UnroutedReason` per segment in ``unrouted +
     extra_unrouted`` — split out of :func:`_realize_maze` purely to keep
     that function's already-long body from growing further, not because
-    anything here is reused elsewhere."""
+    anything here is reused elsewhere.
+
+    ``net_layer_lock_fail`` (Rulings 2026-09-19 item 7) is checked FIRST,
+    before even the plane-drop branch below: a net whose class named a
+    layer this board can't route it on never reached `grid.route` at all
+    (`_route_pass`'s own early-continue), so re-running the point-to-point
+    probes below would ask the wrong question, the same reasoning the
+    plane-drop branch already documents for ITS own never-searched
+    segments."""
     reasons: list[UnroutedReason] = []
     for seg_id in unrouted:
         net_id = int(ir.seg_net[seg_id])
+        if net_layer_lock_fail and net_id in net_layer_lock_fail:
+            reasons.append(
+                UnroutedReason(
+                    seg_id, net_id, "layer_lock", net_layer_lock_fail[net_id]
+                )
+            )
+            continue
         if seg_id in plane_id_set:
             # This segment never went through `grid.route` at all -- see
             # `_route_pass`'s `plane_ids`/`route_ids` split -- so its
@@ -1665,6 +1775,7 @@ def _claim_fixed_copper(
         str(layer.get("name")): i for i, layer in enumerate(ir.stackup)
     }
     step = grid.spec.pitch / 2.0
+    fixed_vias: list[tuple[tuple[int, ...], float, float, float, int]] = []
     for row in fixed_copper:
         net_name = row.get("net")
         net_id = net_name_to_id.get(str(net_name)) if net_name else None
@@ -1699,14 +1810,29 @@ def _claim_fixed_copper(
             if lo is None or hi is None:
                 continue
             lo, hi = min(lo, hi), max(lo, hi)
-            radius = grid.core_radius_mm(float(row.get("dia_mm", 0.0)))
-            grid.stamp_disk(
-                range(lo, hi + 1),
-                float(row.get("x", 0.0)),
-                float(row.get("y", 0.0)),
-                radius,
-                net_id,
-            )
+            # Deferred: an EWOD plaza packs 0.45mm vias 0.54mm apart, so a
+            # one-shot core disc (half-dia + clearance) overlaps its
+            # neighbours'. Stamped in arrival order the LAST via overwrote
+            # the rims of the earlier ones, leaving each a one-cell island
+            # the search could not leave (every B.Cu-locked escape came
+            # back `no_path` "walled in", even routed alone — 2026-09-19
+            # ewod-dogfood-2 rebuild, docs/backlog/pcb-ewod-multitile.md
+            # ruling 7). Contested rings (the pad recipe) are worse at this
+            # pitch — the contested lens between neighbours, dilated, shuts
+            # every exit. So: all cores first, then every via's TRUE disc
+            # re-asserted, then its centre cell — each via owns its own
+            # copper outright, the keep-out between two vias belongs to
+            # whichever came last, and the dilation the search applies to a
+            # foreign core still leaves the outward cells free.
+            via_layers = tuple(range(lo, hi + 1))
+            x, y = float(row.get("x", 0.0)), float(row.get("y", 0.0))
+            dia = float(row.get("dia_mm", 0.0))
+            grid.stamp_disk(via_layers, x, y, grid.core_radius_mm(dia), net_id)
+            fixed_vias.append((via_layers, x, y, dia, net_id))
+    for via_layers, x, y, dia, net_id in fixed_vias:
+        grid.stamp_disk(via_layers, x, y, dia / 2.0, net_id)
+    for via_layers, x, y, dia, net_id in fixed_vias:
+        grid.claim_centre(via_layers, x, y, net_id)
 
 
 def _stamp_pads(
@@ -1928,6 +2054,7 @@ def _route_pass(
     ink_field: _InkField | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
     island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None = None,
+    net_layers: dict[int, list[int]] | None = None,
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]:
     """One complete routing attempt onto a fresh ``grid``, in ``order``.
 
@@ -1949,7 +2076,21 @@ def _route_pass(
     the plain pad point — see :meth:`~precis.pcb.maze.OccupancyGrid.route`'s
     ``extra_start_terminals``/``extra_goal_terminals``. Every segment
     whose realized path actually used one is named in the returned notes
-    dict (:attr:`RealizeResult.island_terminals`)."""
+    dict (:attr:`RealizeResult.island_terminals`).
+
+    ``net_layers`` (:func:`_net_class_layers`, built ONCE in
+    :func:`_realize_maze` — Rulings 2026-09-19 item 7) is this net's
+    routable subset of ``signal_layers``, defaulting to ``signal_layers``
+    itself for a net with no class-level lock — the ``layers=`` argument
+    every segment's ``grid.route`` call below is searched against. A pin
+    whose own NATIVE pad layer (:func:`_side_layer` against the full
+    ``signal_layers``, unchanged) isn't in that locked set has no real
+    copper `grid.route` may start from at its own coordinate; the loop
+    below substitutes the first ``island_terminals`` candidate that IS on
+    an allowed layer as the search's primary endpoint instead (the plaza
+    via's own B.Cu landing, for the EWOD escape case) — never a
+    fabricated point on bare board — and fails the segment outright when
+    no such terminal exists."""
     _claim_fixed_copper(grid, ir, fixed_copper)
     _claim_fiducial_keepouts(grid, ir)
     _claim_mounting_holes(grid, ir)
@@ -1982,6 +2123,17 @@ def _route_pass(
             continue  # no L3 position yet — nothing to draw, not a failure
         net_id = int(ir.seg_net[seg_id])
         rules = rules_by_net[net_id]
+        # Rulings 2026-09-19 item 7: this net's own routable subset,
+        # never the board-wide `signal_layers` directly once a class lock
+        # applies — see `_route_pass`'s own docstring paragraph on
+        # `net_layers`. A net locked to nothing at all (`_net_class_layers`
+        # found no usable layer) never reaches `grid.route`: there is
+        # nothing legal to search, and an empty `layers=` list would only
+        # crash `_side_layer` below, not fail cleanly.
+        allowed_layers = (net_layers or {}).get(net_id, signal_layers)
+        if not allowed_layers:
+            unrouted.append(seg_id)
+            continue
         # How much room ONE layer change costs this net. A via group is
         # sized by ampacity, not by geometry: a 5A rail cannot cross
         # layers through a single via, and a router that plans for one
@@ -1991,18 +2143,40 @@ def _route_pass(
         # fits.
         n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
         terms = (island_terminals or {}).get(seg_id)
+        term_a = terms[0] if terms else ()
+        term_b = terms[1] if terms else ()
         # This segment's OWN two pad layers, never a shared `PAD_LAYER` —
         # `_side_layer` is the same bottom/top rule `pads` above was built
         # with, so a route between a top- and a bottom-mounted pin enters
         # and leaves on the copper its own pads actually sit on instead of
         # both ends being pinned to the top layer regardless of mount side.
-        start_layer = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
-        goal_layer = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
+        native_a = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
+        native_b = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
+        allowed_set = set(allowed_layers)
+        # A locked net's endpoint whose own native pad ISN'T on an allowed
+        # layer (e.g. an EWOD electrode's F.Cu body, locked to B.Cu) has
+        # NO real copper `grid.route` may legally start from at its own
+        # XY — `grid.OccupancyGrid.route` requires `start_layer`/
+        # `goal_layer` to be IN its own `layers=` set, unconditionally, so
+        # simply forcing that native point onto the locked layer (this
+        # module's first attempt) would plant a phantom track origin on
+        # bare board where no copper exists. See `_resolve_route_end`'s
+        # own docstring for the real substitution this uses instead.
+        eff_start, start_layer, extra_a = _resolve_route_end(
+            native_a, start, term_a, allowed_set
+        )
+        eff_goal, goal_layer, extra_b = _resolve_route_end(
+            native_b, end, term_b, allowed_set
+        )
+        if start_layer is None or goal_layer is None:
+            unrouted.append(seg_id)
+            continue
+        assert eff_start is not None and eff_goal is not None  # same branch as above
         path = grid.route(
             net_id,
-            start,
-            end,
-            layers=signal_layers,
+            eff_start,
+            eff_goal,
+            layers=allowed_layers,
             width_mm=rules.track_width_mm,
             via_dia_mm=group_extent,
             start_layer=start_layer,
@@ -2014,12 +2188,8 @@ def _route_pass(
                 if config.preferred_directions
                 else None
             ),
-            extra_start_terminals=tuple((t.point, layer) for t, layer in terms[0])
-            if terms
-            else (),
-            extra_goal_terminals=tuple((t.point, layer) for t, layer in terms[1])
-            if terms
-            else (),
+            extra_start_terminals=tuple((t.point, layer) for t, layer in extra_a),
+            extra_goal_terminals=tuple((t.point, layer) for t, layer in extra_b),
         )
         if path is None or len(path.points) < 2:
             unrouted.append(seg_id)

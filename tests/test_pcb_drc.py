@@ -1797,3 +1797,25 @@ def test_clearance_finding_names_the_layer_the_pair_met_on():
     assert len(findings) == 1
     assert findings[0].where.endswith("on B.Cu")
     assert "on F.Cu" not in findings[0].where
+
+
+def test_resolve_net_rules_ignores_the_layers_key():
+    """Rulings 2026-09-19 item 7's ``"layers"`` net-class key is consumed
+    entirely by :mod:`precis.pcb.realize` (:func:`_net_class_layers`) —
+    the shared per-net resolver every DRC/cost consumer reads through
+    (module docstring) never asks about it and must not choke on it (an
+    unrecognized ``pcb_net_classes.rules`` key from a class another
+    consumer added is exactly the kind of forward-compatibility this
+    resolver's plain ``dict.get`` already gives every OTHER unknown key)."""
+    from precis.pcb.rules import resolve_net_rules
+
+    without = resolve_net_rules(
+        "escape", layer_is_outer=True, fab_caps=_CAP4, overrides={}
+    )
+    with_layers = resolve_net_rules(
+        "escape",
+        layer_is_outer=True,
+        fab_caps=_CAP4,
+        overrides={"layers": ["B.Cu"]},
+    )
+    assert with_layers == without

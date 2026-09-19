@@ -1011,8 +1011,16 @@ class PcbHandler(Handler):
         (:func:`precis.pcb.session.apply_real_pin_offsets`, gripe 338983).
         Threading them here rather than at each view means ``view='drc'``,
         the ratsnest, the SVG previews and the place/route ops all measure
-        the same board the gerber writer exports."""
-        return pcb_session.build_ir(
+        the same board the gerber writer exports.
+
+        Persisted pin swaps ride along too (``pcb_pin_swaps`` — the route
+        job's settled ``PIN_SWAP`` decisions, written back per run). Until
+        ``op='route'`` fed ``pin_swap_groups`` (docs/backlog/
+        pcb-ewod-multitile.md ruling 6, 2026-09-19) no swap ever
+        persisted, so a view that skipped them measured the same board;
+        the first real swaps made DRC/gerber/ratsnest disagree with the
+        routed copper about which sink pin carries which electrode."""
+        ir = pcb_session.build_ir(
             graph,
             mounting_holes=pcb_session.mounting_holes_from_features(
                 self.store.pcb_features_list(ref_id)
@@ -1020,6 +1028,8 @@ class PcbHandler(Handler):
             footprints_by_lcsc=self.store.pcb_footprints_for(ref_id),
             local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
         )
+        pcb_session.apply_pin_swap_overrides(ir, self.store.pcb_pin_swaps_list(ref_id))
+        return ir
 
     def _furniture_clearance_mm(self, stackup: list[dict[str, Any]]) -> float | None:
         """The clearance :meth:`_board_furniture` hands to

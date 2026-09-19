@@ -1695,6 +1695,105 @@ def test_unconnected_pin_pad_is_not_invisible_to_the_router():
             )
 
 
+# ── per-net layer lock (Rulings 2026-09-19 item 7) ───────────────────────
+
+_2LAYER_STACKUP = [
+    {"name": "F.Cu", "role": "signal"},
+    {"name": "B.Cu", "role": "signal"},
+]
+
+
+def _escape_graph(net_class: str | None) -> dict[str, Any]:
+    """U1 (top-mounted, native F.Cu — like an EWOD electrode's own body)
+    carries an authored fixed-copper via bridging F.Cu/B.Cu right at its
+    own pad, the SAME shape a generator's plaza via/stub gives an
+    electrode net; U2 (bottom-mounted, native B.Cu — like a sink channel
+    pin) needs no such bridge. Unlocked, the router reaches U1 on its own
+    native F.Cu pad directly (the via is just extra, unused, copper);
+    locked to B.Cu, U1's native pad is no longer legal and the via's OWN
+    B.Cu landing substitutes for it (Rulings 2026-09-19 item 7's own
+    "the plaza via's B.Cu end is what the escape should attach to")."""
+    net: dict[str, Any] = {
+        "name": "ESC",
+        "members": [
+            {"refdes": "U1", "pin": "1"},
+            {"refdes": "U2", "pin": "1"},
+        ],
+    }
+    if net_class is not None:
+        net["net_class"] = net_class
+    return {
+        "instances": [
+            {"refdes": "U1", "x": 0.0, "y": 0.0},
+            {"refdes": "U2", "x": 5.0, "y": 0.0, "layer": "bottom"},
+        ],
+        "nets": [net],
+    }
+
+
+_ESCAPE_VIA_FIXED_COPPER = [
+    {
+        "ctype": "via",
+        "net": "ESC",
+        "x": 0.0,
+        "y": 0.0,
+        "span": ["F.Cu", "B.Cu"],
+        "dia_mm": 0.3,
+    }
+]
+
+
+def test_net_layer_lock_routes_single_layer_where_the_unlocked_net_would_not():
+    """A two-pin net locked (``pcb_net_classes.rules["layers"]``) to
+    ``["B.Cu"]`` on a 2-layer board routes entirely on B.Cu, no
+    ROUTER-added via — via the authored fixed-copper via's own B.Cu
+    landing substituting for U1's native (F.Cu, locked-out) pad. Unlocked,
+    the SAME geometry is free to reach U1 directly on its own native F.Cu
+    pad — a route the lock below must never produce (no track may touch
+    F.Cu once the class says ``["B.Cu"]``)."""
+    unlocked_ir = from_graph(_escape_graph(None), stackup=_2LAYER_STACKUP)
+    unlocked = realize(
+        unlocked_ir,
+        config=RealizeConfig(router="maze"),
+        fixed_copper=_ESCAPE_VIA_FIXED_COPPER,
+    )
+    assert unlocked.tracks, "sanity: this fixture must actually route"
+    assert not unlocked.unrouted
+
+    locked_ir = from_graph(_escape_graph("escape"), stackup=_2LAYER_STACKUP)
+    locked = realize(
+        locked_ir,
+        config=RealizeConfig(
+            router="maze", class_rules={"escape": {"layers": ["B.Cu"]}}
+        ),
+        fixed_copper=_ESCAPE_VIA_FIXED_COPPER,
+    )
+    assert locked.tracks, "the locked net must still route -- just on B.Cu"
+    assert not locked.unrouted
+    assert not locked.vias, "a single-layer lock needs no ROUTER-added via"
+    assert {t.layer for t in locked.tracks} == {1}  # B.Cu, the locked layer
+
+
+def test_net_layer_lock_to_a_layer_absent_from_the_stackup_fails_named():
+    """A class naming a layer this board's stackup doesn't carry fails
+    the net with the closed ``"layer_lock"`` kind, never silently
+    widening back to the full routable set."""
+    ir = from_graph(_escape_graph("escape"), stackup=_2LAYER_STACKUP)
+    result = realize(
+        ir,
+        config=RealizeConfig(
+            router="maze", class_rules={"escape": {"layers": ["In1.Cu"]}}
+        ),
+    )
+    assert not result.tracks
+    assert result.unrouted
+    reasons = {r.kind for r in result.unrouted_reasons}
+    assert reasons == {"layer_lock"}
+    assert any("In1.Cu" in r.message for r in result.unrouted_reasons), (
+        result.unrouted_reasons
+    )
+
+
 def test_stitched_via_group_stays_connected_to_its_own_trace():
     """docs/backlog/pcb-engine-plan.md "a stitched via group is not
     connected to its own trace": for ``n_vias > 1`` the group used to

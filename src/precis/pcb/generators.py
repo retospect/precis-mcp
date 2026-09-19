@@ -123,6 +123,15 @@ necessarily still-open spec questions):
   the override only changes that WARN threshold; the ERROR floor (fab
   ``jlc_min``) is untouched and still binds a ``gap`` an author sets below
   what the fab can actually make.
+- **Escape net-class layer lock — Rulings 2026-09-19 item 7.** A pin that
+  actually got a plaza via/stub is tagged ``f"ewod_{name}_escape"``
+  instead — the SAME ``clearance_mm`` floor, plus ``"layers": ["B.Cu"]``,
+  which :func:`precis.pcb.realize._net_class_layers` resolves into a hard
+  per-net routing constraint ("the escape is plaza via -> B.Cu track ->
+  sink pad, nothing else", closing gr347037's congestion race together
+  with the pin-swap feed below). A pin with no via (no adjacent plaza, or
+  a reserved slot) has no B.Cu track to lock and keeps the plain
+  electrode-gap class.
 - **Capability map — resolved round 5.** ``get(kind='pcb', view=
   'capability')`` (:meth:`precis.handlers.pcb.PcbHandler._render_capability`)
   renders this module's own ``ledger`` dict (unchanged shape) as either an
@@ -2248,6 +2257,19 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 "fixed": "both",
                 "pins": pin_decls,
                 "roles": ["ewod_sink"],
+                # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19"
+                # item 6: any electrode this sink drives may sit on any of
+                # its OWN channel pins (the chain order is firmware's
+                # problem, not this generator's) -- ONE admissible set of
+                # every channel pin this instance actually wired (not
+                # `sink_cfg.channel_pins` verbatim: a last, undersized
+                # share declares fewer pins than the part has, and a pin
+                # this instance never declared has no IR pin id to swap
+                # at all), no exclusions. `pcb_route` resolves this into a
+                # real `pinswap.PinSwapGroup` with footprint pad offsets;
+                # this generator only ever states the admissible-set
+                # judgment, never the geometry.
+                "pin_swap_groups": [list(channel_map)],
             }
             if sink_cfg.part:
                 comp["part"] = sink_cfg.part
@@ -2325,11 +2347,27 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     # spec wants -- this override changes the WARN threshold, never the
     # ERROR one.
     net_class = f"ewod_{name}"
+    gap_clearance_mm = max(0.0, sizing["gap"] - _GEOMETRY_ROUNDING_SLACK_MM)
+    # Rulings 2026-09-19 item 7 -- a SECOND class, next to the one above,
+    # for the nets that actually got a plaza via/stub (`ledger_pads[pin]`
+    # carries a `"via"` key ONLY when this pin's escape was usable --
+    # `_find_plaza_escape`/the reserve check above, both of which leave
+    # a pin with no via at all, never this class): "the escape is plaza
+    # via -> B.Cu track -> sink pad, nothing else" (ruling 7, verbatim) is
+    # a per-net LAYER LOCK, not merely a clearance floor, so it needs its
+    # own class -- a pin with no via has no B.Cu track to lock at all and
+    # stays on the plain electrode-gap class above. Carries the SAME
+    # `clearance_mm` (the electrode-to-electrode floor still applies to
+    # this net's own copper) plus `"layers": ["B.Cu"]`, resolved by
+    # `precis.pcb.realize._net_class_layers` into the router's per-net
+    # `maze.route(layers=...)` argument.
+    escape_class = f"ewod_{name}_escape"
     nets: list[dict[str, Any]] = []
     connections: list[dict[str, Any]] = []
     for pin in sorted(pin_positions):
         net_name = f"{name}_{pin}"
-        nets.append({"name": net_name, "net_class": net_class})
+        pin_class = escape_class if "via" in ledger_pads.get(pin, {}) else net_class
+        nets.append({"name": net_name, "net_class": pin_class})
         connections.append({"net": net_name, "refdes": name, "pin": pin})
 
     half_extent_x = cols * sizing["pitch"] / 2.0 + sizing["gap"]
@@ -2436,9 +2474,8 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         warnings=warnings,
         copper=copper,
         net_classes={
-            net_class: {
-                "clearance_mm": max(0.0, sizing["gap"] - _GEOMETRY_ROUNDING_SLACK_MM)
-            }
+            net_class: {"clearance_mm": gap_clearance_mm},
+            escape_class: {"clearance_mm": gap_clearance_mm, "layers": ["B.Cu"]},
         },
     )
 

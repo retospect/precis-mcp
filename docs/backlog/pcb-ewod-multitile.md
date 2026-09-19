@@ -624,6 +624,15 @@ web view) — four more, each a build item:**
    gr347037 congestion race disappears — each plaza via takes the nearest
    free ring pad, and the swap decisions persist through the existing
    `pcb_pin_swaps_replace_derived` path (already written back per run).
+   BUILT 2026-09-19 in tree — the generator emits `pin_swap_groups` on
+   every sink instance (all channel pins it actually wired; an unwired
+   spare pin has no IR pin id to swap and is never listed), carried on
+   `pcb_components.meta` (the column already existed, unused — no
+   migration needed) and accepted the same way on a hand-authored
+   component. `pcb_route._resolve_pin_swap_groups` resolves it into real
+   `PinSwapGroup`s each run, dropping a member whose rotation-CSR degree
+   doesn't match its group (a job-summary warning, never a failure). The
+   job summary now names how many swaps settled.
 7. **Fabric escapes are single-layer B.Cu, no crossovers.** The escape
    is plaza via → B.Cu track → sink pad, nothing else: a net class may
    name its allowed `layers` (`["B.Cu"]` for the `{name}_*` escape nets,
@@ -632,6 +641,21 @@ web view) — four more, each a build item:**
    instead of the global `signal_layers`. With ruling 6 the assignment
    exists that makes the B.Cu fan planar; a net that still cannot route
    single-layer fails visibly (`no_path`) rather than sprouting a via.
+   BUILT 2026-09-19 in tree — a pin whose plaza via/stub gives it real
+   B.Cu copper is tagged a NEW `{class}_escape` class (same clearance
+   floor as the electrode-gap class, plus `layers: ["B.Cu"]`); a pin with
+   no via stays on the plain class. `_realize_maze` resolves each net's
+   allowed layers once (`_net_class_layers`) and, per segment, substitutes
+   a real fixed-copper island terminal on the allowed layer for an
+   endpoint whose own native pad isn't on it (the plaza via's B.Cu
+   landing, for the electrode side) — never a fabricated point on bare
+   board; an end with no legal landing at all fails the segment. A net
+   locked to a layer absent from the stackup (or with no routable
+   intersection) fails whole with `UnroutedReason.kind == "layer_lock"`,
+   naming the class and the layer. Single-layer confinement is strictly
+   MORE restrictive than the old multi-layer routing, so the dogfood
+   fixture's realized-escape floor was recalibrated down (still ~half of
+   what seed=1 currently realizes, same margin convention as before).
 8. **Plaza slots: maximise clearance to foreign electrode copper, not
    ring uniformity.** Round 2 chose a uniform 8-slot ring because a
    uniform 3×3 square grid was unsatisfiable at the spec's numbers
@@ -679,6 +703,43 @@ web view) — four more, each a build item:**
    the same buffer powered from 3.3 V or drop it (the chain end is only
    needed for read-back). `ewod-dogfood-2` acceptance moves to
    "fully placed + fully routed (62/62 + the Teensy nets) on prod".
+
+**Rulings 6+7 measured on the faithful prod rebuild (2026-09-19, main
+loop; harness in memory `ewod-pcb-campaign-state.md`):** three more
+router defects surfaced and are fixed in the same tree — the swap
+evaluator matched footprint pads by raw `number` (a real HV507 names
+pins through `pin_map`, so every pin collapsed to the centroid and every
+swap scored 0 → `pinswap.offsets_from_ir` reads the IR's own mirrored,
+rotated pin points); every airwire's far end was its INSTANCE centroid
+(the whole array is one instance → all 54 airwires met at one point →
+`_instance_edges` now uses the far pin's real position) plus a closed-
+form cyclic-angular warm start (`propose_radial_assignment`); fixed
+plaza vias were claimed as one-shot core discs wider than the slot pitch
+so the last stamped overwrote its neighbours' rims (`no_path` "walled
+in" even routed alone → cores, then true discs, then centre cells); and
+`PcbHandler._build_ir` never applied persisted pin swaps (DRC/gerber
+disagreed with the routed copper the moment a swap actually settled).
+Result: 53 swaps settled; unlocked 38/62 realized (was 32); **locked to
+B.Cu 27–30/57 fabric nets**. The remainder is geometry, not the router:
+`ewod-dogfood-2` declares no `drive_voltage_v`, so `hv_separation`
+fell to the 0.09 mm fab floor and the plaza packs its 8 vias 0.54 mm
+apart, while the maze needs ~0.43 mm between a track centreline and a
+foreign via centre (0.15 clearance + 0.2 search dilation); the three
+same-side vias of a plaza pinch each other on the way to the west ring
+pads (watched cell by cell; capping clearance at the class's 0.099 did
+not change the count).
+
+**Two levers, Reto's call:** (1) declare the drive voltage / land
+ruling 3 — IPC-2221B B4 is 0.2 mm ≤250 V (plaza min pitch 1.68 mm,
+fits the 2.0 mm array) and 0.4 mm at 251–300 V (min pitch 2.23 mm, the
+array pitch must grow); (2) **radial B.Cu breakout stubs as fixed
+copper** (gr347037's "pre-solved breakout"): the generator emits, per
+plaza via, a ~1 mm B.Cu stub outward along its slot direction so the 8
+exits sit on a ~1.7 mm circle 1.3 mm apart and the router starts where
+there is room — recommended regardless of (1). Also seen: the sink's
+QFP pads at 0.8 mm pitch leave zero free rows between their clearance
+zones on B.Cu, so a pad is enterable only from its ends — fine for a
+radial fan, but the Teensy/shifter/I2C nets must not cross the ring.
 
 Also from the same review: the web view shows F.Cu tracks ending over
 bottom-side SMD pads (sink / U_TEMP) with no connection. That is the
