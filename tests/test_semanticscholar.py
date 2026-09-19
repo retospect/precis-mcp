@@ -465,3 +465,377 @@ def test_topic_search_cache_hit_rediffs_on_state_change(
     assert f"pa{rediff_id}" not in third.body
     assert "Rediff Target" not in third.body
     assert "Always Unrelated" in third.body
+
+
+# ---------------------------------------------------------------------------
+# Author-papers view (``author:<id>``) — default single page vs.
+# ``args={'complete': True}``'s full paginated walk (gr346833: the 50-work
+# cap silently hid a 190-citation JACS paper the corpus already held).
+# ---------------------------------------------------------------------------
+
+
+def _author_work(i: int, **over: object) -> dict:
+    base: dict = {
+        "title": f"Work {i}",
+        "year": 2000 + (i % 20),
+        "citationCount": i,
+        "paperId": f"p{i}",
+        "externalIds": {},
+    }
+    base.update(over)
+    return base
+
+
+def test_canonical_key_author_complete_gets_a_distinct_suffix(handler) -> None:
+    """``complete=True`` (threaded via ``_pending_complete``, mirroring
+    ``_pending_exclude``) folds into the canonical key so the walked
+    listing caches separately from the capped default page."""
+    handler._pending_complete = False
+    assert handler._canonical_key("author:1741101") == "author:1741101"
+    handler._pending_complete = True
+    try:
+        assert handler._canonical_key("author:1741101") == "author:1741101:complete"
+    finally:
+        handler._pending_complete = False
+
+
+def test_format_author_papers_table_sorts_truncates_and_maps_corpus() -> None:
+    from precis.handlers.semanticscholar import _format_author_papers_table
+
+    long_title = "A" * 90
+    papers = [
+        {"title": long_title, "year": 2001, "citationCount": 2, "paperId": "low"},
+        {
+            "title": "High cite work",
+            "year": 2010,
+            "citationCount": 190,
+            "paperId": "high",
+        },
+        {"title": "No cite count", "year": 2020, "paperId": "none"},
+    ]
+    flags = [("stub: pa5", 5), ("held: pa9", 9), ("NEW", None)]
+    table = _format_author_papers_table(papers, flags)
+    rows = table.splitlines()[2:]  # drop the header + separator rows
+
+    assert rows[0].split("|")[1].strip() == "2010"  # highest cites sorts first
+    assert "held pa9" in rows[0]
+    assert "—" in rows[-1]  # NEW (no citation count) sorts last
+
+    trunc_row = next(r for r in rows if "stub pa5" in r)
+    assert "…" in trunc_row
+    assert long_title not in trunc_row
+
+
+def test_fetch_author_papers_default_shows_exact_capped_hint(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """The default (no ``complete=``) page replaces the old vague
+    "capped at 50" with the exact line the gripe specifies, carrying
+    the API-reported total when available."""
+    papers = [_author_work(i) for i in range(50)]
+    monkeypatch.setattr(
+        s2handler, "_s2_get_json", lambda url, params: {"data": papers, "total": 120}
+    )
+    result = s2handler._fetch("author:1741101")
+    body = result.body_blocks[0].text
+    assert "showing 50 of 120 — args={'complete': True} for all" in body
+    assert result.meta["result_count"] == 50
+    assert result.meta["capped"] is True
+    assert result.meta["complete"] is False
+
+
+def test_fetch_author_papers_default_under_limit_has_no_capped_hint(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """An author with fewer than the page size has no "showing X of Y"
+    footer — the page already holds everything."""
+    papers = [_author_work(i) for i in range(3)]
+    monkeypatch.setattr(s2handler, "_s2_get_json", lambda url, params: {"data": papers})
+    result = s2handler._fetch("author:1741101")
+    body = result.body_blocks[0].text
+    assert "showing" not in body
+    assert result.meta["capped"] is False
+
+
+def test_fetch_author_papers_complete_walks_pages_ranks_and_flags_corpus(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """``complete=True`` walks BOTH pages of a 120-work author, renders
+    one ranked (citations desc) table, and resolves the corpus column
+    against real held/stub refs."""
+    held_id = _mk_paper_with_doi(
+        store, slug="author-held", doi="10.1234/author-held", held=True
+    )
+    stub_id = _mk_paper_with_doi(
+        store, slug="author-stub", doi="10.1234/author-stub", held=False
+    )
+
+    page1 = [_author_work(i) for i in range(100)]
+    page1[0] = _author_work(
+        0, citationCount=190, externalIds={"DOI": "10.1234/author-held"}
+    )
+    page1[1] = _author_work(
+        1, citationCount=5, externalIds={"DOI": "10.1234/author-stub"}
+    )
+    page2 = [_author_work(i) for i in range(100, 120)]
+
+    calls: list[dict] = []
+
+    def fake_backoff(url: str, params: dict) -> dict:
+        calls.append(dict(params))
+        offset = params["offset"]
+        if offset == 0:
+            return {"data": page1, "next": 100}
+        if offset == 100:
+            return {"data": page2}
+        raise AssertionError(f"unexpected offset {offset}")
+
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
+    result = s2handler._fetch("author:1741101:complete")
+    body = result.body_blocks[0].text
+
+    assert len(calls) == 2
+    assert "120 works (complete)" in body
+    assert result.meta["result_count"] == 120
+    assert result.meta["complete"] is True
+
+    lines = body.splitlines()
+    table_start = lines.index("| year | cites | corpus | title | s2 id |")
+    first_row = lines[table_start + 2]
+    assert "190" in first_row and f"held pa{held_id}" in first_row
+    assert f"stub pa{stub_id}" in body
+
+
+def test_fetch_author_papers_complete_caps_title_fallback_at_200(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """300 identifier-less works in complete mode: only the first 200
+    actually pay a title-similarity lookup; the rest render ``?`` in the
+    corpus column with a footnote explaining why (reviewer finding 4 on
+    83c0abca)."""
+
+    def _idless_work(i: int) -> dict:
+        return {
+            "title": f"Untitled Work Number {i}",
+            "year": 2000 + (i % 20),
+            "citationCount": i,
+            "paperId": f"q{i}",
+            "externalIds": {},
+        }
+
+    pages = [[_idless_work(i) for i in range(n, n + 100)] for n in (0, 100, 200)]
+
+    def fake_backoff(url: str, params: dict) -> dict:
+        offset = params["offset"]
+        idx = offset // 100
+        result: dict = {"data": pages[idx]}
+        if idx + 1 < len(pages):
+            result["next"] = offset + 100
+        return result
+
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
+
+    lookups: list[str] = []
+
+    def fake_title_lookup(
+        *, kind: str, q: str, limit: int, min_similarity: float
+    ) -> list:
+        lookups.append(q)
+        return []
+
+    monkeypatch.setattr(store, "find_refs_by_title_similarity", fake_title_lookup)
+
+    result = s2handler._fetch("author:1741101:complete")
+    body = result.body_blocks[0].text
+
+    assert len(lookups) == 200
+    assert result.meta["result_count"] == 300
+    assert body.count("| ? |") == 100
+    assert "not resolvable by id" in body
+    assert "capped at 200" in body
+
+
+def test_fetch_author_papers_complete_stops_at_hard_cap(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """A tail that never exhausts stops at the hard cap, with an exact
+    "stopped at N" note rather than fetching forever."""
+    monkeypatch.setattr("precis.handlers.semanticscholar._AUTHOR_COMPLETE_HARD_CAP", 5)
+
+    def fake_backoff(url: str, params: dict) -> dict:
+        offset = params["offset"]
+        return {
+            "data": [_author_work(offset + j) for j in range(3)],
+            "next": offset + 3,
+        }
+
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
+    result = s2handler._fetch("author:1741101:complete")
+    assert result.meta["result_count"] == 5
+    assert result.meta["stopped_at_cap"] is True
+    assert "stopped at 5 works" in result.body_blocks[0].text
+
+
+def test_fetch_author_papers_complete_exact_cap_with_no_next_has_no_more_remain(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """Landing exactly on the hard cap on a page that ALSO reports no
+    further ``next`` is a normal exhaustion, not a truncation — no
+    "more remain" note (reviewer finding 1 on 83c0abca)."""
+    monkeypatch.setattr("precis.handlers.semanticscholar._AUTHOR_COMPLETE_HARD_CAP", 6)
+
+    def fake_backoff(url: str, params: dict) -> dict:
+        offset = params["offset"]
+        if offset == 0:
+            return {"data": [_author_work(i) for i in range(3)], "next": 3}
+        # Final page lands exactly on the cap (3 + 3 == 6) with no next.
+        return {"data": [_author_work(i) for i in range(3, 6)]}
+
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
+    result = s2handler._fetch("author:1741101:complete")
+    body = result.body_blocks[0].text
+    assert result.meta["result_count"] == 6
+    assert result.meta["stopped_at_cap"] is False
+    assert "more remain" not in body
+    assert "stopped at" not in body
+
+
+def test_walk_author_papers_dedupes_a_replayed_page(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """A page replayed verbatim (same ``paperId``s, at an advancing
+    offset) contributes zero new rows, doesn't count toward the cap, and
+    ends the walk instead of looping forever (reviewer finding 2)."""
+    page1 = [_author_work(i) for i in range(5)]
+    calls = {"n": 0}
+
+    def fake_backoff(url: str, params: dict) -> dict:
+        calls["n"] += 1
+        offset = params["offset"]
+        if offset == 0:
+            return {"data": page1, "next": 5}
+        # Page 2 replays page 1's exact paperIds at a new (advancing)
+        # offset — every row is a duplicate.
+        return {"data": page1, "next": 10}
+
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
+    result = s2handler._fetch("author:1741101:complete")
+    body = result.body_blocks[0].text
+    assert calls["n"] == 2  # walk stops right after the all-duplicate page
+    assert result.meta["result_count"] == 5  # no duplicate rows counted
+    assert result.meta["stopped_at_cap"] is False
+    assert "stopped at" not in body
+
+
+def test_walk_author_papers_stops_on_non_advancing_offset(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch, caplog
+) -> None:
+    """A ``next`` that doesn't advance past the offset just fetched (a
+    malformed/buggy API response) logs one warning and stops the walk
+    rather than looping forever re-requesting the same page (reviewer
+    finding 2)."""
+
+    def fake_backoff(url: str, params: dict) -> dict:
+        offset = params["offset"]
+        # `next` never advances past 0 no matter what offset was asked.
+        return {"data": [_author_work(offset)], "next": 0}
+
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
+    with caplog.at_level("WARNING", logger="precis.handlers.semanticscholar"):
+        result = s2handler._fetch("author:1741101:complete")
+    assert result.meta["result_count"] == 1
+    assert any("non-advancing offset" in r.message for r in caplog.records)
+
+
+def test_walk_author_papers_backoff_retries_a_429_mid_walk(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """A 429 hit on the SECOND page (mid-walk) is retried with
+    exponential backoff instead of aborting the whole walk."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("precis.handlers.semanticscholar.time.sleep", sleeps.append)
+
+    class _FakeResp:
+        def __init__(self, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = "rate limited" if status_code == 429 else ""
+
+        def json(self) -> dict:
+            assert self._payload is not None
+            return self._payload
+
+    calls = {"n": 0}
+
+    def fake_raw(url: str, params: dict) -> _FakeResp:
+        calls["n"] += 1
+        offset = params["offset"]
+        if offset == 0:
+            return _FakeResp(200, {"data": [_author_work(0)], "next": 1})
+        # Page 2: first attempt 429s, the retry succeeds and exhausts.
+        if calls["n"] == 2:
+            return _FakeResp(429)
+        return _FakeResp(200, {"data": [_author_work(1)]})
+
+    monkeypatch.setattr(s2handler, "_s2_raw_get", fake_raw)
+    result = s2handler._fetch("author:1741101:complete")
+
+    assert calls["n"] == 3
+    assert sleeps == [1.0]
+    assert result.meta["result_count"] == 2
+
+
+def test_s2_get_json_backoff_raises_after_5_consecutive_429s(
+    s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """5 consecutive 429s exhaust the retry budget: 4 sleeps (between
+    attempts 1-4 and 2-5), then an ``Upstream`` with the exact
+    "retries exhausted" message — the previous trailing raise for this
+    was unreachable (reviewer finding 3 on 83c0abca)."""
+    from precis.errors import Upstream
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("precis.handlers.semanticscholar.time.sleep", sleeps.append)
+
+    class _FakeResp:
+        status_code = 429
+        text = "rate limited"
+
+        def json(self) -> dict:
+            raise AssertionError("a 429 must never be JSON-parsed")
+
+    monkeypatch.setattr(s2handler, "_s2_raw_get", lambda url, params: _FakeResp())
+
+    with pytest.raises(Upstream, match="retries exhausted"):
+        s2handler._s2_get_json_backoff("http://example/author/x/papers", {})
+
+    assert sleeps == [1.0, 2.0, 4.0, 8.0]
+
+
+def test_get_complete_kwarg_threads_to_a_distinct_cache_row(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """``get(..., complete=True)`` — the python-kwarg landing spot for
+    ``args={'complete': True}`` (dispatch.py flattens ``args=`` into top-
+    level kwargs against the handler's own explicit signature) — caches
+    under a key distinct from the default page, so each fetch path runs
+    exactly once even when both are called for the same author."""
+    calls = {"default": 0, "complete": 0}
+
+    def fake_default(url: str, params: dict) -> dict:
+        calls["default"] += 1
+        return {"data": [_author_work(0)], "total": 1}
+
+    def fake_complete(url: str, params: dict) -> dict:
+        calls["complete"] += 1
+        return {"data": [_author_work(1, citationCount=9)]}
+
+    monkeypatch.setattr(s2handler, "_s2_get_json", fake_default)
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_complete)
+
+    default_resp = s2handler.get(id="author:9999999")
+    complete_resp = s2handler.get(id="author:9999999", complete=True)
+
+    assert calls == {"default": 1, "complete": 1}
+    assert "1 works (complete)" in complete_resp.body
+    assert default_resp.body != complete_resp.body

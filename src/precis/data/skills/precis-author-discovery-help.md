@@ -44,10 +44,22 @@ get(kind="orcid", id="0000-0002-1825-0097", args={"enqueue": 20})
 #    out-of-band. Read what landed, score the frontier, expand.
 search(kind="paper", q="your topic")
 
-# 4. Widen the frontier with the author's top S2 papers (each row's
-#    DOI feeds another put(kind='paper', doi=...) / authors: hop).
+# 4. Widen the frontier with the author's works — a compact table
+#    (year/cites/corpus/title/s2-id, ranked by citations), capped at
+#    the top 50 by default. args={'complete': True} instead walks S2's
+#    full paginated list (up to 2000) — use it before concluding an
+#    author has "no work on X": the capped default has hidden a
+#    highly-cited paper before (gr346833).
 get(kind="semanticscholar", id="author:1741101")
+get(kind="semanticscholar", id="author:1741101", args={"complete": True})
 ```
+
+The ``corpus`` column on that table is ``held pa…`` (a body chunk is on
+file) / ``stub pa…`` (the ref exists but has no body yet) / ``—`` (not
+in the corpus at all) — each row's DOI/title resolved against the held
+corpus the same way a topic search's ``held:``/``stub:``/``NEW`` flags
+are, so a promising work never needs a separate lookup to tell whether
+it's worth a ``put(kind='paper', doi=...)``.
 
 ## Frontier scoring
 

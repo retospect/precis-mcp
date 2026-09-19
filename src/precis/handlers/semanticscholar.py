@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.errors import BadInput, Upstream
@@ -114,10 +115,42 @@ _S2_AUTHOR_BASE = "https://api.semanticscholar.org/graph/v1/author"
 _PAPER_AUTHORS_FIELDS = "name,externalIds,hIndex,affiliations"
 
 #: Fields for ``/author/{id}/papers`` — the outbound BFS frontier.
-_AUTHOR_PAPERS_FIELDS = "title,year,externalIds,venue,citationCount,authors.name"
+#: ``paperId`` backs the compact table's ``s2 id`` column.
+_AUTHOR_PAPERS_FIELDS = (
+    "title,year,externalIds,venue,citationCount,authors.name,paperId"
+)
 
-#: Page size for an author's paper list.
+#: Page size for an author's default (non-``complete``) paper list.
 _AUTHOR_PAPERS_LIMIT = 50
+
+#: Suffix appended to an ``author:<id>`` canonical key when
+#: ``args={'complete': True}`` — gives the walked listing its own cache
+#: row, distinct from the capped default page (gr346833).
+_AUTHOR_COMPLETE_SUFFIX = ":complete"
+
+#: Page size for the ``complete=True`` offset/limit walk — S2's own max.
+_AUTHOR_COMPLETE_PAGE_LIMIT = 100
+
+#: Hard stop on a ``complete=True`` walk regardless of how many works
+#: the author actually has — one ``get()`` must never turn into an
+#: unbounded fetch.
+_AUTHOR_COMPLETE_HARD_CAP = 2000
+
+#: Retry budget for a 429 hit mid-``complete=True`` walk (exponential
+#: backoff: 1s, 2s, 4s, 8s between the 5 attempts).
+_AUTHOR_BACKOFF_ATTEMPTS = 5
+_AUTHOR_BACKOFF_BASE_S = 1.0
+
+#: Title truncation for the compact author-papers table (gr346833).
+_AUTHOR_TITLE_TRUNCATE = 70
+
+#: In ``complete=True`` mode, cap on actual title-similarity fallback
+#: lookups :meth:`SemanticScholarHandler._corpus_flags_bulk` will run —
+#: up to 2000 works, mostly identifier-less, would otherwise fire up to
+#: 2000 serial trigram queries. Works past the cap render ``?`` in the
+#: table's corpus column instead of a false ``NEW``. The default
+#: (≤50-work) path is uncapped — unchanged from before this review.
+_AUTHOR_COMPLETE_TITLE_FALLBACK_CAP = 200
 
 #: Bare-arXiv-id shape (new-style ``2401.00001`` with optional ``vN``).
 #: Used to auto-prefix a path id when the caller passes a naked id.
@@ -153,6 +186,13 @@ class SemanticScholarHandler(CacheBackedHandler):
     #: through to ``_render`` without changing the base class's contract.
     _pending_exclude: list[str] | None = None
 
+    #: Set for the duration of one ``get()`` call — mirrors
+    #: ``_pending_exclude`` above. Read by :meth:`_canonical_key` (only
+    #: reachable on the ``author:`` nav prefix) to fold ``complete=True``
+    #: into a distinct cache key, so a ``complete=True`` walk never reads
+    #: back a stale capped-at-50 row (or vice versa).
+    _pending_complete: bool = False
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="semanticscholar",
         title="Semantic Scholar paper search",
@@ -171,8 +211,10 @@ class SemanticScholarHandler(CacheBackedHandler):
             "author graph: id='authors:<paper-id>' lists that paper's "
             "authors (each with their ORCID — the key into kind='orcid' — "
             "h-index, affiliations, senior author flagged), "
-            "id='author:<authorId>' that author's top papers. One chunk "
-            "per row after the base-class auto-chunker splits it."
+            "id='author:<authorId>' that author's works as one compact "
+            "table (year/cites/corpus/title/s2-id, ranked by citations, "
+            "capped at 50 by default — args={'complete': True} walks the "
+            "full paginated list, up to 2000, instead)."
         ),
         supports_get=True,
         supports_search=True,
@@ -229,6 +271,8 @@ class SemanticScholarHandler(CacheBackedHandler):
                         f"semanticscholar {prefix} needs {needs}",
                         next=f"get(kind='semanticscholar', id='{example}')",
                     )
+                if mode == "author" and self._pending_complete:
+                    ident = f"{ident}{_AUTHOR_COMPLETE_SUFFIX}"
                 return f"{prefix}{ident}"
         return low
 
@@ -296,6 +340,7 @@ class SemanticScholarHandler(CacheBackedHandler):
         refresh: bool = False,
         no_fetch: bool = False,
         literal: bool = False,
+        complete: bool = False,
         **_kw: Any,
     ) -> Response:
         """Like the base ``get()``, plus ``exclude=`` for a plain topic
@@ -303,10 +348,15 @@ class SemanticScholarHandler(CacheBackedHandler):
         ``dr…`` whole draft, ``dc…`` draft-chunk subtree — see
         :func:`precis.handlers._exclude_closure.resolve_exclude_paper_ids`).
         Meaningless (silently ignored) on the ``refs:``/``cites:``/
-        ``authors:``/``author:`` graph-walk modes, which carry no
-        per-paper corpus-diff render to filter.
+        ``authors:`` graph-walk modes, which carry no per-paper corpus-diff
+        render to filter.
+
+        ``complete=True`` (``args={'complete': True}``) is ``author:``-only
+        (gr346833): instead of the default capped 50-work page, walks the
+        S2 API's full offset/limit pagination — see :meth:`_fetch_author_papers`.
         """
         self._pending_exclude = exclude
+        self._pending_complete = complete
         try:
             return super().get(
                 id=id,
@@ -323,6 +373,7 @@ class SemanticScholarHandler(CacheBackedHandler):
             )
         finally:
             self._pending_exclude = None
+            self._pending_complete = False
 
     def _render(self, ref: Ref, cache: CacheEntry, *, hit: bool) -> Response:
         """Corpus-diff render for a plain topic-search ref; everything
@@ -396,7 +447,10 @@ class SemanticScholarHandler(CacheBackedHandler):
         return Response(body="\n".join(lines), cost=self._cost_str(cache, hit=hit))
 
     def _corpus_flags_bulk(
-        self, papers: list[dict[str, Any]]
+        self,
+        papers: list[dict[str, Any]],
+        *,
+        title_fallback_cap: int | None = None,
     ) -> list[tuple[str, int | None]]:
         """Diff every fetched S2 hit against the held corpus — DOI → arXiv
         id → normalized title (the order docs/backlog/
@@ -410,14 +464,23 @@ class SemanticScholarHandler(CacheBackedHandler):
            hit's DOI/arXiv id at once.
         2. A per-hit trigram title query ONLY for hits an identifier
            didn't resolve (the fallback tier — rare, since S2 hits mostly
-           carry a DOI or arXiv id).
+           carry a DOI or arXiv id). ``title_fallback_cap`` bounds how many
+           of THESE per-hit queries actually run — needed by the
+           ``author:``/``complete=True`` walk (gr346833 follow-up), where
+           ``len(papers)`` can run to 2000 and an uncapped fallback would
+           fire up to 2000 serial trigram queries. Candidates beyond the
+           cap are left unresolved (flagged ``'UNRESOLVED'`` below) rather
+           than silently skipped as ``'NEW'`` — ``'NEW'`` means "checked,
+           not found"; these were never checked.
         3. ONE bulk :meth:`Store.fetch_refs_by_ids` over every distinct
            matched ``ref_id`` to read back ``pdf_sha256`` (held vs. stub).
 
         Returns one ``(flag, matched_ref_id)`` pair per input paper, same
-        order — ``flag`` is ``'NEW'`` or ``'held: pa…'`` / ``'stub: pa…'``;
-        ``matched_ref_id`` is ``None`` on ``'NEW'``, else the paper's
-        ``ref_id`` (what ``exclude=`` closure ids compare against).
+        order — ``flag`` is ``'NEW'`` / ``'UNRESOLVED'`` (title-fallback
+        budget exhausted before this candidate) or ``'held: pa…'`` /
+        ``'stub: pa…'``; ``matched_ref_id`` is ``None`` except on the
+        ``held``/``stub`` states, where it's the paper's ``ref_id`` (what
+        ``exclude=`` closure ids compare against).
         """
 
         def _doi_arxiv(p: dict[str, Any]) -> tuple[str, str]:
@@ -442,13 +505,23 @@ class SemanticScholarHandler(CacheBackedHandler):
 
         # Fallback tier: only the hits an identifier left unresolved pay a
         # (per-hit, unavoidable — trigram similarity has no bulk form here)
-        # title query.
+        # title query — capped at ``title_fallback_cap`` actual lookups
+        # when set; candidates past the cap land in ``unresolved_idx``.
+        unresolved_idx: set[int] = set()
+        title_lookups_done = 0
         for i, p in enumerate(papers):
             if matched_ref_ids[i] is not None:
                 continue
             title = str(p.get("title") or "").strip()
             if not title:
                 continue
+            if (
+                title_fallback_cap is not None
+                and title_lookups_done >= title_fallback_cap
+            ):
+                unresolved_idx.add(i)
+                continue
+            title_lookups_done += 1
             title_hits = self.store.find_refs_by_title_similarity(
                 kind="paper", q=title, limit=1, min_similarity=_TITLE_MATCH_FLOOR
             )
@@ -459,7 +532,10 @@ class SemanticScholarHandler(CacheBackedHandler):
         refs_map = self.store.fetch_refs_by_ids(list(unique_ids)) if unique_ids else {}
 
         flags: list[tuple[str, int | None]] = []
-        for rid in matched_ref_ids:
+        for i, rid in enumerate(matched_ref_ids):
+            if i in unresolved_idx:
+                flags.append(("UNRESOLVED", None))
+                continue
             matched = refs_map.get(rid) if rid is not None else None
             if matched is None:  # NEW, or vanished between resolve + fetch
                 flags.append(("NEW", None))
@@ -522,13 +598,35 @@ class SemanticScholarHandler(CacheBackedHandler):
         )
 
     def _fetch_author_papers(self, key: str, ident: str) -> FetchResult:
-        """List an author's top papers — the BFS frontier."""
-        author_id = ident.strip()
+        """List an author's works — the BFS frontier — as one compact,
+        citation-ranked table with a per-row corpus status.
+
+        Default: the same single S2 page as before (≤``_AUTHOR_PAPERS_LIMIT``
+        works), just re-rendered as the table. ``args={'complete': True}``
+        (``ident`` carrying the ``:complete`` suffix minted by
+        :meth:`_canonical_key`) instead WALKS the S2 API's full offset/
+        limit pagination via :meth:`_walk_author_papers` — this is what
+        surfaced a 190-citation JACS paper the 50-work cap silently hid
+        from an author search (gr346833).
+        """
+        complete = ident.endswith(_AUTHOR_COMPLETE_SUFFIX)
+        author_id = (
+            ident[: -len(_AUTHOR_COMPLETE_SUFFIX)] if complete else ident
+        ).strip()
         url = f"{_S2_AUTHOR_BASE}/{author_id}/papers"
-        data = self._s2_get_json(
-            url, {"fields": _AUTHOR_PAPERS_FIELDS, "limit": _AUTHOR_PAPERS_LIMIT}
-        )
-        papers = data.get("data") or []
+
+        stopped_at_cap = False
+        total_hint: int | None = None
+        if complete:
+            papers, stopped_at_cap = self._walk_author_papers(url)
+        else:
+            data = self._s2_get_json(
+                url, {"fields": _AUTHOR_PAPERS_FIELDS, "limit": _AUTHOR_PAPERS_LIMIT}
+            )
+            papers = data.get("data") or []
+            reported = data.get("total")
+            total_hint = reported if isinstance(reported, int) else None
+
         if not papers:
             text = f"No papers found for author {author_id} on Semantic Scholar."
             return FetchResult(
@@ -540,32 +638,149 @@ class SemanticScholarHandler(CacheBackedHandler):
                     "nav": "author",
                     "author": author_id,
                     "result_count": 0,
+                    "complete": complete,
                 },
             )
-        blocks = [
-            ChunkInsert(ord=i, text=_format_paper(p)) for i, p in enumerate(papers)
-        ]
-        capped = len(papers) >= _AUTHOR_PAPERS_LIMIT
-        suffix = f" ({len(papers)} shown" + (", capped" if capped else "") + ")"
+
+        n = len(papers)
+        capped = (not complete) and n >= _AUTHOR_PAPERS_LIMIT
+        if complete:
+            flags = self._corpus_flags_bulk(
+                papers, title_fallback_cap=_AUTHOR_COMPLETE_TITLE_FALLBACK_CAP
+            )
+        else:
+            flags = self._corpus_flags_bulk(papers)
+        table = _format_author_papers_table(papers, flags)
+        has_unresolved = any(flag == "UNRESOLVED" for flag, _rid in flags)
+
+        if complete:
+            note = f"_{n} works (complete)._"
+            if stopped_at_cap:
+                note += (
+                    f" _stopped at {_AUTHOR_COMPLETE_HARD_CAP} works — more remain._"
+                )
+            if has_unresolved:
+                note += (
+                    " _? = not resolvable by id; title fallback capped at "
+                    f"{_AUTHOR_COMPLETE_TITLE_FALLBACK_CAP}._"
+                )
+            title = f"S2 papers by author {author_id} — {n} works (complete)"
+        elif capped:
+            n_of = str(total_hint) if total_hint is not None else f"{n}+"
+            note = f"showing {n} of {n_of} — args={{'complete': True}} for all"
+            title = f"S2 papers by author {author_id} ({n} shown)"
+        else:
+            note = f"_{n} works._"
+            title = f"S2 papers by author {author_id} ({n} shown)"
+
+        body_text = f"{note}\n\n{table}"
         return FetchResult(
-            title=f"S2 papers by author {author_id}{suffix}",
-            body_blocks=blocks,
+            title=title,
+            body_blocks=[ChunkInsert(ord=0, text=body_text)],
             cost_usd=None,
             meta={
                 "key": key,
                 "nav": "author",
                 "author": author_id,
-                "result_count": len(papers),
+                "result_count": n,
+                "complete": complete,
                 "capped": capped,
+                "stopped_at_cap": stopped_at_cap,
             },
         )
 
-    @staticmethod
-    def _s2_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Issue one S2 Graph GET and return parsed JSON (or raise).
+    def _walk_author_papers(self, url: str) -> tuple[list[dict[str, Any]], bool]:
+        """Walk every page of an author's works via S2's offset/limit
+        pagination (``_AUTHOR_COMPLETE_PAGE_LIMIT`` per call), following
+        ``next`` until the API reports exhaustion (no ``next`` key) or
+        ``_AUTHOR_COMPLETE_HARD_CAP`` works have been collected — an
+        author with a very long tail must never turn one ``get()`` into
+        an unbounded fetch. A 429 mid-walk is retried with exponential
+        backoff (:meth:`_s2_get_json_backoff`) rather than aborting the
+        whole walk.
 
-        Shared by the search and citation-graph paths so the
-        rate-limit / auth / transport handling lives in one place.
+        Dedupes by ``paperId`` across pages (a repeat/replayed page must
+        not double-count toward the hard cap or the render) and bails out
+        — logging one warning, not raising — if the API ever reports a
+        ``next`` that doesn't advance past the offset just fetched, which
+        would otherwise loop forever re-requesting the same page.
+
+        Returns ``(papers, stopped_at_cap)`` — ``stopped_at_cap`` is True
+        only when the hard cap was hit AND the API says more remain (a
+        ``next``-less final page landing exactly on the cap is a normal
+        exhaustion, not a truncation).
+        """
+        papers: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        offset = 0
+        while True:
+            data = self._s2_get_json_backoff(
+                url,
+                {
+                    "fields": _AUTHOR_PAPERS_FIELDS,
+                    "limit": _AUTHOR_COMPLETE_PAGE_LIMIT,
+                    "offset": offset,
+                },
+            )
+            page = data.get("data") or []
+            if not page:
+                break
+            new_count = 0
+            for work in page:
+                paper_id = work.get("paperId")
+                if paper_id and paper_id in seen_ids:
+                    continue  # duplicate (replayed page) — never re-counted
+                if paper_id:
+                    seen_ids.add(paper_id)
+                papers.append(work)
+                new_count += 1
+            nxt = data.get("next")
+            if len(papers) >= _AUTHOR_COMPLETE_HARD_CAP:
+                return papers[:_AUTHOR_COMPLETE_HARD_CAP], nxt is not None
+            if new_count == 0:
+                # Every work on this page was already seen — a replayed
+                # duplicate page. Nothing more to gain from continuing.
+                break
+            if nxt is None:
+                break
+            if nxt <= offset:
+                log.warning("S2 returned a non-advancing offset at %s; stopped", nxt)
+                break
+            offset = nxt
+        return papers, False
+
+    def _s2_get_json_backoff(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Like :meth:`_s2_get_json`, but retries an HTTP 429 with
+        exponential backoff (:data:`_AUTHOR_BACKOFF_BASE_S` doubling,
+        :data:`_AUTHOR_BACKOFF_ATTEMPTS` attempts) instead of raising
+        immediately — the 5th (last) consecutive 429 raises rather than
+        sleeping again, with a "retries exhausted" message distinct from
+        :meth:`_s2_parse_response`'s generic 429 message.
+
+        Only the ``complete=True`` author walk uses this — it makes
+        several sequential calls and is far likelier to cross the public
+        tier's ~1 req/s ceiling than the other (single-call) fetch paths,
+        which keep the immediate-raise behaviour of :meth:`_s2_get_json`.
+        """
+        last_attempt = _AUTHOR_BACKOFF_ATTEMPTS - 1
+        for attempt in range(_AUTHOR_BACKOFF_ATTEMPTS):
+            resp = self._s2_raw_get(url, params)
+            if resp.status_code == 429:
+                if attempt == last_attempt:
+                    raise Upstream(
+                        "Semantic Scholar rate-limited (HTTP 429): retries exhausted"
+                    )
+                time.sleep(_AUTHOR_BACKOFF_BASE_S * (2**attempt))
+                continue
+            return self._s2_parse_response(resp)
+        raise AssertionError("unreachable")  # loop always returns/raises above
+
+    @staticmethod
+    def _s2_raw_get(url: str, params: dict[str, Any]) -> Any:
+        """Issue one GET against the S2 Graph API and return the raw
+        ``httpx.Response`` — no status/JSON handling. Shared by
+        :meth:`_s2_get_json` (single-shot, raises immediately on 429) and
+        :meth:`_s2_get_json_backoff` (retrying multi-page walk).
         """
         httpx = require_httpx()
         from precis.secrets import get_secret
@@ -576,10 +791,13 @@ class SemanticScholarHandler(CacheBackedHandler):
             headers["x-api-key"] = api_key
         try:
             with http_client(timeout=30.0, headers=headers) as client:
-                resp = client.get(url, params=params)
+                return client.get(url, params=params)
         except httpx.HTTPError as exc:
             raise Upstream(f"Semantic Scholar transport error: {exc}") from exc
 
+    @staticmethod
+    def _s2_parse_response(resp: Any) -> dict[str, Any]:
+        """Status-check + JSON-parse a raw S2 response (or raise)."""
         if resp.status_code == 429:
             raise Upstream(
                 "Semantic Scholar rate-limited (HTTP 429); the public tier "
@@ -605,6 +823,16 @@ class SemanticScholarHandler(CacheBackedHandler):
             return resp.json()
         except Exception as exc:
             raise Upstream(f"Semantic Scholar returned non-JSON: {exc}") from exc
+
+    @staticmethod
+    def _s2_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Issue one S2 Graph GET and return parsed JSON (or raise).
+
+        Shared by the search and citation-graph paths so the
+        rate-limit / auth / transport handling lives in one place.
+        """
+        resp = SemanticScholarHandler._s2_raw_get(url, params)
+        return SemanticScholarHandler._s2_parse_response(resp)
 
     def _fetch_search(self, key: str) -> FetchResult:
         # Over-fetch (``_S2_FETCH_LIMIT`` ~30) vs. what actually renders
@@ -785,6 +1013,42 @@ def _format_paper_with_flag(p: dict[str, Any], flag: str) -> str:
     heading, _sep, rest = base.partition("\n")
     body = f"{heading}\n_Corpus:_ {flag}"
     return f"{body}\n{rest}" if rest else body
+
+
+def _format_author_papers_table(
+    papers: list[dict[str, Any]], flags: list[tuple[str, int | None]]
+) -> str:
+    """Render an author's works as one markdown table — columns
+    ``year · cites · corpus · title (truncated) · s2 id`` — rows sorted
+    by citation count descending (unknown counts sort last). ``flags`` is
+    :meth:`SemanticScholarHandler._corpus_flags_bulk`'s per-paper output,
+    same order as ``papers``; the ``NEW``/``UNRESOLVED``/``held: pa…``/
+    ``stub: pa…`` spelling collapses to this table's ``—``/``?``/
+    ``held pa…``/``stub pa…`` (gr346833)."""
+
+    def _cites_key(pf: tuple[dict[str, Any], tuple[str, int | None]]) -> int:
+        cites = pf[0].get("citationCount")
+        return int(cites) if isinstance(cites, int | float) else -1
+
+    ranked = sorted(zip(papers, flags, strict=True), key=_cites_key, reverse=True)
+    lines = ["| year | cites | corpus | title | s2 id |", "|---|---|---|---|---|"]
+    for p, (flag, _rid) in ranked:
+        year = p.get("year")
+        year_s = str(year) if year is not None else "?"
+        cites = p.get("citationCount")
+        cites_s = str(cites) if cites is not None else "?"
+        if flag == "NEW":
+            corpus = "—"
+        elif flag == "UNRESOLVED":
+            corpus = "?"
+        else:
+            corpus = flag.replace(": ", " ", 1)
+        title = (p.get("title") or "(untitled)").strip().replace("|", "/")
+        if len(title) > _AUTHOR_TITLE_TRUNCATE:
+            title = title[: _AUTHOR_TITLE_TRUNCATE - 1].rstrip() + "…"
+        s2_id = str(p.get("paperId") or "")
+        lines.append(f"| {year_s} | {cites_s} | {corpus} | {title} | {s2_id} |")
+    return "\n".join(lines)
 
 
 __all__ = ["SemanticScholarHandler"]
