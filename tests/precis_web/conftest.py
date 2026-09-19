@@ -788,6 +788,28 @@ class FakeStore(_FakeStoreBase):
             pool = {**self.deleted_refs, **pool}
         return {i: pool[i] for i in ids if i in pool}
 
+    def get_paper_authors(self, ref_id):
+        """``paper_authors`` row projection off the fake's ``ref.authors``
+        jsonb — this fake has no real table, so it reprojects on every
+        call via the same :func:`~precis.utils.authors.author_row_from_entry`
+        the real store's migration/insert path uses. Good enough for the
+        Meta panel author-table route tests (docs/backlog/
+        precis.utils.authors module docstring); real DB-backed behaviour (verified_at,
+        person_ref_id, the human-source guard) is covered in
+        ``tests/test_paper_authors.py``."""
+        from precis.utils.authors import author_row_from_entry
+
+        ref = next((r for r in self.papers if r.id == ref_id), None)
+        entries = getattr(ref, "authors", None) or [] if ref is not None else []
+        rows = []
+        for i, entry in enumerate(entries, start=1):
+            row = author_row_from_entry(entry, i, source="pdf")
+            if row is not None:
+                row.setdefault("person_ref_id", None)
+                row.setdefault("verified_at", None)
+                rows.append(row)
+        return rows
+
     def restore_ref(self, ref_id, *, conn=None) -> bool:
         """Undelete: move a ref out of the deleted pool back into live view.
         Returns whether a soft-deleted ref was restored (idempotent no-op

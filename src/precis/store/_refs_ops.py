@@ -52,6 +52,7 @@ from precis.store._stub_predicate import (
 from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
+from precis.utils.authors import author_row_from_entry, entry_from_author_row
 
 #: A live prose citation of a finding hub (gr265228's audit predicate):
 #: ``ord >= 0`` excludes synthesized card variants (``chunks_check``
@@ -104,6 +105,153 @@ def _refuse_if_finding_cited(conn: Connection, ref_id: int) -> None:
             "retry delete(kind='finding', id=" + str(ref_id) + ")"
         ),
     )
+
+
+#: ``paper_authors`` column list, in the order every SELECT/row-dict in
+#: this module uses — keep :func:`_paper_author_row_to_dict` in sync.
+_PAPER_AUTHOR_COLS = (
+    "ref_id, position, given, middle, family, name_raw, orcid, "
+    "openalex_author_id, person_ref_id, source, verified_at, updated_at"
+)
+
+
+def _paper_author_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+    """One ``paper_authors`` row (``_PAPER_AUTHOR_COLS`` order) → dict."""
+    return {
+        "ref_id": int(row[0]),
+        "position": int(row[1]),
+        "given": row[2],
+        "middle": row[3],
+        "family": row[4],
+        "name_raw": row[5],
+        "orcid": row[6],
+        "openalex_author_id": row[7],
+        "person_ref_id": int(row[8]) if row[8] is not None else None,
+        "source": row[9],
+        "verified_at": row[10],
+        "updated_at": row[11],
+    }
+
+
+def _fetch_paper_author_rows(conn: Connection, ref_id: int) -> list[dict[str, Any]]:
+    """This paper's ``paper_authors`` rows, ordered by byline position."""
+    rows = conn.execute(
+        f"SELECT {_PAPER_AUTHOR_COLS} FROM paper_authors "
+        "WHERE ref_id = %s ORDER BY position",
+        (ref_id,),
+    ).fetchall()
+    return [_paper_author_row_to_dict(r) for r in rows]
+
+
+def _write_authors_projection(
+    conn: Connection, ref_id: int, rows: list[dict[str, Any]]
+) -> None:
+    """Regenerate ``refs.authors`` jsonb from *rows* (the table is truth)."""
+    projection = [entry_from_author_row(r) for r in rows]
+    conn.execute(
+        "UPDATE refs SET authors = %s::jsonb, updated_at = now() WHERE ref_id = %s",
+        (Jsonb(projection), ref_id),
+    )
+
+
+def project_paper_authors(
+    conn: Connection, ref_id: int, authors: Any, *, source: str
+) -> list[dict[str, Any]]:
+    """The one write choke point for a paper's byline table + jsonb
+    projection (precis.utils.authors module docstring): DELETE+INSERT
+    ``paper_authors`` from *authors* (any ``refs.authors``-shaped input —
+    a list of dict/str entries, or a semicolon-packed string, same
+    tolerance as :func:`~precis.utils.authors.normalize_authors`), then
+    regenerate ``refs.authors`` jsonb from the rows just written and log
+    a ``ref_events`` ``authors_set`` row.
+
+    Standalone (bare ``Connection``, no ``Store``) so
+    :mod:`precis.ingest.db_writer`'s raw ``INSERT INTO refs`` cascade —
+    which deliberately keeps Store mixins out of its loop — can call it
+    right after its own insert. :meth:`RefsMixin.set_paper_authors` is
+    the Store-method wrapper every other caller uses; it does the
+    ``kind='paper'`` gate before delegating here, so this function itself
+    trusts the caller to only invoke it for a paper.
+
+    **Human guard**: if the paper already carries any ``source='human'``
+    row and *source* is not itself ``'human'``, this is a no-op — returns
+    the existing rows untouched (a byline a human corrected survives
+    every later tier's re-resolution). ``cite_key``/``ref_identifiers``
+    are never touched.
+
+    Caller owns the transaction (no commit here).
+    """
+    existing = _fetch_paper_author_rows(conn, ref_id)
+    if source != "human" and any(r["source"] == "human" for r in existing):
+        # The caller (``update_paper_fields``) may already have written
+        # the rejected byline into ``refs.authors``; re-project from the
+        # human rows so table and jsonb never drift.
+        _write_authors_projection(conn, ref_id, existing)
+        return existing
+
+    if isinstance(authors, str):
+        raw_entries: list[Any] = [p.strip() for p in authors.split(";") if p.strip()]
+    elif isinstance(authors, list):
+        raw_entries = authors
+    else:
+        raw_entries = []
+
+    rows: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        row = author_row_from_entry(entry, len(rows) + 1, source=source)
+        if row is not None:
+            rows.append(row)
+
+    conn.execute("DELETE FROM paper_authors WHERE ref_id = %s", (ref_id,))
+    for row in rows:
+        person_ref_id: int | None = None
+        if row["orcid"]:
+            p = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key' AND id_value = %s",
+                (f"orcid:{row['orcid']}",),
+            ).fetchone()
+            person_ref_id = int(p[0]) if p is not None else None
+        conn.execute(
+            "INSERT INTO paper_authors "
+            "(ref_id, position, given, middle, family, name_raw, orcid, "
+            " openalex_author_id, person_ref_id, source) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                ref_id,
+                row["position"],
+                row["given"],
+                row["middle"],
+                row["family"],
+                row["name_raw"],
+                row["orcid"],
+                row["openalex_author_id"],
+                person_ref_id,
+                row["source"],
+            ),
+        )
+
+    final_rows = _fetch_paper_author_rows(conn, ref_id)
+    _write_authors_projection(conn, ref_id, final_rows)
+    conn.execute(
+        "INSERT INTO ref_events (ref_id, source, event, payload) "
+        "VALUES (%s, %s, %s, %s::jsonb)",
+        (
+            ref_id,
+            source,
+            "authors_set",
+            Jsonb({"source": source, "n": len(final_rows)}),
+        ),
+    )
+    return final_rows
+
+
+def _default_author_source(source: str) -> str:
+    """``update_paper_fields``'s ``paper_authors.source`` default when the
+    caller doesn't pass ``authors_source`` explicitly: the human-facing
+    edit doors map to ``'human'``, every programmatic writer to
+    ``'pdf'``."""
+    return "human" if source in ("web-edit", "mcp-edit", "edit") else "pdf"
 
 
 class RefsMixin:
@@ -163,6 +311,7 @@ class RefsMixin:
         parent_id: int | None = None,
         prio: int | None = None,
         owner_login: str | None = None,
+        authors_source: str | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Insert a ref. Slug rules: slug kinds (paper/book/oracle/conv/
@@ -172,7 +321,13 @@ class RefsMixin:
 
         ``authors``/``year`` are first-class ``refs`` columns; pass them
         here so bibtex/RIS/EndNote renderers see them — stashing in
-        ``meta`` instead leaves the columns NULL.
+        ``meta`` instead leaves the columns NULL. For ``kind='paper'``
+        with a non-empty ``authors``, this also projects onto the
+        ``paper_authors`` table via :meth:`set_paper_authors`
+        (``authors_source`` defaults to ``'pdf'``) — the returned
+        ``Ref.authors`` is therefore the table's regenerated projection,
+        not necessarily the literal input. Non-paper kinds keep
+        ``authors`` jsonb-only.
 
         ``owner_login`` (migration 0164) is the FK to ``web_users.login``
         for kinds that are inherently per-user (first consumer:
@@ -274,8 +429,13 @@ class RefsMixin:
                     "  )",
                     ("cite_key", slug, ref_id, provider),
                 )
+            if kind == "paper" and authors:
+                self.set_paper_authors(
+                    ref_id, authors, source=authors_source or "pdf", conn=c
+                )
             # Re-fetch the row with the full _REFS_COLS projection so
-            # the returned ``Ref`` carries the slug we just wrote.
+            # the returned ``Ref`` carries the slug we just wrote (and
+            # the paper_authors projection, if just written).
             fresh = c.execute(
                 f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s",
                 (ref_id,),
@@ -1252,6 +1412,7 @@ class RefsMixin:
         authors: list[dict[str, str]] | None = None,
         meta_patch: dict[str, Any] | None = None,
         source: str = "web-edit",
+        authors_source: str | None = None,
         conn: Connection | None = None,
     ) -> Ref:
         """Patch a paper's first-class metadata columns + merge ``meta``.
@@ -1265,7 +1426,19 @@ class RefsMixin:
         Unlike :meth:`update_ref` (title+meta only), this is the sole
         write path for ``year``/``authors``, otherwise set only at
         ingest. Logs a ``metadata_edited`` ref_event with the changed
-        keys for ``view='log'`` auditability."""
+        keys for ``view='log'`` auditability.
+
+        When ``authors`` is not ``None`` and the ref is ``kind='paper'``,
+        this also projects the byline onto ``paper_authors`` via
+        :meth:`set_paper_authors` — ``authors_source`` picks the tier
+        (``AUTHOR_SOURCES``); left ``None``, it derives from *source*
+        (:func:`_default_author_source`: the ``web-edit``/``mcp-edit``/
+        ``edit`` human-facing doors → ``'human'``, everything else →
+        ``'pdf'``). The projection re-regenerates ``refs.authors`` from
+        the table, so the returned ``Ref.authors`` reflects that
+        canonical form, not necessarily the literal input. A
+        ``kind='draft'`` (or any non-paper) write stays jsonb-only — no
+        ``paper_authors`` rows."""
         changed: list[str] = []
         if title is not None:
             changed.append("title")
@@ -1307,6 +1480,19 @@ class RefsMixin:
                 "VALUES (%s, %s, %s, %s::jsonb)",
                 (ref_id, source, "metadata_edited", Jsonb({"changed": changed})),
             )
+            if authors is not None:
+                self.set_paper_authors(
+                    ref_id,
+                    authors,
+                    source=authors_source or _default_author_source(source),
+                    conn=c,
+                )
+                # Re-fetch: set_paper_authors may have rewritten
+                # refs.authors to the table's regenerated projection.
+                row = c.execute(
+                    f"SELECT {_REFS_COLS} FROM refs WHERE ref_id = %s", (ref_id,)
+                ).fetchone()
+                assert row is not None
             return row
 
         if conn is not None:
@@ -1315,6 +1501,115 @@ class RefsMixin:
             with self.pool.connection() as c:
                 row = _do(c)
         return _row_to_ref(row)
+
+    def set_paper_authors(
+        self,
+        ref_id: int,
+        authors: Any,
+        *,
+        source: str,
+        conn: Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """The one write choke point for a paper's byline
+        (precis.utils.authors module docstring) — every ``authors``
+        writer (``update_paper_fields``, ``insert_ref``,
+        ``ingest/db_writer.py``'s raw insert) routes through this (or its
+        bare-``Connection`` twin, :func:`project_paper_authors`, when no
+        ``Store`` is in scope).
+
+        No-ops (returns ``[]``) when the ref isn't a live ``kind='paper'``
+        — non-paper kinds (draft/patent/datasheet/...) keep ``authors``
+        jsonb-only, as scoped. Otherwise DELETE+INSERTs ``paper_authors``
+        from *authors* (any ``refs.authors``-shaped input — see
+        :func:`~precis.utils.authors.normalize_authors`'s tolerance),
+        regenerates ``refs.authors`` jsonb from the rows just written,
+        and logs a ``ref_events`` ``authors_set`` row.
+
+        **Human guard**: a paper already carrying any ``source='human'``
+        row is left untouched by a subsequent non-human write (returns
+        the existing rows) — a human correction survives every later
+        tier's re-resolution. ``cite_key``/``ref_identifiers`` are never
+        touched.
+        """
+
+        def _do(c: Connection) -> list[dict[str, Any]]:
+            kind_row = c.execute(
+                "SELECT kind FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            if kind_row is None or kind_row[0] != "paper":
+                return []
+            return project_paper_authors(c, ref_id, authors, source=source)
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def get_paper_authors(
+        self, ref_id: int, *, conn: Connection | None = None
+    ) -> list[dict[str, Any]]:
+        """This paper's ``paper_authors`` rows, ordered by byline
+        position — every column, as a dict per row (see
+        :func:`_paper_author_row_to_dict`)."""
+        if conn is not None:
+            return _fetch_paper_author_rows(conn, ref_id)
+        with self.pool.connection() as c:
+            return _fetch_paper_author_rows(c, ref_id)
+
+    def verify_paper_author(
+        self,
+        ref_id: int,
+        position: int,
+        *,
+        given: str | None = None,
+        middle: str | None = None,
+        family: str | None = None,
+        source: str | None = None,
+        conn: Connection | None = None,
+    ) -> None:
+        """Stamp an ORCID cross-check verification on one ``paper_authors``
+        row (precis.utils.authors module docstring).
+
+        Always sets ``verified_at``/``updated_at`` to ``now()``. The name
+        fields (``given``/``middle``/``family``) and ``source`` are applied
+        only when passed non-``None`` — :mod:`precis.workers.orcid_enrich`
+        calls this with all three + ``source='orcid'`` for a non-human row
+        (the ORCID record's name overwrites the byline) and with none of
+        them for a ``source='human'`` row (verified, names untouched — a
+        human correction survives the cross-check). Regenerates
+        ``refs.authors`` afterwards via :func:`_write_authors_projection` so
+        the table and jsonb never drift (``health_checks.paper_authors_drift``
+        stays 0). Never touches ``cite_key``/``ref_identifiers``.
+        """
+
+        def _do(c: Connection) -> None:
+            sets = ["verified_at = now()", "updated_at = now()"]
+            params: list[Any] = []
+            if given is not None:
+                sets.append("given = %s")
+                params.append(given)
+            if middle is not None:
+                sets.append("middle = %s")
+                params.append(middle)
+            if family is not None:
+                sets.append("family = %s")
+                params.append(family)
+            if source is not None:
+                sets.append("source = %s")
+                params.append(source)
+            params.extend([ref_id, position])
+            c.execute(
+                f"UPDATE paper_authors SET {', '.join(sets)} "
+                "WHERE ref_id = %s AND position = %s",
+                params,
+            )
+            _write_authors_projection(c, ref_id, _fetch_paper_author_rows(c, ref_id))
+
+        if conn is not None:
+            _do(conn)
+            return
+        with self.pool.connection() as c:
+            _do(c)
 
     def set_retraction_status(
         self,
@@ -2381,36 +2676,57 @@ class RefsMixin:
         exclude_ref_ids: list[int] | None = None,
     ) -> list[int]:
         """Paper-level author lookup — ``search(kind='paper', author=…)``.
-        Matches the structured ``refs.authors`` jsonb byline (source of
-        truth) rather than the diluted combined card the block path uses
-        (which surfaces other papers' bibliography lines instead). A name
-        matches by substring or ``pg_trgm`` fuzzy hit; a paper scores on
-        its best-matching author. Held papers sort first, then by
-        similarity. Returns ``ref_id`` in rank order."""
+
+        S1 (precis.utils.authors module docstring): matches the
+        ``paper_authors`` table (source of truth) rather than the
+        ``refs.authors`` jsonb S0 patched over as an interim fix. Three
+        forms per author row: ``full_name`` (the generated "Given M.
+        Family" column the migration's trigram index is built on; empty
+        parts collapsed, so no double space when middle is ''), the reversed ``"family, given"`` form (a "Miller, T."
+        query still hits a ``{given,family}`` row), and ``name_raw`` (the
+        unsplit fallback for a ``{"name"}``-only / legacy row). A name
+        matches by substring or ``pg_trgm`` fuzzy hit (threshold 0.35)
+        against any of the three. ``lower(family) = lower(q)`` exact
+        ranks a paper first within its held/unheld bucket, ahead of a
+        merely-fuzzy hit; held papers (``pdf_sha256 IS NOT NULL``) sort
+        before unheld regardless. Returns ``ref_id`` in rank order."""
+        fullname = "pa.full_name"
+        rev = "concat_ws(', ', pa.family, pa.given)"
         clauses = [
             "r.retired_at IS NULL",
             # Defensive superseded-duplicate exclusion (see
             # find_papers_by_title).
             "NOT (r.meta ? 'superseded_by')",
             "r.kind = %s",
-            "r.authors IS NOT NULL",
-            "jsonb_typeof(r.authors) = 'array'",
-            "(ae.elem->>'name' ILIKE '%%' || %s || '%%' "
-            "OR similarity(ae.elem->>'name', %s) >= 0.35)",
+            (
+                "(lower(pa.family) = lower(%s) "
+                f"OR {fullname} ILIKE '%%' || %s || '%%' "
+                f"OR similarity({fullname}, %s) >= 0.35 "
+                f"OR {rev} ILIKE '%%' || %s || '%%' "
+                f"OR similarity({rev}, %s) >= 0.35 "
+                "OR pa.name_raw ILIKE '%%' || %s || '%%' "
+                "OR similarity(pa.name_raw, %s) >= 0.35)"
+            ),
         ]
-        # %s order: sim-in-SELECT, kind, ILIKE-q, sim-in-WHERE, exclude, limit.
-        params: list[Any] = [q, kind, q, q]
+        # %s order: sim-in-SELECT (exact-family, fullname, rev, name_raw),
+        # kind, exact-family, ILIKE-fullname, sim-fullname, ILIKE-rev,
+        # sim-rev, ILIKE-name_raw, sim-name_raw, [exclude], limit.
+        params: list[Any] = [q, q, q, q, kind, q, q, q, q, q, q, q]
         if exclude_ref_ids:
             clauses.append("r.ref_id <> ALL(%s)")
             params.append(list(exclude_ref_ids))
         params.append(limit)
         sql = (
-            "SELECT r.ref_id, max(similarity(ae.elem->>'name', %s)) AS sim "
+            "SELECT r.ref_id, "
+            "bool_or(lower(pa.family) = lower(%s)) AS exact, "
+            f"max(greatest(similarity({fullname}, %s), "
+            f"similarity({rev}, %s), similarity(pa.name_raw, %s))) AS sim "
             "FROM refs r "
-            "CROSS JOIN LATERAL jsonb_array_elements(r.authors) ae(elem) "
+            "JOIN paper_authors pa ON pa.ref_id = r.ref_id "
             f"WHERE {' AND '.join(clauses)} "
             "GROUP BY r.ref_id, r.pdf_sha256 "
-            "ORDER BY (r.pdf_sha256 IS NOT NULL) DESC, sim DESC, r.ref_id ASC "
+            "ORDER BY (r.pdf_sha256 IS NOT NULL) DESC, exact DESC, "
+            "         sim DESC, r.ref_id ASC "
             "LIMIT %s"
         )
         with self.pool.connection() as conn:

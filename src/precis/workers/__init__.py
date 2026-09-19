@@ -29,8 +29,9 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
   ``refs`` (``classify``, ``bib_parse``, ``bib_mark``, ``chase``, ``fetch``,
   ``hub_refine``, ``nursery``, ``sweeper``, ``heartbeat``,
   ``corpus_reconcile``, ``paper_reconcile``, ``paper_meta_enrich``,
-  ``openalex_enrich``, ``stub_rank``, ``paper_rank``, ``llm_summarize``,
-  ``backlog_groom``, ``diagnose_scan``, ``news_poll``, ``briefing``, … —
+  ``openalex_enrich``, ``orcid_enrich``, ``stub_rank``, ``paper_rank``,
+  ``llm_summarize``, ``backlog_groom``, ``diagnose_scan``, ``news_poll``,
+  ``briefing``, … —
   roster: ``registry.py``; ``news_poll``/``briefing`` dedup, backoff and
   delivery detail: ``docs/runbooks/news-ops.md``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`). The
@@ -166,6 +167,12 @@ Notable pass mechanics
   (abstract fill + card rebuild), and ``paper_meta_enrich`` (Crossref/
   OpenAlex author/entry_type/retraction re-resolve) each self-throttle via
   an ``app_state`` marker + a single-runner advisory lock.
+* ``orcid_enrich`` (tiers: :mod:`precis.utils.authors` docstring) — background
+  ORCID identity tier: fetches unvisited ``kind='orcid'`` stub nodes,
+  links held works, cross-checks each authored edge's paper DOI against
+  the fresh record and verifies/overwrites the matching ``paper_authors``
+  row. Self-throttles via an ``app_state`` marker only (no advisory lock —
+  its ``meta.fetched_at IS NULL`` claim predicate already converges).
 * ``stub_rank`` — own docstring for the four-step S2-enrich/embed/rank/
   LLM-band pipeline; writes ``refs.prio`` (1=hottest..10=coldest), which
   ``fetch``'s claim query and the ``stubs``/``chase-queue`` backlog views

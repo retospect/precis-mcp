@@ -105,6 +105,39 @@ paper's short card can lose on rank to content-dense bodies elsewhere; a
 bare author `q='Vaswani'` tends to surface *other* papers' reference-list
 lines. The byline lookup sidesteps both.
 
+## See a paper's full byline with identity links
+## Get ORCID / OpenAlex / Google Scholar links for a paper's authors
+## Fix a wrong or missing author, and record the fix as verified
+
+```python
+get(kind="paper", id="pa40", view="authors")  # position, source, links, verified tick
+edit(kind="paper", id="pa40", authors=["Goldsmith, Bryan R. [0000-0002-1825-0097]", "Zywucka, N."])
+```
+
+`view='authors'` renders one row per byline position: the display name,
+the tier that wrote it, a `✓ verified <date>` mark once ORCID has
+cross-checked the row, and up to three links — ORCID (`orcid.org/<iD>`
+plus the `oi<id>` node handle when a `kind='orcid'` identity node is
+linked), OpenAlex (`openalex.org/<A…>`), and a Google Scholar name
+search (links-only — Scholar has no API and isn't scraped). A
+paper-level Scholar lookup (DOI-keyed when a DOI is on file, else
+title) follows the table.
+
+**Tier ladder** (each write only ever raises the paper toward a more
+authoritative source, never displaces a `human` row): `orcid` (ORCID's
+own record) > `crossref`/`openalex`/`s2` (publisher/index metadata) >
+`pdf`/`legacy` (scraped from the PDF or pre-1NF backfill) — but `human`
+(a manual `edit`) always wins over every later tier's re-resolution,
+regardless of where it sits on this ladder.
+
+`edit(kind='paper', authors=[…])` accepts the same tolerant name shapes
+`author=` search does, **plus** an optional bracketed ORCID iD per line
+— the row grammar `Family, Given Middle [0000-0002-1825-0097]` (the
+bracket is optional; an invalid iD is dropped silently and the name is
+kept). This always writes `source='human'` and stamps the paper's
+`human_verified_at` sign-off — a manual byline correction *is* the
+review that stamp records.
+
 ## Find a paper that mentions an exact term
 ## Grep papers for a unique token (compound, DOI, exact string)
 ## Where does any paper mention this specific string?
@@ -192,8 +225,9 @@ web reader's Semantic/Keyword sidebar reads the same data); fall back to
 the keyword column where a gloss hasn't been written yet.
 
 Views: `abstract`, `toc`, `summaries`, `bibtex` (`cite/bib`), `ris`
-(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`. The `view=`
-kwarg and `slug/<view>` path are equivalent (except for DOIs — see above).
+(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`. The
+`view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
+above).
 
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper

@@ -6,12 +6,21 @@ citation generation, provenance report and bib generation all now share.
 
 from __future__ import annotations
 
+import pytest
+
 from precis.utils.authors import (
     author_display,
+    author_line,
+    author_links,
     author_names,
+    author_row_from_entry,
     build_byline,
+    entry_from_author_row,
     is_junk_author_name,
     normalize_authors,
+    normalize_orcid,
+    paper_scholar_link,
+    split_middle,
     to_author_dicts,
     to_name_dicts,
 )
@@ -304,3 +313,268 @@ class TestNormalizeAuthors:
         crossref_style = normalize_authors([{"family": "Smith", "given": "John"}])
         s2_style = normalize_authors([{"name": "John Smith"}])
         assert author_names(crossref_style) == author_names(s2_style) == ["John Smith"]
+
+
+class TestSplitMiddle:
+    """``paper_authors.middle`` derivation — the rule decided 2026-09-18."""
+
+    def test_trailing_initials_peel_off(self) -> None:
+        assert split_middle("Bryan R.") == ("Bryan", "R.")
+        assert split_middle("John T. J.") == ("John", "T. J.")
+        assert split_middle("Mary A") == ("Mary", "A")
+
+    def test_leading_initial_is_a_first_name(self) -> None:
+        assert split_middle("J. Robert") == ("J. Robert", "")
+        # the first token is never consumed, so "K. S." keeps K. as given
+        assert split_middle("K. S.") == ("K.", "S.")
+
+    def test_multi_word_given_and_hyphenated_initials_stay(self) -> None:
+        assert split_middle("Mary Anne") == ("Mary Anne", "")
+        assert split_middle("A.-K.") == ("A.-K.", "")
+        assert split_middle("Ronggang") == ("Ronggang", "")
+
+    def test_empty_never_none(self) -> None:
+        assert split_middle("") == ("", "")
+        assert split_middle(None) == ("", "")  # type: ignore[arg-type]
+
+
+class TestNormalizeOrcid:
+    def test_strips_url_and_validates(self) -> None:
+        assert (
+            normalize_orcid("https://orcid.org/0000-0002-1825-0097")
+            == "0000-0002-1825-0097"
+        )
+        assert normalize_orcid("0000-0002-1825-009x") == "0000-0002-1825-009X"
+
+    def test_rejects_garbage(self) -> None:
+        assert normalize_orcid("") is None
+        assert normalize_orcid(None) is None
+        assert normalize_orcid("junk") is None
+        assert normalize_orcid("0000-0002-1825") is None
+
+
+class TestAuthorRowMapping:
+    """jsonb element ↔ ``paper_authors`` row, both directions."""
+
+    def test_canonical_entry_splits_middle_and_carries_orcid(self) -> None:
+        e = {
+            "given": "Bryan R.",
+            "family": "Goldsmith",
+            "orcid": "https://orcid.org/0000-0002-1825-0097",
+        }
+        row = author_row_from_entry(e, 2, source="crossref")
+        assert row == {
+            "position": 2,
+            "given": "Bryan",
+            "middle": "R.",
+            "family": "Goldsmith",
+            "name_raw": "Bryan R. Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+            "openalex_author_id": None,
+            "source": "crossref",
+        }
+        # projection back re-absorbs middle into given (CSL shape)
+        assert entry_from_author_row(row) == {
+            "given": "Bryan R.",
+            "family": "Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+        }
+
+    def test_single_comma_name_splits(self) -> None:
+        row = author_row_from_entry({"name": "Zywucka, N."}, 1, source="legacy")
+        assert row is not None
+        assert (row["given"], row["middle"], row["family"]) == ("N.", "", "Zywucka")
+        assert row["name_raw"] == "Zywucka, N."
+        assert entry_from_author_row(row) == {"given": "N.", "family": "Zywucka"}
+
+    def test_ambiguous_name_keeps_name_raw_only(self) -> None:
+        row = author_row_from_entry({"name": "A.K. Geim"}, 1, source="pdf")
+        assert row is not None
+        assert (row["given"], row["middle"], row["family"]) == ("", "", "")
+        assert row["name_raw"] == "A.K. Geim"  # the received string, untouched
+        # the projection renders the tidied {name} shape
+        assert entry_from_author_row(row) == {"name": "A. K. Geim"}
+
+    def test_junk_gets_no_row(self) -> None:
+        assert author_row_from_entry("REFERENCES", 1, source="pdf") is None
+        assert author_row_from_entry({"name": ""}, 1, source="pdf") is None
+
+    def test_openalex_author_id_rides_along(self) -> None:
+        e = {"given": "Jane", "family": "Smith", "openalex_author_id": "A123"}
+        row = author_row_from_entry(e, 1, source="openalex")
+        assert row is not None
+        assert row["openalex_author_id"] == "A123"
+        assert entry_from_author_row(row)["openalex_author_id"] == "A123"
+
+    def test_unknown_source_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown author source"):
+            author_row_from_entry({"name": "Jane Smith"}, 1, source="magic")
+
+    def test_round_trip_matches_normalize_authors(self) -> None:
+        """Acceptance (S1): projecting a row back yields exactly what
+        ``normalize_authors`` would have stored for the same entry."""
+        fixtures: list[object] = [
+            {"given": "Bryan R.", "family": "Goldsmith"},
+            {"name": "Zywucka, N."},
+            {"name": "Christoph Dellago"},
+            "Smith, Jane",
+            {"family": "Aristotle"},
+            {"name": "A.K. Geim"},
+        ]
+        for e in fixtures:
+            row = author_row_from_entry(e, 1, source="legacy")
+            assert row is not None
+            assert entry_from_author_row(row) == normalize_authors([e])[0], e
+
+    def test_row_shape_entry_reabsorbs_middle(self) -> None:
+        """S1's own row shape (given/middle/family as separate keys, as
+        an ``edit(authors=[...])`` caller could pass) round-trips through
+        the same given+middle merge / split as a plain string does — the
+        ``middle`` key is not silently dropped."""
+        e = {
+            "given": "Bryan",
+            "middle": "R.",
+            "family": "Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+            "openalex_author_id": "A123",
+        }
+        row = author_row_from_entry(e, 1, source="human")
+        assert row is not None
+        assert (row["given"], row["middle"], row["family"]) == (
+            "Bryan",
+            "R.",
+            "Goldsmith",
+        )
+        assert row["orcid"] == "0000-0002-1825-0097"
+        assert row["openalex_author_id"] == "A123"
+        assert row["name_raw"] == "Bryan R. Goldsmith"
+
+
+class TestOrcidBracketParsing:
+    """Web textarea grammar: a trailing bracketed ORCID iD on a name
+    string is stripped and carried as ``orcid`` (docs/backlog S4)."""
+
+    def test_bracketed_orcid_stripped_and_carried(self) -> None:
+        row = author_row_from_entry(
+            "Goldsmith, Bryan R. [0000-0002-1825-0097]", 1, source="human"
+        )
+        assert row is not None
+        assert (row["given"], row["middle"], row["family"]) == (
+            "Bryan",
+            "R.",
+            "Goldsmith",
+        )
+        assert row["orcid"] == "0000-0002-1825-0097"
+
+    def test_bracketed_full_orcid_url_accepted(self) -> None:
+        row = author_row_from_entry(
+            "Goldsmith, Bryan R. [https://orcid.org/0000-0002-1825-0097]",
+            1,
+            source="human",
+        )
+        assert row is not None
+        assert row["orcid"] == "0000-0002-1825-0097"
+
+    def test_invalid_bracket_dropped_silently_name_kept(self) -> None:
+        row = author_row_from_entry(
+            "Goldsmith, Bryan R. [not-an-orcid]", 1, source="human"
+        )
+        assert row is not None
+        assert row["orcid"] is None
+        assert (row["given"], row["middle"], row["family"]) == (
+            "Bryan",
+            "R.",
+            "Goldsmith",
+        )
+
+    def test_name_shape_dict_also_accepts_bracket(self) -> None:
+        entry = normalize_authors(["Zywucka, N. [0000-0002-1825-0097]"])[0]
+        assert entry == {
+            "given": "N.",
+            "family": "Zywucka",
+            "orcid": "0000-0002-1825-0097",
+        }
+
+    def test_ambiguous_natural_string_with_bracket_keeps_name_shape(self) -> None:
+        # No comma → stays ``{"name"}``, same ambiguity rule as always;
+        # the bracket is still stripped and carried.
+        assert normalize_authors(["Christoph Dellago [0000-0002-1825-0097]"]) == [
+            {"name": "Christoph Dellago", "orcid": "0000-0002-1825-0097"}
+        ]
+
+
+class TestAuthorLinks:
+    def test_all_three_link_kinds(self) -> None:
+        row = {
+            "given": "Bryan",
+            "middle": "R.",
+            "family": "Goldsmith",
+            "name_raw": "Bryan R. Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+            "openalex_author_id": "A123",
+        }
+        links = author_links(row)
+        assert links["orcid"] == "https://orcid.org/0000-0002-1825-0097"
+        assert links["openalex"] == "https://openalex.org/A123"
+        assert links["scholar"] == (
+            "https://scholar.google.com/scholar?q=%22Bryan%20R.%20Goldsmith%22"
+        )
+
+    def test_missing_identity_links_absent(self) -> None:
+        row = {"given": "N.", "family": "Zywucka", "name_raw": "Zywucka, N."}
+        links = author_links(row)
+        assert "orcid" not in links
+        assert "openalex" not in links
+        assert links["scholar"].startswith("https://scholar.google.com/scholar?q=")
+
+    def test_unsplit_row_falls_back_to_name_raw(self) -> None:
+        row = {"given": "", "middle": "", "family": "", "name_raw": "Aabid Hamid"}
+        links = author_links(row)
+        assert links["scholar"] == (
+            "https://scholar.google.com/scholar?q=%22Aabid%20Hamid%22"
+        )
+
+
+class TestPaperScholarLink:
+    def test_doi_preferred(self) -> None:
+        assert paper_scholar_link("10.1/xyz", "Some Title") == (
+            "https://scholar.google.com/scholar_lookup?doi=10.1%2Fxyz"
+        )
+
+    def test_title_fallback(self) -> None:
+        assert paper_scholar_link(None, "Some Title") == (
+            "https://scholar.google.com/scholar?q=Some%20Title"
+        )
+
+    def test_neither_is_none(self) -> None:
+        assert paper_scholar_link(None, None) is None
+        assert paper_scholar_link("", "") is None
+
+
+class TestAuthorLine:
+    def test_round_trips_bracketed_orcid(self) -> None:
+        row = {
+            "given": "Bryan",
+            "middle": "R.",
+            "family": "Goldsmith",
+            "name_raw": "Bryan R. Goldsmith",
+            "orcid": "0000-0002-1825-0097",
+        }
+        line = author_line(row)
+        assert line == "Goldsmith, Bryan R. [0000-0002-1825-0097]"
+        row2 = author_row_from_entry(line, 1, source="human")
+        assert row2 is not None
+        assert (row2["given"], row2["middle"], row2["family"], row2["orcid"]) == (
+            "Bryan",
+            "R.",
+            "Goldsmith",
+            "0000-0002-1825-0097",
+        )
+
+    def test_no_orcid_no_bracket(self) -> None:
+        row = {"given": "N.", "middle": "", "family": "Zywucka", "orcid": None}
+        assert author_line(row) == "Zywucka, N."
+
+    def test_unsplit_row_renders_name_raw(self) -> None:
+        row = {"given": "", "middle": "", "family": "", "name_raw": "Aabid Hamid"}
+        assert author_line(row) == "Aabid Hamid"

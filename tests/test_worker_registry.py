@@ -65,6 +65,7 @@ _EXPECTED_SYSTEM = frozenset(
         "paper_reconcile",
         "openalex_enrich",
         "paper_meta_enrich",
+        "orcid_enrich",
         "stub_rank",
         "disk_check",
     }

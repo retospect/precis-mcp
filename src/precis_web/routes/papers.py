@@ -50,7 +50,12 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
 from precis.identity import normalize_doi
 from precis.store.types import BibEntry
-from precis.utils.authors import author_names
+from precis.utils.authors import (
+    author_line,
+    author_links,
+    author_names,
+    paper_scholar_link,
+)
 from precis.utils.embed_query import embed_query
 from precis.utils.handle_registry import format_handle
 from precis.utils.toc_db import build_toc_segments
@@ -175,6 +180,25 @@ def _author_edit_lines(ref: Any) -> list[str]:
     shape by the edit handler's :func:`~precis.utils.authors.normalize_authors`
     call."""
     return author_names(getattr(ref, "authors", None))
+
+
+def _author_rows(store: Any, ref: Any, doi: str) -> list[dict[str, Any]]:
+    """``paper_authors`` rows for the Meta panel table + textarea
+    prefill, each augmented with ``links`` (:func:`author_links`) and
+    ``line`` (:func:`author_line` — the textarea round-trip grammar).
+    Empty for a paper with no byline row on file yet (falls back to
+    ``authors_display`` in the template)."""
+    rows = store.get_paper_authors(ref.id)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                **row,
+                "links": author_links(row, doi=doi, title=ref.title),
+                "line": author_line(row),
+            }
+        )
+    return out
 
 
 def _abstract_str(ref: Any) -> str:
@@ -501,6 +525,13 @@ def _render_detail(
         "tags": tags,
         "authors_display": _authors_str(ref),
         "author_lines": _author_edit_lines(ref),
+        # paper_authors 1NF table rows (precis.utils.authors module docstring
+        # §S4), each augmented with its rendered ``line`` (textarea
+        # prefill grammar) and ``links`` (ORCID/OpenAlex/Scholar) — the
+        # template falls back to ``authors_display`` when this is empty
+        # (a paper with no byline on file at all).
+        "author_rows": _author_rows(store, ref, ref_idents.get("doi") or ""),
+        "paper_scholar_url": paper_scholar_link(ref_idents.get("doi") or "", ref.title),
         "abstract": _abstract_full(ref),
         "ingested": stamps,
         "pdf_on_disk": found is not None,

@@ -36,6 +36,24 @@ def _seed_paper(
     return ref.id
 
 
+def _seed_paper_entries(
+    store: Store,
+    *,
+    slug: str,
+    title: str,
+    authors: list[dict[str, str]],
+    year: int | None = None,
+) -> int:
+    ref = store.insert_ref(
+        kind="paper",
+        slug=slug,
+        title=title,
+        authors=authors,
+        year=year,
+    )
+    return ref.id
+
+
 def _handler(store: Store) -> PaperHandler:
     return PaperHandler(hub=Hub(store=store))
 
@@ -83,6 +101,37 @@ def test_find_papers_by_author_surname(store: Store) -> None:
 def test_find_papers_by_author_no_match(store: Store) -> None:
     _seed_paper(store, slug="attn", title="T", authors=["Ashish Vaswani"])
     assert store.find_papers_by_author(kind="paper", q="Hinton") == []
+
+
+def test_find_papers_by_author_given_family_shape(store: Store) -> None:
+    """A canonical {given,family}-only byline (no 'name' key) is invisible
+    to a bare ``elem->>'name'`` match — S0 fix: matched on the display
+    form + the reversed "family, given" form (precis.utils.authors module docstring)."""
+    rid = _seed_paper_entries(
+        store,
+        slug="luo-ge",
+        title="Some canonical-byline paper",
+        authors=[
+            {"given": "Ronggang", "family": "Luo"},
+            {"given": "Shengbo", "family": "Ge"},
+        ],
+    )
+    _seed_paper(store, slug="other2", title="Unrelated", authors=["Jane Doe"])
+    assert store.find_papers_by_author(kind="paper", q="Luo") == [rid]
+    assert store.find_papers_by_author(kind="paper", q="Ronggang Luo") == [rid]
+    assert store.find_papers_by_author(kind="paper", q="Luo, Ronggang") == [rid]
+
+
+def test_find_papers_by_author_name_shape_still_matches(store: Store) -> None:
+    """Legacy {name}-shape byline still matches as before (regression
+    guard on the S0 rewrite)."""
+    rid = _seed_paper(
+        store,
+        slug="attn3",
+        title="A name-shape byline paper",
+        authors=["Ashish Vaswani", "Noam Shazeer"],
+    )
+    assert store.find_papers_by_author(kind="paper", q="Vaswani") == [rid]
 
 
 # ── handler level ─────────────────────────────────────────────────

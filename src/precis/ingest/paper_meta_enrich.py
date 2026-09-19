@@ -30,6 +30,13 @@ What lands where:
   (an OpenAlex-only fetch adds identifiers, nothing else in scope here)
   and only actually inserted for schemes the ref doesn't already carry
   (``insert_ref_identifiers`` is first-write-wins).
+* **per-author ``openalex_author_id``** — the same OpenAlex fetch's
+  ``authorships`` block is merged onto the Crossref author list
+  (:func:`_merge_openalex_author_ids`): paired by position when the
+  counts match, else by case-insensitive family-name match against the
+  OpenAlex ``display_name``'s last token; also backfills ``orcid`` when
+  Crossref's own byline lacked one for that author. Crossref stays the
+  source of truth for names/order — never reordered or dropped.
 * **``refs.retraction_status/reason/url``** — a conservative read of the
   same Crossref response's ``update-to`` array (see
   :mod:`precis.ingest.provenance` for the full notice-ref-minting
@@ -76,6 +83,7 @@ from precis.ingest import orcid as orcid_api
 from precis.ingest.cards import ensure_abstract_card, rewrite_cards
 from precis.ingest.crossref import _normalize as _crossref_normalize
 from precis.ingest.crossref import fetch_message as _fetch_crossref_message
+from precis.ingest.openalex_meta import _authorships as _openalex_authorships
 from precis.ingest.openalex_meta import _short_id as _short_openalex_id
 from precis.ingest.openalex_meta import fetch_openalex_work
 from precis.ingest.provenance import (
@@ -191,6 +199,57 @@ def _openalex_extra_ids(work: dict[str, Any]) -> list[tuple[str, str, str]]:
     if mag:
         out.append(("mag", str(mag).strip(), "openalex"))
     return out
+
+
+def _merge_openalex_author_ids(
+    crossref_authors: list[dict[str, Any]], authorships: list[dict[str, str]]
+) -> None:
+    """Merge OpenAlex identity onto the already-normalized Crossref author
+    list, in place: ``openalex_author_id`` always, ``orcid`` only when the
+    Crossref entry doesn't already carry one (docs/backlog/
+    precis.utils.authors module docstring).
+
+    Paired by position when the two lists are the same length (the common
+    case — both sources parsed the same byline); otherwise by
+    case-insensitive family-name match against the OpenAlex
+    ``display_name``'s last token. Crossref stays the source of truth for
+    names/order — this never reorders or drops a Crossref entry, and an
+    OpenAlex authorship with no match is simply not merged.
+    """
+    if not crossref_authors or not authorships:
+        return
+    pairs: list[tuple[dict[str, Any], dict[str, str]]]
+    if len(crossref_authors) == len(authorships):
+        pairs = list(zip(crossref_authors, authorships, strict=True))
+    else:
+        # Family-name pairing is only safe when the surname is unique on
+        # BOTH sides — two co-authors sharing a family name would otherwise
+        # get one author's orcid/openalex id stamped on the other.
+        by_family: dict[str, list[dict[str, str]]] = {}
+        for a in authorships:
+            tokens = str(a.get("name") or "").split()
+            if tokens:
+                by_family.setdefault(tokens[-1].strip().lower(), []).append(a)
+        crossref_family_counts: dict[str, int] = {}
+        for entry in crossref_authors:
+            family = str(entry.get("family") or "").strip().lower()
+            if family:
+                crossref_family_counts[family] = (
+                    crossref_family_counts.get(family, 0) + 1
+                )
+        pairs = []
+        for entry in crossref_authors:
+            family = str(entry.get("family") or "").strip().lower()
+            candidates = by_family.get(family, []) if family else []
+            if len(candidates) == 1 and crossref_family_counts.get(family) == 1:
+                pairs.append((entry, candidates[0]))
+    for entry, a in pairs:
+        oa_id = str(a.get("openalex_author_id") or "").strip()
+        if oa_id and not entry.get("openalex_author_id"):
+            entry["openalex_author_id"] = oa_id
+        orcid = str(a.get("orcid") or "").strip()
+        if orcid and not entry.get("orcid"):
+            entry["orcid"] = orcid
 
 
 def _mint_and_link_orcid_authors(
@@ -349,7 +408,6 @@ def enrich_paper(
         candidate = normalize_authors(authors_raw)
         if candidate:
             crossref_authors = candidate
-            crossref_orcid_authors = [a for a in candidate if a.get("orcid")]
 
         if norm.get("entry_type") and not current_meta.get("entry_type"):
             meta_patch["entry_type"] = norm["entry_type"]
@@ -371,6 +429,13 @@ def enrich_paper(
             work = None
         if work:
             extra_ids = _openalex_extra_ids(work)
+            if crossref_authors is not None:
+                _merge_openalex_author_ids(
+                    crossref_authors, _openalex_authorships(work)
+                )
+
+        if crossref_authors is not None:
+            crossref_orcid_authors = [a for a in crossref_authors if a.get("orcid")]
 
     new_authors: list[dict[str, Any]] | None = None
     orcid_authors: list[dict[str, Any]] = []
@@ -389,12 +454,21 @@ def enrich_paper(
     if outcome.authors_source:
         meta_patch[SOURCE_KEY] = outcome.authors_source
 
+    # paper_authors.source (precis.utils.authors module docstring):
+    # the Crossref replacement is tier 'crossref'; the comma-split
+    # heuristic over the existing byline is no better than what a PDF
+    # scrape would have given, so it lands as 'pdf'.
+    authors_table_source = {"crossref": "crossref", "heuristic": "pdf"}.get(
+        outcome.authors_source or ""
+    )
+
     with store.tx() as conn:
         store.update_paper_fields(
             ref_id,
             authors=new_authors,
             meta_patch=meta_patch,
             source="paper-meta-enrich",
+            authors_source=authors_table_source,
             conn=conn,
         )
         if extra_ids:

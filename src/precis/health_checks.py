@@ -246,6 +246,67 @@ def backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
         return compute_backlog_counts(conn)
 
 
+#: How many drifted ref_ids :func:`paper_authors_drift` surfaces as
+#: examples — enough to spot-check without a second query.
+_PAPER_AUTHORS_DRIFT_EXAMPLES = 5
+
+
+def paper_authors_drift(conn: Any) -> dict[str, Any]:
+    """Papers whose ``refs.authors`` jsonb length disagrees with their
+    ``paper_authors`` row count (precis.utils.authors module docstring).
+
+    ``paper_authors`` is the source of truth; every sanctioned writer
+    goes through ``store.set_paper_authors``, which regenerates
+    ``refs.authors`` from the table in the same transaction — so any
+    drift means something wrote ``refs.authors`` directly (an ad hoc SQL
+    edit, a call site that bypassed the choke point). ``count=0`` is
+    healthy. Logs a warning (with up to
+    :data:`_PAPER_AUTHORS_DRIFT_EXAMPLES` example ref_ids) when it isn't.
+
+    Returns ``{"count": int, "examples": [ref_id, ...]}``. On a query
+    error, degrades to ``{"count": -1, "examples": []}`` (mirrors
+    :func:`compute_backlog_counts`'s "didn't lie" convention) and rolls
+    back so a caller running more checks on the same connection isn't
+    poisoned.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+             WHERE r.kind = 'paper' AND r.retired_at IS NULL
+               AND coalesce(jsonb_array_length(r.authors), 0) <>
+                   (SELECT count(*) FROM paper_authors pa
+                     WHERE pa.ref_id = r.ref_id)
+             ORDER BY r.ref_id
+            """
+        ).fetchall()
+    except Exception:
+        log.exception("health_checks: paper_authors drift query failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_checks: rollback after drift query failed")
+        return {"count": -1, "examples": []}
+
+    ref_ids = [int(r[0]) for r in rows]
+    examples = ref_ids[:_PAPER_AUTHORS_DRIFT_EXAMPLES]
+    if ref_ids:
+        log.warning(
+            "health_checks: %d paper(s) have refs.authors/paper_authors drift "
+            "(e.g. %s)",
+            len(ref_ids),
+            ", ".join(f"pa{rid}" for rid in examples),
+        )
+    return {"count": len(ref_ids), "examples": examples}
+
+
+def paper_authors_drift_check(store: Any) -> dict[str, Any]:
+    """:func:`paper_authors_drift` over a fresh connection of its own."""
+    with store.pool.connection() as conn:
+        return paper_authors_drift(conn)
+
+
 def fetch_freshness_timestamps(
     conn: Any, signals: Iterable[tuple[str, str]]
 ) -> dict[str, FreshnessProbe]:

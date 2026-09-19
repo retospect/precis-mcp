@@ -14,23 +14,27 @@ local gate had already applied once. The migrator seals on checksum
 service (`docker/dev/compose.yaml`) persists across runs, so the stale
 checksum survives in its `public._migrations` ledger.
 
-**First: which DB reddened?** There are two, and recreating the wrong one
-looks like the reset "didn't work" (cost two full ship cycles on 2026-08-27):
+**First: which DB reddened?** Recreating the wrong one looks like the
+reset "didn't work" (cost two full ship cycles on 2026-08-27):
 
-- `scripts/test` / `scripts/dev` use the shared `dev` compose project —
-  container `dev-precis-test-db-1`. That is the one the commands below
-  target.
-- **`scripts/ship`'s gate uses a PER-WORKTREE project** — container
-  `precis-test-<worktree-name>-precis-test-db-1`. A checksum mismatch in a
-  *ship gate* lives there, and the `dev` reset below will not touch it.
+- **`scripts/test` and `scripts/ship`'s gate both use a PER-WORKTREE
+  compose project** (`scripts/lib/compose-project.sh`, gr176375) —
+  container `precis-test-<worktree-name>-precis-test-db-1`. A coder
+  agent's run may use its own `precis-test-agent-<id>-…` project instead.
   Confirm with `docker ps | grep test-db`, then:
 
 ```
 docker rm -f precis-test-<worktree-name>-precis-test-db-1
 ```
 
-The next `scripts/ship` recreates it (a full replay of every migration, so
-budget several minutes). Verify a suspect ledger directly with:
+The next `scripts/test`/`scripts/ship` recreates it (a full replay of every
+migration, so budget several minutes). Siblings' containers are untouched.
+`scripts/dev` uses the same per-worktree project. Only a bare
+`docker compose -f docker/dev/compose.yaml` invocation (no `-p`) lands on
+the default `dev` project — container `dev-precis-test-db-1` — which the
+compose commands below target.
+
+Verify a suspect ledger directly with:
 
 ```
 docker exec <container> psql -U postgres -d precis_test \

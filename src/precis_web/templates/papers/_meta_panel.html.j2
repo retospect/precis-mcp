@@ -2,10 +2,10 @@
    Rendered inside the shared reader's Meta tab (_reader/reader.html.j2),
    which supplies the ``x-show="tab === 'Meta'"`` wrapper. Reads the paper
    detail context (paper, pa_handle, n_chunks, pdf_on_disk, authors_display,
-   abstract, ingested, tags, is_reviewed, reviewed_at, reviewed_by, journal,
-   issn, entry_type, entry_type_label, retraction, extra_identifiers,
-   s2_citation_count, s2_fields, read_first, keywords) built by
-   papers._render_detail. #}
+   author_rows, paper_scholar_url, abstract, ingested, tags, is_reviewed,
+   reviewed_at, reviewed_by, journal, issn, entry_type, entry_type_label,
+   retraction, extra_identifiers, s2_citation_count, s2_fields, read_first,
+   keywords) built by papers._render_detail. #}
 <dl class="space-y-1 text-xs">
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
@@ -13,7 +13,10 @@
   {% if paper.year %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">year</dt><dd>{{ paper.year }}</dd></div>{% endif %}
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">chunks</dt><dd>{{ n_chunks }}</dd></div>
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">pdf</dt><dd>{{ 'on disk' if pdf_on_disk else ('held, missing file' if paper.has_pdf else 'stub (no pdf)') }}</dd></div>
-  {% if authors_display %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">authors</dt><dd>{{ authors_display }}</dd></div>{% endif %}
+  {# Flat fallback — only when the paper_authors table has no rows yet
+     (a paper never edited/enriched under S1). Once rows exist, the
+     compact table below (with links) replaces this line. #}
+  {% if authors_display and not author_rows %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">authors</dt><dd>{{ authors_display }}</dd></div>{% endif %}
   {% if journal %}
   <div class="flex gap-2">
     <dt class="w-20 shrink-0 text-slate-400">journal</dt>
@@ -42,6 +45,41 @@
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">read-first</dt><dd>{{ read_first | round(1) }} <span class="text-slate-400">/ 100 (reading priority)</span></dd></div>
   {% endif %}
 </dl>
+
+{# Author byline table (precis.utils.authors module docstring) — position,
+   name, source tier chip, verified tick, per-author links. ``author_rows``
+   is empty for a paper that hasn't been through set_paper_authors yet (the
+   flat authors_display dd above covers that case). #}
+{% if author_rows %}
+<div class="border-t border-slate-100 pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Authors</p>
+  <table class="w-full text-xs">
+    <tbody class="divide-y divide-slate-100">
+      {% for a in author_rows %}
+      {% set display_name = ([a.given, a.middle, a.family] | select | join(' ')) if (a.given or a.family) else a.name_raw %}
+      <tr>
+        <td class="pr-2 py-1 text-slate-400 align-top w-5">{{ a.position }}</td>
+        <td class="pr-2 py-1 align-top">{{ display_name }}</td>
+        <td class="pr-2 py-1 align-top">
+          <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ a.source }}</span>
+        </td>
+        <td class="pr-2 py-1 align-top text-emerald-600" title="{% if a.verified_at %}verified {{ a.verified_at.date().isoformat() }}{% endif %}">
+          {%- if a.verified_at %}✓{% endif -%}
+        </td>
+        <td class="pr-2 py-1 align-top whitespace-nowrap">
+          {% if a.links.orcid %}<a class="text-sky-700 hover:underline" href="{{ a.links.orcid }}" target="_blank" rel="noopener">ORCID</a>{% endif %}
+          {% if a.links.openalex %}<a class="ml-1 text-sky-700 hover:underline" href="{{ a.links.openalex }}" target="_blank" rel="noopener">OpenAlex</a>{% endif %}
+          {% if a.links.scholar %}<a class="ml-1 text-sky-700 hover:underline" href="{{ a.links.scholar }}" target="_blank" rel="noopener">Scholar</a>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if paper_scholar_url %}
+  <p class="mt-1 text-[10px] text-slate-500">Paper on Scholar: <a class="text-sky-700 hover:underline" href="{{ paper_scholar_url }}" target="_blank" rel="noopener">search</a></p>
+  {% endif %}
+</div>
+{% endif %}
 
 {# Retraction notice — display-only (source of record is Crossref's
    update-to metadata; see docs/backlog/paper-meta-surfacing.md). Rose,

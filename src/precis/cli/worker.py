@@ -2200,7 +2200,7 @@ def run(args: argparse.Namespace) -> None:
         # replace (also flushes junk) unless human_verified_at is set;
         # DOI-less papers get a no-network heuristic split. Same
         # throttle + advisory-lock guards as openalex_enrich, cadence via
-        # PRECIS_PAPER_META_ENRICH_REFRESH_HOURS (default 6).
+        # PRECIS_PAPER_META_ENRICH_REFRESH_HOURS (default 1).
         if _register("paper_meta_enrich"):
             from precis.workers.paper_meta_enrich import run_paper_meta_enrich_pass
             from precis.workers.runner import BatchResult as _BatchResult
@@ -2209,6 +2209,22 @@ def run(args: argparse.Namespace) -> None:
                 return run_paper_meta_enrich_pass(store, limit=None)
 
             ref_passes.append(_paper_meta_enrich_pass)
+
+        # ORCID identity enrich — the background ORCID tier
+        # (precis.utils.authors module docstring). Fetches unvisited
+        # kind='orcid' stub nodes, stores the full record, links held
+        # works, and cross-checks each authored edge's paper DOI against
+        # the record's works. Same throttle shape as openalex_enrich /
+        # paper_meta_enrich just above, cadence via
+        # PRECIS_ORCID_ENRICH_REFRESH_HOURS (default 1).
+        if _register("orcid_enrich"):
+            from precis.workers.orcid_enrich import run_once as _run_orcid_enrich_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _orcid_enrich_pass(batch_size: int) -> _BatchResult:
+                return _run_orcid_enrich_pass(store, limit=None)
+
+            ref_passes.append(_orcid_enrich_pass)
 
         # Stub rank — S2-enrich + embed + anchor-similarity re-rank paper
         # stubs (title/abstract only, no PDF yet) so fetch_oa's claim

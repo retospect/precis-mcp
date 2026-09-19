@@ -31,6 +31,40 @@ still ambiguous, or recognizably junk (see :func:`is_junk_author_name`
 — an email, a bare section heading, an over-long non-name string),
 stays ``{"name"}`` or is dropped outright.
 
+**The table is the truth (migration 0168).** Since ``paper_authors``,
+``refs.authors`` on a ``kind='paper'`` ref is a *projection*: one row per
+byline position with ``given`` / ``middle`` / ``family`` / ``name_raw``
+(the string as received, never rewritten) / ``orcid`` /
+``openalex_author_id`` / ``person_ref_id`` (the ``kind='orcid'`` node) /
+``source`` / ``verified_at``. Every paper byline write goes through
+``store.set_paper_authors`` (``insert_ref``, ``update_paper_fields`` and
+``ingest/db_writer.py`` route there by kind), which DELETE+INSERTs the
+rows and regenerates the jsonb from them; ``health_checks.
+paper_authors_drift`` catches anything that wrote the jsonb directly.
+Non-paper kinds (draft/patent/datasheet) stay jsonb-only. Neither path
+ever touches ``cite_key`` — it is coupled to the corpus PDF path.
+
+The middle column: :func:`split_middle` peels the trailing run of
+single-letter tokens off ``given`` (``"Bryan R."`` → ``("Bryan",
+"R.")``); the first token is never consumed (``"K. S."`` → given ``K.``,
+middle ``S.``) and hyphenated initials stay in ``given``. Rows are
+rebuilt as a "Given Middle Family" entry by :func:`entry_from_author_row`.
+
+``source`` records the tier that wrote the row (:data:`AUTHOR_SOURCES`):
+``orcid`` (background ``workers/orcid_enrich.py`` cross-check — paper DOI
+in the person's ORCID works stamps ``verified_at`` and takes the ORCID
+names) > ``crossref`` / ``openalex`` / ``s2`` (lookup tiers; ``openalex``
+also contributes ``openalex_author_id`` and any missing ``orcid``) >
+``pdf`` / ``legacy`` (scraped, or projected from pre-0168 jsonb) with
+``llm`` reserved for a future residual pass. ``human`` wins: a paper
+holding any ``source='human'`` row ignores later non-human writes (the
+store re-projects the human rows), while the ORCID cross-check may still
+stamp ``verified_at`` on it. Humans write the textarea/edit grammar
+``Family, Given M. [0000-0002-1825-0097]`` (:func:`author_line` renders
+it, the string branch of :func:`normalize_authors` parses it). Google
+Scholar is links-only (:func:`author_links`, :func:`paper_scholar_link`)
+— it has no API.
+
 ``to_name_dicts`` predates :func:`normalize_authors` and is kept for
 the paths that still want the old squash-everything-to-``{"name"}``
 behaviour (metadata re-resolution / backfill enrichment, out of scope
@@ -52,16 +86,43 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import quote
 
 __all__ = [
+    "AUTHOR_SOURCES",
     "author_display",
+    "author_line",
+    "author_links",
     "author_names",
+    "author_row_from_entry",
     "build_byline",
+    "entry_from_author_row",
     "is_junk_author_name",
     "normalize_authors",
+    "normalize_orcid",
+    "paper_scholar_link",
+    "split_middle",
     "to_author_dicts",
     "to_name_dicts",
 ]
+
+#: ``paper_authors.source`` vocabulary — which tier wrote the row. Mirrors
+#: the CHECK constraint in migration 0168; keep both in sync.
+AUTHOR_SOURCES: frozenset[str] = frozenset(
+    {"orcid", "crossref", "openalex", "s2", "pdf", "legacy", "llm", "human"}
+)
+
+#: Dashed ORCID iD (the last char may be the ``X`` check digit).
+_ORCID_RE = re.compile(r"^[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]$")
+
+#: Trailing run of initials on a ``given`` string — ``"Bryan R."``,
+#: ``"John T. J."``, ``"Mary A"`` — the part :func:`split_middle` peels
+#: off as ``middle``. A token is an initial when it is one letter with an
+#: optional dot; hyphenated initials (``"A.-K."``) are deliberately NOT
+#: matched (they're a first name, cf. ``_tidy_initials``), and the run
+#: never consumes the first token (a leading initial is a first name:
+#: ``"J. Robert"`` keeps its shape).
+_TRAILING_INITIALS_RE = re.compile(r"^(?P<given>\S.*?)((?:\s+[A-Z]\.?)+)$")
 
 # A lone all-caps token ("REFERENCES", "OECD") — used together with the
 # stopword list below; a single all-caps *word* is virtually never a
@@ -274,16 +335,230 @@ def _normalize_one_author(a: Any) -> dict[str, Any] | None:
                 entry["family"] = family
             _carry_optional_author_keys(a, entry)
             return entry
-        name = _tidy_initials(_scrub_name(a.get("name") or ""))
+        raw_name, bracket_orcid = _strip_orcid_bracket(str(a.get("name") or ""))
+        name = _tidy_initials(_scrub_name(raw_name))
         if not name or is_junk_author_name(name):
             return None
         entry = _split_author_name(name)
+        if bracket_orcid:
+            entry["orcid"] = bracket_orcid
         _carry_optional_author_keys(a, entry)
         return entry
-    name = _tidy_initials(_scrub_name(str(a or "")))
+    raw_name, bracket_orcid = _strip_orcid_bracket(str(a or ""))
+    name = _tidy_initials(_scrub_name(raw_name))
     if not name or is_junk_author_name(name):
         return None
-    return _split_author_name(name)
+    entry = _split_author_name(name)
+    if bracket_orcid:
+        entry["orcid"] = bracket_orcid
+    return entry
+
+
+def split_middle(given: str) -> tuple[str, str]:
+    """Peel trailing initials off a ``given`` string → ``(given, middle)``.
+
+    The ``paper_authors.middle`` column is real but no registry delivers
+    it separately, so it is derived here at write time: ``"Bryan R."`` →
+    ``("Bryan", "R.")``, ``"John T. J."`` → ``("John", "T. J.")``,
+    ``"J. Robert"`` → ``("J. Robert", "")`` (a leading initial is a first
+    name), ``"Mary Anne"`` → ``("Mary Anne", "")`` (only single-letter
+    tokens move), ``"A.-K."`` → ``("A.-K.", "")``. ``middle`` is ``""``
+    when there is nothing to peel — never ``None``. Pure — never raises.
+    """
+    given = " ".join(str(given or "").split())
+    m = _TRAILING_INITIALS_RE.match(given)
+    if not m:
+        return given, ""
+    head = m.group("given").strip()
+    middle = " ".join(given[len(m.group("given")) :].split())
+    return head, middle
+
+
+def normalize_orcid(raw: Any) -> str | None:
+    """A dashed ORCID iD or ``None`` — strips a ``https://orcid.org/``
+    prefix and rejects anything that isn't well-formed. Pure."""
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    s = s.rsplit("orcid.org/", 1)[-1].strip().strip("/").upper()
+    return s if _ORCID_RE.match(s) else None
+
+
+#: A trailing bracketed ORCID on a name string — the web textarea grammar
+#: ``Family, Given M. [0000-0002-1825-0097]`` (also accepts a full
+#: ``[https://orcid.org/...]`` URL inside the brackets, since
+#: :func:`normalize_orcid` strips that prefix itself).
+_TRAILING_BRACKET_RE = re.compile(r"\s*\[([^\[\]]+)\]\s*$")
+
+
+def _strip_orcid_bracket(name: str) -> tuple[str, str | None]:
+    """Split a trailing bracketed ORCID iD (or ``[orcid.org/...]`` URL) off
+    *name* — the write-side counterpart to :func:`author_line`'s render.
+    Invalid bracket contents (garbage, a malformed iD) are dropped
+    silently; the name is returned bracket-stripped either way, so a
+    typo'd iD never blocks the byline edit. Pure — never raises."""
+    m = _TRAILING_BRACKET_RE.search(name)
+    if not m:
+        return name, None
+    return name[: m.start()], normalize_orcid(m.group(1))
+
+
+def author_row_from_entry(
+    entry: Any, position: int, *, source: str
+) -> dict[str, Any] | None:
+    """One ``refs.authors`` element → one ``paper_authors`` row dict.
+
+    Also accepts the S1 *row* shape as an entry — a dict already carrying
+    a separate ``middle`` (as :func:`~precis.utils.authors.entry_from_author_row`
+    does NOT produce, but a round-trip through the MCP/web edit form
+    does) — ``middle`` is re-absorbed into ``given`` before display/
+    normalisation, then peeled back off by :func:`split_middle` below, so
+    it round-trips onto the same column instead of being silently
+    dropped.
+
+    Runs the entry through :func:`_normalize_one_author` first (junk
+    guard, initials spacing, single-comma split), then applies
+    :func:`split_middle`. A ``{"name"}``-only entry (unsplittable) keeps
+    its string in ``name_raw`` with empty name columns. ``name_raw`` is
+    always the *received* display string, before any split. Returns
+    ``None`` for junk/empty entries (they get no row). Pure.
+    """
+    if source not in AUTHOR_SOURCES:
+        raise ValueError(f"unknown author source {source!r}")
+    if isinstance(entry, dict) and str(entry.get("middle") or "").strip():
+        merged = dict(entry)
+        merged["given"] = " ".join(
+            p
+            for p in (
+                str(entry.get("given") or "").strip(),
+                str(entry.get("middle") or "").strip(),
+            )
+            if p
+        )
+        merged.pop("middle", None)
+        entry = merged
+    raw_display = author_display(entry)
+    norm = _normalize_one_author(entry)
+    if norm is None or not raw_display:
+        return None
+    given, middle = split_middle(norm.get("given") or "")
+    row: dict[str, Any] = {
+        "position": int(position),
+        "given": given,
+        "middle": middle,
+        "family": norm.get("family") or "",
+        "name_raw": raw_display,
+        "orcid": normalize_orcid(norm.get("orcid")),
+        "openalex_author_id": None,
+        "source": source,
+    }
+    if isinstance(entry, dict):
+        oa = str(entry.get("openalex_author_id") or "").strip()
+        if oa:
+            row["openalex_author_id"] = oa
+    return row
+
+
+def entry_from_author_row(row: dict[str, Any]) -> dict[str, Any]:
+    """The projection back: one ``paper_authors`` row → one canonical
+    ``refs.authors`` element. ``given`` re-absorbs ``middle`` (CSL keeps
+    initials inside ``given``); an unsplit row (both name columns empty)
+    projects as ``{"name": name_raw}``. ``orcid`` and
+    ``openalex_author_id`` ride along when set. Pure.
+    """
+    given = " ".join(p for p in (row.get("given") or "", row.get("middle") or "") if p)
+    family = row.get("family") or ""
+    entry: dict[str, Any] = {}
+    if given:
+        entry["given"] = given
+    if family:
+        entry["family"] = family
+    if not entry:
+        entry["name"] = _tidy_initials(_scrub_name(row.get("name_raw") or ""))
+    if row.get("orcid"):
+        entry["orcid"] = row["orcid"]
+    if row.get("openalex_author_id"):
+        entry["openalex_author_id"] = row["openalex_author_id"]
+    return entry
+
+
+def _row_display_name(row: dict[str, Any]) -> str:
+    """``Given Middle Family`` from a ``paper_authors`` row, falling back
+    to ``name_raw`` when both name columns are empty (an unsplit row)."""
+    parts = (row.get("given") or "", row.get("middle") or "", row.get("family") or "")
+    name = " ".join(p for p in parts if p)
+    return name or (row.get("name_raw") or "")
+
+
+def author_links(
+    row: dict[str, Any], *, doi: str | None = None, title: str | None = None
+) -> dict[str, str]:
+    """Per-author verification links for one ``paper_authors`` row.
+
+    ``orcid`` → ``https://orcid.org/<iD>`` (only when the row has one);
+    ``openalex`` → ``https://openalex.org/<A...>`` (only when
+    ``openalex_author_id`` is set); ``scholar`` → a Google Scholar name
+    search, quoted and urlencoded, built from the row's full display name
+    (``Given Middle Family``, falling back to ``name_raw`` for an unsplit
+    row) — always present, since every author has *some* name. Google
+    Scholar is links-only here: no API, no scraped data, just a
+    convenience search URL a human can click.
+
+    ``doi``/``title`` are accepted (not currently folded into the
+    per-author query — see :func:`paper_scholar_link` for the paper-level
+    link built from them) so a call site can pass the same two values to
+    every author's ``author_links`` call alongside the paper-level link,
+    without a special-cased signature. Missing keys are simply absent
+    from the returned dict (never a blank string). Pure — never raises.
+    """
+    links: dict[str, str] = {}
+    if row.get("orcid"):
+        links["orcid"] = f"https://orcid.org/{row['orcid']}"
+    if row.get("openalex_author_id"):
+        links["openalex"] = f"https://openalex.org/{row['openalex_author_id']}"
+    name = _row_display_name(row)
+    if name:
+        links["scholar"] = "https://scholar.google.com/scholar?q=" + quote(
+            f'"{name}"', safe=""
+        )
+    return links
+
+
+def paper_scholar_link(doi: str | None, title: str | None) -> str | None:
+    """The paper-level Google Scholar link: ``scholar_lookup?doi=<doi>``
+    when a DOI is on file (Scholar's direct-lookup endpoint), else a
+    quoted title search; ``None`` when neither is available. Links-only,
+    same caveat as :func:`author_links`. Pure — never raises."""
+    doi = (doi or "").strip()
+    if doi:
+        return "https://scholar.google.com/scholar_lookup?doi=" + quote(doi, safe="")
+    title = (title or "").strip()
+    if title:
+        return "https://scholar.google.com/scholar?q=" + quote(title, safe="")
+    return None
+
+
+def author_line(row: dict[str, Any]) -> str:
+    """Render one ``paper_authors`` row as the web textarea grammar:
+    ``Family, Given Middle [0000-0002-1825-0097]`` — the bracket only
+    when the row has an ``orcid``. Inverse of the write-side parse (a
+    bare string entry run through :func:`author_row_from_entry`, which
+    calls :func:`_strip_orcid_bracket` then :func:`split_middle`) —
+    round-trips ``author_row_from_entry(author_line(row), ...)`` back to
+    the same ``given``/``middle``/``family``/``orcid``. An unsplit row
+    (both name columns empty) renders its bare ``name_raw`` instead, no
+    comma. Pure — never raises.
+    """
+    family = (row.get("family") or "").strip()
+    given = (row.get("given") or "").strip()
+    middle = (row.get("middle") or "").strip()
+    if family or given:
+        given_middle = " ".join(p for p in (given, middle) if p)
+        head = f"{family}, {given_middle}" if family else given_middle
+    else:
+        head = (row.get("name_raw") or "").strip()
+    orcid = row.get("orcid")
+    return f"{head} [{orcid}]" if orcid else head
 
 
 def _split_author_name(name: str) -> dict[str, Any]:

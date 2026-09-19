@@ -113,7 +113,8 @@ def _names(items: Any, key: str = "display_name") -> list[str]:
 
 
 def _authorships(work: dict[str, Any]) -> list[dict[str, str]]:
-    """Structured author rows: name + ORCID + first institution ROR + country."""
+    """Structured author rows: name + ORCID + OpenAlex author id + first
+    institution ROR + country."""
     out: list[dict[str, str]] = []
     for a in work.get("authorships") or []:
         if not isinstance(a, dict):
@@ -126,6 +127,9 @@ def _authorships(work: dict[str, Any]) -> list[dict[str, str]]:
         orcid = str(author.get("orcid") or "").strip()
         if orcid:
             row["orcid"] = orcid
+        oa_author_id = _short_id(author.get("id"))
+        if oa_author_id:
+            row["openalex_author_id"] = oa_author_id
         insts = a.get("institutions") or []
         if insts and isinstance(insts[0], dict):
             aff = str(insts[0].get("display_name") or "").strip()

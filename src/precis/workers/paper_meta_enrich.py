@@ -14,7 +14,7 @@ modules' docstrings for the detailed rationale):
 
 * **Cadence throttle.** A ``paper_meta_enrich:last_run`` marker in
   ``app_state`` gates the whole pass to once per
-  ``PRECIS_PAPER_META_ENRICH_REFRESH_HOURS`` (default 6).
+  ``PRECIS_PAPER_META_ENRICH_REFRESH_HOURS`` (default 1).
 * **Single-runner advisory lock.** A **transaction-scoped**
   ``pg_try_advisory_xact_lock`` (a distinct key, namespaced away from the
   sibling passes') held on one dedicated connection for the whole pass,
@@ -48,10 +48,10 @@ _LOCK_KEY = 0x70_6D_65_74_61_65_6E_72 - 2**63  # "pmetaenr", mapped signed
 _STATE_KEY = "paper_meta_enrich:last_run"
 #: Env var + default for the cadence throttle (see :func:`_throttle.due`).
 _REFRESH_ENV_VAR = "PRECIS_PAPER_META_ENRICH_REFRESH_HOURS"
-_DEFAULT_REFRESH_HOURS = 6.0
+_DEFAULT_REFRESH_HOURS = 1.0
 
 #: Batch size when the caller doesn't pass a ``limit``.
-_DEFAULT_BATCH_LIMIT = 50
+_DEFAULT_BATCH_LIMIT = 400
 
 
 def _due(store: Store) -> bool:

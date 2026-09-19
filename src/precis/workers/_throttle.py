@@ -1,10 +1,11 @@
 """Shared ``PRECIS_<X>_REFRESH_HOURS`` throttle idiom for demand-driven passes.
 
-Six workers (``openalex_enrich``, ``llm_reconcile``, ``paper_reconcile``,
-``backlog_groom``, ``paper_meta_enrich``, ``corpus_reconcile``) each gate a
-pass to "once per N hours" by comparing an ``app_state`` ISO-8601 timestamp
-against ``now()``. This module is the one implementation; callers supply
-their own env var name, default, and state key.
+Seven workers (``openalex_enrich``, ``llm_reconcile``, ``paper_reconcile``,
+``backlog_groom``, ``paper_meta_enrich``, ``corpus_reconcile``,
+``orcid_enrich``) each gate a pass to "once per N hours" by comparing an
+``app_state`` ISO-8601 timestamp against ``now()``. This module is the one
+implementation; callers supply their own env var name, default, and state
+key.
 """
 
 from __future__ import annotations

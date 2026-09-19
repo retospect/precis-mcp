@@ -37,6 +37,19 @@ def _card_text(store: Store, ref_id: int) -> str:
     return str(row[0])
 
 
+def _legacy_authors(store: Store, ref_id: int, authors: list[dict[str, str]]) -> None:
+    """Seed a pre-0168 ``refs.authors`` jsonb directly — ``insert_ref``
+    now junk-guards + projects at write time, so a junk entry can only
+    exist as legacy data."""
+    from psycopg.types.json import Jsonb
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET authors = %s::jsonb WHERE ref_id = %s",
+            (Jsonb(authors), ref_id),
+        )
+
+
 def _meta(store: Store, ref_id: int) -> dict[str, Any]:
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=True).get(ref_id)
     assert ref is not None
@@ -317,11 +330,13 @@ def test_metadata_hygiene_stats_heuristic_source_and_junk_authors(
         authors=[{"given": "Marie", "family": "Curie"}],
         meta={"authors_source": "crossref"},
     )
-    store.insert_ref(
+    junk = store.insert_ref(
         kind="paper",
         slug="junk-h1",
         title="Paper With A Junk Author Entry",
-        authors=[{"name": "REFERENCES"}, {"name": "not-a-name@example.com"}],
+    )
+    _legacy_authors(
+        store, junk.id, [{"name": "REFERENCES"}, {"name": "not-a-name@example.com"}]
     )
 
     stats = metadata_hygiene_stats(store)
@@ -334,12 +349,12 @@ def test_metadata_hygiene_stats_junk_sample_is_bounded(store: Store) -> None:
     from precis.ingest.paper_hygiene import metadata_hygiene_stats
 
     for i in range(3):
-        store.insert_ref(
+        ref = store.insert_ref(
             kind="paper",
             slug=f"bound-h{i}",
             title=f"Bounded Sample Paper {i}",
-            authors=[{"name": "REFERENCES"}],
         )
+        _legacy_authors(store, ref.id, [{"name": "REFERENCES"}])
 
     stats = metadata_hygiene_stats(store, junk_sample_limit=2)
     assert stats.junk_sample_papers == 2

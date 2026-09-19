@@ -193,6 +193,30 @@ class TestWritePaper:
             None,
         )
 
+    def test_s2_provider_projects_paper_authors_source(self, store):
+        """precis.utils.authors module docstring — the Semantic Scholar
+        lookup path (``pipeline.py::_paper_from_lookup(...,
+        provider='s2')``) needs no separate write; ``write_paper`` already
+        maps ``paper.provider`` through ``AUTHOR_SOURCES`` onto
+        ``paper_authors.source``."""
+        paper = PaperToWrite(
+            title="Entanglement Distillation Protocols",
+            authors=[{"given": "Alice", "family": "Jones"}],
+            year=2022,
+            paper_id="s2p1a2b3",
+            pub_id="doi:10.1038/s2test",
+            cite_key_prefix="jones22",
+            doi="10.1038/s2test",
+            provider="s2",
+        )
+        with store.pool.connection() as conn:
+            result = write_paper(paper, conn=conn)
+            conn.commit()
+
+        rows = store.get_paper_authors(result.ref_id)
+        assert [r["source"] for r in rows] == ["s2"]
+        assert rows[0]["family"] == "Jones"
+
     def test_pdf_with_chunks(self, store):
         """A PDF ingest writes pdfs + refs + ref_identifiers + chunks
         and stitches them by ref_id."""

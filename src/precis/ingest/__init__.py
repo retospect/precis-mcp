@@ -39,7 +39,12 @@ Hygiene: pysbd sentence splitting in the chunker fallback chain
 
 Every ingest/edit author writer funnels through
 :func:`precis.utils.authors.normalize_authors` (the canonical
-``{given, family}`` shape) rather than an ad hoc ``{"name"}`` wrap.
+``{given, family}`` shape) rather than an ad hoc ``{"name"}`` wrap, and
+for ``kind='paper'`` the store projects the byline onto the
+``paper_authors`` table (the truth; ``refs.authors`` is regenerated from
+it — :mod:`precis.utils.authors` docstring; ``db_writer``'s raw insert
+calls ``project_paper_authors`` itself, tagging the row ``source`` with
+the lookup provider).
 :mod:`precis.ingest.paper_meta_enrich` re-resolves a paper's authors plus
 ``meta.entry_type``/``journal``/``issn``, extra ``ref_identifiers``,
 per-author ORCID links, and retraction status from one Crossref

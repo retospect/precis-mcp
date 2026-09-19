@@ -14,6 +14,7 @@ import pytest
 from precis.ingest import openalex_meta
 from precis.ingest.openalex_meta import (
     ENRICH_VERSION,
+    _authorships,
     _reconstruct_abstract,
     _short_id,
     enrich_ref,
@@ -46,6 +47,7 @@ _WORK: dict[str, Any] = {
     "authorships": [
         {
             "author": {
+                "id": "https://openalex.org/A5023888391",
                 "display_name": "Jinglin Fu",
                 "orcid": "https://orcid.org/0000-0002-0814-0089",
             },
@@ -65,6 +67,26 @@ class TestHelpers:
     def test_short_id(self) -> None:
         assert _short_id("https://openalex.org/W4386410574") == "W4386410574"
         assert _short_id(None) == ""
+
+    def test_authorships_captures_openalex_author_id(self) -> None:
+        """``author.id`` (an OpenAlex ``A…`` URL) lands as
+        ``openalex_author_id`` in the short form — docs/backlog/
+        precis.utils.authors module docstring."""
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A5023888391",
+                        "display_name": "Jinglin Fu",
+                    }
+                },
+                # No author.id at all — key is simply absent, never blank.
+                {"author": {"display_name": "No Id Author"}},
+            ]
+        }
+        rows = _authorships(work)
+        assert rows[0]["openalex_author_id"] == "A5023888391"
+        assert "openalex_author_id" not in rows[1]
 
     def test_reconstruct_abstract(self) -> None:
         assert _reconstruct_abstract({"a": [0], "b": [1], "c": [2]}) == "a b c"
@@ -101,6 +123,7 @@ class TestNormalize:
         a = enr.meta["authorships"][0]
         assert a["name"] == "Jinglin Fu"
         assert a["orcid"].endswith("0002-0814-0089")
+        assert a["openalex_author_id"] == "A5023888391"
         assert a["ror"].endswith("03cve4549")
         assert a["country"] == "CN"
         # byline shape keeps affiliation + ror (drops orcid + country per schema)

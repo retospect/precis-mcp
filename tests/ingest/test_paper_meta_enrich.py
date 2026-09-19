@@ -180,6 +180,191 @@ class TestCrossrefAuthorReplace:
         assert called["openalex"] is False
 
 
+class TestOpenAlexAuthorMerge:
+    """precis.utils.authors module docstring — the OpenAlex leg (fetched
+    only when Crossref resolved) merges ``openalex_author_id`` (and a
+    missing ``orcid``) onto the Crossref author entries, never reordering
+    or dropping one."""
+
+    def test_merge_by_position_when_counts_match(self, store: Store) -> None:
+        rid = _paper(store, slug="oa1", doi="10.1234/oa1")
+        msg = _crossref_msg(doi="10.1234/oa1")  # single author, no ORCID
+        msg["author"] = [
+            {"given": "Bryan R.", "family": "Goldsmith"},
+            {"given": "Jane", "family": "Doe"},
+        ]
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1111111111",
+                        "display_name": "Bryan R. Goldsmith",
+                        "orcid": "https://orcid.org/0000-0002-1825-0097",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A2222222222",
+                        "display_name": "Jane Doe",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa1",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        ref = _ref(store, rid)
+        assert ref.authors == [
+            {
+                "given": "Bryan R.",
+                "family": "Goldsmith",
+                "orcid": "0000-0002-1825-0097",
+                "openalex_author_id": "A1111111111",
+            },
+            {
+                "given": "Jane",
+                "family": "Doe",
+                "openalex_author_id": "A2222222222",
+            },
+        ]
+
+        rows = store.get_paper_authors(rid)
+        assert [r["source"] for r in rows] == ["crossref", "crossref"]
+        assert rows[0]["orcid"] == "0000-0002-1825-0097"
+        assert rows[0]["openalex_author_id"] == "A1111111111"
+        assert rows[1]["openalex_author_id"] == "A2222222222"
+        # ORCID mint+link now sees the OpenAlex-backfilled orcid too.
+        assert outcome.orcid_links == 1
+
+    def test_merge_by_family_name_when_counts_differ(self, store: Store) -> None:
+        rid = _paper(store, slug="oa2", doi="10.1234/oa2")
+        msg = _crossref_msg(doi="10.1234/oa2")
+        msg["author"] = [
+            {"given": "Bryan R.", "family": "Goldsmith"},
+            {"given": "Jane", "family": "Doe"},
+        ]
+        # OpenAlex lists a third (e.g. a corrected/duplicate) authorship —
+        # counts differ, so the merge falls back to family-name match.
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A333",
+                        "display_name": "J Doe",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A444",
+                        "display_name": "B. GOLDSMITH",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A555",
+                        "display_name": "Extra One",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa2",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        ref = _ref(store, rid)
+        by_family = {a["family"]: a for a in ref.authors}
+        assert by_family["Goldsmith"]["openalex_author_id"] == "A444"
+        assert by_family["Doe"]["openalex_author_id"] == "A333"
+        # Crossref order/entries are preserved regardless of match order.
+        assert [a["family"] for a in ref.authors] == ["Goldsmith", "Doe"]
+
+    def test_shared_family_name_is_not_paired(self, store: Store) -> None:
+        # Two co-authors named Wang: pairing by surname would stamp one
+        # author's identity on the other, so neither gets an id; the
+        # unique surname still pairs.
+        rid = _paper(store, slug="oa4", doi="10.1234/oa4")
+        msg = _crossref_msg(doi="10.1234/oa4")
+        msg["author"] = [
+            {"given": "Li", "family": "Wang"},
+            {"given": "Wei", "family": "Wang"},
+            {"given": "Jane", "family": "Doe"},
+        ]
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A1",
+                        "display_name": "Li Wang",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A2",
+                        "display_name": "Wei Wang",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A3",
+                        "display_name": "Jane Doe",
+                    }
+                },
+                {
+                    "author": {
+                        "id": "https://openalex.org/A9",
+                        "display_name": "Extra One",
+                    }
+                },
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa4",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        rows = store.get_paper_authors(rid)
+        assert [r["openalex_author_id"] for r in rows] == [None, None, "A3"]
+
+    def test_existing_crossref_orcid_is_not_overwritten(self, store: Store) -> None:
+        rid = _paper(store, slug="oa3", doi="10.1234/oa3")
+        msg = _crossref_msg(doi="10.1234/oa3", orcid=_VALID_ORCID)
+        other_orcid = "0000-0001-2345-6789"
+        work = {
+            "authorships": [
+                {
+                    "author": {
+                        "id": "https://openalex.org/A666",
+                        "display_name": "Bryan R. Goldsmith",
+                        "orcid": f"https://orcid.org/{other_orcid}",
+                    }
+                }
+            ]
+        }
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/oa3",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: work,
+        )
+        assert outcome is not None
+        ref = _ref(store, rid)
+        assert ref.authors[0]["orcid"] == _VALID_ORCID
+        assert ref.authors[0]["openalex_author_id"] == "A666"
+
+
 class TestHumanVerifiedGuard:
     def test_verified_paper_authors_untouched_other_meta_filled(
         self, store: Store
@@ -199,7 +384,9 @@ class TestHumanVerifiedGuard:
         assert outcome is not None
         assert outcome.skipped_authors is True
         ref = _ref(store, rid)
-        assert ref.authors == [{"name": "Human, Fixed"}]
+        # The byline is the paper_authors projection (S1): the unambiguous
+        # "Family, Given" string is split at insert, and stays that way.
+        assert ref.authors == [{"given": "Fixed", "family": "Human"}]
         # other meta fields still fill in.
         assert (ref.meta or {}).get("entry_type") == "journal-article"
         assert SOURCE_KEY not in (ref.meta or {})
