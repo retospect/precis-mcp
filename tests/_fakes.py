@@ -59,3 +59,22 @@ class FakeStore:
 
     def list_chunks_for_ref(self, ref_id: int) -> list[Any]:
         return list(self._blocks.get(ref_id, []))
+
+
+class SingleRefFakeStore(FakeStore):
+    """One ref, one optional DOI — the shape the ingest TTL-gate tests
+    (DOI validation, retraction) both need. Subclasses record whichever
+    write their gate performs."""
+
+    def __init__(self, ref: Any, doi: str | None = None) -> None:
+        super().__init__()
+        self._ref = ref
+        self._doi = doi
+
+    def fetch_refs_by_ids(
+        self, ids: Any, include_deleted: bool = False
+    ) -> dict[int, Any]:
+        return {self._ref.id: self._ref} if self._ref is not None else {}
+
+    def dois_for_refs(self, ids: Any) -> dict[int, str]:
+        return {i: self._doi for i in ids} if self._doi else {}

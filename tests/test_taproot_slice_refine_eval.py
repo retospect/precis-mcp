@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.taproot.slice_refine_eval import eval_hub_slice
+from tests._fakes import FakeStore as _FakeStoreBase
 
 # ── fakes ────────────────────────────────────────────────────────────────
 
@@ -75,19 +76,16 @@ class FakePool:
         yield self._conn
 
 
-class FakeStore:
+class FakeStore(_FakeStoreBase):
     """Deliberately defines NO write method — ``attach_evidence`` /
     ``update_ref`` raise if ever called, so a regression that starts
     writing fails the test immediately instead of silently mutating a
     fake (or, worse, a real store)."""
 
-    chunks = property(
-        lambda self: self
-    )  # chunks carve: flat fake doubles as its own sub-store
-
     def __init__(
         self, conn: FakeConn, candidates: list[tuple[Any, Any, float]]
     ) -> None:
+        super().__init__()
         self.pool = FakePool(conn)
         self._candidates = candidates
 

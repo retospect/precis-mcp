@@ -18,19 +18,13 @@ from typing import Any
 import pytest
 
 from precis.ingest import provenance as P
+from tests._fakes import SingleRefFakeStore
 
 
-class FakeStore:
+class FakeStore(SingleRefFakeStore):
     def __init__(self, ref, doi=None):
-        self._ref = ref
-        self._doi = doi
+        super().__init__(ref, doi)
         self.validations: list[dict] = []
-
-    def fetch_refs_by_ids(self, ids, include_deleted=False):
-        return {self._ref.id: self._ref} if self._ref is not None else {}
-
-    def dois_for_refs(self, ids):
-        return {i: self._doi for i in ids} if self._doi else {}
 
     def set_doi_validation(self, ref_id, *, status, conn=None):
         self.validations.append({"ref_id": ref_id, "status": status})
