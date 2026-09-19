@@ -1010,9 +1010,17 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
     as if it were the judge's answer). ``data`` carries the parsed JSON dict
     so a judge caller reads ``LlmResult.data`` exactly as it read
     ``ClaudePResult.data``.
+
+    Same quota-notice classification as :func:`result_from_agent`
+    (gr345336): the CLI returns "You're out of extra usage · resets …" as
+    an ordinary exit-0 reply on this lane too, and every ``CLAUDE_P``
+    caller (quest_tick's three rungs, plan_tick, doctor_tick, …) then read
+    it as an unparseable answer and *failed* the job instead of pausing
+    for a free retry — ~2/3 of gr345366's "unparseable model output".
     """
-    return LlmResult(
-        text=res.text or res.raw_stdout,
+    text = res.text or res.raw_stdout
+    result = LlmResult(
+        text=text,
         cost_usd=res.cost_usd,
         turns_used=None,
         model=model,
@@ -1023,6 +1031,14 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
         cache_read_tokens=res.cache_read_tokens,
         cache_creation_tokens=res.cache_creation_tokens,
     )
+    if not res.data and is_quota_exhaustion_text(text):
+        result = _replace(
+            result,
+            paused=True,
+            quota_exhausted=True,
+            error=f"account quota exhausted: {text.strip()}",
+        )
+    return result
 
 
 def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:

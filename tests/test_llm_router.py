@@ -291,6 +291,42 @@ def test_result_from_agent_quota_text_on_abnormal_exit_not_paused() -> None:
     assert got.paused is False
 
 
+@pytest.mark.parametrize(
+    "quota_text",
+    [
+        "Claude AI usage limit reached|1757203200",
+        "You've hit your weekly limit · resets 11am (UTC)",
+        "You're out of extra usage · resets 11am (UTC)",
+    ],
+)
+def test_result_from_claude_p_quota_text_pauses_with_quota_kind(
+    quota_text: str,
+) -> None:
+    """gr345366: quest_tick's tick/commit/compress calls carry no
+    ``tools_needed`` so they ride ``CLAUDE_P``, which had none of the
+    gr345336 classification — the quota notice fell through to
+    ``extract_json_object`` and the tick FAILED instead of pausing."""
+    raw = ClaudePResult(data={}, raw_stdout=quota_text, cost_usd=0.0, text=quota_text)
+    got = result_from_claude_p(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    assert got.paused is True
+    assert got.quota_exhausted is True
+    assert got.error is not None and quota_text in got.error
+
+
+def test_result_from_claude_p_parsed_json_never_classifies_as_quota() -> None:
+    """A reply that parsed into ``data`` is an answer, whatever its text
+    says — the sniff only runs on a bare-text reply."""
+    raw = ClaudePResult(
+        data={"note": "You're out of extra usage · resets 11am (UTC)"},
+        raw_stdout="{}",
+        cost_usd=0.0,
+        text="You're out of extra usage · resets 11am (UTC)",
+    )
+    got = result_from_claude_p(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    assert got.paused is False
+    assert got.quota_exhausted is False
+
+
 def test_result_from_claude_p() -> None:
     raw = ClaudePResult(
         data={"verdict": "ok"},
