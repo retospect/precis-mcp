@@ -24,6 +24,7 @@ from precis.errors import BadInput
 from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import PendingGenerate, finish_generate, prepare_generate
 from precis_se.atomic.vocab import check_dof_axis_ports
+from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
 from precis_se.simp_bridge import SimpRequest, prepare_simp
@@ -33,8 +34,14 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 #: ``realize`` strategies. ``analytic`` (the default) is the envelope seed
 #: (:mod:`precis_se.realize`); ``simp`` is the enqueued topology solve
-#: (:mod:`precis_se.simp_bridge`).
-REALIZE_STRATEGIES = ("analytic", "simp")
+#: (:mod:`precis_se.simp_bridge`); ``manufacture`` is the print-in-place
+#: fuse of a manufacture print group (:mod:`precis_se.manufacture`) —
+#: inline when small, enqueued otherwise.
+REALIZE_STRATEGIES = ("analytic", "simp", "manufacture")
+
+#: What ``pending_jobs`` carries: one entry per realize op the handler
+#: runs or enqueues after its own save commits.
+PendingJob = SimpRequest | ManufactureRequest
 
 #: The store-aware ops intercepted in :func:`apply_ops_with_atomic` — they
 #: never reach :func:`precis_se.ops.apply_ops`, so
@@ -60,7 +67,7 @@ def apply_ops_with_atomic(
     ops: list[dict[str, Any]],
     *,
     design_slug: str,
-    pending_jobs: list[SimpRequest] | None = None,
+    pending_jobs: list[PendingJob] | None = None,
 ) -> str | None:
     """Walk ``ops`` in order, applying the store-aware ops here (the
     atomic mode's 3 plus ``realize``) and everything else through the
@@ -104,17 +111,19 @@ def apply_ops_with_atomic(
     "never re-validate something a later op already undid" rule
     ``finish_generate`` follows for its own deferred half).
 
-    **``realize(strategy='simp')`` is validated here and enqueued by the
-    caller** (docs/backlog/structural-solution-space.md slice 4 bridge):
-    :func:`precis_se.simp_bridge.prepare_simp` runs the op's whole
-    refusal set against the in-memory tree, and the resulting
-    :class:`~precis_se.simp_bridge.SimpRequest` is appended to
-    ``pending_jobs`` — the handler enqueues one ``se_simp`` job per entry
-    *after* its own ``save_tree`` commits, so the job's ``load_tree`` sees
-    exactly the tree this call wrote (a job enqueued mid-walk could run
-    against the previous save). The block itself is untouched until the
-    job binds it. A caller that passes no ``pending_jobs`` list refuses
-    the strategy rather than dropping the request on the floor.
+    **``realize(strategy='simp'|'manufacture')`` is validated here and
+    run/enqueued by the caller** (docs/backlog/structural-solution-space.md
+    slice 4 bridge): :func:`precis_se.simp_bridge.prepare_simp` /
+    :func:`precis_se.manufacture.prepare_manufacture` run the op's whole
+    refusal set against the in-memory tree, and the resulting request
+    (:data:`PendingJob`) is appended to ``pending_jobs`` — the handler
+    enqueues one ``se_simp``/``se_manufacture`` job per entry (or, for a
+    small manufacture group, fuses inline) *after* its own ``save_tree``
+    commits, so the run's ``load_tree`` sees exactly the tree this call
+    wrote (a job enqueued mid-walk could run against the previous save).
+    The block itself is untouched until the run binds it. A caller that
+    passes no ``pending_jobs`` list refuses the strategy rather than
+    dropping the request on the floor.
 
     Returns a compact echo of every atomic store-aware op (for the caller's
     response), or ``None`` when there were none."""
@@ -148,14 +157,20 @@ def apply_ops_with_atomic(
                     f"realize: unknown strategy {strategy!r}; known: "
                     f"{', '.join(REALIZE_STRATEGIES)}"
                 )
-            if strategy == "simp":
+            if strategy in ("simp", "manufacture"):
                 if pending_jobs is None:
                     raise BadInput(
-                        "realize(strategy='simp') needs a caller that can enqueue "
-                        "the se_simp job (put/edit on kind='se')"
+                        f"realize(strategy={strategy!r}) needs a caller that can "
+                        "run or enqueue the job (put/edit on kind='se')"
                     )
+                request: PendingJob
                 try:
-                    echo, request = prepare_simp(tree, op)
+                    if strategy == "simp":
+                        echo, request = prepare_simp(tree, op, cad_store_reader=store)
+                    else:
+                        echo, request = prepare_manufacture(
+                            tree, op, cad_store_reader=store
+                        )
                 except OpError as exc:
                     raise BadInput(str(exc)) from exc
                 echoes.append(echo)

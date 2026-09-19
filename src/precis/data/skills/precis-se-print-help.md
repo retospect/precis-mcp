@@ -1,7 +1,7 @@
 ---
 id: precis-se-print-help
 title: precis — turning a block into a printed part (realize, build orientation, process DRC, STL/3MF)
-summary: mint a block's first cad implementation (realize — the envelope seed, or strategy='simp' for an enqueued topology solve bound back as a field leaf), let view='print' pick and pin a build orientation, read the process-DRC findings (overhang, bridge, bed contact, undersize hole, thin feature, load vs layer), write the STL/3MF a slicer opens, print a whole assembly as a fit-test model (a print group with intent='model' — one frame, one 3MF, bought parts as catalog stand-ins), and read view='fab' for the whole design's fabrication plan across every source
+summary: mint a block's first cad implementation (realize — the envelope seed, or strategy='simp' for an enqueued topology solve bound back as a field leaf), let view='print' pick and pin a build orientation, read the process-DRC findings (overhang, bridge, bed contact, undersize hole, thin feature, load vs layer), write the STL/3MF a slicer opens, print a whole assembly as a fit-test model (a print group with intent='model' — one frame, one 3MF, bought parts as catalog stand-ins) or as the real print-in-place part (intent='manufacture' + realize(strategy='manufacture') — rigid members fused, DOF joints gapped, bought parts as cavities with a pause height, fasteners elided), and read view='fab' for the whole design's fabrication plan across every source
 answers:
   - how do I print a block I've designed in se?
   - how do I turn an abstract requirements block into something I can export?
@@ -13,6 +13,8 @@ answers:
   - how do I see everything a design needs to be fabricated, not just the printed parts?
   - how do I print a whole assembly as one fit-test model, screws and bearings included?
   - what is a print group, and where does intent='model' go?
+  - how do I print a hinge or a linkage in place, as one job, with the pin already inside?
+  - what do gap=, fit= and blend= mean on realize(strategy='manufacture'), and why is a fastener missing from the export?
 applies-to: get/edit (kind='se'); read precis-se-help first for the op grammar; precis-se-fasten-help for the screw stack a printed member's holes come from
 status: active
 tags: workflow, design
@@ -223,10 +225,9 @@ own row`, never places or exports it, and every block belongs to its
 nearest root. `intent` is a `set_mode` parameter and lives
 on the block's `build_frame` record next to a pin (`set_build_frame` /
 `clear_build_frame` leave it alone; `set_mode(mode=null)` clears it —
-no mode, no group). Values: `model` (built) and `manufacture` (round B2
-— cavities, in-place gaps, fusion, fastener elision — **refused as not
-built yet**; the enum exists so the arg shape is stable). A non-fdm mode
-with an intent is refused.
+no mode, no group). Values: `model` (this section) and `manufacture`
+(§2e — the real print-in-place part). A non-fdm mode with an intent is
+refused.
 
 **`model` = a fit-test model, any scale.** Every fdm member prints its
 realized solid (stamped holes included, compensation kept). Every
@@ -262,6 +263,87 @@ collapses the group to **one row** naming the intent, member count,
 stand-in count and the 3MF handle. A group root with no intent is not a
 group — everything below it reads exactly as before.
 
+## 2e — print groups: `intent='manufacture'` — the real part, print-in-place
+
+```python
+edit(kind="se", id="unicycle-mk2", ops=[
+  {"op": "set_mode", "block": "hinge", "mode": "fdm/pla", "intent": "manufacture"},
+  {"op": "realize", "block": "hinge", "strategy": "manufacture",
+   "gap": 0.0004, "fit": 0.0002, "blend": 0.002},
+])
+get(kind="se", id="unicycle-mk2", view="print", args={"block": "hinge"})
+get(kind="se", id="unicycle-mk2", view="print",
+    args={"block": "hinge", "fmt": "3mf", "path": "/tmp/hinge.3mf"})
+```
+
+Same group rules as `model` (§2d: fdm ancestor + intent, members below
+it, nested roots end the group). `realize(strategy='manufacture')` on the
+**root** fuses the members into ONE sampled-field solid in the root's
+frame — field/CSG ops only, never a mesh — and binds it to the root as a
+new cad design `<design>-<root>-mfg` (re-run: `-2`, `-3`… sibling; the
+root must not carry a solid of its own). Every connect between two
+members is **rigid** (`rigid`/`captive`/`axial`, or no joint declared —
+fused, with a `joint_undeclared` note) or **DOF** (revolute, prismatic,
+…):
+
+- **rigid pairs fuse**: min-union; `blend=` (m, default 0 = plain min)
+  is the smooth-min width at the seam, the DSL's `blend:` — a fillet-like
+  seam, not an exact radius.
+- **DOF pairs get the in-place gap, seam-locally**: each printed side is
+  **carved back by `gap/2` from its partner** (`A' = A \ dilate(B,
+  gap/2)`, the dilation an `offset` on the partner's re-distanced sampled
+  field, plus half a pitch because the re-distance binarises — `gap` is a
+  floor; face-to-face and pin-in-bore come out at `gap`, a re-entrant
+  corner's worst case is `gap/2`, and the report quotes the **measured**
+  separation per joint). Nothing else about either member moves, so a
+  rigid seam it shares with a third member stays intact. A DOF pair a
+  rigid path joins anyway is `dof_bridged` (error) and the export is
+  refused. `gap=` (m) is required unless the house
+  `min_clearance` capability resolves (null in every fdm row today — a
+  `set_process_override(block=<root>, field='min_clearance', value=<mm>)`
+  supplies it and then also serves as the default). Below the floor →
+  `in_place_clearance` **error**; null floor → an info finding saying the
+  floor is uncalibrated and the gap was taken as declared. A pair that
+  still touches after erosion is `in_place_fused` (error).
+- **bought members become cavities**: the §2d stand-in re-distanced,
+  dilated by `fit=` (m, required whenever there is a cavity to cut, no
+  default; 0 = the exact stand-in) and subtracted. No insertion path is
+  searched: the report names each cavity's **top layer above the bed** as
+  the mid-print pause height (the `bambuuzle` rung inserts the part
+  there). No stand-in → `cavity_missing` (error).
+- **fasteners are elided** when their grip stack (the members the screw
+  passes through, `view='fasten'`) is two or more printed members of one
+  fused body: `joint fused, <bolt> not needed` (info), no cavity, nuts and
+  washers in the stack go with it, the elided screw's clearance holes are
+  left uncut in the fused members, and a bare `screw`-mechanism connect
+  between fused members is no longer an `abstract_joint` — for
+  `manufacture` only; `model` still prints every fastener and its holes.
+  A fastener across a DOF joint stays a cavity.
+- **horizontal bores**: a DOF axis-class joint whose axis lies within 45°
+  of the build plate is an `overhang` finding naming the bore (member,
+  connect, axis) — no teardrop primitive exists yet, so it is reported,
+  not fixed; an undeclared axis says the check could not run.
+
+## 2f — `manufacture`: what the run stores, what the views show
+
+`pitch=` (m) defaults to the house `layer_height`. The op runs **inline**
+when the group has no SIMP-realized member and the grid is under 500 000
+cells; otherwise it enqueues an `se_manufacture` job (the root keeps its
+previous binding until it lands); above 8 000 000 cells it refuses with
+the count. The run summary sits on `meta.manufacture` (`last` + `runs`:
+members, fused components, joints, cavities, elisions, objects, measured
+gaps, findings). `view='print'` on the root reports the frame (root pin >
+SIMP member's `build_dir` > search on the fused mesh), the objects, the
+gaps, the cavities with pause heights and the elisions; `fmt='3mf'`
+writes **one object per connected component** of the fused field — a
+DOF-separated pair comes out as two objects, a fused pair as one.
+`view='fab'` says `intent manufacture, N objects, K cavities, E elided`.
+A member moved after the fuse → `manufacture_stale` (warn) until you
+re-realize. `realize(strategy='simp')` on a manufacture root solves the
+**fused group as one body** (keep-in = the members' envelopes minus the
+cavities, optional `fit=`; loads/supports on the root); a DOF joint
+inside the group is refused there.
+
 ## 3 — read `view='fab'` for the whole plan
 
 ```python
@@ -277,7 +359,7 @@ One row per implementation-bearing block, **any source** — not just
 |---|---|---|
 | `purchase` | the bound component/part, or `no item` | the slug + `view='bom'` |
 | `fdm` | `unrealized` \| `realized, abstract joints: N` \| `realized, print-checked: N finding(s)` \| `realized, pinned`/`proposed` | `realize(block=, mode=)` when unrealized, else `view='print' args={'block': ..., 'fmt': 'stl'}` |
-| `fdm` with `intent` (a print group) | `print group (intent model), N member(s), M stand-in(s)` + finding count or frame origin — its members have no rows of their own | `view='print' args={'block': <root>, 'fmt': '3mf'}` |
+| `fdm` with `intent` (a print group) | `print group (intent model), N member(s), M stand-in(s)` or `print group (intent manufacture), N member(s), intent manufacture, N objects, K cavities, E elided` (`not fused yet` before the realize) + finding count or frame origin — its members have no rows of their own | `view='print' args={'block': <root>, 'fmt': '3mf'}` |
 | `atomic` | bound structure design, or `unbound` | `bind_structure` / `generate` |
 | an unimplemented family (`sla`/`cnc-2.5ax`/`laser`/`stock-cut`) | `planned, not checked` | the family name — no implementer yet |
 | unset | `—` | `set_mode` |
@@ -297,10 +379,13 @@ estimates (`se-feasibility-and-cost.md`'s domain). Mesh thin-wall
 (medial-axis) analysis — `min_feature` is primitive-level, cheap and
 honest about what it covers, not a general wall-thickness solver. Curved-
 ceiling bridge detection reads as overhang (the conservative reading).
-`intent='manufacture'` — print-in-place for the real part: cavities for
-bought parts, the in-place gap between DOF-joined members
-(`in_place_clearance` against a `min_clearance` capability), fusion of
-rigidly-joined members with `blend` at the seam, fastener elision — is
-round B2 (structural-solution-space.md §Slice 4 bridge) and is refused as
-not built yet. Process-skill rewrites (e.g. `bridge-closing-a-bored-
-ceiling`) are filed follow-on items, not built here.
+In `manufacture` groups: a **mixed root** — the fused `field:` leaf plus
+the members' analytic `add`/`cut`/`blend:` nodes — so sub-pitch features
+(hole compensation, seats) survive the re-sample (today every member is
+re-sampled at the pitch and the report says so); an insertion-path search
+for cavities (today a pause height); a teardrop/diamond bore primitive
+(today an `overhang` finding); array/instance members (today
+`member_skipped`); and the calibration figures every fdm row still
+carries as null (`min_clearance`, `simp_pitch`, `strength_z_ratio`). Process-skill rewrites (e.g.
+`bridge-closing-a-bored-ceiling`) are filed follow-on items, not built
+here.

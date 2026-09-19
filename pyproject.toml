@@ -484,6 +484,11 @@ se_propose_atomic = "precis_se.atomic.propose:SPEC"
 # SIMP topology solve over one block's envelope, bound back as a cad
 # field-leaf design (docs/backlog/structural-solution-space.md slice 4).
 se_simp = "precis_se.simp_job:SPEC"
+# se_manufacture: the enqueued half of realize(kind='se',
+# strategy='manufacture') — a print-in-place fuse of one print group,
+# bound back as a cad field-leaf design on the group root (same item,
+# round B2). Small groups fuse inline; this job takes the rest.
+se_manufacture = "precis_se.manufacture_job:SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"

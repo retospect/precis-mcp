@@ -166,9 +166,11 @@ naming it, before save); the node tree renders `field:<12> nx×ny×nz
 @pitch`; export routes through the field backend (`_scaled_for_export`
 scales the loader's grid to mm). Tests: `tests/test_cad_fieldops.py`.
 
-Left open from slice 2: no agent-facing verb puts a grid (the se
-`realize(strategy='simp')` bridge is the first caller — Python-level
-`store.put_field` + DSL is the surface); the web viewer's per-node
+Left open from slice 2 (the se `realize(strategy='simp')` bridge landed
+9471ac99 as the first `put_field` caller; the `cad_propose` loader gap and
+the `put_field` ord race were closed bd0e987a — per-ref advisory lock):
+no agent-facing verb puts a grid (Python-level `store.put_field` + DSL is
+the surface); the web viewer's per-node
 preview skips a field leaf (solid mode meshes it); a 1-voxel-thin sheet
 sampled by the export grid at exactly its own pitch can straddle every
 sample on the zero set — export finer than the field pitch (the
@@ -176,17 +178,12 @@ cantilever test does; a pitch guard in `export` is the obvious follow-up);
 `open`'s vanished-piece test uses the `(√3−1)·r` margin heuristic
 (documented on `VanishedComponent`) rather than a per-feature thickness
 measure; `label_components` is O(rounds × N) with pointer jumping — fine
-at 200³, not profiled beyond; `cad_propose` dry-runs still build without
-a field loader (an LLM cannot propose a grid anyway); the field's outside
+at 200³, not profiled beyond; the field's outside
 formula is Lipschitz ≤ √3 (documented), inside `BAND_SAFETY = 2`, but the
 zero set must stay inside the box — `close` enforces it, nothing else
 does. `open`'s erode/dilate leave `exact=False` by design (the offset is
 exact on one side only); a caller wanting an exact field again calls
-`redistance` on the result. Reviewer (opus, 2026-09-18): `put_field`'s
-`ord = MAX(ord)+1` subselect is the codebase's usual pattern and races
-under two concurrent same-ref writers (unique-key failure on one) — the
-first caller likely to hit it is parallel SIMP runs; move to a retry or
-an advisory lock when the bridge lands. `field` chunks are excluded from
+`redistance` on the result. `field` chunks are excluded from
 the embed/summarize cascades (`skip_chunk_kinds`, pinned by test).
 
 In scope:

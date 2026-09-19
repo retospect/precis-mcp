@@ -53,10 +53,13 @@ one rotation, one shared bed offset (:func:`precis.cad.printability.
 rotate_all_to_frame`). STL is refused for a group: it has no objects.
 
 ``intent='manufacture'`` (cavities, in-place gaps + ``min_clearance``,
-fusion + ``blend`` at the seam, fastener elision) is round B2 — the enum
-value exists so the arg shape is stable, and ``set_mode`` refuses it as
-not built yet. Loads are never scaled here; nothing in this module
-touches objectives.
+fusion + ``blend`` at the seam, fastener elision — round B2) lives in
+:mod:`precis_se.manufacture`; the membership walk, the member
+classification (:func:`_member`), the stand-ins, and the frame precedence
+(:func:`choose_frame`) here are shared with it, and :func:`report_for` /
+:func:`write_group_mesh` dispatch on the root's intent so every
+render/export path asks one function. Loads are never scaled here;
+nothing in this module touches objectives.
 """
 
 from __future__ import annotations
@@ -101,6 +104,12 @@ from precis_se.validate import ValidationIssue
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
+
+#: The two intents (:data:`precis_se.ops.PRINT_INTENTS`) by name — this
+#: module implements ``model``; :mod:`precis_se.manufacture` implements
+#: ``manufacture`` and :func:`report_for` dispatches on it.
+MODEL = "model"
+MANUFACTURE = "manufacture"
 
 #: Member roles a :class:`GroupMember` can carry.
 PRINTED = "printed"
@@ -155,6 +164,12 @@ class GroupPrintReport:
     search_skipped: str | None
     pitch: float | None
     findings: list[ValidationIssue] = field(default_factory=list)
+    #: The ``manufacture`` half (:class:`precis_se.manufacture.
+    #: ManufactureDetail`) when the group's intent is ``manufacture`` —
+    #: the fused field's objects, gaps, cavities and elisions; ``None``
+    #: for a ``model`` group. Typed ``Any`` here so this module stays the
+    #: import root (``manufacture`` imports it, not the reverse).
+    manufacture: Any = None
 
     @property
     def exportable(self) -> list[GroupMember]:
@@ -401,9 +416,18 @@ def _world_mesh(
     return verts @ member.xform.R.T + member.xform.t, tris
 
 
-def _member(tree: SeTree, name: str, *, cad_store_reader: Store) -> GroupMember:
+def _member(
+    tree: SeTree,
+    name: str,
+    *,
+    cad_store_reader: Store,
+    exclude: frozenset[str] = frozenset(),
+) -> GroupMember:
     """Classify one block below the root (or the root itself) and collect
-    what it contributes — module docstring's roles."""
+    what it contributes — module docstring's roles. ``exclude`` is
+    :func:`precis_se.printsolid.printed_solid`'s (the manufacture fuse's
+    elided fasteners, whose holes a fused body must not carry); ``model``
+    passes nothing."""
     node = tree.blocks[name]
     xform = _world(node)
     if node.template is not None:
@@ -427,7 +451,9 @@ def _member(tree: SeTree, name: str, *, cad_store_reader: Store) -> GroupMember:
         )
     family = se_modes.family_of(node.mode)
     if family is not None and family.key == "fdm":
-        printed = printed_solid(tree, name, cad_store_reader=cad_store_reader)
+        printed = printed_solid(
+            tree, name, cad_store_reader=cad_store_reader, exclude=exclude
+        )
         if printed is None or printed.volume_after_m3 <= 0.0:
             findings = list(printed.findings) if printed is not None else []
             findings.append(
@@ -540,89 +566,37 @@ def _simp_pins(tree: SeTree, members: list[GroupMember]) -> list[tuple[str, Vec3
     return out
 
 
-def report_for(
-    tree: SeTree, root: str, *, cad_store_reader: Store
-) -> GroupPrintReport | None:
-    """The group report for ``root``, or ``None`` when ``root`` is not a
-    group root (:func:`is_group_root`). Raises :class:`PrintUnsupported`
-    when a solid needs tessellating and ``manifold3d`` is missing."""
-    if not is_group_root(tree, root):
-        return None
-    root_node = tree.blocks[root]
-    intent = print_intent(root_node) or ""
-    mode = root_node.mode or ""
-    names, nested = _walk(tree, root)
-    if root_node.bound_kind == "cad" and root_node.bound:
-        names = [root, *names]  # a root with its own solid is a member too
-    members = [_member(tree, n, cad_store_reader=cad_store_reader) for n in names]
-    # A nested group root and its subtree print as their own group: one
-    # line here, never a member, never in this group's 3MF.
-    members.extend(
-        GroupMember(
-            block=n,
-            role=NESTED,
-            xform=_world(tree.blocks[n]),
-            note=f"nested group {n!r} — printed separately, see its own row",
-        )
-        for n in nested
-    )
-    findings: list[ValidationIssue] = []
-    for m in members:
-        findings.extend(m.findings)
+@dataclass
+class FrameChoice:
+    """What :func:`choose_frame` decided for a group: the candidate table
+    (empty when the search was skipped), the chosen world-down, whether a
+    root pin chose it, the skipped-search receipt, the chosen score and
+    the pinned-vs-best line."""
 
-    rules = _rules_for(tree, root_node)
-    policy = se_caps.orientation_policy(mode) or {}
-    pitch = rules.get("layer_height")
-    placed = [m for m in members if m.spec is not None]
-    if not placed:
-        findings.append(
-            ValidationIssue(
-                rule="group_empty",
-                subject=root,
-                detail=(
-                    f"print group {root!r} (intent {intent!r}) places nothing — "
-                    "no realized fdm member and no stand-in"
-                ),
-                severity="info",
-            )
-        )
-        return GroupPrintReport(
-            root=root,
-            intent=intent,
-            mode=mode,
-            members=members,
-            candidates=[],
-            chosen_down=None,
-            chosen_score=None,
-            pinned=False,
-            best_other=None,
-            search_skipped=None,
-            pitch=pitch,
-            findings=findings,
-        )
-    if not manifold_available():
-        raise PrintUnsupported(
-            "view='print' on a group needs the manifold3d backend (core "
-            "dependency — a broken venv?)"
-        )
+    candidates: list[BuildCandidate]
+    chosen_down: Vec3 | None
+    pinned: bool
+    search_skipped: str | None
+    chosen_score: cad_printability.Score | None
+    best_other: str | None
 
-    meshes = {m.block: _world_mesh(m, pitch) for m in placed}
-    verts_all: list[np.ndarray] = []
-    tris_all: list[np.ndarray] = []
-    offset = 0
-    for m in placed:
-        v, t = meshes[m.block]
-        verts_all.append(v)
-        tris_all.append(t + offset)
-        offset += len(v)
-    union = (np.vstack(verts_all), np.vstack(tris_all))
-    # set_load declares forces in the world frame — the group's frame.
-    loads: list[Vec3] = [
-        as_vec3(tree.blocks[m.block].objectives["force"])
-        for m in members
-        if (tree.blocks[m.block].objectives or {}).get("force")
-    ]
 
+def choose_frame(
+    tree: SeTree,
+    root_node: SeBlock,
+    members: list[GroupMember],
+    union: tuple[np.ndarray, np.ndarray],
+    rules: dict[str, Any],
+    policy: dict[str, Any],
+    loads: list[Vec3],
+    findings: list[ValidationIssue],
+) -> FrameChoice:
+    """The group's one build frame (module docstring's precedence: root
+    pin > a SIMP member's baked ``build_dir`` > the search on ``union``),
+    appending ``simp_frame_conflict``/``simp_frame_overridden`` to
+    ``findings``. Shared with :mod:`precis_se.manufacture`, whose union is
+    the fused field's mesh rather than the members'."""
+    root = root_node.name
     simp_pins = _simp_pins(tree, members)
     root_pin = pinned_down(root_node)
     pinned = root_pin is not None
@@ -700,6 +674,121 @@ def report_for(
                 f"pinned down={format_down(chosen_down)}'s "
                 f"{chosen_score.total:.4g} ({chosen_score.total - best.score:+.4g})"
             )
+    return FrameChoice(
+        candidates=candidates,
+        chosen_down=chosen_down,
+        pinned=pinned,
+        search_skipped=search_skipped,
+        chosen_score=chosen_score,
+        best_other=best_other,
+    )
+
+
+def group_loads(tree: SeTree, members: list[GroupMember]) -> list[Vec3]:
+    """Every member's declared ``force`` — ``set_load`` declares forces in
+    the world frame, which is the group's frame."""
+    return [
+        as_vec3(tree.blocks[m.block].objectives["force"])
+        for m in members
+        if (tree.blocks[m.block].objectives or {}).get("force")
+    ]
+
+
+def report_for(
+    tree: SeTree, root: str, *, cad_store_reader: Store
+) -> GroupPrintReport | None:
+    """The group report for ``root``, or ``None`` when ``root`` is not a
+    group root (:func:`is_group_root`). Raises :class:`PrintUnsupported`
+    when a solid needs tessellating and ``manifold3d`` is missing. A
+    ``manufacture`` root's report comes from :func:`precis_se.manufacture.
+    report_for` (the fused field's objects rather than the members'
+    solids) — one dispatch here so every render/export path asks one
+    function."""
+    if not is_group_root(tree, root):
+        return None
+    root_node = tree.blocks[root]
+    intent = print_intent(root_node) or ""
+    if intent == MANUFACTURE:
+        # Function-local: manufacture imports this module.
+        from precis_se import manufacture as se_manufacture
+
+        return se_manufacture.report_for(tree, root, cad_store_reader=cad_store_reader)
+    mode = root_node.mode or ""
+    names, nested = _walk(tree, root)
+    if root_node.bound_kind == "cad" and root_node.bound:
+        names = [root, *names]  # a root with its own solid is a member too
+    members = [_member(tree, n, cad_store_reader=cad_store_reader) for n in names]
+    # A nested group root and its subtree print as their own group: one
+    # line here, never a member, never in this group's 3MF.
+    members.extend(
+        GroupMember(
+            block=n,
+            role=NESTED,
+            xform=_world(tree.blocks[n]),
+            note=f"nested group {n!r} — printed separately, see its own row",
+        )
+        for n in nested
+    )
+    findings: list[ValidationIssue] = []
+    for m in members:
+        findings.extend(m.findings)
+
+    rules = _rules_for(tree, root_node)
+    policy = se_caps.orientation_policy(mode) or {}
+    pitch = rules.get("layer_height")
+    placed = [m for m in members if m.spec is not None]
+    if not placed:
+        findings.append(
+            ValidationIssue(
+                rule="group_empty",
+                subject=root,
+                detail=(
+                    f"print group {root!r} (intent {intent!r}) places nothing — "
+                    "no realized fdm member and no stand-in"
+                ),
+                severity="info",
+            )
+        )
+        return GroupPrintReport(
+            root=root,
+            intent=intent,
+            mode=mode,
+            members=members,
+            candidates=[],
+            chosen_down=None,
+            chosen_score=None,
+            pinned=False,
+            best_other=None,
+            search_skipped=None,
+            pitch=pitch,
+            findings=findings,
+        )
+    if not manifold_available():
+        raise PrintUnsupported(
+            "view='print' on a group needs the manifold3d backend (core "
+            "dependency — a broken venv?)"
+        )
+
+    meshes = {m.block: _world_mesh(m, pitch) for m in placed}
+    verts_all: list[np.ndarray] = []
+    tris_all: list[np.ndarray] = []
+    offset = 0
+    for m in placed:
+        v, t = meshes[m.block]
+        verts_all.append(v)
+        tris_all.append(t + offset)
+        offset += len(v)
+    union = (np.vstack(verts_all), np.vstack(tris_all))
+    loads = group_loads(tree, members)
+    frame_choice = choose_frame(
+        tree, root_node, members, union, rules, policy, loads, findings
+    )
+    candidates = frame_choice.candidates
+    chosen_down = frame_choice.chosen_down
+    pinned = frame_choice.pinned
+    search_skipped = frame_choice.search_skipped
+    chosen_score = frame_choice.chosen_score
+    best_other = frame_choice.best_other
 
     # Per-member DRC at the group's one frame (module docstring).
     for m in placed:
@@ -796,6 +885,10 @@ def write_group_mesh(report: GroupPrintReport, out_path: str | Path) -> Path:
     with the union's lowest point at ``z = 0``, millimetres. Reuses the
     cad export seam exactly as :func:`precis_se.printing.write_mesh` does
     (mm-scale first, fold, then rotate the finished meshes)."""
+    if report.manufacture is not None:
+        from precis_se import manufacture as se_manufacture
+
+        return se_manufacture.write_mesh(report, out_path)
     if report.chosen_down is None:
         raise ExportError(
             f"print group {report.root!r} has no build frame to export in "

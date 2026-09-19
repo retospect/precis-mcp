@@ -117,6 +117,7 @@ from precis_se import fret, persist, simp_bridge
 from precis_se import kinematics as se_kinematics
 from precis_se import kinematics_drc as se_kinematics_drc
 from precis_se import library as se_library
+from precis_se import manufacture as se_manufacture
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
 from precis_se import order as se_order
@@ -127,7 +128,7 @@ from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic import validate as se_atomic_validate
-from precis_se.atomic.apply import apply_ops_with_atomic
+from precis_se.atomic.apply import PendingJob, apply_ops_with_atomic
 from precis_se.identity import AmbiguousLabel, resolve_block
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
@@ -140,7 +141,6 @@ from precis_se.ops import (
     effective_ports,
     resolve_template,
 )
-from precis_se.simp_bridge import SimpRequest
 
 log = logging.getLogger(__name__)
 
@@ -406,7 +406,7 @@ class SeHandler(Handler):
         ops: list[dict[str, Any]],
         *,
         slug: str,
-        pending_jobs: list[SimpRequest],
+        pending_jobs: list[PendingJob],
     ) -> str | None:
         """Walk one ``put``/``edit``'s ops list. Delegates to
         :func:`~precis_se.atomic.apply.apply_ops_with_atomic` rather than
@@ -423,18 +423,25 @@ class SeHandler(Handler):
             self.store, tree, ops, design_slug=slug, pending_jobs=pending_jobs
         )
 
-    def _enqueue_simp(self, ref: Any, tree: SeTree, requests: list[SimpRequest]) -> str:
-        """Enqueue one ``se_simp`` job per validated
-        ``realize(strategy='simp')`` — after the tree is saved, never
-        inline (a solve is minutes; :mod:`precis_se.simp_bridge`'s
-        docstring). Idempotent per (design, block, inputs): the idem key
-        is :func:`precis_se.simp_bridge.inputs_sha` (request + envelope +
-        objectives + pose + effective ports), so a re-submit of the same
+    def _run_pending(self, ref: Any, tree: SeTree, requests: list[PendingJob]) -> str:
+        """After the tree is saved: enqueue one ``se_simp`` job per
+        validated ``realize(strategy='simp')`` (never inline — a solve is
+        minutes; :mod:`precis_se.simp_bridge`'s docstring), and for each
+        ``realize(strategy='manufacture')`` either fuse inline
+        (``request.sync`` — small group, no SIMP member;
+        :func:`precis_se.manufacture.run_manufacture` takes the per-ref
+        lock itself) or enqueue an ``se_manufacture`` job. Idempotent per
+        (design, block, inputs): the idem key is the bridge's own
+        ``inputs_sha`` (request + envelope + objectives + pose + effective
+        ports — or, for a group, every member), so a re-submit of the same
         problem collapses onto the in-flight job, while a changed load, a
         moved port or a finished job mints a fresh one (a finished run's
         re-realize is the sibling the spec asks for)."""
         bodies: list[str] = []
         for req in requests:
+            if isinstance(req, se_manufacture.ManufactureRequest):
+                bodies.append(self._run_manufacture(ref, tree, req))
+                continue
             # The SAME hash the job re-checks before binding
             # (simp_bridge.inputs_sha: envelope, objectives, pose, effective
             # ports incl. a load_at/fixed_at port's pose) — one function, so
@@ -474,6 +481,57 @@ class SeHandler(Handler):
                 "(the block reads unrealized until then)."
             )
         return "\n\n".join(bodies)
+
+    def _run_manufacture(
+        self, ref: Any, tree: SeTree, req: se_manufacture.ManufactureRequest
+    ) -> str:
+        """One ``realize(strategy='manufacture')``: inline when the op
+        said so, else an ``se_manufacture`` job (:meth:`_run_pending`)."""
+        slug = str(ref.slug)
+        nxt = (
+            f"Next: get(kind='se', id={slug!r}, view='print', "
+            f"args={{'block': {req.block!r}}}) — frame, objects, gaps, cavity "
+            "pause heights; add 'fmt': '3mf' to export."
+        )
+        if req.sync:
+            try:
+                outcome = se_manufacture.run_manufacture(self.store, int(ref.id), req)
+            except se_manufacture.ManufactureError as exc:
+                # The tree edits are saved; only the fuse failed — say so.
+                return (
+                    f"## se_manufacture — {req.block} NOT fused\n{exc}\n\n"
+                    "The tree edits in this call were saved; fix the cause and "
+                    f"re-run realize(block={req.block!r}, strategy='manufacture', ...)"
+                )
+            return f"## se_manufacture — {req.block} fused\n{outcome.echo}\n\n{nxt}"
+        digest = (se_manufacture.inputs_sha(tree, req) or "gone")[:16]
+        params: dict[str, Any] = {
+            "se_ref_id": int(ref.id),
+            "slug": slug,
+            **req.to_params(),
+        }
+        try:
+            job_resp = self.hub.sibling("job").put(
+                job_type=se_manufacture.JOB_TYPE,
+                executor="job_inproc",
+                parent_id=int(ref.id),
+                params=params,
+                idem_key=f"{se_manufacture.JOB_TYPE}:{ref.id}:{req.block}:{digest}",
+            )
+        except Exception as exc:
+            log.warning(
+                "se_manufacture: enqueue failed for %s.%s: %s", slug, req.block, exc
+            )
+            return (
+                f"## se_manufacture — {req.block} NOT queued\n"
+                f"fuse NOT queued for {req.block!r}: {exc} — the tree edits in this "
+                "call were saved; re-run "
+                f"realize(block={req.block!r}, strategy='manufacture', ...) on its own"
+            )
+        return (
+            f"## se_manufacture — {req.block} enqueued\n{job_resp.body}\n\n{nxt} "
+            "(once the job lands; the root keeps its previous binding until then)"
+        )
 
     def _foreign_resolver(self) -> Callable[[str], SeTree | None]:
         """One cross-design ``template`` resolver
@@ -521,7 +579,7 @@ class SeHandler(Handler):
         # design (cross-design cycle detection, ops._find_instance_cycle).
         tree.own_slug = slug
         tree.foreign = self._foreign_resolver()
-        pending_jobs: list[SimpRequest] = []
+        pending_jobs: list[PendingJob] = []
         echo = self._apply(tree, ops, slug=slug, pending_jobs=pending_jobs)
         ttl = (title or slug).strip() or slug
         existing = self.store.get_ref(kind="se", id=slug)
@@ -578,7 +636,7 @@ class SeHandler(Handler):
         if echo:
             body += f"\n\n{echo}"
         if pending_jobs:
-            body += "\n\n" + self._enqueue_simp(ref, tree, pending_jobs)
+            body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
         return Response(body=body)
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -613,7 +671,7 @@ class SeHandler(Handler):
             )
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
-        pending_jobs: list[SimpRequest] = []
+        pending_jobs: list[PendingJob] = []
         # load -> apply -> save under the design's per-ref lock
         # (persist.tree_mutation's invariant): the retire-all/reinsert-all
         # save would otherwise silently drop a concurrent edit or the
@@ -645,7 +703,7 @@ class SeHandler(Handler):
         if echo:
             body += f"\n\n{echo}"
         if pending_jobs:
-            body += "\n\n" + self._enqueue_simp(ref, tree, pending_jobs)
+            body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
         return Response(body=body)
 
     # ── get ──────────────────────────────────────────────────────────
@@ -1360,12 +1418,21 @@ class SeHandler(Handler):
                 f"view='print': a print group exports as fmt='3mf' only (one "
                 f"object per member; stl has no objects), got {fmt_arg!r}"
             )
-        if not report.exportable or report.chosen_down is None:
+        detail: se_manufacture.ManufactureDetail | None = report.manufacture
+        if detail is not None and not detail.realized:
+            raise BadInput(
+                f"print group {root!r} (intent manufacture) has no fused "
+                f"realization to export — realize(block={root!r}, "
+                "strategy='manufacture', gap=<m>, fit=<m>) first"
+            )
+        if detail is None and (not report.exportable or report.chosen_down is None):
             raise BadInput(
                 f"print group {root!r} has nothing to export — no realized fdm "
                 "member and no stand-in (see view='print' "
                 f"args={{'block': {root!r}}})"
             )
+        if report.chosen_down is None:
+            raise BadInput(f"print group {root!r} has no build frame to export in")
         raw_path = args.get("path")
         out = (
             Path(str(raw_path)).expanduser()
@@ -1382,18 +1449,29 @@ class SeHandler(Handler):
             raise BadInput(str(exc)) from exc
         size = path.stat().st_size
         error_findings = [f for f in report.findings if f.severity == "error"]
+        if detail is not None:
+            object_names = [n for n, _v, _t in detail.objects]
+            what = "one per connected component of the fused field"
+        else:
+            object_names = [m.block for m in report.exportable]
+            what = "members in world pose"
         lines = [
             f"# exported {ref.slug}:{root} → 3MF (print group, intent "
-            f"{report.intent}, {len(report.exportable)} object(s): "
-            + ", ".join(m.block for m in report.exportable)
+            f"{report.intent}, {len(object_names)} object(s): "
+            + ", ".join(object_names)
             + ")",
             f"{path}  ({size:,} bytes)",
             f"build frame: down={se_printing.format_down(report.chosen_down)} "
-            f"({_group_frame_origin(report)}) — shared by every member, "
-            "members in world pose",
+            f"({_group_frame_origin(report)}) — shared by every object, {what}",
         ]
         if report.search_skipped:
             lines.append(report.search_skipped)
+        if detail is not None:
+            lines.extend(
+                line
+                for line in _manufacture_lines(report)
+                if line.startswith(("gap ", "cavity ", "elided fasteners"))
+            )
         if error_findings:
             lines.append("")
             lines.append(
@@ -3164,6 +3242,113 @@ def _group_header_lines(report: se_printgroup.GroupPrintReport) -> list[str]:
     else:
         lines.append("no build frame — nothing placed")
     lines.extend(f"- {m.block}: {m.note}" for m in report.members)
+    if report.manufacture is not None:
+        lines.extend(_manufacture_lines(report))
+    return lines
+
+
+def _manufacture_lines(report: se_printgroup.GroupPrintReport) -> list[str]:
+    """The ``manufacture`` block of a group render: the joint plan, then —
+    once realized — the fused design, its objects, the measured gaps, the
+    cavities with their pause heights, the elided fasteners."""
+    detail: se_manufacture.ManufactureDetail = report.manufacture
+    plan = detail.plan
+    lines: list[str] = []
+    comps = plan.components()
+    lines.append(
+        "fused components: "
+        + (
+            "; ".join("+".join(c) for c in comps)
+            if comps
+            else "none (no printed member placed)"
+        )
+    )
+    if plan.dof_edges:
+        lines.append(
+            "DOF joints (each printed side carved back gap/2 from its partner): "
+            + "; ".join(f"{e.subject} ({e.klass})" for e in plan.dof_edges)
+        )
+        if plan.bridged:
+            lines.append(
+                "BRIDGED by a rigid path — not print-in-place, export refused: "
+                + "; ".join(f"{e.a}–{e.b}" for e in plan.bridged)
+            )
+    else:
+        lines.append("DOF joints: none")
+    s = detail.summary
+    if not detail.realized:
+        cav = [str(c["block"]) for c in s.get("cavities") or []]
+        lines.append("cavities planned: " + (", ".join(cav) if cav else "none"))
+        eli = [str(e["block"]) for e in s.get("elided") or []]
+        lines.append("fasteners to elide: " + (", ".join(eli) if eli else "none"))
+        lines.append(
+            "fused realization: none yet — see the manufacture_unrealized finding"
+        )
+        return lines
+    gap = s.get("gap_m")
+    fit = s.get("fit_m")
+    lines.append(
+        f"fused design {detail.cad_slug!r}: pitch "
+        f"{format_quantity(float(s.get('pitch_m') or 0.0), 'length')} "
+        f"({s.get('pitch_source')}), gap "
+        + (
+            f"{format_quantity(float(gap), 'length')} ({s.get('gap_source')}"
+            + (
+                f", floor {s['gap_floor_mm']:g} mm"
+                if s.get("gap_floor_mm") is not None
+                else ", floor uncalibrated"
+            )
+            + ")"
+            if gap is not None
+            else "— (no DOF joint)"
+        )
+        + ", fit "
+        + (f"{format_quantity(float(fit), 'length')}" if fit is not None else "—")
+        + ", blend "
+        + (
+            f"{format_quantity(float(s.get('blend_m') or 0.0), 'length')}"
+            if s.get("blend_m")
+            else "0 (plain min)"
+        )
+        + (" — STALE, see manufacture_stale" if detail.stale else "")
+    )
+    lines.append(
+        f"fused field at pitch "
+        f"{format_quantity(float(s.get('pitch_m') or 0.0), 'length')} — every "
+        "member is re-sampled at this pitch; sub-pitch features (hole "
+        "compensation, seats) are not preserved; a mixed analytic+field root "
+        "is the follow-up"
+    )
+    objs = s.get("objects") or []
+    lines.append(
+        f"objects ({len(objs)}, one per connected component): "
+        + ", ".join(str(o["name"]) for o in objs)
+    )
+    for g in detail.gaps:
+        lines.append(
+            f"gap {g['a']}–{g['b']}: measured "
+            f"{format_quantity(float(g['measured_m']), 'length')} min separation "
+            f"({g['subject']})"
+        )
+    if detail.pauses:
+        for block, height, source in detail.pauses:
+            lines.append(
+                f"cavity {block!r} ({source}): top layer at "
+                f"{format_quantity(height, 'length')} above the bed — mid-print "
+                "pause here to insert the part (no insertion path is searched; "
+                "the bambuuzle rung injects the pause)"
+            )
+    elif detail.cavities:
+        lines.append(
+            "cavities: "
+            + ", ".join(str(c["block"]) for c in detail.cavities)
+            + " (pause heights need a build frame)"
+        )
+    else:
+        lines.append("cavities: none")
+    lines.append(
+        "elided fasteners: " + (", ".join(detail.elided) if detail.elided else "none")
+    )
     return lines
 
 
@@ -3206,10 +3391,24 @@ def _render_group_block(report: se_printgroup.GroupPrintReport) -> str:
     lines.append("")
     lines.append(_findings_table(report.findings) if report.findings else "no findings")
     lines.append("")
-    lines.append(
-        f"Next: view='print' args={{'block': {report.root!r}, 'fmt': '3mf'}} "
-        "writes one 3MF, one object per member, in the group frame."
-    )
+    if report.manufacture is not None and not report.manufacture.realized:
+        lines.append(
+            f"Next: realize(block={report.root!r}, strategy='manufacture', "
+            "gap=<m>, fit=<m>, blend=<m>?) fuses the group; then view='print' "
+            f"args={{'block': {report.root!r}, 'fmt': '3mf'}} writes one object "
+            "per connected component."
+        )
+    elif report.manufacture is not None:
+        lines.append(
+            f"Next: view='print' args={{'block': {report.root!r}, 'fmt': '3mf'}} "
+            "writes one 3MF, one object per connected component of the fused "
+            "field, in the group frame."
+        )
+    else:
+        lines.append(
+            f"Next: view='print' args={{'block': {report.root!r}, 'fmt': '3mf'}} "
+            "writes one 3MF, one object per member, in the group frame."
+        )
     return "\n".join(lines)
 
 
@@ -3219,8 +3418,19 @@ def _fab_group_cell(report: se_printgroup.GroupPrintReport) -> tuple[str, str]:
     bits = [
         f"print group (intent {report.intent})",
         f"{report.member_count} member(s)",
-        f"{report.count(se_printgroup.STAND_IN)} stand-in(s)",
     ]
+    if report.manufacture is not None:
+        detail: se_manufacture.ManufactureDetail = report.manufacture
+        if detail.realized:
+            bits.append(
+                f"intent manufacture, {len(detail.summary.get('objects') or [])} "
+                f"objects, {len(detail.cavities)} cavities, "
+                f"{len(detail.elided)} elided"
+            )
+        else:
+            bits.append("intent manufacture, not fused yet")
+    else:
+        bits.append(f"{report.count(se_printgroup.STAND_IN)} stand-in(s)")
     serious = [f for f in report.findings if f.severity != "info"]
     if serious:
         bits.append(f"{len(serious)} finding(s)")

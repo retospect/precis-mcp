@@ -85,6 +85,7 @@ slack in prose as a stopgap.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1435,7 +1436,9 @@ def findings(results: list[FastenResult]) -> list[ValidationIssue]:
     return [f for res in results for f in res.findings]
 
 
-def features_for(tree: SeTree, block: str) -> list[Hole]:
+def features_for(
+    tree: SeTree, block: str, *, exclude: frozenset[str] = frozenset()
+) -> list[Hole]:
     """Every :class:`Hole` stamped into ``block`` across every screw
     connect in the tree — the per-block collector se-print-implementer.md
     names as the one thing :func:`fasten` doesn't already give a caller.
@@ -1444,11 +1447,25 @@ def features_for(tree: SeTree, block: str) -> list[Hole]:
     one per-connect pass ``view='fasten'`` renders (:func:`_one` per live
     screw connect) and stores every stamped :class:`Hole` on its
     :class:`FastenResult`, so this is a filter over that result, not a
-    reimplementation of the walk."""
-    return [hole for res in fasten(tree) for hole in res.holes if hole.block == block]
+    reimplementation of the walk.
+
+    ``exclude`` names fastener blocks whose holes are NOT wanted — the
+    one caller is :mod:`precis_se.manufacture`, whose fused body has no
+    use for the clearance hole of a screw it elided (the joint is one
+    body). ``model`` prints and every DRC path pass nothing and read the
+    same list they always did."""
+    return [
+        hole
+        for res in fasten(tree)
+        if res.fastener not in exclude
+        for hole in res.holes
+        if hole.block == block
+    ]
 
 
-def abstract_joints(tree: SeTree) -> list[tuple[ConnectSpec, str]]:
+def abstract_joints(
+    tree: SeTree, *, fused: Callable[[str, str], bool] | None = None
+) -> list[tuple[ConnectSpec, str]]:
     """Every connect whose mechanism *implies* real hardware
     (:data:`precis_se.joints.MECHANISMS`'s ``demands_bom`` entries — today
     ``screw``/``magnet``/``bearing``/``cable``) where nothing real has been
@@ -1456,6 +1473,14 @@ def abstract_joints(tree: SeTree) -> list[tuple[ConnectSpec, str]]:
     realizes it — se-print-implementer.md's "real things need real
     things". Rung 4 renders these as the ``abstract_joint`` finding; this
     only computes the list.
+
+    ``fused`` is the one exception a print-in-place group earns
+    (:mod:`precis_se.manufacture`, ``intent='manufacture'`` ONLY — a
+    ``model`` group passes nothing and prints its fasteners): a predicate
+    over the two endpoint blocks that answers "are these one body in the
+    fused export"; a ``screw`` mechanism whose endpoints it fuses has its
+    demand **satisfied by fusion** — there is no joint left to fasten —
+    and is not listed.
 
     The ``screw`` mechanism reuses :func:`_find_fastener` verbatim — the
     same catalog-form check (a `component`-bound endpoint whose fastener
@@ -1482,6 +1507,8 @@ def abstract_joints(tree: SeTree) -> list[tuple[ConnectSpec, str]]:
             continue
         if mech == "screw":
             if _find_fastener(tree, connect) is not None:
+                continue
+            if fused is not None and fused(connect.a_block, connect.b_block):
                 continue
         else:
             named = any(

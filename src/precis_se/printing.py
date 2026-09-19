@@ -49,6 +49,7 @@ the same "no rule runs on a ``None`` threshold" honesty
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -169,11 +170,14 @@ def _local_loads(node: SeBlock) -> list[Vec3]:
     return [inv.apply_dir(as_vec3(force))]
 
 
-def _abstract_joint_findings(tree: SeTree, block: str) -> list[ValidationIssue]:
+def _abstract_joint_findings(
+    tree: SeTree, block: str, *, fused: Callable[[str, str], bool] | None = None
+) -> list[ValidationIssue]:
     """``abstract_joint`` (warn), filtered to the connects touching
-    ``block`` — module docstring."""
+    ``block`` — module docstring. ``fused`` is the manufacture group's
+    fusion predicate (:func:`precis_se.fasten.abstract_joints`)."""
     out: list[ValidationIssue] = []
-    for connect, mechanism in se_fasten.abstract_joints(tree):
+    for connect, mechanism in se_fasten.abstract_joints(tree, fused=fused):
         if block not in (connect.a_block, connect.b_block):
             continue
         subject = (
@@ -376,15 +380,19 @@ def frame_free_findings(
     block: str,
     printed: PrintedSolid,
     rules: dict[str, Any],
+    *,
+    fused: Callable[[str, str], bool] | None = None,
 ) -> list[ValidationIssue]:
     """The se-only findings that hold whatever frame the solid prints in —
     stamped-hole checks, ``min_feature``, ``abstract_joint`` (module
-    docstring). Shared with :mod:`precis_se.printgroup`."""
+    docstring). Shared with :mod:`precis_se.printgroup` and, with
+    ``fused`` (a ``screw`` demand satisfied by fusion),
+    :mod:`precis_se.manufacture`."""
     out = _hole_findings(node, block, se_fasten.features_for(tree, block), rules)
     mf = _min_feature_finding(block, printed, rules)
     if mf is not None:
         out.append(mf)
-    out.extend(_abstract_joint_findings(tree, block))
+    out.extend(_abstract_joint_findings(tree, block, fused=fused))
     return out
 
 

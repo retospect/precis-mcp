@@ -72,6 +72,7 @@ import hashlib
 import json
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -161,6 +162,10 @@ class SimpRequest:
     open_r: float | None = None
     close_r: float | None = None
     max_iter: int = DEFAULT_MAX_ITER
+    #: The cavity clearance a manufacture group's fused domain subtracts
+    #: its stand-ins with (:func:`precis_se.manufacture.simp_domain`);
+    #: ``None`` = the bare stand-in solids. Meaningless for a lone block.
+    fit: float | None = None
 
     def to_params(self) -> dict[str, Any]:
         return {
@@ -176,6 +181,7 @@ class SimpRequest:
             "open": self.open_r,
             "close": self.close_r,
             "max_iter": self.max_iter,
+            "fit": self.fit,
         }
 
     @classmethod
@@ -197,6 +203,7 @@ class SimpRequest:
             open_r=_opt("open"),
             close_r=_opt("close"),
             max_iter=int(params.get("max_iter") or DEFAULT_MAX_ITER),
+            fit=_opt("fit"),
         )
 
 
@@ -249,6 +256,66 @@ def _grid_shape(lo: np.ndarray, hi: np.ndarray, pitch: float) -> tuple[int, int,
     ext = np.maximum(hi - lo, 0.0)
     n = np.maximum(np.ceil(ext / pitch - 1e-9), 1).astype(int)
     return (int(n[0]), int(n[1]), int(n[2]))
+
+
+@dataclass
+class DomainGrid:
+    """What a domain builder hands :func:`solve_simp`: the element-centred
+    active mask (``True`` = inside the keep-in), the centre of element
+    ``[0,0,0]`` in the block's frame, the box it was cut from, and one
+    line saying what the builder did (kept in the run summary)."""
+
+    domain: np.ndarray
+    origin: np.ndarray
+    lo: np.ndarray
+    hi: np.ndarray
+    note: str = ""
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        nx, ny, nz = self.domain.shape
+        return int(nx), int(ny), int(nz)
+
+
+#: A domain builder: ``(tree, block, pitch) -> DomainGrid``. The default
+#: (:func:`envelope_domain`) voxelises the block's own envelope; a
+#: manufacture group root gets :func:`precis_se.manufacture.simp_domain`
+#: (the union of its members' envelopes minus the cavities) through
+#: :func:`run_simp` — the hook the spec's "fused group as one solve" row
+#: needed, without a second solver path.
+DomainBuilder = Callable[[SeTree, SeBlock, float], DomainGrid]
+
+
+def envelope_domain(tree: SeTree, node: SeBlock, pitch: float) -> DomainGrid:
+    """The default domain: the block's effective envelope in its own local
+    frame, sampled at element centres (module docstring)."""
+    envelope = effective_envelope(tree, node)
+    if not envelope:
+        raise SimpBridgeError(f"realize(simp): block {node.name!r} lost its envelope")
+    design, expr = _envelope_design(envelope)
+    lo, hi = (np.asarray(v, dtype=float) for v in cad_bulk.expr_aabb(design, expr))
+    shape = _grid_shape(lo, hi, pitch)
+    origin = lo + 0.5 * pitch  # centre of element [0, 0, 0]
+    ii, jj, kk = np.meshgrid(*(np.arange(n) for n in shape), indexing="ij")
+    centres = (
+        origin[None, :]
+        + np.stack([ii.ravel(), jj.ravel(), kk.ravel()], axis=1).astype(float) * pitch
+    )
+    sdf = component_sdf_np(design, expr, centres)
+    domain = (np.asarray(sdf) <= 0.0).reshape(shape)
+    if not domain.any():
+        raise SimpBridgeError(
+            f"realize(simp): {node.name!r}'s envelope {envelope!r} voxelises to "
+            f"no active element at pitch {pitch:g} m — the pitch is coarser "
+            "than the envelope"
+        )
+    return DomainGrid(
+        domain=domain,
+        origin=origin,
+        lo=lo,
+        hi=hi,
+        note=f"keep-in = envelope {envelope!r}",
+    )
 
 
 def _default_build_dir(lo: np.ndarray, hi: np.ndarray) -> str:
@@ -442,19 +509,29 @@ def _resolve_pitch(tree: SeTree, node: SeBlock, mode: str, op: dict[str, Any]) -
     return float(resolved.value) / 1000.0
 
 
-def prepare_simp(tree: SeTree, op: dict[str, Any]) -> tuple[str, SimpRequest]:
+def prepare_simp(
+    tree: SeTree, op: dict[str, Any], *, cad_store_reader: Store | None = None
+) -> tuple[str, SimpRequest]:
     """Validate ``{"op": "realize", "strategy": "simp", "block", "mode",
     "volfrac", "load_at", "fixed_at", "pitch"?, "build_dir"?, "round"?,
-    "open"?, "close"?, "max_iter"?}`` against the in-memory tree and
-    return ``(echo, request)``. Pure: nothing is mutated or stored — the
-    block stays unrealized until the ``se_simp`` job lands.
+    "open"?, "close"?, "max_iter"?, "fit"?}`` against the in-memory tree
+    and return ``(echo, request)``. Pure: nothing is mutated or stored —
+    the block stays unrealized until the ``se_simp`` job lands.
 
     Refusals (all :class:`SimpBridgeError`): a bound non-cad block, a
     missing envelope, no ``objectives.force``/``fixed`` (pointing at
     ``set_load``), a null house pitch with no ``pitch=``, ``volfrac``
     outside ``(0, 1)``, an unknown ``build_dir``/``load_at``/``fixed_at``
     token, ``round`` combined with ``open``/``close``, ``max_iter`` beyond
-    :data:`MAX_ITER_CAP`, or a grid beyond :data:`MAX_ELEMENTS`."""
+    :data:`MAX_ITER_CAP`, or a grid beyond :data:`MAX_ELEMENTS``.
+
+    A **manufacture group root** (:func:`precis_se.manufacture.
+    is_manufacture_root`) is the fused-domain case: its keep-in is the
+    union of its members' envelopes minus the cavities
+    (:func:`precis_se.manufacture.simp_box` sizes the budget here;
+    :func:`run_simp` builds the domain), so the root itself needs no
+    envelope — but the caller must pass ``cad_store_reader`` (member
+    solids live in the store). Loads/supports stay the ROOT's."""
     key, node = resolve_realize_target(tree, op)
     if node.bound_kind not in (None, "cad"):
         raise SimpBridgeError(
@@ -470,8 +547,24 @@ def prepare_simp(tree: SeTree, op: dict[str, Any]) -> tuple[str, SimpRequest]:
         parse_mode(mode)
     except ModeError as exc:
         raise SimpBridgeError(f"realize: {exc}") from exc
+    from precis_se import manufacture as se_manufacture  # cycle (docstring)
+
+    fused_group = se_manufacture.is_manufacture_root(tree, key)
+    group_box: tuple[np.ndarray, np.ndarray] | None = None
+    if fused_group:
+        if cad_store_reader is None:
+            raise SimpBridgeError(
+                f"realize(simp): {key!r} is a manufacture group root — its fused "
+                "keep-in needs a store-aware caller (put/edit on kind='se')"
+            )
+        try:
+            group_box = se_manufacture.simp_box(
+                tree, key, cad_store_reader=cad_store_reader
+            )
+        except se_manufacture.ManufactureError as exc:
+            raise SimpBridgeError(str(exc)) from exc
     envelope = effective_envelope(tree, node)
-    if not envelope:
+    if not envelope and not fused_group:
         raise SimpBridgeError(
             f"realize(simp): block {key!r} has no envelope — set_envelope first "
             "(the envelope is the SIMP keep-in domain)"
@@ -525,15 +618,26 @@ def prepare_simp(tree: SeTree, op: dict[str, Any]) -> tuple[str, SimpRequest]:
             "— 0 is an empty part and 1 is the uncut envelope"
         )
 
-    design, expr = _envelope_design(envelope)
-    lo, hi = (np.asarray(v, dtype=float) for v in cad_bulk.expr_aabb(design, expr))
+    if group_box is not None:
+        lo, hi = group_box
+    else:
+        assert envelope is not None  # refused above when not a fused group
+        design, expr = _envelope_design(envelope)
+        lo, hi = (np.asarray(v, dtype=float) for v in cad_bulk.expr_aabb(design, expr))
     shape = _grid_shape(lo, hi, pitch)
     n_elements = shape[0] * shape[1] * shape[2]
     if n_elements > MAX_ELEMENTS:
         raise SimpBridgeError(
-            f"realize(simp): pitch {pitch:g} m over {key!r}'s envelope box gives "
+            f"realize(simp): pitch {pitch:g} m over {key!r}'s "
+            f"{'group' if fused_group else 'envelope'} box gives "
             f"{shape[0]}x{shape[1]}x{shape[2]} = {n_elements} elements, above "
             f"the {MAX_ELEMENTS} budget one solve is allowed — coarsen pitch"
+        )
+    fit = _positive_length(op, "fit")
+    if fit is not None and not fused_group:
+        raise SimpBridgeError(
+            f"realize(simp): fit= is the cavity clearance of a manufacture group's "
+            f"fused domain; {key!r} is a lone block with no cavities"
         )
 
     raw_dir = op.get("build_dir")
@@ -619,15 +723,22 @@ def prepare_simp(tree: SeTree, op: dict[str, Any]) -> tuple[str, SimpRequest]:
         open_r=open_r,
         close_r=close_r,
         max_iter=max_iter,
+        fit=fit,
     )
     dir_note = (
         f"build_dir {build_dir!r} (given)"
         if dir_source == "given"
         else f"build_dir {build_dir!r} (default: largest face of the envelope box down)"
     )
+    domain_note = (
+        " (fused manufacture group: keep-in = the members' envelopes minus the "
+        "cavities" + (f", fit {fit:g} m" if fit is not None else "") + ")"
+        if fused_group
+        else ""
+    )
     echo = (
         f"realize({key!r}, strategy='simp'): queued a {JOB_TYPE} job — pitch "
-        f"{pitch:g} m over a {shape[0]}x{shape[1]}x{shape[2]} grid, volfrac "
+        f"{pitch:g} m over a {shape[0]}x{shape[1]}x{shape[2]} grid{domain_note}, volfrac "
         f"{volfrac:g}, {dir_note}, load at {locations['load_at']!r}, fixed at "
         f"{locations['fixed_at']!r}, max_iter {max_iter}; {key!r} stays "
         f"unrealized until the job lands (advisory tier: the compliance is a "
@@ -665,6 +776,12 @@ def inputs_sha(tree: SeTree, req: SimpRequest) -> str | None:
         },
         "request": req.to_params(),
     }
+    from precis_se import manufacture as se_manufacture  # cycle (prepare_simp)
+
+    if se_manufacture.is_manufacture_root(tree, req.block):
+        # A fused domain reads the whole group: a member moving or
+        # re-binding is a changed problem even when the root is untouched.
+        payload["group"] = se_manufacture.group_signature(tree, req.block)
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -674,35 +791,27 @@ def _binarised_overhangs(fld: Field, frame: _BuildFrame) -> int:
     return overhang_violations(frame.forward_array(solid), plate_at_first_solid=True)
 
 
-def solve_simp(tree: SeTree, req: SimpRequest) -> SimpSolve:
+def solve_simp(
+    tree: SeTree, req: SimpRequest, *, domain_builder: DomainBuilder | None = None
+) -> SimpSolve:
     """Voxelise, load, support, solve, and turn the density into a field —
     the store-free half of :func:`run_simp` (module docstring). Raises
     :class:`SimpBridgeError` for anything :func:`prepare_simp` could not
     see (an envelope that voxelises to nothing at this pitch, a passive
-    set that eats the volume budget) with the engine's own wording."""
+    set that eats the volume budget) with the engine's own wording.
+    ``domain_builder`` (:data:`DomainBuilder`) replaces the block's own
+    envelope as the keep-in; the default is :func:`envelope_domain`."""
     node = tree.blocks.get(req.block)
     if node is None:
         raise SimpBridgeError(f"realize(simp): block {req.block!r} no longer exists")
-    envelope = effective_envelope(tree, node)
-    if not envelope:
-        raise SimpBridgeError(f"realize(simp): block {req.block!r} lost its envelope")
-    design, expr = _envelope_design(envelope)
-    lo, hi = (np.asarray(v, dtype=float) for v in cad_bulk.expr_aabb(design, expr))
-    shape = _grid_shape(lo, hi, req.pitch)
-    origin = lo + 0.5 * req.pitch  # centre of element [0, 0, 0]
-    ii, jj, kk = np.meshgrid(*(np.arange(n) for n in shape), indexing="ij")
-    centres = (
-        origin[None, :]
-        + np.stack([ii.ravel(), jj.ravel(), kk.ravel()], axis=1).astype(float)
-        * req.pitch
-    )
-    sdf = component_sdf_np(design, expr, centres)
-    domain = (np.asarray(sdf) <= 0.0).reshape(shape)
+    grid = (domain_builder or envelope_domain)(tree, node, req.pitch)
+    domain = grid.domain
+    shape = grid.shape
+    origin = grid.origin
     if not domain.any():
         raise SimpBridgeError(
-            f"realize(simp): {req.block!r}'s envelope {envelope!r} voxelises to "
-            f"no active element at pitch {req.pitch:g} m — the pitch is coarser "
-            "than the envelope"
+            f"realize(simp): {req.block!r}'s keep-in voxelises to no active "
+            f"element at pitch {req.pitch:g} m ({grid.note})"
         )
 
     load_nodes = _node_set(
@@ -788,6 +897,7 @@ def solve_simp(tree: SeTree, req: SimpRequest) -> SimpSolve:
         "load_at": req.load_at,
         "fixed_at": req.fixed_at,
         "grid": list(shape),
+        "domain": grid.note,
         "active_elements": int(np.count_nonzero(domain)),
         "passive_elements": int(np.count_nonzero(passive & domain)),
         "load_nodes": len(load_nodes),
@@ -1034,8 +1144,33 @@ def run_simp(store: Store, ref_id: int, req: SimpRequest) -> SimpOutcome:
     if ref is None:
         raise SimpBridgeError(f"realize(simp): se design ref {ref_id} not found")
     tree = _load_live(store, ref_id, str(ref.slug))
-    solve = solve_simp(tree, req)
+    solve = solve_simp(tree, req, domain_builder=domain_builder_for(tree, req, store))
     return realize_simp(store, ref_id, req, solve)
+
+
+def domain_builder_for(
+    tree: SeTree, req: SimpRequest, cad_store_reader: Store
+) -> DomainBuilder | None:
+    """The fused-group builder when ``req.block`` is a manufacture group
+    root (:func:`precis_se.manufacture.simp_domain`), else ``None`` (the
+    block's own envelope)."""
+    # Function-local: manufacture imports printgroup, which imports the
+    # printing/printsolid stack; this module stays import-light.
+    from precis_se import manufacture as se_manufacture
+
+    if not se_manufacture.is_manufacture_root(tree, req.block):
+        return None
+
+    def _build(t: SeTree, node: SeBlock, pitch: float) -> DomainGrid:
+        try:
+            domain, origin, lo, hi, note = se_manufacture.simp_domain(
+                t, node.name, pitch, cad_store_reader=cad_store_reader, fit=req.fit
+            )
+        except se_manufacture.ManufactureError as exc:
+            raise SimpBridgeError(str(exc)) from exc
+        return DomainGrid(domain=domain, origin=origin, lo=lo, hi=hi, note=note)
+
+    return _build
 
 
 __all__ = [
@@ -1047,11 +1182,15 @@ __all__ = [
     "MAX_ITER_CAP",
     "META_KEY",
     "PITCH_FIELD",
+    "DomainBuilder",
+    "DomainGrid",
     "SimpBridgeError",
     "SimpOutcome",
     "SimpRequest",
     "SimpSolve",
     "SimpStale",
+    "domain_builder_for",
+    "envelope_domain",
     "inputs_sha",
     "prepare_simp",
     "realize_simp",

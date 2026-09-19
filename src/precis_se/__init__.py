@@ -426,9 +426,75 @@ members' frame findings are judged at that frame. ``view='print'`` on the
 root renders frame + per-member findings, ``fmt='3mf'`` writes one 3MF
 with an object per member in world pose (one shared bed offset,
 :func:`precis.cad.printability.rotate_all_to_frame`), ``view='fab'``
-collapses the group to one row. ``manufacture`` (cavities, in-place gaps,
-fusion, fastener elision) is round B2: the enum value exists, the op
-refuses it as not built yet. A root with no intent is not a group.
+collapses the group to one row. A root with no intent is not a group.
+
+**Print groups — ``intent='manufacture'``** (round B2, 2026-09-19):
+:mod:`precis_se.manufacture`, the real part, print-in-place.
+``realize(block=<group root>, strategy='manufacture', gap=, fit=,
+blend=, pitch=)`` builds ONE sampled-field solid per group in the root's
+frame by field/CSG ops only — no mesh is ever operated on. Every connect
+between two members is classified *rigid* (no DOF — ``rigid``/
+``captive``/``axial``, or an undeclared joint, said so) or *DOF*
+(:data:`precis_se.drc._MOVING_CLASSES`); rigid pairs of printed members
+**fuse** (min-union, :func:`precis.cad.fold.smooth_min_np` of width
+``blend`` at the seam — the DSL's ``blend:`` semantics, ``0`` = plain
+min); a DOF pair gets its gap **seam-locally by construction** — ``A' =
+A \\ dilate(B, gap/2)``, ``B' = B \\ dilate(A, gap/2)``, the dilation
+:func:`precis.cad.fieldops.offset` on the PARTNER's re-distanced sampled
+field, so a rigid seam elsewhere on ``A`` stays as sampled (face-to-face
+and pin-in-bore come out at ``gap``; a re-entrant corner's worst case is
+``gap/2``), plus half a pitch because the kernel's re-distance binarises,
+so ``gap`` and ``fit`` are floors and the report quotes the **measured**
+separation per joint (the other side's re-distanced SDF over this side's
+mesh vertices); a DOF pair a rigid path joins anyway is ``dof_bridged``
+(error, export refused); a bought member is a **cavity** — its B1
+stand-in re-distanced, dilated by ``fit`` (+ half a pitch), subtracted —
+with its top layer in the chosen frame, read off the sampled cavity
+field (exact to the grid in any frame), reported as the mid-print
+**pause** (no insertion-path search; the ``bambuuzle`` rung); an elided
+fastener's holes are excluded from the fused members
+(``printed_solid(exclude=)`` → ``fasten.features_for(exclude=)``, this
+path only); a bought fastener
+whose grip stack (:func:`precis_se.fasten.fasten`) is two or more printed
+members of one fused component is **elided** (``joint fused, <block> not
+needed``; the ``screw`` mechanism demand in
+:func:`precis_se.fasten.abstract_joints` is satisfied by fusion for this
+intent only — ``model`` still prints it). ``gap`` is required unless the
+house ``min_clearance`` capability resolves (new, null in every fdm row;
+a ``set_process_override`` on the root supplies it) — below the floor is
+an ``in_place_clearance`` error, a null floor an info finding saying
+"uncalibrated, taken as declared"; ``fit`` is required whenever a cavity
+is to be cut; ``pitch`` defaults to the house ``layer_height``. The op
+fuses inline when the group has no SIMP member and the grid is under
+``SYNC_CELL_CAP`` (500k cells), else enqueues ``se_manufacture``
+(:mod:`precis_se.manufacture_job`, its own job type — ``se_simp``'s
+schema is closed and SIMP-shaped); above ``MAX_CELLS`` (8M) it refuses.
+The result is a new cad design ``<design>-<root>-mfg[-N]`` rooted at
+``field:<sha>``, bound to the ROOT (which must hold no solid of its own)
+the way ``realize_simp`` binds — per-ref lock, inputs hash re-checked,
+``meta.manufacture`` ``last``/``runs``, the summary also in the field's
+provenance header, ``derived-from`` link; a re-run mints a sibling. The
+root is one ``field:`` leaf: every member is re-sampled at the pitch and
+sub-pitch features (hole compensation, seats) are not preserved — the
+mixed root (fused ``field:`` leaf + the members' analytic ``add``/``cut``
+/``blend:`` nodes, which the DSL already expresses) is the next item,
+and every render says so.
+``view='print'`` on the root reports the frame (root pin > SIMP member >
+search on the fused mesh), one object per **connected component** of the
+field (:func:`precis.cad.fieldops.label_components` — a DOF pair is two
+objects, a fused pair one), the measured gaps, the cavities with pause
+heights, the elisions, and the **teardrop rule**: a DOF axis-class joint
+whose axis lies within 45° of the build plate is an ``overhang`` finding
+naming the bore (no new primitive; an undeclared axis says the check
+could not run). ``fmt='3mf'`` writes one object per component;
+``view='fab'`` says ``intent manufacture, N objects, K cavities, E
+elided``. ``realize(strategy='simp')`` on a manufacture root solves the
+**fused group as one body**: :func:`precis_se.simp_bridge.solve_simp`'s
+new ``domain_builder`` hook takes :func:`precis_se.manufacture.
+simp_domain` — the union of the member envelopes in the root frame minus
+the stand-in cavities (the simp op's optional ``fit=``) — with the ROOT's
+loads/supports at ``load_at``/``fixed_at``; a DOF joint between printed
+members is refused there (one solve is one body).
 
 **Blocktree slice 4 — ranked library search** (docs/backlog/
 blocktree-library-build-plan.md §Slice 4, port-pose-and-composition-

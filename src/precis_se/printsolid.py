@@ -296,11 +296,18 @@ def _cut_placement(
 
 
 def printed_solid(
-    tree: SeTree, block_name: str, *, cad_store_reader: Store
+    tree: SeTree,
+    block_name: str,
+    *,
+    cad_store_reader: Store,
+    exclude: frozenset[str] = frozenset(),
 ) -> PrintedSolid | None:
     """The printed solid for ``block_name`` — the bound cad design minus
     every stamped hole it carries — or ``None`` when the block is not an
     fdm implementation at all (module docstring's eligibility order).
+    ``exclude`` (fastener block names) drops those fasteners' holes from
+    the cut set — :func:`precis_se.fasten.features_for`'s parameter, the
+    manufacture fuse's elided screws; every other caller passes nothing.
 
     ``cad_store_reader`` is anything offering the ``cad`` kind's own
     store-level ``get_ref``/``cad_load`` (a plain :class:`~precis.store.
@@ -363,7 +370,7 @@ def printed_solid(
     cut_nodes, feature_names, cut_any = _apply_cuts(
         design,
         block_name,
-        se_fasten.features_for(tree, block_name),
+        se_fasten.features_for(tree, block_name, exclude=exclude),
         inv,
         findings,
     )

@@ -389,6 +389,111 @@ paragraph's two-member revolute group. Also still open: array/instance
 members placed per member in a group (today `member_skipped`),
 `strength_z_ratio` calibration, a house `simp_pitch`.
 
+### Slice 4 bridge — round B2 (manufacture intent) built 2026-09-19
+
+Landed (`precis_se/manufacture.py` + `manufacture_job.py`, tests
+`tests/test_se_print_manufacture.py`; the intent table's second row and
+acceptance sentence 2):
+
+- **Op**: `realize(block=<group root>, strategy='manufacture', gap=?,
+  fit=?, blend=?, pitch=?)` — `manufacture` enabled in
+  `BUILT_PRINT_INTENTS`. One fused sampled field per group in the root's
+  frame, field/CSG ops only (no mesh is operated on); the result is a new
+  cad design `<design>-<root>-mfg[-N]` rooted at `field:<sha>`, bound to
+  the ROOT the way `realize_simp` binds (per-ref lock, inputs hash of the
+  whole group re-checked, `meta.manufacture` `last`/`runs`, the summary
+  also in the field's provenance header so `view='print'` needs no ref
+  lookup, `derived-from` link, sibling on re-run; a root carrying a solid
+  of its own is refused). Inline when no SIMP member and the grid is
+  under `SYNC_CELL_CAP` = 500 000 cells; else an `se_manufacture` job
+  (its own job type — `se_simp`'s schema is closed and SIMP-shaped);
+  above `MAX_CELLS` = 8 000 000 refused with the count.
+- **Joint classification** (`classify_joints`): every connect between
+  two members is rigid (`KINEMATIC_CLASSES − drc._MOVING_CLASSES` =
+  `rigid`/`captive`/`axial`, and an undeclared joint — fused with a
+  `joint_undeclared` info) or DOF; union-find over rigid printed pairs
+  gives the fused components; rigid pairs blend with
+  `fold.smooth_min_np(width=blend)` (the DSL's `blend:` semantics,
+  default 0 = plain min), components hard-min.
+- **In-place gap, seam-local by construction** (reviewer round): for
+  each printed–printed DOF pair `(A, B)`, `A' = A \ dilate(B, gap/2)` and
+  `B' = B \ dilate(A, gap/2)` — the dilation `fieldops.offset(−)` on the
+  PARTNER's `redistance`d sample, the subtraction a max on the grid, so
+  nothing else about `A`/`B` moves and a rigid seam with a third member
+  stays exactly as sampled (a whole-member erosion opened it). Guarantee:
+  face-to-face and pin-in-bore separations = `gap`; a re-entrant corner's
+  worst case is `gap/2`; the report always quotes the measured minimum
+  (the other side's re-distanced SDF over this side's exported mesh
+  vertices). Every offset is **plus half a pitch** because the kernel's
+  re-distance binarises (its surface can sit up to `pitch/2` outside the
+  true one), so `gap`/`fit` are floors. `gap` required unless
+  `min_clearance` resolves (new capability, null in every fdm row with a
+  source; a `set_process_override` on the root also serves as the
+  default); below the floor → `in_place_clearance` error, null floor →
+  info "uncalibrated, taken as declared"; a pair still touching after the
+  carve → `in_place_fused` error; a DOF pair whose sides a rigid path
+  joins (union-find over rigid edges) → `dof_bridged` error and the
+  export is refused.
+- **Cavities**: bought members' B1 stand-ins re-distanced, dilated by
+  `fit` (+ half a pitch; `fit` required whenever a cavity is to be cut,
+  0 = exact analytic subtraction), subtracted; the report names each
+  cavity's top layer above the bed in the chosen frame as the mid-print
+  pause height, read off the SAMPLED cavity field on the stored grid
+  (highest void cell along −down + pitch/2 − the union floor — exact to
+  the grid in any frame; the AABB reading over-estimated a rotated
+  member). No insertion-path search — the `bambuuzle` rung. No stand-in
+  → `cavity_missing` error on top of `no_stand_in`.
+- **Fastener elision**: a bought screw whose `fasten.fasten` grip stack
+  holds ≥ 2 printed members all in one fused component is elided (`joint
+  fused, <block> not needed`, info; nuts/washers in the stack go with
+  it); its holes are excluded from the fused members'
+  solids (`printed_solid(exclude=)` → `fasten.features_for(exclude=)`,
+  a two-pass `group_geometry`; `model`/DRC pass nothing and stay
+  byte-identical); `fasten.abstract_joints(fused=)` treats a
+  `screw`-mechanism connect between fused members as satisfied — for
+  `manufacture` only, `model` passes nothing and prints every fastener.
+  A fastener across a DOF joint or whose stack leaves the group stays a
+  cavity.
+- **Fused SIMP domain**: `simp_bridge.solve_simp(domain_builder=)` hook
+  + `DomainGrid`; `run_simp` picks `manufacture.simp_domain` for a
+  manufacture root (union of member envelopes in the root frame minus
+  stand-in cavities, optional `fit=` on the simp op; `prepare_simp` sizes
+  the budget from `simp_box` and needs no root envelope); loads/supports
+  stay the root's at `load_at`/`fixed_at` (face of the group box or a
+  root port); a DOF joint between printed members is refused ("one solve
+  is one body"). The member-qualified `member.face` form is NOT built.
+- **Teardrop bore**: no primitive; a DOF axis-class joint whose declared
+  axis lies within 45° of the build plate in the chosen frame →
+  `overhang` warn naming both members, the connect, the axis and its
+  angle; an undeclared axis → info "could not be judged".
+- **Views/export**: `view='print'` on the root = frame (root pin > SIMP
+  member's `build_dir` > search on the fused mesh, via the shared
+  `printgroup.choose_frame`), objects (one per 6-connected component of
+  the field, `fieldops.label_components`, named by the members whose
+  material they hold), measured gaps, cavities + pause heights, elided
+  fasteners, per-object frame findings, `manufacture_stale` warn when a
+  member moved since the fuse, `manufacture_unrealized` + the plan before
+  the first fuse; `fmt='3mf'` = one object per component (a DOF pair is
+  two objects, a fused pair one); `view='fab'` = `intent manufacture, N
+  objects, K cavities, E elided`.
+
+**State of the section after B2.** Nothing in "Slice 4 bridge" remains
+unbuilt except (a) the calibration figures — `simp_pitch`,
+`min_clearance`, `strength_z_ratio`, all null-with-source in every fdm
+row — and (b) the hand-off rungs (downloadable 3MF artifact → headless
+slicer → `bambuuzle` pause injection → printer push). Left open, in
+order: (1) **the mixed root** — today the fused design is ONE `field:`
+leaf, every member re-sampled at the pitch, so sub-pitch features (hole
+compensation, seats) are not preserved and every render says so; the
+DSL already expresses a `field:` leaf combined with analytic `add`/
+`cut`/`blend:` nodes, so the next item is emitting the fused field plus
+the members' own nodes as one root expression; (2) an insertion-path
+search instead of a pause; (3) a teardrop/diamond bore primitive (the
+finding stands in); (4) array/instance members in a group
+(`member_skipped` since B1); (5) `member.face` load tokens on the fused
+SIMP domain. Whether the item folds into the package docstring is the
+owner's call.
+
 - **Slice 5 — nm state-dependent stability** (blocked on blocktree slice 2
   states): classify per declared state, plus — added 2026-09-11 from the
   multiscale intake — **sweep the switching pathway**: pose intermediate

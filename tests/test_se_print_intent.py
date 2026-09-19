@@ -7,9 +7,10 @@ blocks below it. Pinned here: the one-row ``view='fab'`` collapse, the
 one-3MF-many-objects export with a component-bound fastener printed as
 its catalog stand-in, the one shared build frame, a SIMP member pinning
 that frame (search skipped, said so), two SIMP members disagreeing, an
-unbound purchase member's ``no_stand_in`` finding, ``intent='manufacture'``
-refused as not built, and the regression that a group with no intent
-behaves exactly as before.
+unbound purchase member's ``no_stand_in`` finding, an unknown intent
+refused by name, and the regression that a group with no intent behaves
+exactly as before (``intent='manufacture'`` is
+``tests/test_se_print_manufacture.py``).
 
 Fixtures: the seat-clamp (``tests.test_se_fasten_seatclamp``) re-parented
 under an assembly block, and the SIMP cantilever
@@ -176,21 +177,16 @@ def test_intent_lives_on_the_build_frame_record_and_survives_pin_ops() -> None:
     assert g.mode is None and g.build_frame is None
 
 
-def test_manufacture_is_refused_as_not_built_and_the_rest_by_name() -> None:
+def test_both_intents_are_accepted_and_the_rest_refused_by_name() -> None:
     tree = SeTree()
     apply_ops(tree, [{"op": "add_block", "name": "g"}])
-    with pytest.raises(ValueError, match="not built yet"):
-        apply_ops(
-            tree,
-            [
-                {
-                    "op": "set_mode",
-                    "block": "g",
-                    "mode": "fdm/pla",
-                    "intent": "manufacture",
-                }
-            ],
-        )
+    # round B2 built manufacture: the enum and the built set now agree
+    apply_ops(
+        tree,
+        [{"op": "set_mode", "block": "g", "mode": "fdm/pla", "intent": "manufacture"}],
+    )
+    assert print_intent(tree.blocks["g"]) == "manufacture"
+    apply_ops(tree, [{"op": "set_mode", "block": "g", "mode": None}])
     with pytest.raises(ValueError, match="unknown intent"):
         apply_ops(
             tree, [{"op": "set_mode", "block": "g", "mode": "fdm/pla", "intent": "toy"}]
@@ -203,21 +199,14 @@ def test_manufacture_is_refused_as_not_built_and_the_rest_by_name() -> None:
     assert tree.blocks["g"].mode is None and tree.blocks["g"].build_frame is None
 
 
-def test_manufacture_refusal_reaches_the_handler(handler: SeHandler) -> None:
+def test_unknown_intent_refusal_reaches_the_handler(handler: SeHandler) -> None:
     handler.put(
         id="pi-manu", text=json.dumps({"ops": [{"op": "add_block", "name": "g"}]})
     )
-    with pytest.raises(BadInput, match="not built yet"):
+    with pytest.raises(BadInput, match="unknown intent"):
         handler.edit(
             id="pi-manu",
-            ops=[
-                {
-                    "op": "set_mode",
-                    "block": "g",
-                    "mode": "fdm/pla",
-                    "intent": "manufacture",
-                }
-            ],
+            ops=[{"op": "set_mode", "block": "g", "mode": "fdm/pla", "intent": "toy"}],
         )
 
 

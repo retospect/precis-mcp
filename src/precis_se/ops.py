@@ -136,8 +136,10 @@ the ops for things you *don't* make:
   family with no implementer yet is accepted and reads back as recorded
   intent, never as a checked plan. Optional ``intent`` (fdm-family modes
   only) makes the block a **print group** root
-  (:mod:`precis_se.printgroup`): :data:`PRINT_INTENTS` — ``model`` is
-  built, ``manufacture`` is refused as not built yet; ``null`` clears.
+  (:mod:`precis_se.printgroup`): :data:`PRINT_INTENTS` — ``model`` (a
+  fit-test model) or ``manufacture`` (print-in-place, realized by
+  ``realize(strategy='manufacture')``, :mod:`precis_se.manufacture`);
+  ``null`` clears.
 - ``set_binding``     — bind a block's L3 realization to an existing
   design or catalog row: ``kind`` ∈ ``cad|nm|component|part`` +
   ``design`` (the slug / C-number), or ``clear=true``. The binding is
@@ -1521,9 +1523,8 @@ def _op_set_mode(tree: SeTree, op: dict[str, Any]) -> None:
                 )
             if intent not in BUILT_PRINT_INTENTS:
                 raise OpError(
-                    f"set_mode: intent {intent!r} is not built yet (round B2 — "
-                    "cavities, in-place gaps, fusion, fastener elision); "
-                    f"built: {' | '.join(sorted(BUILT_PRINT_INTENTS))}"
+                    f"set_mode: intent {intent!r} is not built yet; built: "
+                    f"{' | '.join(sorted(BUILT_PRINT_INTENTS))}"
                 )
             if family != "fdm":
                 raise OpError(
@@ -1538,10 +1539,12 @@ def _op_set_mode(tree: SeTree, op: dict[str, Any]) -> None:
 #: The print-group intents ``set_mode(intent=)`` accepts, in
 #: structural-solution-space.md §Slice 4 bridge's table order. The enum is
 #: complete so the arg shape is stable; :data:`BUILT_PRINT_INTENTS` is
-#: the half with an implementer (round B1 = ``model``; ``manufacture`` —
-#: cavities, in-place gaps, fusion, fastener elision — is round B2).
+#: the subset with an implementer (round B1 = ``model``,
+#: :mod:`precis_se.printgroup`; round B2 = ``manufacture``,
+#: :mod:`precis_se.manufacture`) — an intent enters the enum before its
+#: implementer so the arg shape never moves, and the gate stays as code.
 PRINT_INTENTS: tuple[str, ...] = ("model", "manufacture")
-BUILT_PRINT_INTENTS: frozenset[str] = frozenset({"model"})
+BUILT_PRINT_INTENTS: frozenset[str] = frozenset({"model", "manufacture"})
 
 
 def _set_print_intent(node: SeBlock, intent: str | None) -> None:
