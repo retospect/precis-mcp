@@ -128,7 +128,7 @@ class FrontierResult:
 #: **fallback** a quest falls back to when it declares fewer than two
 #: rubric objectives (:func:`plot_axes_for`) — a quest with >= 2 declared
 #: objectives plots its own first two instead, so a catalyst quest's
-#: scatter shows its real headline trade-off (``log_tof`` vs ``atom_cost``)
+#: scatter shows its real headline trade-off (log_tof vs ``atom_cost``)
 #: rather than this starter pick.
 #:
 #: X = "highest barrier" → the autocatpath rate-limiting barrier
@@ -159,11 +159,134 @@ _AXIS_LABELS: dict[str, str] = {
     "energy": "Relaxed energy (eV)",
     "selectivity_margin": "Selectivity margin (eV)",
     "poison_margin": "Poison margin (eV)",
+    "U_L_abs": "|U_L| (V vs RHE)",
+    "U_L": "U_L (V vs RHE)",
+    "U_opt": "U_opt (V vs RHE)",
+    "span": "Energetic span (eV)",
+    "span_at_Uopt": "Energetic span at U_opt (eV)",
+    "P_side": "Side-product probability",
+    "trap_margin": "Trap margin (eV)",
+    "log_tof_p5": "log₁₀ TOF, 5th pct",
+    "log_tof_p95": "log₁₀ TOF, 95th pct",
 }
 
 
 def axis_label_for(key: str) -> str:
     return _AXIS_LABELS.get(key, key)
+
+
+#: Precise per-axis descriptions for the quest hub's Pareto scatter — read by
+#: :func:`axis_description_for` and rendered in a `<details>` block under the
+#: scatter (:func:`precis_web.routes.refs._quest_detail`). Chemistry-verified
+#: against the code that stamps each measure (:mod:`precis.quest.compute`) —
+#: do not soften or paraphrase these without re-checking the source.
+_AXIS_DESCRIPTIONS: dict[str, str] = {
+    "barrier": (
+        "Largest single-step activation energy on the root→product route: "
+        "for each chemical step, E(transition state) − E(the intermediate "
+        "that step starts from), and the axis shows the biggest of those. "
+        "It is not the height above the clean slab — that is the energetic "
+        "span. Barriers come from climbing-image NEB at U = 0 and do not "
+        "shift with potential under the computational hydrogen electrode. "
+        "eV, lower is better. Nulled when the route's barrier is blocked by "
+        "a trust check."
+    ),
+    "span": (
+        "Energetic span (Kozuch–Shaik): the tallest climb from any "
+        "intermediate to any later transition state along the route, "
+        "measured from the lowest preceding intermediate. It can exceed "
+        "every single-step barrier when a deep well precedes a high "
+        "transition state. eV, lower is better."
+    ),
+    "span_at_Uopt": (
+        "The energetic span after shifting every state by n_H·eU at the "
+        "candidate's own U_opt (barriers are not shifted). Each candidate "
+        "is read at a different potential. eV, lower is better."
+    ),
+    "log_tof": (
+        "log₁₀ of the steady-state turnover frequency per top-layer site "
+        "from mean-field microkinetics (Eyring rates for surface steps, "
+        "Hertz–Knudsen for adsorption) at 298.15 K and the configured "
+        "pressures, solved on the U = 0 V vs RHE free energies. Present "
+        "only when the kinetics solve is trusted (finite positive TOF, "
+        "bracket agrees). Higher is better."
+    ),
+    "U_L": (
+        "Limiting potential: U_L = −max ΔG over the proton-electron steps "
+        "at U = 0, the potential (V vs RHE) at which every such step is "
+        "downhill; negative for a reduction. Thermodynamic only: it says "
+        "nothing about barriers."
+    ),
+    "U_L_abs": (
+        "|U_L|, the limiting potential's magnitude — the thermodynamic "
+        "overpotential proxy (V vs RHE). Lower is better. U_L = −max ΔG "
+        "over the proton-electron steps at U = 0; barriers are not "
+        "included."
+    ),
+    "U_opt": (
+        "The potential (V vs RHE) that minimises the energetic span, "
+        "closed form from the crossings of the potential-shifted state and "
+        "transition-state lines."
+    ),
+    "P_side": (
+        "Probability the route diverts to a side product: 1 − ∏ over forks "
+        "of exp(−Ea_main/kT) / Σ exp(−Ea_i/kT) at 298.15 K, over chemical "
+        "(potential-independent) barriers. Null when any fork lacks a "
+        "barrier. Lower is better."
+    ),
+    "energy": (
+        "Relaxed total energy of the candidate slab from its converged "
+        "relax run, on the calculator's own zero (eV). Not comparable "
+        "across compositions: swapping a dopant atom moves it by that "
+        "atom's own energy."
+    ),
+    "atom_cost": (
+        "log₁₀ of the catalyst's raw-material cost in $/kg from element "
+        "prices. Lower is better."
+    ),
+    "selectivity_margin": (
+        "Smallest (side Ea − main Ea) over the route's forks, eV; positive "
+        "disfavours side products. Higher is better."
+    ),
+    "trap_margin": (
+        "Best-route span minus the highest escape barrier from any "
+        "off-route state, eV; negative means a kinetic trap deeper than "
+        "the route. Higher is better."
+    ),
+    "poison_margin": (
+        "Worst screened poison's adsorption free energy relative to the "
+        "substrate's, eV; negative means the poison outcompetes the "
+        "reactant. Higher is better."
+    ),
+    "log_tof_p5": (
+        "log₁₀ TOF, 5th percentile: the low end of the Monte-Carlo 5–95% "
+        "band the kinetics solve samples from the route's own barrier "
+        "uncertainty, present only alongside a trusted log_tof. Higher "
+        "is better."
+    ),
+    "log_tof_p95": (
+        "log₁₀ TOF, 95th percentile: the high end of the Monte-Carlo 5–95% "
+        "band the kinetics solve samples from the route's own barrier "
+        "uncertainty, present only alongside a trusted log_tof. Higher "
+        "is better."
+    ),
+}
+
+
+def axis_description_for(key: str) -> str:
+    """A precise, chemistry-verified prose description of what ``key``
+    measures, or ``""`` for an unknown key (never a fabricated guess)."""
+    return _AXIS_DESCRIPTIONS.get(key, "")
+
+
+#: Shared conditions footnote for the axis-description block — the
+#: computational hydrogen electrode's shift rule + the "trusted values only"
+#: point that applies to every plotted measure, not repeated per-axis.
+AXIS_CONDITIONS_NOTE = (
+    "All energies are Gibbs free energies at 298.15 K on the RHE scale "
+    "under the computational hydrogen electrode: state energies shift by "
+    "n_H·eU, barriers do not. Points show trusted values only."
+)
 
 
 def better_arrow_for(axis: str, sense: str | None) -> str:
@@ -232,7 +355,7 @@ def plot_axes_for(
     """``(x_key, y_key, x_label, y_label)`` — the quest's own Pareto-scatter axes.
 
     Kinetics cutover: a quest that declares >= 2 ``rubric_objectives`` plots
-    its own first two (a catalyst quest orders ``log_tof``/``atom_cost``
+    its own first two (a catalyst quest orders log_tof/``atom_cost``
     first — the headline activity/cost trade-off) instead of the fixed hub-v2
     starter pick (:data:`PARETO_X_MEASURE`/:data:`PARETO_Y_MEASURE`), which
     remains the fallback for every quest that declares fewer than two (the
@@ -501,7 +624,7 @@ def _contour_underlay(
 def _rate_readout(measures: dict[str, float]) -> str | None:
     """``atom_cost - log_tof`` (log10 $ per unit TOF) when both measures are
     present, else ``None`` (never a fabricated partial). Read as: 100x more
-    active (higher ``log_tof``) buys 100x less catalyst mass for the same
+    active (higher log_tof) buys 100x less catalyst mass for the same
     dollar spend — the single number that answers "is dear-but-active worth
     it". Shared by :func:`leaderboard` (the ``$/rate`` column) and
     :func:`build_frontier_scatter` (the hover tooltip)."""

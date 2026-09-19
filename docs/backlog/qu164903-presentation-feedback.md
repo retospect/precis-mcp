@@ -12,14 +12,14 @@ their own backlog files with `blocked-by` back here.
 
 | # | feedback (verbatim intent) | surface | status |
 |---|---|---|---|
-| 1 | "we want to make a Pourbaix diagram — how? for what level? discuss" | new view (pathway/structure/quest) | discussing |
+| 1 | "we want to make a Pourbaix diagram — how? for what level? discuss" | new view (pathway/structure/quest) | DECIDED b+c → `surface-pourbaix-view.md` |
 | 2 | Legend for the chemistry pathway: chemistry vs electrochemistry steps — dashed vs fixed lines? | pathway profile viewer | discussing |
 | 3 | "note somewhere on the page how transition-state energy was calculated" | pathway detail page | discussing |
 | 4 | From the compound page (`/structure/<slug>`) get to the pathway and to the Pourbaix — tabs on the same page? UX discussion | structure detail / pathway detail | discussing |
-| 5 | Pareto front: another energy axis; be specific what the axes are — detailed text | quest page pareto | discussing |
+| 5 | Pareto front: another energy axis; be specific what the axes are — detailed text | quest page pareto | DECIDED: `barrier` stays, per-axis definitions under the plot (in flight) |
 | 6 | Clicking a reaction on the pareto front shows that thing's details (pathway, …) — solved by the tabbed landing spot if tabs are done well | quest page pareto → detail | discussing |
 | 7 | pH slider on the pareto front — do we need to rerun? justify why this can be dynamic | quest page pareto | discussing |
-| 8 | Default axes of the pareto plot (all three) considered more carefully | quest page pareto | discussing |
+| 8 | Default axes of the pareto plot (all three) considered more carefully | quest page pareto | DECIDED: x U_L_abs · y log_tof · colour barrier, via rubric reorder (Reto's SQL below) |
 
 ## Working notes (verified 2026-09-18 against this tree + /Users/reto/catpath)
 
@@ -113,3 +113,39 @@ barriers carry the reactant's thermo correction; U-independent (CHE)" + the
 trust/blocked_by status.
 
 ## Open questions / decisions log
+
+- 2026-09-18 Reto: item 1 → levels b+c (surface Pourbaix + U_L/U_opt overlay),
+  specced in `surface-pourbaix-view.md`. Item 5/8: `barrier` stays and must be
+  defined precisely on the page (it is the largest single-step Ea on the
+  route, TS minus that step's own preceding intermediate — NOT the height
+  above the slab, which is the span); default y = `log_tof`; drop `energy`.
+- Verified definitions (2026-09-18): `barrier` = `precis_pathway/analysis.py::
+  rate_limiting_step` (max edge `barrier` on the root→target path, U = 0,
+  NEB); `span` = `energetic_span` (Kozuch–Shaik); `log_tof` = microkinetics
+  on the U = 0 free energies (`autocatpath/kinetics.py` takes no potential;
+  the runner applies no shift) — NOT at U_opt as earlier notes said; `U_L` =
+  −max ΔG over PCET steps at U = 0 (`electrochem.py`); `energy` = converged
+  relax total energy on the calculator's zero.
+- Prod state 2026-09-18 (213 live candidates): `barrier` 205, `U_L_abs` 208,
+  `span_at_Uopt` 208, `energy` 196, **`log_tof` 32** (kinetics trust gate),
+  `P_side` absent everywhere. A `log_tof` default y plots 15% of points
+  today; the picker's "(n)" count makes that visible. Data hygiene: live
+  `barrier` max 7462 eV and `span_at_Uopt` max 73.7 eV — pre-0.21 garbage
+  rows that should be untrusted, not plotted (file a gripe when the axis
+  block lands; `meta.frontier_viewport` is the stopgap).
+- Rubric edit (Reto runs it; defaults follow rubric order via
+  `frontier.py::plot_axes_for`): `log_tof` goes in as **optional** so the
+  181 kinetics-less candidates stay evaluated on the required axes.
+  ```sql
+  UPDATE refs SET meta = jsonb_set(meta, '{rubric_objectives}',
+    '[{"key":"U_L_abs","sense":"min"},
+      {"key":"log_tof","sense":"max","optional":true},
+      {"key":"barrier","sense":"min"},
+      {"key":"P_side","sense":"min","optional":true}]')
+  WHERE kind='quest' AND ref_id=164903;
+  ```
+  Effect: frontier dominance now includes `log_tof` for the 32 that have it
+  and `barrier` for all; `energy` stops steering the proposer. No rerun.
+- Items 2, 3 (legend row, TS footnote) and 4/6 (structure hub tabs): still
+  Reto's call; 4/6 folds into `surface-pourbaix-view.md` item 3 if approved.
+

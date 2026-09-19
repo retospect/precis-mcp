@@ -289,6 +289,33 @@ def test_quest_hub_frontier_scatter_renders_points(
     assert "not enough simulated candidates to plot yet." not in resp.text
 
 
+def test_quest_hub_frontier_axis_docs_render(client, runtime, monkeypatch) -> None:
+    """A plotted scatter renders the per-axis description block under it,
+    naming the plotted x axis key + its prose."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    frontier = FrontierResult(
+        objectives=[("barrier", "min")],
+        frontier=[
+            Candidate(1, "st1", "Fe-N4", {"barrier": 0.3, "energy": -20.0}, True),
+            Candidate(2, "st2", "Cu-N4", {"barrier": 0.9, "energy": -10.0}, True),
+        ],
+        dominated=[
+            Candidate(3, "st3", "Ni-N4", {"barrier": 1.2, "energy": -5.0}, True),
+        ],
+        unevaluated=[Candidate(4, "st4", "Pd-N4", {}, False)],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "What the axes mean" in resp.text
+    assert ">barrier<" in resp.text
+    assert "single-step" in resp.text
+
+
 def test_quest_hub_frontier_scatter_falls_back_when_underpopulated(
     client, runtime, monkeypatch
 ) -> None:
