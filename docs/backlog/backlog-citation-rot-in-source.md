@@ -18,6 +18,18 @@ three it had directly edited.
 None of this is a runtime defect — it is an agent reading a docstring for the
 "why", following the pointer, and getting nothing.
 
+**Recurring, not one-time.** The 2026-09-19 blocktree/se fold hit the same
+pattern independently: `nm-se-merge.md` and `structure-unit-enclave.md` were
+already dangling (cited across `src/precis/blocktree/__init__.py` and
+`src/precis_se/__init__.py`, left out of that fold's scope) when
+`blocktree-library-build-plan.md` and `port-pose-and-composition-search.md`
+were deleted the same day, each cited by filename in 20+ places across
+`src/precis_se/`, `src/precis/blocktree/`, and a dozen `docs/backlog/`
+siblings. The docstring citations were repointed (option 2 below) as part of
+that fold; the ~40 remaining source-comment citations to the two newly-deleted
+files were left, matching this item's "burn down in passing" sequencing —
+confirming the debt regrows between sweeps exactly as predicted.
+
 ## The convention question, undecided
 
 Three options, and the repo currently does all three by accident:

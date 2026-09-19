@@ -74,8 +74,8 @@ screening-tier shaping term, provenance-tagged like `mechanics.py`
 interactions in particular are cool")
 
 Block states are already specced
-(`blocktree-library-build-plan.md` §Why + slice 2,
-`photoswitch-states-and-spectral-dof.md`, and the fitter's per-state
+(the `src/precis_se/__init__.py` docstring's discrete-block-states
+paragraph, `photoswitch-states-and-spectral-dof.md`, and the fitter's per-state
 bound structures) — features ride that mechanism, one feature set per
 state, no new state machinery here. The states differ in exactly the
 way that makes this layer interesting:
@@ -107,9 +107,9 @@ slice later computes properly.
    topology-only starting arrangement. The nm bridge copies
    `precis_se/formfind.py`'s contract verbatim (proposed-origin
    write-back, `move=` authorization, anchors never move, loud
-   singularity) — one more second-user datum for
-   `blocktree-library-build-plan.md` §Settled's
-   generalise-on-the-second-user doctrine.
+   singularity) — one more second-user datum for the
+   `src/precis/blocktree/__init__.py` docstring's "Settled" doctrine
+   section's generalise-on-the-second-user rule.
 2. **Rigid-body pose relax.** Orientation terms do NOT go through FDM
    (members are axial, `q` fixed; a ring normal is not linear in node
    coordinates — a rigid-cluster + iterated-q shoehorn buys nothing over
@@ -339,7 +339,7 @@ op script that applies it:
   cheap, honesty-tagged as a prediction;
 - reroute the connect to a different port; swap the module for a
   library variant (ranked library search is
-  `blocktree-library-build-plan.md`'s machinery).
+  the `src/precis_se/__init__.py` docstring's machinery).
 
 Each option = predicted score delta + side-effects (what else moves,
 which other pairs' scores change past a threshold) + the op script.
@@ -375,8 +375,8 @@ splicing, rdkit owns conformers).
 Library growth and joining are themselves the dogfood — done as prod
 `nm` designs through the runtime surface (the nm-demo-c60 precedent),
 not as test fixtures. The library substrate (cross-design instancing,
-ranked library search, complementary ports) is
-`blocktree-library-build-plan.md`'s critical path — this section is a
+ranked library search, complementary ports) is the
+`src/precis_se/__init__.py` docstring's critical path — this section is a
 *consumer* of it, not a second plan:
 
 1. **Seed modules**: azobenzene first (both states, capped per the

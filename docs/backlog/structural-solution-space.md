@@ -13,9 +13,10 @@ The structural leg of the multiscale programme
 and 2026-09-09 (Reto + agent). **Merged 2026-09-11:** this doc absorbed
 `se-tension-elements-and-prestress.md` — the rung numbering below is that
 doc's, so code references to "rung N" keep resolving here. Companions it
-extends, never forks: `blocktree-library-build-plan.md` (block library,
-discrete states — the molecular use case consumes its slice 2) and
-`cad-machine-spec.md` (the cad half of the mobility tripwire below).
+extends, never forks: the se/cad block library (`src/precis_se/__init__.py`
+docstring; block library, discrete states — the molecular use case
+consumes the states mechanism) and `cad-machine-spec.md` (the cad half of
+the mobility tripwire below).
 
 **Status 2026-09-11.** Shipped: rungs 1, 2, 4 + solution-space slice 1
 (kinematic class `axial` with the asymmetric capacity pair,

@@ -102,8 +102,8 @@ substrate for a nanobud library.
    import fallback.
 
 Coordinates always derived (embed + relax + registration), never part
-of the standard. Library entries = se designs via the
-`blocktree-library-build-plan.md` machinery; properties follow the
+of the standard. Library entries = se designs via the block-library
+machinery (`src/precis_se/__init__.py` docstring); properties follow the
 declared/derived discipline — cited values vs computed-run values,
 never blurred.
 

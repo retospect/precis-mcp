@@ -63,7 +63,7 @@ already handled by `precis_se.validate.kernel_scale`.
 | design-to-intersection, quantity as optimiser input | `se-feasibility-and-cost.md` (capability-resolved severity re-grades per process) | open |
 | tool access / swept volumes / assembly order | `se-off-the-shelf-fabrication.md` rung 3b; `se-feasibility-and-cost.md` rungs 5–6 | open |
 | DFA soft costs, objective vector | `se-feasibility-and-cost.md` | open |
-| molecular fragment library, states, joining chemistry | `blocktree-library-build-plan.md` + star-schema facts | open (plan `ready`) |
+| molecular fragment library, states, joining chemistry | `src/precis_se/__init__.py` docstring + star-schema facts | shipped |
 | interaction-aware module placement (graded π-stack, kT thresholds, pose solve, fisheye read) | `nm-stick-placement.md` | spec ready 2026-09-11 |
 | photoswitch physics, channel budget, photo-charge | `photoswitch-states-and-spectral-dof.md` | evidence gathered |
 | toolpath ownership (slicer integration ladder) | **here, §Toolpath ownership** | new (Reto 2026-09-11); rung 4 nonplanar member sweeps added 2026-09-14 |

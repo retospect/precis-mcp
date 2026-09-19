@@ -13,10 +13,9 @@ negotiation, buck converter, Teensy, motor-driver H-bridge). Reduces
 token use through reuse. Reuse at a schematic block level and at a
 layout routed level? And where do we keep the blocks?"
 
-Coordinate with the se/cad `functional-block-library-and-assembly-
-states.md` / `blocktree-library-build-plan.md` — same library-of-
-reusable-intent pattern, different substrate; don't fork vocabulary
-gratuitously.
+Coordinate with the se/cad block library (`src/precis_se/__init__.py`
+docstring) — same library-of-reusable-intent pattern, different
+substrate; don't fork vocabulary gratuitously.
 
 ## Two levels, built in this order
 

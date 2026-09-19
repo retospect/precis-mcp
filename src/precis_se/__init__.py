@@ -263,8 +263,7 @@ kind's storage is dropped by migration ``0008_se_drop_nm_tables.sql``;
 ``nm`` itself now answers with a retired-kind pointer at this one
 (``precis.runtime.dispatch``'s ``_RETIRED_KINDS``).
 
-**Discrete block states + stimulus-labelled transitions**
-(docs/backlog/blocktree-library-build-plan.md §Slice 2) rent the shared
+**Discrete block states + stimulus-labelled transitions** rent the shared
 design core (:mod:`precis.design.states`, not an se-local table — the
 same mechanism serves macro bistables and photoswitches/conformers alike,
 per that module's A9 hysteresis warning: a state-carrying block's state
@@ -348,7 +347,12 @@ capability rows behind it, compliance advisories (ship-order step 6),
 the profile tier, and the rest of mechanism→geometry: tool access
 (a swept driver envelope per drive type × size), assembly-order
 existence, edge distance, and the sheet/tube instances of the stamping
-engine (finger joints, cope/fishmouth, press seats).
+engine (finger joints, cope/fishmouth, press seats). Also still open:
+ranking a composition search by human-set rubric weights through
+``quest``'s selection machinery (``meta.rubric_objectives``/
+``meta.rubric_composite``) rather than today's match-count order, and
+running DRC over a composition's instanced tree once realised, rather
+than per-library-row.
 
 **se-print-implementer.md rung 1** (2026-09-16) widens every ``fdm``
 ``se_capabilities.json`` row with the full process-figure set (layer
@@ -496,9 +500,8 @@ the stand-in cavities (the simp op's optional ``fit=``) — with the ROOT's
 loads/supports at ``load_at``/``fixed_at``; a DOF joint between printed
 members is refused there (one solve is one body).
 
-**Blocktree slice 4 — ranked library search** (docs/backlog/
-blocktree-library-build-plan.md §Slice 4, port-pose-and-composition-
-search.md Decision 2) lands ``search(kind='se', wants={...})``:
+**Blocktree slice 4 — ranked library search** lands
+``search(kind='se', wants={...})``:
 :mod:`precis_se.library` walks every non-instance block in the whole
 library, scores it against a per-attribute wishlist (three built-in
 structural keys read off the block/tree — ``stimulus``/``bistable``/
@@ -509,8 +512,36 @@ dominance rule. Never a strict filter: every row shows its per-attribute
 match/miss with the actual value, and the result set is empty only when
 the library itself is.
 
-**Composition proposer** (port-pose-and-composition-search.md "New item
-— composition proposer") lands ``search(kind='se', compose={...})``:
+**Joining-precedent DRC** (:mod:`precis_se.precedent`) checks a connect's
+declared joining chemistry against reaction evidence rather than trusting
+the label: a ``driver_kind='reaction'`` transition on either endpoint's
+template must resolve its ``driver_ref`` to an existing ``rxn`` slug at
+write time (``SeHandler``'s pending-transitions flush; an unresolvable
+slug fails the whole edit, rolled back like any op error). At read time,
+appended to ``view='drc'`` after ``se_drc.drc()`` (which stays store-free
+by contract): a declared joining with no reaction transition naming an
+rxn is ``joining_unnamed`` (info); a named rxn with no ``reaction_class``
+is ``joining_class_unknown`` (warn); a resolved class with zero yield
+rows (``store.rxn_precedent_count``, one SQL COUNT over the same join
+``rxn_search_values`` uses) is ``joining_unprecedented`` (warn,
+"unprecedented step"); rows present is ``joining_precedent`` (info, the
+count). One finding per rxn per connect, deduped by slug.
+
+**``view='order'``** (:mod:`precis_se.order`) answers "what do I order":
+``rollup`` walks the instanced tree to its leaf templates — skipping
+instance/array nodes, reading ``bound_kind``/``bound``/``mode`` off each
+template, and multiplying by ``bom.design_occurrences`` (array/instance
+counts already folded in, including across a foreign template) — into a
+**purchasable** table for ``component``/``part``-bound leaves
+(``component_current_spec_value`` for cost/mass, the canonical store
+value, never copied) and a **to make** table for everything else;
+explicit ``tree.bom`` lines merge into the same rows rather than double
+counting. A non-leaf template itself bound to a component is purchasable
+whole — its subtree is not walked. Mirrors ``bom``'s honesty-line shape
+(``purchasable: P of L leaf template(s) · to make: M``, then
+``priced``/``massed``, a partial total when not every line is priced).
+
+**Composition proposer** lands ``search(kind='se', compose={...})``:
 :mod:`precis_se.compose` enumerates n switches + m spacers over the same
 library rows against a requirement box (``delta`` Å / ``span`` nm
 intervals), scores each composition like a slice 4 row (per-unit facts

@@ -395,11 +395,11 @@ class SeBlock(BlockNode):
     # mypy flags this as an unsafe narrowing (dict is invariant — a caller
     # holding this as a plain BlockNode could in principle assign a bare
     # Port in). ``BlockNode`` isn't generic over its port type the way
-    # ``Tree`` is over block/connect (docs/backlog/
-    # blocktree-library-build-plan.md §Settled known wart: a real gap, not
-    # papered over — worth a ``BlockNode[TPort: Port]`` now that the merge
-    # leaves se as the one domain with its own port fields), so this is the
-    # narrowest fix available without widening that core class.
+    # ``Tree`` is over block/connect (precis.blocktree package docstring's
+    # "known wart": a real gap, not papered over — worth a
+    # ``BlockNode[TPort: Port]`` now that the merge leaves se as the one
+    # domain with its own port fields), so this is the narrowest fix
+    # available without widening that core class.
     ports: dict[str, PortSpec] = field(default_factory=dict)  # type: ignore[assignment]
     #: Stable identity (``se_blocks.uid``, migration ``0009_se_block_uid``,
     #: minted from core's ``design_block_uid_seq`` —

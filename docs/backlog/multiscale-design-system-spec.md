@@ -45,8 +45,8 @@ Owned elsewhere (read the owner first):
 - **§4.8 PCB** → the `pcb-*` docs. Deltas here: metal-core boards,
   closed-loop multiphysics escape hatch.
 - **§4.9 molecular tier** — fragment library/states →
-  `blocktree-library-build-plan.md` (adopt this doc's brick/linker
-  vocabulary there), π systems + interaction terms →
+  the `src/precis_se/__init__.py` docstring's library-search paragraphs
+  (adopt this doc's brick/linker vocabulary there), π systems + interaction terms →
   `nm-stick-placement.md`, switching physics →
   `photoswitch-states-and-spectral-dof.md`. Held here: the `density_at`
   fidelity ladder, conformer enumeration, degradation/cleavage records,
@@ -625,7 +625,7 @@ alongside π-stacking), the ratchet/bistable-snap barrier-graph reading,
 the hysteresis cache-keying rule, and the DFT-computed spacer library
 are Addendum A9 (`multiscale-design-addendum-a.md`); instances route to
 `nm-stick-placement.md`, `photoswitch-states-and-spectral-dof.md`,
-`design-state-core.md` and `blocktree-library-build-plan.md`
+`design-state-core.md` and the `src/precis_se/__init__.py` docstring
 respectively.
 
 **Not modelled: solvent.** Everything is currently in vacuum. This matters a great deal for π-stacking. See §6.

@@ -235,8 +235,8 @@ into 7a/7b sub-slices. Original findings kept below for the record.
   under the pattern as documented, and no persist.py rewrite to make ids
   stable is named in Explicitly-NOT-in-scope or Target+blast radius —
   items 2 and 5 pull in opposite directions on the same mechanism.
-- blocker: item 6's states schema doesn't match
-  `blocktree-library-build-plan.md` §Slice 2, which is already
+- blocker: item 6's states schema doesn't match the se block-states
+  design (`src/precis_se/__init__.py` docstring), which is already
   `status: ready` and already concrete: `driver_kind ∈ {light, reaction,
   redox, ph, thermal}` (closed enum) vs. this spec's "open vocabulary:
   wavelength, force, temperature, chemistry"; `state: (block, name,

@@ -597,7 +597,8 @@ local composition search (*which* substituent at *this* position) from
 combinatorial into descendable, which is exactly where an annealer
 wastes most of its budget. Worth a serious look before committing to
 pure discrete search at the fragment tier. Routes to spec §4.9 /
-`blocktree-library-build-plan.md` when investigated.
+the `src/precis_se/__init__.py` docstring's library-search paragraphs
+when investigated.
 
 ## 8. Open items
 
