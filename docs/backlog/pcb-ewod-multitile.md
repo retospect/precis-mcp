@@ -572,6 +572,7 @@ each is now a build item, not a question:**
    raising `gap` to 0.27 (changes the droplet physics) and accepting the
    finding / tighter fab house. The earlier "widen the margin" regression
    was a constant bump without re-solving the wall — this is the re-solve.
+   BUILT 2026-09-19 in tree.
 2. **9×9 sink packing → balanced by chain order.** `sink_grid.per_tiles`
    (square cell blocks) is replaced by `channels_per_sink` (default = the
    part's 64); sink count = ceil(driven / channels_per_sink), electrodes
@@ -646,7 +647,18 @@ web view) — four more, each a build item:**
    `_plaza_capacity`'s `min_half`/`min_pitch` contract (validated the
    same way); the ledger keeps the 8 slot names. The centre spare slot
    stays. Composes with ruling 1 (the corridor is the diagonal slot's
-   stub path).
+   stub path). BUILT 2026-09-19 in tree — the actual optimum the search
+   finds moves the cardinals to a LARGER radius than the old ring
+   (`slot_a` ≈0.738mm vs. the ring's ≈0.707mm at default via/hv numbers,
+   min_pitch ≈1.377mm vs. ≈1.435mm — a net improvement, not the
+   originally-expected "cardinals move in": the closed-form foreign-
+   clearance curve is U-shaped in the cardinal's own distance from centre
+   (minimum exactly at `half`), so the true maximiser sits on the FAR
+   side of that minimum once the via-via pairwise floor is folded in —
+   see `precis.pcb.generators._family_foreign_clearance`'s own docstring
+   for the derivation); still strictly beats the old ring's own minimum
+   foreign-copper clearance at every `half`, which is the acceptance bar
+   this ruling actually set.
 9. **Add a Teensy 4.0 as the controller** (`U_MCU`, top side, outside
    the array, near the serial-in end of the chain). Authored as a LOCAL
    footprint (PJRC's own drawing is the source: 2 × 14 through-hole pins

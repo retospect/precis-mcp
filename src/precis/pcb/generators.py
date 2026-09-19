@@ -192,6 +192,7 @@ necessarily still-open spec questions):
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -242,31 +243,32 @@ _HV_SEPARATION_V_SCALE = 0.002
 #: retreats (chamfers) each flanking corner along its own two walls by
 #: :func:`_electrode_polygon`'s ``plaza_corner_chamfer``, cutting the
 #: corner INWARD (never protruding outward, so it cannot newly violate
-#: any OTHER already-tuned clearance) until the corridor reopens to the
-#: same ``gap`` the rest of the array's design already targets everywhere
-#: else. This margin is added on top of that geometric target to absorb
-#: the stub's own residual half-width at its closest approach and
-#: ordinary coordinate-rounding noise.
+#: any OTHER already-tuned clearance) until the corridor reopens.
 #:
-#: **pcb-pre-place-route-blocks Slice 2 finding, STILL OPEN at the default
-#: ``gap`` — a design decision, not a build item.** Round 4's number was
-#: calibrated for a TAPERED footprint-pad neck (:func:`_stub_polygon`, now
-#: retired), whose width right at the pinch point was ~0. Slice 2 replaced
-#: the taper with a CONSTANT-width track (:func:`_stub_track_row`) the
-#: full length, so the copper occupies ``stub_width/2`` of the corridor
-#: everywhere, including at the corner — at default sizing this reads a
-#: couple hundredths of a mm under the fab's absolute clearance floor. Two
-#: fixes were tried and both rejected: WIDENING THIS MARGIN (closed the
-#: gap, opened a worse, unrelated zigzag-wall regression — do not retry),
-#: and NARROWING THE TRACK below the fab's minimum trace width (closed the
-#: clearance finding by emitting 0.038mm copper JLC cannot etch — a lie
-#: the `trace_width` DRC rule and the fixed-copper envelope both expose).
-#: ``resolve_ewod_sizing`` keeps the cap but floors it at the fab's
-#: minimum trace width; the residual deficit stays visible as a
-#: ``clearance`` finding until the corridor is made wide enough for
-#: min-width + two clearances (a wider ``gap``, >= ~0.27mm at JLC 4-layer
-#: rules, or a rule-derived chamfer corridor).
-_PLAZA_CORNER_CHAMFER_MARGIN_MM = 0.01
+#: **docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item 1 —
+#: the corridor is now RULE-DERIVED, not a fixed margin on top of ``gap``.**
+#: Round 4's number (a flat +0.01mm on top of ``gap``, formerly a module
+#: constant here) was calibrated for a TAPERED footprint-pad neck
+#: (:func:`_stub_polygon`, retired), whose width right at the pinch point
+#: was ~0. pcb-pre-place-route-blocks Slice 2 replaced the taper with a
+#: CONSTANT-width track (:func:`_stub_track_row`) the full length, so the
+#: copper occupies ``stub_width/2`` of the corridor everywhere, including
+#: at the corner — at that fixed +0.01mm margin the corridor (``gap +
+#: 0.01`` = 0.11mm at the default ``gap``) could not host a fab-minimum
+#: track plus two fab clearances (0.09 + 2x0.09 = 0.27mm), so the deficit
+#: was pinned as a KNOWN, documented gap rather than hidden. Two fixes
+#: were tried against that FIXED margin and both rejected: WIDENING IT (a
+#: naive constant bump closed the gap but opened a worse, unrelated
+#: zigzag-wall regression, because :func:`_electrode_polygon`'s meshing
+#: wall still measured its own zero-deflection flat run purely off
+#: ``tooth_pitch`` — see ``_meshing_wall``'s ``margin_t0``/``margin_t1``
+#: below for the re-solve that this ruling required alongside it), and
+#: NARROWING THE TRACK below the fab's minimum trace width (emitted
+#: 0.038mm copper JLC cannot etch — a lie the ``trace_width`` DRC rule and
+#: the fixed-copper envelope both expose). The ruling replaces the fixed
+#: margin with a corridor sized directly from what has to fit through it —
+#: ``resolve_ewod_sizing``'s own ``plaza_corner_chamfer`` derivation is the
+#: actual formula now; this constant is gone.
 
 #: 1 micron. The electrode-gap net class's ``clearance_mm`` (below) is set
 #: from the analytic ``gap`` value, but the ACTUAL manufactured gap DRC
@@ -364,86 +366,218 @@ def expand(generator: str, name: str, params: dict[str, Any]) -> GeneratorExpans
 
 
 # ── plaza slot capacity ───────────────────────────────────────────────────
-#: 2*sin(22.5deg) — the chord-length factor for 8 points evenly spaced
-#: (45 degrees apart) on a circle: chord = 2*R*sin(half the angle step).
-_RING_CHORD_FACTOR = 2.0 * math.sin(math.pi / 8.0)
+#: docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19" item 8 —
+#: absolute step (not relative to ``half``) for the small, deterministic
+#: numeric search :func:`_plaza_family` runs to pick ``(a, b)``. Small
+#: enough that ``min_pitch`` moves by well under the ruling's own 0.05mm
+#: budget between two consecutive candidates; coarse enough that the
+#: search stays fast (a few hundred thousand float ops per
+#: :func:`_plaza_capacity` call, cached — see its own decorator).
+_PLAZA_FAMILY_GRID_STEP_MM = 0.005
 
 
+def _pair_floor(via_dia: float, hv_separation: float) -> float:
+    """The via-via centre-to-centre floor every one of the family's 28
+    slot pairs (:func:`_family_min_pair_chord`) must clear — unchanged
+    from round 4's own adjacent-ring-chord floor, just no longer scoped
+    to "adjacent" (the axis-aligned family has no uniform ring to be
+    adjacent ON): ``via_dia + hv_separation``, padded by
+    :data:`_GEOMETRY_ROUNDING_SLACK_MM` for the same coordinate-rounding
+    reason the ring version's own docstring documented."""
+    return via_dia + hv_separation + _GEOMETRY_ROUNDING_SLACK_MM
+
+
+def _foreign_req(via_dia: float, hv_separation: float) -> float:
+    """The floor a slot's via EDGE (not centre) must clear from any
+    FOREIGN electrode's own nominal flat corner — round 2's own
+    constraint 2 threshold, unchanged: ``via_dia/2 + hv_separation``,
+    padded the same way."""
+    return via_dia / 2.0 + hv_separation + _GEOMETRY_ROUNDING_SLACK_MM
+
+
+def _family_min_pair_chord(a: float, b: float) -> float:
+    """The minimum centre-to-centre distance over all 28 pairs among the
+    family's 8 slots (cardinals at ``(+-a, 0)``/``(0, +-a)``, diagonals at
+    ``(+-b, +-b)``) — reduced, by the family's own 8-fold symmetry, to the
+    3 distinct chord shapes that can ever be the minimum: two cardinals
+    90 degrees apart (``a*sqrt(2)``), two diagonals sharing one axis sign
+    (``2*b``), and a cardinal next to its nearer diagonal neighbour
+    (``hypot(b, a-b)``). Every OTHER pair — opposite cardinals (``2a``),
+    opposite diagonals (``2*sqrt(2)*b``), a cardinal against its FARTHER
+    diagonal neighbour — is strictly larger than one of these three for
+    any ``a, b >= 0``; verified once against the full 28-pair brute-force
+    enumeration rather than re-derived by hand at every call
+    (``tests/test_pcb_ewod_generator_drc.py``'s own all-28-pairs test)."""
+    return min(a * math.sqrt(2.0), 2.0 * b, math.hypot(b, a - b))
+
+
+def _family_foreign_clearance(a: float, b: float, half: float, gap: float) -> float:
+    """The minimum distance from ANY of the family's 8 slots to ANY
+    FOREIGN electrode's own nominal (un-chamfered) flat corner — the
+    identity round 2's own constraint 2 used, generalised from the single
+    ring radius to two free parameters. By the family's own 8-fold
+    symmetry this reduces to two closed forms, each independent of the
+    OTHER parameter — but each has TWO candidate corners, not one,
+    because (unlike round 2's ring, where every slot sat at the same
+    radius) ``a``/``b`` are now free to grow past ``half``:
+
+    - A cardinal slot (say E, at ``(a, 0)``) is nearest EITHER N/S's own
+      near-plaza corner (board-frame offset ``(+-half, -+(half+gap))``
+      from the plaza centre — the corner every flat wall uses) while
+      ``a <= half + gap/2``, or NE/SE's own near-plaza corner (offset
+      ``(half+gap, -+(half+gap))``) once ``a`` grows past that —
+      ``min(hypot(half-a, half+gap), hypot(half+gap-a, half+gap))``. The
+      crossover ``a = half + gap/2`` is where the two candidate distances
+      are exactly equal (solving ``hypot(half-a, half+gap) =
+      hypot(half+gap-a, half+gap)`` for ``a``).
+    - A diagonal slot (say NE, at ``(b, b)`` in magnitude) is nearest the
+      N (or E) electrode's own near-plaza corner — round 2's own
+      constraint 2 identity, ``u`` replaced by the free ``b``:
+      ``hypot(half - b, half + gap - b)``. Unlike the cardinal case, no
+      SECOND candidate ever wins here for ``b`` up to at least
+      ``half + gap`` (verified the same way, below).
+
+    Both reduce EXACTLY to the brute-force 8-slots x 7-foreign-electrodes
+    x 4-corners minimum for ``a, b`` in ``[0, half + gap]`` — checked
+    against 2000 random ``(half, gap, a, b)`` draws in that range while
+    deriving this function, zero mismatches — which is why
+    :func:`_plaza_family`'s own search never lets ``a``/``b`` exceed
+    ``half + gap`` (a real physical bound too: beyond it a slot has left
+    its own plaza's hollow interior and entered a foreign electrode's own
+    copper outline, which no corner-distance formula alone protects
+    against)."""
+    cardinal = min(
+        math.hypot(half - a, half + gap), math.hypot(half + gap - a, half + gap)
+    )
+    diagonal = math.hypot(half - b, half + gap - b)
+    return min(cardinal, diagonal)
+
+
+def _plaza_family(
+    gap: float, via_dia: float, hv_separation: float, half: float
+) -> tuple[float, float, float]:
+    """The best ``(a, b)`` at a GIVEN ``half`` — a small grid search (step
+    :data:`_PLAZA_FAMILY_GRID_STEP_MM`) over ``a`` in ``[a0, half + gap]``,
+    ``b`` in ``[b0, half + gap]``, where ``a0``/``b0`` are each axis's OWN
+    independent pairwise floor (below which even same-type slots can't
+    clear :func:`_pair_floor` regardless of the other axis — shrinking the
+    search range's LOWER end below what the ruling's own text suggests,
+    since nothing below ``a0``/``b0`` is ever feasible) and ``half + gap``
+    is the search range's UPPER end (:func:`_family_foreign_clearance`'s
+    own docstring — both the limit of its closed forms' validity and the
+    real physical boundary of the plaza's own hollow interior). Returns
+    ``(a, b, clearance)``; ``clearance`` is ``-1.0`` if ``half`` is too
+    small to even host ``a0``/``b0`` (an empty search range, not a real
+    candidate — the caller's own :func:`_plaza_capacity` search must grow
+    ``half`` past this before it can find anything)."""
+    d = _pair_floor(via_dia, hv_separation)
+    a0 = d / math.sqrt(2.0)
+    b0 = d / 2.0
+    upper = half + gap
+    if upper < a0 - 1e-9 or upper < b0 - 1e-9:
+        return (a0, b0, -1.0)
+    step = _PLAZA_FAMILY_GRID_STEP_MM
+    best = -1.0
+    best_a, best_b = a0, b0
+    a = a0
+    while a <= upper + 1e-9:
+        b = b0
+        while b <= upper + 1e-9:
+            if _family_min_pair_chord(a, b) >= d - 1e-9:
+                clearance = _family_foreign_clearance(a, b, half, gap)
+                if clearance > best:
+                    best = clearance
+                    best_a, best_b = a, b
+            b += step
+        a += step
+    return (best_a, best_b, best)
+
+
+@functools.lru_cache(maxsize=256)
 def _plaza_capacity(
     gap: float, via_dia: float, hv_separation: float
 ) -> dict[str, float]:
-    """The REAL plaza floor (round-2 stress-test finding, replacing an
-    earlier "3x3 sub-grid at spacing=half" model that turned out
-    infeasible at the spec's own default numbers — see the module
-    docstring's own history note if this reads like a second attempt,
-    because it is one).
+    """The REAL plaza floor, chosen from a two-parameter AXIS-ALIGNED
+    slot family (docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19"
+    item 8) rather than round 2/4's single uniform 8-slot ring: cardinal
+    slots (N/E/S/W) at distance ``a`` from the plaza centre on the axes,
+    diagonal slots (NE/NW/SE/SW) at ``(+-b, +-b)``. The ring was chosen
+    because a uniform 3x3 SQUARE sub-grid was unsatisfiable at the spec's
+    own numbers (this function's own earlier history); the ring itself
+    ties the cardinal and diagonal positions TOGETHER (both sit at the
+    same radius ``R``, cardinal directly, diagonal via ``u = R/sqrt(2)``
+    on each axis), even though they face DIFFERENT nearest-foreign-corner
+    geometry (:func:`_family_foreign_clearance`) and only share ONE
+    constraint (the via-via floor between them). Decoupling them into two
+    free parameters and letting the search below explore both AND the
+    fact that a cardinal's own foreign-clearance curve is NOT monotone
+    (:func:`_family_foreign_clearance`'s own docstring — it dips to a
+    minimum at ``a = half`` and rises on either side) finds a strictly
+    better combined floor than the ring ever could — verified against the
+    ring's own formula for the default via/hv numbers
+    (``tests/test_pcb_ewod_generator_drc.py``).
 
-    **Slot layout.** All 8 escapes sit on ONE ring of radius ``R`` around
-    the plaza centre, at 45-degree spacing (N/NE/E/SE/S/SW/W/NW) — not a
-    3x3 square sub-grid. A square grid forces the SAME spacing (``half``)
-    to serve two very different jobs at once (adjacent-slot clearance
-    AND diagonal-slot-to-foreign-electrode clearance), and at the spec's
-    own cited via/pitch numbers those two jobs need DIFFERENT spacings —
-    the square model is unsatisfiable there. A ring decouples them: ``R``
-    is picked purely from adjacent-slot spacing, then validated
-    separately against the (fixed, `R`-independent-until-plugged-in)
-    foreign-corner clearance.
-
-    **Two real constraints, ``half`` is the one free variable:**
-
-    1. Adjacent same-ring slots (45 degrees apart) must clear
-       ``via_dia + hv_separation`` centre-to-centre: chord
-       ``= R * 2*sin(22.5deg) >= via_dia + hv_separation``, giving
-       ``R = (via_dia + hv_separation) / (2*sin(22.5deg))`` (the smallest
-       ring that satisfies every adjacent pair at once — cardinal-cardinal
-       and cardinal-diagonal chords are equal on a uniform ring).
-    2. A DIAGONAL slot (radius component along each axis ``u = R/sqrt(2)``)
-       must clear the two neighbouring electrodes it does NOT serve — e.g.
-       the plaza's NW slot serves the NW electrode (same net, free to be
-       close) but sits near the N electrode's own SW corner, at board-frame
-       offset ``(-half, -(half+gap))`` from the plaza centre (the SAME
-       geometric identity every OTHER electrode's own flat corner uses).
-       Requiring ``sqrt((half-u)^2 + (half+gap-u)^2) >= via_dia/2 +
-       hv_separation`` and solving the resulting quadratic for the
-       SMALLEST ``half`` that satisfies it (larger ``half`` moves that
-       corner farther away, so this is monotone) gives ``min_half``.
+    **The search.** For a candidate ``half``, :func:`_plaza_family` grid-
+    searches ``(a, b)`` for the pair-floor-feasible combination that
+    MAXIMISES :func:`_family_foreign_clearance` — the smallest ``half``
+    at which that best-achievable clearance reaches :func:`_foreign_req`
+    is ``min_half``, found by doubling-then-bisecting on ``half`` (both
+    :func:`_family_foreign_clearance` terms are non-decreasing in
+    ``half`` for FIXED ``a``/``b``, and the feasible ``(a, b)`` region
+    itself never depends on ``half`` at all, so the best-achievable
+    clearance is monotone non-decreasing in ``half`` — bisection is
+    valid). The ``(a, b)`` found AT ``min_half`` is what
+    :func:`resolve_ewod_sizing` uses for ANY actual (larger) ``half`` a
+    real board ends up with — exactly how the superseded ring's own
+    ``R`` was fixed independent of ``half`` too: a bigger pitch only ever
+    buys MORE clearance for the same ``(a, b)``, never requires a
+    different one. ``@functools.lru_cache``: this is a pure function of
+    three floats with no history dependence (the module's own
+    "Idempotency contract"), and the search itself is not free — most
+    calls across one process share the same (default or house) via/gap/
+    hv_separation, so the cache turns a repeat sizing call (every
+    ``resolve_ewod_sizing`` invocation makes one) into a dict lookup.
 
     ``min_pitch = gap + 2*min_half`` is what :func:`resolve_ewod_sizing`
-    actually validates ``pitch`` against.
-
-    **Round-4 fix: adjacent-ring-slot chord carries a rounding-slack
-    margin.** When no ``drive_voltage_v`` is declared, ``hv_separation``
-    itself falls back to the fab's OWN ``jlc_min`` ``trace_spacing_mm``
-    (:func:`resolve_ewod_sizing`'s own fallback) — the SAME value
-    :func:`precis.pcb.drc.check_clearance`'s ERROR tier checks against.
-    Constraint 1 above then places adjacent via slots at EXACTLY that
-    floor, zero margin, by design — but the placed vias' actual board
-    coordinates go through the same 4-decimal-place rounding as every
-    other pad (:func:`precis.pcb.padplace.place_footprint_pads`), which
-    can shave a few 0.00001mm off the exact analytic chord (same
-    mechanism ``_GEOMETRY_ROUNDING_SLACK_MM``'s own docstring documents
-    for the electrode-gap net class) — enough, at zero margin, to flip a
-    genuinely-manufacturable design into a spurious ``check_clearance``
-    ERROR (found stress-testing this round's diagonal-stub fix: once that
-    fix stopped dominating the findings list, THIS zero-margin pair was
-    what showed up next). Padding the chord requirement by the same
-    :data:`_GEOMETRY_ROUNDING_SLACK_MM` used elsewhere keeps every
-    adjacent via pair comfortably above the floor without materially
-    loosening ``min_pitch`` (the slack is 1% of the default ``gap`` and
-    far smaller than any real via/hv_separation figure)."""
-    req = via_dia / 2.0 + hv_separation + _GEOMETRY_ROUNDING_SLACK_MM
-    ring_radius = (
-        via_dia + hv_separation + _GEOMETRY_ROUNDING_SLACK_MM
-    ) / _RING_CHORD_FACTOR
-    u0 = ring_radius / math.sqrt(2.0)
-    # 2*a^2 + 2*g*a + (g^2 - req^2) >= 0, a = half - u0 -- see docstring's
-    # constraint 2. The upper root is the boundary; `a` must be AT LEAST
-    # that (a is increasing in `half`).
-    disc = 2.0 * req * req - gap * gap
-    a_hi = req if disc < 0 else (-gap + math.sqrt(disc)) / 2.0
-    min_half = u0 + a_hi
+    actually validates ``pitch`` against — the same contract the ring
+    version held, still true here (the ruling's own requirement)."""
+    req = _foreign_req(via_dia, hv_separation)
+    d = _pair_floor(via_dia, hv_separation)
+    a0 = d / math.sqrt(2.0)
+    b0 = d / 2.0
+    lo_half = max(a0, b0)
+    _, _, clearance = _plaza_family(gap, via_dia, hv_separation, lo_half)
+    if clearance >= req:
+        min_half = lo_half
+    else:
+        hi_half = max(lo_half, req)
+        _, _, clearance = _plaza_family(gap, via_dia, hv_separation, hi_half)
+        while clearance < req:
+            hi_half *= 1.5
+            _, _, clearance = _plaza_family(gap, via_dia, hv_separation, hi_half)
+        # `lo_half` is confirmed infeasible above, `hi_half` feasible --
+        # bisect down to the grid's own step resolution (finer serves no
+        # purpose: `_plaza_family`'s own (a, b) choice is already only
+        # that precise).
+        for _ in range(48):
+            mid = (lo_half + hi_half) / 2.0
+            _, _, mid_clearance = _plaza_family(gap, via_dia, hv_separation, mid)
+            if mid_clearance >= req:
+                hi_half = mid
+            else:
+                lo_half = mid
+        min_half = hi_half
+    a, b, _ = _plaza_family(gap, via_dia, hv_separation, min_half)
     return {
-        "slot_radius": ring_radius,
+        "slot_a": a,
+        "slot_b": b,
+        # Alias for any reader still keyed on the pre-ruling-8 ring name
+        # (docs/backlog/pcb-ewod-multitile.md's own instruction) --
+        # `precis.pcb.svg`'s capability-map view draws a single schematic
+        # ring off this and is explicitly NOT the fab-accurate geometry
+        # (its own docstring), so approximating every slot at radius `a`
+        # there is an acceptable, unchanged simplification.
+        "slot_radius": a,
         "min_half": min_half,
         "min_pitch": gap + 2.0 * min_half,
     }
@@ -519,7 +653,7 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
             f"capacity floor {min_pitch:.3f}mm for gap={gap}mm, "
             f"via_dia={via_dia}mm, hv_separation={hv_separation}mm (see "
             "precis.pcb.generators._plaza_capacity) -- the plaza cannot "
-            "fit its 8-slot escape ring at this pitch; raise pitch, or "
+            "fit its 8-slot escape family at this pitch; raise pitch, or "
             "override via/gap/hv_separation explicitly"
         )
 
@@ -531,58 +665,26 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
     # see the `stub_width = min(...)` clamp below -- turning "default"
     # into "default, plus a warning every single call"), so start from
     # the floor instead.
-    stub_width_uncapped = float(
-        params.get(
-            "stub_width", cap.jlc_min.get("trace_width_mm") or _DEFAULT_STUB_WIDTH_MM
-        )
-    )
-    # A diagonal escape's via slot sits only `gap*sqrt(2)` from the
-    # diagonally-adjacent electrode's own corner (round-2 stress-test
-    # finding). A neck wider than `gap` at that end clips the neighbour --
-    # capped here (once; :func:`_expand_ewod_pad_array` no longer repeats
-    # this clamp) so `plaza_corner_chamfer` below can be derived from the
-    # SAME final width the track will actually be drawn at.
-    stub_width = min(stub_width_uncapped, gap)
-    # pcb-pre-place-route-blocks Slice 2 geometry residue, BOUNDED here (not
-    # closed at the default gap -- see `_PLAZA_CORNER_CHAMFER_MARGIN_MM`): a
-    # constant-width track (unlike round 4's near-zero-width taper) eats
-    # `stub_width/2` of the corridor the plaza-corner chamfer opens, at
-    # its own closest approach right at the flanking corner. That corridor
-    # is `gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM` wide, by construction of
-    # `plaza_corner_chamfer` below (the chamfer's whole job is to retreat
-    # the corner out to exactly that distance from the escape centreline).
-    # Deriving the widest `stub_width` that still leaves the fab's own
-    # absolute clearance floor (jlc_min `trace_spacing_mm` -- the ERROR
-    # tier `check_clearance` actually enforces regardless of any net-class
-    # override, module docstring) intact -- plus the same rounding slack
-    # used elsewhere for shapely/coordinate-rounding noise -- is the fix
-    # the module docstring's "tried and reverted" note explicitly did NOT
-    # take (widening the chamfer MARGIN instead, which regressed the
-    # mesh-wall zigzag clearance): this narrows the TRACK, which is
-    # load-bearing only against this exact corridor, never against
-    # anything the chamfer margin itself also protects.
-    #
-    # The cap has a FLOOR of its own: the fab's minimum trace width. A
-    # track narrower than that is not "extra clearance", it is copper JLC
-    # will not etch — and `_fabric_envelope` stamps `min_track_mm` = that
-    # same floor onto every row, so emitting a thinner stub would make the
-    # envelope lie. At the spec's DEFAULT gap (0.10mm) the corridor
-    # (0.11mm) cannot host min-width + two clearances (0.09 + 2×0.09), so
-    # the cap bottoms out at the floor and the residual clearance deficit
-    # stays VISIBLE as a `clearance` finding — never traded for a silent
-    # sub-minimum track. Closing it needs a wider `gap` (>= ~0.27mm at JLC
-    # 4-layer rules) or a rule-derived chamfer corridor: a design call,
-    # recorded in docs/backlog/pcb-pre-place-route-blocks.md.
     _trace_spacing_floor = float(cap.jlc_min.get("trace_spacing_mm") or 0.09)
     _trace_width_floor = float(
         cap.jlc_min.get("trace_width_mm") or _DEFAULT_STUB_WIDTH_MM
     )
-    _corridor = gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM
-    _max_stub_for_corridor = max(
-        2.0 * (_corridor - _trace_spacing_floor - _GEOMETRY_ROUNDING_SLACK_MM),
-        _trace_width_floor,
-    )
-    stub_width = min(stub_width, _max_stub_for_corridor)
+    stub_width_uncapped = float(params.get("stub_width", _trace_width_floor))
+    # A diagonal escape's via slot sits only `gap*sqrt(2)` from the
+    # diagonally-adjacent electrode's own corner (round-2 stress-test
+    # finding). A neck wider than `gap` at that end clips the neighbour --
+    # capped here (once; :func:`_expand_ewod_pad_array` no longer repeats
+    # this clamp).
+    stub_width = min(stub_width_uncapped, gap)
+    # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item 1 --
+    # there is NO corridor cap here any more (the corridor itself is now
+    # sized FROM the fab minimum, below -- see `plaza_corner_chamfer`),
+    # only the fab's own absolute floor: copper narrower than this is not
+    # "extra clearance", it is trace JLC will not etch, regardless of why
+    # an author asked for it (an explicit `stub_width` override below the
+    # floor is raised back up here, not silently accepted then flagged
+    # elsewhere by `check_trace_width`).
+    stub_width = max(stub_width, _trace_width_floor)
     edge = params.get("edge") or {}
     tooth_depth = float(edge.get("tooth_depth", _DEFAULT_TOOTH_DEPTH_MM))
     tooth_pitch = float(edge.get("tooth_pitch", _DEFAULT_TOOTH_PITCH_MM))
@@ -619,39 +721,39 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
         )
     half = (pitch - gap) / 2.0
 
-    # Plaza-corner chamfer (round-4 fix, see _PLAZA_CORNER_CHAMFER_MARGIN_MM's
-    # docstring for the full derivation): retreat = sqrt(2)*(target - gap/
-    # sqrt(2)) where target = gap + margin -- i.e. the corner moves along
-    # each of its own two flat/mesh walls by just enough that its distance
-    # to the escape's 45-degree centreline grows from the un-chamfered
-    # gap/sqrt(2) up to the array's own uniform `gap` design target, plus
-    # a fixed safety margin.
+    # Plaza-corner chamfer -- docs/backlog/pcb-ewod-multitile.md "Rulings
+    # 2026-09-18" item 1: RULE-DERIVED, not a fixed margin on top of
+    # `gap` (round 4's superseded formula, see _stub_track_row's sibling
+    # notes and this module's own history for the fixed-margin version
+    # and why it was pinned as a KNOWN gap rather than fixed by widening
+    # the margin -- that regressed the meshing wall, see `_edge_sign`'s
+    # own `margin_t0`/`margin_t1` docstring for the re-solve this ruling
+    # ALSO required).
     #
-    # **pcb-pre-place-route-blocks Slice 2 tried and REVERTED a stub-
-    # aware widening here.** Naively growing this margin to also cover the
-    # constant-width track's own half-width (replacing the near-zero
-    # taper -- _PLAZA_CORNER_CHAMFER_MARGIN_MM's own docstring) fixed the
-    # track-vs-neighbour clearance this docstring used to flag, but
-    # introduced a WORSE, un-related regression: the wider chamfer shrinks
-    # the flat run each MESHING wall gets before `_edge_sign`'s own
-    # tooth-transition margin kicks in, which measurably tightened the
-    # zigzag offset curve's OWN clearance against its mirrored neighbour
-    # (observed: two electrode BODIES, no stub involved, down to 0.04mm at
-    # default sizing -- worse than the 0.065mm the stub itself caused).
-    # That is exactly the class of subtle mesh-wall interaction rounds
-    # 2-4 above each needed a dedicated stress-test pass to pin down, not
-    # a one-line margin bump. **Fixed instead by narrowing the TRACK, not
-    # this margin**: `stub_width` above is capped to the widest value that
-    # still leaves the fab's absolute clearance floor intact against this
-    # exact corridor (``gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM``), so the
-    # corridor this chamfer opens stays exactly as wide as it always was
-    # -- nothing here changed -- and the diagonal escape's stub track
-    # clears its two flanking neighbours' bodies by construction
-    # (``tests/test_pcb_ewod_generator_drc.py``'s
-    # ``test_diagonal_escape_stub_track_clearance_stays_clean`` pins this).
-    plaza_corner_chamfer = (
-        math.sqrt(2.0) * (gap + _PLAZA_CORNER_CHAMFER_MARGIN_MM) - gap
+    # The corridor a diagonal escape's stub threads through is the
+    # perpendicular gap between the two flanking (cardinal-escaping)
+    # neighbours' own chamfered corners. For a fab-legal stub to fit,
+    # that corridor needs to be at least `stub_width + 2 *
+    # trace_spacing_floor` wide (the track's own width plus a fab
+    # clearance on each side) -- the ruling fixes `stub_width` here to
+    # the FAB MINIMUM specifically (not whatever an author may have
+    # overridden `stub_width` to, above -- the chamfer is a board-wide
+    # geometric feature computed once, sized for the standard case; a
+    # WIDER author override just spends some of the resulting margin,
+    # same as it always could), plus the usual coordinate-rounding slack.
+    #
+    # `plaza_corner_chamfer`'s relationship to that corridor target is
+    # the SAME geometric identity round 4 derived (only the target
+    # changed): retreating each flanking corner by `plaza_corner_chamfer`
+    # along its own two flat/mesh walls grows its distance to the
+    # escape's 45-degree centreline from the un-chamfered `gap/sqrt(2)`
+    # up to `corridor_target/sqrt(2)` -- i.e. `corridor_target =
+    # sqrt(2)*(gap + plaza_corner_chamfer) / sqrt(2)`... solved for the
+    # chamfer: `plaza_corner_chamfer = sqrt(2)*corridor_target - gap`.
+    _corridor_target = (
+        _trace_width_floor + 2.0 * _trace_spacing_floor + _GEOMETRY_ROUNDING_SLACK_MM
     )
+    plaza_corner_chamfer = math.sqrt(2.0) * _corridor_target - gap
     if plaza_corner_chamfer >= half:
         raise ValueError(
             f"ewod_pad_array: derived plaza_corner_chamfer={plaza_corner_chamfer:.3f}mm "
@@ -669,6 +771,8 @@ def resolve_ewod_sizing(params: dict[str, Any]) -> dict[str, Any]:
         "stub_width_uncapped": stub_width_uncapped,
         "tooth_depth": tooth_depth,
         "tooth_pitch": tooth_pitch,
+        "slot_a": capacity["slot_a"],
+        "slot_b": capacity["slot_b"],
         "slot_radius": capacity["slot_radius"],
         "corner_radius": corner_radius,
         "external_edge": external_edge,
@@ -729,9 +833,19 @@ def _tooth_sign(t: float, tooth_pitch: float) -> int:
     return 1 if math.floor(t / tooth_pitch) % 2 == 0 else -1
 
 
-def _edge_sign(t: float, tooth_pitch: float, t0: float, t1: float) -> int:
+def _edge_sign(
+    t: float,
+    tooth_pitch: float,
+    t0: float,
+    t1: float,
+    *,
+    margin_t0: float = 0.0,
+    margin_t1: float = 0.0,
+) -> int:
     """:func:`_tooth_sign`, but forced to 0 (no deflection) within one
-    tooth_pitch of either end of the edge ``[t0, t1]``.
+    tooth_pitch of either end of the edge ``[t0, t1]`` — or within
+    ``margin_t0``/``margin_t1`` (whichever is larger), when the caller
+    passes one.
 
     Without this, two edges meeting at a pad's corner each compute their
     OWN independent wave (one is a function of x, the perpendicular one a
@@ -741,10 +855,34 @@ def _edge_sign(t: float, tooth_pitch: float, t0: float, t1: float) -> int:
     end-to-end rather than side-by-side. Clamping every wall to the
     pad's plain, non-deflected corner (this returns 0 there, giving the
     same nominal ``+-half`` corner every flat wall already uses) is what
-    keeps the polygon a single closed, non-self-intersecting ring."""
+    keeps the polygon a single closed, non-self-intersecting ring.
+
+    **``margin_t0``/``margin_t1`` — docs/backlog/pcb-ewod-multitile.md
+    "Rulings 2026-09-18" item 1's own wall re-solve.** A meshing wall
+    whose ``[t0, t1]`` is already the CHAMFERED (shrunk) extent
+    (:func:`_electrode_polygon`'s ``_chamfer_inset``) used to get its
+    zero-deflection buffer from ``tooth_pitch`` alone, same as any other
+    wall — fine while ``plaza_corner_chamfer`` was a small fixed margin,
+    but once the chamfer is sized to fit a real fab-legal stub through
+    the corridor it opens (``resolve_ewod_sizing``'s own derivation) it
+    can exceed ``tooth_pitch`` several times over: with only
+    ``tooth_pitch`` of flat run past the (now much farther-retreated)
+    corner, the wall's first real ZIGZAG tooth pokes back out toward the
+    escape corridor the chamfer just widened, partially undoing it — the
+    exact, previously-unexplained mechanism behind the "widening the
+    margin regressed the zigzag wall" finding this module's history
+    records (the margin grew, the wall's own flat run never followed).
+    ``_electrode_polygon`` passes the ACTUAL chamfer amount applied at
+    each end (0 where that end wasn't chamfered at all, the old,
+    unaffected behaviour) so the flat run always reaches at least as far
+    as the chamfer itself does."""
     lo, hi = (t0, t1) if t0 <= t1 else (t1, t0)
-    margin = min(tooth_pitch, (hi - lo) / 2.0)
-    if t <= lo + margin + 1e-9 or t >= hi - margin - 1e-9:
+    m_t0, m_t1 = max(tooth_pitch, margin_t0), max(tooth_pitch, margin_t1)
+    m_lo, m_hi = (m_t0, m_t1) if t0 <= t1 else (m_t1, m_t0)
+    half_len = (hi - lo) / 2.0
+    m_lo = min(m_lo, half_len)
+    m_hi = min(m_hi, half_len)
+    if t <= lo + m_lo + 1e-9 or t >= hi - m_hi - 1e-9:
         return 0
     return _tooth_sign(t, tooth_pitch)
 
@@ -835,7 +973,13 @@ def _s_curve(
 
 
 def _centerline_points(
-    t0: float, t1: float, *, tooth_pitch: float, depth: float
+    t0: float,
+    t1: float,
+    *,
+    tooth_pitch: float,
+    depth: float,
+    margin_t0: float = 0.0,
+    margin_t1: float = 0.0,
 ) -> list[tuple[float, float]]:
     """The SHARED crenellated centreline — ``(t, deflection)`` pairs, a
     right-angle-square-wave SHAPE (flat plateaus at ``+-depth``) but
@@ -845,12 +989,23 @@ def _centerline_points(
 
     This is a template curve, not a pad boundary: :func:`_meshing_wall`
     derives EACH side's actual boundary from it via a proper
-    perpendicular polyline offset (shapely ``offset_curve``)."""
+    perpendicular polyline offset (shapely ``offset_curve``).
+    ``margin_t0``/``margin_t1`` pass straight through to
+    :func:`_edge_sign` (its own docstring has the ruling-1 re-solve this
+    exists for)."""
     pts = _breakpoints(t0, t1, tooth_pitch)
     n_intervals = len(pts) - 1
     # One flat deflection level per interval [pts[i], pts[i+1]].
     levels = [
-        depth * _edge_sign((pts[i] + pts[i + 1]) / 2.0, tooth_pitch, t0, t1)
+        depth
+        * _edge_sign(
+            (pts[i] + pts[i + 1]) / 2.0,
+            tooth_pitch,
+            t0,
+            t1,
+            margin_t0=margin_t0,
+            margin_t1=margin_t1,
+        )
         for i in range(n_intervals)
     ]
 
@@ -890,6 +1045,8 @@ def _meshing_wall(
     gap: float,
     side: float,
     axis: str,
+    margin_t0: float = 0.0,
+    margin_t1: float = 0.0,
 ) -> list[Point]:
     """One pad's boundary along a meshing wall: the shared, ROUNDED
     crenellated centreline (:func:`_centerline_points`, already smooth —
@@ -907,8 +1064,19 @@ def _meshing_wall(
     zero deflection — empirically, all four walls (W/N/E/S) turn out to
     want ``side=1.0`` given how each one's own ``t0``/``t1``/``mid_axis``
     are set up in :func:`_electrode_polygon`, rather than a symbolic
-    +/-1 derived from shapely's left/right convention."""
-    centerline = _centerline_points(t0, t1, tooth_pitch=tooth_pitch, depth=depth)
+    +/-1 derived from shapely's left/right convention. ``margin_t0``/
+    ``margin_t1`` — the amount ``t0``/``t1`` was itself already retreated
+    by a plaza-corner chamfer, or 0 — pass straight through to
+    :func:`_centerline_points`/:func:`_edge_sign` (ruling-1 wall
+    re-solve, see the latter's own docstring)."""
+    centerline = _centerline_points(
+        t0,
+        t1,
+        tooth_pitch=tooth_pitch,
+        depth=depth,
+        margin_t0=margin_t0,
+        margin_t1=margin_t1,
+    )
     if axis == "x":
         xy = [(mid_axis + d, t) for t, d in centerline]
     else:
@@ -982,7 +1150,8 @@ _DIR_BY_DELTA: dict[tuple[int, int], str] = {
 
 def _needs_plaza_corner_chamfer(kind_a: str, kind_b: str) -> bool:
     """A corner needs chamfering (round-4 fix, see
-    ``_PLAZA_CORNER_CHAMFER_MARGIN_MM``'s docstring) exactly where one
+    ``resolve_ewod_sizing``'s own ``plaza_corner_chamfer`` derivation)
+    exactly where one
     adjoining wall is ``flat`` (facing a plaza or a rim's hollow interior
     — no interlocking partner there) and the OTHER is ``mesh`` (an
     internal electrode neighbour, or an external boundary meshing for
@@ -993,6 +1162,20 @@ def _needs_plaza_corner_chamfer(kind_a: str, kind_b: str) -> bool:
     edge with no interlocking partner either) needs no chamfer -- nothing
     protrudes past either of those to be threatened by."""
     return {kind_a, kind_b} == {"flat", "mesh"}
+
+
+def _needs_diagonal_margin_widen(kind_a: str, kind_b: str, kind_diag: str) -> bool:
+    """The MIRROR side of :func:`_needs_plaza_corner_chamfer` — this
+    electrode's OWN corner isn't chamfered (both of ITS adjoining walls
+    are ``mesh``, nothing on its own side to cut), but the cell DIAGONAL
+    to it at this exact corner (``kind_diag``) is ``flat`` — a plaza or
+    hollow interior sitting one cell further out, diagonally. That means
+    ONE of the two cardinal cells between this electrode and that
+    diagonal plaza (whichever actually borders it) has ITS OWN flat wall
+    there and IS chamfering this same physical corner point (see
+    :func:`_electrode_polygon`'s own docstring for why this electrode's
+    wall margin must widen to match, even though its shape does not)."""
+    return kind_a == "mesh" and kind_b == "mesh" and kind_diag == "flat"
 
 
 def _chamfer_inset(
@@ -1013,8 +1196,15 @@ def _chamfer_inset(
 
 def _electrode_polygon(
     layout: _Layout, r0: int, c0: int, r1: int | None = None, c1: int | None = None
-) -> list[Point]:
-    """One electrode's polygon — a single grid cell (``r0==r1, c0==c1``,
+) -> tuple[list[Point], int]:
+    """One electrode's polygon, and the number of its own 4 OUTER
+    corners that got a plaza-corner chamfer (0-2 for the auto 3x3 rule's
+    usual single-flat-wall case, up to 4 for a hand-authored ``plazas``
+    layout with a plaza on more than one side — the ledger's own
+    ``chamfer_loss_mm2`` is ``count * plaza_corner_chamfer**2 / 2``, see
+    below).
+
+    A single grid cell (``r0==r1, c0==c1``,
     the only shape before round 6) OR a ``pad_sizes``-merged rectangular
     SPAN of ``r1-r0+1`` x ``c1-c0+1`` cells (round 6): 4 walls (W, N, E,
     S), each either crenellated against a same-status neighbour (another
@@ -1047,20 +1237,25 @@ def _electrode_polygon(
     there is no diagonal escape geometry threading past an internal seam,
     only past the span's own true corners, the same as a single pad's.
 
-    **Plaza-corner chamfer (round 4, generalised round 6).** Where a FLAT
-    wall (facing a plaza) meets a MESH wall (facing an electrode
-    neighbour) at one of the span's own 4 OUTER corners, that corner is
-    exactly the point a DIFFERENT electrode's own diagonal escape stub has
-    to thread past on its way to the same plaza — and at default sizing
-    that corner sits geometrically closer to the escape's centreline than
-    the fab's own absolute copper-spacing floor allows, independent of how
-    the stub itself is shaped (see ``_PLAZA_CORNER_CHAMFER_MARGIN_MM``'s
-    docstring for the full derivation and why no taper redesign alone can
-    fix it). Both walls meeting such a corner retreat INWARD along their
-    own axis by ``plaza_corner_chamfer`` — this only ever removes copper
-    (can't newly violate anything else) and reopens the corridor those two
-    walls' corner and its mirror twin bound to (at least) the array's own
-    uniform ``gap`` design target."""
+    **Plaza-corner chamfer (round 4, generalised round 6, RULE-DERIVED
+    since docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item
+    1).** Where a FLAT wall (facing a plaza) meets a MESH wall (facing an
+    electrode neighbour) at one of the span's own 4 OUTER corners, that
+    corner is exactly the point a DIFFERENT electrode's own diagonal
+    escape stub has to thread past on its way to the same plaza — and
+    un-chamfered, that corner sits at perpendicular distance ``gap/
+    sqrt(2)`` from the escape's centreline, independent of how the stub
+    itself is shaped (below the fab's own absolute copper-spacing floor
+    at any sizing that needs a real track through there — see
+    ``resolve_ewod_sizing``'s own ``plaza_corner_chamfer`` derivation for
+    why no taper redesign alone can fix it, and for the corridor-width
+    target the current chamfer is solved from). Both walls meeting such a
+    corner retreat INWARD along their own axis by ``plaza_corner_chamfer``
+    — this only ever removes copper (can't newly violate anything else)
+    and reopens the corridor those two walls' corner and its mirror twin
+    bound to. The area each such corner loses is reported per-electrode
+    in the ledger as ``chamfer_loss_mm2`` (``chamfer**2 / 2`` per
+    chamfered corner — a right isoceles triangle)."""
     if r1 is None:
         r1 = r0
     if c1 is None:
@@ -1099,6 +1294,64 @@ def _electrode_polygon(
     chamfer_es = _needs_plaza_corner_chamfer(kind_e(r1), kind_s(c1))
     chamfer_sw = _needs_plaza_corner_chamfer(kind_s(c0), kind_w(r1))
 
+    # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item 1's own
+    # wall re-solve, PART TWO (the mirror side of a chamfered corner).
+    # `chamfer_*` above is TRUE only for the electrode that itself owns a
+    # flat wall at that corner (e.g. a plaza's cardinal N/S/E/W neighbour)
+    # -- but a corner electrode DIAGONAL to the plaza (e.g. the array's
+    # own R0C0-style corner, whose own two adjoining walls are BOTH mesh)
+    # shares that EXACT physical corner point with its cardinal neighbour,
+    # who DOES chamfer there. Both sides of one shared mesh wall query the
+    # SAME absolute coordinate (`_tooth_sign`'s own docstring), so if only
+    # ONE side widens its zero-deflection margin, the OTHER side's zigzag
+    # can still put a real tooth right where its neighbour has already
+    # retreated -- this is the exact, previously mis-attributed "widening
+    # the margin regressed the zigzag wall" finding (two electrode
+    # BODIES, no stub, down to 0.04mm): the fixed-margin version's
+    # neighbour-side never widened AT ALL, so growing only one side's
+    # margin made the mismatch bigger, not the margin itself the problem.
+    #
+    # This has to be a PER-UNIT check, not just a span-outer-corner one
+    # (round 6's merged spans generalise it): a merged span's own mesh
+    # wall can run past SEVERAL of a NEIGHBOUR's own cells (or, for a
+    # 2+-cell merge, the mirror-worthy neighbour might sit below/beside an
+    # INTERNAL unit of the span, not either of its two true outer
+    # corners), so each unit checks its OWN two local ends independently
+    # of whether it happens to be the span's first/last unit --
+    # ``_needs_diagonal_margin_widen`` reduces to "the neighbour ACROSS
+    # this wall has a plaza on the far side of this exact position", using
+    # this wall's own row/column for the (always-mesh) cardinal side of
+    # that check (see the function's own docstring for the full 4-cell
+    # corner identity this collapses from).
+    def wall_widen_fns(
+        fixed_kind_fn: Callable[[int], str],
+        neighbour_at: Callable[[int, int], str],
+        delta_t0: int,
+        delta_t1: int,
+    ) -> tuple[Callable[[int], bool], Callable[[int], bool]]:
+        """``neighbour_at(unit, delta)`` names the wall's foreign
+        neighbour cell's own kind one step further along the wall's own
+        axis (``delta`` = -1/+1) from ``unit`` -- e.g. for a south wall,
+        ``neighbour_at(c, -1)`` is ``classify(layout.cell_kind(r1 + 1, c
+        - 1))``. ``delta_t0``/``delta_t1`` are the EXPLICIT deltas that
+        correspond to each wall's own ``t0``/``t1`` (which one is
+        "toward larger coordinate" vs "smaller" differs per wall's own
+        ``get_extent`` -- passed explicitly at each call site rather than
+        inferred, to keep this one small function correct for all 4
+        orientations rather than four hand-derived copies)."""
+
+        def widen_t0(unit: int) -> bool:
+            return _needs_diagonal_margin_widen(
+                fixed_kind_fn(unit), "mesh", neighbour_at(unit, delta_t0)
+            )
+
+        def widen_t1(unit: int) -> bool:
+            return _needs_diagonal_margin_widen(
+                fixed_kind_fn(unit), "mesh", neighbour_at(unit, delta_t1)
+            )
+
+        return widen_t0, widen_t1
+
     def wall_run(
         units: list[int],
         get_extent: Callable[[int], tuple[float, float]],
@@ -1109,19 +1362,31 @@ def _electrode_polygon(
         axis: str,
         chamfer_start: bool,
         chamfer_end: bool,
+        widen_t0: Callable[[int], bool],
+        widen_t1: Callable[[int], bool],
     ) -> list[Point]:
         out: list[Point] = []
         n = len(units)
         for i, unit in enumerate(units):
             t0, t1 = get_extent(unit)
+            at_start = i == 0 and chamfer_start
+            at_end = i == n - 1 and chamfer_end
             t0c, t1c = _chamfer_inset(
-                t0,
-                t1,
-                at_start=(i == 0 and chamfer_start),
-                at_end=(i == n - 1 and chamfer_end),
-                amount=chamfer,
+                t0, t1, at_start=at_start, at_end=at_end, amount=chamfer
             )
             if kind_fn(unit) == "mesh":
+                # A self-chamfered end's own zero-deflection zone is
+                # measured from its ALREADY-RETREATED endpoint, so 1x
+                # `chamfer` reaches `nominal - 2*chamfer` absolute --
+                # the point a MIRROR (widen-only, no self-chamfer) end
+                # must ALSO reach, but measured from its OWN un-retreated
+                # nominal endpoint instead, hence 2x there.
+                m_start = (
+                    chamfer if at_start else (2.0 * chamfer if widen_t0(unit) else 0.0)
+                )
+                m_end = (
+                    chamfer if at_end else (2.0 * chamfer if widen_t1(unit) else 0.0)
+                )
                 out += _meshing_wall(
                     t0c,
                     t1c,
@@ -1131,6 +1396,8 @@ def _electrode_polygon(
                     gap=gap,
                     side=1.0,
                     axis=axis,
+                    margin_t0=m_start,
+                    margin_t1=m_end,
                 )
             elif axis == "x":
                 out += [(flat_axis, t0c), (flat_axis, t1c)]
@@ -1141,7 +1408,13 @@ def _electrode_polygon(
     pts: list[Point] = []
     # West wall: rows r1 -> r0 (south to north), each row's own y-extent
     # (cy+half) down to (cy-half) -- start is the SW corner, end the WN
-    # corner, matching the single-cell case's own point order.
+    # corner, matching the single-cell case's own point order. t0 = south
+    # (larger y), t1 = north (smaller y); the west neighbour at row r is
+    # (r, c0-1), so "widen at t0/south" checks that neighbour's own SOUTH
+    # side (r+1, c0-1), "widen at t1/north" its NORTH side (r-1, c0-1).
+    w_widen_t0, w_widen_t1 = wall_widen_fns(
+        kind_w, lambda r, d: classify(layout.cell_kind(r + d, c0 - 1)), 1, -1
+    )
     pts += wall_run(
         list(range(r1, r0 - 1, -1)),
         lambda r: (layout.cy(r) + half, layout.cy(r) - half),
@@ -1151,8 +1424,16 @@ def _electrode_polygon(
         axis="x",
         chamfer_start=chamfer_sw,
         chamfer_end=chamfer_wn,
+        widen_t0=w_widen_t0,
+        widen_t1=w_widen_t1,
     )
-    # North wall: cols c0 -> c1 (west to east).
+    # North wall: cols c0 -> c1 (west to east). t0 = west, t1 = east; the
+    # north neighbour at col c is (r0-1, c) -- "widen at t0/west" checks
+    # its WEST side (r0-1, c-1), "widen at t1/east" its EAST side
+    # (r0-1, c+1).
+    n_widen_t0, n_widen_t1 = wall_widen_fns(
+        kind_n, lambda c, d: classify(layout.cell_kind(r0 - 1, c + d)), -1, 1
+    )
     pts += wall_run(
         list(range(c0, c1 + 1)),
         lambda c: (layout.cx(c) - half, layout.cx(c) + half),
@@ -1162,8 +1443,16 @@ def _electrode_polygon(
         axis="y",
         chamfer_start=chamfer_wn,
         chamfer_end=chamfer_ne,
+        widen_t0=n_widen_t0,
+        widen_t1=n_widen_t1,
     )
-    # East wall: rows r0 -> r1 (north to south).
+    # East wall: rows r0 -> r1 (north to south). t0 = north, t1 = south;
+    # the east neighbour at row r is (r, c1+1) -- "widen at t0/north"
+    # checks its NORTH side (r-1, c1+1), "widen at t1/south" its SOUTH
+    # side (r+1, c1+1).
+    e_widen_t0, e_widen_t1 = wall_widen_fns(
+        kind_e, lambda r, d: classify(layout.cell_kind(r + d, c1 + 1)), -1, 1
+    )
     pts += wall_run(
         list(range(r0, r1 + 1)),
         lambda r: (layout.cy(r) - half, layout.cy(r) + half),
@@ -1173,8 +1462,16 @@ def _electrode_polygon(
         axis="x",
         chamfer_start=chamfer_ne,
         chamfer_end=chamfer_es,
+        widen_t0=e_widen_t0,
+        widen_t1=e_widen_t1,
     )
-    # South wall: cols c1 -> c0 (east to west).
+    # South wall: cols c1 -> c0 (east to west). t0 = east, t1 = west; the
+    # south neighbour at col c is (r1+1, c) -- "widen at t0/east" checks
+    # its EAST side (r1+1, c+1), "widen at t1/west" its WEST side
+    # (r1+1, c-1).
+    s_widen_t0, s_widen_t1 = wall_widen_fns(
+        kind_s, lambda c, d: classify(layout.cell_kind(r1 + 1, c + d)), 1, -1
+    )
     pts += wall_run(
         list(range(c1, c0 - 1, -1)),
         lambda c: (layout.cx(c) + half, layout.cx(c) - half),
@@ -1184,6 +1481,8 @@ def _electrode_polygon(
         axis="y",
         chamfer_start=chamfer_es,
         chamfer_end=chamfer_sw,
+        widen_t0=s_widen_t0,
+        widen_t1=s_widen_t1,
     )
 
     # De-dup consecutive identical points (a straight wall's own start
@@ -1201,7 +1500,8 @@ def _electrode_polygon(
         and abs(out[0][1] - out[-1][1]) < 1e-9
     ):
         out.pop()
-    return out
+    chamfer_count = sum([chamfer_wn, chamfer_ne, chamfer_es, chamfer_sw])
+    return out, chamfer_count
 
 
 #: The rule-envelope keys :meth:`precis.store._pcb_ops.PcbMixin.
@@ -1357,15 +1657,21 @@ def _plaza_slot_point(layout: _Layout, pr: int, pc: int, direction: str) -> Poin
     """The via-slot centre inside plaza ``(pr, pc)`` serving the
     electrode that lies in ``direction`` FROM the electrode's own
     perspective (i.e. this is the plaza-to-electrode direction the slot
-    physically sits toward -- see :data:`_OPPOSITE`). All 8 slots sit on
-    ONE ring of radius ``slot_radius`` (:func:`_plaza_capacity`) at
-    45-degree spacing -- a cardinal direction's unit vector is already
-    unit length, a diagonal one has magnitude sqrt(2) and is normalised
-    here so every slot ends up the same distance from the plaza centre."""
+    physically sits toward -- see :data:`_OPPOSITE`).
+
+    docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19" item 8 —
+    the family is axis-aligned, not a uniform ring: a CARDINAL direction
+    (exactly one of ``dr``/``dc`` non-zero, already unit length) sits at
+    distance ``slot_a`` from the plaza centre; a DIAGONAL direction
+    (``dr``, ``dc`` both +-1) sits at ``(+-slot_b, +-slot_b)`` -- since
+    ``dr``/``dc`` are themselves +-1 there, multiplying by ``slot_b``
+    directly (no normalising) already gives exactly that point, unlike
+    the superseded uniform ring which normalised BOTH cases onto the
+    same-radius circle (:func:`_plaza_capacity`'s own docstring has the
+    two-parameter derivation)."""
     dr, dc = {d: (dr, dc) for d, dr, dc in _DIRECTIONS}[_OPPOSITE[direction]]
-    norm = math.hypot(dr, dc)
-    r = layout.sizing["slot_radius"]
-    return (layout.cx(pc) + dc / norm * r, layout.cy(pr) + dr / norm * r)
+    r = layout.sizing["slot_a"] if (dr == 0 or dc == 0) else layout.sizing["slot_b"]
+    return (layout.cx(pc) + dc * r, layout.cy(pr) + dr * r)
 
 
 def _edge_anchor(layout: _Layout, r: int, c: int, direction: str) -> Point:
@@ -1696,7 +2002,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 pin = pin_name(r, c)
                 r0, c0, r1, c1 = r, c, r, c
                 cells = [(r, c)]
-            poly = _electrode_polygon(layout, r0, c0, r1, c1)
+            poly, chamfer_count = _electrode_polygon(layout, r0, c0, r1, c1)
             pads.append(
                 {
                     "pin": pin,
@@ -1716,6 +2022,17 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             if len(cells) > 1:
                 ledger_pads[pin]["span"] = [r1 - r0 + 1, c1 - c0 + 1]
                 ledger_pads[pin]["cells"] = [[cr, cc] for cr, cc in cells]
+            if chamfer_count:
+                # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18"
+                # item 1: each plaza-corner chamfer removes a right
+                # isoceles triangle of copper (legs = plaza_corner_chamfer)
+                # from this electrode's own body -- reported so the
+                # corridor-widening trade this ruling makes is visible per
+                # electrode, not just in the aggregate sizing figure.
+                chamfer_mm = float(sizing.get("plaza_corner_chamfer", 0.0))
+                ledger_pads[pin]["chamfer_loss_mm2"] = (
+                    chamfer_count * chamfer_mm * chamfer_mm / 2.0
+                )
 
             if variant == "rim":
                 # A merged span's via/anchor is placed off its FIRST cell
