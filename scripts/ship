@@ -604,7 +604,7 @@ _release_ship_lock() {
     fi
 }
 acquire_ship_lock() {
-    local _waited=0 holder holder_desc holder_pid _reason
+    local _waited=0 _last_holder="" holder holder_desc holder_pid _reason
     # Re-entrant: the hybrid race fallback keeps the lock across its retry
     # iteration — a second acquire from the same pid is a no-op, not a
     # self-deadlock. (A CI-retry iteration released it first, so its
@@ -621,10 +621,18 @@ acquire_ship_lock() {
             continue
         fi
 
+        # Re-announce whenever the holder CHANGES, not just once (gr343941
+        # comment 9): the lock is a 3 s mkdir poll with no ticket order, so
+        # it routinely passes from the holder we first saw to a fresh
+        # acquirer; a log that still names the original, long-dead holder
+        # reads as a hang instead of a lost handoff.
         if [[ "$_waited" == 0 ]]; then
             say "waiting for the ship lock — held by: ${holder_desc}"
             echo "(will steal it immediately if that process dies; a live holder on this host is waited out however long it takes)"
+        elif [[ "$holder" != "$_last_holder" ]]; then
+            say "ship lock changed hands — now held by: ${holder_desc}"
         fi
+        _last_holder="$holder"
         _waited=1
         sleep 3
     done
