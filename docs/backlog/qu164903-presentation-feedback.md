@@ -131,8 +131,10 @@ trust/blocked_by status.
   `P_side` absent everywhere. A `log_tof` default y plots 15% of points
   today; the picker's "(n)" count makes that visible. Data hygiene: live
   `barrier` max 7462 eV and `span_at_Uopt` max 73.7 eV — pre-0.21 garbage
-  rows that should be untrusted, not plotted (file a gripe when the axis
-  block lands; `meta.frontier_viewport` is the stopgap).
+  rows that should be untrusted, not plotted. Axis block landed 75569104
+  (2026-09-19); gripe filed as gr356741 (plausibility clamp in the harvest,
+  barrier > 10 eV or span > 20 eV ⇒ trusted=false + reason, plus a prod
+  re-harvest). `meta.frontier_viewport` is the stopgap.
 - Rubric edit (Reto runs it; defaults follow rubric order via
   `frontier.py::plot_axes_for`): `log_tof` goes in as **optional** so the
   181 kinetics-less candidates stay evaluated on the required axes.
