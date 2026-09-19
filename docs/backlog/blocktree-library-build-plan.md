@@ -101,7 +101,7 @@ leg's slice 5, state-dependent stability
                               5 rxn-driven transitions      6 realized-by → component
                                    + precedent DRC              ("what do I order")
 
-Slices 7–9 are independent and can go any time by anyone.
+Items 7–9 were independent of the slices; all three are done.
 
 ---
 
@@ -455,16 +455,16 @@ BOM section for `view='order'`.
 
 ---
 
-## Independent, unblocked, any time
+## Independent, unblocked, any time — **all three done**
 
-7. **Unblock `structure` authoring** — gripe 330034. The whole atoms leg is
-   unreachable from the MCP client until fixed. Infrastructure, not design,
-   but it gates the bottom of the three-level chain.
-8. **`cad` unit declaration** — removes the "1 mm = 1 nm" fiction and makes
-   probe output self-describing.
-9. **`cad` intended-overlap declaration** — a welded 14-part cage emits 36
-   interference warnings, all intended, drowning any real one. (Gripe 330182
-   covers the doc half.)
+7. **Unblock `structure` authoring** — gripe 330034, fixed by another
+   session (in review 2026-09-19).
+8. **`cad` unit declaration** — shipped as the units-policy cutover
+   (c4b5292c, 2026-09-12): every length in the cad DSL carries its unit.
+9. **`cad` intended-overlap declaration** — **SHIPPED 2026-09-19** as the
+   `weld` source line (`precis.cad.scene` module docstring, "weld"
+   bullet): undeclared penetration warns, a declared weld collapses to a
+   count, an air weld warns.
 
 ---
 

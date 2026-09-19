@@ -220,6 +220,11 @@ are correctly seen as **not touching** — only their post-cut annulus/disc
 material counts. So "is the hub connected to the rim?" gives the physical
 answer, not the pre-cut one.
 
+Each contact row also carries a `welded` flag: `true` when a `weld <a>
+<b> […]` / `weld *` line (see [[precis-cad-help]]'s put section) declares
+that pair's overlap intended — so a designed-in interference reads as
+declared here too, not as an undeclared defect.
+
 ### Truisms — a real part is one connected solid
 
 A manufacturable part is a *single connected body*: a wheel is its hub, its

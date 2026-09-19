@@ -72,6 +72,8 @@ from precis.cad.scene import (
     part_code,
     part_spec,
     ports_of,
+    resolve_weld_group,
+    welds_of,
 )
 from precis.cad.vec import Vec3, vec3
 from precis.cad_resolve import design_resolver
@@ -89,6 +91,61 @@ from precis.utils.search_merge import SearchHit
 from precis.utils.units import Dimension, format_quantity, parse_quantity
 
 log = logging.getLogger(__name__)
+
+
+def _split_weld_groups(
+    spec: Any, comps: list[str]
+) -> tuple[list[set[str]], list[list[str]]]:
+    """Split ``spec``'s stored ``weld`` groups (:func:`welds_of`) into star
+    scopes and named groups, the shape ``_interference_note`` /
+    ``_render_connectivity`` both consume.
+
+    A **star scope** is a resolved component set every internal pair of
+    which is declared welded, with no air-weld check (a pair inside it
+    either interferes and counts, or doesn't and is silently fine — never
+    a warning): the literal top-level ``weld *`` (scope = the whole
+    design) or a single-name group ending ``.*`` — how an inlined sub-
+    design's own ``weld *`` is carried into its host
+    (:func:`~precis.cad.scene._inline`), scoped to just that instance's
+    own components. Everything else (two or more explicit names) is a
+    **named group**, the kind the air-weld check applies to."""
+    star_scopes: list[set[str]] = []
+    named_groups: list[list[str]] = []
+    for group in welds_of(spec):
+        if group == ["*"]:
+            star_scopes.append(set(comps))
+        elif len(group) == 1:
+            star_scopes.append(resolve_weld_group(group, comps)[0])
+        else:
+            named_groups.append(group)
+    return star_scopes, named_groups
+
+
+def _declared_weld_pairs(
+    star_scopes: list[set[str]], named_groups: list[list[str]], comps: list[str]
+) -> set[frozenset[str]]:
+    """Every component pair a stored ``weld`` declaration covers, from
+    ``_split_weld_groups``'s output — every internal pair of a star scope,
+    or every cross pair between a named group's two resolved sets —
+    regardless of whether the pair actually touches. Shared by
+    ``_interference_note`` (which further intersects this with which
+    pairs are *interfering*, for the count) and ``_render_connectivity``
+    (which marks a contact row directly from membership)."""
+    pairs: set[frozenset[str]] = set()
+    for scope in star_scopes:
+        members = sorted(scope)
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                pairs.add(frozenset((members[i], members[j])))
+    for group in named_groups:
+        resolved = resolve_weld_group(group, comps)
+        for a_idx in range(len(resolved)):
+            for b_idx in range(a_idx + 1, len(resolved)):
+                for x in resolved[a_idx]:
+                    for y in resolved[b_idx]:
+                        if x != y:
+                            pairs.add(frozenset((x, y)))
+    return pairs
 
 
 def _fmt_interval_line(iv: Any) -> str:
@@ -1803,19 +1860,86 @@ class CadHandler(Handler):
         )
 
     def _interference_note(self, design: Any, spec: Any) -> str:
+        """Pair-check every component, split by ``weld`` declaration.
+
+        A pair no weld covers keeps today's ``⚠ … interfere``. A weld
+        collapses its *penetrating* pairs into one combined count line
+        (``N welded overlap(s) declared``) instead — that's the intended-
+        overlap declaration doing its job. A declared pair that turns out
+        **not** to touch (none of its resolved cross-pairs come within
+        :attr:`~precis.cad.relate.ClearanceResult.resolution`) gets its own
+        air-weld warning with the minimum cross-pair gap — the defect the
+        declaration exists to catch. A star scope (``weld *``, or an
+        inlined sub-design's own ``weld *`` carried in — see
+        :func:`_split_weld_groups`) skips the air-weld check entirely for
+        the pairs it covers: star means every overlap *there* is
+        sanctioned, not that every pair must touch."""
         comps = list(dict.fromkeys(spec.components))
-        warns = []
+        star_scopes, named_groups = _split_weld_groups(spec, comps)
+        declared = _declared_weld_pairs(star_scopes, named_groups, comps)
+
+        gap_cache: dict[tuple[str, str], Any] = {}
+
+        def gap(a: str, b: str) -> Any:
+            key = (a, b) if a <= b else (b, a)
+            if key not in gap_cache:
+                try:
+                    gap_cache[key] = cad_clearance(design, a, b)
+                except Exception:  # pragma: no cover - defensive
+                    gap_cache[key] = None
+            return gap_cache[key]
+
+        welded_pairs: set[frozenset[str]] = set()
+        for pair in declared:
+            x, y = tuple(pair)
+            res = gap(x, y)
+            if res is not None and res.interfering:
+                welded_pairs.add(pair)
+
+        air_warns: list[str] = []
+        for group in named_groups:
+            resolved = resolve_weld_group(group, comps)
+            for a_idx in range(len(group)):
+                for b_idx in range(a_idx + 1, len(group)):
+                    min_gap = None
+                    touches = False
+                    for x in resolved[a_idx]:
+                        for y in resolved[b_idx]:
+                            if x == y:
+                                continue
+                            res = gap(x, y)
+                            if res is None:
+                                continue
+                            if min_gap is None or res.gap < min_gap:
+                                min_gap = res.gap
+                            if res.gap <= res.resolution:
+                                touches = True
+                    if not touches and min_gap is not None:
+                        air_warns.append(
+                            f"⚠ weld {group[a_idx]} ↔ {group[b_idx]} declared "
+                            f"but the parts are "
+                            f"{format_quantity(min_gap, 'length')} apart"
+                        )
+
+        plain_warns = []
         for i in range(len(comps)):
             for j in range(i + 1, len(comps)):
-                try:
-                    res = cad_clearance(design, comps[i], comps[j])
-                except Exception:  # pragma: no cover - defensive
+                pair = frozenset((comps[i], comps[j]))
+                if pair in declared:
                     continue
-                if res.interfering:
-                    warns.append(
+                res = gap(comps[i], comps[j])
+                if res is not None and res.interfering:
+                    plain_warns.append(
                         f"⚠ {comps[i]} ↔ {comps[j]} interfere "
                         f"({format_quantity(res.gap, 'length')})"
                     )
+
+        warns: list[str] = []
+        if welded_pairs:
+            n = len(welded_pairs)
+            warns.append(f"{n} welded overlap{'s' if n != 1 else ''} declared")
+        warns.extend(air_warns)
+        warns.extend(plain_warns)
         return ("  " + "; ".join(warns)) if warns else ""
 
     def _connectivity_note(self, design: Any, spec: Any) -> str:
@@ -2203,17 +2327,27 @@ class CadHandler(Handler):
         iso = conn.isolated()
         if iso:
             lines.append(f"  ⚠ floating (touch nothing): {', '.join(iso)}")
+
+        # weld coverage: a pair is welded when it sits inside a star scope
+        # (`weld *`, or an inlined sub-design's own `weld *` carried in —
+        # scoped to that instance) or a named group's two resolved sets
+        # both contain one endpoint each — `_split_weld_groups` +
+        # `_declared_weld_pairs`, the same split `_interference_note` uses.
+        comps = list(dict.fromkeys(spec.components))
+        declared = _declared_weld_pairs(*_split_weld_groups(spec, comps), comps)
+
         rows = [
             {
                 "a": c.a,
                 "b": c.b,
                 "gap": format_quantity(c.gap, "length"),
                 "state": "interfere" if c.interfering else "touch",
+                "welded": frozenset((c.a, c.b)) in declared,
             }
             for c in conn.contacts
         ]
         table = (
-            render_agent_table(rows, schema=["a", "b", "gap", "state"])
+            render_agent_table(rows, schema=["a", "b", "gap", "state", "welded"])
             if rows
             else "(no contacts)"
         )

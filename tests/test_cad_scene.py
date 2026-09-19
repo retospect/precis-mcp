@@ -186,3 +186,112 @@ def test_chamfer_truncates_cylinder_top() -> None:
     )
     assert design.classify_point(vec3(0, 0, 0.0049), component="part").inside
     assert not design.classify_point(vec3(0, 0, 0.0051), component="part").inside
+
+
+# ---------------------------------------------------------------------------
+# weld — declared intended overlap (docs/backlog/cad-intended-overlap-weld.md)
+# ---------------------------------------------------------------------------
+
+_TWO_PARTS = """
+component a
+abox add box:w10mmd10mmh10mm
+component b
+bbox add box:w10mmd10mmh10mm @8mm,0mm,0mm
+"""
+
+_THREE_PARTS = _TWO_PARTS + "component c\ncbox add box:w10mmd10mmh10mm @30mm,0mm,0mm\n"
+
+
+def test_weld_two_names_stores_sorted_group() -> None:
+    spec = parse_source(_TWO_PARTS + "weld a b\n")
+    assert spec.meta["welds"] == [["a", "b"]]
+
+
+def test_weld_order_of_names_does_not_matter() -> None:
+    spec = parse_source(_TWO_PARTS + "weld b a\n")
+    assert spec.meta["welds"] == [["a", "b"]]
+
+
+def test_weld_three_names_is_one_clique_group() -> None:
+    spec = parse_source(_THREE_PARTS + "weld a b c\n")
+    assert spec.meta["welds"] == [["a", "b", "c"]]
+
+
+def test_weld_star_stores_star_form() -> None:
+    spec = parse_source(_TWO_PARTS + "weld *\n")
+    assert spec.meta["welds"] == [["*"]]
+
+
+def test_weld_no_line_leaves_meta_absent() -> None:
+    spec = parse_source(_TWO_PARTS)
+    assert "welds" not in spec.meta
+
+
+def test_weld_single_name_is_scene_error_with_line() -> None:
+    with pytest.raises(SceneError, match="line 6"):
+        parse_source(_TWO_PARTS + "weld a\n")
+
+
+def test_weld_repeated_name_is_scene_error_with_line() -> None:
+    with pytest.raises(SceneError, match="line 6"):
+        parse_source(_TWO_PARTS + "weld a a\n")
+
+
+def test_weld_unknown_name_is_scene_error_with_line() -> None:
+    with pytest.raises(SceneError, match="line 6"):
+        parse_source(_TWO_PARTS + "weld a nosuch\n")
+
+
+def test_weld_naming_an_instance_parses() -> None:
+    # `use … as g` declares an instance; a weld may name it just like a
+    # plain component — name resolution happens after expansion.
+    spec = parse_source(
+        "component base\nb add box:w10mmd10mmh10mm\nuse standoff as g\nweld g base\n"
+    )
+    assert spec.meta["welds"] == [["base", "g"]]
+
+
+def test_weld_round_trips() -> None:
+    spec = parse_source(_TWO_PARTS + "weld a b\n")
+    assert parse_source(spec_to_source(spec)) == spec
+
+
+def test_weld_star_round_trips() -> None:
+    spec = parse_source(_TWO_PARTS + "weld *\n")
+    assert parse_source(spec_to_source(spec)) == spec
+
+
+def test_two_separate_weld_lines_stay_two_groups() -> None:
+    spec = parse_source(_THREE_PARTS + "weld a b\nweld b c\n")
+    # a–c is never implied — only the two declared groups
+    assert spec.meta["welds"] == [["a", "b"], ["b", "c"]]
+    assert parse_source(spec_to_source(spec)) == spec
+
+
+def test_duplicate_weld_line_is_dropped() -> None:
+    spec = parse_source(_TWO_PARTS + "weld a b\nweld b a\n")
+    assert spec.meta["welds"] == [["a", "b"]]
+
+
+def test_weld_round_trips_after_mates_joints_couples() -> None:
+    # weld lines follow mates/joints/couples in the trailing relation block.
+    src = (
+        "component post\n"
+        "pillar add box:w6mmd6mmh20mm @0mm,28mm,0mm\n"
+        "component a1\n"
+        "bar1 add box:w20mmd6mmh6mm @10mm,0mm,3mm\n"
+        "port h1 of:a1\n"
+        "component a2\n"
+        "bar2 add box:w30mmd6mmh6mm @15mm,0mm,13mm\n"
+        "port h2 of:a2\n"
+        "joint a1 revolute at:h1 limits:-180deg..180deg\n"
+        "joint a2 revolute at:h2 limits:-180deg..180deg\n"
+        "gear a1 to a2 ratio:1\n"
+        "weld post a1\n"
+    )
+    spec = parse_source(src)
+    assert spec.meta["welds"] == [["a1", "post"]]
+    out = spec_to_source(spec)
+    # weld comes after the gear/belt coupling
+    assert out.index("gear a1 to a2") < out.index("weld a1 post")
+    assert parse_source(out) == spec

@@ -9,10 +9,14 @@ disconnected once each is carved down.
 
 from __future__ import annotations
 
+import pytest
+
 from precis.cad.dsl import build_config
 from precis.cad.graph import Design
 from precis.cad.relate import connectivity
 from precis.cad.vec import translation
+from precis.dispatch import Hub
+from precis.handlers.cad import CadHandler
 
 
 def _two_boxes(dx: float) -> Design:
@@ -84,3 +88,32 @@ def test_spoke_bridges_hub_and_rim() -> None:
     assert c.connected
     assert c.path("hub", "rim") == ["hub", "spoke", "rim"]
     assert c.neighbors("spoke") == ["hub", "rim"]
+
+
+# ── handler view='connectivity' — the `welded` flag ──────────────────────
+# (docs/backlog/cad-intended-overlap-weld.md item 4)
+
+
+@pytest.fixture
+def cad(store):
+    return CadHandler(hub=Hub(store=store))
+
+
+def test_connectivity_marks_only_the_welded_contact(cad):
+    # a (@0) and b (@8mm) overlap 2mm; c (@14mm) overlaps b by 4mm but is
+    # clear of a — a-b declared welded, b-c is an undeclared penetration.
+    cad.put(
+        id="chainw",
+        text=(
+            "component a\nabox add box:w10mmd10mmh10mm\n"
+            "component b\nbbox add box:w10mmd10mmh10mm @8mm,0mm,0mm\n"
+            "component c\ncbox add box:w10mmd10mmh10mm @14mm,0mm,0mm\n"
+            "weld a b\n"
+        ),
+    )
+    rep = cad.get(id="chainw", view="connectivity")
+    lines = [ln.strip() for ln in rep.body.splitlines()]
+    ab_row = next(ln for ln in lines if ln.startswith("a") and "\tb\t" in ln)
+    bc_row = next(ln for ln in lines if ln.startswith("b") and "\tc\t" in ln)
+    assert ab_row.endswith("true")
+    assert bc_row.endswith("false")

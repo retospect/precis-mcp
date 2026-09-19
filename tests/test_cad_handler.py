@@ -679,3 +679,114 @@ def test_payload_card_marks_the_port(cad, store):
             (ref.id,),
         ).fetchone()
     assert "leaf_a (1 payload)" in card
+
+
+# ── weld — declared intended overlap (docs/backlog/cad-intended-overlap-weld.md)
+
+# a (@0) and b (@8mm) overlap 2mm; c (@30mm) is well clear of both.
+_TWO_BOXES = """
+component a
+abox add box:w10mmd10mmh10mm
+component b
+bbox add box:w10mmd10mmh10mm @8mm,0mm,0mm
+"""
+
+_THREE_BOXES = _TWO_BOXES + "component c\ncbox add box:w10mmd10mmh10mm @30mm,0mm,0mm\n"
+
+# a-b overlap 2mm, b-c overlap 4mm (undeclared), a-c stays clear.
+_CHAIN_BOXES = _TWO_BOXES + "component c\ncbox add box:w10mmd10mmh10mm @14mm,0mm,0mm\n"
+
+
+def test_no_weld_warns_interfere(cad):
+    resp = cad.put(id="pair", text=_TWO_BOXES)
+    assert "⚠ a ↔ b interfere" in resp.body
+
+
+def test_weld_declares_the_pair_and_silences_interfere(cad):
+    resp = cad.put(id="pair", text=_TWO_BOXES + "weld a b\n")
+    assert "1 welded overlap declared" in resp.body
+    assert "interfere" not in resp.body
+
+
+def test_weld_clique_flags_air_welds_between_non_touching_members(cad):
+    resp = cad.put(id="trio", text=_THREE_BOXES + "weld a b c\n")
+    assert "1 welded overlap declared" in resp.body
+    assert "⚠ weld a ↔ c declared but the parts are" in resp.body
+    assert "⚠ weld b ↔ c declared but the parts are" in resp.body
+    assert "interfere" not in resp.body  # a-b is declared, not a plain warn
+
+
+def test_weld_star_is_count_only_no_air_weld_check(cad):
+    resp = cad.put(id="trio2", text=_THREE_BOXES + "weld *\n")
+    assert "1 welded overlap declared" in resp.body
+    # no air-weld warning for the non-touching a-c / b-c pairs (star means
+    # every overlap is intended, not that every pair must touch), and no
+    # plain interference warning either — c being a separate floating body
+    # is a `_connectivity_note` truism, unrelated to weld declarations.
+    assert "declared but the parts are" not in resp.body
+    assert "interfere" not in resp.body
+
+
+def test_weld_leaves_undeclared_penetration_visible(cad):
+    resp = cad.put(id="chain", text=_CHAIN_BOXES + "weld a b\n")
+    assert "1 welded overlap declared" in resp.body
+    assert "⚠ b ↔ c interfere" in resp.body
+    assert "weld a ↔" not in resp.body and "weld b ↔" not in resp.body
+
+
+# ── weld through instances (use <slug> as <name>) ───────────────────────
+# cage: two internal parts overlapping, wholly welded.
+_CAGE = """
+component a
+abox add box:w10mmd10mmh10mm
+component b
+bbox add box:w10mmd10mmh10mm @8mm,0mm,0mm
+weld *
+"""
+
+
+def test_carried_sub_design_weld_star_silences_internal_interference(cad):
+    cad.put(id="cage", text=_CAGE)
+    resp = cad.put(id="host1", text="use cage as c\n")
+    assert "1 welded overlap declared" in resp.body
+    assert "⚠" not in resp.body
+
+
+def test_host_weld_covers_instance_pair_through_namespaced_parts(cad):
+    cad.put(id="cage", text=_CAGE)
+    # base overlaps c.a only (base @-8mm spans -13..-3, c.a spans -5..5,
+    # c.b spans 3..13) — clear of c.b by 6mm.
+    resp = cad.put(
+        id="host2",
+        text=(
+            "use cage as c\ncomponent base\nbs add box:w10mmd10mmh10mm @-8mm,0mm,0mm\n"
+            "weld c base\n"
+        ),
+    )
+    assert "welded overlap" in resp.body and "declared" in resp.body
+    assert "⚠" not in resp.body
+
+
+_STRUT = "component body\nb add box:w10mmd10mmh10mm\n"
+
+
+def test_instance_name_weld_resolves_through_namespaced_parts(cad):
+    cad.put(id="strut", text=_STRUT)
+    # s1.body @0 spans -5..5; s2.body @5mm spans 0..10 — 5mm overlap.
+    resp = cad.put(
+        id="rig_touch",
+        text="use strut as s1\nuse strut as s2 @5mm,0mm,0mm\nweld s1 s2\n",
+    )
+    assert "1 welded overlap declared" in resp.body
+    assert "⚠" not in resp.body
+
+
+def test_instance_name_weld_flags_an_air_weld_with_min_gap(cad):
+    cad.put(id="strut", text=_STRUT)
+    # s1.body @0 spans -5..5; s3.body @30mm spans 25..35 — 20mm clear.
+    resp = cad.put(
+        id="rig_apart",
+        text="use strut as s1\nuse strut as s3 @30mm,0mm,0mm\nweld s1 s3\n",
+    )
+    assert "⚠ weld s1 ↔ s3 declared but the parts are" in resp.body
+    assert "20 mm apart" in resp.body

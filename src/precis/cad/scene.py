@@ -93,6 +93,16 @@ exist only at this text boundary, converted exactly once.
 - ``gear <a> to <b> ratio:<r>`` / ``belt …`` — couples joint ``b``'s state
   to ``ratio × a``'s (the sign carries the sense; ``gear``/``belt`` record
   intent, the math is identical).
+- ``weld <a> <b> [<c> …]`` / ``weld *`` — declares the named
+  components'/instances' mutual overlap intended (one welded body, not a
+  defect): an *undeclared* penetrating pair still warns at
+  ``put``/``derive``, a declared one collapses to a count, and a declared
+  pair that turns out not to touch warns separately as an air weld. Two
+  or more names is a clique (every pair among them); several ``weld``
+  lines are separate groups, never merged into a larger one. Names
+  resolve after :func:`expand_instances` — a bare name covers its
+  expanded component and every namespaced descendant an inlined
+  sub-design's own ``weld`` carried in.
 - Posing: ``expand_instances(..., state={'<joint>': q})`` — a joint's name
   is its subject instance / component. Defaults to 0 (clamped into
   ``limits:``); an *explicit* out-of-limits state is an error.
@@ -119,7 +129,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypedDict
 
@@ -841,6 +851,41 @@ def couples_of(spec: SceneSpec) -> list[CoupleSpec]:
     return [CoupleSpec.from_meta(r) for r in spec.meta.get("couples") or ()]
 
 
+def welds_of(spec: SceneSpec) -> list[list[str]]:
+    """This design's declared ``weld`` groups — each a sorted name list,
+    ``["*"]`` for the star form (empty when it declares none)."""
+    return [list(g) for g in (spec.meta.get("welds") or ())]
+
+
+def resolve_weld_group(
+    names: Sequence[str], components: Sequence[str]
+) -> list[set[str]]:
+    """Expand one stored weld group's raw names against ``components`` (an
+    *expanded* design's component list) into per-name resolved sets.
+
+    A bare name matches the identically-named expanded component (if any)
+    plus every namespaced descendant ``<name>.<…>`` instancing it produced
+    — the realistic case, a ``use … as s1`` instance welded by its own
+    name. A name ending ``.<NAMESPACE_SEP>*`` (how an inlined sub-design's
+    own ``weld *`` line is carried into its host, prefixed
+    ``<instance>.``) matches only the descendants, since the bare instance
+    name itself never survives expansion. Handlers pair up two names'
+    resolved sets to test/count the pairs a group declares; an empty
+    resolved set means the name's node produced no components after
+    expansion (e.g. an all-cut instance) — callers see an empty set, not
+    an error."""
+    star_suffix = f"{NAMESPACE_SEP}*"
+    out: list[set[str]] = []
+    for nm in names:
+        if nm.endswith(star_suffix):
+            prefix = nm[: -len("*")]
+            out.append({c for c in components if c.startswith(prefix)})
+        else:
+            prefix = f"{nm}{NAMESPACE_SEP}"
+            out.append({c for c in components if c == nm or c.startswith(prefix)})
+    return out
+
+
 def _length(num: str, unit: str | None, arg_name: str) -> float:
     """One boundary-mode length token → SI metres. ``unit`` is the regex's
     optional unit-suffix group — ``None`` raises the structured
@@ -921,6 +966,8 @@ def parse_source(text: str) -> SceneSpec:
     mates: list[MateSpec] = []
     cjoints: list[ComponentJointSpec] = []
     couples: list[CoupleSpec] = []
+    welds: list[tuple[int, tuple[str, ...]]] = []  # (lineno, sorted group)
+    weld_seen: set[tuple[str, ...]] = set()
 
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
@@ -1295,6 +1342,38 @@ def parse_source(text: str) -> SceneSpec:
                 CoupleSpec(via=toks[0], drive=toks[1], driven=toks[3], ratio=ratio)
             )
             continue
+        if toks[0] == "weld":
+            # `weld <a> <b> [<c> …]` / `weld *` — declare that these
+            # names' overlap is intended (§ module docstring). Two or more
+            # names form a clique; name *resolution* (unknown-name check)
+            # is deferred to `_validate_interfaces` below — like ports/
+            # joints, weld names may forward-reference a component or
+            # `use … as <name>` instance declared later in the source.
+            # Only the local, order-free syntax is checked here.
+            names = toks[1:]
+            if names == ["*"]:
+                group: tuple[str, ...] = ("*",)
+            elif "*" in names:
+                raise SceneError(
+                    f"line {lineno}: 'weld *' must stand alone — it "
+                    "declares every overlap in the design, not a mix"
+                )
+            else:
+                if len(names) < 2:
+                    raise SceneError(
+                        f"line {lineno}: 'weld' needs two or more names "
+                        "(or 'weld *' for every overlap in the design)"
+                    )
+                if len(set(names)) != len(names):
+                    raise SceneError(
+                        f"line {lineno}: weld names repeated on this line: "
+                        f"{' '.join(names)}"
+                    )
+                group = tuple(sorted(names))
+            if group not in weld_seen:
+                weld_seen.add(group)
+                welds.append((lineno, group))
+            continue
         if len(toks) < 3:
             raise SceneError(
                 f"line {lineno}: expected '<name> <op> <config> [@x,y,z] [...]'"
@@ -1413,6 +1492,7 @@ def parse_source(text: str) -> SceneSpec:
         mates=mates,
         cjoints=cjoints,
         couples=couples,
+        welds=welds,
         seen_components=seen_components,
         instance_names=instance_names,
     )
@@ -1430,6 +1510,8 @@ def parse_source(text: str) -> SceneSpec:
         spec.meta["joints"] = [j.to_meta() for j in cjoints]
     if couples:
         spec.meta["couples"] = [c.to_meta() for c in couples]
+    if welds:
+        spec.meta["welds"] = [list(g) for _, g in welds]
     spec.components = seen_components or ["part"]
     return spec
 
@@ -1440,6 +1522,7 @@ def _validate_interfaces(
     mates: list[MateSpec],
     cjoints: list[ComponentJointSpec],
     couples: list[CoupleSpec],
+    welds: list[tuple[int, tuple[str, ...]]],
     seen_components: list[str],
     instance_names: set[str],
 ) -> None:
@@ -1518,6 +1601,21 @@ def _validate_interfaces(
                 )
             seen.add(cur)
             cur = driven_by.get(cur)
+
+    # Weld names may name either a component or an instance (unlike ports/
+    # materials, which forbid instances) — a weld says "these bodies are
+    # one", and an instance is as much a body as a plain component.
+    known_components = set(seen_components)
+    for lineno, group in welds:
+        if group == ("*",):
+            continue
+        for nm in group:
+            if nm not in known_components:
+                declared = ", ".join(sorted(known_components)) or "none"
+                raise SceneError(
+                    f"line {lineno}: weld names {nm!r}, which is not a "
+                    f"component or instance of this design — declared: {declared}"
+                )
 
 
 def _fmt_interval(iv: list[float | None]) -> str:
@@ -1780,13 +1878,15 @@ def spec_to_source(spec: SceneSpec) -> str:
             current = node.component
         lines.append(_node_line(node))
 
-    # Mates/joints/couples last: they address instances and components by
-    # name, so they read in dependency order after the lines that declare
-    # them (parsing is order-free).
+    # Mates/joints/couples/welds last: they address instances and
+    # components by name, so they read in dependency order after the
+    # lines that declare them (parsing is order-free). One `weld` line
+    # per stored group, in the order they were declared.
     trailing = [
         *(mate.to_source() for mate in mates_of(spec)),
         *(j.to_source() for j in joints_of(spec)),
         *(c.to_source() for c in couples_of(spec)),
+        *(f"weld {' '.join(g)}" for g in welds_of(spec)),
     ]
     if trailing:
         lines.append("")
@@ -1879,11 +1979,16 @@ def _inline(
     out: list[NodeSpec],
     stack: tuple[str, ...],
     materials: dict[str, str] | None = None,
+    welds: list[list[str]] | None = None,
 ) -> None:
     """Append ``spec``'s nodes to ``out``, re-placed under ``xf`` and
     namespaced under ``prefix``, recursing through its own instances.
     ``resolve`` may be ``None`` for a parts-only design — only a ``use``
-    node needs it (:func:`expand_instances` pre-checks)."""
+    node needs it (:func:`expand_instances` pre-checks). ``welds`` mirrors
+    ``materials``: an inlined sub-design's own ``weld`` groups are carried
+    in with every name prefixed ``<instance>.`` (its ``weld *`` becomes a
+    group naming ``<instance>.*``, resolved by :func:`resolve_weld_group`)
+    — a welded sub-assembly stays welded once it lands in its host."""
     for node in spec.nodes:
         sub_slug = instance_slug(node.config)
         code = part_code(node.config)
@@ -1954,6 +2059,9 @@ def _inline(
             if materials is not None:
                 for mcomp, mslug in (sub.meta.get("materials") or {}).items():
                     materials.setdefault(f"{sub_prefix}{mcomp}", mslug)
+            if welds is not None:
+                for group in sub.meta.get("welds") or ():
+                    welds.append([f"{sub_prefix}{nm}" for nm in group])
             _inline(
                 sub,
                 resolve,
@@ -1962,6 +2070,7 @@ def _inline(
                 out,
                 (*stack, sub_slug) if sub_slug is not None else stack,
                 materials,
+                welds,
             )
         if len(out) > MAX_EXPANDED_NODES:
             raise SceneError(
@@ -2519,6 +2628,7 @@ def expand_instances(
             )
         out: list[NodeSpec] = []
         sub_materials: dict[str, str] = {}
+        sub_welds: list[list[str]] = []
         for node in spec.nodes:
             if instance_slug(node.config) is None and part_code(node.config) is None:
                 # Top-level nodes are kept verbatim — pattern included — so an
@@ -2533,6 +2643,7 @@ def expand_instances(
                 out,
                 (),
                 sub_materials,
+                sub_welds,
             )
     else:
         out = list(spec.nodes)
@@ -2567,6 +2678,12 @@ def expand_instances(
         merged = {**sub_materials, **(meta.get("materials") or {})}
         if merged:
             meta["materials"] = merged
+        # Sub-designs' own `weld` groups follow the same way, every name
+        # prefixed `<instance>.` (`_inline`) — this design's own weld
+        # groups (bare names, already in this design's namespace) are
+        # untouched by expansion and stay in `meta['welds']` as-is.
+        if sub_welds:
+            meta["welds"] = [*(meta.get("welds") or []), *sub_welds]
     return replace(spec, nodes=out, components=components, meta=meta)
 
 

@@ -179,6 +179,11 @@ immediately, and the result echoes the node tree plus any
 **interference** warning between parts. Re-`put`ting the same slug
 **replaces** it (old nodes soft-retired, recoverable).
 
+If an overlap is *intended* (a welded assembly, not a defect), declare it
+with `weld <a> <b> [<c> …]` or `weld *` (every overlap) so the echo
+collapses that pair to a count instead of warning, and flags it instead
+if the declared parts turn out not to actually touch.
+
 ### The `config` mini-DSL
 
 Every key but `n` (a dimensionless count) needs an explicit length unit;
