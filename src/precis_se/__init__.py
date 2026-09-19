@@ -238,11 +238,19 @@ position of the atom it resolves to as its own pose
 (``pose_source='bound'``, the measured half of the port pose slot) — into
 an empty slot or over an earlier bind's reading, never over a
 ``'declared'`` target, which is the requirement that realization is
-checked against. Its L4 is :mod:`precis_se.atomic.validate` (the bond
+checked against. Mapped with ``axis_atom``/``phase_atom`` (the object form of
+``bind_structure``'s ``ports=``: axle bond ``atom → axis_atom`` is the
+frame's z, ``atom → phase_atom`` projected off it fixes the roll), the
+same bind independently measures the port's ``rot`` off that atom triple
+(``rot_source='bound'`` — its OWN provenance, never coupled to
+``pose_source``; se-plugin migration 0014 mirrors both as CHECKs). There
+is no direction-only measurement: ``direction`` stays declared, and a
+measured frame's z is checked against it under the same
+``PORT_ROT_MISMATCH_RAD`` (10°) as a declared ``rot``. Its L4 is :mod:`precis_se.atomic.validate` (the bond
 capability re-check, the binding checks, bond-geometry sanity, the
-``port_pose_mismatch`` declared-vs-measured check, and ``envelope_fit``
-— the design(m)↔atomistic(Å) agreement check, whose conversion is the
-one permanent unit crossing, test-pinned) plus
+``port_pose_mismatch``/``port_rot_mismatch`` declared-vs-measured checks,
+and ``envelope_fit`` — the design(m)↔atomistic(Å) agreement check, whose
+conversion is the one permanent unit crossing, test-pinned) plus
 :mod:`precis_se.atomic.mechanics`'s advisory ceilings, rendered as
 ``view='mechanics'``/``view='literature'``
 (:mod:`precis_se.atomic.render`). A mode and a binding that contradict
@@ -447,6 +455,36 @@ path, not the LLM ``se_propose_atomic`` job. Every row surfaces the
 PSS-scaled stroke, the T-type verdict with τ½, a ``floppy``/``stiffness
 unknown`` mark against the persistence length, and the switch↔spacer
 port complementarity; the Next line is the ops script that realises it.
+
+**Kinematics and levers** (the port-rotation item, shipped whole
+2026-09-19). Nothing declares an angle: a transition's swing on a port is
+*derived*, ``R_to · R_fromᵀ`` of the port frame composed through each
+state's ``port_pose_overrides`` (:mod:`precis_se.kinematics`, one
+``compose_port_rot`` shared with the display path; axis-angle via
+``precis.cad.vec.axis_angle_from_matrix``, both degenerate cases
+handled). ``view='kinematics'`` tabulates axis (block frame), angle,
+``arm (envelope)`` — the port-origin-to-envelope extent in the plane
+normal to the axis, a geometric UPPER BOUND on the block's own lever arm,
+labelled so — and the tip displacement ``2·arm·sin(angle/2)``; sourced
+``step_angle``/``rotation_rate``/``rotation_barrier`` rows sit beside the
+derived angle and a >10 % disagreement is flagged, never averaged.
+Precondition, surfaced twice: an override on a pose-less port is a no-op
+(``_apply_port_delta``), so validate raises ``port_override_unapplied``
+and the kinematics row says ``no pose`` rather than reading as
+"no change". Frames: a joint names its axis in the WORLD frame
+(:mod:`precis_se.joints`), a port carries its rotation in the BLOCK
+frame — :mod:`precis_se.kinematics_drc` transforms through the block's
+own placement before comparing, and ``revolute_axis_mismatch`` (warn) is
+the disagreement; the joint owns the axis and class, the port owns the
+rotation, never a second slot on joints. The proposer's second family:
+a **rotary unit** (a block with a derived swing, else a sourced
+``step_angle`` with arm₀ = half the envelope diagonal) plus k arm units
+is a lever whose tip stroke ``2·(arm₀ + k·unit_length)·sin(angle/2)``
+ranks beside linear chains under ``delta``; a ``swing`` box key (degrees,
+exclusive with ``delta`` — one stroke measure) ranks rotary series by
+summed angle; a lever's ``span`` is its arm reach, scored as such; a
+rotating port with no role complementary to the arm's says ``joining:
+none`` and emits no connect, never a placeholder.
 """
 
 from __future__ import annotations

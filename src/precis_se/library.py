@@ -677,6 +677,26 @@ def _resolve_star_value(
     return None
 
 
+def value_row_number(row: dict[str, Any]) -> float | None:
+    """A resolved star-schema value row's own numeric point value —
+    ``value_num`` if the row carries one, else the midpoint of
+    ``value_low``/``value_high`` (a declared band with no single point),
+    else ``None`` (a bool/text row, or an empty one). Shared by every
+    caller of :func:`_resolve_star_value` that wants a plain number out
+    of the ``(row, unit, provenance)`` hit rather than
+    :func:`_match_value_row`'s spec-scored comparison — factored out here
+    (not duplicated per caller) after :mod:`precis_se.compose` and
+    :mod:`precis_se.kinematics` both independently grew the identical
+    three lines."""
+    num = row.get("value_num")
+    if num is not None:
+        return float(num)
+    low, high = row.get("value_low"), row.get("value_high")
+    if low is not None and high is not None:
+        return (float(low) + float(high)) / 2.0
+    return None
+
+
 def _match_value_row(
     row: dict[str, Any], spec: WantSpec
 ) -> tuple[bool, str, float | None]:

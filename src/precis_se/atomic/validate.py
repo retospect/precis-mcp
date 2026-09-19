@@ -66,12 +66,14 @@ from precis.cad.graph import Design as CadDesign
 from precis.cad.primitives import Placed, Primitive
 from precis.cad.relate import component_sdf
 from precis.cad.vec import as_vec3 as cad_as_vec3
+from precis.cad.vec import euler_rad_from_matrix
 from precis.cad.vec import pose as cad_pose
+from precis.cad.vec import rotation as cad_rotation
 from precis.structure import Scene as StructScene
 from precis.utils.units import format_quantity
 from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
 from precis_se.atomic.vocab import bond_capability_offences, connect_role
-from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
+from precis_se.ops import PortSpec, SeBlock, SeTree, effective_envelope, effective_ports
 from precis_se.validate import ValidationIssue
 
 #: The design↔atomistic seam conversion factor (`precis/utils/units.py`,
@@ -245,6 +247,16 @@ BOND_VECTOR_MAX_DEVIATION_RAD = math.radians(60.0)
 #: different points, which is the thing worth saying out loud.
 PORT_POSE_MISMATCH_FRACTION = 0.25
 
+#: :func:`rot_mismatch_rad`'s disagreement threshold (R1, docs/backlog/
+#: port-rotation-and-lever-composition.md), radians — the axis-angle
+#: between a port's declared frame (its ``rot``, or — absent one — the
+#: angle between a declared ``direction`` and the measured z alone) and
+#: the frame :func:`measured_port_frame` reads off ``axis_atom``/
+#: ``phase_atom``. 0.175 rad (~10°) is the spec's own figure: unlike the
+#: length thresholds above, an angle has no "fraction of the block" to
+#: scale by, so this one constant covers every block size.
+PORT_ROT_MISMATCH_RAD = 0.175
+
 
 def _envelope_diag(prim: Primitive) -> float | None:
     """A primitive's own characteristic size — its local (unposed) AABB
@@ -297,6 +309,162 @@ def m_to_A(value_m: float) -> float:
     (``tests/test_se_atomic_angstrom_seam.py``), so a caller that needs to
     report Å borrows this rather than spelling ``1e10`` somewhere new."""
     return value_m * _M_TO_A
+
+
+#: A frame's unit x/y/z columns, each a plain 3-list — dimensionless (unit
+#: vectors have no length unit to cross, unlike :func:`bound_port_origin`'s
+#: origin), so this is the SAME frame whether read off Å or m coordinates.
+PortFrame = tuple[list[float], list[float], list[float]]
+
+
+def _frame_or_reason(
+    scene: StructScene, atom_label: str, axis_atom_label: str, phase_atom_label: str
+) -> tuple[PortFrame | None, str | None]:
+    """The shared core of :func:`measured_port_frame` (the silent form,
+    for a read-time caller that only wants the frame or ``None``) and
+    :func:`frame_degeneracy_reason` (the naming form, for a bind-time
+    caller that has to tell an agent WHICH atoms are the problem) — the
+    geometry is computed once here so the two can never drift apart on
+    what counts as degenerate.
+
+    ``z`` is the unit vector ``atom_label -> axis_atom_label`` (the axle —
+    a stator->rotor bond); ``x`` is the unit projection of ``atom_label ->
+    phase_atom_label`` onto the plane normal to ``z`` (a rotor substituent
+    fixes the roll); ``y`` is the cross product ``z`` × ``x``, completing
+    a right-handed triad. Stacked as a matrix's COLUMNS ``(x, y, z)`` this
+    is exactly what :func:`~precis.cad.vec.rotation` builds (its own
+    columns are where it sends the local basis vectors), so
+    :func:`~precis.cad.vec.euler_rad_from_matrix` inverts it directly.
+
+    ``(None, reason)`` — never raises — when any label is missing from
+    ``scene``, the axle is zero-length (``axis_atom`` coincides with
+    ``atom_label``), ``phase_atom`` itself coincides with ``atom_label``
+    (zero-length, nothing to project), or ``phase_atom`` is collinear with
+    the axle (projected x-component under ``1e-3`` of the phase vector's
+    own length) — the FOUR distinct ways this can fail, each its own
+    ``reason`` string so a bind-time caller can name the actual problem
+    rather than a generic "degenerate"."""
+    atom = scene.atoms.get(atom_label)
+    axis = scene.atoms.get(axis_atom_label)
+    phase = scene.atoms.get(phase_atom_label)
+    if atom is None or axis is None or phase is None:
+        missing = next(
+            label
+            for label, resolved in (
+                (atom_label, atom),
+                (axis_atom_label, axis),
+                (phase_atom_label, phase),
+            )
+            if resolved is None
+        )
+        return None, f"atom {missing!r} not found in the structure"
+    p0 = scene.cell.frac_to_cart(atom.frac)
+    p_axis = scene.cell.frac_to_cart(axis.frac)
+    p_phase = scene.cell.frac_to_cart(phase.frac)
+    v_axis = p_axis - p0
+    axis_len = float(np.linalg.norm(v_axis))
+    if axis_len < 1e-9:
+        return None, (
+            f"axis_atom {axis_atom_label!r} coincides with atom "
+            f"{atom_label!r} — the axle has zero length"
+        )
+    z = v_axis / axis_len
+    v_phase = p_phase - p0
+    phase_len = float(np.linalg.norm(v_phase))
+    if phase_len < 1e-9:
+        return None, (
+            f"phase_atom {phase_atom_label!r} coincides with atom "
+            f"{atom_label!r} — there is no direction left to fix the roll"
+        )
+    x_raw = v_phase - np.dot(v_phase, z) * z
+    if float(np.linalg.norm(x_raw)) < 1e-3 * phase_len:
+        return None, (
+            f"phase_atom {phase_atom_label!r} is collinear with the axle "
+            f"{atom_label!r}→{axis_atom_label!r} — nothing fixes the roll"
+        )
+    x = x_raw / np.linalg.norm(x_raw)
+    y = np.cross(z, x)
+    frame: PortFrame = (
+        [float(v) for v in x],
+        [float(v) for v in y],
+        [float(v) for v in z],
+    )
+    return frame, None
+
+
+def measured_port_frame(
+    scene: StructScene, atom_label: str, axis_atom_label: str, phase_atom_label: str
+) -> PortFrame | None:
+    """The port frame R1 measures (docs/backlog/
+    port-rotation-and-lever-composition.md) — see :func:`_frame_or_reason`
+    for the geometry. ``None`` — never raises — when any label is missing
+    from ``scene`` or the frame is degenerate: the caller decides whether
+    that is loud (bind time, :func:`precis_se.atomic.bind.bind_structure`,
+    which uses :func:`frame_degeneracy_reason` instead to name the atoms)
+    or silent (read time — a degenerate stored row contributes nothing to
+    a finding rather than raising on a read)."""
+    frame, _reason = _frame_or_reason(
+        scene, atom_label, axis_atom_label, phase_atom_label
+    )
+    return frame
+
+
+def frame_degeneracy_reason(
+    scene: StructScene, atom_label: str, axis_atom_label: str, phase_atom_label: str
+) -> str | None:
+    """Why :func:`measured_port_frame` returned ``None`` for these three
+    atoms, naming which of the four ways it failed (module-level
+    :func:`_frame_or_reason`) — the bind-time counterpart to
+    :func:`measured_port_frame`'s silence, for
+    :func:`precis_se.atomic.bind.bind_structure`'s ``BadInput``. ``None``
+    when the frame is not, in fact, degenerate (a caller error — should
+    never happen when :func:`measured_port_frame` returned ``None`` for
+    the same three labels)."""
+    _frame, reason = _frame_or_reason(
+        scene, atom_label, axis_atom_label, phase_atom_label
+    )
+    return reason
+
+
+def frame_euler_rad(frame: PortFrame) -> list[float]:
+    """``frame``'s ``(x, y, z)`` columns as an ``[rx, ry, rz]`` Euler
+    triple, se's storage shape for ``rot`` (module docstring's ``Rz@Ry@Rx``
+    convention, mirrored from :func:`~precis.cad.vec.rotation`)."""
+    x, y, z = frame
+    R = np.column_stack([x, y, z])
+    return list(euler_rad_from_matrix(R))
+
+
+def rot_mismatch_rad(port: PortSpec, frame: PortFrame) -> float | None:
+    """The axis-angle (radians) between ``port``'s DECLARED frame and the
+    MEASURED ``frame`` (:func:`measured_port_frame`) — the rot half of
+    :func:`_port_pose_findings`'s comparison, shared by the bind-time echo
+    (:func:`precis_se.atomic.bind._measure_port_poses`) and the standing
+    ``port_rot_mismatch`` finding (:func:`_port_rot_findings`) so the two
+    can never drift onto different arithmetic.
+
+    A declared ``rot`` (Euler radians) is compared as a full frame:
+    ``angle = arccos((trace(R_declared^T @ R_measured) - 1) / 2)`` — the
+    standard rotation-matrix geodesic distance. Absent a declared ``rot``
+    but present a declared ``direction`` (never itself measured — module
+    docstring), only the measured z is compared against it, same formula
+    specialized to two unit vectors. ``None`` when the port declares
+    neither (nothing to compare) or a declared ``direction`` is the zero
+    vector (a malformed row, not this function's job to raise on)."""
+    x, y, z = frame
+    if port.rot is not None:
+        R_declared = cad_rotation(*(float(v) for v in port.rot)).R
+        R_measured = np.column_stack([x, y, z])
+        cos = (float(np.trace(R_declared.T @ R_measured)) - 1.0) / 2.0
+        return math.acos(float(np.clip(cos, -1.0, 1.0)))
+    if port.direction is not None:
+        d = np.asarray(port.direction, dtype=float)
+        d_norm = float(np.linalg.norm(d))
+        if d_norm < 1e-12:
+            return None
+        cos = float(np.dot(d / d_norm, np.asarray(z, dtype=float)))
+        return math.acos(float(np.clip(cos, -1.0, 1.0)))
+    return None
 
 
 def _extent_along(lo: object, hi: object, unit: object) -> float:
@@ -863,6 +1031,84 @@ def _port_pose_findings(
     return findings
 
 
+def _port_rot_findings(
+    tree: SeTree, bound_full_scenes: dict[str, StructScene]
+) -> list[ValidationIssue]:
+    """``port_rot_mismatch`` (warn) — :func:`_port_pose_findings`'s
+    counterpart for the frame half of the port pose slot (R1, docs/backlog/
+    port-rotation-and-lever-composition.md): a port whose declared ``rot``
+    (or, absent one, a declared ``direction``) disagrees with the frame
+    :func:`measured_port_frame` reads off its ``axis_atom``/``phase_atom``
+    by more than :data:`PORT_ROT_MISMATCH_RAD`. Re-derived from the
+    hydrated scene on every read — the bind echo says it once, this says
+    it again on every later read, because the bound structure can change
+    under a standing binding long after the bind returned (the same
+    "preflight note now, standing finding forever after" split
+    ``envelope_fit``/``port_pose_mismatch`` already use).
+
+    Only a port carrying the full atom/axis_atom/phase_atom triple AND a
+    declared frame (``rot_source=='declared'``, or — absent a declared
+    ``rot`` — a declared ``direction``, which carries no provenance of its
+    own) is ever a candidate — gated on ``rot``'s OWN provenance, NOT
+    ``pose_source`` (R1's bind-time bug fix, mirrored here: a port with a
+    declared pose and only a measured/absent rot is not a candidate — it
+    has nothing declared to check the rot against). A port with neither
+    has nothing to check against, and one bound by string form alone (no
+    ``axis_atom``/``phase_atom``) was never measured a frame to disagree
+    with. Skipped, like ``port_pose_mismatch``, when the scene doesn't
+    share the block's frame at all (``envelope_fit`` already says that
+    once for the whole block)."""
+    findings: list[ValidationIssue] = []
+    for node in tree.blocks.values():
+        if node.template is not None or node.bound_kind != "structure":
+            continue
+        env = effective_envelope(tree, node)
+        if not env or node.bound is None:
+            continue
+        scene = bound_full_scenes.get(node.bound)
+        if scene is None:
+            continue
+        if isinstance(envelope_fit(env, scene), FrameMismatch):
+            continue
+        for port in node.ports.values():
+            if (
+                port.bound_atom is None
+                or port.axis_atom is None
+                or port.phase_atom is None
+            ):
+                continue
+            declared_rot = port.rot is not None and port.rot_source == "declared"
+            declared_direction_only = port.rot is None and port.direction is not None
+            if not (declared_rot or declared_direction_only):
+                continue
+            frame = measured_port_frame(
+                scene, port.bound_atom, port.axis_atom, port.phase_atom
+            )
+            if frame is None:
+                continue  # degenerate atoms — nothing to compare
+            deviation = rot_mismatch_rad(port, frame)
+            if deviation is None or deviation <= PORT_ROT_MISMATCH_RAD:
+                continue
+            against = "declared rot" if declared_rot else "declared direction"
+            findings.append(
+                ValidationIssue(
+                    rule="port_rot_mismatch",
+                    subject=f"{node.name}.{port.name}",
+                    detail=(
+                        f"measured frame off {port.axis_atom!r}/"
+                        f"{port.phase_atom!r} (in structure {node.bound!r}) "
+                        f"is {format_quantity(deviation, 'angle')} from the "
+                        f"{against} — more than "
+                        f"{format_quantity(PORT_ROT_MISMATCH_RAD, 'angle')}. "
+                        "The declared target is kept: fix whichever is "
+                        "wrong (set_port_pose, or move the atoms)"
+                    ),
+                    severity="warn",
+                )
+            )
+    return findings
+
+
 def validate_atomic(
     tree: SeTree,
     *,
@@ -886,6 +1132,7 @@ def validate_atomic(
     findings.extend(_binding_findings(tree, bound_scenes or {}))
     findings.extend(_envelope_fit_findings(tree, bound_full_scenes or {}))
     findings.extend(_port_pose_findings(tree, bound_full_scenes or {}))
+    findings.extend(_port_rot_findings(tree, bound_full_scenes or {}))
     findings.extend(_connect_cycle_findings(tree))
     findings.extend(_bond_length_findings(tree))
     findings.extend(_bond_vector_findings(tree))

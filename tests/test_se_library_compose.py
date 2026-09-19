@@ -7,12 +7,16 @@ unknown`` mark; never-empty nearest-miss; the ``floppy`` flag and the
 ``stiffness unknown`` mark; a block without length rows is skipped and
 counted; ``compose=`` reaches the handler over the MCP door (the verb
 signature IS the schema); ``wants=`` keys still score on the switch
-block; the parser's refusals.
+block; the parser's refusals; R3's lever family (a rotary unit + arm
+units, ``swing`` box key, docs/backlog/port-rotation-and-lever-
+composition.md "Slice R3") ranked beside — or, for a swing box, instead
+of — the linear chains.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -126,6 +130,90 @@ def _unit(
     )
 
 
+#: The hinge's own envelope arm — a sub-nm box (``2e-10`` m per side, an
+#: Å-scale round number) so R2's metre-scale envelope arithmetic and R3's
+#: Å-scale ``delta`` box land in the same ballpark as a real switch's
+#: stroke. ``p1`` sits centred in x/y at half height, exactly R2's own
+#: hinge fixture (``tests/test_se_kinematics.py::_hinge_ops``) scaled
+#: down, so the in-plane arm is the same ``half-width·√2`` shape.
+_HINGE_HALF_WIDTH_M = 1e-10
+ARM0_M = _HINGE_HALF_WIDTH_M * math.sqrt(2.0)
+
+
+def _hinge(
+    handler: SeHandler,
+    slug: str,
+    *,
+    block: str = "u",
+    roles: tuple[str, ...] = (),
+    driver_kind: str = "mechanical",
+    requires: dict[str, Any] | None = None,
+) -> None:
+    """One library block ``<slug>#<block>`` whose port ``p1`` swings 90°
+    about z between two declared states (a
+    ``port_pose_overrides`` rot delta on a posed port — R2 derives the
+    swing from exactly this shape). ``roles`` lets a fixture give the
+    rotating port a complementary half for the ops-script test; ``requires``
+    rides on the one declared transition for the ``compose='<slug>#<block>'``
+    string-form tests."""
+    transition: dict[str, Any] = {
+        "from_state": "trans",
+        "to_state": "cis",
+        "driver_kind": driver_kind,
+    }
+    if requires is not None:
+        transition["requires"] = requires
+    ops: list[dict[str, Any]] = [
+        {
+            "op": "add_block",
+            "name": block,
+            "envelope": "box:w2e-10d2e-10h2e-10",
+        },
+        {
+            "op": "add_port",
+            "block": block,
+            "name": "p1",
+            "pose": [0.0, 0.0, _HINGE_HALF_WIDTH_M],
+            "roles": list(roles),
+        },
+        {
+            "op": "declare_states",
+            "block": block,
+            "states": [
+                {"name": "trans"},
+                {
+                    "name": "cis",
+                    "port_pose_overrides": {"p1": {"rot": [0.0, 0.0, math.pi / 2.0]}},
+                },
+            ],
+        },
+        {"op": "declare_transitions", "block": block, "transitions": [transition]},
+    ]
+    handler.put(id=slug, text=json.dumps({"ops": ops}))
+
+
+def _link_step_angle(
+    handler: SeHandler,
+    material: MaterialHandler,
+    store: Store,
+    slug: str,
+    block: str,
+    rad: float,
+) -> None:
+    mat = f"mat-{slug}-step"
+    material.put(id=mat, title=mat)
+    material.put(id=mat, property="step_angle", value=rad, unit="rad")
+    design_ref = store.get_ref(kind="se", id=slug)
+    mat_ref = store.get_ref(kind="material", id=mat)
+    assert design_ref is not None and mat_ref is not None
+    store.add_link(
+        src_ref_id=design_ref.id,
+        dst_ref_id=mat_ref.id,
+        relation="made-of",
+        meta={"block": block},
+    )
+
+
 # ── arithmetic, PSS scaling, floppy ─────────────────────────────────────
 
 
@@ -210,6 +298,183 @@ def test_no_switch_in_the_library_says_nothing_to_compose(
     assert body.startswith("no library block carries a delta_length row")
     assert "1 spacer(s)" in body
     assert "property='delta_length'" in body
+
+
+# ── R3: lever family — rotary unit + arm units, swing box key ───────────
+# docs/backlog/port-rotation-and-lever-composition.md "Slice R3"
+
+
+def test_lever_row_ranks_a_rotary_unit_plus_an_arm_by_tip_stroke(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _hinge(handler, "hinge", roles=("azide",))
+    _unit(handler, material, store, "spacer", length=10.0, roles=("alkyne",))
+    # A plain switch chain lives in the SAME library — the merged ranked
+    # list (R3 review: "add a switch+spacer so both families produce
+    # rows") must show BOTH families and order them by whichever is
+    # actually closer to the box.
+    _unit(handler, material, store, "azo", delta=200.0)
+    spacer_m = 10.0 * 1e-9
+    tip_m = 2.0 * (ARM0_M + spacer_m) * math.sin(math.pi / 4.0)
+    tip_a = tip_m * 1e10
+
+    # The lever wins: the box brackets the lever's tip stroke, nowhere
+    # near azo's 200 Å chain. n_max/m_max=1 keeps the row set small and
+    # the ranking unambiguous (no tied-distance combinatorics to reason
+    # through).
+    body = handler.search(
+        compose={"delta": [tip_a - 1.0, tip_a + 1.0], "n_max": 1, "m_max": 1}
+    ).body
+    lines = _row_lines(body)
+    top = lines[0]
+    assert "hinge#u + 1 × spacer#u" in top
+    assert f"✓delta: {tip_a:g} Å" in top
+    assert "arm" in top and "nm (envelope)" in top
+    assert "+ 1 × spacer 10 nm (spacer#u)" in top
+    assert "family: lever" in top
+    assert "; 1 rotary unit(s)" in body
+    # The chain still shows — never hidden — ranked behind, as a miss.
+    chain_row = next(ln for ln in lines if "1 × azo#u" in ln and "spacer#u" not in ln)
+    assert "✗delta" in chain_row
+    assert "family: chain" in chain_row
+    assert lines.index(chain_row) > 0
+    # The Next ops script: rotary + arm, connected at the rotating port.
+    assert "{'op': 'instance_block', 'name': 'r1', 'template': 'hinge#u'}" in body
+    assert "{'op': 'instance_block', 'name': 'a1', 'template': 'spacer#u'}" in body
+    assert "{'op': 'connect', 'a': 'r1.p1', 'b': 'a1.p0'}" in body
+
+    # The chain wins: the box brackets azo's 200 Å, nowhere near any
+    # lever's tip stroke over this library's tiny sub-nm envelope.
+    body = handler.search(
+        compose={"delta": [199.0, 201.0], "n_max": 1, "m_max": 1}
+    ).body
+    lines = _row_lines(body)
+    top = lines[0]
+    assert top.startswith("1. 1 × azo#u")
+    assert "✓delta: 200 Å" in top
+    assert "family: chain" in top
+    lever_row = next(ln for ln in lines if "hinge#u + 1 × spacer#u" in ln)
+    assert "✗delta" in lever_row
+    assert "family: lever" in lever_row
+    assert lines.index(lever_row) > 0
+
+
+def test_swing_box_ranks_a_rotary_series_by_total_angle(handler: SeHandler) -> None:
+    _hinge(handler, "hinge_series")
+    body = handler.search(compose={"swing": [170, 190]}).body
+    top = _row_lines(body)[0]
+    assert top.startswith("1. 2 × hinge_series#u")
+    assert "✓swing: 180°" in top
+    assert "family: series" in top
+    # n=1 (90°) and n=3 (270°) both miss the window — never empty/hidden.
+    misses = [
+        ln for ln in _row_lines(body) if "hinge_series#u" in ln and "✗swing" in ln
+    ]
+    assert misses
+
+
+def test_sourced_step_angle_disagreeing_with_the_derived_swing_shows_both(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _hinge(handler, "hinge_disagree", roles=("azide",))
+    _unit(handler, material, store, "spacer_d", length=10.0, roles=("alkyne",))
+    # 57 % off the derived pi/2 — same fixture pi/2 vs 1.0 rad R2's own
+    # kinematics test uses (tests/test_se_kinematics.py).
+    _link_step_angle(handler, material, store, "hinge_disagree", "u", 1.0)
+
+    body = handler.search(compose={"delta": [0.0, 1e12]}).body
+    top = _row_lines(body)[0]
+    assert "hinge_disagree#u" in top
+    step_deg = f"{math.degrees(1.0):g}"
+    assert f"sourced step_angle {step_deg}° disagrees" in top
+    assert "(derived from trans → cis on port p1)" in top
+
+
+def test_lever_row_with_no_complementary_role_says_joining_none_and_skips_connect(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """The rotating port ``p1`` carries no role at all here — no half
+    complements the arm's ``alkyne`` — so :func:`~precis_se.compose.
+    _rotating_port_pair` must not fabricate a ``'<port>'`` connect: the
+    row still lists (never empty/hidden) with a ``joining: none`` note,
+    and its ops script drops the connect for a comment line instead."""
+    _hinge(handler, "hinge_bare")  # p1 carries no roles
+    _unit(handler, material, store, "spacer_bare", length=10.0, roles=("alkyne",))
+    spacer_m = 10.0 * 1e-9
+    tip_m = 2.0 * (ARM0_M + spacer_m) * math.sin(math.pi / 4.0)
+    tip_a = tip_m * 1e10
+
+    body = handler.search(
+        compose={"delta": [tip_a - 1.0, tip_a + 1.0], "n_max": 1, "m_max": 1}
+    ).body
+    top = _row_lines(body)[0]
+    assert "hinge_bare#u + 1 × spacer_bare#u" in top
+    assert (
+        "joining: none (rotating port p1 has no role complementary to "
+        "spacer_bare#u's ports)" in top
+    )
+    # never a fabricated '<port>' connect — the ops script skips it and
+    # leaves a comment instead.
+    assert "{'op': 'connect'" not in body
+    assert "no connect: rotating port p1" in body
+
+
+def test_swing_and_delta_together_refused() -> None:
+    with pytest.raises(BadInput, match="one stroke measure"):
+        se_compose.parse_compose({"delta": [1, 2], "swing": [10, 20]})
+
+
+def test_declare_transitions_requires_delta_and_swing_together_refused(
+    handler: SeHandler,
+) -> None:
+    """The same refusal, exercised through the WRITE path
+    (``declare_transitions … requires=``), not just ``parse_compose``
+    directly — ``precis_se/ops.py`` catches ``parse_requires``'s
+    ``BadInput`` and re-raises it as an ``OpError``, which
+    ``apply_ops_with_atomic`` (the handler's own op-walking layer) then
+    re-wraps back into a ``BadInput`` — so the message survives both
+    hops unchanged, naming 'one stroke measure' the same way at write
+    time as at ``compose=`` read time."""
+    ops = [
+        {"op": "add_block", "name": "u", "envelope": "sphere:r0.005"},
+        {
+            "op": "declare_states",
+            "block": "u",
+            "states": [{"name": "trans"}, {"name": "cis"}],
+        },
+        {
+            "op": "declare_transitions",
+            "block": "u",
+            "transitions": [
+                {
+                    "from_state": "trans",
+                    "to_state": "cis",
+                    "driver_kind": "light",
+                    "requires": {"delta": [1, 2], "swing": [10, 20]},
+                }
+            ],
+        },
+    ]
+    with pytest.raises(BadInput, match="one stroke measure"):
+        handler.put(id="bad_requires", text=json.dumps({"ops": ops}))
+
+
+def test_swing_via_compose_string_form_reads_requires(handler: SeHandler) -> None:
+    _hinge(handler, "hinge_requires", requires={"swing": [80, 100]})
+    body = handler.search(compose="hinge_requires#u").body
+    top = _row_lines(body)[0]
+    assert top.startswith("1. 1 × hinge_requires#u")
+    assert "✓swing:" in top
+    assert "box from se:hinge_requires#u trans->cis (mechanical)" in body
+
+
+def test_no_rotary_unit_in_the_library_says_nothing_to_compose(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    _unit(handler, material, store, "rod", length=10.0)
+    body = handler.search(compose={"swing": [10, 20]}).body
+    assert body.startswith("no library block")
+    assert "step_angle" in body
 
 
 # ── wants= still scores on the switch block ────────────────────────────

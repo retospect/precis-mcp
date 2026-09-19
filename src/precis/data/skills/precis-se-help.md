@@ -219,10 +219,11 @@ state; nothing about a plain block's shape changes.
   (`set_pose` one level down). The slot is nullable on purpose — with no
   pose, geometry checks fall back to the block-pose + envelope-extent
   approximation and say so; with one on both ends, `bond_length_sanity`
-  reports the exact port-to-port distance instead. This op and `add_port`
-  write `pose_source='declared'` (intent); `bind_structure` measures
-  `'bound'` off the realization and never overwrites a declared target —
-  `precis-se-atomic-help`.
+  reports the exact port-to-port distance instead. `pose_source` and
+  `rot_source` are INDEPENDENT stamps: this op and `add_port` write
+  `'declared'` for whichever of `pose`/`rot` they set; `bind_structure`
+  measures `'bound'` per field (rot off a port's `axis_atom`/`phase_atom`
+  frame) and never overwrites a declared one — `precis-se-atomic-help`.
 - `declare_transitions` — `block`, `transitions` `[{'from_state',
   'to_state', 'driver_kind', 'driver_ref'?, 'params'?, 'requires'?}]`
   (req). DIRECTED edges — a ratchet's forward/reverse barriers are two
@@ -254,6 +255,27 @@ get(kind='se', id='switch1', view='clearance',
     args={'a':'dye','b':'wall','state':{'dye':'cis'}})  # probe THIS state
 get(kind='se', id='switch1', view='sweep')               # probe EVERY state
 ```
+
+## Kinematics — the derived swing (view='kinematics')
+
+Nothing new to declare: two states already carry a port's frame
+(`port_pose_overrides[port].rot` composed onto the port's own `rot`), so
+the rotation a transition performs is read straight off them. One table
+per design: `axis` (block frame), `angle` (°), `arm (envelope)` — the
+port origin to the envelope extent in the plane normal to the axis, an
+upper bound on the lever the block offers — and `tip` =
+`2·arm·sin(angle/2)`. A port whose frame does not change reads `—`; a
+port with **no declared pose** reads `no pose`, never the dash: an
+override on a pose-less port is a silent no-op, so `view='validate'`
+raises `port_override_unapplied` ("declare set_port_pose first"). A block
+with no states gets a one-line note. Sourced `step_angle` /
+`rotation_rate` / `rotation_barrier` (rad / Hz / eV, the star-schema
+lookup `delta_length` uses) render beside the derived angle; a >10 %
+disagreement is named in `note`. A connect whose `joint` is
+`class: 'revolute'` (its `axis` in the WORLD frame) is checked against
+the port's derived axis after the block's own placement is applied —
+past 10° it is `revolute_axis_mismatch` in `view='drc'`: the joint names
+the axis, the port carries the rotation, both must agree.
 
 ## Ranked library search — search(kind='se', wants=…)
 
@@ -359,6 +381,27 @@ declared transition `requires=` instead of a literal dict — its
 transitions may carry a `requires=` box; with none, declare one
 (`declare_transitions … requires=`); with several, add the
 `/<from>-><to>` selector to pick one.
+
+## Lever family — rotary unit + arms (compose swing=)
+
+A third box key, `swing` (°, total rotary angle), adds a second family.
+A **rotary unit** is a block with a non-zero `view='kinematics'` swing
+(else a sourced `step_angle`); one with no usable envelope (no `arm₀`)
+is skipped and counted in the header. With
+`delta`, lever rows — one rotary unit + k arm units (ordinary spacers)
+at its rotating port, tip stroke `2·(arm₀ + k·unit_length)·sin(angle/2)`
+— rank in ONE merged list beside switch chains (`family: lever` /
+`family: chain` on each row). With `swing` instead, `n` rotary units
+chained (angles summed) rank alone (`family: series`). `delta` and
+`swing` together is refused — one stroke measure. A lever row's `span`
+is its arm reach (`arm₀ + k·unit_length`, nm), scored like a chain's and
+labelled `(arm reach)`; a series row's `span` is its units' summed
+`unit_length`. Each lever row shows the arm breakdown, the angle and its origin (`derived
+from trans → cis on port p1`, or a sourced `step_angle` beside a
+disagreeing derived one), the bistable/τ½ verdict, and the
+rotating-port↔arm joining — `joining: none (…)` when no role is
+complementary, and the ops script then omits that connect rather than
+guessing a port.
 
 ## Optical (FRET) ops — energy transfer as a comm channel
 

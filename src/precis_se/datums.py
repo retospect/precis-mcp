@@ -54,7 +54,7 @@ import numpy as np
 
 from precis.cad import dsl as cad_dsl
 from precis.cad.primitives import CircularFrustum, Placed, PolyFrustum
-from precis.cad.vec import as_vec3
+from precis.cad.vec import aabb_corners, as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis_se.measures import MeasureError, MeasureSpec, declared_band
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
@@ -240,18 +240,7 @@ def _face_geometry(placed: Placed) -> dict[str, tuple[Any, Any, float]]:
     faces = prim.faces_local()
     polys = getattr(prim, "_face_polys", None)  # PolyFrustum, when present
     out: dict[str, tuple[Any, Any, float]] = {}
-    corners_local = np.array(
-        [
-            [lo[0], lo[1], lo[2]],
-            [hi[0], lo[1], lo[2]],
-            [lo[0], hi[1], lo[2]],
-            [hi[0], hi[1], lo[2]],
-            [lo[0], lo[1], hi[2]],
-            [hi[0], lo[1], hi[2]],
-            [lo[0], hi[1], hi[2]],
-            [hi[0], hi[1], hi[2]],
-        ]
-    )
+    corners_local = np.array(aabb_corners(lo, hi))
     corners_world = (placed.xform.R @ corners_local.T).T + placed.xform.t
     for i, f in enumerate(faces):
         n_l = as_vec3(f.normal)

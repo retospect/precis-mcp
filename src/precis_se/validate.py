@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -46,6 +47,7 @@ from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import Vec3
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis.design import states as design_states
 from precis_se import bom as se_bom
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 
@@ -509,4 +511,65 @@ def validate(
                     severity="error",
                 )
             )
+    return findings
+
+
+def port_override_unapplied_findings(
+    store: Any, tree: SeTree, ref_id: int
+) -> list[ValidationIssue]:
+    """``port_override_unapplied`` (warn) — R2, docs/backlog/
+    port-rotation-and-lever-composition.md: a declared state's
+    ``port_pose_overrides[port]`` names a ``pose`` or ``rot`` delta for a
+    port that has no pose of its own. :func:`precis_se.handler.
+    _apply_port_delta` silently no-ops that delta (nothing to displace,
+    no origin to swing about) — the override is stored and shown
+    verbatim, per :mod:`precis.design.states`'s own docstring, but
+    changes NOTHING at read time, which is exactly the trap this finding
+    exists to name loudly rather than let an agent discover by a pose
+    that never moves.
+
+    Store-aware, unlike :func:`validate` (which stays pure over ``tree``
+    by contract) — a state's ``port_pose_overrides`` live in the shared
+    ``design_states`` table, keyed by block uid
+    (:mod:`precis.design.states`), not on the tree itself. Called
+    separately by the handler's ``_render_validate``, appended after
+    :func:`validate`'s own findings — the same "pure core, store-aware
+    sibling appended by the view" split :mod:`precis_se.atomic.validate`
+    and :mod:`precis_se.precedent` already use.
+
+    Ordinary blocks only (``node.template is None``) — declared states
+    live on the template, same as everywhere else this round
+    (:mod:`precis_se.kinematics`'s module docstring). A dangling override
+    port name is some OTHER finding's job (or none — an override naming a
+    port the block no longer has is simply skipped at read time, the same
+    as :func:`precis_se.handler._apply_state_arg`)."""
+    findings: list[ValidationIssue] = []
+    for node in tree.blocks.values():
+        if node.template is not None:
+            continue
+        if node.uid is None:
+            continue
+        for state in design_states.states_for(store, ref_id, node.uid):
+            for port_name, override in (state.port_pose_overrides or {}).items():
+                if not isinstance(override, dict):
+                    continue
+                port = node.ports.get(port_name)
+                if port is None or port.pose is not None:
+                    continue
+                carries = [k for k in ("pose", "rot") if override.get(k) is not None]
+                if not carries:
+                    continue
+                findings.append(
+                    ValidationIssue(
+                        rule="port_override_unapplied",
+                        subject=f"{node.name}.{port_name} (state {state.name!r})",
+                        detail=(
+                            f"state {state.name!r} overrides "
+                            f"{'/'.join(carries)} on port {port_name!r}, "
+                            "which has no pose — the delta is a no-op; "
+                            "declare set_port_pose first"
+                        ),
+                        severity="warn",
+                    )
+                )
     return findings

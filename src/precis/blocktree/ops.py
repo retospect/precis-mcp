@@ -62,9 +62,11 @@ The 9 shared ops:
   ``rot`` in the block's local frame — ``set_pose`` one level down. The
   slot is nullable by design and stays null until someone fills it
   (:class:`~precis.blocktree.types.Port`); this op and ``add_port`` are
-  the two core ops that fill it, both stamping ``pose_source='declared'``
-  — a ``'bound'`` pose is measured off a realization by a domain op
-  (``se``'s ``bind_structure``), never stated here.
+  the two core ops that fill it, stamping ``pose_source='declared'``
+  whenever ``pose`` is written and, INDEPENDENTLY, ``rot_source=
+  'declared'`` whenever ``rot`` is written — a ``'bound'`` pose or rot is
+  measured off a realization by a domain op (``se``'s ``bind_structure``),
+  never stated here.
 - ``connect``         — a port↔port intent edge (``a``/``b`` as
   ``'block.port'``, split on the *last* dot). Each endpoint resolves on
   the block itself or — for an instance — its template. Self- and
@@ -778,6 +780,10 @@ def op_add_port(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
         pose=pose,
         rot=rot,
         pose_source=None if pose is None else "declared",
+        # Independent of pose_source (R1) — but ``_port_pose_args`` already
+        # refuses a ``rot`` with no ``pose``, so ``rot`` here is never set
+        # without ``pose`` also being set.
+        rot_source=None if rot is None else "declared",
     )
 
 
@@ -817,13 +823,16 @@ def op_set_port_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
     """Rewrite an existing port's own ``pose``/``rot`` — :func:`op_set_pose`
     for ports, and the only way to fill the slot after ``add_port``.
 
-    ``clear=True`` nulls all three fields back to "no stored pose" (the
+    ``clear=True`` nulls all four fields back to "no stored pose" (the
     fallback approximation resumes). Otherwise ``pose`` is required unless
     the port already carries one (so ``rot`` alone can be corrected without
     restating the origin), ``rot`` is optional and an absent ``rot`` keeps
-    the stored one (each key rewrites only itself), and the write stamps
-    ``pose_source='declared'`` — this op is an agent stating design intent;
-    a measured ``'bound'`` origin comes from a realization, not from here
+    the stored one AND its provenance (each key rewrites only itself — R1,
+    docs/backlog/port-rotation-and-lever-composition.md), and the write
+    stamps ``pose_source='declared'`` whenever ``pose`` is written and,
+    INDEPENDENTLY, ``rot_source='declared'`` whenever ``rot`` is written —
+    this op is an agent stating design intent; a measured ``'bound'``
+    pose/rot comes from a realization, not from here
     (:data:`~precis.blocktree.types.PORT_POSE_SOURCES`)."""
     block = _require_block(tree, op, "block", "set_port_pose")
     node = tree.blocks[block]
@@ -842,15 +851,17 @@ def op_set_port_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
             f"no such port on block {block!r}: {name!r}. Available ports: {roster}"
         )
     if op.get("clear"):
-        port.pose = port.rot = port.pose_source = None
+        port.pose = port.rot = port.pose_source = port.rot_source = None
         return
     what = f"{block}.{name}"
     if op.get("pose") is None and port.pose is not None:
-        # Keep the stored origin, rewrite the rotation on top of it.
+        # Keep the stored origin, rewrite the rotation on top of it. Only
+        # rot's OWN provenance changes — the origin's is untouched, since
+        # its value didn't change either.
         if op.get("rot") is None:
             raise OpError("set_port_pose needs 'pose' and/or 'rot' (or clear=True)")
         port.rot = _as_vec3(op.get("rot"), f"set_port_pose rot for {what}")
-        port.pose_source = "declared"
+        port.rot_source = "declared"
         return
     pose, rot = _port_pose_args(op, opname="set_port_pose", what=what)
     if pose is None:
@@ -858,12 +869,16 @@ def op_set_port_pose(tree: Tree[Any, Any], op: dict[str, Any]) -> None:
             f"set_port_pose needs 'pose' for {what} — the port carries no "
             "origin yet (or pass clear=True to null it)"
         )
-    if op.get("rot") is None:
-        # An absent ``rot`` keeps the stored one — nudging the origin must
-        # not silently unrotate the port; ``clear=True`` is the way to drop
-        # a rotation.
+    rot_given = op.get("rot") is not None
+    if not rot_given:
+        # An absent ``rot`` keeps the stored one AND its provenance —
+        # nudging the origin must not silently unrotate the port, or
+        # restate a measured rot as newly declared; ``clear=True`` is the
+        # way to drop a rotation.
         rot = port.rot
     port.pose, port.rot, port.pose_source = pose, rot, "declared"
+    if rot_given:
+        port.rot_source = "declared"
 
 
 def op_connect(tree: Tree[Any, Any], op: dict[str, Any]) -> None:

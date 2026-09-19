@@ -34,17 +34,42 @@ T-type verdict with τ½, ``floppy`` whenever the span exceeds the
 stiffness-bearing unit's persistence length (``stiffness unknown`` when
 it has no row), and the switch↔spacer port complementarity (slice 3's
 halves). The Next line is the ``instance_block`` × n + spacer ops script.
+
+R3 (docs/backlog/port-rotation-and-lever-composition.md "Slice R3") adds
+a second family beside the linear chain: a **rotary unit** — a block
+whose R2-derived transition swing (:mod:`precis_se.kinematics`) or
+sourced ``step_angle`` is non-zero (:func:`resolve_rotary`) — paired with
+``k`` **arm** units (ordinary spacers) at its rotating port. A third box
+key, ``swing`` (°, total rotary angle), joins ``delta``/``span``
+(:class:`ComposeBox`); ``delta`` scores a lever row's tip stroke
+(``2·(arm₀ + k·unit_length)·sin(angle/2)``) through the SAME value-row
+match as a switch chain's, ranked in ONE merged list (``family`` on each
+row: ``'lever'``/``'chain'``); ``swing`` instead scores ``n`` rotary
+units chained (angles summed, ``family='series'``), alone (a switch
+chain has no angle). ``delta`` and ``swing`` together is refused — one
+stroke measure, never both. A lever row's own ``span`` is its arm reach
+(``arm₀ + k·unit_length``); a rotary with no usable envelope (no arm₀)
+is left out of the lever family and counted in the header, mirroring
+``counts['skipped']``. The rotating-port↔arm complementarity gets the
+same ``joining`` note a switch↔spacer chain does — never a fabricated
+``'<port>'`` connect when there is no complementary role.
 """
 
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
+from precis.cad import dsl as cad_dsl
 from precis.design import states as design_states
 from precis.errors import BadInput, NotFound
+from precis_se import kinematics as se_kinematics
 from precis_se import library, persist
+from precis_se.atomic.validate import _M_TO_A
 from precis_se.atomic.vocab import _complementary_pair, _joining_name
 from precis_se.library import (
     AttrResult,
@@ -52,6 +77,7 @@ from precis_se.library import (
     _Candidate,
     _ReadCache,
 )
+from precis_se.ops import SeBlock, SeTree, effective_envelope
 
 DELTA_KEY = "delta_length"
 LENGTH_KEY = "unit_length"
@@ -70,7 +96,7 @@ _DEFAULT_M_MAX = 4
 _HARD_MAX = 50
 #: Named cap on compositions one call scores (the backlog's 2 000).
 _MAX_COMPOSITIONS = 2_000
-_ALLOWED_KEYS = frozenset({"delta", "span", "n_max", "m_max", "conditions"})
+_ALLOWED_KEYS = frozenset({"delta", "span", "swing", "n_max", "m_max", "conditions"})
 
 
 # ── compose= parsing ─────────────────────────────────────────────────────
@@ -85,6 +111,7 @@ class ComposeBox:
 
     delta: WantSpec | None
     span: WantSpec | None
+    swing: WantSpec | None = None
     n_max: int = _DEFAULT_N_MAX
     m_max: int = _DEFAULT_M_MAX
     #: Filter (gr346735) applied to every per-unit fact read
@@ -101,13 +128,17 @@ class ComposeBox:
             out["delta"] = self.delta
         if self.span is not None:
             out["span"] = self.span
+        if self.swing is not None:
+            out["swing"] = self.swing
         return out
 
 
 def parse_compose(compose: dict[str, Any]) -> ComposeBox:
     """Vet + canonicalise a dict ``compose=``. :class:`BadInput` for a
-    non-dict, an unknown key, a box with neither ``delta`` nor ``span``, a
-    non-numeric range, or an out-of-range count — never for what the
+    non-dict, an unknown key, a box with none of ``delta``/``span``/
+    ``swing``, ``delta`` and ``swing`` together (one stroke measure —
+    R3, docs/backlog/port-rotation-and-lever-composition.md "Slice R3"),
+    a non-numeric range, or an out-of-range count — never for what the
     library holds (that is scored and reported). The string form
     (``'<design>#<block>'``) is :func:`resolve_compose`, not this — it
     needs ``store`` to read a block's declared transition."""
@@ -125,11 +156,18 @@ def parse_compose(compose: dict[str, Any]) -> ComposeBox:
         )
     delta = _range(compose, "delta", "Å")
     span = _range(compose, "span", "nm")
-    if delta is None and span is None:
+    swing = _range(compose, "swing", "°")
+    if delta is None and span is None and swing is None:
         raise BadInput(
-            "compose= needs at least one of 'delta' (Å, port-to-port stroke) "
-            "or 'span' (nm, long-state length)",
+            "compose= needs at least one of 'delta' (Å, port-to-port stroke), "
+            "'span' (nm, long-state length), or 'swing' (°, total rotary angle)",
             next=example,
+        )
+    if delta is not None and swing is not None:
+        raise BadInput(
+            "compose= carries both 'delta' and 'swing' — one stroke measure: "
+            "delta (tip) or swing (angle)",
+            next="drop one of compose['delta']/compose['swing']",
         )
     conditions = None
     if "conditions" in compose:
@@ -139,6 +177,7 @@ def parse_compose(compose: dict[str, Any]) -> ComposeBox:
     return ComposeBox(
         delta=delta,
         span=span,
+        swing=swing,
         n_max=_count(compose, "n_max", _DEFAULT_N_MAX, lo=1),
         m_max=_count(compose, "m_max", _DEFAULT_M_MAX, lo=0),
         conditions=conditions,
@@ -181,13 +220,16 @@ def parse_requires(requires: Any, *, opname: str) -> dict[str, Any]:
     ``stimulus`` is refused: it is derived from the transition's own
     ``driver_kind`` at read time, never a declared target. An empty
     object and an absent key both mean "no requirement" — pass ``{}`` for
-    either; a NON-empty one must name ``delta`` or ``span`` (the same
-    invariant :func:`parse_compose` enforces at read time) — a
-    ``wants=``-only box would otherwise fail later, at
-    ``compose=``, with no block or transition named. :class:`BadInput`
-    always names ``opname`` (the caller's op, e.g.
-    ``'declare_transitions'``), so a malformed box fails at write time
-    the same way it would fail at ``compose=`` read time."""
+    either; a NON-empty one must name ``delta``, ``span`` or ``swing``
+    (the same invariant :func:`parse_compose` enforces at read time,
+    R3's ``swing`` added alongside — docs/backlog/port-rotation-and-
+    lever-composition.md "Slice R3") — a ``wants=``-only box would
+    otherwise fail later, at ``compose=``, with no block or transition
+    named; ``delta`` and ``swing`` together fails here too, the same
+    "one stroke measure" refusal. :class:`BadInput` always names
+    ``opname`` (the caller's op, e.g. ``'declare_transitions'``), so a
+    malformed box fails at write time the same way it would fail at
+    ``compose=`` read time."""
     if not isinstance(requires, dict):
         raise BadInput(f"{opname}: requires must be a JSON object, got {requires!r}")
     if not requires:
@@ -198,13 +240,13 @@ def parse_requires(requires: Any, *, opname: str) -> dict[str, Any]:
             "IS the transition's driver_kind, read back automatically by "
             "compose='<slug>#<block>'"
         )
-    if "delta" not in requires and "span" not in requires:
+    if "delta" not in requires and "span" not in requires and "swing" not in requires:
         raise BadInput(
-            f"{opname}: requires= needs at least one of 'delta' (Å) or "
-            "'span' (nm); wants-only keys belong in search(wants=)"
+            f"{opname}: requires= needs at least one of 'delta' (Å), "
+            "'span' (nm) or 'swing' (°); wants-only keys belong in search(wants=)"
         )
     out: dict[str, Any] = {}
-    for key, unit in (("delta", "Å"), ("span", "nm")):
+    for key, unit in (("delta", "Å"), ("span", "nm"), ("swing", "°")):
         if key not in requires:
             continue
         try:
@@ -215,6 +257,11 @@ def parse_requires(requires: Any, *, opname: str) -> dict[str, Any]:
         lo = spec.min if spec.min is not None else spec.target
         hi = spec.max if spec.max is not None else spec.target
         out[key] = [float(lo), float(hi)]
+    if "delta" in out and "swing" in out:
+        raise BadInput(
+            f"{opname}: requires carries both 'delta' and 'swing' — one "
+            "stroke measure: delta (tip) or swing (angle)"
+        )
     for key in ("n_max", "m_max"):
         if key not in requires:
             continue
@@ -390,16 +437,6 @@ class Unit:
         return roles
 
 
-def _number(row: dict[str, Any]) -> float | None:
-    num = row.get("value_num")
-    if num is not None:
-        return float(num)
-    low, high = row.get("value_low"), row.get("value_high")
-    if low is not None and high is not None:
-        return (float(low) + float(high)) / 2.0
-    return None
-
-
 def _fact(
     cand: _Candidate,
     key: str,
@@ -411,7 +448,7 @@ def _fact(
     if hit is None:
         return None
     row, _unit, _prov = hit
-    value = _number(row)
+    value = library.value_row_number(row)
     return None if value is None else (value, row)
 
 
@@ -447,6 +484,148 @@ def unit_label(cache: _ReadCache, key: str) -> str:
     return _DEFAULT_UNITS.get(key, "")
 
 
+# ── rotary facts (R3, docs/backlog/port-rotation-and-lever-composition.md
+# "Slice R3") ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RotaryUnit:
+    """One library block resolved as a **rotary** — the lever family's
+    analog of :class:`Unit`, and a SEPARATE role from
+    :func:`resolve_unit`'s switch/spacer classification (a block can be
+    both — the module's "keeps both roles" rule). ``angle_rad`` is
+    whichever swing this row uses: R2's derived transition swing on
+    ``port`` (:mod:`precis_se.kinematics`, the largest angle when several
+    ports swing) when one exists, else a sourced ``step_angle``
+    (:data:`precis_se.kinematics.STEP_ANGLE_KEY`) — :attr:`angle_source`
+    names which. ``arm0_m``/``arm0_label`` are the corresponding lever
+    arm: R2's own per-port envelope arm when derived, else half the
+    block's envelope diagonal (no axis to project along), labelled
+    accordingly. ``step_angle_rad``/``step_angle_source``/``disagree``
+    carry the sourced fact independently of :attr:`angle_source` — the
+    whole point when both exist and disagree (R3 acceptance criteria).
+    ``length``/``half_life`` resolve through the star schema exactly like
+    :class:`Unit`'s, for a swing series' summed span and the same
+    bistability/τ½ verdict a switch's row shows."""
+
+    cand: _Candidate
+    port: str
+    transition: str | None
+    angle_rad: float
+    angle_source: str  # 'derived' | 'sourced'
+    axis: tuple[float, float, float] | None
+    arm0_m: float | None
+    arm0_label: str  # 'envelope' | 'envelope, no axis'
+    step_angle_rad: float | None
+    step_angle_source: str | None
+    disagree: bool
+    length: float | None
+    half_life: float | None
+
+    @property
+    def handle(self) -> str:
+        return f"{self.cand.design_slug}#{self.cand.block_name}"
+
+    @property
+    def roles(self) -> set[str]:
+        roles: set[str] = set()
+        for port in self.cand.node.ports.values():
+            roles.update(port.roles)
+        return roles
+
+
+def _envelope_diag_half_m(tree: SeTree, node: SeBlock) -> float | None:
+    """Half the block envelope's AABB diagonal — the fallback lever arm
+    when a sourced ``step_angle`` has no derived axis to project along
+    (R3: "arm₀ = half the envelope diagonal"). ``None`` for no/unparsable
+    envelope, same as :func:`precis_se.kinematics._port_arm_m`'s own
+    fallback — the caller shows ``—``/"unknown", never a fabricated
+    number."""
+    env = effective_envelope(tree, node)
+    if not env:
+        return None
+    try:
+        prim = cad_dsl.build_config(env)
+    except cad_dsl.DslError:
+        return None
+    lo, hi = prim.aabb_local()
+    if not (np.all(np.isfinite(lo)) and np.all(np.isfinite(hi))):
+        return None
+    diag = np.asarray(hi, dtype=np.float64) - np.asarray(lo, dtype=np.float64)
+    return float(np.linalg.norm(diag)) / 2.0
+
+
+def resolve_rotary(
+    cand: _Candidate,
+    cache: _ReadCache,
+    derive_cache: dict[int, se_kinematics.DeriveResult],
+) -> RotaryUnit | None:
+    """``None`` when neither a derived swing nor a sourced ``step_angle``
+    exists on ``cand``'s block — the caller (:func:`render_compose`)
+    simply leaves it out of the rotary family, the same "skipped" shape
+    :func:`resolve_unit`'s switch/spacer classification already has.
+
+    ``derive_cache`` memoizes :func:`~precis_se.kinematics.derive` per
+    TREE (keyed by ``id(cand.tree)`` — candidates from the same live
+    design share one already-loaded tree object, :mod:`precis_se.
+    library`'s ``_Candidate``), so a design with several blocks derives
+    its kinematics once, not once per candidate row — the R3 spec's
+    "reuse the candidate's already-loaded tree … do NOT reload"."""
+    tree_key = id(cand.tree)
+    result = derive_cache.get(tree_key)
+    if result is None:
+        result = se_kinematics.derive(cache.store, cand.tree, cand.ref_id)
+        derive_cache[tree_key] = result
+    best: se_kinematics.KinematicsRow | None = None
+    for row in result.rows:
+        if row.block != cand.block_name or row.axis is None:
+            continue
+        if best is None or abs(row.angle_rad) > abs(best.angle_rad):
+            best = row
+    length_hit = _fact(cand, LENGTH_KEY, cache)
+    half_life_hit = _fact(cand, HALF_LIFE_KEY, cache)
+    length = None if length_hit is None else length_hit[0]
+    half_life = None if half_life_hit is None else half_life_hit[0]
+    if best is not None:
+        return RotaryUnit(
+            cand=cand,
+            port=best.port,
+            transition=best.transition,
+            angle_rad=best.angle_rad,
+            angle_source="derived",
+            axis=best.axis,
+            arm0_m=best.arm_m,
+            arm0_label="envelope",
+            step_angle_rad=best.step_angle_rad,
+            step_angle_source=best.step_angle_source,
+            disagree=best.disagree,
+            length=length,
+            half_life=half_life,
+        )
+    step_hit = library._resolve_star_value(cand, se_kinematics.STEP_ANGLE_KEY, cache)
+    if step_hit is None:
+        return None
+    value_row, _unit, provenance = step_hit
+    step_angle_rad = library.value_row_number(value_row)
+    if step_angle_rad is None or abs(step_angle_rad) < 1e-12:
+        return None
+    return RotaryUnit(
+        cand=cand,
+        port="",
+        transition=None,
+        angle_rad=abs(step_angle_rad),
+        angle_source="sourced",
+        axis=None,
+        arm0_m=_envelope_diag_half_m(cand.tree, cand.node),
+        arm0_label="envelope, no axis",
+        step_angle_rad=step_angle_rad,
+        step_angle_source=provenance,
+        disagree=False,
+        length=length,
+        half_life=half_life,
+    )
+
+
 # ── enumeration ────────────────────────────────────────────────────────────
 
 
@@ -465,6 +644,11 @@ class Composition:
     notes: list[str] = field(default_factory=list)
     sum_distance: float = 0.0
     on_frontier: bool = False
+    #: The linear family's own name on the merged ranked list R3 grows
+    #: (:class:`LeverComposition`'s ``'lever'``/``'series'`` sit beside
+    #: this one) — a plain default so every existing chain row picks it
+    #: up for free.
+    family: str = "chain"
 
     @property
     def handle(self) -> str:
@@ -523,16 +707,22 @@ def _span_attr(comp: Composition, spec: WantSpec, unit: str) -> AttrResult:
     )
 
 
-def _tau_suffix(switch: Unit) -> str:
-    if switch.half_life is None:
+def _tau_suffix(unit: Unit | RotaryUnit) -> str:
+    if unit.half_life is None:
         return ""
-    return f", τ½ {_fmt_duration(switch.half_life)}"
+    return f", τ½ {_fmt_duration(unit.half_life)}"
 
 
-def _bistable_note(comp: Composition, cache: _ReadCache) -> str:
-    verdict = library._eval_bistable(comp.switch.cand, WantSpec(target=True), cache)
+def _bistable_note(unit: Unit | RotaryUnit, cache: _ReadCache) -> str:
+    """The bistability + τ½ verdict — shared by a linear chain's switch
+    (:func:`score_compositions`) and a lever/series row's rotary unit
+    (:func:`score_levers`, R3's "PSS/bistability/τ½ verdicts exactly like
+    linear rows" requirement): the same read (:func:`~precis_se.library.
+    _eval_bistable`) off whichever block owns the row's own states, so the
+    two families can never drift apart."""
+    verdict = library._eval_bistable(unit.cand, WantSpec(target=True), cache)
     mark = "✓" if verdict.matched else "✗"
-    return f"bistable {mark} ({verdict.actual}{_tau_suffix(comp.switch)})"
+    return f"bistable {mark} ({verdict.actual}{_tau_suffix(unit)})"
 
 
 def _stiffness_note(comp: Composition, unit: str) -> str | None:
@@ -617,6 +807,143 @@ def enumerate_compositions(
     return out, False
 
 
+@dataclass
+class LeverComposition:
+    """One R3 lever-family row: a single rotary unit alone or paired with
+    ``k`` arm units at its rotating port (``family='lever'``, ``n`` fixed
+    at 1, scored on tip stroke — :attr:`tip_m`), or ``n`` copies of the
+    SAME rotary unit chained with no arms (``family='series'``, ``k``
+    fixed at 0, scored on total swing — :attr:`angle_total_rad`) — never
+    both shapes on the same row, mirroring :class:`Composition`'s
+    switch/spacer shape one level up (docs/backlog/port-rotation-and-
+    lever-composition.md "Slice R3")."""
+
+    rotary: RotaryUnit
+    n: int
+    arm: Unit | None
+    k: int
+    family: str
+    angle_total_rad: float
+    tip_m: float | None
+    delta_ideal: float | None
+    delta_eff: float | None
+    span: float | None
+    attrs: dict[str, AttrResult]
+    score: float
+    max_score: float
+    notes: list[str] = field(default_factory=list)
+    sum_distance: float = 0.0
+    on_frontier: bool = False
+
+    @property
+    def handle(self) -> str:
+        if self.family == "series":
+            return f"{self.n} × {self.rotary.handle}"
+        label = self.rotary.handle
+        if self.arm is not None and self.k:
+            label += f" + {self.k} × {self.arm.handle}"
+        return label
+
+
+def enumerate_levers(
+    rotaries: list[RotaryUnit],
+    spacers: list[Unit],
+    box: ComposeBox,
+    *,
+    cap: int = _MAX_COMPOSITIONS,
+) -> tuple[list[LeverComposition], bool, int]:
+    """Every lever (``box.swing`` absent, one rotary + ``k`` arm units,
+    ``k`` from 0 through ``box.m_max``) or swing series (``box.swing``
+    present, ``n`` copies of one rotary from 1 through ``box.n_max``) up
+    to the box's counts — ``(rows, capped, skipped)``, :func:`enumerate_
+    compositions`'s shape (``skipped`` mirrors its ``counts['skipped']``:
+    a rotary with no usable envelope offers no lever arm and is left out
+    of the lever family, counted rather than silently dropped — the
+    swing family needs no envelope, so it never skips here). Empty when
+    the box carries neither ``delta`` nor ``swing`` (a span-only box
+    scores the linear family alone — R3 only grows a lever/series row
+    off one of its own two trigger keys). Attrs/score are filled by
+    :func:`score_levers`."""
+    out: list[LeverComposition] = []
+    if box.swing is not None:
+        for rotary in rotaries:
+            for n in range(1, box.n_max + 1):
+                angle_total = n * rotary.angle_rad
+                span = None if rotary.length is None else n * rotary.length
+                out.append(
+                    LeverComposition(
+                        rotary=rotary,
+                        n=n,
+                        arm=None,
+                        k=0,
+                        family="series",
+                        angle_total_rad=angle_total,
+                        tip_m=None,
+                        delta_ideal=None,
+                        delta_eff=None,
+                        span=span,
+                        attrs={},
+                        score=0.0,
+                        max_score=0.0,
+                    )
+                )
+                if len(out) >= cap:
+                    return out, True, 0
+    elif box.delta is not None:
+        skipped = 0
+        for rotary in rotaries:
+            if rotary.arm0_m is None:
+                skipped += 1
+                continue  # no envelope — nothing to lever, never a guess
+            for arm in [None, *spacers]:
+                k_values = range(1, box.m_max + 1) if arm is not None else range(1)
+                for k in k_values:
+                    k_eff = 0 if arm is None else k
+                    arm_len_m = (
+                        0.0 if arm is None or arm.length is None else arm.length * 1e-9
+                    )
+                    arm_total_m = rotary.arm0_m + k_eff * arm_len_m
+                    tip_m = 2.0 * arm_total_m * math.sin(rotary.angle_rad / 2.0)
+                    tip_a = tip_m * _M_TO_A  # the one sanctioned Å crossing
+                    out.append(
+                        LeverComposition(
+                            rotary=rotary,
+                            n=1,
+                            arm=arm,
+                            k=k_eff,
+                            family="lever",
+                            angle_total_rad=rotary.angle_rad,
+                            tip_m=tip_m,
+                            delta_ideal=tip_a,
+                            delta_eff=tip_a,
+                            # R3 review decision: a lever's own span is its
+                            # arm reach (nm) — :func:`_lever_span_attr`.
+                            span=arm_total_m * 1e9,
+                            attrs={},
+                            score=0.0,
+                            max_score=0.0,
+                        )
+                    )
+                    if len(out) >= cap:
+                        return out, True, skipped
+        return out, False, skipped
+    return out, False, 0
+
+
+def _numeric_keys(box: ComposeBox, want_specs: dict[str, WantSpec]) -> list[str]:
+    """The one list of keys :func:`~precis_se.library.order_rows`'s
+    Pareto tie-break runs over — box keys (``delta``/``span``/R3's
+    ``swing``) plus any numeric ``wants=`` key — shared by
+    :func:`score_compositions` and :func:`score_levers` so a merged
+    chain+lever ranked list (:func:`render_compose`) sorts on the SAME
+    axes regardless of which family a row came from."""
+    return list(box.specs) + [
+        k
+        for k, s in want_specs.items()
+        if k not in library._BUILTIN_KEYS and s.is_numeric
+    ]
+
+
 def score_compositions(
     store: Any,
     comps: list[Composition],
@@ -630,11 +957,7 @@ def score_compositions(
     keys on the switch block), stamp the must-surface notes, and rank
     with :func:`~precis_se.library.order_rows`."""
     box_specs = box.specs
-    numeric_keys = list(box_specs) + [
-        k
-        for k, s in want_specs.items()
-        if k not in library._BUILTIN_KEYS and s.is_numeric
-    ]
+    numeric_keys = _numeric_keys(box, want_specs)
     max_score = sum(s.weight for s in box_specs.values()) + sum(
         s.weight for s in want_specs.values()
     )
@@ -661,7 +984,7 @@ def score_compositions(
                 distance=verdict.distance,
             )
         else:
-            comp.notes.append(_bistable_note(comp, cache))
+            comp.notes.append(_bistable_note(comp.switch, cache))
         for note in (_stiffness_note(comp, units[LENGTH_KEY]), _joining_note(comp)):
             if note:
                 comp.notes.append(note)
@@ -670,6 +993,156 @@ def score_compositions(
         comp.max_score = max_score
         comp.sum_distance = library.sum_distances(attrs, numeric_keys)
     return library.order_rows(comps, numeric_keys)
+
+
+def _lever_delta_attr(comp: LeverComposition, spec: WantSpec, unit: str) -> AttrResult:
+    assert comp.delta_eff is not None and comp.delta_ideal is not None
+    matched, _display, distance = library._match_value_row(
+        {"value_num": comp.delta_eff}, spec
+    )
+    return AttrResult(
+        matched=matched,
+        actual=f"{comp.delta_ideal:g} {unit}",
+        weight=spec.weight,
+        distance=distance,
+    )
+
+
+def _lever_span_attr(comp: LeverComposition, spec: WantSpec, unit: str) -> AttrResult:
+    """``box.span`` on a lever row is its own reach — ``arm0 +
+    k·unit_length`` (:func:`enumerate_levers` computes it in nm already,
+    R3 review decision: a lever's ``span`` IS its arm reach, scored
+    through the SAME :func:`~precis_se.library._match_value_row` band/
+    tolerance rules a chain row's ``span`` uses, labelled "(arm reach)"
+    so it is never mistaken for a switch chain's long-state length). A
+    series row's ``span`` is its rotary units' own summed
+    ``unit_length`` instead (R3: "span … scores the series' summed
+    unit_length as before") — both shapes land in :attr:`LeverComposition
+    .span` already, so this is one function; ``None`` (no length fact on
+    the block) is an honest miss, never a guess."""
+    if comp.span is None:
+        return AttrResult(
+            matched=False,
+            actual=f"unknown (no {LENGTH_KEY} row on {comp.rotary.handle})",
+            weight=spec.weight,
+            distance=float("inf"),
+        )
+    matched, _display, distance = library._match_value_row(
+        {"value_num": comp.span}, spec
+    )
+    suffix = " (arm reach)" if comp.family == "lever" else ""
+    return AttrResult(
+        matched=matched,
+        actual=f"{comp.span:g} {unit}{suffix}",
+        weight=spec.weight,
+        distance=distance,
+    )
+
+
+def _lever_arm_note(comp: LeverComposition) -> str:
+    rotary = comp.rotary
+    if rotary.arm0_m is None:
+        arm_str = f"arm unknown ({rotary.handle}: no envelope)"
+    else:
+        arm_str = f"arm {rotary.arm0_m * 1e9:g} nm ({rotary.arm0_label})"
+    if comp.arm is not None and comp.k:
+        length = "unknown" if comp.arm.length is None else f"{comp.arm.length:g} nm"
+        arm_str += f" + {comp.k} × spacer {length} ({comp.arm.handle})"
+    return arm_str
+
+
+def _angle_origin_note(rotary: RotaryUnit) -> str:
+    """The angle a lever/series row used, and where it came from — R3's
+    "the angle used and its origin (derived vs sourced)"; when a sourced
+    ``step_angle`` ALSO exists it always shows too, agreeing or
+    disagreeing (R3 acceptance: "a rotary unit with a sourced step_angle
+    disagreeing with its derived angle shows both")."""
+    angle_deg = math.degrees(rotary.angle_rad)
+    if rotary.angle_source == "derived":
+        origin = f"derived from {rotary.transition} on port {rotary.port}"
+    else:
+        prov = f" {rotary.step_angle_source}" if rotary.step_angle_source else ""
+        origin = f"sourced step_angle{prov}"
+    note = f"angle {angle_deg:g}° ({origin})"
+    if rotary.angle_source == "derived" and rotary.step_angle_rad is not None:
+        step_deg = math.degrees(rotary.step_angle_rad)
+        verdict = "disagrees" if rotary.disagree else "agrees"
+        note += f"; sourced step_angle {step_deg:g}° {verdict}"
+    return note
+
+
+def score_levers(
+    store: Any,
+    comps: list[LeverComposition],
+    box: ComposeBox,
+    want_specs: dict[str, WantSpec],
+    cache: _ReadCache,
+    *,
+    delta_unit: str,
+    span_unit: str,
+) -> list[LeverComposition]:
+    """Score every lever/series row exactly as :func:`score_compositions`
+    scores the linear family (``wants=`` keys on the rotary block,
+    mirroring "wants= keys score on the switch block"), stamp the must-
+    surface notes (arm breakdown, angle + origin, bistable/τ½ — R3's "PSS
+    /bistability/τ½ verdicts exactly like linear rows, same helpers" —
+    PSS has no lever analog: the tip-stroke formula carries no PSS term,
+    so only bistability/τ½ apply here). NOT ordered here — :func:`render_
+    compose` merges chain and lever rows before the one :func:`~precis_se
+    .library.order_rows` call, so the two families are ranked on the
+    SAME pass, never sorted twice."""
+    numeric_keys = _numeric_keys(box, want_specs)
+    rotary_attrs: dict[str, dict[str, AttrResult]] = {}
+    for comp in comps:
+        attrs: dict[str, AttrResult] = {}
+        if comp.family == "lever" and box.delta is not None:
+            attrs["delta"] = _lever_delta_attr(comp, box.delta, delta_unit)
+        if comp.family == "series" and box.swing is not None:
+            total_deg = math.degrees(comp.angle_total_rad)
+            matched, _display, distance = library._match_value_row(
+                {"value_num": total_deg}, box.swing
+            )
+            attrs["swing"] = AttrResult(
+                matched=matched,
+                actual=f"{total_deg:g}°",
+                weight=box.swing.weight,
+                distance=distance,
+            )
+        if box.span is not None:
+            attrs["span"] = _lever_span_attr(comp, box.span, span_unit)
+        if want_specs:
+            key = comp.rotary.handle
+            if key not in rotary_attrs:
+                rotary_attrs[key] = library.resolve_block_attrs(
+                    store, comp.rotary.cand, want_specs, cache
+                )
+            attrs.update(rotary_attrs[key])
+        if "bistable" in attrs:
+            verdict = attrs["bistable"]
+            attrs["bistable"] = AttrResult(
+                matched=verdict.matched,
+                actual=verdict.actual + _tau_suffix(comp.rotary),
+                weight=verdict.weight,
+                distance=verdict.distance,
+            )
+            bistable_note = None
+        else:
+            bistable_note = _bistable_note(comp.rotary, cache)
+        comp.attrs = attrs
+        comp.score = sum(a.weight for a in attrs.values() if a.matched)
+        comp.max_score = sum(s.weight for s in box.specs.values()) + sum(
+            s.weight for s in want_specs.values()
+        )
+        comp.sum_distance = library.sum_distances(attrs, numeric_keys)
+        notes = [_lever_arm_note(comp), _angle_origin_note(comp.rotary)]
+        if bistable_note:
+            notes.append(bistable_note)
+        join_note = _lever_joining_note(comp)
+        if join_note:
+            notes.append(join_note)
+        notes.append(f"family: {comp.family}")
+        comp.notes = notes
+    return comps
 
 
 # ── rendering ──────────────────────────────────────────────────────────────
@@ -689,23 +1162,28 @@ def _chain(comp: Composition) -> list[tuple[str, Unit]]:
     return chain
 
 
-def _port_pair(a: Unit, b: Unit) -> tuple[str, str]:
+def _port_named(cand: _Candidate, role: str) -> str:
+    for name, port in cand.node.ports.items():
+        if role in port.roles:
+            return name
+    return "<port>"
+
+
+def _port_pair(a: Unit | RotaryUnit, b: Unit | RotaryUnit) -> tuple[str, str]:
     pair = _complementary_pair(a.roles, b.roles)
     if pair is None:
         return "<port>", "<port>"
-
-    def port_named(unit: Unit, role: str) -> str:
-        for name, port in unit.cand.node.ports.items():
-            if role in port.roles:
-                return name
-        return "<port>"
-
-    return port_named(a, pair[0]), port_named(b, pair[1])
+    return _port_named(a.cand, pair[0]), _port_named(b.cand, pair[1])
 
 
-def ops_script(comp: Composition) -> list[dict[str, Any]]:
-    """The ``instance_block`` × n + spacer ops that realise one row,
-    joining consecutive units through complementary ports."""
+def ops_script(comp: Composition | LeverComposition) -> list[dict[str, Any]]:
+    """The ``instance_block`` × n + spacer/arm ops that realise one row,
+    joining consecutive units through complementary ports — dispatches on
+    the row's family (R3 adds :class:`LeverComposition` beside the
+    original :class:`Composition`; :func:`_lever_ops_script` is its own
+    shape, "connect from the ROTATING port")."""
+    if isinstance(comp, LeverComposition):
+        return _lever_ops_script(comp)
     chain = _chain(comp)
     ops: list[dict[str, Any]] = [
         {"op": "instance_block", "name": name, "template": unit.handle}
@@ -719,8 +1197,110 @@ def ops_script(comp: Composition) -> list[dict[str, Any]]:
     return ops
 
 
+def _lever_chain(comp: LeverComposition) -> list[tuple[str, RotaryUnit | Unit]]:
+    """Instance names in chain order: the rotary unit (``n`` copies for a
+    ``'series'`` row, one for a ``'lever'`` row) then the ``k`` arm units,
+    if any — mirrors :func:`_chain`'s shape one level up."""
+    chain: list[tuple[str, RotaryUnit | Unit]] = [
+        (f"r{i + 1}", comp.rotary) for i in range(comp.n)
+    ]
+    if comp.arm is not None:
+        chain += [(f"a{i + 1}", comp.arm) for i in range(comp.k)]
+    return chain
+
+
+def _rotating_port(rotary: RotaryUnit) -> tuple[str, set[str]]:
+    """``(port name, its roles)`` for the rotary unit's own named ROTATING
+    port (R2's derived-swing port, when known); falls back to the unit's
+    whole role set (like :func:`_port_pair`) when the row's angle came
+    off a sourced ``step_angle`` with no derived port to name."""
+    if rotary.port and rotary.port in rotary.cand.node.ports:
+        return rotary.port, set(rotary.cand.node.ports[rotary.port].roles)
+    return rotary.port or "(unnamed)", rotary.roles
+
+
+def _rotating_port_pair(rotary: RotaryUnit, other: Unit) -> tuple[str, str] | None:
+    """The rotary unit's own named ROTATING port paired with ``other``'s
+    complementary port — R3's "connect from the ROTATING port to the
+    first arm's complementary port", never just any port the rotary unit
+    happens to carry a matching role on. ``None`` — never a ``'<port>'``
+    placeholder — when the rotating port has no role complementary to
+    ``other``'s: :func:`_lever_ops_script` skips the connect and
+    :func:`_lever_joining_note` says so on the row, the same "no
+    complementary ports" honesty :func:`_joining_note` already gives the
+    linear family."""
+    port_name, roles = _rotating_port(rotary)
+    pair = _complementary_pair(roles, other.roles)
+    if pair is None:
+        return None
+    rotary_port = (
+        port_name
+        if port_name in rotary.cand.node.ports
+        else _port_named(rotary.cand, pair[0])
+    )
+    return rotary_port, _port_named(other.cand, pair[1])
+
+
+def _lever_joining_note(comp: LeverComposition) -> str | None:
+    """The rotating-port↔arm complementarity — :func:`_joining_note`'s
+    switch↔spacer check, one level up for the lever family. ``None`` for
+    a bare rotary (no arm, nothing to join) or a swing series (chained
+    through the generic :func:`_port_pair`, same as a switch↔switch
+    chain — no ROTATING-port concept there)."""
+    if comp.family != "lever" or comp.arm is None:
+        return None
+    port_name, roles = _rotating_port(comp.rotary)
+    pair = _complementary_pair(roles, comp.arm.roles)
+    if pair is not None:
+        return f"joining rotating port↔arm: {pair[0]}↔{pair[1]}{_joining_name(*pair)}"
+    return (
+        f"joining: none (rotating port {port_name} has no role "
+        f"complementary to {comp.arm.handle}'s ports)"
+    )
+
+
+def _lever_ops_script(comp: LeverComposition) -> list[dict[str, Any]]:
+    """The ``instance_block`` × (1 or n) rotary + × k arm ops, connecting
+    the rotary's ROTATING port to the first arm's complementary port and
+    every following pair through :func:`_port_pair` (arm↔arm, or
+    rotary↔rotary for a ``'series'`` row — the same generic role match
+    the linear family's switch↔switch chaining already uses). The
+    ROTATING-port connect is skipped — never a ``'<port>'`` placeholder —
+    when there is no complementary role, replaced by an op-free comment
+    entry (:func:`_lever_joining_note` says the same thing on the row)."""
+    chain = _lever_chain(comp)
+    ops: list[dict[str, Any]] = [
+        {"op": "instance_block", "name": name, "template": unit.handle}
+        for name, unit in chain
+    ]
+    for idx, ((a_name, a_unit), (b_name, b_unit)) in enumerate(
+        itertools.pairwise(chain)
+    ):
+        if idx == 0 and comp.family == "lever" and isinstance(a_unit, RotaryUnit):
+            assert isinstance(b_unit, Unit)
+            pair = _rotating_port_pair(a_unit, b_unit)
+            if pair is None:
+                ops.append(
+                    {
+                        "note": (
+                            f"no connect: rotating port {a_unit.port or '(unnamed)'} "
+                            f"on {a_unit.handle} has no role complementary to "
+                            f"{b_unit.handle}'s ports"
+                        )
+                    }
+                )
+                continue
+            a_port, b_port = pair
+        else:
+            a_port, b_port = _port_pair(a_unit, b_unit)
+        ops.append(
+            {"op": "connect", "a": f"{a_name}.{a_port}", "b": f"{b_name}.{b_port}"}
+        )
+    return ops
+
+
 def render_compositions(
-    rows: list[Composition],
+    rows: list[Composition | LeverComposition],
     box: ComposeBox,
     want_specs: dict[str, WantSpec],
     *,
@@ -743,8 +1323,10 @@ def render_compositions(
         lines.append(source_note)
     facts = (
         f"{counts['switches']} switch(es) × {counts['spacers']} spacer(s) from "
-        f"{counts['blocks']} library block(s)"
+        f"{counts['blocks']} library block(s); {counts['rotary']} rotary unit(s)"
     )
+    if counts.get("rotary_skipped"):
+        facts += f" ({counts['rotary_skipped']} skipped, no envelope)"
     if counts["skipped"]:
         facts += (
             f"; {counts['skipped']} block(s) carry no length facts — "
@@ -818,7 +1400,9 @@ def render_compose(
     )
     switches: list[Unit] = []
     spacers: list[Unit] = []
+    rotaries: list[RotaryUnit] = []
     skipped = 0
+    derive_cache: dict[int, se_kinematics.DeriveResult] = {}
     for cand in candidates:
         unit = resolve_unit(cand, cache, conditions=box.conditions)
         if unit.is_switch:
@@ -827,24 +1411,101 @@ def render_compose(
             spacers.append(unit)
         else:
             skipped += 1
-    counts = {
+        # A block keeps BOTH roles when it earns them — the rotary walk
+        # is independent of the switch/spacer classification above (R3:
+        # "a block that is both linear switch and rotary keeps both
+        # roles").
+        rotary = resolve_rotary(cand, cache, derive_cache)
+        if rotary is not None:
+            rotaries.append(rotary)
+    counts: dict[str, int] = {
         "blocks": len(candidates),
         "switches": len(switches),
         "spacers": len(spacers),
         "skipped": skipped,
+        "rotary": len(rotaries),
+        "rotary_skipped": 0,
     }
-    if not switches:
-        return (
-            f"no library block carries a {DELTA_KEY} row — nothing to compose "
-            f"({counts['blocks']} block(s) inspected, {counts['spacers']} spacer(s))"
-            f"{'  ' + narrow_note if narrow_note else ''}\n\n"
-            f"Next: put(kind='material', id='<mat>', property='{DELTA_KEY}', "
-            "value=<Å>, unit='Å') and link the switch's design or component "
-            "made-of it"
-        )
     units = {key: unit_label(cache, key) for key in (DELTA_KEY, LENGTH_KEY)}
-    comps, capped = enumerate_compositions(switches, spacers, box)
-    rows = score_compositions(store, comps, box, want_specs, cache, units=units)
+    numeric_keys = _numeric_keys(box, want_specs)
+    unknown = library.unknown_keys(store, want_specs, cache) if want_specs else []
+
+    if box.swing is not None:
+        # swing box: rotary units and series of them only — a switch's
+        # chain has no angle to rank on (R3: "with swing in the box…").
+        if not rotaries:
+            return (
+                f"no library block derives a swing or carries a "
+                f"{se_kinematics.STEP_ANGLE_KEY} row — nothing to compose "
+                f"({counts['blocks']} block(s) inspected)"
+                f"{'  ' + narrow_note if narrow_note else ''}\n\n"
+                "Next: declare_states/declare_transitions with a "
+                "port_pose_overrides rot delta on a posed port, or "
+                f"put(kind='material', id='<mat>', "
+                f"property='{se_kinematics.STEP_ANGLE_KEY}', value=<rad>, "
+                "unit='rad') and link the block made-of it"
+            )
+        levers, capped, counts["rotary_skipped"] = enumerate_levers(
+            rotaries, spacers, box
+        )
+        levers = score_levers(
+            store,
+            levers,
+            box,
+            want_specs,
+            cache,
+            delta_unit=units[DELTA_KEY],
+            span_unit=units[LENGTH_KEY],
+        )
+        ordered_levers = library.order_rows(levers, numeric_keys)
+        rows: list[Composition | LeverComposition] = list(ordered_levers)
+    else:
+        # A rotary-only library only has something to rank when this box
+        # will actually grow a lever row off it (``box.delta`` — R3); a
+        # span-only box with no switch stays the pre-R3 refusal, never a
+        # silently empty "0 composition(s)" list.
+        if not switches and not (rotaries and box.delta is not None):
+            return (
+                f"no library block carries a {DELTA_KEY} row — nothing to compose "
+                f"({counts['blocks']} block(s) inspected, {counts['spacers']} "
+                "spacer(s))"
+                f"{'  ' + narrow_note if narrow_note else ''}\n\n"
+                f"Next: put(kind='material', id='<mat>', property='{DELTA_KEY}', "
+                "value=<Å>, unit='Å') and link the switch's design or component "
+                "made-of it"
+            )
+        comps, chain_capped = enumerate_compositions(switches, spacers, box)
+        chain_rows = score_compositions(
+            store, comps, box, want_specs, cache, units=units
+        )
+        lever_rows: list[LeverComposition] = []
+        lever_capped = False
+        if box.delta is not None and rotaries:
+            lever_rows, lever_capped, counts["rotary_skipped"] = enumerate_levers(
+                rotaries, spacers, box
+            )
+            lever_rows = score_levers(
+                store,
+                lever_rows,
+                box,
+                want_specs,
+                cache,
+                delta_unit=units[DELTA_KEY],
+                span_unit=units[LENGTH_KEY],
+            )
+        capped = chain_capped or lever_capped
+        if lever_rows:
+            # Only label the family when there is a real choice between
+            # the two on this list — R3: "family named on each row: lever
+            # / chain", in the merged-ranking scenario the wording is
+            # about.
+            for c in chain_rows:
+                c.notes.append(f"family: {c.family}")
+            combined: list[Composition | LeverComposition] = [*chain_rows, *lever_rows]
+            rows = list(library.order_rows(combined, numeric_keys))
+        else:
+            rows = list(chain_rows)
+
     return render_compositions(
         rows,
         box,
@@ -852,7 +1513,7 @@ def render_compose(
         compose_repr=compose,
         wants_repr=wants,
         counts=counts,
-        unknown=library.unknown_keys(store, want_specs, cache) if want_specs else [],
+        unknown=unknown,
         capped=capped,
         narrow_note=narrow_note,
         source_note=source_note,
@@ -863,14 +1524,19 @@ def render_compose(
 __all__ = [
     "ComposeBox",
     "Composition",
+    "LeverComposition",
+    "RotaryUnit",
     "Unit",
     "enumerate_compositions",
+    "enumerate_levers",
     "ops_script",
     "parse_compose",
     "parse_requires",
     "render_compose",
     "render_compositions",
     "resolve_compose",
+    "resolve_rotary",
     "resolve_unit",
     "score_compositions",
+    "score_levers",
 ]

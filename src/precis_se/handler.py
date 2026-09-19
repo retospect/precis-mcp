@@ -114,6 +114,8 @@ from precis_se import drc as se_drc
 from precis_se import fasten as se_fasten
 from precis_se import freedom as se_freedom
 from precis_se import fret, persist, simp_bridge
+from precis_se import kinematics as se_kinematics
+from precis_se import kinematics_drc as se_kinematics_drc
 from precis_se import library as se_library
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
@@ -724,6 +726,8 @@ class SeHandler(Handler):
                     str(exc), next="pip install --force-reinstall 'precis-mcp'"
                 ) from exc
             return Response(body=body)
+        if v == "kinematics":
+            return Response(body=self._render_kinematics(tree, ref.id))
         if v == "bom":
             return Response(body=self._render_bom(tree))
         if v == "order":
@@ -758,7 +762,10 @@ class SeHandler(Handler):
             "declared state? — the cross product of every state-carrying "
             "block's declared states, budget-bounded) | view='drc' "
             "(graph tier + DOF "
-            "probe) | view='bom' (bought items, multiplied through the "
+            "probe) | view='kinematics' (derived axis/angle/arm/tip for "
+            "every declared transition's ports — port_pose_overrides, "
+            "R_to·R_fromᵀ as axis-angle) | view='bom' (bought items, "
+            "multiplied through the "
             "arrays, with cost/mass) | view='order' (what to buy — the "
             "instanced tree walked to purchasable leaves and bought-whole "
             "assemblies, merged with explicit BOM lines, plus a to-make "
@@ -792,7 +799,11 @@ class SeHandler(Handler):
         branch (a fresh scaffold trivially has no findings, and a bare
         check-mark would misread as done).
 
-        Store-aware for the atomic half only: the chemistry checks need
+        :func:`precis_se.validate.validate` stays pure over ``tree`` by
+        contract; two store-aware finding sets are appended here instead
+        — :func:`precis_se.validate.port_override_unapplied_findings`
+        (R2, declared states live in the shared ``design_states`` table,
+        not on the tree) and the atomic chemistry checks, which need
         every bound ``structure`` design hydrated
         (:func:`precis_se.atomic.render.hydrate_bound_scenes` — the
         "assemble in the view path, keep the checker pure" split), and a
@@ -803,6 +814,9 @@ class SeHandler(Handler):
         (:func:`_scenario_line`) — a verdict whose production context isn't
         stated can't be re-read later."""
         findings = list(se_validate.validate(tree))
+        findings.extend(
+            se_validate.port_override_unapplied_findings(self.store, tree, ref_id)
+        )
         bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
             self.store, tree
         )
@@ -848,6 +862,50 @@ class SeHandler(Handler):
             f"{fill_block}\n\n"
             + render_agent_table(rows, schema=["severity", "rule", "subject", "detail"])
         )
+
+    def _render_kinematics(self, tree: SeTree, ref_id: int) -> str:
+        """``view='kinematics'`` — R2 (docs/backlog/
+        port-rotation-and-lever-composition.md): every declared
+        transition's derived swing, ONE :func:`~precis.format.
+        render_agent_table` for the whole design
+        (:func:`precis_se.kinematics.derive`; ``block`` is a column, not
+        a section header — a design with several state-carrying blocks
+        gets one table, not one per block). An ordinary block that
+        declares no states at all gets its own one-line note instead of
+        silently vanishing — the same "say so, don't just omit" rule the
+        rest of se's suggestive-by-contract views follow (an instance
+        never gets a line: declared states live on its template, which
+        renders its own)."""
+        result = se_kinematics.derive(self.store, tree, ref_id)
+        lines: list[str] = []
+        for name in sorted(tree.blocks):
+            node = tree.blocks[name]
+            if node.template is not None:
+                continue
+            if name not in result.state_carrying_blocks:
+                lines.append(f"{name}: no declared states")
+        if result.rows:
+            if lines:
+                lines.append("")
+            lines.append(
+                render_agent_table(
+                    [_kinematics_row(r) for r in result.rows],
+                    schema=[
+                        "block",
+                        "transition",
+                        "port",
+                        "axis",
+                        "angle",
+                        "arm (envelope)",
+                        "tip",
+                        "step_angle",
+                        "note",
+                    ],
+                )
+            )
+        if not lines:
+            return "(no blocks yet — unfilled)"
+        return "\n".join(lines)
 
     def _render_bom(self, tree: SeTree) -> str:
         """The bought-item rollup: one row per ``component``/``part``,
@@ -2020,10 +2078,16 @@ def _fmt_expected(element: str | None, hybridization: str | None) -> str:
 def _fmt_bound(port: PortSpec) -> str:
     """The port→atom map cell (:class:`~precis_se.ops.PortSpec`'s
     ``bound_design``/``bound_atom`` — the "one fact, two projections"
-    port's atom-side half, set by ``bind_structure``)."""
-    if port.bound_design and port.bound_atom:
-        return f"{port.bound_design}:{port.bound_atom}"
-    return "—"
+    port's atom-side half, set by ``bind_structure``). ``axis_atom``/
+    ``phase_atom`` (R1, docs/backlog/port-rotation-and-lever-composition.md)
+    ride along when the port was mapped with the object form — the frame
+    references a measured ``rot`` came from."""
+    if not (port.bound_design and port.bound_atom):
+        return "—"
+    cell = f"{port.bound_design}:{port.bound_atom}"
+    if port.axis_atom and port.phase_atom:
+        cell += f" (axis={port.axis_atom} phase={port.phase_atom})"
+    return cell
 
 
 #: The atomic mode's own port columns, appended to a ports table only
@@ -2057,15 +2121,20 @@ def _shows_port_poses(ports: Iterable[PortSpec]) -> bool:
 
 def _fmt_port_pose(port: PortSpec) -> str:
     """The ``pose`` cell — the port's OWN origin (and frame, when it has
-    one) in the block's local frame, with its provenance, e.g.
-    ``[0, 0, 0.004] rot [0, 1.5708, 0] · declared``. ``rot`` is omitted
-    rather than printed as zeros when the port carries none: unrotated and
-    "no rotation stated" mean the same thing, unlike ``pose``, whose
-    absence is exactly what the dash is there to report."""
+    one) in the block's local frame, EACH with its own provenance (R1,
+    docs/backlog/port-rotation-and-lever-composition.md: ``pose_source``
+    and ``rot_source`` are independent stamps, so they render right next
+    to the value they each describe), e.g. ``[0, 0, 0.004] · declared rot
+    [0, 1.5708, 0] · bound``. ``rot`` is omitted rather than printed as
+    zeros when the port carries none: unrotated and "no rotation stated"
+    mean the same thing, unlike ``pose``, whose absence is exactly what
+    the dash is there to report."""
     if port.pose is None:
         return "—"
-    rot = f" rot [{_fmt3(port.rot)}]" if port.rot is not None else ""
-    return f"[{_fmt3(port.pose)}]{rot} · {port.pose_source or '?'}"
+    cell = f"[{_fmt3(port.pose)}] · {port.pose_source or '?'}"
+    if port.rot is not None:
+        cell += f" rot [{_fmt3(port.rot)}] · {port.rot_source or '?'}"
+    return cell
 
 
 def _port_cells(port: PortSpec, *, atomic: bool, posed: bool = False) -> dict[str, str]:
@@ -2855,6 +2924,7 @@ def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") 
     ``drc()``'s own findings — never inside it."""
     report = se_drc.drc(tree)
     report.findings.extend(se_precedent.findings(store, tree, ref_id))
+    report.findings.extend(se_kinematics_drc.findings(store, tree, ref_id))
     fill_line = _fill_fraction_line(tree)
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"
@@ -3797,6 +3867,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "clearance": frozenset({"a", "b", "state"}),
     "sweep": frozenset(),
     "drc": frozenset(),
+    "kinematics": frozenset(),
     "bom": frozenset(),
     "fasten": frozenset(),
     "interview": frozenset(),
@@ -3954,17 +4025,26 @@ def _apply_state_arg(
 def _apply_port_delta(port: PortSpec, override: dict[str, Any]) -> None:
     """Apply one state's rigid ``pose``/``rot`` delta to ``port``, in the
     block's local frame. No-op for a pose-less port (see
-    :func:`_apply_state_arg`). Rotation composes through the cad kernel's
-    own transforms rather than a second Euler implementation here — a null
-    port ``rot`` reads as zeros, and the composed matrix goes back to
-    Euler radians via :func:`~precis.cad.vec.euler_rad_from_matrix`.
+    :func:`_apply_state_arg`) — R2 (docs/backlog/
+    port-rotation-and-lever-composition.md) checks that precondition
+    itself: :func:`precis_se.validate.port_override_unapplied_findings`
+    (write-time echo) and a pose-less port's ``view='kinematics'`` row
+    (:mod:`precis_se.kinematics`). Rotation composes through the cad
+    kernel's own transforms rather than a second Euler implementation
+    here — a null port ``rot`` reads as zeros, and the composed matrix
+    goes back to Euler radians via
+    :func:`~precis.cad.vec.euler_rad_from_matrix`.
 
     Frame: the delta rotation is expressed in the BLOCK frame — the same
     frame the ``pose`` delta is added in — so the result is
     ``R_delta @ R_port`` (a hinge swinging the port about a block axis),
     NOT the port-local ``R_port @ R_delta`` that a scene mate's spin uses.
     Off-axis base + delta pairs do not commute, so the order is pinned by
-    a multi-axis test, not just the single-axis ones."""
+    a multi-axis test, not just the single-axis ones. The matrix
+    arithmetic itself is :func:`precis_se.kinematics.compose_port_rot` —
+    factored out there (not here) so :mod:`precis_se.kinematics` can read
+    the composed matrix directly, without this function's Euler
+    round-trip, and the two can never drift onto different arithmetic."""
     delta_pose = override.get("pose")
     delta_rot = override.get("rot")
     if (delta_pose is None and delta_rot is None) or port.pose is None:
@@ -3972,15 +4052,63 @@ def _apply_port_delta(port: PortSpec, override: dict[str, Any]) -> None:
     if delta_pose is not None:
         port.pose = [p + float(d) for p, d in zip(port.pose, delta_pose, strict=True)]
     if delta_rot is not None:
-        base = port.rot or [0.0, 0.0, 0.0]
-        composed = cad_rotation(*(float(x) for x in delta_rot)).compose(
-            cad_rotation(*(float(x) for x in base))
-        )
+        composed_R = se_kinematics.compose_port_rot(port.rot, delta_rot)
         # ``-0.0`` is what the arcsin/arctan2 round trip hands back for an
         # untouched axis; it compares equal to zero but RENDERS as "-0",
         # which reads like a real (tiny, negative) angle. Normalize once,
         # here, rather than teaching every renderer about it.
-        port.rot = [0.0 if x == 0.0 else x for x in cad_euler_rad(composed.R)]
+        port.rot = [0.0 if x == 0.0 else x for x in cad_euler_rad(composed_R)]
+
+
+def _kinematics_row(row: se_kinematics.KinematicsRow) -> dict[str, str]:
+    """One ``view='kinematics'`` table row, formatted (:meth:`SeHandler.
+    _render_kinematics`) — the three-way note (module docstring of
+    :mod:`precis_se.kinematics`): ``no pose`` (the precondition failed —
+    never confused with a real ``—``), ``— (no change)`` (a real
+    comparison, the frame just didn't move), or the sourced ``step_angle``
+    provenance / its disagreement with the derived angle."""
+    if row.no_pose:
+        return {
+            "block": row.block,
+            "transition": row.transition,
+            "port": row.port,
+            "axis": "no pose",
+            "angle": "no pose",
+            "arm (envelope)": "—",
+            "tip": "—",
+            "step_angle": "—",
+            "note": "no pose",
+        }
+    if row.axis is None:
+        axis_str = "—"
+        angle_str = "—"
+        note = "— (no change)"
+    else:
+        axis_str = " ".join(f"{c:.3f}" for c in row.axis)
+        angle_str = format_quantity(row.angle_rad, "angle")
+        if row.disagree:
+            note = "sourced step_angle disagrees"
+        elif row.step_angle_source:
+            note = row.step_angle_source
+        else:
+            note = "—"
+    return {
+        "block": row.block,
+        "transition": row.transition,
+        "port": row.port,
+        "axis": axis_str,
+        "angle": angle_str,
+        "arm (envelope)": (
+            "—" if row.arm_m is None else format_quantity(row.arm_m, "length")
+        ),
+        "tip": "—" if row.tip_m is None else format_quantity(row.tip_m, "length"),
+        "step_angle": (
+            "—"
+            if row.step_angle_rad is None
+            else format_quantity(row.step_angle_rad, "angle")
+        ),
+        "note": note,
+    }
 
 
 def _clearance_verdict(gap: float, resolution: float) -> str:

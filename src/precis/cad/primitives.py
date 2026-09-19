@@ -63,6 +63,7 @@ from precis.cad.vec import (
     LINEAR_REL_EPS,
     Transform,
     Vec3,
+    aabb_corners,
     as_vec3,
     vec3,
 )
@@ -1248,17 +1249,6 @@ class Placed:
         lo, hi = self.prim.aabb_local()
         if not (np.all(np.isfinite(lo)) and np.all(np.isfinite(hi))):
             return vec3(NEG_INF, NEG_INF, NEG_INF), vec3(POS_INF, POS_INF, POS_INF)
-        corners = np.array(
-            [
-                [lo[0], lo[1], lo[2]],
-                [hi[0], lo[1], lo[2]],
-                [lo[0], hi[1], lo[2]],
-                [hi[0], hi[1], lo[2]],
-                [lo[0], lo[1], hi[2]],
-                [hi[0], lo[1], hi[2]],
-                [lo[0], hi[1], hi[2]],
-                [hi[0], hi[1], hi[2]],
-            ]
-        )
+        corners = np.array(aabb_corners(lo, hi))
         world = (self.xform.R @ corners.T).T + self.xform.t
         return as_vec3(world.min(axis=0)), as_vec3(world.max(axis=0))

@@ -81,7 +81,9 @@ used here as-is or extended with se's own cascades:
   ``'block.port'`` syntax reserves it. ``pose``/``rot`` optionally place
   the port ITSELF in the block's local frame (metres/radians; ``rot``
   without ``pose`` is refused — a rotation with no origin is meaningless),
-  stamped ``pose_source='declared'``. The core op plus se's two
+  stamped ``pose_source='declared'`` and, independently,
+  ``rot_source='declared'`` when ``rot`` is given (R1, docs/backlog/
+  port-rotation-and-lever-composition.md). The core op plus se's two
   *expected chemistry* fields (:func:`_op_add_port`).
 - ``remove_port``     — drop a port; refused while any live ``connect``
   still references it, *including* one stored against an instance/array
@@ -316,6 +318,16 @@ class PortSpec(Port):
     #: ``bind_structure`` op. NULL until filled; always both or neither.
     bound_design: str | None = None
     bound_atom: str | None = None
+    #: The two extra atom labels ``bind_structure``'s object ``ports=``
+    #: form supplies alongside ``bound_atom`` (R1, docs/backlog/
+    #: port-rotation-and-lever-composition.md): ``axis_atom`` — with
+    #: ``bound_atom`` — is the axle whose bond direction is the measured
+    #: frame's z; ``phase_atom``'s projection off that axis fixes the
+    #: frame's x. Mirror ``bound_atom``'s lifecycle exactly (both or
+    #: neither; cleared on unbind/re-target) — se persist (migration
+    #: ``0014``) is the writer.
+    axis_atom: str | None = None
+    phase_atom: str | None = None
 
 
 # ``OpError`` too is reused directly — there is nothing domain-specific
@@ -964,6 +976,7 @@ def _op_add_port(tree: SeTree, op: dict[str, Any]) -> None:
         pose=base.pose,
         rot=base.rot,
         pose_source=base.pose_source,
+        rot_source=base.rot_source,
         expected_element=_opt_str(op.get("expected_element")),
         expected_hybridization=_opt_str(op.get("expected_hybridization")),
     )

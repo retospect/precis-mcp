@@ -26,24 +26,38 @@ A bind also *measures*: the atom a port resolves to has block-local
 coordinates, which is exactly what the port pose slot holds, so
 :func:`bind_structure` fills ``pose``/``pose_source='bound'`` on the ports
 it maps (:func:`_measure_port_poses` for what it will and will not
-overwrite) and :func:`unbind_structure` drops what it wrote.
+overwrite) and :func:`unbind_structure` drops what it wrote. A port mapped
+with the object form's ``axis_atom``/``phase_atom`` (R1, docs/backlog/
+port-rotation-and-lever-composition.md) additionally measures a full
+frame into ``rot``, and also carries ``se_ports.axis_atom``/
+``phase_atom`` — the two extra atom labels, persisted alongside
+``bound_atom`` and cleared with it (both mirror ``bound_atom``'s
+lifecycle exactly).
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.blocktree.types import OpError
 from precis.errors import BadInput, NotFound
 from precis.structure import Scene as StructScene
+from precis.utils.units import format_quantity
 from precis_se.atomic.validate import (
     PORT_POSE_MISMATCH_FRACTION,
+    PORT_ROT_MISMATCH_RAD,
     FrameMismatch,
+    PortFrame,
     bound_port_origin,
     envelope_diag_m,
     envelope_fit,
+    frame_degeneracy_reason,
+    frame_euler_rad,
     m_to_A,
+    measured_port_frame,
+    rot_mismatch_rad,
 )
 from precis_se.ops import SeBlock, SeTree, effective_envelope
 
@@ -78,10 +92,28 @@ def _block_named(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[str,
     return key, tree.blocks[key]
 
 
+@dataclass
+class _PortBind:
+    """One port's resolved ``ports=`` mapping entry — the atom
+    (``bind_structure``'s string form, or the object form's ``atom``) plus
+    the optional ``axis_atom``/``phase_atom`` pair that additionally asks
+    for a measured ``rot`` (R1, docs/backlog/
+    port-rotation-and-lever-composition.md). ``frame`` is that
+    measurement, computed once in the ``ports=`` parse loop — the
+    degeneracy checks there already need it to decide whether to raise, so
+    :func:`_measure_port_poses` reuses the answer rather than re-deriving
+    it (no second store query, module docstring)."""
+
+    atom: str
+    axis_atom: str | None = None
+    phase_atom: str | None = None
+    frame: PortFrame | None = None
+
+
 def _measure_port_poses(
     node: SeBlock,
     scene: StructScene,
-    resolved: dict[str, str],
+    resolved: dict[str, _PortBind],
     *,
     block_name: str,
     design_slug: str,
@@ -97,25 +129,40 @@ def _measure_port_poses(
     only work is the Å→m crossing (:func:`~precis_se.atomic.validate.
     bound_port_origin`).
 
-    **A measurement never overwrites a declaration.** A port whose pose an
-    agent stated (``pose_source='declared'``) keeps it: that is the target
-    the realization gets checked *against*, and replacing it with what the
-    realization did would destroy the only record of what was asked for —
-    Decision 2's requirement/fact split, applied to the port slot. Where
-    the two disagree by more than
-    :data:`~precis_se.atomic.validate.PORT_POSE_MISMATCH_FRACTION` of the
-    block's own envelope, the gap goes on this echo and, on every later
-    read, into the ``port_pose_mismatch`` finding. An empty slot — or one
-    already holding a ``'bound'`` pose from an earlier bind, which this
-    call's atom supersedes — simply takes the measurement: free
-    information with nothing to conflict with.
+    **When the port also carries an ``axis_atom``/``phase_atom`` pair**
+    (R1), the SAME rule extends to ``rot`` — but ``rot`` has its OWN
+    provenance, :attr:`~precis.blocktree.types.Port.rot_source`,
+    independent of ``pose_source``: a port can carry a ``'declared'``
+    pose and a ``'bound'`` (or never-yet-measured) rot, or vice versa,
+    and this function decides what to do with each half separately. A
+    port mapped by the plain string form (or the object form's ``atom``
+    alone) carries no :attr:`_PortBind.frame` and this never touches its
+    ``rot`` either way, exactly as before R1.
+
+    **A measurement never overwrites a declaration — per field.** A
+    ``pose_source='declared'`` pose keeps its ``pose`` as stated: it is
+    the target the realization gets checked *against*, and a disagreement
+    past :data:`~precis_se.atomic.validate.PORT_POSE_MISMATCH_FRACTION`
+    of the block's own envelope goes on this echo and the standing
+    ``port_pose_mismatch`` finding. Independently, a ``rot_source=
+    'declared'`` rot (or, absent one, a declared ``direction`` — which
+    carries no provenance of its own and so is ALWAYS a comparison
+    target, never a write) keeps its frame, compared instead
+    (:func:`~precis_se.atomic.validate.rot_mismatch_rad`) against a past
+    :data:`~precis_se.atomic.validate.PORT_ROT_MISMATCH_RAD` disagreement,
+    reported the same way as ``port_rot_mismatch``. Neither comparison
+    depends on the OTHER field's provenance — a declared pose with an
+    empty (or ``'bound'``) rot still gets that rot filled/refreshed, and
+    vice versa. An empty slot — or one already holding a ``'bound'``
+    reading from an earlier bind, which this call's atoms supersede —
+    simply takes the measurement: free information with nothing to
+    conflict with.
 
     Nothing is measured when the scene doesn't share the block's frame
     (``envelope_fit``'s :class:`~precis_se.atomic.validate.FrameMismatch`):
     those coordinates are in some other frame, and reading them as
     block-local poses would mint numbers that look measured and mean
-    nothing. ``rot`` is never touched either way — an atom has a position,
-    not an orientation."""
+    nothing."""
     if not resolved:
         return ""
     if frame_mismatch:
@@ -127,12 +174,16 @@ def _measure_port_poses(
         )
     diag_m = envelope_diag_m(env) if env else None
     measured: list[str] = []
+    measured_rot: list[str] = []
     notes: list[str] = []
-    for port_name, atom_label in sorted(resolved.items()):
+    for port_name, bind in sorted(resolved.items()):
+        atom_label = bind.atom
         origin = bound_port_origin(scene, atom_label)
         if origin is None:  # pragma: no cover - the atom resolved above
             continue
         port = node.ports[port_name]
+        # The pose half — unchanged from Decision 1, gated on pose_source
+        # alone.
         if port.pose is not None and port.pose_source == "declared":
             gap_m = math.dist(origin, [float(c) for c in port.pose])
             if diag_m is not None and gap_m > PORT_POSE_MISMATCH_FRACTION * diag_m:
@@ -144,10 +195,39 @@ def _measure_port_poses(
                     "fix whichever is wrong with set_port_pose, or move "
                     "the atom"
                 )
+        else:
+            port.pose = origin
+            port.pose_source = "bound"
+            measured.append(f"{port_name}→{atom_label}")
+        # The rot half — its OWN gate, independent of what the pose half
+        # just decided (the bug this branch split fixes: a declared pose
+        # with no declared rot must still get the rot measured).
+        if bind.frame is None:
             continue
-        port.pose = origin
-        port.pose_source = "bound"
-        measured.append(f"{port_name}→{atom_label}")
+        declared_rot = port.rot is not None and port.rot_source == "declared"
+        declared_direction_only = port.rot is None and port.direction is not None
+        if declared_rot or declared_direction_only:
+            deviation = rot_mismatch_rad(port, bind.frame)
+            if deviation is not None and deviation > PORT_ROT_MISMATCH_RAD:
+                against = "rot" if declared_rot else "direction"
+                notes.append(
+                    f"\n⚠ port_rot_mismatch: {block_name}.{port_name} "
+                    f"declares a {against} whose frame is "
+                    f"{format_quantity(deviation, 'angle')} from the "
+                    f"frame measured off {bind.axis_atom!r}/"
+                    f"{bind.phase_atom!r} — the declared target is "
+                    "kept; fix whichever is wrong with set_port_pose, "
+                    "or move the atoms"
+                )
+        else:
+            port.rot = frame_euler_rad(bind.frame)
+            port.rot_source = "bound"
+            measured_rot.append(port_name)
+    if measured_rot:
+        notes.insert(
+            0,
+            "\n· port rot measured (source='bound'): " + ", ".join(measured_rot),
+        )
     if measured:
         notes.insert(
             0, "\n· port pose measured (source='bound'): " + ", ".join(measured)
@@ -157,8 +237,9 @@ def _measure_port_poses(
 
 def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     """``{"op": "bind_structure", "block": <name>, "design": <structure
-    slug>, "ports": {<port name>: <atom label>, ...} (optional)}`` — the L5
-    binding (``se_blocks.bound_kind``/``bound`` + per-port
+    slug>, "ports": {<port name>: <atom label> | {'atom': <label>,
+    'axis_atom'?: <label>, 'phase_atom'?: <label>}, ...} (optional)}`` —
+    the L5 binding (``se_blocks.bound_kind``/``bound`` + per-port
     ``se_ports.bound_design``/``bound_atom``, module docstring). Loads the
     source structure design via the same ``get_ref``/``structure_load``
     path ``handlers/structure.py::_import_fragment`` uses, then checks
@@ -172,6 +253,16 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     item in ``docs/backlog/se-atomic-round2.md``. Nothing is written
     until every mapped port passes.
 
+    **The object form additionally measures a frame** (R1, docs/backlog/
+    port-rotation-and-lever-composition.md): ``axis_atom``/``phase_atom``
+    are both-or-neither (one alone is a ``BadInput`` naming the port),
+    ``axis_atom`` may not equal ``atom`` (a degenerate axle), and the
+    triple must not be geometrically degenerate (``phase_atom`` collinear
+    with the axle) — all three are gated here, before anything is
+    written, same as every other bind-time check. See
+    :func:`_measure_port_poses` for what the measured frame does to
+    ``rot``.
+
     **Rebind semantics**: binding to a *different* design than the block's
     current ``bound`` first clears every existing port binding on the block
     (a full re-target — the old design's atom labels mean nothing in the
@@ -183,12 +274,19 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
     only maps additional (or different) ports, so a design can be filled
     in across several ``bind_structure`` calls.
 
-    **Port poses are measured, declarations are not overwritten**
-    (:func:`_measure_port_poses`): every mapped port whose slot is empty
-    (or holds an earlier bind's measurement) takes the atom's block-local
-    origin as ``pose``/``pose_source='bound'``; a ``'declared'`` target is
-    kept, and a disagreement bigger than the block's own scale is reported
-    here and by the standing ``port_pose_mismatch`` finding.
+    **Port poses (and, when mapped with the frame form, rots) are
+    measured, declarations are not overwritten — per field**
+    (:func:`_measure_port_poses`): every mapped port whose ``pose`` slot
+    is empty (or holds an earlier bind's measurement) takes the atom's
+    block-local origin as ``pose``/``pose_source='bound'``; INDEPENDENTLY,
+    a port mapped with ``axis_atom``/``phase_atom`` whose ``rot`` slot is
+    empty (or ``rot_source='bound'``) takes its axle's frame as ``rot``/
+    ``rot_source='bound'`` — a declared pose does not block a rot
+    measurement, and vice versa. A ``'declared'`` target (either field) is
+    kept, and a disagreement bigger than the block's own scale (pose) or
+    :data:`~precis_se.atomic.validate.PORT_ROT_MISMATCH_RAD` (rot) is
+    reported here and by the standing ``port_pose_mismatch``/
+    ``port_rot_mismatch`` findings.
 
     **``envelope_fit`` preflight** (:func:`precis_se.atomic.validate.
     envelope_fit`, the L1↔L5 agreement check): once the binding above
@@ -237,8 +335,8 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
         raise BadInput(
             "bind_structure 'ports' must be a JSON object {port name: atom label}"
         )
-    resolved: dict[str, str] = {}
-    for port_name_raw, atom_label_raw in ports_raw.items():
+    resolved: dict[str, _PortBind] = {}
+    for port_name_raw, spec_raw in ports_raw.items():
         port_name = str(port_name_raw).strip()
         if port_name not in node.ports:
             roster = ", ".join(sorted(node.ports)) if node.ports else "(none)"
@@ -246,7 +344,38 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
                 f"no such port on block {block_name!r}: {port_name!r}. "
                 f"Available ports: {roster}"
             )
-        atom_label = str(atom_label_raw).strip()
+        # The object form (R1): {'atom': ..., 'axis_atom'?: ..., 'phase_atom'?:
+        # ...} — 'atom' required, the other two both-or-neither. The plain
+        # string form (the bound atom alone) still works unchanged.
+        if isinstance(spec_raw, dict):
+            atom_raw = spec_raw.get("atom")
+            if not atom_raw or not str(atom_raw).strip():
+                raise BadInput(
+                    f"bind_structure: port {port_name!r}'s object form needs "
+                    "'atom' (the bound atom label)"
+                )
+            atom_label = str(atom_raw).strip()
+            axis_raw = spec_raw.get("axis_atom")
+            phase_raw = spec_raw.get("phase_atom")
+            has_axis = bool(axis_raw) and bool(str(axis_raw).strip())
+            has_phase = bool(phase_raw) and bool(str(phase_raw).strip())
+            if has_axis != has_phase:
+                raise BadInput(
+                    f"bind_structure: port {port_name!r} needs both "
+                    "'axis_atom' and 'phase_atom' together (or neither) — "
+                    "one alone cannot fix a frame"
+                )
+            axis_atom = str(axis_raw).strip() if has_axis else None
+            phase_atom = str(phase_raw).strip() if has_phase else None
+            if axis_atom is not None and axis_atom == atom_label:
+                raise BadInput(
+                    f"bind_structure: port {port_name!r}'s axis_atom "
+                    f"{axis_atom!r} is the same atom as 'atom' — the "
+                    "frame's z axis needs two distinct atoms"
+                )
+        else:
+            atom_label = str(spec_raw).strip()
+            axis_atom = phase_atom = None
         atom = scene.atoms.get(atom_label)
         if atom is None:
             labels = sorted(scene.atoms)
@@ -263,7 +392,31 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
                 f"element {port.expected_element!r}, but atom "
                 f"{atom_label!r} in {design_slug!r} is {atom.element!r}"
             )
-        resolved[port_name] = atom_label
+        frame: PortFrame | None = None
+        if axis_atom is not None and phase_atom is not None:
+            for extra_label in (axis_atom, phase_atom):
+                if scene.atoms.get(extra_label) is None:
+                    labels = sorted(scene.atoms)
+                    roster = ", ".join(labels[:8]) if labels else "(none)"
+                    more = (
+                        "" if len(labels) <= 8 else f", … ({len(labels)} atoms total)"
+                    )
+                    raise NotFound(
+                        f"no such atom in structure {design_slug!r}: "
+                        f"{extra_label!r}. Available atoms: {roster}{more}"
+                    )
+            frame = measured_port_frame(scene, atom_label, axis_atom, phase_atom)
+            if frame is None:
+                reason = frame_degeneracy_reason(
+                    scene, atom_label, axis_atom, phase_atom
+                )
+                raise BadInput(
+                    f"bind_structure: port {port_name!r}'s frame is "
+                    f"degenerate — {reason or 'the three atoms cannot fix a frame'}"
+                )
+        resolved[port_name] = _PortBind(
+            atom=atom_label, axis_atom=axis_atom, phase_atom=phase_atom, frame=frame
+        )
     if node.bound_kind == "structure" and node.bound not in (None, design_slug):
         # Full re-target (docstring above): the old design's atom labels are
         # meaningless against the new scene, so every existing port binding
@@ -272,18 +425,26 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
         for p in node.ports.values():
             p.bound_design = None
             p.bound_atom = None
+            p.axis_atom = None
+            p.phase_atom = None
+            # Pose and rot drop independently, by their OWN provenance
+            # (R1) — a measured value is a fact about the OLD scene; the
+            # new design has said nothing about this port yet, and a
+            # stale measurement reads exactly like a fresh one. A
+            # declared value (either one) is design intent and survives.
             if p.pose_source == "bound":
-                # A measured pose is a fact about the OLD scene; the new
-                # design has said nothing about this port yet, and a
-                # stale measurement reads exactly like a fresh one.
-                p.pose = p.rot = p.pose_source = None
+                p.pose = p.pose_source = None
+            if p.rot_source == "bound":
+                p.rot = p.rot_source = None
     node.bound_kind = "structure"
     node.bound = design_slug
-    for port_name, atom_label in resolved.items():
+    for port_name, bind in resolved.items():
         p = node.ports[port_name]
         p.bound_design = design_slug
-        p.bound_atom = atom_label
-    mapped = ", ".join(f"{p}→{a}" for p, a in resolved.items())
+        p.bound_atom = bind.atom
+        p.axis_atom = bind.axis_atom
+        p.phase_atom = bind.phase_atom
+    mapped = ", ".join(f"{p}→{b.atom}" for p, b in resolved.items())
     msg = f"bound block {block_name!r} to structure {design_slug!r}" + (
         f" (ports: {mapped})" if mapped else ""
     )
@@ -335,11 +496,13 @@ def bind_structure(store: Store, tree: SeTree, op: dict[str, Any]) -> str:
 def unbind_structure(tree: SeTree, op: dict[str, Any]) -> str:
     """``{"op": "unbind_structure", "block": <name>}`` — clears the block's
     ``structure`` binding (``bound_kind``/``bound``) and every one of its
-    ports' ``bound_design``/``bound_atom`` — including any port pose the
-    bind itself measured (``pose_source='bound'``): that number was a
-    reading of a binding that no longer exists. A ``'declared'`` pose is
-    an agent's own design intent and survives untouched. Refuses a block
-    bound to
+    ports' ``bound_design``/``bound_atom``/``axis_atom``/``phase_atom`` —
+    including any port pose/rot the bind itself measured, each dropped by
+    its OWN provenance (``pose_source=='bound'``/``rot_source=='bound'``,
+    R1 — independent stamps, so a port with a declared pose and only a
+    measured rot drops just the rot): those numbers were a reading of a
+    binding that no longer exists. A ``'declared'`` pose/rot is an agent's
+    own design intent and survives untouched. Refuses a block bound to
     something that isn't chemistry: ``set_binding`` is the op for those,
     and silently clearing a ``component`` binding through the atomic verb
     would be a surprising write."""
@@ -354,16 +517,32 @@ def unbind_structure(tree: SeTree, op: dict[str, Any]) -> str:
     node.bound_kind = None
     node.bound = None
     cleared = 0
-    unmeasured = 0
+    pose_unmeasured = 0
+    rot_unmeasured = 0
     for p in node.ports.values():
-        if p.bound_design is not None or p.bound_atom is not None:
+        if (
+            p.bound_design is not None
+            or p.bound_atom is not None
+            or p.axis_atom is not None
+            or p.phase_atom is not None
+        ):
             p.bound_design = None
             p.bound_atom = None
+            p.axis_atom = None
+            p.phase_atom = None
             cleared += 1
+        # Pose and rot drop independently, by their OWN provenance (R1) —
+        # a port bound with pose declared but only rot measured drops just
+        # the rot, keeping the declared pose untouched, and vice versa.
         if p.pose_source == "bound":
-            p.pose = p.rot = p.pose_source = None
-            unmeasured += 1
+            p.pose = p.pose_source = None
+            pose_unmeasured += 1
+        if p.rot_source == "bound":
+            p.rot = p.rot_source = None
+            rot_unmeasured += 1
     msg = f"unbound block {block_name!r} ({cleared} port binding(s) cleared)"
-    if unmeasured:
-        msg += f", {unmeasured} measured port pose(s) dropped"
+    if pose_unmeasured:
+        msg += f", {pose_unmeasured} measured port pose(s) dropped"
+    if rot_unmeasured:
+        msg += f", {rot_unmeasured} measured port rot(s) dropped"
     return msg

@@ -88,19 +88,25 @@ def parse_template_ref(raw: str) -> tuple[str | None, str]:
 ForeignResolver = Callable[[str], "Tree[Any, Any] | None"]
 
 
-#: Where a port's :attr:`Port.pose` came from — a CLOSED enum (``None``
-#: = the port carries no pose at all). ``'declared'`` is design intent: an
-#: agent said where on the block this attachment point sits.
-#: ``'bound'`` is measurement: the displacement read back off a realized
-#: structure the block binds. The distinction is load-bearing for the
-#: consumers — a declared origin is a target to check a realization
-#: against, a bound one is what the realization actually did — so it is
-#: stored, not inferred. A domain that persists ports mirrors this enum as
-#: a DB CHECK (``se``'s ``se_ports_pose_source_check``). The core ops write
-#: only ``'declared'`` — a measurement comes from a domain that knows what
-#: a realization *is* (``se``'s ``bind_structure`` reads it off the bound
-#: structure's atom), and by its rule a measurement fills an empty slot but
-#: never overwrites a declared target.
+#: Where a port's :attr:`Port.pose` — or, independently,
+#: :attr:`Port.rot` (:attr:`Port.rot_source`) — came from. A CLOSED enum
+#: (``None`` = the port carries no pose/rot at all). ``'declared'`` is
+#: design intent: an agent said where on the block this attachment point
+#: sits, or how it's oriented. ``'bound'`` is measurement: the
+#: displacement (or frame) read back off a realized structure the block
+#: binds. The distinction is load-bearing for the consumers — a declared
+#: value is a target to check a realization against, a bound one is what
+#: the realization actually did — so it is stored, not inferred. A domain
+#: that persists ports mirrors this enum as a DB CHECK (``se``'s
+#: ``se_ports_pose_source_check``). The core ops write only ``'declared'``
+#: — a measurement comes from a domain that knows what a realization *is*
+#: (``se``'s ``bind_structure`` reads it off the bound structure's atom),
+#: and by its rule a measurement fills an empty slot but never overwrites
+#: a declared target. ``pose_source`` and ``rot_source`` are two
+#: INDEPENDENT stamps off this same enum (R1, docs/backlog/
+#: port-rotation-and-lever-composition.md) — a port's pose and its frame
+#: can each be declared or measured on their own schedule; there is no
+#: single "the port's provenance".
 PORT_POSE_SOURCES: tuple[str, ...] = ("declared", "bound")
 
 
@@ -126,8 +132,11 @@ class Port:
 
     Invariants, enforced by the ops (and mirrored as DB CHECKs by a domain
     that persists ports): ``rot`` requires ``pose`` (a rotation with no
-    origin is meaningless), and ``pose_source`` is set exactly when
-    ``pose`` is — see :data:`PORT_POSE_SOURCES`."""
+    origin is meaningless), ``pose_source`` is set exactly when ``pose``
+    is, and — independently — ``rot_source`` is set exactly when ``rot``
+    is (R1, docs/backlog/port-rotation-and-lever-composition.md: the two
+    provenance stamps track their own field, never each other — see
+    :data:`PORT_POSE_SOURCES`)."""
 
     name: str
     roles: list[str] = field(default_factory=list)
@@ -136,6 +145,7 @@ class Port:
     pose: list[float] | None = None
     rot: list[float] | None = None
     pose_source: str | None = None
+    rot_source: str | None = None
 
 
 @dataclass

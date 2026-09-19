@@ -38,10 +38,14 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   **own** ports] (req). Records intent only — no torsion scan, no
   barrier estimate.
 - `bind_structure` / `unbind_structure` — **atomic mode.** `block`,
-  `design` (a `structure` slug), `ports` (`{port: atom_label}`) —
-  every mapped port must exist on the block, the atom label must exist
-  in the structure, and a port's `expected_element` must match the
-  bound atom's element (a loud rejection at bind time). Binding again
+  `design` (a `structure` slug), `ports` (`{port: atom_label}`, or the
+  object form `{port: {'atom': atom_label, 'axis_atom'?: label,
+  'phase_atom'?: label}}`) — every mapped port must exist on the block,
+  every atom label must exist in the structure, and a port's
+  `expected_element` must match the bound atom's element (a loud
+  rejection at bind time). `axis_atom`/`phase_atom` are both-or-neither
+  and `axis_atom` may not equal `atom` — one alone, or a degenerate
+  (collinear) triple, is a `BadInput` naming the atoms. Binding again
   to the **same** design is incremental; binding to a **different**
   design first clears every port binding on the block. Both target an
   ordinary block only — bind via the template for an instance.
@@ -51,9 +55,17 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   — but only into an empty slot or over an earlier bind's measurement. A
   `pose_source='declared'` target is design intent and is never
   overwritten; a real disagreement is reported instead (echo line +
-  `port_pose_mismatch`). Nothing is measured when the scene doesn't share
-  the block's frame. `unbind_structure` drops the measured poses,
-  keeping declared ones.
+  `port_pose_mismatch`). Mapped with `axis_atom`/`phase_atom`, the SAME
+  bind also measures the port's `rot` — z is the unit `atom→axis_atom`
+  axle, x is `atom→phase_atom` projected off it — under `rot`'s OWN
+  `rot_source`, independent of `pose_source` (a declared pose with no
+  declared rot still gets its rot filled, and vice versa): a declared
+  `rot` (`rot_source='declared'`, or, absent one, a declared `direction`,
+  which carries no provenance of its own) is compared instead, and a
+  disagreement past 10° is `port_rot_mismatch` (echo line + standing
+  finding). Nothing is measured when the scene doesn't share the block's
+  frame.
+  `unbind_structure` drops the measured pose/rot, keeping declared ones.
 - `generate` — **atomic mode.** `generator` `cnt|fullerene|cone|
   cyclodextrin|hexfold`, `params` (dict), `name` (new block) · `parent`/`pose`/
   `rot` passthrough. One op = a canonical block whose atoms follow from

@@ -38,6 +38,7 @@ import numpy as np
 import pytest
 
 import precis_se
+from precis.cad.vec import rotation as cad_rotation
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.structure import StructureHandler
@@ -2119,3 +2120,586 @@ def test_a_frame_mismatched_scene_measures_nothing(
     assert "⚠ port pose: not measured for 1 port(s)" in resp.body
     assert "port pose measured" not in resp.body
     assert _measured(store, "posebind6")["p1"] == (None, None, None)
+
+
+# ── R1: bind_structure measures a port's frame (axis_atom/phase_atom) ────
+# docs/backlog/port-rotation-and-lever-composition.md Slice R1: the object
+# ``ports=`` form (``{port: {'atom', 'axis_atom'?, 'phase_atom'?}}``)
+# additionally measures the port's ``rot`` off a 3-atom triad — z is the
+# unit atom->axis_atom axle, x is atom->phase_atom projected off it — under
+# the SAME never-overwrite-a-declaration rule the pose half already has
+# (§Decision 1), extended to the frame: a declared ``rot`` (or, absent one,
+# a declared ``direction``) is compared instead, past
+# ``PORT_ROT_MISMATCH_RAD`` (10°) reported as ``port_rot_mismatch``.
+
+
+def _frame_atoms(
+    structure: StructureHandler, slug: str, carts: list[list[float]]
+) -> tuple[str, str, str]:
+    """Three labelled atoms ``(atom, axis_atom, phase_atom)`` at ``carts``
+    (a structure design minted fresh at ``slug``)."""
+    atom, axis_atom, phase_atom = _make_structure(structure, slug, carts=carts)
+    return atom, axis_atom, phase_atom
+
+
+#: A trivial triad: z = atom->axis_atom = (0,0,1); x = atom->phase_atom
+#: (1.2,0,0.3) projected off z = (1.2,0,0); y = z × x = (0,1,0) — the
+#: measured frame is the identity, Euler (0, 0, 0).
+_TRIVIAL_FRAME_CARTS = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.5], [1.2, 0.0, 0.3]]
+
+#: A rotated triad: z = atom->axis_atom = (1,0,0); x = atom->phase_atom
+#: (0.3,1.2,0) projected off z = (0,1,0); y = z × x = (0,0,1) — a known
+#: non-trivial frame (x, y, z permuted off the identity).
+_ROTATED_FRAME_CARTS = [[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [0.3, 1.2, 0.0]]
+
+#: Collinear: axis_atom and phase_atom sit on the SAME ray from atom, so
+#: phase_atom's projection off the axis is the zero vector — degenerate.
+_COLLINEAR_FRAME_CARTS = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.5], [0.0, 0.0, 3.0]]
+
+#: Zero-length phase vector: phase_atom sits at the SAME cartesian
+#: position as atom itself — a distinct degeneracy from collinearity
+#: (there is no direction at all, not merely the wrong one).
+_ZERO_LENGTH_PHASE_FRAME_CARTS = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.5], [0.0, 0.0, 0.0]]
+
+
+def test_bind_measures_a_trivial_frame(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag1", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag1",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    resp = handler.put(id="framebind1", text=json.dumps({"ops": ops}))
+    assert "port rot measured (source='bound')" in resp.body
+
+    pose, source, rot = _measured(store, "framebind1")["p1"]
+    assert source == "bound"
+    assert pose is not None
+    assert rot == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
+
+
+def test_bind_measures_a_rotated_frame(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag2", _ROTATED_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag2",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    handler.put(id="framebind2", text=json.dumps({"ops": ops}))
+    _pose, source, rot = _measured(store, "framebind2")["p1"]
+    assert source == "bound"
+    assert rot is not None
+    R = cad_rotation(*rot).R
+    assert R[:, 0] == pytest.approx([0.0, 1.0, 0.0], abs=1e-6)  # x
+    assert R[:, 1] == pytest.approx([0.0, 0.0, 1.0], abs=1e-6)  # y
+    assert R[:, 2] == pytest.approx([1.0, 0.0, 0.0], abs=1e-6)  # z
+
+
+def test_bind_string_form_still_measures_pose_only_never_rot(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """The plain string form (or the object form's ``atom`` alone) has no
+    ``axis_atom``/``phase_atom`` to measure a frame from — ``rot`` stays
+    untouched, exactly as before R1."""
+    atom, _axis, _phase = _frame_atoms(structure, "framefrag3", _TRIVIAL_FRAME_CARTS)
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag3",
+            "ports": {"p1": atom},
+        },
+    ]
+    resp = handler.put(id="framebind3", text=json.dumps({"ops": ops}))
+    assert "port rot measured" not in resp.body
+    pose, source, rot = _measured(store, "framebind3")["p1"]
+    assert source == "bound"
+    assert pose is not None
+    assert rot is None
+
+
+def test_bind_declared_rot_mismatch_past_10deg_is_kept_and_flagged(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """The rot half of the never-overwrite rule: ~28.6° of declared/
+    measured disagreement (Euler ``ry=0.5`` against a trivial-frame
+    measurement) is reported on the echo and kept as ``'declared'`` —
+    never silently replaced by the measurement."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag4", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {
+            "op": "add_port",
+            "block": "hub",
+            "name": "p1",
+            "pose": [0.0, 0.0, 0.0],
+            "rot": [0.0, 0.5, 0.0],
+        },
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag4",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    resp = handler.put(id="framebind4", text=json.dumps({"ops": ops}))
+    assert "⚠ port_rot_mismatch: hub.p1" in resp.body
+    assert "port rot measured" not in resp.body
+
+    pose, source, rot = _measured(store, "framebind4")["p1"]
+    assert source == "declared"
+    assert rot == pytest.approx([0.0, 0.5, 0.0], abs=1e-12)
+
+    validate = handler.get(id="framebind4", view="validate")
+    assert "port_rot_mismatch" in validate.body
+    assert "hub.p1" in validate.body
+    assert "# 0 error(s)" in validate.body  # warn tier: it never gates
+
+
+def test_bind_declared_rot_within_10deg_is_not_flagged(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    """~5.7° (Euler ``ry=0.1``) is the check working, not drift — a
+    declared frame is a rough statement of intent, same as pose."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag5", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {
+            "op": "add_port",
+            "block": "hub",
+            "name": "p1",
+            "pose": [0.0, 0.0, 0.0],
+            "rot": [0.0, 0.1, 0.0],
+        },
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag5",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    resp = handler.put(id="framebind5", text=json.dumps({"ops": ops}))
+    assert "port_rot_mismatch" not in resp.body
+    assert "port_rot_mismatch" not in handler.get(id="framebind5", view="validate").body
+
+
+def test_bind_declared_direction_vs_measured_z_mismatch(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    """No declared ``rot``: the measured z alone is compared against a
+    declared ``direction`` — the module docstring's "no direction-only
+    measurement" rule, the other direction."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag6", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {
+            "op": "add_port",
+            "block": "hub",
+            "name": "p1",
+            "pose": [0.0, 0.0, 0.0],
+            "direction": [1.0, 0.0, 0.0],  # measured z is (0,0,1) — 90° off
+        },
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag6",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    resp = handler.put(id="framebind6", text=json.dumps({"ops": ops}))
+    assert "⚠ port_rot_mismatch: hub.p1" in resp.body
+    assert "declares a direction" in resp.body
+
+    validate = handler.get(id="framebind6", view="validate")
+    assert "port_rot_mismatch" in validate.body
+    assert "declared direction" in validate.body
+
+
+def test_bind_frame_axis_atom_without_phase_atom_is_bad_input(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    atom, axis_atom, _phase = _frame_atoms(
+        structure, "framefrag7", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag7",
+            "ports": {"p1": {"atom": atom, "axis_atom": axis_atom}},
+        },
+    ]
+    with pytest.raises(BadInput, match="needs both"):
+        handler.put(id="framebind7", text=json.dumps({"ops": ops}))
+
+
+def test_bind_frame_phase_atom_without_axis_atom_is_bad_input(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    atom, _axis, phase_atom = _frame_atoms(
+        structure, "framefrag7b", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag7b",
+            "ports": {"p1": {"atom": atom, "phase_atom": phase_atom}},
+        },
+    ]
+    with pytest.raises(BadInput, match="needs both"):
+        handler.put(id="framebind7b", text=json.dumps({"ops": ops}))
+
+
+def test_bind_frame_axis_atom_equal_to_atom_is_bad_input(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    atom, _axis, phase_atom = _frame_atoms(
+        structure, "framefrag8", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag8",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    with pytest.raises(BadInput, match="same atom"):
+        handler.put(id="framebind8", text=json.dumps({"ops": ops}))
+
+
+def test_bind_frame_collinear_phase_atom_is_bad_input(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    """Named as collinear specifically — distinct from the zero-length
+    phase vector case below, which is a different problem (no direction
+    at all, not merely the wrong one)."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag9", _COLLINEAR_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag9",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    with pytest.raises(BadInput, match="degenerate") as exc:
+        handler.put(id="framebind9", text=json.dumps({"ops": ops}))
+    assert "collinear" in str(exc.value)
+    assert phase_atom in str(exc.value)
+
+
+def test_bind_frame_zero_length_phase_vector_is_bad_input_named_distinctly(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    """``phase_atom`` sitting exactly where ``atom`` does is a DIFFERENT
+    degeneracy from collinearity (reviewer finding: name which one) — the
+    message says the atoms coincide, not that they're collinear."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag9b", _ZERO_LENGTH_PHASE_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag9b",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    with pytest.raises(BadInput, match="degenerate") as exc:
+        handler.put(id="framebind9b", text=json.dumps({"ops": ops}))
+    assert "coincides" in str(exc.value)
+    assert "collinear" not in str(exc.value)
+    assert phase_atom in str(exc.value)
+
+
+def test_unbind_drops_measured_rot_and_keeps_a_declared_one(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag10", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "add_port",
+            "block": "hub",
+            "name": "p2",
+            "pose": [1.0e-10, 0.0, 0.0],
+            "rot": [0.0, 0.3, 0.0],
+        },
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag10",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    handler.put(id="framebind10", text=json.dumps({"ops": ops}))
+    resp = handler.edit(
+        id="framebind10", ops=[{"op": "unbind_structure", "block": "hub"}]
+    )
+    assert "measured port pose(s) dropped" in resp.body
+
+    ports = _measured(store, "framebind10")
+    assert ports["p1"] == (None, None, None)
+    p2_pose, p2_src, p2_rot = ports["p2"]
+    assert p2_src == "declared"
+    assert p2_pose == pytest.approx([1.0e-10, 0.0, 0.0], abs=1e-15)
+    assert p2_rot == pytest.approx([0.0, 0.3, 0.0], abs=1e-12)
+
+
+def test_axis_phase_atom_labels_persist_across_a_second_save(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """Same landmine as ``bound_atom``'s own persist test: ``se_blocks.id``
+    is rebuilt on every ``save_tree``, so the two labels have to survive
+    keyed by name, never by row id."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag11", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag11",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    handler.put(id="framebind11", text=json.dumps({"ops": ops}))
+    handler.edit(id="framebind11", ops=[{"op": "add_block", "name": "unrelated"}])
+
+    ref = store.get_ref(kind="se", id="framebind11")
+    assert ref is not None
+    hub = persist.load_tree(store, ref.id).blocks["hub"]
+    assert hub.ports["p1"].axis_atom == axis_atom
+    assert hub.ports["p1"].phase_atom == phase_atom
+    assert hub.ports["p1"].bound_atom == atom
+
+
+def test_block_view_shows_axis_and_phase_atoms_when_set(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag12", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag12",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    handler.put(id="framebind12", text=json.dumps({"ops": ops}))
+    block = handler.get(id="framebind12", view="block", args={"name": "hub"})
+    assert f"axis={axis_atom}" in block.body
+    assert f"phase={phase_atom}" in block.body
+
+
+# ── R1 reviewer fix: pose_source and rot_source are INDEPENDENT stamps ──
+# The bug: a port whose pose was declared (pose_source='declared') but
+# whose rot was never declared used to fall into bind's "declared" branch
+# wholesale and get no rot measurement at all — no fill, no note. Fixed by
+# giving rot its own provenance column (rot_source, migration 0014) that
+# bind/set_port_pose/add_port/unbind all gate on independently of
+# pose_source.
+
+
+def test_bind_fills_rot_when_only_pose_is_declared(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """The reviewer's exact repro: a port with ONLY a declared pose (no
+    declared rot, no declared direction) still gets its rot measured —
+    pose_source and rot_source are independent, so a declared pose must
+    never silently block a rot measurement."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag13", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {
+            "op": "add_port",
+            "block": "hub",
+            "name": "p1",
+            "pose": [0.0, 0.0, 0.0],  # declared, no rot, no direction
+        },
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag13",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    resp = handler.put(id="framebind13", text=json.dumps({"ops": ops}))
+    assert "port rot measured (source='bound')" in resp.body
+    assert "port_rot_mismatch" not in resp.body
+
+    ref = store.get_ref(kind="se", id="framebind13")
+    assert ref is not None
+    port = persist.load_tree(store, ref.id).blocks["hub"].ports["p1"]
+    assert port.pose_source == "declared"
+    assert port.rot_source == "bound"
+    assert port.rot == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
+
+
+def test_set_port_pose_rot_only_flips_rot_source_and_a_rebind_compares(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    """A later ``set_port_pose(rot=...)`` on a bound (measured) port
+    declares ONLY the rot — the pose's own provenance is untouched — and a
+    re-bind of the same design then compares the declared rot instead of
+    silently overwriting it."""
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag14", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag14",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    handler.put(id="framebind14", text=json.dumps({"ops": ops}))
+    ref = store.get_ref(kind="se", id="framebind14")
+    assert ref is not None
+    port = persist.load_tree(store, ref.id).blocks["hub"].ports["p1"]
+    assert (port.pose_source, port.rot_source) == ("bound", "bound")
+
+    handler.edit(
+        id="framebind14",
+        ops=[
+            {
+                "op": "set_port_pose",
+                "block": "hub",
+                "name": "p1",
+                "rot": [0.0, 0.5, 0.0],  # ~28.6° off the measured identity
+            }
+        ],
+    )
+    port = persist.load_tree(store, ref.id).blocks["hub"].ports["p1"]
+    assert port.pose_source == "bound"  # unchanged — only rot was declared
+    assert port.rot_source == "declared"
+    assert port.rot == pytest.approx([0.0, 0.5, 0.0], abs=1e-12)
+
+    resp = handler.edit(
+        id="framebind14",
+        ops=[
+            {
+                "op": "bind_structure",
+                "block": "hub",
+                "design": "framefrag14",
+                "ports": {
+                    "p1": {
+                        "atom": atom,
+                        "axis_atom": axis_atom,
+                        "phase_atom": phase_atom,
+                    }
+                },
+            }
+        ],
+    )
+    assert "⚠ port_rot_mismatch: hub.p1" in resp.body
+    assert "port rot measured" not in resp.body
+    port = persist.load_tree(store, ref.id).blocks["hub"].ports["p1"]
+    assert port.rot_source == "declared"
+    assert port.rot == pytest.approx([0.0, 0.5, 0.0], abs=1e-12)
+
+
+def test_rot_source_persists_across_a_second_save(
+    handler: SeHandler, structure: StructureHandler, store: Store
+) -> None:
+    atom, axis_atom, phase_atom = _frame_atoms(
+        structure, "framefrag15", _TRIVIAL_FRAME_CARTS
+    )
+    ops = [
+        {"op": "add_block", "name": "hub", "envelope": "sphere:r5e-10"},
+        {"op": "add_port", "block": "hub", "name": "p1"},
+        {
+            "op": "bind_structure",
+            "block": "hub",
+            "design": "framefrag15",
+            "ports": {
+                "p1": {"atom": atom, "axis_atom": axis_atom, "phase_atom": phase_atom}
+            },
+        },
+    ]
+    handler.put(id="framebind15", text=json.dumps({"ops": ops}))
+    handler.edit(id="framebind15", ops=[{"op": "add_block", "name": "unrelated"}])
+    ref = store.get_ref(kind="se", id="framebind15")
+    assert ref is not None
+    port = persist.load_tree(store, ref.id).blocks["hub"].ports["p1"]
+    assert port.rot_source == "bound"

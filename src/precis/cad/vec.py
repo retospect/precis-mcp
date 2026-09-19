@@ -81,6 +81,27 @@ def as_float3(
     return (x, y, z)
 
 
+def aabb_corners(lo: object, hi: object) -> list[tuple[float, float, float]]:
+    """The 8 corners of an axis-aligned box ``[lo, hi]``, in a FIXED
+    order (x varies fastest, then y, then z). One enumeration for every
+    caller that used to spell the same 8 rows out by hand, independently
+    and byte-for-byte identically: :meth:`~precis.cad.primitives.
+    Placed.aabb`, :mod:`precis_se.datums`'s ``_face_geometry``, and
+    :mod:`precis_se.kinematics`'s ``_port_arm_m``."""
+    lo_v = as_vec3(lo)
+    hi_v = as_vec3(hi)
+    return [
+        (float(lo_v[0]), float(lo_v[1]), float(lo_v[2])),
+        (float(hi_v[0]), float(lo_v[1]), float(lo_v[2])),
+        (float(lo_v[0]), float(hi_v[1]), float(lo_v[2])),
+        (float(hi_v[0]), float(hi_v[1]), float(lo_v[2])),
+        (float(lo_v[0]), float(lo_v[1]), float(hi_v[2])),
+        (float(hi_v[0]), float(lo_v[1]), float(hi_v[2])),
+        (float(lo_v[0]), float(hi_v[1]), float(hi_v[2])),
+        (float(hi_v[0]), float(hi_v[1]), float(hi_v[2])),
+    ]
+
+
 def deg2rad(deg: float) -> float:
     """Degrees → radians."""
     return float(deg) * np.pi / 180.0
@@ -187,6 +208,69 @@ def euler_rad_from_matrix(R: NDArray[np.float64]) -> tuple[float, float, float]:
         rx = float(np.arctan2(-R[1, 2], R[1, 1]))
     ry = float(np.arcsin(-r20))
     return (rx, ry, rz)
+
+
+def axis_angle_from_matrix(
+    R: NDArray[np.float64],
+) -> tuple[tuple[float, float, float] | None, float]:
+    """``(axis, angle_rad)`` off a proper rotation matrix — the
+    :func:`euler_rad_from_matrix` sibling for a caller that wants the
+    axis-angle form instead of Euler radians (R2, docs/backlog/
+    port-rotation-and-lever-composition.md, the swing between two
+    declared port frames: ``R_swing = R_to @ R_from.T``).
+
+    ``angle_rad`` is always the non-negative geodesic angle
+    (``arccos((trace(R) - 1) / 2)``, range ``[0, π]``); ``axis`` — a unit
+    3-vector, or ``None`` when there is no rotation to speak of — carries
+    the sign, by the right-hand rule: rotating ``angle_rad`` about
+    ``axis`` reproduces ``R``.
+
+    Three regimes:
+
+    - ``angle_rad < 1e-6`` (no rotation): ``(None, 0.0)`` — an axis is
+      meaningless for the identity.
+    - within ``1e-6`` of ``π`` (the antisymmetric-part formula below
+      divides by ``sin(angle) ≈ 0``, which is numerically unusable):
+      the axis is the dominant eigenvector of the SYMMETRIZED ``R + I``
+      (exactly rank-1 at ``angle = π``, where ``R = 2kkᵀ - I`` for the
+      true axis ``k``) — sign picked to agree with the (tiny but usually
+      still informative) antisymmetric part when that part is non-zero,
+      else any consistent choice (first nonzero component positive) —
+      ``R`` alone cannot distinguish ``k`` from ``-k`` at exactly
+      ``angle = π``.
+    - otherwise: the standard antisymmetric-part formula, ``axis ∝
+      (R[2,1]-R[1,2], R[0,2]-R[2,0], R[1,0]-R[0,1])``, normalized by
+      ``2 sin(angle)``.
+    """
+    Rm = np.asarray(R, dtype=np.float64)
+    cos_angle = float(np.clip((float(np.trace(Rm)) - 1.0) / 2.0, -1.0, 1.0))
+    angle = float(np.arccos(cos_angle))
+    if angle < 1e-6:
+        return None, 0.0
+    antisym_vec = np.array(
+        [Rm[2, 1] - Rm[1, 2], Rm[0, 2] - Rm[2, 0], Rm[1, 0] - Rm[0, 1]],
+        dtype=np.float64,
+    )
+    if abs(angle - float(np.pi)) < 1e-6:
+        sym = (Rm + Rm.T) / 2.0 + np.eye(3, dtype=np.float64)
+        eigvals, eigvecs = np.linalg.eigh(sym)
+        axis_vec = eigvecs[:, int(np.argmax(eigvals))]
+        norm = float(np.linalg.norm(axis_vec))
+        if norm < 1e-12:
+            return None, angle  # degenerate — should not happen for a real rotation
+        axis_vec = axis_vec / norm
+        if float(np.linalg.norm(antisym_vec)) > 1e-9:
+            if float(np.dot(antisym_vec, axis_vec)) < 0.0:
+                axis_vec = -axis_vec
+        else:
+            for component in axis_vec:
+                if abs(float(component)) > 1e-12:
+                    if component < 0.0:
+                        axis_vec = -axis_vec
+                    break
+        return (float(axis_vec[0]), float(axis_vec[1]), float(axis_vec[2])), angle
+    axis_vec = antisym_vec / (2.0 * np.sin(angle))
+    return (float(axis_vec[0]), float(axis_vec[1]), float(axis_vec[2])), angle
 
 
 def normalize(v: Vec3) -> Vec3:
