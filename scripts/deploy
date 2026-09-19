@@ -133,15 +133,6 @@ for _a in "$@"; do
     esac
 done
 REF="${_POSITIONAL[0]:-main}"
-# A short sha is expanded to the full 40-char commit here: the playbook's pin
-# step treats anything that is not ^[0-9a-f]{40}$ as a ref NAME and resolves
-# it with `git ls-remote`, which never matches a bare abbreviated sha, so
-# `scripts/deploy 08f79a3a` died in preflight after the wheel build. Ref
-# names (main, a tag) are left alone; the playbook resolves those itself.
-if [[ "$REF" =~ ^[0-9a-f]{7,39}$ ]]; then
-    _full="$(git rev-parse -q --verify "${REF}^{commit}" 2>/dev/null || true)"
-    [[ -n "$_full" ]] && REF="$_full"
-fi
 EXTRA_ARGS=()
 for _v in ${PRECIS_DEPLOY_EXTRA_VARS:-}; do
     EXTRA_ARGS+=(-e "$_v")
@@ -152,6 +143,17 @@ CLUSTER_DIR="${PRECIS_CLUSTER_DIR:-${HOME}/work/cluster}"
 # checkout) — the deploy-state marker always belongs at THIS repo's root, the
 # one scripts/ship reads it from, regardless of where ansible itself runs.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A short sha is expanded to the full 40-char commit here: the playbook's pin
+# step treats anything that is not ^[0-9a-f]{40}$ as a ref NAME and resolves
+# it with `git ls-remote`, which never matches a bare abbreviated sha, so
+# `scripts/deploy 08f79a3a` died in preflight after the wheel build. Ref
+# names (main, a tag) are left alone; the playbook resolves those itself.
+# Resolved against REPO_ROOT, not the cwd, so a deploy launched from another
+# directory does not silently skip the expansion.
+if [[ "$REF" =~ ^[0-9a-f]{7,39}$ ]]; then
+    _full="$(git -C "$REPO_ROOT" rev-parse -q --verify "${REF}^{commit}" 2>/dev/null || true)"
+    [[ -n "$_full" ]] && REF="$_full"
+fi
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }

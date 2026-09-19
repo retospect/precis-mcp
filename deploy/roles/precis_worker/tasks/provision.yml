@@ -250,6 +250,16 @@
     - service: cast_audio
       enabled: >-
         {{ (inventory_hostname in (precis_capabilities.tts_render | default([]))) }}
+    # backlog_groom (dark-factory fix lane, rung 3): `enable_env`-only in the
+    # registry, so post-§L it registers everywhere but runs ONLY with a row —
+    # exporting PRECIS_BACKLOG_GROOM_ENABLED in the daemon env does nothing
+    # (2026-09-19: the 08f79a3a deploy armed the flag, the pass stayed dark).
+    # Seed it on the gateway when the fix lane is armed, same gate as 20b's
+    # `_l_b_fix_env`; diagnose_scan's row was hand-set at the 08-14 arming.
+    - service: backlog_groom
+      enabled: >-
+        {{ (inventory_hostname in groups['gateway'])
+           and (precis_fix_lane_enabled | default(false) | bool) }}
   loop_control:
     label: "{{ item.service }} (was-enabled={{ item.enabled }})"
   when: item.enabled | bool

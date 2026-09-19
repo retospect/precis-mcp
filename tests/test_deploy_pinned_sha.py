@@ -219,7 +219,11 @@ def fx(tmp_path: Path) -> Fixture:
 
 
 def _run_deploy(
-    fx: Fixture, fakebin: Path, *args: str, allow_stale: str = "1"
+    fx: Fixture,
+    fakebin: Path,
+    *args: str,
+    allow_stale: str = "1",
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = _test_env(
         PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
@@ -232,12 +236,35 @@ def _run_deploy(
     env["PATH"] = f"{fakebin}:{env['PATH']}"
     return subprocess.run(
         ["bash", str(fx.repo / "scripts" / "deploy"), *args],
-        cwd=str(fx.repo),
+        cwd=str(cwd or fx.repo),
         env=env,
         capture_output=True,
         text=True,
         timeout=60,
     )
+
+
+def test_short_sha_is_expanded_before_the_playbook_sees_it(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """The playbook's pin step treats anything that is not a full 40-char sha
+    as a ref NAME and `git ls-remote`s it, which never matches an abbreviated
+    sha — `scripts/deploy 08f79a3a` died in preflight after the wheel build
+    (2026-09-18). The script now expands a short sha itself, and must do so
+    against the repo it lives in rather than the caller's cwd: the first cut
+    ran a bare `git rev-parse` before REPO_ROOT existed, so a deploy launched
+    from any other directory silently skipped the expansion and hit the same
+    abort. Run from an unrelated cwd and check the resolved target."""
+    fakebin = _make_fake_bin(tmp_path)
+    fx.set_marker(fx.base)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    result = _run_deploy(fx, fakebin, fx.gated[:8], "--pinned", cwd=elsewhere)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert f"cluster is running '{fx.gated}'" in result.stdout, result.stdout
+    assert fx.marker_sha() == fx.gated
 
 
 # ───────────────────────── the --pinned rollback guard ───────────────────────

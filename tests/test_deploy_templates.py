@@ -282,21 +282,85 @@ def test_sandbox_worker_env_sets_precis_root() -> None:
 
 def test_collapsed_worker_fix_lane_env_is_gated() -> None:
     """The fix-lane env (PRECIS_FIX_WORK_DIR / PRECIS_FIX_REPO_DIR plus the
-    two lane-arming flags PRECIS_DIAGNOSE_AUTOPROMOTE /
-    PRECIS_BACKLOG_GROOM_ENABLED) renders ONLY on a gateway host with
-    ``precis_fix_lane_enabled`` set — everywhere else the block must be
-    empty, so an unarmed host neither advertises the ``clones_dir``
+    lane-arming flag PRECIS_DIAGNOSE_AUTOPROMOTE) renders ONLY on a gateway
+    host with ``precis_fix_lane_enabled`` set — everywhere else the block
+    must be empty, so an unarmed host neither advertises the ``clones_dir``
     capability, nor lets a soft-fallback-routed diagnose job half-run, nor
-    grooms auto-fix gripes into fix_gripe todos
-    (docs/backlog/dark-factory-arming.md, gripe 210007)."""
+    auto-promotes diagnoses (docs/backlog/dark-factory-arming.md, gripe
+    210007)."""
     armed = _render_collapsed_worker_fix_env(gateway=True, enabled=True)
-    # 367779ca arms the groomer + diagnose auto-promote on the same gate:
-    # both ride the fix lane, so an unarmed host renders neither.
+    # 367779ca armed diagnose auto-promote here; the groomer is NOT an env
+    # switch post-§L (an `enable_env` pass runs only with a service_config
+    # row) — its arming is the seed-loop entry tested below, and a
+    # PRECIS_BACKLOG_GROOM_ENABLED export here would be an inert decoy.
     assert armed == {
         "PRECIS_FIX_WORK_DIR": "/Users/deploy/precis-fix-work",
         "PRECIS_FIX_REPO_DIR": "/Users/deploy/precis-fix-repo",
         "PRECIS_DIAGNOSE_AUTOPROMOTE": "1",
-        "PRECIS_BACKLOG_GROOM_ENABLED": "1",
     }
+    assert "PRECIS_BACKLOG_GROOM_ENABLED" not in armed
     assert _render_collapsed_worker_fix_env(gateway=True, enabled=False) == {}
     assert _render_collapsed_worker_fix_env(gateway=False, enabled=True) == {}
+
+
+def _seed_loop_enabled(service: str, **render_vars: object) -> bool:
+    """Render the ``enabled`` expression of one entry of the precis_worker
+    role's §L ``service seed`` loop (the task that mirrors a host's arming
+    state into ``service_config`` rows on every deploy)."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    provision = _REPO_ROOT / "deploy" / "roles" / "precis_worker" / "tasks"
+    tasks = yaml.safe_load((provision / "provision.yml").read_text(encoding="utf-8"))
+    seed_tasks = [t for t in tasks if str(t.get("name", "")).startswith("§L seed:")]
+    assert len(seed_tasks) == 1, [t.get("name") for t in seed_tasks]
+    entries = {item["service"]: item["enabled"] for item in seed_tasks[0]["loop"]}
+    assert service in entries, sorted(entries)
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    # ansible's `bool` filter (jinja2 core has none): the truthy spellings
+    # ansible.plugins.filter.core accepts, so the expression renders as-is.
+    env.filters["bool"] = lambda v: (
+        str(v).strip().lower()
+        in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    )
+    rendered = env.from_string(str(entries[service])).render(**render_vars)
+    return bool(rendered)
+
+
+def test_seed_loop_arms_the_groomer_row_on_an_armed_gateway_only() -> None:
+    """2026-09-19: the 08f79a3a deploy exported PRECIS_BACKLOG_GROOM_ENABLED
+    on the fix host and the groomer stayed dark — post-§L a registry
+    ``enable_env`` pass needs a ``service_config`` row to run, and the env
+    flag is no longer a default source (cli/worker.py ``_profile_default_on``).
+    The deploy's seed loop must therefore mint the ``backlog_groom`` row on
+    exactly the host the fix lane is armed on — a gateway with
+    ``precis_fix_lane_enabled`` — and nowhere else (a seed on an unarmed
+    host would start minting fix_gripe todos no host can run)."""
+    gateway = {"gateway": ["host-a"]}
+    assert _seed_loop_enabled(
+        "backlog_groom",
+        inventory_hostname="host-a",
+        groups=gateway,
+        precis_fix_lane_enabled=True,
+    )
+    assert not _seed_loop_enabled(
+        "backlog_groom",
+        inventory_hostname="host-a",
+        groups=gateway,
+        precis_fix_lane_enabled=False,
+    )
+    assert not _seed_loop_enabled(
+        "backlog_groom",
+        inventory_hostname="host-b",
+        groups=gateway,
+        precis_fix_lane_enabled=True,
+    )
+    # No host_var at all (every non-gateway host in practice) → no row.
+    assert not _seed_loop_enabled(
+        "backlog_groom", inventory_hostname="host-a", groups=gateway
+    )

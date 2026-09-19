@@ -56,8 +56,12 @@ Guards:
   lock is unsafe through pgbouncer ``pool_mode=transaction`` — see the
   ``paper_reconcile`` docstring for the full rationale.
 
-Registered **default-OFF** in ``cli/worker.py`` (``--only backlog_groom`` or
-``PRECIS_BACKLOG_GROOM_ENABLED=1``): once on it starts handing repo bugs to
+Registered **default-OFF** in ``cli/worker.py``: it runs under ``--only
+backlog_groom`` or with a ``service_config`` row (``precis service prio <host>
+backlog_groom 5``, seeded on an armed gateway by the deploy's §L seed loop).
+Post-§L the ``PRECIS_BACKLOG_GROOM_ENABLED`` env is NOT a switch — an
+``enable_env`` pass registers but stays gated off without the row. Once on
+it starts handing repo bugs to
 the autonomous fixer substrate, so it is enabled deliberately, like the
 classifier — now scoped tightly enough (auto-fix gate + mint cap) that a
 prod deployment can actually turn it on.
