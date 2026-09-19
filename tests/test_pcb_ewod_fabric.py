@@ -251,7 +251,6 @@ def test_via_span_is_f_cu_to_b_cu_but_no_bottom_side_fan_track_exists():
             "grid": [6, 6],
             "sink_grid": {
                 "part": "C639448",
-                "per_tiles": 3,
                 "channel_pins": [f"OUT{i}" for i in range(16)],
             },
         },
@@ -317,24 +316,15 @@ def test_8x8_dogfood_shape_reports_truncated_edge_tiles_honestly():
     assert exp.ledger["summary"]["pads_unusable"] == 0
 
 
-def test_9x9_with_sink_grid_per_tiles_8_splits_into_four_sinks_none_overflowing():
-    """pcb-pre-place-route-blocks.md Slice 3 constraint check, run for
-    real rather than assumed: a 9x9 array has 72 driven electrodes and
-    the HV507 sink (64 channels) cannot serve all of them from ONE sink
-    instance. But ``sink_grid.per_tiles`` bins by electrode CELL
-    coordinate (``tile_key = (r0 // per_tiles, c0 // per_tiles)``, this
-    module's own sink-grid loop), not by the array's total electrode
-    count — mirroring ``tests/test_pcb_ewod_dogfood.py::_design``'s own
-    ``per_tiles=8`` (chosen there for an 8x8 field, "one sink for the
-    whole field") onto a 9x9 field does NOT reproduce a single 72-channel
-    sink: a 9-cell axis at ``per_tiles=8`` splits into TWO tile bins per
-    axis (``0..7`` and ``8``), so the sink grid mechanically becomes FOUR
-    sink instances (2x2 tile bins), each well under 64 channels — no
-    named refusal fires, because none of the four individual demands
-    (55/8/8/1) ever exceeds what one HV507 can serve. A genuine
-    single-sink overflow needs ``per_tiles=9`` (the whole field, ONE
-    tile) instead -- see the companion test below, which pins THAT named
-    refusal."""
+def test_9x9_with_channels_per_sink_64_splits_into_two_balanced_sinks():
+    """docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18" item 2 --
+    "9x9 sink packing → balanced by chain order": a 9x9 array has 72
+    driven electrodes and the HV507 sink (64 channels) cannot serve all
+    of them from ONE sink instance. The REPLACED ``per_tiles`` square-
+    block rule could land this as a lopsided 64+8 or refuse outright
+    (see the companion refusal tests below); ``channels_per_sink``
+    instead balances by CHAIN ORDER: ``ceil(72/64) = 2`` sinks, split
+    into as-equal-as-possible shares -- 36 + 36, never 64 + 8."""
     channel_pins = [f"OUT{i}" for i in range(64)]
     exp = G.expand(
         "ewod_pad_array",
@@ -343,7 +333,7 @@ def test_9x9_with_sink_grid_per_tiles_8_splits_into_four_sinks_none_overflowing(
             "grid": [9, 9],
             "sink_grid": {
                 "part": "C639448",
-                "per_tiles": 8,
+                "channels_per_sink": 64,
                 "channel_pins": channel_pins,
                 "serial_in_pin": "DIN",
                 "serial_out_pin": "DOUT",
@@ -354,34 +344,60 @@ def test_9x9_with_sink_grid_per_tiles_8_splits_into_four_sinks_none_overflowing(
 
     sink_ledger = exp.ledger["sink_grid"]
     sink_refdes = {k for k in sink_ledger if not k.startswith("_")}
-    assert sink_refdes == {
-        "ARR1_SINK_0_0",
-        "ARR1_SINK_0_1",
-        "ARR1_SINK_1_0",
-        "ARR1_SINK_1_1",
-    }
+    assert sink_refdes == {"ARR1_SINK_0", "ARR1_SINK_1"}
     n_channels = {
         refdes: len(sink_ledger[refdes]["channels"]) for refdes in sink_refdes
     }
-    assert n_channels == {
-        "ARR1_SINK_0_0": 55,
-        "ARR1_SINK_0_1": 8,
-        "ARR1_SINK_1_0": 8,
-        "ARR1_SINK_1_1": 1,
-    }
+    assert n_channels == {"ARR1_SINK_0": 36, "ARR1_SINK_1": 36}
     assert all(n <= len(channel_pins) for n in n_channels.values())
     assert sum(n_channels.values()) == 72
 
+    # Both centroids sit inside the field's own extent (the mask_open
+    # feature's polygon is the field's bounding box), and in DIFFERENT
+    # halves -- chain order groups roughly the first half of rows into
+    # one share and the second half into the other.
+    poly = exp.features[0]["geom"]["polygon"]
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    x_lo, x_hi = min(xs), max(xs)
+    y_lo, y_hi = min(ys), max(ys)
+    sink0, sink1 = sink_ledger["ARR1_SINK_0"], sink_ledger["ARR1_SINK_1"]
+    for s in (sink0, sink1):
+        assert x_lo <= s["x"] <= x_hi
+        assert y_lo <= s["y"] <= y_hi
+    assert (sink0["y"] < 0) != (sink1["y"] < 0)
 
-def test_9x9_with_a_single_whole_field_sink_refuses_the_64_channel_overflow():
-    """The genuine overflow the module docstring's own ``_SinkGrid`` class
-    already names ("A tile needing more channels than ``channel_pins``
-    provides is a hard error"): ``per_tiles=9`` bins the ENTIRE 9x9 field
-    into one tile, which needs all 72 driven electrodes' worth of
-    channels against a 64-channel part -- refused with a named reason,
-    never a silent truncation or an unnamed exception."""
+
+def test_9x9_with_channels_per_sink_80_refuses_exceeding_the_part():
+    """``channels_per_sink`` may never exceed the part's own
+    ``channel_pins`` count (rule 1 of the 2026-09-18 ruling) -- a sink
+    cannot serve more channels than the part has pins for, named at
+    parse time rather than discovered lazily during assignment."""
     channel_pins = [f"OUT{i}" for i in range(64)]
-    with pytest.raises(ValueError, match="sink_grid tile .* needs 72 escape channels"):
+    with pytest.raises(ValueError, match="exceeds channel_pins' own length"):
+        G.expand(
+            "ewod_pad_array",
+            "ARR1",
+            {
+                "grid": [9, 9],
+                "sink_grid": {
+                    "part": "C639448",
+                    "channels_per_sink": 80,
+                    "channel_pins": channel_pins,
+                    "serial_in_pin": "DIN",
+                    "serial_out_pin": "DOUT",
+                },
+            },
+        )
+
+
+def test_9x9_sink_grid_per_tiles_is_refused_with_a_named_error():
+    """``per_tiles`` (square cell blocks) was REPLACED by
+    ``channels_per_sink`` (balanced by chain order) -- forward-only, no
+    silent alias, since a spatial block count cannot map onto a channel
+    count."""
+    channel_pins = [f"OUT{i}" for i in range(64)]
+    with pytest.raises(ValueError, match="per_tiles was replaced by channels_per_sink"):
         G.expand(
             "ewod_pad_array",
             "ARR1",

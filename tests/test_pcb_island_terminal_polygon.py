@@ -231,7 +231,7 @@ def _ring_design() -> dict[str, Any]:
                     "pad_sizes": [{"name": "RESV", "cells": [[0, 0], [0, 1]]}],
                     "sink_grid": {
                         "part": _RING_LCSC,
-                        "per_tiles": 8,  # one sink for the whole 8x8 field
+                        "channels_per_sink": 64,  # one sink for the whole 8x8 field
                         "channel_pins": _RING_CHANNELS,
                         "serial_in_pin": "DIOA",
                         "serial_out_pin": "DIOB",
@@ -298,7 +298,7 @@ def _island_terminals_offered(pcb, store, ref_id: int) -> tuple[int, int]:
     fixed_nets = {str(row["net"]) for row in copper if row.get("net")}
     # `refdes == "ARR1"` (exact), not a prefix match: the array is ONE
     # component under that exact refdes (generators.py's own "one
-    # component, one pad per pin" docstring); `ARR1_SINK_0_0`'s channel
+    # component, one pad per pin" docstring); `ARR1_SINK_0`'s channel
     # pins share the SAME net names but sit nowhere near the stub/via, so
     # a prefix match would wrongly count them as pins a terminal should
     # have been offered for.

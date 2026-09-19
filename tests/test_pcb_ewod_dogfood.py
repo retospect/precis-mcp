@@ -134,7 +134,7 @@ def _design() -> dict[str, Any]:
                     "pad_sizes": [{"name": "RESV", "cells": [[0, 0], [0, 1]]}],
                     "sink_grid": {
                         "part": _HV507_LCSC,
-                        "per_tiles": 8,  # one sink for the whole 8x8 field
+                        "channels_per_sink": 64,  # one sink for the whole 8x8 field
                         "channel_pins": _HV507_CHANNELS,
                         "serial_in_pin": "DIN",
                         "serial_out_pin": "DOUT",
@@ -354,17 +354,22 @@ def test_dogfood_applies_and_places_69_channel_sink_under_the_array(pcb):
     assert ref is not None
     graph = pcb.store.pcb_graph(ref.id)
     by_refdes = {i["refdes"]: i for i in graph["instances"]}
-    assert "ARR1_SINK_0_0" in by_refdes
-    assert by_refdes["ARR1_SINK_0_0"]["layer"] == "bottom"
-    assert by_refdes["ARR1_SINK_0_0"]["x"] == pytest.approx(0.0)
-    assert by_refdes["ARR1_SINK_0_0"]["y"] == pytest.approx(0.0)
+    assert "ARR1_SINK_0" in by_refdes
+    assert by_refdes["ARR1_SINK_0"]["layer"] == "bottom"
+    # Centroid of its own share (ruling 2026-09-18, "balanced by chain
+    # order") -- not exactly the field's own geometric centre, since the
+    # merged RESV pad (a top-left corner span) drops one electrode's own
+    # chain position asymmetrically, but still well inside the field,
+    # "directly under the array" either way.
+    assert by_refdes["ARR1_SINK_0"]["x"] == pytest.approx(0.0, abs=1.0)
+    assert by_refdes["ARR1_SINK_0"]["y"] == pytest.approx(0.0, abs=1.0)
     # 64 pads - 9 auto plazas - 1 (the RESV merge removes one net) = 54
     # distinct escape pins on an 8x8 field; the merged RESV pad plus
     # whichever boundary cells lack an adjacent plaza are excluded from
     # the sink's own channel roster (see the ledger assertion below).
     gens = pcb.store.pcb_generators_for(ref.id)
     ledger = gens["ARR1"]["ledger"]
-    assert ledger["sink_grid"]["ARR1_SINK_0_0"]["channels"]
+    assert ledger["sink_grid"]["ARR1_SINK_0"]["channels"]
 
 
 @pytest.mark.slow
@@ -463,7 +468,7 @@ def test_dogfood_drc_view_findings_are_all_the_documented_side_gap(pcb, store):
     # documented side gap the module docstring used to describe); now
     # they are on correctly-opposite reported layers (F.Cu/B.Cu) and
     # never contend at all.
-    sink_refdes = "ARR1_SINK_0_0"
+    sink_refdes = "ARR1_SINK_0"
     two_refdes_pads = [
         p for p in all_pads if str(p.get("refdes")) in ("ARR1", sink_refdes)
     ]

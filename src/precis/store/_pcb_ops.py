@@ -2377,14 +2377,14 @@ class PcbMixin:
         net-retirement query below already uses, generalised to
         instances/components/pins too (round 7, ``sink_grid``): a
         generator that emits SECONDARY components under its own name
-        (``ewod_pad_array``'s ``{name}_SINK_{r}_{c}`` bottom-side sink
-        instances) would otherwise orphan them on a changed-params
-        re-apply — the exact-refdes-only query above only ever retired
-        the array's own single component, never the sinks it also
-        created, so a sink whose channel wiring changed (e.g. a
-        different ``per_tiles``) would keep its STALE pins/netconns
-        forever while its own escape nets got silently retired out from
-        under it by the net-LIKE query below."""
+        (``ewod_pad_array``'s ``{name}_SINK_{i}`` bottom-side sink
+        instances, chain-index ``i``) would otherwise orphan them on a
+        changed-params re-apply — the exact-refdes-only query above only
+        ever retired the array's own single component, never the sinks it
+        also created, so a sink whose channel wiring changed (e.g. a
+        different ``channels_per_sink``) would keep its STALE pins/
+        netconns forever while its own escape nets got silently retired
+        out from under it by the net-LIKE query below."""
         rows = conn.execute(
             "SELECT instance_id, component_id FROM pcb_instances "
             "WHERE ref_id = %s AND retired_at IS NULL "

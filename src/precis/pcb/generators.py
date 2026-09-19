@@ -148,11 +148,19 @@ necessarily still-open spec questions):
   own zero-deflection ends (the existing corner-flattening machinery)
   already connect cleanly to the next unit's, which is exactly the solid
   copper a merged pad's own internal seam should be.
-- **Sink-grid emission — resolved round 7, mechanically.** ``sink_grid``
-  (:class:`_SinkGrid`) now emits one bottom-side component instance per
-  ``per_tiles`` x ``per_tiles`` tile block, wired to that block's own
-  USABLE electrode escape nets (row-major channel assignment against
-  ``channel_pins``), chained DIN->DOUT across tiles in row-major order,
+- **Sink-grid emission — resolved round 7, mechanically; rebalanced by
+  chain order per the 2026-09-18 ruling.** ``sink_grid``
+  (:class:`_SinkGrid`) emits one bottom-side component instance per
+  ``channels_per_sink`` USABLE electrode escapes, assigned in
+  **serpentine (boustrophedon) chain order** — the discovery loop's own
+  row-major order, direction alternating on odd rows — and split into
+  as-equal-as-possible shares (``docs/backlog/pcb-ewod-multitile.md``
+  "Rulings 2026-09-18" item 2: square-block ``per_tiles`` binning could
+  land a 9x9 field's 72 electrodes as a lopsided 64+8 across two
+  64-channel sinks; balancing by chain order instead gives 36+36).
+  ``per_tiles`` is REMOVED, forward-only (no silent alias — a spatial
+  block count cannot map onto a channel count); ``_parse_sink_grid``
+  refuses it by name. Sinks are chained DIN->DOUT in chain-index order,
   and (optionally) tied into a shared top-plate/complement-rail net. It
   is deliberately PART-AGNOSTIC (:func:`expand` is pure, no DB reads, so
   it cannot look up a real part's own pin names) — the caller names
@@ -166,8 +174,8 @@ necessarily still-open spec questions):
   the router's own via F.Cu/B.Cu transition reference, not a pad-layer
   override; a sink placed directly under the array is correctly read as a
   different physical side by courtyard-overlap/clearance checks. Pin-to-
-  channel assignment order is documented in the ledger (auto row-major;
-  the pre-place-route block spec will revisit the whole scheme).
+  channel assignment order is documented in the ledger (chain order, see
+  above; the pre-place-route block spec will revisit the whole scheme).
 - ``corner_radius`` (the electrode's own OUTER 4 corners — a separate
   concept from the tooth TRANSITION rounding :func:`_s_curve` now does
   internally, radius=``tooth_depth``, not user-tunable) is accepted
@@ -1454,12 +1462,14 @@ def _parse_pad_sizes(
 @dataclass
 class _SinkGrid:
     """Resolved ``sink_grid`` param (round 7, docs/backlog/
-    pcb-ewod-multitile.md's "sink_grid emission — part-agnostic" decision):
-    a regular grid of bottom-side sink component instances, one per
-    ``per_tiles`` x ``per_tiles`` block of electrode CELLS, each wired to
-    the escape nets of the usable electrodes its own block owns, chained
-    DIN->DOUT in row-major tile order, and (optionally) tied into a shared
-    top-plate/complement-drive rail net.
+    pcb-ewod-multitile.md's "sink_grid emission — part-agnostic" decision;
+    channel assignment rebalanced by the 2026-09-18 ruling, "9x9 sink
+    packing → balanced by chain order"): a set of bottom-side sink
+    component instances, one per ``channels_per_sink`` USABLE electrode
+    escapes assigned in serpentine CHAIN order (see the main loop's own
+    ``chain_order`` comment), chained DIN->DOUT in that same chain-index
+    order, and (optionally) tied into a shared top-plate/complement-drive
+    rail net.
 
     **Deliberately part-agnostic.** :func:`expand` is pure -- no DB reads
     -- so it cannot look up an arbitrary LCSC part's (or local footprint's)
@@ -1472,18 +1482,22 @@ class _SinkGrid:
     footprint at all -- it just has to name pins consistently with
     whatever the real part/footprint calls them.
 
-    **Channel assignment is mechanical, not optimal**: row-major over the
-    tile's own USABLE (escaped, non-reserved) electrodes, zipped against
-    ``channel_pins`` in the order given -- "the block spec will revisit"
-    (docs/backlog/pcb-ewod-multitile.md's own round-6 handoff note). A
-    tile needing more channels than ``channel_pins`` provides is a hard
-    error (the part cannot serve that many escapes); a tile needing fewer
-    just leaves the tail of ``channel_pins`` unused for that sink."""
+    **Channel assignment is balanced, not spatial**: ``sink_count =
+    ceil(n_driven / channels_per_sink)``, then ``n_driven`` electrodes (in
+    chain order) split into ``sink_count`` shares of ``n_driven //
+    sink_count`` each, the FIRST ``n_driven % sink_count`` shares taking
+    one extra -- never a greedy fill-then-spill (72 driven electrodes at
+    ``channels_per_sink=64`` is 2 sinks of 36, not one at 64 and one at 8).
+    ``channels_per_sink`` defaults to the whole part (``len(channel_pins)``)
+    and is refused above that -- a sink cannot serve more channels than the
+    part has pins for. The former square-block ``per_tiles`` param is
+    REMOVED (forward-only; :func:`_parse_sink_grid` refuses it by name) --
+    a spatial block count cannot map onto a channel count."""
 
     part: str | None
     footprint: str | None
     footprint_label: str
-    per_tiles: int
+    channels_per_sink: int
     channel_pins: list[str]
     serial_in_pin: str
     serial_out_pin: str
@@ -1498,6 +1512,15 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
     cfg = params.get("sink_grid")
     if cfg is None:
         return None
+    if "per_tiles" in cfg:
+        raise ValueError(
+            "ewod_pad_array: sink_grid.per_tiles was replaced by "
+            "channels_per_sink (balanced by chain order, ruling "
+            "2026-09-18) -- a spatial block count cannot map onto a "
+            "channel count, so there is no silent alias; set "
+            "sink_grid.channels_per_sink instead (default = "
+            "len(channel_pins))"
+        )
     part = cfg.get("part")
     footprint = cfg.get("footprint")
     if bool(part) == bool(footprint):
@@ -1508,9 +1531,6 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
             "wires connections to the sink, it never authors the sink's "
             "own footprint geometry"
         )
-    per_tiles = int(cfg.get("per_tiles") or 0)
-    if per_tiles < 1:
-        raise ValueError("ewod_pad_array: sink_grid.per_tiles must be >= 1")
     channel_pins = [str(p) for p in (cfg.get("channel_pins") or [])]
     if not channel_pins:
         raise ValueError(
@@ -1518,12 +1538,21 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
             "pin (the part-agnostic design has no other way to know what "
             "this part calls its channel pins)"
         )
+    channels_per_sink = int(cfg.get("channels_per_sink") or len(channel_pins))
+    if channels_per_sink < 1:
+        raise ValueError("ewod_pad_array: sink_grid.channels_per_sink must be >= 1")
+    if channels_per_sink > len(channel_pins):
+        raise ValueError(
+            f"ewod_pad_array: sink_grid.channels_per_sink ({channels_per_sink}) "
+            f"exceeds channel_pins' own length ({len(channel_pins)}) -- a "
+            "sink cannot serve more channels than the part has pins for"
+        )
     top_plate_pin = cfg.get("top_plate_pin")
     return _SinkGrid(
         part=str(part) if part else None,
         footprint=str(footprint) if footprint else None,
         footprint_label=str(cfg.get("label") or footprint or f"sink:{part}"),
-        per_tiles=per_tiles,
+        channels_per_sink=channels_per_sink,
         channel_pins=channel_pins,
         serial_in_pin=str(cfg.get("serial_in_pin") or "DIN"),
         serial_out_pin=str(cfg.get("serial_out_pin") or "DOUT"),
@@ -1592,15 +1621,15 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     ledger_pads: dict[str, dict[str, Any]] = {}
     ledger_plazas: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
-    # `sink_grid`'s own per-tile channel roster, built up in the SAME
-    # row-major electrode-escape scan below rather than a second pass --
-    # (tile_row, tile_col) -> [(anchor_row, anchor_col, pin), ...] in the
-    # exact order electrodes are visited (row-major), which is the
-    # "row-major channel assignment" the module docstring promises. Only
-    # ever populated for USABLE escapes (an unusable pad has no via, so
-    # binding a sink channel to it would wire a pad-to-pad net with no
-    # copper between them).
-    tile_pin_lists: dict[tuple[int, int], list[tuple[int, int, str]]] = {}
+    # `sink_grid`'s own chain roster, built up in the SAME row-major
+    # electrode-escape scan below rather than a second pass --
+    # [(anchor_row, anchor_col, pin), ...] in the exact order electrodes
+    # are visited (row-major); reordered into serpentine chain order
+    # further down, once every electrode's usability is known. Only ever
+    # populated for USABLE escapes (an unusable pad has no via, so binding
+    # a sink channel to it would wire a pad-to-pad net with no copper
+    # between them).
+    chain_pins: list[tuple[int, int, str]] = []
     x_anchor = float(params.get("x", 0.0))
     y_anchor = float(params.get("y", 0.0))
 
@@ -1793,8 +1822,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             _fabric_tile(slot_key)["emitted"] += 1
             fabric_totals["emitted"] += 1
             if sink_cfg is not None:
-                tile_key = (r0 // sink_cfg.per_tiles, c0 // sink_cfg.per_tiles)
-                tile_pin_lists.setdefault(tile_key, []).append((r0, c0, pin))
+                chain_pins.append((r0, c0, pin))
 
     # -- centre spare slots (every plaza gets one, whether or not any of
     # its 8 directional slots ended up used) --------------------------
@@ -1815,40 +1843,53 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             f"reserve: {leftover!r} does not name a real plaza slot -- ignored"
         )
 
-    # -- sink grid (round 7): bottom-side switch/connector instances, one
-    # per `per_tiles` x `per_tiles` block, wired to the block's own
-    # escaped electrode nets + a DIN->DOUT daisy chain + an optional
-    # shared top-plate/complement rail -- see _SinkGrid's own docstring
-    # for the full design. Emitted here (rather than folded into the main
-    # loop above) because the daisy chain needs every tile's identity
-    # decided FIRST, in row-major tile order, not electrode-discovery
-    # order (a tile with its escape-adjacent electrode near the far edge
-    # of the block could otherwise be discovered out of tile order).
+    # -- sink grid: bottom-side switch/connector instances, BALANCED BY
+    # CHAIN ORDER (docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-18"
+    # item 2 -- replaces the old square-block `per_tiles` binning, which
+    # could land a 9x9 field's 72 driven electrodes as a lopsided 64+8
+    # across two 64-channel sinks instead of a balanced 36+36). Emitted
+    # here (rather than folded into the main loop above) because the
+    # daisy chain and the equal-share split both need every driven
+    # electrode's identity decided FIRST.
+    #
+    # `chain_order` is the serpentine (boustrophedon) reordering of
+    # `chain_pins`: grouped by each electrode's own anchor row `r0` (a
+    # merged span's top row), each row's own already-ascending-`c0` items
+    # are used as discovered on even rows and REVERSED on odd rows -- so
+    # consecutive chain positions land on spatially adjacent electrodes
+    # across a row's own end, not a jump back to column 0. `sink_count =
+    # ceil(n_driven / channels_per_sink)`; the `n_driven` chain positions
+    # then split into `sink_count` shares of `n_driven // sink_count`
+    # each, the FIRST `n_driven % sink_count` shares taking one extra --
+    # the standard as-equal-as-possible partition, never a greedy
+    # fill-then-spill.
+    chain_order: list[tuple[int, int, str]] = []
+    if sink_cfg is not None:
+        by_row: dict[int, list[tuple[int, int, str]]] = {}
+        for r0, c0, pin in chain_pins:
+            by_row.setdefault(r0, []).append((r0, c0, pin))
+        for row_r0 in sorted(by_row):
+            row_items = by_row[row_r0]
+            chain_order.extend(reversed(row_items) if row_r0 % 2 else row_items)
+
     sink_components: list[dict[str, Any]] = []
     sink_connections: list[dict[str, Any]] = []
     ledger_sinks: dict[str, Any] = {}
     if sink_cfg is not None:
+        n_driven = len(chain_order)
+        sink_count = math.ceil(n_driven / sink_cfg.channels_per_sink) if n_driven else 0
+        base, extra = divmod(n_driven, sink_count) if sink_count else (0, 0)
         prev_out_net: str | None = None
-        for tile_key in sorted(tile_pin_lists):
-            tr, tc = tile_key
-            channel_pins_here = tile_pin_lists[tile_key]  # already row-major
-            if len(channel_pins_here) > len(sink_cfg.channel_pins):
-                raise ValueError(
-                    f"ewod_pad_array: sink_grid tile ({tr},{tc}) needs "
-                    f"{len(channel_pins_here)} escape channels but "
-                    f"sink_grid.channel_pins only names "
-                    f"{len(sink_cfg.channel_pins)} -- this part cannot "
-                    "serve that many electrodes per tile"
-                )
-            r_lo = tr * sink_cfg.per_tiles
-            r_hi = min(rows - 1, r_lo + sink_cfg.per_tiles - 1)
-            c_lo = tc * sink_cfg.per_tiles
-            c_hi = min(cols - 1, c_lo + sink_cfg.per_tiles - 1)
-            sink_refdes = f"{name}_SINK_{tr}_{tc}"
+        cursor = 0
+        for i in range(sink_count):
+            share_n = base + (1 if i < extra else 0)
+            share = chain_order[cursor : cursor + share_n]
+            cursor += share_n
+            sink_refdes = f"{name}_SINK_{i}"
             channel_map: dict[str, str] = {}
             pin_decls: list[dict[str, Any]] = []
-            for i, (_r0, _c0, elec_pin) in enumerate(channel_pins_here):
-                ch_pin = sink_cfg.channel_pins[i]
+            for j, (_r0, _c0, elec_pin) in enumerate(share):
+                ch_pin = sink_cfg.channel_pins[j]
                 channel_map[ch_pin] = elec_pin
                 pin_decls.append({"name": ch_pin})
                 sink_connections.append(
@@ -1871,20 +1912,22 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                     {"net": net_name, "refdes": sink_refdes, "pin": pn}
                 )
 
+            mean_r0 = sum(r0 for r0, _c0, _pin in share) / len(share)
+            mean_c0 = sum(c0 for _r0, c0, _pin in share) / len(share)
             comp: dict[str, Any] = {
                 "refdes": sink_refdes,
-                "label": f"{name} sink ({tr},{tc})",
+                "label": f"{name} sink {i}",
                 "footprint": sink_cfg.footprint_label,
-                "x": layout.cx((c_lo + c_hi) / 2.0),
-                "y": layout.cy((r_lo + r_hi) / 2.0),
+                "x": layout.cx(mean_c0),
+                "y": layout.cy(mean_r0),
                 "rot": 0.0,
                 "layer": "bottom",
                 # A sink's whole reason to exist is sitting directly under
-                # ITS OWN tile block (the escape-locality argument the
-                # spec's own "regular grid of HV switches directly under
-                # the array" language makes) -- letting the placer move it
-                # would defeat that, same as the array's own `fixed=
-                # 'both'` above.
+                # ITS OWN share of electrodes (the escape-locality
+                # argument the spec's own "regular grid of HV switches
+                # directly under the array" language makes) -- letting
+                # the placer move it would defeat that, same as the
+                # array's own `fixed='both'` above.
                 "fixed": "both",
                 "pins": pin_decls,
                 "roles": ["ewod_sink"],
@@ -1904,17 +1947,18 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             sink_connections.append(
                 {"net": in_net, "refdes": sink_refdes, "pin": sink_cfg.serial_in_pin}
             )
-            out_net = f"{name}_serial_{tr}_{tc}"
+            out_net = f"{name}_serial_{i}"
             sink_connections.append(
                 {"net": out_net, "refdes": sink_refdes, "pin": sink_cfg.serial_out_pin}
             )
             prev_out_net = out_net
 
             ledger_sinks[sink_refdes] = {
-                "tile": [tr, tc],
+                "index": i,
                 "x": comp["x"],
                 "y": comp["y"],
                 "channels": channel_map,
+                "share": share_n,
             }
         if ledger_sinks:
             ledger_sinks["_serial_in_net"] = f"{name}_serial_in"
@@ -1923,8 +1967,8 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 ledger_sinks["_top_plate_net"] = sink_cfg.top_plate_net
         else:
             warnings.append(
-                "sink_grid: configured but no tile claimed any usable "
-                "escape -- check per_tiles/plaza layout"
+                "sink_grid: configured but no electrode claimed a usable "
+                "escape -- check channels_per_sink/plaza layout"
             )
 
     if not pads:
@@ -2047,7 +2091,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             {
                 "part": sink_cfg.part,
                 "footprint": sink_cfg.footprint,
-                "per_tiles": sink_cfg.per_tiles,
+                "channels_per_sink": sink_cfg.channels_per_sink,
                 "channel_pins": sink_cfg.channel_pins,
                 "serial_in_pin": sink_cfg.serial_in_pin,
                 "serial_out_pin": sink_cfg.serial_out_pin,

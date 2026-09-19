@@ -211,11 +211,11 @@ def test_pads_not_a_perfect_square_needs_explicit_grid(pcb):
         pcb.put(id="ewod-bad", args=_array_args(pads=10))
 
 
-# ── sink_grid (round 7) ──────────────────────────────────────────────────
+# ── sink_grid (round 7; balanced-by-chain-order ruling 2026-09-18) ───────
 def _sink_args(**overrides):
     sink_grid = {
         "part": "C639448",
-        "per_tiles": 3,
+        "channels_per_sink": 8,
         "channel_pins": [f"OUT{i}" for i in range(16)],
         "top_plate_pin": "CPLT",
         "power": {"VDD": "VCC_HV", "GND": "GND"},
@@ -230,24 +230,33 @@ def test_sink_grid_needs_exactly_one_of_part_or_footprint(pcb):
             id="ewod-bad",
             args=_array_args(
                 grid=[6, 6],
-                sink_grid={"per_tiles": 3, "channel_pins": ["A"]},
+                sink_grid={"channel_pins": ["A"]},
             ),
         )
 
 
-def test_sink_grid_emits_one_bottom_side_instance_per_tile_block(pcb):
+def test_sink_grid_per_tiles_is_refused_with_a_named_error(pcb):
+    with pytest.raises(BadInput, match="per_tiles was replaced by channels_per_sink"):
+        pcb.put(
+            id="ewod-bad",
+            args=_sink_args(sink_grid={"per_tiles": 3}),
+        )
+
+
+def test_sink_grid_emits_one_bottom_side_instance_per_channels_per_sink_share(pcb):
     pcb.put(id="ewod-sink-1", args=_sink_args())
     ref = pcb.store.get_ref(kind="pcb", id="ewod-sink-1")
     assert ref is not None
     graph = pcb.store.pcb_graph(ref.id)
     by_refdes = {i["refdes"]: i for i in graph["instances"]}
-    # 6x6 grid, per_tiles=3 -> a 2x2 grid of tile blocks -> 4 sinks.
+    # 6x6 grid -> 32 driven electrodes (36 cells - 4 auto plazas);
+    # channels_per_sink=8 -> ceil(32/8) = 4 equal shares of 8, chain-ordered.
     sink_refdes = {r for r in by_refdes if r.startswith("ARR1_SINK_")}
     assert sink_refdes == {
-        "ARR1_SINK_0_0",
-        "ARR1_SINK_0_1",
-        "ARR1_SINK_1_0",
-        "ARR1_SINK_1_1",
+        "ARR1_SINK_0",
+        "ARR1_SINK_1",
+        "ARR1_SINK_2",
+        "ARR1_SINK_3",
     }
     for r in sink_refdes:
         assert by_refdes[r]["layer"] == "bottom"
@@ -259,9 +268,10 @@ def test_sink_grid_channels_bind_to_the_electrode_escape_nets(pcb):
     assert ref is not None
     gens = pcb.store.pcb_generators_for(ref.id)
     ledger = gens["ARR1"]["ledger"]["sink_grid"]
-    # 3x3 full block has one plaza (auto rule) -> 8 usable electrodes.
-    sink0 = ledger["ARR1_SINK_0_0"]
-    assert sink0["tile"] == [0, 0]
+    # 32 driven electrodes / channels_per_sink=8 -> 4 equal shares of 8.
+    sink0 = ledger["ARR1_SINK_0"]
+    assert sink0["index"] == 0
+    assert sink0["share"] == 8
     assert len(sink0["channels"]) == 8
     graph = pcb.store.pcb_graph(ref.id)
     nets_by_name = {n["name"]: n for n in graph["nets"]}
@@ -269,18 +279,18 @@ def test_sink_grid_channels_bind_to_the_electrode_escape_nets(pcb):
         members = {
             (m["refdes"], m["pin"]) for m in nets_by_name[f"ARR1_{elec_pin}"]["members"]
         }
-        assert ("ARR1_SINK_0_0", ch_pin) in members
+        assert ("ARR1_SINK_0", ch_pin) in members
         assert ("ARR1", elec_pin) in members
 
 
-def test_sink_grid_daisy_chains_din_dout_across_tiles(pcb):
+def test_sink_grid_daisy_chains_din_dout_across_sinks(pcb):
     pcb.put(id="ewod-sink-1", args=_sink_args())
     ref = pcb.store.get_ref(kind="pcb", id="ewod-sink-1")
     assert ref is not None
     gens = pcb.store.pcb_generators_for(ref.id)
     ledger = gens["ARR1"]["ledger"]["sink_grid"]
     assert ledger["_serial_in_net"] == "ARR1_serial_in"
-    assert ledger["_serial_out_net"] == "ARR1_serial_1_1"
+    assert ledger["_serial_out_net"] == "ARR1_serial_3"
     graph = pcb.store.pcb_graph(ref.id)
     members_by_net = {n["name"]: n["members"] for n in graph["nets"]}
     # Every intermediate daisy net has exactly 2 endpoints (one sink's DOUT,
@@ -307,11 +317,13 @@ def test_sink_grid_top_plate_rail_fans_out_to_every_sink(pcb):
     assert len(members_by_net["ARR1_top_plate"]) == 4  # one per sink
 
 
-def test_sink_grid_too_few_channel_pins_is_bad_input(pcb):
-    with pytest.raises(BadInput, match="channel_pins only names"):
+def test_sink_grid_channels_per_sink_exceeding_channel_pins_is_bad_input(pcb):
+    with pytest.raises(BadInput, match="exceeds channel_pins' own length"):
         pcb.put(
             id="ewod-bad",
-            args=_sink_args(sink_grid={"channel_pins": ["OUT0"]}),
+            args=_sink_args(
+                sink_grid={"channel_pins": ["OUT0"], "channels_per_sink": 5}
+            ),
         )
 
 
@@ -320,18 +332,21 @@ def test_sink_grid_changed_params_retires_old_sinks_too(pcb):
     ref = pcb.store.get_ref(kind="pcb", id="ewod-sink-1")
     assert ref is not None
 
-    # per_tiles=6 collapses the 2x2 sink grid down to a single sink -- 32
-    # usable electrodes (36 cells - 4 plazas) now need one sink's worth of
-    # channel_pins, so widen it past the base fixture's 16.
+    # channels_per_sink=32 collapses the 4-sink split down to a single
+    # sink -- 32 usable electrodes (36 cells - 4 plazas) now need one
+    # sink's worth of channel_pins, so widen it past the base fixture's 16.
     pcb.put(
         id="ewod-sink-1",
         args=_sink_args(
-            sink_grid={"per_tiles": 6, "channel_pins": [f"OUT{i}" for i in range(32)]}
+            sink_grid={
+                "channels_per_sink": 32,
+                "channel_pins": [f"OUT{i}" for i in range(32)],
+            }
         ),
     )
     graph = pcb.store.pcb_graph(ref.id)
     sink_refdes = {i["refdes"] for i in graph["instances"] if "_SINK_" in i["refdes"]}
-    assert sink_refdes == {"ARR1_SINK_0_0"}
+    assert sink_refdes == {"ARR1_SINK_0"}
     with pcb.store.pool.connection() as conn:
         n_retired_sinks = conn.execute(
             "SELECT count(*) FROM pcb_instances WHERE ref_id=%s "
@@ -340,8 +355,8 @@ def test_sink_grid_changed_params_retires_old_sinks_too(pcb):
         ).fetchone()
     # All 4 old sinks are retired before the new one is inserted (retire
     # happens on the OLD refdes set, independent of what the new expansion
-    # names) -- the surviving "ARR1_SINK_0_0" above is a FRESH row, not
-    # the old one kept alive.
+    # names) -- the surviving "ARR1_SINK_0" above is a FRESH row, not the
+    # old one kept alive.
     assert n_retired_sinks[0] == 4
 
 

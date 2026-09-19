@@ -172,7 +172,7 @@ def test_courtyard_overlap_a_refdes_absent_from_the_map_defaults_to_top():
 
 @pytest.mark.slow
 def test_dogfood_sink_pads_land_on_bottom_copper_in_the_fab_svg(pcb):
-    """``ARR1_SINK_0_0`` is authored ``layer='bottom'`` and sits directly
+    """``ARR1_SINK_0`` is authored ``layer='bottom'`` and sits directly
     under the ``ARR1`` array (round-7 ``sink_grid`` — see ``tests.
     test_pcb_ewod_dogfood``'s module docstring). Its pads must now flash
     on ``B_Cu`` in the fab SVG (:mod:`precis.pcb.gerber_view`'s own hover
@@ -181,8 +181,8 @@ def test_dogfood_sink_pads_land_on_bottom_copper_in_the_fab_svg(pcb):
     slug = _seed(pcb)
     resp = pcb.get(id=slug, view="svg", args={"level": "fab"})
     titles = re.findall(r"<title>([^<]*)</title>", resp.body)
-    sink_titles = [t for t in titles if "of ARR1_SINK_0_0" in t]
-    assert sink_titles, "expected at least one pad title naming ARR1_SINK_0_0"
+    sink_titles = [t for t in titles if "of ARR1_SINK_0" in t]
+    assert sink_titles, "expected at least one pad title naming ARR1_SINK_0"
     assert all(t.startswith("B_Cu") for t in sink_titles), sink_titles
     assert not any(t.startswith("F_Cu") for t in sink_titles), sink_titles
 
@@ -190,7 +190,7 @@ def test_dogfood_sink_pads_land_on_bottom_copper_in_the_fab_svg(pcb):
 @pytest.mark.slow
 def test_dogfood_drc_no_longer_reports_array_vs_sink_cross_layer_clearance(pcb):
     """The DRC-facing half of the same fact: ``ARR1`` (top) and
-    ``ARR1_SINK_0_0`` (bottom) share several nets (the sink's channel
+    ``ARR1_SINK_0`` (bottom) share several nets (the sink's channel
     pins ARE the electrodes' own escape nets) but even a FOREIGN-net pair
     between the two must now be silent -- they are on opposite sides of
     the board, never coplanar. Round-8's ``test_dogfood_drc_view_
@@ -202,9 +202,9 @@ def test_dogfood_drc_no_longer_reports_array_vs_sink_cross_layer_clearance(pcb):
     assert ref is not None
     pads = pcb._drc_pads(ref.id, _LAYERS)
     two_refdes_pads = [
-        p for p in pads if str(p.get("refdes")) in ("ARR1", "ARR1_SINK_0_0")
+        p for p in pads if str(p.get("refdes")) in ("ARR1", "ARR1_SINK_0")
     ]
-    assert any(p.get("refdes") == "ARR1_SINK_0_0" for p in two_refdes_pads)
+    assert any(p.get("refdes") == "ARR1_SINK_0" for p in two_refdes_pads)
     model = {"layers": _LAYERS, "copper": [], "pads": two_refdes_pads}
     errors = [f for f in drc.check_clearance(model, _CAP4) if f.severity == "error"]
     detail = "\n".join(

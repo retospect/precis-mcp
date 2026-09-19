@@ -578,7 +578,7 @@ each is now a build item, not a question:**
    assigned in serpentine chain order in equal shares (72 → 36 + 36), each
    sink placed under its own share. Same rule at any size. Rejected:
    greedy 64 + 8 (one chip at 12 %, all escapes converge), trimming to 64
-   driven (not the 9×9).
+   driven (not the 9×9). BUILT 2026-09-19 in tree.
 3. **HV separation → per-copper-class IPC-2221B Table 6-1 rows, valid
    for ANY actuation pattern.** Electrode gaps (top, under parylene +
    oil) stay advisory — the dielectric stack owns them. Plaza internals
@@ -605,6 +605,75 @@ each is now a build item, not a question:**
    temperature — a heater-loop sensor. Intake: `op='footprint'` on the
    chosen C-number, verify `view='footprints'` shows no synthesized pin;
    the exposed pad needs paste/stencil care on B.Cu under the array.
+
+**Rulings 2026-09-19 (Reto, from reviewing prod `ewod-dogfood-2` in the
+web view) — four more, each a build item:**
+
+6. **Sink channel pins are freely swappable → wire pin swap through
+   `op='route'`.** Any electrode may drive any HV507 channel (the
+   chain order is firmware's problem), so the generator emits ONE
+   :class:`precis.pcb.pinswap.PinSwapGroup`-shaped admissible set per
+   sink (all `channel_pins`, no exclusions) as authored data, and the
+   route job resolves it — with real per-pin offsets from the cached
+   footprint (`pinswap.group_from_pads`) — into
+   `OptimizeConfig.pin_swap_groups`. Today that field is never populated
+   from the tool surface (`precis-pcb-route-help.md` "PIN_SWAP needs
+   footprint pad-offset + admissible-pin data this tool surface does not
+   supply"); this closes that documented gap. Expected effect: the
+   gr347037 congestion race disappears — each plaza via takes the nearest
+   free ring pad, and the swap decisions persist through the existing
+   `pcb_pin_swaps_replace_derived` path (already written back per run).
+7. **Fabric escapes are single-layer B.Cu, no crossovers.** The escape
+   is plaza via → B.Cu track → sink pad, nothing else: a net class may
+   name its allowed `layers` (`["B.Cu"]` for the `{name}_*` escape nets,
+   emitted by the generator next to the existing electrode-gap class),
+   and `_realize_maze` passes that per-net list to `maze.route(layers=)`
+   instead of the global `signal_layers`. With ruling 6 the assignment
+   exists that makes the B.Cu fan planar; a net that still cannot route
+   single-layer fails visibly (`no_path`) rather than sprouting a via.
+8. **Plaza slots: maximise clearance to foreign electrode copper, not
+   ring uniformity.** Round 2 chose a uniform 8-slot ring because a
+   uniform 3×3 square grid was unsatisfiable at the spec's numbers
+   (`_plaza_capacity` docstring). Reto's point stands for the cardinal
+   slots though: for a via-via floor `d`, a ring needs radius 1.307 d
+   while an axis-aligned layout puts the cardinals at `d` from centre —
+   0.3 d more edge margin. Build: replace the one-radius ring with the
+   two-parameter axis-aligned family (cardinals at ±a on the axes,
+   diagonals at (±b, ±b)) and pick `(a, b)` by maximising the minimum
+   clearance from any slot to any FOREIGN electrode's copper, subject to
+   every slot pair ≥ `via_dia + hv_separation` and the same
+   foreign-corner constraint round 2 already solves. Keep
+   `_plaza_capacity`'s `min_half`/`min_pitch` contract (validated the
+   same way); the ledger keeps the 8 slot names. The centre spare slot
+   stays. Composes with ruling 1 (the corridor is the diagonal slot's
+   stub path).
+9. **Add a Teensy 4.0 as the controller** (`U_MCU`, top side, outside
+   the array, near the serial-in end of the chain). Authored as a LOCAL
+   footprint (PJRC's own drawing is the source: 2 × 14 through-hole pins
+   at 2.54 mm, rows 15.24 mm apart, 17.78 × 35.56 mm body — VERIFY the
+   pin count/positions against pjrc.com/teensy/card10a_rev2.pdf before
+   the footprint lands; the bottom SMD pads are NOT modelled). Wiring:
+   sink chain `DIN`/`CLK`/`LE`/`BL`/`POL` (whatever `sink_grid` names —
+   today only `serial_in_pin`/`serial_out_pin` are parametrised; add the
+   clock/latch/blank/polarity pins the HV507 actually has) from Teensy
+   GPIOs; I2C `SDA`/`SCL` (pins 18/19) to U_TEMP; `GND`; Teensy `VIN`
+   from the board's logic rail. **Level shifting is part of this item —
+   settled from the datasheet (Microchip DS20005845A): HV507 VDD is
+   4.5–5.5 V and `V_IH` = VDD − 0.9 V (≥ 4.1 V at 5 V), so the Teensy's
+   3.3 V outputs cannot drive it directly.** One 74HCT245-class octal
+   buffer (HCT inputs accept 3.3 V, outputs at 5 V; `U_LVL`, top side,
+   between Teensy and sink chain) shifts DIN/CLK/LE/BL/POL; the HV507's
+   DOUT back to the Teensy is 5 V into a 3.3 V-only pin — take it through
+   the same buffer powered from 3.3 V or drop it (the chain end is only
+   needed for read-back). `ewod-dogfood-2` acceptance moves to
+   "fully placed + fully routed (62/62 + the Teensy nets) on prod".
+
+Also from the same review: the web view shows F.Cu tracks ending over
+bottom-side SMD pads (sink / U_TEMP) with no connection. That is the
+layer-blind-router signature gr346744 already fixed on `main` — prod is
+still at 8e0099fc, which predates every route fix; the render is expected
+to change only after the next deploy + `op='route'`. If it persists after
+that, it is a new defect.
 
 Decided 2026-09-13 (Reto): no via-in-pad anywhere (fab cost) → padless
 via plazas; plaza vias plain tented, maybe bare — no fill; sticker
