@@ -435,27 +435,43 @@ collapses the group to one row. A root with no intent is not a group.
 **Print groups — ``intent='manufacture'``** (round B2, 2026-09-19):
 :mod:`precis_se.manufacture`, the real part, print-in-place.
 ``realize(block=<group root>, strategy='manufacture', gap=, fit=,
-blend=, pitch=)`` builds ONE sampled-field solid per group in the root's
-frame by field/CSG ops only — no mesh is ever operated on. Every connect
-between two members is classified *rigid* (no DOF — ``rigid``/
+blend=, pitch=)`` builds ONE cad design per group in the root's frame
+whose root is a **mixed analytic+field expression** (the mixed root of
+2026-09-19): every printed member's own node tree placed at its pose
+(:func:`precis.cad.scene.placed_nodes` — analytic, holes and their
+printed-hole compensation intact), a ``field:`` leaf ONLY where a field
+op is required, CSG/field ops only — no mesh is ever operated on. Every
+connect between two members is classified *rigid* (no DOF — ``rigid``/
 ``captive``/``axial``, or an undeclared joint, said so) or *DOF*
 (:data:`precis_se.drc._MOVING_CLASSES`); rigid pairs of printed members
-**fuse** (min-union, :func:`precis.cad.fold.smooth_min_np` of width
-``blend`` at the seam — the DSL's ``blend:`` semantics, ``0`` = plain
-min); a DOF pair gets its gap **seam-locally by construction** — ``A' =
-A \\ dilate(B, gap/2)``, ``B' = B \\ dilate(A, gap/2)``, the dilation
-:func:`precis.cad.fieldops.offset` on the PARTNER's re-distanced sampled
-field, so a rigid seam elsewhere on ``A`` stays as sampled (face-to-face
-and pin-in-bore come out at ``gap``; a re-entrant corner's worst case is
-``gap/2``), plus half a pitch because the kernel's re-distance binarises,
-so ``gap`` and ``fit`` are floors and the report quotes the **measured**
-separation per joint (the other side's re-distanced SDF over this side's
-mesh vertices); a DOF pair a rigid path joins anyway is ``dof_bridged``
-(error, export refused); a bought member is a **cavity** — its B1
-stand-in re-distanced, dilated by ``fit`` (+ half a pitch), subtracted —
-with its top layer in the chosen frame, read off the sampled cavity
-field (exact to the grid in any frame), reported as the mid-print
-**pause** (no insertion-path search; the ``bambuuzle`` rung); an elided
+**fuse** — ``blend=0`` (default) keeps each member its own component
+and the whole is their hard min-union, cuts included; ``blend>0``
+(:func:`precis.cad.fold.smooth_min_np`, the DSL's ``blend:``) chains
+the members of a fused component into one cad component ``<a>+<b>``
+with the blend on each later member's base node (the chain fold means a
+later member's cuts also cut earlier members where they overlap — a
+``blend_chain`` info says so); a DOF pair gets its gap **seam-locally by
+construction** — ``A' = A \\ dilate(B, gap/2)``, ``B' = B \\ dilate(A,
+gap/2)`` — each eroded member ONE ``field:`` leaf on its own AABB-sized
+grid at the group pitch (origin snapped to the export lattice), the
+dilation :func:`precis.cad.fieldops.offset` on the PARTNER's
+re-distanced sample, so a rigid seam elsewhere on ``A`` stays exact
+(face-to-face and pin-in-bore come out at ``gap``; a re-entrant corner's
+worst case is ``gap/2``), plus half a pitch because the kernel's
+re-distance binarises, so ``gap`` and ``fit`` are floors and the report
+quotes the **measured** separation per joint (the other side's
+re-distanced eroded leaf over this side's mesh vertices); a DOF pair a
+rigid path joins anyway is ``dof_bridged`` (error, export refused); a
+bought member is a **cavity** cut from every component its box meets —
+``fit == 0`` on an add-only stand-in is the analytic stand-in cut
+directly; ``fit > 0`` (or a stand-in with cuts of its own) is one
+``field:`` leaf, the stand-in re-distanced and dilated by ``fit`` (+
+half a pitch) on its own grid (a box/cyl grown by ``fit`` is not its
+Minkowski dilation, so that is never done) — with its top layer in the
+chosen frame, read off the cavity's own leaf or the analytic stand-in
+sampled on the export lattice (exact to the grid in any frame),
+reported as the mid-print **pause** (no insertion-path search; the
+``bambuuzle`` rung); an elided
 fastener's holes are excluded from the fused members
 (``printed_solid(exclude=)`` → ``fasten.features_for(exclude=)``, this
 path only); a bought fastener
@@ -468,25 +484,33 @@ house ``min_clearance`` capability resolves (new, null in every fdm row;
 a ``set_process_override`` on the root supplies it) — below the floor is
 an ``in_place_clearance`` error, a null floor an info finding saying
 "uncalibrated, taken as declared"; ``fit`` is required whenever a cavity
-is to be cut; ``pitch`` defaults to the house ``layer_height``. The op
-fuses inline when the group has no SIMP member and the grid is under
-``SYNC_CELL_CAP`` (500k cells), else enqueues ``se_manufacture``
-(:mod:`precis_se.manufacture_job`, its own job type — ``se_simp``'s
-schema is closed and SIMP-shaped); above ``MAX_CELLS`` (8M) it refuses.
-The result is a new cad design ``<design>-<root>-mfg[-N]`` rooted at
-``field:<sha>``, bound to the ROOT (which must hold no solid of its own)
-the way ``realize_simp`` binds — per-ref lock, inputs hash re-checked,
-``meta.manufacture`` ``last``/``runs``, the summary also in the field's
-provenance header, ``derived-from`` link; a re-run mints a sibling. The
-root is one ``field:`` leaf: every member is re-sampled at the pitch and
-sub-pitch features (hole compensation, seats) are not preserved — the
-mixed root (fused ``field:`` leaf + the members' analytic ``add``/``cut``
-/``blend:`` nodes, which the DSL already expresses) is the next item,
-and every render says so.
+is to be cut; ``pitch`` defaults to the house ``layer_height``. Cells =
+the export grid + every per-member/per-cavity field grid (analytic
+members cost export cells only). The op fuses inline when the group has
+no SIMP member and that total is under ``SYNC_CELL_CAP`` (500k), else
+enqueues ``se_manufacture`` (:mod:`precis_se.manufacture_job`, its own
+job type — ``se_simp``'s schema is closed and SIMP-shaped); an export
+grid above ``MAX_CELLS`` (8M) is refused with the pitch that would fit.
+The result is a new cad design ``<design>-<root>-mfg[-N]``, bound to
+the ROOT (which must hold no solid of its own) the way ``realize_simp``
+binds — per-ref lock, inputs hash re-checked, ``meta.manufacture``
+``last``/``runs``, the summary also on the cad ref's
+``meta.se_manufacture``, ``derived-from`` link; a re-run mints a
+sibling. Every render lists each member/cavity as ``analytic`` |
+``field (gap)`` | ``field (cavity fit)`` | ``field (cavity shape)``.
 ``view='print'`` on the root reports the frame (root pin > SIMP member >
-search on the fused mesh), one object per **connected component** of the
-field (:func:`precis.cad.fieldops.label_components` — a DOF pair is two
-objects, a fused pair one), the measured gaps, the cavities with pause
+search on the fused mesh), one object per **connected component** — the
+one group-wide grid left is the EXPORT lattice (:func:`precis.cad.
+fieldmesh.field_grid` over the printed members' box at the group
+pitch), the root's exact SDF sampled at its vertices once at realize
+time and labelled (:func:`precis.cad.fieldops.label_components`); each
+object is then meshed as the exact fold of its OWN components on that
+lattice (:func:`precis.cad.export.object_meshes` — no masking of a
+shared grid, no invented vertex value; a DOF pair is two objects, a
+fused pair one), and the split is a property of the design
+(``meta.export_objects`` + ``meta.export_lattice``), so cad's own 3MF
+export of the ``-mfg`` design writes the same objects and its STL export
+refuses more than one — the measured gaps, the cavities with pause
 heights, the elisions, and the **teardrop rule**: a DOF axis-class joint
 whose axis lies within 45° of the build plate is an ``overhang`` finding
 naming the bore (no new primitive; an undeclared axis says the check

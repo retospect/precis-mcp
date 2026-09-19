@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -449,7 +450,7 @@ def test_bought_member_becomes_a_cavity_with_a_pause_height(
     # inside the bolt's shank is void, a point `fit` off its surface is
     # void, a point well inside the clamp beyond the fit is solid
     tree = _load(handler, "mf-cav")
-    stored = se_manufacture._stored_field(handler.store, tree.blocks["assy"], "assy")
+    stored = se_manufacture._stored_root(handler.store, tree.blocks["assy"], "assy")
     assert stored is not None
     _slug, _summary, fld = stored
     shank_r = 0.002
@@ -829,14 +830,16 @@ def test_seam_local_gap_keeps_the_rigid_seam_intact(
     assert not any(f["rule"] == "dof_bridged" for f in last["findings"])
     # a probe ON the base–knuckle seam (z = 0), away from the bore, is inside
     # the fused solid: the knuckle was carved back from the pin only, not
-    # shrunk everywhere
+    # shrunk everywhere (the seam itself reads exactly 0 now that the base
+    # is analytic — on the surface of both, inside by the <= convention)
     tree = _load(handler, "mf-seam")
-    stored = se_manufacture._stored_field(handler.store, tree.blocks["hinge"], "hinge")
+    stored = se_manufacture._stored_root(handler.store, tree.blocks["hinge"], "hinge")
     assert stored is not None
     fld = stored[2]
     for x in (0.007, -0.007):
-        assert fld.distance_local_np(np.array([[x, 0.007, 0.0]]))[0] < 0.0
+        assert fld.distance_local_np(np.array([[x, 0.007, 0.0]]))[0] <= 1e-9
         assert fld.distance_local_np(np.array([[x, 0.007, 0.0005]]))[0] < 0.0
+        assert fld.distance_local_np(np.array([[x, 0.007, -0.0005]]))[0] < 0.0
     # and the bore wall is still gapped: a point just off the pin's surface
     # (radially, at the bore's mid-length) is void
     probe = np.array([[0.0, 0.0, 0.006 + _PIN_R + 0.0003]])
@@ -891,7 +894,7 @@ def test_elided_fastener_leaves_no_hole_in_the_fused_solid(
     handler.edit(id="mf-nohole", ops=[_mfg("stack", fit=0.0005)])
     tree = _load(handler, "mf-nohole")
     assert _last(handler, "mf-nohole")["elided"][0]["block"] == "bolt"
-    stored = se_manufacture._stored_field(handler.store, tree.blocks["stack"], "stack")
+    stored = se_manufacture._stored_root(handler.store, tree.blocks["stack"], "stack")
     assert stored is not None
     fld = stored[2]
     # on the screw axis (x = 8 mm), inside each plate: solid in the fuse
@@ -1037,3 +1040,399 @@ def test_simp_on_a_manufacture_root_solves_the_fused_group(
                 }
             ],
         )
+
+
+# ---------------------------------------------------------------------------
+# the mixed root (2026-09-19): analytic members, per-member field leaves,
+# analytic vs field-backed cavities
+# ---------------------------------------------------------------------------
+
+
+def _root_spec(h: SeHandler, cad_slug: str) -> SceneSpec:
+    ref = h.store.get_ref(kind="cad", id=cad_slug)
+    assert ref is not None
+    spec, _handles = h.store.cad_load(ref.id)
+    return spec
+
+
+def test_analytic_member_keeps_its_compensated_hole_in_root_and_mesh(
+    handler: SeHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A rigid printed member with a compensated fastener hole enters the
+    root as its own node tree — the hole node itself, no ``field:`` leaf —
+    and the exported mesh's hole wall sits on the compensated analytic
+    radius to well under a quarter pitch (the vertices interpolate the
+    exact SDF; nothing was re-sampled)."""
+    from precis.cad.dsl import parse
+    from precis_se import fasten as se_fasten
+    from precis_se.printsolid import printed_solid
+
+    screw_slug = _mint_slug(hub, "iso-10642", "M4x12")
+    handler.put(id="mf-analytic", text=json.dumps({"ops": _clamp_ops(screw_slug)}))
+    handler.edit(
+        id="mf-analytic", ops=[{"op": "realize", "block": "clamp", "mode": "fdm/asa"}]
+    )
+    tree = _load(handler, "mf-analytic")
+    holes = [h for h in se_fasten.features_for(tree, "clamp") if "clearance" in h.kind]
+    assert holes, [h.kind for h in se_fasten.features_for(tree, "clamp")]
+    hole = holes[0]
+    assert hole.source and "compensation" in hole.source
+    solid = printed_solid(tree, "clamp", cad_store_reader=handler.store)
+    assert solid is not None and solid.features
+    hole_node = next(
+        n
+        for n in solid.spec.nodes
+        if n.op == "cut"
+        and parse(n.config).alias == "cyl"
+        and parse(n.config).params["r"] == pytest.approx(hole.diameter_m / 2)
+    )
+    r_hole = hole.diameter_m / 2
+
+    resp = handler.edit(id="mf-analytic", ops=[_mfg("assy", fit=0.0)])
+    assert "clamp analytic" in resp.body and "bolt analytic" in resp.body
+    last = _last(handler, "mf-analytic")
+    forms = {p["block"]: p["form"] for p in last["parts"]}
+    assert forms == {"clamp": "analytic", "bolt": "analytic"}
+    assert last["field_cells"] == 0
+    assert last["cells"] == last["export"]["cells"]
+    spec = _root_spec(handler, last["cad"])
+    names = {n.name: n for n in spec.nodes}
+    assert f"clamp.{hole_node.name}" in names
+    placed = names[f"clamp.{hole_node.name}"]
+    assert placed.op == "cut" and placed.config == hole_node.config
+    assert not any(n.config.startswith("field:") for n in spec.nodes)
+    # the cavity at fit=0: the csk stand-in's own nodes as cuts
+    bolt_nodes = [n for n in spec.nodes if n.name.startswith("bolt.")]
+    assert {n.name for n in bolt_nodes} == {"bolt.shank", "bolt.head"}
+    assert all(n.op == "cut" for n in bolt_nodes)
+    assert spec.meta["se_manufacture"]["root"] == "assy"
+
+    body = handler.get(id="mf-analytic", view="print", args={"block": "assy"}).body
+    assert "- clamp: analytic" in body and "- cavity bolt: analytic" in body
+    assert "re-sampled" not in body
+
+    out = tmp_path / "analytic.3mf"
+    handler.get(
+        id="mf-analytic",
+        view="print",
+        args={"block": "assy", "fmt": "3mf", "path": str(out)},
+    )
+    (clamp,) = _3mf_objects(out).values()
+    # the file is laid on the bed (down = -z pinned: no rotation, one z
+    # offset putting the clamp's bottom, world z = 8 mm, at z = 0)
+    assert clamp[:, 0].min() == pytest.approx(-15.0, abs=0.01)
+    dz = clamp[:, 2].min() - 8.0
+    # the hole wall in the middle of the hole's own run, about its axis
+    z0 = hole.origin[2] * 1000.0 + dz
+    z1 = z0 + hole.depth_m * hole.axis[2] * 1000.0
+    lo_z, hi_z = sorted((z0, z1))
+    band = (clamp[:, 2] > lo_z + 0.4 * (hi_z - lo_z)) & (
+        clamp[:, 2] < lo_z + 0.6 * (hi_z - lo_z)
+    )
+    axis_xy = np.array([hole.origin[0], hole.origin[1]]) * 1000.0
+    radial = np.linalg.norm(clamp[band][:, :2] - axis_xy[None, :], axis=1)
+    ring = radial[radial < r_hole * 1000.0 + 1.0]
+    assert len(ring) > 20
+    assert np.abs(ring - r_hole * 1000.0).max() < _PITCH * 1000.0 / 4
+
+
+def test_eroded_member_is_one_field_leaf_sized_to_its_own_box(
+    handler: SeHandler,
+) -> None:
+    _realized_hinge(handler, "mf-leaf")
+    handler.edit(id="mf-leaf", ops=[_mfg(gap=_GAP)])
+    last = _last(handler, "mf-leaf")
+    parts = {p["block"]: p for p in last["parts"]}
+    assert parts["knuckle"]["form"] == "field (gap)"
+    assert parts["pin"]["form"] == "field (gap)"
+    spec = _root_spec(handler, last["cad"])
+    for m in ("knuckle", "pin"):
+        (node,) = [n for n in spec.nodes if n.name.startswith(f"{m}.")]
+        assert node.name == f"{m}.eroded" and node.op == "add"
+        assert node.config == f"field:{parts[m]['sha']}"
+        assert node.component == m
+    # each leaf's grid is its member's box plus the carve radius + margin,
+    # on the group pitch — not the group's box
+    export = last["export"]
+    group_span = (np.array(export["shape"]) - 1) * _PITCH
+    margin = 0.5 * _GAP + 0.5 * _PITCH + 2 * _PITCH
+    spans: dict[str, np.ndarray] = {}
+    for m, expect in (("pin", (0.03, 0.008, 0.008)), ("knuckle", (0.02, 0.02, 0.012))):
+        header, fld = handler.store.get_field(parts[m]["sha"])
+        assert header["provenance"] == {
+            "source": "se_manufacture",
+            "root": "hinge",
+            "block": m,
+            "form": "field (gap)",
+        }
+        assert fld.pitch == _PITCH
+        span = (np.array(fld.shape) - 1) * fld.pitch
+        spans[m] = span
+        assert np.all(span >= np.array(expect) + 2 * margin - 1e-9)
+        assert np.all(span <= np.array(expect) + 2 * margin + 2 * _PITCH + 1e-9)
+        # the leaf's origin sits on the export lattice
+        k = (np.asarray(fld.origin) - np.asarray(export["origin"])) / _PITCH
+        assert np.allclose(k, np.rint(k), atol=1e-6)
+    assert spans["pin"][1] < group_span[1] - 0.005  # the pin's y-extent, not the box's
+    assert last["cells"] == export["cells"] + last["field_cells"]
+    assert last["field_cells"] == parts["pin"]["cells"] + parts["knuckle"]["cells"]
+    body = handler.get(id="mf-leaf", view="print", args={"block": "hinge"}).body
+    assert "- knuckle: field (gap)" in body and "- pin: field (gap)" in body
+
+
+def test_cavity_is_field_backed_with_fit_and_analytic_without(
+    handler: SeHandler, hub: Hub
+) -> None:
+    screw_slug = _mint_slug(hub, "iso-10642", "M4x12")
+    handler.put(id="mf-cavform", text=json.dumps({"ops": _clamp_ops(screw_slug)}))
+    handler.edit(
+        id="mf-cavform", ops=[{"op": "realize", "block": "clamp", "mode": "fdm/asa"}]
+    )
+    fit = 0.0005
+    resp = handler.edit(id="mf-cavform", ops=[_mfg("assy", fit=fit)])
+    assert "bolt field (cavity fit)" in resp.body
+    last = _last(handler, "mf-cavform")
+    (cav,) = last["cavities"]
+    assert cav["form"] == "field (cavity fit)" and cav["sha"]
+    assert cav["components"] == ["clamp.part"]
+    spec = _root_spec(handler, last["cad"])
+    (node,) = [n for n in spec.nodes if n.name.startswith("bolt.")]
+    assert node.name == "bolt.cavity" and node.op == "cut"
+    assert node.config == f"field:{cav['sha']}" and node.component == "clamp.part"
+    header, fld = handler.store.get_field(cav["sha"])
+    assert header["provenance"]["form"] == "field (cavity fit)"
+    # the leaf covers the stand-in plus the fit, not the clamp
+    span = (np.array(fld.shape) - 1) * fld.pitch
+    assert span[0] < 0.02  # the clamp is 30 mm wide
+    body = handler.get(id="mf-cavform", view="print", args={"block": "assy"}).body
+    assert "- cavity bolt: field (cavity fit)" in body
+    assert "- clamp: analytic" in body
+
+    # fit == 0: the same cavity is the analytic stand-in, cut node by node;
+    # the re-run mints the -mfg-2 sibling
+    resp = handler.edit(id="mf-cavform", ops=[_mfg("assy", fit=0.0)])
+    assert "bolt analytic" in resp.body
+    again = _last(handler, "mf-cavform")
+    assert again["cad"] == "mf-cavform-assy-mfg-2"
+    assert again["previous_cad"] == "mf-cavform-assy-mfg"
+    (cav2,) = again["cavities"]
+    assert cav2["form"] == "analytic" and cav2["sha"] is None
+    spec2 = _root_spec(handler, again["cad"])
+    bolt_nodes = [n for n in spec2.nodes if n.name.startswith("bolt.")]
+    assert [n.op for n in bolt_nodes] == ["cut", "cut"]
+    assert not any(n.config.startswith("field:") for n in spec2.nodes)
+    assert _load(handler, "mf-cavform").blocks["assy"].bound == "mf-cavform-assy-mfg-2"
+
+
+# ---------------------------------------------------------------------------
+# reviewer round: per-object exact folds — the gap regime, the generic cad
+# export of the -mfg design, blend_chain, the cavity analytic rule
+# ---------------------------------------------------------------------------
+
+
+def _min_dist(a: np.ndarray, b: np.ndarray) -> float:
+    best = math.inf
+    for start in range(0, len(a), 512):
+        d = np.linalg.norm(a[start : start + 512, None, :] - b[None, :, :], axis=2)
+        best = min(best, float(d.min()))
+    return best
+
+
+@pytest.mark.parametrize("gap_pitches", [2.0, 1.5])
+def test_gap_regime_survives_the_3mf_path(
+    handler: SeHandler, tmp_path: Path, gap_pitches: float
+) -> None:
+    """A DOF pair at gap = 2 and 1.5 pitches through the real
+    ``view='print', fmt='3mf'`` path. Each object is the exact fold of its
+    own parts, so the bore wall and the pin surface are the two eroded
+    leaves' own zero sets: the pin's in-bore radius lies in the band the
+    carve guarantees, ``[R − gap/2 − pitch, R − gap/2]`` (the carve is
+    ``gap/2 + pitch/2`` off the partner's binarised surface, which sits
+    within ``pitch/2`` of the true one), the bore's in
+    ``[R + gap/2, R + gap/2 + pitch]``, and the vertex-to-vertex floor is
+    at least ``gap − pitch/2`` (the radial bands give ``>= gap`` for the
+    leaf zero sets themselves; the half pitch is the trilinear slack
+    between a leaf's zero set and the marched vertices, observed far
+    smaller)."""
+    slug = f"mf-regime-{int(gap_pitches * 10)}"
+    gap = gap_pitches * _PITCH
+    _realized_hinge(handler, slug)
+    resp = handler.edit(id=slug, ops=[_mfg(gap=gap)])
+    assert "2 object(s): knuckle, pin" in resp.body
+    (gap_row,) = _last(handler, slug)["gaps"]
+    assert gap_row["measured_m"] >= gap - 1e-9
+    out = tmp_path / f"{slug}.3mf"
+    handler.get(
+        id=slug, view="print", args={"block": "hinge", "fmt": "3mf", "path": str(out)}
+    )
+    objects = _3mf_objects(out)
+    assert set(objects) == {"knuckle", "pin"}
+    pin, knuckle = objects["pin"], objects["knuckle"]
+    p_mm, gap_mm, r_mm = _PITCH * 1000.0, gap * 1000.0, _PIN_R * 1000.0
+    axis_yz = pin[:, 1:].mean(axis=0)
+    kx_lo, kx_hi = knuckle[:, 0].min(), knuckle[:, 0].max()
+    in_bore = (pin[:, 0] > kx_lo + 2.0) & (pin[:, 0] < kx_hi - 2.0)
+    pin_r = _radial(pin[in_bore], axis_yz)
+    assert in_bore.sum() > 100
+    assert pin_r.max() <= r_mm - gap_mm / 2 + 1e-6
+    assert pin_r.min() >= r_mm - gap_mm / 2 - p_mm - 1e-6
+    inside_x = (knuckle[:, 0] > kx_lo + 1.0) & (knuckle[:, 0] < kx_hi - 1.0)
+    near = knuckle[inside_x]
+    near = near[_radial(near, axis_yz) < 5.5]  # the bore's wall, not the faces
+    bore_r = _radial(near, axis_yz)
+    wall = bore_r < r_mm + gap_mm / 2 + 1.5 * p_mm  # the carved wall itself
+    assert wall.sum() > 100
+    assert bore_r.min() >= r_mm + gap_mm / 2 - 1e-6
+    assert bore_r[wall].max() <= r_mm + gap_mm / 2 + p_mm + 1e-6
+    # the floor between the two exported meshes, every pin vertex against
+    # every knuckle vertex anywhere near the bore
+    floor = _min_dist(pin, near)
+    assert floor >= gap_mm - p_mm / 2 - 1e-6, (floor, gap_mm)
+    assert gap_row["measured_m"] * 1000.0 <= floor + 1e-6
+
+
+def test_generic_cad_export_of_the_mfg_design_matches_view_print(
+    handler: SeHandler, tmp_path: Path
+) -> None:
+    """The object split is a property of the design (``meta.export_objects``
+    + the lattice): cad's own 3MF export of the ``-mfg`` design writes the
+    same objects, with the same vertices, as ``view='print'``; STL of a
+    two-object design is refused, naming 3MF."""
+    from precis.cad.export import EXPORT_LATTICE_KEY, EXPORT_OBJECTS_KEY, ExportError
+    from precis.cad.export import export_mesh as cad_export_mesh
+
+    _realized_hinge(handler, "mf-generic")
+    handler.edit(id="mf-generic", ops=[_mfg(gap=_GAP)])
+    last = _last(handler, "mf-generic")
+    spec = _root_spec(handler, last["cad"])
+    assert spec.meta[EXPORT_OBJECTS_KEY] == {"knuckle": ["knuckle"], "pin": ["pin"]}
+    assert spec.meta[EXPORT_LATTICE_KEY]["pitch"] == _PITCH
+    assert spec.meta[EXPORT_LATTICE_KEY]["origin"] == last["export"]["origin"]
+    generic = tmp_path / "generic.3mf"
+    cad_export_mesh(spec, generic)  # pitch: the design's own lattice pitch
+    g_objects = _3mf_objects(generic)
+    printed = tmp_path / "print.3mf"
+    handler.get(
+        id="mf-generic",
+        view="print",
+        args={"block": "hinge", "fmt": "3mf", "path": str(printed)},
+    )
+    p_objects = _3mf_objects(printed)
+    assert set(g_objects) == set(p_objects) == {"knuckle", "pin"}
+    # view='print' lays the group on the bed (one shared z offset, root
+    # pose identity, down pinned -z): the same vertex sets, shifted
+    shift = np.vstack(list(p_objects.values())).min(axis=0) - np.vstack(
+        list(g_objects.values())
+    ).min(axis=0)
+    assert shift[0] == pytest.approx(0.0, abs=1e-6)
+    assert shift[1] == pytest.approx(0.0, abs=1e-6)
+    for name in ("knuckle", "pin"):
+        g, p = g_objects[name], p_objects[name] - shift
+        assert g.shape == p.shape, (name, g.shape, p.shape)
+        assert _min_dist(g[::13], p) < 1e-6 and _min_dist(p[::13], g) < 1e-6
+        assert np.allclose(np.sort(g, axis=0), np.sort(p, axis=0), atol=1e-6)
+    with pytest.raises(ExportError, match="3MF"):
+        cad_export_mesh(spec, tmp_path / "generic.stl")
+
+
+def _tri_ops() -> list[dict[str, Any]]:
+    """The L plus a ``cap`` (10×10×5) rigidly on top of the post."""
+    ops = _ell_ops()
+    ops[-2:-2] = [
+        {
+            "op": "add_block",
+            "name": "cap",
+            "parent": "ell",
+            "envelope": "box:w0.01d0.01h0.005",
+            "pose": [0.015, 0, 0.02],
+        },
+        {"op": "set_mode", "block": "cap", "mode": "fdm/pla"},
+        {"op": "add_port", "block": "post", "name": "top"},
+        {"op": "add_port", "block": "cap", "name": "bottom"},
+        {
+            "op": "connect",
+            "a": "post.top",
+            "b": "cap.bottom",
+            "joint": {"class": "rigid"},
+        },
+    ]
+    return ops
+
+
+def test_rigid_three_member_root_exports_one_object_from_cad_too(
+    handler: SeHandler, tmp_path: Path
+) -> None:
+    from precis.cad.export import EXPORT_OBJECTS_KEY
+    from precis.cad.export import export_mesh as cad_export_mesh
+
+    handler.put(id="mf-tri", text=json.dumps({"ops": _tri_ops()}))
+    for block in ("foot", "post", "cap"):
+        handler.edit(
+            id="mf-tri", ops=[{"op": "realize", "block": block, "mode": "fdm/pla"}]
+        )
+    handler.edit(id="mf-tri", ops=[_mfg("ell")])
+    last = _last(handler, "mf-tri")
+    assert last["fused_components"] == [["cap", "foot", "post"]]
+    (obj,) = last["objects"]
+    assert obj["members"] == ["cap", "foot", "post"]
+    assert obj["components"] == ["cap.part", "foot.part", "post.part"]
+    spec = _root_spec(handler, last["cad"])
+    # three cad components (blend 0 keeps every member its own) …
+    assert spec.components == ["cap.part", "foot.part", "post.part"]
+    assert spec.meta[EXPORT_OBJECTS_KEY] == {
+        "cap+foot+post": ["cap.part", "foot.part", "post.part"]
+    }
+    # … and ONE printed object, from cad's generic export as from se's
+    out = tmp_path / "tri.3mf"
+    cad_export_mesh(spec, out)
+    assert set(_3mf_objects(out)) == {"cap+foot+post"}
+    se_out = tmp_path / "tri-se.3mf"
+    handler.get(
+        id="mf-tri",
+        view="print",
+        args={"block": "ell", "fmt": "3mf", "path": str(se_out)},
+    )
+    assert set(_3mf_objects(se_out)) == {"cap+foot+post"}
+    # STL of a one-object design is that object
+    cad_export_mesh(spec, tmp_path / "tri.stl")
+    assert (tmp_path / "tri.stl").stat().st_size > 84
+
+
+def test_blend_chain_finding_only_when_a_later_member_cuts(
+    handler: SeHandler,
+) -> None:
+    # two plain boxes: chained, nothing leaks, no finding
+    _realized_ell(handler, "mf-chain-plain")
+    handler.edit(id="mf-chain-plain", ops=[_mfg("ell", blend=0.003)])
+    last = _last(handler, "mf-chain-plain")
+    assert last["components"] == ["foot+post"]
+    assert not any(f["rule"] == "blend_chain" for f in last["findings"])
+    # the post carries a bore: its cut reaches the foot along the chain
+    _realized_ell(handler, "mf-chain-cut")
+    _cut_bore(handler, "mf-chain-cut", block="post")
+    handler.edit(id="mf-chain-cut", ops=[_mfg("ell", blend=0.003)])
+    last = _last(handler, "mf-chain-cut")
+    (f,) = [f for f in last["findings"] if f["rule"] == "blend_chain"]
+    assert f["subject"] == "foot+post" and f["severity"] == "info"
+    assert "cut/intersect nodes of post" in f["detail"]
+    spec = _root_spec(handler, last["cad"])
+    names = [n.name for n in spec.nodes]
+    assert names == ["foot.body", "post.body", "post.bore"]
+    assert spec.nodes[1].blend == 0.003 and spec.nodes[2].op == "cut"
+
+
+def test_cavity_analytic_rule_requires_plain_add_nodes() -> None:
+    plain = [
+        NodeSpec(
+            name="b.shank", op="add", config="cyl:r0.002h0.012", component="b.body"
+        ),
+        NodeSpec(
+            name="b.head", op="add", config="cone:r0.004h0.002", component="b.body"
+        ),
+    ]
+    assert se_manufacture._cavity_is_analytic(plain, 0.0)
+    assert not se_manufacture._cavity_is_analytic(plain, 0.0005)
+    blended = [plain[0], replace(plain[1], blend=0.001)]
+    assert not se_manufacture._cavity_is_analytic(blended, 0.0)
+    bored = [plain[0], replace(plain[1], op="cut")]
+    assert not se_manufacture._cavity_is_analytic(bored, 0.0)

@@ -11,6 +11,7 @@ byte-identical analytic route for sharp designs).
 from __future__ import annotations
 
 import math
+import re
 import struct
 import zipfile
 import zlib
@@ -29,7 +30,15 @@ from precis.cad.dsl import (
     format_spec,
     parse,
 )
-from precis.cad.fieldmesh import MAX_BAND_CELLS, FieldMeshError, field_mesh
+from precis.cad.fieldmesh import (
+    MAX_BAND_CELLS,
+    FieldMeshError,
+    field_grid,
+    field_mesh,
+    sample_grid,
+    snap_lo,
+)
+from precis.cad.fieldops import label_components
 from precis.cad.fold import Union, smooth_min
 from precis.cad.primitives import (
     CircularFrustum,
@@ -50,6 +59,7 @@ from precis.cad.relate import _bounds, clearance, component_sdf, component_sdf_n
 from precis.cad.scene import (
     NodeSpec,
     SceneError,
+    SceneSpec,
     build_design,
     parse_source,
     spec_to_source,
@@ -507,6 +517,122 @@ def test_field_mesh_refuses_over_budget_and_empty_fields() -> None:
     with pytest.raises(FieldMeshError, match="no zero crossing"):
         field_mesh(sdf, vec3(5, 5, 5), vec3(6, 6, 6), 0.1)
     assert MAX_BAND_CELLS == 50_000_000
+
+
+def _two_spheres(pts: np.ndarray) -> np.ndarray:
+    a = np.linalg.norm(pts, axis=1) - 1.0
+    b = np.linalg.norm(pts - np.array([3.0, 0.0, 0.0]), axis=1) - 0.6
+    return np.minimum(a, b)
+
+
+def test_field_grid_and_sample_grid_describe_the_meshers_vertices() -> None:
+    """The public grid is the mesher's own: a full sample lands on the
+    fine vertices field_mesh marches, and snap_lo places a box so the
+    mesher's vertices fall on a caller's lattice."""
+    lo, hi, pitch = vec3(-1, -1, -1), vec3(3.6, 1, 1), 0.1
+    grid = field_grid(lo, hi, pitch)
+    assert grid.cells == grid.nv[0] * grid.nv[1] * grid.nv[2]
+    assert grid.factor >= 2 and all((n - 1) % grid.factor == 0 for n in grid.nv)
+    pts = grid.points()
+    assert pts.shape == (grid.cells, 3)
+    assert np.allclose(pts[0], grid.origin)
+    vals = sample_grid(_two_spheres, grid)
+    assert vals.shape == grid.nv
+    assert np.allclose(vals.ravel(), _two_spheres(pts))
+    labels, count = label_components(vals <= 0.0)
+    assert count == 2
+    # every mesh vertex lies on a grid edge: two of its three coordinates
+    # are lattice coordinates
+    verts, _tris = field_mesh(_two_spheres, lo, hi, pitch)
+    q = (verts - grid.origin) / pitch
+    on_lattice = np.isclose(q, np.rint(q), atol=1e-6)
+    assert np.all(on_lattice.sum(axis=1) >= 2)
+    # a second box snapped onto the same lattice shares those vertices
+    lo2 = snap_lo(vec3(-0.93, -0.71, -0.88), grid.origin, pitch)
+    g2 = field_grid(lo2, hi, pitch)
+    k = (np.asarray(g2.origin) - np.asarray(grid.origin)) / pitch
+    assert np.allclose(k, np.rint(k)) and np.all(lo2 <= vec3(-0.93, -0.71, -0.88))
+    assert np.all(lo2 > vec3(-0.93, -0.71, -0.88) - pitch)
+
+
+def test_object_meshes_folds_each_object_from_its_own_components() -> None:
+    """A design whose meta names which components print as one object:
+    3MF export writes one object per entry, each the exact fold of its
+    components (a hole cut in one component stays in it); a second object
+    sitting in the first's box does not perturb its vertices; STL refuses
+    more than one object, naming 3MF."""
+    src = (
+        "component a\nbody add box:w20mmd10mmh10mm\n"
+        "hole cut cyl:r2mmh12mm @5mm,0mm,-1mm\n"
+        "component b\nbar add box:w6mmd6mmh6mm @2mm,0mm,12mm\n"
+        "component c\nplug add cyl:r1mmh30mm @-40mm,0mm,-5mm\n"
+    )
+    spec = parse_source(src)
+    spec.meta[cad_export.EXPORT_OBJECTS_KEY] = {"ab": ["a", "b"], "c": ["c"]}
+    design = build_design(spec)
+    meshes = cad_export.object_meshes(design, {"ab": ["a", "b"], "c": ["c"]}, 0.0005)
+    assert [n for n, _v, _t in meshes] == ["ab", "c"]
+    ab, c = meshes[0][1], meshes[1][1]
+    assert _edges_closed(meshes[0][2]) and _edges_closed(meshes[1][2])
+    # object 'ab' spans both components (touching at z = 10 mm), 'c' is
+    # the far cylinder alone
+    assert ab[:, 2].min() == pytest.approx(0.0, abs=1e-6)
+    assert ab[:, 2].max() == pytest.approx(0.018, abs=1e-6)
+    assert c[:, 0].min() == pytest.approx(-0.041, abs=0.0005 / 4)  # a chord
+    # the hole in 'a' survives the fold: a ring of vertices at r = 2 mm
+    mid = (ab[:, 2] > 0.004) & (ab[:, 2] < 0.006)
+    radial = np.linalg.norm(ab[mid][:, :2] - np.array([0.005, 0.0]), axis=1)
+    ring = radial[radial < 0.0025]
+    assert len(ring) > 20 and np.allclose(ring, 0.002, atol=2e-5)
+    # 'a' alone, meshed with and without 'c' in the design: identical —
+    # another object never perturbs this one's vertices
+    alone = cad_export.object_meshes(design, {"ab": ["a", "b"]}, 0.0005)[0][1]
+    assert alone.shape == ab.shape and np.allclose(alone, ab)
+    with pytest.raises(cad_export.ExportError, match="none of its components"):
+        cad_export.object_meshes(design, {"x": ["nope"]}, 0.0005)
+
+
+@pytest.mark.skipif(not _HAS_MANIFOLD, reason="manifold3d not installed")
+def test_export_mesh_honours_export_objects_meta(tmp_path: Path) -> None:
+    src = (
+        "component a\nbody add box:w20mmd10mmh10mm\n"
+        "component b\nbar add box:w6mmd6mmh6mm @2mm,0mm,12mm\n"
+        "component c\nplug add cyl:r1mmh30mm @-40mm,0mm,-5mm\n"
+    )
+    spec = parse_source(src)
+    # without the meta: 3MF is one object per component (three)
+    plain = tmp_path / "plain.3mf"
+    cad_export.export_mesh(spec, plain, pitch=0.0005)
+    assert sorted(_3mf_object_names(plain)) == ["a", "b", "c"]
+    spec.meta[cad_export.EXPORT_OBJECTS_KEY] = {"ab": ["a", "b"], "c": ["c"]}
+    spec.meta[cad_export.EXPORT_LATTICE_KEY] = {
+        "origin": [-0.011, -0.006, -0.006],
+        "pitch": 0.0005,
+    }
+    out = tmp_path / "objects.3mf"
+    cad_export.export_mesh(spec, out)  # pitch defaults to the lattice's
+    assert sorted(_3mf_object_names(out)) == ["ab", "c"]
+    with pytest.raises(cad_export.ExportError, match="3MF"):
+        cad_export.export_mesh(spec, tmp_path / "objects.stl")
+    # one object: STL is fine (it IS that object)
+    spec.meta[cad_export.EXPORT_OBJECTS_KEY] = {"abc": ["a", "b", "c"]}
+    cad_export.export_mesh(spec, tmp_path / "one.stl")
+    assert (tmp_path / "one.stl").stat().st_size > 84
+    with pytest.raises(cad_export.ExportError, match="list of component names"):
+        cad_export.export_mesh(
+            SceneSpec(
+                nodes=list(spec.nodes),
+                components=list(spec.components),
+                meta={cad_export.EXPORT_OBJECTS_KEY: {"x": "a"}},
+            ),
+            tmp_path / "bad.3mf",
+        )
+
+
+def _3mf_object_names(path: Path) -> list[str]:
+    with zipfile.ZipFile(path) as zf:
+        model = zf.read("3D/3dmodel.model").decode("utf-8")
+    return re.findall(r'<object id="\d+" name="([^"]+)"', model)
 
 
 def test_needs_field_backend_only_for_rd_or_blend() -> None:

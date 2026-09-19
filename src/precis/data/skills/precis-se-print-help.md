@@ -276,67 +276,89 @@ get(kind="se", id="unicycle-mk2", view="print",
     args={"block": "hinge", "fmt": "3mf", "path": "/tmp/hinge.3mf"})
 ```
 
-Same group rules as `model` (§2d: fdm ancestor + intent, members below
-it, nested roots end the group). `realize(strategy='manufacture')` on the
-**root** fuses the members into ONE sampled-field solid in the root's
-frame — field/CSG ops only, never a mesh — and binds it to the root as a
-new cad design `<design>-<root>-mfg` (re-run: `-2`, `-3`… sibling; the
-root must not carry a solid of its own). Every connect between two
-members is **rigid** (`rigid`/`captive`/`axial`, or no joint declared —
-fused, with a `joint_undeclared` note) or **DOF** (revolute, prismatic,
-…):
+Same group rules as `model` (§2d). `realize(strategy='manufacture')` on
+the **root** composes the members into ONE cad design in the root's
+frame whose root is a **mixed analytic+field expression**: every
+member's own node tree placed at its pose (analytic — holes, their
+printed-hole compensation, every sub-pitch feature exactly as stored), a
+`field:` leaf ONLY where a field op is required; never a mesh. Bound to
+the root as `<design>-<root>-mfg` (re-run: `-2`, `-3`… sibling; the root
+must not carry a solid of its own). Every render lists each member/
+cavity as `analytic` | `field (gap)` | `field (cavity fit)` | `field
+(cavity shape)`. Every connect between two members is **rigid**
+(`rigid`/`captive`/`axial`, or undeclared — fused, `joint_undeclared`
+note) or **DOF** (revolute, prismatic, …):
 
-- **rigid pairs fuse**: min-union; `blend=` (m, default 0 = plain min)
-  is the smooth-min width at the seam, the DSL's `blend:` — a fillet-like
-  seam, not an exact radius.
+- **rigid pairs fuse**: `blend=0` (default) keeps each member its own
+  component — the whole is their hard min-union, cuts included. `blend=`
+  (m) > 0 is the smooth-min seam width (the DSL's `blend:`, fillet-like,
+  not an exact radius) and chains a fused component's members into one
+  cad component `<a>+<b>`, blend on each later member's base node; in a
+  chain a later member's cuts also cut earlier members where they overlap
+  (`blend_chain` info).
 - **DOF pairs get the in-place gap, seam-locally**: each printed side is
   **carved back by `gap/2` from its partner** (`A' = A \ dilate(B,
-  gap/2)`, the dilation an `offset` on the partner's re-distanced sampled
-  field, plus half a pitch because the re-distance binarises — `gap` is a
-  floor; face-to-face and pin-in-bore come out at `gap`, a re-entrant
-  corner's worst case is `gap/2`, and the report quotes the **measured**
-  separation per joint). Nothing else about either member moves, so a
-  rigid seam it shares with a third member stays intact. A DOF pair a
-  rigid path joins anyway is `dof_bridged` (error) and the export is
-  refused. `gap=` (m) is required unless the house
-  `min_clearance` capability resolves (null in every fdm row today — a
-  `set_process_override(block=<root>, field='min_clearance', value=<mm>)`
-  supplies it and then also serves as the default). Below the floor →
-  `in_place_clearance` **error**; null floor → an info finding saying the
-  floor is uncalibrated and the gap was taken as declared. A pair that
-  still touches after erosion is `in_place_fused` (error).
-- **bought members become cavities**: the §2d stand-in re-distanced,
-  dilated by `fit=` (m, required whenever there is a cavity to cut, no
-  default; 0 = the exact stand-in) and subtracted. No insertion path is
-  searched: the report names each cavity's **top layer above the bed** as
-  the mid-print pause height (the `bambuuzle` rung inserts the part
-  there). No stand-in → `cavity_missing` (error).
-- **fasteners are elided** when their grip stack (the members the screw
-  passes through, `view='fasten'`) is two or more printed members of one
-  fused body: `joint fused, <bolt> not needed` (info), no cavity, nuts and
-  washers in the stack go with it, the elided screw's clearance holes are
-  left uncut in the fused members, and a bare `screw`-mechanism connect
-  between fused members is no longer an `abstract_joint` — for
-  `manufacture` only; `model` still prints every fastener and its holes.
-  A fastener across a DOF joint stays a cavity.
-- **horizontal bores**: a DOF axis-class joint whose axis lies within 45°
-  of the build plate is an `overhang` finding naming the bore (member,
-  connect, axis) — no teardrop primitive exists yet, so it is reported,
-  not fixed; an undeclared axis says the check could not run.
+  gap/2)`, an `offset` on the partner's re-distanced sample, plus half a
+  pitch because the re-distance binarises — `gap` is a floor; face-to-
+  face and pin-in-bore come out at `gap`, a re-entrant corner's worst case
+  is `gap/2`; the report quotes the **measured** separation per joint).
+  The eroded member becomes ONE `field:` leaf on a grid sized to its own
+  box at the group pitch; nothing else moves, so a rigid seam with a third
+  member stays exact. A DOF pair a rigid path joins anyway is
+  `dof_bridged` (error, export refused). `gap=` (m) is required unless
+  the house `min_clearance` capability resolves (null in every fdm row
+  today — `set_process_override(block=<root>, field='min_clearance',
+  value=<mm>)` supplies it and is then the default). Below the floor →
+  `in_place_clearance` **error**; null floor → info "uncalibrated, taken
+  as declared". A pair still touching after erosion is `in_place_fused`
+  (error).
+- **bought members become cavities**, cut from every component their
+  box meets: `fit=` (m, required whenever there is a cavity, no default)
+  is the radial clearance — `fit=0` on an add-only stand-in cuts the
+  analytic stand-in directly; `fit>0` (or a stand-in with cuts of its own,
+  a bearing's bore) is one `field:` leaf, the stand-in re-distanced and
+  dilated by `fit` (+ half a pitch) on its own grid (a box grown by `fit`
+  is not its dilation; never done). No insertion path is searched: the
+  report names each cavity's **top layer above the bed** as the mid-print
+  pause height (the `bambuuzle` rung). No stand-in → `cavity_missing`.
+- **fasteners are elided** when their grip stack (`view='fasten'`) is two
+  or more printed members of one fused body: `joint fused, <bolt> not
+  needed` (info), no cavity, nuts/washers in the stack go with it, the
+  screw's clearance holes are left uncut, and a bare `screw`-mechanism
+  connect between fused members is no longer an `abstract_joint` — for
+  `manufacture` only; `model` prints every fastener and its holes. A
+  fastener across a DOF joint stays a cavity.
 
 ## 2f — `manufacture`: what the run stores, what the views show
 
-`pitch=` (m) defaults to the house `layer_height`. The op runs **inline**
-when the group has no SIMP-realized member and the grid is under 500 000
-cells; otherwise it enqueues an `se_manufacture` job (the root keeps its
-previous binding until it lands); above 8 000 000 cells it refuses with
-the count. The run summary sits on `meta.manufacture` (`last` + `runs`:
-members, fused components, joints, cavities, elisions, objects, measured
-gaps, findings). `view='print'` on the root reports the frame (root pin >
-SIMP member's `build_dir` > search on the fused mesh), the objects, the
-gaps, the cavities with pause heights and the elisions; `fmt='3mf'`
-writes **one object per connected component** of the fused field — a
-DOF-separated pair comes out as two objects, a fused pair as one.
+**Horizontal bores**: a DOF axis-class joint whose axis lies within 45°
+of the build plate is an `overhang` finding naming the bore — no
+teardrop primitive yet, so reported, not fixed; an undeclared axis says
+the check could not run.
+
+`pitch=` (m) defaults to the house `layer_height`. Cells = the export
+grid (the one group-wide grid: the printed members' box at the pitch —
+analytic members cost export cells only) + every per-member/per-cavity
+field grid. The op runs **inline** when the group has no SIMP-realized
+member and that total is under 500 000; otherwise it enqueues an
+`se_manufacture` job (the root keeps its previous binding until it
+lands); an export grid above 8 000 000 cells is refused with the count
+and the pitch that fits. The run summary sits on `meta.manufacture`
+(`last` + `runs`: parts with their form, fused components, joints,
+cavities, elisions, objects, measured gaps, findings) and on the cad
+design's `meta.se_manufacture`. `view='print'` on the root reports the
+frame (root pin > SIMP member's `build_dir` > search on the fused mesh),
+the per-part form lines, the objects, the gaps, the cavities with pause
+heights and the elisions; `fmt='3mf'` writes **one object per connected
+component** of the root — labelled once on the export lattice at
+realize time, each object then meshed as the exact fold of its own
+components (nothing masked or invented) — a DOF-separated pair comes out
+as two objects, a fused pair as one; an analytic member's mesh
+interpolates its exact distances, so a compensated hole survives a pitch
+coarser than the compensation. The split lives on the design
+(`meta.export_objects`): exporting the `-mfg` cad design itself
+(`get(kind='cad', view='3mf')`) writes the same objects; its STL export
+refuses more than one object.
 `view='fab'` says `intent manufacture, N objects, K cavities, E elided`.
 A member moved after the fuse → `manufacture_stale` (warn) until you
 re-realize. `realize(strategy='simp')` on a manufacture root solves the
@@ -379,13 +401,12 @@ estimates (`se-feasibility-and-cost.md`'s domain). Mesh thin-wall
 (medial-axis) analysis — `min_feature` is primitive-level, cheap and
 honest about what it covers, not a general wall-thickness solver. Curved-
 ceiling bridge detection reads as overhang (the conservative reading).
-In `manufacture` groups: a **mixed root** — the fused `field:` leaf plus
-the members' analytic `add`/`cut`/`blend:` nodes — so sub-pitch features
-(hole compensation, seats) survive the re-sample (today every member is
-re-sampled at the pitch and the report says so); an insertion-path search
-for cavities (today a pause height); a teardrop/diamond bore primitive
+In `manufacture` groups: a nested union under `blend>0` (today the
+members of a blended component chain, so a later member's cuts reach
+earlier members — `blend_chain` says so); an insertion-path search for
+cavities (today a pause height); a teardrop/diamond bore primitive
 (today an `overhang` finding); array/instance members (today
 `member_skipped`); and the calibration figures every fdm row still
-carries as null (`min_clearance`, `simp_pitch`, `strength_z_ratio`). Process-skill rewrites (e.g.
-`bridge-closing-a-bored-ceiling`) are filed follow-on items, not built
-here.
+carries as null (`min_clearance`, `simp_pitch`, `strength_z_ratio`).
+Process-skill rewrites (e.g. `bridge-closing-a-bored-ceiling`) are filed
+follow-on items, not built here.

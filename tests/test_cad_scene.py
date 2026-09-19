@@ -9,11 +9,13 @@ import pytest
 from precis.cad.scene import (
     NodeSpec,
     SceneError,
+    SceneSpec,
     build_design,
     parse_source,
+    placed_nodes,
     spec_to_source,
 )
-from precis.cad.vec import vec3
+from precis.cad.vec import identity, rotation, translation, vec3
 
 _FLANGE = """
 # a flange
@@ -186,6 +188,54 @@ def test_chamfer_truncates_cylinder_top() -> None:
     )
     assert design.classify_point(vec3(0, 0, 0.0049), component="part").inside
     assert not design.classify_point(vec3(0, 0, 0.0051), component="part").inside
+
+
+def test_placed_nodes_re_places_a_design_under_a_pose_and_namespaces_it() -> None:
+    """The merge-under-transform step of ``use`` instancing on its own: the
+    nodes keep their ops/configs/blend, are renamed ``<prefix>.<name>`` in
+    components ``<prefix>.<component>``, their poses composed under the
+    transform; a pattern flattens to one node per copy; ``use:`` and an
+    empty prefix are refused."""
+    spec = parse_source(
+        "component part\n"
+        "body add box:w20mmd10mmh10mm\n"
+        "hole cut cyl:r2mmh12mm @5mm,0mm,-1mm\n"
+        "component lid\n"
+        "cap add box:w20mmd10mmh2mm @0mm,0mm,10mm\n"
+    )
+    xf = translation(0.1, 0.0, 0.0).compose(rotation(0.0, 0.0, math.pi / 2))
+    nodes = placed_nodes(spec, xf, "m")
+    assert [n.name for n in nodes] == ["m.body", "m.hole", "m.cap"]
+    assert [n.component for n in nodes] == ["m.part", "m.part", "m.lid"]
+    assert [n.op for n in nodes] == ["add", "cut", "add"]
+    assert [n.config for n in nodes] == [n.config for n in spec.nodes]
+    # the hole's local (5 mm, 0, -1 mm) turned 90° about z, then shifted
+    assert nodes[1].loc == pytest.approx((0.1, 0.005, -0.001))
+    assert nodes[1].rot[2] == pytest.approx(math.pi / 2)
+    placed = build_design(SceneSpec(nodes=nodes, components=["m.part", "m.lid"]))
+    original = build_design(spec)
+    for p in ((0.003, 0.0, 0.005), (0.005, 0.0, 0.005), (0.0, 0.0, 0.011)):
+        q = xf.apply(vec3(*p))
+        assert (
+            placed.classify_point(q).inside == original.classify_point(vec3(*p)).inside
+        )
+
+    patterned = parse_source(
+        "component part\nplate add cyl:r25mmh8mm\n"
+        "bolts cut cyl:r2.5mmh10mm @18mm,0mm,-1mm polar:n3r18mm\n"
+    )
+    flat = placed_nodes(patterned, identity(), "f")
+    assert [n.name for n in flat] == ["f.plate", "f.bolts#1", "f.bolts#2", "f.bolts#3"]
+    assert all(n.pattern is None for n in flat)
+
+    with pytest.raises(SceneError, match="non-empty prefix"):
+        placed_nodes(spec, identity(), "")
+    uses = SceneSpec(
+        nodes=[NodeSpec(name="sub", op="add", config="use:other", component="sub")],
+        components=["sub"],
+    )
+    with pytest.raises(SceneError, match="no resolver"):
+        placed_nodes(uses, identity(), "x")
 
 
 # ---------------------------------------------------------------------------

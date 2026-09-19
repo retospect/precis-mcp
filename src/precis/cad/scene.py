@@ -2079,6 +2079,27 @@ def _inline(
             )
 
 
+def placed_nodes(spec: SceneSpec, xform: Transform, prefix: str) -> list[NodeSpec]:
+    """``spec``'s nodes re-placed under ``xform`` and namespaced
+    ``<prefix>.<name>`` / ``<prefix>.<component>`` — the merge-under-
+    transform step of ``use`` instancing (:func:`_inline`) on its own, for
+    a caller composing several already-expanded designs into one root
+    (se's manufacture group: every member's own node tree at its pose,
+    exactly as the store holds it — no re-sampling). Patterns flatten to
+    one node per copy (``name#i``) as instancing does; a patterned
+    ``intersect`` is refused for the same reason. ``spec`` must carry no
+    ``use:`` node (expand it first); a ``part:`` node inlines from the
+    catalog. The result folds per component like any flat spec — a later
+    ``cut``/``intersect`` in a component applies to everything before it
+    in that component, so two members meant to stay independent go in
+    different components (their names are already disjoint)."""
+    if not prefix:
+        raise SceneError("placed_nodes needs a non-empty prefix (the member's name)")
+    out: list[NodeSpec] = []
+    _inline(spec, None, xform, f"{prefix}{NAMESPACE_SEP}", out, ())
+    return out
+
+
 def _coerce_state(
     name: str,
     kind: str,

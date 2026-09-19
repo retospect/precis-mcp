@@ -39,12 +39,24 @@ The band is budgeted: more than :data:`MAX_BAND_CELLS` fine cells raises
 the caller coarsens deliberately; this module never swaps the pitch
 underneath it. Dual contouring / adaptive octrees are the named upgrade
 when that refusal fires on real parts.
+
+**The grid is public** (:func:`field_grid` → :class:`FieldGrid`,
+:func:`sample_grid`, :func:`snap_lo`): a caller that needs the sampled
+sign field itself — se's manufacture root labels its connected
+components on it — samples the whole grid once, and a caller that wants
+several meshes (or a stored :class:`~precis.cad.primitives.Field` leaf
+and the mesh that reads it) to share one set of sample points snaps its
+boxes onto one lattice. The mesher itself never takes precomputed or
+edited values: every vertex it marches is the ``sdf`` evaluated there
+(:func:`precis.cad.export.object_meshes` splits a design into objects by
+meshing each object's own exact fold, not by masking a shared grid).
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
@@ -122,6 +134,92 @@ for _case, _row in enumerate(TRI_TABLE):
 _NTRI = ((_TRI >= 0).sum(axis=1) // 3).astype(np.int64)
 
 
+@dataclass(frozen=True)
+class FieldGrid:
+    """The fine vertex grid :func:`field_mesh` samples for one ``(lo, hi,
+    pitch)``: vertex ``(i, j, k)`` sits at ``origin + (i, j, k) · pitch``;
+    ``nv`` is the vertex count per axis (the coarse cells of ``factor``
+    fine cells tile it exactly). Same units as the caller's box."""
+
+    origin: Vec3
+    nv: tuple[int, int, int]
+    pitch: float
+    factor: int
+
+    @property
+    def cells(self) -> int:
+        """Vertices in the grid — what a full :func:`sample_grid` costs."""
+        return self.nv[0] * self.nv[1] * self.nv[2]
+
+    @property
+    def stride(self) -> NDArray[np.int64]:
+        return np.array([self.nv[1] * self.nv[2], self.nv[2], 1], dtype=np.int64)
+
+    def points(self) -> NDArray[np.float64]:
+        """Every vertex, ``(cells, 3)``, in C (``i``-major) order — the order
+        :func:`sample_grid`'s array flattens to."""
+        ii, jj, kk = np.meshgrid(*(np.arange(n) for n in self.nv), indexing="ij")
+        idx = np.stack([ii.ravel(), jj.ravel(), kk.ravel()], axis=1).astype(float)
+        return self.origin[None, :] + idx * self.pitch
+
+
+def field_grid(lo: Vec3, hi: Vec3, pitch: float, *, name: str = "field") -> FieldGrid:
+    """The grid :func:`field_mesh` will use for ``[lo, hi]`` at ``pitch``
+    (module docstring step 1) — public so a caller can size, sample or
+    align other grids to it before meshing. Raises :class:`FieldMeshError`
+    for a non-positive pitch or a degenerate box."""
+    lo = as_vec3(lo)
+    hi = as_vec3(hi)
+    if not (pitch > 0.0 and math.isfinite(pitch)):
+        raise FieldMeshError(f"{name}: pitch must be a positive length, got {pitch}")
+    if np.any(hi <= lo):
+        raise FieldMeshError(f"{name}: degenerate AABB {lo.tolist()} .. {hi.tolist()}")
+    origin = lo - _PAD_PITCHES * pitch
+    span = hi + _PAD_PITCHES * pitch - origin
+    n_fine = np.ceil(span / pitch).astype(np.int64) + 1  # cells per axis
+    factor = _coarse_factor(n_fine)
+    n_coarse = np.ceil(n_fine / factor).astype(np.int64)
+    n_fine = n_coarse * factor  # extend so coarse cells tile exactly
+    nv = n_fine + 1  # fine vertices per axis
+    return FieldGrid(
+        origin=origin,
+        nv=(int(nv[0]), int(nv[1]), int(nv[2])),
+        pitch=float(pitch),
+        factor=int(factor),
+    )
+
+
+def sample_grid(sdf: SdfFn, grid: FieldGrid) -> NDArray[np.float64]:
+    """``sdf`` at every vertex of ``grid`` → an ``nv``-shaped float64
+    array (C order; ``.ravel()`` indexes like the mesher's linear vertex
+    keys). Evaluated in :data:`EVAL_CHUNK` rows so memory stays bounded;
+    the caller budgets ``grid.cells`` — this function never refuses."""
+    out = np.empty(grid.nv, dtype=np.float64)
+    flat = out.reshape(-1)
+    nv = np.array(grid.nv, dtype=np.int64)
+    stride = grid.stride
+    total = grid.cells
+    for start in range(0, total, EVAL_CHUNK):
+        stop = min(start + EVAL_CHUNK, total)
+        lin = np.arange(start, stop, dtype=np.int64)
+        ijk = np.stack(
+            [lin // stride[0], (lin // stride[1]) % nv[1], lin % nv[2]], axis=1
+        ).astype(np.float64)
+        flat[start:stop] = sdf(grid.origin + ijk * grid.pitch)
+    return out
+
+
+def snap_lo(lo: Vec3, origin: Vec3, pitch: float) -> Vec3:
+    """The largest box corner ``<= lo`` for which :func:`field_grid`'s
+    vertices land on the lattice ``origin + k · pitch`` — how several
+    meshes (or a stored :class:`~precis.cad.primitives.Field` leaf and the
+    mesh that reads it) share one set of sample points."""
+    lo = as_vec3(lo)
+    origin = as_vec3(origin)
+    pad = _PAD_PITCHES * pitch
+    return origin + pad + np.floor((lo - origin - pad) / pitch + 1e-9) * pitch
+
+
 def field_mesh(
     sdf: SdfFn, lo: Vec3, hi: Vec3, pitch: float, *, name: str = "field"
 ) -> Mesh:
@@ -135,21 +233,12 @@ def field_mesh(
     width. ``name`` labels error messages. Units are whatever ``lo``/
     ``hi``/``pitch`` are in.
     """
-    lo = as_vec3(lo)
-    hi = as_vec3(hi)
-    if not (pitch > 0.0 and math.isfinite(pitch)):
-        raise FieldMeshError(f"{name}: pitch must be a positive length, got {pitch}")
-    if np.any(hi <= lo):
-        raise FieldMeshError(f"{name}: degenerate AABB {lo.tolist()} .. {hi.tolist()}")
-
-    origin = lo - _PAD_PITCHES * pitch
-    span = hi + _PAD_PITCHES * pitch - origin
-    n_fine = np.ceil(span / pitch).astype(np.int64) + 1  # cells per axis
-    factor = _coarse_factor(n_fine)
-    n_coarse = np.ceil(n_fine / factor).astype(np.int64)
-    n_fine = n_coarse * factor  # extend so coarse cells tile exactly
-    nv = n_fine + 1  # fine vertices per axis
-    stride = np.array([nv[1] * nv[2], nv[2], 1], dtype=np.int64)
+    grid = field_grid(lo, hi, pitch, name=name)
+    origin = grid.origin
+    factor = grid.factor
+    nv = np.array(grid.nv, dtype=np.int64)
+    n_coarse = (nv - 1) // factor
+    stride = grid.stride
 
     # --- 2. coarse sample at cell centres -------------------------------
     cx, cy, cz = (np.arange(n_coarse[i], dtype=np.int64) for i in range(3))

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import struct
 import zipfile
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -35,8 +36,8 @@ from typing import Any
 import numpy as np
 
 from precis.cad.dsl import FIELD_ALIAS, ROUND_KEY, format_spec, parse
-from precis.cad.fieldmesh import FieldMeshError, field_mesh
-from precis.cad.fold import Union
+from precis.cad.fieldmesh import FieldMeshError, field_mesh, snap_lo
+from precis.cad.fold import Diff, Expr, Inter, Union
 from precis.cad.graph import Design
 from precis.cad.relate import _bounds, _positive_bounds, component_sdf_np
 from precis.cad.scene import (
@@ -49,7 +50,7 @@ from precis.cad.scene import (
     build_design,
 )
 from precis.cad.tessellate import design_aabb, halfspace_clamp_params, node_meshes
-from precis.cad.vec import Transform, Vec3
+from precis.cad.vec import Transform, Vec3, as_vec3
 
 #: Facet resolution for curved primitives in the exported mesh.
 _FN = 64
@@ -418,6 +419,122 @@ def _field_mesh_of(
         raise ExportError(str(exc)) from exc
 
 
+#: ``spec.meta`` key: ``{"<object name>": ["<component>", ...]}`` — which
+#: components print as ONE object (a fused print-in-place part whose
+#: members kept their own components). 3MF export writes one object per
+#: entry (:func:`object_meshes`); STL, which has no objects, refuses a
+#: design with more than one. Rides on ``refs.meta`` like ``blends``.
+EXPORT_OBJECTS_KEY = "export_objects"
+#: ``spec.meta`` key: ``{"origin": [x, y, z], "pitch": p}`` (metres) — the
+#: lattice the objects were built on; when present, 3MF export snaps each
+#: object's box onto it (:func:`~precis.cad.fieldmesh.snap_lo`) and uses
+#: its pitch by default, so the file's vertices are the very samples a
+#: stored ``field:`` leaf holds.
+EXPORT_LATTICE_KEY = "export_lattice"
+
+
+def _max_blend(expr: Expr) -> float:
+    """The widest smooth-min in ``expr`` (0 for hard folds)."""
+    if isinstance(expr, Union):
+        return max([expr.blend, *(_max_blend(p) for p in expr.parts)])
+    if isinstance(expr, Inter):
+        return max((_max_blend(p) for p in expr.parts), default=0.0)
+    if isinstance(expr, Diff):
+        return max([_max_blend(expr.base), *(_max_blend(c) for c in expr.cutters)])
+    return 0.0
+
+
+def object_meshes(
+    design: Design,
+    objects: Mapping[str, Sequence[str]],
+    pitch: float,
+    *,
+    origin: Vec3 | None = None,
+) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """One ``(name, verts, tris)`` per object — each the **exact fold of
+    its own components** (their min-union, every cut inside them applied)
+    meshed from that fold's field on the object's own box (+ half its
+    widest blend) at ``pitch``. Nothing is masked or re-sampled: every
+    vertex is the object's own SDF evaluated there, so two objects that
+    are disjoint in the design come out disjoint in the file, at the
+    distance the design holds. ``origin`` snaps each box onto the lattice
+    ``origin + k · pitch`` (:func:`~precis.cad.fieldmesh.snap_lo`). Units
+    are the design's own."""
+    out: list[tuple[str, np.ndarray, np.ndarray]] = []
+    for name, comps in objects.items():
+        exprs = [design.components[c] for c in comps if c in design.components]
+        if not exprs:
+            raise ExportError(
+                f"object {name!r}: none of its components {list(comps)} exist in "
+                "the design"
+            )
+        expr = exprs[0] if len(exprs) == 1 else Union(parts=tuple(exprs))
+        box = _positive_bounds(design, expr) or _bounds(design, expr)
+        if box is None:
+            raise ExportError(f"object {name!r}: unbounded — nothing finite to mesh")
+        pad = 0.5 * _max_blend(expr)
+        lo, hi = box[0] - pad, box[1] + pad
+        if origin is not None:
+            lo = snap_lo(lo, as_vec3(origin), pitch)
+
+        def sdf(pts: np.ndarray, expr: Expr = expr) -> np.ndarray:
+            return component_sdf_np(design, expr, pts)
+
+        try:
+            verts, tris = field_mesh(sdf, lo, hi, pitch, name=f"object {name!r}")
+        except FieldMeshError as exc:
+            raise ExportError(str(exc)) from exc
+        out.append((name, verts, tris))
+    return out
+
+
+def export_objects_of(spec: SceneSpec) -> dict[str, list[str]] | None:
+    """``spec.meta[EXPORT_OBJECTS_KEY]`` validated, else ``None``."""
+    raw = spec.meta.get(EXPORT_OBJECTS_KEY)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    out: dict[str, list[str]] = {}
+    for name, comps in raw.items():
+        if not isinstance(comps, list | tuple) or not all(
+            isinstance(c, str) for c in comps
+        ):
+            raise ExportError(
+                f"meta.{EXPORT_OBJECTS_KEY}[{name!r}] must be a list of component "
+                f"names, got {comps!r}"
+            )
+        out[str(name)] = [str(c) for c in comps]
+    return out
+
+
+def _export_lattice_mm(spec: SceneSpec) -> tuple[Vec3, float] | None:
+    """``(origin, pitch)`` of ``meta.export_lattice`` in millimetres (the
+    meta is stored in metres; ``_scaled_for_export`` leaves meta alone)."""
+    raw = spec.meta.get(EXPORT_LATTICE_KEY)
+    if not isinstance(raw, dict):
+        return None
+    try:
+        origin = as_vec3([float(x) for x in raw["origin"]]) * _MM_PER_M
+        pitch = float(raw["pitch"]) * _MM_PER_M
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ExportError(f"meta.{EXPORT_LATTICE_KEY} is malformed: {exc}") from exc
+    return origin, pitch
+
+
+def _object_meshes_of(
+    spec: SceneSpec, objects: dict[str, list[str]], pitch: float | None
+) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """:func:`object_meshes` for an mm-scaled spec carrying
+    ``meta.export_objects`` — the lattice's pitch when none is given."""
+    design = build_design(spec)
+    lattice = _export_lattice_mm(spec)
+    origin = lattice[0] if lattice is not None else None
+    if pitch is None and lattice is not None:
+        p = lattice[1]
+    else:
+        p = _field_pitch(design, pitch)
+    return object_meshes(design, objects, p, origin=origin)
+
+
 def _solid_mesh(
     spec: SceneSpec, *, pitch: float | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -540,16 +657,37 @@ def export_mesh(
     the design's diagonal. A pitch whose narrow band would exceed
     :data:`precis.cad.fieldmesh.MAX_BAND_CELLS` is refused with
     :class:`ExportError` (never coarsened silently). Designs without any
-    of the three ignore it and take the analytic route unchanged."""
+    of the three ignore it and take the analytic route unchanged.
+
+    A design carrying ``meta.export_objects`` (:data:`EXPORT_OBJECTS_KEY`
+    — components that print as one object) exports 3MF as one object per
+    entry through :func:`object_meshes` (the field route, at ``pitch`` or
+    the design's ``meta.export_lattice`` pitch), and refuses STL when it
+    names more than one object."""
+    objects = export_objects_of(spec)
     spec = _scaled_for_export(spec)
     mm_pitch = None if pitch is None else pitch * _MM_PER_M
     out = Path(out_path)
     f = (fmt or out.suffix.lstrip(".")).lower()
     if f == "stl":
-        verts, tris = _solid_mesh(spec, pitch=mm_pitch)
+        if objects and len(objects) > 1:
+            raise ExportError(
+                f"this design prints as {len(objects)} separate objects "
+                f"({', '.join(objects)}) — meta.{EXPORT_OBJECTS_KEY}; STL has no "
+                "objects and would weld them into one body — export 3MF"
+            )
+        if objects:
+            (_name, verts, tris), *_rest = _object_meshes_of(spec, objects, mm_pitch)
+        else:
+            verts, tris = _solid_mesh(spec, pitch=mm_pitch)
         _write_binary_stl(out, verts, tris)
     elif f == "3mf":
-        _write_3mf(out, _component_meshes(spec, pitch=mm_pitch))
+        _write_3mf(
+            out,
+            _object_meshes_of(spec, objects, mm_pitch)
+            if objects
+            else _component_meshes(spec, pitch=mm_pitch),
+        )
     else:
         raise ExportError(
             f"unknown mesh format {f!r}; supported: {list(_MESH_FORMATS)}"

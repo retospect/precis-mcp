@@ -483,17 +483,69 @@ unbuilt except (a) the calibration figures — `simp_pitch`,
 `min_clearance`, `strength_z_ratio`, all null-with-source in every fdm
 row — and (b) the hand-off rungs (downloadable 3MF artifact → headless
 slicer → `bambuuzle` pause injection → printer push). Left open, in
-order: (1) **the mixed root** — today the fused design is ONE `field:`
-leaf, every member re-sampled at the pitch, so sub-pitch features (hole
-compensation, seats) are not preserved and every render says so; the
-DSL already expresses a `field:` leaf combined with analytic `add`/
-`cut`/`blend:` nodes, so the next item is emitting the fused field plus
-the members' own nodes as one root expression; (2) an insertion-path
-search instead of a pause; (3) a teardrop/diamond bore primitive (the
-finding stands in); (4) array/instance members in a group
-(`member_skipped` since B1); (5) `member.face` load tokens on the fused
-SIMP domain. Whether the item folds into the package docstring is the
-owner's call.
+order: (1) a nested union under `blend>0` (see the mixed-root block
+below: a blended fused component is a per-component chain today, so a
+later member's cuts reach earlier members — `blend_chain` says so; a
+`ref:<component>`-style sub-expression node in the DSL would make it
+exact, an Opus-level DSL call); (2) an insertion-path search instead of
+a pause; (3) a teardrop/diamond bore primitive (the finding stands in);
+(4) array/instance members in a group (`member_skipped` since B1); (5)
+`member.face` load tokens on the fused SIMP domain. Whether the item
+folds into the package docstring is the owner's call.
+
+### Slice 4 bridge — mixed analytic+field root built 2026-09-19
+
+Reto's ruling (2026-09-19, fix it): the ONE-`field:`-leaf root re-sampled
+every member at the group pitch, losing `hole_diameter_compensation`,
+fastener seats and exact bores on members that never needed a field op,
+and real groups (100 mm at 0.2 mm = 125M cells) ran at ≥ 0.5 mm under
+the cap. Built: the manufacture output design's root is now an ordinary
+CSG expression — every un-eroded printed member is its bound design's
+own node tree placed in the root frame (`cad.scene.placed_nodes`, the
+`use`-instancing merge-under-transform step exposed; nodes
+`<member>.<node>`, components `<member>.<component>`), analytic and
+exact; a DOF-eroded member is ONE `field:` leaf on a grid sized to its
+own AABB (+ `gap/2 + pitch/2` + margin) at the group pitch, origin
+snapped to the export lattice, `A \ dilate(B, gap/2 + pitch/2)` as
+before, stored with `put_field` (several leaves per ref; provenance
+names the member); rigid fusion with `blend=0` is one component per
+member (hard min-union, cuts included — exact), with `blend>0` the
+members of a fused component chain into one cad component `<a>+<b>` with
+`blend:` on each later member's base node (the DSL has no nested union;
+the `blend_chain` info states the cut leak); cavities cut from every
+component whose box they meet — `fit=0` on an add-only stand-in is the
+analytic stand-in as `cut` nodes, `fit>0` (or a composite stand-in at
+`fit=0`) is a per-cavity `field:` leaf = `offset(redistance(sample),
+−(fit + pitch/2))` (a box/cyl grown by `fit` is not its Minkowski
+dilation, never done), the report says which. The one group-wide grid
+left is the EXPORT lattice (`cad.fieldmesh.field_grid` over the printed
+members' box + `blend/2` at the group pitch): the root's exact SDF is
+sampled once at its vertices (`sample_grid`) at realize time and
+labelled (`label_components`, 6-connectivity) into objects; each object
+is then meshed as the **exact fold of its own components** on its own
+lattice-snapped box (`cad.export.object_meshes`, new; reviewer round
+dropped a first `field_mesh(keep=)` masking hook because forcing
+foreign-material vertices to a made-up value shifted the kept surface
+exactly at the gap) — objects are disjoint by construction, no vertex
+value is invented, and an analytic member's mesh vertices interpolate
+its exact distances, so a compensated hole survives a pitch coarser
+than the compensation. The split is a property of the design
+(`spec.meta.export_objects` = `{object: [components]}` +
+`meta.export_lattice`, persisted on `refs.meta` like `blends`), honoured
+by cad itself: `export_mesh(fmt='3mf')` writes one object per entry
+through the same `object_meshes`, STL refuses more than one. A member
+the cavities cut into pieces is a `member_split` error (the per-object
+fold cannot keep one piece). Cell accounting = export grid + per-member + per-
+cavity field grids (analytic members cost export cells only); the
+`MAX_CELLS` refusal is on the export grid and names the pitch that
+fits; the sync cap on the total. Gaps are still measured on the exported
+objects' vertices against the partner's re-distanced eroded leaf; pause
+heights come from the cavity's own leaf or the analytic stand-in sampled
+on the export lattice; the run summary rides on the cad ref's
+`meta.se_manufacture` (a root with no field leaf has no provenance
+header to carry it). With this, the whole "Slice 4 bridge" section is
+built apart from the calibration figures and the hand-off rungs; the
+per-item residue is the numbered list above.
 
 - **Slice 5 — nm state-dependent stability** (blocked on blocktree slice 2
   states): classify per declared state, plus — added 2026-09-11 from the

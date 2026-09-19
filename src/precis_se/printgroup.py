@@ -166,7 +166,7 @@ class GroupPrintReport:
     findings: list[ValidationIssue] = field(default_factory=list)
     #: The ``manufacture`` half (:class:`precis_se.manufacture.
     #: ManufactureDetail`) when the group's intent is ``manufacture`` —
-    #: the fused field's objects, gaps, cavities and elisions; ``None``
+    #: the fused root's objects, gaps, cavities and elisions; ``None``
     #: for a ``model`` group. Typed ``Any`` here so this module stays the
     #: import root (``manufacture`` imports it, not the reverse).
     manufacture: Any = None
@@ -595,7 +595,7 @@ def choose_frame(
     pin > a SIMP member's baked ``build_dir`` > the search on ``union``),
     appending ``simp_frame_conflict``/``simp_frame_overridden`` to
     ``findings``. Shared with :mod:`precis_se.manufacture`, whose union is
-    the fused field's mesh rather than the members'."""
+    the fused root's mesh rather than the members'."""
     root = root_node.name
     simp_pins = _simp_pins(tree, members)
     root_pin = pinned_down(root_node)
@@ -701,7 +701,7 @@ def report_for(
     group root (:func:`is_group_root`). Raises :class:`PrintUnsupported`
     when a solid needs tessellating and ``manifold3d`` is missing. A
     ``manufacture`` root's report comes from :func:`precis_se.manufacture.
-    report_for` (the fused field's objects rather than the members'
+    report_for` (the fused root's objects rather than the members'
     solids) — one dispatch here so every render/export path asks one
     function."""
     if not is_group_root(tree, root):

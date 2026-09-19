@@ -1452,7 +1452,7 @@ class SeHandler(Handler):
         error_findings = [f for f in report.findings if f.severity == "error"]
         if detail is not None:
             object_names = [n for n, _v, _t in detail.objects]
-            what = "one per connected component of the fused field"
+            what = "one per connected component of the fused root"
         else:
             object_names = [m.block for m in report.exportable]
             what = "members in world pose"
@@ -3384,13 +3384,31 @@ def _manufacture_lines(report: se_printgroup.GroupPrintReport) -> list[str]:
         )
         + (" — STALE, see manufacture_stale" if detail.stale else "")
     )
+    parts = list(s.get("parts") or [])
+    export = dict(s.get("export") or {})
+    shape = export.get("shape") or s.get("grid") or []
     lines.append(
-        f"fused field at pitch "
-        f"{format_quantity(float(s.get('pitch_m') or 0.0), 'length')} — every "
-        "member is re-sampled at this pitch; sub-pitch features (hole "
-        "compensation, seats) are not preserved; a mixed analytic+field root "
-        "is the follow-up"
+        "root: analytic member trees (holes and their compensation intact) + a "
+        "field leaf only where a field op is required; export grid "
+        + ("x".join(str(int(n)) for n in shape) if shape else "?")
+        + f" at pitch {format_quantity(float(s.get('pitch_m') or 0.0), 'length')}"
+        + (
+            f" ({int(export['cells'])} export cells + "
+            f"{int(s.get('field_cells') or 0)} field cells)"
+            if export.get("cells") is not None
+            else ""
+        )
     )
+    for p in parts:
+        kind = "cavity " if p.get("kind") == "cavity" else ""
+        grid_bits = (
+            " "
+            + "x".join(str(int(n)) for n in p["grid"])
+            + f" = {p.get('cells')} cells"
+            if p.get("grid")
+            else ""
+        )
+        lines.append(f"- {kind}{p.get('block')}: {p.get('form')}{grid_bits}")
     objs = s.get("objects") or []
     lines.append(
         f"objects ({len(objs)}, one per connected component): "
@@ -3474,7 +3492,7 @@ def _render_group_block(report: se_printgroup.GroupPrintReport) -> str:
         lines.append(
             f"Next: view='print' args={{'block': {report.root!r}, 'fmt': '3mf'}} "
             "writes one 3MF, one object per connected component of the fused "
-            "field, in the group frame."
+            "root, in the group frame."
         )
     else:
         lines.append(
