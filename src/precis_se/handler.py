@@ -119,6 +119,7 @@ from precis_se import modes as se_modes
 from precis_se import notes as se_notes
 from precis_se import order as se_order
 from precis_se import precedent as se_precedent
+from precis_se import printgroup as se_printgroup
 from precis_se import printing as se_printing
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
@@ -280,7 +281,16 @@ class SeHandler(Handler):
             "set_build_frame block= down=[x,y,z] pins a block's print "
             "orientation (view='print' still searches every read and "
             "reports how much worse the pin scores); clear_build_frame "
-            "block= removes the pin. view='fab' is the design's whole "
+            "block= removes the pin. set_mode block= mode='fdm/<m>' "
+            "intent='model' makes an ancestor block a PRINT GROUP "
+            "(members = the blocks below it; no schema): one build frame "
+            "scored on the union of the members, one 3MF with an object "
+            "per member in world pose, every purchase member printed as "
+            "a catalog stand-in (no_stand_in finding when nothing gives "
+            "one); a SIMP member pins the group frame (search skipped, "
+            "said so); view='fab' collapses the group to one row; "
+            "intent='manufacture' is refused, not built yet. "
+            "view='fab' is the design's whole "
             "fabrication plan — one row per implementation-bearing block "
             "(any source: purchase/fdm/atomic/unimplemented), qty "
             "through the array multiplicities, status and the handle "
@@ -1198,6 +1208,8 @@ class SeHandler(Handler):
                 f"status lives on the template; view='print' "
                 f"args={{'block': {node.template!r}}} instead"
             )
+        if se_printgroup.is_group_root(tree, block):
+            return self._render_print_group(tree, ref, block, args)
         try:
             report = se_printing.report_for(tree, block, cad_store_reader=self.store)
         except se_printing.PrintUnsupported as exc:
@@ -1267,23 +1279,103 @@ class SeHandler(Handler):
             lines.append(_findings_table(error_findings))
         return Response(body="\n".join(lines))
 
+    def _render_print_group(
+        self, tree: SeTree, ref: Any, root: str, args: dict[str, Any]
+    ) -> Response:
+        """``view='print' args={'block': <group root>}`` — the group's one
+        frame + per-member findings (:mod:`precis_se.printgroup`); with
+        ``fmt='3mf'`` the one-object-per-member export. STL is refused for
+        a group (no objects)."""
+        try:
+            report = se_printgroup.report_for(tree, root, cad_store_reader=self.store)
+        except se_printing.PrintUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="pip install --force-reinstall 'precis-mcp'"
+            ) from exc
+        assert report is not None
+        fmt_arg = args.get("fmt")
+        if fmt_arg is None:
+            return Response(body=_render_group_block(report))
+        fmt = str(fmt_arg).strip().lower()
+        if fmt != "3mf":
+            raise BadInput(
+                f"view='print': a print group exports as fmt='3mf' only (one "
+                f"object per member; stl has no objects), got {fmt_arg!r}"
+            )
+        if not report.exportable or report.chosen_down is None:
+            raise BadInput(
+                f"print group {root!r} has nothing to export — no realized fdm "
+                "member and no stand-in (see view='print' "
+                f"args={{'block': {root!r}}})"
+            )
+        raw_path = args.get("path")
+        out = (
+            Path(str(raw_path)).expanduser()
+            if raw_path
+            else Path(tempfile.gettempdir()) / f"{ref.slug}-{root}.3mf"
+        )
+        try:
+            path = se_printgroup.write_group_mesh(report, out)
+        except se_printing.PrintUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="pip install --force-reinstall 'precis-mcp'"
+            ) from exc
+        except ExportError as exc:
+            raise BadInput(str(exc)) from exc
+        size = path.stat().st_size
+        error_findings = [f for f in report.findings if f.severity == "error"]
+        lines = [
+            f"# exported {ref.slug}:{root} → 3MF (print group, intent "
+            f"{report.intent}, {len(report.exportable)} object(s): "
+            + ", ".join(m.block for m in report.exportable)
+            + ")",
+            f"{path}  ({size:,} bytes)",
+            f"build frame: down={se_printing.format_down(report.chosen_down)} "
+            f"({_group_frame_origin(report)}) — shared by every member, "
+            "members in world pose",
+        ]
+        if report.search_skipped:
+            lines.append(report.search_skipped)
+        if error_findings:
+            lines.append("")
+            lines.append(
+                "⚠ exported WITH error-severity finding(s) — a file "
+                "never leaves without its warnings:"
+            )
+            lines.append(_findings_table(error_findings))
+        return Response(body="\n".join(lines))
+
     def _render_print_all(self, tree: SeTree) -> str:
-        """``view='print'`` with no args — one section per fdm-family
-        block, then a pointer to ``view='fab'`` for everything else."""
+        """``view='print'`` with no args — one section per print group,
+        then one per fdm-family block outside any group, then a pointer to
+        ``view='fab'`` for everything else."""
+        grouped = se_printgroup.grouped_blocks(tree)
         names = sorted(
             name
             for name, node in tree.blocks.items()
             if node.template is None
+            and name not in grouped
             and (fam := se_modes.family_of(node.mode)) is not None
             and fam.key == "fdm"
         )
-        if not names:
+        if not names and not grouped:
             return (
                 "# view='print' — no fdm-mode block in this design\n"
                 "(set_mode block=... mode='fdm/<material>' first, or "
                 "view='fab' for the whole fabrication plan)"
             )
         sections = []
+        for root in se_printgroup.group_roots(tree):
+            try:
+                group = se_printgroup.report_for(
+                    tree, root, cad_store_reader=self.store
+                )
+            except se_printing.PrintUnsupported as exc:
+                raise Unsupported(
+                    str(exc), next="pip install --force-reinstall 'precis-mcp'"
+                ) from exc
+            assert group is not None
+            sections.append(_render_group_summary(group))
         for name in names:
             try:
                 report = se_printing.report_for(tree, name, cad_store_reader=self.store)
@@ -1304,6 +1396,7 @@ class SeHandler(Handler):
         block, any source, pointing at each row's own handle. Never
         exports itself — every row's handle is the export route."""
         occ = se_bom.design_occurrences(tree)
+        grouped = se_printgroup.grouped_blocks(tree)
         rows: list[dict[str, Any]] = []
         counts: dict[str, int] = {}
         for name in sorted(tree.blocks):
@@ -1313,7 +1406,23 @@ class SeHandler(Handler):
             qty = occ.get(name, 0)
             mode = node.mode
             family = se_modes.family_of(mode)
-            if mode is None:
+            if name in grouped and grouped[name] != name:
+                continue  # a group member: its group's one row carries it
+            if name in grouped:
+                # A print group collapses to one row (se-print-in-place-
+                # groups.md's fab behaviour, kept by its successor spec).
+                try:
+                    group = se_printgroup.report_for(
+                        tree, name, cad_store_reader=self.store
+                    )
+                except se_printing.PrintUnsupported as exc:
+                    raise Unsupported(
+                        str(exc), next="pip install --force-reinstall 'precis-mcp'"
+                    ) from exc
+                assert group is not None
+                key, source = "fdm", str(mode)
+                status, handle = _fab_group_cell(group)
+            elif mode is None:
                 key, source, status, handle = "unassigned", "—", "—", "set_mode"
             elif family is None:
                 key, source = "unknown", mode
@@ -2939,6 +3048,115 @@ def _fab_fdm_cell(
     elif not n_abs:
         bits.append("pinned" if report.pinned else "proposed")
     handle = f"view='print' args={{'block': {name!r}, 'fmt': 'stl'}}"
+    return ", ".join(bits), handle
+
+
+def _group_frame_origin(report: se_printgroup.GroupPrintReport) -> str:
+    """``pinned`` / ``simp`` / ``proposed`` for a group's frame — the same
+    vocabulary :func:`_frame_origin` uses for one block."""
+    if report.pinned:
+        return "pinned"
+    if report.search_skipped:
+        return "simp"
+    return "proposed"
+
+
+def _group_header_lines(report: se_printgroup.GroupPrintReport) -> list[str]:
+    """The lines both group renders share: the roll-up, the frame, the
+    skipped-search receipt, one line per member."""
+    lines = [
+        f"members: {report.member_count} ("
+        f"printed {report.count(se_printgroup.PRINTED)}, "
+        f"stand-in {report.count(se_printgroup.STAND_IN)}, "
+        f"unrealized {report.count(se_printgroup.UNREALIZED)}, "
+        f"skipped {report.count(se_printgroup.SKIPPED)}"
+        + (
+            f", nested groups {n_nested}"
+            if (n_nested := report.count(se_printgroup.NESTED))
+            else ""
+        )
+        + ")"
+    ]
+    if report.chosen_down is not None:
+        score_bit = (
+            f", score {report.chosen_score.total:.4g} (union of the members)"
+            if report.chosen_score is not None
+            else ""
+        )
+        lines.append(
+            f"group build frame ({_group_frame_origin(report)}): "
+            f"down={se_printing.format_down(report.chosen_down)}{score_bit}"
+        )
+        if report.best_other:
+            lines.append(f"vs best: {report.best_other}")
+        if report.search_skipped:
+            lines.append(report.search_skipped)
+    else:
+        lines.append("no build frame — nothing placed")
+    lines.extend(f"- {m.block}: {m.note}" for m in report.members)
+    return lines
+
+
+def _render_group_summary(report: se_printgroup.GroupPrintReport) -> str:
+    """One ``## group`` section of ``view='print'``'s no-args summary."""
+    lines = [
+        f"## {report.root} — print group, intent {report.intent}, mode {report.mode}",
+        *_group_header_lines(report),
+    ]
+    lines.append(_findings_table(report.findings) if report.findings else "no findings")
+    return "\n".join(lines)
+
+
+def _render_group_block(report: se_printgroup.GroupPrintReport) -> str:
+    """``view='print' args={'block': <group root>}`` — the group frame, the
+    candidate table (when a search ran), every member's findings."""
+    lines = [
+        f"# view='print' — {report.root} (print group, intent "
+        f"{report.intent}, mode {report.mode})",
+        "",
+        *_group_header_lines(report),
+    ]
+    if report.candidates:
+        top = report.candidates[: se_printing.CANDIDATE_TABLE_N]
+        term_keys = sorted(top[0].terms.keys())
+        lines.append("")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "down": se_printing.format_down(c.down),
+                        "score": f"{c.score:.4g}",
+                        **{k: f"{c.terms[k]:.4g}" for k in term_keys},
+                    }
+                    for c in top
+                ],
+                schema=["down", "score", *term_keys],
+            )
+        )
+    lines.append("")
+    lines.append(_findings_table(report.findings) if report.findings else "no findings")
+    lines.append("")
+    lines.append(
+        f"Next: view='print' args={{'block': {report.root!r}, 'fmt': '3mf'}} "
+        "writes one 3MF, one object per member, in the group frame."
+    )
+    return "\n".join(lines)
+
+
+def _fab_group_cell(report: se_printgroup.GroupPrintReport) -> tuple[str, str]:
+    """``view='fab'``'s ``(status, handle)`` for a print group's one row:
+    the intent, member count, stand-in count, and the artifact handle."""
+    bits = [
+        f"print group (intent {report.intent})",
+        f"{report.member_count} member(s)",
+        f"{report.count(se_printgroup.STAND_IN)} stand-in(s)",
+    ]
+    serious = [f for f in report.findings if f.severity != "info"]
+    if serious:
+        bits.append(f"{len(serious)} finding(s)")
+    elif report.chosen_down is not None:
+        bits.append(_group_frame_origin(report))
+    handle = f"view='print' args={{'block': {report.root!r}, 'fmt': '3mf'}}"
     return ", ".join(bits), handle
 
 

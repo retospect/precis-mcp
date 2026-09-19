@@ -113,6 +113,25 @@ def rotate_to_frame(verts: NDArray[np.float64], down: Vec3) -> NDArray[np.float6
     return rotated
 
 
+def rotate_all_to_frame(
+    meshes: Sequence[NDArray[np.float64]], down: Vec3
+) -> list[NDArray[np.float64]]:
+    """:func:`rotate_to_frame` for several bodies that print TOGETHER: one
+    rotation, and one shared translation so the lowest point of the
+    **union** sits at ``z = 0`` — each body keeps its place relative to
+    the others (a print-in-place group, se's print groups). Rotating each
+    body on its own would drop every one of them onto the bed."""
+    r = _down_rotation(as_vec3(down))
+    rotated = [np.asarray(v, dtype=np.float64) @ r.T for v in meshes]
+    floor = min((float(v[:, 2].min()) for v in rotated if len(v)), default=0.0)
+    out = []
+    for v in rotated:
+        v = v.copy()
+        v[:, 2] -= floor
+        out.append(v)
+    return out
+
+
 def _face_normals_areas(
     verts: NDArray[np.float64], tris: NDArray[np.int64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:

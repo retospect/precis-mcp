@@ -396,6 +396,32 @@ switches the one binding a block holds — the previous design stays,
 named in ``runs`` and linked ``derived-from`` the se design. Advisory
 tier: the compliance is a voxel estimate, never a DRC verdict.
 
+**Print groups — ``intent='model'``** (the same spec's print ``intent``
+table, round B1, 2026-09-19): :mod:`precis_se.printgroup`. A print group
+is an ancestor block in an fdm mode carrying an intent — ``set_mode(block,
+mode='fdm/<m>', intent='model')``, stored as the ``intent`` key of the
+block's ``build_frame`` record beside a pin (``ops.print_intent``/
+``ops.pinned_down`` are the two reads; an intent-only record is not a pin)
+— and its members are the blocks below it by ``parent`` edges, derived at
+read time, no schema; **a group ends where the next group root begins**
+(a nested root owns its own subtree, the outer group lists it as one
+``nested group … printed separately`` line, and every block maps to its
+nearest root). ``model`` prints every fdm member's solid and every
+purchase member as a **stand-in**: the cad catalog's analytic solid
+(:func:`precis.cad.catalog.family_for_series` maps the component's minted
+series to ``part <family>:<size>``, threads dropped) or a solid from its
+spec dims, else a ``no_stand_in`` finding naming what it needs. One build
+frame per group, the orientation search run on the union of the member
+meshes in world pose; a SIMP member pins it to its baked ``build_dir``
+(search skipped, said so; two disagreeing → ``simp_frame_conflict``);
+members' frame findings are judged at that frame. ``view='print'`` on the
+root renders frame + per-member findings, ``fmt='3mf'`` writes one 3MF
+with an object per member in world pose (one shared bed offset,
+:func:`precis.cad.printability.rotate_all_to_frame`), ``view='fab'``
+collapses the group to one row. ``manufacture`` (cavities, in-place gaps,
+fusion, fastener elision) is round B2: the enum value exists, the op
+refuses it as not built yet. A root with no intent is not a group.
+
 **Blocktree slice 4 — ranked library search** (docs/backlog/
 blocktree-library-build-plan.md §Slice 4, port-pose-and-composition-
 search.md Decision 2) lands ``search(kind='se', wants={...})``:

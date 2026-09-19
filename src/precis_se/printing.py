@@ -74,7 +74,7 @@ from precis.structsolve.simp import overhang_violations
 from precis_se import capabilities as se_caps
 from precis_se import fasten as se_fasten
 from precis_se import modes as se_modes
-from precis_se.ops import SeBlock, SeTree
+from precis_se.ops import SeBlock, SeTree, pinned_down
 from precis_se.printsolid import PrintedSolid, printed_solid
 from precis_se.validate import ValidationIssue
 
@@ -335,6 +335,59 @@ def _layer_vs_load_finding(
     )
 
 
+def frame_findings(
+    block: str,
+    mesh: tuple[np.ndarray, np.ndarray],
+    down: Vec3,
+    rules: dict[str, Any],
+    *,
+    score: cad_printability.Score | None,
+    best_other: str | None = None,
+) -> list[ValidationIssue]:
+    """The findings that depend on WHICH build frame a solid prints in —
+    Engine 2's ``process_findings`` (overhang/bridge/bed contact/build
+    volume) mapped onto se's issue shape, plus ``layer_vs_load``. Shared
+    with :mod:`precis_se.printgroup`, which judges every member at the
+    group's one frame rather than at the member's own best."""
+    out: list[ValidationIssue] = [
+        ValidationIssue(
+            rule=f.rule,
+            subject=block,
+            detail=f.detail,
+            severity=f.severity,
+            measured=f.measured,
+            expected=f.expected,
+            suggested_fix=f.suggested_fix,
+        )
+        for f in cad_printability.process_findings(
+            mesh, down, rules, best_other=best_other
+        )
+    ]
+    if score is not None:
+        lv = _layer_vs_load_finding(block, score, rules)
+        if lv is not None:
+            out.append(lv)
+    return out
+
+
+def frame_free_findings(
+    tree: SeTree,
+    node: SeBlock,
+    block: str,
+    printed: PrintedSolid,
+    rules: dict[str, Any],
+) -> list[ValidationIssue]:
+    """The se-only findings that hold whatever frame the solid prints in —
+    stamped-hole checks, ``min_feature``, ``abstract_joint`` (module
+    docstring). Shared with :mod:`precis_se.printgroup`."""
+    out = _hole_findings(node, block, se_fasten.features_for(tree, block), rules)
+    mf = _min_feature_finding(block, printed, rules)
+    if mf is not None:
+        out.append(mf)
+    out.extend(_abstract_joint_findings(tree, block))
+    return out
+
+
 _AXIS_PERM = {"x": (1, 2, 0), "y": (2, 0, 1), "z": (0, 1, 2)}
 
 
@@ -387,7 +440,8 @@ def report_for(
     if family is None or family.key != "fdm":
         return None
     mode = node.mode or ""
-    pinned = bool(node.build_frame)
+    pin = pinned_down(node)
+    pinned = pin is not None
     printed = printed_solid(tree, block, cad_store_reader=cad_store_reader)
     findings: list[ValidationIssue] = []
 
@@ -499,9 +553,8 @@ def report_for(
     best_other: str | None = None
     chosen_down: Vec3 | None = None
     chosen_score: cad_printability.Score | None = None
-    if pinned:
-        assert node.build_frame is not None
-        chosen_down = as_vec3(node.build_frame["down"])
+    if pin is not None:
+        chosen_down = as_vec3(pin)
         chosen_score = cad_printability.score(mesh, chosen_down, rules, policy, loads)
         if candidates and not np.allclose(chosen_down, candidates[0].down, atol=1e-6):
             best = candidates[0]
@@ -516,33 +569,17 @@ def report_for(
         chosen_score = cad_printability.score(mesh, chosen_down, rules, policy, loads)
 
     if chosen_down is not None:
-        process = cad_printability.process_findings(
-            mesh, chosen_down, rules, best_other=best_other
-        )
         findings.extend(
-            ValidationIssue(
-                rule=f.rule,
-                subject=block,
-                detail=f.detail,
-                severity=f.severity,
-                measured=f.measured,
-                expected=f.expected,
-                suggested_fix=f.suggested_fix,
+            frame_findings(
+                block,
+                mesh,
+                chosen_down,
+                rules,
+                score=chosen_score,
+                best_other=best_other,
             )
-            for f in process
         )
-        if chosen_score is not None:
-            lv = _layer_vs_load_finding(block, chosen_score, rules)
-            if lv is not None:
-                findings.append(lv)
-
-    findings.extend(
-        _hole_findings(node, block, se_fasten.features_for(tree, block), rules)
-    )
-    mf = _min_feature_finding(block, printed, rules)
-    if mf is not None:
-        findings.append(mf)
-    findings.extend(_abstract_joint_findings(tree, block))
+    findings.extend(frame_free_findings(tree, node, block, printed, rules))
 
     return BlockPrintReport(
         block=block,

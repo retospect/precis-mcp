@@ -261,6 +261,52 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
     assert ctx.meta_set["proposal_valid"] is True
 
 
+def _stored_field_sha(store, ref_id: int) -> str:
+    """A small exact box grid stored on ``ref_id`` — the shape every
+    ``realize(strategy='simp')`` design is rooted at."""
+    import numpy as np
+
+    from precis.cad.fieldops import redistance
+
+    pitch = 1e-3
+    binary = np.ones((12, 8, 6), dtype=bool)
+    fld = redistance(binary, pitch, (0.0, 0.0, 0.0))
+    return store.put_field(ref_id, fld, provenance={"source": "test-box"})
+
+
+def test_dry_run_builds_a_field_rooted_design_with_the_store_loader(seeded):
+    """A ``field:<sha>`` leaf builds only through the store's loader —
+    without it the kernel refuses the leaf and a sound proposal reads as
+    a build error that has nothing to do with the proposal."""
+    store, ref = seeded
+    sha = _stored_field_sha(store, ref.id)
+    source = (
+        f"component p\nbody add field:{sha}\nbore cut cyl:r1mmh20mm @6mm,4mm,-5mm\n"
+    )
+    err_without, _ = cp.dry_run(source)
+    assert err_without is not None and "build error" in err_without
+    err, warnings = cp.dry_run(source, field_loader=store.field_loader())
+    assert err is None and warnings == []
+
+
+def test_dispatch_dry_runs_a_field_rooted_proposal(seeded, monkeypatch):
+    store, ref = seeded
+    sha = _stored_field_sha(store, ref.id)
+    reply = json.dumps(
+        {
+            "source": f"component p\nbody add field:{sha}\n",
+            "rationale": "keep the solved field, drop the bore",
+        }
+    )
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _agent(reply))
+    ctx = _FakeCtx(store, ref.id, {"cad_ref_id": ref.id, "instruction": "drop bore"})
+    cp._dispatch(ctx, cp.SPEC)
+    assert ctx.status == "succeeded" and ctx.failure is None
+    result = ctx.result_chunk()
+    assert result is not None
+    assert result["valid"] is True, result.get("error")
+
+
 def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
     store, ref = seeded
     reply = json.dumps({"source": "plate frobnicate cyl:r1mmh1mm", "rationale": "oops"})

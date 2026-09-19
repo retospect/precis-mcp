@@ -67,7 +67,7 @@ from typing import Any
 
 from precis import component_series
 
-__all__ = ["PartInfo", "known_families", "resolve_part"]
+__all__ = ["PartInfo", "family_for_series", "known_families", "resolve_part"]
 
 
 @dataclass(frozen=True)
@@ -577,6 +577,21 @@ _FAMILIES: dict[str, Any] = {
     "gear": _gear,
     **{fam: partial(_series_part, fam, sid) for fam, sid in _SERIES_FAMILIES.items()},
 }
+
+
+def family_for_series(series_id: str) -> str | None:
+    """The catalog family whose parts are generated from ``series_id``
+    (``'iso-4762'`` → ``'screw'``, ``'iso-4017'`` → ``'bolt'``), or
+    ``None`` when no family reads that series — the inverse of
+    :data:`_SERIES_FAMILIES` + :data:`_FASTENER_SERIES`, for a caller
+    holding a minted ``component`` (its ``meta.series``/``meta.size``)
+    that wants the same analytic solid ``part <family>:<size>`` would
+    place (se's print stand-ins)."""
+    sid = str(series_id).strip().lower()
+    for family, series in {**_FASTENER_SERIES, **_SERIES_FAMILIES}.items():
+        if series == sid:
+            return family
+    return None
 
 
 def resolve_part(spec: str) -> PartInfo:

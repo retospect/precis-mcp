@@ -97,7 +97,14 @@ from precis.structsolve.simp import (
 from precis_se import capabilities as se_caps
 from precis_se import persist
 from precis_se.modes import ModeError, parse_mode
-from precis_se.ops import OpError, SeBlock, SeTree, apply_ops, effective_envelope
+from precis_se.ops import (
+    OpError,
+    SeBlock,
+    SeTree,
+    apply_ops,
+    effective_envelope,
+    print_intent,
+)
 from precis_se.ops import effective_ports as se_effective_ports
 from precis_se.realize import _unique_cad_slug, resolve_realize_target
 
@@ -941,11 +948,14 @@ def realize_simp(
                 ],
             )
             frame = _BuildFrame.for_dir(req.build_dir)
+            intent = print_intent(node)  # a group root's intent is not a pin
             node.build_frame = {
                 "down": frame.down_local(),
                 "origin": FRAME_ORIGIN,
                 "build_dir": req.build_dir,
             }
+            if intent is not None:
+                node.build_frame["intent"] = intent
             row = conn.execute(
                 "SELECT title, meta FROM refs WHERE ref_id = %s", (ref_id,)
             ).fetchone()

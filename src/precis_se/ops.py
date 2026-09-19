@@ -132,7 +132,10 @@ the ops for things you *don't* make:
   (:mod:`precis_se.modes` — ``purchase``, ``fdm/asa``, ``laser/acrylic``,
   …), or clear it with ``null``. An unknown *family* is rejected; a known
   family with no implementer yet is accepted and reads back as recorded
-  intent, never as a checked plan.
+  intent, never as a checked plan. Optional ``intent`` (fdm-family modes
+  only) makes the block a **print group** root
+  (:mod:`precis_se.printgroup`): :data:`PRINT_INTENTS` — ``model`` is
+  built, ``manufacture`` is refused as not built yet; ``null`` clears.
 - ``set_binding``     — bind a block's L3 realization to an existing
   design or catalog row: ``kind`` ∈ ``cad|nm|component|part`` +
   ``design`` (the slug / C-number), or ``clear=true``. The binding is
@@ -438,6 +441,11 @@ class SeBlock(BlockNode):
     #: column, dark, since migration 0001 — rung 4 is the first write to
     #: it, so no new migration is needed. Realization-facet-adjacent and
     #: template-owned the same way ``mode``/``process_overrides`` are.
+    #: The same record carries an optional ``"intent"`` key — the print
+    #: group intent ``set_mode(intent=)`` writes (:data:`PRINT_INTENTS`),
+    #: a fact about the same L5 build rather than a second column: a dict
+    #: holding only ``intent`` is NOT a pin (:func:`pinned_down` decides),
+    #: and ``clear_build_frame`` drops the pin but keeps the intent.
     build_frame: dict[str, Any] | None = None
     #: Catalog-**derived** envelope/ports for a `component` binding
     #: (:mod:`precis_se.catalog`), filled at load time by
@@ -1482,12 +1490,76 @@ def _op_set_mode(tree: SeTree, op: dict[str, Any]) -> None:
     raw = op.get("mode")
     if raw is None:
         node.mode = None
+        # No mode, no group: an intent is a fact about an fdm build.
+        _set_print_intent(node, None)
         return
     try:
-        parse_mode(raw)
+        family, _material = parse_mode(raw)
     except ModeError as exc:
         raise OpError(f"set_mode: {exc}") from exc
+    if "intent" in op:
+        intent = op.get("intent")
+        if intent is not None:
+            intent = str(intent).strip().lower()
+            if intent not in PRINT_INTENTS:
+                raise OpError(
+                    f"set_mode: unknown intent {op.get('intent')!r}; known: "
+                    + " | ".join(PRINT_INTENTS)
+                )
+            if intent not in BUILT_PRINT_INTENTS:
+                raise OpError(
+                    f"set_mode: intent {intent!r} is not built yet (round B2 — "
+                    "cavities, in-place gaps, fusion, fastener elision); "
+                    f"built: {' | '.join(sorted(BUILT_PRINT_INTENTS))}"
+                )
+            if family != "fdm":
+                raise OpError(
+                    f"set_mode: intent={intent!r} needs an fdm-family mode — a "
+                    f"print group is an ancestor block in an fdm mode, not "
+                    f"{str(raw).strip()!r}"
+                )
+        _set_print_intent(node, intent)
     node.mode = str(raw).strip()
+
+
+#: The print-group intents ``set_mode(intent=)`` accepts, in
+#: structural-solution-space.md §Slice 4 bridge's table order. The enum is
+#: complete so the arg shape is stable; :data:`BUILT_PRINT_INTENTS` is
+#: the half with an implementer (round B1 = ``model``; ``manufacture`` —
+#: cavities, in-place gaps, fusion, fastener elision — is round B2).
+PRINT_INTENTS: tuple[str, ...] = ("model", "manufacture")
+BUILT_PRINT_INTENTS: frozenset[str] = frozenset({"model"})
+
+
+def _set_print_intent(node: SeBlock, intent: str | None) -> None:
+    """Write/clear the ``intent`` key of the block's ``build_frame`` record
+    without disturbing a pin that shares it (the field's docstring)."""
+    frame = dict(node.build_frame or {})
+    if intent is None:
+        frame.pop("intent", None)
+    else:
+        frame["intent"] = intent
+    node.build_frame = frame or None
+
+
+def print_intent(node: SeBlock) -> str | None:
+    """The block's print-group intent, or ``None`` — the one read of the
+    ``build_frame['intent']`` key, so no reader spells the layout."""
+    frame = node.build_frame
+    if not frame:
+        return None
+    intent = frame.get("intent")
+    return str(intent) if intent else None
+
+
+def pinned_down(node: SeBlock) -> list[float] | None:
+    """The block's pinned build-down direction, or ``None`` when the
+    ``build_frame`` record holds no pin (absent, or an intent-only
+    record) — every "is this block pinned" read goes through here."""
+    frame = node.build_frame
+    if not frame or not frame.get("down"):
+        return None
+    return [float(v) for v in frame["down"]]
 
 
 def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
@@ -1638,7 +1710,11 @@ def _op_set_build_frame(tree: SeTree, op: dict[str, Any]) -> None:
     norm = math.sqrt(sum(v * v for v in vec))
     if norm <= 0.0:
         raise OpError("set_build_frame: 'down' must be non-zero")
-    node.build_frame = {"down": [v / norm for v in vec], "origin": "user"}
+    frame: dict[str, Any] = {"down": [v / norm for v in vec], "origin": "user"}
+    intent = print_intent(node)
+    if intent is not None:
+        frame["intent"] = intent  # the group intent is not a pin; it stays
+    node.build_frame = frame
 
 
 def _op_clear_build_frame(tree: SeTree, op: dict[str, Any]) -> None:
@@ -1651,11 +1727,12 @@ def _op_clear_build_frame(tree: SeTree, op: dict[str, Any]) -> None:
         opname="clear_build_frame",
         what="build frame",
     )
-    if node.build_frame is None:
+    if pinned_down(node) is None:
         raise OpError(
             f"clear_build_frame: block {node.name!r} has no pinned build frame"
         )
-    node.build_frame = None
+    intent = print_intent(node)
+    node.build_frame = {"intent": intent} if intent is not None else None
 
 
 def _bom_pair(line: BomLine) -> frozenset[tuple[str, str]]:

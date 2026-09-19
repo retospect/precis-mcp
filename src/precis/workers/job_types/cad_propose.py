@@ -33,6 +33,7 @@ import os
 from typing import Any
 
 from precis.cad.bulk import volume as cad_volume
+from precis.cad.dsl import FieldLoader
 from precis.cad.graph import Design
 from precis.cad.relate import ConnectivityResult, connectivity
 from precis.cad.scene import (
@@ -245,7 +246,10 @@ def _interference_warnings(result: ConnectivityResult) -> list[str]:
 
 
 def dry_run(
-    source: str, *, resolve: Resolver | None = None
+    source: str,
+    *,
+    resolve: Resolver | None = None,
+    field_loader: FieldLoader | None = None,
 ) -> tuple[str | None, list[str]]:
     """Parse + build the proposed source, then run cheap geometry lint on it,
     to catch errors before a human sees it.
@@ -256,6 +260,13 @@ def dry_run(
     connectivity`); otherwise it names what's wrong. ``warnings`` carries
     non-fatal findings (currently: inter-part interference, which can be
     intentional — a press fit) that don't flip ``error``.
+
+    ``field_loader`` (``store.field_loader()`` in the job) is what lets a
+    ``field:<sha>`` leaf build — every ``realize(strategy='simp')`` block's
+    design is rooted at one, and without the loader the kernel refuses the
+    leaf, so a proposal against such a design would read as a build error
+    that has nothing to do with the proposal (``handlers/cad.py::
+    _parse_design`` attaches the same loader on the put path).
     """
     try:
         spec = parse_source(source)
@@ -263,6 +274,7 @@ def dry_run(
         return f"source error: {exc}", []
     if not spec.nodes:
         return "design has no nodes", []
+    spec.field_loader = field_loader
     try:
         design = build_design(spec, resolve=resolve)
     except Exception as exc:  # kernel build error
@@ -346,7 +358,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"cad_propose: {exc}")
         return
 
-    err, warnings = dry_run(proposal["source"], resolve=design_resolver(ctx.store))
+    err, warnings = dry_run(
+        proposal["source"],
+        resolve=design_resolver(ctx.store),
+        field_loader=ctx.store.field_loader(),
+    )
     proposal["valid"] = err is None
     if err is not None:
         proposal["error"] = err

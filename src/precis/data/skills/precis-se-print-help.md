@@ -1,7 +1,7 @@
 ---
 id: precis-se-print-help
 title: precis — turning a block into a printed part (realize, build orientation, process DRC, STL/3MF)
-summary: mint a block's first cad implementation (realize — the envelope seed, or strategy='simp' for an enqueued topology solve bound back as a field leaf), let view='print' pick and pin a build orientation, read the process-DRC findings (overhang, bridge, bed contact, undersize hole, thin feature, load vs layer), write the STL/3MF a slicer opens, and read view='fab' for the whole design's fabrication plan across every source
+summary: mint a block's first cad implementation (realize — the envelope seed, or strategy='simp' for an enqueued topology solve bound back as a field leaf), let view='print' pick and pin a build orientation, read the process-DRC findings (overhang, bridge, bed contact, undersize hole, thin feature, load vs layer), write the STL/3MF a slicer opens, print a whole assembly as a fit-test model (a print group with intent='model' — one frame, one 3MF, bought parts as catalog stand-ins), and read view='fab' for the whole design's fabrication plan across every source
 answers:
   - how do I print a block I've designed in se?
   - how do I turn an abstract requirements block into something I can export?
@@ -11,6 +11,8 @@ answers:
   - what does abstract_joint mean, and how do I clear it?
   - how do I get an STL or 3MF out of an se design?
   - how do I see everything a design needs to be fabricated, not just the printed parts?
+  - how do I print a whole assembly as one fit-test model, screws and bearings included?
+  - what is a print group, and where does intent='model' go?
 applies-to: get/edit (kind='se'); read precis-se-help first for the op grammar; precis-se-fasten-help for the screw stack a printed member's holes come from
 status: active
 tags: workflow, design
@@ -200,6 +202,66 @@ build frame, and every error-severity finding** — a file never leaves
 without its warnings; an `abstract_joint` or other warn-tier finding does
 not block the write.
 
+## 2d — print groups: `intent='model'` on an ancestor block
+
+```python
+edit(kind="se", id="unicycle-mk2", ops=[
+  {"op": "set_mode", "block": "wheel", "mode": "fdm/pla", "intent": "model"},
+])
+get(kind="se", id="unicycle-mk2", view="print", args={"block": "wheel"})
+get(kind="se", id="unicycle-mk2", view="print",
+    args={"block": "wheel", "fmt": "3mf", "path": "/tmp/wheel.3mf"})
+```
+
+A **print group** is an ancestor block in an fdm mode that carries a
+print `intent`; its members are the blocks below it (`parent` edges — no
+schema, no membership list). **A group ends where the next group root
+begins**: a descendant that is itself an intent root (the fork group and
+the wheel group under one assembly root) owns its own subtree — the outer
+group lists it as `nested group '<name>' — printed separately, see its
+own row`, never places or exports it, and every block belongs to its
+nearest root. `intent` is a `set_mode` parameter and lives
+on the block's `build_frame` record next to a pin (`set_build_frame` /
+`clear_build_frame` leave it alone; `set_mode(mode=null)` clears it —
+no mode, no group). Values: `model` (built) and `manufacture` (round B2
+— cavities, in-place gaps, fusion, fastener elision — **refused as not
+built yet**; the enum exists so the arg shape is stable). A non-fdm mode
+with an intent is refused.
+
+**`model` = a fit-test model, any scale.** Every fdm member prints its
+realized solid (stamped holes included, compensation kept). Every
+**purchase** member prints as a **stand-in**: the analytic catalog solid
+(`part <family>:<size>` from the cad catalog, threads dropped, no drive
+recess) when its bound `component` was minted from a series the catalog
+reads; else a solid from its spec dims (a bearing = outer cylinder minus
+bore; anything else the catalog envelope, said so). Fasteners print too —
+the fit is the point. Joints with DOF and rigid joints alike stay separate
+parts. A purchase member with nothing to draw is a `no_stand_in` finding
+(warn) naming what it needs — a `component` binding, or the spec dims —
+never a silent skip. Instances/arrays and non-fdm/non-purchase members are
+`member_skipped` (info). Loads are never scaled: a 1:6 toy gets its own
+`set_load`.
+
+**One build frame for the group**, chosen by the same orientation search
+on the **union** of the member meshes in their world poses (the root's
+mode names the process). A `set_build_frame` on the root pins it. A
+SIMP-realized member (`build_frame.origin == 'simp'`) pins the group to
+its baked `build_dir`; the search is skipped and the report says which
+member it followed. Two SIMP members that disagree are a
+`simp_frame_conflict` finding (error) — the first by name wins, the
+finding names both. Every member's frame findings (overhang, bridge, bed
+contact, `layer_vs_load`) are judged at the group frame, each on its own
+footprint the way a slicer's drop-to-bed places it.
+
+**Output**: `fmt='3mf'` only — one 3MF, one object per member (stand-ins
+are objects too, a multi-component member contributes `<member>/<part>`
+objects), every member in world pose, one rotation and one shared bed
+offset. `view='print'` with no args renders one `## <root> — print group`
+section per group (members do not repeat below it); `view='fab'`
+collapses the group to **one row** naming the intent, member count,
+stand-in count and the 3MF handle. A group root with no intent is not a
+group — everything below it reads exactly as before.
+
 ## 3 — read `view='fab'` for the whole plan
 
 ```python
@@ -215,6 +277,7 @@ One row per implementation-bearing block, **any source** — not just
 |---|---|---|
 | `purchase` | the bound component/part, or `no item` | the slug + `view='bom'` |
 | `fdm` | `unrealized` \| `realized, abstract joints: N` \| `realized, print-checked: N finding(s)` \| `realized, pinned`/`proposed` | `realize(block=, mode=)` when unrealized, else `view='print' args={'block': ..., 'fmt': 'stl'}` |
+| `fdm` with `intent` (a print group) | `print group (intent model), N member(s), M stand-in(s)` + finding count or frame origin — its members have no rows of their own | `view='print' args={'block': <root>, 'fmt': '3mf'}` |
 | `atomic` | bound structure design, or `unbound` | `bind_structure` / `generate` |
 | an unimplemented family (`sla`/`cnc-2.5ax`/`laser`/`stock-cut`) | `planned, not checked` | the family name — no implementer yet |
 | unset | `—` | `set_mode` |
@@ -234,7 +297,10 @@ estimates (`se-feasibility-and-cost.md`'s domain). Mesh thin-wall
 (medial-axis) analysis — `min_feature` is primitive-level, cheap and
 honest about what it covers, not a general wall-thickness solver. Curved-
 ceiling bridge detection reads as overhang (the conservative reading).
-Print-in-place groups (one shared frame + in-place clearance across a
-`whole-assembly`) and process-skill rewrites (e.g.
-`bridge-closing-a-bored-ceiling`) are filed follow-on items, not built
-here.
+`intent='manufacture'` — print-in-place for the real part: cavities for
+bought parts, the in-place gap between DOF-joined members
+(`in_place_clearance` against a `min_clearance` capability), fusion of
+rigidly-joined members with `blend` at the seam, fastener elision — is
+round B2 (structural-solution-space.md §Slice 4 bridge) and is refused as
+not built yet. Process-skill rewrites (e.g. `bridge-closing-a-bored-
+ceiling`) are filed follow-on items, not built here.

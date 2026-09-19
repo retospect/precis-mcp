@@ -67,6 +67,19 @@ class FieldAmbiguous(NotFound, LookupError):
     """A ``field:`` prefix matches more than one stored grid."""
 
 
+#: ``pg_advisory_xact_lock`` namespace for :meth:`CadMixin.put_field`'s
+#: per-ref critical section (its own int, distinct from
+#: ``precis_se.persist.TREE_LOCK_NAMESPACE``'s — the two-int form keys
+#: ``(namespace, ref_id)``, so different namespaces never contend). The
+#: chunk ``ord`` is minted by ``MAX(ord) + 1`` under ``chunks_ref_id_ord_key``
+#: (UNIQUE ``(ref_id, ord)``): two concurrent puts on one ref — the
+#: ``se_simp`` job is a real concurrent caller — would otherwise read the
+#: same max and one would die on the unique violation. The lock also
+#: serialises the content-address dedup check, so two identical grids in
+#: flight land as one row.
+FIELD_PUT_LOCK_NAMESPACE = 0xF1E1D  # "field"
+
+
 def _field_summary(fld: Field, provenance: dict[str, Any]) -> str:
     """The field chunk's ``text`` — the one line a human (or search) sees."""
     nx, ny, nz = fld.shape
@@ -249,6 +262,12 @@ class CadMixin:
         sha = payload_sha256(payload)
         header = _wire_header(fld, prov)
         with self.tx() as conn:
+            # Held to commit: the ord mint + the dedup check below are one
+            # critical section per ref (FIELD_PUT_LOCK_NAMESPACE).
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s, %s)",
+                (FIELD_PUT_LOCK_NAMESPACE, int(ref_id)),
+            )
             hit = conn.execute(
                 "SELECT 1 FROM chunk_blobs WHERE sha256 = %s AND mime = %s",
                 (sha, FIELD_MIME),

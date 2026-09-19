@@ -250,7 +250,7 @@ read (100k elements × 60 iterations is minutes on a node).
 
 **Print `intent` on a print group** (an ancestor block in an fdm mode;
 membership derived from the tree, no schema change — absorbs
-`se-print-in-place-groups.md`, which becomes the `manufacture` half):
+`se-print-in-place-groups.md` — deleted 2026-09-19 once its group frame + one-3MF + fab-collapse behaviours landed in round B1 below; its in-place clearance rule is the `manufacture` half):
 
 | intent | printed members | purchase members | joints with DOF | rigid joints | SIMP domain |
 |---|---|---|---|---|---|
@@ -327,6 +327,67 @@ of the acceptance paragraph (the two-member revolute group, the
 calibration (point 5's figure for toys), a house `simp_pitch`, the
 cantilever's `objectives` still carry no position (`load_at`/`fixed_at`
 live only on the realize op and in the run summary).
+
+### Slice 4 bridge — round B1 (model intent) built 2026-09-19
+
+Landed (`precis_se/printgroup.py`, tests `tests/test_se_print_intent.py`):
+
+- **Where `intent` lives**: a parameter of the existing `set_mode` op
+  (`set_mode(block=, mode='fdm/<m>', intent='model')`), stored as the
+  `intent` key of the block's `build_frame` jsonb beside a pin — no new
+  column, no migration; `ops.print_intent`/`ops.pinned_down` are the two
+  reads, an intent-only record is not a pin, `clear_build_frame` keeps
+  the intent, `set_mode(mode=null)` clears it (no mode, no group), a
+  non-fdm mode with an intent is refused. The enum is complete
+  (`ops.PRINT_INTENTS = model | manufacture`); `manufacture` is refused
+  "not built yet".
+- **Group = an fdm ancestor with an intent; members = its descendants**
+  by `parent` edges, derived at read time (`printgroup.descendants` over
+  a walk that stops where the next group root begins — a nested root
+  owns its own subtree, the outer group lists it as one `nested group …
+  printed separately` line and never exports it, and every block maps to
+  its nearest root, so `view='fab'` has one row per root including nested
+  ones). A root with no intent is not a group and everything reads as
+  before (regression-pinned).
+- **`model`**: fdm members print their cut solid (stamped holes keep the
+  compensation); purchase members print as **stand-ins** — the cad
+  catalog's analytic solid via the component's minted `meta.series`/
+  `meta.size` (`cad.catalog.family_for_series` → `scene.part_spec`,
+  proud heads shifted by their own height to the se head-top-at-origin
+  frame), else spec dims (bearing = OD minus bore; otherwise the derived
+  envelope, said so), else a `no_stand_in` warn finding naming what it
+  needs. Instances/arrays and other-family members are `member_skipped`
+  (info). Stand-ins are cad primitives, never meshes, so export is the
+  ordinary `_component_meshes` fold.
+- **One frame per group**: `cad.printability.orient` on the union of the
+  member meshes in world pose with the root's rules/policy; root pin >
+  SIMP member's baked `build_dir` (search skipped, said so; a second SIMP
+  member disagreeing → `simp_frame_conflict` error, first-by-name wins;
+  a root pin over a SIMP member → `simp_frame_overridden` warn) > search.
+  Per-member frame findings are judged at that frame (a SIMP member in
+  its own frame gets the 45° voxel rule instead of the mesh overhang
+  rule, as `printing.report_for` does alone).
+- **Output**: `view='print' args={'block': <root>}` = frame + candidate
+  table + per-member findings; `fmt='3mf'` = one 3MF, one object per
+  member in world pose, one rotation + one shared bed offset
+  (`printability.rotate_all_to_frame`); STL refused for a group.
+  `view='print'` no-args renders one section per group and skips its
+  members; `view='fab'` collapses a group to one row (intent, member
+  count, stand-in count, finding count or frame origin, the 3MF handle).
+- Residuals closed alongside: `store.put_field` takes a per-ref
+  `pg_advisory_xact_lock` (`FIELD_PUT_LOCK_NAMESPACE`) so concurrent puts
+  cannot collide on `MAX(ord)+1`; `cad_propose.dry_run` attaches the
+  store's `field_loader` so a proposal against a field-rooted design
+  builds.
+
+**B2 remains**: `intent='manufacture'` — cavities (component envelope +
+fit clearance + insertion path or pause), in-place gaps + the
+`min_clearance` capability + `in_place_clearance`, fusion of rigid
+members with `blend` at the seam, fastener elision with its finding, the
+fused group as one SIMP domain, the teardrop bore — and the acceptance
+paragraph's two-member revolute group. Also still open: array/instance
+members placed per member in a group (today `member_skipped`),
+`strength_z_ratio` calibration, a house `simp_pitch`.
 
 - **Slice 5 — nm state-dependent stability** (blocked on blocktree slice 2
   states): classify per declared state, plus — added 2026-09-11 from the

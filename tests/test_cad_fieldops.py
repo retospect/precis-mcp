@@ -578,6 +578,57 @@ def test_store_put_get_field_round_trip_dedupes_and_never_updates(cad, store) ->
     assert store.field_header("deadbeefdead") is None
 
 
+def test_put_field_serialises_per_ref_under_an_advisory_lock(cad, store) -> None:
+    """``put_field`` mints the chunk ``ord`` by ``MAX(ord) + 1`` under a
+    UNIQUE ``(ref_id, ord)`` — two concurrent puts on one cad ref (the
+    ``se_simp`` job is a real concurrent caller) must serialise, not race
+    each other onto the same ord. Deterministic half: a foreign
+    connection holding the lock stalls ``put_field`` until it lets go.
+    Burst half: eight distinct grids put at once all land, on distinct
+    ords, with no unique violation."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis.store._cad_ops import FIELD_PUT_LOCK_NAMESPACE
+
+    cad.put(id="seat-lock", text="base add box:w40mmd20mmh10mm")
+    ref = store.get_ref(kind="cad", id="seat-lock")
+    base, _c = _sphere_field()
+    base = base.scaled(1e-3)
+
+    def _grid(i: int) -> Field:
+        return Field(
+            grid=base.grid + np.float32(i * 1e-4), pitch=base.pitch, origin=base.origin
+        )
+
+    # ── the lock is what put_field waits on ────────────────────────────
+    done = threading.Event()
+    with store.pool.connection() as other:
+        other.execute(
+            "SELECT pg_advisory_xact_lock(%s, %s)",
+            (FIELD_PUT_LOCK_NAMESPACE, ref.id),
+        )
+
+        def _put_then_flag() -> None:
+            store.put_field(ref.id, _grid(1))
+            done.set()
+
+        t = threading.Thread(target=_put_then_flag)
+        t.start()
+        assert not done.wait(0.5)  # blocked behind the foreign lock holder
+        other.rollback()  # releases the xact lock
+    t.join(timeout=30)
+    assert done.is_set()
+
+    # ── a burst on one ref: every put lands, ords distinct ─────────────
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        shas = list(pool.map(lambda i: store.put_field(ref.id, _grid(i)), range(2, 10)))
+    assert len(set(shas)) == 8
+    rows = _chunk_rows(store, ref.id)
+    assert len(rows) == 9  # 1 from the deterministic half + 8 from the burst
+    assert len({r[2] for r in rows}) == 9  # every ord distinct
+
+
 def test_cad_load_rebuilds_a_field_leaf_and_the_handler_renders_it(
     cad, store, tmp_path
 ) -> None:
