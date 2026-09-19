@@ -43,7 +43,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -272,11 +271,56 @@ def install_exit_breadcrumb_hooks() -> None:
     _hooks_installed = True
 
 
+class InstallWatchdog(threading.Thread):
+    """The poll thread, with a ``stop()`` (gr347099).
+
+    Without one, a thread armed against a throwaway baseline outlives its
+    creator and fires the real ``os._exit(0)`` later — two tests did
+    exactly that with a 3600 s interval, killing their xdist worker one
+    hour into any gate slow enough to still be running (the "hangs at
+    95%" signature). The server never stops its watchdog; the handle is
+    for tests and for any future embedder that re-arms.
+    """
+
+    def __init__(self, *, baseline: Fingerprint, interval_s: float) -> None:
+        super().__init__(name="install-watchdog", daemon=True)
+        self._baseline = baseline
+        self._interval_s = interval_s
+        self._stop = threading.Event()
+
+    def stop(self, timeout: float | None = 5.0) -> None:
+        """Ask the loop to end and wait for it (a no-op if never started)."""
+        self._stop.set()
+        if self.is_alive():
+            self.join(timeout)
+
+    def run(self) -> None:
+        while not self._stop.wait(self._interval_s):
+            if _install_replaced(self._baseline):
+                try:
+                    current = install_fingerprint()
+                except OSError:
+                    current = None
+                _write_exit_breadcrumb(
+                    "install-swapped",
+                    old_fingerprint=self._baseline,
+                    new_fingerprint=current,
+                )
+                log.warning(
+                    "install watchdog: %s replaced on disk — exiting cleanly "
+                    "so the MCP client restarts a fresh server (gr338977)",
+                    self._baseline[0],
+                )
+                sys.stderr.flush()
+                os._exit(0)
+
+
 def start_install_watchdog(
     *, interval_s: float = _DEFAULT_INTERVAL_S
-) -> threading.Thread | None:
-    """Arm the watchdog; returns the thread, or ``None`` when not armed
-    (disabled by env, source install, or unstat-able baseline)."""
+) -> InstallWatchdog | None:
+    """Arm the watchdog; returns the thread (``.stop()`` ends it), or
+    ``None`` when not armed (disabled by env, source install, or
+    unstat-able baseline)."""
     install_exit_breadcrumb_hooks()
     if os.environ.get("PRECIS_INSTALL_WATCHDOG", "1") == "0":
         log.debug("install watchdog: disabled by PRECIS_INSTALL_WATCHDOG=0")
@@ -290,28 +334,7 @@ def start_install_watchdog(
         log.debug("install watchdog: source install — not watching")
         return None
 
-    def _watch() -> None:
-        while True:
-            time.sleep(interval_s)
-            if _install_replaced(baseline):
-                try:
-                    current = install_fingerprint()
-                except OSError:
-                    current = None
-                _write_exit_breadcrumb(
-                    "install-swapped",
-                    old_fingerprint=baseline,
-                    new_fingerprint=current,
-                )
-                log.warning(
-                    "install watchdog: %s replaced on disk — exiting cleanly "
-                    "so the MCP client restarts a fresh server (gr338977)",
-                    baseline[0],
-                )
-                sys.stderr.flush()
-                os._exit(0)
-
-    thread = threading.Thread(target=_watch, name="install-watchdog", daemon=True)
+    thread = InstallWatchdog(baseline=baseline, interval_s=interval_s)
     thread.start()
     log.info("install watchdog armed on %s (every %.0fs)", baseline[0], interval_s)
     return thread

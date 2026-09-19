@@ -17,12 +17,30 @@ import pytest
 
 from precis import install_watchdog
 from precis.install_watchdog import (
+    InstallWatchdog,
     _fingerprint_for,
     _install_replaced,
     consume_last_exit_breadcrumb,
     install_exit_breadcrumb_hooks,
     start_install_watchdog,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_watchdog_outlives_its_test() -> Iterator[None]:
+    """Stop every watchdog thread a test armed (gr347099).
+
+    A leaked thread carries a tmp-path baseline and, once monkeypatch has
+    restored the real ``install_fingerprint``, its next poll reads as
+    "install replaced" and calls the real ``os._exit(0)`` — on the xdist
+    worker, one interval later. Two tests here armed 3600 s intervals, so
+    any gate still running an hour on lost a worker and hung at 95%.
+    """
+    yield
+    for thread in threading.enumerate():
+        if isinstance(thread, InstallWatchdog):
+            thread.stop()
+    assert not [t for t in threading.enumerate() if isinstance(t, InstallWatchdog)]
 
 
 def _fake_install(tmp_path: Path) -> Path:
@@ -120,6 +138,26 @@ def test_start_arms_thread_for_real_install(
     assert isinstance(thread, threading.Thread)
     assert thread.daemon is True
     assert thread.is_alive()
+
+
+def test_stop_ends_the_thread_without_exiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``stop()`` returns promptly and the loop never reaches ``os._exit``
+    even though the baseline has become stale — the leak gr347099 hit."""
+    init = _fake_install(tmp_path)
+    monkeypatch.delenv("PRECIS_INSTALL_WATCHDOG", raising=False)
+    monkeypatch.setattr(
+        install_watchdog, "install_fingerprint", lambda: _fingerprint_for(init)
+    )
+    exits: list[int] = []
+    monkeypatch.setattr(install_watchdog.os, "_exit", exits.append)
+    thread = start_install_watchdog(interval_s=3600.0)
+    assert thread is not None
+    init.unlink()  # baseline now stale — a wake-up would exit
+    thread.stop()
+    assert not thread.is_alive()
+    assert exits == []
 
 
 def test_install_fingerprint_reads_the_precis_module_file(
