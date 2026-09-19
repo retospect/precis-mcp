@@ -223,7 +223,6 @@ def test_structure_load_at_version_returns_the_atom_count_of_that_save(
     assert len(live.atoms) == counts[4]
     # Every version has its revision row, ops verbatim.
     assert [r.rev for r in history.list_revisions(store, ref_id)] == [1, 2, 3, 4]
-    assert history.revision(store, ref_id, 4) is not None
-    assert history.revision(store, ref_id, 4).ops == [  # type: ignore[union-attr]
-        {"op": "vacancy", "atom": "aPd2"}
-    ]
+    rev4 = history.revision(store, ref_id, 4)
+    assert rev4 is not None
+    assert rev4.ops == [{"op": "vacancy", "atom": "aPd2"}]

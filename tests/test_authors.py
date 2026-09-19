@@ -6,6 +6,8 @@ citation generation, provenance report and bib generation all now share.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from precis.utils.authors import (
@@ -335,7 +337,7 @@ class TestSplitMiddle:
 
     def test_empty_never_none(self) -> None:
         assert split_middle("") == ("", "")
-        assert split_middle(None) == ("", "")  # type: ignore[arg-type]
+        assert split_middle(cast(str, None)) == ("", "")
 
 
 class TestNormalizeOrcid:

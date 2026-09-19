@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -100,7 +100,7 @@ def _stub(reply: str) -> Any:
         seen.append(prompt)
         return reply
 
-    call.seen = seen  # type: ignore[attr-defined]
+    cast(Any, call).seen = seen
     return call
 
 

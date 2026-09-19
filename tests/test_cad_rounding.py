@@ -273,7 +273,9 @@ def test_rounded_ray_hits_match_the_field() -> None:
 def test_rounded_in_a_design_probes_and_bounds_report_unshrunk_extents() -> None:
     design = build_design(parse_source(_RBOX))
     expr = design.components["p"]
-    lo, hi = _bounds(design, expr)  # type: ignore[misc]
+    bounds = _bounds(design, expr)
+    assert bounds is not None
+    lo, hi = bounds
     assert np.allclose(lo, [-0.02, -0.01, 0.0]) and np.allclose(hi, [0.02, 0.01, 0.01])
     # point probes see the round: the sharp corner is void, the face centre solid
     assert not design.classify_point(vec3(0.0199, 0.0099, 0.0099)).inside

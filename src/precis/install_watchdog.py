@@ -286,16 +286,16 @@ class InstallWatchdog(threading.Thread):
         super().__init__(name="install-watchdog", daemon=True)
         self._baseline = baseline
         self._interval_s = interval_s
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
 
     def stop(self, timeout: float | None = 5.0) -> None:
         """Ask the loop to end and wait for it (a no-op if never started)."""
-        self._stop.set()
+        self._stop_event.set()
         if self.is_alive():
             self.join(timeout)
 
     def run(self) -> None:
-        while not self._stop.wait(self._interval_s):
+        while not self._stop_event.wait(self._interval_s):
             if _install_replaced(self._baseline):
                 try:
                     current = install_fingerprint()
