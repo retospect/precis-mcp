@@ -115,8 +115,12 @@ CLI: `precis taproot refine --from fi<sharper> --to fi<original>`
 
 ### Merge duplicate hubs
 
-No automated merge door — the `pub_id`-collision raise from a reword
-attempt above is the handoff, not a self-serve button. Pick the
+The merge door is a CLI verb, human-run: `precis taproot merge --loser fi<dup>
+--winner fi<survivor>` (`--dry-run` prints the plan: edges repointed,
+redundant edges dropped, the loser retired). It refuses a loser past
+`candidate`. From the agent surface there is no merge verb — the
+`pub_id`-collision raise from a reword attempt above is the handoff:
+name the pair in a todo for the operator, or do it by hand. Pick the
 survivor (better wording / more evidence), then:
 
 ```python

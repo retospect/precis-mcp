@@ -121,6 +121,7 @@ def render_from_store(
     handle: str,
     kind: str,
     scope: tuple[int, int] | None = None,
+    readiness_line: str | None = None,
 ) -> str:
     """Render the TOC body for ``ref_id``, optionally scoped to a range.
 
@@ -130,9 +131,18 @@ def render_from_store(
     the inclusive ``(lo, hi)`` position range. Without it, the full body
     is clustered.
 
-    Returns Markdown. First line is the kind-aware headline; the rest
-    is the TOON table, optionally preceded by a ``Topics:`` line and
-    followed by a ``Next:`` drill-in block.
+    ``readiness_line`` (read-for-question loop, slice 4) is a pre-rendered
+    ``"readiness: embedded N/M · summarised N/M"`` line, threaded straight
+    through into the header. Computed by the caller (typically only for
+    the top-level, unscoped call — see ``PaperHandler._render_toc``) since
+    this module's own store access is deliberately limited to
+    ``ChunkListingStore`` (:mod:`precis.store.protocols`), which has no
+    embed/summarize backlog query surface.
+
+    Returns Markdown. First line is the kind-aware headline; the second
+    (when ``readiness_line`` is given) is the readiness line; the rest is
+    the TOON table, optionally preceded by a ``Topics:`` line and followed
+    by a ``Next:`` drill-in block.
     """
     pos_range = scope
     blocks = store.chunks.list_chunks_for_ref(ref_id, pos_range=pos_range)
@@ -141,12 +151,16 @@ def render_from_store(
 
     n = len(blocks)
     if not _should_cluster(n, scope):
-        return _render_per_chunk(handle=handle, blocks=blocks, scope=scope)
+        return _render_per_chunk(
+            handle=handle, blocks=blocks, scope=scope, readiness_line=readiness_line
+        )
 
     target_k = _target_k(n, scope)
     distances = _adjacent_jaccard_distances(blocks)
     if not distances:
-        return _render_per_chunk(handle=handle, blocks=blocks, scope=scope)
+        return _render_per_chunk(
+            handle=handle, blocks=blocks, scope=scope, readiness_line=readiness_line
+        )
 
     raw_segments = segment_dp(distances, k=target_k)
     segments = _collapse_singletons(raw_segments, min_size=_MIN_CLUSTER_SIZE)
@@ -175,7 +189,10 @@ def render_from_store(
     headline = _headline(handle=handle, n_chunks=n, n_clusters=len(rows), scope=scope)
     table = render_agent_table(rows, schema=["handle", "keywords"])
 
-    parts: list[str] = [headline, ""]
+    parts: list[str] = [headline]
+    if readiness_line:
+        parts.append(readiness_line)
+    parts.append("")
     topics = _topics_line(row_keyword_sets)
     if topics:
         parts.extend([f"Topics: {topics}", ""])
@@ -477,6 +494,7 @@ def _render_per_chunk(
     handle: str,
     blocks: Sequence[Any],
     scope: tuple[int, int] | None,
+    readiness_line: str | None = None,
 ) -> str:
     """Short-range path: one row per chunk, per-chunk keywords as label.
 
@@ -497,6 +515,8 @@ def _render_per_chunk(
         head = f"# {handle} sub-TOC ~{scope[0]}..{scope[1]} — {n_total} chunks"
     else:
         head = f"# {handle} TOC — {n_total} chunks"
+    if readiness_line:
+        head = f"{head}\n{readiness_line}"
     table = render_agent_table(rows, schema=["handle", "keywords"])
     return f"{head}\n\n{table}"
 

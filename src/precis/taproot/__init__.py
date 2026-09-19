@@ -69,6 +69,23 @@ path with no verdict omits the key, so a new edge is **born withheld**
 wording withholds its old verdicts on sha mismatch, but a pre-sha legacy
 stamp stays valid until the operational re-verify pass rewrites it.
 
+**Every mint door runs the canonicalizer.** The agent's
+``put(kind='finding', supporters=…)`` (``handlers/_finding_hub_mint.py``)
+runs the same ``block -> dedup_judge -> place`` cascade as backfill,
+directed mint and the chase bridge before it mints: ``attach`` lands the
+evidence on the matched hub (response: *converged onto fi<id>*),
+``new_contradicts`` writes the ``disputes`` link, and ``needs_review``
+**mints anyway** and files a review todo naming both hubs — a hand-authored,
+grounded claim is never dropped, unlike the automated callers which get a
+re-run. ``dedup=False`` is the explicit escape and says so in the response.
+The ``pub_id`` content hash is not the dedup: identical wording twice is
+rare; its only job is the concurrent-identical-sentence race in
+``hub.mint_hub``. It no longer appears in agent-facing output — hubs are
+addressed as ``fi<id>``; the signed artifact carries the sentence hash.
+``get(view='similar')`` and the web review page's "Nearest claims" panel
+(``precis_web/nanopub_render.py``, with the guarded merge door) expose the
+same neighbourhood to an agent and to the approving human.
+
 Module map (detail lives in each module's own docstring):
 
 - :mod:`.canon` — the canonicalizer cascade: ``extract_claim`` -> ``block``

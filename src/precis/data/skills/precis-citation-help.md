@@ -107,7 +107,7 @@ put(kind="finding",
     scope={"<regime-key>": "<controlled term>"},
     supporters=[{"paper": "pa5", "source_handle": "pc293"},
                 {"paper": "pa9", "source_handle": "pc871"}])
-# → "claim hub fi<id>  pub_id=…" — this is your cite
+# → "claim hub fi<id> …" — cite it as [fi<id>]
 ```
 
 Always give `source_handle`: a supporter without one grounds the whole

@@ -1226,6 +1226,160 @@ class TestSearchTrustAxis:
         assert "flags" not in out.body
 
 
+# ── search_hits() — cross-kind merge stream: live hubs only ──────────
+
+
+class TestSearchHits:
+    """``FindingHandler.search_hits`` — the override
+    the claim-layer-in-cross-kind-search design (shipped 2026-09-19) option 1
+    installs: the flag flip alone (``supports_search_hits=True``) would
+    have handed the cross-kind merge the inherited
+    ``NumericRefHandler.search_hits`` — every finding, posture-stripped.
+    """
+
+    def test_supports_search_hits_is_flipped_on(self) -> None:
+        assert FindingHandler.spec.supports_search_hits is True
+
+    def test_empty_q_returns_no_hits(self, store) -> None:
+        h = _make_handler(store)
+        assert h.search_hits(q="") == []
+
+    def test_only_live_hubs_surface_not_chase_findings(self, store) -> None:
+        h = _make_handler(store)
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Palladium accelerates nitrate reduction shx", scope={}
+            ),
+        )
+        _seed_paper(store, cite_key="shx-src")
+        resp = h.put(
+            title="in-flight claim about nitrate reduction shx",
+            body="palladium claim body text shx",
+            cited_in="shx-src",
+        )
+        chase_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        hits = h.search_hits(q="Palladium accelerates nitrate reduction shx")
+        ref_ids = {hit.ref_id for hit in hits}
+        assert hub_id in ref_ids
+        assert chase_id not in ref_ids
+
+    def test_refuted_hub_carries_the_refuted_posture(self, store) -> None:
+        from precis.taproot.hub import attach_evidence
+
+        h = _make_handler(store)
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(sentence="Copper catalyzes ammonia synthesis shy", scope={}),
+        )
+        opponent = _seed_paper(store, cite_key="shy-opp")
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=opponent,
+            role="establishes",
+            meta={"support": "no", "verified_by": "test"},
+            set_by="system",
+        )
+
+        [hit] = h.search_hits(q="Copper catalyzes ammonia synthesis shy")
+        assert hit.ref_id == hub_id
+        assert hit.posture == "◆ refuted"
+
+    def test_disputed_hub_carries_the_disputed_posture(self, store) -> None:
+        from precis.taproot.hub import attach_evidence
+
+        h = _make_handler(store)
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(sentence="Iridium boosts oxygen evolution shz", scope={}),
+        )
+        opponent = _seed_paper(store, cite_key="shz-opp")
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=opponent,
+            role="contradicts",
+            meta={"support": "no"},
+            set_by="system",
+        )
+
+        [hit] = h.search_hits(q="Iridium boosts oxygen evolution shz")
+        assert hit.ref_id == hub_id
+        assert hit.posture == "◆ disputed"
+
+    def test_verified_unopposed_hub_carries_the_check_posture(self, store) -> None:
+        from precis.taproot.hub import attach_evidence
+
+        h = _make_handler(store)
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Ruthenium speeds hydrogen evolution shw", scope={}
+            ),
+        )
+        supporter = _seed_paper(store, cite_key="shw-sup")
+        attach_evidence(
+            store,
+            hub_ref_id=hub_id,
+            paper_ref_id=supporter,
+            role="establishes",
+            meta={"support": "yes", "verified_by": "test"},
+            set_by="system",
+        )
+
+        [hit] = h.search_hits(q="Ruthenium speeds hydrogen evolution shw")
+        assert hit.ref_id == hub_id
+        assert hit.posture == "◆ 1✓ unopposed"
+
+    def test_unminted_hub_with_no_evidence_carries_unverified_posture(
+        self, store
+    ) -> None:
+        h = _make_handler(store)
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(sentence="Nickel foam enables urea oxidation shv", scope={}),
+        )
+
+        [hit] = h.search_hits(q="Nickel foam enables urea oxidation shv")
+        assert hit.ref_id == hub_id
+        assert hit.posture == "◆ unverified"
+
+    def test_exclude_ref_ids_forwarded_to_the_finding_body_leg(self, store) -> None:
+        h = _make_handler(store)
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(sentence="Cobalt oxide splits water shu", scope={}),
+        )
+
+        excluded = h.search_hits(
+            q="Cobalt oxide splits water shu", exclude_ref_ids=[hub_id]
+        )
+        assert hub_id not in {hit.ref_id for hit in excluded}
+
+        unfiltered = h.search_hits(q="Cobalt oxide splits water shu")
+        assert hub_id in {hit.ref_id for hit in unfiltered}
+
+    def test_include_ref_ids_restricts_to_the_given_set(self, store) -> None:
+        h = _make_handler(store)
+        hub_a = mint_hub(
+            store,
+            CanonicalClaim(sentence="Xylonite promotes catalysis alpha sht", scope={}),
+        )
+        hub_b = mint_hub(
+            store,
+            CanonicalClaim(sentence="Xylonite promotes catalysis beta sht", scope={}),
+        )
+
+        hits = h.search_hits(
+            q="Xylonite promotes catalysis sht", include_ref_ids=[hub_a]
+        )
+        ref_ids = {hit.ref_id for hit in hits}
+        assert hub_a in ref_ids
+        assert hub_b not in ref_ids
+
+
 # ── put(supporters=...) — Taproot claim-hub authoring ────────
 
 
@@ -1243,10 +1397,12 @@ class TestPutSupportersHubMint:
         resp = h.put(
             title="amine loading raises CO2 capacity",
             supporters=[{"paper": "miller23a"}],
+            dedup=False,
         )
         m = _search(r"claim hub fi(\d+)", resp.body)
         hub_id = int(m.group(1))
-        assert "pub_id=" in resp.body
+        assert "pub_id=" not in resp.body
+        assert "dedup skipped" in resp.body
         assert is_claim_hub(store, hub_id)
         # evidence edge landed paper --role--> hub (not the reverse).
         with store.pool.connection() as conn:
@@ -1264,8 +1420,8 @@ class TestPutSupportersHubMint:
         paper_b = _seed_paper(store, cite_key="paper-b")
         h = _make_handler(store)
         sentence = "amine loading raises CO2 capacity"
-        r1 = h.put(title=sentence, supporters=[{"paper": "paper-a"}])
-        r2 = h.put(title=sentence, supporters=[{"paper": "paper-b"}])
+        r1 = h.put(title=sentence, supporters=[{"paper": "paper-a"}], dedup=False)
+        r2 = h.put(title=sentence, supporters=[{"paper": "paper-b"}], dedup=False)
         hub1 = int(_search(r"claim hub fi(\d+)", r1.body).group(1))
         hub2 = int(_search(r"claim hub fi(\d+)", r2.body).group(1))
         assert hub1 == hub2
@@ -1305,6 +1461,7 @@ class TestPutSupportersHubMint:
             title="amine loading raises CO2 capacity",
             scope={"method": "engineered into printed touch sensors"},
             supporters=[{"paper": "miller23a"}],
+            dedup=False,
         )
         assert "lint (advisory, hub already minted):" in resp.body
         assert "scope-free-text" in resp.body
@@ -1328,6 +1485,7 @@ class TestPutSupportersHubMint:
             body="A much longer body paragraph describing the same finding "
             "in far more detail than the short title above.",
             supporters=[{"paper": "miller23a"}],
+            dedup=False,
         )
         assert f"claim: {title}" in resp.body
 
@@ -1350,6 +1508,7 @@ class TestPutSupportersHubMint:
             title="amine loading raises CO2 capacity",
             scope={"material": "amine"},
             supporters=[{"paper": "miller23a"}],
+            dedup=False,
         )
         assert "lint (advisory, hub already minted):" not in resp.body
 
@@ -1507,6 +1666,7 @@ class TestPutAcquisitionMode:
         hub = h.put(
             title="amine loading raises CO2 capacity",
             supporters=[{"paper": "miller23a"}],
+            dedup=False,
         )
         assert "claim hub fi" in hub.body
 

@@ -4,9 +4,13 @@ model label — written to kill the 2026-08-27 mutation survivors: the
 route-level tests render the HTML but never asserted which rung is
 current/done, which group a status came from, or the label fallback.
 
-The trailing ``_dispute_panel``/``_contradicted_panel`` section is
-DB-backed (D1, docs/backlog/disputes-edge-nonblocking-disagreement.md) —
-those two read live ``links`` rows, so a fake row can't stand in."""
+The trailing ``_dispute_panel``/``_contradicted_panel`` and "Nearest
+claims" (``_nearest_claims``/``hub_context``) sections are DB-backed (D1,
+docs/backlog/disputes-edge-nonblocking-disagreement.md; slice 3,
+the read-for-question loop (skill precis-read-for-question)) — those read live rows or mint a
+real hub, so a fake row can't stand in; the nearest-claims panel keeps its
+ANN retrieval and LLM verdict injected (``nearest_fn``/``judge_fn``) so
+these stay network-free."""
 
 from __future__ import annotations
 
@@ -23,6 +27,8 @@ from precis_web.nanopub_render import (
     _gate_report,
     _ladder,
     _lazy_enqueue_context_sentences,
+    _nearest_claims,
+    hub_context,
 )
 
 
@@ -613,3 +619,124 @@ def test_mint_dryrun_threads_the_source_title(monkeypatch: Any) -> None:
     assert not _dryrun_advisories(
         monkeypatch, _bundle(chunks=[paper_chunk], sources=[paper])
     )
+
+
+# ── _nearest_claims / hub_context wiring (slice 3) ───────────────────────
+
+
+def test_nearest_claims_no_embedder_degrades_to_empty_with_note() -> None:
+    rows, note = _nearest_claims(
+        object(),
+        1,
+        "a sentence",
+        None,
+        embedder=None,
+        nearest_fn=lambda *a, **k: (_ for _ in ()).throw(AssertionError("unreached")),
+        judge_fn=lambda a, b: (_ for _ in ()).throw(AssertionError("unreached")),
+        own_mergeable=True,
+    )
+    assert rows == []
+    assert note == "nearest claims unavailable (no embedder)"
+
+
+def test_nearest_claims_excludes_self_and_shapes_rows() -> None:
+    from precis.taproot.canon import MergeCandidate
+
+    candidates = [
+        MergeCandidate(hub_ref_id=1, claim="this hub's own sentence", distance=0.0),
+        MergeCandidate(hub_ref_id=2, claim="a near neighbour", distance=0.12),
+    ]
+
+    def _fake_nearest(sentence, scope, store, embedder, *, k):
+        assert k == 6  # k=5 + 1, so self (when present) doesn't crowd out a real hit
+        return candidates
+
+    def _fake_judge(a, b):
+        assert a == "this hub's own sentence"
+        assert b == "a near neighbour"
+        return {"verdict": "different", "confidence": 0.4, "rationale": "stub"}
+
+    rows, note = _nearest_claims(
+        object(),
+        1,
+        "this hub's own sentence",
+        {"material": "Pd/C"},
+        embedder=object(),
+        nearest_fn=_fake_nearest,
+        judge_fn=_fake_judge,
+        own_mergeable=True,
+    )
+
+    assert note is None
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["hub_ref_id"] == 2
+    assert row["handle"] == "fi2"
+    assert row["claim"] == "a near neighbour"
+    assert row["distance"] == 0.12
+    assert row["verdict"] == "different"
+    assert row["confidence"] == 0.4
+    assert row["can_merge"] is True
+
+
+def test_nearest_claims_can_merge_follows_own_mergeable() -> None:
+    from precis.taproot.canon import MergeCandidate
+
+    rows, _note = _nearest_claims(
+        object(),
+        1,
+        "sentence",
+        None,
+        embedder=object(),
+        nearest_fn=lambda *a, **k: [
+            MergeCandidate(hub_ref_id=2, claim="other", distance=0.1)
+        ],
+        judge_fn=lambda a, b: {"verdict": "same", "confidence": 0.9, "rationale": "x"},
+        own_mergeable=False,
+    )
+    assert rows[0]["can_merge"] is False
+
+
+def test_hub_context_wires_injected_nearest_and_judge_fns(store: Any) -> None:
+    """The full assembly: :func:`hub_context` calls :func:`_nearest_claims`
+    with THIS hub's own sentence/scope, excludes the hub from any
+    self-hit the injected retrieval returns, and carries the result under
+    ``nearest``/``nearest_note`` — no DB ANN query or LLM call happens
+    (both are injected stubs)."""
+    from precis.taproot.canon import CanonicalClaim, MergeCandidate
+    from precis.taproot.hub import mint_hub
+
+    hub = mint_hub(store, CanonicalClaim(sentence="A wired-panel claim.", scope={}))
+    other = mint_hub(store, CanonicalClaim(sentence="A different claim.", scope={}))
+
+    def _fake_nearest(sentence, scope, s, embedder, *, k):
+        assert sentence == "A wired-panel claim."
+        return [
+            MergeCandidate(hub_ref_id=hub, claim=sentence, distance=0.0),
+            MergeCandidate(hub_ref_id=other, claim="A different claim.", distance=0.3),
+        ]
+
+    def _fake_judge(a, b):
+        return {"verdict": "different", "confidence": 0.5, "rationale": "stub"}
+
+    ctx = hub_context(
+        store, hub, embedder=object(), nearest_fn=_fake_nearest, judge_fn=_fake_judge
+    )
+
+    assert ctx is not None
+    assert ctx["nearest_note"] is None
+    assert [r["hub_ref_id"] for r in ctx["nearest"]] == [other]
+    assert ctx["nearest"][0]["can_merge"] is True  # unminted -> still a valid winner
+
+
+def test_hub_context_no_embedder_yields_empty_nearest_and_note(store: Any) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    hub = mint_hub(store, CanonicalClaim(sentence="No embedder wired.", scope={}))
+
+    ctx = hub_context(store, hub, embedder=None)
+
+    assert ctx is not None
+    assert ctx["nearest"] == []
+    assert ctx["nearest_note"] == "nearest claims unavailable (no embedder)"

@@ -897,6 +897,31 @@ def block(
     ]
 
 
+def nearest_hubs(
+    sentence: str,
+    scope: dict[str, str] | None,
+    store: Store,
+    embedder: Any,
+    *,
+    k: int = 10,
+) -> list[MergeCandidate]:
+    """The ``k`` nearest existing claim hubs to ``sentence``/``scope`` — a
+    thin wrapper over :func:`block` that builds the :class:`CanonicalClaim`
+    for a caller that only has raw sentence text, not a claim already in
+    hand.
+
+    Two callers: the hub-mint dedup cascade's ``view='similar'``
+    (``handlers/finding.py``, read-only "what's near this hub" query —
+    ``scope`` there is the hub's own ``meta['scope']``) and the web
+    approve form's nearest-claims panel (docs/backlog/read-for-question-
+    loop.md slice 3). Neither builds a :class:`CanonicalClaim` itself, so
+    this saves every caller from importing that constructor just to call
+    :func:`block`.
+    """
+    claim = CanonicalClaim(sentence=sentence, scope=dict(scope or {}))
+    return block(claim, store, embedder, k=k)
+
+
 # ── dedup_judge — MEDIUM, the crux ──────────────────────────────────────
 
 _DEDUP_SYS = (
@@ -1203,6 +1228,7 @@ __all__ = [
     "extract_claim_strict",
     "extract_claim_strict_big",
     "merge_confirm",
+    "nearest_hubs",
     "not_hypothesis_predicate_sql",
     "place",
 ]

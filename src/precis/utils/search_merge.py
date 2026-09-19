@@ -83,6 +83,27 @@ _RETRACTION_SCORE_FACTOR: dict[str, float] = {
     "expression_of_concern": 0.85,
 }
 
+# Posture ranking lever, same mould and same reason as
+# ``_RETRACTION_SCORE_FACTOR`` above — see docs/backlog/claim-layer-
+# absent-from-cross-kind-search.md option 1. ``SearchHit.posture`` is a
+# pre-rendered token (``FindingHandler._search_hit_posture`` is the sole
+# producer, one closed vocabulary), and this parses the SAME string the
+# renderer prefixes onto the summary cell rather than carrying a second
+# field — the retraction precedent's own rule ("adds no column") applied
+# to the ranking side too: no redundant enum, one string, two consumers.
+#
+# ``_POSTURE_VERIFIED_FACTOR`` is deliberately the smallest lever in this
+# module (contrast the 0.02/0.85 retraction pair): with ~95% of hubs in
+# prod carrying >=1 verdict (docs/backlog item, 2026-08-29 snapshot), an
+# aggressive boost would turn every wildcard search into a claim list —
+# the backlog item's own explicit "start conservative" instruction.
+# ``_POSTURE_REFUTED_FACTOR`` can be much stronger (48 of 1552 hubs,
+# 2026-08-29) without that risk, mirroring ``retracted``'s 0.02.
+_POSTURE_REFUTED_PREFIX = "◆ refuted"
+_POSTURE_VERIFIED_MARKER = "unopposed"
+_POSTURE_REFUTED_FACTOR = 0.1
+_POSTURE_VERIFIED_FACTOR = 1.1
+
 # Human-facing one-line labels, keyed by ``refs.retraction_status``.
 # Mirrors ``handlers/paper.py::_RETRACTION_LABELS`` (that module isn't
 # imported here to avoid a handlers→utils dependency inversion; the
@@ -106,6 +127,21 @@ def _retraction_note(status: str | None) -> str | None:
         return None
     label = _RETRACTION_LABELS.get(status.strip().lower())
     return f"⚠ {label}" if label else None
+
+
+def _annotation_prefix(hit: SearchHit) -> str | None:
+    """The combined ``⚠ RETRACTED``/``◆ …`` prefix for one hit, or
+    ``None`` when neither annotation applies.
+
+    A single hit can in principle carry both (a retracted paper is never
+    a claim hub, but nothing enforces that at the type level) — space-
+    joined so both survive rather than one silently overwriting the
+    other. Shared by :func:`_render_toon_table` (summary-cell prefix)
+    and :func:`_render_hit` (its own preview line) so the two renderers
+    can never disagree about what a hit's annotation reads.
+    """
+    parts = [p for p in (_retraction_note(hit.retraction_status), hit.posture) if p]
+    return " ".join(parts) if parts else None
 
 
 _MergeMode = Literal["priority", "rrf"]
@@ -206,6 +242,18 @@ class SearchHit:
     # (the overwhelming majority — checking is opt-in and sparse) is a
     # complete no-op on both paths.
     retraction_status: str | None = None
+    # Terse pre-rendered claim-hub posture token (``"◆ 4✓ unopposed"`` /
+    # ``"◆ refuted"`` / ``"◆ disputed"`` / ``"◆ unverified"``), ``None``
+    # for every non-finding hit and every finding hit that isn't a live
+    # claim hub. The one field the claim-layer-in-cross-kind-search design (shipped 2026-09-19) option 1 specifies — no ``state``/``support``/
+    # ``flags`` columns in the cross-kind merge (see that item's "why the
+    # flag is set" section for why a naive flag flip would have been
+    # wrong). Read by :func:`_merge_rrf` (the ranking lever,
+    # ``_POSTURE_REFUTED_FACTOR``/``_POSTURE_VERIFIED_FACTOR``) and by
+    # :func:`_render_toon_table`/:func:`_render_hit` (the summary-cell /
+    # preview prefix), both keyed off this exact string — see those
+    # constants' docstring for why a second field wasn't added instead.
+    posture: str | None = None
 
     @property
     def handle(self) -> str:
@@ -368,6 +416,14 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
     per document using the representative hit's
     ``retraction_status``, not per-stream-contribution, so a paper
     that surfaces across multiple streams is penalised exactly once.
+
+    A claim hub's ``posture`` gets the same one-per-document treatment:
+    ``_POSTURE_REFUTED_FACTOR`` sinks a refuted hub, ``_POSTURE_VERIFIED_
+    FACTOR`` gives a modest boost to a verified-and-unopposed one, and a
+    ``disputed``/``unverified`` posture (or ``None``) is a no-op — a
+    contested claim is what a drafting agent most needs to see, so it
+    stays at its unpenalised rank rather than being buried alongside a
+    refuted one.
     """
     # group_id is either the dedupe_key string or a synthetic
     # ``"_:{stream}:{idx}"`` token for hits without a key. Using a
@@ -393,6 +449,11 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
         factor = _RETRACTION_SCORE_FACTOR.get(status)
         if factor is not None:
             totals[key] *= factor
+        posture = hit.posture or ""
+        if posture.startswith(_POSTURE_REFUTED_PREFIX):
+            totals[key] *= _POSTURE_REFUTED_FACTOR
+        elif _POSTURE_VERIFIED_MARKER in posture:
+            totals[key] *= _POSTURE_VERIFIED_FACTOR
 
     # Sort by RRF total desc, break ties by raw score desc, then
     # by insertion order for determinism.
@@ -517,15 +578,18 @@ def _render_toon_table(
     rows: list[dict[str, str]] = []
     for hit in hits:
         summary, remaining_words = _derive_toon_summary(hit)
-        note = _retraction_note(hit.retraction_status)
-        if note:
+        prefix = _annotation_prefix(hit)
+        if prefix:
             # Prefix rather than a dedicated column: the flag is rare
             # (most refs are unchecked) so a column would render an
             # empty cell on ~every row — pure token waste for the
             # common case. The handle/id cell stays untouched
             # (agents paste it verbatim into get()); the summary cell
-            # is prose already, so a prefix reads naturally there.
-            summary = f"{note} — {summary}" if summary else note
+            # is prose already, so a prefix reads naturally there. Same
+            # rule for ``posture`` (:func:`_annotation_prefix`) — a claim
+            # hub's posture is exactly as sparse in a mixed-kind result
+            # page as retraction status is corpus-wide.
+            summary = f"{prefix} — {summary}" if summary else prefix
         if hit.uhandle:
             ident = hit.uhandle  # universal handle when backfilled
         elif hit.slug:
@@ -607,9 +671,9 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     parts = [f"\n## {rank}. {ident}{label}"]
     if hit.title:
         parts.append(f"_{hit.title}_")
-    note = _retraction_note(hit.retraction_status)
-    if note:
-        parts.append(note)
+    prefix = _annotation_prefix(hit)
+    if prefix:
+        parts.append(prefix)
     parts.extend(hit.extra_lines)
     if hit.preview:
         parts.append(hit.preview)
@@ -725,6 +789,7 @@ def ref_hits_to_search_hits(
     reach: str | None = None,
     preview_for: Any = None,
     excerpt: int = 140,
+    posture_for: Any = None,
 ) -> list[SearchHit]:
     """Adapt ``(ref, rank)`` rows into ``SearchHit``s.
 
@@ -739,6 +804,11 @@ def ref_hits_to_search_hits(
         preview_for: Optional ``(ref) -> str`` callable for the
             preview text.  Defaults to a truncated ref title.
         excerpt: Truncation cap for the default title-based preview.
+        posture_for: Optional ``(ref) -> str | None`` callable populating
+            :attr:`SearchHit.posture` (``FindingHandler.search_hits`` is
+            the only caller today). ``None`` — the default for every
+            other producer — leaves the field unset, exactly like
+            omitting ``retraction_status``.
     """
     out: list[SearchHit] = []
     for ref, rank in pairs:
@@ -762,6 +832,12 @@ def ref_hits_to_search_hits(
             dedupe = f"{kind}:#{ref_id}"
         else:
             dedupe = None
+        posture: str | None = None
+        if posture_for is not None:
+            try:
+                posture = posture_for(ref)
+            except Exception:
+                posture = None
         out.append(
             SearchHit(
                 score=float(rank),
@@ -777,6 +853,7 @@ def ref_hits_to_search_hits(
                 # ``(kind, ref_id)``.
                 uhandle=handle_registry.try_format(kind, ref_id, chunk=False),
                 retraction_status=getattr(ref, "retraction_status", None),
+                posture=posture,
             )
         )
     return out

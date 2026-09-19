@@ -74,6 +74,7 @@ def test_claims_view_lists_grounded_hub_with_posture(store: Store) -> None:
     assert f"[{hub_handle}]" in body
     assert "corroborates" in body
     assert "Top-gated 9-atom AGNR FETs" in body
+    assert "pub_id" not in body
 
 
 def test_claims_view_contradicting_edge_renders_distinct_role(store: Store) -> None:
@@ -113,19 +114,22 @@ def test_claims_view_contradicting_edge_renders_distinct_role(store: Store) -> N
     assert "disputed" in body_contradictor
 
 
-def test_claims_view_ungrounded_pub_id_hub_marked_uncited(store: Store) -> None:
+def test_claims_view_ungrounded_pub_id_hub_still_shown(store: Store) -> None:
     """A hub this paper grounds but that hasn't been assigned a ``pub_id``
     yet is still shown here (unlike the cite-time nudge, which drops it) —
-    marked so a reader doesn't try to cite it."""
+    ``pub_id`` itself never renders in this table (slice 2), so the row
+    is indistinguishable from any other by that column, but its presence
+    at all is the thing under test."""
     paper = seed_ref(store, title="Frontier Paper", kind="paper")
     pa = handle_registry.format_handle("paper", paper)
 
-    seed_claim_hub(
+    out = seed_claim_hub(
         store,
         sentence="Frontier claim: A enables B.",
         scope={"material": "A"},
         supporters=[{"paper": paper}],
     )
+    hub_handle = handle_registry.format_handle("finding", out["hub_ref_id"])
 
     # seed_claim_hub always assigns a pub_id in the normal mint path, so
     # strip it here to exercise the require_pub_id=False branch directly.
@@ -139,4 +143,5 @@ def test_claims_view_ungrounded_pub_id_hub_marked_uncited(store: Store) -> None:
 
     body = _handler(store).get(id=pa, view="claims").body
 
-    assert "<uncited>" in body
+    assert f"[{hub_handle}]" in body
+    assert "pub_id" not in body

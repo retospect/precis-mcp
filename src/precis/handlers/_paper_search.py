@@ -659,6 +659,7 @@ class FusedBlockSearch:
         answers: list[str] | None,
         per_paper: int | None,
         extra_exclude_ref_ids: list[int] | None = None,
+        extra_include_ref_ids: list[int] | None = None,
     ) -> BlockSearchResult:
         # Local import — paper.py imports this module lazily, so by the
         # time ``run`` executes paper.py is fully loaded; see this
@@ -847,6 +848,17 @@ class FusedBlockSearch:
         exclude_ref_ids: list[int] = sorted(
             exclude_resolved | set(extra_exclude_ref_ids or ())
         )
+        # ``extra_include_ref_ids`` is the dispatch-resolved ``cited=``/
+        # ``hubbed=True`` closure — the inclusion mirror of
+        # ``extra_exclude_ref_ids`` (``runtime.dispatch._resolve_cited_include``
+        # / ``._resolve_hubbed_facet``). No ``include=`` slug counterpart
+        # exists to merge with, so this threads straight through.
+        # ``is not None`` (not truthy): an empty list means "restricted to
+        # zero sources" and must return zero hits, never fall through
+        # unfiltered like an empty ``exclude_ref_ids`` correctly does.
+        include_ref_ids: list[int] | None = (
+            list(extra_include_ref_ids) if extra_include_ref_ids is not None else None
+        )
         # gr340059: a handle-shaped exclude= entry (``pa<id>`` etc.) that
         # doesn't resolve to a live ref is a caller-visible skip-list
         # mistake, not a stale-slug shrug — say so instead of quietly
@@ -946,6 +958,7 @@ class FusedBlockSearch:
                 offset=search_offset,
                 max_distance=SEMANTIC_DISTANCE_FLOOR,
                 exclude_ref_ids=exclude_ref_ids or None,
+                include_ref_ids=include_ref_ids,
                 year_from=year_from,
                 year_to=year_to,
                 card_kinds=("card_combined",),
@@ -989,6 +1002,7 @@ class FusedBlockSearch:
                 offset=search_offset,
                 max_distance=SEMANTIC_DISTANCE_FLOOR,
                 exclude_ref_ids=exclude_ref_ids or None,
+                include_ref_ids=include_ref_ids,
                 year_from=year_from,
                 year_to=year_to,
                 card_kinds=("card_combined",),
@@ -1038,6 +1052,7 @@ class FusedBlockSearch:
                 scope_ref_id=scope_ref_id,
                 tags=normalized_tags,
                 exclude_ref_ids=exclude_ref_ids or None,
+                include_ref_ids=include_ref_ids,
             )
             if omitted:
                 lo = str(year_from) if year_from is not None else "…"
@@ -1108,6 +1123,7 @@ class FusedBlockSearch:
                         scope_ref_id=scope_ref_id,
                         tags=normalized_tags,
                         exclude_ref_ids=exclude_ref_ids or None,
+                        include_ref_ids=include_ref_ids,
                         card_kinds=("card_combined",),
                         year_from=year_from,
                         year_to=year_to,
@@ -1141,6 +1157,7 @@ class FusedBlockSearch:
                         scope_ref_id=scope_ref_id,
                         tags=normalized_tags,
                         exclude_ref_ids=exclude_ref_ids or None,
+                        include_ref_ids=include_ref_ids,
                         card_kinds=("card_combined",),
                     )
                 _log.debug(

@@ -27,11 +27,27 @@ import json
 import logging
 import re
 import threading
+from collections.abc import Callable
 from typing import Any
 
+from precis.taproot.canon import MergeCandidate, Verdict, dedup_judge, nearest_hubs
+from precis.utils import handle_registry
 from precis_web.timefmt import abs_ts
 
 log = logging.getLogger(__name__)
+
+#: Injectable signatures for the "Nearest claims" panel (slice 3,
+#: the read-for-question loop (skill precis-read-for-question)) — :func:`hub_context` defaults
+#: to the real :func:`~precis.taproot.canon.nearest_hubs`/``dedup_judge``,
+#: tests inject stubs so a unit test never opens a DB connection or an LLM
+#: call.
+NearestFn = Callable[..., list[MergeCandidate]]
+JudgeFn = Callable[[str, str], Verdict]
+
+#: "Nearest claims" panel size — five is plenty for an at-a-glance
+#: same-claim check; the agent-facing ``view='similar'`` door
+#: (``handlers/_finding_hub_mint.py``) uses a bigger k for a fuller scan.
+_NEAREST_K = 5
 
 #: One action per publish state (the state → next-transition map the
 #: action box renders from).
@@ -45,12 +61,27 @@ _STATE_ACTION = {
 }
 
 
-def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
+def hub_context(
+    store: Any,
+    hub_id: int,
+    *,
+    embedder: Any = None,
+    nearest_fn: NearestFn = nearest_hubs,
+    judge_fn: JudgeFn = dedup_judge,
+) -> dict[str, Any] | None:
     """Assemble the review-and-sign context for claim hub ``hub_id``, or
     ``None`` when it isn't a live ``TAPROOT:claim`` hub. See the module
     docstring — the caller merges this under one namespaced context key
     (``ctx['np']``) rather than splatting it flat, so its keys can never
-    silently shadow the reader-evidence context's own."""
+    silently shadow the reader-evidence context's own.
+
+    ``embedder``/``nearest_fn``/``judge_fn`` feed the "Nearest claims"
+    panel (:func:`_nearest_claims`, slice 3 of docs/backlog/read-for-
+    question-loop.md) — injected so a unit test can stub the ANN
+    retrieval and the LLM verdict without a DB or model call. The caller
+    (``routes/claim.py``'s ``claim_page_context``) is the one that
+    resolves the real embedder off the runtime; ``hub_context`` itself
+    never reaches for one."""
     from precis.errors import BadInput
     from precis.handlers._finding_hypothesis import (
         ARTIFACT_HYPOTHESIS,
@@ -114,14 +145,38 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
     preflight = publish_preflight(store, hub_id, row=row) if state is not None else []
     suggested_payload = _suggested_payload(store, row, bundle, hub_meta)
     open_disputes = _dispute_panel(store, hub_id)
-    # Pre-approve (unminted/candidate): the mint gates haven't run for
-    # real yet, but they are pure reads — dry-run them against the live
-    # sentence + the prefilled grounding so the gates panel shows how the
-    # claim stacks up NOW, not a wall of "pending".
+    # Pre-approve (unminted/candidate) is also this hub's own eligibility
+    # to be a merge WINNER (slice 3: a hub past 'candidate' has a frozen
+    # identity — merging into it would retroactively re-identify a
+    # reviewed/signed artifact, taproot-merge-mcp-surface.md) — shared by
+    # the mint-gates dry-run below and the nearest-claims panel.
+    pre_approve = state in (None, "candidate")
+    # Pre-approve: the mint gates haven't run for real yet, but they are
+    # pure reads — dry-run them against the live sentence + the prefilled
+    # grounding so the gates panel shows how the claim stacks up NOW, not
+    # a wall of "pending".
     dryrun = (
         _mint_dryrun(store, hub_id, bundle, hub_meta, suggested_payload)
-        if state in (None, "candidate")
+        if pre_approve
         else None
+    )
+    # "Nearest claims" (slice 3): skip the ANN + per-row LLM judge entirely
+    # once past candidate — the panel is hidden there anyway (frozen
+    # identity, nothing to merge into), so there's no point spending the
+    # judge calls.
+    nearest, nearest_note = (
+        _nearest_claims(
+            store,
+            hub_id,
+            bundle.sentence,
+            hub_meta.get("scope"),
+            embedder=embedder,
+            nearest_fn=nearest_fn,
+            judge_fn=judge_fn,
+            own_mergeable=pre_approve,
+        )
+        if pre_approve
+        else ([], None)
     )
     return {
         "hub_id": hub_id,
@@ -149,7 +204,62 @@ def hub_context(store: Any, hub_id: int) -> dict[str, Any] | None:
         ),
         "ladder": _ladder(state, row, disputed=disputed),
         "gates": _gate_report(state, preflight, dryrun=dryrun),
+        "nearest": nearest,
+        "nearest_note": nearest_note,
     }
+
+
+def _nearest_claims(
+    store: Any,
+    hub_ref_id: int,
+    sentence: str,
+    scope: Any,
+    *,
+    embedder: Any,
+    nearest_fn: NearestFn,
+    judge_fn: JudgeFn,
+    own_mergeable: bool,
+    k: int = _NEAREST_K,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """The "Nearest claims" panel data (slice 3, docs/backlog/read-for-
+    question-loop.md): the ``k`` nearest OTHER live claim hubs to this
+    hub's own sentence (:func:`~precis.taproot.canon.nearest_hubs`, the
+    same ANN retrieval the mint-door cascade and ``view='similar'`` use —
+    :func:`~precis.handlers._finding_hub_mint.render_similar_view`
+    excludes self the same way), each carrying the
+    :func:`~precis.taproot.canon.dedup_judge` verdict against this hub's
+    sentence, computed fresh on every render (no cache — this is one
+    hub's page at a time, never a batch scan).
+
+    ``can_merge`` on every row is this hub's OWN eligibility to be a merge
+    winner (``own_mergeable``, the same 'pre-candidate' test the mint-gate
+    dry-run above uses) — not a per-neighbour :func:`~precis.taproot.hub.
+    merge_hubs` dry-run plan, which would cost one more DB round-trip per
+    row just to show a button; the confirm POST computes the real,
+    authoritative plan (including the *neighbour's* own eligibility)
+    before writing anything.
+
+    ``embedder is None`` (no query embedder configured on this runtime)
+    degrades to an empty list + an explanatory note, never an exception —
+    the panel is advisory, not a page-breaking dependency.
+    """
+    if embedder is None:
+        return [], "nearest claims unavailable (no embedder)"
+    candidates = nearest_fn(sentence, scope, store, embedder, k=k + 1)
+    others = [c for c in candidates if c.hub_ref_id != hub_ref_id][:k]
+    rows = [
+        {
+            "hub_ref_id": c.hub_ref_id,
+            "handle": handle_registry.format_handle("finding", c.hub_ref_id),
+            "claim": c.claim,
+            "distance": c.distance,
+            "verdict": (v := judge_fn(sentence, c.claim))["verdict"],
+            "confidence": v["confidence"],
+            "can_merge": own_mergeable,
+        }
+        for c in others
+    ]
+    return rows, None
 
 
 def _mint_dryrun(

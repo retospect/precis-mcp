@@ -1811,7 +1811,7 @@ def merge_hubs(
     conn: Any = None,
 ) -> MergePlan:
     """Collapse ``loser_ref_id`` into ``winner_ref_id`` -- the merge door
-    (docs/backlog/claim-hub-merge-door.md) neither :func:`apply_placement`
+    (the merge door, shipped 2026-08-20) neither :func:`apply_placement`
     nor :func:`refine_claim_sentence`/:func:`link_claims` provide (both
     only dedup/link, never absorb one existing hub into another).
 

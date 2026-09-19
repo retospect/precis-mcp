@@ -192,17 +192,33 @@ children, partial, …}`). Then read the winners via their handles.
 ## Search the whole corpus
 ## Find something but I don't know which kind
 ## Cross-kind search — let the runtime pick
+## Papers and claim hubs together — kind='source'
 
 ```python
 search(q="Z-scheme photocatalysis")  # all kinds
 search(kind="*", q="topic:x")  # explicit wildcard
 search(kind="paper,patent", q="Z-scheme")  # subset via comma-list
+search(kind="source", q="Z-scheme photocatalysis")  # papers + live claim hubs only
 ```
 
 When `kind=` is omitted (or `'*'` / `'all'` / `'any'` / `''`), search
 fans out across every kind whose handler supports it. Each hit is
 tagged with its source kind. Streams merge by rank, so a strong hit in
-`memory` can out-rank a weaker hit in `paper`.
+`memory` can out-rank a weaker hit in `paper`. This is also where a
+settled claim surfaces: a live claim hub (`finding` handler, minted
+via `supporters=`) rides in the same merge, its summary cell prefixed
+`◆ 4✓ unopposed` / `◆ refuted` / `◆ disputed` / `◆ unverified` — verified
+support, no live objection; every judged edge came back negative;
+a live objection is on file; nothing judged yet. A refuted hub sinks in
+the ranking, a verified-unopposed one rises modestly — the chase-tree
+finding underneath a hub never appears on its own, only the hub itself.
+
+`kind='source'` is a fixed two-kind fan-out — `paper` plus live claim
+hubs, nothing else — the same merge and the same posture prefix as the
+unscoped wildcard above, just narrowed to "is there a settled claim
+about this, or only raw passages?" `uncited=`/`cited=` compose with it
+exactly as with any other cross-kind call; `hubbed=` does not — it's a
+paper-ref-only restriction, so it still needs `kind='paper'` on its own.
 
 ## See more results
 ## Page through search hits beyond the first page
@@ -351,6 +367,46 @@ An unresolvable handle, or one that resolves to a non-draft ref, raises
 whose search has no exclude-by-ref_id wiring yet (`patent`, `edgar`)
 explicitly raises `Unsupported`; the default unscoped fan-out instead
 drops it from the merge and says so (`_(uncited=: skipped edgar — …)_`).
+
+## Find sources a draft already cites — restrict instead of exclude
+## cited= — the mirror of uncited=
+
+```python
+search(kind="paper", q="wang tile guided self assembly", cited="dr173020")
+```
+
+`cited=<draft>` is the inclusion mirror of `uncited=`: same closure, same
+non-draft/unresolvable rejection — but it restricts hits to the closure
+instead of dropping it (useful for "what did this draft already lean
+on?" or composing with `hubbed=` below). Response:
+
+```
+_(cited=dr173020: restricted to 4 already-cited sources)_
+```
+
+`cited=` and `uncited=` are mutually exclusive — passing both raises
+`BadInput`. A closure of zero sources restricts to zero hits (never
+falls through to an unfiltered search).
+
+## Papers that already back a claim hub, or don't
+## hubbed=true/false — paper-only
+
+```python
+search(kind="paper", q="nitrate reduction catalyst", hubbed=False)
+```
+
+`hubbed=True` restricts to papers that are a supporter
+(`establishes`/`corroborates` evidence edge) of at least one live claim
+hub; `hubbed=False` excludes them — the well-trodden-path guard
+(`precis-read-for-question`): once a paper's evidence is already in a
+hub, a fresh reading pass wants the *rest* of the corpus. `kind='paper'`
+only — any other kind raises `BadInput`. Composes with
+`cited=`/`uncited=`/`exclude=` (both restrictions apply). Response:
+
+```
+_(hubbed=false: 12 hubbed papers excluded)_
+_(hubbed=true: restricted to 12 hubbed papers)_
+```
 
 ## What does the ⚠ on a paper hit mean?
 ## Why did a retracted paper rank so low?

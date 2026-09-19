@@ -45,6 +45,7 @@ __all__ = [
     "resolve_hub_ref_id",
     "resolve_merge_loser_ref_id",
     "resolve_paper_ref_id",
+    "resolve_supporters",
     "seed_claim_hub",
 ]
 
@@ -216,6 +217,68 @@ def resolve_merge_loser_ref_id(store: Store, hub: int | str) -> int:
     )
 
 
+def resolve_supporters(
+    store: Store, supporters: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Validate + resolve every supporter's ``paper``/``role`` up front,
+    read-only — extracted from :func:`seed_claim_hub` (gr263195's
+    validate-before-write discipline) so a second caller needing the same
+    resolution without a mint (the hub-mint dedup cascade's ``attach``
+    path — :mod:`precis.handlers._finding_hub_mint` — attaches the
+    original supporters onto an EXISTING hub the cascade matched, never
+    calling :func:`seed_claim_hub`, which would mint a second hub for the
+    differently-worded claim) doesn't reimplement it.
+
+    Returns ``(resolved, errors)`` — each ``resolved`` entry is the
+    original supporter dict plus ``role`` (defaulted) and
+    ``paper_ref_id``; ``errors`` is one message per failing supporter
+    (``"supporter[<idx>] paper=<repr>: <cause>"``). A non-empty
+    ``errors`` means the caller should raise :class:`BadInput` rather
+    than write anything — mirrors the hypothesis door's own
+    validate-before-write discipline (and the CLI's pre-existing
+    ``_preflight_resolve_supporters``, which :func:`seed_claim_hub`
+    subsumed for every caller, not just the CLI batch path) — a typo'd
+    handle or a wrong role must fail closed with nothing written, not
+    after a hub is already durable.
+    """
+    resolved: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for idx, supporter in enumerate(supporters):
+        paper = supporter.get("paper")
+        try:
+            if paper is None:
+                raise BadInput("supporter missing required 'paper' field")
+            role = supporter.get("role") or _DEFAULT_ROLE
+            if role not in HUB_ROLES:
+                raise BadInput(
+                    f"invalid evidence role: {role!r}",
+                    options=sorted(HUB_ROLES - {"contradicts"}),
+                    next=f"role must be one of {sorted(HUB_ROLES - {'contradicts'})}",
+                )
+            if role == "contradicts":
+                # Migration 0150 split (D4): `contradicts` is
+                # adjudication-derived only — the role stays in HUB_ROLES
+                # for Part 2's programmatic use, but no agent-facing door
+                # accepts it. A passage running counter to the claim is a
+                # question, not a verdict: file a `disputes` link instead.
+                raise BadInput(
+                    "role 'contradicts' is adjudication-derived and cannot "
+                    "be filed at mint time",
+                    options=sorted(HUB_ROLES - {"contradicts"}),
+                    next=(
+                        "mint with establishes/corroborates supporters, then "
+                        "file the conflict as a non-blocking `disputes` link "
+                        "(link(rel='disputes'))"
+                    ),
+                )
+            paper_ref_id = resolve_paper_ref_id(store, paper)
+        except BadInput as exc:
+            errors.append(f"supporter[{idx}] paper={paper!r}: {exc.cause}")
+            continue
+        resolved.append({**supporter, "role": role, "paper_ref_id": paper_ref_id})
+    return resolved, errors
+
+
 def _evidence_edge_exists(
     store: Store,
     *,
@@ -360,47 +423,11 @@ def seed_claim_hub(
     pub_id = make_pub_id(make_taproot_hub_paper_id(claim.sentence, claim.scope))
 
     # ── validate-first (gr263195): resolve every supporter's kind + role
-    # up front, read-only, before mint_hub ever runs. Mirrors the
-    # hypothesis door's own validate-before-write discipline (and the CLI's
-    # pre-existing `_preflight_resolve_supporters`, which this now
-    # subsumes for every caller, not just the CLI batch path) — a typo'd
-    # handle or a wrong role must fail closed with nothing written, not
-    # after a hub is already durable.
-    resolved: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for idx, supporter in enumerate(supporters):
-        paper = supporter.get("paper")
-        try:
-            if paper is None:
-                raise BadInput("supporter missing required 'paper' field")
-            role = supporter.get("role") or _DEFAULT_ROLE
-            if role not in HUB_ROLES:
-                raise BadInput(
-                    f"invalid evidence role: {role!r}",
-                    options=sorted(HUB_ROLES - {"contradicts"}),
-                    next=f"role must be one of {sorted(HUB_ROLES - {'contradicts'})}",
-                )
-            if role == "contradicts":
-                # Migration 0150 split (D4): `contradicts` is
-                # adjudication-derived only — the role stays in HUB_ROLES
-                # for Part 2's programmatic use, but no agent-facing door
-                # accepts it. A passage running counter to the claim is a
-                # question, not a verdict: file a `disputes` link instead.
-                raise BadInput(
-                    "role 'contradicts' is adjudication-derived and cannot "
-                    "be filed at mint time",
-                    options=sorted(HUB_ROLES - {"contradicts"}),
-                    next=(
-                        "mint with establishes/corroborates supporters, then "
-                        "file the conflict as a non-blocking `disputes` link "
-                        "(link(rel='disputes'))"
-                    ),
-                )
-            paper_ref_id = resolve_paper_ref_id(store, paper)
-        except BadInput as exc:
-            errors.append(f"supporter[{idx}] paper={paper!r}: {exc.cause}")
-            continue
-        resolved.append({**supporter, "role": role, "paper_ref_id": paper_ref_id})
+    # up front, read-only, before mint_hub ever runs — factored into
+    # :func:`resolve_supporters` so the dedup cascade's ``attach`` path
+    # shares it. A typo'd handle or a wrong role must fail closed with
+    # nothing written, not after a hub is already durable.
+    resolved, errors = resolve_supporters(store, supporters)
 
     if errors:
         raise BadInput(

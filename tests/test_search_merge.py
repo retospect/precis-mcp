@@ -304,6 +304,29 @@ def test_ref_helper_preview_callable() -> None:
     assert hit.preview == "custom: Title"
 
 
+def test_ref_helper_posture_for_populates_posture() -> None:
+    pairs = [(FakeRef("Title", "foo"), 0.5)]
+    [hit] = ref_hits_to_search_hits(
+        pairs, kind="finding", posture_for=lambda r: "◆ 2✓ unopposed"
+    )
+    assert hit.posture == "◆ 2✓ unopposed"
+
+
+def test_ref_helper_posture_for_none_leaves_posture_unset() -> None:
+    pairs = [(FakeRef("Title", "foo"), 0.5)]
+    [hit] = ref_hits_to_search_hits(pairs, kind="oracle")
+    assert hit.posture is None
+
+
+def test_ref_helper_posture_for_exception_degrades_to_none() -> None:
+    def _boom(_ref: object) -> str:
+        raise RuntimeError("posture read exploded")
+
+    pairs = [(FakeRef("Title", "foo"), 0.5)]
+    [hit] = ref_hits_to_search_hits(pairs, kind="finding", posture_for=_boom)
+    assert hit.posture is None
+
+
 # ---------------------------------------------------------------------------
 # view='keywords' — compact id|kind|keywords TOON shape (T10.1)
 # ---------------------------------------------------------------------------
@@ -646,6 +669,143 @@ def test_block_helper_populates_retraction_status_from_ref() -> None:
     triples = [(FakeBlock("body", 0), RetractedRef("t", "abc"), 0.5)]
     [hit] = block_hits_to_search_hits(triples, kind="paper")
     assert hit.retraction_status == "retracted"
+
+
+# ---------------------------------------------------------------------------
+# Claim-hub posture: RRF ranking lever + annotation
+# (the claim-layer-in-cross-kind-search design (shipped 2026-09-19) option 1)
+# ---------------------------------------------------------------------------
+
+
+def test_rrf_refuted_hub_sinks_below_an_equal_score_paper() -> None:
+    """A refuted claim hub matching at the same rank as a plain paper
+    must sink below it — the negative half of the ranking lever."""
+    hub_hit = SearchHit(
+        score=0.9,
+        kind="finding",
+        title="A refuted claim",
+        preview="P",
+        ref_id=1,
+        dedupe_key="finding:1",
+        posture="◆ refuted",
+    )
+    paper_hit = _hit(slug="clean-paper", dedupe_key="paper:1", score=0.9)
+    out = merge_and_render([[hub_hit], [paper_hit]], page_size=10, mode="rrf")
+    body = out.body
+    hub_idx = body.find("A refuted claim")
+    paper_idx = body.find("clean-paper")
+    assert hub_idx != -1 and paper_idx != -1
+    assert paper_idx < hub_idx  # the paper renders first
+
+
+def test_rrf_verified_unopposed_hub_ranks_modestly_above_an_equal_score_paper() -> None:
+    """The positive half of the lever: a verified-and-unopposed hub
+    outranks an equal-score paper, but the factor stays conservative
+    (1.1x, not the retraction pair's 0.02/0.85 magnitude — see the
+    factor constants' own docstring)."""
+    hub_hit = SearchHit(
+        score=0.9,
+        kind="finding",
+        title="A verified claim",
+        preview="P",
+        ref_id=2,
+        dedupe_key="finding:2",
+        posture="◆ 3✓ unopposed",
+    )
+    paper_hit = _hit(slug="plain-paper", dedupe_key="paper:2", score=0.9)
+    out = merge_and_render([[hub_hit], [paper_hit]], page_size=10, mode="rrf")
+    body = out.body
+    hub_idx = body.find("A verified claim")
+    paper_idx = body.find("plain-paper")
+    assert hub_idx != -1 and paper_idx != -1
+    assert hub_idx < paper_idx  # the hub renders first
+
+
+def test_rrf_disputed_posture_ties_with_an_equal_score_plain_hit() -> None:
+    """``disputed`` carries no ranking penalty at all (factor 1.0, unlike
+    refuted/verified above) — a contested claim is what a drafting agent
+    most needs to see. An equal-rank disputed hit and a plain hit end in
+    an exact RRF tie, broken only by insertion order — any nonzero
+    factor would break this tie instead."""
+    disputed_hit = SearchHit(
+        score=0.9,
+        kind="finding",
+        title="disputed-one",
+        preview="P",
+        dedupe_key="finding:d",
+        posture="◆ disputed",
+    )
+    plain_hit = _hit(slug="plain-one", dedupe_key="finding:p", score=0.9)
+    out = merge_and_render([[disputed_hit], [plain_hit]], page_size=10, mode="rrf")
+    assert out.body.find("disputed-one") < out.body.find("plain-one")
+
+
+def test_rrf_none_posture_is_a_complete_no_op() -> None:
+    """The overwhelming majority of hits carry no posture at all —
+    ranking must be byte-for-byte identical to a build with no posture
+    feature (factor exactly 1.0)."""
+    s1 = [_hit(slug="x", dedupe_key="finding:x", score=0.9)]
+    s2 = [_hit(slug="x", dedupe_key="finding:x", score=0.5)]
+    s3 = [_hit(slug="y", dedupe_key="finding:y", score=0.6)]
+    out = merge_and_render([s1, s2, s3], page_size=10, mode="rrf")
+    assert "1. x" in out.body
+
+
+def test_render_hit_annotates_posture() -> None:
+    s1 = [
+        SearchHit(
+            score=0.5,
+            kind="finding",
+            title="A verified claim",
+            preview="P",
+            posture="◆ 2✓ unopposed",
+        )
+    ]
+    out = merge_and_render([s1], page_size=10, mode="priority")
+    assert "◆ 2✓ unopposed" in out.body
+
+
+def test_render_hit_no_posture_annotation_when_unset() -> None:
+    s1 = [_hit(slug="clean", title="Clean finding")]
+    out = merge_and_render([s1], page_size=10, mode="priority")
+    assert "◆" not in out.body
+
+
+def test_toon_table_prefixes_posture_onto_the_summary_cell() -> None:
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="finding",
+            title="A refuted claim",
+            preview="p",
+            ref_id=3,
+            posture="◆ refuted",
+        )
+    ]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "◆ refuted — A refuted claim" in out.body
+
+
+def test_toon_table_combines_retraction_and_posture_prefixes() -> None:
+    """Both annotations can in principle fire on the same hit — space-
+    joined so neither silently overwrites the other."""
+    s1 = [
+        SearchHit(
+            score=0.9,
+            kind="finding",
+            title="Odd combo",
+            preview="p",
+            ref_id=4,
+            retraction_status="retracted",
+            posture="◆ refuted",
+        )
+    ]
+    out = merge_and_render(
+        [s1], page_size=10, query="q", mode="rrf", output_shape="toon"
+    )
+    assert "⚠ RETRACTED ◆ refuted — Odd combo" in out.body
 
 
 def test_block_helper_defaults_retraction_status_none() -> None:

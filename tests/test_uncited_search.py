@@ -142,7 +142,10 @@ def test_uncited_excludes_hub_supporter_via_closure(
     body, is_error = _search(rt, uncited=f"dr{draft_ref_id}")
     assert not is_error
     assert _pc(supporter_chunk) not in body
-    assert "1 already-cited source excluded" in body
+    # 2, not 1: the closure now also counts the cited hub's own ref_id
+    # (the claim-layer-in-cross-kind-search design (shipped 2026-09-19) — a hub
+    # is itself a citeable cross-kind hit now), alongside its supporter.
+    assert "2 already-cited sources excluded" in body
 
 
 # ── a contradicting paper is NOT "already cited for this point" ────────────

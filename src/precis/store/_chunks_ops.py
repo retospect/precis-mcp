@@ -385,6 +385,7 @@ class ChunkStore:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         distinct_refs: bool = False,
         since: datetime | None = None,
@@ -435,6 +436,9 @@ class ChunkStore:
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
         if since is not None:
             clauses.append("r.created_at >= %s")
             params.append(since)
@@ -461,6 +465,7 @@ class ChunkStore:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         distinct_refs: bool = False,
         include_speculative: bool = False,
@@ -531,6 +536,9 @@ class ChunkStore:
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
         sql = (
             f"SELECT {count_expr} FROM chunks c "
             "JOIN refs r ON r.ref_id = c.ref_id "
@@ -548,6 +556,7 @@ class ChunkStore:
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
     ) -> int:
         """Count distinct **papers** that match the lexical query but
         carry no ``year`` — the "omitted from a publish-date filter"
@@ -575,6 +584,9 @@ class ChunkStore:
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
         sql = (
             "SELECT count(DISTINCT r.ref_id) FROM chunks c "
             "JOIN refs r ON r.ref_id = c.ref_id, "
@@ -649,6 +661,7 @@ class ChunkStore:
         limit: int = 20,
         offset: int = 0,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
@@ -667,6 +680,12 @@ class ChunkStore:
         excluded — they're punctuation, section markers, or other
         formatting artefacts that pollute results with hits agents
         can't quote (MCP critic MAJOR #11).
+
+        ``include_ref_ids`` is the ``cited=``/``hubbed=true`` inclusion
+        mirror of ``exclude_ref_ids``: when not ``None`` (even an empty
+        list — "restricted to zero sources" must match zero rows, not
+        fall through to unfiltered), only chunks whose ``ref_id`` is in
+        the set are returned.
         """
         clauses = [
             "r.retired_at IS NULL",
@@ -701,6 +720,9 @@ class ChunkStore:
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
         params.append(limit)
         params.append(offset)
 
@@ -736,6 +758,7 @@ class ChunkStore:
         limit: int = 20,
         offset: int = 0,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
@@ -788,6 +811,9 @@ class ChunkStore:
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
         params.append(limit)
         params.append(offset)
 
@@ -817,6 +843,7 @@ class ChunkStore:
         offset: int = 0,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
@@ -873,6 +900,9 @@ class ChunkStore:
         if exclude_ref_ids:
             where_params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            where_params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
 
         distance_clause = ""
         distance_params: list[Any] = []
@@ -918,6 +948,7 @@ class ChunkStore:
         k: int = 60,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
@@ -949,6 +980,7 @@ class ChunkStore:
                 limit=limit,
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
                 year_from=year_from,
                 year_to=year_to,
@@ -995,6 +1027,9 @@ class ChunkStore:
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
+        if include_ref_ids is not None:
+            params.append(list(include_ref_ids))
+            clauses.append("c.ref_id = ANY(%s)")
 
         where_extra = (" AND " + " AND ".join(clauses)) if clauses else ""
 
@@ -1104,6 +1139,7 @@ class ChunkStore:
         k: int = 60,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
@@ -1166,6 +1202,7 @@ class ChunkStore:
                 limit=limit,
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
                 year_from=year_from,
                 year_to=year_to,
@@ -1199,6 +1236,7 @@ class ChunkStore:
                         tags=tags,
                         limit=pool,
                         exclude_ref_ids=exclude_ref_ids,
+                        include_ref_ids=include_ref_ids,
                         include_speculative=include_speculative,
                         year_from=year_from,
                         year_to=year_to,
@@ -1221,6 +1259,7 @@ class ChunkStore:
                         limit=pool,
                         max_distance=max_distance,
                         exclude_ref_ids=exclude_ref_ids,
+                        include_ref_ids=include_ref_ids,
                         include_speculative=include_speculative,
                         year_from=year_from,
                         year_to=year_to,
@@ -1273,6 +1312,7 @@ class ChunkStore:
         k: int = 60,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Cross-kind chunk search — RRF-fused, per-ref best chunk, dated.
         The source-search primitive behind the unified Drive surface:
@@ -1312,6 +1352,7 @@ class ChunkStore:
                 k=k,
                 max_distance=max_distance,
                 exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
                 per_paper=1,  # one best chunk per ref (breadth / triage)
             )
             fused.sort(
@@ -1335,6 +1376,7 @@ class ChunkStore:
             k=k,
             max_distance=max_distance,
             exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
             per_paper=1,
         )
 
@@ -1352,6 +1394,7 @@ class ChunkStore:
         k: int = 60,
         max_distance: float | None = None,
         exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         include_speculative: bool = False,
         year_from: int | None = None,
         year_to: int | None = None,
@@ -1390,6 +1433,7 @@ class ChunkStore:
                 limit=limit,
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
                 year_from=year_from,
                 year_to=year_to,
@@ -1407,6 +1451,7 @@ class ChunkStore:
                 offset=offset,
                 max_distance=max_distance,
                 exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
                 year_from=year_from,
                 year_to=year_to,
@@ -1423,6 +1468,7 @@ class ChunkStore:
                 limit=limit,
                 offset=offset,
                 exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
                 include_speculative=include_speculative,
                 year_from=year_from,
                 year_to=year_to,
@@ -1441,6 +1487,7 @@ class ChunkStore:
             k=k,
             max_distance=max_distance,
             exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
             include_speculative=include_speculative,
             year_from=year_from,
             year_to=year_to,

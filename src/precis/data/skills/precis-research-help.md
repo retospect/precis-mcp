@@ -25,6 +25,10 @@ quantified bounds, primary citations, contradictions flagged. If
 your output reads like a high-school book report, the slice was
 wasted.
 
+**Question-shaped pass?** The step order (hubs first, papers the hubs
+do not rest on, one reader per paper, root converges onto hubs) is
+[[precis-read-for-question]]; this file is the quality bar it applies.
+
 ## The quality bar (laundry list — apply every item)
 
 1. **Primary sources, not reviews.** Cite the paper that ran the

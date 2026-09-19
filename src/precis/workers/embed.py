@@ -365,7 +365,7 @@ def resolve_embedder(
     )
 
 
-def unembedded_chunk_count(conn: Connection) -> int:
+def unembedded_chunk_count(conn: Connection, *, ref_id: int | None = None) -> int:
     """Chunks still needing the corpus's default embedder's vector — the
     SAME predicate :class:`EmbedHandler`'s derived-queue claim
     (``WorkerHandler._claim_fresh``) uses: no current, non-stale
@@ -385,7 +385,25 @@ def unembedded_chunk_count(conn: Connection) -> int:
 
     Shared by the ``materialize`` cadence (backlog high-water threshold)
     and ``embed_batch`` (the "queue_remaining" summary figure) so the two
-    can never disagree about what "backlog" means (§F cycle a).
+    can never disagree about what "backlog" means (§F cycle a). Both call
+    this **unscoped** (``ref_id=None``) — that path's SQL and result are
+    byte-identical to before ``ref_id=`` existed; never change it.
+
+    ``ref_id=`` (read-for-question loop, slice 4 / docs/backlog/
+    embed-status-hint-three-state.md) scopes the count to one ref's body
+    chunks (``ord >= 0``) for the toc readiness line's poll. It is
+    deliberately a **different predicate**, not just an added ``WHERE
+    c.ref_id = %s``: the unscoped form's ``NOT EXISTS (... OR o.status =
+    'failed' ...)`` treats a permanently-failed embedding as "don't
+    retry" — satisfied, so it does NOT count toward the backlog (the
+    correct behaviour for a high-water threshold, which must not spin
+    forever on a row that will never succeed). The scoped form drops that
+    escape: a chunk whose only row is ``status = 'failed'`` counts as NOT
+    embedded here, because a caller polling "is my edit embedded yet"
+    needs to see the failure, not read it as done. See
+    :func:`failed_embedding_count` for the "how many of those are
+    specifically failed" breakdown the readiness line's ``· failed N``
+    suffix needs.
     """
     row = conn.execute(
         "SELECT name FROM embedders WHERE is_default = TRUE ORDER BY name LIMIT 1"
@@ -399,6 +417,22 @@ def unembedded_chunk_count(conn: Connection) -> int:
     if skip_kinds:
         skip_clause = "AND c.chunk_kind <> ALL(%s)"
         params.append(list(skip_kinds))
+    if ref_id is None:
+        not_exists_pred = (
+            "(o.status = 'failed' OR o.content_sha IS NOT DISTINCT FROM c.content_sha)"
+        )
+        scope_clause = ""
+    else:
+        # Scoped: only an ``ok`` row with a matching sha satisfies —
+        # unlike the unscoped predicate above, a ``failed`` row (whatever
+        # its content_sha) must NOT satisfy, or a permanently-failed
+        # chunk would drop out of the scoped backlog too (see the
+        # docstring divergence note).
+        not_exists_pred = (
+            "o.status = 'ok' AND o.content_sha IS NOT DISTINCT FROM c.content_sha"
+        )
+        scope_clause = "AND c.ref_id = %s AND c.ord >= 0"
+        params.append(ref_id)
     count_row = conn.execute(
         f"""
         SELECT count(*)
@@ -407,15 +441,87 @@ def unembedded_chunk_count(conn: Connection) -> int:
                  SELECT 1 FROM {EmbedHandler.output_table} o
                   WHERE o.chunk_id = c.chunk_id
                     AND o.{EmbedHandler.model_column} = %s
-                    AND (o.status = 'failed'
-                         OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
+                    AND {not_exists_pred}
                )
            AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
            {skip_clause}
+           {scope_clause}
         """,
         params,
     ).fetchone()
     return int(count_row[0]) if count_row else 0
 
 
-__all__ = ["EmbedHandler", "resolve_embedder", "unembedded_chunk_count"]
+def eligible_chunk_count(conn: Connection, *, ref_id: int) -> int:
+    """Body chunks (``ord >= 0``) of ``ref_id`` eligible for embedding — the
+    denominator the toc readiness line pairs with
+    :func:`unembedded_chunk_count`'s scoped count (``embedded N/<eligible>``).
+    Same predicate as that function's scoped ``skip_clause``: not a
+    :attr:`EmbedHandler.skip_chunk_kinds` kind, not ``meta.no_index``. No
+    length window — unlike the summarizer, the embedder has none, so a
+    ``table``/``equation`` chunk kind is the only thing this excludes that
+    :meth:`~precis.store._chunks_ops.ChunkStore.count_chunks` (the naive
+    "every body chunk" total the toc readiness line used to divide by)
+    would have counted as done.
+    """
+    skip_kinds = EmbedHandler.skip_chunk_kinds
+    skip_clause = ""
+    params: list[Any] = [ref_id]
+    if skip_kinds:
+        skip_clause = "AND c.chunk_kind <> ALL(%s)"
+        params.append(list(skip_kinds))
+    row = conn.execute(
+        f"""
+        SELECT count(*)
+          FROM chunks c
+         WHERE c.ref_id = %s
+           AND c.ord >= 0
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           {skip_clause}
+        """,
+        params,
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def failed_embedding_count(conn: Connection, *, ref_id: int) -> int:
+    """Body chunks (``ord >= 0``) of ``ref_id`` whose CURRENT content's only
+    default-embedder row is ``status = 'failed'`` — the readiness line's
+    ``· failed N`` breakdown of :func:`unembedded_chunk_count`'s scoped
+    total (every one of these is already counted there; this just names
+    how many).
+
+    ``content_sha IS NOT DISTINCT FROM c.content_sha`` matters: a chunk
+    edited since its last (failed) embed attempt is "pending" again, not
+    "failed" — the stale failed row belongs to content that no longer
+    exists.
+    """
+    row = conn.execute(
+        "SELECT name FROM embedders WHERE is_default = TRUE ORDER BY name LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return 0
+    model_name = str(row[0])
+    count_row = conn.execute(
+        f"""
+        SELECT count(*)
+          FROM chunks c
+          JOIN {EmbedHandler.output_table} o ON o.chunk_id = c.chunk_id
+         WHERE o.{EmbedHandler.model_column} = %s
+           AND o.status = 'failed'
+           AND o.content_sha IS NOT DISTINCT FROM c.content_sha
+           AND c.ref_id = %s
+           AND c.ord >= 0
+        """,
+        (model_name, ref_id),
+    ).fetchone()
+    return int(count_row[0]) if count_row else 0
+
+
+__all__ = [
+    "EmbedHandler",
+    "eligible_chunk_count",
+    "failed_embedding_count",
+    "resolve_embedder",
+    "unembedded_chunk_count",
+]

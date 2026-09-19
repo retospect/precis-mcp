@@ -87,6 +87,8 @@ def _block_leg(
     tags: list[str] | None,
     limit: int,
     chunk_kinds: list[str] | None,
+    exclude_ref_ids: list[int] | None = None,
+    include_ref_ids: list[int] | None = None,
 ) -> list[Ref]:
     """Block-level hits collapsed to one ref each, best rank first.
 
@@ -110,6 +112,8 @@ def _block_leg(
         max_distance=SEMANTIC_DISTANCE_FLOOR
         if (mode or "").strip().lower() == "semantic"
         else None,
+        exclude_ref_ids=exclude_ref_ids,
+        include_ref_ids=include_ref_ids,
     )
     best: dict[int, tuple[Ref, float]] = {}
     for _block, ref, rank in raw:
@@ -129,6 +133,8 @@ def fused_ref_hits(
     limit: int = 20,
     mode: str | None = None,
     chunk_kinds: list[str] | None = None,
+    exclude_ref_ids: list[int] | None = None,
+    include_ref_ids: list[int] | None = None,
 ) -> list[Ref]:
     """Hybrid ref-level search: title lexical + block hybrid + notation leg.
 
@@ -138,6 +144,14 @@ def fused_ref_hits(
 
     ``chunk_kinds`` scopes the block leg (``['finding_body']`` for claim hubs,
     so the leg matches the claim sentence rather than a chase-chain card).
+
+    ``exclude_ref_ids``/``include_ref_ids`` (``uncited=``/``cited=``/
+    ``hubbed=`` — read-for-question loop, slice 4): the block leg threads
+    them straight into ``search_chunks`` (SQL-level). ``search_refs_lexical``
+    (the title leg, and its notation-canonical twin) has no such wiring, so
+    both are filtered in Python here instead — equivalent to SQL-level
+    filtering for correctness, since every leg's raw pool is filtered
+    *before* :func:`_fuse` slices to ``limit``, not after.
 
     **Explicit ``mode='semantic'`` is the one exception to "additive, never
     substitutive"** (gr343635). The title-lexical leg and the two notation-
@@ -156,16 +170,27 @@ def fused_ref_hits(
 
     query_vec = query_vec_for(embedder, q, mode)
     semantic_only = (mode or "").strip().lower() == "semantic"
+    exclude_set = set(exclude_ref_ids) if exclude_ref_ids else None
+    include_set = set(include_ref_ids) if include_ref_ids is not None else None
+
+    def _filter_title_leg(refs: list[Ref]) -> list[Ref]:
+        if exclude_set:
+            refs = [r for r in refs if r.id not in exclude_set]
+        if include_set is not None:
+            refs = [r for r in refs if r.id in include_set]
+        return refs
 
     streams: list[list[Ref]] = []
     if not semantic_only:
         streams.append(
-            [
-                ref
-                for ref, _rank in store.search_refs_lexical(
-                    q=q, kind=kind, tags=tags, limit=limit
-                )
-            ]
+            _filter_title_leg(
+                [
+                    ref
+                    for ref, _rank in store.search_refs_lexical(
+                        q=q, kind=kind, tags=tags, limit=limit
+                    )
+                ]
+            )
         )
     streams.append(
         _block_leg(
@@ -177,6 +202,8 @@ def fused_ref_hits(
             tags=tags,
             limit=limit,
             chunk_kinds=chunk_kinds,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
         )
     )
 
@@ -184,12 +211,14 @@ def fused_ref_hits(
         canonical, _applied = normalize_notation(q)
         if canonical and canonical != q:
             streams.append(
-                [
-                    ref
-                    for ref, _rank in store.search_refs_lexical(
-                        q=canonical, kind=kind, tags=tags, limit=limit
-                    )
-                ]
+                _filter_title_leg(
+                    [
+                        ref
+                        for ref, _rank in store.search_refs_lexical(
+                            q=canonical, kind=kind, tags=tags, limit=limit
+                        )
+                    ]
+                )
             )
             # Lexical-only on the canonical form: the semantic leg already ran
             # on the raw query and embeds notation variants close together, so
@@ -205,6 +234,8 @@ def fused_ref_hits(
                     tags=tags,
                     limit=limit,
                     chunk_kinds=chunk_kinds,
+                    exclude_ref_ids=exclude_ref_ids,
+                    include_ref_ids=include_ref_ids,
                 )
             )
 

@@ -202,6 +202,79 @@
         {% endif %}
       </section>
 
+      {# ── nearest claims + guarded merge (the read-for-question loop
+         slice 3) — hidden once the hub is past 'candidate' (a frozen
+         identity can't be re-identified by a merge,
+         taproot-merge-mcp-surface.md), EXCEPT a merge attempt against
+         one is still reported (block_reason/merge_error) so a stray
+         direct POST never disappears its own refusal. #}
+      {% if np.state in ('unminted', 'candidate') or np.merge_plan or np.merge_error %}
+      <section class="rounded-lg border border-slate-200 bg-white p-4 space-y-3 text-sm">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">Nearest claims</h3>
+
+        {% if np.merge_error %}
+        <div class="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 whitespace-pre-wrap">✖ {{ np.merge_error }}</div>
+        {% endif %}
+
+        {% if np.merge_plan %}
+        <div class="rounded-lg border p-3 space-y-2
+          {% if np.merge_plan.can_merge %}border-emerald-200 bg-emerald-50{% else %}border-rose-200 bg-rose-50{% endif %}">
+          <p class="text-xs font-semibold {% if np.merge_plan.can_merge %}text-emerald-700{% else %}text-rose-700{% endif %}">
+            Merge plan: fi{{ np.merge_plan.loser_ref_id }} → fi{{ hub_ref_id }}
+          </p>
+          {% if not np.merge_plan.can_merge %}
+          <p class="text-xs text-rose-700">{{ np.merge_plan.block_reason }}</p>
+          {% else %}
+          <ul class="text-xs space-y-0.5">
+            {% for e in np.merge_plan.edges %}
+            <li><span class="font-mono">{{ e.action }}</span> {{ e.relation }} ({{ e.direction }}) ↔ fi{{ e.other_ref_id }}</li>
+            {% else %}
+            <li class="text-slate-500">No links on the loser — nothing to repoint.</li>
+            {% endfor %}
+          </ul>
+          <form method="post" action="/nanopub/fi{{ hub_ref_id }}/merge">
+            <input type="hidden" name="loser" value="{{ np.merge_plan.loser_ref_id }}">
+            <input type="hidden" name="confirm" value="1">
+            <button class="px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs"
+                    onclick="return confirm('Collapse fi{{ np.merge_plan.loser_ref_id }} into fi{{ hub_ref_id }}? This deletes redundant links and cannot be undone.')">
+              Confirm merge
+            </button>
+          </form>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        {% if np.nearest_note %}
+        <p class="text-xs text-slate-500">{{ np.nearest_note }}</p>
+        {% elif not np.nearest %}
+        <p class="text-xs text-slate-500">No other claim hubs found nearby.</p>
+        {% else %}
+        <ul class="space-y-1.5">
+          {% for n in np.nearest %}
+          <li class="flex items-center justify-between gap-2 text-xs">
+            <span class="grow min-w-0 truncate" title="{{ n.claim }}">
+              <span class="px-1.5 py-0.5 rounded font-mono
+                {% if n.verdict == 'same' %}bg-rose-100 text-rose-700
+                {% elif n.verdict == 'contradicts' %}bg-amber-100 text-amber-700
+                {% else %}bg-slate-100 text-slate-600{% endif %}"
+                title="dedup_judge: {{ n.verdict }} (confidence {{ '%.2f' | format(n.confidence) }})">{{ n.verdict }}</span>
+              <a class="text-emerald-700 hover:underline" href="/claim/{{ n.handle }}">{{ n.handle }}</a>
+              {{ n.claim[:100] }}{% if n.claim|length > 100 %}…{% endif %}
+              <span class="text-slate-400 font-mono">d={{ '%.3f' | format(n.distance) }}</span>
+            </span>
+            {% if n.can_merge %}
+            <form method="post" action="/nanopub/fi{{ hub_ref_id }}/merge" class="shrink-0">
+              <input type="hidden" name="loser" value="{{ n.hub_ref_id }}">
+              <button class="px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs whitespace-nowrap">Merge into this</button>
+            </form>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </section>
+      {% endif %}
+
       {# ── withheld edges + sign-off doors ── #}
       {% if np.withheld %}
       <section class="rounded-lg border border-amber-300 bg-amber-50 p-4 space-y-3 text-sm">

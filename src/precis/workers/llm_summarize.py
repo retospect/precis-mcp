@@ -670,7 +670,9 @@ def claim_chunks_without_summary(
     return claimed
 
 
-def unsummarized_chunk_count(conn: Any, *, summarizer: str = SUMMARIZER_NAME) -> int:
+def unsummarized_chunk_count(
+    conn: Any, *, summarizer: str = SUMMARIZER_NAME, ref_id: int | None = None
+) -> int:
     """Chunks still needing the ``summarizer`` summary — the backlog the
     ``materialize`` SMALL band gates on (``docs/backlog/
     small-llm-derived-drain-band.md``).
@@ -683,9 +685,26 @@ def unsummarized_chunk_count(conn: Any, *, summarizer: str = SUMMARIZER_NAME) ->
     ``chunk_claims``): an approximate *backlog* for a high-water threshold, not
     "claimable right now" — same contract as
     :func:`~precis.workers.embed.unembedded_chunk_count`.
+
+    ``ref_id=`` (read-for-question loop, slice 4) scopes the count to one
+    ref's body chunks (``ord >= 0``) for the toc readiness line. The
+    default (``None``, unscoped) call is byte-identical to before
+    ``ref_id=`` existed — ``chunk_summaries`` carries no ``status`` column,
+    so unlike :func:`~precis.workers.embed.unembedded_chunk_count` there is
+    no failed-state divergence between the scoped and unscoped predicate.
     """
+    params: dict[str, Any] = {
+        "artifact": summarizer,
+        "skip_kinds": list(SKIP_KINDS),
+        "min_chars": MIN_CHUNK_CHARS,
+        "max_chars": MAX_CHUNK_CHARS,
+    }
+    scope_clause = ""
+    if ref_id is not None:
+        scope_clause = "AND c.ref_id = %(ref_id)s AND c.ord >= 0"
+        params["ref_id"] = ref_id
     row = conn.execute(
-        """
+        f"""
         SELECT count(*)
           FROM chunks c
          WHERE NOT EXISTS (
@@ -696,9 +715,35 @@ def unsummarized_chunk_count(conn: Any, *, summarizer: str = SUMMARIZER_NAME) ->
            AND length(c.text) >= %(min_chars)s
            AND length(c.text) <= %(max_chars)s
            AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           {scope_clause}
+        """,
+        params,
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def eligible_chunk_count(conn: Any, *, ref_id: int) -> int:
+    """Body chunks (``ord >= 0``) of ``ref_id`` eligible for summarization —
+    the denominator the toc readiness line pairs with
+    :func:`unsummarized_chunk_count`'s scoped count (``summarised
+    N/<eligible>``). Same base eligibility predicate as that function's
+    scoped form, minus the "no current summary" ``NOT EXISTS``: not a
+    :data:`SKIP_KINDS` kind, within ``[MIN_CHUNK_CHARS, MAX_CHUNK_CHARS]``,
+    not ``meta.no_index``.
+    """
+    row = conn.execute(
+        """
+        SELECT count(*)
+          FROM chunks c
+         WHERE c.ref_id = %(ref_id)s
+           AND c.ord >= 0
+           AND c.chunk_kind <> ALL(%(skip_kinds)s)
+           AND length(c.text) >= %(min_chars)s
+           AND length(c.text) <= %(max_chars)s
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
         """,
         {
-            "artifact": summarizer,
+            "ref_id": ref_id,
             "skip_kinds": list(SKIP_KINDS),
             "min_chars": MIN_CHUNK_CHARS,
             "max_chars": MAX_CHUNK_CHARS,
@@ -1591,6 +1636,7 @@ __all__ = [
     "Transport",
     "build_messages",
     "claim_chunks_without_summary",
+    "eligible_chunk_count",
     "fetch_doc_card",
     "parse_summary",
     "run_llm_summarize_pass",

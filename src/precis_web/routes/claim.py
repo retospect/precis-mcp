@@ -44,7 +44,7 @@ from precis_web.claim_render import (
     claim_full_sentence,
     render_claim_evidence,
 )
-from precis_web.deps import get_store, get_web_config, templates
+from precis_web.deps import get_embedder, get_store, get_web_config, templates
 from precis_web.nanopub_render import hub_context
 from precis_web.routes.refs import _followup_discussions
 
@@ -88,13 +88,20 @@ def _refuted_ruling(store: Any, hub_ref_id: int) -> dict[str, Any] | None:
     return {"ruling_id": None, "ruling_title": None, "ruling_url": None}
 
 
-def claim_page_context(store: Any, head: str) -> dict[str, Any]:
+def claim_page_context(
+    store: Any, head: str, *, embedder: Any = None
+) -> dict[str, Any]:
     """The full ``/claim/<head>`` page context: the reader evidence shape
     plus, when the store carries the nanopub mixin, the review-and-sign
     context merged in under ``ctx['np']``. Shared by :func:`claim_view`
-    (the GET) and ``routes/nanopub.py``'s approve-error re-render (the one
-    POST door that still needs to re-render a full page on a gate refusal)
-    so both render byte-identical pages."""
+    (the GET) and ``routes/nanopub.py``'s approve-error/merge re-renders
+    (the POST doors that still need to re-render a full page on a gate
+    refusal) so all three render byte-identical pages.
+
+    ``embedder`` (the runtime's query embedder, ``deps.get_embedder``)
+    feeds the review section's "Nearest claims" panel
+    (:func:`~precis_web.nanopub_render.hub_context`); ``None`` degrades
+    that one panel, never the page."""
     data = render_claim_evidence(store, head)
     if data is None:
         return {"head": head, "missing": True}
@@ -126,7 +133,9 @@ def claim_page_context(store: Any, head: str) -> dict[str, Any]:
         "discussions": _followup_discussions(store, hub_ref_id),
         "ask_model": ask.answer_model_label(),
         "passages_by_paper": _passages_by_paper(data["chunks"]),
-        "np": hub_context(store, hub_ref_id) if _publish_row_fn else None,
+        "np": hub_context(store, hub_ref_id, embedder=embedder)
+        if _publish_row_fn
+        else None,
         "refuted": _refuted_ruling(store, hub_ref_id),
         "hypothesis": _hypothesis_fields(store, hub_ref),
     }
@@ -168,7 +177,7 @@ async def claim_view(request: Request, head: str) -> HTMLResponse:
     corroborating/contradicting evidence, and — when the store carries the
     nanopub mixin — the review-and-sign section (state, DAG, approve/sign
     action)."""
-    ctx = claim_page_context(get_store(request), head)
+    ctx = claim_page_context(get_store(request), head, embedder=get_embedder(request))
     # htmx-aware (the ``flags.py`` pattern): the /nanopub workbench swaps
     # this claim straight into its review pane, so an htmx request gets the
     # body WITHOUT page chrome — the same ``claim/_body.html.j2`` the full

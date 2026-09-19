@@ -31,7 +31,7 @@ by Lee et al. 2008 — the canonical graphene-strength measurement.
   `supported_count > 0 and not disputed`. **`trust='verified'` therefore
   hides every compound hub**, however well-supported its atoms.
 - That lands directly on the design resolved in
-  `claim-layer-absent-from-cross-kind-search.md`: the ranking lever there
+  the claim-layer-in-cross-kind-search design (shipped 2026-09-19): the ranking lever there
   boosts verified-and-unopposed hubs. Compounds would never boost —
   the search would systematically rank a compound *below* its own atoms.
 - Any "hubs with zero verdicts" audit over-counts. This is how `fi211522`

@@ -210,6 +210,17 @@ source paragraph. The bar is therefore stricter than for an inline citation.
 
 ## Search before you mint — strengthen, don't duplicate
 
+**The mint door now runs this search itself.** `supporters=` mint runs
+the same dedup cascade first: a confirmed match attaches your
+supporters to the existing hub instead of minting a near-duplicate
+("converged onto fi&lt;id&gt; …"); no match mints normally; a risky,
+unconfirmed match still mints — a hand-grounded claim is never silently
+dropped — but flags a review todo naming both hubs. `dedup=False` skips
+the cascade and mints unconditionally (bulk re-puts). `view='similar'`
+on a minted hub runs the same query read-only, without minting. None of
+this replaces the judgment call below — the cascade only auto-attaches
+on a confident match.
+
 **A hard gate: never mint without searching first.** `pub_id` convergence
 is a *content hash* — it catches only byte-identical (post-NFKD)
 sentences. Two agents phrasing one claim two ways mint two hubs, each
@@ -295,7 +306,7 @@ put(
     title="Pd/C catalyzes Suzuki coupling at room temperature.",
     scope={"catalyst": "Pd/C"},
     supporters=[{"paper": "pa5", "source_handle": "pc293"}],
-)  # -> "claim hub fi<id>  pub_id=…" — cite it as [fi<id>]
+)  # -> "claim hub fi<id> …" — cite it as [fi<id>]
 ```
 
 `supporters` is a list of `{paper, role, source_handle}`: `paper` is the

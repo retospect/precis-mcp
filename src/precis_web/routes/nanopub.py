@@ -39,6 +39,16 @@ functions with ``interactive=True`` (a person clicked).
 * ``GET /np/<code>`` — the exact frozen artifact bytes as
   ``application/trig``, served by artifact code (during embargo the
   w3id name resolves nowhere public; this is the local mirror).
+* ``POST /nanopub/fi<id>/merge`` — the guarded merge door (slice 3,
+  the read-for-question loop (skill precis-read-for-question); guard rationale:
+  docs/backlog/taproot-merge-mcp-surface.md). The claim page's "Nearest
+  claims" panel (``hub_context``'s ``nearest``) is the only source of the
+  ``loser=`` value a person clicks. Dry-run by default
+  (:func:`~precis.taproot.hub.merge_hubs`) — the plan (edges repointed /
+  dropped, or the block reason) re-renders on the same page with a second
+  confirm form; only ``confirm=1`` applies. ``set_by="user"`` — the web
+  door's own identity, never the generic ``"agent"`` merge_hubs defaults
+  to (the MCP surface stays closed; this is a human-only door for now).
 
 The **registry POST is deliberately absent** — publishing is CLI-only
 (``precis nanopub publish --live``), so the one true point of no return
@@ -54,7 +64,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis_web.auth import current_user
-from precis_web.deps import get_store, get_web_config, templates
+from precis_web.deps import get_embedder, get_store, get_web_config, templates
 from precis_web.routes.claim import claim_page_context
 
 router = APIRouter(tags=["nanopub"])
@@ -276,7 +286,7 @@ async def nanopub_approve(
         # plain GET so both render byte-identical pages (see module
         # docstring) — head is the canonical fi<id> form, always
         # resolvable regardless of what cite head the reviewer arrived by.
-        ctx = claim_page_context(store, f"fi{hub_id}")
+        ctx = claim_page_context(store, f"fi{hub_id}", embedder=get_embedder(request))
         if ctx.get("np") is None:
             return _error(request, "Approve refused", str(exc), 400)
         ctx["np"] = {
@@ -441,3 +451,70 @@ async def nanopub_evidence_remove(
             400,
         )
     return _back_to_hub(hub_id)
+
+
+@router.post("/nanopub/fi{hub_id}/merge", response_model=None)
+async def nanopub_merge(
+    request: Request,
+    hub_id: int,
+    loser: int = Form(...),
+    confirm: str = Form(""),
+) -> Response:
+    """The guarded merge door (module docstring; slice 3, the read-for-question loop (skill precis-read-for-question)) — ``loser`` collapses into ``fi<hub_id>``
+    (the winner). Two-step, mirroring approve's own gate-refusal
+    re-render:
+
+    * No ``confirm``: :func:`~precis.taproot.hub.merge_hubs` runs
+      ``dry_run=True`` and the plan re-renders on the claim page
+      (``ctx['np']['merge_plan']``) with a second form carrying
+      ``confirm=1`` — nothing is written yet, even when the plan itself
+      says ``can_merge=False`` (that refusal is reported, not an
+      exception, from a dry run).
+    * ``confirm`` set: applies for real (``dry_run=False``); a refusal
+      there (either side moved past 'candidate' since the dry run, or a
+      structural ``BadInput``) re-renders the same way instead of
+      redirecting.
+
+    ``set_by="user"`` — the web door's own identity (merge-door doc's
+    "record who applied it"), not the ``merge_hubs`` default ``"agent"``.
+    """
+    from precis.errors import BadInput
+    from precis.taproot.hub import merge_hubs
+
+    store = get_store(request)
+    embedder = get_embedder(request)
+
+    def _rerender(
+        *, merge_plan: Any = None, merge_error: str | None = None, status: int
+    ) -> Response:
+        ctx = claim_page_context(store, f"fi{hub_id}", embedder=embedder)
+        if ctx.get("np") is None:
+            return _error(
+                request, "Merge refused", merge_error or "no claim hub", status
+            )
+        ctx["np"] = {
+            **ctx["np"],
+            "merge_plan": merge_plan,
+            "merge_error": merge_error,
+        }
+        return templates.TemplateResponse(
+            request, "claim/view.html.j2", ctx, status_code=status
+        )
+
+    applying = bool(confirm)
+    try:
+        plan = merge_hubs(
+            store,
+            loser_ref_id=loser,
+            winner_ref_id=hub_id,
+            set_by="user",
+            dry_run=not applying,
+        )
+    except BadInput as exc:
+        return _rerender(merge_error=str(exc), status=400)
+
+    if applying:
+        return _back_to_hub(hub_id)
+    if not plan.can_merge:
+        return _rerender(merge_plan=plan, status=400)
+    return _rerender(merge_plan=plan, status=200)

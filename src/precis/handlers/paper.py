@@ -734,6 +734,13 @@ class PaperHandler(Handler):
         # Declared as an explicit kwarg (not swallowed by ``**_kw``) so the
         # filter can never be silently dropped for paper/cfp/datasheet.
         exclude_ref_ids: list[int] | None = None,
+        # dispatch-injected (see runtime.dispatch._resolve_cited_include /
+        # ._resolve_hubbed_facet — ``search(cited=<draft>)`` /
+        # ``search(hubbed=True)``): the inclusion mirror of
+        # ``exclude_ref_ids``, already resolved. ``None`` means no
+        # restriction; an empty list means "restricted to zero sources"
+        # and must return zero hits, not fall through unfiltered.
+        include_ref_ids: list[int] | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -871,6 +878,7 @@ class PaperHandler(Handler):
             answers=answers,
             per_paper=per_paper,
             extra_exclude_ref_ids=exclude_ref_ids,
+            extra_include_ref_ids=include_ref_ids,
         )
         return PaperSearchResultRenderer(kind=kind).render(result)
 
@@ -891,6 +899,10 @@ class PaperHandler(Handler):
         # explicitly (not swallowed by ``**_kw``) so the cross-kind fan-out
         # never silently loses the filter for this kind.
         exclude_ref_ids: list[int] | None = None,
+        # dispatch-injected (see runtime.dispatch._resolve_cited_include /
+        # ._resolve_hubbed_facet): the inclusion mirror. ``None`` means no
+        # restriction; an empty list means "restricted to zero sources".
+        include_ref_ids: list[int] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Block-level fused search returned as ``SearchHit``s.
@@ -906,7 +918,10 @@ class PaperHandler(Handler):
         ``resolve_exclude_paper_ids`` supports). Cross-kind callers can
         pass it through so pagination works across the merged stream.
         ``exclude_ref_ids=`` is the pre-resolved numeric complement
-        (``uncited=``'s closure).
+        (``uncited=``'s closure). ``include_ref_ids=`` is the pre-resolved
+        inclusion set (``cited=``'s closure, or ``hubbed=True``'s set) —
+        threaded straight through (no ``include=`` slug counterpart to
+        merge with).
         """
         if not (q and q.strip()):
             return []
@@ -944,6 +959,7 @@ class PaperHandler(Handler):
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=sorted(resolved_exclude_ref_ids) or None,
+            include_ref_ids=include_ref_ids,
             card_kinds=("card_combined",),
         )
         triples = _dedup_card_hits(triples)
@@ -1748,8 +1764,11 @@ class PaperHandler(Handler):
         (``_draft_lint.pc_cite_claim_hub_hint``, which wants only citable
         hubs), a hub this paper grounds but not yet assigned a ``pub_id``
         is exactly the mint-frontier signal a reader here wants, not
-        noise to hide. Such a row renders ``pub_id: <uncited>`` so a
-        reader doesn't try to cite it.
+        noise to hide. ``pub_id`` itself never renders in this table
+        (the read-for-question loop (skill precis-read-for-question) slice 2: skills already
+        tell authors to cite ``[fi<id>]``, never the pub_id placeholder) —
+        an unassigned one still surfaces the hub, just without a column
+        naming the gap.
 
         Posture (``state``/``support``/``flags``) comes from
         ``handlers/finding.py::_posture_cells`` over one batched
@@ -1790,13 +1809,11 @@ class PaperHandler(Handler):
         for h in hubs:
             hub_handle = handle_registry.format_handle("finding", h["hub_ref_id"])
             hub_handles.append(hub_handle)
-            pub_id = h["pub_id"] if h["pub_id"] is not None else "<uncited>"
             claim = _excerpt(_clean_inline_text(h["claim"] or ""), limit=80)
             cells = _posture_cells(postures.get(h["hub_ref_id"]))
             rows.append(
                 {
                     "hub": f"[{hub_handle}]",
-                    "pub_id": str(pub_id),
                     "role": h["role"],
                     "claim": claim,
                     **cells,
@@ -1806,7 +1823,7 @@ class PaperHandler(Handler):
         head = f"# {slug} — {len(rows)} claim hub(s) grounded"
         table = render_agent_table(
             rows,
-            schema=["hub", "pub_id", "role", "claim", "state", "support", "flags"],
+            schema=["hub", "role", "claim", "state", "support", "flags"],
         )
         body = f"{head}\n\n{table}"
         body += render_next_section(
@@ -2315,6 +2332,14 @@ class PaperHandler(Handler):
             handle=_pa(ref),
             kind=self.spec.kind,
             scope=scope,
+            # Only the top-level (unscoped) TOC carries the readiness
+            # line — a drill-down sub-TOC is the same document, so
+            # re-querying the same corpus-wide embed/summarize backlog
+            # on every recursive drill would be redundant DB load for
+            # a number that hasn't changed.
+            readiness_line=_toc_readiness_line(self.store, ref.id)
+            if scope is None
+            else None,
         )
         banner = _retraction_banner(ref)
         if banner:
@@ -2543,6 +2568,57 @@ _RETRACTION_LABELS: dict[str, str] = {
     "expression_of_concern": "EXPRESSION OF CONCERN",
     "corrected": "CORRECTED",
 }
+
+
+def _toc_readiness_line(store: Store, ref_id: int) -> str | None:
+    """``readiness: embedded N/M · summarised N/M`` for ``get(kind='paper',
+    view='toc')`` (read-for-question loop, slice 4 / docs/backlog/
+    embed-status-hint-three-state.md) — lets a caller that just edited a
+    paper's chunks poll "is my edit embedded/summarised yet" instead of
+    guessing or re-searching blindly.
+
+    ``None`` when the paper has no body chunks yet (nothing to report —
+    :func:`~precis.utils.toc_db._empty_body` already says so). Body chunks
+    only (``ord >= 0``). The two fractions have independent denominators —
+    ``embedded``'s is :func:`~precis.workers.embed.eligible_chunk_count`
+    (excludes ``EmbedHandler.skip_chunk_kinds`` + ``no_index``),
+    ``summarised``'s is
+    :func:`~precis.workers.llm_summarize.eligible_chunk_count` (excludes
+    ``SKIP_KINDS``, the ``[MIN_CHUNK_CHARS, MAX_CHUNK_CHARS]`` window, and
+    ``no_index``) — each matches the predicate its own "not done" count
+    uses, so a structurally-ineligible chunk (a ``table``, or a stub below
+    ``MIN_CHUNK_CHARS``) never reads as silently "done" in a denominator it
+    can't actually satisfy. ``· failed N`` is appended only when the
+    scoped embed count reports a genuine failure
+    (:func:`~precis.workers.embed.failed_embedding_count`) — most papers
+    show none. Counted entirely in SQL — no chunk rows are fetched here.
+    """
+    from precis.workers.embed import (
+        eligible_chunk_count as eligible_embed_chunk_count,
+    )
+    from precis.workers.embed import failed_embedding_count, unembedded_chunk_count
+    from precis.workers.llm_summarize import (
+        eligible_chunk_count as eligible_summary_chunk_count,
+    )
+    from precis.workers.llm_summarize import unsummarized_chunk_count
+
+    if store.chunks.count_chunks(ref_id) == 0:
+        return None
+    with store.pool.connection() as conn:
+        eligible_embed = eligible_embed_chunk_count(conn, ref_id=ref_id)
+        not_embedded = unembedded_chunk_count(conn, ref_id=ref_id)
+        failed = failed_embedding_count(conn, ref_id=ref_id)
+        eligible_summary = eligible_summary_chunk_count(conn, ref_id=ref_id)
+        not_summarised = unsummarized_chunk_count(conn, ref_id=ref_id)
+    embedded = eligible_embed - not_embedded
+    summarised = eligible_summary - not_summarised
+    line = (
+        f"readiness: embedded {embedded}/{eligible_embed} · "
+        f"summarised {summarised}/{eligible_summary}"
+    )
+    if failed:
+        line += f" · failed {failed}"
+    return line
 
 
 def _retraction_banner(ref: Ref) -> str | None:

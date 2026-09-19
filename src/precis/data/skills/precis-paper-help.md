@@ -8,6 +8,7 @@ answers:
   - how do I look a paper up by its exact title or author instead of a keyword search?
   - how do I find where a paper mentions a specific exact term?
   - how do I filter papers by publication year?
+  - how do I search inside one paper for a passage?
 applies-to: get/search/tag/link (kind='paper')
 status: active
 tags: [addressing, workflow]
@@ -216,6 +217,11 @@ TOC rows are drillable: each row leads with the block handle (`pc<id>`,
 or a `pc<id>..pc<id>` range) — paste it back as `id=`. Each row shows
 the segment's most-distinctive keywords. Segments are clustered
 dynamically by content at request time.
+
+The top-level (unscoped) TOC header also carries a readiness line —
+`readiness: embedded 41/44 · summarised 44/44` (plus `· failed N` when
+some chunks' embedding attempts genuinely failed) — so you can poll
+"is my edit indexed yet" instead of guessing.
 
 `view='summaries'` is the flat, per-chunk companion to the clustered
 `view='toc'`: one row per body chunk — its `~ord` handle, its `llm-v1`

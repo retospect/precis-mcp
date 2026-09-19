@@ -276,3 +276,39 @@ class TestDrillHierarchy:
         # Bucketed headline names a cluster count; the per-chunk fallback
         # would omit it. This pins the fix.
         assert "clusters" in out
+
+
+# ── readiness line (read-for-question loop, slice 4) ─────────────────────
+
+
+class TestReadinessLine:
+    def test_per_chunk_path_renders_readiness_line(self) -> None:
+        blocks = [_Stub(ord=i, keywords=[f"kw{i}"]) for i in range(4)]
+        out = render_from_store(
+            store=_StubStore(blocks),
+            ref_id=1,
+            handle="pa1",
+            kind="paper",
+            readiness_line="readiness: embedded 3/4 · summarised 4/4",
+        )
+        assert "readiness: embedded 3/4 · summarised 4/4" in out
+
+    def test_bucketed_path_renders_readiness_line(self) -> None:
+        blocks = [_Stub(ord=i, keywords=[f"kw{i % 5}"]) for i in range(40)]
+        out = render_from_store(
+            store=_StubStore(blocks),
+            ref_id=1,
+            handle="pa1",
+            kind="paper",
+            readiness_line="readiness: embedded 40/40 · summarised 38/40",
+        )
+        assert "readiness: embedded 40/40 · summarised 38/40" in out
+
+    def test_omitted_readiness_line_unchanged(self) -> None:
+        """No ``readiness_line=`` -> header is byte-identical to before —
+        the default keeps every existing caller (and test) unchanged."""
+        blocks = [_Stub(ord=i, keywords=[f"kw{i}"]) for i in range(4)]
+        out = render_from_store(
+            store=_StubStore(blocks), ref_id=1, handle="pa1", kind="paper"
+        )
+        assert "readiness:" not in out

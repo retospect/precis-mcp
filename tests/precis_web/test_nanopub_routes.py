@@ -936,3 +936,184 @@ def test_draft_filter_unknown_id_is_a_friendly_notice_not_a_500(
     junk = client.get("/nanopub?draft=not-an-id")
     assert junk.status_code == 200
     assert "showing all claims" in junk.text
+
+
+# ── Nearest claims + guarded merge (the read-for-question loop slice 3) ──
+
+
+def _embed_hub_body(store: Any, embedder: Any, hub_id: int, sentence: str) -> None:
+    """Insert the ``bge-m3`` embedding row :func:`~precis.taproot.canon.block`
+    ANN-retrieves over — mirrors ``tests/test_finding_hub_mint.py``'s
+    ``_mint_and_embed`` closure. Real hubs mint with no embedding (a
+    worker fills it later); tests that exercise the ANN path fill it by
+    hand."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0 "
+            "AND chunk_kind = 'finding_body'",
+            (hub_id,),
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, 'bge-m3', %s, 'ok')",
+            (row[0], embedder.embed_one(sentence)),
+        )
+        conn.commit()
+
+
+def _is_retired(store: Any, ref_id: int) -> bool:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return row is not None and row[0] is not None
+
+
+def _stub_dedup_judge(monkeypatch: Any, verdict: str = "different") -> None:
+    """No live model: :func:`~precis.taproot.canon.dedup_judge` dispatches
+    through ``canon.route`` (module-global lookup at call time), so
+    patching THAT — not ``dedup_judge`` itself, already bound as
+    ``hub_context``'s default ``judge_fn`` — is what actually reaches the
+    web route's call path."""
+    from types import SimpleNamespace
+
+    from precis.taproot import canon
+
+    monkeypatch.setattr(
+        canon,
+        "route",
+        lambda req: SimpleNamespace(
+            text="",
+            data={"verdict": verdict, "confidence": 0.4, "rationale": "stub"},
+            error=None,
+        ),
+    )
+
+
+def test_claim_page_shows_nearest_claims_and_merge_form(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    store = _store(runtime_with_store)
+    embedder = runtime_with_store.hub.embedder
+    _stub_dedup_judge(monkeypatch)
+
+    winner = mint_hub(
+        store,
+        CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling at RT.", scope={}),
+    )
+    neighbour = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="Pd/C catalyzes Suzuki coupling at room temperature.", scope={}
+        ),
+    )
+    _embed_hub_body(store, embedder, winner, "Pd/C catalyzes Suzuki coupling at RT.")
+    _embed_hub_body(
+        store,
+        embedder,
+        neighbour,
+        "Pd/C catalyzes Suzuki coupling at room temperature.",
+    )
+
+    resp = client.get(f"/claim/fi{winner}")
+
+    assert resp.status_code == 200
+    assert "Nearest claims" in resp.text
+    assert f"fi{neighbour}" in resp.text
+    assert f'action="/nanopub/fi{winner}/merge"' in resp.text
+    assert f'value="{neighbour}"' in resp.text  # the loser= hidden field
+
+
+def test_merge_without_confirm_renders_plan_and_writes_nothing(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    store = _store(runtime_with_store)
+    _stub_dedup_judge(monkeypatch)
+    winner = mint_hub(store, CanonicalClaim(sentence="A merge-plan winner.", scope={}))
+    loser = mint_hub(store, CanonicalClaim(sentence="A merge-plan loser.", scope={}))
+
+    resp = client.post(f"/nanopub/fi{winner}/merge", data={"loser": str(loser)})
+
+    assert resp.status_code == 200
+    assert "Merge plan" in resp.text
+    assert f"fi{loser}" in resp.text
+    assert 'name="confirm"' in resp.text
+    assert not _is_retired(store, loser)  # dry run — nothing written
+
+
+def test_merge_with_confirm_applies_and_repoints_evidence(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import attach_evidence, mint_hub
+
+    store = _store(runtime_with_store)
+    _stub_dedup_judge(monkeypatch)
+    winner = mint_hub(
+        store, CanonicalClaim(sentence="A confirmed-merge winner.", scope={})
+    )
+    loser = mint_hub(
+        store, CanonicalClaim(sentence="A confirmed-merge loser.", scope={})
+    )
+    paper, _chunk, _sha = _seed_paper(store)
+    attach_evidence(
+        store,
+        hub_ref_id=loser,
+        paper_ref_id=paper,
+        role="corroborates",
+        check_retraction=False,
+    )
+
+    resp = client.post(
+        f"/nanopub/fi{winner}/merge",
+        data={"loser": str(loser), "confirm": "1"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/claim/fi{winner}"
+    assert _is_retired(store, loser)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s AND relation = 'corroborates'",
+            (paper,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == winner  # the loser's evidence edge repointed onto the winner
+
+
+def test_merge_refuses_past_candidate_winner_writes_nothing(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    import json
+
+    store = _store(runtime_with_store)
+    _stub_dedup_judge(monkeypatch)
+    paper, chunk, sha = _seed_paper(store)
+    title = "DFT finds the past-candidate merge winner holds."
+    winner = _seed_hub(store, title, paper, chunk)
+    approved = client.post(
+        f"/nanopub/fi{winner}/approve",
+        data={"title": title, "payload": json.dumps(_payload(chunk, sha))},
+        follow_redirects=False,
+    )
+    assert approved.status_code == 303, approved.text
+    assert store.nanopub_publish_row(winner).state == "reviewed"
+
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    loser = mint_hub(store, CanonicalClaim(sentence="A would-be loser.", scope={}))
+
+    resp = client.post(f"/nanopub/fi{winner}/merge", data={"loser": str(loser)})
+
+    assert resp.status_code == 400
+    assert "candidate" in resp.text
+    assert not _is_retired(store, loser)

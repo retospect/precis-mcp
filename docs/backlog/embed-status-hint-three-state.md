@@ -26,6 +26,13 @@ correct across worker restarts and concurrent sibling edits.
 Bonus: the same hint makes the existing ~1M-chunk backlog legible per-scope
 for the first time, instead of one global number.
 
+> **2026-09-19, partial:** `unembedded_chunk_count(conn, ref_id=…)` and
+> `unsummarized_chunk_count(conn, ref_id=…)` gained the scope parameter
+> (unscoped byte-identical; scoped counts a `status='failed'` row as NOT
+> embedded, plus `failed_embedding_count`), surfaced as the paper toc header's
+> `readiness:` line. Still open: the caller-pollable three-state hint on an
+> arbitrary scope (draft slug / chunk-id set).
+
 ## In scope
 
 - A scope parameter (ref_id / draft slug / chunk-id set) on the existing

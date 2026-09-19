@@ -669,51 +669,58 @@ class DispatchMixin(RuntimeShape):
         return page_body, False
 
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
-        """``search(uncited=...)`` resolution wrapper around
+        """``search(uncited=/cited=/hubbed=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
 
-        Resolves ``uncited=<draft>`` into a merged
-        ``args['exclude_ref_ids']`` BEFORE any search-shape interception
+        Resolves the source facets into merged ``args['exclude_ref_ids']``/
+        ``args['include_ref_ids']`` BEFORE any search-shape interception
         branches off, so every retrieval path sees the same filter — then
-        prepends the "N already-cited sources excluded" note to whatever
-        ``Response`` the core method returns, regardless of which
-        internal early-return branch produced it. Kept as a thin wrapper
-        (not folded into the core method) precisely because there are so
-        many early returns there: one wrapping call guarantees the
-        footer is never forgotten on a future branch.
+        prepends the agent-facing note(s) to whatever ``Response`` the core
+        method returns, regardless of which internal early-return branch
+        produced it. Kept as a thin wrapper (not folded into the core
+        method) precisely because there are so many early returns there:
+        one wrapping call guarantees the footer is never forgotten on a
+        future branch.
 
         The note is **prepended**, not appended: pagination keeps the
         largest *leading* run that fits the byte cap, stashing the rest
         behind ``more()`` — a trailing note on a paginated result would
         strand the filter signal on a page the caller never reads.
         """
-        uncited_note: str | None = None
-        if verb == "search" and args.get("uncited") is not None:
-            self._reject_uncited_unfiltered_shape(args)
-            uncited_note = self._resolve_uncited_exclude(args)
+        note: str | None = None
+        if verb == "search" and (
+            args.get("uncited") is not None
+            or args.get("cited") is not None
+            or args.get("hubbed") is not None
+        ):
+            self._reject_source_facet_unfiltered_shape(args)
+            note = self._resolve_source_facets(args)
         response = self._dispatch_inner_core(verb, args)
-        if uncited_note is not None:
+        if note is not None:
             from dataclasses import replace as _replace
 
-            response = _replace(response, body=f"{uncited_note}\n\n{response.body}")
+            response = _replace(response, body=f"{note}\n\n{response.body}")
         return response
 
-    def _reject_uncited_unfiltered_shape(self, args: dict[str, Any]) -> None:
-        """Refuse ``uncited=`` on the search shapes that
-        :meth:`_dispatch_inner_core` intercepts and returns from *before*
-        any ``exclude_ref_ids`` is consulted.
+    def _reject_source_facet_unfiltered_shape(self, args: dict[str, Any]) -> None:
+        """Refuse ``uncited=``/``cited=``/``hubbed=`` on the search shapes
+        that :meth:`_dispatch_inner_core` intercepts and returns from
+        *before* any ``exclude_ref_ids``/``include_ref_ids`` is consulted.
 
         ``view='dreamable'``, ``view='stubs'``, ``view='chase-queue'`` and
         the ``angle=``/``like=`` spray each pick their own seed and target
-        set and never read ``exclude_ref_ids`` — and their default target
-        set includes ``paper``, the very kind the exclusion is built from.
-        Left alone they would return fully unfiltered hits *underneath the
-        "N already-cited sources excluded" note*, which is worse than no
-        feature at all: the note actively attests that a filter ran. A
-        caller cannot see the difference from the output, so this must
-        fail loudly. Same stance as the ``UNCITED_UNSUPPORTED_KINDS``
+        set and never read ``exclude_ref_ids``/``include_ref_ids`` — and
+        their default target set includes ``paper``, the very kind these
+        facets are built from. Left alone they would return fully
+        unfiltered hits *underneath a note claiming a filter ran*, which is
+        worse than no feature at all: the note actively attests that a
+        filter ran. A caller cannot see the difference from the output, so
+        this must fail loudly. Same stance as the ``UNCITED_UNSUPPORTED_KINDS``
         guard, for the same reason.
         """
+        facets = [f for f in ("uncited", "cited", "hubbed") if args.get(f) is not None]
+        if not facets:
+            return
         view = str(args.get("view") or "").strip()
         shape = (
             view
@@ -726,15 +733,46 @@ class DispatchMixin(RuntimeShape):
         )
         if shape is None:
             return
+        facet_desc = "/".join(f"{f}=" for f in facets)
         raise Unsupported(
-            f"uncited= is not supported with {shape} — that search shape "
-            "picks its own seed and target set and has no "
-            "exclude-by-ref_id wiring",
+            f"{facet_desc} is not supported with {shape} — that search "
+            "shape picks its own seed and target set and has no "
+            "exclude/include-by-ref_id wiring",
             next=(
-                "drop uncited=, or use a plain search(q=..., uncited=...) "
-                "which filters across every citeable kind"
+                f"drop {facet_desc}, or use a plain search(q=..., "
+                f"{facets[0]}=...) which filters across every citeable kind"
             ),
         )
+
+    def _resolve_source_facets(self, args: dict[str, Any]) -> str | None:
+        """Resolve ``uncited=``/``cited=``/``hubbed=`` into
+        ``args['exclude_ref_ids']``/``args['include_ref_ids']``, in that
+        order, and return the combined agent-facing note (``None`` when no
+        facet was present).
+
+        ``cited=`` and ``uncited=`` are mutually exclusive (one asks for
+        the closure excluded, the other for the closure alone) — raises
+        ``BadInput`` when both are present. ``hubbed=`` composes with
+        either: ``hubbed=True`` intersects into ``include_ref_ids`` (both
+        restrictions must hold), ``hubbed=False`` unions into
+        ``exclude_ref_ids`` (either exclusion drops the hit).
+        """
+        if args.get("cited") is not None and args.get("uncited") is not None:
+            raise BadInput(
+                "cited= and uncited= are mutually exclusive",
+                next=(
+                    "pass cited=<draft> to restrict to already-cited sources, "
+                    "or uncited=<draft> to exclude them — not both"
+                ),
+            )
+        notes: list[str] = []
+        if args.get("uncited") is not None:
+            notes.append(self._resolve_uncited_exclude(args))
+        if args.get("cited") is not None:
+            notes.append(self._resolve_cited_include(args))
+        if args.get("hubbed") is not None:
+            notes.append(self._resolve_hubbed_facet(args))
+        return "\n".join(notes) if notes else None
 
     def _resolve_uncited_exclude(self, args: dict[str, Any]) -> str:
         """Resolve ``search(uncited=<draft>)`` into
@@ -774,6 +812,96 @@ class DispatchMixin(RuntimeShape):
             f"_(uncited={handle}: {n} already-cited source{'s' if n != 1 else ''} "
             "excluded)_"
         )
+
+    def _resolve_cited_include(self, args: dict[str, Any]) -> str:
+        """Resolve ``search(cited=<draft>)`` into ``args['include_ref_ids']``
+        — the inclusion mirror of :meth:`_resolve_uncited_exclude`: same
+        closure (:func:`~precis.backfill.candidates.draft_cited_ref_ids`),
+        same non-draft/unresolvable rejection, but restricts hits to the
+        closure instead of dropping it.
+
+        Intersects into any ``include_ref_ids`` a prior facet in this same
+        call already set (today only :meth:`_resolve_hubbed_facet` could
+        run first, but it's resolved after ``cited=`` — see
+        :meth:`_resolve_source_facets` — so this is future-proofing, not
+        live behaviour): two inclusion restrictions must both hold, not
+        either. An empty closure sets ``include_ref_ids = []`` — ANY(ARRAY[])
+        matches nothing, which is correct: "restricted to 0 already-cited
+        sources" must return zero hits, not fall through unfiltered.
+        """
+        from precis.backfill.candidates import draft_cited_ref_ids, resolve_draft_ref_id
+        from precis.utils import handle_registry
+
+        token = args.pop("cited")
+        store = self.store
+        if store is None:
+            raise Unsupported("cited= needs a store-backed deployment")
+        draft_ref_id = resolve_draft_ref_id(store, str(token))
+        cited = draft_cited_ref_ids(store, draft_ref_id)
+        self._intersect_include_ref_ids(args, cited)
+        handle = (
+            handle_registry.try_format("draft", draft_ref_id) or f"draft:{draft_ref_id}"
+        )
+        n = len(cited)
+        return (
+            f"_(cited={handle}: restricted to {n} already-cited "
+            f"source{'s' if n != 1 else ''})_"
+        )
+
+    def _resolve_hubbed_facet(self, args: dict[str, Any]) -> str:
+        """Resolve ``search(kind='paper', hubbed=True|False)`` into
+        ``args['include_ref_ids']``/``args['exclude_ref_ids']``.
+
+        Paper-only (single ``kind='paper'`` — cross-kind fan-out is out of
+        scope: the hubbed set is paper ref_ids only, so composing it into
+        the shared exclude/include channel for every fanned-out kind would
+        either be a harmless no-op (exclude) or silently zero out every
+        non-paper kind's hits (include) — neither is what an agent asking
+        for ``hubbed=`` on a mixed fan-out would expect). Raises
+        ``BadInput`` naming the offending ``kind=`` otherwise.
+
+        ``hubbed=True`` intersects the corpus-wide hubbed-paper set
+        (:func:`~precis.backfill.candidates.hubbed_paper_ref_ids`, one
+        query) into ``include_ref_ids``; ``hubbed=False`` unions it into
+        ``exclude_ref_ids``.
+        """
+        hubbed = args.pop("hubbed")
+        if not isinstance(hubbed, bool):
+            raise BadInput(
+                f"hubbed= must be a boolean, got {hubbed!r}",
+                next="search(kind='paper', q='...', hubbed=True) or hubbed=False",
+            )
+        kind = args.get("kind")
+        resolved_kind = self._expand_kind_code(str(kind)) if kind is not None else None
+        if resolved_kind != "paper":
+            raise BadInput(
+                f"hubbed= is only supported on kind='paper', got kind={kind!r}",
+                next="search(kind='paper', q='...', hubbed=True)",
+            )
+        store = self.store
+        if store is None:
+            raise Unsupported("hubbed= needs a store-backed deployment")
+        from precis.backfill.candidates import hubbed_paper_ref_ids
+
+        hubbed_ids = hubbed_paper_ref_ids(store)
+        is_true = hubbed
+        n = len(hubbed_ids)
+        if is_true:
+            self._intersect_include_ref_ids(args, hubbed_ids)
+            return f"_(hubbed=true: restricted to {n} hubbed paper{'s' if n != 1 else ''})_"
+        merged: set[int] = set(args.get("exclude_ref_ids") or ())
+        merged |= hubbed_ids
+        args["exclude_ref_ids"] = sorted(merged)
+        return f"_(hubbed=false: {n} hubbed paper{'s' if n != 1 else ''} excluded)_"
+
+    @staticmethod
+    def _intersect_include_ref_ids(args: dict[str, Any], ids: set[int]) -> None:
+        """Merge ``ids`` into ``args['include_ref_ids']`` by intersection —
+        two inclusion restrictions in the same call must both hold. Sets it
+        fresh (sorted) when no prior facet touched the channel yet."""
+        existing = args.get("include_ref_ids")
+        merged = set(ids) if existing is None else set(existing) & set(ids)
+        args["include_ref_ids"] = sorted(merged)
 
     def _dispatch_inner_core(self, verb: str, args: dict[str, Any]) -> Response:
         """Orchestrate one verb call.
@@ -885,26 +1013,31 @@ class DispatchMixin(RuntimeShape):
         if cross_kind_resp is not None:
             return cross_kind_resp
 
-        # ``uncited=`` (resolved above into ``args['exclude_ref_ids']``)
-        # combined with an EXPLICIT single-kind request for a citeable kind
-        # that has no SQL-level exclusion wiring (patent's local+OPS-remote
+        # ``uncited=``/``cited=`` (resolved above into
+        # ``args['exclude_ref_ids']``/``args['include_ref_ids']``) combined
+        # with an EXPLICIT single-kind request for a citeable kind that has
+        # no SQL-level exclude/include wiring (patent's local+OPS-remote
         # search, edgar's filing search — see
         # :data:`~precis.runtime._shared.UNCITED_UNSUPPORTED_KINDS`) must
         # fail loudly rather than silently return hits that might already
-        # be cited. The default wildcard cross-kind fan-out handles this
-        # kind pair differently (drops + footer-notes them, in
+        # be (mis)cited. The default wildcard cross-kind fan-out handles
+        # this kind pair differently (drops + footer-notes them, in
         # ``_dispatch_cross_kind``) since raising there would break the
         # common unscoped ``search(q=..., uncited=...)`` call entirely.
         if (
             verb == "search"
-            and args.get("exclude_ref_ids") is not None
+            and (
+                args.get("exclude_ref_ids") is not None
+                or args.get("include_ref_ids") is not None
+            )
             and resolved_kind in _UNCITED_UNSUPPORTED_KINDS
         ):
+            facet = "cited=" if args.get("include_ref_ids") is not None else "uncited="
             raise Unsupported(
-                f"uncited= is not supported for kind={resolved_kind!r} — its "
-                "search has no exclude-by-ref_id wiring yet",
+                f"{facet} is not supported for kind={resolved_kind!r} — its "
+                "search has no exclude/include-by-ref_id wiring yet",
                 next=(
-                    "drop uncited= for this kind, or use "
+                    f"drop {facet} for this kind, or use "
                     "sort=/since=/until= (the cross-kind source-search "
                     "primitive) which excludes uniformly across every kind"
                 ),

@@ -5,6 +5,13 @@ title: "expose taproot merge on the MCP surface — with a guard the CLI does no
 
 # Merge from the web
 
+> **2026-09-19:** the web door shipped — the claim review page lists the 5
+> nearest hubs with dedup-judge verdicts and `POST /nanopub/fi{hub}/merge`
+> (dry-run plan, `confirm=1` applies, refuses past `candidate`,
+> `set_by='user'`). The product call below is therefore made: apply is a
+> human door. What remains open here is the **agent-side** dry-run verb and
+> the list-candidates read verb.
+
 `precis taproot merge --loser … --winner …` (shipped 2026-08-20) is CLI-only, so
 collapsing a duplicate pair means an operator with a prod DSN. The dedup sweep is
 a read-review-act loop over pairs a human judges one at a time, and that loop

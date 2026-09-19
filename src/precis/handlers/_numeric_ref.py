@@ -412,6 +412,15 @@ class NumericRefHandler(Handler):
         page_size: int = 10,
         page: int = 1,
         mode: str | None = None,
+        # dispatch-injected (runtime.dispatch._resolve_uncited_exclude /
+        # ._resolve_cited_include — ``search(uncited=<draft>)`` /
+        # ``search(cited=<draft>)``), pre-resolved. Declared explicitly
+        # (not swallowed by ``**_kw``) so a single-kind
+        # search(kind=<this kind>, uncited=/cited=...) never silently
+        # drops the filter — see the read-for-question loop (skill precis-read-for-question)
+        # slice 4.
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         **_kw: Any,
     ) -> Response:
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
@@ -481,6 +490,8 @@ class NumericRefHandler(Handler):
                 status_note=status_note,
                 page=page,
                 mode=mode,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
             )
 
         # Title lexical fused with a hybrid block leg (see
@@ -496,6 +507,8 @@ class NumericRefHandler(Handler):
             tags=normalized_tags,
             limit=page_size,
             mode=mode,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
         )
         if not hit_refs:
             tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
@@ -815,6 +828,14 @@ class NumericRefHandler(Handler):
         tags: list[str] | None = None,
         page_size: int = 10,
         mode: str | None = None,
+        # dispatch-injected — see the identically-named kwargs on
+        # :meth:`search`. Declared explicitly (not swallowed by ``**_kw``)
+        # so the cross-kind fan-out never silently drops the filter for
+        # kinds built on this base (read-for-question loop, slice 4 —
+        # previously the known-hazard case: ``search_hits`` calls bypass
+        # the ``_invoke_handler`` strictness gate entirely).
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
         **_kw: Any,
     ) -> list[SearchHit]:
         """Ref-level hybrid search returned as ``SearchHit``s.
@@ -839,7 +860,12 @@ class NumericRefHandler(Handler):
             return []
         if self.search_body_chunks:
             return self._body_search_hits(
-                q=q, tags=tags, page_size=page_size, mode=mode
+                q=q,
+                tags=tags,
+                page_size=page_size,
+                mode=mode,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
             )
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
         refs = fused_ref_hits(
@@ -850,6 +876,8 @@ class NumericRefHandler(Handler):
             tags=normalized_tags,
             limit=page_size,
             mode=mode,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
         self.store.chunks.bump_salience(
@@ -880,6 +908,8 @@ class NumericRefHandler(Handler):
         page_size: int,
         page: int = 1,
         mode: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
     ) -> tuple[list[tuple[Any, Ref, float]], int]:
         """Best-ranked chunk per ref for a hybrid body-chunk query.
 
@@ -924,6 +954,8 @@ class NumericRefHandler(Handler):
             tags=tags,
             limit=page_size * 5 * max(1, page),
             max_distance=SEMANTIC_DISTANCE_FLOOR,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
         )
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
@@ -941,7 +973,12 @@ class NumericRefHandler(Handler):
         # running the whole fusion again just for a headline.)
         total = max(
             self.store.chunks.count_chunks_lexical(
-                q=q, kind=self.kind, tags=tags, distinct_refs=True
+                q=q,
+                kind=self.kind,
+                tags=tags,
+                distinct_refs=True,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
             ),
             len(ordered),
         )
@@ -956,9 +993,19 @@ class NumericRefHandler(Handler):
         status_note: str = "",
         page: int = 1,
         mode: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref."""
-        hits, total = self._best_body_hits(q, tags, page_size, page=page, mode=mode)
+        hits, total = self._best_body_hits(
+            q,
+            tags,
+            page_size,
+            page=page,
+            mode=mode,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+        )
         if self.heat_salience_on_body_search:
             self.store.chunks.bump_salience(
                 self.store.chunks.card_chunk_ids([ref.id for _, ref, _ in hits])
@@ -1031,12 +1078,21 @@ class NumericRefHandler(Handler):
         tags: list[str] | None,
         page_size: int,
         mode: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
     ) -> list[SearchHit]:
         """Ref-grouped chunk-level hits as ``SearchHit`` for cross-kind merge."""
         if not (q and q.strip()):
             return []
         normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
-        ordered, _ = self._best_body_hits(q, normalized_tags, page_size, mode=mode)
+        ordered, _ = self._best_body_hits(
+            q,
+            normalized_tags,
+            page_size,
+            mode=mode,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+        )
         return [
             SearchHit(
                 score=rank,

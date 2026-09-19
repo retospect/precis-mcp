@@ -186,6 +186,16 @@ def get_web_config(request: Request) -> WebConfig:
     return cfg
 
 
+def get_embedder(request: Request) -> Any:
+    """Return the runtime's query embedder, or ``None`` when the store is
+    stateless (no ``PRECIS_DATABASE_URL``) or a test double left ``hub``
+    unset. Same defensive lookup ``routes/drafts.py``'s backfill door uses
+    (``runtime.hub.embedder``) — every caller that reaches into it, not
+    just that one, so a stale test double or a hub-less runtime degrades
+    the caller's embedder-dependent feature rather than 500ing the page."""
+    return getattr(getattr(get_runtime(request), "hub", None), "embedder", None)
+
+
 def dispatch(request: Request, verb: str, args: dict[str, Any]) -> tuple[str, bool]:
     """Run one seven-verb call through the in-process runtime (sync).
 

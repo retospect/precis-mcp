@@ -202,6 +202,7 @@ disputes, cite `[fi<id>]`.
 ## See also
 
 - [[precis-citation-help]] — the four-step cite procedure (search hubs → ground + mint → adversarial → cite).
+- [[precis-read-for-question]] — you have a *question*, not a sentence to cite: the reading loop that leaves hubs behind.
 - [[precis-taproot-mint-help]] — admissibility, scope, notation, search-before-mint.
 - [[precis-taproot-hub-edit-help]] — attach, reword, merge an existing hub.
 - [[precis-check-source-help]] — find the chunk, read its surrounds, judge support.

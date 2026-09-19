@@ -992,6 +992,10 @@ def put(
     # claim HUB instead of a chase finding — title=/body= carry the claim
     # sentence. Supplying both supporters= and cited_in= errors (two modes).
     supporters: list[dict[str, Any]] | None = None,
+    # dedup=False skips the semantic near-duplicate cascade the hub-mint door
+    # runs before minting (block → dedup_judge → place); the response says
+    # so. Default (None) = the handler's True.
+    dedup: bool | None = None,
     # finding acquisition-mode (see precis-finding-help): wants= (a list of
     # {'doi':…} / {'arxiv':…} / {'title':…,'url':…} descriptors, >=1) +
     # provenance= (a ref/chunk handle for where the claim came from) INSTEAD
@@ -1241,6 +1245,7 @@ def put(
             "scope": scope,
             "cited_in": cited_in,
             "supporters": supporters,
+            "dedup": dedup,
             "wants": wants,
             "provenance": provenance,
             # False is the "not this mode" value and would be stripped by

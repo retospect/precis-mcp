@@ -106,6 +106,7 @@ from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
 from precis.utils.ref_hybrid import fused_ref_hits
+from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
@@ -125,6 +126,15 @@ _AWAITS_EVIDENCE = "awaits-evidence"
 # *tag*, so a minted hub is visible regardless of its status value, without
 # the ``status='*'`` workaround.
 _TAPROOT_CLAIM_TAG = "TAPROOT:claim"
+# The other half of the claim-hub definition
+# (``taproot/canon.py::claim_hub_predicate_sql``; ``mint_hub`` writes both
+# tags atomically, and is the sole writer of ``TAPROOT:claim`` anywhere —
+# but a demotion can later strip ``STATUS:canonical`` off a hub without
+# touching ``TAPROOT:claim``, per that predicate's own docstring).
+# :meth:`FindingHandler.search_hits` ANDs this onto :data:`_TAPROOT_CLAIM_TAG`
+# so its candidate pool is live-hub-only at the query itself, not just at
+# the posture-read backstop.
+_STATUS_CANONICAL_TAG = "STATUS:canonical"
 
 # ── the trust axis ────────────────────────────────────────────────────
 # Orthogonal to ``STATUS:`` — that is the *chase lifecycle* (how far the
@@ -164,7 +174,7 @@ class FindingHandler(NumericRefHandler):
         supports_put=True,
         supports_get=True,
         supports_search=True,
-        supports_search_hits=False,
+        supports_search_hits=True,
         supports_edit=True,
         supports_delete=True,
         supports_tag=True,
@@ -189,6 +199,7 @@ class FindingHandler(NumericRefHandler):
         scope: dict[str, Any] | None = None,
         cited_in: str | None = None,
         supporters: list[dict[str, Any]] | None = None,
+        dedup: bool = True,
         wants: list[dict[str, Any]] | None = None,
         provenance: str | None = None,
         hypothesis: bool = False,
@@ -239,7 +250,14 @@ class FindingHandler(NumericRefHandler):
         See :func:`precis.handlers._finding_acquire.put_acquiring`.
 
         **Hub mode** — pass ``supporters=`` instead of
-        ``cited_in=``/``wants=`` to mint/converge a Taproot claim hub.
+        ``cited_in=``/``wants=`` to mint/converge a Taproot claim hub. Runs
+        the semantic-dedup cascade first (``taproot/canon.py``: ``block``
+        -> ``dedup_judge`` -> ``place``, same as ``taproot/directed.py``'s
+        ``directed_mint``): a matched existing claim attaches the
+        supporters there instead of minting a near-duplicate hub; a risky/
+        unconfirmed match mints anyway and files a review todo naming both
+        hubs. ``dedup=False`` skips the cascade and mints unconditionally
+        (needs no embedder). See :mod:`precis.handlers._finding_hub_mint`.
 
         **Hypothesis mode** — pass ``hypothesis=True`` with ``motivation=``,
         ``testable_by=``, ``motivated_by=`` (≥2 artifacts across ≥2 source
@@ -295,12 +313,16 @@ class FindingHandler(NumericRefHandler):
 
         # --- Taproot hub-mint mode ---
         # A finding born with paper ``supporters=`` (and no ``cited_in``) is a
-        # claim HUB, not a chase target: route through the single write door
-        # (``taproot/hub.py`` via ``seed_claim_hub``), which mints/converges the
-        # hub and attaches each supporter's ``paper --role--> hub`` evidence
-        # edge. The grounding invariant holds by construction — ``seed_claim_hub``
-        # REQUIRES paper supporters, so this door can never mint a thin-air hub.
-        # ``title=``/``body=`` carry the canonical claim sentence.
+        # claim HUB, not a chase target: route through
+        # :mod:`precis.handlers._finding_hub_mint`, which runs the semantic-
+        # dedup cascade (``taproot/canon.py``: block -> dedup_judge -> place)
+        # then the single write door (``taproot/hub.py``/``taproot/
+        # authoring.py``) — mints/converges the hub (or attaches onto a
+        # matched existing one) and attaches each supporter's
+        # ``paper --role--> hub`` evidence edge. The grounding invariant
+        # holds by construction — every path REQUIRES paper supporters, so
+        # this door can never mint a thin-air hub. ``title=``/``body=``
+        # carry the canonical claim sentence.
         if supporters is not None:
             if cited_in is not None or wants is not None:
                 raise BadInput(
@@ -328,38 +350,16 @@ class FindingHandler(NumericRefHandler):
                     f"scope must be a dict, got {type(scope).__name__}",
                     next="scope={'system': 'aqueous', ...}",
                 )
-            result = authoring.seed_claim_hub(
+            from precis.handlers import _finding_hub_mint
+
+            return _finding_hub_mint.put_hub(
                 self.store,
                 sentence=sentence,
                 scope=scope or {},
                 supporters=supporters,
                 set_by="agent",
-            )
-            ung = result["ungrounded"]
-            # Advisory lints, surfaced at the one moment the author can still
-            # act on them cheaply. `scope` is in the identity hash, so a prose
-            # scope value forks a hub that should have converged -- both live
-            # duplicate pairs in the corpus were forked exactly that way.
-            # Never blocks the mint; the hub above is already written.
-            lints = [*(result.get("notation") or []), *(result.get("scope_lint") or [])]
-            lint_note = (
-                "\nlint (advisory, hub already minted):\n"
-                + "\n".join(f"  - {w}" for w in lints)
-                if lints
-                else ""
-            )
-            return Response(
-                body=(
-                    f"claim hub fi{result['hub_ref_id']}  "
-                    f"pub_id={result['pub_id']}\n"
-                    f"claim: {sentence[:120]}\n"
-                    f"evidence: {result['attached']} attached, "
-                    f"{result['already']} already present"
-                    + (f", {ung} ref-level (ungrounded)" if ung else "")
-                    + "\n"
-                    f"cite it inline as [fi{result['hub_ref_id']}] — resolves to "
-                    "the current derived originator(s) on every render" + lint_note
-                )
+                dedup=dedup,
+                embedder=getattr(self.hub, "embedder", None),
             )
 
         # --- Acquisition mode (claim-first mint) ---
@@ -808,6 +808,11 @@ class FindingHandler(NumericRefHandler):
         payload through ``get``'s extras channel,
         ``args={'payload': {...}}``; omitted, it gates whatever is already
         frozen or parked on the hub.
+        ``view='similar'`` lists the ``k`` nearest OTHER live claim hubs to
+        this hub's sentence (:func:`precis.taproot.canon.nearest_hubs`,
+        the same ANN retrieval the hub-mint dedup cascade runs before
+        minting — :mod:`precis.handlers._finding_hub_mint`), with
+        distance and claim text; excludes this hub itself.
         ``view ∈ kwd|summary|verbatim|fisheye|fisheye+1hop`` (the
         :class:`~precis.workers.working_set.Extent` ladder) renders the
         finding as an eye (:func:`precis.utils.eye_render.render_eye`); at
@@ -820,7 +825,7 @@ class FindingHandler(NumericRefHandler):
         Every other view (bare get, ``links``/``log``/``raw``) falls
         through to the base
         :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
-        All four deliberately kept off ``_BASE_VIEWS`` — finding-specific,
+        All five deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
         id = self._resolve_pub_id_slug(id)
@@ -839,6 +844,14 @@ class FindingHandler(NumericRefHandler):
             ref = self._resolve_live_ref(ref_id)
             return _finding_mint_preflight.render_mint_preflight(
                 self.store, ref, payload=payload
+            )
+        if view == "similar":
+            from precis.handlers import _finding_hub_mint
+
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return _finding_hub_mint.render_similar_view(
+                self.store, ref, embedder=getattr(self.hub, "embedder", None)
             )
         extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
         if view in extent_ladder:
@@ -983,6 +996,88 @@ class FindingHandler(NumericRefHandler):
         postures = self._postures([int(r.id) for r in refs], strict=True)
         kept = [r for r in refs if _passes_trust(postures.get(int(r.id)), trust)]
         return kept[:page_size]
+
+    # ──────────────────────────────────────────────────────────────────
+    # search_hits — cross-kind merge stream: live claim hubs only
+    # ──────────────────────────────────────────────────────────────────
+
+    def search_hits(  # type: ignore[override]
+        self,
+        *,
+        q: str,
+        tags: list[str] | None = None,
+        page_size: int = 10,
+        mode: str | None = None,
+        # dispatch-injected — see the identically-named kwargs on
+        # ``NumericRefHandler.search_hits``. Declared explicitly (not
+        # swallowed by ``**_kw``) so ``uncited=``/``cited=`` keep working
+        # now that this kind reaches the cross-kind fan-out.
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Claim-hub-only cross-kind stream, posture-annotated.
+
+        the claim-layer-in-cross-kind-search design (shipped 2026-09-19) option
+        1: naively flipping ``supports_search_hits`` would have handed
+        the cross-kind merge the inherited
+        ``NumericRefHandler.search_hits`` — every finding (chase-tree
+        rows included), each stripped of the ``state``/``support``/
+        ``flags`` columns that make a claim hit legible. This override
+        IS what the flag flip actually turns on: candidates restricted
+        to live claim hubs (``TAPROOT:claim`` + ``STATUS:canonical`` —
+        :data:`_STATUS_CANONICAL_TAG`'s docstring), each carrying a terse
+        ``posture`` token (:func:`_search_hit_posture`) instead of the
+        three-column TOON shape, so the settled-or-not signal rides
+        along the merged row rather than being flattened away.
+
+        Posture comes from one batched
+        :func:`~precis.nanopub.overview.hub_rows` call per page — the
+        same query :meth:`_render_finding_table`'s posture columns use —
+        which doubles as a correctness backstop: a tag-filtered candidate
+        ``hub_rows`` doesn't return for (rare — ``mint_hub`` is the sole
+        ``STATUS:canonical`` writer) is dropped rather than rendered with
+        a posture it can't have. ``strict=True`` (see :meth:`_postures`):
+        an unreadable posture must raise (surfacing as this kind
+        "errored, omitted from this merge" at the dispatch layer — see
+        ``runtime.search._cross_kind_invoke_search_hits``), not silently
+        degrade to "no hubs this page".
+        """
+        if not (q and q.strip()):
+            return []
+        hub_tags = Tag.normalize_filter(
+            _tags_with(
+                _tags_with(list(tags) if tags else [], _TAPROOT_CLAIM_TAG),
+                _STATUS_CANONICAL_TAG,
+            ),
+            kind=self.kind,
+        )
+        refs = fused_ref_hits(
+            self.store,
+            getattr(self.hub, "embedder", None),
+            q=q,
+            kind=self.kind,
+            tags=hub_tags,
+            limit=page_size,
+            mode=mode,
+            chunk_kinds=["finding_body"],
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+        )
+        if not refs:
+            return []
+        postures = self._postures([int(r.id) for r in refs], strict=True)
+        kept = [r for r in refs if int(r.id) in postures]
+        if not kept:
+            return []
+        pairs: list[tuple[Any, float]] = [
+            (r, float(len(kept) - i)) for i, r in enumerate(kept)
+        ]
+        return ref_hits_to_search_hits(
+            pairs,
+            kind=self.kind,
+            posture_for=lambda ref: _search_hit_posture(postures[int(ref.id)]),
+        )
 
     def search(
         self,
@@ -1725,6 +1820,33 @@ def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
         "support": support,
         "flags": ",".join(flags),
     }
+
+
+def _search_hit_posture(row: HubOverviewRow) -> str:
+    """The cross-kind ``SearchHit.posture`` token for one claim hub.
+
+    Terser than :func:`_posture_cells` (three TOON columns) — one
+    pre-rendered prefix for the merged cross-kind summary cell
+    (the claim-layer-in-cross-kind-search design (shipped 2026-09-19) option 1).
+    Bucket order is significant, both for what a drafting agent needs to
+    see first and for the ranking lever that pattern-matches this exact
+    vocabulary (``search_merge._merge_rrf``, ``_POSTURE_REFUTED_PREFIX``/
+    ``_POSTURE_VERIFIED_MARKER``): refuted first (rare, high-value
+    negative signal — every judged edge came back negative), then
+    disputed (a live ``contradicts`` edge — contested, never demoted, the
+    RRF lever leaves it at its unpenalised rank), then verified-and-
+    unopposed (the dense positive signal — reuses :func:`_passes_trust`'s
+    own ``trust='verified'`` definition: ``supported_count > 0`` and not
+    disputed), else unverified (unminted-with-nothing or withheld-only —
+    the bulk of the corpus per the backlog item's prod snapshot).
+    """
+    if is_refuted(row):
+        return "◆ refuted"
+    if row.disputed:
+        return "◆ disputed"
+    if row.supported_count > 0:
+        return f"◆ {row.supported_count}✓ unopposed"
+    return "◆ unverified"
 
 
 __all__ = ["FindingHandler"]

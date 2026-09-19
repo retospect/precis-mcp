@@ -28,6 +28,14 @@ CROSS_KIND_WILDCARD = "*"
 # search-hits-capable kind.
 CROSS_KIND_ALIASES: frozenset[str] = frozenset({"*", "", "all", "any", "*all*"})
 
+# ``kind='source'`` (the read-for-question loop slice 5, the ``kind='source'``
+# fan-out): papers + live claim hubs in one RRF-fused table — the "settled
+# claim or raw passage" question a drafting agent asks first. Unlike
+# :data:`CROSS_KIND_ALIASES` (which all expand to *every* search-hits kind),
+# this expands to exactly the two kinds below, never more, never fewer.
+CROSS_KIND_SOURCE_ALIAS = "source"
+CROSS_KIND_SOURCE_KINDS: tuple[str, ...] = ("paper", "finding")
+
 # The citeable kinds (:data:`precis.utils.refeye._CITED_KINDS`, mirrored
 # here to avoid an import into a low-level shared module) whose ``search()``
 # / ``search_hits()`` have no SQL-level ``exclude_ref_ids`` wiring: patent's

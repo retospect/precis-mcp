@@ -8,6 +8,15 @@ merge across handlers' ``search_hits``), the tags-only cross-kind sweep,
 never-tried-first sibling. The angle spray and dreamable region live
 in :mod:`precis.runtime.angle` — those also fan out across kinds but pick
 their own seed rather than ranking a ``q=`` query.
+
+``kind='source'`` (unrelated naming collision with the paragraph above,
+despite both saying "source"): a fixed cross-kind alias — exactly
+``paper`` + ``finding`` — not a new search shape. It rides the same
+``_resolve_cross_kind_request`` expansion the wildcard and comma-list
+forms use, so it composes with every existing entry point (``folder=``,
+``view='keywords'``, the ``sort=``/``since=``/``until=`` primitive above,
+and the plain fan-out) for free. See
+:data:`~precis.runtime._shared.CROSS_KIND_SOURCE_ALIAS`.
 """
 
 from __future__ import annotations
@@ -20,6 +29,8 @@ from precis.errors import BadInput, Internal, NotFound, Unsupported, Upstream
 from precis.protocol import Handler
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_ALIASES as _CROSS_KIND_ALIASES
+from precis.runtime._shared import CROSS_KIND_SOURCE_ALIAS as _CROSS_KIND_SOURCE_ALIAS
+from precis.runtime._shared import CROSS_KIND_SOURCE_KINDS as _CROSS_KIND_SOURCE_KINDS
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
 from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
@@ -248,6 +259,8 @@ class SearchMixin(RuntimeShape):
 
         - the wildcard ``'*'`` and its English aliases ``'all'`` /
           ``'any'`` (see :data:`~precis.runtime._shared.CROSS_KIND_ALIASES`);
+        - ``'source'`` — the fixed paper+finding-hub alias (see
+          :data:`~precis.runtime._shared.CROSS_KIND_SOURCE_ALIAS`);
         - any comma-list (``'paper,memory'`` or ``'paper, memory'``);
         - an explicit empty string (``''``) is treated like the
           wildcard for symmetry with MCP clients that send ``kind=""``.
@@ -259,7 +272,10 @@ class SearchMixin(RuntimeShape):
         """
         if not isinstance(kind, str):
             return False
-        if kind.strip().lower() in _CROSS_KIND_ALIASES:
+        normalized = kind.strip().lower()
+        if normalized in _CROSS_KIND_ALIASES:
+            return True
+        if normalized == _CROSS_KIND_SOURCE_ALIAS:
             return True
         if "," in kind:
             return True
@@ -306,14 +322,34 @@ class SearchMixin(RuntimeShape):
     def _resolve_cross_kind_request(self, kind: str) -> list[str]:
         """Expand ``kind`` into the concrete list of kinds to fan out to.
 
-        Wildcard expands to every search-hits-capable kind.  Comma-
-        lists are split, normalised (trim whitespace), and validated:
-        unknown kinds and kinds that don't support cross-kind search
-        raise ``BadInput`` with the recoverable list as ``options``.
+        Wildcard expands to every search-hits-capable kind.
+        ``'source'`` expands to exactly
+        :data:`~precis.runtime._shared.CROSS_KIND_SOURCE_KINDS`
+        (``paper`` + ``finding``) — raises ``BadInput`` if either isn't
+        search-hits-capable in this build, same as an explicit comma-list
+        naming an unsupported kind. Comma-lists are split, normalised
+        (trim whitespace), and validated: unknown kinds and kinds that
+        don't support cross-kind search raise ``BadInput`` with the
+        recoverable list as ``options``.
         """
         eligible = self._cross_kind_kinds()
-        if kind.strip().lower() in _CROSS_KIND_ALIASES:
+        normalized = kind.strip().lower()
+        if normalized in _CROSS_KIND_ALIASES:
             return eligible
+        if normalized == _CROSS_KIND_SOURCE_ALIAS:
+            eligible_set = set(eligible)
+            missing = [k for k in _CROSS_KIND_SOURCE_KINDS if k not in eligible_set]
+            if missing:
+                raise BadInput(
+                    f"kind='source' needs {list(_CROSS_KIND_SOURCE_KINDS)!r} "
+                    f"search-hits-capable in this build — missing {missing!r}",
+                    options=eligible,
+                    next=(
+                        "use kind='paper' or kind='finding' directly, or "
+                        "kind='*' for the full cross-kind fan-out"
+                    ),
+                )
+            return list(_CROSS_KIND_SOURCE_KINDS)
 
         requested = [tok.strip() for tok in kind.split(",")]
         requested = [t for t in requested if t]
@@ -403,14 +439,15 @@ class SearchMixin(RuntimeShape):
         once, runs the single store query, renders per-ref hits (each
         stamped with its own ``ref.kind``) as one pre-ordered stream.
 
-        ``args['exclude_ref_ids']`` (``_dispatch_inner``'s ``uncited=``
-        resolution) threads straight into
+        ``args['exclude_ref_ids']``/``args['include_ref_ids']``
+        (``_dispatch_inner``'s ``uncited=``/``cited=``/``hubbed=``
+        resolution) thread straight into
         :meth:`~precis.store._chunks_ops.BlocksMixin.search_chunks_across_kinds`,
         applied in the ONE underlying SQL query across every kind — the
         only search path with no per-kind support gap (unlike
         :meth:`_dispatch_cross_kind`'s per-handler fan-out), so this is
-        the recommended route for ``uncited=`` when the target kinds
-        include patent/edgar.
+        the recommended route for ``uncited=``/``cited=`` when the target
+        kinds include patent/edgar.
         """
         store = self.hub.store
         if store is None:
@@ -447,6 +484,7 @@ class SearchMixin(RuntimeShape):
                 log.exception("source search: query embed failed; lexical-only")
 
         exclude_ref_ids = args.get("exclude_ref_ids")
+        include_ref_ids = args.get("include_ref_ids")
         results = store.chunks.search_chunks_across_kinds(
             kinds=kinds,
             q=q,
@@ -459,6 +497,7 @@ class SearchMixin(RuntimeShape):
             limit=top_k,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
         )
         hits: list[SearchHit] = []
         for block, ref, score in results:
@@ -499,17 +538,24 @@ class SearchMixin(RuntimeShape):
         # leg doesn't need an embedder, so we can answer this in one
         # store query — list_refs accepts a kind=None tag filter and
         # returns a kind-mixed result set the renderer trivially flattens.
-        # ``_dispatch_cross_kind_tags_only`` has no exclude_ref_ids wiring
-        # at all (``list_refs`` isn't a ranked chunk search), so a
-        # ``uncited=`` resolved into ``args['exclude_ref_ids']`` above would
-        # silently ride through unfiltered — raise instead of falling
-        # through to that path.
+        # ``_dispatch_cross_kind_tags_only`` has no exclude_ref_ids/
+        # include_ref_ids wiring at all (``list_refs`` isn't a ranked chunk
+        # search), so a ``uncited=``/``cited=`` resolved into
+        # ``args['exclude_ref_ids']``/``args['include_ref_ids']`` above
+        # would silently ride through unfiltered — raise instead of
+        # falling through to that path.
         if q is None or not (isinstance(q, str) and q.strip()):
             if args.get("exclude_ref_ids") is not None:
                 raise BadInput(
                     "uncited= requires q= (it filters a ranked search, not "
                     "the tags-only sweep)",
                     next=f"search(kind={kind!r}, q='your query', uncited=…)",
+                )
+            if args.get("include_ref_ids") is not None:
+                raise BadInput(
+                    "cited= requires q= (it filters a ranked search, not "
+                    "the tags-only sweep)",
+                    next=f"search(kind={kind!r}, q='your query', cited=…)",
                 )
             if tags_in:
                 return self._dispatch_cross_kind_tags_only(kind, args)
@@ -546,19 +592,33 @@ class SearchMixin(RuntimeShape):
                 ),
             )
 
-        # ``uncited=`` (resolved by ``_dispatch_inner`` into
-        # ``args['exclude_ref_ids']``): every per-handler ``search_hits``
-        # accepts arbitrary kwargs (``**_kw``), so an unsupported kind would
-        # otherwise silently swallow the filter and contribute unfiltered
-        # (possibly already-cited) hits — the "believed every hit was new"
-        # failure mode the feature must never produce. Kinds in
-        # ``_UNCITED_UNSUPPORTED_KINDS`` have no real SQL-level exclusion
-        # wiring: an EXPLICIT request for one of them raises; the default
-        # wildcard fan-out instead drops them (footer-noted below) so the
-        # common unscoped ``search(q=..., uncited=...)`` call still works.
+        # ``uncited=``/``cited=`` (resolved by ``_dispatch_inner`` into
+        # ``args['exclude_ref_ids']``/``args['include_ref_ids']``): every
+        # per-handler ``search_hits`` accepts arbitrary kwargs (``**_kw``),
+        # so an unsupported kind would otherwise silently swallow the
+        # filter and contribute unfiltered (possibly already-cited, or
+        # not-actually-cited) hits — the failure mode the feature must
+        # never produce. Kinds in ``_UNCITED_UNSUPPORTED_KINDS`` have no
+        # real SQL-level exclude/include wiring: an EXPLICIT request for
+        # one of them raises; the default wildcard fan-out instead drops
+        # them (footer-noted below) so the common unscoped
+        # ``search(q=..., uncited=...)``/``cited=...`` call still works.
         exclude_ref_ids = args.get("exclude_ref_ids")
+        include_ref_ids = args.get("include_ref_ids")
+        # Name every facet that is live, not just the first — a drop caused
+        # by the exclusion half of a ``cited=`` + ``exclude=`` call must not
+        # read as a ``cited=`` problem.
+        _facets = [
+            label
+            for label, live in (
+                ("cited=", include_ref_ids is not None),
+                ("uncited=", exclude_ref_ids is not None),
+            )
+            if live
+        ]
+        facet_label = "/".join(_facets) if _facets else None
         uncited_dropped_kinds: list[str] = []
-        if exclude_ref_ids is not None:
+        if facet_label is not None:
             unsupported_present = [k for k in kinds if k in _UNCITED_UNSUPPORTED_KINDS]
             if unsupported_present:
                 if kind.strip().lower() in _CROSS_KIND_ALIASES:
@@ -566,9 +626,9 @@ class SearchMixin(RuntimeShape):
                     uncited_dropped_kinds = unsupported_present
                     if not kinds:
                         raise Unsupported(
-                            "uncited= leaves no searchable kinds — every "
+                            f"{facet_label} leaves no searchable kinds — every "
                             f"eligible kind {unsupported_present!r} lacks "
-                            "exclude-by-ref_id wiring",
+                            "exclude/include-by-ref_id wiring",
                             next=(
                                 "use sort=/since=/until= (the cross-kind "
                                 "source-search primitive), which excludes "
@@ -577,8 +637,8 @@ class SearchMixin(RuntimeShape):
                         )
                 else:
                     raise Unsupported(
-                        f"uncited= is not supported for kind(s) "
-                        f"{unsupported_present!r} — no exclude-by-ref_id "
+                        f"{facet_label} is not supported for kind(s) "
+                        f"{unsupported_present!r} — no exclude/include-by-ref_id "
                         "wiring yet",
                         next=(
                             "drop these kinds from the comma-list, or use "
@@ -673,6 +733,12 @@ class SearchMixin(RuntimeShape):
             # citeable-kind refs (see ``_UNCITED_UNSUPPORTED_KINDS`` above
             # for the two exceptions, already excluded from ``kinds``).
             base_kwargs["exclude_ref_ids"] = exclude_ref_ids
+        if include_ref_ids is not None:
+            # ``is not None`` (not truthy): an empty ``include_ref_ids``
+            # means "restricted to zero sources", which must fan out as
+            # zero hits from every wired kind, not fall through unfiltered
+            # like an empty ``exclude_ref_ids`` correctly would.
+            base_kwargs["include_ref_ids"] = include_ref_ids
 
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
@@ -829,10 +895,11 @@ class SearchMixin(RuntimeShape):
         if uncited_dropped_kinds:
             lines = response.body.splitlines()
             tip = (
-                "_(uncited=: skipped "
+                f"_({facet_label}: skipped "
                 + ", ".join(sorted(uncited_dropped_kinds))
-                + " — no exclude-by-ref_id wiring yet, so a hit there might "
-                "already be cited; search that kind explicitly to check)_"
+                + " — no exclude/include-by-ref_id wiring yet, so a hit "
+                "there might already be (mis)cited; search that kind "
+                "explicitly to check)_"
             )
             if lines:
                 lines.insert(1, tip)

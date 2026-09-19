@@ -164,11 +164,15 @@ def draft_cited_ref_ids(store: Store, ref_id: int, *, kind: str = "draft") -> se
     """The cited-source ref_ids a draft already points at — mined from every
     chunk's body (``resolve_link_targets``, the reference ring's path), filtered
     to citeable kinds (paper/datasheet/patent/cfp) and to live refs, **plus**
-    every ``[fi]`` claim-hub cite's evidence-supporter papers
-    (:func:`_hub_supporter_ref_ids` — Build 2 §G1). This is the Tier-0 dedup
-    set: a candidate already cited *anywhere* in the draft — directly, or as
-    a hub's supporting evidence once ``[pc]``/``[pa]`` backfill to ``[fi]`` —
-    is not a fresh gap."""
+    every ``[fi]`` claim-hub cite's own ref_id and its evidence-supporter
+    papers (:func:`_hub_supporter_ref_ids` — Build 2 §G1, extended by
+    the claim-layer-in-cross-kind-search design (shipped 2026-09-19)
+    ``kind='source'`` fan-out: a hub is now itself a citeable cross-kind hit,
+    so ``uncited=<draft>``/``cited=<draft>`` must treat a ``[fi<id>]`` cite
+    the same as any other — see that function's own docstring). This is the
+    Tier-0 dedup set: a candidate already cited *anywhere* in the draft —
+    directly, or as a hub's supporting evidence once ``[pc]``/``[pa]``
+    backfill to ``[fi]`` — is not a fresh gap."""
     chunks = store.drafts.reading_order(ref_id, kind=kind)
     hit: set[int] = set()
     for c in chunks:
@@ -187,12 +191,17 @@ def draft_cited_ref_ids(store: Store, ref_id: int, *, kind: str = "draft") -> se
 
 
 def _hub_supporter_ref_ids(store: Store, chunks: list[Any]) -> set[int]:
-    """The evidence-supporter papers of every ``[fi]`` claim-hub these chunks
-    cite (Build 2 §G1 — the load-bearing closure fix). A hub already backs
-    its claim with these papers, so once ``[pc]``/``[pa]`` cites backfill to
-    ``[fi]`` hub cites, dropping them from the closure would re-surface
-    already-used papers as fresh "gaps" — a correctness bug taproot-ifying a
-    draft would otherwise create.
+    """Every ``[fi]`` claim-hub these chunks cite, plus **its own ref_id**
+    and its evidence-supporter papers (Build 2 §G1 — the load-bearing
+    closure fix). A hub already backs its claim with these papers, so once
+    ``[pc]``/``[pa]`` cites backfill to ``[fi]`` hub cites, dropping them
+    from the closure would re-surface already-used papers as fresh "gaps" —
+    a correctness bug taproot-ifying a draft would otherwise create. The
+    hub's own ref_id joined the set once hubs became a citeable cross-kind
+    hit in their own right (``kind='source'`` fan-out) — a ``[fi<id>]``
+    cite is "already cited" the same as a ``[pa<id>]`` one; before that the
+    hub's ref_id was harmless-but-pointless to carry (nothing consuming
+    this closure ever searched findings).
 
     Mines the same ``[fi]``/``[pub_id]`` cites
     :func:`precis.handlers._citations_view._collect_raw_cites` partitions as
@@ -201,7 +210,8 @@ def _hub_supporter_ref_ids(store: Store, chunks: list[Any]) -> set[int]:
     Contradictors are deliberately excluded — a paper that contradicts the
     claim is not "already cited for this point." A finding cite that is
     *not* a live ``TAPROOT:claim`` hub (a plain chase finding) is silently
-    skipped, not errored — ``derive_evidence`` only accepts hubs."""
+    skipped, not errored — ``derive_evidence`` only accepts hubs, and a
+    plain chase finding is not a citeable source at all."""
     from precis.handlers._citations_view import _collect_raw_cites
     from precis.taproot.seniority import derive_evidence, is_claim_hub
 
@@ -211,10 +221,48 @@ def _hub_supporter_ref_ids(store: Store, chunks: list[Any]) -> set[int]:
     for hub_id in hub_ids:
         if not is_claim_hub(store, hub_id):
             continue  # a plain chase finding, not a claim hub — not evidence
+        out.add(hub_id)
         evidence = derive_evidence(store, hub_id)
         out.update(e.paper_ref_id for e in evidence.originators)
         out.update(e.paper_ref_id for e in evidence.corroborators)
     return out
+
+
+def hubbed_paper_ref_ids(store: Store) -> set[int]:
+    """Every live paper that supports >=1 live claim hub — the
+    ``search(kind='paper', hubbed=…)`` predicate (read-for-question loop,
+    slice 4). "Supports" means an ``establishes``/``corroborates`` link
+    edge (:data:`~precis.taproot.seniority._SUPPORT_ROLES`) from the paper
+    to a ref that is a live claim hub
+    (:func:`~precis.taproot.canon.claim_hub_predicate_sql` — the single
+    source of truth for "is this a hub", not a hand-rolled tag check).
+    ``contradicts`` edges don't count: a paper that only disputes a claim
+    isn't one of its supporters.
+
+    One indexed query, same shape as :func:`_hub_supporter_ref_ids` but
+    corpus-wide rather than closure-scoped — the per-call cost
+    ``search(hubbed=…)`` promises."""
+    from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
+
+    hub_predicate = claim_hub_predicate_sql(ref_alias="h")
+    sql = f"""
+        SELECT DISTINCT l.src_ref_id
+        FROM links l
+        JOIN refs p ON p.ref_id = l.src_ref_id
+        JOIN refs h ON h.ref_id = l.dst_ref_id
+        WHERE l.relation = ANY(%(roles)s)
+          AND p.kind = 'paper'
+          AND p.retired_at IS NULL
+          AND h.retired_at IS NULL
+          AND {hub_predicate}
+    """
+    params: dict[str, Any] = {
+        "roles": ["establishes", "corroborates"],
+        **CLAIM_HUB_PREDICATE_PARAMS,
+    }
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def seed_from_targets(
