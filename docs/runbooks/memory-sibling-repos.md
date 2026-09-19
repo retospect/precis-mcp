@@ -64,3 +64,5 @@ into a durable doc and delete the memory).
 **2026-09-11** — 1 stale path(s): glass_foam_buoyancy_study.md: ~/work/projects/code/glassfoam-sim — no longer on disk (repo retired/renamed? fix or drop the ref); 
 
 **2026-09-11** — ✓ clean (later run, session-start hook)
+
+**2026-09-19** — ✓ clean
