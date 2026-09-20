@@ -365,13 +365,39 @@ _DOCTOR_LINE_MAX_CHARS = 240
 
 
 def _doctor_report_line(report: DoctorReport) -> str:
-    """One display line for the health lane: the report's lead section
-    (its first non-empty body paragraph), falling back to the draft's
-    headline when the body has nothing readable yet. Empty when there is
-    truly nothing to say, so the caller's degrade-to-empty stays a single
-    ``if line:`` check."""
-    first = next((p.strip() for p in report.body.split("\n\n") if p.strip()), "")
-    text = (first or report.headline or "").lstrip("#").strip()
+    """One display line for the health lane: the report's lead content
+    (its first body paragraph that is not just a heading, prefixed with
+    the section it sits under), falling back to the draft's headline when
+    the body has nothing readable yet. Empty when there is truly nothing
+    to say, so the caller's degrade-to-empty stays a single ``if line:``
+    check.
+
+    Headings are skipped, not taken: since the 2026-09-18 preamble strip
+    a doctor report opens with ``## Classification`` as its own
+    paragraph, and the naive first-paragraph read handed the brief the
+    bare word "Classification" (the model then dropped the line). When
+    the first content paragraph is a bullet list, only its first bullet
+    is taken — the top classification IS the lead.
+    """
+    heading = ""
+    first = ""
+    for para in report.body.split("\n\n"):
+        lines = [ln.strip() for ln in para.splitlines() if ln.strip()]
+        heads = [ln.lstrip("#").strip() for ln in lines if ln.startswith("#")]
+        content = [ln for ln in lines if not ln.startswith("#")]
+        if heads:
+            heading = heads[-1]
+        if not content:
+            continue
+        if content[0][:2] in ("- ", "* "):
+            first = content[0][2:].strip()
+        else:
+            first = " ".join(content)
+        break
+    if first:
+        text = f"{heading}: {first}" if heading else first
+    else:
+        text = (report.headline or "").lstrip("#").strip()
     # The lane renders each part as a single `- ` bullet; an embedded
     # newline would leak an un-bulleted continuation line into the brief.
     text = " ".join(text.split())

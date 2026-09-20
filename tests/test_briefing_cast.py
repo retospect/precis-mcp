@@ -549,8 +549,24 @@ class TestDoctorReportLine:
         report = _fake_doctor_report(body="## Diagnosis\nembed backlog draining")
         # Internal newlines are flattened: the lane renders each part as a
         # single `- ` bullet, so a surviving `\n` would leak an un-bulleted
-        # continuation line into the brief.
-        assert _doctor_report_line(report) == "Diagnosis embed backlog draining"
+        # continuation line into the brief. The heading names the section.
+        assert _doctor_report_line(report) == "Diagnosis: embed backlog draining"
+
+    def test_doctor_report_line_skips_a_heading_only_lead_paragraph(self) -> None:
+        # The real report shape since the 2026-09-18 preamble strip: the
+        # section heading is its own paragraph, then a bullet list. The old
+        # first-paragraph read produced the bare word "Classification".
+        body = (
+            "## Classification\n\n"
+            "- **melchior job_claude_inproc handler** — broken pass (P0): dark.\n"
+            "- **embed_batch** — noisy-but-working.\n\n"
+            "## Diagnosis\n\n- upstream healthy."
+        )
+        report = _fake_doctor_report(body=body)
+        assert _doctor_report_line(report) == (
+            "Classification: **melchior job_claude_inproc handler** — "
+            "broken pass (P0): dark."
+        )
 
     def test_doctor_report_line_falls_back_to_headline_when_body_empty(self) -> None:
         report = _fake_doctor_report(body="")

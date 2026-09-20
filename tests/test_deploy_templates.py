@@ -107,6 +107,7 @@ _WORKER_UNIT_SOURCES = [
     _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml",
     _REPO_ROOT / "deploy" / "playbooks" / "20c-precis-heartbeat-serving.yml",
     _REPO_ROOT / "deploy" / "playbooks" / "20d-precis-worker-drain.yml",
+    _REPO_ROOT / "deploy" / "playbooks" / "20e-precis-worker-agentlane.yml",
     _REPO_ROOT
     / "deploy"
     / "roles"
@@ -278,6 +279,72 @@ def test_sandbox_worker_env_sets_precis_root() -> None:
     ``precis_root`` default), not a hand-picked literal."""
     env = _render_sandbox_worker_env()
     assert env.get("PRECIS_ROOT") == "/mnt/archive/nas0/precis_root"
+
+
+def _render_agentlane_env(**render_vars: object) -> dict[str, str]:
+    """Render 20e's ``service_unit_env`` (the dedicated gateway agent lane)
+    with the ansible-only filters stubbed — ``combine`` is a plain dict
+    merge here — and the play-level ``_agentlane_*`` facts pinned."""
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20e-precis-worker-agentlane.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    task = next(
+        t for t in plays[0]["tasks"] if "service_unit_env" in (t.get("vars") or {})
+    )
+    expr = task["vars"]["service_unit_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+
+    def _combine(base: dict[str, str], *others: dict[str, str]) -> dict[str, str]:
+        out = dict(base)
+        for o in others:
+            out.update(o)
+        return out
+
+    env.filters["combine"] = _combine
+    rendered = env.from_string(expr).render(
+        precis_shared_env={},
+        precis_identity_env={},
+        _agentlane_venv="/opt/precis/venv",
+        _agentlane_dsn="postgresql://agent_rw@db/precis_prod",
+        _agentlane_mcp_config="/Users/deploy/.claude/mcp.json",
+        **render_vars,
+    )
+    assert isinstance(rendered, dict), f"service_unit_env rendered to {type(rendered)}"
+    return rendered
+
+
+def test_agentlane_carries_the_container_gate_and_autopromote_like_20b() -> None:
+    """gr346813: the agent lane claims most claude_inproc jobs on the gateway,
+    so it must carry the same §13 container env (PRECIS_AGENT_CONTAINER
+    behind ``precis_agent_container_enabled``, plus bin + image) and the
+    same PRECIS_DIAGNOSE_AUTOPROMOTE as 20b's collapsed unit — otherwise
+    every diagnose/fix job it wins cancels on the gr179498 fail-closed gate
+    while the collapsed unit's few wins succeed (the "flap")."""
+    armed = _render_agentlane_env(
+        precis_fix_lane_enabled=True, precis_agent_container_enabled=True
+    )
+    assert armed["PRECIS_AGENT_CONTAINER"] == "1"
+    assert armed["PRECIS_CONTAINER_BIN"] == "/opt/homebrew/bin/docker"
+    assert armed["PRECIS_AGENT_IMAGE"] == "precis-agent:latest"
+    assert armed["PRECIS_DIAGNOSE_AUTOPROMOTE"] == "1"
+    assert armed["PRECIS_FIX_WORK_DIR"] == "/Users/deploy/precis-fix-work"
+    assert armed["PRECIS_PROCESS"] == "precis-worker-agentlane"
+
+    gate_off = _render_agentlane_env(
+        precis_fix_lane_enabled=True, precis_agent_container_enabled=False
+    )
+    assert "PRECIS_AGENT_CONTAINER" not in gate_off
+    assert gate_off["PRECIS_CONTAINER_BIN"] == "/opt/homebrew/bin/docker"
+
+    lane_off = _render_agentlane_env(precis_agent_container_enabled=True)
+    assert "PRECIS_DIAGNOSE_AUTOPROMOTE" not in lane_off
+    assert "PRECIS_FIX_WORK_DIR" not in lane_off
+    assert lane_off["PRECIS_AGENT_CONTAINER"] == "1"
 
 
 def test_collapsed_worker_fix_lane_env_is_gated() -> None:

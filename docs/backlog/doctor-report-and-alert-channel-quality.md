@@ -1,6 +1,6 @@
 ---
 status: ready
-title: fix lane still dark after 08f79a3a (groomer row + melchior container gate + diagnosis backfill); gr225018 residue; worker_logs ts index
+title: fix lane after 08f79a3a — agent-lane container env (gr346813 fix, needs deploy); brief/doctor quality findings; gr225018 residue; worker_logs ts index
 prio: low
 model: sonnet
 ---
@@ -36,25 +36,74 @@ gripes since the deploy. Three stacked causes:
    `precis_fix_lane_enabled` (ON CONFLICT DO NOTHING, so a console
    override survives), the decoy env export is removed, and
    `test_seed_loop_arms_the_groomer_row_on_an_armed_gateway_only` pins
-   the gate. Takes effect on the next deploy. To arm it now without a
-   deploy (prod write, Reto's call): web Status → Services, or
-   `precis service prio melchior backlog_groom 5`.
-2. **Every post-deploy diagnosis cancels on the container gate.** All four
-   `diagnose_gripe` jobs since the deploy (205 of 594 all time) end
-   `STATUS:cancelled` with "no containerized agent path available … —
-   PRECIS_AGENT_CONTAINER is not enabled on this host" (gr179498
-   fail-closed): melchior's `precis_agent_container_enabled` host_var is
-   off (20b: "flip only after dream_agent × container is verified"). So
-   `PRECIS_DIAGNOSE_AUTOPROMOTE` never gets a diagnosis to tag. Existing
-   thread: gr346813. Not a code change; a host_var flip in the overlay.
-3. **Backfill gap.** 124 of the 188 succeeded diagnoses carry
-   `meta.confidence >= 0.8` but were written with autopromote OFF, so they
-   are untagged, and the lane tags only at diagnosis-write time. Once 1
-   and 2 are fixed the groomer still starts from zero. Options: a one-off
-   tag pass (open gripes, no `no-groom`, newest succeeded `diagnose_gripe`
-   job with confidence ≥ 0.8 → `OPEN:auto-fix`, `set_by='system'`), or
-   accept that only new gripes ride the lane. Reto's ruling; the one-off
-   is a prod write.
+   the gate. Takes effect on the next deploy. **Armed by hand 2026-09-19
+   21:38Z** on Reto's "as recommended": `service_config` row
+   `melchior/backlog_groom prio 5` (actor "reto via claude …"); the seed's
+   ON CONFLICT DO NOTHING leaves it alone.
+2. **Most diagnoses cancel on the container gate — per PROCESS, not per
+   host (gr346813 root cause, found 2026-09-20).** melchior runs four
+   worker processes; the dedicated agent lane (`precis-worker-agentlane`,
+   playbook 20e, `--only job_claude_inproc --only job_inproc`) wins most
+   `claude_inproc` claims and carried NO `PRECIS_AGENT_CONTAINER` (20e's
+   env had only the fix dirs), so every diagnose/fix job it won cancelled
+   "PRECIS_AGENT_CONTAINER is not enabled on this host" (gr179498
+   fail-closed). The collapsed unit (`precis-worker`, 20b) DOES carry it —
+   the overlay's `precis_agent_container_enabled: true` was already set —
+   and the few jobs it won succeeded (2026-09-20: 2 succeeded on
+   `precis-worker`, 8 cancelled on `precis-worker-agentlane`, same
+   8.34.0 build). That claim race is the whole "flap". The earlier note
+   here ("host_var off") was wrong. **Fix landed 2026-09-20:** 20e's env
+   now mirrors 20b's `_l_b_container_env` darwin branch (gate + bin +
+   image) and exports `PRECIS_DIAGNOSE_AUTOPROMOTE=1` too (the promote
+   decision is read by the process that runs the diagnosis; 20b's export
+   never reached the lane), pinned by
+   `test_agentlane_carries_the_container_gate_and_autopromote_like_20b`.
+   Live on the next deploy; 20e bootout+bootstraps the unit, so the env
+   takes (no kickstart trap). Close gr346813 on the deploy.
+3. **Backfill — DONE 2026-09-20 09:31Z** on Reto's "tag 14": 14 gripes
+   tagged `OPEN:auto-fix` (`set_by='system'`; gr180306 gr182230 gr228652
+   gr228699 gr244679 gr248866 gr259665 gr259666 gr263257 gr263258
+   gr264778 gr294498 gr311857 gr343755). Skipped 6 of the 20 candidates:
+   gr239587/gr239588/gr260308 (ops or overlay work), gr266041 (its own
+   text: not a clear-cut bug), gr182078 (feature ask), gr228594 (dup of
+   gr228652). The groomer has run hourly since arming (`claimed=0` until
+   the tags existed); its 6 h refresh window next opens ~14:30Z, minting
+   up to 3 `fix_gripe` todos per window. **Until the 20e fix is deployed
+   those mints mostly cancel on the agent lane** (a cancelled fix todo is
+   not `done`, so it blocks a re-mint for that gripe — no spin, but no
+   fix either). Deploy first if the cancel noise matters.
+
+## Doctor report and morning brief: quality findings (2026-09-20)
+
+- **Brief health line was the bare word "Classification" — FIXED 2026-09-20.**
+  `briefing_cast._doctor_report_line` took the report's first paragraph;
+  since the preamble strip that is the `## Classification` heading on its
+  own, so the brief got "Doctor report: Classification" and the model
+  dropped it (the 09-20 brief has no doctor line at all). Now: skip
+  heading-only paragraphs, prefix the section, take the first bullet.
+- **The brief cannot see the doctor's asks.** `_attention_ask_user` counts
+  `OPEN:ask-user*` todos; the doctor's needs-a-human todos are
+  `waiting-for:reto` (64e97785). The 09-20 brief said "two tasks waiting on
+  your input" the morning the doctor had minted twelve. Ruling needed:
+  fold `waiting-for:reto` into the brief's attention count, or leave the
+  doctor's queue to `/asks`.
+- **The brief re-diagnoses alerts the doctor already classified.** Its
+  09-20 lane-skipping paragraph ("something structural broke in the
+  scheduler … root-cause rather than retry") contradicts the doctor's
+  same-day classification (fail-closed config gate, gr179498). With the
+  health line fixed the brief at least carries the doctor's top
+  classification; whether the alert lane should defer to the doctor's
+  verdicts is a follow-up.
+- **Three doctor asks of 2026-09-20 are wrong and should be closed** (prod
+  write, Reto's call): td360163 (P0 "melchior job_claude_inproc dark, 0 log
+  lines in 24 h" — worker_logs has 7,781 lines naming that pass in the
+  same window; casts and two diagnoses ran through it); td360164 and
+  td366642 ("deploy / confirm b58a18a0 on melchior, skip text still
+  generic" — b58a18a0 is an ancestor of the deployed 08f79a3a and the
+  newest skip event, and even al348959's own `detail`, already carry the
+  leg-specific text). The doctor's "0 log lines" read suggests its pass
+  filter misses `precis.workers.runner` lines that name the pass in the
+  message; worth a look when the doctor prompt is next touched.
 
 ## gr225018 — RULED 2026-09-18 (option 1: keep the invariant, stamp the roots) — executed
 
