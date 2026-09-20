@@ -4,6 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/precis-mcp.svg)](https://pypi.org/project/precis-mcp/)
 [![Python](https://img.shields.io/pypi/pyversions/precis-mcp.svg)](https://pypi.org/project/precis-mcp/)
 [![License](https://img.shields.io/github/license/retospect/precis-mcp.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22863181.svg)](https://doi.org/10.5281/zenodo.22863181)
 
 A [Model Context Protocol](https://modelcontextprotocol.io/) server that
 gives language-model agents a small, uniform API for reading, writing,

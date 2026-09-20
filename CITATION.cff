@@ -15,6 +15,12 @@ authors:
     given-names: Reto
     email: reto@retostamm.com
     orcid: "https://orcid.org/0000-0002-1427-020X"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22863181
+    description: >-
+      Concept DOI — resolves to the latest archived release. Cite this
+      unless you need a specific version.
 repository-code: "https://github.com/retospect/precis-mcp"
 url: "https://github.com/retospect/precis-mcp"
 license: GPL-3.0-or-later
