@@ -287,8 +287,8 @@ Affiliation | ROR`, posting to `/drafts/<slug>/authors`.
 ## Add prose — one paragraph per put
 
 Write **one paragraph per `put`**. A longer `put` splits at block
-boundaries (blank lines; lists/code/tables stay whole), returns one
-handle per chunk:
+boundaries (blank lines; code/tables stay whole, a bullet block becomes a
+structured list — see below), returns one handle per chunk:
 
 ```python
 put(
@@ -319,6 +319,40 @@ is one; the degree of an **angle** is not, so angles stay tight: `85°`.
 Same rule governs claim sentences (`precis-notation-canon`), so prose and
 claims cannot disagree. A malformed temperature trips a
 `⚠ temperature/unit formatting` hint on write.
+
+## Write a list — markdown bullets, converted on write
+
+Write the list as ordinary markdown. A paragraph `put` whose text is
+wholly a list lands as a `ulist`/`olist` container with one `item` chunk
+per bullet; indentation nests. The response says so and names the
+container.
+
+```python
+put(
+    kind="draft",
+    id="nanotrans",
+    chunk_kind="paragraph",
+    text="- NO side: N-O scission [fi348958]\n"
+         "    - Bader charge shows 0.39 e transferred\n"
+         "- NH3 side: Faradaic efficiency",
+)
+# → markdown bullets → structured list: dc91 [ulist] holding 3 items
+```
+
+Why it converts rather than staying bullet text: only the web reader
+renders markdown bullets. The PDF and docx exports build lists from the
+container/item shape — bullet text inside a paragraph reaches them as one
+run-on line with literal hyphens. Structured, each item is also its own
+addressable `dc` handle: citable, editable, reviewable.
+
+Two bullets minimum, and *every* line must be a bullet or a continuation
+of the one above it, so a paragraph that merely opens with a dash stays
+prose. Converted something you meant as prose?
+`edit(kind='draft', id='dc<container>', list_kind='normal')` dissolves it
+back to paragraphs.
+
+The outline shows a list as one row (`dc91 [ulist] 3 items: NO side · …`);
+`get(kind='draft', id='dc91')` renders its items in full.
 
 ## Add a figure or a data table
 

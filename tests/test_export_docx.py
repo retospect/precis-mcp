@@ -722,6 +722,38 @@ def test_export_renders_list_styles(
     assert styled.get("one") == "List Number"
 
 
+def test_markdown_bullets_export_as_nested_list_styles(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """End to end, the trap this closes: bullet text written into a
+    paragraph used to reach Word as one run-on Body Text line. It now
+    lands structured (:mod:`precis.draft.mdlist`), so the nesting level
+    picks List Bullet 2."""
+    pid = int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+    draft.put(id="md", title="Lists", project=pid)
+    draft.put(
+        id="md",
+        chunk_kind="paragraph",
+        text="- NO side\n    - Bader charge shows 0.39 e\n- NH3 side",
+        at={"last": True},
+    )
+
+    ref = hub.live_store.get_ref(kind="draft", id="md")
+    out = tmp_path / "md.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    doc = docx.Document(str(out))
+    styled = {p.text: p.style.name for p in doc.paragraphs if p.text}
+    assert styled.get("NO side") == "List Bullet"
+    assert styled.get("NH3 side") == "List Bullet"
+    assert styled.get("Bader charge shows 0.39 e") == "List Bullet 2"
+
+
 def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
     """A chunk_kind='table' becomes a native Word table:
     header row bold, one body row per data row, cells via the inline grammar.

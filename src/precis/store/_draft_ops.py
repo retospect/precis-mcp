@@ -34,6 +34,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from precis.draft import mdlist
 from precis.errors import BadInput, Gone, NotFound
 from precis.store._draft_review_ops import (
     ChunkReviewEntry,
@@ -2345,20 +2346,87 @@ class DraftStore(_AbbrevMixin):
             parent, lo, hi = self._resolve_at(conn, ref_id, at)
             self._lock_sections(conn, ref_id, parent)
             keys = n_keys_between(lo, hi, len(blocks))
-            return [
-                self._insert_draft_chunk(
-                    conn,
-                    ref_id=ref_id,
-                    chunk_kind=chunk_kind,
-                    text=block,
-                    parent_chunk_id=parent,
-                    pos=key,
-                    source={"reason": "add"},
-                    meta=meta,
-                    kind=kind,
+            out: list[DraftChunk] = []
+            for block, key in zip(blocks, keys, strict=True):
+                # Markdown bullets are an *input* syntax, not a storage
+                # form: a paragraph block that is wholly a list lands as a
+                # ulist/olist container + item children, the shape every
+                # export already reads (migration 0037). Bullet text left
+                # inside a paragraph renders only in the web reader and
+                # collapses to one run-on line in the PDF and docx.
+                tree = (
+                    mdlist.parse_list_block(block)
+                    if chunk_kind == "paragraph"
+                    else None
                 )
-                for block, key in zip(blocks, keys, strict=True)
-            ]
+                if tree is not None:
+                    out.extend(
+                        self._insert_list_tree(
+                            conn,
+                            ref_id=ref_id,
+                            node=tree,
+                            parent_chunk_id=parent,
+                            pos=key,
+                            meta=meta,
+                            kind=kind,
+                        )
+                    )
+                    continue
+                out.append(
+                    self._insert_draft_chunk(
+                        conn,
+                        ref_id=ref_id,
+                        chunk_kind=chunk_kind,
+                        text=block,
+                        parent_chunk_id=parent,
+                        pos=key,
+                        source={"reason": "add"},
+                        meta=meta,
+                        kind=kind,
+                    )
+                )
+            return out
+
+    def _insert_list_tree(
+        self,
+        conn: psycopg.Connection,
+        *,
+        ref_id: int,
+        node: mdlist.Node,
+        parent_chunk_id: int | None,
+        pos: str,
+        meta: dict[str, Any] | None,
+        kind: str,
+    ) -> list[DraftChunk]:
+        """Insert a parsed list tree depth-first, container before its
+        items, and return every chunk created in that order."""
+        row = self._insert_draft_chunk(
+            conn,
+            ref_id=ref_id,
+            chunk_kind=node.chunk_kind,
+            text=node.text,
+            parent_chunk_id=parent_chunk_id,
+            pos=pos,
+            source={"reason": "add", "from": "markdown-list"},
+            meta=meta,
+            kind=kind,
+        )
+        out = [row]
+        if node.children:
+            keys = n_keys_between(None, None, len(node.children))
+            for child, key in zip(node.children, keys, strict=True):
+                out.extend(
+                    self._insert_list_tree(
+                        conn,
+                        ref_id=ref_id,
+                        node=child,
+                        parent_chunk_id=row.chunk_id,
+                        pos=key,
+                        meta=meta,
+                        kind=kind,
+                    )
+                )
+        return out
 
     def add_figure(
         self,

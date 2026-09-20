@@ -28,6 +28,7 @@ from precis.cli import (
     anki_sync,
     cast,
     classify,
+    convert_draft_lists,
     cron,
     db,
     doi_backfill,
@@ -165,6 +166,10 @@ def main() -> None:
 
     if args.cmd == "retire-draft-equations":
         retire_draft_equations.run(args)
+        return
+
+    if args.cmd == "convert-draft-lists":
+        convert_draft_lists.run(args)
         return
 
     if args.cmd == "resolve-metadata":
@@ -361,6 +366,7 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate_refs.add_parser(sub)
     reconcile.add_parser(sub)
     retire_draft_equations.add_parser(sub)
+    convert_draft_lists.add_parser(sub)
     resolve_metadata.add_parser(sub)
     doi_backfill.add_parser(sub)
     podcast.add_parser(sub)

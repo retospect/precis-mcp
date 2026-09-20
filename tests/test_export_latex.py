@@ -1961,3 +1961,34 @@ def test_export_draft_emits_byline_from_ref_authors(hub) -> None:
     assert "\\author[1]{Doe, Jane}" in main_tex
     assert "\\affil[1]{\\href{https://ror.org/x}{MIT}}" in main_tex
     assert "\\affil[2]{Caltech}" in main_tex
+
+
+def test_markdown_bullets_export_as_a_nested_itemize(hub, tmp_path) -> None:
+    """End to end, the trap this closes: bullet text written into a
+    paragraph used to reach LaTeX as one run-on line with literal hyphens.
+    It now lands structured (:mod:`precis.draft.mdlist`) and renders as a
+    real nested itemize."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    d = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    d.put(id="md", title="T", project=proj)
+    d.put(
+        id="md",
+        chunk_kind="paragraph",
+        text="- NO side\n    - Bader charge shows 0.39 e\n- NH3 side",
+        at={"last": True},
+    )
+
+    ref = store.get_ref(kind="draft", id="md")
+    body = latex.render_body(store, ref).body
+    assert body.count("\\begin{itemize}") == 2  # outer + the nested one
+    assert body.count("\\end{itemize}") == 2
+    assert "\\item NO side" in body and "\\item NH3 side" in body
+    # the sublist sits between its parent item and the next sibling
+    assert (
+        body.index("\\item NO side")
+        < body.index("\\item Bader charge shows 0.39 e")
+        < body.index("\\item NH3 side")
+    )

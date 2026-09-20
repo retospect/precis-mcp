@@ -131,6 +131,36 @@ _JOB_STATUS_LABEL_ORDER: tuple[str, ...] = tuple(
 )
 
 
+#: Item heads shown on a collapsed outline row, and how far each is cut.
+_LIST_GLOSS_HEADS = 3
+_LIST_GLOSS_CHARS = 60
+
+
+def _list_gloss(chunks: list[Any], container: Any) -> str:
+    """The outline row for a collapsed list: how many items it holds
+    (nested ones included) and the first few item heads, so the reader
+    sees what the list is about without paying for every bullet."""
+    ids = {container.chunk_id}
+    items = 0
+    heads: list[str] = []
+    for c in chunks:
+        if c.parent_chunk_id not in ids:
+            continue
+        ids.add(c.chunk_id)  # a descendant's children are in-subtree too
+        if c.chunk_kind != "item":
+            continue
+        items += 1
+        if c.parent_chunk_id == container.chunk_id and len(heads) < _LIST_GLOSS_HEADS:
+            head = " ".join((c.text or "").split())
+            if len(head) > _LIST_GLOSS_CHARS:
+                head = head[:_LIST_GLOSS_CHARS].rstrip() + "…"
+            heads.append(head)
+    gloss = f"{items} item{'' if items == 1 else 's'}"
+    if heads:
+        gloss += ": " + " · ".join(heads)
+    return gloss
+
+
 def _summarize_job_counts(jobs: tuple[tuple[int, str], ...]) -> str:
     """Collapse a todo's child-job list to per-status counts.
 
@@ -1063,9 +1093,27 @@ class DraftHandler(Handler):
             )
             self.sync_draft_links(ref.id)
             self._attribute_touch([c.chunk_id for c in chunks])
-            handles = " ".join(f"{c.dc}" for c in chunks)
-            n = len(chunks)
+            # A markdown bullet block lands as a ulist/olist container +
+            # item children (the shape every export reads), so report the
+            # containers instead of spraying one handle per bullet — and
+            # say it converted, since the caller wrote markdown.
+            made = {c.chunk_id for c in chunks}
+            top = [c for c in chunks if c.parent_chunk_id not in made]
+            handles = " ".join(f"{c.dc}" for c in top)
+            n = len(top)
             body = f"added {n} chunk{'' if n == 1 else 's'} to {slug}: {handles}"
+            lists = [c for c in top if c.chunk_kind in ("ulist", "olist")]
+            if lists:
+                items = sum(1 for c in chunks if c.chunk_kind == "item")
+                body += (
+                    "\n\nmarkdown bullets → structured list: "
+                    + ", ".join(f"{c.dc} [{c.chunk_kind}]" for c in lists)
+                    + f" holding {items} item{'' if items == 1 else 's'}, "
+                    "each individually addressable, citable and exported as a "
+                    "real (nested) list. Meant a literal hyphen-led paragraph? "
+                    "edit(kind='draft', id='<dc>', list_kind='normal') dissolves "
+                    "it back."
+                )
             # Hint the LLM about abbreviations it just wrote (skip when the
             # write *is* a term definition). All of a new chunk's text is
             # "newly introduced", so there's no prior text to diff against.
@@ -2801,16 +2849,36 @@ class DraftHandler(Handler):
         views = self.store.drafts.block_views(ref.id)
         n = len(chunks)
         lines = [f"# {ref.title}  ({slug}) — {n} chunk{'' if n == 1 else 's'}\n"]
+        # A list is one outline row, not one row per bullet: a survey whose
+        # sections are bullet lists runs to thousands of items, and the
+        # outline's job is shape. The row carries the item count and the
+        # first item heads; ``get(kind='draft', id='dc<container>')``
+        # renders the items in full.
+        collapsed = 0
+        skip_below: int | None = None
         for c in chunks:
+            if skip_below is not None:
+                if c.depth > skip_below:
+                    continue
+                skip_below = None
             v = views.get(c.handle, {})
             gloss = v.get("summary") or v.get("keywords") or ""
             if not gloss:
                 gloss = c.text.splitlines()[0] if c.text else ""
+            if c.chunk_kind in ("ulist", "olist"):
+                skip_below = c.depth
+                collapsed += 1
+                gloss = _list_gloss(chunks, c)
             # Flatten to one line: split() drops every whitespace run —
             # spaces, tabs, \n, \r — so a multi-line gloss stays on a single
             # outline row. No length cap: show the full gloss.
             gloss = " ".join(gloss.split())
             lines.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
+        if collapsed:
+            lines.append(
+                f"\n({collapsed} list{'' if collapsed == 1 else 's'} collapsed — "
+                "get(kind='draft', id='dc<container>') renders its items in full)"
+            )
         lines.extend(self._work_lines(ref.id))
         lines.extend(self._hygiene_lines(ref.id, chunks))
         return Response(body="\n".join(lines))
@@ -3237,6 +3305,17 @@ class DraftHandler(Handler):
             if chunk is None:
                 raise NotFound(f"draft chunk {handle!r} not found")
             window = [chunk]
+            if chunk.chunk_kind in ("ulist", "olist"):
+                # A list container carries no prose — rendering it alone
+                # shows an empty block. Its items *are* its content, and
+                # the outline collapses a list to this one handle, so this
+                # read is where the items live.
+                ids = set(self.store.drafts.draft_subtree_chunk_ids(core))
+                window = [
+                    c
+                    for c in self.store.drafts.reading_order(chunk.ref_id)
+                    if c.chunk_id in ids
+                ]
         # ``sha:`` is a short prefix of the chunk's content_sha — pass it
         # back as ``edit(base_sha=…)`` for an optimistic edit that won't
         # clobber a change that landed since this read. 12 hex chars (48

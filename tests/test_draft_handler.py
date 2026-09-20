@@ -2684,3 +2684,67 @@ def test_edit_meta_at_chunk_handle_still_routes_to_term_attrs(
     # at ref level (``pronunciation``) is simply ignored by
     # set_term_attrs's own allowlist — no crossover between the two paths.
     assert "pronunciation" not in leaf.meta
+
+
+def test_put_converts_markdown_bullets_to_a_structured_list(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Bullets are an input syntax: a paragraph block that is wholly a list
+    lands as a ulist + item children, the shape the PDF/docx exports read.
+    Left as paragraph text it rendered only in the web reader and collapsed
+    to one run-on line everywhere else."""
+    draft.put(id="nt", title="Title", project=_proj(hub))
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="- NO side\n    - Bader charge shows 0.39 e\n- NH3 side",
+    )
+    assert "markdown bullets → structured list" in r.body
+    assert "3 items" in r.body
+    # the response names the containers, not one handle per bullet
+    assert "added 1 chunk" in r.body
+    kinds = [(c.chunk_kind, c.depth) for c in _order(hub, "nt")]
+    assert kinds == [
+        ("heading", 0),
+        ("ulist", 0),
+        ("item", 1),
+        ("ulist", 2),
+        ("item", 3),
+        ("item", 1),
+    ]
+
+
+def test_put_leaves_a_hyphen_led_paragraph_alone(draft: DraftHandler, hub: Hub) -> None:
+    """The guards: a single bullet is not a list, and prose that merely
+    opens with a dash stays one paragraph."""
+    draft.put(id="nt", title="Title", project=_proj(hub))
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="- the dash opens a clause\nand the rest runs on as prose.",
+    )
+    assert "markdown bullets" not in r.body
+    assert [c.chunk_kind for c in _order(hub, "nt")] == ["heading", "paragraph"]
+
+
+def test_outline_collapses_a_list_to_one_row(draft: DraftHandler, hub: Hub) -> None:
+    """A survey whose sections are bullet lists has thousands of items; the
+    outline shows shape, and the container read shows the items."""
+    draft.put(id="nt", title="Title", project=_proj(hub))
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="- alpha\n    - nested\n- beta",
+    )
+    out = draft.get(id="nt").body
+    assert "[item]" not in out
+    assert "[ulist] 3 items: alpha · beta" in out
+    assert "1 list collapsed" in out
+
+
+def test_container_read_renders_the_items(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="Title", project=_proj(hub))
+    draft.put(id="nt", chunk_kind="paragraph", text="- alpha\n    - nested\n- beta")
+    container = next(c for c in _order(hub, "nt") if c.chunk_kind == "ulist")
+    body = draft.get(id=container.dc).body
+    assert "alpha" in body and "nested" in body and "beta" in body
