@@ -2,7 +2,6 @@
 status: draft
 title: global structure search — slice 2: variable composition (`add` as ranges) + surrogate warm-start from a prior search's AGOX database
 prio: normal
-blocked-by: global-structure-search-gofee-agox
 ---
 
 # global structure search — slice 2: variable composition (`add` as ranges) + surrogate warm-start from a prior search's AGOX database
@@ -11,7 +10,7 @@ Building on slice 1's fixed-stoichiometry search, this slice extends the `struct
 
 ## Motivation / why
 
-Slice 1 searches a fixed stoichiometry (e.g., `{"Pd": 2, "N": 1, "O": 1}`). Many real exploration scenarios need flexibility: is there a sweet spot at Pd₂NO₃ or Pd₃NO₂? Variable composition (per-element min/max ranges) lets the search explore the stoichiometry landscape, discovering stable phases nobody hypothesized.
+Slice 1 (shipped 2026-09-20, `structure/search.py`) searches a fixed stoichiometry (e.g., `{"Pd": 2, "N": 1, "O": 1}`). Many real exploration scenarios need flexibility: is there a sweet spot at Pd₂NO₃ or Pd₃NO₂? Variable composition (per-element min/max ranges) lets the search explore the stoichiometry landscape, discovering stable phases nobody hypothesized.
 
 A surrogate (GPR fingerprint) trained on one problem's AGOX database can accelerate a similar search: warm-starting from a prior search's population, rather than starting from scratch, cuts acquisition steps and wall time.
 
@@ -44,4 +43,4 @@ A surrogate (GPR fingerprint) trained on one problem's AGOX database can acceler
 
 ## Open questions / decisions log
 
-- OPEN (non-blocking): AGOX `Database` save/load as warm-start — verify the API before speccing. (See slice 1's open questions.)
+- OPEN (non-blocking): AGOX `Database` save/load as warm-start — verify the API before speccing. (Slice 1's decisions log is in git: `docs/backlog/global-structure-search-gofee-agox.md` at 98fcdfa8.)

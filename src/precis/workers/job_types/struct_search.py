@@ -1,6 +1,8 @@
 """``struct_search`` job_type — an AGOX/GOFEE surrogate search, in-process.
 
-Slice 1 of `docs/backlog/global-structure-search-gofee-agox.md`: one job
+Global structure search slice 1 (shipped 2026-09-20; the spec's surviving
+truth lives in `structure/search.py`'s docstring, slices 2/3 in
+`docs/backlog/global-structure-search-slice-*`): one job
 proposes N candidates instead of an LLM authoring one at a time. AGOX
 searches a confined box on a seed slab with a fixed stoichiometry, using the
 ``ml`` rung's own MACE calculator as the oracle

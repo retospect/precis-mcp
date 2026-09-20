@@ -1,5 +1,6 @@
-"""``dispatch_search`` + its WIP-slot spend in ``_stage_compute`` — item 4 of
-docs/backlog/global-structure-search-gofee-agox.md, round 2 (struct_search
+"""``dispatch_search`` + its WIP-slot spend in ``_stage_compute`` — global
+structure search slice 1's quest opt-in (spec folded into
+``structure/search.py`` on ship), round 2 (struct_search
 already writes back candidates; this is the quest opt-in that mints the
 job).  No AGOX/MACE here: ``dispatch_search`` only mints the ``struct_search``
 job row, it never runs the search — real dispatch is

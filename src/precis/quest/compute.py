@@ -950,8 +950,8 @@ def dispatch_search(
     store: Store, quest_id: int, *, hub: Any | None = None
 ) -> str | None:
     """Spend the tick's WIP slot on an AGOX/GOFEE surrogate search instead of
-    an LLM-authored structure — item 4 of
-    `docs/backlog/global-structure-search-gofee-agox.md`.
+    an LLM-authored structure (global structure search slice 1, shipped
+    2026-09-20; slices 2/3 in `docs/backlog/global-structure-search-slice-*`).
 
     Opt-in via the quest ref's ``meta.search`` (a dict): ``seed`` (a
     structure slug/id/handle that must already ``serve`` this quest — the

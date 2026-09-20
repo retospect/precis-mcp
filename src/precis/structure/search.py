@@ -1,6 +1,7 @@
 """Global structure search — a GOFEE/AGOX surrogate search over a confined box.
 
-Slice 1 of `docs/backlog/global-structure-search-gofee-agox.md`: today a
+Global structure search, slice 1 (spec folded here on ship, 2026-09-20;
+slices 2/3 are `docs/backlog/global-structure-search-slice-*`): today a
 quest's candidate `structure`s come one at a time from an LLM proposal, named
 by a human-shaped guess (a dopant here, an adatom there). This module is the
 alternative proposal source: point AGOX (Christiansen, Rønne & Hammer 2022,
@@ -42,12 +43,18 @@ round-trips through :func:`scene_from_ase`/:func:`atoms_from_scene` (general
 Scene<->Atoms plumbing, used by the template build here), it's just not
 independently meaningful while the whole template is frozen.
 
-**Budget = oracle single-point evaluations = AGOX iterations.** Every
-algorithm here defaults its evaluator to ``number_to_evaluate=1`` (AGOX
-`LocalOptConfig`/`SinglePointEvaluatorConfig`'s own default) — one oracle
-call per `AGOX.run(N_iterations=...)` iteration — so ``spec.budget`` maps
-directly onto ``N_iterations``. Documented here because it is a mapping, not
-an AGOX-visible parameter this module sets.
+**Budget = AGOX iterations, and the oracle is called TWICE per iteration.**
+``spec.budget`` maps onto ``AGOX.run(N_iterations=...)``; GOFEE's evaluator
+then spends two oracle single-points per iteration (measured: 400
+evaluations for ``budget=200``, ``SearchResult.budget_used`` reports the
+real count). Whether ``budget`` should count evaluations instead is an
+open call for slice 2 — until then, read it as iterations.
+
+**Measured on the cluster (2026-09-20, job 366641):** Pd(111) 3×3×4 seed,
+``add={Pd:2,N:1,O:1}``, gofee, budget 200, ``mace_mp`` on pollux — 10
+distinct candidates in **37 min** wall, best −199.56 eV vs −184.25 eV for
+seed + isolated atoms. The wall goes to the CPU-side GPR relaxations
+(four ray actors at ~50 %); the GPU idles between oracle calls.
 
 **Wall-clock, not a raise.** :func:`run_search` never raises on a timeout:
 a tiny :class:`~agox.observer.Observer` (built lazily inside `run_search`,

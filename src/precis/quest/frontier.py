@@ -1275,8 +1275,8 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
 
     raw_params = meta.get("params")
     params = dict(raw_params) if isinstance(raw_params, dict) else {}
-    # A struct_search-minted candidate (backlog item 4/6,
-    # `docs/backlog/global-structure-search-gofee-agox.md`) carries
+    # A struct_search-minted candidate (global structure search slice 1,
+    # `structure/search.py`) carries
     # `meta.search` (algo/model/budget_used/iteration/rank/...) rather than
     # `meta.params` — surfaced here as a synthetic `origin` param row so the
     # rendered params table (`_param_rows`) distinguishes it from the

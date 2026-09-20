@@ -2,7 +2,6 @@
 status: draft
 title: global structure search — slice 3: hyperspatial / degree-of-existence generators (Pickard 2019, Hammer 2025)
 prio: normal
-blocked-by: global-structure-search-gofee-agox
 ---
 
 # global structure search — slice 3: hyperspatial / degree-of-existence generators (Pickard 2019, Hammer 2025)
