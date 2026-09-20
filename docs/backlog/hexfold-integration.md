@@ -112,7 +112,13 @@ fixed by step 2's 109.5° ideal); pillar (sheet `hex(0)` → `tube(6,0)`,
 native `{7:6}` seam); nanobuds 9-6, 8-7, DA/DB necks; cone(P); C60 hole;
 tube_fuse; pill on a sheet — a capped pill above and a bump below, seamed
 at the pill's foot ring, each tube top closed by a `cap(6,0)` flat lid
-(`sheet_pill_bump.hx`, residual 0, no ERROR).
+(`sheet_pill_bump.hx`, residual 0, no ERROR); flanged doughnut — two
+`cap(24,0)` washers joined through a `(12,0)` tube wall and closed at the
+outer equator by a `cap(36,0)` annulus in a k=3 seam, whose 24 seam atoms
+are the trivalent Y-carbon functionalisation sites of
+`rotary-ratchet-valve.md` (`flanged_doughnut.hx`, residual 0, no ERROR);
+pendants on the Y carbons via `<seam>/s<i>` (`flanged_doughnut_oh.hx`,
+six hydroxyls, residual 0, no ERROR).
 
 ## Standalone-repo state (for the eventual re-export)
 

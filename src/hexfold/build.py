@@ -3050,53 +3050,23 @@ def _apply_connects(
             consumed_rims.append(tuple(q.atoms))
             del ports[p.name]
             del ports[q.name]
-        elif c.verb == "bond":
-            ai, af = _atom_ref_ord(c.src, path_to_ord, frag_names)
-            bi, bf = _atom_ref_ord(c.dst, path_to_ord, frag_names)
-            for frag in (af, bf):
-                if frag is not None:
-                    findings.append(
-                        Finding(
-                            "frag.unrealized",
-                            Severity.INFO,
-                            f"fragment {frag} bond recorded, not built",
-                            span=c.span,
-                        )
-                    )
-            if ai is not None and bi is not None:
-                bonds.append((min(ai, bi), max(ai, bi), c.order or 1))
-                annot(ai, bi, c.src.split("/", 1)[0])
-                bond_links.append((ai, bi))
-                attach_bonds.append((min(ai, bi), max(ai, bi)))
-            else:
-                # Any endpoint that resolves to neither a real atom nor a
-                # fragment names an atom that does not exist (SPEC 23.2:
-                # op.dangling) -- flagged per-ref, never silently. This
-                # also fixes a latent gap in the old check (which only
-                # fired when *both* endpoints failed): a mixed ref pair
-                # (one live fragment, one missing atom) used to fall
-                # through with no finding at all.
-                for ref, ordv, frag in ((c.src, ai, af), (c.dst, bi, bf)):
-                    if ordv is None and frag is None:
-                        findings.append(
-                            Finding(
-                                "op.dangling",
-                                Severity.ERROR,
-                                f"bond op references an atom that does not exist: {ref!r}",
-                                where=ref,
-                                span=c.span,
-                                data=(("op", "bond"),),
-                            )
-                        )
 
-    # k>=3 seams (SPEC 11.3): resolved after fuse/bond so a seam can name
-    # a rim a menu/fuse just minted.  Each rim's own atoms/faces stay
-    # with its own sheet (SPEC 6.3) -- a seam never merges components,
-    # so it is a parallel pass, not folded into the fuse branch above.
+    # k>=3 seams (SPEC 11.3): resolved after menu/fuse but before bond
+    # connects, so a `--bond-->` can name a seam atom `<seam>/s<i>` that
+    # this pass mints (SPEC 9, [spec 0.2]) -- and so a seam can also
+    # name a rim a menu/fuse just minted.  Each rim's own atoms/faces
+    # stay with its own sheet (SPEC 6.3) -- a seam never merges
+    # components, so it is a parallel pass, not folded into the fuse
+    # branch above.
     seam_records: list[SeamRecord] = []
     seam_rims: list[tuple[tuple[int, ...], int, int]] = []
     seam_atom_ords: set[int] = set()
     seam_registry_edges: list[tuple[str, str, int, int]] = []
+    # ord -> rim ords it bonds to, in minted order -- used below to seed
+    # each seam atom's 3D position from its rim neighbours once
+    # _place_seeds has placed those (gr347187: seam atoms have no seed
+    # of their own, since they don't exist in the pre-seam net).
+    seam_nbrs: dict[int, list[int]] = {}
     for seam in spec.seams:
         missing = [r for r in seam.rims if r not in ports]
         if missing:
@@ -3177,12 +3147,14 @@ def _apply_connects(
             )
             path_to_ord[path] = o
             new_ords.append(o)
+            seam_nbrs[o] = []
         for i in range(n):
             for j, port in enumerate(resolved):
                 rim_ord = port.dangling[_idx(j, i)]
                 a, b = new_ords[i], rim_ord
                 bonds.append((min(a, b), max(a, b), 1))
                 annot(min(a, b), max(a, b), seam.name)
+                seam_nbrs[new_ords[i]].append(rim_ord)
         seam_atom_ords.update(new_ords)
         faces = _seam_faces_k(
             [p.atoms for p in resolved],
@@ -3224,7 +3196,77 @@ def _apply_connects(
             )
         seam_records.append(SeamRecord(seam.name, seam.rims, seam.k, tuple(new_ords)))
 
-    seed3, seed_kind = _place_seeds(spec, net, fuse_frames, bond_links)
+    # bond connects (SPEC 23.2): resolved last so a `--bond-->` endpoint
+    # can name a seam atom `<seam>/s<i>` the k>=3 seam pass above just
+    # minted, in addition to any menu/fuse atom.
+    for c in spec.connects:
+        if c.verb != "bond":
+            continue
+        ai, af = _atom_ref_ord(c.src, path_to_ord, frag_names)
+        bi, bf = _atom_ref_ord(c.dst, path_to_ord, frag_names)
+        for frag in (af, bf):
+            if frag is not None:
+                findings.append(
+                    Finding(
+                        "frag.unrealized",
+                        Severity.INFO,
+                        f"fragment {frag} bond recorded, not built",
+                        span=c.span,
+                    )
+                )
+        if ai is not None and bi is not None:
+            bonds.append((min(ai, bi), max(ai, bi), c.order or 1))
+            annot(ai, bi, c.src.split("/", 1)[0])
+            bond_links.append((ai, bi))
+            attach_bonds.append((min(ai, bi), max(ai, bi)))
+        else:
+            # Any endpoint that resolves to neither a real atom nor a
+            # fragment names an atom that does not exist (SPEC 23.2:
+            # op.dangling) -- flagged per-ref, never silently. This
+            # also fixes a latent gap in the old check (which only
+            # fired when *both* endpoints failed): a mixed ref pair
+            # (one live fragment, one missing atom) used to fall
+            # through with no finding at all.
+            for ref, ordv, frag in ((c.src, ai, af), (c.dst, bi, bf)):
+                if ordv is None and frag is None:
+                    findings.append(
+                        Finding(
+                            "op.dangling",
+                            Severity.ERROR,
+                            f"bond op references an atom that does not exist: {ref!r}",
+                            where=ref,
+                            span=c.span,
+                            data=(("op", "bond"),),
+                        )
+                    )
+
+    # _place_seeds rigidly transforms whole *instances* along fuse/bond
+    # frames using net.atoms (the pre-seam net); a seam atom belongs to
+    # no single instance's local frame (SPEC 11.3 mints it fresh) and is
+    # seeded separately below (gr347187), so a bond onto one is excluded
+    # here rather than crashing on an ord _place_seeds has never seen.
+    inst_bond_links = [
+        (ai, bi)
+        for ai, bi in bond_links
+        if ai not in seam_atom_ords and bi not in seam_atom_ords
+    ]
+    seed3, seed_kind = _place_seeds(spec, net, fuse_frames, inst_bond_links)
+    if seed3 is not None and seam_nbrs:
+        # gr347187: _place_seeds works from the pre-seam net, so seed3
+        # has no rows for the seam atoms minted above -- append one row
+        # per seam atom, in ordinal order (they're contiguous after the
+        # pre-seam atoms), placed at the mean of its rim neighbours'
+        # already-placed seed positions.
+        pos = np.array(seed3, dtype=np.float64)
+        extra = [tuple(pos[seam_nbrs[o]].mean(axis=0)) for o in sorted(seam_nbrs)]
+        seed3 = tuple(seed3) + tuple(
+            (float(r0), float(r1), float(r2)) for r0, r1, r2 in extra
+        )
+        seed_kind = "mixed"
+    if seed3 is not None:
+        assert len(seed3) == len(atoms), (
+            f"seed3 has {len(seed3)} rows for {len(atoms)} atoms"
+        )
     # part-graph edges for registry closure (SPEC 12.2) -- resolve each
     # fuse/bond endpoint to its owning instance while atoms still carry
     # their pre-hybridisation identity (ord -> instance is unaffected by
@@ -3243,17 +3285,23 @@ def _apply_connects(
     for ai, bi in bond_links:
         registry_edges.append((inst_of_ord[ai], inst_of_ord[bi], 0, 1))
     registry_edges.extend(seam_registry_edges)
-    # derived hybridisation: 4 bonds -> sp3; a seam atom stays sp2
-    # regardless of degree (SPEC 11.3: k=3 is the sp2 case, k>3 is
-    # over-valent sp2, not a promotion to sp3 -- valence.over is the
-    # point, not a hybridisation change that would hide it)
+    # derived hybridisation: 4 bonds -> sp3, exactly as for a lattice
+    # atom -- whether the 4th bond is a `--bond-->` onto a k=3 seam
+    # atom's own 3 ring bonds (SPEC 9, [spec 0.2]) or onto a lattice
+    # atom's 3 ring bonds.  A seam atom's *native* ring-bond count
+    # (len(seam_nbrs), == its seam's rim count) is its own SPEC 11.3
+    # floor: k=3 is the sp2 case, promoting on a 4th bond the same as
+    # any lattice atom; k>3 is already over-valent sp2 by construction
+    # (no --bond--> needed to reach 4) and must stay sp2 regardless of
+    # degree so valence.over fires rather than being hidden by a
+    # hybridisation change.
     deg: dict[int, int] = {}
     for i, j, _ in bonds:
         deg[i] = deg.get(i, 0) + 1
         deg[j] = deg.get(j, 0) + 1
     atoms = [
         replace(a, hyb="sp3")
-        if deg.get(a.ord, 0) == 4 and a.ord not in seam_atom_ords
+        if deg.get(a.ord, 0) == 4 and len(seam_nbrs.get(a.ord, ())) <= 3
         else a
         for a in atoms
     ]

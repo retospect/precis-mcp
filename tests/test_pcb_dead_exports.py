@@ -245,10 +245,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "'vocabulary settles in sketch.py, slice 7' -- a documented "
         "future slice, not a forgotten wire-up"
     ),
-    "src/precis/pcb/ir.py::PcbIR.rotation_index": (
-        "L2 tier -- same 'slice 7' future-work note as set_rotation, see "
-        "that entry's reason"
-    ),
     "src/precis/pcb/ir.py::PcbIR.rotation_darts": (
         "L2 tier -- same 'slice 7' future-work note as set_rotation, see "
         "that entry's reason"
