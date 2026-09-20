@@ -581,23 +581,25 @@ def test_fetch_author_papers_complete_walks_pages_ranks_and_flags_corpus(
 
     calls: list[dict] = []
 
-    def fake_backoff(url: str, params: dict) -> dict:
+    def fake_backoff(url: str, params: dict) -> tuple[dict, int]:
         calls.append(dict(params))
         offset = params["offset"]
         if offset == 0:
-            return {"data": page1, "next": 100}
+            return {"data": page1, "next": 100}, 1
         if offset == 100:
-            return {"data": page2}
+            return {"data": page2}, 1
         raise AssertionError(f"unexpected offset {offset}")
 
     monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
     result = s2handler._fetch("author:1741101:complete")
-    body = result.body_blocks[0].text
+    body = "\n\n".join(b.text for b in result.body_blocks)
 
     assert len(calls) == 2
-    assert "120 works (complete)" in body
+    assert "120 works (complete, 2 requests)" in body
     assert result.meta["result_count"] == 120
     assert result.meta["complete"] is True
+    assert result.meta["s2_requests"] == 2
+    assert result.meta["s2_requests_retried"] == 0
 
     lines = body.splitlines()
     table_start = lines.index("| year | cites | corpus | title | s2 id |")
@@ -625,13 +627,13 @@ def test_fetch_author_papers_complete_caps_title_fallback_at_200(
 
     pages = [[_idless_work(i) for i in range(n, n + 100)] for n in (0, 100, 200)]
 
-    def fake_backoff(url: str, params: dict) -> dict:
+    def fake_backoff(url: str, params: dict) -> tuple[dict, int]:
         offset = params["offset"]
         idx = offset // 100
         result: dict = {"data": pages[idx]}
         if idx + 1 < len(pages):
             result["next"] = offset + 100
-        return result
+        return result, 1
 
     monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
 
@@ -646,7 +648,7 @@ def test_fetch_author_papers_complete_caps_title_fallback_at_200(
     monkeypatch.setattr(store, "find_refs_by_title_similarity", fake_title_lookup)
 
     result = s2handler._fetch("author:1741101:complete")
-    body = result.body_blocks[0].text
+    body = "\n\n".join(b.text for b in result.body_blocks)
 
     assert len(lookups) == 200
     assert result.meta["result_count"] == 300
@@ -662,12 +664,15 @@ def test_fetch_author_papers_complete_stops_at_hard_cap(
     "stopped at N" note rather than fetching forever."""
     monkeypatch.setattr("precis.handlers.semanticscholar._AUTHOR_COMPLETE_HARD_CAP", 5)
 
-    def fake_backoff(url: str, params: dict) -> dict:
+    def fake_backoff(url: str, params: dict) -> tuple[dict, int]:
         offset = params["offset"]
-        return {
-            "data": [_author_work(offset + j) for j in range(3)],
-            "next": offset + 3,
-        }
+        return (
+            {
+                "data": [_author_work(offset + j) for j in range(3)],
+                "next": offset + 3,
+            },
+            1,
+        )
 
     monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
     result = s2handler._fetch("author:1741101:complete")
@@ -684,12 +689,12 @@ def test_fetch_author_papers_complete_exact_cap_with_no_next_has_no_more_remain(
     "more remain" note (reviewer finding 1 on 83c0abca)."""
     monkeypatch.setattr("precis.handlers.semanticscholar._AUTHOR_COMPLETE_HARD_CAP", 6)
 
-    def fake_backoff(url: str, params: dict) -> dict:
+    def fake_backoff(url: str, params: dict) -> tuple[dict, int]:
         offset = params["offset"]
         if offset == 0:
-            return {"data": [_author_work(i) for i in range(3)], "next": 3}
+            return {"data": [_author_work(i) for i in range(3)], "next": 3}, 1
         # Final page lands exactly on the cap (3 + 3 == 6) with no next.
-        return {"data": [_author_work(i) for i in range(3, 6)]}
+        return {"data": [_author_work(i) for i in range(3, 6)]}, 1
 
     monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
     result = s2handler._fetch("author:1741101:complete")
@@ -709,14 +714,14 @@ def test_walk_author_papers_dedupes_a_replayed_page(
     page1 = [_author_work(i) for i in range(5)]
     calls = {"n": 0}
 
-    def fake_backoff(url: str, params: dict) -> dict:
+    def fake_backoff(url: str, params: dict) -> tuple[dict, int]:
         calls["n"] += 1
         offset = params["offset"]
         if offset == 0:
-            return {"data": page1, "next": 5}
+            return {"data": page1, "next": 5}, 1
         # Page 2 replays page 1's exact paperIds at a new (advancing)
         # offset — every row is a duplicate.
-        return {"data": page1, "next": 10}
+        return {"data": page1, "next": 10}, 1
 
     monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
     result = s2handler._fetch("author:1741101:complete")
@@ -735,10 +740,10 @@ def test_walk_author_papers_stops_on_non_advancing_offset(
     rather than looping forever re-requesting the same page (reviewer
     finding 2)."""
 
-    def fake_backoff(url: str, params: dict) -> dict:
+    def fake_backoff(url: str, params: dict) -> tuple[dict, int]:
         offset = params["offset"]
         # `next` never advances past 0 no matter what offset was asked.
-        return {"data": [_author_work(offset)], "next": 0}
+        return {"data": [_author_work(offset)], "next": 0}, 1
 
     monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
     with caplog.at_level("WARNING", logger="precis.handlers.semanticscholar"):
@@ -779,10 +784,18 @@ def test_walk_author_papers_backoff_retries_a_429_mid_walk(
 
     monkeypatch.setattr(s2handler, "_s2_raw_get", fake_raw)
     result = s2handler._fetch("author:1741101:complete")
+    body = "\n\n".join(b.text for b in result.body_blocks)
 
     assert calls["n"] == 3
     assert sleeps == [1.0]
     assert result.meta["result_count"] == 2
+    # 3 actual HTTP calls total (page 1, page 2's 429, page 2's retry) —
+    # 1 of those 3 was a retry (gr356740: the render names the request
+    # cost of a complete=True walk).
+    assert result.meta["s2_requests"] == 3
+    assert result.meta["s2_requests_retried"] == 1
+    assert "2 works (complete, 3 requests, 1 retried)." in body
+    assert body.count("works (complete,") == 1
 
 
 def test_s2_get_json_backoff_raises_after_5_consecutive_429s(
@@ -826,9 +839,9 @@ def test_get_complete_kwarg_threads_to_a_distinct_cache_row(
         calls["default"] += 1
         return {"data": [_author_work(0)], "total": 1}
 
-    def fake_complete(url: str, params: dict) -> dict:
+    def fake_complete(url: str, params: dict) -> tuple[dict, int]:
         calls["complete"] += 1
-        return {"data": [_author_work(1, citationCount=9)]}
+        return {"data": [_author_work(1, citationCount=9)]}, 1
 
     monkeypatch.setattr(s2handler, "_s2_get_json", fake_default)
     monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_complete)
@@ -837,5 +850,29 @@ def test_get_complete_kwarg_threads_to_a_distinct_cache_row(
     complete_resp = s2handler.get(id="author:9999999", complete=True)
 
     assert calls == {"default": 1, "complete": 1}
-    assert "1 works (complete)" in complete_resp.body
+    assert "1 works (complete, 1 request)." in complete_resp.body
     assert default_resp.body != complete_resp.body
+
+
+def test_get_author_complete_summary_line_renders_once_with_request_count(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """Full ``get()`` round trip (store + ``_render()``'s chunk-rejoin),
+    not just ``_fetch()`` — a big enough table pushes the combined body
+    past ``chunk_target_chars`` and into the base class's auto-splitter,
+    which is where the summary line used to print twice (gr356740): a
+    single "note\\n\\ntable" blob got auto-split with the short note
+    carried forward as an undetected overlap tail. Also covers the
+    request-count addition the same gripe asked for."""
+    papers = [_author_work(i) for i in range(150)]
+
+    def fake_backoff(url: str, params: dict) -> tuple[dict, int]:
+        return {"data": papers}, 1
+
+    monkeypatch.setattr(s2handler, "_s2_get_json_backoff", fake_backoff)
+
+    resp = s2handler.get(id="author:1741101", complete=True)
+
+    assert resp.body.count("150 works (complete, 1 request).") == 1
+    assert resp.body.count("Work 0") == 1
+    assert resp.body.count("Work 149") == 1

@@ -617,8 +617,10 @@ class SemanticScholarHandler(CacheBackedHandler):
 
         stopped_at_cap = False
         total_hint: int | None = None
+        requests = 0
+        retried = 0
         if complete:
-            papers, stopped_at_cap = self._walk_author_papers(url)
+            papers, stopped_at_cap, requests, retried = self._walk_author_papers(url)
         else:
             data = self._s2_get_json(
                 url, {"fields": _AUTHOR_PAPERS_FIELDS, "limit": _AUTHOR_PAPERS_LIMIT}
@@ -654,7 +656,10 @@ class SemanticScholarHandler(CacheBackedHandler):
         has_unresolved = any(flag == "UNRESOLVED" for flag, _rid in flags)
 
         if complete:
-            note = f"_{n} works (complete)._"
+            req_note = f"{requests} request{'' if requests == 1 else 's'}"
+            if retried:
+                req_note += f", {retried} retried"
+            note = f"_{n} works (complete, {req_note})._"
             if stopped_at_cap:
                 note += (
                     f" _stopped at {_AUTHOR_COMPLETE_HARD_CAP} works — more remain._"
@@ -673,10 +678,21 @@ class SemanticScholarHandler(CacheBackedHandler):
             note = f"_{n} works._"
             title = f"S2 papers by author {author_id} ({n} shown)"
 
-        body_text = f"{note}\n\n{table}"
+        # Two SEPARATE blocks, not one "note\n\ntable" blob — a single
+        # blob over ``chunk_target_chars`` gets auto-split
+        # (``_split_body_blocks``) with a carried-forward overlap tail;
+        # the short ``note`` paragraph is below the seam-dedupe floor
+        # (``_MIN_SEAM_OVERLAP`` in _cache_base.py), so the render used
+        # to reconstruct it as two consecutive identical lines under the
+        # title (gr356740). Splitting the table on its own — independent
+        # of ``note`` — means the note is never a candidate for that
+        # seam at all.
         return FetchResult(
             title=title,
-            body_blocks=[ChunkInsert(ord=0, text=body_text)],
+            body_blocks=[
+                ChunkInsert(ord=0, text=note),
+                ChunkInsert(ord=1, text=table),
+            ],
             cost_usd=None,
             meta={
                 "key": key,
@@ -686,10 +702,14 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "complete": complete,
                 "capped": capped,
                 "stopped_at_cap": stopped_at_cap,
+                "s2_requests": requests,
+                "s2_requests_retried": retried,
             },
         )
 
-    def _walk_author_papers(self, url: str) -> tuple[list[dict[str, Any]], bool]:
+    def _walk_author_papers(
+        self, url: str
+    ) -> tuple[list[dict[str, Any]], bool, int, int]:
         """Walk every page of an author's works via S2's offset/limit
         pagination (``_AUTHOR_COMPLETE_PAGE_LIMIT`` per call), following
         ``next`` until the API reports exhaustion (no ``next`` key) or
@@ -705,16 +725,23 @@ class SemanticScholarHandler(CacheBackedHandler):
         ``next`` that doesn't advance past the offset just fetched, which
         would otherwise loop forever re-requesting the same page.
 
-        Returns ``(papers, stopped_at_cap)`` — ``stopped_at_cap`` is True
-        only when the hard cap was hit AND the API says more remain (a
-        ``next``-less final page landing exactly on the cap is a normal
-        exhaustion, not a truncation).
+        Returns ``(papers, stopped_at_cap, requests, retried)``:
+        ``stopped_at_cap`` is True only when the hard cap was hit AND the
+        API says more remain (a ``next``-less final page landing exactly
+        on the cap is a normal exhaustion, not a truncation);
+        ``requests`` is the total count of actual HTTP calls the walk
+        made (one per page, plus one per 429 :meth:`_s2_get_json_backoff`
+        retried) and ``retried`` is how many of those were 429 retries —
+        both surfaced in the render so the cost of a ``complete=True``
+        walk is visible (gr356740).
         """
         papers: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         offset = 0
+        requests = 0
+        retried = 0
         while True:
-            data = self._s2_get_json_backoff(
+            data, attempts = self._s2_get_json_backoff(
                 url,
                 {
                     "fields": _AUTHOR_PAPERS_FIELDS,
@@ -722,6 +749,8 @@ class SemanticScholarHandler(CacheBackedHandler):
                     "offset": offset,
                 },
             )
+            requests += attempts
+            retried += attempts - 1
             page = data.get("data") or []
             if not page:
                 break
@@ -736,7 +765,12 @@ class SemanticScholarHandler(CacheBackedHandler):
                 new_count += 1
             nxt = data.get("next")
             if len(papers) >= _AUTHOR_COMPLETE_HARD_CAP:
-                return papers[:_AUTHOR_COMPLETE_HARD_CAP], nxt is not None
+                return (
+                    papers[:_AUTHOR_COMPLETE_HARD_CAP],
+                    nxt is not None,
+                    requests,
+                    retried,
+                )
             if new_count == 0:
                 # Every work on this page was already seen — a replayed
                 # duplicate page. Nothing more to gain from continuing.
@@ -747,15 +781,22 @@ class SemanticScholarHandler(CacheBackedHandler):
                 log.warning("S2 returned a non-advancing offset at %s; stopped", nxt)
                 break
             offset = nxt
-        return papers, False
+        return papers, False, requests, retried
 
-    def _s2_get_json_backoff(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _s2_get_json_backoff(
+        self, url: str, params: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
         """Like :meth:`_s2_get_json`, but retries an HTTP 429 with
         exponential backoff (:data:`_AUTHOR_BACKOFF_BASE_S` doubling,
         :data:`_AUTHOR_BACKOFF_ATTEMPTS` attempts) instead of raising
         immediately — the 5th (last) consecutive 429 raises rather than
         sleeping again, with a "retries exhausted" message distinct from
         :meth:`_s2_parse_response`'s generic 429 message.
+
+        Returns ``(json, attempts)`` — ``attempts`` is how many actual
+        HTTP calls this one page needed (1 when no 429 was hit, more
+        when it was retried) — :meth:`_walk_author_papers` sums these
+        across pages for the ``complete=True`` render's request count.
 
         Only the ``complete=True`` author walk uses this — it makes
         several sequential calls and is far likelier to cross the public
@@ -772,7 +813,7 @@ class SemanticScholarHandler(CacheBackedHandler):
                     )
                 time.sleep(_AUTHOR_BACKOFF_BASE_S * (2**attempt))
                 continue
-            return self._s2_parse_response(resp)
+            return self._s2_parse_response(resp), attempt + 1
         raise AssertionError("unreachable")  # loop always returns/raises above
 
     @staticmethod

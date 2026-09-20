@@ -231,7 +231,8 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "reported to the caller as a real gap"
     ),
     # ---- PcbIR fields: L2 explicit-embedding tier ----------------------
-    # set_rotation/rotation_index/rotation_darts are the sole L2 tier
+    # set_rotation/rotation_darts are the L2 tier (rotation_index gained a
+    # production reader in workers/job_types/pcb_route.py, a25a3a00)
     # (module docstring: "L2: explicit combinatorial embedding"); ir.py's
     # own seg_side field (the OTHER L2 field, right next to these) is
     # documented in-line as "reserved obstacle-side annotation
