@@ -65,13 +65,15 @@ the outcome in the query string, 409 on a past ``?rev=``):
 is one tool-less ``Tier.BIG`` ``route()`` call whose prompt is a text
 digest of the design plus the clicked handles; the reply is JSON
 ``{ops, rationale}`` vetted against the kind's real roster (unknown op,
-raw coordinates, or no JSON → whole turn rejected, nothing written). Pure
-se ops dry-run then auto-apply via ``SeHandler.edit(turn=…)`` as one
-revision; store-aware se ops and every structure op come back as a
-proposal for ``apply_proposal`` (``StructureHandler.edit`` in place, never
-``derive``). Transcript = one ``conv`` per design (``design-chat-<slug>``,
-linked ``related-to``), one block per accepted turn; the revision's
-``turn`` is ``<conv-slug>~<block ordinal>``.
+raw coordinates, no JSON, or a failed dry run → the validator's message
+goes back to the model for ONE repair round; still bad → whole turn
+rejected, nothing written to the design). Pure se ops dry-run then
+auto-apply via ``SeHandler.edit(turn=…)`` as one revision; store-aware se
+ops and every structure op come back as a proposal for ``apply_proposal``
+(``StructureHandler.edit`` in place, never ``derive``). Transcript = one
+``conv`` per design (``design-chat-<slug>``, linked ``related-to``), one
+block per answered turn tagged applied / proposal / rejected / no-op; the
+revision's ``turn`` is ``<conv-slug>~<block ordinal>``.
 
 **Drive (`/drive`)** is the unified seek+manage surface:
 ``routes/drive.py::index`` runs cross-kind chunk search (``q=``, kind/tag

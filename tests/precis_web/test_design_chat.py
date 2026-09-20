@@ -13,8 +13,8 @@ monkeypatched, so the router is never reached.
 * ``POST /structure/{slug}/chat`` with an atom op → proposal (hover
   ``data-atoms``) → apply → ``meta.version`` +1 on the same ref, no
   ``derived-from`` link;
-* an empty message → 400; a rejected reply → 303 with the validator's
-  message flashed, nothing written.
+* an empty message → 400; a rejected reply (after its one repair round)
+  → 303 to the rejected transcript block, no design write.
 
 Real Postgres (the ``store`` fixture) — the handlers write the rows the
 page reads.
@@ -254,7 +254,7 @@ def test_se_chat_on_a_past_revision_is_refused(
     assert r3.status_code == 303
 
 
-def test_se_rejected_reply_is_flashed_and_writes_nothing(
+def test_se_rejected_reply_stays_in_the_transcript_and_writes_no_revision(
     client, runtime_with_store, store, stub
 ) -> None:
     _seed_se(runtime_with_store, store)
@@ -264,13 +264,39 @@ def test_se_rejected_reply_is_flashed_and_writes_nothing(
     r = client.post("/se/caster_chat/chat", data={"message": "move it"})
     assert r.status_code == 303
     q = _query(r.headers["location"])
-    assert "turn" not in q and "unknown op 'teleport'" in q["chat_error"]
+    assert q == {"turn": "0"}
+    assert len(stub.prompts) == 2  # the one repair round
+    assert "# Validator error" in stub.prompts[1]
     assert _revision_rows(store) == rows_before
+    assert store.get_ref(kind="conv", id="design-chat-caster_chat") is not None
+    page = client.get(r.headers["location"]).text
+    assert 'id="design-chat-error"' not in page
+    assert 'id="chat-turn-0"' in page and "move it" in page
+    assert ">rejected<" in page
+    assert "unknown op &#39;teleport&#39;" in page or "unknown op 'teleport'" in page
+    assert "one repair round" in page
+    assert 'id="design-chat-proposal"' not in page
+
+
+def test_model_failure_is_flashed_and_writes_nothing(
+    client, runtime_with_store, store, stub, monkeypatch
+) -> None:
+    _seed_se(runtime_with_store, store)
+
+    def down(ref_id: int):
+        def call(prompt: str) -> str:
+            raise RuntimeError("router down")
+
+        return call
+
+    monkeypatch.setattr(design_turn, "_router_call", down)
+    r = client.post("/se/caster_chat/chat", data={"message": "move it"})
+    assert r.status_code == 303
+    q = _query(r.headers["location"])
+    assert "turn" not in q and "router down" in q["chat_error"]
     assert store.get_ref(kind="conv", id="design-chat-caster_chat") is None
     page = client.get(r.headers["location"]).text
-    assert 'id="design-chat-error"' in page
-    assert "unknown op &#39;teleport&#39;" in page or "unknown op 'teleport'" in page
-    assert "No turns yet." in page
+    assert 'id="design-chat-error"' in page and "No turns yet." in page
 
 
 def test_empty_message_is_400(client, runtime_with_store, store, stub) -> None:

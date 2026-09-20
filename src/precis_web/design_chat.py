@@ -8,13 +8,13 @@ Two POSTs per kind, registered in each kind's own route module:
   ``handles`` (the clicked block names / atom labels, comma- or
   space-separated); runs :func:`design_turn.run_turn` off the event loop
   and 303s back to the page with the outcome in the query string
-  (:func:`redirect_after`): ``?turn=N`` for an accepted turn (the panel
-  highlights block N), ``?chat_error=…`` for a rejected one (a rejected
-  turn writes no transcript block, so the message has nowhere else to
-  live), ``?chat_note=…`` for the valid "cannot be expressed as ops"
-  reply (no ops, nothing written, the rationale still worth reading).
-  ``?rev=N`` naming a past revision is refused with a 409 — a turn edits
-  the CURRENT tree, never the one on screen.
+  (:func:`redirect_after`): ``?turn=N`` for every turn the model answered
+  — applied, proposal, rejected or no-op, the panel highlights block N
+  and its outcome badge carries the verdict — ``?chat_error=…`` only when
+  no block exists (the model call itself failed). ``?chat_note=…`` is the
+  legacy no-ops flash, kept for a result with neither ``turn`` nor
+  ``error``. ``?rev=N`` naming a past revision is refused with a 409 — a
+  turn edits the CURRENT tree, never the one on screen.
 * ``POST /{kind}/{slug}/chat/apply`` — form ``ops`` (JSON list) + ``turn``
   (the proposing handle); :func:`design_turn.apply_proposal`. The human
   Apply for the propose-only op classes.
@@ -133,9 +133,9 @@ def redirect_flash(
 
 def redirect_after(kind: DesignKind, slug: str, result: TurnResult) -> RedirectResponse:
     """The redirect after :func:`design_turn.run_turn`: a transcript block
-    exists (applied, or a proposal — valid or not; the badge carries the
-    dry-run error) → ``turn``; a rejection → ``error``; the no-ops
-    "cannot be expressed" reply → ``note``."""
+    exists (applied, proposal, rejected, no-op — the badge carries the
+    verdict) → ``turn``; a model-call failure → ``error``; a result with
+    neither → ``note`` (no longer produced by ``run_turn``)."""
     if result.turn is not None:
         return redirect_flash(kind, slug, turn=result.turn)
     if result.error is not None:
@@ -200,6 +200,9 @@ def _turn_row(
         "proposal": t.proposal,
         "valid": t.valid,
         "error": t.error,
+        "rejected": t.rejected,
+        "noop": t.noop,
+        "repair": t.repair,
         "created": _ago(t.created_at) if t.created_at else None,
     }
 

@@ -336,7 +336,9 @@ PAGE_HELP: tuple[tuple[str, str], ...] = (
         "One turn at a time: click atoms to mention them, describe the change, "
         "send. The model answers with typed ops only, shown as a proposal; "
         "Apply edits this design in place as a new revision (the scrubber "
-        "walks back to any earlier one). A rejected reply writes nothing.",
+        "walks back to any earlier one). A rejected reply gets one repair "
+        "round, then stays in the transcript as rejected — nothing written "
+        "to the design.",
     ),
     (
         "Eyes & measures",

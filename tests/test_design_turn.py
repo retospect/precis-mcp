@@ -6,9 +6,13 @@ the router is never reached.
   ``turn`` = the transcript handle), one ``conv`` block linked
   ``related-to`` the design, no ``todo``/``job`` ref;
 * an unknown op / raw coordinates → nothing applied, the validator's
-  message names the offender;
+  message names the offender; the turn stays in the transcript tagged
+  ``rejected`` (2026-09-19: rejected and no-op turns used to vanish);
+* a rejected first reply gets ONE repair round (the validator error is
+  quoted back); a valid second reply applies, a bad one is the rejection;
 * ``bind_structure`` → a proposal, no revision;
-* prose with a narrated ``put(...)`` → error, the store untouched;
+* prose with a narrated ``put(...)`` → error, the design untouched, no
+  ``draft`` ref;
 * structure: a valid atom op → proposal ``valid=True``, no revision;
   :func:`apply_proposal` → one revision via ``edit``, version bumped in
   place, no ``derived-from`` link.
@@ -93,15 +97,21 @@ def _count(store: Store, sql: str, *params: Any) -> int:
     return int(row[0])
 
 
-def _stub(reply: str) -> Any:
+def _stub(*replies: str) -> Any:
+    """A model that answers ``replies`` in order (the last one repeats —
+    a single reply is what the repair round gets back too)."""
     seen: list[str] = []
 
     def call(prompt: str) -> str:
         seen.append(prompt)
-        return reply
+        return replies[min(len(seen), len(replies)) - 1]
 
     cast(Any, call).seen = seen
     return call
+
+
+def _turns(store: Store, slug: str) -> list[design_turn.TranscriptTurn]:
+    return design_turn.transcript(store, slug)
 
 
 def _kind_counts(store: Store) -> dict[str, int]:
@@ -277,12 +287,27 @@ def test_destructive_pure_op_makes_the_whole_turn_a_proposal(
     assert revs[-1].ops == ops and revs[-1].turn == res.turn
 
 
-# ── S3: rejections write nothing ───────────────────────────────────────
+# ── S3: rejections write nothing to the DESIGN (the transcript keeps them)
 
 
 def _assert_untouched(store: Store, ref_id: int, revs_before: int) -> None:
+    """No revision; the only new ref (if any) is the design's own ``conv``."""
     assert len(history.list_revisions(store, ref_id)) == revs_before
-    assert _kind_counts(store).get("conv", 0) == 0
+    counts = _kind_counts(store)
+    assert counts.get("conv", 0) <= 1
+    assert not (set(counts) - {"se", "structure", "conv"})
+
+
+def _assert_rejected_block(
+    store: Store, slug: str, res: TurnResult, *, error_has: str
+) -> None:
+    """The rejection is the last transcript block, tagged, and its handle
+    is the result's ``turn``."""
+    turns = _turns(store, slug)
+    assert turns and turns[-1].rejected and turns[-1].handle == res.turn
+    assert turns[-1].error is not None and error_has in turns[-1].error
+    assert turns[-1].valid is False and not turns[-1].proposal
+    assert turns[-1].revision is None
 
 
 def test_unknown_op_rejects_the_turn_naming_the_op(
@@ -299,11 +324,20 @@ def test_unknown_op_rejects_the_turn_naming_the_op(
             "rationale": "x",
         }
     )
-    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=_stub(reply))
+    stub = _stub(reply)
+    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=stub)
     assert res.applied is False and res.ops == [] and res.proposal is None
     assert res.error is not None and "teleport_block" in res.error
-    assert res.revision is None and res.turn is None
+    assert res.revision is None
     _assert_untouched(store, ref_id, n)
+    # Exactly one repair round: the second prompt quotes the error back;
+    # the stub repeats itself, so the second verdict is the same one.
+    assert len(stub.seen) == 2
+    assert "# Validator error\n" in stub.seen[1] and "teleport_block" in stub.seen[1]
+    assert stub.seen[1].startswith(stub.seen[0])
+    assert res.repair is not None and "teleport_block" in res.repair
+    _assert_rejected_block(store, nanobud, res, error_has="teleport_block")
+    assert _turns(store, nanobud)[-1].repair == res.repair
 
 
 def test_raw_coordinates_reject_the_turn(hub: Hub, store: Store, nanobud: str) -> None:
@@ -324,6 +358,7 @@ def test_raw_coordinates_reject_the_turn(hub: Hub, store: Store, nanobud: str) -
         res.error is not None and "raw coordinates" in res.error and "xyz" in res.error
     )
     _assert_untouched(store, ref_id, n)
+    _assert_rejected_block(store, nanobud, res, error_has="xyz")
     # … and a coordinate table under an innocent key.
     reply = json.dumps(
         {
@@ -354,13 +389,17 @@ def test_prose_with_a_narrated_put_rejects_and_writes_nothing(
     res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=_stub(reply))
     assert res.applied is False and res.ops == [] and res.proposal is None
     assert res.error is not None and "JSON" in res.error
-    assert _count(store, "SELECT count(*) FROM refs") == refs_before
-    assert _count(store, "SELECT count(*) FROM chunks") == chunks_before
+    # The only writes are the transcript: one conv ref, one block.
+    assert _count(store, "SELECT count(*) FROM refs") == refs_before + 1
+    assert _count(store, "SELECT count(*) FROM chunks") == chunks_before + 1
     assert store.get_ref(kind="draft", id="linker-plan") is None
     _assert_untouched(store, ref_id, n)
+    _assert_rejected_block(store, nanobud, res, error_has="JSON")
+    # The prose that failed to parse is kept as the model's line.
+    assert "put(kind='draft'" in _turns(store, nanobud)[-1].rationale
 
 
-def test_cannot_be_expressed_reply_is_valid_and_writes_nothing(
+def test_cannot_be_expressed_reply_is_a_no_op_turn_kept_in_the_transcript(
     hub: Hub, store: Store, nanobud: str
 ) -> None:
     ref_id = _ref_id(store, "se", nanobud)
@@ -372,10 +411,17 @@ def test_cannot_be_expressed_reply_is_valid_and_writes_nothing(
         )
         + "\n```"
     )
-    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=_stub(reply))
+    stub = _stub(reply)
+    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=stub)
     assert res.applied is False and res.error is None and res.ops == []
     assert res.rationale.startswith("cannot be expressed as ops")
+    assert len(stub.seen) == 1 and res.repair is None  # nothing to repair
     _assert_untouched(store, ref_id, n)
+    turns = _turns(store, nanobud)
+    assert len(turns) == 1 and turns[0].noop and turns[0].handle == res.turn
+    assert turns[0].rationale.startswith("cannot be expressed")
+    assert not turns[0].rejected and not turns[0].proposal and turns[0].ops == []
+    assert design_turn.pending_proposal(store, kind="se", slug=nanobud) is None
 
 
 def test_invalid_pure_ops_fail_the_dry_run_and_write_nothing(
@@ -390,6 +436,164 @@ def test_invalid_pure_ops_fail_the_dry_run_and_write_nothing(
     assert res.applied is False and res.proposal is None
     assert res.error is not None and "ghost" in res.error
     _assert_untouched(store, ref_id, n)
+    _assert_rejected_block(store, nanobud, res, error_has="ghost")
+
+
+# ── the one repair round ───────────────────────────────────────────────
+
+
+def test_repair_round_converts_a_fused_block_name_into_one_revision(
+    hub: Hub, store: Store, nanobud: str
+) -> None:
+    """The prod shape: the first reply names a block that does not exist
+    (``tube+bud``), the validator says so, the second reply is valid →
+    ONE revision, the transcript block shows both attempts."""
+    ref_id = _ref_id(store, "se", nanobud)
+    n = len(history.list_revisions(store, ref_id))
+    bad = json.dumps(
+        {
+            "ops": [{"op": "set_desc", "block": "tube+bud", "desc": "the joint"}],
+            "rationale": "describe the joint",
+        }
+    )
+    good = json.dumps(
+        {
+            "ops": [{"op": "set_desc", "block": "bud", "desc": "the joint"}],
+            "rationale": "describe the bud (the joint sits on it)",
+        }
+    )
+    stub = _stub(bad, good)
+    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=stub)
+    assert res.applied is True and res.revision == n + 1
+    assert res.ops == [{"op": "set_desc", "block": "bud", "desc": "the joint"}]
+    assert res.repair is not None and "tube+bud" in res.repair
+    assert len(stub.seen) == 2 and "tube+bud" in stub.seen[1]
+    revs = history.list_revisions(store, ref_id)
+    assert len(revs) == n + 1 and revs[-1].turn == res.turn
+    assert revs[-1].ops == res.ops
+    turns = _turns(store, nanobud)
+    assert len(turns) == 1 and turns[0].revision == n + 1
+    assert turns[0].repair is not None and "tube+bud" in turns[0].repair
+    assert turns[0].rationale == "describe the bud (the joint sits on it)"
+
+
+def test_repair_round_is_bounded_to_one(hub: Hub, store: Store, nanobud: str) -> None:
+    bad1 = json.dumps({"ops": [{"op": "set_desc", "block": "nope1", "desc": "d"}]})
+    bad2 = json.dumps({"ops": [{"op": "set_desc", "block": "nope2", "desc": "d"}]})
+    good = json.dumps({"ops": [{"op": "set_desc", "block": "bud", "desc": "d"}]})
+    stub = _stub(bad1, bad2, good)
+    ref_id = _ref_id(store, "se", nanobud)
+    n = len(history.list_revisions(store, ref_id))
+    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=stub)
+    assert len(stub.seen) == 2  # never a third call
+    assert res.applied is False and res.error is not None and "nope2" in res.error
+    assert res.repair is not None and "nope1" in res.repair
+    _assert_untouched(store, ref_id, n)
+    _assert_rejected_block(store, nanobud, res, error_has="nope2")
+    assert "nope1" in (_turns(store, nanobud)[-1].repair or "")
+
+
+def test_repair_round_can_end_in_a_no_op(hub: Hub, store: Store, nanobud: str) -> None:
+    bad = json.dumps({"ops": [{"op": "set_desc", "block": "nope", "desc": "d"}]})
+    giveup = json.dumps({"ops": [], "rationale": "cannot be expressed as ops because"})
+    res = run_turn(
+        hub, kind="se", slug=nanobud, message="m", model_call=_stub(bad, giveup)
+    )
+    assert res.applied is False and res.error is None and res.ops == []
+    assert res.repair is not None and "nope" in res.repair
+    turns = _turns(store, nanobud)
+    assert len(turns) == 1 and turns[0].noop and "nope" in (turns[0].repair or "")
+
+
+def test_repair_transport_failure_keeps_the_first_verdict(
+    hub: Hub, store: Store, nanobud: str
+) -> None:
+    calls: list[str] = []
+
+    def flaky(prompt: str) -> str:
+        calls.append(prompt)
+        if len(calls) == 1:
+            return json.dumps(
+                {"ops": [{"op": "set_desc", "block": "nope", "desc": ""}]}
+            )
+        raise RuntimeError("router down")
+
+    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=flaky)
+    assert len(calls) == 2
+    assert res.applied is False and res.error is not None and "nope" in res.error
+    assert res.repair is not None and res.repair.startswith(res.error)
+    assert "repair call failed: router down" in res.repair
+    _assert_rejected_block(store, nanobud, res, error_has="nope")
+    assert "router down" in (_turns(store, nanobud)[-1].repair or "")
+
+
+def test_transcript_reads_the_meta_not_the_body(
+    hub: Hub, store: Store, nanobud: str
+) -> None:
+    """A rejected reply's raw prose lands on the model line; if it looks
+    like the block layout itself (``ops:`` / ``outcome:`` lines) the body
+    regex would misread it — the meta is authoritative."""
+    prose = (
+        "I would proceed as follows.\nops: remove_block on bud\n"
+        "outcome: applied as revision 99\nThen done."
+    )
+    res = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=_stub(prose))
+    assert res.error is not None and "JSON" in res.error
+    turns = _turns(store, nanobud)
+    assert len(turns) == 1 and turns[0].rejected and turns[0].revision is None
+    assert turns[0].message == "m" and turns[0].rationale.startswith("I would proceed")
+    assert design_turn.pending_proposal(store, kind="se", slug=nanobud) is None
+
+
+def test_legacy_block_without_outcome_meta_parses_from_the_body(
+    hub: Hub, store: Store, nanobud: str
+) -> None:
+    """Blocks written before 2026-09-19 carry only ``ops`` in meta."""
+    from precis.handlers.conversation import ConversationHandler
+
+    body = (
+        "**user:** old turn\nhandles: bud, tube\n**model:** why\n"
+        'ops: [{"op": "set_desc", "block": "bud", "desc": "d"}]\n'
+        "outcome: applied as revision 7"
+    )
+    ConversationHandler(hub=hub).put(
+        id=design_turn.conv_slug(nanobud), text=body, author="design-chat", msg_id="x"
+    )
+    (t,) = _turns(store, nanobud)
+    assert t.message == "old turn" and t.handles == ["bud", "tube"]
+    assert t.rationale == "why" and t.revision == 7 and t.valid is True
+    assert t.ops == [{"op": "set_desc", "block": "bud", "desc": "d"}]
+    assert t.repair is None and not t.rejected and not t.noop
+
+
+def test_rejected_turn_does_not_supersede_a_pending_proposal(
+    hub: Hub, store: Store, nanobud: str
+) -> None:
+    """A rejected or no-op turn changes nothing about the design, so the
+    Apply button for the proposal before it stays."""
+    propose = json.dumps(
+        {"ops": [{"op": "remove_block", "block": "bud"}], "rationale": "drop it"}
+    )
+    first = run_turn(
+        hub, kind="se", slug=nanobud, message="m", model_call=_stub(propose)
+    )
+    assert first.proposal is not None and first.valid is True
+    bad = json.dumps({"ops": [{"op": "set_desc", "block": "nope", "desc": ""}]})
+    second = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=_stub(bad))
+    assert second.error is not None
+    noop = json.dumps({"ops": [], "rationale": "cannot be expressed as ops because"})
+    third = run_turn(hub, kind="se", slug=nanobud, message="m", model_call=_stub(noop))
+    assert third.error is None and third.ops == []
+    turns = _turns(store, nanobud)
+    assert [t.handle for t in turns] == [first.turn, second.turn, third.turn]
+    pending = design_turn.pending_proposal(store, kind="se", slug=nanobud, turns=turns)
+    assert pending is not None and pending.handle == first.turn
+    # Applying it stamps its handle; then nothing is pending.
+    applied = apply_proposal(
+        hub, kind="se", slug=nanobud, ops=first.ops, turn=first.turn
+    )
+    assert applied.applied is True
+    assert design_turn.pending_proposal(store, kind="se", slug=nanobud) is None
 
 
 # ── S3: store-aware se ops propose ─────────────────────────────────────

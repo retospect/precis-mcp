@@ -22,7 +22,7 @@
 
   {% if chat.chat_error %}
   <div id="design-chat-error" class="mb-2 rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-800">
-    <span class="font-semibold">turn rejected — nothing written:</span> {{ chat.chat_error }}
+    <span class="font-semibold">turn failed — nothing written:</span> {{ chat.chat_error }}
   </div>
   {% endif %}
   {% if chat.chat_note %}
@@ -58,10 +58,17 @@
           {% if t.valid %}<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">valid</span>
           {% else %}<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">invalid</span> {{ t.error }}{% endif %}
           {% if chat.pending and chat.pending.ord == t.ord %}<span class="text-slate-400">— awaiting Apply below</span>{% endif %}
+        {% elif t.rejected %}
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800">rejected</span> {{ t.error }} <span class="text-slate-400">— nothing written to the design</span>
+        {% elif t.noop %}
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800">no-op</span> <span class="text-slate-400">cannot be expressed as ops — nothing written to the design</span>
         {% else %}
           {{ t.outcome }}
         {% endif %}
       </div>
+      {% if t.repair %}
+      <div class="mt-1 text-[10px] text-slate-400">first attempt rejected: {{ t.repair }} — one repair round</div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>

@@ -29,19 +29,32 @@ fails to parse, never a write.
   ``StructureHandler.edit`` (version in place, never ``derive``) or
   ``SeHandler.edit``.
 
-**Rejection is whole-turn.** An unknown op name, an op smuggling raw
-coordinates (:func:`_raw_coordinate_key`), or a reply with no JSON object
-→ ``TurnResult(applied=False, error=...)`` with the validator's message
-verbatim and **no writes at all** — not even the transcript block, so a
-failed turn leaves the store exactly as it found it (acceptance S3's
-"the store fake saw no writes").
+**Rejection is whole-turn, with one repair round.** An unknown op name,
+an op smuggling raw coordinates (:func:`_raw_coordinate_key`), a reply
+with no JSON object, or a dry run that fails → the validator's message is
+fed back to the model ONCE (:func:`build_repair_prompt`: the original
+prompt + the rejected reply + the error, same tool-less contract) and the
+second reply is vetted from scratch. Still bad → **no design writes** —
+no revision, no ref of the kind a narrated ``put(...)`` named (acceptance
+S3): a parse/roster failure or a failed dry run of auto-apply ops is
+``TurnResult(applied=False, error=...)`` tagged ``rejected``; a failed dry
+run of proposal-class ops stays an INVALID proposal (as before — Apply
+re-vets). A transport failure on the repair call keeps the first verdict
+and says so in the ``repair`` note. The first prod use (2026-09-19) rejected 2 of 4 turns on
+op-shape errors the validator named exactly (a fused block name, a
+``set_load`` with no target); the repair round exists to convert those.
 
 **Transcript.** One ``conv`` ref per design, slug
 :func:`conv_slug` (``design-chat-<slug>``), linked ``related-to`` the
 design once (``Store.add_link`` is idempotent on the edge). One block per
-*accepted* turn — user message, clicked handles, model rationale, ops,
-outcome — appended through ``ConversationHandler.put`` with ``msg_id`` =
-the turn handle. The turn handle stamped onto the revision row is
+turn that reached the model *and got a reply* — applied, proposal,
+**rejected** and **no-op** ("cannot be expressed as ops") alike; only a
+model transport failure writes nothing — user message, clicked handles,
+model rationale, ops, an optional ``repair:`` line (the first attempt's
+error when a repair round ran) and the ``outcome:`` tag, appended through
+``ConversationHandler.put`` with ``msg_id`` = the turn handle. Rejected
+and no-op turns were lost before 2026-09-19: two of the four first-use
+turns were informational answers the operator only saw as a flash. The turn handle stamped onto the revision row is
 ``<conv-slug>~<block ordinal>``: the address ``get(kind='conv',
 id='<slug>~N')`` resolves and ``precis.utils.mentions`` parses (the
 computed ``format_handle`` form is a *chunk-id* handle, which a reader
@@ -215,7 +228,7 @@ class TurnResult:
     Apply (``valid`` = the dry run's verdict, its message in ``error``
     when ``False``). ``error`` with ``ops=[]`` — the reply was rejected
     before any dry run. ``turn`` is the transcript block's handle when
-    one was written."""
+    one was written (every turn the model answered)."""
 
     applied: bool
     ops: list[dict[str, Any]] = field(default_factory=list)
@@ -225,6 +238,9 @@ class TurnResult:
     error: str | None = None
     revision: int | None = None
     turn: str | None = None
+    #: The first attempt's validator error when a repair round ran (the
+    #: second reply is what ``ops``/``error`` describe).
+    repair: str | None = None
 
 
 def conv_slug(slug: str) -> str:
@@ -412,6 +428,26 @@ def build_prompt(
     )
 
 
+#: A rejected reply (and the validator error, which can echo model
+#: text) is quoted back to the model at most this long.
+_REPAIR_REPLY_MAX = 4000
+_REPAIR_ERROR_MAX = 2000
+
+
+def build_repair_prompt(prompt: str, *, reply: str, error: str) -> str:
+    """The one repair round: the original prompt, the reply the validator
+    refused, and its message verbatim — the model fixes exactly that or
+    says why it cannot."""
+    return (
+        f"{prompt}\n\n# Your previous reply was rejected\n"
+        f"{(reply or '').strip()[:_REPAIR_REPLY_MAX] or '(empty)'}\n\n"
+        f"# Validator error\n{error[:_REPAIR_ERROR_MAX]}\n\n"
+        "Fix exactly that and reply again with ONE JSON object under the same "
+        'contract. If it cannot be fixed with the listed ops, reply {"ops": [], '
+        '"rationale": "cannot be expressed as ops because ..."}.'
+    )
+
+
 def parse_reply(text: str) -> tuple[list[dict[str, Any]], str]:
     """``(ops, rationale)`` out of the model's reply — tolerates a fence or
     surrounding prose (:func:`extract_json_object`). ``ValueError`` when no
@@ -578,25 +614,41 @@ def _write_transcript(
     rationale: str,
     ops: list[dict[str, Any]],
     outcome: str,
+    repair: str | None = None,
 ) -> None:
     store = _store_of(hub)
     cslug = conv_slug(str(design_ref.slug))
-    body = "\n".join(
-        [
-            f"**user:** {message.strip()}",
-            f"handles: {', '.join(h for h in handles if h.strip()) or '(none)'}",
-            f"**model:** {rationale or '(no rationale)'}",
-            f"ops: {json.dumps(ops)}",
-            f"outcome: {outcome}",
-        ]
-    )
+    lines = [
+        f"**user:** {message.strip()}",
+        f"handles: {', '.join(h for h in handles if h.strip()) or '(none)'}",
+        f"**model:** {rationale or '(no rationale)'}",
+        f"ops: {json.dumps(ops)}",
+    ]
+    if repair is not None:
+        lines.append(f"repair: {' '.join(repair.split())}")
+    lines.append(f"outcome: {outcome}")
+    body = "\n".join(lines)
+    # The meta is what :func:`_parse_turn` reads back; the body text is
+    # the human-readable rendering (and the only source for blocks
+    # written before ``outcome`` was recorded here, 2026-09-19).
+    meta: dict[str, Any] = {
+        "design_kind": kind,
+        "design": str(design_ref.slug),
+        "message": message.strip(),
+        "handles": [h.strip() for h in handles if h.strip()],
+        "rationale": rationale,
+        "ops": ops,
+        "outcome": outcome,
+    }
+    if repair is not None:
+        meta["repair"] = repair
     ConversationHandler(hub=hub).put(
         id=cslug,
         text=body,
         author="design-chat",
         msg_id=turn,
         title=f"design chat — {kind} {design_ref.slug}",
-        meta={"design_kind": kind, "design": str(design_ref.slug), "ops": ops},
+        meta=meta,
         ref_meta={"design_kind": kind, "design": str(design_ref.slug)},
     )
     conv_ref = store.get_ref(kind="conv", id=cslug)
@@ -610,11 +662,14 @@ def _write_transcript(
 
 @dataclass(frozen=True)
 class TranscriptTurn:
-    """One accepted turn read back off the ``conv`` block
-    :func:`_write_transcript` wrote. ``revision`` is set when the outcome
-    was "applied as revision N"; ``proposal`` when the turn proposed ops
-    for a human Apply (``valid``/``error`` = the dry run's verdict, as
-    recorded)."""
+    """One turn read back off the ``conv`` block :func:`_write_transcript`
+    wrote. ``revision`` is set when the outcome was "applied as revision
+    N"; ``proposal`` when the turn proposed ops for a human Apply
+    (``valid``/``error`` = the dry run's verdict, as recorded);
+    ``rejected`` when the validator refused the (repaired) reply
+    (``error`` = its message); ``noop`` for a "cannot be expressed as
+    ops" answer. ``repair`` is the first attempt's error when a repair
+    round ran."""
 
     ord: int
     handle: str
@@ -627,17 +682,21 @@ class TranscriptTurn:
     proposal: bool = False
     valid: bool | None = None
     error: str | None = None
+    rejected: bool = False
+    noop: bool = False
+    repair: str | None = None
     created_at: datetime | None = None
 
 
-#: The block layout :func:`_write_transcript` emits, in order. Message and
-#: rationale may span lines (``re.S``); the ``handles``/``ops``/``outcome``
-#: lines are single-line by construction.
+#: The block layout :func:`_write_transcript` emits, in order. Message,
+#: rationale and the (last) outcome may span lines (``re.S``); the
+#: ``handles``/``ops``/``repair`` lines are single-line by construction.
 _TRANSCRIPT_RE = re.compile(
     r"^\*\*user:\*\* (?P<message>.*?)\n"
     r"handles: (?P<handles>[^\n]*)\n"
     r"\*\*model:\*\* (?P<rationale>.*?)\n"
     r"ops: (?P<ops>[^\n]*)\n"
+    r"(?:repair: (?P<repair>[^\n]*)\n)?"
     r"outcome: (?P<outcome>.*)$",
     re.S,
 )
@@ -645,13 +704,55 @@ _APPLIED_RE = re.compile(r"^applied as revision (\d+)")
 _PROPOSAL_RE = re.compile(
     r"^proposal \(\d+ op\(s\), (?:(valid)|INVALID: (.*))\)$", re.S
 )
+_REJECTED_PREFIX = "rejected: "
+_NOOP_OUTCOME = "no-op (cannot be expressed as ops)"
+
+
+def _classify(outcome: str) -> dict[str, Any]:
+    """The typed fields an ``outcome:`` tag carries."""
+    out: dict[str, Any] = {}
+    if applied := _APPLIED_RE.match(outcome):
+        out["revision"] = int(applied.group(1))
+        out["valid"] = True
+    elif prop := _PROPOSAL_RE.match(outcome):
+        out["proposal"] = True
+        out["valid"] = prop.group(1) is not None
+        out["error"] = prop.group(2)
+    elif outcome.startswith(_REJECTED_PREFIX):
+        out["rejected"] = True
+        out["valid"] = False
+        out["error"] = outcome[len(_REJECTED_PREFIX) :]
+    elif outcome == _NOOP_OUTCOME:
+        out["noop"] = True
+    return out
 
 
 def _parse_turn(block: Any, cslug: str) -> TranscriptTurn:
     text = block.text or ""
-    m = _TRANSCRIPT_RE.match(text)
     meta = block.meta or {}
     ops_meta = meta.get("ops")
+    outcome_meta = meta.get("outcome")
+    if isinstance(outcome_meta, str):
+        # A block written since the meta carries the fields: never parse
+        # the body, whose model line may itself contain ``ops:``/
+        # ``outcome:``-shaped text (a rejected reply's raw prose).
+        handles_meta = meta.get("handles")
+        repair_meta = meta.get("repair")
+        return TranscriptTurn(
+            ord=int(block.ord),
+            handle=f"{cslug}~{block.ord}",
+            message=str(meta.get("message") or ""),
+            handles=(
+                [str(h) for h in handles_meta] if isinstance(handles_meta, list) else []
+            ),
+            rationale=str(meta.get("rationale") or ""),
+            ops=list(ops_meta) if isinstance(ops_meta, list) else [],
+            outcome=outcome_meta,
+            repair=str(repair_meta) if isinstance(repair_meta, str) else None,
+            created_at=getattr(block, "created_at", None),
+            **_classify(outcome_meta),
+        )
+    m = _TRANSCRIPT_RE.match(text)
     if m is None:
         # Not a block this module wrote (someone appended by hand) — show
         # it whole rather than drop it from the transcript.
@@ -684,17 +785,6 @@ def _parse_turn(block: Any, cslug: str) -> TranscriptTurn:
     if rationale == "(no rationale)":
         rationale = ""
     outcome = m.group("outcome").strip()
-    revision: int | None = None
-    proposal = False
-    valid: bool | None = None
-    error: str | None = None
-    if applied := _APPLIED_RE.match(outcome):
-        revision = int(applied.group(1))
-        valid = True
-    elif prop := _PROPOSAL_RE.match(outcome):
-        proposal = True
-        valid = prop.group(1) is not None
-        error = prop.group(2)
     return TranscriptTurn(
         ord=int(block.ord),
         handle=f"{cslug}~{block.ord}",
@@ -703,18 +793,15 @@ def _parse_turn(block: Any, cslug: str) -> TranscriptTurn:
         rationale=rationale,
         ops=ops,
         outcome=outcome,
-        revision=revision,
-        proposal=proposal,
-        valid=valid,
-        error=error,
+        repair=m.group("repair"),
         created_at=getattr(block, "created_at", None),
+        **_classify(outcome),
     )
 
 
 def transcript(store: Any, slug: str) -> list[TranscriptTurn]:
     """The design's chat so far, oldest first — every block of
-    ``design-chat-<slug>`` parsed back; ``[]`` before the first accepted
-    turn."""
+    ``design-chat-<slug>`` parsed back; ``[]`` before the first turn."""
     cslug = conv_slug(slug)
     ref = store.get_ref(kind="conv", id=cslug)
     if ref is None:
@@ -730,15 +817,15 @@ def pending_proposal(
     slug: str,
     turns: list[TranscriptTurn] | None = None,
 ) -> TranscriptTurn | None:
-    """The proposal awaiting a human Apply: the LAST turn, when it proposed
-    ops and no ``design_revisions`` row on the design carries its handle
-    (Apply stamps the proposing ``turn`` onto the revision it writes). A
-    later turn supersedes an unapplied one — only the newest is offered."""
+    """The proposal awaiting a human Apply: the LAST turn that touched the
+    design (rejected and no-op turns change nothing and are skipped), when
+    it proposed ops and no ``design_revisions`` row on the design carries
+    its handle (Apply stamps the proposing ``turn`` onto the revision it
+    writes). A later applied or proposing turn supersedes an unapplied
+    one — only the newest is offered."""
     rows = transcript(store, slug) if turns is None else turns
-    if not rows:
-        return None
-    last = rows[-1]
-    if not last.proposal:
+    last = next((t for t in reversed(rows) if not (t.rejected or t.noop)), None)
+    if last is None or not last.proposal:
         return None
     ref = store.get_ref(kind=kind, id=slug)
     if ref is None:
@@ -779,6 +866,40 @@ def _revision_of(store: Any, ref_id: int) -> int | None:
     return revs[-1].rev if revs else None
 
 
+@dataclass(frozen=True)
+class _Vetted:
+    """One reply through parse → roster gate → dry run. ``error`` names
+    the stage's message; ``stage`` is ``"reply"`` (parse/roster — the ops
+    are unusable, ``ops=[]``) or ``"dry_run"`` (well-formed ops the design
+    refused)."""
+
+    ops: list[dict[str, Any]]
+    rationale: str
+    error: str | None = None
+    stage: Literal["reply", "dry_run"] | None = None
+
+
+def _vet_reply(store: Any, ref: Any, *, kind: DesignKind, reply: str) -> _Vetted:
+    try:
+        ops, rationale = parse_reply(reply)
+    except ValueError as exc:
+        # Keep what the model said (truncated) so the transcript shows
+        # the prose that failed to parse.
+        return _Vetted([], (reply or "").strip()[:500], str(exc), "reply")
+    rejection = vet_ops(ops, kind=kind)
+    if rejection is not None:
+        return _Vetted([], rationale, rejection, "reply")
+    if not ops:
+        return _Vetted([], rationale)
+    if kind == "se":
+        tree = _load_se_tree(store, ref)
+        err = dry_run_se(store, tree, ops, design_slug=str(ref.slug))
+    else:
+        scene, _handles = store.structure_load(ref.id)
+        err = dry_run_structure(scene, ops)
+    return _Vetted(ops, rationale, err, "dry_run" if err is not None else None)
+
+
 def run_turn(
     hub: Hub,
     *,
@@ -805,75 +926,81 @@ def run_turn(
         reply = call(prompt)
     except Exception as exc:
         return TurnResult(applied=False, error=f"model call failed: {exc}")
-    try:
-        ops, rationale = parse_reply(reply)
-    except ValueError as exc:
-        return TurnResult(applied=False, error=str(exc))
-    rejection = vet_ops(ops, kind=kind)
-    if rejection is not None:
-        return TurnResult(applied=False, rationale=rationale, error=rejection)
-    if not ops:
-        # "cannot be expressed as ops" — a valid reply; nothing to write.
-        return TurnResult(applied=False, ops=[], rationale=rationale)
+    vetted = _vet_reply(store, ref, kind=kind, reply=reply)
+    repair: str | None = None
+    if vetted.error is not None:
+        # The one repair round: same contract, the validator's message
+        # quoted back. A transport failure here keeps the first verdict.
+        repair = vetted.error
+        try:
+            reply = call(build_repair_prompt(prompt, reply=reply, error=repair))
+        except Exception as exc:
+            log.warning("design-chat repair call failed: %s", exc)
+            repair = f"{repair} (repair call failed: {exc})"
+        else:
+            vetted = _vet_reply(store, ref, kind=kind, reply=reply)
+    ops, rationale = vetted.ops, vetted.rationale
 
     turn = _next_turn_handle(store, str(ref.slug))
-    if kind == "se":
-        tree = _load_se_tree(store, ref)
-        err = dry_run_se(store, tree, ops, design_slug=str(ref.slug))
-        if is_auto_apply(ops, kind="se"):
-            if err is not None:
-                return TurnResult(
-                    applied=False, ops=ops, rationale=rationale, error=err
-                )
-            try:
-                SeHandler(hub=hub).edit(id=str(ref.slug), ops=ops, turn=turn)
-            except (BadInput, NotFound) as exc:
-                return TurnResult(
-                    applied=False, ops=ops, rationale=rationale, error=str(exc)
-                )
-            except IntegrityError:
-                return TurnResult(
-                    applied=False,
-                    ops=ops,
-                    rationale=rationale,
-                    error=_CONCURRENT_SAVE_ERROR,
-                )
-            revision = _revision_of(store, ref.id)
-            _write_transcript(
-                hub,
-                kind=kind,
-                design_ref=ref,
-                turn=turn,
-                message=message,
-                handles=clicked,
-                rationale=rationale,
-                ops=ops,
-                outcome=f"applied as revision {revision}",
-            )
-            return TurnResult(
-                applied=True,
-                ops=ops,
-                rationale=rationale,
-                valid=True,
-                revision=revision,
-                turn=turn,
-            )
-    else:
-        scene, _handles = store.structure_load(ref.id)
-        err = dry_run_structure(scene, ops)
+
+    def record(outcome: str) -> None:
+        _write_transcript(
+            hub,
+            kind=kind,
+            design_ref=ref,
+            turn=turn,
+            message=message,
+            handles=clicked,
+            rationale=rationale,
+            ops=ops,
+            outcome=outcome,
+            repair=repair,
+        )
+
+    def rejected(error: str) -> TurnResult:
+        record(f"{_REJECTED_PREFIX}{error}")
+        return TurnResult(
+            applied=False,
+            ops=ops,
+            rationale=rationale,
+            error=error,
+            turn=turn,
+            repair=repair,
+        )
+
+    if vetted.stage == "reply":
+        assert vetted.error is not None
+        return rejected(vetted.error)
+    if not ops:
+        # "cannot be expressed as ops" — a valid reply; nothing to apply.
+        record(_NOOP_OUTCOME)
+        return TurnResult(
+            applied=False, ops=[], rationale=rationale, turn=turn, repair=repair
+        )
+    err = vetted.error
+    if kind == "se" and is_auto_apply(ops, kind="se"):
+        if err is not None:
+            return rejected(err)
+        try:
+            SeHandler(hub=hub).edit(id=str(ref.slug), ops=ops, turn=turn)
+        except (BadInput, NotFound) as exc:
+            return rejected(str(exc))
+        except IntegrityError:
+            return rejected(_CONCURRENT_SAVE_ERROR)
+        revision = _revision_of(store, ref.id)
+        record(f"applied as revision {revision}")
+        return TurnResult(
+            applied=True,
+            ops=ops,
+            rationale=rationale,
+            valid=True,
+            revision=revision,
+            turn=turn,
+            repair=repair,
+        )
 
     valid = err is None
-    _write_transcript(
-        hub,
-        kind=kind,
-        design_ref=ref,
-        turn=turn,
-        message=message,
-        handles=clicked,
-        rationale=rationale,
-        ops=ops,
-        outcome=f"proposal ({len(ops)} op(s), {'valid' if valid else f'INVALID: {err}'})",
-    )
+    record(f"proposal ({len(ops)} op(s), {'valid' if valid else f'INVALID: {err}'})")
     return TurnResult(
         applied=False,
         ops=ops,
@@ -882,6 +1009,7 @@ def run_turn(
         valid=valid,
         error=err,
         turn=turn,
+        repair=repair,
     )
 
 
@@ -934,6 +1062,7 @@ __all__ = [
     "apply_proposal",
     "build_digest",
     "build_prompt",
+    "build_repair_prompt",
     "conv_slug",
     "dry_run_se",
     "dry_run_structure",
