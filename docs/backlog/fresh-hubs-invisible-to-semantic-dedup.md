@@ -45,6 +45,16 @@ duplicate hub with its own `pub_id` and its own evidence edges) is expensive to
 undo — merging hubs is a manual adjudication, which is why the remediation
 backlog has a dedup pass at all.
 
+> **2026-09-19:** the agent `put(kind='finding', supporters=)` door now runs
+> the block→dedup_judge→place cascade (`handlers/_finding_hub_mint.py`),
+> which makes this window bite harder: a root converging several readers'
+> proposals in one session mints duplicates whenever two proposals paraphrase
+> one claim, because the first mint is not embedded when the second arrives.
+> The `precis-read-for-question` skill works around it by clustering
+> proposals before the door. Option 1 is still the fix; the embedder is
+> already in hand at that door (`embedder=`), so a hub-only synchronous embed
+> of the new `finding_body` chunk right after `mint_hub` is one call.
+
 ## Options
 
 1. **Embed hub chunks synchronously at mint.** A claim hub is one short

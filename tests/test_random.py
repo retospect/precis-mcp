@@ -351,8 +351,10 @@ def test_slug_view_freshly_random(handler: RandomHandler) -> None:
     """Successive calls return different slugs (with overwhelming
     probability — 4 chars in a 32-char alphabet = 1 in ~1M collision)."""
     slugs = {handler.get(view="slug").body.splitlines()[0] for _ in range(20)}
-    # 20 draws from 1M space — collision probability vanishingly small.
-    assert len(slugs) == 20
+    # 20 draws from 1M space: ONE birthday collision is ~1 in 5000 (it
+    # reddened a gate on 2026-09-19), two is ~1 in 10^8. Freshness is
+    # the property under test, not uniqueness -- tolerate a single hit.
+    assert len(slugs) >= 19
 
 
 def test_slug_view_custom_length(handler: RandomHandler) -> None:

@@ -139,6 +139,15 @@ Identical wording twice is not how convergence happens; the judge over
 nearest hubs is. Trust it, and let the human approve queue be the last
 line ([[precis-nanopub-help]]).
 
+**Cluster proposals before the door, not after.** The door's dedup reads
+hub embeddings, and a hub you minted a minute ago has none yet (the
+embed worker runs on its own cadence, up to an hour). So the door cannot
+see this session's own mints: two readers proposing the same claim in
+different words become two hubs if you feed them in one by one. Group
+the proposals from all readers by claim first, using
+`view='similar'` between proposals or your own judgment, and call the
+door once per group with every group member as a supporter.
+
 ## Step 5 — side-facts: cap them
 ## The paper had a useful fact unrelated to the question
 
