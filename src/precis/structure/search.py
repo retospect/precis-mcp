@@ -72,6 +72,7 @@ in eV, coordinates in Å, never converted to SI here.
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -318,6 +319,19 @@ def _agox_compat_shims() -> None:
     GPR._log_marginal_likelihood_gradient = _scalar_lml_gradient
 
 
+def _ray_tmp_dir() -> Path:
+    """Short, per-process ray temp dir. ray puts Unix sockets under
+    ``<tmp>/session_<ts>_<pid>/sockets/`` and ``AF_UNIX`` paths cap at 107
+    bytes; the job workdir on the cluster scratch mount blew that (second
+    cluster run, job 366190). Per process, not per job: ray stays up across
+    searches in one worker (AGOX's pool actors are module globals), so the
+    first search's dir is the process's dir."""
+    base = Path("/tmp")  # ray's own default; macOS's gettempdir() is ~50 bytes
+    if not (base.is_dir() and os.access(base, os.W_OK)):
+        base = Path(tempfile.gettempdir())
+    return base / f"precis-ray-{os.getpid()}"
+
+
 def _start_ray_with_shim(*, cpu_count: int, tmp_dir: Path) -> None:
     """Start AGOX's local ray cluster ourselves so every worker process runs
     :func:`_agox_compat_shims` before it imports agox.
@@ -428,11 +442,11 @@ def run_search(
     run_cfg = RunConfig(
         path=str(workdir),
         cpu_count=_search_cpu_count(),
-        ray_tmp_dir=str(workdir / "ray"),
+        ray_tmp_dir=str(_ray_tmp_dir()),  # unused: ray is up before create()
     )
 
     # Before create(): the parallel algorithms call ray_startup() inside it.
-    _start_ray_with_shim(cpu_count=run_cfg.cpu_count, tmp_dir=workdir / "ray")
+    _start_ray_with_shim(cpu_count=run_cfg.cpu_count, tmp_dir=_ray_tmp_dir())
     search = algo_classes[spec.algo].create(problem=problem_cfg, run=run_cfg)
 
     deadline = time.monotonic() + float(spec.timeout_s)

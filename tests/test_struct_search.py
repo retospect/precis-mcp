@@ -474,3 +474,13 @@ def test_compat_shim_makes_gpr_lml_gradient_scalar(
     p, grad = FakeGPR()._log_marginal_likelihood_gradient(np.zeros(3))
     assert isinstance(p, float) and p == pytest.approx(-9.12)
     assert grad.shape == (3,)
+
+
+def test_ray_tmp_dir_is_short_enough_for_unix_sockets() -> None:
+    """ray's plasma socket lives ~70 bytes below the temp dir; AF_UNIX caps the
+    whole path at 107. The cluster scratch workdir blew that (job 366190)."""
+    from precis.structure.search import _ray_tmp_dir
+
+    path = str(_ray_tmp_dir())
+    assert len(path) + 70 < 107, path
+    assert path.endswith(f"precis-ray-{__import__('os').getpid()}")
