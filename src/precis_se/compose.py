@@ -35,6 +35,25 @@ stiffness-bearing unit's persistence length (``stiffness unknown`` when
 it has no row), and the switch↔spacer port complementarity (slice 3's
 halves). The Next line is the ``instance_block`` × n + spacer ops script.
 
+``n_max``/``m_max`` bound the linear chain's enumeration (:func:`enumerate_
+compositions`) — an explicit ``compose['n_max'/'m_max']`` is respected as
+given; left out, each switch derives its OWN ``n_max`` from ``ceil(delta_hi
+/ switch.delta_length)`` (only when ``delta`` is boxed) and each spacer its
+OWN ``m_max`` from ``ceil(span_hi / spacer.unit_length)`` (only when
+``span`` is boxed), so a 20–30 nm span box is reachable through a 0.34
+nm/bp spacer (m ≈ 59–88) without a fixed small default capping it below
+4 nm (gr356739) — every derived bound is clamped to :data:`_HARD_MAX`.
+Past :data:`_MAX_COMPOSITIONS` candidates for one (switch, spacer) pair,
+the ``m`` sweep stops walking every value from 1 and narrows to the band
+around the box's own span edges instead (:func:`_band_m_values`) — the
+derivation exists so the feasible band is reached at all, not so every
+unrelated small ``m`` is scored on the way there. When the best reachable
+span (or delta) under the effective bounds still misses the box's lower
+edge, the header says so by name — the bound, the best value actually
+reached, and (unless the bound is already at the hard ceiling) the value
+that would reach it (:func:`_span_reachability_note`/:func:`_delta_
+reachability_note`).
+
 R3 (docs/backlog/port-rotation-and-lever-composition.md "Slice R3") adds
 a second family beside the linear chain: a **rotary unit** — a block
 whose R2-derived transition swing (:mod:`precis_se.kinematics`) or
@@ -91,11 +110,27 @@ _DEFAULT_UNITS = {DELTA_KEY: "Å", LENGTH_KEY: "nm", LP_KEY: "nm"}
 
 _DEFAULT_N_MAX = 6
 _DEFAULT_M_MAX = 4
-#: Sanity ceiling on a caller's ``n_max``/``m_max`` — past this the
-#: enumeration is a search, not a proposal.
-_HARD_MAX = 50
-#: Named cap on compositions one call scores (the backlog's 2 000).
+#: Sanity ceiling on ANY ``n_max``/``m_max`` — an explicit one (checked in
+#: :func:`_count`) or a DERIVED one (gr356739, :func:`_derive_bound`:
+#: ``ceil(delta_hi / switch.delta_length)`` / ``ceil(span_hi /
+#: spacer.unit_length)``, so a caller's box is reachable through a
+#: short-unit spacer like a 0.34 nm/bp dsDNA one without the header's own
+#: "pass n_max=X/m_max=X or larger" suggestion naming a value the caller
+#: could never actually pass) — past this the enumeration is a search,
+#: not a proposal.
+_HARD_MAX = 200
+#: Named cap on compositions one call scores (the backlog's 2 000). Also
+#: the per-(switch, spacer) pair budget past which :func:`_band_m_values`
+#: stops walking every ``m`` from 1 and narrows to the band around the
+#: box's own span edges instead — otherwise a derived ``m_max`` in the
+#: hundreds, crossed with several switches, would either blow the cap
+#: enumerating small-``m`` rows nowhere near the box (never reaching the
+#: actually feasible ones) or just explode.
 _MAX_COMPOSITIONS = 2_000
+#: Extra ``m`` values kept on each side of the span-feasible window when
+#: :func:`_band_m_values` narrows — enough to still show a legible
+#: nearest miss just outside the box's own edges.
+_BAND_PAD = 2
 _ALLOWED_KEYS = frozenset({"delta", "span", "swing", "n_max", "m_max", "conditions"})
 
 
@@ -114,6 +149,16 @@ class ComposeBox:
     swing: WantSpec | None = None
     n_max: int = _DEFAULT_N_MAX
     m_max: int = _DEFAULT_M_MAX
+    #: Whether ``n_max``/``m_max`` were the caller's own explicit count
+    #: (respected as given everywhere) rather than this dataclass's ready-
+    #: to-use default — the linear chain family (:func:`enumerate_
+    #: compositions`) derives its OWN, per-switch/per-spacer bound instead
+    #: of the default when the flag is ``False`` (gr356739,
+    #: :func:`_derive_bound`); the lever/series family (:func:`enumerate_
+    #: levers`) is untouched by gr356739 and always reads ``n_max``/
+    #: ``m_max`` directly, explicit or not.
+    n_max_explicit: bool = True
+    m_max_explicit: bool = True
     #: Filter (gr346735) applied to every per-unit fact read
     #: (:func:`resolve_unit`/:func:`_fact`) — same rule as
     #: ``wants[key]['conditions']`` (:func:`~precis_se.library.
@@ -180,6 +225,8 @@ def parse_compose(compose: dict[str, Any]) -> ComposeBox:
         swing=swing,
         n_max=_count(compose, "n_max", _DEFAULT_N_MAX, lo=1),
         m_max=_count(compose, "m_max", _DEFAULT_M_MAX, lo=0),
+        n_max_explicit="n_max" in compose,
+        m_max_explicit="m_max" in compose,
         conditions=conditions,
     )
 
@@ -759,6 +806,90 @@ def _joining_note(comp: Composition) -> str | None:
     return f"joining {who}: no complementary ports ({a} vs {b})"
 
 
+def _derive_bound(
+    spec: WantSpec | None,
+    default: int,
+    explicit: bool,
+    unit_value: float | None,
+) -> tuple[int, bool]:
+    """One switch's/spacer's own effective ``n_max``/``m_max`` — ``(bound,
+    at_ceiling)`` (gr356739). The caller's explicit count (``explicit``)
+    or the box's ready-to-use default (``default`` — used verbatim when
+    there is nothing to derive from: no box key, or this unit carries no
+    matching length fact) pass straight through with ``at_ceiling=False``;
+    otherwise ``ceil(spec's hi / unit_value)`` clamped to :data:`_HARD_MAX`
+    — the same ceiling :func:`_count` enforces on an explicit value, so a
+    header's "pass n_max=X" suggestion (:func:`_span_reachability_note`/
+    :func:`_delta_reachability_note`) always names something the caller
+    could actually pass."""
+    if explicit or spec is None or unit_value is None or unit_value <= 0:
+        return default, False
+    hi = spec.max if spec.max is not None else spec.target
+    if hi is None or hi <= 0:
+        return default, False
+    derived = math.ceil(hi / unit_value)
+    if derived >= _HARD_MAX:
+        return _HARD_MAX, True
+    return max(1, derived), False
+
+
+def _switch_n_bound(switch: Unit, box: ComposeBox) -> tuple[int, bool]:
+    """``switch``'s own effective ``n_max`` — derived from ``box.delta``
+    (gr356739) unless the caller gave an explicit ``n_max``. Derives off
+    ``delta_eff`` — ``switch.delta`` scaled by ``switch.pss`` when known,
+    the SAME quantity :func:`_delta_attr`/:func:`_delta_reachability_note`
+    score/suggest against — never the unscaled ideal, which would
+    undercount ``n_max`` for any switch with ``pss < 1`` (a low-PSS
+    switch needs MORE n to clear the box, not fewer)."""
+    pss = switch.pss if switch.pss is not None else 1.0
+    per_n = None if switch.delta is None else switch.delta * pss
+    return _derive_bound(box.delta, box.n_max, box.n_max_explicit, per_n)
+
+
+def _spacer_m_bound(spacer: Unit, box: ComposeBox) -> tuple[int, bool]:
+    """``spacer``'s own effective ``m_max`` — derived from ``box.span``
+    (gr356739) unless the caller gave an explicit ``m_max``."""
+    return _derive_bound(box.span, box.m_max, box.m_max_explicit, spacer.length)
+
+
+def _band_m_values(
+    n: int, switch: Unit, spacer: Unit, box: ComposeBox, m_max: int
+) -> list[int]:
+    """The ``m`` values to try for one ``(switch, n, spacer)`` triple when
+    the pair's full ``n_max × m_max`` grid blew past :data:`_MAX_
+    COMPOSITIONS` (gr356739) — the band around the box's own span edges
+    (``[span_lo, span_hi] / spacer.unit_length``, padded by :data:`_BAND_
+    PAD` for a legible nearest miss just outside them) rather than every
+    ``m`` from 1. Always includes ``m_max`` itself, so the true maximum
+    reachable span for this pair stays in the enumerated set even when
+    narrowed — :func:`_span_reachability_note`'s "max X nm" figure reads
+    it straight off the enumerated rows, never a value recomputed (and
+    possibly drifted) separately."""
+    assert (
+        box.span is not None and switch.length is not None and spacer.length is not None
+    )
+    lo_edge = box.span.min if box.span.min is not None else box.span.target
+    hi_edge = box.span.max if box.span.max is not None else box.span.target
+    residual_lo = None if lo_edge is None else lo_edge - n * switch.length
+    residual_hi = None if hi_edge is None else hi_edge - n * switch.length
+    lo_m = (
+        1
+        if residual_lo is None
+        else math.floor(residual_lo / spacer.length) - _BAND_PAD
+    )
+    hi_m = (
+        m_max
+        if residual_hi is None
+        else math.ceil(residual_hi / spacer.length) + _BAND_PAD
+    )
+    lo_m = max(1, lo_m)
+    hi_m = min(m_max, max(lo_m, hi_m))
+    values = list(range(lo_m, hi_m + 1))
+    if m_max not in values:
+        values.append(m_max)
+    return values
+
+
 def enumerate_compositions(
     switches: list[Unit],
     spacers: list[Unit],
@@ -767,19 +898,39 @@ def enumerate_compositions(
     cap: int = _MAX_COMPOSITIONS,
 ) -> tuple[list[Composition], bool]:
     """Every (switch, n, spacer, m) up to the box's counts — ``(rows,
-    capped)``. Attrs/score are filled by :func:`score_compositions`."""
+    capped)``. ``n_max``/``m_max`` are each switch's/spacer's OWN
+    effective bound (:func:`_switch_n_bound`/:func:`_spacer_m_bound`,
+    gr356739) — the caller's explicit count, or one derived from the box.
+    Attrs/score are filled by :func:`score_compositions`."""
     out: list[Composition] = []
     for switch in switches:
         delta_s = switch.delta
         if delta_s is None:  # not a switch — caller's classification slipped
             continue
-        for n in range(1, box.n_max + 1):
-            delta_ideal = n * delta_s
-            delta_eff = (
-                delta_ideal * switch.pss if switch.pss is not None else delta_ideal
-            )
-            for spacer in [None, *spacers]:
-                m_values = range(1, box.m_max + 1) if spacer is not None else range(1)
+        n_max, _n_ceiling = _switch_n_bound(switch, box)
+        for spacer in [None, *spacers]:
+            if spacer is None:
+                m_max = 0
+                narrow = False
+            else:
+                m_max, _m_ceiling = _spacer_m_bound(spacer, box)
+                narrow = (
+                    n_max * m_max > _MAX_COMPOSITIONS
+                    and box.span is not None
+                    and switch.length is not None
+                    and spacer.length is not None
+                )
+            for n in range(1, n_max + 1):
+                delta_ideal = n * delta_s
+                delta_eff = (
+                    delta_ideal * switch.pss if switch.pss is not None else delta_ideal
+                )
+                if spacer is None:
+                    m_values: list[int] | range = range(1)
+                elif narrow:
+                    m_values = _band_m_values(n, switch, spacer, box, m_max)
+                else:
+                    m_values = range(1, m_max + 1)
                 for m in m_values:
                     span: float | None = None
                     if switch.length is not None and (
@@ -1299,6 +1450,125 @@ def _lever_ops_script(comp: LeverComposition) -> list[dict[str, Any]]:
     return ops
 
 
+def _reachability_note(
+    key: str,
+    spec: WantSpec,
+    unit: str,
+    best_value: float | None,
+    handle: str | None,
+    bound_name: str,
+    bound_value: int,
+    at_ceiling: bool,
+    needed: int | None,
+) -> str | None:
+    """One header line — ``None`` when ``best_value`` already reaches the
+    box's own lower edge. Otherwise names the bound (``bound_name=
+    bound_value``), the best ``key`` actually reached and by whom, and
+    either the value that would reach the box (``needed``) or, when the
+    bound derived (:func:`_derive_bound`) is already :data:`_HARD_MAX`,
+    says so instead — a "pass n_max=X" naming a value past the ceiling
+    would be a suggestion the caller could never carry out (gr356739)."""
+    lo = spec.min if spec.min is not None else spec.target
+    if lo is None or best_value is None or best_value >= lo:
+        return None
+    best_str = f"max {best_value:g} {unit}"
+    if handle is not None:
+        best_str += f" with {handle}"
+    if at_ceiling:
+        return (
+            f"{key} unreachable at {bound_name}={bound_value} (hard ceiling; "
+            f"{best_str}) — no {bound_name} within the {_HARD_MAX} hard "
+            f"ceiling reaches the box's {key}"
+        )
+    if needed is None:
+        return f"{key} unreachable at {bound_name}={bound_value} ({best_str})"
+    return (
+        f"{key} unreachable at {bound_name}={bound_value} ({best_str}) — "
+        f"pass {bound_name}={needed} or larger"
+    )
+
+
+def _span_reachability_note(
+    comps: list[Composition], box: ComposeBox, unit: str
+) -> str | None:
+    """Header honesty for ``span`` (gr356739): the best ``span`` any
+    enumerated chain row actually reaches (:func:`enumerate_compositions`
+    always keeps each pair's own maximum in the set — see :func:`_band_m_
+    values`) versus the box's own lower edge. Names ``m_max`` + the spacer
+    when the winning chain uses one (the derived-bound key, gr356739);
+    falls back to ``n_max`` + the switch for a spacer-free chain, where
+    only the switch count grows the span."""
+    if box.span is None:
+        return None
+    reachable = [c for c in comps if c.span is not None]
+    if not reachable:
+        return None
+    best = max(reachable, key=lambda c: c.span if c.span is not None else float("-inf"))
+    assert best.span is not None
+    lo = box.span.min if box.span.min is not None else box.span.target
+    if lo is None or best.span >= lo:
+        return None
+    if best.spacer is not None and best.spacer.length is not None:
+        bound_value, at_ceiling = _spacer_m_bound(best.spacer, box)
+        bound_name, handle = "m_max", best.spacer.handle
+        needed = None
+        if not at_ceiling and best.switch.length is not None:
+            residual = lo - best.n * best.switch.length
+            needed_m = max(1, math.ceil(residual / best.spacer.length))
+            needed = needed_m if needed_m <= _HARD_MAX else None
+    elif best.switch.length is not None:
+        bound_value, at_ceiling = _switch_n_bound(best.switch, box)
+        bound_name, handle = "n_max", best.switch.handle
+        needed_n = max(1, math.ceil(lo / best.switch.length))
+        needed = needed_n if (not at_ceiling and needed_n <= _HARD_MAX) else None
+    else:
+        return None
+    return _reachability_note(
+        "span",
+        box.span,
+        unit,
+        best.span,
+        handle,
+        bound_name,
+        bound_value,
+        at_ceiling,
+        needed,
+    )
+
+
+def _delta_reachability_note(
+    comps: list[Composition], box: ComposeBox, unit: str
+) -> str | None:
+    """Header honesty for ``delta`` (gr356739's "same for n_max vs delta
+    when a switch's delta_length is small") — mirrors :func:`_span_
+    reachability_note` one key over: ``n_max`` is always the bound here
+    (only a switch's own count grows ``delta``, never a spacer's)."""
+    if box.delta is None or not comps:
+        return None
+    best = max(comps, key=lambda c: c.delta_eff)
+    lo = box.delta.min if box.delta.min is not None else box.delta.target
+    if lo is None or best.delta_eff >= lo:
+        return None
+    bound_value, at_ceiling = _switch_n_bound(best.switch, box)
+    needed = None
+    if not at_ceiling:
+        pss = best.switch.pss if best.switch.pss is not None else 1.0
+        if pss > 0 and best.switch.delta is not None and best.switch.delta > 0:
+            needed_n = max(1, math.ceil((lo / pss) / best.switch.delta))
+            needed = needed_n if needed_n <= _HARD_MAX else None
+    return _reachability_note(
+        "delta",
+        box.delta,
+        unit,
+        best.delta_eff,
+        best.switch.handle,
+        "n_max",
+        bound_value,
+        at_ceiling,
+        needed,
+    )
+
+
 def render_compositions(
     rows: list[Composition | LeverComposition],
     box: ComposeBox,
@@ -1311,6 +1581,7 @@ def render_compositions(
     capped: bool,
     narrow_note: str = "",
     source_note: str = "",
+    bound_notes: list[str] | None = None,
     page_size: int = 20,
 ) -> str:
     header = f"# {len(rows)} composition(s) ranked for compose={compose_repr!r}"
@@ -1337,6 +1608,8 @@ def render_compositions(
     if capped:
         facts += f"; enumeration capped at {_MAX_COMPOSITIONS} — lower n_max/m_max"
     lines.append(facts)
+    for note in bound_notes or []:
+        lines.append(note)
     if unknown:
         lines.append(
             f"⚠ not a registered property/spec: {', '.join(unknown)} "
@@ -1459,6 +1732,7 @@ def render_compose(
         )
         ordered_levers = library.order_rows(levers, numeric_keys)
         rows: list[Composition | LeverComposition] = list(ordered_levers)
+        bound_notes: list[str] = []
     else:
         # A rotary-only library only has something to rank when this box
         # will actually grow a lever row off it (``box.delta`` — R3); a
@@ -1478,6 +1752,18 @@ def render_compose(
         chain_rows = score_compositions(
             store, comps, box, want_specs, cache, units=units
         )
+        # Header honesty (gr356739): say when the effective n_max/m_max
+        # still can't reach the box's own lower edge, off the FULL
+        # enumerated set — before it gets merged with any lever rows or
+        # paged down to page_size below.
+        bound_notes = [
+            note
+            for note in (
+                _span_reachability_note(comps, box, units[LENGTH_KEY]),
+                _delta_reachability_note(comps, box, units[DELTA_KEY]),
+            )
+            if note is not None
+        ]
         lever_rows: list[LeverComposition] = []
         lever_capped = False
         if box.delta is not None and rotaries:
@@ -1517,6 +1803,7 @@ def render_compose(
         capped=capped,
         narrow_note=narrow_note,
         source_note=source_note,
+        bound_notes=bound_notes,
         page_size=page_size,
     )
 

@@ -338,12 +338,14 @@ library and scores each composition against the box exactly like a
 exists (the nearest misses show with their distances). `delta` (Å,
 port-to-port stroke) and `span` (nm, long-state length) take the same
 scalar / `[lo, hi]` / dict shapes as `wants`; at least one is required.
-`n_max` (default 6) and `m_max` (default 4) bound the enumeration (cap
-2 000 compositions, said in the header). `wants=` may ride along: its
-keys score on the **switch** block; `q=` narrows designs as before. A
-`conditions` box key (same shape as `wants[key]['conditions']`) filters
-every per-unit fact read — e.g. pick the row logged at one wavelength
-over a newer one at another.
+`n_max`/`m_max` (default 6/4) bound the enumeration (cap 2 000
+compositions). Left unset, each switch/spacer derives its own from the
+box's `delta`/`span` hi edge (clamped to 200) — the header names the
+bound and fix when that still misses. `wants=` may ride along: its keys
+score on the **switch** block; `q=` narrows designs. A `conditions` box
+key (same shape as `wants[key]['conditions']`) filters every per-unit
+fact read — e.g. pick the row logged at one wavelength over a newer
+one.
 
 Facts are star-schema rows, never on the block — five ordinary
 `material`/`component` properties (an unknown one mints `proposed`-tier
@@ -360,8 +362,7 @@ Every row surfaces what a stroke estimate must not hide: the PSS-scaled
 (thermal reverse), τ½ 2 d)`), `floppy: span 23 nm > Lp 15 nm (rod#u)`
 when the span exceeds the spacer's (or, without one, the switch's)
 persistence length — `stiffness unknown` when there is no row — and
-the switch↔spacer port complementarity from the slice 3 halves
-(`azide↔alkyne (CuAAC)`).
+the switch↔spacer port complementarity (`azide↔alkyne (CuAAC)`).
 
 ```python
 search(kind='se', compose={'delta': [8, 9], 'span': [20, 30]},
@@ -377,10 +378,9 @@ ports — paste it into `edit(kind='se', id=<yours>, ops=[…])` and run
 DRC on the composed tree. `compose='<design>#<block>'` (or
 `'<design>#<block>/<from>-><to>'`) reads the box off that block's own
 declared transition `requires=` instead of a literal dict — its
-`stimulus` comes from `driver_kind`. Exactly one of the block's
-transitions may carry a `requires=` box; with none, declare one
-(`declare_transitions … requires=`); with several, add the
-`/<from>-><to>` selector to pick one.
+`stimulus` comes from `driver_kind`. Exactly one transition may carry
+`requires=`; none → `declare_transitions … requires=`; several → add the
+`/<from>-><to>` selector.
 
 ## Lever family — rotary unit + arms (compose swing=)
 

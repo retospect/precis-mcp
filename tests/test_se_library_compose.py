@@ -300,6 +300,99 @@ def test_no_switch_in_the_library_says_nothing_to_compose(
     assert "property='delta_length'" in body
 
 
+# ── derived n_max/m_max bounds (gr356739) ───────────────────────────────
+
+
+def test_span_box_derives_m_max_from_the_spacer_unit_length(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """The gripe's own case: a 20-30 nm span box over a 0.34 nm/bp spacer
+    needs m in the 50s-80s — the old fixed default (4) could never reach
+    it (best 1.36 nm). With no ``m_max`` given, each spacer derives its
+    own from ``ceil(span_hi / unit_length)``; the switch (``length=0`` —
+    all the span comes from the spacer here) still derives its own
+    ``n_max`` from ``ceil(delta_hi / delta_length)`` so the PSS-scaled
+    delta band is reachable too."""
+    _unit(
+        handler, material, store, "azo",
+        delta=3.4, length=0.0, pss=0.8, roles=("azide",),
+    )  # fmt: skip
+    _unit(handler, material, store, "dsdna-bp", length=0.34, roles=("alkyne",))
+
+    body = handler.search(compose={"delta": [8, 9], "span": [20, 30]}).body
+    lines = _row_lines(body)
+    assert lines, body
+    assert "unreachable" not in body
+    matches = [ln for ln in lines if "✓span" in ln and "3 × azo#u" in ln]
+    assert matches, body
+    for ln in matches:
+        m = int(ln.split("× dsdna-bp#u")[0].rsplit("+", 1)[1].strip().split()[0])
+        assert 59 <= m <= 88, ln
+    assert "8.16 Å at PSS 80 % short" in matches[0]
+
+
+def test_explicit_m_max_below_the_derived_bound_says_unreachable(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """The same box, but the caller pins ``m_max=4`` explicitly — derived
+    bounds never override an explicit one. The header names the bound
+    that IS the problem, the best span actually reached under it, and the
+    ``m_max`` that would reach the box's own lower edge (20 nm / 0.34
+    nm/bp = 59 — computed, never hard-coded in the handler)."""
+    _unit(
+        handler, material, store, "azo",
+        delta=3.4, length=0.0, pss=0.8, roles=("azide",),
+    )  # fmt: skip
+    _unit(handler, material, store, "dsdna-bp", length=0.34, roles=("alkyne",))
+
+    body = handler.search(compose={"delta": [8, 9], "span": [20, 30], "m_max": 4}).body
+    assert (
+        "span unreachable at m_max=4 (max 1.36 nm with dsdna-bp#u) — "
+        "pass m_max=59 or larger" in body
+    )
+    assert all("✗span" in ln for ln in _row_lines(body) if "3 × azo#u" in ln)
+
+
+def test_derived_m_max_clamped_to_the_hard_ceiling_says_so(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """A spacer with a tiny ``unit_length`` against a huge span box would
+    derive an ``m_max`` in the hundreds of thousands — clamped to
+    :data:`~precis_se.compose._HARD_MAX` (200). Nothing in the library
+    reaches the box even at the ceiling, so the header says the bound
+    IS the ceiling instead of naming an ``m_max`` the caller could never
+    actually pass (the same 200 ceiling caps an explicit value too)."""
+    _unit(handler, material, store, "sw", delta=3.4, length=0.0)
+    _unit(handler, material, store, "tiny", length=0.001)
+
+    body = handler.search(compose={"span": [500, 600], "n_max": 1}).body
+    assert (
+        "span unreachable at m_max=200 (hard ceiling; max 0.2 nm with "
+        "tiny#u) — no m_max within the 200 hard ceiling reaches the "
+        "box's span" in body
+    )
+    assert "pass m_max=" not in body
+
+
+def test_derived_n_max_accounts_for_pss_scaling(
+    handler: SeHandler, material: MaterialHandler, store: Store
+) -> None:
+    """A low-PSS switch needs MORE ``n`` to clear the box, not fewer —
+    ``delta_eff = n * delta_length * pss`` is what the box is scored
+    against (:func:`~precis_se.compose._delta_attr`), so the derivation
+    must divide by ``pss`` the same way :func:`~precis_se.compose.
+    _delta_reachability_note`'s own suggestion already does. Unscaled,
+    ``ceil(9 / 3.4) = 3`` would cap the sweep at n=3 (best 3.06 Å) and
+    the box would wrongly read as unreachable; scaled by pss=0.3 the
+    true n=8 (8.16 Å) is in range and reachable."""
+    _unit(handler, material, store, "lowpss", delta=3.4, pss=0.3, roles=("azide",))
+    body = handler.search(compose={"delta": [8, 9]}).body
+    assert "unreachable" not in body
+    matches = [ln for ln in _row_lines(body) if "✓delta" in ln]
+    assert matches, body
+    assert "8.16 Å at PSS 30 % short" in matches[0]
+
+
 # ── R3: lever family — rotary unit + arm units, swing box key ───────────
 # docs/backlog/port-rotation-and-lever-composition.md "Slice R3"
 
@@ -742,7 +835,7 @@ def test_compose_string_form_mcp_door_takes_a_string(
         ({"delta": "long"}, "must be a number"),
         ({"delta": True}, "must be a number"),
         ({"delta": [1, 2], "n_max": 0}, "n_max"),
-        ({"delta": [1, 2], "m_max": 99}, "m_max"),
+        ({"delta": [1, 2], "m_max": 999}, "m_max"),
     ],
 )
 def test_parse_compose_refusals(compose: Any, match: str) -> None:
