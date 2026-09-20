@@ -99,6 +99,7 @@ def stub_predicate_sql(
     id_kinds: Iterable[str] = _STUB_ID_KIND_ORDER,
     *,
     exclude_retracted: bool = True,
+    pin_meta_key: str | None = None,
 ) -> str:
     """The shared "is this a fetchable stub" WHERE-fragment.
 
@@ -119,9 +120,28 @@ def stub_predicate_sql(
     Pass ``False`` only for a caller that deliberately wants retracted
     stubs back (none exist today; this is the opt-out valve, not a
     conditional default).
+
+    ``pin_meta_key`` (default ``None``) widens the ``pdf_sha256 IS
+    NULL`` leg with an OR: a ref that DOES carry a PDF but is stamped
+    ``meta.<pin_meta_key>`` still qualifies. The one caller today is
+    ``fetch_oa.claim_stubs_to_fetch``'s ``markup_refetch`` pin
+    (gr372781 item 3): a front-matter-only Elsevier preview looks
+    "done" to the plain predicate (it has a ``pdf_sha256``) but is
+    worse than no body at all, so the fetcher needs to be able to
+    re-claim it. Every other call site (the ``/drive`` stub backlog,
+    ``requeue_stubs_for_fetch``) leaves this ``None`` — a pinned ref
+    there is a scheduled re-fetch, not a "no PDF yet" stub in the
+    ordinary sense, so it stays out of those displays. Uses
+    ``jsonb_exists()`` rather than the ``?`` operator: this predicate
+    feeds queries that also carry ``%(name)s``-style named parameters
+    (``claim_stubs_to_fetch``), and a literal ``?`` collides with that
+    placeholder scan.
     """
+    pdf_clause = f"{alias}.pdf_sha256 IS NULL"
+    if pin_meta_key:
+        pdf_clause = f"({pdf_clause} OR jsonb_exists({alias}.meta, '{pin_meta_key}'))"
     predicate = (
-        f"{alias}.kind = 'paper' AND {alias}.pdf_sha256 IS NULL "
+        f"{alias}.kind = 'paper' AND {pdf_clause} "
         f"AND {alias}.retired_at IS NULL "
         f"AND {fetchable_id_exists_sql(alias, id_kinds=id_kinds)}"
     )

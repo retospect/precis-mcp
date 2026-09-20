@@ -277,8 +277,19 @@ def claim_stubs_to_fetch(
     """Lock and return up to ``limit`` stubs needing an OA fetch attempt.
 
     A stub qualifies when ``refs.pdf_sha256 IS NULL`` AND at least one
-    of {DOI, arXiv, S2 id} is registered. Excludes stubs tried by *any*
-    ``fetcher:%`` source within an **exponentially-widening** window —
+    of {DOI, arXiv, S2 id} is registered. **Escape hatch:** a ref that
+    DOES carry a PDF but is stamped ``meta.markup_refetch`` also
+    qualifies (:func:`~precis.store._stub_predicate.stub_predicate_sql`'s
+    ``pin_meta_key``) — that pin marks a front-matter-only Elsevier
+    preview (gr372781 item 3: an entitlement-limited ``%PDF-`` page 1
+    that ingested silently as a handful of chunks), which is worse than
+    no body at all but looks "done" to the plain ``pdf_sha256 IS NULL``
+    predicate; :func:`precis.ingest.paper_hygiene.
+    requeue_front_matter_only_papers` stamps the pin, and
+    :func:`precis.ingest.db_writer.register_aliases_and_maybe_upgrade`
+    is what actually replaces the body once the re-fetch lands. Excludes
+    stubs tried by *any* ``fetcher:%`` source within an
+    **exponentially-widening** window —
     the retry window applies cross-source by convention (if one source
     had nothing N hours ago, the others probably won't either).
 
@@ -388,7 +399,7 @@ def claim_stubs_to_fetch(
                    AND q.retired_at IS NULL
                    AND t.namespace = 'STATUS' AND t.value = 'active'
           ) qb ON TRUE
-         WHERE {stub_predicate_sql("r")}
+         WHERE {stub_predicate_sql("r", pin_meta_key="markup_refetch")}
            AND (
                  fe.last_ts IS NULL
                  OR fe.last_ts < now() - (

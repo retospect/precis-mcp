@@ -256,6 +256,126 @@ def test_requeue_dry_run_writes_nothing(store: Store) -> None:
     assert "oa_requeued" not in _meta(store, rid)
 
 
+# ── front-matter-only Elsevier previews ───────────────────────────
+
+
+def _body_chunk(store: Store, ref_id: int, ord_: int, text: str) -> None:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, 'paragraph', %s)",
+                (ref_id, ord_, text),
+            )
+
+
+def _stamp_pdf(store: Store, ref_id: int, sha: str) -> None:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/x') "
+                "ON CONFLICT (pdf_sha256) DO NOTHING",
+                (sha, sha),
+            )
+            conn.execute("UPDATE refs SET pdf_sha256=%s WHERE ref_id=%s", (sha, ref_id))
+
+
+_FOOTER_TEXT = (
+    "Contents lists available at ScienceDirect\n\n"
+    "journal homepage: www.elsevier.com/locate/xyz"
+)
+
+
+def _seed_front_matter_paper(
+    store: Store,
+    *,
+    slug: str,
+    n_body_chunks: int = 8,
+    include_footer: bool = True,
+    include_references: bool = False,
+    elsevier_xml_fetch_ok: bool = False,
+) -> int:
+    """Seed a live paper shaped like an Elsevier front-matter-only preview."""
+    rid = _paper(store, slug=slug, title=f"Paper {slug}")
+    sha = f"{rid:064d}"
+    _stamp_pdf(store, rid, sha)
+    _fetch_event(store, rid, "fetch_ok", hours_ago=1, source="fetcher:elsevier")
+    if elsevier_xml_fetch_ok:
+        _fetch_event(store, rid, "fetch_ok", hours_ago=1, source="fetcher:elsevier_xml")
+    for i in range(n_body_chunks):
+        text = f"Body paragraph {i}."
+        if i == n_body_chunks - 1 and include_footer:
+            text = _FOOTER_TEXT
+        _body_chunk(store, rid, i, text)
+    if include_references:
+        _body_chunk(store, rid, n_body_chunks, "References\n[1] Some citation.")
+    return rid
+
+
+class TestRequeueFrontMatterOnlyPapers:
+    def test_detects_and_pins_front_matter_only_paper(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import requeue_front_matter_only_papers
+
+        rid = _seed_front_matter_paper(store, slug="fmo1")
+
+        out = requeue_front_matter_only_papers(store, dry_run=False)
+        assert out == [rid]
+
+        marker = _meta(store, rid).get("markup_refetch")
+        assert marker and marker["body_chunks"] == 8
+        assert marker["reason"] == "front-matter-only body"
+        assert _fetcher_event_count(store, rid) == 0  # backoff cleared
+
+        with store.pool.connection() as conn:
+            breadcrumb = conn.execute(
+                "SELECT event, payload FROM ref_events "
+                "WHERE ref_id=%s AND source='paper_reconcile'",
+                (rid,),
+            ).fetchone()
+        assert breadcrumb is not None
+        assert breadcrumb[0] == "markup_refetch_queued"
+        assert breadcrumb[1]["body_chunks"] == 8
+
+    def test_dry_run_writes_nothing(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import requeue_front_matter_only_papers
+
+        rid = _seed_front_matter_paper(store, slug="fmo-dry1")
+
+        out = requeue_front_matter_only_papers(store, dry_run=True)
+        assert out == [rid]
+        assert "markup_refetch" not in _meta(store, rid)
+        assert _fetcher_event_count(store, rid) == 1  # untouched
+
+    def test_skips_paper_with_elsevier_xml_fetch_ok(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import requeue_front_matter_only_papers
+
+        _seed_front_matter_paper(store, slug="fmo-xml1", elsevier_xml_fetch_ok=True)
+        assert requeue_front_matter_only_papers(store, dry_run=False) == []
+
+    def test_skips_paper_with_references_chunk(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import requeue_front_matter_only_papers
+
+        _seed_front_matter_paper(store, slug="fmo-refs1", include_references=True)
+        assert requeue_front_matter_only_papers(store, dry_run=False) == []
+
+    def test_skips_paper_over_chunk_cap(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import requeue_front_matter_only_papers
+
+        _seed_front_matter_paper(store, slug="fmo-big1", n_body_chunks=20)
+        assert requeue_front_matter_only_papers(store, dry_run=False) == []
+
+    def test_skips_already_pinned_paper(self, store: Store) -> None:
+        from precis.ingest.paper_hygiene import requeue_front_matter_only_papers
+
+        rid = _seed_front_matter_paper(store, slug="fmo-pinned1")
+        with store.tx() as conn:
+            store.stamp_ref_meta(
+                rid, {"markup_refetch": {"at": "2026-01-01T00:00:00+00:00"}}, conn=conn
+            )
+        assert requeue_front_matter_only_papers(store, dry_run=False) == []
+
+
 # ── metadata hygiene stats ───────────────────────────────────────
 
 

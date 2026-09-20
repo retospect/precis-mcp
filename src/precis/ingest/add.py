@@ -756,6 +756,47 @@ def _precis_add_markup(
         return _ingest_markup(input, store=store)
 
 
+def _note_markup_outcome(
+    store: Store,
+    ref_id: int | None,
+    *,
+    event: str,
+    fmt: str,
+    path: Path,
+    **payload: Any,
+) -> None:
+    """Record how a markup trigger resolved, on the paper's own event log.
+
+    The markup leg's whole claim over the PDF leg is that a non-entitled
+    source fails *loudly* (``MarkupParseError``) instead of silently
+    leaving an entitlement-preview body in place. That loudness used to
+    exist only in this worker's log: ``get(kind='paper', view='log')``
+    showed a ``fetch_ok`` for the XML and nothing about whether the XML
+    ever became a body, so a one-page paper was indistinguishable from a
+    full-text one without reading its chunks (gripe 372781).
+
+    Best-effort by construction — a failure to journal must never fail an
+    ingest that otherwise succeeded, and ``ref_id`` is ``None`` for a
+    manual drop with no sidecar stub to attach to.
+    """
+    if ref_id is None:
+        return
+    try:
+        store.append_event(
+            int(ref_id),
+            source=f"markup:{fmt}",
+            event=event,
+            payload={"fmt": fmt, "file": path.name, **payload},
+        )
+    except Exception as exc:  # pragma: no cover - journalling is best-effort
+        log.warning(
+            "precis_add (markup): could not journal %s for ref_id=%s: %s",
+            event,
+            ref_id,
+            exc,
+        )
+
+
 def _ingest_markup(
     input: MarkupInput,
     *,
@@ -784,6 +825,14 @@ def _ingest_markup(
             input.fmt,
             exc,
             input.markup_path.name,
+        )
+        _note_markup_outcome(
+            store,
+            input.fold_ref_id,
+            event="markup_parse_failed",
+            fmt=input.fmt,
+            path=input.markup_path,
+            error=str(exc)[:300],
         )
         _recover_markup_parse_failure(input, store=store)
         # The markup itself is unparseable and always will be — the paper's
@@ -837,6 +886,18 @@ def _ingest_markup(
                 input.fmt,
                 chunks_written,
             )
+            # chunks_written == 0 here is the attach-only path (the ref
+            # already had a body) — worth journalling precisely because
+            # it looks identical to a successful body ingest otherwise.
+            _note_markup_outcome(
+                store,
+                existing,
+                event="markup_ingested",
+                fmt=input.fmt,
+                path=input.markup_path,
+                chunks_written=chunks_written,
+                ref_state="folded",
+            )
             return _with_kind(
                 _hit_result_from_db(
                     existing,
@@ -851,6 +912,15 @@ def _ingest_markup(
         conn.commit()
 
     _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
+    _note_markup_outcome(
+        store,
+        result.ref_id,
+        event="markup_ingested",
+        fmt=input.fmt,
+        path=input.markup_path,
+        chunks_written=result.chunks_written,
+        ref_state="new",
+    )
     log.info(
         "precis_add (markup): wrote new ref_id=%s from %s "
         "(fmt=%s, chunks=%d, printable=%s)",

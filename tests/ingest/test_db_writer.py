@@ -500,6 +500,251 @@ class TestAttachOnlyGuard:
         assert pdf_sha is not None and pdf_sha[0] is None  # still chunks-only
 
 
+class TestMarkupBackfillReplace:
+    """register_aliases_and_maybe_upgrade — gr372781 item 3 gated replace."""
+
+    def _seed_pinned_ref(self, store, *, n_old_body: int = 8) -> int:
+        """A ref carrying a front-matter-only body plus a card, pinned
+        the way ``paper_hygiene.requeue_front_matter_only_papers`` would."""
+        from psycopg.types.json import Jsonb
+
+        chunks = [
+            ChunkToWrite(ord=-1, chunk_kind="card_combined", text="Card\nAuthor"),
+        ] + [
+            ChunkToWrite(ord=i, chunk_kind="paragraph", text=f"Old body {i}.")
+            for i in range(n_old_body)
+        ]
+        stub = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="crossref",
+            pdf_sha256="1" * 64,
+            content_hash="2" * 64,
+            pdf_storage_path="/corpus/p/preview24.pdf",
+            pdf_page_count=1,
+            pdf_size_bytes=100,
+            chunks=chunks,
+        )
+        with store.pool.connection() as conn:
+            res = write_paper(stub, conn=conn)
+            conn.commit()
+        ref_id = res.ref_id
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                (
+                    Jsonb(
+                        {
+                            "markup_refetch": {
+                                "at": "2026-09-20T00:00:00+00:00",
+                                "reason": "front-matter-only body",
+                                "body_chunks": n_old_body,
+                            }
+                        }
+                    ),
+                    ref_id,
+                ),
+            )
+            conn.commit()
+        return ref_id
+
+    def test_replaces_body_when_growth_guard_clears(self, store):
+        ref_id = self._seed_pinned_ref(store, n_old_body=8)
+
+        new_chunks = [
+            ChunkToWrite(ord=i, chunk_kind="paragraph", text=f"New body {i}.")
+            for i in range(40)
+        ]
+        markup = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="markup",
+            content_hash="3" * 64,
+            chunks=new_chunks,
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, markup, conn=conn)
+            conn.commit()
+
+        assert written == 40
+        with store.pool.connection() as conn:
+            body_count = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0", (ref_id,)
+            ).fetchone()
+            card_count = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord < 0", (ref_id,)
+            ).fetchone()
+            first_body_text = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id=%s AND ord = 0", (ref_id,)
+            ).fetchone()
+            event = conn.execute(
+                "SELECT event, payload FROM ref_events "
+                "WHERE ref_id=%s AND source='markup_backfill'",
+                (ref_id,),
+            ).fetchone()
+        assert body_count is not None and body_count[0] == 40
+        assert card_count is not None and card_count[0] == 1  # card untouched
+        assert first_body_text is not None and first_body_text[0] == "New body 0."
+        assert event is not None
+        assert event[0] == "body_replaced"
+        assert event[1]["old_chunks"] == 8
+        assert event[1]["new_chunks"] == 40
+
+        ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        assert ref is not None
+        assert "markup_refetch" not in (ref.meta or {})
+
+    def test_declines_replace_when_growth_guard_fails(self, store):
+        ref_id = self._seed_pinned_ref(store, n_old_body=8)
+
+        new_chunks = [
+            ChunkToWrite(ord=i, chunk_kind="paragraph", text=f"Meh body {i}.")
+            for i in range(10)
+        ]
+        markup = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="markup",
+            content_hash="4" * 64,
+            chunks=new_chunks,
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, markup, conn=conn)
+            conn.commit()
+
+        assert written == 0
+        with store.pool.connection() as conn:
+            body_count = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0", (ref_id,)
+            ).fetchone()
+            event = conn.execute(
+                "SELECT event, payload FROM ref_events "
+                "WHERE ref_id=%s AND source='markup_backfill'",
+                (ref_id,),
+            ).fetchone()
+        assert body_count is not None and body_count[0] == 8  # unchanged
+        assert event is not None
+        assert event[0] == "body_replace_declined"
+        assert event[1]["old_chunks"] == 8
+        assert event[1]["new_chunks"] == 10
+
+        ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        assert ref is not None
+        assert "markup_refetch" not in (ref.meta or {})  # pin cleared regardless
+
+    def test_printable_only_attach_does_not_consume_the_pin(self, store):
+        """The companion PDF must not spend the ref's one shot.
+
+        In the backfill's own fetch order the ``printable_only`` companion
+        (Marker skipped, so no body chunks) is ingested BEFORE the markup
+        trigger becomes watcher-visible. If that attach were allowed to
+        see the pin it would decline on ``new_body == 0``, clear the
+        one-shot pin, and leave the markup ingest that follows to take the
+        ordinary attach-only path — making the whole backfill a silent
+        no-op on every paper.
+        """
+        ref_id = self._seed_pinned_ref(store, n_old_body=8)
+
+        printable = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="fetcher:elsevier",
+            pdf_sha256="9" * 64,
+            content_hash="a" * 64,
+            pdf_storage_path="/corpus/p/preview24-again.pdf",
+            pdf_page_count=1,
+            pdf_size_bytes=100,
+            chunks=[],  # printable_only: Marker never ran
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, printable, conn=conn)
+            conn.commit()
+
+        assert written == 0
+        with store.pool.connection() as conn:
+            body_count = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0", (ref_id,)
+            ).fetchone()
+            events = conn.execute(
+                "SELECT count(*) FROM ref_events "
+                "WHERE ref_id=%s AND source='markup_backfill'",
+                (ref_id,),
+            ).fetchone()
+        assert body_count is not None and body_count[0] == 8  # unchanged
+        assert events is not None and events[0] == 0  # no decline recorded
+
+        ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        assert ref is not None
+        assert "markup_refetch" in (ref.meta or {})  # pin SURVIVES
+
+    def test_markup_still_replaces_after_the_printable_attach(self, store):
+        """End-to-end ordering: printable attach, then the markup body."""
+        ref_id = self._seed_pinned_ref(store, n_old_body=8)
+
+        printable = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="fetcher:elsevier",
+            pdf_sha256="9" * 64,
+            content_hash="a" * 64,
+            pdf_storage_path="/corpus/p/preview24-again.pdf",
+            pdf_page_count=1,
+            pdf_size_bytes=100,
+            chunks=[],
+        )
+        markup = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="markup",
+            content_hash="b" * 64,
+            chunks=[
+                ChunkToWrite(ord=i, chunk_kind="paragraph", text=f"Full body {i}.")
+                for i in range(40)
+            ],
+        )
+        with store.pool.connection() as conn:
+            register_aliases_and_maybe_upgrade(ref_id, printable, conn=conn)
+            written = register_aliases_and_maybe_upgrade(ref_id, markup, conn=conn)
+            conn.commit()
+
+        assert written == 40
+        with store.pool.connection() as conn:
+            body_count = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0", (ref_id,)
+            ).fetchone()
+            event = conn.execute(
+                "SELECT event FROM ref_events "
+                "WHERE ref_id=%s AND source='markup_backfill'",
+                (ref_id,),
+            ).fetchone()
+        assert body_count is not None and body_count[0] == 40
+        assert event is not None and event[0] == "body_replaced"
+
+
 def _make_paper(
     *,
     paper_id: str,

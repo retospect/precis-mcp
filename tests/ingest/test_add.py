@@ -767,3 +767,141 @@ class TestMarkupParseFailureRecovery:
         ):
             with pytest.raises(MarkupTriggerSpent):
                 precis_add(MarkupInput(markup_path=markup, fmt="jats"), store=store)
+
+
+class TestMarkupOutcomeJournal:
+    """gripe 372781: how a markup trigger resolved must land on the paper's
+    OWN event log, not only in the worker log.
+
+    Before this, ``get(kind='paper', view='log')`` showed an
+    ``elsevier_xml fetch_ok`` and then nothing — a paper left holding an
+    entitlement-preview PDF body because its XML never parsed was
+    indistinguishable from a genuine full-text markup ingest without
+    reading the chunks by hand.
+    """
+
+    @staticmethod
+    def _events(store, ref_id: int) -> list[tuple[str, str, dict]]:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event, payload FROM ref_events "
+                "WHERE ref_id = %s AND source LIKE 'markup:%%' ORDER BY event_id",
+                (ref_id,),
+            ).fetchall()
+        return [(str(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+
+    def test_parse_failure_is_journalled_on_the_fold_ref(
+        self, store, tmp_path: Path
+    ) -> None:
+        stub = store.insert_ref(kind="paper", slug="jrnlfail83", title="Parked")
+        markup = tmp_path / "jrnlfail83.xml"
+        markup.write_bytes(b"<xml>not real elsevier</xml>")
+
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup",
+            side_effect=MarkupParseError("Elsevier XML: no <body>", fmt="elsevier_xml"),
+        ):
+            with pytest.raises(MarkupTriggerSpent):
+                precis_add(
+                    MarkupInput(
+                        markup_path=markup,
+                        fmt="elsevier_xml",
+                        fold_ref_id=stub.id,
+                    ),
+                    store=store,
+                )
+
+        events = self._events(store, stub.id)
+        assert [(src, ev) for src, ev, _ in events] == [
+            ("markup:elsevier_xml", "markup_parse_failed")
+        ]
+        payload = events[0][2]
+        assert payload["fmt"] == "elsevier_xml"
+        assert payload["file"] == "jrnlfail83.xml"
+        # The reason has to survive into the payload — "no <body>" is
+        # precisely the entitlement signal an operator is looking for.
+        assert "no <body>" in payload["error"]
+
+    def test_new_ref_ingest_is_journalled_with_its_chunk_count(
+        self, store, tmp_path: Path
+    ) -> None:
+        markup = tmp_path / "jrnlnew83.xml"
+        markup.write_bytes(b"<xml>real enough</xml>")
+        paper = _fixture_paper(paper_id="jrnlnewpid", doi="10.1000/jrnl-new")
+
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup",
+            return_value=paper,
+        ):
+            result = precis_add(
+                MarkupInput(markup_path=markup, fmt="elsevier_xml"), store=store
+            )
+
+        assert result is not None
+        events = self._events(store, result.ref_id)
+        assert [(src, ev) for src, ev, _ in events] == [
+            ("markup:elsevier_xml", "markup_ingested")
+        ]
+        payload = events[0][2]
+        assert payload["ref_state"] == "new"
+        # The chunk count is the whole point: a "successful" markup ingest
+        # that produced a handful of chunks is the thin-paper signal.
+        assert payload["chunks_written"] == result.chunks_written
+
+    def test_attach_only_fold_is_journalled_as_zero_chunks(
+        self, store, tmp_path: Path
+    ) -> None:
+        # A ref that already has a body: the markup folds in attach-only and
+        # writes NO chunks (db_writer.register_aliases_and_maybe_upgrade).
+        # That outcome looks identical to a body-populating ingest from the
+        # outside, which is exactly why it needs journalling.
+        first = tmp_path / "jrnlfold83.xml"
+        first.write_bytes(b"<xml>first</xml>")
+        paper = _fixture_paper(paper_id="jrnlfoldpid", doi="10.1000/jrnl-fold")
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup",
+            return_value=paper,
+        ):
+            first_result = precis_add(
+                MarkupInput(markup_path=first, fmt="elsevier_xml"), store=store
+            )
+        assert first_result is not None
+
+        second = tmp_path / "jrnlfold83-again.xml"
+        second.write_bytes(b"<xml>second</xml>")
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup",
+            return_value=paper,
+        ):
+            second_result = precis_add(
+                MarkupInput(markup_path=second, fmt="elsevier_xml"), store=store
+            )
+
+        assert second_result is not None
+        assert second_result.ref_id == first_result.ref_id
+        events = self._events(store, first_result.ref_id)
+        assert [ev for _, ev, _ in events] == ["markup_ingested", "markup_ingested"]
+        assert events[1][2]["ref_state"] == "folded"
+        assert events[1][2]["chunks_written"] == 0
+
+    def test_manual_drop_without_fold_ref_journals_nothing(
+        self, store, tmp_path: Path
+    ) -> None:
+        # No sidecar stub to attach an event to. Must no-op cleanly rather
+        # than raise some other error on the way out.
+        markup = tmp_path / "jrnlmanual.xml"
+        markup.write_bytes(b"<xml>not real</xml>")
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup",
+            side_effect=MarkupParseError("no <body>", fmt="elsevier_xml"),
+        ):
+            with pytest.raises(MarkupTriggerSpent):
+                precis_add(
+                    MarkupInput(markup_path=markup, fmt="elsevier_xml"), store=store
+                )
+
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM ref_events WHERE source LIKE 'markup:%'"
+            ).fetchone()[0]
+        assert n == 0

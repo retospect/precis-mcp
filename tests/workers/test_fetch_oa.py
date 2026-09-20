@@ -203,6 +203,30 @@ class TestClaimStubs:
             conn.commit()
         assert stubs == []
 
+    def test_admits_ref_with_pdf_when_markup_refetch_pinned(self, store: Store) -> None:
+        """gr372781 item 3 escape hatch: a ref carrying a PDF (the
+        front-matter-only Elsevier preview) is still claimed once pinned
+        with ``meta.markup_refetch`` — the whole point of the pin."""
+        from psycopg.types.json import Jsonb
+
+        ref_id = _seed_paper_stub(store, doi="10.1234/pinned")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) "
+                "VALUES (%s, %s, 1, 100, '/tmp/preview')",
+                ("b" * 64, "b" * 64),
+            )
+            conn.execute(
+                "UPDATE refs SET pdf_sha256 = %s, meta = meta || %s WHERE ref_id = %s",
+                ("b" * 64, Jsonb({"markup_refetch": {"at": "2026-09-20"}}), ref_id),
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [ref_id]
+
     def test_skips_recently_attempted(self, store: Store) -> None:
         ref_id = _seed_paper_stub(store, doi="10.1234/c")
         # Stamp a recent fetcher event — within the default 24h window.

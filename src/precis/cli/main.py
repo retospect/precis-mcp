@@ -45,6 +45,7 @@ from precis.cli import (
     llm,
     logs,
     maintenance,
+    markup_backfill,
     migrate,
     migrate_refs,
     nanopub,
@@ -162,6 +163,10 @@ def main() -> None:
 
     if args.cmd == "reconcile-duplicates":
         reconcile.run(args)
+        return
+
+    if args.cmd == "markup-backfill":
+        markup_backfill.run(args)
         return
 
     if args.cmd == "retire-draft-equations":
@@ -365,6 +370,7 @@ def _build_parser() -> argparse.ArgumentParser:
     fix_metadata.add_parser(sub)
     migrate_refs.add_parser(sub)
     reconcile.add_parser(sub)
+    markup_backfill.add_parser(sub)
     retire_draft_equations.add_parser(sub)
     convert_draft_lists.add_parser(sub)
     resolve_metadata.add_parser(sub)

@@ -20,6 +20,19 @@ ingestion/edit bugs that the current code no longer produces:
   misconfig black-holed the download, and the exponential fetch backoff
   then parked the stub ~30 days out. Clears the backoff **once** so the
   now-fixed pipeline re-fetches it.
+* :func:`requeue_front_matter_only_papers` — a live paper whose only
+  body is Elsevier's entitlement-limited preview page (title,
+  affiliations, abstract, first paragraphs of the intro, printed
+  footer — no references), fingerprinted by the footer boilerplate
+  plus the absence of a reference list. Unlike the stranded-fetch class
+  above, this ref DOES carry a ``pdf_sha256`` (the preview downloaded
+  fine), so it's invisible to both ``requeue_stranded_fetches`` and the
+  fetcher's own claim query until pinned. Clears the fetch backoff and
+  stamps a one-shot ``meta.markup_refetch`` pin (gr372781 item 3) that
+  :func:`precis.workers.fetch_oa.claim_stubs_to_fetch` admits despite
+  the existing PDF and :func:`precis.ingest.db_writer.
+  register_aliases_and_maybe_upgrade` uses to gate a body *replacement*
+  once the re-fetch lands.
 
 All are dry-run by default and idempotent: a clean corpus yields empty
 results and the next pass is a cheap no-op.
@@ -366,6 +379,172 @@ def requeue_stranded_fetches(
 
 
 # ---------------------------------------------------------------------------
+# Front-matter-only Elsevier previews
+# ---------------------------------------------------------------------------
+
+#: Cap on body-chunk count for a candidate front-matter-only preview.
+#: Elsevier's entitlement-limited preview PDF — title, affiliations,
+#: keywords, abstract, the first paragraphs of the intro, and the
+#: printed page footer — ingests as ~8 body chunks; a real full-text
+#: paper runs into the dozens-to-hundreds. 12 sits comfortably above
+#: the observed preview shape and comfortably below any genuine paper.
+_FRONT_MATTER_MAX_CHUNKS = 12
+
+#: Elsevier's printed-page-footer boilerplate — present on the preview
+#: PDF's one page (it's running-header/footer furniture, not article
+#: content) and never its own chunk in a genuine full-text ingest. Any
+#: one hit fingerprints the entitlement-limited preview.
+_ELSEVIER_FOOTER_SIGNATURES = (
+    "%Contents lists available at ScienceDirect%",
+    "%journal homepage: www.elsevier.com%",
+    "%including those for text and data mining%",
+)
+
+#: A real full-text paper has a reference list; its absence alongside
+#: an Elsevier footer chunk is the front-matter-only fingerprint — the
+#: preview stops after the intro, long before References /
+#: Acknowledgements.
+_BACK_MATTER_SIGNATURES = (
+    "%References%",
+    "%Bibliography%",
+    "%Acknowledg%",
+)
+
+
+def requeue_front_matter_only_papers(
+    store: Store, *, dry_run: bool = True, limit: int | None = None
+) -> list[int]:
+    """Re-queue live papers whose only body is an Elsevier entitlement preview.
+
+    Elsevier's Article Retrieval API can return a well-formed,
+    complete ``%PDF-`` response that is nonetheless only the
+    entitlement-limited preview page — title, affiliations, keywords,
+    abstract, the first paragraphs of the intro, and the printed-page
+    footer — with no error and nothing to distinguish it from a
+    genuine full-text fetch. It ingests silently as a handful (~8) of
+    front-matter chunks, carrying a real ``pdf_sha256`` — invisible to
+    :func:`requeue_stranded_fetches` (which keys on a NULL hash) and to
+    the fetcher's own claim query (same reason). ~7800 prod papers are
+    affected (gr372781 item 3); the markup-first XML leg
+    (``PRECIS_FETCH_MARKUP`` / ``fetch_oa._try_elsevier_markup``) fixes
+    this going forward but does nothing for what's already ingested.
+
+    The signature: a live paper that (a) has a ``fetcher:elsevier``
+    ``fetch_ok`` but no ``fetcher:elsevier_xml`` one — the markup leg
+    can't be fooled by this failure mode (a non-entitled DOI answers
+    its XML request with an error body, not a truncated-but-valid
+    one), so its presence would mean the markup body already landed;
+    (b) between 1 and :data:`_FRONT_MATTER_MAX_CHUNKS` body chunks;
+    (c) one of which matches the Elsevier printed-footer boilerplate
+    (:data:`_ELSEVIER_FOOTER_SIGNATURES`); and (d) none of which look
+    like a reference list (:data:`_BACK_MATTER_SIGNATURES`) — the
+    footer without a References section is what a genuine short paper
+    never looks like.
+
+    The heal deletes the ref's ``fetcher:%`` events (clears the
+    backoff, same mechanism and reasoning as
+    :func:`requeue_stranded_fetches`) and stamps a one-shot
+    ``meta.markup_refetch`` pin that two other pieces of this backfill
+    key on: :func:`precis.workers.fetch_oa.claim_stubs_to_fetch` admits
+    the ref back into the fetch claim *despite* its existing PDF, and
+    :func:`precis.ingest.db_writer.register_aliases_and_maybe_upgrade`
+    uses the pin to gate a body **replacement** (never an in-place
+    update — see that function) once the re-fetch lands. A
+    ``paper_reconcile``/``markup_refetch_queued`` breadcrumb (source
+    deliberately not ``fetcher:%``, so it doesn't re-arm the backoff it
+    just cleared) preserves the audit trail the delete removes.
+
+    Returns the ref_ids selected (dry-run returns what it *would* act
+    on, without writing).
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, cnt.body_chunks
+              FROM refs r
+              JOIN LATERAL (
+                    SELECT count(*) AS body_chunks
+                      FROM chunks c
+                     WHERE c.ref_id = r.ref_id AND c.ord >= 0
+              ) cnt ON TRUE
+             WHERE r.kind = 'paper'
+               AND r.retired_at IS NULL
+               AND r.pdf_sha256 IS NOT NULL
+               AND NOT (r.meta ? 'markup_refetch')
+               AND cnt.body_chunks BETWEEN 1 AND %s
+               AND EXISTS (
+                     SELECT 1 FROM ref_events e
+                      WHERE e.ref_id = r.ref_id
+                        AND e.source = 'fetcher:elsevier' AND e.event = 'fetch_ok'
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_events e
+                      WHERE e.ref_id = r.ref_id
+                        AND e.source = 'fetcher:elsevier_xml' AND e.event = 'fetch_ok'
+                   )
+               AND EXISTS (
+                     SELECT 1 FROM chunks c
+                      WHERE c.ref_id = r.ref_id AND c.ord >= 0
+                        AND c.text ILIKE ANY(%s)
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM chunks c
+                      WHERE c.ref_id = r.ref_id AND c.ord >= 0
+                        AND c.text ILIKE ANY(%s)
+                   )
+             ORDER BY r.ref_id
+            """,
+            (
+                _FRONT_MATTER_MAX_CHUNKS,
+                list(_ELSEVIER_FOOTER_SIGNATURES),
+                list(_BACK_MATTER_SIGNATURES),
+            ),
+        ).fetchall()
+    candidates = [(int(r[0]), int(r[1])) for r in rows]
+    if limit:
+        candidates = candidates[:limit]
+
+    queued: list[int] = []
+    for ref_id, body_chunks in candidates:
+        if not dry_run:
+            with store.tx() as conn:
+                conn.execute(
+                    "DELETE FROM ref_events "
+                    "WHERE ref_id = %s AND source LIKE 'fetcher:%%'",
+                    (ref_id,),
+                )
+                conn.execute(
+                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                    (
+                        Jsonb(
+                            {
+                                "markup_refetch": {
+                                    "at": datetime.now(UTC).isoformat(),
+                                    "reason": "front-matter-only body",
+                                    "body_chunks": body_chunks,
+                                }
+                            }
+                        ),
+                        ref_id,
+                    ),
+                )
+                store.append_event(
+                    ref_id,
+                    source="paper_reconcile",
+                    event="markup_refetch_queued",
+                    payload={"body_chunks": body_chunks},
+                    conn=conn,
+                )
+        queued.append(ref_id)
+    if queued and not dry_run:
+        log.info(
+            "paper_hygiene: re-queued %d front-matter-only Elsevier paper(s)",
+            len(queued),
+        )
+    return queued
+
+
+# ---------------------------------------------------------------------------
 # Metadata hygiene counters (read-only)
 # ---------------------------------------------------------------------------
 
@@ -606,4 +785,6 @@ __all__ = [
     "is_filename_like_title",
     "metadata_hygiene_stats",
     "migrate_dangling_paper_links",
+    "requeue_front_matter_only_papers",
+    "requeue_stranded_fetches",
 ]

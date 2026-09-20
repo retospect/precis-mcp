@@ -500,6 +500,24 @@ def write_paper(paper: PaperToWrite, *, conn: Connection) -> WriteResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# Markup-backfill gated body replacement (gr372781 item 3)
+# ---------------------------------------------------------------------------
+
+#: A ``meta.markup_refetch``-pinned ref (see
+#: ``precis.ingest.paper_hygiene.requeue_front_matter_only_papers``)
+#: replaces its front-matter-only body only when the incoming body is
+#: at least this many times bigger than what's there — a modest
+#: improvement isn't proof the new fetch actually got the full text
+#: rather than a slightly-longer preview.
+_BACKFILL_MIN_GROWTH = 3
+
+#: ...and at least this many chunks outright — the multiplier alone
+#: would pass an 8-chunk preview replaced by a 24-chunk *other*
+#: preview; an absolute floor guards against that.
+_BACKFILL_MIN_CHUNKS = 30
+
+
 def register_aliases_and_maybe_upgrade(
     existing_ref_id: int,
     paper: PaperToWrite,
@@ -526,12 +544,23 @@ def register_aliases_and_maybe_upgrade(
          set the canonical PDF (when it carries one) and write its
          chunks (PDF-Marker *or* markup). The derived queue picks the new
          chunks up; any finding waiting on this stub resumes naturally.
-       * **Has body** (markup-ingested ref) and a PDF arrives later —
-         **attach-only**: promote the PDF as the printable, write NO
-         chunks. Body chunks are append-only (AGENTS.md §Don'ts), so the
-         first body-bearing ingest (markup) stays authoritative and a
-         later publisher PDF is a cheap printable attach, not a duplicate
-         Marker run.
+       * **Has body, pinned (``meta.markup_refetch``)** — the
+         gr372781 item 3 backfill case: the existing body is a
+         front-matter-only Elsevier preview, which is *worse* than no
+         body at all, so a pinned ref is a **replace** candidate rather
+         than an attach-only one. Replaces only when the incoming body
+         clears a growth guard (:data:`_BACKFILL_MIN_GROWTH` /
+         :data:`_BACKFILL_MIN_CHUNKS`) — see the dedicated section below
+         the function for the guard rationale and the DELETE+INSERT
+         mechanics. The pin is cleared either way (replace or decline);
+         it's one-shot so a paper can never loop through re-fetch
+         forever.
+       * **Has body, unpinned** (ordinary markup-ingested ref) and a PDF
+         arrives later — **attach-only**: promote the PDF as the
+         printable, write NO chunks. Body chunks are append-only
+         (AGENTS.md §Don'ts), so the first body-bearing ingest (markup)
+         stays authoritative and a later publisher PDF is a cheap
+         printable attach, not a duplicate Marker run.
 
     Returns the number of chunks written (zero on the alias-only and
     attach-only paths, ``len(paper.chunks)`` on the body-populating
@@ -623,6 +652,124 @@ def register_aliases_and_maybe_upgrade(
             "WHERE ref_id = %s AND retired_at IS NULL",
             (paper.pdf_sha256, pdf_pages, paper.pdf_role, existing_ref_id),
         )
+
+    # Markup-backfill gated replacement (gr372781 item 3). A ref pinned
+    # by paper_hygiene.requeue_front_matter_only_papers carries
+    # meta.markup_refetch: its existing body is the front-matter-only
+    # Elsevier preview (worse than no body — it looks "done" but stops
+    # after the intro), so unlike the ordinary attach-only case below, a
+    # pinned ref is a REPLACE candidate. The pin is one-shot — cleared
+    # here whether the replace happens or not — so a paper can never
+    # loop through re-fetch forever.
+    #
+    # A body-less ingest must NOT reach the pin at all. The companion PDF
+    # the OA cascade drops alongside a markup trigger is tagged
+    # ``printable_only`` (Marker skipped entirely, so ``paper.chunks``
+    # carries no ``ord >= 0`` rows) AND it is ingested BEFORE the markup
+    # trigger becomes watcher-visible — ``_publish_markup_trigger`` only
+    # fires once the companion's fate is known
+    # (:func:`precis.workers.fetch_oa._run_markup_cascade`). Letting that
+    # attach see the pin would decline on ``new_body == 0``, clear the
+    # one-shot pin, and leave the markup ingest that follows to take the
+    # ordinary attach-only path below — silently turning the entire
+    # backfill into a no-op for every paper it touches. Skipping keeps the
+    # pin intact for whichever ingest actually brings a body (the markup,
+    # or a full Marker run if the markup leg failed).
+    new_body = sum(1 for c in paper.chunks if c.ord >= 0)
+    if has_body and new_body > 0:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+            (existing_ref_id,),
+        ).fetchone()
+        meta = (meta_row[0] if meta_row else None) or {}
+        if isinstance(meta, dict) and "markup_refetch" in meta:
+            old_body_row = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (existing_ref_id,),
+            ).fetchone()
+            old_body = int(old_body_row[0]) if old_body_row else 0
+            # Clear the pin unconditionally — replace or decline, this is
+            # the ref's one shot.
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'markup_refetch' WHERE ref_id = %s",
+                (existing_ref_id,),
+            )
+            if (
+                new_body >= _BACKFILL_MIN_GROWTH * old_body
+                and new_body >= _BACKFILL_MIN_CHUNKS
+            ):
+                # DELETE + INSERT, never an in-place UPDATE: a non-draft
+                # chunk's content_sha is NULL, so an UPDATE would strand
+                # chunk_embeddings/chunk_summaries instead of cascading
+                # them — this is the append-only body-chunk rule's
+                # documented DELETE+INSERT exception (AGENTS.md), used
+                # here because "update" a bad body genuinely means
+                # replace it. The DELETE cascades the derived rows and
+                # the fresh INSERT below re-enters the embed/keyword
+                # queues. Only ord >= 0 (body) rows are touched — a
+                # synthesis-pass-owned ord < 0 card variant is untouched.
+                conn.execute(
+                    "DELETE FROM chunks WHERE ref_id = %s AND ord >= 0",
+                    (existing_ref_id,),
+                )
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (
+                        existing_ref_id,
+                        "markup_backfill",
+                        "body_replaced",
+                        Jsonb(
+                            {
+                                "old_chunks": old_body,
+                                "new_chunks": new_body,
+                                "provider": paper.provider,
+                            }
+                        ),
+                    ),
+                )
+                log.info(
+                    "register_aliases_and_maybe_upgrade: ref_id=%s "
+                    "markup_refetch REPLACE (old=%d body chunk(s), "
+                    "new=%d, provider=%s)",
+                    existing_ref_id,
+                    old_body,
+                    new_body,
+                    paper.provider,
+                )
+                # Body cleared — fall through to the "no body" path below
+                # so this ingest's chunks are written the normal way.
+                has_body = False
+            else:
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (
+                        existing_ref_id,
+                        "markup_backfill",
+                        "body_replace_declined",
+                        Jsonb(
+                            {
+                                "old_chunks": old_body,
+                                "new_chunks": new_body,
+                                "reason": (
+                                    f"new_chunks={new_body} below growth guard "
+                                    f"(need >= {_BACKFILL_MIN_GROWTH}x old "
+                                    f"chunks ({old_body}) and >= "
+                                    f"{_BACKFILL_MIN_CHUNKS} outright)"
+                                ),
+                            }
+                        ),
+                    ),
+                )
+                log.info(
+                    "register_aliases_and_maybe_upgrade: ref_id=%s "
+                    "markup_refetch DECLINE (old=%d body chunk(s), new=%d "
+                    "fails growth guard); pin cleared, body unchanged",
+                    existing_ref_id,
+                    old_body,
+                    new_body,
+                )
 
     # Attach-only guard: never write body chunks onto a ref that already
     # has them. Only the first body-bearing ingest (markup or Marker)
