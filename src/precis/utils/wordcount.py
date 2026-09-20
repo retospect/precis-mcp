@@ -32,9 +32,13 @@ from typing import Any, Protocol
 #: excluded — counting them would make a section's "length" disagree with
 #: what a human (or a call-for-proposal's limit) means by word count.
 #: ``claim`` (gripe 57812) is a Claims-heading assertion — prose like
-#: ``paragraph``, counted the same way.
+#: ``paragraph``, counted the same way. ``item`` is a list bullet: body
+#: prose that a reader reads and a word limit counts, and in a findings
+#: survey it is a whole claim sentence carrying its own citation. Its
+#: ``ulist``/``olist`` container is *not* here — the container holds no
+#: text, so counting or reviewing it would be a no-op with a handle.
 PROSE_CHUNK_KINDS: frozenset[str] = frozenset(
-    {"paragraph", "aside", "callout", "claim"}
+    {"paragraph", "aside", "callout", "claim", "item"}
 )
 
 # A draft cross-reference is a bracketed handle (``[¶ab12]`` / ``[§foo~3]``

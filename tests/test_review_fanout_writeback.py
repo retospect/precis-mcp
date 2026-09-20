@@ -21,7 +21,7 @@ import pytest
 
 from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS, mint_review_fanout
 from precis.quest.weave_review import mint_review_todo
-from precis.store._draft_ops import ReviewableChunk
+from precis.store._draft_ops import PROSE_CHUNK_KINDS, ReviewableChunk
 from precis.store.store import Store
 from precis.store.types import Tag
 from precis.utils import handle_registry
@@ -83,7 +83,16 @@ _PROSE_PERSONAS = {"flow", "cites"}
 def _expected_pairs(chunks: list[ReviewableChunk], lenses: tuple[str, ...]) -> int:
     total = 0
     for c in chunks:
-        allowed = _HEADING_PERSONAS if c.chunk_kind == "heading" else _PROSE_PERSONAS
+        if c.chunk_kind == "heading":
+            allowed = _HEADING_PERSONAS
+        elif c.chunk_kind in PROSE_CHUNK_KINDS:
+            allowed = _PROSE_PERSONAS
+        else:
+            # A structural chunk (a ulist/olist container, a table, a
+            # figure) carries no prose and no persona mints on it —
+            # counting it as prose overstated the expected total once
+            # markdown bullets started landing as list chunks.
+            continue
         total += len(allowed & set(lenses))
     return total
 

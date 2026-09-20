@@ -108,3 +108,19 @@ def test_partial_target_bounds() -> None:
         _C(2, 1, "paragraph", "a b c"),  # 3 >= 2, no ceiling
     ]
     assert aggregate_word_counts(chunks_min).sections[0].verdict == "ok"
+
+
+def test_list_items_count_as_prose_but_the_container_does_not() -> None:
+    """A bullet is body prose a reader reads and a word limit counts. Once
+    markdown bullets started landing as ``item`` chunks, leaving ``item``
+    out of ``PROSE_CHUNK_KINDS`` silently undercounted every bullet-heavy
+    section; the empty ``ulist`` container must still count for nothing."""
+    chunks = [
+        _C(1, None, "heading", "S"),
+        _C(2, 1, "ulist", ""),
+        _C(3, 2, "item", "one two three"),
+        _C(4, 2, "item", "four five"),
+    ]
+    report = aggregate_word_counts(chunks)
+    assert report.total == 5
+    assert report.sections[0].words == 5

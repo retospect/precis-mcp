@@ -8,10 +8,19 @@ from __future__ import annotations
 
 import pytest
 
-from precis.draft.mdlist import count_items, parse_list_block
+from precis.draft.mdlist import Node, count_items, parse_list_block
 
 
-def _flat(node, depth=0):
+def _parsed(text: str) -> Node:
+    """Parse text that is expected to *be* a list. The declining cases have
+    their own test, so the positive ones don't each re-narrow ``Node |
+    None``."""
+    node = parse_list_block(text)
+    assert node is not None, f"expected {text!r} to parse as a list"
+    return node
+
+
+def _flat(node: Node, depth: int = 0) -> list[tuple[int, str, str]]:
     """(depth, chunk_kind, text) in DFS order — the shape the store inserts."""
     out = [(depth, node.chunk_kind, node.text)]
     for c in node.children:
@@ -20,7 +29,7 @@ def _flat(node, depth=0):
 
 
 def test_flat_bullets_become_a_ulist_of_items() -> None:
-    node = parse_list_block("- alpha\n- beta")
+    node = _parsed("- alpha\n- beta")
     assert _flat(node) == [
         (0, "ulist", ""),
         (1, "item", "alpha"),
@@ -30,7 +39,7 @@ def test_flat_bullets_become_a_ulist_of_items() -> None:
 
 
 def test_indent_nests_a_sublist_under_the_item_above() -> None:
-    node = parse_list_block("- top\n    - inner\n    - inner2\n- top2")
+    node = _parsed("- top\n    - inner\n    - inner2\n- top2")
     assert _flat(node) == [
         (0, "ulist", ""),
         (1, "item", "top"),
@@ -43,11 +52,11 @@ def test_indent_nests_a_sublist_under_the_item_above() -> None:
 
 
 def test_numbered_markers_open_an_olist() -> None:
-    assert parse_list_block("1. one\n2) two").chunk_kind == "olist"
+    assert _parsed("1. one\n2) two").chunk_kind == "olist"
 
 
 def test_tab_indent_nests_like_spaces() -> None:
-    node = parse_list_block("- top\n\t- inner")
+    node = _parsed("- top\n\t- inner")
     assert [k for _, k, _ in _flat(node)] == ["ulist", "item", "ulist", "item"]
 
 
@@ -67,7 +76,7 @@ def test_declines_anything_that_is_not_cleanly_one_list(block: str) -> None:
 
 def test_lazy_continuation_joins_into_the_item_above() -> None:
     # The corpus hard-wraps items, at the bullet's indent and at column 0.
-    node = parse_list_block("- a claim that runs\n  past one line\nand another\n- b")
+    node = _parsed("- a claim that runs\n  past one line\nand another\n- b")
     assert _flat(node) == [
         (0, "ulist", ""),
         (1, "item", "a claim that runs past one line and another"),
@@ -85,5 +94,5 @@ def test_a_single_bullet_is_not_a_list() -> None:
 def test_blank_lines_between_items_stay_one_list() -> None:
     # ``_split_blocks`` splits on blank lines before the parser sees a
     # block, but a caller reaching the parser directly gets loose lists.
-    node = parse_list_block("- a\n\n- b")
+    node = _parsed("- a\n\n- b")
     assert count_items(node) == 2
