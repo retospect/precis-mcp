@@ -273,6 +273,78 @@ class SearchResult:
     best_energy_eV: float | None = None
 
 
+def _agox_compat_shims() -> None:
+    """Patch the two places AGOX 3.11.1 breaks on the fleet's pinned ase/numpy.
+
+    Runs in the driver before ``import agox`` and, via ray's
+    ``worker_process_setup_hook``, in every AGOX worker process (see
+    :func:`_start_ray_with_shim`). Idempotent. The fleet's constraints file
+    pins ase and numpy to uv.lock, so version bounds on the extra would not
+    resolve — putting the old behaviour back is the fix that installs.
+
+    1. ase 3.29 split ``ase/constraints.py`` into a package and dropped
+       ``IndexedConstraint`` / ``slice2enlist`` from the public namespace
+       (they live in ``ase.constraints.constraint``); AGOX does ``from
+       ase.constraints import IndexedConstraint``. Re-export them.
+    2. numpy 2.5 made ``float()`` of a shape-(1,) array a ``TypeError``;
+       ``GPR._log_marginal_likelihood_gradient`` returns the log marginal
+       likelihood as the ``(k,)`` einsum result and both hyperparameter
+       optimisers ``float()`` it (the sibling ``_log_marginal_likelihood``
+       already ``np.sum``s). Wrap it to return the scalar.
+    """
+    import ase.constraints as ase_constraints
+
+    try:
+        from ase.constraints import constraint as ase_constraint_mod
+    except ImportError:  # pre-3.29 ase: flat module, names already public
+        pass
+    else:
+        for name in ("IndexedConstraint", "slice2enlist"):
+            if not hasattr(ase_constraints, name) and hasattr(ase_constraint_mod, name):
+                setattr(ase_constraints, name, getattr(ase_constraint_mod, name))
+
+    try:
+        from agox.models.GPR.GPR import GPR
+    except ImportError:  # no agox here — run_search raises SearchUnsupported
+        return
+    original = GPR._log_marginal_likelihood_gradient
+    if getattr(original, "__name__", "") == "_scalar_lml_gradient":
+        return  # already wrapped (driver and workers both call this)
+
+    def _scalar_lml_gradient(self: Any, theta: Any) -> tuple[float, Any]:
+        log_p, grad = original(self, theta)
+        return float(np.sum(log_p)), grad
+
+    GPR._log_marginal_likelihood_gradient = _scalar_lml_gradient
+
+
+def _start_ray_with_shim(*, cpu_count: int, tmp_dir: Path) -> None:
+    """Start AGOX's local ray cluster ourselves so every worker process runs
+    :func:`_agox_compat_shims` before it imports agox.
+
+    AGOX's ``ray_startup`` returns early when ray is already initialised, and
+    its actors import ``agox.environments`` in fresh worker processes where
+    an in-process shim is invisible — the first cluster run died with the
+    same ``IndexedConstraint`` ImportError inside ``ray::Actor.add_module``
+    after the driver had imported fine. ``worker_process_setup_hook`` is the
+    job-level ray knob for exactly that; AGOX's per-actor ``runtime_env``
+    only sets ``env_vars``, which merge rather than replace it.
+    """
+    import ray
+
+    if ray.is_initialized():
+        return
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    ray.init(
+        address="local",
+        num_cpus=cpu_count,
+        ignore_reinit_error=True,
+        include_dashboard=False,
+        _temp_dir=str(tmp_dir.resolve()),
+        runtime_env={"worker_process_setup_hook": _agox_compat_shims},
+    )
+
+
 class SearchUnsupported(RuntimeError):
     """AGOX (the ``[struct-search]`` extra) is not importable on this host."""
 
@@ -297,6 +369,7 @@ def run_search(
     returns whatever AGOX's database holds when the deadline observer stops
     the run.
     """
+    _agox_compat_shims()
     try:
         import agox  # noqa: F401
     except ImportError as exc:
@@ -358,6 +431,8 @@ def run_search(
         ray_tmp_dir=str(workdir / "ray"),
     )
 
+    # Before create(): the parallel algorithms call ray_startup() inside it.
+    _start_ray_with_shim(cpu_count=run_cfg.cpu_count, tmp_dir=workdir / "ray")
     search = algo_classes[spec.algo].create(problem=problem_cfg, run=run_cfg)
 
     deadline = time.monotonic() + float(spec.timeout_s)

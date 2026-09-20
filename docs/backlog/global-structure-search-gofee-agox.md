@@ -196,8 +196,20 @@ relax jobs. AGOX is ASE-native and ASE is a core dependency.
   calls a `create_by_kind` that does not exist in 3.11.1 — avoided.
 - OPEN (non-blocking, slice 2): AGOX `Database` save/load as warm-start —
   verify the API before speccing surrogate persistence.
-- OPEN (non-blocking): `ray` pulled by AGOX — confirm it stays idle unless
-  AGOX's parallel collector is configured; we run single-process.
+- DECIDED (2026-09-19, first cluster run): `ray` is NOT idle — GOFEE's
+  default collector/relaxer are ray-pool actors that import agox in fresh
+  worker processes. AGOX 3.11.1 is broken against the fleet's pins (ase
+  3.29 hid `IndexedConstraint`/`slice2enlist`; numpy 2.5 rejects
+  `float()` of the `(1,)` log-marginal-likelihood), so `search.py` starts
+  ray itself with `worker_process_setup_hook=_agox_compat_shims` before
+  `create()`. Version bounds on the extra cannot fix it: the GPU venv
+  installs against the uv.lock-derived constraints file. The first
+  acceptance job (356752) died on this at import; an EMT smoke of the
+  shimmed module on pollux then ran GOFEE end-to-end (12 candidates,
+  16.8 s wall, budget 6).
+- OPEN (non-blocking): `budget_used` was 12 for `budget=6` on that smoke —
+  GOFEE spends two oracle evaluations per iteration, so the cap is 2× the
+  request. Decide whether `budget` should count iterations or evaluations.
 - OPEN (non-blocking): wall-clock — a 200-call GOFEE search with MACE on
   a 3×3×4 slab + 4 adatoms is expected in minutes, not hours; the 2 h cap
   is a guard, not a budget. Measure on the first real run and record here.

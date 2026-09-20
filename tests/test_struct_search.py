@@ -428,3 +428,49 @@ def test_registry_loads_struct_search() -> None:
     assert spec.name == "struct_search"
     assert spec.compatible_executors == frozenset({"ssh_node"})
     assert spec.requires == frozenset({"has_gpaw"})
+
+
+# ── AGOX compat shims (ase 3.29 namespace, numpy 2.5 scalar strictness) ──
+
+
+def test_compat_shim_reexports_ase_constraint_names() -> None:
+    """ase 3.29 hid IndexedConstraint/slice2enlist behind ase.constraints.constraint;
+    AGOX imports them from ase.constraints. Idempotent."""
+    import ase.constraints as ase_constraints
+
+    from precis.structure.search import _agox_compat_shims
+
+    _agox_compat_shims()
+    _agox_compat_shims()
+    assert hasattr(ase_constraints, "IndexedConstraint")
+    assert hasattr(ase_constraints, "slice2enlist")
+
+
+def test_compat_shim_makes_gpr_lml_gradient_scalar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wrapped gradient returns a float even when AGOX's einsum hands back a
+    shape-(1,) array (numpy 2.5 makes float() of that a TypeError); wrapping twice
+    does not stack."""
+    import sys
+    import types
+
+    from precis.structure.search import _agox_compat_shims
+
+    class FakeGPR:
+        def _log_marginal_likelihood_gradient(self, theta: Any) -> tuple[Any, Any]:
+            return np.array([-9.12]), np.zeros(3)
+
+    fake_mod = types.ModuleType("agox.models.GPR.GPR")
+    fake_mod.GPR = FakeGPR  # type: ignore[attr-defined]
+    for name in ("agox", "agox.models", "agox.models.GPR"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "agox.models.GPR.GPR", fake_mod)
+
+    _agox_compat_shims()
+    first = FakeGPR._log_marginal_likelihood_gradient
+    _agox_compat_shims()
+    assert FakeGPR._log_marginal_likelihood_gradient is first
+    p, grad = FakeGPR()._log_marginal_likelihood_gradient(np.zeros(3))
+    assert isinstance(p, float) and p == pytest.approx(-9.12)
+    assert grad.shape == (3,)

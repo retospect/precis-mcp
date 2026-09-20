@@ -786,6 +786,8 @@ module = [
     "pymatgen",
     "pymatgen.*",
     "pysbd",
+    "ray",  # pulled by [struct-search] (agox); absent from the gate image like agox itself
+    "ray.*",
     "rdkit",
     "rdkit.*",
     "semanticscholar",
