@@ -203,6 +203,49 @@ def test_npth_annular_ring_has_no_in_table_coupling():
         assert row.house_default["npth_annular_ring_mm"] is not None
 
 
+def test_conductor_spacing_mm_external_coated_matches_ipc2221b_b4():
+    # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19" item 10 --
+    # values VERIFIED against IPC-2221B Table 6-1 (not memory): the
+    # 101-300V band is 0.4mm B4; 100V sits in the LOWER 51-100V band
+    # (0.13mm) -- distinct on purpose, so this test can't pass by
+    # returning one flat number regardless of voltage; 500V is 0.8mm.
+    assert caps.conductor_spacing_mm(
+        250, layer="external", coated=True
+    ) == pytest.approx(0.4)
+    assert caps.conductor_spacing_mm(
+        100, layer="external", coated=True
+    ) == pytest.approx(0.13)
+    assert caps.conductor_spacing_mm(
+        500, layer="external", coated=True
+    ) == pytest.approx(0.8)
+
+
+def test_conductor_spacing_mm_external_uncoated_matches_ipc2221b_b2():
+    assert caps.conductor_spacing_mm(
+        150, layer="external", coated=False
+    ) == pytest.approx(0.6)
+    assert caps.conductor_spacing_mm(
+        170, layer="external", coated=False
+    ) == pytest.approx(1.25)
+
+
+def test_conductor_spacing_mm_internal_reads_b1_regardless_of_coated():
+    for coated in (True, False):
+        assert caps.conductor_spacing_mm(
+            250, layer="internal", coated=coated
+        ) == pytest.approx(0.2)
+
+
+def test_conductor_spacing_mm_above_500v_refuses():
+    with pytest.raises(ValueError, match="500"):
+        caps.conductor_spacing_mm(501, layer="external", coated=True)
+
+
+def test_conductor_spacing_mm_rejects_an_unknown_layer():
+    with pytest.raises(ValueError, match="layer"):
+        caps.conductor_spacing_mm(100, layer="both", coated=True)  # type: ignore[arg-type]
+
+
 def test_no_low_confidence_field_carries_a_bare_unexplained_number():
     # A field flagged "low" confidence must never carry a non-null number
     # without an explanatory note attached — a bare "low" tag on a real

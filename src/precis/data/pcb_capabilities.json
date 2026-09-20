@@ -146,5 +146,21 @@
         "silk_to_mask_clearance_mm": "low — JLC publishes no silkscreen-to-mask clearance for aluminum boards; null is deliberate. Same design_value fallback as soldermask_expansion_mm"
       }
     }
-  ]
+  ],
+  "ipc2221b_conductor_spacing_mm": {
+    "source": "IPC-2221B Table 6-1, columns B1 (internal conductors), B2 (external conductors, uncoated, <=3050m/10000ft altitude), B4 (external conductors, with permanent polymer coating)",
+    "retrieved": "2026-09-19",
+    "note": "Minimum electrical spacing between conductors as a function of PEAK working voltage (docs/backlog/pcb-ewod-multitile.md 'Rulings 2026-09-19' item 3/10: ANY actuation pattern may put two electrodes at full differential, so the full drive voltage -- not a switched fraction of it -- is the working voltage looked up here). Valid only below 3050m (10000ft) altitude, IPC-2221B's own scope for the B2/B4 columns; a design flown or operated above that altitude needs a different table, not modelled here. 'max_voltage_v' is the inclusive top of each band (peak volts). precis.pcb.capabilities.conductor_spacing_mm() is the only sanctioned reader -- never index 'bands' directly from a generator.",
+    "bands": [
+      {"max_voltage_v": 15, "b1_internal_mm": 0.05, "b2_external_uncoated_mm": 0.1, "b4_external_coated_mm": 0.05},
+      {"max_voltage_v": 30, "b1_internal_mm": 0.05, "b2_external_uncoated_mm": 0.1, "b4_external_coated_mm": 0.05},
+      {"max_voltage_v": 50, "b1_internal_mm": 0.1, "b2_external_uncoated_mm": 0.6, "b4_external_coated_mm": 0.13},
+      {"max_voltage_v": 100, "b1_internal_mm": 0.1, "b2_external_uncoated_mm": 0.6, "b4_external_coated_mm": 0.13},
+      {"max_voltage_v": 150, "b1_internal_mm": 0.2, "b2_external_uncoated_mm": 0.6, "b4_external_coated_mm": 0.4},
+      {"max_voltage_v": 170, "b1_internal_mm": 0.2, "b2_external_uncoated_mm": 1.25, "b4_external_coated_mm": 0.4},
+      {"max_voltage_v": 250, "b1_internal_mm": 0.2, "b2_external_uncoated_mm": 1.25, "b4_external_coated_mm": 0.4},
+      {"max_voltage_v": 300, "b1_internal_mm": 0.2, "b2_external_uncoated_mm": 1.25, "b4_external_coated_mm": 0.4},
+      {"max_voltage_v": 500, "b1_internal_mm": 0.25, "b2_external_uncoated_mm": 2.5, "b4_external_coated_mm": 0.8}
+    ]
+  }
 }

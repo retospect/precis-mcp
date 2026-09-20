@@ -22,6 +22,18 @@ pin's several pads now read them off ``exp.copper`` instead
 (:func:`_copper_by_net`/:func:`_copper_shape`); the cross-net-overlap
 sweep folds copper shapes in alongside pad shapes so the "no short"
 property still covers the whole fabric, not just the bodies.
+
+**Rulings 2026-09-19 item 11** adds a THIRD copper row per driven
+electrode: a B.Cu breakout stub running from the plaza via outward
+(:func:`precis.pcb.generators._breakout_track_row`). It sits on a
+DIFFERENT physical layer (B.Cu) from the electrode body/neck (F.Cu), so
+:func:`_copper_shape`/:func:`_all_shapes` now carry each shape's own
+layer set alongside its geometry — the cross-net overlap sweep only
+flags a geometric intersection when the two shapes' layer sets actually
+share a layer; a B.Cu breakout passing near a foreign F.Cu electrode body
+in plain (x, y) is not a short (different physical layer), which a
+layer-blind sweep would have wrongly flagged the moment breakout
+geometry was added.
 """
 
 from __future__ import annotations
@@ -75,28 +87,40 @@ def _copper_by_pin(
     return out
 
 
-def _copper_shape(item: dict[str, Any]) -> Polygon:
+def _copper_shape(item: dict[str, Any]) -> tuple[Polygon, frozenset[str]]:
+    """The item's own geometry, paired with the set of physical layers it
+    occupies — a via's ``span`` (both ends it bridges), a track's own
+    single drawn ``layer``. Rulings 2026-09-19 item 11's B.Cu breakout is
+    the first copper row this module ever emits that does NOT share a
+    layer with the electrode body/neck (both F.Cu), so the overlap sweep
+    below needs this to avoid flagging harmless cross-layer proximity."""
     geom = item["geom"]
     if item["ctype"] == "via":
-        return SPoint(geom["x"], geom["y"]).buffer(geom["dia_mm"] / 2.0)
+        shape = SPoint(geom["x"], geom["y"]).buffer(geom["dia_mm"] / 2.0)
+        return shape, frozenset(geom["span"])
     seg = geom["segments"][0]
     line = LineString([tuple(seg["start"]), tuple(seg["end"])])
     r = float(geom["width_mm"]) / 2.0
-    return line.buffer(r) if r > 0 else line
+    shape = line.buffer(r) if r > 0 else line
+    return shape, frozenset({str(item["layer"])})
 
 
 def _all_shapes(
     exp: G.GeneratorExpansion, name: str = "ARR"
-) -> list[tuple[str, Polygon]]:
-    """Every net's copper as one shape list — electrode bodies (``pads``)
-    AND the neck track + plaza via (``copper``) — so a cross-net overlap
-    sweep still covers the whole fabric now that only the body lives in
-    ``pads``."""
-    shapes = [(p["pin"], _shape(p)) for p in exp.footprints[0]["pads"]]
-    shapes += [
-        (_pin_for_net(name, str(item["net"])), _copper_shape(item))
-        for item in exp.copper
+) -> list[tuple[str, frozenset[str], Polygon]]:
+    """Every net's copper as one shape list — electrode bodies (``pads``,
+    always F.Cu) AND the neck track + plaza via + B.Cu breakout
+    (``copper``) — so a cross-net overlap sweep still covers the whole
+    fabric now that only the body lives in ``pads``. Each entry carries
+    its own layer set (see :func:`_copper_shape`) so the sweep can tell a
+    real short (same layer, different net) from harmless cross-layer
+    proximity."""
+    shapes: list[tuple[str, frozenset[str], Polygon]] = [
+        (p["pin"], frozenset({"F.Cu"}), _shape(p)) for p in exp.footprints[0]["pads"]
     ]
+    for item in exp.copper:
+        shape, layers = _copper_shape(item)
+        shapes.append((_pin_for_net(name, str(item["net"])), layers, shape))
     return shapes
 
 
@@ -155,14 +179,16 @@ def test_zigzag_gap_between_row_neighbours_is_constant(grid):
 )
 def test_no_cross_net_copper_overlap(variant, grid):
     exp = G.expand("ewod_pad_array", "ARR", {"grid": grid, "variant": variant})
-    shapes = _all_shapes(exp)  # bodies (pads) + neck tracks/vias (copper)
+    shapes = _all_shapes(exp)  # bodies + neck tracks/vias/breakouts (copper)
     n = len(shapes)
     for i in range(n):
-        pin_i, gi = shapes[i]
+        pin_i, layers_i, gi = shapes[i]
         for j in range(i + 1, n):
-            pin_j, gj = shapes[j]
+            pin_j, layers_j, gj = shapes[j]
             if pin_i == pin_j:
                 continue  # same net -- redundant overlap is fine by design
+            if not (layers_i & layers_j):
+                continue  # different physical layers -- can't short
             assert gi.intersection(gj).area < 1e-9, (
                 f"{pin_i} and {pin_j} pads overlap -- would short two different nets"
             )
@@ -224,11 +250,14 @@ def test_pad_sizes_merges_a_1x2_span_into_one_pad():
     assert len(by_pin["R0C0"]) == 1  # body only -- no stub/via pad rows
     # exactly one via for the merged pad, same "one via suffices" rule as
     # any ordinary single-cell electrode -- now a copper row, not a pad.
+    # Two tracks (Rulings 2026-09-19 item 11): the F.Cu neck plus the
+    # B.Cu breakout stub outward from the via.
     copper_by_pin = _copper_by_pin(exp)
     vias = [c for c in copper_by_pin["R0C0"] if c["ctype"] == "via"]
     tracks = [c for c in copper_by_pin["R0C0"] if c["ctype"] == "track"]
     assert len(vias) == 1
-    assert len(tracks) == 1
+    assert len(tracks) == 2
+    assert {t["layer"] for t in tracks} == {"F.Cu", "B.Cu"}
 
 
 def test_pad_sizes_merged_electrode_body_is_a_valid_simple_ring_and_wider_than_one_cell():
@@ -333,14 +362,16 @@ def test_no_cross_net_copper_overlap_with_a_merged_pad(variant, grid, cells):
         "ARR",
         {"grid": grid, "variant": variant, "pad_sizes": [{"cells": cells}]},
     )
-    shapes = _all_shapes(exp)  # bodies (pads) + neck tracks/vias (copper)
+    shapes = _all_shapes(exp)  # bodies + neck tracks/vias/breakouts (copper)
     n = len(shapes)
     for i in range(n):
-        pin_i, gi = shapes[i]
+        pin_i, layers_i, gi = shapes[i]
         for j in range(i + 1, n):
-            pin_j, gj = shapes[j]
+            pin_j, layers_j, gj = shapes[j]
             if pin_i == pin_j:
                 continue
+            if not (layers_i & layers_j):
+                continue  # different physical layers -- can't short
             assert gi.intersection(gj).area < 1e-9, (
                 f"{pin_i} and {pin_j} pads overlap -- would short two different nets"
             )

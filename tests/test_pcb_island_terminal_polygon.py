@@ -46,6 +46,7 @@ from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import connectivity as pcb_connectivity
 from tests.test_pcb_ewod_dogfood import _drain_one_job
+from tests.test_pcb_ewod_generator_drc import _ewod_model
 
 pytestmark = pytest.mark.db
 
@@ -161,6 +162,38 @@ def test_polygon_pad_corner_is_touched_by_a_stub_the_inscribed_circle_misses(
     assert frozenset({("ARR1", "R0C2"), ("DRV1", "1")}) not in old_pairs
 
 
+# ── 1b. Rulings 2026-09-19 item 11: the breakout far end is offered ─────
+
+
+def test_breakout_far_end_is_offered_as_a_b_cu_island_terminal():
+    """``_realize_maze``'s island terminals already pick up EVERY fixed-
+    copper track endpoint (:func:`~precis.pcb.connectivity.
+    fixed_copper_pin_terminals`, generically, not something this item
+    needed to teach it) -- this just verifies the new B.Cu breakout's own
+    far end (not merely the via centre it starts from) is actually among
+    them for a real ``ewod_pad_array`` expansion, so the router has a
+    real landing point past the plaza's own crowded interior to start
+    from (gr347037's "pre-solved breakout")."""
+    expansion, model = _ewod_model(grid=[3, 3])
+    terminals = pcb_connectivity.fixed_copper_pin_terminals(model)
+    checked = 0
+    for pin, pad_ledger in expansion.ledger["pads"].items():
+        far = pad_ledger.get("breakout")
+        if far is None:
+            continue
+        key = ("ARR1", pin)
+        assert key in terminals, f"{pin}: no island terminal offered at all"
+        points = {
+            (round(t.point[0], 4), round(t.point[1], 4), t.layer)
+            for t in terminals[key]
+        }
+        assert (round(far["x"], 4), round(far["y"], 4), "B.Cu") in points, (
+            f"{pin}: breakout far end {far} not among offered terminals {points}"
+        )
+        checked += 1
+    assert checked > 0, "no driven electrode had a breakout to check"
+
+
 # ── 2. end-to-end: ewod_pad_array + a real ring-package sink footprint ──
 
 _RING_LCSC = (
@@ -228,6 +261,14 @@ def _ring_design() -> dict[str, Any]:
                 "generator": "ewod_pad_array",
                 "params": {
                     "grid": [8, 8],
+                    # docs/backlog/pcb-ewod-multitile.md "Rulings
+                    # 2026-09-19" items 3/10 -- same dogfood-fixture
+                    # convention as tests/test_pcb_ewod_dogfood.py: declare
+                    # the drive voltage so hv_separation derives from
+                    # IPC-2221B's B4 column, and pitch at the ruling's own
+                    # figure (min_pitch 2.233mm at 250V).
+                    "drive_voltage_v": 250,
+                    "pitch": 2.25,
                     "pad_sizes": [{"name": "RESV", "cells": [[0, 0], [0, 1]]}],
                     "sink_grid": {
                         "part": _RING_LCSC,

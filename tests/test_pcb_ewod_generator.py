@@ -97,7 +97,9 @@ def test_generator_copper_carries_the_escape_fabric_as_tracks_and_vias(pcb):
     """pcb-pre-place-route-blocks Slice 2: every driven electrode's neck
     stub and plaza via land in ``pcb_fixed_copper`` as real ``track``/
     ``via`` rows, scoped to this generator's own identity — not as
-    footprint pads (see the sibling test above)."""
+    footprint pads (see the sibling test above). Rulings 2026-09-19 item
+    11 adds a SECOND track per electrode (the B.Cu breakout stub past the
+    via), so 16 tracks now, not 8 -- split by layer below."""
     pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
     ref = pcb.store.get_ref(kind="pcb", id="ewod-gen-1")
     assert ref is not None
@@ -105,8 +107,11 @@ def test_generator_copper_carries_the_escape_fabric_as_tracks_and_vias(pcb):
     assert board is not None
     rows = pcb.store.pcb_fixed_copper_list(int(board["board_id"]))
     tracks = [r for r in rows if r["ctype"] == "track"]
+    necks = [t for t in tracks if t["layer"] == "F.Cu"]
+    breakouts = [t for t in tracks if t["layer"] == "B.Cu"]
     vias = [r for r in rows if r["ctype"] == "via"]
-    assert len(tracks) == 8
+    assert len(necks) == 8
+    assert len(breakouts) == 8
     assert len(vias) == 8
     assert all(r["fixed"] is True for r in rows)
     assert all(r["generator_name"] == "ARR1" for r in rows)

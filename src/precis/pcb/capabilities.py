@@ -56,6 +56,17 @@ diameter, drill_mm + 2 x annular_ring_mm)`` at THAT tier — the JSON's stored
 ``via_diameter_mm`` is JLC's published floor (an independent, real
 constraint), never the final number. :func:`_derive_via_diameter_mm` is the
 one place this happens; no other consumer re-derives it.
+
+**``ipc2221b_conductor_spacing_mm``** (docs/backlog/pcb-ewod-multitile.md
+"Rulings 2026-09-19" item 10) is a SEPARATE top-level key, not a
+per-process row — IPC-2221B Table 6-1's minimum electrical conductor
+spacing is a function of PEAK working voltage and coating/layer alone, not
+of any one fab's process capability. :func:`conductor_spacing_mm` is the
+typed accessor: ``layer='internal'`` reads the B1 column (no separate
+coated variant — IPC does not publish one), ``layer='external'`` reads B4
+when ``coated`` else B2, and any voltage above the table's own 500V top
+band is refused rather than extrapolated. Valid only below 3050m altitude
+(the table's own scope, recorded in the JSON's ``note``).
 """
 
 from __future__ import annotations
@@ -63,7 +74,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from importlib import resources
-from typing import Any
+from typing import Any, Literal
 
 _PACKAGED_DATA = "precis.data"
 _FILE = "pcb_capabilities.json"
@@ -204,10 +215,60 @@ def headroom(row: CapabilityRow, field: str, value_mm: float) -> float:
     return value_mm - jlc_min
 
 
+def conductor_spacing_mm(
+    voltage_v: float, *, layer: Literal["internal", "external"], coated: bool
+) -> float:
+    """IPC-2221B Table 6-1 (columns B1/B2/B4) minimum conductor spacing,
+    in mm, for a PEAK working voltage of ``voltage_v`` — the module
+    docstring's own paragraph on why this is a separate top-level key,
+    not a per-process capability row.
+
+    ``layer='internal'`` always reads the B1 column (IPC-2221B does not
+    publish a separate coated-internal figure — inner-layer copper is
+    never exposed to conformal coating in the first place); ``coated`` is
+    ignored in that case. ``layer='external'`` reads B4 (``coated=True``)
+    or B2 (``coated=False``). ``voltage_v`` above the table's own top band
+    (500V) is refused outright — per-volt extrapolation past a table this
+    coarse is out of scope (docs/backlog/pcb-ewod-multitile.md "Rulings
+    2026-09-19" item 10); a design that needs it must supply its own
+    ``hv_separation`` override rather than have one invented here. Valid
+    only below 3050m altitude (this table's own scope — see the JSON
+    file's ``ipc2221b_conductor_spacing_mm.note``)."""
+    if layer not in ("internal", "external"):
+        raise ValueError(
+            f"conductor_spacing_mm: layer must be 'internal' or 'external', "
+            f"got {layer!r}"
+        )
+    if voltage_v < 0:
+        raise ValueError(
+            f"conductor_spacing_mm: voltage_v must be >= 0, got {voltage_v}"
+        )
+    table = _load_raw()["ipc2221b_conductor_spacing_mm"]
+    bands = table["bands"]
+    if voltage_v > bands[-1]["max_voltage_v"] + 1e-9:
+        raise ValueError(
+            f"conductor_spacing_mm: {voltage_v}V exceeds IPC-2221B Table "
+            f"6-1's {bands[-1]['max_voltage_v']}V top band -- per-volt "
+            "extrapolation above it is out of scope; supply an explicit "
+            "hv_separation override instead"
+        )
+    for band in bands:
+        if voltage_v <= band["max_voltage_v"] + 1e-9:
+            if layer == "internal":
+                return float(band["b1_internal_mm"])
+            return float(
+                band["b4_external_coated_mm"]
+                if coated
+                else band["b2_external_uncoated_mm"]
+            )
+    raise AssertionError("unreachable: bands cover [0, top band] by construction")
+
+
 __all__ = [
     "FIELDS",
     "CapabilityRow",
     "capability_for",
+    "conductor_spacing_mm",
     "design_value",
     "headroom",
     "load_capabilities",

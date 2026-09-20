@@ -1,8 +1,11 @@
 """``ewod-dogfood-1`` — the round-1 EWOD dogfood vehicle (docs/backlog/
-pcb-ewod-multitile.md's "Dogfood vehicle" section): 8x8 pad field @2mm
-pitch, one merged reservoir pad, one HV507-class 64-channel sink under the
-whole array (``sink_grid``, round 7), a bottom-side I2C temperature sensor,
-a top-plate pogo terminal, an HV-in connector + bleed resistor, and a plain
+pcb-ewod-multitile.md's "Dogfood vehicle" section): 8x8 pad field @2.25mm
+pitch, 250V drive (docs/backlog "Rulings 2026-09-19" — IPC-2221B B4 at
+101-300V is 0.4mm, min_pitch 2.233mm; the field previously carried no
+declared voltage at all, falling back to the fab spacing floor), one
+merged reservoir pad, one HV507-class 64-channel sink under the whole
+array (``sink_grid``, round 7), a bottom-side I2C temperature sensor, a
+top-plate pogo terminal, an HV-in connector + bleed resistor, and a plain
 pin header out to the instrument.
 
 **Test-fixture footprints, not datasheet-accurate ones.** Every cached
@@ -128,6 +131,15 @@ def _design() -> dict[str, Any]:
                 "generator": "ewod_pad_array",
                 "params": {
                     "grid": [8, 8],
+                    # Rulings 2026-09-19 items 3/10: a declared drive
+                    # voltage derives `hv_separation` from IPC-2221B's B4
+                    # column instead of falling back to the fab spacing
+                    # floor; 250V's own min_pitch (2.233mm) is why `pitch`
+                    # is declared explicitly too (the module default alone,
+                    # 2.25mm, would already clear it, but the ruling's own
+                    # numbers are worth pinning here for the test's sake).
+                    "drive_voltage_v": 250,
+                    "pitch": 2.25,
                     # One merged reservoir pad, corner cells (0,0)-(0,1) --
                     # neither is a via-plaza cell (plazas sit at r,c in
                     # {1,4,7}), so the "never cover a plaza" rule is clear.
@@ -810,15 +822,22 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     escape_nets = [n for n in status_by_net if n.startswith("ARR1_R")]
     assert len(escape_nets) >= 50
     realized_escapes = [n for n in escape_nets if status_by_net[n] == "realized"]
-    # Rulings 2026-09-19 item 7 (net-class `layers`) lowers this floor from
-    # its earlier value: the escape nets are now genuinely LOCKED to
+    # Rulings 2026-09-19 item 7 (net-class `layers`) LOWERED this floor
+    # from its pre-item-7 value: the escape nets are genuinely LOCKED to
     # B.Cu-only (module docstring's "no crossovers"), so a net that used
     # to route by borrowing a layer change through the field can no
     # longer do that -- a real, expected drop in raw count, not a
-    # regression this fixture should paper over. Still half of what
-    # seed=1 currently realizes under the lock, same "a tuning wobble
-    # can't redden it" margin the old floor used.
-    assert len(realized_escapes) >= 3, (
+    # regression this fixture should paper over.
+    #
+    # Items 3/10/11 (250V drive, 2.25mm pitch, B.Cu breakout stubs)
+    # RAISE it again: measured 13/54 escape nets realized at seed=1 on
+    # this fixture with the declared voltage/pitch and the breakout
+    # stubs both in place (up from the pre-breakout, pre-voltage floor of
+    # 3, out of 57 nets -- the declared voltage also moved the fixture's
+    # own net count slightly). Floor set to half the observed count, same
+    # "a tuning wobble can't redden it" margin every earlier floor here
+    # used.
+    assert len(realized_escapes) >= 6, (
         "electrode escapes no longer route through the plaza fabric — the "
         f"gripe-346962 wall (enclosing pad discs) is back? {diag}"
     )
@@ -872,6 +891,15 @@ def test_dogfood_gerber_export_zip_loads(pcb, tmp_path):
         assert f"{slug}-B_Cu.gbr" in names
         f_cu = zf.read(f"{slug}-F_Cu.gbr").decode("utf-8")
         assert "G36*" in f_cu and "G37*" in f_cu  # the polygon electrodes
+        # Rulings 2026-09-19 item 11: every plaza via's B.Cu breakout stub
+        # is a real DRAWN track (D02*/D01*), not just the via's own flash
+        # (D03*) already on this layer -- distinguishes "the stub actually
+        # exported" from "the via happens to span this layer too".
+        b_cu = zf.read(f"{slug}-B_Cu.gbr").decode("utf-8")
+        assert "D02*" in b_cu and "D01*" in b_cu, (
+            "no drawn (D01*) track on B.Cu -- the plaza via breakout stubs "
+            "did not export"
+        )
 
 
 def test_dogfood_fab_svg_render_is_well_formed(pcb, tmp_path):

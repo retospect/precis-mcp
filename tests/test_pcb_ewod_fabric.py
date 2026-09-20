@@ -1,5 +1,6 @@
 """pcb-pre-place-route-blocks Slice 2 — ``ewod_pad_array`` emits its
-escape fabric (neck track + plaza via) as real copper.
+escape fabric (neck track + plaza via, plus — Rulings 2026-09-19 item 11 —
+a B.Cu breakout stub outward from the via) as real copper.
 
 Pure-Python coverage (no DB) of :func:`precis.pcb.generators.expand`'s own
 ``copper``/``ledger['fabric']`` contract, matching the style
@@ -24,9 +25,12 @@ pure shape/ledger/idempotency coverage, not DRC.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
+from shapely.geometry import LineString  # type: ignore[import-untyped]
+from shapely.geometry import Point as SPoint
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
@@ -35,10 +39,16 @@ from precis.pcb import generators as G
 
 def _copper_by_ctype(
     exp: G.GeneratorExpansion,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    tracks = [c for c in exp.copper if c["ctype"] == "track"]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(F.Cu neck tracks, B.Cu breakout tracks, vias) — split by layer
+    since Rulings 2026-09-19 item 11 added a second, differently-layered
+    track per driven electrode."""
+    necks = [c for c in exp.copper if c["ctype"] == "track" and c["layer"] == "F.Cu"]
+    breakouts = [
+        c for c in exp.copper if c["ctype"] == "track" and c["layer"] == "B.Cu"
+    ]
     vias = [c for c in exp.copper if c["ctype"] == "via"]
-    return tracks, vias
+    return necks, breakouts, vias
 
 
 def _pads_by_pin(exp: G.GeneratorExpansion) -> dict[str, list[dict[str, Any]]]:
@@ -51,13 +61,14 @@ def _pads_by_pin(exp: G.GeneratorExpansion) -> dict[str, list[dict[str, Any]]]:
 # ── 1. copper row shapes ────────────────────────────────────────────────
 
 
-def test_driven_electrode_emits_one_track_and_one_via_row():
+def test_driven_electrode_emits_one_neck_one_breakout_and_one_via_row():
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [3, 3]})
-    tracks, vias = _copper_by_ctype(exp)
-    assert len(tracks) == 8
+    necks, breakouts, vias = _copper_by_ctype(exp)
+    assert len(necks) == 8
+    assert len(breakouts) == 8
     assert len(vias) == 8
 
-    track = next(t for t in tracks if t["net"] == "ARR_R0C0")
+    track = next(t for t in necks if t["net"] == "ARR_R0C0")
     assert track["ctype"] == "track"
     assert track["layer"] == "F.Cu"
     seg = track["geom"]["segments"]
@@ -73,6 +84,18 @@ def test_driven_electrode_emits_one_track_and_one_via_row():
     assert via["geom"]["span"] == ["F.Cu", "B.Cu"]
     assert via["geom"]["dia_mm"] > via["geom"]["drill_mm"] > 0
     assert via["envelope"] == track["envelope"]  # same call, same floor
+
+    # Rulings 2026-09-19 item 11: the B.Cu breakout stub starts EXACTLY at
+    # the via's own centre (so it unions onto the via's B.Cu terminal by
+    # ordinary touching-copper connectivity) and runs outward.
+    breakout = next(b for b in breakouts if b["net"] == "ARR_R0C0")
+    assert breakout["ctype"] == "track"
+    assert breakout["layer"] == "B.Cu"
+    bseg = breakout["geom"]["segments"][0]
+    assert bseg["start"] == [via["geom"]["x"], via["geom"]["y"]]
+    assert bseg["start"] != bseg["end"]
+    assert breakout["geom"]["width_mm"] > 0
+    assert breakout["envelope"] == track["envelope"]
 
 
 def test_electrode_body_stays_the_pins_only_pad():
@@ -123,7 +146,9 @@ def test_reserved_slot_suppresses_its_track_and_via():
     nets_with_copper = {str(c["net"]) for c in exp.copper}
     assert "ARR_R0C1" not in nets_with_copper
     # every OTHER driven electrode is unaffected.
-    assert len(exp.copper) == 14  # 7 usable electrodes * (1 track + 1 via)
+    # 7 usable electrodes * (1 F.Cu neck + 1 via + 1 B.Cu breakout,
+    # Rulings 2026-09-19 item 11).
+    assert len(exp.copper) == 21
 
 
 # ── 3. per-tile ledger ───────────────────────────────────────────────────
@@ -239,11 +264,16 @@ def test_envelope_refuses_reapply_after_the_board_stackup_shrinks(pcb):
 # ── 5. B.Cu fan-out scope ────────────────────────────────────────────────
 
 
-def test_via_span_is_f_cu_to_b_cu_but_no_bottom_side_fan_track_exists():
-    """The via's own ``span`` reaches B.Cu (its landing IS there), but
-    this generator emits no SECOND track continuing on from that landing
-    to any sink footprint -- exactly one track (F.Cu neck) and one via
-    per driven electrode, never two tracks."""
+def test_via_span_is_f_cu_to_b_cu_and_breakout_is_short_not_a_full_fan_to_sink():
+    """The via's own ``span`` reaches B.Cu (its landing IS there).
+    Rulings 2026-09-19 item 11 adds a SHORT, pre-solved B.Cu breakout
+    stub past the via (so exactly TWO tracks per driven electrode now:
+    the F.Cu neck and the B.Cu breakout) -- but this generator still
+    emits no THIRD track continuing all the way to any sink footprint:
+    the breakout's own length is bounded at the plaza's own ``slot_a``,
+    nowhere near a real sink pad's position (this module has no DB access
+    to compute that), and ``ledger['fabric']['fan']`` still names the
+    router as the owner of that remaining run."""
     exp = G.expand(
         "ewod_pad_array",
         "ARR",
@@ -255,12 +285,22 @@ def test_via_span_is_f_cu_to_b_cu_but_no_bottom_side_fan_track_exists():
             },
         },
     )
-    tracks, vias = _copper_by_ctype(exp)
+    necks, breakouts, vias = _copper_by_ctype(exp)
     by_net: dict[str, list[dict[str, Any]]] = {}
-    for t in tracks:
+    for t in necks + breakouts:
         by_net.setdefault(str(t["net"]), []).append(t)
-    assert all(len(v) == 1 for v in by_net.values())
+    assert all(len(v) == 2 for v in by_net.values())
+    assert all({t["layer"] for t in v} == {"F.Cu", "B.Cu"} for v in by_net.values())
     assert all(v["geom"]["span"] == ["F.Cu", "B.Cu"] for v in vias)
+
+    slot_a = exp.canonical_params["slot_a"]
+    for b in breakouts:
+        seg = b["geom"]["segments"][0]
+        length = math.hypot(
+            seg["end"][0] - seg["start"][0], seg["end"][1] - seg["start"][1]
+        )
+        assert length == pytest.approx(slot_a, abs=1e-6)
+
     assert exp.ledger["fabric"]["fan"] == "router"
 
 
@@ -276,8 +316,9 @@ def test_9x9_full_has_nine_untruncated_plazas_and_72_driven_electrodes():
     plazas = {(r, c) for r in (1, 4, 7) for c in (1, 4, 7)}
     assert {(v["row"], v["col"]) for v in exp.ledger["plazas"].values()} == plazas
 
-    tracks, vias = _copper_by_ctype(exp)
-    assert len(tracks) == 72
+    necks, breakouts, vias = _copper_by_ctype(exp)
+    assert len(necks) == 72
+    assert len(breakouts) == 72
     assert len(vias) == 72
 
     fabric = exp.ledger["fabric"]
@@ -412,6 +453,99 @@ def test_9x9_sink_grid_per_tiles_is_refused_with_a_named_error():
                 },
             },
         )
+
+
+# ── 6b. Rulings 2026-09-19 items 10/11 — HV-derived sizing, breakout ──────
+
+
+def test_hv_separation_derives_from_ipc2221b_b4_at_declared_voltage():
+    """Item 10: a declared ``drive_voltage_v`` derives ``hv_separation``
+    from IPC-2221B Table 6-1's B4 (external, coated) column — 0.4mm for
+    the whole 101-300V band (so both 250V and 100V land there), and the
+    row used is recorded (``hv_row``) so the ledger/capability view can
+    quote it."""
+    sizing_250 = G.resolve_ewod_sizing({"grid": [3, 3], "drive_voltage_v": 250})
+    assert sizing_250["hv_separation"] == pytest.approx(0.4)
+    assert sizing_250["hv_row"] == "B4"
+
+    sizing_100 = G.resolve_ewod_sizing({"grid": [3, 3], "drive_voltage_v": 100})
+    assert sizing_100["hv_separation"] == pytest.approx(0.13)
+    assert sizing_100["hv_row"] == "B4"
+
+    # No declared voltage -- unchanged fallback to the fab spacing floor,
+    # `hv_row` stays None (nothing was looked up in the IPC table at all).
+    sizing_none = G.resolve_ewod_sizing({"grid": [3, 3]})
+    assert sizing_none["hv_row"] is None
+
+
+def test_drive_voltage_above_500v_refuses_with_a_named_error():
+    """Item 10: per-volt extrapolation past IPC-2221B Table 6-1's 500V top
+    band is explicitly out of scope -- refused, not silently invented."""
+    with pytest.raises(ValueError, match="500"):
+        G.resolve_ewod_sizing({"grid": [3, 3], "drive_voltage_v": 600})
+
+
+def test_pitch_2mm_is_under_the_derived_floor_at_250v():
+    """Item 10's own worked example: at 250V (B4 -> 0.4mm hv_separation)
+    the derived plaza-capacity floor is ~2.233mm -- the array's PREVIOUS
+    default pitch (2.0mm) no longer fits, and `resolve_ewod_sizing` must
+    say so rather than silently under-space the plaza."""
+    with pytest.raises(ValueError, match="derived plaza-capacity floor"):
+        G.resolve_ewod_sizing({"grid": [3, 3], "drive_voltage_v": 250, "pitch": 2.0})
+
+    # The ruling's own new default (2.25mm) clears that floor.
+    sizing = G.resolve_ewod_sizing({"grid": [3, 3], "drive_voltage_v": 250})
+    assert sizing["min_pitch"] == pytest.approx(2.233, abs=0.01)
+    assert G.resolve_ewod_sizing(
+        {"grid": [3, 3], "drive_voltage_v": 250, "pitch": 2.25}
+    )
+
+
+def test_8x8_breakout_stubs_clear_hv_separation_from_every_foreign_via_and_stub():
+    """Item 11's own clearance requirement, checked at the design point
+    the ruling was made against (8x8 @ pitch 2.25mm / 250V drive): no
+    breakout stub comes within ``hv_separation`` of ANY other net's own
+    via or breakout stub. Checked by real polygon distance (shapely),
+    not the closed-form slot geometry the plaza layout search already
+    proved pairwise-safe for VIA centres alone (:func:`precis.pcb.
+    generators._plaza_capacity`) -- the breakout stubs are new geometry
+    that search never reasoned about."""
+    exp = G.expand(
+        "ewod_pad_array",
+        "ARR1",
+        {"grid": [8, 8], "drive_voltage_v": 250, "pitch": 2.25},
+    )
+    hv = exp.canonical_params["hv_separation"]
+    stub_width = exp.canonical_params["stub_width"]
+    _, breakouts, vias = _copper_by_ctype(exp)
+
+    stub_shapes = []
+    for b in breakouts:
+        seg = b["geom"]["segments"][0]
+        line = LineString([tuple(seg["start"]), tuple(seg["end"])])
+        stub_shapes.append((str(b["net"]), line.buffer(stub_width / 2.0)))
+    via_shapes = [
+        (
+            str(v["net"]),
+            SPoint(v["geom"]["x"], v["geom"]["y"]).buffer(v["geom"]["dia_mm"] / 2.0),
+        )
+        for v in vias
+    ]
+
+    worst = min(
+        s1.distance(s2)
+        for i, (n1, s1) in enumerate(stub_shapes)
+        for n2, s2 in stub_shapes[i + 1 :]
+        if n1 != n2
+    )
+    assert worst >= hv, f"stub-vs-stub clearance {worst}mm < hv_separation {hv}mm"
+
+    worst_via = min(
+        s1.distance(s2) for n1, s1 in stub_shapes for n2, s2 in via_shapes if n1 != n2
+    )
+    assert worst_via >= hv, (
+        f"stub-vs-via clearance {worst_via}mm < hv_separation {hv}mm"
+    )
 
 
 # ── 7. determinism ───────────────────────────────────────────────────────

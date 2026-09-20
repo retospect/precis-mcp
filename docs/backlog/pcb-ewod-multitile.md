@@ -741,6 +741,26 @@ QFP pads at 0.8 mm pitch leave zero free rows between their clearance
 zones on B.Cu, so a pad is enterable only from its ends — fine for a
 radial fan, but the Teensy/shifter/I2C nets must not cross the ring.
 
+**RULED 2026-09-19 (Reto, on the two levers): drive voltage 250 V, AND
+radial breakout stubs as fixed copper.** With the IPC-2221B values
+VERIFIED against the table (not memory): B4 external-coated = 0.4 mm for
+the whole 101–300 V band, B1 internal = 0.2 mm, B2 uncoated = 0.6 mm to
+150 V then 1.25 mm — so ruling 3's rows are those, and at 250 V the
+plaza's minimum pitch is 2.233 mm. **Pitch → 2.25 mm** (Reto, same
+day; rejected: a documented plaza-internal override at 2.0 mm, and
+150 V which sits in the same 0.4 mm band). Build items:
+10. `pcb_capabilities.json` HV rows (B1/B2/B4 by voltage band);
+    `resolve_ewod_sizing` derives `hv_separation` from
+    `drive_voltage_v` + coated/external (B4) instead of the 0.002 mm/V
+    slope; inner-layer heaters (slice 3) read B1. Dogfood/default
+    `drive_voltage_v: 250`, `pitch: 2.25`. BUILT 2026-09-19 in tree.
+11. Per plaza via, the generator emits a B.Cu breakout stub as fixed
+    copper, outward along the slot's own direction, length ≈ the
+    plaza's `slot_a` (so the 8 exits sit on a ring ~1.7 mm out, ≥1.3 mm
+    apart); the router's island terminals then start at the stub's far
+    end. Same "the fabric owns its pre-routed copper" contract as the
+    plaza vias (pre-place-route slice 1). BUILT 2026-09-19 in tree.
+
 Also from the same review: the web view shows F.Cu tracks ending over
 bottom-side SMD pads (sink / U_TEMP) with no connection. That is the
 layer-blind-router signature gr346744 already fixed on `main` — prod is
