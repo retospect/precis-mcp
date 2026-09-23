@@ -50,7 +50,10 @@ the lookup provider).
 per-author ORCID links, and retraction status from one Crossref
 (+conditional OpenAlex) fetch, on the :mod:`precis.workers.paper_meta_enrich`
 cadence; ``meta.authors_resolved_at`` is its idempotency stamp and
-``refs.human_verified_at`` its skip guard.
+``refs.human_verified_at`` its skip guard. It also fills
+``refs.title``/``refs.year`` when — and only when — the ref has none of
+its own (:func:`precis.identity.is_placeholder_title`), which is how a
+DOI-only acquire's title-less stub ever gets a name.
 """
 
 from precis.ingest.add import IngestResult

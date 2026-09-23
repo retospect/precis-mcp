@@ -20,6 +20,17 @@ What lands where:
   the *existing* flat strings otherwise (no network). Skipped entirely
   when ``refs.human_verified_at`` is set — a hand correction is never
   clobbered (a verified paper still gets its other meta fields filled).
+* **``refs.title`` / ``refs.year``** — filled only when the ref carries
+  no real value of its own: a blank title or the ``PLACEHOLDER_TITLE``
+  sentinel (:func:`precis.identity.is_placeholder_title`), and a NULL
+  year. A DOI-only acquire mints its stub title-less and yearless
+  (``Store.acquire_paper_stub``), and this pass was for a long while the
+  only thing that ever looked the DOI up — so the row sat at
+  ``(no title)`` forever while its *abstract* and byline filled in. The
+  placeholder guard is what lets this run corpus-wide: a real title is
+  by definition not a placeholder, so a PDF-derived title or a human's
+  Meta-tab correction is never clobbered (and needs no ``verified``
+  special case — there is nothing to protect in a blank).
 * **``meta.entry_type`` / ``meta.journal`` / ``meta.issn`` /
   ``meta.abstract``** — filled only when the ref doesn't already carry
   one (never clobbers a better existing value, or a human edit made via
@@ -79,6 +90,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from precis.identity import is_placeholder_title
 from precis.ingest import orcid as orcid_api
 from precis.ingest.cards import ensure_abstract_card, rewrite_cards
 from precis.ingest.crossref import _normalize as _crossref_normalize
@@ -119,6 +131,8 @@ class EnrichOutcome:
     retraction_status: str | None = None
     extra_identifiers: int = 0
     orcid_links: int = 0
+    title_filled: str | None = None
+    year_filled: int | None = None
     skipped_authors: bool = False
     cards_rebuilt: bool = False
 
@@ -378,6 +392,8 @@ def enrich_paper(
     meta_patch: dict[str, Any] = {}
     extra_ids: list[tuple[str, str, str]] = []
     retraction: tuple[RetractionStatus, str | None, str | None] | None = None
+    new_title: str | None = None
+    new_year: int | None = None
     crossref_authors: list[dict[str, Any]] | None = None
     crossref_orcid_authors: list[dict[str, Any]] = []
 
@@ -408,6 +424,24 @@ def enrich_paper(
         candidate = normalize_authors(authors_raw)
         if candidate:
             crossref_authors = candidate
+
+        # Title/year: fill-blanks-only, like the meta fields below. A
+        # DOI-only acquire mints its stub with ``PLACEHOLDER_TITLE`` and a
+        # NULL year (``Store.acquire_paper_stub``) and nothing downstream
+        # ever replaced them — Crossref's answer was normalized, its
+        # journal/issn/abstract kept, and its title dropped on the floor.
+        # ``is_placeholder_title`` is what makes this safe to run over the
+        # whole corpus: a real title (or a human's correction) is never a
+        # placeholder, so it is never clobbered. The year rides along under
+        # the same guard because a placeholder-titled stub's year is NULL
+        # for the same reason — but is filled independently, since a
+        # properly-titled ref can still be missing its year.
+        if norm.get("title") and is_placeholder_title(ref.title):
+            new_title = str(norm["title"]).strip() or None
+            outcome.title_filled = new_title
+        if norm.get("year") and ref.year is None:
+            new_year = int(norm["year"])
+            outcome.year_filled = new_year
 
         if norm.get("entry_type") and not current_meta.get("entry_type"):
             meta_patch["entry_type"] = norm["entry_type"]
@@ -465,6 +499,8 @@ def enrich_paper(
     with store.tx() as conn:
         store.update_paper_fields(
             ref_id,
+            title=new_title,
+            year=new_year,
             authors=new_authors,
             meta_patch=meta_patch,
             source="paper-meta-enrich",
@@ -496,7 +532,7 @@ def enrich_paper(
     if link_orcid and orcid_authors:
         outcome.orcid_links = _mint_and_link_orcid_authors(store, ref_id, orcid_authors)
 
-    if new_authors or meta_patch.get("abstract"):
+    if new_authors or new_title or meta_patch.get("abstract"):
         _rebuild_cards(store, ref_id)
         outcome.cards_rebuilt = True
 

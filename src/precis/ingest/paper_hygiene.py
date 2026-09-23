@@ -33,6 +33,14 @@ ingestion/edit bugs that the current code no longer produces:
   the existing PDF and :func:`precis.ingest.db_writer.
   register_aliases_and_maybe_upgrade` uses to gate a body *replacement*
   once the re-fetch lands.
+* :func:`requeue_placeholder_title_papers` — a live paper still carrying
+  the ``PLACEHOLDER_TITLE`` sentinel a DOI-only acquire mints it with,
+  even though ``paper_meta_enrich`` already visited it and kept the rest
+  of the Crossref record. That pass never wrote ``refs.title``/``year``
+  until it was taught to; clearing its ``meta.authors_resolved_at``
+  idempotency stamp is the whole heal — the ref falls back into
+  ``_claim_batch``'s predicate and the (now title-filling) pass re-runs
+  over it. No network here: this only re-arms.
 
 All are dry-run by default and idempotent: a clean corpus yields empty
 results and the next pass is a cheap no-op.
@@ -56,6 +64,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from precis.identity import PLACEHOLDER_TITLE
 from precis.ingest.cards import rewrite_cards
 from precis.store import Store
 from precis.utils.authors import author_display, author_names, is_junk_author_name
@@ -778,6 +787,80 @@ def metadata_hygiene_stats(
     )
 
 
+def requeue_placeholder_title_papers(
+    store: Store, *, dry_run: bool = True, limit: int | None = None
+) -> list[int]:
+    """Re-arm ``paper_meta_enrich`` over papers stuck at the no-title sentinel.
+
+    A DOI-only acquire (``Store.acquire_paper_stub``) mints its stub with
+    :data:`precis.identity.PLACEHOLDER_TITLE` and a NULL year, because at
+    mint time only the identifier is known. Filling those in is
+    ``paper_meta_enrich``'s job — but until it was taught to write
+    ``refs.title``/``refs.year`` it normalized Crossref's answer, kept the
+    journal/ISSN/abstract/byline out of it, and dropped the title. The row
+    then pinned itself shut: that pass stamps ``meta.authors_resolved_at``
+    on every ref it visits, hit or miss, and claims only rows where the
+    stamp is NULL, so a once-visited ref is never reconsidered.
+
+    The heal is therefore just the stamp: delete it, and the ref re-enters
+    :func:`precis.workers.paper_meta_enrich._claim_batch` on the next pass
+    (hourly by default), which now fills the title. Nothing is fetched
+    here — the re-fetch is the worker's, under its existing rate budget.
+
+    Only papers carrying a DOI are selected: a DOI-less placeholder has
+    nothing for Crossref to resolve, so re-arming it would burn a claim
+    slot to reach the same no-op. Those rows need a human or a fresh
+    identifier and are left alone (``metadata_hygiene_stats`` still counts
+    them).
+
+    A ``paper_reconcile``/``title_backfill_queued`` breadcrumb records the
+    re-arm, so ``view='log'`` shows why a long-settled ref was visited
+    twice. Returns the ref_ids selected; a dry run returns what it *would*
+    act on without writing.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+             WHERE r.kind = 'paper'
+               AND r.retired_at IS NULL
+               AND (r.title IS NULL OR btrim(r.title) IN ('', %s))
+               AND r.meta ? 'authors_resolved_at'
+               AND EXISTS (
+                     SELECT 1 FROM ref_identifiers ri
+                      WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi'
+                   )
+             ORDER BY r.ref_id
+            """,
+            (PLACEHOLDER_TITLE,),
+        ).fetchall()
+    candidates = [int(r[0]) for r in rows]
+    if limit:
+        candidates = candidates[:limit]
+
+    if not dry_run:
+        for ref_id in candidates:
+            with store.tx() as conn:
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'authors_resolved_at' "
+                    "WHERE ref_id = %s",
+                    (ref_id,),
+                )
+                store.append_event(
+                    ref_id,
+                    source="paper_reconcile",
+                    event="title_backfill_queued",
+                    payload={"reason": "placeholder title"},
+                    conn=conn,
+                )
+        log.info(
+            "requeue_placeholder_title_papers: re-armed %d paper(s)",
+            len(candidates),
+        )
+    return candidates
+
+
 __all__ = [
     "MetadataHygieneStats",
     "collapse_superseded_chains",
@@ -786,5 +869,6 @@ __all__ = [
     "metadata_hygiene_stats",
     "migrate_dangling_paper_links",
     "requeue_front_matter_only_papers",
+    "requeue_placeholder_title_papers",
     "requeue_stranded_fetches",
 ]

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 import precis.ingest.paper_meta_enrich as paper_meta_enrich
+from precis.identity import PLACEHOLDER_TITLE
 from precis.ingest.paper_meta_enrich import (
     RESOLVED_AT_KEY,
     SOURCE_KEY,
@@ -611,3 +612,107 @@ class TestStampOrdering:
                 "SELECT count(*) FROM refs WHERE kind='orcid'"
             ).fetchone()
         assert rows is not None and rows[0] == 1
+
+
+class TestPlaceholderTitleFill:
+    """The no-title sentinel is a hole to fill, a real title is not.
+
+    A DOI-only acquire mints its stub with ``PLACEHOLDER_TITLE`` and no
+    year; before this, the pass normalized Crossref's answer, kept the
+    journal/ISSN/abstract/byline, and dropped the title — leaving a row
+    that looked enriched and read as ``(no title)``.
+    """
+
+    def test_placeholder_title_is_replaced_by_crossref(self, store: Store) -> None:
+        rid = _paper(store, slug="p20", title=PLACEHOLDER_TITLE, doi="10.1234/ph")
+        msg = _crossref_msg(doi="10.1234/ph")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/ph",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled == "A Paper"
+        assert outcome.year_filled == 2020
+        ref = _ref(store, rid)
+        assert ref.title == "A Paper"
+        assert ref.year == 2020
+
+    def test_blank_title_is_replaced_too(self, store: Store) -> None:
+        rid = _paper(store, slug="p21", title="   ", doi="10.1234/blank")
+        msg = _crossref_msg(doi="10.1234/blank")
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/blank",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert _ref(store, rid).title == "A Paper"
+
+    def test_real_title_is_never_clobbered(self, store: Store) -> None:
+        rid = _paper(
+            store, slug="p22", title="The Author's Own Title", doi="10.1234/keep"
+        )
+        msg = _crossref_msg(doi="10.1234/keep")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/keep",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled is None
+        assert _ref(store, rid).title == "The Author's Own Title"
+
+    def test_year_fills_independently_of_the_title(self, store: Store) -> None:
+        """A properly-titled ref can still be missing its year."""
+        rid = _paper(store, slug="p23", title="Titled Already", doi="10.1234/yr")
+        msg = _crossref_msg(doi="10.1234/yr")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/yr",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.year_filled == 2020
+        assert _ref(store, rid).year == 2020
+
+    def test_existing_year_is_not_overwritten(self, store: Store) -> None:
+        ref = store.insert_ref(
+            kind="paper", slug="p24", title=PLACEHOLDER_TITLE, year=1999
+        )
+        store.set_ref_identifier(ref.id, "doi", "10.1234/oldyear", source="manual")
+        msg = _crossref_msg(doi="10.1234/oldyear")
+        outcome = enrich_paper(
+            store,
+            ref.id,
+            doi="10.1234/oldyear",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.year_filled is None
+        after = _ref(store, ref.id)
+        assert after.year == 1999
+        assert after.title == "A Paper"
+
+    def test_no_doi_leaves_the_placeholder_alone(self, store: Store) -> None:
+        """Nothing to look up — the sentinel survives rather than being
+        replaced by a guess."""
+        rid = _paper(store, slug="p25", title=PLACEHOLDER_TITLE)
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi=None,
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled is None
+        assert _ref(store, rid).title == PLACEHOLDER_TITLE

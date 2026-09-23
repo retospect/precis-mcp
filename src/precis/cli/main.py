@@ -71,6 +71,7 @@ from precis.cli import (
     stubs,
     taproot,
     taproot_migrate,
+    title_backfill,
     tools,
     users,
     verify,
@@ -167,6 +168,10 @@ def main() -> None:
 
     if args.cmd == "markup-backfill":
         markup_backfill.run(args)
+        return
+
+    if args.cmd == "title-backfill":
+        title_backfill.run(args)
         return
 
     if args.cmd == "retire-draft-equations":
@@ -371,6 +376,7 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate_refs.add_parser(sub)
     reconcile.add_parser(sub)
     markup_backfill.add_parser(sub)
+    title_backfill.add_parser(sub)
     retire_draft_equations.add_parser(sub)
     convert_draft_lists.add_parser(sub)
     resolve_metadata.add_parser(sub)

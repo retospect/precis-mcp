@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from precis.identity import PLACEHOLDER_TITLE
 from precis.ingest.paper_hygiene import (
     collapse_superseded_chains,
     heal_drifted_cards,
     is_filename_like_title,
     migrate_dangling_paper_links,
+    requeue_placeholder_title_papers,
 )
 from precis.store import Store
 
@@ -542,3 +544,51 @@ def test_metadata_hygiene_stats_title_sample_is_bounded(store: Store) -> None:
     assert stats.title_sample_papers == 2
     assert stats.title_sample_bounded is True
     assert stats.filename_like_titles == 2  # only the sampled two counted
+
+
+class TestRequeuePlaceholderTitlePapers:
+    """Re-arming is the whole heal: clear the enrichment pass's
+    idempotency stamp so it reconsiders a row it already gave up on."""
+
+    def _stub(
+        self,
+        store: Store,
+        *,
+        slug: str,
+        title: str,
+        doi: str | None = "10.1234/a",
+        resolved: bool = True,
+    ) -> int:
+        meta: dict[str, Any] = {"authors_resolved_at": "2026-09-01T00:00:00+00:00"}
+        ref = store.insert_ref(
+            kind="paper", slug=slug, title=title, meta=meta if resolved else {}
+        )
+        if doi:
+            store.set_ref_identifier(ref.id, "doi", doi, source="manual")
+        return ref.id
+
+    def test_clears_the_stamp_so_the_pass_reclaims_it(self, store: Store) -> None:
+        rid = self._stub(store, slug="t1", title=PLACEHOLDER_TITLE)
+        assert requeue_placeholder_title_papers(store, dry_run=False) == [rid]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert "authors_resolved_at" not in (ref.meta or {})
+
+    def test_dry_run_selects_without_writing(self, store: Store) -> None:
+        rid = self._stub(store, slug="t2", title=PLACEHOLDER_TITLE)
+        assert requeue_placeholder_title_papers(store, dry_run=True) == [rid]
+        ref = store.fetch_refs_by_ids([rid])[rid]
+        assert "authors_resolved_at" in (ref.meta or {})
+
+    def test_skips_titled_papers_and_doi_less_placeholders(self, store: Store) -> None:
+        self._stub(store, slug="t3", title="A Real Title")
+        self._stub(store, slug="t4", title=PLACEHOLDER_TITLE, doi=None)
+        # Never visited by the pass - it will claim this one anyway.
+        self._stub(
+            store, slug="t5", title=PLACEHOLDER_TITLE, doi="10.1234/b", resolved=False
+        )
+        assert requeue_placeholder_title_papers(store, dry_run=True) == []
+
+    def test_second_run_is_a_no_op(self, store: Store) -> None:
+        self._stub(store, slug="t6", title=PLACEHOLDER_TITLE)
+        assert len(requeue_placeholder_title_papers(store, dry_run=False)) == 1
+        assert requeue_placeholder_title_papers(store, dry_run=False) == []

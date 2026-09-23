@@ -645,7 +645,11 @@ class RefsMixin:
         explicit identifier pairs so the gated dream ``acquire`` tool can
         reuse it (docs/backlog/dreaming.md, §Acquire).
         """
-        from precis.identity import make_cite_key, normalize_doi
+        from precis.identity import (
+            PLACEHOLDER_TITLE,
+            make_cite_key,
+            normalize_doi,
+        )
 
         # Canonicalise DOIs (lowercase, strip doi:/URL prefixes) so both the
         # collapse *probe* and the stored row match the trigger-lowercased form
@@ -721,7 +725,7 @@ class RefsMixin:
             new_ref = self.insert_ref(
                 kind="paper",
                 slug=cite_key,
-                title=title or "(no title)",
+                title=title or PLACEHOLDER_TITLE,
                 year=year,
                 meta=initial_meta,
                 conn=c,

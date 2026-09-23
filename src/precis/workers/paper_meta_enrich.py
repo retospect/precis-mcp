@@ -118,6 +118,7 @@ def run_paper_meta_enrich_pass(
             batch = _claim_batch(store, limit=batch_limit)
             ok = 0
             failed = 0
+            titled = 0
             for ref_id, doi in batch:
                 try:
                     outcome = enrich_paper(
@@ -131,15 +132,19 @@ def run_paper_meta_enrich_pass(
                     continue
                 if outcome is not None:
                     ok += 1
+                    if outcome.title_filled:
+                        titled += 1
 
             store.set_setting(_STATE_KEY, datetime.now(UTC).isoformat())
 
             if batch:
                 log.info(
-                    "paper_meta_enrich: visited %d ref(s), %d ok, %d failed",
+                    "paper_meta_enrich: visited %d ref(s), %d ok, %d failed, "
+                    "%d placeholder title(s) filled",
                     len(batch),
                     ok,
                     failed,
+                    titled,
                 )
             return BatchResult(
                 handler="paper_meta_enrich", claimed=len(batch), ok=ok, failed=failed

@@ -17,6 +17,8 @@ import string
 import pytest
 
 from precis.identity import (
+    PLACEHOLDER_TITLE,
+    is_placeholder_title,
     make_cite_key,
     make_content_hash,
     make_finding_paper_id,
@@ -586,3 +588,17 @@ def test_node_id_regression(
     paper_id: str, page: int | None, block_index: int, expected: str
 ) -> None:
     assert make_node_id(paper_id, page, block_index) == expected
+
+
+class TestPlaceholderTitle:
+    def test_blank_and_sentinel_are_placeholders(self) -> None:
+        assert is_placeholder_title(None)
+        assert is_placeholder_title("")
+        assert is_placeholder_title("   ")
+        assert is_placeholder_title(PLACEHOLDER_TITLE)
+        assert is_placeholder_title(f"  {PLACEHOLDER_TITLE}  ")
+
+    def test_a_real_title_is_not(self) -> None:
+        assert not is_placeholder_title("Attention Is All You Need")
+        # Close, but a real (if odd) title - the check is exact, not fuzzy.
+        assert not is_placeholder_title("(no title) - a memoir")

@@ -165,6 +165,34 @@ def _surname_from_string(name: str) -> str:
     return re.sub(r"[^a-z]", "", folded)[:_SURNAME_MAX]
 
 
+#: Literal title stamped on a paper minted with no title of its own — a
+#: DOI/identifier-only acquire (``Store.acquire_paper_stub``). It is a
+#: *sentinel*, not a value: every pass that learns a real title from an
+#: external record (Crossref, Semantic Scholar) must overwrite it rather
+#: than treat the row as already-titled. Kept here so the writer and the
+#: fillers agree on one spelling.
+PLACEHOLDER_TITLE = "(no title)"
+
+
+def is_placeholder_title(title: str | None) -> bool:
+    """True when ``title`` carries no information — blank, or the
+    :data:`PLACEHOLDER_TITLE` sentinel a title-less acquire stamps.
+
+    The check a metadata-filling pass uses to decide "may I write the
+    title I just fetched?", so that a real title is never clobbered and
+    a sentinel never survives.
+
+        >>> is_placeholder_title(None), is_placeholder_title("  ")
+        (True, True)
+        >>> is_placeholder_title("(no title)")
+        True
+        >>> is_placeholder_title("Attention Is All You Need")
+        False
+    """
+    stripped = (title or "").strip()
+    return not stripped or stripped == PLACEHOLDER_TITLE
+
+
 def _first_author_surname(authors: Any) -> str:
     """Return the first author's surname, lowercased ASCII letters only.
 
@@ -607,7 +635,9 @@ def make_node_id(paper_id: str, page: int | None, block_index: int) -> str:
 
 
 __all__ = [
+    "PLACEHOLDER_TITLE",
     "CiteKeyOverflow",
+    "is_placeholder_title",
     "make_cite_key",
     "make_content_hash",
     "make_finding_paper_id",
