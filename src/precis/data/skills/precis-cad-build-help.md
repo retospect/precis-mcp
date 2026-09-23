@@ -171,3 +171,4 @@ process-DRC findings (overhang, bridge, bed_contact, build_volume).
 - [[precis-cad-assembly-help]] — ports, mates, joints, connectivity
 - [[precis-material-help]] — the `material` kind `material <component> <slug>` assigns
 - [[precis-component-help]] — the catalog `component` refs a BOM resolves against
+- [[precis-differentiation-help]] — pick the derivative route before descending on a shape or sizing objective

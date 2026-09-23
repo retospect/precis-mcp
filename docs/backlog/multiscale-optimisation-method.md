@@ -26,6 +26,8 @@ Section → owner:
 - §1–2 the two-layer split — spec §3.1 owns (already decided, same
   memetic/basin-hopping shape). Held here: the *forcing* argument (no
   integral finds a minimum; stationarity gives critical points).
+- §2a derivative route per cost term — **new, owned here**; the
+  tooling choice it implies stays open item 2.
 - §3 shape functional over a level set — **new, owned here**, with the
   SIMP/feature-parameterisation reconciliation in §3.6.
 - §4 fixed reference normalisation — refines spec §3.3 ("penalties
@@ -184,6 +186,66 @@ wherever there is a boundary to advect:
 
 Three independent upgrades — per-block first, multiphase for assemblies,
 topological derivative for nucleation — none blocking the others.
+
+## 2a. How each term's derivative is obtained (added 2026-09-23)
+
+§7's scale table names a *gradient source* per tier (shape derivative +
+adjoint / force field / analytic forces) and §6b names torch for pcb, but
+nothing here said how a **newly declared cost term** gets its derivative.
+That is the first decision of the continuous layer, not an implementation
+detail discovered later: descent on a gradient that does not belong to the
+reported objective converges quietly to the wrong design.
+
+**Decision.** The derivative route is named per term at declaration time,
+from a fixed ladder, and the assembled gradient is verified before any
+descent runs. The playbook lives as the runtime skill
+`precis-differentiation-help` (`src/precis/data/skills/`); this section is
+the method-level commitment, the skill is what an agent reads.
+
+| Route | Chosen when | Cost |
+|---|---|---|
+| Hand-derived analytic derivative + adjoint solve | PDE-constrained term (stress, thermal, flow), many design variables | one extra solve/step, independent of variable count |
+| Reverse-mode AD over the cost stack | term already written in a differentiable array library, no PDE constraint | ~2–4× forward, independent of variable count |
+| Forward-mode AD | phase-2 sizing: few feature variables; directional second derivatives | one sweep per variable |
+| Complex-step | verifying a smooth analytic evaluator that cannot be rewritten | one complex eval per variable, no step tuning |
+| Finite differences | verification only, or an unrewritable black box | 2n evals, step tuning, cancellation |
+
+The deciding number is design-variable count into one scalar: many ⇒
+adjoint/reverse; few ⇒ forward. Finite differences are never the
+production gradient. Consequences already carried elsewhere in this doc
+(§2's aggregated stress requirement, §4's bilateral-Huber/softmin choice,
+§2's "default to freezing" for D-kind requirements, §6b's torch placement)
+are instances of this same ladder, not separate rules.
+
+**Mandatory verification.** Every gradient ships with (a) a directional
+dot-product test, (b) a Taylor-remainder test whose residual quarters when
+the step halves, and (c) an independent route on a variable subset at
+several step sizes. This is the existing house practice generalised:
+`structsolve/simp.py`'s exact compliance sensitivity is already gated
+against central finite differences through the whole map.
+
+**Two failure modes the method must structurally avoid.**
+
+- *Differentiating the solver's iterations.* Unrolling is expensive and is
+  wrong whenever the stopping criterion depends on the design variables.
+  Differentiate the converged state via the implicit relation (residual =
+  0) — which is what the adjoint already does.
+- *Varying inner tolerance.* §2's surrogate ladder (cheap early, full
+  adjoint near convergence) is legitimate; loosening the *real* solve's
+  tolerance as a function of outer iteration is not — a non-converged
+  inner solve returns a confident gradient for a state that is not the
+  answer, and every derivative formula here assumes the residual is zero.
+  The escalation must switch models, never tolerances, and each model's
+  gradient must be self-consistent.
+
+**Discretise-then-optimise is the default.** Differentiate what the solver
+actually solves, so the gradient is consistent with the discretisation;
+check the optimum survives mesh refinement rather than assuming the
+continuous gradient.
+
+Provenance: landscape check `perplexity-reasoning:445527`. Primary-source
+cites (complex-step, topological derivative, level-set shape optimisation,
+analytic placement) are an open item — see §8.
 
 ## 3. Normalisation, not weights
 
@@ -624,3 +686,11 @@ when investigated.
     own backlog item; prerequisite for the wells (§4).
 11. pcb bridge: descent-seeded `seed_placement` — after the optimiser
     protocol lands.
+12. Primary-source cites for §2a's ladder — complex-step derivatives,
+    topological derivative, level-set shape optimisation, analytic
+    placement. Import the papers; the section currently rests on a
+    landscape check, not on refs.
+13. §2a gradient-verification harness — one reusable directional +
+    Taylor-remainder checker every new cost term's test calls, rather
+    than each term re-rolling the finite-difference comparison
+    `structsolve/simp.py` already has.
