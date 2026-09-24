@@ -37,6 +37,15 @@ Source of truth for editing:
    density sensitivity in `src/precis/structsolve/simp.py` is gated this way
    — match it.
 
+## Spectral graph objects — ask which of three roles
+
+Basis (frozen eigenvectors as reduced design coordinates) ⇒ differentiable,
+one projection, forward mode. Objective (an eigenvalue) ⇒ differentiable only
+while it is simple; clustered eigenvalues and mode switching need a p-norm/KS
+aggregate over a mode *band*. Structure decision (Fiedler cut, clustering,
+coarsening) ⇒ combinatorial, annealer only. Deciding test: does it get
+recomputed when the design changes? Recomputed ⇒ outer layer.
+
 ## Two failure modes that do not crash
 
 - Differentiating a solver's *iterations* instead of its converged state.

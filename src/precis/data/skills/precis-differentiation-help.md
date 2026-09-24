@@ -165,6 +165,101 @@ backward pass: roughly a third more compute for a several-fold memory
 cut. Use it when activation memory is the binding constraint; skip it
 when each forward evaluation is already the expensive thing.
 
+## Spectral graph — basis, objective, or structure decision
+
+Graph spectra enter a design problem in three roles. They have different
+derivative answers, and conflating them is the usual mistake.
+
+| Role | Example | Derivative status |
+|---|---|---|
+| **Basis** — eigenvectors as reduced design coordinates | low-frequency Laplacian modes as the shape variables; adjacency eigenvectors as a graph embedding | differentiable and cheap, **provided the basis is frozen** |
+| **Objective** — an eigenvalue is the quantity you care about | resonant frequency, buckling load | differentiable only while the eigenvalue is simple |
+| **Structure decision** — the spectrum picks a partition | Fiedler cut, clustering, coarsening level, which block splits | not differentiable; belongs to the discrete search |
+
+### Spectral basis — freeze it, then it is free
+
+Write the design field as a truncated sum over the first few eigenvectors.
+The gradient with respect to a spectral coefficient is one projection of
+the ordinary gradient onto that eigenvector — no extra solve. You get few
+variables (so forward mode suffices), built-in smoothness, and a globally
+coupled basis instead of a nodal one.
+
+The condition is that the eigenvectors are **computed once and held
+fixed**. A basis recomputed from the current design each step is an
+implicit dependence nobody differentiates, and the descent silently
+follows a moving target.
+
+Two traps specific to eigenvector bases:
+
+- **Sign and rotation are not canonical.** An eigensolver returns *some*
+  valid eigenvector; a degenerate pair returns *some* basis of its
+  subspace. Any rule that pins them ("make the largest component
+  positive") is a discontinuous canonicalisation — fine for a
+  deterministic seed, a jump discontinuity if it sits inside a
+  differentiated path.
+- **A trivial mode carries no shape.** The all-one-sign leading mode of a
+  connected graph is structure-free; skip it before using the rest as
+  coordinates.
+
+### Spectral objective — simple eigenvalues only, else aggregate
+
+For a simple eigenvalue, the derivative is the eigenvector sandwiched
+around the derivative of the matrix — no adjoint solve needed, the
+eigenvector *is* the adjoint. This is the same shape as the analytic
+forces used at the atomic tier.
+
+It stops being true the moment eigenvalues repeat or cluster:
+
+- "the k-th eigenvalue" is only piecewise smooth — at a crossing it is
+  not differentiable, and the labelling swaps.
+- **Mode switching** is the practical failure: a term protects mode 3,
+  modes 3 and 4 cross, and from then on the gradient defends the wrong
+  mode while the reported constraint looks satisfied. Correlation-based
+  mode tracking jumps branches exactly when modes are close, which is
+  exactly when you needed it.
+- Eigenvector derivatives are conditioned by the eigenvalue *gap*. Close
+  eigenvalues make them enormous and meaningless; only the derivative of
+  the whole subspace stays well-behaved.
+
+The fix is the same aggregation rule as pointwise stress: constrain a
+smooth aggregate (p-norm or log-sum-exp) over a *band* of modes, not one
+labelled mode. Symmetric functions of the spectrum stay differentiable
+through crossings because they do not depend on the ordering.
+
+With a density field, also expect **spurious localised modes**:
+near-void elements are soft and nearly massless, so they host very low
+eigenvalues confined to a few cells that mean nothing structurally. Floor
+the density, or aggregate over a physically meaningful band, before any
+frequency term is trusted.
+
+### Spectral structure decisions stay in the discrete layer
+
+Partitioning, clustering and coarsening are combinatorial: an
+infinitesimal design change flips a node across a cut. Descending through
+them is meaningless. They are annealer moves, and the inner descent runs
+with the partition held constant.
+
+The test is one question: **does this spectral object get recomputed when
+the design changes?** Recomputed ⇒ outer discrete layer, held fixed
+during each inner solve. Precomputed once ⇒ safe inside the differentiable
+layer, as a basis, a preconditioner, or a filter.
+
+### Filtering the gradient is descending a different problem
+
+A smoothing filter over a mesh or graph is a graph filter. Applying it to
+the *design* and defining the objective on the filtered field keeps the
+gradient consistent — the filter is part of the forward map, and the
+chain rule covers it. Applying it to the *gradient* alone does not: the
+optimiser then converges to a stationary point of a regularised problem,
+not of the objective it reports.
+
+That is a legitimate move when the regularised problem is the one you
+want (it is how minimum-feature-size enforcement is usually bought), but
+it must be declared, not discovered. The shipped density-based screen
+does exactly this and says so: its radius filter smooths the gradient and
+is explicitly not part of the differentiable forward map. Anything
+claiming to be an exact gradient may not quietly do the same.
+
 ## What supplies the gradient at each scale
 
 | Scale | Continuous variables | Gradient source |

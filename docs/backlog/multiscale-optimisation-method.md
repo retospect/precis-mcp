@@ -26,8 +26,8 @@ Section → owner:
 - §1–2 the two-layer split — spec §3.1 owns (already decided, same
   memetic/basin-hopping shape). Held here: the *forcing* argument (no
   integral finds a minimum; stationarity gives critical points).
-- §2a derivative route per cost term — **new, owned here**; the
-  tooling choice it implies stays open item 2.
+- §2a derivative route per cost term, incl. spectral quantities —
+  **new, owned here**; the tooling choice it implies stays open item 2.
 - §3 shape functional over a level set — **new, owned here**, with the
   SIMP/feature-parameterisation reconciliation in §3.6.
 - §4 fixed reference normalisation — refines spec §3.3 ("penalties
@@ -246,6 +246,63 @@ continuous gradient.
 Provenance: landscape check `perplexity-reasoning:445527`. Primary-source
 cites (complex-step, topological derivative, level-set shape optimisation,
 analytic placement) are an open item — see §8.
+
+### Spectral graph quantities — three roles, three answers (added 2026-09-24)
+
+The ladder above is about *how* a derivative is obtained; spectral graph
+objects force a prior question — *whether* the thing is differentiable at
+all. Three roles, decided per use:
+
+1. **Spectral basis (inner layer, differentiable).** Eigenvectors of a
+   Laplacian or adjacency matrix as reduced design coordinates: the
+   gradient w.r.t. a spectral coefficient is one projection of the nodal
+   gradient onto that eigenvector, no extra solve. Few variables ⇒ forward
+   mode, per the ladder. **Condition: the basis is computed once and
+   frozen.** A basis recomputed from the current design each step is an
+   undifferentiated implicit dependence. The house already builds such
+   embeddings — `structure/georelax.py`'s Manolopoulos–Fowler topological
+   coordinates (adjacency eigenvectors, Perron mode skipped) and
+   `structsolve/formfind.py`'s force-density Laplacian solve. Note
+   georelax's sign canonicalisation (largest-magnitude component forced
+   positive) is deliberately discontinuous: correct for a deterministic
+   seed, a jump if it ever lands inside a differentiated path.
+2. **Spectral objective (differentiable only when simple).** A simple
+   eigenvalue's derivative is $v^\top (\partial A/\partial\theta) v$ — the
+   eigenvector is its own adjoint, the same shape as the atomic tier's
+   analytic forces. Repeated or clustered eigenvalues are **not**
+   differentiable: "the $k$-th eigenvalue" is piecewise smooth, and mode
+   switching makes a frequency term defend the wrong mode while its
+   reported value still looks satisfied. Fix = the §2's aggregation rule
+   again: constrain a p-norm / KS aggregate over a *band* of modes. With
+   a density field, floor the density or restrict the band — near-void
+   elements host spurious localised modes. This is a prerequisite for any
+   future frequency or buckling term; none exists yet (open item 14).
+3. **Spectral structure decision (outer layer, never descended).** Fiedler
+   cuts, clustering, coarsening level, which block splits — combinatorial,
+   an infinitesimal design change flips a node across a cut. Annealer
+   moves, held constant during the inner solve. §6b's quadratic-placement
+   ancestry sits here on the seeding side: a Laplacian solve is a fine
+   *seed* for `seed_placement`, and the netlist partition it implies is a
+   discrete choice, while the nonlinear placement descent that follows is
+   the inner layer.
+
+**The deciding test:** does the spectral object get recomputed when the
+design changes? Recomputed ⇒ outer layer. Precomputed once ⇒ safe inside
+the differentiable layer as basis, preconditioner, or filter.
+
+**Gradient-filtering is a declared change of problem.** A radius filter is
+a graph filter. Applied to the *design* with the objective defined on the
+filtered field, the chain rule covers it and the gradient stays exact.
+Applied to the *gradient* alone, the descent converges to a stationary
+point of a regularised problem — legitimate (it is how minimum feature
+size is bought) but it must be declared. `structsolve/simp.py` already
+declares it: its sensitivity filter smooths the gradient and is
+explicitly not part of the differentiable forward map. §2a's verification
+tests are therefore run against the *unfiltered* sensitivity; a filtered
+gradient will fail a Taylor-remainder test by construction, and that
+failure is not a bug.
+
+Provenance: landscape check `perplexity-reasoning:449075`.
 
 ## 3. Normalisation, not weights
 
@@ -694,3 +751,7 @@ when investigated.
     Taylor-remainder checker every new cost term's test calls, rather
     than each term re-rolling the finite-difference comparison
     `structsolve/simp.py` already has.
+14. Frequency / buckling constraint — no spectral objective exists
+    yet. When one lands it needs the mode-band aggregate and the
+    density floor from §2a's spectral rules, not a bare "k-th
+    eigenvalue" constraint.
