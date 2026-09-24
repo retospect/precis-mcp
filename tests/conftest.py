@@ -117,6 +117,83 @@ def _dsn_with_db(dsn: str, dbname: str) -> str:
     return make_conninfo(dsn, dbname=dbname)
 
 
+# --- design-core seed watch (opt-in; PRECIS_WATCH_SEED) --------------------
+# gr408184 tripwire. The bug: a test that rebuilds the schema via the
+# *baseline* path leaves a schema-only snapshot plus a FULL ``_migrations``
+# ledger, so ``fresh_db``'s teardown ``apply_all()`` restores the tables but
+# re-runs none of the seeding migrations' INSERTs — every later test in that
+# worker then sees an empty ``design_scenarios`` ("unknown scenario
+# 'prototype' — known: "). Fixed by reseeding in that teardown
+# (``_ensure_vocab_seeds``); this watch is how the offender was found and is
+# kept so a regression names the culprit in one run rather than costing
+# another 22.5k-test bisect. Off unless ``PRECIS_WATCH_SEED=1``.
+_WATCH_SEED = os.environ.get("PRECIS_WATCH_SEED") == "1"
+
+#: Cached probe connection, keyed by DSN — a fresh connect per test would add
+#: ~10ms × 22.5k tests for a query that reads three rows.
+_seed_probe: tuple[str, psycopg.Connection] | None = None
+
+
+def _seed_probe_conn() -> psycopg.Connection | None:
+    """A reusable autocommit connection to the active clone, or ``None`` when
+    the DB is unreachable (teardown after a test that dropped it, say)."""
+    global _seed_probe
+    dsn = _active_dsn()
+    if _seed_probe is not None:
+        cached_dsn, conn = _seed_probe
+        if cached_dsn == dsn and not conn.closed:
+            return conn
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _seed_probe = None
+    try:
+        conn = psycopg.connect(dsn, autocommit=True, connect_timeout=5)
+    except Exception:
+        return None
+    _seed_probe = (dsn, conn)
+    return conn
+
+
+#: Fixtures that rebuild the schema by contract and restore the seed in their
+#: own teardown. This hook runs BEFORE fixture finalizers, so a test using one
+#: of these is legitimately mid-rebuild here and must not be probed. (A
+#: finalizer that forgets to reseed is still caught — by the next test.)
+_SEED_WATCH_EXEMPT_FIXTURES = frozenset({"fresh_db", "drop_public_objects"})
+
+
+def pytest_runtest_teardown(item: pytest.Item) -> None:
+    """Fail at the exact test that leaves the design-core seed empty.
+
+    Teardown rather than setup, so the reported nodeid is the test that DID
+    it rather than the next innocent one to notice.
+    """
+    if not _WATCH_SEED:
+        return
+    if _SEED_WATCH_EXEMPT_FIXTURES & set(getattr(item, "fixturenames", ())):
+        return
+    conn = _seed_probe_conn()
+    if conn is None:
+        return
+    try:
+        row = conn.execute(
+            "SELECT count(*) FROM design_scenarios WHERE status = 'core'"
+        ).fetchone()
+    except Exception:
+        # Table absent (a schema-rebuild test on its own DB) or the connection
+        # died — neither is the emptying we're hunting.
+        global _seed_probe
+        _seed_probe = None
+        return
+    if row is not None and row[0] == 0:
+        db = conninfo_to_dict(_active_dsn()).get("dbname")
+        raise AssertionError(
+            f"gr408184: design_scenarios core seed EMPTY after {item.nodeid} "
+            f"(db={db!r}) — this test is the offender"
+        )
+
+
 # --- connection-leak detection (on by default; PRECIS_TEST_LEAKCHECK) -------
 # A test that opens a Store/pool/worker and doesn't close it leaves a backend
 # holding a RowExclusiveLock on the clone; the NEXT test's `store` fixture
@@ -550,10 +627,7 @@ def _initialise_test_db() -> Iterator[None]:
         if _claim_template_maintenance(admin_dsn):
             Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
             _truncate_data_tables(PG_TEST_DSN)
-            _ensure_material_seed(PG_TEST_DSN)
-            _ensure_component_seed(PG_TEST_DSN)
-            _ensure_rxn_seed(PG_TEST_DSN)
-            _ensure_design_core_seed(PG_TEST_DSN)
+            _ensure_vocab_seeds(PG_TEST_DSN)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)
@@ -704,7 +778,14 @@ def fresh_db() -> Iterator[str]:
     # Restore the schema for downstream tests in the same session.
     # The next ``store`` fixture call would otherwise fail because
     # the tables it wants to TRUNCATE don't exist.
+    #
+    # ``apply_all`` is ledger-idempotent, so it restores the schema but NOT
+    # the seed rows whenever the body left a full ``_migrations`` ledger
+    # behind — which the baseline path does by construction (the snapshot is
+    # schema-only and carries the ledger). Reseed explicitly, or every later
+    # test in this worker sees an empty vocab table (gr408184).
     Migrator(_active_dsn(), MIGRATIONS_DIR).apply_all()
+    _ensure_vocab_seeds(_active_dsn())
 
 
 @pytest.fixture
@@ -939,6 +1020,19 @@ def _drop_all_public_objects(dsn: str) -> None:
             _run_with_lock_retry(conn, f'DROP FUNCTION IF EXISTS "{name}" CASCADE')
 
 
+def _ensure_vocab_seeds(dsn: str) -> None:
+    """Re-apply every defensive vocab reseed, in dependency order.
+
+    Each ``_ensure_*_seed`` is individually idempotent and cheap when the
+    tier is intact, so this is safe to call from any path that may have
+    rebuilt the schema without replaying the seeding migrations' INSERTs.
+    """
+    _ensure_material_seed(dsn)
+    _ensure_component_seed(dsn)
+    _ensure_rxn_seed(dsn)
+    _ensure_design_core_seed(dsn)
+
+
 def _ensure_material_seed(dsn: str) -> None:
     """Defensive reseed of ``material_properties``'s ``core`` tier.
 
@@ -1071,16 +1165,22 @@ def _ensure_component_seed(dsn: str) -> None:
     """Defensive reseed of ``component_categories``/``component_specs``'
     ``core`` tiers — the ``component`` kind's analogue of
     :func:`_ensure_material_seed`. Same rationale: the seed lives only in
-    tail migration ``0093_component_kind.sql``'s ``INSERT ... ON CONFLICT
-    DO NOTHING`` statements, so it needs the same defensive reseed guard
-    material needed (see that function's docstring for the full "why").
+    the tail migrations' ``INSERT ... ON CONFLICT DO NOTHING`` statements,
+    so it needs the same defensive reseed guard material needed (see that
+    function's docstring for the full "why").
 
-    Re-executes 0093's own SQL directly (bypassing the ``_migrations``
-    ledger check) whenever the ``core`` category tier is missing. Safe to
-    call any time — the file is idempotent for exactly this reason.
+    Re-executes 0093 / 0152 / 0163's own SQL directly (bypassing the
+    ``_migrations`` ledger check) whenever any of the three tiers they seed
+    is missing. Safe to call any time — the files are idempotent for
+    exactly this reason.
     """
-    seed_file = MIGRATIONS_DIR / "0093_component_kind.sql"
-    if not seed_file.exists():
+    seed_files = [
+        MIGRATIONS_DIR / "0093_component_kind.sql",
+        MIGRATIONS_DIR / "0152_component_geometry_specs.sql",
+        MIGRATIONS_DIR / "0163_component_head_form_specs.sql",
+    ]
+    seed_files = [f for f in seed_files if f.exists()]
+    if not seed_files:
         return  # this checkout predates the component kind; nothing to seed
     from precis.store.migrate import _execute_dump_sql
 
@@ -1106,19 +1206,32 @@ def _ensure_component_seed(dsn: str) -> None:
         # surfaced far downstream as an se catalog derivation reporting
         # "screw needs length" for a component whose mint had silently
         # skipped exactly those four specs.
+        # ``component_specs`` is seeded by THREE migrations, so each needs its
+        # own discriminator — a probe that only one of them can satisfy would
+        # declare the seed intact while another's rows are missing. 0163's
+        # head-form specs are the case that bit: the categories and 0093's
+        # category-scoped specs were both present, the guard returned early,
+        # and `head_form` / `head_angle` stayed missing — surfacing far
+        # downstream as a seatclamp mint reporting "skipped" for an ISO 10642
+        # countersunk screw, CI-only and green locally.
         counts = conn.execute(
             "SELECT (SELECT count(*) FROM component_categories "
             "        WHERE status = 'core'), "
             "       (SELECT count(*) FROM component_specs "
-            "        WHERE status = 'core' AND category_id IS NOT NULL)"
+            "        WHERE status = 'core' AND category_id IS NOT NULL), "
+            "       (SELECT count(*) FROM component_specs "
+            "        WHERE spec_id = 'head_form')"
         ).fetchone()
-        if counts and counts[0] > 0 and counts[1] > 0:
-            return  # both halves intact — nothing to repair
+        if counts and all(c > 0 for c in counts):
+            return  # every half intact — nothing to repair
         log.warning(
-            "conftest: component_categories core seed missing on %r — "
-            "re-applying 0093's seed directly (see _ensure_component_seed)",
+            "conftest: component seed incomplete on %r (categories=%s, "
+            "scoped specs=%s, head_form=%s) — re-applying the component "
+            "seed migrations directly (see _ensure_component_seed)",
             dsn,
+            *(counts or (None, None, None)),
         )
         with conn.transaction():
             with conn.cursor() as cur:
-                _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))
+                for seed_file in seed_files:
+                    _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))

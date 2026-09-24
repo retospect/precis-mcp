@@ -165,7 +165,7 @@ backward pass: roughly a third more compute for a several-fold memory
 cut. Use it when activation memory is the binding constraint; skip it
 when each forward evaluation is already the expensive thing.
 
-## Spectral graph — basis, objective, or structure decision
+## Spectral graph — which of the three roles is it
 
 Graph spectra enter a design problem in three roles. They have different
 derivative answers, and conflating them is the usual mistake.
@@ -176,7 +176,7 @@ derivative answers, and conflating them is the usual mistake.
 | **Objective** — an eigenvalue is the quantity you care about | resonant frequency, buckling load | differentiable only while the eigenvalue is simple |
 | **Structure decision** — the spectrum picks a partition | Fiedler cut, clustering, coarsening level, which block splits | not differentiable; belongs to the discrete search |
 
-### Spectral basis — freeze it, then it is free
+## Spectral basis — freeze it, then it is free
 
 Write the design field as a truncated sum over the first few eigenvectors.
 The gradient with respect to a spectral coefficient is one projection of
@@ -201,7 +201,7 @@ Two traps specific to eigenvector bases:
   connected graph is structure-free; skip it before using the rest as
   coordinates.
 
-### Spectral objective — simple eigenvalues only, else aggregate
+## Spectral objective — simple eigenvalues only, else aggregate
 
 For a simple eigenvalue, the derivative is the eigenvector sandwiched
 around the derivative of the matrix — no adjoint solve needed, the
@@ -232,7 +232,7 @@ eigenvalues confined to a few cells that mean nothing structurally. Floor
 the density, or aggregate over a physically meaningful band, before any
 frequency term is trusted.
 
-### Spectral structure decisions stay in the discrete layer
+## Spectral structure decisions stay in the discrete layer
 
 Partitioning, clustering and coarsening are combinatorial: an
 infinitesimal design change flips a node across a cut. Descending through
@@ -244,7 +244,7 @@ the design changes?** Recomputed ⇒ outer discrete layer, held fixed
 during each inner solve. Precomputed once ⇒ safe inside the differentiable
 layer, as a basis, a preconditioner, or a filter.
 
-### Filtering the gradient is descending a different problem
+## Filtering the gradient is descending a different problem
 
 A smoothing filter over a mesh or graph is a graph filter. Applying it to
 the *design* and defining the objective on the filtered field keeps the
