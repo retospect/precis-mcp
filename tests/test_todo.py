@@ -59,6 +59,29 @@ def test_create_requires_text(handler: TodoHandler) -> None:
         handler.put(text="   ")
 
 
+# ── put: id= is rejected, never a silent duplicate (gr450132) ────────
+
+
+def test_put_with_existing_id_rejects_instead_of_duplicating(
+    handler: TodoHandler,
+) -> None:
+    """``put(id=<existing>)`` used to silently mint a new row — ``id``
+    was accepted in the signature but never forwarded to the base
+    ``put``'s own rejection, so ``_reject_mutating_put`` never saw it.
+    It must now raise, naming ``edit(...mode='replace')`` as the fix."""
+    r = handler.put(text="original")
+    tid = handler.store.list_refs(kind="todo", limit=1)[0].id
+    before = handler.store.list_refs(kind="todo", limit=10)
+    with pytest.raises(BadInput, match="put on existing todo") as ei:
+        handler.put(id=tid, text="mutate me")
+    assert "edit(kind='todo'" in (ei.value.next or "")
+    assert "mode='replace'" in (ei.value.next or "")
+    after = handler.store.list_refs(kind="todo", limit=10)
+    # No duplicate row was minted.
+    assert len(after) == len(before)
+    assert r.ref_id == tid
+
+
 # ── optional details body (additive, migration 0050) ─────────────────
 
 
@@ -107,6 +130,43 @@ def test_edit_requires_text_or_body(handler: TodoHandler) -> None:
     tid = _latest_todo_id(handler)
     with pytest.raises(BadInput, match="requires text= and/or body="):
         handler.edit(id=tid, mode="replace")
+
+
+# ── edit: meta={'llm_tier': None} parks a leaf (gr439934) ────────────
+
+
+def test_edit_meta_llm_tier_none_unsets_it(handler: TodoHandler) -> None:
+    """A parented leaf auto-stamps ``meta.llm_tier='opus'`` on create
+    (arms dispatch's plan_tick). The create-ack hint says
+    ``meta={'llm_tier': None}`` parks it — that write must actually
+    succeed and must delete the key, not merge a JSON ``null`` (which
+    would still satisfy dispatch's ``meta ? 'llm_tier'`` check)."""
+    root = handler.put(text="Build the platform.")
+    root_id = handler.store.list_refs(kind="todo", limit=1)[0].id
+    assert root.ref_id == root_id
+    leaf = handler.put(text="Write the first paper.", parent_id=root_id)
+    leaf_id = leaf.ref_id
+    assert leaf_id is not None
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None
+    assert ref.meta.get("llm_tier") == "opus"
+
+    handler.edit(id=leaf_id, meta={"llm_tier": None})
+
+    ref = handler.store.get_ref(kind="todo", id=leaf_id)
+    assert ref is not None
+    assert "llm_tier" not in ref.meta
+
+
+def test_edit_meta_rejects_shapes_other_than_llm_tier_none(
+    handler: TodoHandler,
+) -> None:
+    handler.put(text="a leaf")
+    tid = _latest_todo_id(handler)
+    with pytest.raises(BadInput, match="only accepts"):
+        handler.edit(id=tid, meta={"llm_tier": "opus"})
+    with pytest.raises(BadInput, match="only accepts"):
+        handler.edit(id=tid, meta={"rotation_root": True})
 
 
 # ── put: status transitions ──────────────────────────────────────────

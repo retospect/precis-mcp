@@ -397,6 +397,24 @@ class TodoHandler(NumericRefHandler):
         params: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``put`` is create-only on this kind (mirrors the base
+        # NumericRefHandler contract) — but unlike the base ``put``,
+        # ``id`` isn't forwarded to ``super().put()`` below (it's
+        # consumed here for the parent/tier bookkeeping instead), so
+        # the base's own id-rejection (``_reject_mutating_put``) never
+        # sees it and silently mints a duplicate row instead of
+        # rejecting the mutate-an-existing-todo shape (gr450132). Reject
+        # up front, before any of that bookkeeping runs.
+        if id is not None:
+            raise BadInput(
+                f"put on existing {self._sense()} id={id!r} is not supported",
+                next=(
+                    f"edit(kind={self.kind!r}, id={id}, mode='replace', "
+                    "text='...'/body='...') to rewrite it, or "
+                    f"tag(kind={self.kind!r}, id={id}, add=[...]/remove=[...]) "
+                    "to change status/meta"
+                ),
+            )
         prio = _validate_prio(prio)
         # A create-time ``PRIO:`` alias syncs to the canonical prio column
         # (the doable ORDER BY), stripped from the tag set — same
@@ -576,11 +594,13 @@ class TodoHandler(NumericRefHandler):
             )
 
             validate_auto_check_spec(meta["auto_check"])
-        # Delegate to the base put for D6 guardrails (id=/mode=/etc.
-        # rejection, tag validation, link target resolution, atomic
-        # tx). It calls back into ``_create``, which we override to
-        # plumb ``parent_id``, ``meta``, and ``prio`` through to the
-        # store layer.
+        # Delegate to the base put for the remaining D6 guardrails
+        # (mode=/untags=/unlink= rejection, tag validation, link target
+        # resolution, atomic tx) — id= was already rejected above (it's
+        # consumed here, not forwarded, so the base's own id-rejection
+        # would never fire on it). It calls back into ``_create``, which
+        # we override to plumb ``parent_id``, ``meta``, and ``prio``
+        # through to the store layer.
         self._pending_parent_id = parent_int
         self._pending_meta = meta
         self._pending_prio = prio
@@ -736,6 +756,7 @@ class TodoHandler(NumericRefHandler):
         mode: str = "replace",
         text: str | None = None,
         body: str | None = None,
+        meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
@@ -749,6 +770,15 @@ class TodoHandler(NumericRefHandler):
         authority veto as delete / reparent. Distinct from delete + re-put,
         which would break every inbound edge and the tree position.
 
+        ``meta={'llm_tier': None}`` is the one meta write this verb
+        accepts: it unsets ``meta.llm_tier`` on the leaf, parking it —
+        dispatch (``workers/dispatch.py``) only mints a ``plan_tick`` for
+        an ``llm_tier``-set leaf, and a stored JSON ``null`` still
+        satisfies its ``meta ? 'llm_tier'`` existence check, so this
+        deletes the key outright rather than nulling it (gr439934). Every
+        other meta mutation still goes through ``tag(meta=...)``'s
+        allowlisted promotion.
+
         ``dry_run=True`` previews the replacement without writing — the
         tool-level contract every editable kind must honour (a silent
         write on ``dry_run`` is data loss).
@@ -759,11 +789,23 @@ class TodoHandler(NumericRefHandler):
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
         require_mode(spec=self.spec, verb="edit", mode=mode)
+        unset_llm_tier = False
+        if meta is not None:
+            if set(meta) != {"llm_tier"} or meta["llm_tier"] is not None:
+                raise BadInput(
+                    "edit(kind='todo', meta=...) only accepts "
+                    "{'llm_tier': None} (park a leaf's auto-run tier)",
+                    next=(
+                        f"other meta mutations: tag(kind='todo', id={id}, meta={{...}})"
+                    ),
+                )
+            unset_llm_tier = True
         has_text = text is not None and text.strip()
         has_body = body is not None and body.strip()
-        if not has_text and not has_body:
+        if not has_text and not has_body and not unset_llm_tier:
             raise BadInput(
-                "edit(kind='todo', mode='replace') requires text= and/or body=",
+                "edit(kind='todo', mode='replace') requires text= and/or "
+                "body= (or meta={'llm_tier': None} to park the leaf)",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
         ref_id = self._coerce_id(id)
@@ -780,6 +822,8 @@ class TodoHandler(NumericRefHandler):
                 )
             if has_body:
                 preview.append("details body would be replaced")
+            if unset_llm_tier:
+                preview.append("meta.llm_tier would be unset (parked)")
             return Response(
                 body=(
                     f"dry-run (no write) — would replace {' + '.join(preview)} "
@@ -804,6 +848,18 @@ class TodoHandler(NumericRefHandler):
                     source=guards._caller_source(),
                     conn=conn,
                 )
+            if unset_llm_tier:
+                # A real JSONB key deletion, not a ``stamp_ref_meta``
+                # merge — ``meta || {'llm_tier': null}`` would leave the
+                # key present (storing JSON null), and dispatch's
+                # ``meta ? 'llm_tier'`` existence check doesn't inspect
+                # the value, only key presence, so a stored null would
+                # still mint a plan_tick.
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'llm_tier', "
+                    "updated_at = now() WHERE ref_id = %s",
+                    (ref_id,),
+                )
         parts: list[str] = []
         if has_text:
             assert text is not None
@@ -812,6 +868,8 @@ class TodoHandler(NumericRefHandler):
             parts.append(f"title ({old_words} → {new_words} words)")
         if has_body:
             parts.append("details body")
+        if unset_llm_tier:
+            parts.append("meta.llm_tier (unset, parked)")
         return Response(
             body=(
                 f"replaced {' + '.join(parts)} of todo id={ref.id}. "
@@ -1206,8 +1264,9 @@ class TodoHandler(NumericRefHandler):
             # receipt must say so (silent side effects erode agent trust).
             body += (
                 " meta.llm_tier='opus' stamped (parented default) — the"
-                " dispatcher will auto-run this leaf as a plan_tick; pass"
-                " meta={'llm_tier': None} to park it instead."
+                " dispatcher will auto-run this leaf as a plan_tick; run"
+                f" edit(kind={self.kind!r}, id={ref_id},"
+                " meta={'llm_tier': None}) to park it instead."
             )
         body += render_next_section(
             [
