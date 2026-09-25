@@ -151,3 +151,13 @@ docs/codebase-map.md
 # sibling --quick ship may have moved meanwhile). Per-worktree, rewritten every
 # ship — state, not source.
 .ship-sha
+
+# Conference posters and the DFT structures behind them. This repo is PUBLIC and
+# these hold unpublished work (Raju's CONTCARs, a paper in preparation), so they
+# must never be added here. pres/poster-cmd2026-nanobuds/ carries its OWN git
+# repo -- version it there, not in this tree.
+/pres/poster-cmd2026-nanobuds/
+/contcars/
+
+# Stray render dropped in the repo root by a hexfold session — scratch, not source.
+/hexfold-*.png
