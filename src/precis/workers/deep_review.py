@@ -57,6 +57,11 @@ def _strategic_dashboard(store: Store) -> str:
                  WHERE r.kind = 'todo' AND r.retired_at IS NULL
                    AND {todo_root_sql("r")}
                    AND COALESCE((r.meta->>'rotation_root')::boolean, false)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                          AND t.value IN ('done', 'won''t-do')
+                   )
               ),
               subtree AS (
                 SELECT s.ref_id AS ref_id, s.ref_id AS strategic_id FROM strat s
@@ -70,7 +75,16 @@ def _strategic_dashboard(store: Store) -> str:
                    (SELECT count(*) FROM ref_events e
                      WHERE e.ref_id IN (SELECT st.ref_id FROM subtree st WHERE st.strategic_id = s.ref_id)
                        AND e.event = 'status:done'
-                       AND e.ts >= now() - interval '7 days') AS picks_7d
+                       AND e.ts >= now() - interval '7 days') AS picks_7d,
+                   (SELECT count(*) FROM subtree st
+                     WHERE st.strategic_id = s.ref_id AND st.ref_id <> s.ref_id) AS desc_total,
+                   (SELECT count(*) FROM subtree st
+                     WHERE st.strategic_id = s.ref_id AND st.ref_id <> s.ref_id
+                       AND NOT EXISTS (
+                           SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = st.ref_id AND t.namespace = 'STATUS'
+                              AND t.value IN ('done', 'won''t-do')
+                       )) AS desc_open
               FROM strat s
              ORDER BY s.ref_id
             """,
@@ -78,12 +92,14 @@ def _strategic_dashboard(store: Store) -> str:
     if not rows:
         return "(no strategic todos yet)"
     lines: list[str] = []
-    for s_id, title, size, picks in rows:
+    for s_id, title, size, picks, desc_total, desc_open in rows:
         first = (title or "").splitlines()[0]
         handle = handle_registry.format_handle("todo", int(s_id))
+        stale = int(desc_total or 0) > 0 and int(desc_open or 0) == 0
+        flag = "  [STALE-ROOT: subtree all done]" if stale else ""
         lines.append(
             f"[{handle}] {first}  ({int(size or 0)} descendants, "
-            f"{int(picks or 0)} picks in 7d)"
+            f"{int(picks or 0)} picks in 7d){flag}"
         )
     return "\n".join(lines)
 

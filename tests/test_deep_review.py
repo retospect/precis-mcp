@@ -107,6 +107,39 @@ def test_strategic_dashboard_renders_picks(handler: TodoHandler, store: Store) -
     assert f"#{root_id} " not in snap
 
 
+def test_strategic_dashboard_excludes_done_root(
+    handler: TodoHandler, store: Store
+) -> None:
+    root = handler.put(text="Finished rollout", meta={"rotation_root": True})
+    root_id = id_of(root.body)
+    handler.tag(id=root_id, add=["STATUS:done"])
+
+    snap = _strategic_dashboard(store)
+    assert f"td{root_id}" not in snap
+
+
+def test_strategic_dashboard_excludes_wont_do_root(
+    handler: TodoHandler, store: Store
+) -> None:
+    root = handler.put(text="Abandoned idea", meta={"rotation_root": True})
+    root_id = id_of(root.body)
+    handler.tag(id=root_id, add=["STATUS:won't-do"])
+
+    snap = _strategic_dashboard(store)
+    assert f"td{root_id}" not in snap
+
+
+def test_strategic_dashboard_keeps_open_root_with_no_picks(
+    handler: TodoHandler, store: Store
+) -> None:
+    root = handler.put(text="Still grinding", meta={"rotation_root": True})
+    root_id = id_of(root.body)
+
+    snap = _strategic_dashboard(store)
+    assert f"[td{root_id}] Still grinding" in snap
+    assert "0 picks in 7d" in snap
+
+
 def test_build_prompt_has_all_directive_sections(store: Store) -> None:
     prompt = _build_prompt(store)
     assert "DEEP REVIEW" in prompt
