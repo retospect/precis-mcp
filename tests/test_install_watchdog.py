@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import sys
 import threading
@@ -176,12 +177,16 @@ def test_install_fingerprint_reads_the_precis_module_file(
 
 
 def test_watch_loop_exits_zero_on_replacement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Run the real thread loop against a fake install and capture the
     exit: replacement must produce exactly ``_exit(0)`` — the clean-exit
     code is what makes the client restart instead of back off."""
     init = _fake_install(tmp_path)
+    baseline = _fingerprint_for(init)
+    assert baseline is not None
     codes: list[int] = []
     fired = threading.Event()
 
@@ -195,6 +200,7 @@ def test_watch_loop_exits_zero_on_replacement(
         install_watchdog, "install_fingerprint", lambda: _fingerprint_for(init)
     )
     monkeypatch.delenv("PRECIS_INSTALL_WATCHDOG", raising=False)
+    caplog.set_level(logging.WARNING, logger=install_watchdog.log.name)
     thread = start_install_watchdog(interval_s=0.05)
     assert thread is not None
 
@@ -203,6 +209,14 @@ def test_watch_loop_exits_zero_on_replacement(
     assert fired.wait(10.0), "watchdog never reacted to the replaced install"
     assert codes == [0]
     thread.join(5.0)
+
+    # gr351234 — the swap message must name both fingerprints, not just
+    # the stale baseline, so an operator can see what the install became.
+    [record] = [r for r in caplog.records if "install watchdog" in r.getMessage()]
+    assert isinstance(record.args, tuple)
+    assert len(record.args) == 2
+    assert record.args[0] == baseline[0]
+    assert record.args[1] != "?"
 
 
 def test_exit_zero_is_the_contract() -> None:

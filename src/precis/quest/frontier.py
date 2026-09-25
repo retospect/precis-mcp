@@ -40,6 +40,18 @@ log = logging.getLogger(__name__)
 #: see :func:`_flag_energy_twins`.
 _ENERGY_TWIN_EPS = 0.002
 
+#: A surface elementary-step barrier above this magnitude (eV) is nonphysical,
+#: not just "large" — the qu164903 audit's corner saga saw 12-14 eV readings
+#: rank alongside sub-eV ones. N2's total dissociation energy (~9.8 eV) is
+#: about the strongest bond scale a catalysis step could plausibly touch, so
+#: 8.0 eV sits comfortably below every real artifact seen and above every
+#: real barrier. Lives here (rather than :mod:`precis.quest.compute`, which
+#: imports it) so :func:`_candidate_from_structure` can apply the SAME
+#: ceiling at read time to a legacy row that predates
+#: :func:`compute._flag_absurd_barrier` ever having run (gr356741) — one
+#: number, two call sites, never duplicated.
+_BARRIER_ABSURD_EV = 8.0
+
 #: Default objective when a quest declares no rubric: the lowest-energy
 #: (most stable) converged candidate wins.
 DEFAULT_OBJECTIVES: tuple[tuple[str, str], ...] = (("energy", "min"),)
@@ -1296,6 +1308,23 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     flags: dict[str, Any] = {}
     if "barrier_trusted" in meta:
         flags["barrier_trusted"] = bool(meta.get("barrier_trusted"))
+    elif any(
+        abs(measures[k]) > _BARRIER_ABSURD_EV
+        for k in ("barrier", "span")
+        if k in measures
+    ):
+        # gr356741: a row that predates `compute._flag_absurd_barrier` ever
+        # running carries no `barrier_trusted` key at all — apply the SAME
+        # magnitude ceiling here, at read time, so a preguard-era physically
+        # impossible barrier/span (qu164903: ~73.7 eV) can't silently rank
+        # as trusted merely because the harvest guard never ran on it. A
+        # plausible-magnitude no-key row is untouched — "missing key =
+        # unknown, rides through as trusted" stays intact for every other
+        # candidate (compute.py's own "defensive: treated as unknown"
+        # comment; see `TestAutocatpathHarvest::
+        # test_missing_pathway_ref_stamps_no_trust_flags`).
+        flags["barrier_trusted"] = False
+        flags["barrier_trust_note"] = "absurd-magnitude-preguard"
     if "barrier_neb_failed" in meta:
         flags["barrier_neb_failed"] = meta.get("barrier_neb_failed")
     if "barrier_desorbed" in meta:
@@ -1392,7 +1421,12 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     # dominate or be dominated; each falls to `unevaluated` via the existing
     # "missing a declared objective" path. The raw values survive in `flags`
     # so the leaderboard can still show what was measured, just marked
-    # excluded.
+    # excluded. Gated on an EXPLICIT False — a missing key stays "unknown,
+    # rides through" (compute.py's own "defensive: treated as unknown"
+    # comment; `TestAutocatpathHarvest::test_missing_pathway_ref_stamps_no_
+    # trust_flags` pins it), except the absurd-magnitude preguard fires
+    # above and stamps an explicit False for exactly the qu164903-shaped
+    # gap (gr356741): a no-key row whose barrier/span is nonphysical.
     if flags.get("barrier_trusted") is False:
         excluded_barrier = measures.pop("barrier", None)
         measures.pop("span", None)

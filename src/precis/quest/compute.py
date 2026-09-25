@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.atomcost import atom_cost, dearest
-from precis.quest.frontier import _UNTRUSTED_VALUE_SUFFIX
+from precis.quest.frontier import _BARRIER_ABSURD_EV, _UNTRUSTED_VALUE_SUFFIX
 from precis.quest.logbook import MEASURED_BY, append_entry
 from precis.store import Tag
 from precis.structure.canonical import geom_hash_c as _geom_hash_c
@@ -1991,14 +1991,6 @@ _ADSORBATE_DETACHED = "detached"
 #: label's ``*`` designates a different binder (autocatpath ``validate.binding_site_ok``).
 #: A barrier off a mis-bound endpoint is as untrustworthy as one off a desorbed one.
 _WRONG_BINDING_SITE = "wrong-site"
-
-#: A surface elementary-step barrier above this magnitude (eV) is nonphysical,
-#: not just "large" — the qu164903 audit's corner saga saw 12-14 eV readings
-#: rank alongside sub-eV ones. N2's total dissociation energy (~9.8 eV) is
-#: about the strongest bond scale a catalysis step could plausibly touch, so
-#: 8.0 eV sits comfortably below every real artifact seen and above every
-#: real barrier. See :func:`_flag_absurd_barrier`.
-_BARRIER_ABSURD_EV = 8.0
 
 #: Two candidates sharing the same canonical ``geom_hash_c`` (the SAME crystal
 #: under lattice translation/rotation/mirror, :func:`precis.structure.canonical.geom_hash_c`)

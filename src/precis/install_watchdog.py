@@ -307,9 +307,10 @@ class InstallWatchdog(threading.Thread):
                     new_fingerprint=current,
                 )
                 log.warning(
-                    "install watchdog: %s replaced on disk — exiting cleanly "
-                    "so the MCP client restarts a fresh server (gr338977)",
+                    "install watchdog: %s replaced by %s on disk — exiting "
+                    "cleanly so the MCP client restarts a fresh server (gr338977)",
                     self._baseline[0],
+                    current[0] if current else "?",
                 )
                 sys.stderr.flush()
                 os._exit(0)

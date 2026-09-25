@@ -2313,6 +2313,57 @@ class TestSelectivityTrustSplit:
         for k in ("barrier", "U_L", "P_side", "selectivity_margin"):
             assert k not in c.measures, k
 
+    def test_no_key_absurd_magnitude_is_untrusted_preguard(self, store: Any) -> None:
+        """gr356741: a row that predates :func:`compute._flag_absurd_barrier`
+        ever running carries a ``barrier``/``span`` value but no
+        ``barrier_trusted`` key at all. When that value is physically
+        impossible (qu164903: a ~73.7 eV span, here rounded up to pin
+        against the SAME ceiling the harvest guard uses), the read path
+        must apply the ceiling itself rather than let a no-key row ride
+        onto the frontier as trusted."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 7462.0,
+                "span": 73.7,
+                "U_L": -0.9,
+                "P_side": 0.4,
+                "selectivity_margin": 0.2,
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["barrier_trusted"] is False
+        assert c.flags["barrier_trust_note"] == "absurd-magnitude-preguard"
+        for k in ("barrier", "span", "U_L", "P_side", "selectivity_margin"):
+            assert k not in c.measures, k
+        assert c.flags["barrier_untrusted_value"] == 7462.0
+
+    def test_no_key_plausible_magnitude_still_rides_through_trusted(
+        self, store: Any
+    ) -> None:
+        """The preserved contract: a no-key row with a physically plausible
+        barrier is "unknown", not "untrusted" — it must keep ranking exactly
+        as it does today (compute.py's own "defensive: treated as unknown"
+        comment; mirrors `TestAutocatpathHarvest::
+        test_missing_pathway_ref_stamps_no_trust_flags`, which pins the
+        harvest side of the same contract)."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"barrier": 0.8, "span": 1.1})
+        c = _cand(store, sid)
+        assert "barrier_trusted" not in c.flags
+        assert "barrier_trust_note" not in c.flags
+        assert c.measures["barrier"] == 0.8
+        assert c.measures["span"] == 1.1
+
 
 class TestProvisionalReasonsSelectivityBlockers:
     def test_selectivity_blocker_prose_names_competitor_fork_and_record(
