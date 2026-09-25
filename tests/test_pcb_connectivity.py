@@ -79,6 +79,12 @@ def _poly_pad(
     }
 
 
+def _rect_pad(
+    net: str, x: float, y: float, w: float, h: float, *, layer: str = "F.Cu"
+) -> dict[str, Any]:
+    return {"layer": layer, "net": net, "shape": "rect", "x": x, "y": y, "w": w, "h": h}
+
+
 def _model(copper: list[dict[str, Any]], pads: list[dict[str, Any]]) -> dict[str, Any]:
     return {"layers": _LAYERS, "copper": copper, "pads": pads}
 
@@ -236,6 +242,22 @@ def test_a_polygon_pad_touched_on_a_diagonal_vertex_is_connected() -> None:
     model = _model(
         [_track("N", [(3.0, 3.0), (1.0, 1.0)], w=0.1)],
         [_poly_pad("N", 0.0, 0.0, poly)],
+    )
+    assert connectivity.net_islands(model) == []
+
+
+def test_a_rect_pad_touched_on_its_short_edge_is_connected() -> None:
+    """gr450064/gr449709: `_pad_poly` used to return `None` for every
+    rect/obround pad, so `_pad_primitives` fell back to the INSCRIBED disk
+    (`min(w, h) / 2`) for them too. A 2.0x1.0mm pad's inscribed disk has
+    radius 0.5mm — half the pad's actual 1.0mm reach on its long (x) axis.
+    A track landing exactly on the pad's real short edge at `(1.0, 0.0)` is
+    genuine copper touching genuine copper, so this must read as ONE
+    component. Under the old disk-only approximation it read as TWO.
+    """
+    model = _model(
+        [_track("N", [(3.0, 0.0), (1.0, 0.0)], w=0.1)],
+        [_rect_pad("N", 0.0, 0.0, 2.0, 1.0)],
     )
     assert connectivity.net_islands(model) == []
 

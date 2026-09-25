@@ -46,6 +46,7 @@ from typing import Any
 from precis.pcb.drc import (
     _arc_points,
     _capsule_capsule_gap,
+    _copper_item_polygon,
     _Prim,
     _segments_intersect,
     _via_layer_names,
@@ -82,23 +83,23 @@ def _pad_primitives(
     connected to.
 
     The disk is the pad's INSCRIBED circle (``min(w, h) / 2``) for a
-    circle/rect/obround pad — a deliberate UNDER-approximation, and safe
-    here only because the sibling primitives (track capsules, via disks)
-    it is compared against are exact: understating THIS shape's reach can
-    only produce a false alarm (a human sees a healthy net reported as
-    islands), while over-stating it would hide a real break, the one
-    failure this module exists to catch.
+    genuinely round (``shape == 'circle'``) pad — that disk already IS its
+    exact reach, not an approximation of it.
 
-    A ``shape == 'polygon'`` pad gets its real outline instead
-    (:func:`_pad_poly`) — the inscribed disk understates it by a lot at
-    the vertices a trace actually lands on (gr339236's EWOD electrodes:
-    real anchors sat outside the inscribed disk on every diagonal vertex,
-    so every one of them read as disconnected). The second return value
-    carries that outline, keyed by the pad's index in the returned
-    primitive list, so a caller can route it through :func:`_touch_gap`
-    exactly like :func:`connected_pin_pairs` and
-    :func:`fixed_copper_pin_terminals` already do — one polygon-aware touch
-    test for all three callers, not a fourth independent one here.
+    Every other shape gets its real outline instead (:func:`_pad_poly`) —
+    the inscribed disk UNDER-approximates all of them, and by a lot right
+    where a trace actually lands: a rect/obround pad's reach on its long
+    axis (gr450064/gr449709 — a 2:1 pad's inscribed disk understated its
+    long-axis reach 2x, enough to read a track landing on the pad's own
+    short edge as disconnected), and a ``shape == 'polygon'`` pad's
+    vertices (gr339236's EWOD electrodes: real anchors sat outside the
+    inscribed disk on every diagonal vertex, so every one of them read as
+    disconnected too). The second return value carries that outline, keyed
+    by the pad's index in the returned primitive list, so a caller can
+    route it through :func:`_touch_gap` exactly like
+    :func:`connected_pin_pairs` and :func:`fixed_copper_pin_terminals`
+    already do — one polygon-aware touch test for all three callers, not a
+    fourth independent one here.
 
     A polygon pad whose outline cannot actually be resolved (``poly``
     missing or degenerate — :func:`_pad_poly` returns ``None`` even though
@@ -177,17 +178,31 @@ def _copper_primitives_with_vias(
 
 
 def _pad_poly(pad: dict[str, Any]) -> tuple[Point, ...] | None:
-    """The pad's authored outline, when it has one — ``None`` for the
-    overwhelming majority (circle/rect/obround pads, whose inscribed disk
-    already IS their reach) so callers fall straight back to the circle
-    :func:`_pad_primitives` builds. Only ``shape == 'polygon'`` pads (the
-    EWOD electrode pads that motivate this at all — gr339236) carry one."""
-    if pad.get("shape") != "polygon":
-        return None
-    poly = pad.get("poly")
-    if not poly or len(poly) < 3:
-        return None
-    return tuple((float(p[0]), float(p[1])) for p in poly)
+    """The pad's authored outline, as an exact polygon — ``None`` only for
+    a genuinely round pad (``shape == 'circle'``, whose inscribed disk
+    already IS its exact reach) or one this function cannot resolve.
+
+    ``shape == 'polygon'`` pads (the EWOD electrode pads that motivate this
+    module at all — gr339236) read their raw authored outline directly.
+    ``rect``/``obround`` pads (gr450064/gr449709) get theirs from
+    :mod:`precis.pcb.drc`'s :func:`~precis.pcb.drc._copper_item_polygon` —
+    that module's own "ONE shape function" for what a pad physically
+    occupies — rather than a second rect-corners/stadium construction here:
+    two independently-maintained notions of "what shape is this pad" is
+    this subsystem's own most-repeated defect (see that function's own
+    docstring)."""
+    shape = pad.get("shape")
+    if shape == "polygon":
+        poly = pad.get("poly")
+        if not poly or len(poly) < 3:
+            return None
+        return tuple((float(p[0]), float(p[1])) for p in poly)
+    if shape in ("rect", "obround"):
+        geom = _copper_item_polygon({**pad, "ctype": "pad"})
+        if geom is None or geom.is_empty:
+            return None
+        return tuple((float(x), float(y)) for x, y in geom.exterior.coords[:-1])
+    return None
 
 
 def _prim_polygon_gap(prim: _Prim, poly: tuple[Point, ...]) -> float:

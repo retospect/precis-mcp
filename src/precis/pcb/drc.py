@@ -317,14 +317,16 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
     "what shape is this thing", answering differently) is this
     subsystem's own most-repeated defect (see :func:`pads_for_ir`'s own
     docstring in :mod:`precis.pcb.realize` for the pad-geometry half of
-    the same lesson). ``check_via_pad_keepout`` now reads a pad's real
-    outline through this SAME function too (gr346004 — the disc it used
+    the same lesson). ``check_via_pad_keepout`` (gr346004) and
+    ``check_outline_containment`` (gr450064/gr449709) both now read a pad's
+    real outline through this SAME function too — the disc either used
     before over-stated a non-square pad's reach past its actual land,
-    firing on vias that cleared the real copper by a wide margin);
-    ``check_outline_containment`` still carries its own PRE-EXISTING
-    circumscribed-circle pad approximation (containment predates this
-    function's pad support) — reported, not silently merged in, since
-    changing its numbers was not asked for here.
+    firing on vias/off-board findings against copper that, on the real
+    board, clears them by a wide margin. :mod:`precis.pcb.connectivity`'s
+    own pad-touch test (:func:`~precis.pcb.connectivity._pad_poly`) reads
+    its rect/obround outline from here for the same reason, though it
+    keeps its own polygon-vertex machinery rather than sharing shapely
+    geometry across module boundaries.
 
     **A pour's ``holes`` are antipads, not decoration.** :mod:`precis.pcb.
     planes` (:func:`~precis.pcb.planes.plane_pours`, its own docstring)
@@ -1658,24 +1660,17 @@ def check_outline_containment(
         )
 
     for pad in model.get("pads") or []:
-        # Deliberately NOT _copper_item_polygon's exact rect/obround pad
-        # shape (that function's own docstring names this function as the
-        # one remaining pre-existing pad approximation it did not unify
-        # away — check_via_pad_keepout's own circumscribed-circle stand-in
-        # was fixed under gr346004) — this is a circumscribed-circle
-        # stand-in that predates the exact polygon, and swapping it in here
-        # would change which pads report a containment violation and how
-        # much area is claimed to overhang, a real behaviour change nobody
-        # asked for here. A SECOND pad-shape notion, now named rather than
-        # silently duplicated: circumscribed circle here (gr346004 left
-        # unfixed, deliberately — see docs/backlog/
-        # pcb-pre-place-route-blocks.md), exact polygon everywhere else via
-        # _copper_item_polygon.
-        w = float(pad.get("w", 0.0))
-        h = float(pad.get("h", w))
-        geom = Point(float(pad["x"]), float(pad["y"])).buffer(
-            max(w, h) / 2.0, quad_segs=_BUFFER_QUAD_SEGS
-        )
+        # The pad's real shape (circle/rect/obround/polygon), same as every
+        # other copper item above — this loop's own circumscribed-circle
+        # stand-in (gr346004 left it, deliberately, as the one remaining
+        # pre-existing pad approximation) is fixed under gr450064/gr449709:
+        # a non-square pad's circumscribed disc over-states its reach past
+        # the real land, so a pad that cleared the outline by a wide margin
+        # could still read as a containment violation against board that,
+        # on the real design, it is not actually off of.
+        geom = _copper_item_polygon({**pad, "ctype": "pad"})
+        if geom is None or geom.is_empty:
+            continue
         net, layer = pad.get("net"), pad.get("layer")
         outside(geom, f"pad[{net}] on {layer}", {"net": net, "layer": layer})
 

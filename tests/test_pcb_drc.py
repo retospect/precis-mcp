@@ -1820,6 +1820,24 @@ def test_a_pad_off_the_board_is_reported() -> None:
     assert "pad[N]" in found[0].where
 
 
+def test_a_rect_pad_whose_circumscribed_circle_crosses_the_edge_is_quiet() -> None:
+    """gr450064/gr449709: this loop used to stand in every pad as a
+    CIRCUMSCRIBED circle (``max(w, h) / 2``), which over-states a non-square
+    pad's reach on its SHORT axis. A 4.0x1.0mm pad centred 1.0mm above the
+    bottom edge is fully on the board (its real y-range is 0.5..1.5mm), but
+    its circumscribed disc (radius 2.0mm, matching the pad's own long-axis
+    half-length) reaches to y = -1.0mm — past the edge the real copper never
+    gets near. The old approximation read this as a containment violation;
+    the pad's real rect outline must not.
+    """
+    model = {
+        "layers": ["F.Cu"],
+        "copper": [],
+        "pads": [_pad("N", "F.Cu", 15.0, 1.0, w=4.0, h=1.0, shape="rect")],
+    }
+    assert _containment(model) == []
+
+
 def test_a_part_placed_off_the_board_is_reported() -> None:
     """The placer's seed shelf-packs from the origin; on an outline
     narrower than its natural row width it put parts straight off the edge,
