@@ -470,6 +470,21 @@ class TestStoreMergeRefs:
         with pytest.raises(BadInput, match="already belongs to ref"):
             store.set_ref_identifier(other, "doi", "10.1234/live.2024")
 
+    def test_identifier_collision_next_names_merge_duplicate(
+        self, store: Store
+    ) -> None:
+        """gr450133: the collision's ``next=`` must name the concrete
+        remedy (``merge_duplicate`` + the skill section), not just say
+        "resolve the duplicate" with no pointer to how."""
+        owner = _seed_paper(store, slug="alive2025a")
+        other = _seed_paper(store, slug="alive2025b")
+        store.set_ref_identifier(owner, "doi", "10.1234/live.2025")
+        with pytest.raises(BadInput, match="already belongs to ref") as exc_info:
+            store.set_ref_identifier(other, "doi", "10.1234/live.2025")
+        next_hint = exc_info.value.next
+        assert next_hint is not None and "merge_duplicate" in next_hint
+        assert "precis-paper-help" in next_hint
+
     def test_merge_into_self_rejected(self, store: Store) -> None:
         a = _seed_paper(store, slug="self2023")
         with pytest.raises(BadInput, match="cannot merge a ref into itself"):

@@ -1321,7 +1321,12 @@ class PaperHandler(Handler):
             if owner_id is not None and owner_id != ref_id:
                 raise BadInput(
                     f"{scheme}={str(value).strip()!r} already belongs to ref id={owner_id}",
-                    next="resolve the duplicate before reassigning the identifier",
+                    next=(
+                        "a merge_duplicate cleanup is needed — see "
+                        "get(kind='skill', id='precis-paper-help') §resolving "
+                        "a duplicate ref; prefer the ref with chunks/body as "
+                        "the survivor"
+                    ),
                 )
         lines: list[str] = []
         if new_title is not None:

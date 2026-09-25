@@ -112,7 +112,11 @@ lines. The byline lookup sidesteps both.
 
 ```python
 get(kind="paper", id="pa40", view="authors")  # position, source, links, verified tick
-edit(kind="paper", id="pa40", authors=["Goldsmith, Bryan R. [0000-0002-1825-0097]", "Zywucka, N."])
+edit(
+    kind="paper",
+    id="pa40",
+    authors=["Goldsmith, Bryan R. [0000-0002-1825-0097]", "Zywucka, N."],
+)
 ```
 
 `view='authors'` renders one row per byline position: the display name,
@@ -166,6 +170,33 @@ repairable the same way — `edit(kind='paper', id='<slug>', doi='10.…')` (or
 DOI-bearing stub and orphaning the first. ⚠ `year=` is accepted by the
 handler but not yet exposed on the `edit` wire schema, so it is silently
 dropped — see `docs/backlog/mcp-verb-kwarg-parity.md`.
+
+## Resolving a duplicate ref
+## `already belongs to ref id=N` — what now?
+## An identifier collision blocked my edit — how do I fix it?
+
+Two *live* refs holding the same `doi`/`arxiv` is a duplicate-paper pair —
+`edit`/`set_ref_identifier` raises `BadInput` rather than silently
+stealing the other ref's claim. The fix is a merge, not a retry.
+
+The merge primitive is `precis.ingest.dedup.merge_duplicate`; no
+session-MCP verb wraps it, and there is no single-pair "merge these two
+refs" door — only a standing sweep. Run it on the box (not the session
+`precis` MCP; prod invocation via `docs/runbooks/prod-one-off-cli.md`):
+
+```
+precis reconcile-duplicates          # dry-run — prints the planned merges
+precis reconcile-duplicates --apply  # commits: doi-case, pdf_sha256, title-sim groups
+```
+
+It auto-picks the survivor (has an external id → non-junk title → most
+authors, tiebreak lowest ref id; the doi-case path instead keeps
+whichever side actually holds chunks/body over an empty stub) and
+soft-deletes the rest with a `supersedes` edge. If the pair shares no
+`pdf_sha256`/DOI-case/title-similarity signal, there's no targeted
+single-pair door either — call `merge_duplicate(survivor_ref_id=…,
+duplicate_ref_id=…, ...)` directly inside a transaction via the prod
+one-off CLI recipe; survivor = the ref that actually holds chunks/body.
 
 ## See additional papers after a search
 ## Page through more search results

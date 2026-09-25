@@ -360,7 +360,12 @@ class IdentifiersMixin:
                 if not owner_deleted:
                     raise BadInput(
                         f"{s}={v!r} already belongs to ref id={owner_id}",
-                        next="resolve the duplicate before reassigning the identifier",
+                        next=(
+                            "a merge_duplicate cleanup is needed — see "
+                            "get(kind='skill', id='precis-paper-help') §resolving "
+                            "a duplicate ref; prefer the ref with chunks/body as "
+                            "the survivor"
+                        ),
                     )
                 # Orphan from a soft-deleted ref — reclaim it. The PK is
                 # (id_kind, id_value), so the stale row must go before the
