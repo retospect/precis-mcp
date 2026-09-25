@@ -347,6 +347,27 @@ def test_agentlane_carries_the_container_gate_and_autopromote_like_20b() -> None
     assert lane_off["PRECIS_AGENT_CONTAINER"] == "1"
 
 
+def test_agentlane_carries_the_embedder_env_its_job_inproc_lane_needs() -> None:
+    """The agent lane drains ``job_inproc`` too, and its only job_type
+    (``embed_batch``) resolves the embedder through ``load_config()`` —
+    whose default is the non-production ``mock`` backend. Without
+    PRECIS_EMBEDDER/PRECIS_EMBEDDER_URL in this unit's env every
+    embed_batch it won (41 on melchior, 2026-09-22 → 09-25) died on
+    ``chunk_embeddings_embedder_fkey`` (``Key (embedder)=(mock)``), the
+    gr346813 shape one env key over. Same pair as 20b's §F-b block; the
+    role defaults are out of scope here, so the play-level ``default``
+    filters must yield the production values on their own."""
+    env = _render_agentlane_env()
+    assert env["PRECIS_EMBEDDER"] == "remote"
+    assert env["PRECIS_EMBEDDER_URL"] == "http://127.0.0.1:8181"
+
+    pinned = _render_agentlane_env(
+        precis_worker_agent_embedder="remote",
+        precis_worker_agent_embedder_url="http://127.0.0.1:9181",
+    )
+    assert pinned["PRECIS_EMBEDDER_URL"] == "http://127.0.0.1:9181"
+
+
 def test_collapsed_worker_fix_lane_env_is_gated() -> None:
     """The fix-lane env (PRECIS_FIX_WORK_DIR / PRECIS_FIX_REPO_DIR plus the
     lane-arming flag PRECIS_DIAGNOSE_AUTOPROMOTE) renders ONLY on a gateway

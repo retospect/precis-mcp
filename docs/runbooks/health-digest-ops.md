@@ -50,7 +50,8 @@ In production it fires once an hour, wherever the cadence lease lands.
    DB-overridable knob); cadence staleness is their only check, watching
    the resolved interval automatically.
 2. **Cadence staleness (derived)** — every `scheduler_leases` row overdue
-   past `interval_s + margin` (`margin = max(interval_s, 300s)`), including
+   past `interval_s + margin` (`margin = max(interval_s, 15 min)` — the
+   floor is one slow worker rotation, see `_CADENCE_MARGIN_FLOOR_S`), including
    `dream_agent` / `anki_sync`. Zero per-cadence config — a cadence added
    to `workers/scheduler.py` is watched the moment it seeds its first
    lease row.

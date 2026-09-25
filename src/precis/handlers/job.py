@@ -168,10 +168,15 @@ class JobHandler(NumericRefHandler):
         the same ``WHERE`` — every value from the query string is bound,
         never string-formatted into the SQL text.
 
-        ``handler=`` matches either the logger-derived ``pass`` column
-        (the short worker-pass name, e.g. ``'dispatch'``) or the raw
-        ``logger`` column (e.g. ``'precis.workers.dispatch'``) —
-        whichever the caller happens to know. ``level=`` is a *minimum*
+        ``handler=`` matches the logger-derived ``pass`` column (the short
+        worker-pass name, e.g. ``'dispatch'``), the raw ``logger`` column
+        (e.g. ``'precis.workers.dispatch'``), or ``payload->>'handler'`` —
+        the runner's per-cycle ``worker: <pass> claimed=N ok=N failed=N``
+        row is logged by ``precis.workers.runner`` (so its ``pass`` is
+        ``'runner'``) and names the pass only in its payload; without
+        that third leg a pass that logs nothing of its own between cycles
+        (``job_ssh_node``, ``job_inproc``, …) read as *dark* here while
+        its cycle rows sat one column over. ``level=`` is a *minimum*
         (stdlib ordering DEBUG < INFO < WARNING < ERROR < CRITICAL),
         defaulting to WARNING so a bare ``id='/logs'`` reads as "what's
         currently wrong" rather than a full firehose. ``since=`` is
@@ -233,7 +238,10 @@ class JobHandler(NumericRefHandler):
             "levels": allowed_levels,
         }
         if handler:
-            where.append("(pass = %(handler)s OR logger = %(handler)s)")
+            where.append(
+                "(pass = %(handler)s OR logger = %(handler)s "
+                "OR payload->>'handler' = %(handler)s)"
+            )
             sql_params["handler"] = handler
         if host:
             where.append("host = %(host)s")

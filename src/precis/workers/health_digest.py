@@ -226,16 +226,10 @@ _FRESHNESS_CHECKS: tuple[tuple[str, str, str, float, str, str], ...] = (
         _WARN,
         "cast_audio narrating a cast",
     ),
-    (
-        "taproot_edges",
-        "knowledge",
-        "SELECT max(created_at) FROM links WHERE relation = ANY(ARRAY"
-        f"{list(_TAPROOT_HUB_ROLES)!r}::text[])",
-        6.0,
-        _WARN,
-        "a findings→claims taproot edge",
-    ),
 )
+# ``taproot_edges`` used to be a row here (bare ``max(links.created_at)``
+# over the hub roles, 6h budget). It is now :func:`_check_taproot_edges`,
+# input-aware like ``chunks_extracted`` — see that function for why.
 
 
 def _freshness_layer1(conn: Any) -> list[CheckResult]:
@@ -615,6 +609,87 @@ def _check_chunks_extracted(conn: Any) -> CheckResult:
         f"a chunk being extracted: last body chunk {age:.1f}h ago "
         f"(budget {_CHUNKS_EXTRACTED_BUDGET_HOURS:.0f}h) while a paper landed "
         f"{_hours_since(stale_input_ts):.1f}h ago with nothing extracted since",
+        _WARN,
+        age,
+    )
+
+
+#: Budget for :func:`_check_taproot_edges` — the retired freshness row's
+#: own 6h, kept: a claim hub that has sat this long with no edge is a
+#: mint pipeline that stopped half-way, not a slow one.
+_TAPROOT_EDGES_BUDGET_HOURS = 6.0
+
+
+def _check_taproot_edges(conn: Any) -> CheckResult:
+    """Taproot edge liveness: input-aware, mirrors :func:`_check_chunks_extracted`.
+
+    The retired freshness row read ``max(links.created_at)`` over the hub
+    roles (:data:`_TAPROOT_HUB_ROLES`) against a 6h budget — but a
+    findings→claims edge is only ever minted when there is a new claim hub
+    (or a chase over a new paper) to hang it on, so a quiet corpus tripped
+    it every night: 15 open/resolve episodes and 531 sightings in the 30
+    days to 2026-09-25, every one of them "idle", none a stuck pass. Same
+    fix as extraction: stale only when a ``TAPROOT:claim`` hub landed more
+    than budget ago that is *newer* than the newest hub-role edge (input
+    arrived, nothing linked since — which already implies the edge itself
+    is past budget too). Quiet when no such hub exists.
+    """
+    sql = """
+        SELECT
+            (SELECT max(created_at) FROM links
+              WHERE relation = ANY(%(roles)s::text[])) AS newest_edge_ts,
+            (SELECT max(r.created_at)
+               FROM refs r
+               JOIN ref_tags rt ON rt.ref_id = r.ref_id
+               JOIN tags t ON t.tag_id = rt.tag_id
+              WHERE r.kind = 'finding' AND r.retired_at IS NULL
+                AND t.namespace = 'TAPROOT' AND t.value = 'claim'
+                AND r.created_at < now() - (%(budget)s || ' hours')::interval
+                AND r.created_at > COALESCE(
+                      (SELECT max(created_at) FROM links
+                        WHERE relation = ANY(%(roles)s::text[])),
+                      '-infinity'::timestamptz)
+            ) AS stale_input_ts
+    """
+    params = {
+        "roles": list(_TAPROOT_HUB_ROLES),
+        "budget": _TAPROOT_EDGES_BUDGET_HOURS,
+    }
+    try:
+        row = conn.execute(sql, params).fetchone()
+        newest_edge_ts, stale_input_ts = (row[0], row[1]) if row else (None, None)
+    except Exception:
+        log.exception("health_digest: taproot_edges probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_digest: rollback after taproot_edges probe failed")
+        return CheckResult(
+            "knowledge",
+            "taproot_edges",
+            "unknown",
+            "a findings→claims taproot edge: probe failed",
+            _WARN,
+        )
+    age = _hours_since(newest_edge_ts)
+    if stale_input_ts is None:
+        seen = f"{age:.1f}h ago" if age is not None else "never"
+        return CheckResult(
+            "knowledge",
+            "taproot_edges",
+            "ok",
+            f"a findings→claims taproot edge: {seen} "
+            "(idle — no new claim hub waiting for an edge)",
+            _WARN,
+            age,
+        )
+    return CheckResult(
+        "knowledge",
+        "taproot_edges",
+        "stale",
+        f"a findings→claims taproot edge: last edge {age:.1f}h ago "
+        f"(budget {_TAPROOT_EDGES_BUDGET_HOURS:.0f}h) while a claim hub landed "
+        f"{_hours_since(stale_input_ts):.1f}h ago with nothing linked since",
         _WARN,
         age,
     )
@@ -1252,6 +1327,7 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
     with store.pool.connection() as conn:
         out = _freshness_layer1(conn)
         out.append(_check_chunks_extracted(conn))
+        out.append(_check_taproot_edges(conn))
         out += _idle_aware_backlog_checks(conn)
         out.append(_check_card_forge(conn))
         out.append(_check_claim_hub_dedup_index(conn))
@@ -1297,15 +1373,35 @@ def _layer1_checks(store: Store) -> list[CheckResult]:
 _CADENCE_NEVER_SEEDED_EXEMPT = frozenset({"materialize"})
 
 
+#: Floor on the cadence-staleness margin (seconds) — see
+#: :func:`_cadence_staleness_checks` for the measured rotation lengths that
+#: set it. A short-interval cadence is judged against this, not its own
+#: interval.
+_CADENCE_MARGIN_FLOOR_S = 900
+
+
 def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
     """Every ``scheduler_leases`` row overdue past ``interval_s + margin``,
     plus (gr194430) every registry cadence with **no** lease row at all.
 
     Zero per-cadence config — a cadence added to ``workers/scheduler.py``
     is watched the moment it seeds its first lease row, no digest edit.
-    ``margin = max(interval_s, 300s)`` — generous enough that a normal
-    scheduling jitter never trips it, tight enough that a genuinely-stopped
-    cadence trips within about one missed interval.
+    ``margin = max(interval_s, _CADENCE_MARGIN_FLOOR_S)`` — generous enough
+    that a normal rotation never trips it, tight enough that a
+    genuinely-stopped cadence still trips within a fraction of the 6h
+    self-heal budget its ``watchdog:cadence`` alert carries.
+
+    Why the floor is 15 min and not the old 300 s: a cadence fires from
+    the ``scheduler`` pass of whichever worker's rotation reaches it, and a
+    rotation is as long as its slowest pass. Measured 2026-09-25 (12h,
+    prod): melchior's system worker cycles every ~34 min (``fetch_oa`` up
+    to 43 min, ``fetch_google_patents`` 32 min, ``orcid_enrich`` 12 min,
+    all by their own pacing), balthazar's every ~7.5 min with 9 gaps over
+    10 min in 6h. A 300 s cadence with a 300 s margin therefore read
+    "stale" every time balthazar's rotation ran long — ``materialize``
+    flapped 5× in one morning while firing every 5–13 min, never stopped.
+    The check's job is "stopped firing", a days-scale rot; 15 min of
+    lateness is the worker architecture, not a finding.
 
     The never-seeded half closes §D's blind spot: an ``eligible`` gate
     (``dream_agent``/``anki_sync``/``structural``/``deep_review``) that's
@@ -1352,7 +1448,7 @@ def _cadence_staleness_checks(store: Store) -> list[CheckResult]:
         )
     now = datetime.now(UTC)
     for lease in leases:
-        margin_s = max(lease.interval_s, 300)
+        margin_s = max(lease.interval_s, _CADENCE_MARGIN_FLOOR_S)
         next_fire = lease.next_fire_at
         if next_fire.tzinfo is None:
             next_fire = next_fire.replace(tzinfo=UTC)

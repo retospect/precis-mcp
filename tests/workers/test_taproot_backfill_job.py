@@ -290,7 +290,16 @@ def test_dispatch_converts_figure_caption_citation_and_skips_table(
     carry a ``[pc]``/``[pa]`` marker ('Reproduced from [pa2069]') — the
     backfill must reach it same as any prose chunk. A table chunk (markdown
     regenerated from ``meta.table``) is still skipped entirely — never
-    handed to ``apply_chunk`` at all."""
+    handed to ``apply_chunk`` at all.
+
+    gr450329 (c4fb8cd6) narrows what "reach" yields: a caption whose cite
+    sits behind a bare provenance pointer ("Reproduced from [pc]") is
+    provenance, not a claim about the world — ``apply_chunk`` is still
+    called (the scan happened) but short-circuits to no-claim, so the
+    ``[pc]`` marker stays and no ``[fi…]`` hub is minted. Captions that
+    carry claim content still convert (``tests/test_taproot_backfill.py``
+    ``test_apply_non_figure_chunk_with_reproduced_from_still_extracts``
+    and the ``figure_pointer`` siblings pin both arms)."""
     draft = DraftHandler(hub=hub)
     _paper_a, pc1 = _pc_of(store, paper_title="paper A")
     proj = _proj(hub)
@@ -343,8 +352,9 @@ def test_dispatch_converts_figure_caption_citation_and_skips_table(
 
     fig_chunk = store.drafts.get_draft_chunk(fig_dc)
     assert fig_chunk is not None
-    assert "[fi" in fig_chunk.text, fig_chunk.text
-    assert f"[{pc1}]" not in fig_chunk.text
+    # pointer-only caption: scanned, but provenance is not a claim (gr450329)
+    assert "[fi" not in fig_chunk.text, fig_chunk.text
+    assert f"[{pc1}]" in fig_chunk.text
 
 
 def test_dispatch_isolates_one_chunk_failure(

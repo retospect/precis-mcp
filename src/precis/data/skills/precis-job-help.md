@@ -353,8 +353,10 @@ get(kind='job', id='/logs')
 # → last 24h, WARNING+, newest first — the default "what's wrong?" view
 
 get(kind='job', id='/logs?handler=dispatch&since=24&level=WARNING')
-# handler= takes either the short pass name ('dispatch', 'embed', ...)
-# or the full dotted logger ('precis.workers.dispatch')
+# handler= takes the short pass name ('dispatch', 'embed', ...), the full
+# dotted logger ('precis.workers.dispatch'), or the pass named in the
+# runner's per-cycle `worker: <pass> claimed=N ok=N failed=N` INFO row
+# (payload.handler) — so level=INFO shows a quiet pass's heartbeat too
 
 get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&limit=50')
 # host=, q= (substring on message), since= (hours, max 168),

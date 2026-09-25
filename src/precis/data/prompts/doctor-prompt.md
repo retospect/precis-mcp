@@ -67,6 +67,18 @@ before writing "could not confirm" or "no worker_logs/Bash access this tick"
 (`'dispatch'`, `'embed'`, …) or the full dotted logger; omit it to see every
 pass at once for a host/window.
 
+**"Dark" needs the cycle rows, not the pass's own chatter.** Every
+registered pass logs one `worker: <pass> claimed=N ok=N failed=N` INFO row
+per cycle (it is what the deterministic pass-dead condition keys off), and
+`handler=<pass>` matches it. Many passes log nothing else while idle —
+`job_ssh_node`, `job_inproc`, the executors — so a WARNING-only read that
+shows the last row days ago is a quiet lane, not a dark one. Before
+classifying a pass as dark, read
+`get(kind='job', id='/logs?handler=<pass>&since=2&level=INFO&limit=5')`:
+cycle rows in the last interval ⇒ alive (idle if `claimed=0`); none on any
+host ⇒ dark. `claimed=0` for days is a demand question (nothing minted for
+it), not a liveness one.
+
 Skim `search(kind='skill', q='<surface you need>')` for anything not listed
 above (scheduler-lease staleness, claim-registry forensics) — the skill docs
 describe what's checked even where no direct query exists; note "no

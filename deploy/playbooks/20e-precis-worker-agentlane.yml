@@ -86,10 +86,20 @@
 #   * `job_inproc` (executors/job_inproc.py) has no ServiceSpec.introspect of
 #     its own beyond that shared claim path — its own module reads only
 #     PRECIS_INPROC_CONCURRENCY / PRECIS_JOB_INPROC_LEASE_S / PRECIS_NODE,
-#     all optional with code defaults.
+#     all optional with code defaults. BUT the job_type it drains,
+#     `embed_batch`, resolves its embedder through `load_config()`
+#     (workers/embed.py::resolve_embedder → PrecisConfig.embedder), whose
+#     default is the non-production "mock" backend — so this lane MUST carry
+#     PRECIS_EMBEDDER + PRECIS_EMBEDDER_URL exactly like 20b's §F-b env
+#     block. Without them (2026-09-22 → 09-25, 41 jobs on the gateway) every
+#     embed_batch this lane won died on chunk_embeddings_embedder_fkey
+#     ("Key (embedder)=(mock) is not present in table embedders") while the
+#     collapsed unit's wins embedded fine — the gr346813 shape again, one
+#     env key over.
 # So the base env is: the DB DSN mechanism + PGPASSFILE + PATH (to find
-# `precis`/`claude`) + PRECIS_MCP_CONFIG + the four planner-guardrail cost
-# caps + PRECIS_SUSPENDED_JOB_TYPES + precis_shared_env/precis_identity_env
+# `precis`/`claude`) + PRECIS_MCP_CONFIG + the embedder pair + the four
+# planner-guardrail cost caps + PRECIS_SUSPENDED_JOB_TYPES +
+# precis_shared_env/precis_identity_env
 # (API-key parity with every other precis-* unit, mirrors 43/20d) + the
 # fix-lane pair when armed. Deliberately NOT carried: PRECIS_JOB_CPU_SHARES /
 # PRECIS_JOB_CPUSET (container-executor `docker run` CPU limits,
@@ -294,6 +304,9 @@
                  'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
                  'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
                  'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+                 'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
+                 'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
+                   | default('http://127.0.0.1:' ~ (embedder_port | default(8181))),
                })
              | combine(
                  {

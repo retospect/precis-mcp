@@ -43,6 +43,7 @@ from precis.workers.health_digest import (
     _check_claim_hub_dedup_index,
     _check_doctor_report_fresh,
     _check_hosts_alive,
+    _check_taproot_edges,
     _diagnose_embed_pipeline,
     _idle_aware_backlog_checks,
     _layer1_checks,
@@ -203,11 +204,32 @@ def _seed_lease(store, name: str, *, interval_s: int, overdue_s: float) -> None:
 
 
 def test_stopped_cadence_reported_stale_within_interval_plus_margin(store) -> None:
-    # interval 60s, margin = max(60, 300) = 300s; overdue by 400s > margin.
-    _seed_lease(store, "c-stopped", interval_s=60, overdue_s=400)
+    # interval 60s, margin = max(60, 900) = 900s; overdue by 1000s > margin.
+    _seed_lease(store, "c-stopped", interval_s=60, overdue_s=1000)
     results = _cadence_staleness_checks(store)
     hit = next(r for r in results if r.name == "c-stopped")
     assert hit.status == "stale"
+
+
+def test_short_cadence_late_by_one_slow_rotation_is_ok(store) -> None:
+    """The 2026-09-25 ``materialize`` flap: a 300 s cadence firing 11 min
+    late because the winning worker's rotation ran long (a 12-min
+    ``orcid_enrich`` batch ahead of the scheduler pass). That is the worker
+    architecture, not a stopped cadence — inside the 15-min margin floor."""
+    _seed_lease(store, "c-slow-rotation", interval_s=300, overdue_s=660)
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "c-slow-rotation")
+    assert hit.status == "ok"
+
+
+def test_short_cadence_past_the_margin_floor_is_stale(store) -> None:
+    """...but the floor is a floor, not a blindfold: 20 min overdue on a
+    300 s cadence is past interval+floor and reads stale."""
+    _seed_lease(store, "c-really-stopped", interval_s=300, overdue_s=1200)
+    results = _cadence_staleness_checks(store)
+    hit = next(r for r in results if r.name == "c-really-stopped")
+    assert hit.status == "stale"
+    assert "300s + 900s" in hit.detail
 
 
 def test_cadence_within_margin_is_ok(store) -> None:
@@ -631,6 +653,81 @@ def test_chunks_extracted_ignores_card_forge_rewrite(store) -> None:
     with store.pool.connection() as conn:
         result = _check_chunks_extracted(conn)
     assert result.status == "stale"
+
+
+# ── taproot_edges: input-aware staleness (mirrors chunks_extracted) ──────
+
+
+def _seed_claim_hub(store, *, hours_ago: float) -> int:
+    ref_id = seed_ref(store, title="claim hub", kind="finding")
+    store.add_tag(ref_id, Tag.closed("TAPROOT", "claim"), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - (%s || ' hours')::interval "
+            "WHERE ref_id = %s",
+            (hours_ago, ref_id),
+        )
+        conn.commit()
+    return int(ref_id)
+
+
+def _seed_hub_edge(store, src: int, dst: int, *, hours_ago: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by, created_at) "
+            "VALUES (%s, %s, 'establishes', 'system', "
+            "now() - (%s || ' hours')::interval)",
+            (src, dst, hours_ago),
+        )
+        conn.commit()
+
+
+def test_taproot_edges_quiet_when_no_new_hub_since_the_last_edge(store) -> None:
+    """The retired freshness row fired on exactly this shape every quiet
+    night (15 episodes / 531 sightings in 30 days): an edge well past the
+    6h budget with no newer claim hub behind it is idle, not stuck."""
+    hub = _seed_claim_hub(store, hours_ago=30)
+    evidence = seed_ref(store, title="evidence", kind="finding")
+    _seed_hub_edge(store, evidence, hub, hours_ago=20)
+
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+    assert result.status == "ok"
+    assert "idle" in result.detail
+
+
+def test_taproot_edges_quiet_when_never_any_edge_and_no_hub(store) -> None:
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+    assert result.status == "ok"
+    assert "never" in result.detail
+
+
+def test_taproot_edges_stale_when_hub_newer_than_edge_past_budget(store) -> None:
+    """A claim hub landed after the newest edge and has sat past budget
+    with nothing linked to it — the mint pipeline stopped half-way."""
+    old_hub = _seed_claim_hub(store, hours_ago=30)
+    evidence = seed_ref(store, title="evidence", kind="finding")
+    _seed_hub_edge(store, evidence, old_hub, hours_ago=20)
+    _seed_claim_hub(store, hours_ago=10)  # newer than the edge, > 6h old
+
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+    assert result.status == "stale"
+    assert "claim hub landed" in result.detail
+
+
+def test_taproot_edges_quiet_while_a_fresh_hub_is_still_inside_budget(store) -> None:
+    """A hub minted an hour ago with its edge still pending is inside the
+    6h budget — no alarm yet."""
+    old_hub = _seed_claim_hub(store, hours_ago=30)
+    evidence = seed_ref(store, title="evidence", kind="finding")
+    _seed_hub_edge(store, evidence, old_hub, hours_ago=20)
+    _seed_claim_hub(store, hours_ago=1)
+
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+    assert result.status == "ok"
 
 
 # ── claim_hub_dedup_index: strict claim-hub definition ────────────────────

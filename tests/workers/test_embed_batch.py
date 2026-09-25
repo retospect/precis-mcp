@@ -112,6 +112,30 @@ def test_drains_all_chunks_and_reports_zero_remaining(
     assert "queue_remaining≈0" in text
 
 
+def test_unregistered_mock_embedder_fails_infra_before_claiming(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker unit whose env lacks PRECIS_EMBEDDER resolves the bare
+    ``MockEmbedder`` (model ``'mock'``, not in ``embedders``): the job must
+    fail ``infra`` with a self-describing reason and claim NOTHING — not
+    claim + embed + die on ``chunk_embeddings_embedder_fkey`` per
+    micro-batch (the 2026-09-25 agent-lane shape)."""
+    _patch_embedder(monkeypatch, MockEmbedder(dim=1024))
+    seed_chunks(store, [f"chunk {i}" for i in range(3)])
+
+    ctx = _mk_ctx(store, params={"limit": 100})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert len(ctx.failures) == 1
+    reason, failure_class = ctx.failures[0]
+    assert failure_class == "infra"
+    assert "'mock'" in reason
+    assert "PRECIS_EMBEDDER" in reason
+    assert _claim_count(store, model="mock") == 0
+    assert _embedding_count(store, model="mock") == 0
+    assert ctx.summaries == []
+
+
 def test_stops_at_limit_below_backlog_size(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

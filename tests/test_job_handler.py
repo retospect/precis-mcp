@@ -10,6 +10,8 @@ exercise the view's filters end to end against a real Postgres.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from precis.dispatch import Hub
@@ -32,14 +34,15 @@ def _insert_log(
     level: str = "WARNING",
     message: str = "test message",
     hours_ago: float = 0.0,
+    payload: dict[str, object] | None = None,
 ) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO worker_logs "
-            "(ts, host, process, pass, level, logger, message) "
+            "(ts, host, process, pass, level, logger, message, payload) "
             "VALUES (now() - (%(hours_ago)s || ' hours')::interval, "
             "%(host)s, 'precis-worker', %(pass)s, %(level)s, %(logger)s, "
-            "%(message)s)",
+            "%(message)s, %(payload)s::jsonb)",
             {
                 "hours_ago": hours_ago,
                 "host": host,
@@ -47,6 +50,7 @@ def _insert_log(
                 "level": level,
                 "logger": logger,
                 "message": message,
+                "payload": json.dumps(payload) if payload is not None else None,
             },
         )
         conn.commit()
@@ -120,6 +124,37 @@ def test_handler_filter_matches_logger_column(jobs: JobHandler, store: Store) ->
 
     assert "fetch_oa lane message" in resp.body
     assert "embed chatter" not in resp.body
+
+
+def test_handler_filter_matches_the_runner_cycle_row_payload(
+    jobs: JobHandler, store: Store
+) -> None:
+    """The runner's per-cycle ``worker: <pass> claimed=N …`` row is logged
+    by ``precis.workers.runner`` (``pass='runner'``) and names the pass
+    only in ``payload.handler``. ``handler=<pass>`` must find it — else a
+    pass that logs nothing of its own between cycles reads as dark to the
+    doctor while its heartbeat sits one column over."""
+    _insert_log(
+        store,
+        pass_="runner",
+        logger="precis.workers.runner",
+        level="INFO",
+        message="worker: job_ssh_node claimed=0 ok=0 failed=0",
+        payload={"handler": "job_ssh_node", "claimed": 0, "ok": 0, "failed": 0},
+    )
+    _insert_log(
+        store,
+        pass_="runner",
+        logger="precis.workers.runner",
+        level="INFO",
+        message="worker: dispatch claimed=2 ok=2 failed=0",
+        payload={"handler": "dispatch", "claimed": 2, "ok": 2, "failed": 0},
+    )
+
+    resp = jobs.get(id="/logs?handler=job_ssh_node&level=INFO")
+
+    assert "job_ssh_node claimed=0" in resp.body
+    assert "dispatch claimed=2" not in resp.body
 
 
 def test_host_filter(jobs: JobHandler, store: Store) -> None:

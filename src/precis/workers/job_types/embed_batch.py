@@ -103,6 +103,33 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         ctx.record_failure(f"embed_batch: {exc}", failure_class="infra")
         return
 
+    # Fail fast, BEFORE claiming anything, when the resolved embedder is a
+    # non-production backend that the ``embedders`` FK table doesn't know:
+    # that is the signature of a worker unit whose env lacks
+    # PRECIS_EMBEDDER/PRECIS_EMBEDDER_URL (``resolve_embedder`` then falls
+    # through to ``PrecisConfig.embedder``'s ``"mock"`` default). Without
+    # this guard every micro-batch claimed, embedded and then died on
+    # ``chunk_embeddings_embedder_fkey`` (41 jobs on the gateway's agent
+    # lane, 2026-09-22 → 09-25, deploy/playbooks/20e) — an FK traceback that
+    # names no cause. Production embedders skip the probe (no round-trip);
+    # a mock registered under a real model name (the test fixtures) passes.
+    if not getattr(embedder, "is_production", True):
+        with ctx.store.pool.connection() as conn:
+            registered = conn.execute(
+                "SELECT 1 FROM embedders WHERE name = %s", (embedder.model,)
+            ).fetchone()
+        if registered is None:
+            ctx.record_failure(
+                "embed_batch: embedder resolved to the non-production "
+                f"{embedder.model!r} backend, which is not registered in "
+                "embedders — this worker process has no PRECIS_EMBEDDER/"
+                "PRECIS_EMBEDDER_URL in its env (every chunk_embeddings write "
+                "would violate chunk_embeddings_embedder_fkey); export them on "
+                "this unit",
+                failure_class="infra",
+            )
+            return
+
     handler = EmbedHandler(embedder)
     processed = ok_total = failed_total = 0
 
