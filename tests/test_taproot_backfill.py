@@ -171,6 +171,37 @@ def test_segment_multiple_groups_in_order() -> None:
     assert groups[1].span_text == "Then claim two"
 
 
+def test_segment_bounds_span_to_trailing_sentence_only() -> None:
+    # gr450339: a cite several sentences into a paragraph grounds only the
+    # sentence immediately before it — an earlier, unrelated definitional
+    # sentence in the same marker-to-marker run must never reach
+    # extract_claim (the over-reach that minted fi449493 off the wrong
+    # sentence in dr173020).
+    text = (
+        "Carbon nanobuds consist of a strained seam. "
+        "These structures are the subject of this review. "
+        "Their properties are conventionally adjusted by doping [pc1]."
+    )
+    groups = segment_cite_groups(text)
+    assert len(groups) == 1
+    assert groups[0].handles == ["pc1"]
+    assert groups[0].span_text == (
+        "Their properties are conventionally adjusted by doping"
+    )
+    assert "strained seam" not in groups[0].span_text
+
+
+def test_segment_bounds_pulls_in_prior_sentence_for_short_fragment() -> None:
+    # A trailing sentence under ~6 words reads as a dangling fragment (no
+    # subject on its own) — the sentence before it is pulled in too, so
+    # extract_claim still sees a complete clause.
+    text = "Carbon nanobuds consist of a strained seam. This works. Doping helps [pc2]."
+    groups = segment_cite_groups(text)
+    assert len(groups) == 1
+    assert groups[0].span_text == "This works. Doping helps"
+    assert "strained seam" not in groups[0].span_text
+
+
 def test_segment_empty_when_no_pc_cites() -> None:
     assert segment_cite_groups("All converted [fi1] and [fi2].") == []
 
@@ -273,6 +304,32 @@ def _seed_draft_para(
             text=text,
             at={"after": "¶" + title_handle},
         )
+    order = hub.live_store.drafts.reading_order(ref.id)
+    return int(order[-1].chunk_id)
+
+
+def _seed_draft_figure(
+    draft: DraftHandler,
+    hub: Hub,
+    caption: str,
+    *,
+    draft_id: str = "nt",
+) -> int:
+    """Seed a one-figure draft ``draft_id`` (default ``nt``) whose caption is
+    ``caption``, ``chunk_kind='figure'``; return its body chunk_id. No
+    ``image=``/``render=`` — the plain caption-only figure path
+    (:meth:`DraftHandler.put`'s general add-a-chunk branch)."""
+    proj = _proj(hub)
+    draft.put(id=draft_id, title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id=draft_id)
+    assert ref is not None
+    title_handle = hub.live_store.drafts.reading_order(ref.id)[0].handle
+    draft.put(
+        id=draft_id,
+        chunk_kind="figure",
+        text=caption,
+        at={"after": "¶" + title_handle},
+    )
     order = hub.live_store.drafts.reading_order(ref.id)
     return int(order[-1].chunk_id)
 
@@ -1319,6 +1376,104 @@ def test_apply_reground_nomatch_single_leaves_pa(draft: DraftHandler, hub: Hub) 
     assert result.plans[0].action == "reground-nomatch"
     assert result.rewritten_text is None
     assert _links_count(hub.live_store) == links_before
+
+
+# ── figure caption provenance pointers are never claims (gripe 450329) ────
+
+
+@pytest.mark.parametrize(
+    "caption_tail",
+    [
+        "Reproduced from",
+        "Adapted from",
+        "Data from",
+        "reproduced from",  # case-insensitive
+    ],
+)
+def test_apply_figure_pointer_caption_is_no_claim_never_extracts(
+    draft: DraftHandler, hub: Hub, caption_tail: str
+) -> None:
+    # A figure caption's trailing image-reuse trail is provenance, not a
+    # claim — regardless of exact phrasing, it must be forced no-claim
+    # BEFORE extract_claim ever runs (extract_fn=_never_called asserts
+    # that). Mirrors dr173020's 6-of-10 inconsistent conversions.
+    _, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_figure(
+        draft,
+        hub,
+        f"Panel (a) shows the nanotube ester linkage. {caption_tail} [{pc}].",
+    )
+    findings_before = _finding_count(hub.live_store)
+    links_before = _links_count(hub.live_store)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_never_called,  # never reached — forced no-claim first
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    assert result.plans[0].action == "no-claim"
+    assert result.rewritten_text is None  # prose left as [pc…]
+    assert _finding_count(hub.live_store) == findings_before  # no hub minted
+    assert _links_count(hub.live_store) == links_before  # no evidence edge
+
+
+def test_apply_figure_pointer_caption_pa_arm_also_no_claim(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The same forced-skip applies to a [pa] pointer, and short-circuits
+    # BEFORE the [pa] arm's own routing (stub-fetch-first / reground) would
+    # otherwise fire — locate_fn is never called either.
+    _, pa = _fetched_pa(hub.live_store)
+    dc = _seed_draft_figure(
+        draft, hub, f"Panel (b) depicts the device. Adapted from [{pa}]."
+    )
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_never_called,  # never reached — forced no-claim first
+    )
+
+    assert result.plans[0].action == "no-claim"
+    assert result.rewritten_text is None
+
+
+def test_apply_non_figure_chunk_with_reproduced_from_still_extracts(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # The pointer-idiom skip is scoped to chunk_kind='figure' — ordinary
+    # body prose that happens to say "reproduced from" (e.g. describing a
+    # reproduction method) is unaffected and still routes through
+    # extract_claim normally.
+    _, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"The sample was reproduced from [{pc}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("The sample was reproduced from."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    assert result.plans[0].action == "new"
+    assert result.rewritten_text is not None
 
 
 def test_reground_then_promote_yields_chunk_grounded_hub(

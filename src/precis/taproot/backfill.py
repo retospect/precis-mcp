@@ -88,6 +88,7 @@ from precis.taproot.canon import (
 from precis.taproot.grounding import has_grounding_prose
 from precis.utils.draft_markup import strip_markers
 from precis.utils.mentions import DRAFT_MARKUP_PATTERN
+from precis.utils.sentences import split_sentences
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -116,6 +117,21 @@ _PA_HANDLE_RE = re.compile(r"^pa\d+$")
 #: Leading whitespace + a prior sentence's trailing terminator, trimmed off a
 #: grounded span so extract_claim reads the claim, not ". "/", " residue.
 _LEADING_PUNCT_RE = re.compile(r"^[\s.,;:!?)—–-]+")
+
+#: Below this word count a trailing sentence reads as a dangling fragment
+#: ("Doping helps." / a transition clause) rather than the claim itself —
+#: the sentence before it is pulled in too, so :func:`_bound_to_trailing_sentences`
+#: never hands ``extract_claim`` a subject-less clause.
+_FRAGMENT_WORD_MIN = 6
+
+_WORD_RE = re.compile(r"\w+")
+
+#: A figure caption's trailing image-reuse pointer — "Reproduced from",
+#: "Adapted from", "Data from" — right before the cite marker it grounds
+#: (gripe 450329). Provenance, not a claim about the world.
+_FIGURE_POINTER_RE = re.compile(
+    r"\b(?:reproduced|adapted|data)\s+from\s*$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -391,6 +407,36 @@ def _iter_bare_cites(text: str) -> list[PcCite]:
     return out
 
 
+def _bound_to_trailing_sentences(span: str) -> str:
+    """Bound ``span`` to the sentence(s) immediately preceding the cite
+    marker it grounds (gripe 450339) — never the whole marker-to-marker
+    prose run. A citation landing several sentences into a paragraph must
+    not pull in an unrelated earlier sentence just because it shares the
+    span; a multi-sentence run collapses to its **last** sentence, plus the
+    one before it when that last sentence is a short fragment (under
+    :data:`_FRAGMENT_WORD_MIN` words) that would otherwise reach
+    ``extract_claim`` with no subject.
+
+    A span with 0-1 sentences is returned unchanged (nothing to bound —
+    covers the empty-span no-claim case and the already-single-sentence
+    common case).
+    """
+    sentences = split_sentences(span)
+    if len(sentences) <= 1:
+        return span
+    start = sentences[-1].char_offset
+    if len(_WORD_RE.findall(sentences[-1].text)) < _FRAGMENT_WORD_MIN:
+        start = sentences[-2].char_offset
+    return span[start:].strip()
+
+
+def _is_figure_pointer_span(span_text: str) -> bool:
+    """True iff ``span_text`` ends in a figure's provenance-pointer idiom
+    ("Reproduced from"/"Adapted from"/"Data from") right before the cite
+    marker — an image-reuse trail, not a claim (gripe 450329)."""
+    return bool(_FIGURE_POINTER_RE.search(span_text.rstrip()))
+
+
 def segment_cite_groups(text: str) -> list[CiteGroup]:
     """Partition ``text`` into grounded cite-groups.
 
@@ -406,6 +452,11 @@ def segment_cite_groups(text: str) -> list[CiteGroup]:
     contiguity**, so an anchor right after one starts its own group. A
     **kind switch** breaks contiguity the same way — a whole-paper cite
     and a passage cite are always routed to separate groups.
+
+    Each group's ``span_text`` is further bounded to its trailing
+    sentence(s) via :func:`_bound_to_trailing_sentences` — a multi-sentence
+    prose run since the previous marker never hands ``extract_claim`` an
+    earlier, unrelated sentence just because a cite happens to land after it.
     """
     # All markers (any kind) give the span boundaries; only bare pc/pa cites
     # are anchors. Walk markers in order; an anchor folds into the current
@@ -429,8 +480,10 @@ def segment_cite_groups(text: str) -> list[CiteGroup]:
         cite = cite_by_start[start]
         # The prose since the previous marker, minus the previous sentence's
         # trailing terminator (a leading ". " / ", " belongs to that sentence,
-        # not this claim) — cleaner input for extract_claim.
+        # not this claim), then bounded to the trailing sentence(s) this cite
+        # actually grounds — cleaner input for extract_claim.
         span = _LEADING_PUNCT_RE.sub("", strip_markers(text[prev_end:start]).strip())
+        span = _bound_to_trailing_sentences(span)
         if not span and prev_kind == cite.kind and groups:
             # Unbroken same-kind run (only whitespace since the last same-kind
             # cite): same grounded span, another supporting paper.
@@ -445,15 +498,18 @@ def segment_cite_groups(text: str) -> list[CiteGroup]:
 # ── chunk read ───────────────────────────────────────────────────────────
 
 
-def _read_draft_chunk(store: Store, chunk_id: int) -> tuple[str, int]:
-    """``(text, draft_ref_id)`` for a live draft body chunk. Read-only.
+def _read_draft_chunk(store: Store, chunk_id: int) -> tuple[str, int, str]:
+    """``(text, draft_ref_id, chunk_kind)`` for a live draft body chunk.
+    Read-only. ``chunk_kind`` (e.g. ``"paragraph"``/``"figure"``) lets the
+    planner special-case a figure caption's provenance pointer (gripe
+    450329).
 
     Raises:
         BadInput: no such body chunk, or its owning ref isn't a live draft.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT c.text, c.ref_id, r.kind, r.retired_at "
+            "SELECT c.text, c.ref_id, c.chunk_kind, r.kind, r.retired_at "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
             "WHERE c.chunk_id = %s AND c.ord >= 0 AND c.retired_at IS NULL",
             (chunk_id,),
@@ -463,13 +519,13 @@ def _read_draft_chunk(store: Store, chunk_id: int) -> tuple[str, int]:
             f"no live draft body chunk with chunk_id={chunk_id}",
             next="pass a dc<id> handle for a live draft chunk",
         )
-    text, ref_id, kind, retired_at = row
+    text, ref_id, chunk_kind, kind, retired_at = row
     if kind != "draft" or retired_at is not None:
         raise BadInput(
             f"chunk_id={chunk_id} belongs to a {kind!r} ref (ref_id={ref_id}), "
             "not a live draft",
         )
-    return str(text), int(ref_id)
+    return str(text), int(ref_id), str(chunk_kind)
 
 
 # ── planning (read-only, the dry-run core) ─────────────────────────────────
@@ -659,6 +715,7 @@ def _plan_group(
     merge_confirm_fn: MergeConfirmFn,
     locate_fn: LocateFn = _default_locate,
     ref_level: bool = False,
+    chunk_kind: str | None = None,
 ) -> GroupPlan:
     """Resolve → route for ONE cite-group (read-only).
 
@@ -667,7 +724,10 @@ def _plan_group(
     later group's ``block`` ANN sees hubs earlier groups in the same chunk
     just minted (intra-chunk convergence). A ``pc`` group runs the cascade
     directly; a ``pa`` group routes through :func:`_plan_pa_group`
-    (stub-skip / re-ground / ref-level promote).
+    (stub-skip / re-ground / ref-level promote). ``chunk_kind == "figure"``
+    with a pointer-only span (gripe 450329) short-circuits to a no-claim
+    plan before either arm runs — ``extract_fn``/``locate_fn`` are never
+    called for it.
     """
     from precis.taproot.authoring import resolve_paper_ref_id
 
@@ -686,6 +746,18 @@ def _plan_group(
             group=group,
             action="unresolved",
             note=f"no handle resolved to a paper: {unresolved}",
+        )
+
+    if chunk_kind == "figure" and _is_figure_pointer_span(group.span_text):
+        # A caption's image-reuse trail ("Reproduced from"/"Adapted from"/
+        # "Data from" + [pc/pa<id>]) is provenance, not a claim about the
+        # world — forced no-claim, mechanically, before extract_fn (or a
+        # [pa] group's locate_fn) ever sees it.
+        return GroupPlan(
+            group=group,
+            action="no-claim",
+            supporters=supporters,
+            note="figure caption provenance pointer, not a claim — skipped",
         )
 
     if group.kind == "pa":
@@ -781,7 +853,7 @@ def plan_chunk(
     inherent, since neither convergence nor the grounding passage can be
     known without the ANN + judge/locate.
     """
-    text, draft_ref_id = _read_draft_chunk(store, chunk_id)
+    text, draft_ref_id, chunk_kind = _read_draft_chunk(store, chunk_id)
     plans = [
         _plan_group(
             store,
@@ -793,6 +865,7 @@ def plan_chunk(
             judge_fn=judge_fn,
             merge_confirm_fn=merge_confirm_fn,
             locate_fn=locate_fn,
+            chunk_kind=chunk_kind,
         )
         for group in segment_cite_groups(text)
     ]
@@ -942,7 +1015,7 @@ def apply_chunk(
     """
     from precis.taproot.hub import _DEFAULT_ROLE, apply_extraction, attach_evidence
 
-    text, draft_ref_id = _read_draft_chunk(store, chunk_id)
+    text, draft_ref_id, chunk_kind = _read_draft_chunk(store, chunk_id)
 
     def _todo_fn(claim: CanonicalClaim, placement: Placement) -> None:
         _file_review_todo(store, claim, placement, chunk_id=chunk_id, set_by=set_by)
@@ -979,6 +1052,7 @@ def apply_chunk(
             judge_fn=judge_fn,
             merge_confirm_fn=merge_confirm_fn,
             locate_fn=locate_fn,
+            chunk_kind=chunk_kind,
         )
         plans.append(plan)
         if plan.action == "reground":
