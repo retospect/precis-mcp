@@ -274,7 +274,7 @@ if [[ "$IMPACTED" == "1" ]]; then
     # so the raw exit code stops meaning "tests failed" (gr450298, gr449802).
     # Capture the run to a file (still streamed live via tee) so
     # testmon-exit-guard.py can tell a real failure from testmon's own crash.
-    TESTMON_LOG="$(mktemp "${TMPDIR:-/tmp}/precis-test-testmon.XXXXXX.log")"
+    TESTMON_LOG="$(mktemp "${TMPDIR:-/tmp}/precis-test-testmon.XXXXXX")"
 fi
 
 # Fast mode: deselect the whole DB suite (auto-applied `db` marker) AND the
