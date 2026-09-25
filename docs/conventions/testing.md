@@ -231,3 +231,39 @@ it in the fixing commit's subject (`fix(x): … caught by test_y`) or the
 test's docstring. Over months `git log --grep 'caught by'` becomes the
 ground-truth map of which tests earn their runtime — no separate tracker to
 maintain and rot.
+
+## Characterization budgets — assert what you measured, not what you hoped
+
+For anything discretisation-dependent (mesh quality, solver iteration
+counts, numerical residuals), the useful assertion is the number you
+actually got plus headroom, not the number you wish were true. A test
+asserting an aspiration fails on arrival and gets weakened until it
+passes, which leaves a test that no longer means anything; a test
+asserting measured behaviour with a stated budget fails only on *drift*,
+which is the event worth knowing about.
+
+Write the measured value into the message, so a future reader can tell
+the budget from the observation:
+
+```python
+budget = 0.10 if n % 2 else 0.55       # measured: odd 0-5.6%, even 18-49%
+assert sliver_frac < budget, (
+    f"{name} n={n}: {sliver_frac:.1%} near-degenerate -- budget {budget:.0%}. "
+    "A sharp rise means the sampling tie-break or wrap indexing regressed."
+)
+```
+
+Two rules that fall out of it:
+
+- **Never `== 0.0` on a computed float.** Enforced for the numeric suites
+  by `tests/test_no_float_equality_in_numeric_tests.py`. Slice 1 of
+  `precis_surface` shipped a degeneracy test asserting `area == 0.0`
+  that passed vacuously against triangles of area 9e-23 — twenty orders
+  of magnitude below the median, and never bit-exactly zero.
+- **Know which of your invariants are combinatorial.** They hold
+  regardless of the geometry and therefore cannot detect a geometry bug.
+  The angle-defect total of a closed triangle mesh is `2*pi*chi` for
+  *any* vertex positions, so it stayed correct to 1e-13 across a bug that
+  made every per-vertex defect wrong by three orders of magnitude. An
+  invariant that cannot fail is not a check; pair it with one that reads
+  the distribution.

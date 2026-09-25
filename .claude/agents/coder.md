@@ -53,6 +53,14 @@ guess. Those decisions belong on Opus.
 - What you changed, as a short list of `file — what/why`.
 - The verification you ran and its result (`scripts/test --impacted` → pass, or
   the failing test ids if you couldn't get it green).
+- **Numbers, with the command that produced them — never a bare verdict.**
+  "0 degenerate triangles" is unreported unless you show the measurement and
+  the threshold it used; a claim of zero is the one most likely to be an
+  artifact of asking the wrong question (an `== 0.0` test against values that
+  are never bit-exactly zero passes vacuously). Report a count and how you
+  counted, a residual and its tolerance, a fraction and its denominator. If
+  a quantity is supposed to be invariant, say what it was before and after,
+  not that it "held".
 - Any decision you deferred back to the caller, phrased as a specific question.
 
 ## Filing a gripe
