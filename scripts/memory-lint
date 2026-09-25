@@ -11,9 +11,11 @@
 #
 # Checks (all advisory — always exits 0; for `/whatneedsdoing`, not a gate):
 #   1. broken index links + unindexed topic files.
-#   2. landed-thread scan: a bullet under `## Threads` whose every cited commit
-#      is in main + no open-work words → shipped; verify + delete (the auto
-#      diagram-catch).
+#   2. landed-thread scan: a bullet whose every cited commit is in main + no
+#      open-work words → shipped; verify + delete (the auto diagram-catch).
+#      Runs over every linked topic file, not just those grouped under
+#      `## Threads` — the live index is a flat list, and a missing/empty
+#      `## Threads` section is itself flagged rather than silently no-op'd.
 #   3. MEMORY.md over byte budget.
 #   4. reconsolidation cadence (once/day).
 #   5. (--currency only) per-claim currency ledger — treat each memory as a set
@@ -51,10 +53,13 @@ fi
 INDEX="$MEMDIR/MEMORY.md"
 problems=0
 
-# 1a. broken links: [text](file.md) whose target is absent
+# 1a. broken links: [text](file.md) whose target is absent. The char class
+# allows a hyphen — every real topic file is kebab-case
+# (design-workbench-state.md), and without it this never matched a real
+# filename at all (gr450546, same defect as check 2's link extraction below).
 while IFS= read -r f; do
     [[ -z "$f" || -f "$MEMDIR/$f" ]] || { echo "  broken link → $f"; problems=$((problems+1)); }
-done < <(grep -hoE '\(([a-z0-9_]+)\.md\)' "$INDEX" 2>/dev/null | tr -d '()' | sort -u)
+done < <(grep -hoE '\(([a-z0-9_-]+)\.md\)' "$INDEX" 2>/dev/null | tr -d '()' | sort -u)
 
 # 1b. unindexed topic files (referenced by neither a (file.md) link nor a [[slug]])
 for tf in "$MEMDIR"/*.md; do
@@ -64,10 +69,25 @@ for tf in "$MEMDIR"/*.md; do
         || { echo "  unindexed → $b (index it, or if landed delete it — git log is the record)"; problems=$((problems+1)); }
 done
 
-# 2. landed-thread scan over the files listed under the `## Threads` section
+# 2. landed-thread scan. The `## Threads` section is where the oracle below
+# is meant to look, but the live index is a flat bullet list (no `##`
+# headings) — a silently-empty slice used to make this whole check a no-op
+# (memory-lint-threads-scan-dead.md). Two fixes: (a) an empty/missing
+# `## Threads` slice is now its own FINDING, not a clean pass; (b) the scan
+# itself runs over every linked topic file in the index regardless of
+# section — headings, where they exist, only affect reading order, so the
+# landed-or-not oracle applies uniformly whether or not the file is grouped.
+# The link-extraction pattern allows a hyphen in the filename class: every
+# real topic file is kebab-case (design-workbench-state.md), so without it
+# the "widened" scan still matched nothing on the live index — same failure
+# mode, one level down.
 open_re='unshipped|not deployed|NOT shipped|deferred|remain|residual|pending|blocked|dark|NEXT|TODO|WIP|design-only|proposal|roadmap|backlog'
-threads=$(awk '/^## Threads/{f=1;next} /^## /{f=0} f' "$INDEX" 2>/dev/null \
-    | grep -oE '\([a-z0-9_]+\.md\)' | tr -d '()' || true)
+threads_slice=$(awk '/^## Threads/{f=1;next} /^## /{f=0} f' "$INDEX" 2>/dev/null || true)
+if [[ -z "${threads_slice//[[:space:]]/}" ]]; then
+    echo "  MEMORY.md has no \`## Threads\` heading — landed-thread scan is disabled"
+    problems=$((problems+1))
+fi
+threads=$(grep -oE '\([a-z0-9_-]+\.md\)' "$INDEX" 2>/dev/null | tr -d '()' | sort -u || true)
 while IFS= read -r b; do
     [[ -z "$b" ]] && continue
     tf="$MEMDIR/$b"; [[ -f "$tf" ]] || continue
