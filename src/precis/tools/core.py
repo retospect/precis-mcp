@@ -1049,6 +1049,16 @@ def put(
     executor: str | None = None,
     params: dict[str, Any] | None = None,
     idem_key: str | None = None,
+    # job resource-slot reservation (see precis-job-help): explicit
+    # {resource: units} tokens (e.g. {'gpu': 1}) stamped onto
+    # meta.requires, held from claim to terminal — the mechanism that
+    # serializes GPU-bound jobs one-at-a-time per host. Declared at the
+    # verb level (the gr262482 pattern) so strict-schema MCP clients don't
+    # strip it — JobHandler.put has accepted requires= since 47671907, but
+    # it never reached the schema nor the dispatch payload, so an
+    # MCP-dispatched GPU job couldn't reserve its slot and collided with
+    # campaign-dispatched siblings on the same host.
+    requires: dict[str, int] | None = None,
     # job parent (see precis-job-help): the ref this job hangs off
     # — a parent todo for the canonical intent→compute path, or the subject
     # artifact (a draft/structure ref) for a derived-compute job. Declared at
@@ -1273,6 +1283,7 @@ def put(
             "executor": executor,
             "params": params,
             "idem_key": idem_key,
+            "requires": requires,
             "parent_id": parent_id,
             "prio": prio,
             "model": model,

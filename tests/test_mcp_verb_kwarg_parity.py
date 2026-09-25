@@ -119,7 +119,9 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         ("mermaid", "put", "viewbox"),
         ("mermaid", "put", "vocab"),
         # -- put: job submission gating -----------------------------------
-        ("job", "put", "requires"),
+        # requires= WIRED THROUGH (docs/backlog/job-put-requires-passthrough.md):
+        # tools/core.py::put now declares + forwards it (the handler has
+        # accepted it since 47671907).
         ("job", "put", "select"),
         # -- put: llm catalog mint (the whole variant-precise surface) ---
         ("llm", "put", "capability"),

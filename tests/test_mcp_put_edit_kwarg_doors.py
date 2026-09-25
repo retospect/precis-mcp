@@ -715,3 +715,43 @@ def test_command_profile_put_structure_text_as_coerced_dict_funnels_through(
     assert "created" in body
     assert "Pd2" in body and "aPd1" in body
     assert store.get_ref(kind="structure", id="pd_pair_command_profile") is not None
+
+
+# ---------------------------------------------------------------------------
+# docs/backlog/job-put-requires-passthrough.md: put(kind='job', requires=…)
+# must reach JobHandler.put over the real MCP door — the handler has
+# accepted meta.requires since 47671907, but tools/core.py::put never
+# declared or forwarded it, so a strict-schema MCP client stripped it
+# before the handler saw it (the gr262482 parity pattern parent_id=/prio=
+# were both fixed for).
+# ---------------------------------------------------------------------------
+
+
+def test_put_job_requires_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``put(kind='job', ..., requires={'gpu': 1})`` through the real MCP
+    callable lands on ``meta.requires`` — the resource-slot reservation
+    token the worker holds from claim to terminal — not silently dropped."""
+    todo_out = tools_core.put(kind="todo", text="mint a GPU-bound job")
+    assert not _is_error(todo_out), _body(todo_out)
+    todo_id = store.list_refs(kind="todo", limit=1)[0].id
+
+    out = tools_core.put(
+        kind="job",
+        job_type="plan_tick",
+        executor="claude_inproc",
+        parent_id=todo_id,
+        params={"model": "sonnet"},
+        requires={"gpu": 1},
+    )
+
+    assert not _is_error(out), _body(out)
+    body = _body(out)
+    m = re.search(r"created job id=(\d+)", body)
+    assert m is not None, body
+    job_id = int(m.group(1))
+    ref = store.get_ref(kind="job", id=job_id)
+    assert ref is not None
+    assert ref.meta.get("requires") == {"gpu": 1}
