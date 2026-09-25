@@ -27,10 +27,12 @@ from typing import Any
 import pytest
 from mcp.types import CallToolResult
 
+from precis.handlers._finding_hypothesis import META_PROPOSED_PAYLOAD
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.store.types import ChunkInsert
 from precis.tools import core as tools_core
+from tests.workers._helpers import seed_chunk, seed_ref
 
 
 @pytest.fixture
@@ -167,6 +169,53 @@ def test_edit_paper_doi_empty_string_clears_over_the_mcp_door(
     assert "doi cleared" in out
     identifiers = store.identifiers_for_refs([ref_id]).get(ref_id, {})
     assert "doi" not in identifiers
+
+
+def test_edit_finding_testable_by_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``edit(kind='finding', testable_by=…)`` through the real MCP
+    callable sharpens a live hypothesis's falsification terms (gr263258)
+    — not a silent ``**_kw`` drop of an undeclared kwarg."""
+    _, ch1 = _paper_with_chunk(store, "First hypothesis source")
+    _, ch2 = _paper_with_chunk(store, "Second hypothesis source")
+
+    mint_out = tools_core.put(
+        kind="finding",
+        title="Nanoindentation measures a modulus above 9 GPa in nanobud films.",
+        hypothesis=True,
+        motivation="Both papers attribute stiffness to the covalent junction; "
+        "the transfer to films is untested.",
+        testable_by="nanoindentation under matched tip and load",
+        motivated_by=[f"pc{ch1}", f"pc{ch2}"],
+        llm_models=["test-model"],
+    )
+    m = re.search(r"fi(\d+) minted", mint_out)
+    assert m is not None, mint_out
+    hub_ref_id = int(m.group(1))
+
+    out = tools_core.edit(
+        kind="finding",
+        id=hub_ref_id,
+        testable_by="site-resolved AFM force spectroscopy, not ensemble SAXS",
+    )
+
+    assert not _is_error(out), _body(out)
+    assert f"fi{hub_ref_id}" in _body(out)
+    live = store.fetch_refs_by_ids([hub_ref_id])[hub_ref_id]
+
+    payload = live.meta[META_PROPOSED_PAYLOAD]
+    assert payload["testable_by"].startswith("site-resolved AFM")
+    assert len(live.meta["testable_by_history"]) == 1
+
+
+def _paper_with_chunk(store: Store, title: str) -> tuple[int, int]:
+    """A fresh paper ref plus one body chunk, for use as a hypothesis
+    motivator (mirrors ``test_finding_hypothesis_put.py``'s helper)."""
+    ref_id = seed_ref(store, title=title, kind="paper")
+    chunk_id = seed_chunk(store, ref_id=ref_id, text=f"A passage from {title}.")
+    return ref_id, chunk_id
 
 
 def test_edit_structure_ops_reach_the_handler_over_the_mcp_door(

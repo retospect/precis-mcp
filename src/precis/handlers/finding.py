@@ -1400,21 +1400,26 @@ class FindingHandler(NumericRefHandler):
         title: str | None = None,
         unacquirable_note: str | None = None,
         unacquirable_mode: str | None = None,
+        testable_by: str | None = None,
+        motivation: str | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
-        retitle a ``TAPROOT:claim`` hub, or record an author's
-        unacquirable-source override. Mutually exclusive kwargs — pass
-        exactly one; ``dry_run`` is rejected outright (neither op has a
-        faithful preview). See
+        retitle a ``TAPROOT:claim`` hub, record an author's
+        unacquirable-source override, or sharpen a live hypothesis's
+        falsification terms (``testable_by=``/``motivation=``). Mutually
+        exclusive kwargs — pass exactly one (``testable_by=``/``motivation=``
+        may be combined with each other, not with the rest); ``dry_run`` is
+        rejected outright (no op has a faithful preview). See
         :func:`precis.handlers._finding_edit.edit` for the full contract
         (pick_candidate promotes a chase candidate + flips status back to
         tracing; title retitles a TAPROOT:claim hub via
         ``taproot/hub.py::refine_claim_sentence``; unacquirable_note writes
-        the trust-surfaces override) — the state machine lives there since
-        it only ever touches ``self.store``/``self.kind``, not any other
-        handler state.
+        the trust-surfaces override; testable_by=/motivation= route through
+        ``_finding_hypothesis.update_hypothesis``) — the state machine lives
+        there since it only ever touches ``self.store``/``self.kind``, not
+        any other handler state.
         """
         return _finding_edit.edit(
             self.store,
@@ -1424,6 +1429,8 @@ class FindingHandler(NumericRefHandler):
             title=title,
             unacquirable_note=unacquirable_note,
             unacquirable_mode=unacquirable_mode,
+            testable_by=testable_by,
+            motivation=motivation,
             dry_run=dry_run,
         )
 

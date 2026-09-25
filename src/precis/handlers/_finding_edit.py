@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
+from precis.handlers import _finding_hypothesis
 from precis.handlers._finding_common import fetch_ref_any_kind
 from precis.response import Response
 from precis.store.types import Tag
@@ -34,12 +35,16 @@ def edit(
     title: str | None = None,
     unacquirable_note: str | None = None,
     unacquirable_mode: str | None = None,
+    testable_by: str | None = None,
+    motivation: str | None = None,
     dry_run: bool | str | None = None,
 ) -> Response:
     """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
-    retitle a ``TAPROOT:claim`` hub, or record an author's
-    unacquirable-source override. Mutually exclusive kwargs — pass
-    exactly one.
+    retitle a ``TAPROOT:claim`` hub, record an author's
+    unacquirable-source override, or sharpen a live hypothesis's
+    falsification terms. Mutually exclusive kwargs — pass exactly one
+    (``testable_by=``/``motivation=`` are the one exception: they may be
+    combined in a single call, since both sharpen the same conjecture).
 
     **Pick a candidate.** When the chase reaches a chunk citing
     multiple references (e.g. ``[12,13]``) and can't disambiguate
@@ -103,6 +108,35 @@ def edit(
     channel exists yet for a handler to read one from). Idempotent —
     re-setting just overwrites the prior ``mode``/``by``/``at``/``note``.
 
+    **Sharpen a hypothesis.** A ``hypothesis`` finding
+    (``meta.artifact_type == 'hypothesis'``, see
+    :mod:`precis.handlers._finding_hypothesis`) freezes its
+    ``testable_by``/``motivation`` prose at mint — but a hypothesis is
+    meant to sit in the corpus accumulating for/against evidence, and the
+    discriminating experiment that best separates it from vibes moves
+    with the literature. This door lets it:
+
+        edit(kind='finding', id='fi<N>', testable_by='<sharpened experiment>')
+        edit(kind='finding', id='fi<N>', motivation='<sharpened leap>')
+        edit(kind='finding', id='fi<N>', testable_by='...', motivation='...')
+
+    Only valid on a hypothesis — a ``BadInput`` on any other finding,
+    mirroring how ``title=`` rejects a non-hub. Re-runs the same
+    non-empty mandatory-field check :func:`_finding_hypothesis.
+    put_hypothesis` runs at mint, patches ``meta.proposed_payload``, and
+    appends the prior value to ``meta.testable_by_history`` /
+    ``meta.motivation_history`` (``{value, replaced_at}``) so a sharpened
+    discriminator is visibly distinct from the original conjecture.
+    Refused once the hub has left ``candidate`` in the nanopub publish
+    state machine — ``nanopub/mint.py::approve`` freezes ``testable_by``/
+    ``motivation`` into the review row's ``grounding`` the moment a human
+    reviews it (``state='reviewed'``), well before ``sign``, so an edit to
+    the still-live ``meta.proposed_payload`` past that point would either
+    silently diverge from what was reviewed or, once actually signed
+    (``state`` in ``'signed'``/``'anchored'``/``'published'``), from what
+    was cryptographically attested. Mint a fresh hypothesis and link it to
+    this one instead.
+
     No op here supports ``dry_run`` (see below).
     """
     given = [
@@ -114,14 +148,20 @@ def edit(
         )
         if value is not None
     ]
+    sharpening = testable_by is not None or motivation is not None
+    if sharpening:
+        given.append("testable_by/motivation")
     if len(given) > 1:
         raise BadInput(
             "edit(kind='finding') accepts exactly one of pick_candidate, "
-            f"title, or unacquirable_note — got {', '.join(given)}",
+            "title, unacquirable_note, or testable_by=/motivation= — got "
+            f"{', '.join(given)}",
             next=(
                 "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
                 "edit(kind='finding', id='fi<N>', title='<reworded claim>') / "
-                "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
+                "edit(kind='finding', id=<N>, unacquirable_note='<why>') / "
+                "edit(kind='finding', id='fi<N>', testable_by='<sharpened "
+                "experiment>')"
             ),
         )
     if unacquirable_mode is not None and unacquirable_note is None:
@@ -141,6 +181,27 @@ def edit(
                 next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
             )
         return _retitle_hub(store, id=id, title=title)
+    if sharpening:
+        if dry_run:
+            raise BadInput(
+                "edit(kind='finding', testable_by=…/motivation=…) does not "
+                "support dry_run — the sharpen has no preview; omit dry_run "
+                "to apply",
+                next="edit(kind='finding', id='fi<N>', testable_by='<experiment>')",
+            )
+        if id is None:
+            raise BadInput(
+                "edit(kind='finding', testable_by=…/motivation=…) requires "
+                "id=<hypothesis ref_id or fi<N> handle>",
+                next="edit(kind='finding', id='fi<N>', testable_by='<experiment>')",
+            )
+        return _sharpen_hypothesis(
+            store,
+            kind=kind,
+            raw_id=id,
+            testable_by=testable_by,
+            motivation=motivation,
+        )
     if dry_run:
         # Neither op has a faithful preview yet: pick_candidate rewrites
         # links + flips status; unacquirable_note writes an audit-trail
@@ -315,6 +376,63 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
             f"new: {result['new_title']}\n"
             f"pub_id: {result['pub_id']}{alias_note}"
         )
+    )
+
+
+def _sharpen_hypothesis(
+    store: Store,
+    *,
+    kind: str,
+    raw_id: int | str,
+    testable_by: str | None,
+    motivation: str | None,
+) -> Response:
+    """``edit(kind='finding', testable_by=…/motivation=…)`` — sharpen a
+    live hypothesis's falsification terms (gr263258).
+
+    ``id`` must resolve to a hypothesis hub
+    (``meta.artifact_type == 'hypothesis'``) — a ``BadInput`` on any
+    other finding, mirroring the ``title=`` non-hub rejection. Refused
+    once the hub's publish row has left ``candidate``: see the module
+    docstring's "Sharpen a hypothesis" section for why ``reviewed`` (not
+    just ``signed``) is already too late.
+    """
+    finding_ref_id = _resolve_finding_ref_id(store, kind=kind, raw_id=raw_id)
+    ref = store.fetch_refs_by_ids([finding_ref_id]).get(finding_ref_id)
+    if (
+        ref is None
+        or (ref.meta or {}).get(_finding_hypothesis.META_ARTIFACT_TYPE)
+        != _finding_hypothesis.ARTIFACT_HYPOTHESIS
+    ):
+        raise BadInput(
+            f"edit(kind='finding', testable_by=…/motivation=…) only "
+            f"sharpens a hypothesis — id={raw_id!r} does not resolve to one",
+            next=(
+                "an ordinary finding's claim has evidence behind it and no "
+                "testable_by/motivation fields to sharpen — mutate it via a "
+                "fresh put() instead"
+            ),
+        )
+    row_fn = getattr(store, "nanopub_publish_row", None)
+    row = row_fn(finding_ref_id) if row_fn is not None else None
+    if row is not None and row.state != "candidate":
+        raise BadInput(
+            f"fi{finding_ref_id}'s publish row {row.id} is {row.state!r}, "
+            "not candidate — testable_by/motivation already froze into the "
+            "reviewed grounding (or a signed artifact) and a live edit "
+            "would silently diverge from what was reviewed/signed",
+            next=(
+                "mint a fresh hypothesis with the sharpened terms "
+                "(put(kind='finding', hypothesis=True, ...)) and link it to "
+                "fi" + str(finding_ref_id) + " — a supersede, not an edit, "
+                "once the prior conjecture left candidate"
+            ),
+        )
+    return _finding_hypothesis.update_hypothesis(
+        store,
+        hub_ref_id=finding_ref_id,
+        testable_by=testable_by,
+        motivation=motivation,
     )
 
 

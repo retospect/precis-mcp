@@ -146,6 +146,13 @@ envelope so the human's approve form comes pre-filled. Confirm with
 `view='mint-preflight'`, which runs the full gates (not just the
 sentence) against what you parked.
 
+**Sharpening.** `motivation=`/`testable_by=` aren't frozen at mint: while
+the hub's publish row is still `candidate`, `edit(kind='finding',
+id='fi<N>', testable_by=…)` (and/or `motivation=…`) patches the parked
+envelope and keeps the prior wording in `meta.testable_by_history` /
+`meta.motivation_history`. Refused once a human has reviewed it
+(`state != 'candidate'`) — mint a fresh hypothesis instead.
+
 ## Mint gates (why a claim you drafted may not mint)
 
 **Admissible is not true.** Every gate below checks that a claim is

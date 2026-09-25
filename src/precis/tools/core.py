@@ -1384,6 +1384,14 @@ def edit(
     # established / multi_candidate finding. Declared at the verb level
     # so strict-schema MCP clients don't strip it (see precis-finding-help).
     pick_candidate: str | int | None = None,
+    # finding-specific (hypothesis only, gr263258): sharpen a live
+    # hypothesis's falsification terms — testable_by= the discriminating
+    # experiment, motivation= the inferential leap. Declared at the verb
+    # level (the pick_candidate/wants pattern) so strict-schema MCP
+    # clients don't strip them; put()'s motivation=/testable_by= (mint)
+    # already exist above — these are the same names, edit's sharpen door.
+    testable_by: str | None = None,
+    motivation: str | None = None,
     # draft (see precis-draft-help): reorder/reparent a chunk by intent,
     # move={before|after|into:'¶handle'} / {first|last:true}. No text.
     move: dict[str, Any] | None = None,
@@ -1556,6 +1564,8 @@ def edit(
         "allow_rename": allow_rename,
         "dry_run": dry_run,
         "pick_candidate": pick_candidate,
+        "testable_by": testable_by,
+        "motivation": motivation,
         "move": move,
         "base_sha": base_sha,
         "not_abbrev": not_abbrev,

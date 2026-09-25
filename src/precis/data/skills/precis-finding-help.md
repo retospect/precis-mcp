@@ -385,9 +385,14 @@ no resolvable inline citation. Mark it terminal with
 run `precis worker --only fetch`.
 
 **`edit(kind='finding', ...)` accepts exactly one of** `pick_candidate=`
-(above) | `title=` | `unacquirable_note=` — passing more than one errors.
-`title=` retitles a `TAPROOT:claim` hub in place (rejects a plain finding);
-see `precis-taproot-mint-help`'s "Reword a hub in place". `unacquirable_note=`
+(above) | `title=` | `unacquirable_note=` | `testable_by=`/`motivation=`
+— passing more than one errors (`testable_by=`/`motivation=` may combine
+with each other). `title=` retitles a `TAPROOT:claim` hub in place
+(rejects a plain finding); see `precis-taproot-mint-help`'s "Reword a hub
+in place". `testable_by=`/`motivation=` sharpen a still-`candidate`
+hypothesis's falsification terms (rejected on any other finding, or once
+a human has reviewed it) — see `precis-nanopub-help`'s "Sharpening".
+`unacquirable_note=`
 records a **claim-level** declaration — an author assertion about THIS
 claim, never inherited from its source paper — that a print-only/
 undigitized source is legitimately citeable despite no digital copy being

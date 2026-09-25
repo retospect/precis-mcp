@@ -57,6 +57,7 @@ the human queue forever:
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from precis.errors import BadInput
@@ -391,6 +392,94 @@ def put_hypothesis(
     )
 
 
+def update_hypothesis(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    testable_by: str | None,
+    motivation: str | None,
+) -> Response:
+    """``edit(kind='finding', testable_by=…/motivation=…)``'s write path
+    (gr263258) — sharpen a still-``candidate`` hypothesis's falsification
+    terms.
+
+    Re-runs the same non-empty mandatory-field checks
+    :func:`put_hypothesis` runs at mint (a hypothesis is defined by its
+    falsifiability — a blank ``testable_by``/``motivation`` is as invalid
+    post-mint as it is at mint), patches ``meta.proposed_payload``, and
+    appends the prior value onto ``meta.testable_by_history`` /
+    ``meta.motivation_history`` (``{value, replaced_at}``) so a sharpened
+    discriminator stays visibly distinct from the original conjecture.
+    Callers (:mod:`precis.handlers._finding_edit`) are responsible for the
+    artifact-type gate and the publish-state refusal — this function
+    trusts both preconditions already hold."""
+    ref = store.fetch_refs_by_ids([hub_ref_id]).get(hub_ref_id)
+    if ref is None:
+        raise BadInput(f"no live finding with ref_id={hub_ref_id}")
+    meta = dict(ref.meta or {})
+    payload = dict(meta.get(META_PROPOSED_PAYLOAD) or {})
+
+    now = datetime.now(UTC).isoformat()
+    meta_patch: dict[str, Any] = {}
+    changed: list[str] = []
+
+    if testable_by is not None:
+        stripped = testable_by.strip()
+        if not stripped:
+            raise BadInput(
+                "a hypothesis needs testable_by= — the discriminating "
+                "experiment is what separates a conjecture from vibes.",
+                next=f"edit(kind='finding', id='fi{hub_ref_id}', testable_by='conductance "
+                "modulation under electrode displacement in junctions of …')",
+            )
+        prior = str(payload.get("testable_by") or "").strip()
+        if prior != stripped:
+            history = list(meta.get("testable_by_history") or [])
+            history.append({"value": prior, "replaced_at": now})
+            meta_patch["testable_by_history"] = history
+            payload["testable_by"] = stripped
+            changed.append("testable_by")
+
+    if motivation is not None:
+        stripped = motivation.strip()
+        if not stripped:
+            raise BadInput(
+                "a hypothesis needs motivation= prose naming the inferential leap.",
+                next=f"edit(kind='finding', id='fi{hub_ref_id}', motivation='Both systems "
+                "attribute X to the same mechanism; the transfer to Y is "
+                "untested.')",
+            )
+        prior = str(payload.get("motivation") or "").strip()
+        if prior != stripped:
+            history = list(meta.get("motivation_history") or [])
+            history.append({"value": prior, "replaced_at": now})
+            meta_patch["motivation_history"] = history
+            payload["motivation"] = stripped
+            changed.append("motivation")
+
+    handle = handle_registry.format_handle("finding", hub_ref_id)
+    if not changed:
+        return Response(
+            body=(
+                f"no change on hypothesis {handle} — the given value(s) "
+                "already match the live payload"
+            )
+        )
+
+    meta_patch[META_PROPOSED_PAYLOAD] = payload
+    store.update_ref(hub_ref_id, meta_patch=meta_patch)
+
+    return Response(
+        body=(
+            f"sharpened {handle}: {', '.join(changed)}\n"
+            f"prior value(s) preserved in "
+            f"meta.{'/meta.'.join(f'{f}_history' for f in changed)}\n"
+            f"check it before leaving it: get(kind='finding', id='{handle}', "
+            "view='mint-preflight')"
+        )
+    )
+
+
 def hypothesis_prose(store: Store, ref: Any) -> dict[str, str] | None:
     """The falsification prose — ``{"motivation": …, "testable_by": …}`` —
     for a hypothesis hub's already-fetched ``ref``. ``None`` unless ``ref``
@@ -481,4 +570,5 @@ __all__ = [
     "PROPOSED_TAG",
     "hypothesis_prose",
     "put_hypothesis",
+    "update_hypothesis",
 ]
