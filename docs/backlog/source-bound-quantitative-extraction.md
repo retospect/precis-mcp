@@ -26,18 +26,30 @@ ordinary tables. A script materializes the full record by slicing the snapshot.
 Measured over 20 papers, the binding encoding is 35% smaller than the pooled
 record it reproduces byte-for-byte, and 67% smaller than the fully-expanded
 form. Four fresh reader runs then tested whether a reader can actually work this
-way; three completed (the fourth stalled twice on infrastructure, unrelated to
-content — see Open questions). Across those three: **222 evidence spans, 100%
-expressed as anchors, zero fallbacks to character offsets, zero materialization
-errors.** One paper's reader wrote 15.3k tokens of bindings that materialized to
-46.2k of pooled record (3.0×) and 82.9k fully expanded (5.4×), because four
-table recipes produced 46 of its 66 results. The same paper extracted the old
+way. All four completed with **zero materialization errors**, producing 224
+results from 451 evidence spans, of which **97.6% are anchor ids and 11 (2.4%)
+are raw character offsets** — every one of those in the same paper, and every
+one of them a sub-sentence interval literal (`550–575`, `125~150`) that no
+anchor can address without cropping the value. That residue is not reader
+sloppiness; it is a missing anchor granularity, and it is item 5 below.
+
+Amplification from what the reader writes to the materialized record is 1.8–3.0×
+against the pooled form and 5.2–7.0× against the fully expanded one. The best
+case is the paper whose four table recipes produced 46 of its 66 results: 15.3k
+of bindings → 46.2k pooled → 82.9k expanded. That same paper extracted the old
 way produced 6 results and skipped its three tables — **which is a cost result,
 not a quality result.** Both runs declared themselves representative rather than
 exhaustive, they had different prompts and producers, and neither is a gold
 standard; what it shows is that recipes price tabular data low enough to record,
 not that the extraction got more correct. Nothing in this item measures accuracy
 (see Explicitly NOT in scope).
+
+Two behaviours worth keeping in the design: readers corrected the selector
+rather than trusting it (one recovered two blocks dropped with *zero* flags, one
+carrying the paper's basis for its central mechanistic claim), and one caught
+and repaired a wrong span of its own during self-verification. Both are load
+bearing — the map is a proposal, and the check loop is what makes a fallible
+proposal safe to start from.
 
 The pilot also surfaced defects that only appear once real binding documents
 exist, and those are what this item is mostly about. They are listed under
@@ -82,29 +94,56 @@ recipe at all. Inherit a condition set at group level, override per result, same
 mechanism as `defaults.results`.
 
 **4. Rank escalations; stop drowning the auditor.**
-426 escalations over three papers, of which 277 (65%) are `inferred_condition_basis`
+503 escalations over four papers, of which 312 (62%) are `inferred_condition_basis`
 almost all saying "Methods states the electrolyte, the result does not restate
 it" — ordinary paper structure, indistinguishable in the output from a genuinely
-shaky inference. Item 3 removes most of them structurally; the rest need a
-severity so a strong-model audit has an order to work in.
+shaky inference. A further 25 are a single matcher bug (item 7) and 11 are the
+unavoidable interval spans of item 5, so well over two thirds of what an auditor
+would read is noise. Item 3 removes most of it structurally; the rest needs a
+severity so a strong-model audit has an order to work in. A related blind spot:
+where a condition is *defined and applied in the same clause* ("below 200 °C"),
+its applicability evidence necessarily repeats its definition, and the
+`applicability_not_shown_for_this_result` check cannot tell that apart from
+genuinely unsupported applicability.
 
-**5. Recipe per-row / per-item field overrides.**
-A recipe fixes one field block per column, so cells that differ mechanically
-leak back to hand-writing: six `<1` upper-bound cells had to be lifted out of a
-table recipe purely to change `value_form`. Add per-row overrides, and let the
-materializer set `value_form: upper_bound` when a cell literal begins `<`.
-Related: a `listed` recipe cannot bind `9.6 ± 1.7`, because numeric anchors are
-single atoms — so recipes currently work on un-replicated data and fail on
-replicated data, which is backwards.
+**5. Sub-sentence anchor granularity, and recipe per-row overrides.**
+Two faces of one gap: the anchor vocabulary cannot address a fragment, so an
+exact interval literal (`550–575`, `125~150`, `80~400`) can only be bound with
+raw `[chunk, start, end]` offsets — which the `sub_sentence_span` check then
+flags. All 11 offset spans and all 11 such flags in the round are this, and none
+is avoidable without cropping the value. **The check currently penalises the only
+correct encoding.** Add a fragment anchor (a numeric-region span that can cover a
+range expression, or an explicit sub-sentence id) so intervals are anchorable.
+Then, on recipes: a recipe fixes one field block per column, so cells that differ
+mechanically leak back to hand-writing — six `<1` upper-bound cells had to be
+lifted out purely to change `value_form`. Add per-row overrides, and let the
+materializer set `value_form: upper_bound` when a cell literal begins `<`. A
+`listed` recipe also cannot bind `9.6 ± 1.7`, because numeric anchors are single
+atoms, so recipes work on un-replicated data and fail on replicated data, which
+is backwards. Finally, a table recipe binds one unit per column, so a table that
+carries its units in a *third column* materializes its results with
+`reported_unit: null`.
 
-**6. A `contradicts` relation.**
+**5b. `reported_value` is numeric-only, which silently drops categorical rows.**
+A spec table whose rows are "Pd", "γ-Al2O3, Ce0.5Zr0.5O2", "Cordierite" cannot
+produce results at all; one reader could only preserve them as prose inside an
+assertion's limitations, which is not queryable. Either admit a categorical
+value form or define where non-numeric sourced facts live — right now they are
+lost by construction, quietly.
+
+**6. A `contradicts` relation, and a way to say "stated but unattributed".**
 Nine intra-paper conflicts were found across two papers (150 vs 200 mg;
 `7381.1 ± 59.5` vs `± 594.7` for the same quantity; three incompatible
 definitions of "activity"). All had to be flattened into prose `gaps` with no
 link to the results they qualify. One reader also could not record that the
 authors *themselves* declare their electrochemical results non-reproducible —
 that is a source-stated reliability claim, not an uncertainty and not a gap in
-our reading.
+our reading. A third case: two activation energies (95 and 77.6 kJ/mol) are
+stated with no citation and no method, and the only available encoding is
+`not_established` on all three of evidence_mode / value_generation /
+source_attribution — which *understates* what is known, namely that the number
+is asserted by this paper and unattributed. "Unattributed assertion" is a
+distinct epistemic state from "we could not establish it".
 
 **7. Small verified bugs.** `expansion_directory` is built from a hardcoded path
 that ignores the map label (`bindings.py`). The sentence splitter breaks after
@@ -134,7 +173,12 @@ NOT MCP verbs.
   ontology, and any comparability engine are all separate and larger.
 - **OCR, supplements, figure digitisation, curve refits.** A table that is an
   undelimited character run (`L-Pd/rGO0.03055454.61`) stays `ocr_uncertainty`;
-  we do not infer column boundaries.
+  we do not infer column boundaries. Two of the four pilot papers hit this — a
+  collapsed header and a fully undelimited table — and in both the reader
+  correctly promoted nothing. Recipes only reach well-formed pipe tables, and
+  `table_shape` being non-null does not mean a table holds results: of eight
+  shaped chunks in one paper, one held results, three held designed setpoints
+  (bound as conditions), three were glossaries and one was OCR-broken.
 - **The information-gain research** in `paper-evidence-selection-fisher-rao.md`
   and prod todo td449041. Do not let this item quietly become that project.
 
@@ -152,8 +196,11 @@ NOT MCP verbs.
 4. Escalations carry a severity; a fixture where the only issue is "Methods
    states it, result does not restate it" ranks below one with a genuinely
    unsupported condition.
-5. A table recipe expands a column containing both `12.3` and `<1` into results
-   whose `value_form` differs, with no hand-written result.
+5. An interval literal (`550–575`) is bindable by anchor, materializes with the
+   literal intact, and does NOT raise `sub_sentence_span`.
+6. A table recipe expands a column containing both `12.3` and `<1` into results
+   whose `value_form` differs, with no hand-written result; a table carrying its
+   units in a separate column materializes with a non-null `reported_unit`.
 6. Two conflicting literals from one paper can be bound to each other as a
    first-class relation and survive materialization.
 7. `scripts/test` green; the three verified small bugs each have a regression
@@ -169,11 +216,17 @@ untracked directory and its data must never enter a shipping commit.
 
 ## Open questions / decisions log
 
-- **Does the 4th pilot paper change item 5?** The stalled paper (8 well-formed
-  tables, thermal catalysis, peaks at differing operating points) is the one that
-  most stresses recipe overrides and temperature-as-real-condition. Two runs
-  stalled on infrastructure before producing output; a third is running. Re-read
-  item 5 when it lands. Items 1–4 do not depend on it.
+- ~~**Does the 4th pilot paper change item 5?**~~ **Resolved — yes, it widened
+  it.** That paper (thermal catalysis, 8 shaped tables, peaks at differing
+  operating points) landed on the third attempt after two infrastructure stalls.
+  It contributed all 11 character-offset spans in the round, all of them exact
+  interval literals, which turned item 5 from "recipe ergonomics" into a missing
+  anchor granularity plus the finding that `sub_sentence_span` penalises the only
+  correct encoding. It also produced 5b (categorical rows), the units-in-a-third-
+  column case, and the "stated but unattributed" gap in item 6. It confirmed
+  item 2 from the other direction: it kept three real preparation temperatures
+  (preheat, premix tank, heating belt) in a condition set referenced by **no**
+  result — a deliberate orphan the format cannot mark as intentional.
 - **Is a chunk-level extraction a new kind, or a finding subtype?** Reusing the
   existing findings infrastructure is an invariant; whether the intermediate
   record needs its own kind is undecided and gates the migration question.
