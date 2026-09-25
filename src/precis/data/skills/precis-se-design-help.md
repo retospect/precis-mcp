@@ -87,8 +87,26 @@ Process DRC is unshipped: mode is intent, not yet checked.
 
 ## Worked example (in prod)
 
-`unicycle-mk2`: 29 blocks, 12 tension-only `axial` spokes at
-600 N verified as a self-stress state; the stability view correctly
-reports it **first-order mobile** — radially-laced wheels transmit no
-crank torque, which is the kind of non-obvious truth the checking views
-exist to surface. Read it with `view='tree'` then `view='stability'`.
+`unicycle-mk2` is the live 20-inch printable demo: 15 blocks, flat (no
+subassembly parents), wheel as one integral cylinder envelope — tire, rim,
+spokes and hub abstracted into a single block. Read it with `view='tree'`,
+then `view='stability'` to see what that abstraction costs you: the
+stability view reports **no axial members — stability analysis does not
+apply**, and warns that the loads on `saddle` and `wheel` sit outside the
+analysed subgraph, so they were not checked.
+
+That is the lesson, not a defect. The stability view models *pin-ended
+axial members only* — an integral wheel has none, so there is nothing for
+Maxwell/Calladine to count. Lacing the wheel instead (a hub, a rim, and
+`connect` members with `class: "axial"`, `compression_capacity: 0` and a
+declared `preload`/`free_length`/`rate` triple) is what makes the view
+informative — and what it then reports is non-obvious: a purely radially-
+laced wheel comes back **first-order mobile**, because radial spokes
+transmit no crank torque. An earlier laced revision of this design is
+where that showed up; it has since been retired, so re-derive it on your
+own design rather than expecting to load it.
+
+Caveat while modelling that: `rigid` connects are not in the equilibrium
+matrix (gr334788), so a rim built as a ring of rigid blocks contributes
+nothing — express the ring itself as axial members if you want the view to
+see it.
