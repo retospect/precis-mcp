@@ -252,12 +252,12 @@ def test_edit_todo_meta_rejected_loudly_not_swallowed(
     mounted_runtime: PrecisRuntime,
     store: Store,
 ) -> None:
-    """``edit(kind='todo', id=…, meta={…})`` must fail loudly — ``TodoHandler
-    .edit`` doesn't accept ``meta=`` at all (its meta is set via ``tag()``'s
-    allowlisted promotion instead), so before the fix this reached the
-    handler's ``**_kw`` catch-all and vanished with a bare "success" body
-    and no meta write (gr301897, symptom 2 — worse than the tag() TypeError
-    because nothing signalled the drop)."""
+    """``edit(kind='todo', id=…, meta={…})`` with a shape other than the one
+    parking move (``{'llm_tier': None}``, gr439934) must fail loudly naming
+    ``meta`` — before the fix this reached the handler's ``**_kw`` catch-all
+    and vanished with a bare "success" body and no meta write (gr301897,
+    symptom 2 — worse than the tag() TypeError because nothing signalled the
+    drop). Other meta mutations belong to ``tag()``'s allowlisted promotion."""
     tools_core.put(kind="todo", text="unblock the plan_tick crash loop")
     ref = store.list_refs(kind="todo", limit=1)[0]
 
@@ -270,6 +270,29 @@ def test_edit_todo_meta_rejected_loudly_not_swallowed(
     live = store.get_ref(kind="todo", id=ref.id)
     assert live is not None
     assert live.meta.get("llm_tier") != "opus"
+
+
+def test_edit_todo_meta_llm_tier_none_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``edit(kind='todo', id=…, meta={'llm_tier': None})`` through the real
+    MCP callable parks the leaf: the key is deleted, not nulled (gr439934).
+    The tool layer defaults mode= to ``'find-replace'``, which the todo kind
+    rejects, so a meta-only patch must skip the mode check or the documented
+    parking move is unreachable over the door (the quest trap, 4db6836b)."""
+    tools_core.put(kind="todo", text="park me: no auto plan_tick")
+    ref = store.list_refs(kind="todo", limit=1)[0]
+    store.stamp_ref_meta(ref.id, {"llm_tier": "opus"})
+    stamped = store.get_ref(kind="todo", id=ref.id)
+    assert stamped is not None and stamped.meta.get("llm_tier") == "opus"
+
+    out = tools_core.edit(kind="todo", id=ref.id, meta={"llm_tier": None})
+
+    assert not _is_error(out), _body(out)
+    live = store.get_ref(kind="todo", id=ref.id)
+    assert live is not None
+    assert "llm_tier" not in live.meta
 
 
 def test_edit_quest_meta_reaches_the_handler_over_the_mcp_door(

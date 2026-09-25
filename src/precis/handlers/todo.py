@@ -788,7 +788,20 @@ class TodoHandler(NumericRefHandler):
                 "edit(kind='todo') requires id=",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
-        require_mode(spec=self.spec, verb="edit", mode=mode)
+        # A meta-only patch rewrites no text, so mode= has nothing to select
+        # and is not required. It cannot simply be validated either: the
+        # tool-layer ``tools/core.py::edit`` defaults mode= to the file-kind
+        # ``'find-replace'``, so an omitted mode= arrives here as a value this
+        # kind rejects — which would make the parking shape this path exists
+        # for (``edit(kind='todo', id=N, meta={'llm_tier': None})``)
+        # unreachable over the MCP door (same trap as quest, 4db6836b).
+        meta_only = (
+            meta is not None
+            and (text is None or not text.strip())
+            and (body is None or not body.strip())
+        )
+        if not meta_only:
+            require_mode(spec=self.spec, verb="edit", mode=mode)
         unset_llm_tier = False
         if meta is not None:
             if set(meta) != {"llm_tier"} or meta["llm_tier"] is not None:
