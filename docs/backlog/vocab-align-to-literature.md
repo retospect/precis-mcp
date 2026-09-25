@@ -72,6 +72,45 @@ Cousot 1977, stubbed as `pa449839`). This bears on `envelope` above: if
 `envelope` is an outer bound it should say so in the name or the type, not
 only in the glossary.
 
+## Unicycle finding — the levels are not what is expensive (2026-09-25)
+
+The question that prompted the tier-2 row: the live `se:unicycle-mk2` is
+flat (15 blocks, no subassembly parents, wheel as one integral cylinder)
+while `precis-se-design-help` teaches a conceptual → embodiment → detail
+walk. Was the walk skipped because it costs an LLM author too much? No.
+
+- The retired predecessor `unicycle-printed-v1` (29 blocks, 28 parented,
+  laced wheel with 12 axial spokes) was LLM-authored 2026-09-11 in ~40 min
+  and 13 revisions. `mk2` (2026-09-13) is a units-cutover port of it,
+  re-authored three times over; no note, gripe or backlog item records a
+  decision to author flat. The flatness is an artefact, not a ruling.
+- Blind experiment 2026-09-25 (detail in gr450524): a Sonnet agent with no
+  knowledge of either design, no repo access, a neutral brief (20 in wheel,
+  80 kg rider, mostly FDM) and skills-only discovery produced
+  `se:unicycle-c1` — 20 blocks, 19 parented, root box with `set_load`
+  (1800 N saddle / 900 N pedal) and requirement measures, `validate`/`drc`
+  run mid-authoring, a self-caught parent-relative pose bug, ~38 min. The
+  pre-registered prediction (flat, no root, checks only at the end) was
+  wrong on three of four counts.
+
+Ruling for this item: keep the conceptual / embodiment / detail
+decomposition as the taught workflow and rename it per tier 2; author cost
+is not the obstacle. What still keeps the coarse levels from paying off in
+full is tracked elsewhere and is not vocabulary work: gr334788 (rigid
+connects excluded from the equilibrium matrix, so a rim ring or frame is
+never checked as one body; folded into `se-feasibility-and-cost.md`
+2026-09-25), gr450524 finding 1 (`view='order'`/`'bom'` drop a moded block the
+moment it gets a child, so hierarchy silently costs printed parts), and the
+unprofiled `validate`/`drc` slowness (30 s budget brushed at 20 blocks;
+gr337045 was soft-deleted after only the server-death half was fixed).
+`unicycle-c1` is the first live design with parent edges — the fixture all
+three need.
+
+Consequence for the skill rewrite: `precis-se-design-help`'s worked example
+(541b417a) presents the flat `mk2`, i.e. the artefact. gr450093 rules that
+skills name no live design at all, so the replacement should sketch the
+hierarchical shape inline rather than repoint at `unicycle-c1`.
+
 ## Definition of done
 
 - Tier 1 glosses added, one line each, in the existing entries.

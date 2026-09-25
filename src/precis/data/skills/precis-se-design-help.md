@@ -85,26 +85,36 @@ Process DRC is unshipped: mode is intent, not yet checked.
   weights (mass via `bom`, compliance, member count, cost). **Weights
   are human-set; a solver never tunes its own objective.**
 
-## Worked example (in prod)
+## Worked example — a wheel, integral vs laced
 
-`unicycle-mk2` is the live 20-inch printable demo: 15 blocks, flat (no
-subassembly parents), wheel as one integral cylinder envelope — tire, rim,
-spokes and hub abstracted into a single block. Read it with `view='tree'`,
-then `view='stability'` to see what that abstraction costs you: the
-stability view reports **no axial members — stability analysis does not
-apply**, and warns that the loads on `saddle` and `wheel` sit outside the
-analysed subgraph, so they were not checked.
+Shape a design the way §0–§3 above build one: a root block
+carrying `set_load` and the requirement measures, `frame`/`wheel`/`drive`
+subassemblies as its children (`add_block parent=…`), and parts below
+those. Model the `wheel` child as one integral cylinder envelope — tire,
+rim, spokes and hub abstracted into a single block:
+
+```python
+edit(kind="se", id="switch1", ops=[
+  {"op": "add_block", "name": "wheel", "parent": "frame",
+   "envelope": "cyl:r0.28h0.03"},
+  {"op": "set_mode", "block": "wheel", "mode": "fdm/pla"},
+])
+```
+
+Read it with `view='tree'`, then `view='stability'` to see what that
+abstraction costs you: the stability view reports **no axial members —
+stability analysis does not apply**, and warns that loads on sibling
+blocks (a saddle, say) sit outside the analysed subgraph, so they were
+not checked.
 
 That is the lesson, not a defect. The stability view models *pin-ended
 axial members only* — an integral wheel has none, so there is nothing for
-Maxwell/Calladine to count. Lacing the wheel instead (a hub, a rim, and
-`connect` members with `class: "axial"`, `compression_capacity: 0` and a
-declared `preload`/`free_length`/`rate` triple) is what makes the view
-informative — and what it then reports is non-obvious: a purely radially-
-laced wheel comes back **first-order mobile**, because radial spokes
-transmit no crank torque. An earlier laced revision of this design is
-where that showed up; it has since been retired, so re-derive it on your
-own design rather than expecting to load it.
+Maxwell/Calladine to count. Lacing the wheel instead (a `hub`, a `rim`,
+and `connect` members with `class: "axial"`, `compression_capacity: 0`
+and a declared `preload`/`free_length`/`rate` triple) is what makes the
+view informative — and what it then reports is non-obvious: a purely
+radially-laced wheel comes back **first-order mobile**, because radial
+spokes transmit no crank torque.
 
 Caveat while modelling that: `rigid` connects are not in the equilibrium
 matrix (gr334788), so a rim built as a ring of rigid blocks contributes

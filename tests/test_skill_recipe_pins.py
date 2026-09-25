@@ -30,8 +30,11 @@ test files) — those are intentionally *not* duplicated here.
 
 from __future__ import annotations
 
+import ast
+import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -45,7 +48,16 @@ from precis.handlers.todo import _RESERVED_PARENT_REL, TodoHandler
 from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
 from precis.workers.schedule.parse import every_to_cron
+from precis_se import persist
+from precis_se import printgroup as se_printgroup
+from precis_se.handler import SeHandler
 from tests.conftest import id_of
+from tests.test_se_print_intent import _3mf_objects, handler, register_se_simp
+from tests.test_se_print_manufacture import _cut_bore
+from tests.test_se_print_views import _mint_slug
+
+# fixtures re-exported for pytest (test_se_print_manufacture.py's pattern)
+__all__ = ["handler", "register_se_simp"]
 
 _SKILLS_DIR = (
     Path(__file__).resolve().parent.parent / "src" / "precis" / "data" / "skills"
@@ -270,3 +282,150 @@ def test_cite_paper_help_router_table_handles_and_kinds_are_live() -> None:
     assert handle_registry.KIND_CODES["paper"] == "pa"
     for kind in ("citation", "finding", "paper", "memory", "draft"):
         assert handle_registry.is_known_kind(kind), f"{kind!r} no longer known"
+
+
+# ── precis-se-print-help.md — §1b / §2d / §2e (gr450093 slug-free rewrite) ─
+#
+# The rewrite that made these sections slug-free (skills must never name a
+# live prod design) also made them self-contained, valid-python-literal
+# ``ops=[...]`` snippets — this pin runs each one verbatim, straight out of
+# the shipped skill text, rather than re-deriving a paraphrase of it that
+# could quietly drift from what the doc actually shows.
+
+
+def _skill_section(slug: str, heading: str) -> str:
+    """The skill's markdown between ``## <heading>`` and the next ``## ``
+    heading (or EOF)."""
+    text = _skill_text(slug)
+    pattern = re.compile(
+        rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
+    )
+    m = pattern.search(text)
+    assert m is not None, f"missing '## {heading}' section in {slug}.md"
+    return m.group(1)
+
+
+def _extract_ops_lists(section: str) -> list[list[dict[str, Any]]]:
+    """Every ``ops=[...]`` payload in a skill section's fenced python, in
+    order, ``ast.literal_eval``'d out of the raw text — the skill writes
+    them as valid Python literals (``True``/``None``, not ``true``/``null``)
+    for exactly this reason."""
+    out: list[list[dict[str, Any]]] = []
+    i = 0
+    while True:
+        start = section.find("ops=[", i)
+        if start == -1:
+            break
+        bracket_start = start + len("ops=")
+        depth = 0
+        j = bracket_start
+        while j < len(section):
+            if section[j] == "[":
+                depth += 1
+            elif section[j] == "]":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.append(ast.literal_eval(section[bracket_start : j + 1]))
+        i = j + 1
+    assert out, "no ops=[...] payload found in section"
+    return out
+
+
+def test_print_help_1b_simp_realize_enqueues_and_reads_unrealized(
+    handler: SeHandler, register_se_simp: Any
+) -> None:
+    """Pins ``precis-se-print-help.md`` ## 1b — ``realize(strategy='simp')``:
+    the op only validates and enqueues an ``se_simp`` job (never solves
+    inline), so the response carries a job handle and the block still reads
+    ``unrealized`` in ``view='print'`` until the job lands."""
+    (ops,) = _extract_ops_lists(
+        _skill_section(
+            "precis-se-print-help",
+            "1b — `realize(strategy='simp')`: solve the material instead of seeding it",
+        )
+    )
+    resp = handler.put(id="skillpin-1b", text=json.dumps({"ops": ops}))
+    assert "se_simp" in resp.body and "enqueued" in resp.body
+    body = handler.get(id="skillpin-1b", view="print", args={"block": "fork"}).body
+    assert "unrealized" in body
+
+
+def test_print_help_2d_model_group_renders_two_members_and_exports_two_objects(
+    handler: SeHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """Pins ``precis-se-print-help.md`` ## 2d — print groups:
+    ``intent='model'``: the sketched ``assy`` ⊃ ``clamp``/``bolt`` group
+    (``rail`` stays outside it) renders a print-group section naming both
+    members and exports one 3MF with exactly 2 objects."""
+    screw_slug = _mint_slug(hub, "iso-10642", "M4x12")
+    (ops,) = _extract_ops_lists(
+        _skill_section(
+            "precis-se-print-help",
+            "2d — print groups: `intent='model'` on an ancestor block",
+        )
+    )
+    for op in ops:
+        if op.get("op") == "set_binding" and op.get("kind") == "component":
+            op["design"] = screw_slug
+    handler.put(id="skillpin-2d", text=json.dumps({"ops": ops}))
+    handler.edit(
+        id="skillpin-2d", ops=[{"op": "realize", "block": "clamp", "mode": "fdm/asa"}]
+    )
+    ref = handler.store.get_ref(kind="se", id="skillpin-2d")
+    assert ref is not None
+    tree = persist.load_tree(handler.store, ref.id)
+    report = se_printgroup.report_for(tree, "assy", cad_store_reader=handler.store)
+    assert report is not None and report.intent == "model"
+    assert {m.block for m in report.members} == {"bolt", "clamp"}
+
+    body = handler.get(id="skillpin-2d", view="print", args={"block": "assy"}).body
+    assert "print group" in body and "intent model" in body
+
+    handler.edit(
+        id="skillpin-2d",
+        ops=[{"op": "set_build_frame", "block": "assy", "down": [0, 0, -1]}],
+    )
+    out = tmp_path / "assy.3mf"
+    resp = handler.get(
+        id="skillpin-2d",
+        view="print",
+        args={"block": "assy", "fmt": "3mf", "path": str(out)},
+    )
+    assert out.exists() and "2 object(s)" in resp.body
+    objects = _3mf_objects(out)
+    assert set(objects) == {"bolt", "clamp"}
+
+
+def test_print_help_2e_manufacture_group_exports_two_objects(
+    handler: SeHandler, tmp_path: Path
+) -> None:
+    """Pins ``precis-se-print-help.md`` ## 2e — print groups:
+    ``intent='manufacture'``: the sketched pin-in-knuckle hinge, once each
+    member is realized and fused (``realize(strategy='manufacture')``),
+    exports one 3MF with exactly 2 objects."""
+    slug = "skillpin-2e"
+    ops_lists = _extract_ops_lists(
+        _skill_section(
+            "precis-se-print-help",
+            "2e — print groups: `intent='manufacture'` — the real part, print-in-place",
+        )
+    )
+    assert len(ops_lists) == 4  # tree+intent, realize(knuckle), realize(pin), fuse
+    handler.put(id=slug, text=json.dumps({"ops": ops_lists[0]}))
+    handler.edit(id=slug, ops=ops_lists[1])
+    handler.edit(id=slug, ops=ops_lists[2])
+    _cut_bore(handler, slug)
+    resp = handler.edit(id=slug, ops=ops_lists[3])
+    assert "se_manufacture" in resp.body and "fused" in resp.body
+
+    out = tmp_path / "hinge.3mf"
+    handler.get(
+        id=slug,
+        view="print",
+        args={"block": "hinge", "fmt": "3mf", "path": str(out)},
+    )
+    assert out.exists()
+    objects = _3mf_objects(out)
+    assert len(objects) == 2

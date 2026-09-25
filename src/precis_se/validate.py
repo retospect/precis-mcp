@@ -151,7 +151,7 @@ def kernel_scale(*posed: tuple[str, SeBlock]) -> float | None:
     Historically the cad kernel's tolerances were **absolute in whatever
     numbers it was handed** (``LINEAR_EPS = 1e-6`` culled "degenerate"
     faces, so a nanometre-scale box arrived with *zero* faces and
-    vacuously contained everything — the boxel-3nm ValueError,
+    vacuously contained everything — a live design's ValueError,
     2026-09-09); the units-policy-cutover relative-tolerance audit fixed
     that at the source (``LINEAR_REL_EPS``, per-primitive). This seam
     stays for a narrower, still-real reason: combining a housing-scale and

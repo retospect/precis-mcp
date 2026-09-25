@@ -36,7 +36,7 @@ Read `precis-se-help` first for the op grammar. Everything below is
 ## 1 — realize the block
 
 ```python
-edit(kind="se", id="unicycle-mk2", ops=[
+edit(kind="se", id="switch1", ops=[
   {"op": "realize", "block": "hub", "mode": "fdm/pla"},
 ])
 ```
@@ -59,8 +59,11 @@ screw to buy is a design decision, not something this op guesses.
 ## 1b — `realize(strategy='simp')`: solve the material instead of seeding it
 
 ```python
-edit(kind="se", id="unicycle-mk2", ops=[
-  {"op": "set_load", "block": "fork", "force": [0, 0, -40], "fixed": true},
+edit(kind="se", id="switch1", ops=[
+  {"op": "add_block", "name": "fork", "envelope": "box:w0.03d0.03h0.15"},
+  {"op": "add_port", "block": "fork", "name": "axle", "pose": [0, 0, 0]},
+  {"op": "set_mode", "block": "fork", "mode": "fdm/pla"},
+  {"op": "set_load", "block": "fork", "force": [0, 0, -40], "fixed": True},
   {"op": "realize", "block": "fork", "mode": "fdm/pla", "strategy": "simp",
    "pitch": 0.001, "volfrac": 0.35, "load_at": "z+", "fixed_at": "axle",
    "build_dir": "z+", "close": 0.002, "max_iter": 80},
@@ -119,8 +122,8 @@ and brings the search back.
 ## 2a — read `view='print'`: the report
 
 ```python
-get(kind="se", id="unicycle-mk2", view="print")                       # every fdm block, one section each
-get(kind="se", id="unicycle-mk2", view="print", args={"block": "hub"}) # one block, full candidate table
+get(kind="se", id="switch1", view="print")                       # every fdm block, one section each
+get(kind="se", id="switch1", view="print", args={"block": "hub"}) # one block, full candidate table
 ```
 
 With no `args`, one section per block whose resolved mode family is
@@ -151,7 +154,7 @@ Pin one yourself when you know better than the search (a known-good
 orientation from a prior print, a cosmetic face that must face up):
 
 ```python
-edit(kind="se", id="unicycle-mk2", ops=[
+edit(kind="se", id="switch1", ops=[
   {"op": "set_build_frame", "block": "hub", "down": [0, 0, -1]},
 ])
 ```
@@ -188,9 +191,9 @@ number standing in.
 ## 2c — exporting
 
 ```python
-get(kind="se", id="unicycle-mk2", view="print",
+get(kind="se", id="switch1", view="print",
     args={"block": "hub", "fmt": "stl"})                  # temp path
-get(kind="se", id="unicycle-mk2", view="print",
+get(kind="se", id="switch1", view="print",
     args={"block": "hub", "fmt": "3mf", "path": "/tmp/hub.3mf"})
 ```
 
@@ -206,28 +209,54 @@ not block the write.
 
 ## 2d — print groups: `intent='model'` on an ancestor block
 
+A group root is any ancestor block that carries a print `intent`; its
+**members** are the blocks below it — `parent` edges, no schema, no
+membership list. Sketch of a two-member group next to a block that stays
+outside it (`assy` ⊃ `clamp` fdm + `bolt` purchase, bound to a minted
+screw; `rail` sits beside `assy`, not under it):
+
 ```python
-edit(kind="se", id="unicycle-mk2", ops=[
-  {"op": "set_mode", "block": "wheel", "mode": "fdm/pla", "intent": "model"},
+edit(kind="se", id="switch1", ops=[
+  {"op": "add_block", "name": "assy"},
+  {"op": "add_block", "name": "rail", "envelope": "box:w0.03d0.02h0.004",
+   "pose": [0, 0, 0.004]},
+  {"op": "set_mode", "block": "rail", "mode": "fdm/asa"},
+  {"op": "add_block", "name": "clamp", "parent": "assy",
+   "envelope": "box:w0.03d0.02h0.012", "pose": [0, 0, 0.008]},
+  {"op": "set_mode", "block": "clamp", "mode": "fdm/asa"},
+  {"op": "add_block", "name": "bolt", "parent": "assy", "pose": [0, 0, 0.004]},
+  {"op": "set_mode", "block": "bolt", "mode": "purchase"},
+  {"op": "set_binding", "block": "bolt", "kind": "component",
+   "design": "iso-10642-m4x12"},
+  {"op": "add_port", "block": "bolt", "name": "thread"},
+  {"op": "add_port", "block": "clamp", "name": "boss"},
+  {"op": "connect", "a": "bolt.thread", "b": "clamp.boss",
+   "joint": {"class": "rigid", "mechanism": "screw",
+             "params": {"thread_strategy": "nut-trap"}}},
+  {"op": "set_mode", "block": "assy", "mode": "fdm/pla", "intent": "model"},
 ])
-get(kind="se", id="unicycle-mk2", view="print", args={"block": "wheel"})
-get(kind="se", id="unicycle-mk2", view="print",
-    args={"block": "wheel", "fmt": "3mf", "path": "/tmp/wheel.3mf"})
+get(kind="se", id="switch1", view="print", args={"block": "assy"})
+get(kind="se", id="switch1", view="print",
+    args={"block": "assy", "fmt": "3mf", "path": "/tmp/assy.3mf"})
 ```
 
-A **print group** is an ancestor block in an fdm mode that carries a
-print `intent`; its members are the blocks below it (`parent` edges — no
-schema, no membership list). **A group ends where the next group root
-begins**: a descendant that is itself an intent root (the fork group and
-the wheel group under one assembly root) owns its own subtree — the outer
-group lists it as `nested group '<name>' — printed separately, see its
-own row`, never places or exports it, and every block belongs to its
-nearest root. `intent` is a `set_mode` parameter and lives
+A group root with no descendants has no members — the intent op above
+still succeeds, but there is nothing below it to print. **A group ends
+where the next group root begins**: a descendant that is itself an
+intent root (a fork group and a wheel group under one assembly root)
+owns its own subtree — the outer group lists it as `nested group
+'<name>' — printed separately, see its own row`, never places or exports
+it, and every block belongs to its nearest root. `intent` is a `set_mode`
+parameter and lives
 on the block's `build_frame` record next to a pin (`set_build_frame` /
 `clear_build_frame` leave it alone; `set_mode(mode=null)` clears it —
 no mode, no group). Values: `model` (this section) and `manufacture`
 (§2e — the real print-in-place part). A non-fdm mode with an intent is
 refused.
+
+## 2d.1 — model groups: what prints, the group frame, the 3MF
+
+Rules for a `model` group (§2d); `manufacture` groups differ from §2e on.
 
 **`model` = a fit-test model, any scale.** Every fdm member prints its
 realized solid (stamped holes included, compensation kept). Every
@@ -265,16 +294,44 @@ group — everything below it reads exactly as before.
 
 ## 2e — print groups: `intent='manufacture'` — the real part, print-in-place
 
+Sketch of a pin-in-knuckle hinge (`hinge` ⊃ `knuckle` fdm box + `pin` fdm
+cylinder, joined by a `revolute` connect):
+
 ```python
-edit(kind="se", id="unicycle-mk2", ops=[
+edit(kind="se", id="switch1", ops=[
+  {"op": "add_block", "name": "hinge"},
+  {"op": "add_block", "name": "knuckle", "parent": "hinge",
+   "envelope": "box:w0.02d0.02h0.012"},
+  {"op": "set_mode", "block": "knuckle", "mode": "fdm/pla"},
+  {"op": "add_block", "name": "pin", "parent": "hinge",
+   "envelope": "cyl:r0.004h0.03", "pose": [-0.015, 0, 0.006],
+   "rot": [0, 1.5707963267948966, 0]},
+  {"op": "set_mode", "block": "pin", "mode": "fdm/pla"},
+  {"op": "add_port", "block": "knuckle", "name": "bore"},
+  {"op": "add_port", "block": "pin", "name": "axis"},
+  {"op": "connect", "a": "pin.axis", "b": "knuckle.bore",
+   "joint": {"class": "revolute", "axis": [1, 0, 0]}},
   {"op": "set_mode", "block": "hinge", "mode": "fdm/pla", "intent": "manufacture"},
-  {"op": "realize", "block": "hinge", "strategy": "manufacture",
-   "gap": 0.0004, "fit": 0.0002, "blend": 0.002},
+  {"op": "set_build_frame", "block": "hinge", "down": [0, 0, -1]},
 ])
-get(kind="se", id="unicycle-mk2", view="print", args={"block": "hinge"})
-get(kind="se", id="unicycle-mk2", view="print",
+edit(kind="se", id="switch1", ops=[
+  {"op": "realize", "block": "knuckle", "mode": "fdm/pla"},
+])
+edit(kind="se", id="switch1", ops=[
+  {"op": "realize", "block": "pin", "mode": "fdm/pla"},
+])
+edit(kind="se", id="switch1", ops=[
+  {"op": "realize", "block": "hinge", "strategy": "manufacture",
+   "pitch": 0.0005, "gap": 0.0004, "fit": 0.0002, "blend": 0.002},
+])
+get(kind="se", id="switch1", view="print", args={"block": "hinge"})
+get(kind="se", id="switch1", view="print",
     args={"block": "hinge", "fmt": "3mf", "path": "/tmp/hinge.3mf"})
 ```
+
+(A member must be `realize`d before the group can be fused — that is why
+`knuckle` and `pin` each get their own `edit` call ahead of the
+`strategy='manufacture'` one.)
 
 Same group rules as `model` (§2d). `realize(strategy='manufacture')` on
 the **root** composes the members into ONE cad design in the root's
@@ -287,7 +344,13 @@ must not carry a solid of its own). Every render lists each member/
 cavity as `analytic` | `field (gap)` | `field (cavity fit)` | `field
 (cavity shape)`. Every connect between two members is **rigid**
 (`rigid`/`captive`/`axial`, or undeclared — fused, `joint_undeclared`
-note) or **DOF** (revolute, prismatic, …):
+note) or **DOF** (revolute, prismatic, …); §2e.1 says what each
+class becomes.
+
+## 2e.1 — manufacture groups: fuse, gap, cavity, elision
+
+How `realize(strategy='manufacture')` (§2e) treats each connect class
+and each bought member:
 
 - **rigid pairs fuse**: `blend=0` (default) keeps each member its own
   component — the whole is their hard min-union, cuts included. `blend=`
@@ -369,7 +432,7 @@ inside the group is refused there.
 ## 3 — read `view='fab'` for the whole plan
 
 ```python
-get(kind="se", id="unicycle-mk2", view="fab")
+get(kind="se", id="switch1", view="fab")
 ```
 
 One row per implementation-bearing block, **any source** — not just

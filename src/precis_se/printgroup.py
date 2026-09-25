@@ -9,8 +9,8 @@ print_intent`); its **members** are the blocks below it in the tree,
 membership derived from ``parent`` edges at read time — no schema, no
 membership table. **A print group ends where the next group root
 begins**: a descendant that is itself a group root (fdm mode + intent —
-the unicycle's fork group and wheel group under one assembly root) owns
-its own subtree; the outer group neither places nor exports it and lists
+a fork group and a wheel group under one assembly root) owns its own
+subtree; the outer group neither places nor exports it and lists
 it as one ``nested group … printed separately`` line, and every block
 maps to its NEAREST group-root ancestor (:func:`grouped_blocks`). A group
 root with no intent is not a group: every member reads as its own

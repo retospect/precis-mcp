@@ -336,6 +336,33 @@ def test_toolpath_help_does_not_claim_nm_is_gated() -> None:
     assert "dark, needs" not in text
 
 
+# Live prod design slugs — a shipped skill must never name one, in
+# python-fenced code OR prose (gr450093): an example that resolves against
+# a real production design invites an agent to read/mutate live data by
+# accident (precis-se-print-help's old `unicycle-mk2` examples were a
+# live purchase block a reader could edit, and one whose print-group
+# member count would silently read 0). Denylist, not an allowlist, because
+# the fix is "never name one of these," not "only allow the ones we know
+# about."
+_LIVE_DESIGN_SLUGS = frozenset({"unicycle-mk2", "boxel-3nm", "unicycle-printed-v1"})
+
+
+def test_no_skill_names_a_live_prod_design_slug() -> None:
+    """No shipped skill's full text — prose or fenced code alike — names a
+    live production design slug (gr450093). Skill examples are read by
+    agents that may act on what they read; a fictional id (``switch1``,
+    ``my-design``, …) keeps the example inert."""
+    errors: list[str] = []
+    for path in _iter_skill_files():
+        text = path.read_text(encoding="utf-8")
+        for slug in _LIVE_DESIGN_SLUGS:
+            if slug in text:
+                errors.append(f"{path.name}: names live prod design slug {slug!r}")
+    assert not errors, "shipped skills name live prod design slugs:\n" + "\n".join(
+        errors
+    )
+
+
 def test_precis_overview_cad_examples_parse_under_boundary_grammar() -> None:
     """``precis-overview`` is the top-level orientation skill — the only cad
     grammar many agents ever see. Every backtick cad ``config`` example on

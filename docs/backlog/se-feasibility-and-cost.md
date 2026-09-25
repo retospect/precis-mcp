@@ -244,6 +244,20 @@ as a default; MTBF for anything whose leaves have no published failure
 rate; Monte Carlo tolerance analysis beyond RSS (worth it only once RSS
 is shown insufficient on a real design).
 
+## Folded in: rigid connects in the equilibrium matrix (gr334788)
+
+`view='stability'` counts the axial subgraph only; `rigid` connects are
+not in the equilibrium matrix. A rim ring or a frame built from rigid
+blocks therefore contributes nothing, and the only way to have it checked
+is to re-express it as a redundant axial truss, which distorts the b and s
+counts. Wanted: a rigid-group declaration that merges member blocks into
+one node set (master-slave / rigid-link reduction) so m−s counting stays
+meaningful on real designs. Triaged into this item 2026-09-24; the gripe's
+comment pointed here but this file did not carry it until 2026-09-25.
+`se:unicycle-c1` (2026-09-25, 20 blocks, 19 parented) is the first live
+design with parent edges and is the fixture this needs — the earlier
+laced design it was found on (`unicycle-printed-v1`) is retired.
+
 ## Open questions for Reto
 
 - ~~**Where does `fit_class` sit**~~ — **built 2026-09-05 as

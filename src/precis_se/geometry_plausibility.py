@@ -6,8 +6,8 @@ the connect itself *claims* about the geometry.
 **gr337040 — undeclared_interpenetration's missing twin.** The existing
 ``undeclared_interpenetration`` check (:mod:`precis_se.validate`) flags
 overlap nobody declared; nothing flagged the opposite — a connect declared
-between two envelopes that never actually touch (``unicycle-printed-v1``:
-26 connects, 0 DRC errors, parts floating up to 144 mm apart, because the
+between two envelopes that never actually touch (a live design: 26
+connects, 0 DRC errors, parts floating up to 144 mm apart, because the
 envelopes were authored assuming centred cylinders against the kernel's
 base-at-pose ``z=0..h`` convention). :func:`findings` below's
 ``connect_envelope_disjoint`` rule is the direct mirror: same

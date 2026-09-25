@@ -145,7 +145,7 @@ in a 6 mm plate is too big a thing to do to a part unasked.
 ## 4 — read `view='fasten'`
 
 ```python
-get(kind="se", id="unicycle-mk2", view="fasten")
+get(kind="se", id="switch1", view="fasten")
 ```
 
 It gives you, per screw joint: the **stack** the axis walks (member, from,
