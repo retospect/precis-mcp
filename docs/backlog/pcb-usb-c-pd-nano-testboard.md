@@ -113,6 +113,12 @@ Verified against the code, not assumed:
 3. **`pcb_net_classes.rules` has no consumer** — `drc.py` reads only the fab
    capability table. So there is no per-net clearance for the 20 V nets and
    no per-net width. `op='class_rules'` round-trips but changes nothing.
+   **STALE (2026-09-24):** `rules.py::resolve_net_rules` now feeds
+   `drc.py::check_clearance`, `realize.py` and `cost.py`. Residue: the
+   router takes ONE clearance = max over all classes
+   (`realize.py::_realize_maze`), and an authored clearance is a WARN
+   tier, not an ERROR — both tracked in `ewod-controller-and-hv-supply.md`
+   ruling 14 / Slice 4.
 4. **Slice 9 (JLCPCB ordering) is unbuilt**, blocked on the console scope
    grant — so the board could be designed and exported but not ordered
    through the system.

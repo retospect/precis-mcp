@@ -39,6 +39,7 @@ its own.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,23 +73,60 @@ class NetIslands:
     witnesses: tuple[tuple[float, float, str], ...]
 
 
-def _pad_primitives(model: dict[str, Any], start_group: int) -> list[_Prim]:
-    """Pads as disks. Each pad is its OWN group: two pads of one part are
-    not electrically joined just because they belong to the same footprint.
-    A pad with no net is skipped — a mechanical land has nothing to be
-    connected to."""
+def _pad_primitives(
+    model: dict[str, Any], start_group: int
+) -> tuple[list[_Prim], dict[int, tuple[Point, ...]]]:
+    """Pads as disks, each its OWN group — two pads of one part are not
+    electrically joined just because they belong to the same footprint. A
+    pad with no net is skipped — a mechanical land has nothing to be
+    connected to.
+
+    The disk is the pad's INSCRIBED circle (``min(w, h) / 2``) for a
+    circle/rect/obround pad — a deliberate UNDER-approximation, and safe
+    here only because the sibling primitives (track capsules, via disks)
+    it is compared against are exact: understating THIS shape's reach can
+    only produce a false alarm (a human sees a healthy net reported as
+    islands), while over-stating it would hide a real break, the one
+    failure this module exists to catch.
+
+    A ``shape == 'polygon'`` pad gets its real outline instead
+    (:func:`_pad_poly`) — the inscribed disk understates it by a lot at
+    the vertices a trace actually lands on (gr339236's EWOD electrodes:
+    real anchors sat outside the inscribed disk on every diagonal vertex,
+    so every one of them read as disconnected). The second return value
+    carries that outline, keyed by the pad's index in the returned
+    primitive list, so a caller can route it through :func:`_touch_gap`
+    exactly like :func:`connected_pin_pairs` and
+    :func:`fixed_copper_pin_terminals` already do — one polygon-aware touch
+    test for all three callers, not a fourth independent one here.
+
+    A polygon pad whose outline cannot actually be resolved (``poly``
+    missing or degenerate — :func:`_pad_poly` returns ``None`` even though
+    ``shape == 'polygon'`` said there should be one) still needs a disk,
+    but NOT the inscribed one: this module's touch test is a NEGATIVE
+    predicate ("this gap is > eps, so call it not-touching"), and an
+    under-approximation is only sound for a POSITIVE one ("this gap is <=
+    eps, so call it touching"). Feeding the inscribed disk to a predicate
+    of the opposite polarity is exactly today's defect, just relocated one
+    level down to the pads this fix cannot make exact — so that one
+    degenerate case uses the CIRCUMSCRIBED disk (``hypot(w, h) / 2``,
+    :mod:`precis.pcb.maze`'s own ``enclosing_radius_mm`` fallback for the
+    same "cannot represent exactly" situation) instead."""
     prims: list[_Prim] = []
+    polys: dict[int, tuple[Point, ...]] = {}
     for i, pad in enumerate(model.get("pads") or []):
         net = str(pad.get("net", ""))
         if not net:
             continue
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
-        # The inscribed disk, not the circumscribed one: over-stating a
-        # pad's reach would report a broken net as healthy, which is the
-        # failure this module exists to catch. Understating it can only
-        # produce a false alarm, which a human sees.
-        r = min(w, h) / 2.0
+        poly = _pad_poly(pad)
+        if poly is None and pad.get("shape") == "polygon":
+            # Outline authored but unresolvable -- see the docstring above.
+            r = math.hypot(w, h) / 2.0
+        else:
+            r = min(w, h) / 2.0
+        pad_index = len(prims)
         prims.append(
             _Prim(
                 (float(pad["x"]), float(pad["y"])),
@@ -99,7 +137,9 @@ def _pad_primitives(model: dict[str, Any], start_group: int) -> list[_Prim]:
                 str(pad.get("layer", "")),
             )
         )
-    return prims
+        if poly is not None:
+            polys[pad_index] = poly
+    return prims, polys
 
 
 def _copper_primitives_with_vias(
@@ -236,7 +276,12 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
     same defect twice with two different names.
     """
     prims, via_groups = _copper_primitives_with_vias(model)
-    prims += _pad_primitives(model, start_group=len(model.get("copper") or []))
+    pad_offset = len(prims)
+    pad_prims, pad_polys_raw = _pad_primitives(
+        model, start_group=len(model.get("copper") or [])
+    )
+    prims += pad_prims
+    pad_polys = {pad_offset + k: v for k, v in pad_polys_raw.items()}
     if not prims:
         return []
 
@@ -278,7 +323,10 @@ def net_islands(model: dict[str, Any]) -> list[NetIslands]:
             pa = prims[members[a_i]]
             for b_i in range(a_i + 1, len(members)):
                 pb = prims[members[b_i]]
-                if _capsule_capsule_gap(pa, pb) <= TOUCH_EPS_MM:
+                gap = _touch_gap(
+                    pa, pb, pad_polys.get(members[a_i]), pad_polys.get(members[b_i])
+                )
+                if gap <= TOUCH_EPS_MM:
                     dsu.union(members[a_i], members[b_i])
 
     per_net: dict[str, dict[int, tuple[float, float, str]]] = {}

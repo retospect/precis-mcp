@@ -600,7 +600,11 @@ each is now a build item, not a question:**
    loading/cleaning. Generator: the THT "pogo" ring becomes a
    `role: tape_land` strip (mask open, no paste, no drill) with a length
    param (tape contact resistance scales with overlap). Rejected:
-   overhang + pogo, depth-milled pocket, spring clip.
+   overhang + pogo, depth-milled pocket, spring clip. **NOT BUILT
+   (verified 2026-09-24: no `tape_land` in `src/`; the role allowlist is
+   still `solderable|electrode|probe`)** — Reto re-found it in the prod
+   web view as "we lack the copper tape landing side for the ITO"; build
+   item = `ewod-controller-and-hv-supply.md` Defect B / Slice 3.
 5. **U_TEMP → TI TMP117** (WSON-6 2×2 mm with exposed pad, ±0.1 °C,
    4 addresses, ALERT). Board temperature under the array, not droplet
    temperature — a heater-loop sensor. Intake: `op='footprint'` on the
@@ -760,6 +764,23 @@ day; rejected: a documented plaza-internal override at 2.0 mm, and
     apart); the router's island terminals then start at the stub's far
     end. Same "the fabric owns its pre-routed copper" contract as the
     plaza vias (pre-place-route slice 1). BUILT 2026-09-19 in tree.
+
+**Rulings 12–14 (Reto, 2026-09-24) live in
+`ewod-controller-and-hv-supply.md`**: 12 = Arduino Pro Mini 5 V/16 MHz as
+controller (**supersedes ruling 9** — the 74HCT245 level shifter is
+deleted; HV507 `V_IH` 4.1 V is met by 5 V logic directly); 13 = one USB-C
+port for power, PD negotiation to 20 V (CH224K) and programming
+(USB-serial bridge on the 5 V rail, never VBUS); 14 = on-board 250 V from
+a Cockcroft-Walton ladder off the 20 V rail (**supersedes design-review
+item 6**'s external boost + HV-in connector; flyback recorded there as
+the rejected alternative). That item also holds two defects from the
+same prod review — the sink declares only its WIRED pins (`pin_decls` is
+wire-driven; every undeclared HV507 pad is invisible to DRC/router/
+connectivity) and ruling 4's `tape_land` was never built — plus the
+finding that the `{name}_escape` class carries the electrode-gap
+clearance, not `hv_separation`, so ruling 3's "B.Cu escapes take B4" is
+geometry-only today. Prerequisites listed there: re-measure gr347037 and
+gr346004 at HEAD before fixing either (both predate rulings 10/11).
 
 Also from the same review: the web view shows F.Cu tracks ending over
 bottom-side SMD pads (sink / U_TEMP) with no connection. That is the

@@ -57,6 +57,23 @@ def _pad(net: str, x: float, y: float, *, layer: str = "F.Cu") -> dict[str, Any]
     }
 
 
+def _poly_pad(
+    net: str, cx: float, cy: float, poly: list[tuple[float, float]], *, layer: str = "F.Cu"
+) -> dict[str, Any]:
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    return {
+        "layer": layer,
+        "net": net,
+        "shape": "polygon",
+        "x": cx,
+        "y": cy,
+        "w": max(xs) - min(xs),
+        "h": max(ys) - min(ys),
+        "poly": [list(p) for p in poly],
+    }
+
+
 def _model(copper: list[dict[str, Any]], pads: list[dict[str, Any]]) -> dict[str, Any]:
     return {"layers": _LAYERS, "copper": copper, "pads": pads}
 
@@ -195,4 +212,49 @@ def test_exactly_touching_counts_as_connected(gap: float) -> None:
         ],
         [],
     )
+    assert connectivity.net_islands(model) == []
+
+
+def test_a_polygon_pad_touched_on_a_diagonal_vertex_is_connected() -> None:
+    """gr339236's own geometry, restated for `net_islands` (the two
+    sibling functions already got this fix; `_pad_primitives` had not).
+
+    A square `shape == 'polygon'` pad's inscribed disk has radius 1.0mm,
+    but its own corner sits `sqrt(2)` ~= 1.414mm from centre -- 0.414mm
+    outside that disk. A trace landing exactly on that corner is real
+    copper touching the pad's real outline, so this must read as ONE
+    component. Under the old inscribed-disk-only approximation the same
+    board reads as TWO -- the false "disconnected net" finding this test
+    exists to catch.
+    """
+    poly = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+    model = _model(
+        [_track("N", [(3.0, 3.0), (1.0, 1.0)], w=0.1)],
+        [_poly_pad("N", 0.0, 0.0, poly)],
+    )
+    assert connectivity.net_islands(model) == []
+
+
+def test_a_polygon_pad_with_no_resolvable_outline_falls_back_conservatively() -> None:
+    """A `shape == 'polygon'` pad whose `poly` is missing/degenerate has no
+    exact outline to test against. The fallback disk must be the
+    CIRCUMSCRIBED one (`hypot(w, h) / 2`), not the inscribed one:
+    `net_islands`'s touch test is a negative predicate ("gap > eps, so NOT
+    touching"), and an under-approximation is only sound for the opposite,
+    positive predicate. A trace landing on the corner a real 2x2mm square
+    pad would have (inscribed radius 1.0mm, corner at `sqrt(2)`mm) must
+    still read as connected even though this pad's outline could not be
+    resolved.
+    """
+    pad = {
+        "layer": "F.Cu",
+        "net": "N",
+        "shape": "polygon",
+        "x": 0.0,
+        "y": 0.0,
+        "w": 2.0,
+        "h": 2.0,
+        "poly": [],  # degenerate: authored as a polygon, but unresolvable
+    }
+    model = _model([_track("N", [(3.0, 3.0), (1.0, 1.0)], w=0.1)], [pad])
     assert connectivity.net_islands(model) == []
