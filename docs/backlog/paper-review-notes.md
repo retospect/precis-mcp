@@ -161,10 +161,23 @@ budget in the acceptance criteria is the thing to watch post-deploy.
 - **Decided 2026-09-20:** dream consolidation deferred → gripe 372794.
 - **Open:** does the Meta default apply to the whole reader family (cfp,
   datasheet) or papers only?
-- **Open:** slice boundary. Proposed slice 1 = Meta default + Review tab
-  CRUD + paper-level notes in the overview + backlinks; slice 2 = chunk
-  anchors, the `_render_chunks` sidecar, `search_hits` markers, the hover
-  count. Slice 2 is the half that matters — is slice 1 worth shipping alone?
+- **Decided 2026-09-24 (Reto): slice boundary = hand-anchor now, merge C
+  into A.** One slice, not two: Meta default + Review tab CRUD + paper-level
+  notes in the overview + backlinks, TOGETHER WITH the chunk-anchor read path
+  (`_render_chunks` sidecar, `search_hits` markers). Rationale: the earlier
+  proposal put the chunk sidecar in a later slice, but all three real
+  critiques captured so far are paper-level, so a sidecar shipped alone has
+  nothing to render — it would land as dead code. Anchoring the existing
+  critiques is a hand step, not a feature, and it is what gives the sidecar
+  something to show on day one.
+  ⚠ Anchoring data is thin and is itself a finding — see gripe 372863: of
+  Matthias's three critiques on `microkinetic26` (me372797 particle size,
+  me372798 subsurface H, me372799 no experimental validation), only the
+  particle-size one has a defensible anchor (`pc2350636`); subsurface H
+  appears nowhere in the ingested text; and the validation critique is in
+  apparent tension with `pc2350636`, which DOES compare to literature
+  experimental data. Cause: `pa167977` is a one-page Elsevier preview
+  (`pdf_pages = [0,1)`). Re-check after the markup backfill runs.
 - **Open:** should an open critique on a paper warn at *evidence-attach*
   time — when that paper's chunk is about to ground a `finding` hub? That is
   the highest-value consumer of the distinction and the reason the
