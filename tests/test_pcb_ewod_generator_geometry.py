@@ -408,3 +408,160 @@ def test_reserved_slot_gets_no_via_and_no_stub():
     # blocks Slice 2 -- see test_pcb_ewod_fabric.py for the ledger side).
     copper_by_pin = _copper_by_pin(exp)
     assert "R0C1" not in copper_by_pin
+
+
+# ── gr449483 / docs/backlog/pcb-lazy-netlist-and-checks.md Slice 1 ────────
+#
+# The spec's own hypothesis, verified against the code rather than assumed:
+# "the neck's start is computed against the NOMINAL square, not the real
+# outline... the diagonal escaper's own corner is not chamfered". The
+# second half is true (`_needs_plaza_corner_chamfer` needs one FLAT wall;
+# a diagonal escaper's own two adjoining walls -- e.g. R2C0's N and E,
+# both facing ordinary electrode neighbours -- are BOTH `mesh`, so neither
+# is chamfered there). But an un-chamfered corner is exactly the span's
+# own UN-RETREATED nominal vertex, `chamfer_start`/`chamfer_end=False`
+# leaves `wall_run`'s own `t0`/`t1` untouched (`_chamfer_inset`'s own
+# early return), and `_meshing_wall`'s own zero-deflection flat run (at
+# least `tooth_pitch` long, `_edge_sign`'s own unconditional clamp) offsets
+# that STRAIGHT run by exactly `gap/2`, landing on the SAME `half`-away
+# point `_edge_anchor`'s diagonal branch computes by plain arithmetic. The
+# two tests below establish, bit-for-bit, which half of the hypothesis
+# actually explains gr449483's measurement (32 realized / 13 of them
+# disconnected, all 13 diagonal, zero cardinal).
+def _diag_direction(seg: dict[str, Any]) -> tuple[float, float] | None:
+    """``(ax, ay)`` (the neck's electrode-side anchor) when the segment is
+    a 45-degree diagonal escape (equal |dx|/|dy|), else ``None`` for a
+    cardinal one -- classified from the emitted track geometry itself, not
+    re-derived from the grid position, so this stays correct for any
+    ``pad_sizes``/``reserve`` layout a future test throws at it."""
+    (ax, ay), (vx, vy) = seg["start"], seg["end"]
+    dx, dy = vx - ax, vy - ay
+    if abs(abs(dx) - abs(dy)) < 1e-6 and abs(dx) > 1e-9:
+        return (ax, ay)
+    return None
+
+
+def test_diagonal_escape_neck_anchor_is_a_real_vertex_of_the_electrode_polygon():
+    """Disproves the spec's "anchor moved off the real boundary" half:
+    every diagonal escape's neck track starts EXACTLY on its own
+    electrode's real polygon ring -- not merely near it, not merely
+    touching within some tolerance, but literally one of the ring's own
+    vertices (bit-identical coordinates, and ``shapely`` agrees the
+    polygon's boundary passes through that exact point at distance 0).
+    ``generators.py`` is not the mechanism gr449483 measures; see the
+    sibling test below for the mechanism that is."""
+    exp = G.expand(
+        "ewod_pad_array", "ARR", {"grid": [8, 8], "drive_voltage_v": 250, "pitch": 2.25}
+    )
+    by_pin = _pads_by_pin(exp)
+    copper_by_pin = _copper_by_pin(exp)
+    checked = 0
+    for pin, items in copper_by_pin.items():
+        tracks = [c for c in items if c["ctype"] == "track" and c["layer"] == "F.Cu"]
+        if not tracks:
+            continue
+        seg = tracks[0]["geom"]["segments"][0]
+        anchor = _diag_direction(seg)
+        if anchor is None:
+            continue  # a cardinal escape -- covered by the constant-gap test above
+        body = next(
+            p["poly"]
+            for p in by_pin[pin]
+            if p["shape"] == "polygon" and len(p["poly"]) > 4
+        )
+        poly = Polygon(body)
+        checked += 1
+        assert any(
+            abs(vx - anchor[0]) < 1e-9 and abs(vy - anchor[1]) < 1e-9 for vx, vy in body
+        ), f"{pin}: neck anchor {anchor} is not a vertex of its own electrode ring"
+        # Not `poly.touches(...)`: a mesh-mesh corner (neither adjoining
+        # wall is chamfered) is computed by TWO independent paths that
+        # both target the same nominal point but arrive by different
+        # arithmetic -- `_edge_anchor`'s plain `cx + dc*half` here, the
+        # corner's own zero-deflection endpoint through `_meshing_wall`'s
+        # shapely `offset_curve` on the polygon side -- and can differ by
+        # a single ULP (~1e-17mm here, found on R3C3: sub-femtometre, well
+        # under any fab tolerance). At THAT scale a strict topological
+        # predicate is exactly the "vertex is numerically ambiguous"
+        # tangency the spec called out and can go either way; the
+        # geometrically meaningful claim is the DISTANCE, asserted next.
+        p = SPoint(*anchor)
+        assert poly.exterior.distance(p) < 1e-9, (
+            f"{pin}: neck anchor sits {poly.exterior.distance(p)}mm off the real "
+            "boundary -- generators.py's own geometry mismatch, if this ever fails"
+        )
+    assert checked >= 8, "expected several diagonal escapes on an 8x8 dogfood-sized field"
+
+
+def test_net_islands_false_flags_a_genuinely_touching_diagonal_escape_as_split():
+    """The REAL mechanism (not generators.py, not realize.py): this
+    documents ``connectivity.py``'s own bug so the wrong file never gets
+    "fixed" for gr449483 again. ``net_islands`` (the oracle
+    ``drc.py::check_connectivity`` — and, after this change,
+    ``pcb_route``'s own status ladder — both call) approximates EVERY
+    pad, even a ``shape=='polygon'`` electrode, as an INSCRIBED DISK sized
+    from its bounding box (``connectivity._pad_primitives``: ``r =
+    min(w, h) / 2``) — unlike its own siblings
+    ``connected_pin_pairs``/``fixed_copper_pin_terminals`` in the SAME
+    module, which already read the real ring via ``_pad_poly``/
+    ``_touch_gap``. A cardinal escape's anchor sits at an edge MIDPOINT,
+    distance exactly ``half`` from centre — inside that disk (radius ~=
+    ``half + tooth_depth``, since the ring's bbox is padded out by the
+    zigzag). A diagonal escape's anchor sits at the pad's own CORNER,
+    distance ``half * sqrt(2)`` from centre — outside it. So every
+    diagonal escape's genuinely-touching neck (proved by the sibling test
+    above) reads as a SECOND, disconnected piece, and every cardinal one
+    never does — exactly gr449483's own measured split (0 of 30 cardinal
+    escapes flagged, all of the diagonal ones that route). This is
+    ``connectivity.py``'s pad model, not this module's anchor arithmetic;
+    fixing it belongs in ``connectivity._pad_primitives``, out of this
+    change's own file ownership."""
+    from precis.pcb import connectivity, padplace
+    from precis.store._pcb_ops import _normalize_local_footprint_pad
+
+    name = "ARR"
+    exp = G.expand(
+        "ewod_pad_array", name, {"grid": [8, 8], "drive_voltage_v": 250, "pitch": 2.25}
+    )
+    raw_pads = exp.footprints[0]["pads"]
+    norm_pads = [_normalize_local_footprint_pad(p) for p in raw_pads]
+    pin_names = {p["pin"] for p in raw_pads}
+    placed, _drills = padplace.place_footprint_pads(
+        norm_pads,
+        {"x": 0.0, "y": 0.0, "rot": 0.0},
+        layers=["F.Cu"],
+        pin_to_net={pin: f"{name}_{pin}" for pin in pin_names},
+    )
+    flat_copper = [
+        {"ctype": c["ctype"], "layer": c["layer"], "net": c["net"], **c["geom"]}
+        for c in exp.copper
+    ]
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": flat_copper, "pads": placed}
+    flagged = {island.net for island in connectivity.net_islands(model)}
+
+    copper_by_pin = _copper_by_pin(exp, name)
+    diag_nets: set[str] = set()
+    cardinal_nets: set[str] = set()
+    for pin, items in copper_by_pin.items():
+        tracks = [c for c in items if c["ctype"] == "track" and c["layer"] == "F.Cu"]
+        if not tracks:
+            continue
+        seg = tracks[0]["geom"]["segments"][0]
+        net = f"{name}_{pin}"
+        if _diag_direction(seg) is not None:
+            diag_nets.add(net)
+        else:
+            cardinal_nets.add(net)
+
+    assert diag_nets and cardinal_nets  # the 8x8 dogfood-sized field has both kinds
+    missing = diag_nets - flagged
+    assert not missing, (
+        f"{len(missing)} diagonal escape(s) were NOT flagged -- the disk-model gap "
+        f"this test documents may have been fixed; update this test's docstring: "
+        f"{sorted(missing)[:5]}"
+    )
+    false_cardinal = cardinal_nets & flagged
+    assert not false_cardinal, (
+        f"a cardinal escape was flagged disconnected too: {sorted(false_cardinal)[:5]} "
+        "-- the split gr449483 measured (diagonal-only) no longer holds"
+    )

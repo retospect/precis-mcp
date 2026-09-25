@@ -88,6 +88,105 @@ def test_no_crossing_when_separated():
     assert ratsnest.crossings(wires) == []
 
 
+# ── side-aware MST (gripe 449579) ──────────────────────────────────────
+def _edge_set(wires: list[ratsnest.Airwire]) -> set[frozenset[str]]:
+    return {frozenset((w.a, w.b)) for w in wires}
+
+
+def test_side_crossing_net_prefers_via_minimal_tree():
+    # ewod-dogfood-2's reported case, collinear on x=20: J_INSTR (top) @
+    # y=5, U_TEMP (bottom) @ y=0, R_BLEED (top) @ y=-6. Pure-Euclidean MST
+    # chains J_INSTR-U_TEMP-U_TEMP-R_BLEED (5mm+6mm=11mm, shortest 2D tree)
+    # through BOTH sides — 2 vias. The via-minimal tree is J_INSTR-R_BLEED
+    # direct (11mm, one side, 0 vias) plus a J_INSTR-U_TEMP spur (1 via).
+    placed: dict[str, tuple[float, float]] = {
+        "J_INSTR": (20.0, 5.0),
+        "U_TEMP": (20.0, 0.0),
+        "R_BLEED": (20.0, -6.0),
+    }
+    net = _net("SIG", "signal", "J_INSTR", "U_TEMP", "R_BLEED")
+    bottom = frozenset({"U_TEMP"})
+
+    # Red before green: side-blind (no `bottom`) reproduces the reported bug.
+    blind = ratsnest.build_airwires(placed, [net])
+    assert _edge_set(blind) == {
+        frozenset({"J_INSTR", "U_TEMP"}),
+        frozenset({"U_TEMP", "R_BLEED"}),
+    }
+
+    aware = ratsnest.build_airwires(placed, [net], bottom=bottom)
+    assert _edge_set(aware) == {
+        frozenset({"J_INSTR", "R_BLEED"}),
+        frozenset({"J_INSTR", "U_TEMP"}),
+    }
+    # Exactly one side-crossing edge in the via-minimal tree (J_INSTR-
+    # U_TEMP), vs. two in the side-blind tree above.
+    n_crossing = sum(
+        1 for w in aware if (w.a in bottom) != (w.b in bottom)
+    )
+    assert n_crossing == 1
+
+
+def test_side_crossing_net_reordered_members_same_result():
+    # Member order shouldn't matter — Prim's always starts at index 0, so
+    # this pins that the fix isn't an artifact of the reported case's
+    # particular authored member order.
+    placed: dict[str, tuple[float, float]] = {
+        "U_TEMP": (20.0, 0.0),
+        "R_BLEED": (20.0, -6.0),
+        "J_INSTR": (20.0, 5.0),
+    }
+    net = _net("SIG", "signal", "U_TEMP", "R_BLEED", "J_INSTR")
+    bottom = frozenset({"U_TEMP"})
+    aware = ratsnest.build_airwires(placed, [net], bottom=bottom)
+    assert _edge_set(aware) == {
+        frozenset({"J_INSTR", "R_BLEED"}),
+        frozenset({"J_INSTR", "U_TEMP"}),
+    }
+
+
+def test_single_side_net_unaffected_by_bottom_set():
+    # Common case: no side-crossing available in this net at all (R_BLEED
+    # isn't even a member) — the via term must never perturb a pure
+    # single-side tree, `bottom` given or not.
+    placed: dict[str, tuple[float, float]] = {
+        "U1": (0.0, 0.0),
+        "U2": (10.0, 0.0),
+        "U3": (20.0, 0.0),
+    }
+    net = _net("D", "signal", "U1", "U2", "U3")
+    blind = ratsnest.build_airwires(placed, [net])
+    with_unrelated_bottom = ratsnest.build_airwires(
+        placed, [net], bottom=frozenset({"U1", "U2", "U3"})
+    )
+    assert _edge_set(blind) == _edge_set(with_unrelated_bottom)
+    assert _edge_set(blind) == {
+        frozenset({"U1", "U2"}),
+        frozenset({"U2", "U3"}),
+    }
+
+
+def test_mst_tie_break_is_deterministic():
+    # A unit square: A-B and A-D both tie at distance 1 for the first Prim's
+    # step, and B-C/D-C tie at distance 1 for the last — the nested-loop
+    # "first strict `<` wins" rule must pick the SAME edge set every time,
+    # unperturbed by the new via term (`bottom` omitted, so it's a no-op).
+    placed: dict[str, tuple[float, float]] = {
+        "A": (0.0, 0.0),
+        "B": (1.0, 0.0),
+        "C": (1.0, 1.0),
+        "D": (0.0, 1.0),
+    }
+    net = _net("SQ", "signal", "A", "B", "C", "D")
+    expected = {
+        frozenset({"A", "B"}),
+        frozenset({"A", "D"}),
+        frozenset({"B", "C"}),
+    }
+    for _ in range(5):
+        assert _edge_set(ratsnest.build_airwires(placed, [net])) == expected
+
+
 # ── signal trace ─────────────────────────────────────────────────────
 def test_trace_hops_through_series_resistor():
     # NET_A -- R1(2-pin) -- NET_B -- U1(multi-pin, terminus)

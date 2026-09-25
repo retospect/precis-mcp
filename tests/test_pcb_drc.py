@@ -367,8 +367,11 @@ def test_check_annular_ring_dedupes_a_drilled_pad_flashed_on_every_layer():
 def test_check_annular_ring_pad_ring_uses_the_narrow_axis():
     """A rect/obround THT pad's ring is thinnest on its NARROW dimension --
     checked against ``min(w, h)``, the conservative direction (unlike
-    :func:`drc.check_via_pad_keepout`'s deliberately-opposite ``max(w, h)``
-    keep-out-radius convention, which over-states the pad on purpose)."""
+    :func:`drc.check_via_pad_keepout`'s ``max(w, h)`` keep-out-radius
+    fallback, deliberately opposite for the same over-state-not-understate
+    reason -- since gr346004 that fallback only runs for a pad
+    :func:`drc._copper_item_polygon` cannot shape at all; the normal path
+    reads the pad's real outline)."""
     jlc_min = _CAP4.jlc_min["annular_ring_mm"]
     assert jlc_min is not None
     drill = 0.5
@@ -672,7 +675,11 @@ def test_check_via_pad_keepout_fires_when_a_via_lands_on_a_same_net_pad():
     assert f.rule == "via_pad_keepout" and f.severity == "error"
     required = _CAP4.jlc_min["trace_spacing_mm"]
     assert required is not None
-    assert f.margin_mm == pytest.approx(-0.3 - 0.5 - required, abs=1e-9)
+    # gr346004: the pad's real (square, so here numerically square-vs-disc
+    # coincide on centre-to-centre) outline, not a circumscribed circle --
+    # the via's centre sits INSIDE the 1x1mm rect, so the true edge gap is
+    # 0 and the only radius subtracted is the via's own.
+    assert f.margin_mm == pytest.approx(-0.3 - required, abs=1e-9)
 
 
 def test_check_via_pad_keepout_exempts_a_same_net_fixed_via():
@@ -747,6 +754,131 @@ def test_check_via_pad_keepout_fires_on_a_polygon_electrode_pad():
     findings = drc.check_via_pad_keepout(model, _CAP4)
     assert len(findings) == 1
     assert findings[0].rule == "via_pad_keepout"
+
+
+# ── gr346004: circumscribed-disc false positive on a non-square pad ──────
+
+
+def _rect_polygon_pad(net: str, *, w: float, h: float, x: float = 0.0, y: float = 0.0):
+    hw, hh = w / 2.0, h / 2.0
+    return {
+        "layer": "F.Cu",
+        "net": net,
+        "shape": "polygon",
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "poly": [
+            [x - hw, y - hh],
+            [x + hw, y - hh],
+            [x + hw, y + hh],
+            [x - hw, y + hh],
+        ],
+    }
+
+
+def test_check_via_pad_keepout_quiet_on_a_real_non_square_pad_gr346004():
+    """gr346004: prod design ``ewod-dogfood-2``'s merged reservoir pad
+    (``ARR1_RESV``) is a long, non-square electrode -- every real EWOD
+    electrode is a ``shape: polygon`` pad (:mod:`precis.pcb.generators`'s
+    own module docstring), never a bare circle. The OLD
+    ``pr = max(w, h) / 2.0`` keep-out radius (a circumscribed circle) read
+    that pad as reaching a full ``max(w, h) / 2`` in EVERY direction,
+    including straight out the SHORT edge -- so a via well clear of the
+    pad's real short-edge outline still measured as landing inside the
+    disc. Reproduced here with a 1mm x 2mm rect (the same aspect the real
+    reservoir pad has) and a via placed just outside the pad's true short
+    edge:
+
+    - OLD formula (hand-computed below, not a live code path any more --
+      this rule no longer has a ``pr = max(w, h) / 2.0`` branch for a real
+      pad): centre-to-centre 0.75mm, via radius 0.1mm, pad radius
+      ``max(1.0, 2.0) / 2 = 1.0mm`` -> gap = 0.75 - 0.1 - 1.0 = -0.35mm,
+      well below the 4-layer ``jlc_min`` of 0.09mm -- an ERROR that isn't
+      real (RED before this fix).
+    - NEW (this test, against the live rule): the via's true edge gap to
+      the rect's short (x) edge is 0.75 - 0.5 = 0.25mm, minus the via's own
+      0.1mm radius = 0.15mm -- clears the 0.09mm floor (GREEN after the
+      fix)."""
+    w, h = 1.0, 2.0
+    pad = _rect_polygon_pad("ARR1_RESV", w=w, h=h)
+    vx, vy, via_dia = 0.75, 0.0, 0.2
+    via = _via("ARR1_R0C2", "F.Cu", vx, vy, dia_mm=via_dia, drill_mm=0.1)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+
+    required = _CAP4.jlc_min["trace_spacing_mm"]
+    assert required is not None
+    old_pr = max(w, h) / 2.0
+    old_gap = math.hypot(vx, vy) - via_dia / 2.0 - old_pr
+    assert old_gap < required  # pins the false positive the old formula gave
+
+    assert drc.check_via_pad_keepout(model, _CAP4) == []
+
+
+def test_check_via_pad_keepout_still_fires_on_a_genuine_non_square_pad_violation():
+    """The false-positive fix above must not blunt real detection: a via
+    actually landing inside the SAME non-square pad's true outline is
+    still an error -- fixing gr346004 by exempting non-square pads instead
+    of measuring them correctly would have been the wrong fix (module
+    docstring's own "understating a pad can hide a real via-on-pad")."""
+    pad = _rect_polygon_pad("ARR1_RESV", w=1.0, h=2.0)
+    via = _via("OTHER", "F.Cu", 0.3, 0.3, dia_mm=0.2, drill_mm=0.1)  # inside the rect
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert findings[0].margin_mm is not None and findings[0].margin_mm < 0
+
+
+def test_check_via_pad_keepout_polygon_path_honours_pad_rotation():
+    """The circumscribed-disc approximation's whole selling point was
+    rotation independence -- dropping it for the pad's real outline only
+    stays correct if that outline is read AS ROTATED, not as an
+    axis-aligned stand-in built from ``w``/``h``. A 1mm square pad rotated
+    30 degrees about its own centre reaches x=0.683mm along +x at its
+    rotated corner -- BEYOND the unrotated half-width (0.5mm) a naive
+    w/h-only implementation would assume is the pad's whole reach in that
+    direction. A via centred exactly on that rotated corner must still
+    fire; nudged further out by more than the required clearance, past
+    the SAME corner (the polygon's true extreme point along +x, so it
+    stays the nearest point as the via moves straight away from it), it
+    must clear."""
+    theta = math.radians(30.0)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+
+    def rot(x: float, y: float) -> tuple[float, float]:
+        return (x * cos_t - y * sin_t, x * sin_t + y * cos_t)
+
+    square = [(0.5, 0.5), (-0.5, 0.5), (-0.5, -0.5), (0.5, -0.5)]
+    poly = [list(rot(x, y)) for x, y in square]
+    pad = {
+        "layer": "F.Cu",
+        "net": "E1",
+        "shape": "polygon",
+        "x": 0.0,
+        "y": 0.0,
+        "w": 1.0,
+        "h": 1.0,
+        "poly": poly,
+    }
+    corner_x, corner_y = rot(0.5, -0.5)  # the rotated corner reaching furthest +x
+    assert corner_x == pytest.approx(0.6830, abs=1e-3)
+    assert corner_x > 0.5  # past what an UNROTATED half-width would assume
+
+    via_dia = 0.1
+    on_corner = _via("OTHER", "F.Cu", corner_x, corner_y, dia_mm=via_dia, drill_mm=0.05)
+    model_on = {"layers": ["F.Cu"], "copper": [on_corner], "pads": [pad]}
+    findings = drc.check_via_pad_keepout(model_on, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+
+    required = _CAP4.jlc_min["trace_spacing_mm"]
+    assert required is not None
+    clear_x = corner_x + via_dia / 2.0 + required + 0.05
+    well_clear = _via("OTHER", "F.Cu", clear_x, corner_y, dia_mm=via_dia, drill_mm=0.05)
+    model_clear = {"layers": ["F.Cu"], "copper": [well_clear], "pads": [pad]}
+    assert drc.check_via_pad_keepout(model_clear, _CAP4) == []
 
 
 def test_check_via_pad_keepout_none_field_never_crashes():

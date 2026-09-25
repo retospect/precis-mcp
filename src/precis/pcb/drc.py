@@ -317,12 +317,14 @@ def _copper_item_polygon(item: dict[str, Any]) -> BaseGeometry | None:
     "what shape is this thing", answering differently) is this
     subsystem's own most-repeated defect (see :func:`pads_for_ir`'s own
     docstring in :mod:`precis.pcb.realize` for the pad-geometry half of
-    the same lesson). ``check_via_pad_keepout`` and ``check_outline_
-    containment`` still carry their own PRE-EXISTING circumscribed-circle
-    pad approximations (a via's keep-out uses plain circle/circle math
-    with no shapely dependency at all; containment predates this
+    the same lesson). ``check_via_pad_keepout`` now reads a pad's real
+    outline through this SAME function too (gr346004 — the disc it used
+    before over-stated a non-square pad's reach past its actual land,
+    firing on vias that cleared the real copper by a wide margin);
+    ``check_outline_containment`` still carries its own PRE-EXISTING
+    circumscribed-circle pad approximation (containment predates this
     function's pad support) — reported, not silently merged in, since
-    changing either one's numbers was not asked for here.
+    changing its numbers was not asked for here.
 
     **A pour's ``holes`` are antipads, not decoration.** :mod:`precis.pcb.
     planes` (:func:`~precis.pcb.planes.plane_pours`, its own docstring)
@@ -1051,12 +1053,17 @@ def check_via_pad_keepout(
     fixed-copper row, that electrode's own designed drop point, placed
     just outside the body by :mod:`precis.pcb.generators`'s own derived
     spacing (:func:`~precis.pcb.generators._plaza_capacity`) — and the
-    pad-radius approximation just below (circumscribed circle, not the
-    electrode's real crenellated/chamfered outline) over-states how close
-    the body actually reaches there — a false positive on real geometry,
-    not a wicking risk on it. A FOREIGN net's via, or an ordinary
-    (non-fixed) via on the SAME net, is unaffected: only ``item["fixed"]
-    and via_net == pad_net`` (both non-empty) skips.
+    circumscribed-circle pad approximation this rule used to use (not the
+    electrode's real crenellated/chamfered outline) over-stated how close
+    the body actually reaches there, a false positive on real geometry,
+    not a wicking risk on it (this is what gr346004 later confirmed by
+    arithmetic on prod ``ewod-dogfood-2``, and what this rule's geometry —
+    now read off the pad's real polygon, see just below — no longer does).
+    This carve-out stays regardless: it is a narrower, net-scoped policy
+    call about an authored drop point, not a stand-in for the geometry fix.
+    A FOREIGN net's via, or an ordinary (non-fixed) via on the SAME net, is
+    unaffected: only ``item["fixed"] and via_net == pad_net`` (both
+    non-empty) skips.
 
     The margin is DERIVED, not invented: ``trace_spacing_mm`` is already
     this project's figure for how close two independent copper features
@@ -1095,16 +1102,34 @@ def check_via_pad_keepout(
             pad_net_raw = pad.get("net")
             if via_fixed and via_net and pad_net_raw and via_net == pad_net_raw:
                 continue
-            px, py = float(pad["x"]), float(pad["y"])
-            w = float(pad.get("w", 0.0))
-            h = float(pad.get("h", w))
-            # Circumscribed, not inscribed: the same conservative direction
-            # check_outline_containment already takes for a rect/obround
-            # pad approximated as a circle — over-stating the pad can only
-            # produce an extra finding a human sees, understating it can
-            # hide a real via-on-pad.
-            pr = max(w, h) / 2.0
-            gap = _dist((vx, vy), (px, py)) - vr - pr
+            vx_y = Point(vx, vy)
+            pad_poly = _copper_item_polygon({**pad, "ctype": "pad"})
+            if pad_poly is not None and not pad_poly.is_empty:
+                # The pad's REAL outline (:func:`_copper_item_polygon` — the
+                # module docstring's ONE shape function, already the source
+                # of truth for a pad's physical reach in
+                # :func:`check_clearance`), not a circumscribed circle
+                # (gr346004): a non-square pad's circumscribed disc reaches
+                # well past its real land, so a via that clears the actual
+                # copper by a wide margin still read as a keepout violation
+                # against ground that, on the real board, is not there. A
+                # via is itself round, so its own shape stays a disc — only
+                # the PAD side of this pair gets the true-shape upgrade;
+                # ``gap`` is the exact edge-to-edge distance (0 the instant
+                # the via's centre enters the pad), same contract the old
+                # circle/circle formula kept.
+                gap = pad_poly.distance(vx_y) - vr
+            else:
+                px, py = float(pad["x"]), float(pad["y"])
+                w = float(pad.get("w", 0.0))
+                h = float(pad.get("h", w))
+                # Degenerate pad geometry only (zero-size, or a malformed
+                # polygon with < 3 vertices) — the same circumscribed-circle
+                # fallback this rule always used, kept here only so a pad
+                # that :func:`_copper_item_polygon` cannot shape at all
+                # still gets SOME check rather than none.
+                pr = max(w, h) / 2.0
+                gap = _dist((vx, vy), (px, py)) - vr - pr
             if gap >= required - _EPS:
                 continue
             pad_net, pad_layer = pad.get("net"), pad.get("layer")
@@ -1634,16 +1659,18 @@ def check_outline_containment(
 
     for pad in model.get("pads") or []:
         # Deliberately NOT _copper_item_polygon's exact rect/obround pad
-        # shape (that function's own docstring names this function as one
-        # of two pre-existing pad approximations it did not unify away) —
-        # this is a circumscribed-circle stand-in that predates the exact
-        # polygon, and swapping it in here would change which pads report
-        # a containment violation and how much area is claimed to overhang,
-        # a real behaviour change nobody asked for while fixing board-edge
-        # clearance's missing pad coverage. A THIRD pad-shape notion, now
-        # named rather than silently duplicated: circumscribed circle here,
-        # circumscribed circle again in check_via_pad_keepout, exact
-        # polygon everywhere else via _copper_item_polygon.
+        # shape (that function's own docstring names this function as the
+        # one remaining pre-existing pad approximation it did not unify
+        # away — check_via_pad_keepout's own circumscribed-circle stand-in
+        # was fixed under gr346004) — this is a circumscribed-circle
+        # stand-in that predates the exact polygon, and swapping it in here
+        # would change which pads report a containment violation and how
+        # much area is claimed to overhang, a real behaviour change nobody
+        # asked for here. A SECOND pad-shape notion, now named rather than
+        # silently duplicated: circumscribed circle here (gr346004 left
+        # unfixed, deliberately — see docs/backlog/
+        # pcb-pre-place-route-blocks.md), exact polygon everywhere else via
+        # _copper_item_polygon.
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
         geom = Point(float(pad["x"]), float(pad["y"])).buffer(
