@@ -121,9 +121,7 @@ def test_side_crossing_net_prefers_via_minimal_tree():
     }
     # Exactly one side-crossing edge in the via-minimal tree (J_INSTR-
     # U_TEMP), vs. two in the side-blind tree above.
-    n_crossing = sum(
-        1 for w in aware if (w.a in bottom) != (w.b in bottom)
-    )
+    n_crossing = sum(1 for w in aware if (w.a in bottom) != (w.b in bottom))
     assert n_crossing == 1
 
 

@@ -8,6 +8,7 @@ Runs against real PG (the ``store`` fixture) so the ``serves`` walk +
 from __future__ import annotations
 
 import re
+from argparse import Namespace
 from types import SimpleNamespace
 from typing import Any
 
@@ -209,7 +210,7 @@ class TestRelevanceFloor:
 
         def _search(
             _store: Any, _q: str, _exclude: list[int]
-        ) -> list[tuple[int, float]]:
+        ) -> list[tuple[int, float | None]]:
             return [(strong, 0.9), (weak, 0.1)]
 
         with caplog.at_level("INFO", logger="precis.quest.search"):
@@ -226,7 +227,8 @@ class TestRelevanceFloor:
         assert strong in served
         assert weak not in served
         assert any(
-            "dropped below-floor hit" in r.getMessage() and f"ref={weak}" in r.getMessage()
+            "dropped below-floor hit" in r.getMessage()
+            and f"ref={weak}" in r.getMessage()
             for r in caplog.records
         )
 
@@ -260,7 +262,8 @@ class TestRelevanceFloor:
         tag = Tag.open(f"quest:{qid}")
         assert tag not in store.tags_for(weak)
         assert any(
-            "dropped below-floor hit" in r.getMessage() and f"ref={weak}" in r.getMessage()
+            "dropped below-floor hit" in r.getMessage()
+            and f"ref={weak}" in r.getMessage()
             for r in caplog.records
         )
 
@@ -275,7 +278,7 @@ class TestRelevanceFloor:
 
         def _search(
             _store: Any, _q: str, _exclude: list[int]
-        ) -> list[tuple[int, float]]:
+        ) -> list[tuple[int, float | None]]:
             return [(weak, 0.0001)]
 
         step = run_search_step(store, qid, ["a query"], search_fn=_search)
@@ -326,9 +329,7 @@ class TestAcquireLegBoundedNotUnconditional:
         monkeypatch.setattr(PaperHandler, "acquire", _fake_acquire)
 
         search_fn = make_acquiring_search(qid, Hub(store=store))
-        step = run_search_step(
-            store, qid, ["acquire bound query"], search_fn=search_fn
-        )
+        step = run_search_step(store, qid, ["acquire bound query"], search_fn=search_fn)
 
         assert len(minted) == n_candidates  # every DOI was acquired ...
         assert step.papers_linked == MAX_LINK_PER_QUERY  # ... only 3 linked
@@ -353,7 +354,7 @@ class TestCliQuestSet:
         h = _handler(store)
         qid = _created_id(h.put(text="A quest set from the CLI"))
 
-        _cmd_set(store, SimpleNamespace(id=qid, key="compute_lane", value="off"))
+        _cmd_set(store, Namespace(id=qid, key="compute_lane", value="off"))
 
         live = store.get_ref(kind="quest", id=qid)
         assert live is not None
@@ -367,4 +368,4 @@ class TestCliQuestSet:
         qid = _created_id(h.put(text="A quest guarded from the CLI too"))
 
         with pytest.raises(BadInput):
-            _cmd_set(store, SimpleNamespace(id=qid, key="nope", value="x"))
+            _cmd_set(store, Namespace(id=qid, key="nope", value="x"))

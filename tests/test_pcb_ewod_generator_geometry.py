@@ -490,32 +490,29 @@ def test_diagonal_escape_neck_anchor_is_a_real_vertex_of_the_electrode_polygon()
             f"{pin}: neck anchor sits {poly.exterior.distance(p)}mm off the real "
             "boundary -- generators.py's own geometry mismatch, if this ever fails"
         )
-    assert checked >= 8, "expected several diagonal escapes on an 8x8 dogfood-sized field"
+    assert checked >= 8, (
+        "expected several diagonal escapes on an 8x8 dogfood-sized field"
+    )
 
 
-def test_net_islands_false_flags_a_genuinely_touching_diagonal_escape_as_split():
-    """The REAL mechanism (not generators.py, not realize.py): this
-    documents ``connectivity.py``'s own bug so the wrong file never gets
-    "fixed" for gr449483 again. ``net_islands`` (the oracle
-    ``drc.py::check_connectivity`` — and, after this change,
-    ``pcb_route``'s own status ladder — both call) approximates EVERY
-    pad, even a ``shape=='polygon'`` electrode, as an INSCRIBED DISK sized
-    from its bounding box (``connectivity._pad_primitives``: ``r =
-    min(w, h) / 2``) — unlike its own siblings
-    ``connected_pin_pairs``/``fixed_copper_pin_terminals`` in the SAME
-    module, which already read the real ring via ``_pad_poly``/
-    ``_touch_gap``. A cardinal escape's anchor sits at an edge MIDPOINT,
+def test_net_islands_reads_a_genuinely_touching_diagonal_escape_as_connected():
+    """Regression guard for ``connectivity._pad_primitives``' polygon-aware
+    pad model (gr449483). ``net_islands`` — which the oracle
+    ``drc.py::check_connectivity`` and ``pcb_route``'s own status ladder
+    both call — once approximated EVERY pad, even a ``shape=='polygon'``
+    electrode, as an INSCRIBED DISK sized from its bounding box (``r =
+    min(w, h) / 2``). A cardinal escape's anchor sits at an edge MIDPOINT,
     distance exactly ``half`` from centre — inside that disk (radius ~=
     ``half + tooth_depth``, since the ring's bbox is padded out by the
     zigzag). A diagonal escape's anchor sits at the pad's own CORNER,
-    distance ``half * sqrt(2)`` from centre — outside it. So every
-    diagonal escape's genuinely-touching neck (proved by the sibling test
-    above) reads as a SECOND, disconnected piece, and every cardinal one
-    never does — exactly gr449483's own measured split (0 of 30 cardinal
-    escapes flagged, all of the diagonal ones that route). This is
-    ``connectivity.py``'s pad model, not this module's anchor arithmetic;
-    fixing it belongs in ``connectivity._pad_primitives``, out of this
-    change's own file ownership."""
+    distance ``half * sqrt(2)`` from centre — outside it, so every diagonal
+    escape's genuinely-touching neck (proved by the sibling test above) read
+    as a SECOND, disconnected piece while every cardinal one never did —
+    gr449483's measured split. ``_pad_primitives`` now reads the real ring
+    via ``_pad_poly``/``_touch_gap``, like its siblings
+    ``connected_pin_pairs``/``fixed_copper_pin_terminals`` in the SAME
+    module, so NEITHER kind is flagged. A failure here means that pad model
+    has regressed to the inscribed disk."""
     from precis.pcb import connectivity, padplace
     from precis.store._pcb_ops import _normalize_local_footprint_pad
 
@@ -554,14 +551,9 @@ def test_net_islands_false_flags_a_genuinely_touching_diagonal_escape_as_split()
             cardinal_nets.add(net)
 
     assert diag_nets and cardinal_nets  # the 8x8 dogfood-sized field has both kinds
-    missing = diag_nets - flagged
-    assert not missing, (
-        f"{len(missing)} diagonal escape(s) were NOT flagged -- the disk-model gap "
-        f"this test documents may have been fixed; update this test's docstring: "
-        f"{sorted(missing)[:5]}"
-    )
-    false_cardinal = cardinal_nets & flagged
-    assert not false_cardinal, (
-        f"a cardinal escape was flagged disconnected too: {sorted(false_cardinal)[:5]} "
-        "-- the split gr449483 measured (diagonal-only) no longer holds"
+    falsely_split = (diag_nets | cardinal_nets) & flagged
+    assert not falsely_split, (
+        f"{len(falsely_split)} genuinely-touching escape(s) read as split -- "
+        f"connectivity._pad_primitives has regressed to the inscribed-disk pad "
+        f"model: {sorted(falsely_split)[:5]}"
     )

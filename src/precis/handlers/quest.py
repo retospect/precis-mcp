@@ -553,7 +553,17 @@ class QuestHandler(NumericRefHandler):
                 "edit(kind='quest') requires id=",
                 next="edit(kind='quest', id=N, mode='replace', text='new striving statement')",
             )
-        require_mode(spec=self.spec, verb="edit", mode=mode)
+        # A meta-only patch rewrites no text, so mode= has nothing to select
+        # and is not required. It cannot simply be validated either: the
+        # tool-layer ``tools/core.py::edit`` defaults mode= to the file-kind
+        # ``'find-replace'`` (see todo.py's KindSpec annotation, gr292913),
+        # so an omitted mode= arrives here as a value this kind rejects —
+        # which would make the incident-response shape this path exists for
+        # (``edit(kind='quest', id=N, meta={'compute_lane': 'off'})``)
+        # unreachable over the MCP door.
+        meta_only = meta is not None and (text is None or not text.strip())
+        if not meta_only:
+            require_mode(spec=self.spec, verb="edit", mode=mode)
         ref_id = self._coerce_id(id)
         ref = self._resolve_live_ref(ref_id)
 
@@ -587,10 +597,7 @@ class QuestHandler(NumericRefHandler):
                     ),
                 )
             return Response(
-                body=(
-                    f"patched meta {meta_changed} on {self._sense()} "
-                    f"id={ref.id}."
-                )
+                body=(f"patched meta {meta_changed} on {self._sense()} id={ref.id}.")
             )
 
         with self.store.tx() as conn:

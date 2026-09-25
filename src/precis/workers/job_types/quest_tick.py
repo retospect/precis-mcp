@@ -691,7 +691,9 @@ def _fallback_queries(
     meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
     rc = meta.get("reaction_config")
     is_catalyst = isinstance(rc, dict) and bool(rc)
-    bare_facets = _CATALYSIS_FALLBACK_FACETS if is_catalyst else _GENERIC_FALLBACK_FACETS
+    bare_facets = (
+        _CATALYSIS_FALLBACK_FACETS if is_catalyst else _GENERIC_FALLBACK_FACETS
+    )
     facets = [f"{topic} {facet}" for facet in bare_facets]
     return [facets[slice_count % len(facets)]]
 

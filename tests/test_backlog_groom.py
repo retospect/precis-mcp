@@ -368,11 +368,13 @@ def test_dispatched_job_carries_the_fixes_link(store: Store) -> None:
     run_dispatch_pass(store)
 
     with store.pool.connection() as conn:
-        job_id = conn.execute(
+        row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
             "AND retired_at IS NULL",
             (todo_id,),
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None, "dispatch minted no job for the todo"
+    job_id = row[0]
     fixes = store.links_for(job_id, direction="out", relation="fixes")
     assert [link.dst_ref_id for link in fixes] == [gid]
 
@@ -392,10 +394,12 @@ def test_dispatch_falls_back_to_params_gripe_id(store: Store) -> None:
     run_dispatch_pass(store)
 
     with store.pool.connection() as conn:
-        job_id = conn.execute(
+        row = conn.execute(
             "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
             "AND retired_at IS NULL",
             (todo_id,),
-        ).fetchone()[0]
+        ).fetchone()
+    assert row is not None, "dispatch minted no job for the todo"
+    job_id = row[0]
     fixes = store.links_for(job_id, direction="out", relation="fixes")
     assert [link.dst_ref_id for link in fixes] == [gid]

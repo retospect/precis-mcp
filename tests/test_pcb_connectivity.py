@@ -58,7 +58,12 @@ def _pad(net: str, x: float, y: float, *, layer: str = "F.Cu") -> dict[str, Any]
 
 
 def _poly_pad(
-    net: str, cx: float, cy: float, poly: list[tuple[float, float]], *, layer: str = "F.Cu"
+    net: str,
+    cx: float,
+    cy: float,
+    poly: list[tuple[float, float]],
+    *,
+    layer: str = "F.Cu",
 ) -> dict[str, Any]:
     xs = [p[0] for p in poly]
     ys = [p[1] for p in poly]
