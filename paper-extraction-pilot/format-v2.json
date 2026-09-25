@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "extends": "format.json",
+  "reason": "Round-one readers exposed ambiguous exactness, conflation of evidence mode with value generation, and inferred normalization hidden in free text.",
+  "unchanged": "Keep the top-level structure, source fingerprints, coverage, objects, groups, assertions, exact evidence anchors, reported_value, reported_unit, normalization_basis, uncertainty, conditions, limitations and gaps from format.json.",
+  "result_changes": {
+    "remove": ["origin", "bound"],
+    "add_required": {
+      "evidence_mode": ["experimental", "computational", "analytical", "mixed", "not_established"],
+      "value_generation": ["measurement", "fit", "calculation", "not_established"],
+      "source_attribution": ["own_work", "cited_work", "not_established"],
+      "value_form": ["point_estimate", "approximate_point", "interval", "lower_bound", "upper_bound", "not_established"],
+      "normalization_status": ["explicit", "inferred", "unresolved", "not_applicable"],
+      "normalization_evidence": ["anchor; nonempty for explicit/inferred normalization"],
+      "measurand_status": ["explicit", "interpreted", "ambiguous"]
+    },
+    "meaning": {
+      "evidence_mode": "What kind of evidence the authors used; an experimentally fitted parameter remains experimental, not a generic mode called fit.",
+      "value_generation": "How this quantity was obtained in the source. This pilot copies source reports; it does not run its own fits or calculations. Use not_established when the inspected method does not settle the distinction.",
+      "source_attribution": "Distinguish authors' own work from numbers attributed to another study.",
+      "value_form": "A reported measured value is a point estimate, not mathematically exact. Keep approximation and bound wording separately from uncertainty.",
+      "normalization_status": "Whether denominator meaning is explicitly stated, inferred across contexts, unresolved, or genuinely inapplicable. A fractional yield/efficiency also has a denominator and is not automatically not_applicable.",
+      "measurand_status": "Allows an interpretation such as capacitance proxy instead of silently changing the source's ECSA label. Explicit does not imply scientific validation."
+    }
+  },
+  "revision_policy": {
+    "round": 2,
+    "source": "Use the same immutable packets; inspect additional source chunks if needed and update the coverage record honestly.",
+    "history": "Write round2/<ref_id>.json; keep round1 unchanged.",
+    "numeric_policy": "Do not alter reported numbers just to reconcile conflicting source passages. Preserve alternatives and mark the ambiguity.",
+    "review": "Record a revision_notes array explaining semantic changes, especially if any value/context link was removed or narrowed. All outputs remain proposed."
+  }
+}

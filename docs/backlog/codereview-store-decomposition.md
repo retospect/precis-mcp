@@ -1,66 +1,38 @@
-# codereview: Store decomposition — 23 mixins → composed sub-stores
+# codereview: Store decomposition — mixin facade → composed sub-stores
 
-`store/store.py::Store` composes 23 mixins, 344 transitive methods, one
-flat namespace. Already caused one shipped MRO-shadowing incident
-(documented at `store/_refs_ops.py` — a runtime `add_tag` stub shadowed
-TagsMixin's real one; guard test added, but two runtime stubs still rely on
-MRO ordering). Mixins fake their contract with bare `pool: Any`-style
-annotations. This is file-splitting-by-inheritance, and it's why nobody can
-usefully annotate `store:` (see [codereview-store-typing-seam]).
+`store/store.py::Store` still composes 25 direct domain mixins in one flat
+namespace. This already caused one shipped MRO-shadowing incident (documented
+at `store/_refs_ops.py` — a runtime `add_tag` stub shadowed TagsMixin's real
+one); `tests/test_store_mixin_guard.py` now catches duplicate names, but the
+facade remains file-splitting-by-inheritance rather than domain namespacing.
 
-Design (agreed): composition with a delegating facade, migrated
-incrementally — `StoreCore` holds pool/tx lifecycle (the only stateful
-part); domain sub-stores hold a core + a `host` back-ref for their few
-cross-domain calls, exposed as cached properties; the flat method
-surface survives as thin typed delegations, deleted per-domain once
-call sites migrate. Inheritance alone can't do this: it gives sharing,
-not namespacing, and the flat-namespace collision class is the defect.
+Design (agreed): composition with a delegating facade, migrated incrementally —
+`StoreCore` holds pool/tx lifecycle; domain sub-stores hold a core + a `host`
+back-reference for their few cross-domain calls, exposed as cached properties.
+Inheritance alone gives sharing, not namespacing, and the flat-namespace
+collision class is the defect.
 
-Step 1 SHIPPED: `store/core.py::StoreCore` extracted; drafts carved —
-`_draft_ops.py::DraftStore(_AbbrevMixin)` composed as `store.drafts`
-(cached property), mixin guard rescoped to the remaining 21 mixins.
-Step 2 SHIPPED (all batches): every src + test call site now goes
-through `store.drafts.*`; the 76 transitional flat delegations are
-DELETED from `Store`, and `tests/test_store_drafts_facade.py` now pins
-the inverse (no flat draft name may reappear on `Store`). Test-double
-recipe that worked: hand-rolled fakes get a one-line
-`drafts = property(lambda self: self)`; `SimpleNamespace` fakes get
-`store.drafts = store`; tests monkeypatching a flat facade name on a
-REAL store must patch `store.drafts` instead (the flat patch silently
-stops intercepting).
+Steps 1–2 SHIPPED: `StoreCore` extracted and drafts carved as
+`store.drafts`; all source/test call sites migrated and transitional flat
+`Store` delegations deleted. `tests/test_store_drafts_facade.py` pins the
+composed shape.
 
-Step 3 SHIPPED (both halves): blocks carved — `_blocks_ops.py::BlockStore`
-composed as `store.blocks`, transitional flat delegations on `Store`,
-all src call sites migrated (244 sites, 87 files; store-internal
-consumers too: `_cache_ops` insert_blocks, and
-`_replace_card_combined` in cad/pcb/structure now via
-`self.blocks.*`). Measurement that picked blocks over refs: blocks =
-41 methods, 243 src + 429 test sites, 0 outbound cross-domain, 2
-inbound; refs = 48 methods, 761 src + 2,477 test sites, 20 inbound —
-and `get_ref`/`insert_ref`/`add_tag` are the most-called methods in
-the codebase, so refs is core-adjacent and needs its own design pass
-(maybe its flat names *stay* on the facade permanently).
-
-Step 3b SHIPPED: all 433 test call sites migrated, the 41 flat
-delegations DELETED from `Store`, `tests/test_store_blocks_facade.py`
-pins the inverse. Test-double recipe held (12 class fakes shimmed
-`blocks = property(lambda self: self)`; 2 `__init__`-assigned fakes got
-`self.blocks = self`; 7 real-store monkeypatches retargeted to
-`store.blocks`; one fake used `self.blocks` as its own recording list —
-renamed).
+Step 3 SHIPPED under the then-current `blocks` name; the vocabulary has since
+converged on chunks: `_chunks_ops.py::ChunkStore` is composed as
+`store.chunks`, all call sites migrated, and flat delegations deleted.
+`tests/test_store_chunks_facade.py` pins the final shape. The measurement that
+picked chunks over refs still governs the next decision: refs is the hottest,
+most cross-domain surface, so it needs a design pass before any carve.
 
 REMAINING (one domain per ship):
-- **DraftStore delegation blocks finish** — Both transitional delegation
-  block chains documented in `store/_draft_ops.py`'s module docstring
-  (DraftStore out of the Store mixin stack; DraftReviewStore out of
-  _draft_ops) are still present: three names reach the same method
-  (`store.X`, `store.drafts.X`, `store.drafts.review.X`) and nothing
-  forces the migration to finish. 3,737 LOC in the file. Follow the
-  finished carve pattern (drafts + blocks): all src call sites migrated
-  (verified), flat delegations on `Store` **and** `DraftStore` deleted
-  once call sites are confirmed off old names, `tests/test_store_drafts_facade.py`
-  parity checks held. (Related: see `codereview-handler-size-cleanups.md`
-  for the review-surface call-site migration residual.)
+- **DraftReviewStore delegation finish** — Transitional delegations documented
+  in `store/_draft_ops.py` still expose each review op under two names:
+  `store.drafts.X` and `store.drafts.review.X`. The flat `store.X` layer is
+  already gone. Follow the finished drafts/chunks carve pattern: confirm source
+  call sites use `store.drafts.review.*`, delete the `DraftStore` delegations,
+  and flip `tests/test_store_drafts_facade.py` from parity checks to an inverse
+  guard. (Related: `codereview-handler-size-cleanups.md` owns the review-surface
+  call-site migration residual.)
 - **Refs full pass — LESSER PRIORITY (Reto, 2026-08-15).** Design pass
   first (carve vs bless the flat names permanently — see measurement
   above; the design pass is cheap, ~150–400k tokens). If "carve": the

@@ -1,3 +1,10 @@
+---
+status: idea
+title: Worker rotations starve rescue passes for hours
+prio: high
+model: opus
+---
+
 # Worker rotations starve the rescue passes for hours at a time
 
 > Found 2026-08-14 while trying to observe a quest tick. The quest loop was the
@@ -123,6 +130,16 @@ its own process (the `agent` profile exists; melchior currently runs `all`).
 
 **Do not treat the alerts as noise.** They were correct and early; the gap is
 between detection and remediation.
+
+## Architecture review confirmation (2026-09-21)
+
+The defect remains structural: `workers/runner.py::run_loop` executes every
+chunk handler and ref-pass serially. `_REF_PASS_PRIORITY` changes who waits but
+cannot bound the wait, and the dedicated heartbeat thread only prevents a false
+host-dark signal; it does not make `sweeper`, `scheduler`, or quest rescue run.
+The durable target is separately supervised health/rescue, job/planner, and
+background enrichment/fetch loops. Priority bands may remain within each lane,
+but must not be the isolation boundary.
 
 ## Verify
 

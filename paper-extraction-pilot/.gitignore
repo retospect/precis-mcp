@@ -1,0 +1,22 @@
+# The pilot works on full source-paper text. This repository is public, so
+# only the code and schema contracts are tracked. Everything else holds source
+# text, quotations drawn from it, or measurements derived per paper.
+#
+# The allowlist names files explicitly on purpose: a glob such as !*.py would
+# also track scratch probe scripts, which routinely have source text pasted
+# into them. Add a new script here deliberately, or write it to /tmp.
+*
+!.gitignore
+!bindings.py
+!compact.py
+!evaluate.py
+!pilot.py
+!round6_report.py
+!round7_report.py
+!test_bindings.py
+!test_compact.py
+!test_pilot.py
+!format.json
+!format-v2.json
+!format-v3.json
+!format-v4.json

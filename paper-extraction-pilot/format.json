@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "purpose": "Local source-grounded extraction experiment; not production facts or approved nanopublications",
+  "policy": {
+    "source_authority": "The exported original chunk text, not summaries, candidates or previous model outputs",
+    "scope": "Extract a bounded representative set of own numerical results and the context that binds them; record inspected scope honestly",
+    "evidence": "Every object, group, membership, assertion, result and condition must carry short verbatim supporting quotations",
+    "ambiguity": "Retain uncertainty and alternative assignments; do not invent missing units, reference electrodes, uncertainty definitions, or normalization",
+    "separation": "Keep reported results, simulations, fitted parameters and quoted work distinct; do not combine maxima at different operating points",
+    "state": "All agent output is proposed. Passing mechanical checks is not scientific validation or human approval.",
+    "supplements": "A mention of supporting information is not proof that its contents were accessed",
+    "coverage": "Only list chunks actually inspected; available source text is not equivalent to inspected source text",
+    "revision": "Write a new round directory; never overwrite earlier extraction or review artifacts"
+  },
+  "top_level": {
+    "schema_version": 1,
+    "source_ref_id": "integer: copy from packet",
+    "source_fingerprint": "string: copy exactly from packet",
+    "round": "integer",
+    "producer": "string describing the actual producing agent; do not invent a model identifier",
+    "coverage": {"inspected_chunk_ids": ["integer"], "limitations": ["string"]},
+    "objects": ["object records"],
+    "groups": ["group records"],
+    "assertions": ["assertion records"],
+    "results": ["result records"],
+    "gaps": ["gap records"]
+  },
+  "anchor": {
+    "chunk_id": "integer from source packet",
+    "quote": "nonempty exact substring of the original chunk; preserve LaTeX/HTML and punctuation",
+    "occurrence": "optional zero-based integer, REQUIRED if the same quote occurs more than once in this chunk"
+  },
+  "object": {
+    "id": "document-local unique string",
+    "type": ["sample", "experiment", "protocol", "series", "model", "material", "figure", "table"],
+    "label": "string",
+    "evidence": ["anchor"]
+  },
+  "group": {
+    "id": "document-local unique string",
+    "label": "string",
+    "summary": "brief navigational interpretation, not replacement evidence",
+    "evidence": ["anchor"],
+    "members": [{
+      "chunk_id": "integer",
+      "role": ["description", "method", "qualifier", "result", "caption", "comparison", "model"],
+      "evidence": ["anchor"]
+    }],
+    "limitations": ["string"]
+  },
+  "assertion": {
+    "id": "document-local unique string",
+    "subject_id": "existing local object/group/result ID",
+    "predicate": ["uses-protocol", "qualifies", "reports-result-for", "measured-under", "refers-to", "compares", "derived-from", "same-source-object"],
+    "object_id": "existing local object/group/result ID",
+    "basis": ["explicit", "inferred"],
+    "evidence": ["anchor"],
+    "limitations": ["string"]
+  },
+  "result": {
+    "id": "document-local unique string",
+    "subject_id": "existing object ID",
+    "context_id": "existing group/object ID or null when unresolved",
+    "measurand": "specific quantity name, not a generic performance label",
+    "reported_value": "string containing the literal numerical value or bound appearing in its evidence; no calculations or normalization",
+    "reported_unit": "string or null",
+    "normalization_basis": "string or null, e.g. geometric electrode area vs catalyst mass vs active-metal mass",
+    "origin": ["reported_experiment", "reported_simulation", "reported_fit", "cited_other_work", "unspecified"],
+    "bound": ["exact", "approximate", "lower", "upper", "range", "unspecified"],
+    "uncertainty": "string or null; preserve the reported notation and do not infer its statistical meaning",
+    "evidence": ["anchor"],
+    "conditions": [{
+      "name": "string",
+      "value": "reported string appearing in this condition's evidence",
+      "unit": "string or null",
+      "basis": ["explicit", "inferred"],
+      "evidence": ["anchor"]
+    }],
+    "limitations": ["string"]
+  },
+  "gap": {
+    "type": ["missing_supplement", "unresolved_context", "figure_only", "not_located_in_inspected_text", "ocr_uncertainty", "schema_gap"],
+    "description": "string",
+    "chunk_ids": ["integer"]
+  },
+  "requested_minimum_per_paper": {
+    "objects": "At least one source-grounded object",
+    "groups": "At least one group linking description/context and results where justified",
+    "results": "About 4-8 representative numerical results when available; fewer is valid if evidence is insufficient",
+    "audit_targets": "Report any tempting but unjustified linkage, mismatched condition, alternative denominator, or boundary between simulation and experiment"
+  }
+}
