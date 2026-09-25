@@ -242,6 +242,57 @@ def test_edit_todo_meta_rejected_loudly_not_swallowed(
     assert live.meta.get("llm_tier") != "opus"
 
 
+def test_edit_quest_meta_reaches_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``edit(kind='quest', id=…, meta={'compute_lane': 'off'})`` through the
+    real MCP callable patches the quest's meta — not the pre-fix
+    ``args= keys ['meta'] not accepted by quest.edit`` (``QuestHandler.edit``
+    swallowed ``meta=`` via ``**_kw``; quest-tick-incident-fix.md item 1).
+    No ``text=`` is passed — the incident-response shape, no statement
+    rewrite required. A re-read shows the key, and a *sibling* key already
+    on ``meta`` survives the patch (patch-merge via ``store.stamp_ref_meta``,
+    not a whole-dict clobber)."""
+    mint_out = tools_core.put(kind="quest", text="A quest worth reasoning about")
+    m = re.search(r"\bqu(\d+)\b", mint_out)
+    assert m is not None, mint_out
+    ref_id = int(m.group(1))
+    store.stamp_ref_meta(ref_id, {"horizon": "long"})
+
+    out = tools_core.edit(kind="quest", id=ref_id, meta={"compute_lane": "off"})
+
+    assert not _is_error(out), _body(out)
+    assert f"id={ref_id}" in _body(out)
+    live = store.get_ref(kind="quest", id=ref_id)
+    assert live is not None
+    assert live.meta.get("compute_lane") == "off"
+    assert live.meta.get("horizon") == "long"  # sibling key untouched
+
+
+def test_edit_quest_meta_unknown_key_rejected_naming_allowlist(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """An unknown ``meta=`` key on ``edit(kind='quest', ...)`` is refused
+    loudly, naming the allowlist — not a silent drop into ``**_kw``."""
+    mint_out = tools_core.put(kind="quest", text="A quest with a guarded meta")
+    m = re.search(r"\bqu(\d+)\b", mint_out)
+    assert m is not None, mint_out
+    ref_id = int(m.group(1))
+
+    out = tools_core.edit(kind="quest", id=ref_id, meta={"anything_goes": "nope"})
+
+    assert _is_error(out), _body(out)
+    body = _body(out)
+    assert "[error:BadInput]" in body
+    assert "anything_goes" in body
+    assert "compute_lane" in body  # the allowlist is named in the error
+    live = store.get_ref(kind="quest", id=ref_id)
+    assert live is not None
+    assert "anything_goes" not in (live.meta or {})
+
+
 def test_put_todo_prio_reaches_the_handler_over_the_mcp_door(
     mounted_runtime: PrecisRuntime,
     store: Store,

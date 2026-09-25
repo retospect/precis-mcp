@@ -11,6 +11,9 @@
                                       # (reviewable chunk x persona) of a draft
     precis quest tag-papers 7        # backfill quest:<id> tag onto serving
                                       # papers (Drive-scoped browse)
+    precis quest set 7 compute_lane off  # incident lever — patch one
+                                      # allowlisted meta key (compute_lane/
+                                      # quest_body/rubric_objectives)
 
 The autonomous loop (rung 4d) is dark by default; ``tick`` is the manual, one-
 shot driver — explicit human intent, so it runs regardless of
@@ -228,6 +231,26 @@ def add_parser(subparsers: Any) -> None:
     tp.add_argument("id", type=int, help="Quest ref id.")
     tp.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    s = qsub.add_parser(
+        "set",
+        help="Patch one allowlisted quest meta key (compute_lane/quest_body/"
+        "rubric_objectives) — the operator lever for an incident (e.g. "
+        "`precis quest set 401863 compute_lane off` stops the force-acquire "
+        "fallback even if the MCP is wedged). Same allowlist + patch-merge "
+        "as edit(kind='quest', meta=...).",
+    )
+    s.add_argument("id", type=int, help="Quest ref id.")
+    s.add_argument(
+        "key", help="Meta key: compute_lane, quest_body, or rubric_objectives."
+    )
+    s.add_argument(
+        "value",
+        help="New value. Parsed as JSON when it parses (so 'off', 'true', "
+        "'[{...}]' work as string/bool/list); otherwise stored verbatim as "
+        "a string.",
+    )
+    s.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     r = qsub.add_parser(
         "run", help="Allocator: pick the best active quest + tick it once."
     )
@@ -406,6 +429,29 @@ def _cmd_tag_papers(store: Store, args: argparse.Namespace) -> None:
         print(f"quest tag-papers: {exc}", file=sys.stderr)
         sys.exit(2)
     print(f"quest {args.id}: tagged {n} serving paper(s) with tag={tag_value!r}")
+
+
+def _cmd_set(store: Store, args: argparse.Namespace) -> None:
+    """Patch one allowlisted quest meta key — see ``QuestHandler.edit``'s
+    ``meta=`` (:data:`precis.handlers.quest._META_ALLOWED_KEYS`). Routes
+    through the same handler as the MCP verb, so the allowlist + patch-merge
+    (``store.stamp_ref_meta``) can't drift between the two write paths.
+    ``value`` is JSON-decoded when it parses (so bools/lists/numbers work),
+    else kept as the raw string — ``off``/``on`` land as plain strings.
+    """
+    import json
+
+    from precis.dispatch import Hub
+    from precis.handlers.quest import QuestHandler
+
+    try:
+        value: Any = json.loads(args.value)
+    except ValueError:
+        value = args.value
+
+    handler = QuestHandler(hub=Hub(store=store))
+    resp = handler.edit(id=args.id, meta={args.key: value})
+    print(resp.body)
 
 
 def _cmd_run(store: Store, args: argparse.Namespace) -> None:
@@ -645,3 +691,5 @@ def run(args: argparse.Namespace) -> None:
         _cmd_tag_papers(store, args)
     elif args.quest_cmd == "run":
         _cmd_run(store, args)
+    elif args.quest_cmd == "set":
+        _cmd_set(store, args)

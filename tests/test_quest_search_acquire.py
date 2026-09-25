@@ -154,9 +154,16 @@ class TestMakeAcquiringSearch:
         store: Any = FakeStore(held_ids=[10, 11])
         out = fn(store, "NO NH3 Pd catalyst", [])
 
-        assert out == [10, 11, 901, 902]
+        # held-corpus hits carry their ts_rank_cd score; S2-acquired
+        # candidates carry score=None (no relevance signal of their own —
+        # see make_acquiring_search's docstring).
+        assert out == [(10, 1.0), (11, 1.0), (901, None), (902, None)]
         assert len(calls) == 2
-        assert calls[0]["context_ref_id"] == 164903
+        # No context_ref_id: acquire() must not link related-to->quest here
+        # unconditionally (quest-tick-incident-fix.md item 5) — only
+        # run_search_step's floor+MAX_LINK_PER_QUERY-bounded serves link may
+        # associate an acquired paper with the quest.
+        assert "context_ref_id" not in calls[0]
         assert "quest lit-search" in calls[0]["reason"]
 
     def test_exclude_ref_ids_removed_from_result(
@@ -176,7 +183,7 @@ class TestMakeAcquiringSearch:
         store: Any = FakeStore(held_ids=[10, 11])
         out = fn(store, "q", [11, 901])
 
-        assert out == [10]
+        assert out == [(10, 1.0)]
 
     def test_acquire_exception_is_swallowed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -201,7 +208,7 @@ class TestMakeAcquiringSearch:
         store: Any = FakeStore(held_ids=[10])
         out = fn(store, "q", [])
 
-        assert out == [10, 902]
+        assert out == [(10, 1.0), (902, None)]
 
     def test_s2_search_exception_still_returns_held(
         self, monkeypatch: pytest.MonkeyPatch
@@ -215,7 +222,7 @@ class TestMakeAcquiringSearch:
         store: Any = FakeStore(held_ids=[10, 11])
         out = fn(store, "q", [])
 
-        assert out == [10, 11]
+        assert out == [(10, 1.0), (11, 1.0)]
 
     def test_no_doi_candidates_are_skipped(
         self, monkeypatch: pytest.MonkeyPatch
@@ -320,7 +327,7 @@ class TestHydeCorpusHits:
             [],
         )
 
-        assert out == [42, 7]
+        assert out == [(42, 1.0), (7, 0.5)]
         assert len(calls) == 1
         assert calls[0]["queries"] == ["rate limiting step"]
         assert calls[0]["answers"] == [
@@ -346,7 +353,8 @@ class TestHydeCorpusHits:
         out = qsearch._hyde_corpus_hits(
             store, None, 1, "q", "a hypothetical passage", [2]
         )
-        assert out == [1]  # 2 excluded, 1 deduped to a single entry
+        # 2 excluded, 1 deduped to a single entry (first-seen score kept)
+        assert out == [(1, 1.0)]
 
     def test_degrades_to_empty_on_failure(
         self, monkeypatch: pytest.MonkeyPatch

@@ -194,8 +194,10 @@ class TestTickGrounding:
             "proposals": [],
         }
 
-        def _search(_store: Any, _q: str, _exclude: list[int]) -> list[int]:
-            return [stand_in]
+        def _search(
+            _store: Any, _q: str, _exclude: list[int]
+        ) -> list[tuple[int, float]]:
+            return [(stand_in, 1.0)]
 
         out = run_quest_tick(
             store,

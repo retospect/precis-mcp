@@ -347,6 +347,32 @@ automatically, and compute is off unless you pass `--compute`
 (`PRECIS_QUEST_LOOP_ENABLED` gates the autonomous loop; the manual CLI
 runs regardless).
 
+## Patch quest meta — compute_lane / quest_body / rubric_objectives
+
+`edit(kind='quest', id=N, meta={...})` patch-merges an **allowlisted** key
+into `refs.meta` (siblings untouched — never a whole-dict clobber); an
+unknown key is refused, naming the allowlist. Same allowlist over the CLI:
+`precis quest set <id> <key> <value>` (`value` is JSON-decoded when it
+parses, so `true`/`[...]` land typed — `off` stays the plain string
+`"off"`) — the lever to reach for when the MCP itself is the thing
+that's wedged.
+
+- **`compute_lane`** — `"off"` makes every armed tick of *this* quest
+  reason-only: no `--compute` dispatch, and no guaranteed-acquisition
+  literature fallback either (a quiet propose step used to force-fire a
+  lit-search + link regardless of this switch — fixed alongside the meta
+  write path itself, since before it nothing could set `compute_lane` on
+  a *live* quest at all). Any other value, or the key's absence, keeps
+  compute on.
+- **`quest_body`** — routes the tick to the weave (paper-writing) body
+  instead of the catalyst research loop; see `mark_weave_quest`.
+- **`rubric_objectives`** — the frontier's measured-axis override, see
+  "A research tick" above.
+
+`edit(kind='quest', id=N, text=...)` (the founding-statement rewrite) and
+`meta=` may be combined in one call, or `meta=` passed alone — no `text=`
+required for a meta-only patch.
+
 ## Trust a barrier before you rank on it
 
 `barrier_trusted` (behind the confirmed/provisional split above) goes

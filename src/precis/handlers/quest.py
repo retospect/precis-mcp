@@ -73,6 +73,21 @@ from precis.utils.next_block import render_next_section
 #: parser (which only gates *which* axes a kind may carry).
 _LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
 
+#: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
+#: fix): ``compute_lane`` (the reason-only switch —
+#: :data:`precis.workers.job_types.quest_tick.COMPUTE_LANE_META_KEY`),
+#: ``quest_body`` (catalyst vs. weave tick routing —
+#: :data:`precis.quest.weave_tick.QUEST_BODY_META_KEY`), ``rubric_objectives``
+#: (the frontier's measured-axis override, :mod:`precis.quest.frontier`).
+#: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
+#: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
+#: bag; anything else still goes through ``put()``/create-time meta. Before
+#: this, nothing could set ``compute_lane`` on a live quest at all — the
+#: qu401863 incident's cause 2 (``quest-tick-incident-fix.md``).
+_META_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {"compute_lane", "quest_body", "rubric_objectives"}
+)
+
 #: ``PRIO:`` tag ↔ ``refs.prio`` column translation — the striving-weight
 #: scale the todo tree rotates on and slice 2's reweighting reads
 #: (:mod:`precis.quest.reweight`). Shared with the gripe handler; see
@@ -507,18 +522,31 @@ class QuestHandler(NumericRefHandler):
         id: str | int | None = None,
         mode: str = "replace",
         text: str | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        """In-place rewrite of the founding striving statement (``refs.title``).
+        """In-place rewrite of the founding striving statement (``refs.title``),
+        and/or a patch-merge onto the quest's ``meta`` (allowlisted).
 
-        Only ``mode='replace'`` is supported. Mirrors ``memory``/``todo``'s
-        edit: same id, same ``STATUS:``/``PRIO:`` tags, same logbook entries,
-        same ``serves``/``served-by`` links — only the statement text
-        changes. The old wording lands in ``ref_events`` as a
+        Only ``mode='replace'`` is supported. ``text=`` mirrors ``memory``/
+        ``todo``'s edit: same id, same ``STATUS:``/``PRIO:`` tags, same
+        logbook entries, same ``serves``/``served-by`` links — only the
+        statement text changes. The old wording lands in ``ref_events`` as a
         ``body_replaced`` row (``view='log'`` for the diff). Distinct from
         the logbook append (``put(id=N, text=…, entry=…)``), which never
         touches the founding text; this is the "wordsmith the striving,
         keep everything else" verb (gripe 169979).
+
+        ``meta=`` is a **closed allowlist**
+        (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_body``/
+        ``rubric_objectives``), patch-merged via ``store.stamp_ref_meta``
+        (existing keys outside the patch untouched — never a whole-dict
+        clobber). An unknown key is refused naming the allowlist, mirroring
+        ``todo.tag()``'s ``check_meta_keys_promotable`` gate. May be combined
+        with ``text=`` in one call, or passed alone (no ``text=`` required)
+        — the incident-response path: ``edit(kind='quest', id=N,
+        meta={'compute_lane': 'off'})`` needs no statement rewrite
+        (``quest-tick-incident-fix.md``).
         """
         if id is None:
             raise BadInput(
@@ -526,16 +554,45 @@ class QuestHandler(NumericRefHandler):
                 next="edit(kind='quest', id=N, mode='replace', text='new striving statement')",
             )
         require_mode(spec=self.spec, verb="edit", mode=mode)
-        if text is None or not text.strip():
-            raise BadInput(
-                "edit(kind='quest', mode='replace') requires text=",
-                next=(
-                    "edit(kind='quest', id=N, mode='replace', "
-                    "text='new striving statement')"
-                ),
-            )
         ref_id = self._coerce_id(id)
         ref = self._resolve_live_ref(ref_id)
+
+        meta_changed: list[str] = []
+        if meta is not None:
+            unknown = sorted(set(meta) - _META_ALLOWED_KEYS)
+            if unknown:
+                allowed = ", ".join(sorted(_META_ALLOWED_KEYS))
+                raise BadInput(
+                    f"edit(kind='quest', meta=...) key(s) {unknown} not "
+                    f"allowed — the allowlist is [{allowed}]",
+                    options=sorted(_META_ALLOWED_KEYS),
+                    next=(
+                        "drop the unrecognised key(s); other quest meta is "
+                        "set at create time via put()"
+                    ),
+                )
+            self.store.stamp_ref_meta(ref_id, meta)
+            meta_changed = sorted(meta)
+
+        if text is None or not text.strip():
+            if not meta_changed:
+                raise BadInput(
+                    "edit(kind='quest', mode='replace') requires text= "
+                    "(or meta= to patch compute_lane/quest_body/"
+                    "rubric_objectives)",
+                    next=(
+                        "edit(kind='quest', id=N, mode='replace', "
+                        "text='new striving statement') or "
+                        "edit(kind='quest', id=N, meta={'compute_lane': 'off'})"
+                    ),
+                )
+            return Response(
+                body=(
+                    f"patched meta {meta_changed} on {self._sense()} "
+                    f"id={ref.id}."
+                )
+            )
+
         with self.store.tx() as conn:
             old_text = self.store.replace_ref_text(
                 ref.id, text, source="agent", conn=conn
@@ -547,10 +604,11 @@ class QuestHandler(NumericRefHandler):
                 self.store.chunks.upsert_card_combined(ref.id, text, conn=conn)
         old_words = len((old_text or "").split())
         new_words = len(text.split())
+        meta_note = f" meta patched: {meta_changed}." if meta_changed else ""
         return Response(
             body=(
                 f"replaced striving statement of {self._sense()} id={ref.id} "
-                f"({old_words} → {new_words} words). "
+                f"({old_words} → {new_words} words).{meta_note} "
                 "logbook/links/tags untouched. view='log' for the full diff."
             )
         )

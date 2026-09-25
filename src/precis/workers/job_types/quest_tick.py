@@ -196,7 +196,7 @@ def _dry_rest_escalate_threshold() -> int:
     return env_int("PRECIS_QUEST_DRY_REST_ESCALATE", 3, lo=1, hi=100_000)
 
 
-def _force_acquire_enabled() -> bool:
+def _force_acquire_enabled(store: Any, quest_id: int) -> bool:
     """Gate for the guaranteed-acquisition fallback (default ON).
 
     ``PaperHandler.acquire`` is idempotent (identifier-collapse on an
@@ -206,9 +206,19 @@ def _force_acquire_enabled() -> bool:
     costs nothing. A later dial-down (once a quest's corpus fills, or
     acquisition volume needs throttling) is just flipping this env var, no
     redeploy of the fallback logic itself.
+
+    Also off whenever ``meta.compute_lane == "off"``
+    (:func:`_quest_compute_enabled`) — a quest declared reason-only must not
+    force-acquire literature just because its own propose step stayed quiet
+    (qu401863's cause 1, ``quest-tick-incident-fix.md``: the fallback fired
+    on every quiet slice regardless of the compute-lane switch, appending
+    hardcoded catalysis facets to an unrelated quest's title and linking
+    whatever the corpus + Semantic Scholar returned).
     """
     raw = os.environ.get("PRECIS_QUEST_FORCE_ACQUIRE", "true").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return _quest_compute_enabled(store, quest_id)
 
 
 PARAMS_SCHEMA: dict[str, Any] = {
@@ -621,6 +631,31 @@ def _quest_topic(store: Store, quest_id: int) -> str:
     return (ref.title or "").strip()
 
 
+#: Catalysis-specific facets appended to the topic for a quest that declares
+#: ``meta.reaction_config`` (a catalyst-discovery quest — see
+#: :func:`_quest_topic`). Kept byte-identical to the pre-incident behaviour
+#: (``quest-tick-incident-fix.md`` explicitly leaves ``reaction_config``
+#: quests' facets unchanged).
+_CATALYSIS_FALLBACK_FACETS: tuple[str, ...] = (
+    "DFT barrier mechanism",
+    "dopant single-atom-alloy catalyst",
+    "review 2023 2024",
+)
+
+#: Domain-neutral facets for every other quest (the default — no reaction
+#: chemistry declared). This is the qu401863 root-cause fix: the fallback
+#: used to append catalysis-specific facets to ANY quiet quest's title
+#: (funding, governance, biology, …), so the lit-search literally asked the
+#: corpus for e.g. "A standing flow of money for open, independent research
+#: … DFT barrier mechanism" and linked whatever scored — the query was
+#: catalytic, not the ranking (``quest-tick-incident-fix.md`` cause 1).
+_GENERIC_FALLBACK_FACETS: tuple[str, ...] = (
+    "mechanism",
+    "review 2023 2024",
+    "recent advances",
+)
+
+
 def _fallback_queries(
     # test_quest_tick_job.py calls this directly with a bare SimpleNamespace
     # (FakeCtx.store), diverging from Store.
@@ -637,16 +672,27 @@ def _fallback_queries(
     facet list keyed on the quest's own topic and picks one by
     ``slice_count % N`` — so consecutive fallback slices explore mechanism,
     then dopants, then recent reviews, instead of the same hit over and over.
+
+    The facet list itself is keyed on whether the quest declares
+    ``meta.reaction_config`` (a catalyst-discovery quest, per
+    :func:`_quest_topic`): with it, today's three catalysis facets
+    (:data:`_CATALYSIS_FALLBACK_FACETS`) stay byte-identical; without it, a
+    domain-neutral set (:data:`_GENERIC_FALLBACK_FACETS`) — a non-chemistry
+    quest must never have "DFT barrier mechanism" appended to its title.
     """
     topic = _quest_topic(store, quest_id)
     if not topic:
         return []
 
-    facets = [
-        f"{topic} DFT barrier mechanism",
-        f"{topic} dopant single-atom-alloy catalyst",
-        f"{topic} review 2023 2024",
-    ]
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        ref = None
+    meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
+    rc = meta.get("reaction_config")
+    is_catalyst = isinstance(rc, dict) and bool(rc)
+    bare_facets = _CATALYSIS_FALLBACK_FACETS if is_catalyst else _GENERIC_FALLBACK_FACETS
+    facets = [f"{topic} {facet}" for facet in bare_facets]
     return [facets[slice_count % len(facets)]]
 
 
@@ -1002,7 +1048,9 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     # slice regardless (dial-able via PRECIS_QUEST_FORCE_ACQUIRE). If this
     # tick ran zero searches of its own, fire a rotating fallback query built
     # from the quest's own goal — never fails the slice.
-    if _force_acquire_enabled() and not getattr(outcome, "searches_run", 0):
+    if _force_acquire_enabled(ctx.store, quest_id) and not getattr(
+        outcome, "searches_run", 0
+    ):
         try:
             from precis.quest.search import run_search_step
 

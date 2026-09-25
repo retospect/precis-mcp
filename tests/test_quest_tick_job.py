@@ -909,6 +909,36 @@ class TestFallbackLitSearch:
         assert calls == []
         assert not any("fallback lit-search" in text for _kind, text in ctx.chunks)
 
+    def test_compute_lane_off_skips_fallback_and_links_no_paper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """quest-tick-incident-fix.md item 2: ``meta.compute_lane == 'off'``
+        must stop the force-acquire fallback even with
+        ``PRECIS_QUEST_FORCE_ACQUIRE`` left at its default-ON — a quest
+        declared reason-only must not force-acquire literature just because
+        its own propose step stayed quiet."""
+        _stub_tick(monkeypatch, _Outcome(searches_run=0))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
+            title="A reason-only quest",
+            meta={"compute_lane": "off", "reaction_config": {"substrate": "NO"}},
+        )
+
+        calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "precis.quest.search.run_search_step",
+            lambda *a, **kw: calls.append(kw),
+        )
+
+        out = qt._dispatch(ctx, qt.SPEC)
+
+        assert isinstance(out, Yield)
+        assert calls == []  # no lit-search ran -> no paper could be linked
+        assert not any("fallback lit-search" in text for _kind, text in ctx.chunks)
+
     def test_fallback_query_rotates_by_slice_count(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -932,6 +962,42 @@ class TestFallbackLitSearch:
         ctx = FakeCtx(_meta())
         ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(title="", meta={})
         assert qt._fallback_queries(ctx.store, 164903, 1) == []
+
+    def test_facets_key_on_reaction_config_presence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """quest-tick-incident-fix.md item 3 (the root-cause fix): a quest
+        WITH ``meta.reaction_config`` still gets today's three catalysis
+        facets, byte-identical; a quest WITHOUT it must never see "DFT" /
+        "dopant" / "single-atom-alloy" / "barrier" appended to its title —
+        the qu401863 incident (a funding quest searched for its own title
+        + "DFT barrier mechanism")."""
+        ctx = FakeCtx(_meta())
+
+        # WITH reaction_config: the pre-incident catalysis facets, unchanged.
+        # _quest_topic() prefers reaction_config's substrate+target over the
+        # title when reaction_config is present — see _fake_quest_ref.
+        ctx.store.get_ref = lambda *, kind, id: self._fake_quest_ref()
+        catalyst_facets = {
+            qt._fallback_queries(ctx.store, 164903, i)[0] for i in range(3)
+        }
+        topic = "NO NH3"
+        assert catalyst_facets == {
+            f"{topic} DFT barrier mechanism",
+            f"{topic} dopant single-atom-alloy catalyst",
+            f"{topic} review 2023 2024",
+        }
+
+        # WITHOUT reaction_config: domain-neutral facets only.
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
+            title="A standing flow of money for open, independent research",
+            meta={},
+        )
+        generic_facets = " ".join(
+            qt._fallback_queries(ctx.store, 164903, i)[0] for i in range(3)
+        )
+        for forbidden in ("DFT", "dopant", "single-atom-alloy", "barrier"):
+            assert forbidden not in generic_facets
 
 
 class TestRegistration:

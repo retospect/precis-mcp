@@ -37,6 +37,19 @@ the plain keyword ``query``) keeps its exact 3-argument shape unchanged.
 Degrades to a fused-LEXICAL-only result when no embedder is wired (never
 raises) — same contract as the broad ``search()`` verb with no embedder
 configured.
+
+**Relevance floor (quest-tick-incident-fix.md).** Every ``search_fn`` now
+returns ``(ref_id, score)`` pairs instead of bare ids — the score each leg
+already computed and used to discard (``ts_rank_cd``, the fused block
+score) is now what :func:`run_search_step` floors on before linking (see
+:func:`relevance_floor`; default is log-only, ``0.0``). The one leg with no
+native score — :func:`make_acquiring_search`'s Semantic Scholar candidates
+— carries ``score=None`` and is bounded the other way: it no longer links
+``related-to``→quest itself (that used to happen unconditionally, inside
+``PaperHandler.acquire``, *before* this step's own slice/floor ever ran —
+the unbounded path qu401863's stray ``related-to`` papers came from); the
+only link either leg can produce is this step's ``serves``, gated by the
+same floor+:data:`MAX_LINK_PER_QUERY` cut as everything else.
 """
 
 from __future__ import annotations
@@ -51,7 +64,7 @@ from precis.quest.gaps import _handle, _live_servers
 from precis.quest.logbook import append_entry
 from precis.quest.tagging import quest_tag_value
 from precis.store.types import Tag
-from precis.utils.env import env_int
+from precis.utils.env import env_float, env_int
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -73,8 +86,35 @@ def _acquire_per_query() -> int:
     return env_int("PRECIS_QUEST_ACQUIRE_PER_QUERY", 4, lo=1, hi=10)
 
 
-#: (store, query, exclude_ref_ids) -> ranked paper ref_ids (best first).
-SearchFn = Callable[["Store", str, list[int]], list[int]]
+def relevance_floor() -> float:
+    """Minimum score a hit must clear to be linked in :func:`run_search_step`
+    (quest-tick-incident-fix.md item 4 — the "score computed and discarded"
+    fix; default **0.0**, i.e. log every score but filter nothing).
+
+    ``0.0`` is a deliberate no-op default, not a placeholder: every scored
+    leg here (``ts_rank_cd`` off :func:`_default_paper_search`, the fused
+    block score off :func:`_hyde_corpus_hits`) is non-negative by
+    construction, so a hit is never dropped until an operator raises this.
+    The backlog's own decision log is explicit that the floor "wants a
+    number from real score distributions, not a guess" — ship
+    log-and-don't-filter for a while, then set it from what got logged.
+
+    Scores are **not comparable across legs** — lexical ``ts_rank_cd`` and
+    the fused semantic+lexical block score live on different scales, and
+    the S2 acquire leg (:func:`make_acquiring_search`) has no score at all
+    (its candidates carry ``score=None`` and always pass the floor — see
+    that function). A single global floor is a known simplification, fine
+    at the ``0.0`` default; raising it applies unevenly per leg until each
+    leg's distribution is characterised separately.
+    """
+    return env_float("PRECIS_QUEST_SEARCH_FLOOR", 0.0, lo=0.0)
+
+
+#: (store, query, exclude_ref_ids) -> ranked ``(ref_id, score)`` pairs (best
+#: first). ``score`` is ``None`` when the leg has no relevance signal to
+#: offer (e.g. the S2 acquire leg's un-ranked candidates) — :func:`
+#: run_search_step`'s floor never drops a ``None``-scored hit, only logs it.
+SearchFn = Callable[["Store", str, list[int]], list[tuple[int, float | None]]]
 
 #: Parses ``id=N`` out of the ``PaperHandler.acquire`` ack (mirrors
 #: ``_good_search._ID_IN_ACK``).
@@ -90,11 +130,17 @@ class SearchStep:
 
 def _default_paper_search(
     store: Store, query: str, exclude_ref_ids: list[int]
-) -> list[int]:
-    """Safe corpus-only default: lexical paper-title lookup, no network."""
+) -> list[tuple[int, float]]:
+    """Safe corpus-only default: lexical paper-title lookup, no network.
+
+    Returns ``(ref_id, rank)`` pairs, best first — ``rank`` is
+    ``search_refs_lexical``'s own ``ts_rank_cd`` score, previously computed
+    and discarded here; :func:`run_search_step` now floors on it (quest-
+    tick-incident-fix.md item 4).
+    """
     ex = set(exclude_ref_ids)
     rows = store.search_refs_lexical(q=query, kind="paper", limit=10)
-    return [r.id for (r, _rank) in rows if r.id not in ex]
+    return [(r.id, rank) for (r, rank) in rows if r.id not in ex]
 
 
 @dataclass(frozen=True)
@@ -137,13 +183,16 @@ def _hyde_corpus_hits(
     exclude_ref_ids: list[int],
     *,
     limit: int = 10,
-) -> list[int]:
+) -> list[tuple[int, float]]:
     """The HyDE-fused corpus leg: ``query`` + ``hypothetical`` run through
     :class:`precis.handlers._paper_search.FusedBlockSearch` (``queries=
     [query], answers=[hypothetical]``) — the same broad-retrieval fusion the
     ``search(kind='paper', queries=…, answers=…)`` verb exposes — in place of
-    :func:`_default_paper_search`'s plain lexical lookup. Ranked paper
-    ref_ids, best first, deduped, ``exclude_ref_ids`` dropped.
+    :func:`_default_paper_search`'s plain lexical lookup. Ranked ``(ref_id,
+    score)`` pairs, best first, deduped, ``exclude_ref_ids`` dropped — the
+    fused score was previously computed and discarded here;
+    :func:`run_search_step` now floors on it (quest-tick-incident-fix.md
+    item 4).
 
     Degrades to ``[]`` on any failure (an embedder-less store, a store stub
     missing a method this pulls in, a flaky embed call) — one search entry's
@@ -177,12 +226,12 @@ def _hyde_corpus_hits(
         return []
     ex = set(exclude_ref_ids)
     seen: set[int] = set()
-    out: list[int] = []
-    for _block, ref, _score in result.hits:
+    out: list[tuple[int, float]] = []
+    for _block, ref, score in result.hits:
         if ref.id in ex or ref.id in seen:
             continue
         seen.add(ref.id)
-        out.append(ref.id)
+        out.append((ref.id, float(score)))
     return out
 
 
@@ -192,13 +241,29 @@ def make_acquiring_search(quest_id: int, hub: Any) -> SearchFn:
     Layers Semantic Scholar over :func:`_default_paper_search`: held-corpus
     lexical hits come first (free, instant), then each of the top S2 results
     for the query — anything carrying a DOI — is queued through
-    ``PaperHandler.acquire`` (idempotent stub mint + link ``serves``→quest;
-    ``fetch_oa`` ingests the PDF later, out of band). A bad DOI or a flaky S2 /
-    fetch round-trip is swallowed per-candidate — one dud result must never
-    sink the whole lit-search step.
+    ``PaperHandler.acquire`` (idempotent stub mint + ``fetch_oa`` pickup
+    later, out of band). A bad DOI or a flaky S2 / fetch round-trip is
+    swallowed per-candidate — one dud result must never sink the whole
+    lit-search step.
+
+    Unlike the pre-incident version, this does **not** pass
+    ``context_ref_id=quest_id`` to ``acquire()`` — that call linked
+    ``related-to``→quest for every accepted (has-DOI) S2 candidate
+    (up to :func:`_acquire_per_query`, default 4 per query)
+    *unconditionally*, before :func:`run_search_step` ever slices to
+    :data:`MAX_LINK_PER_QUERY` or applies the relevance floor — the
+    unbounded path qu401863's four surviving ``related-to`` papers
+    (pa410522–25) came from (quest-tick-incident-fix.md item 5). An S2
+    result carries no relevance score of its own (unlike the held-corpus
+    leg's ``ts_rank_cd``), so it is returned with ``score=None`` — the
+    caller's floor never drops it, but it is now bounded exactly like every
+    other candidate: ``serves``→quest is the *only* link this step can
+    create, and only for the top :data:`MAX_LINK_PER_QUERY` survivors.
     """
 
-    def _search(store: Store, query: str, exclude_ref_ids: list[int]) -> list[int]:
+    def _search(
+        store: Store, query: str, exclude_ref_ids: list[int]
+    ) -> list[tuple[int, float | None]]:
         from precis.handlers.paper import PaperHandler
         from precis.ingest.semantic_scholar import search_s2_papers
 
@@ -219,7 +284,6 @@ def make_acquiring_search(quest_id: int, hub: Any) -> SearchFn:
             try:
                 resp = handler.acquire(
                     identifier=f"doi:{doi}",
-                    context_ref_id=quest_id,
                     reason=f"quest lit-search: {query[:120]}",
                     verify=True,
                 )
@@ -236,14 +300,17 @@ def make_acquiring_search(quest_id: int, hub: Any) -> SearchFn:
                 acquired.append(int(m.group(1)))
 
         ex = set(exclude_ref_ids)
-        ordered = held + acquired
+        ordered: list[tuple[int, float | None]] = [
+            *held,
+            *((rid, None) for rid in acquired),
+        ]
         seen: set[int] = set()
-        out: list[int] = []
-        for rid in ordered:
+        out: list[tuple[int, float | None]] = []
+        for rid, score in ordered:
             if rid in ex or rid in seen:
                 continue
             seen.add(rid)
-            out.append(rid)
+            out.append((rid, score))
         return out
 
     return _search
@@ -281,10 +348,21 @@ def run_search_step(
     tag (see :mod:`precis.quest.tagging`) — the same tag the Drive-scoped
     hub links point at, so a paper this step links is immediately visible
     there without waiting on a backfill.
+
+    **Relevance floor** (quest-tick-incident-fix.md item 4): each merged hit
+    carries the score its leg computed (``ts_rank_cd`` off
+    :func:`_default_paper_search`, the fused score off
+    :func:`_hyde_corpus_hits`; the S2 acquire leg's un-ranked candidates
+    carry ``score=None``). A scored hit below :func:`relevance_floor` is
+    dropped before the :data:`MAX_LINK_PER_QUERY` slice — never linked — and
+    logged with its score; a ``None``-scored hit always passes (there is
+    nothing to floor it against). Default floor is ``0.0`` (log-only, see
+    :func:`relevance_floor`).
     """
     search = search_fn or _default_paper_search
     quest_tag = Tag.open(quest_tag_value(quest_id, store))
     existing = {s.id for s in _live_servers(store, quest_id) if s.kind == "paper"}
+    floor = relevance_floor()
     queries_run = 0
     linked_total = 0
     notes: list[str] = []
@@ -295,7 +373,7 @@ def run_search_step(
             continue
         query = entry.query
         queries_run += 1
-        merged: list[int] = []
+        merged: list[tuple[int, float | None]] = []
         if entry.hypothetical:
             merged.extend(
                 _hyde_corpus_hits(
@@ -307,13 +385,27 @@ def run_search_step(
                     list(existing),
                 )
             )
-        seen = set(merged)
-        for rid in search(store, query, list(existing)):
+        seen = {rid for rid, _score in merged}
+        for rid, score in search(store, query, list(existing)):
             if rid in seen:
                 continue
             seen.add(rid)
-            merged.append(rid)
-        hits = merged[:MAX_LINK_PER_QUERY]
+            merged.append((rid, score))
+        above_floor: list[int] = []
+        for rid, score in merged:
+            if score is not None and score < floor:
+                log.info(
+                    "quest %s: dropped below-floor hit ref=%s score=%.4f "
+                    "floor=%.4f query=%r",
+                    quest_id,
+                    rid,
+                    score,
+                    floor,
+                    query[:80],
+                )
+                continue
+            above_floor.append(rid)
+        hits = above_floor[:MAX_LINK_PER_QUERY]
         linked: list[int] = []
         for rid in hits:
             if rid in existing:
@@ -361,5 +453,6 @@ __all__ = [
     "SearchQuery",
     "SearchStep",
     "make_acquiring_search",
+    "relevance_floor",
     "run_search_step",
 ]
