@@ -510,12 +510,26 @@ def claim_executor_jobs(
     invokes on its own claimed rows before running them (mirrors
     ssh_node's original inline guard, now shared).
 
-    **Claim ordering (slice 6a).** ``ORDER BY COALESCE(prio, 5) ASC,
-    ref_id ASC`` — LOWER ``refs.prio`` first, the ``0014_refs_prio.sql``
+    **Claim ordering (slice 6a, FIFO fix 2026-09-25).** ``ORDER BY
+    COALESCE(prio, 5) ASC, queued_since ASC, ref_id ASC`` — LOWER
+    ``refs.prio`` first, the ``0014_refs_prio.sql``
     convention every writer follows (prio=1 chat/preempt · 2 cron · 5
     default; NULL reads as 5): the dispatcher propagates the parent
     todo's prio onto the job, so a high-urgency (low-number) quest/
-    project has its compute claimed ahead of commodity work, oldest-first
+    project has its compute claimed ahead of commodity work. Within a
+    prio band, ``queued_since`` — the ``created_at`` of the row's current
+    ``STATUS:queued`` tag (a status replace is DELETE+INSERT, so a
+    re-queue stamps it afresh) — orders by how long the row has been
+    claimable, NOT by ``ref_id``. Pure ``ref_id`` order starved every
+    long-lived coordinator loop younger than the claim cap: prod
+    2026-09-25, coordinator ``limit=4``, four older ``quest_tick`` loops
+    re-parked on a 5-min heartbeat and were re-queued by every ~30-min
+    rotation, so three consecutive cycles claimed the same four lowest
+    ref_ids while four younger loops sat ``queued`` for hours with no
+    ``lease_until`` (the wake_runner lease fix made them survive; before
+    it the reaper freed the slots by killing them). For rows queued once
+    and never re-queued (the common case) ``queued_since`` order equals
+    ``ref_id`` order, so nothing else moves. Oldest-first
     (``ref_id``) as the within-prio tiebreak / anti-starvation term. An
     all-unset queue collapses to ``ref_id`` ASC — the pre-6a FIFO. The
     capability-rarity term (§5.3) is layered on in 6d.
@@ -931,7 +945,11 @@ def claim_executor_jobs(
     # no longer carries the running-row OR-arms (moved above).
     rows = conn.execute(
         f"""
-        SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at
+        SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
+               (SELECT max(rt.created_at)
+                  FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = r.ref_id
+                   AND t.namespace = %s AND t.value = %s) AS queued_since
           FROM refs r
          WHERE r.kind = 'job'
            AND r.retired_at IS NULL
@@ -955,11 +973,13 @@ def claim_executor_jobs(
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
                ){exclusion_sql}{parent_sql}{suspend_sql}
-         ORDER BY COALESCE(r.prio, %s) ASC, r.ref_id ASC
+         ORDER BY COALESCE(r.prio, %s) ASC, queued_since ASC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
         (
+            STATUS_NAMESPACE,
+            QUEUED,
             executor,
             node,
             STATUS_NAMESPACE,
@@ -984,10 +1004,14 @@ def claim_executor_jobs(
         for res in res_set:
             host_count[res] = host_count.get(res, 0) + 1
 
-    def _order_key(r: Any) -> tuple[float, int, int]:
+    def _order_key(r: Any) -> tuple[float, int, Any, int]:
         prio = int(r[3]) if r[3] is not None else _DEFAULT_JOB_PRIO
         scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
-        return (-scarcity, prio, int(r[0]))
+        # ``queued_since`` (r[5]) before ``ref_id``: the same FIFO-within-band
+        # rule the SQL ORDER BY applies — see the "Claim ordering" note in
+        # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
+        # admitted, but ``or r[4]`` keeps the key total if a race retags it.
+        return (-scarcity, prio, r[5] or r[4], int(r[0]))
 
     ranked = sorted(rows, key=_order_key)
 

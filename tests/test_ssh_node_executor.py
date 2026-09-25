@@ -705,6 +705,53 @@ def test_fresh_work_still_respects_prio_and_limit_alongside_reclaim(
     assert fresh_claimed == sorted(fresh_ids)[:2]
 
 
+def test_fresh_work_is_fifo_by_queued_since_not_ref_id(store: Store) -> None:
+    """2026-09-25 starvation: within one prio band an OLDER ref_id that was
+    re-queued a moment ago must NOT out-rank a YOUNGER ref_id that has been
+    waiting since before it. ``queued_since`` is the current
+    ``STATUS:queued`` tag's ``created_at`` (a status replace re-inserts the
+    row), so the row waiting longest wins the slot."""
+    older = _mk_job(store, params={"resources": {"wall_seconds": 60}}, prio=2)
+    younger = _mk_job(store, params={"resources": {"wall_seconds": 60}}, prio=2)
+    assert older < younger
+    with store.pool.connection() as conn:
+        # younger has been claimable for 10 min; older was (re-)queued just now
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - interval '10 minutes' "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'STATUS' AND t.value = 'queued'",
+            (younger,),
+        )
+        conn.commit()
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(conn, executor="ssh_node", limit=1)
+        conn.commit()
+
+    assert [ref_id for ref_id, _t, _m in claimed] == [younger]
+
+
+def test_fresh_work_prio_still_beats_queued_since(store: Store) -> None:
+    """FIFO is a tiebreak INSIDE a prio band — a prio=1 row queued a second
+    ago still goes ahead of a prio=5 row that has waited an hour."""
+    patient = _mk_job(store, params={"resources": {"wall_seconds": 60}}, prio=5)
+    urgent = _mk_job(store, params={"resources": {"wall_seconds": 60}}, prio=1)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET created_at = now() - interval '60 minutes' "
+            "FROM tags t WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'STATUS' AND t.value = 'queued'",
+            (patient,),
+        )
+        conn.commit()
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(conn, executor="ssh_node", limit=1)
+        conn.commit()
+
+    assert [ref_id for ref_id, _t, _m in claimed] == [urgent]
+
+
 # ── §H piece 4: detached submit/poll protocol (gr187627) ───────────
 
 
