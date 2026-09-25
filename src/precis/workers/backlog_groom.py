@@ -309,6 +309,21 @@ def _mint_todo_for_gripe(
         store.add_tag(
             child.id, Tag.open("origin:backlog-groom"), set_by="system", conn=conn
         )
+        # The ``fixes`` edge is not decoration: ``claude_inproc``'s
+        # ``_run_fix_gripe`` resolves the gripe to work on *only* through
+        # ``link(rel='fixes')`` (``_linked_gripe_id``), and records an
+        # event-0 failure without one — ``meta.params.gripe_id`` above is
+        # read later, by the handler, and does not stand in for it. Minting
+        # the todo without this link produced an infinite fail loop: every
+        # dispatch died immediately, the sweeper unparked it, and the retry
+        # re-minted the same unlinked job (gr399837).
+        store.add_link(
+            src_ref_id=int(child.id),
+            dst_ref_id=gripe_id,
+            relation="fixes",
+            set_by="system",
+            conn=conn,
+        )
         store.append_event(
             root_id,
             source="backlog_groom",

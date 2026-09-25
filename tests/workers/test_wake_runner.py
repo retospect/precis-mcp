@@ -324,3 +324,81 @@ def test_past_deadline_all_children_terminal_uses_clean_wake_not_degraded(
     assert not any(  # no degraded bubble — the clean wake fired instead
         t.startswith("child-failed:") for t in _tags_of(store, coord)
     )
+
+
+def test_at_time_wake_clears_the_stale_lease(store: Store) -> None:
+    """A woken job is back in ``queued`` and so holds no claim; leaving
+    ``meta.lease_until`` behind makes it look like a job whose executor
+    died. The quest reconciler reaps exactly that shape — see
+    ``test_woken_loop_is_not_reaped_as_a_reboot_orphan``."""
+    coord = _mk_job(
+        store,
+        parent_id=None,
+        status="waiting_time",
+        meta={"job_type": "quest_tick", "executor": "coordinator"},
+    )
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            coord,
+            wake_when={"kind": "at_time", "payload": {"ts": 0}},
+            lease_until="2020-01-01T00:00:00+00:00",
+        )
+        conn.commit()
+
+    result = wake_runner.run_wake_pass(store)
+
+    assert result["ok"] == 1
+    assert _status_of(store, coord) == "queued"
+    assert "lease_until" not in _job_meta(store, coord)
+
+
+def test_woken_loop_is_not_reaped_as_a_reboot_orphan(store: Store) -> None:
+    """The bug this clearing exists for, end to end.
+
+    A loop parked on ``at_time`` is woken by a live wake_runner. Its last
+    chunk is the wake audit line and its old lease is long expired, so
+    before the fix the reconciler's orphan arm matched it and cancelled a
+    perfectly healthy loop — 47 quest_tick loops died this way in three
+    days with 0 succeeding (prod job 393999 was reaped 13 minutes after
+    being woken)."""
+    from precis.quest.loop import _reap_orphaned_loop
+
+    quest = store.insert_ref(kind="quest", slug=None, title="q", meta={})
+    coord = _mk_job(
+        store,
+        parent_id=None,
+        status="waiting_time",
+        meta={
+            "job_type": "quest_tick",
+            "executor": "coordinator",
+            "idem_key": f"quest_tick:{quest.id}",
+        },
+    )
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            coord,
+            wake_when={"kind": "at_time", "payload": {"ts": 0}},
+            lease_until="2020-01-01T00:00:00+00:00",
+        )
+        conn.commit()
+
+    wake_runner.run_wake_pass(store)
+    # Age the wake audit chunk past the grace window. Without this the
+    # test passes even with the fix removed: the chunk the wake just
+    # wrote is itself fresh enough to hold the reaper off, which is
+    # exactly why the reap lands ~13 minutes later in prod and not
+    # immediately. The lease is what has to carry the job after that.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET created_at = now() - interval '20 minutes' "
+            " WHERE ref_id = %s",
+            (coord,),
+        )
+        conn.commit()
+
+    reaped = _reap_orphaned_loop(store, int(quest.id), grace_s=600)
+
+    assert reaped is None, "a freshly woken loop must not read as an orphan"
+    assert _status_of(store, coord) == "queued"

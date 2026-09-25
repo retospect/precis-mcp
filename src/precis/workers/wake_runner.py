@@ -403,6 +403,31 @@ def _tag_present(conn: Connection, ref_id: int, tag_pattern: str) -> bool:
     return row is not None
 
 
+def _clear_lease(conn: Connection, ref_id: int) -> None:
+    """Drop the stale claim markers from a job going back to ``queued``.
+
+    ``meta.lease_until`` describes a *claim*. A re-queued job has none —
+    its previous slice is over and no executor holds it — so carrying the
+    old lease makes a healthy woken job indistinguishable from one whose
+    executor died. That is not hypothetical: the quest reconciler
+    (``quest/loop.py::_reap_orphaned_loop``) reaps a non-terminal loop
+    whose lease is stale beyond the grace window and which has written no
+    chunk inside it, and a job parked on ``at_time`` satisfies both the
+    moment it is woken. Prod job 393999 was re-queued by a live
+    wake_runner at 14:57 and cancelled as a "reboot-orphan" 13 minutes
+    later; 47 quest_tick loops died that way in three days, 0 succeeded.
+
+    The reconciler already treats a null lease as "never claimed, not my
+    business", so clearing it puts a woken job back in exactly the state
+    a freshly-minted one is in. The sweeper's ~1h stuck-job threshold
+    remains the backstop if nothing claims it.
+    """
+    conn.execute(
+        "UPDATE refs SET meta = meta - 'lease_until' WHERE ref_id = %s",
+        (ref_id,),
+    )
+
+
 def _requeue(store: Store, ref_id: int, reason: str) -> None:
     """Transition ``ref_id`` back to ``STATUS:queued`` + audit chunk.
 
@@ -411,6 +436,7 @@ def _requeue(store: Store, ref_id: int, reason: str) -> None:
     """
     with store.pool.connection() as conn:
         _set_status(store, ref_id, _QUEUED, conn=conn)
+        _clear_lease(conn, ref_id)
         # Audit chunk so the lifecycle reads cleanly:
         # waiting_children → wake_runner: re-queued (children_done) → running → ...
         _append_chunk(
@@ -482,6 +508,7 @@ def _requeue_degraded(
             wake_degraded_at=time.time(),
         )
         _set_status(store, ref_id, _QUEUED, conn=conn)
+        _clear_lease(conn, ref_id)
         _append_chunk(
             store,
             ref_id,

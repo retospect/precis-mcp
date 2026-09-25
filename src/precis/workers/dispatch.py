@@ -564,6 +564,58 @@ def _drop_orphaned(store: Store, ids: list[int]) -> list[int]:
     return [i for i in ids if i not in orphaned]
 
 
+def _carry_fixes_link(
+    store: Store,
+    conn: Any,
+    *,
+    parent_id: int,
+    child_id: int,
+    job_type: str,
+    params: dict[str, Any],
+) -> None:
+    """Give a minted job the ``fixes`` edge its handler reads.
+
+    ``claude_inproc._run_fix_gripe`` resolves which gripe to work on
+    purely through ``link(rel='fixes')`` on the **job** row, and records
+    an event-0 failure when there isn't one. The agent-facing door
+    (``handlers/job.py``) enforces that link at put time; this
+    dispatch path mints jobs directly and so bypassed it entirely —
+    every todo-dispatched ``fix_gripe`` died on arrival, the sweeper
+    unparked it, and the retry re-minted the same link-less job
+    (gr399837).
+
+    Two sources, in order: the parent todo's own ``fixes`` link (the
+    general case — any minting pass that records what its todo fixes
+    gets this for free), else ``params.gripe_id`` (what the backlog
+    groomer stamps). The fallback is what heals todos minted before
+    the groomer started writing the link.
+    """
+    if job_type != "fix_gripe":
+        return
+    row = conn.execute(
+        "SELECT dst_ref_id FROM links "
+        " WHERE src_ref_id = %s AND relation = 'fixes' LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    gripe_id = row[0] if row is not None else params.get("gripe_id")
+    if gripe_id is None:
+        log.warning(
+            "dispatch: fix_gripe job #%d minted from todo #%d has no gripe to "
+            "fix (no rel='fixes' link on the parent, no params.gripe_id) — it "
+            "will fail at event 0",
+            child_id,
+            parent_id,
+        )
+        return
+    store.add_link(
+        src_ref_id=child_id,
+        dst_ref_id=int(gripe_id),
+        relation="fixes",
+        set_by="system",
+        conn=conn,
+    )
+
+
 # ── per-parent locked mint ────────────────────────────────────────
 
 
@@ -854,6 +906,14 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             set_by="system",
             replace_prefix=True,
             conn=conn,
+        )
+        _carry_fixes_link(
+            store,
+            conn,
+            parent_id=ref_id,
+            child_id=int(child.id),
+            job_type=job_type,
+            params=params,
         )
         store.append_event(
             ref_id,

@@ -343,3 +343,59 @@ def test_idle_when_no_open_gripes(store: Store) -> None:
     assert result.claimed == 0
     assert result.ok == 0
     assert _groomer_todos(store) == []
+
+
+def test_minted_todo_links_to_the_gripe_it_fixes(store: Store) -> None:
+    """``claude_inproc._run_fix_gripe`` finds its gripe only through a
+    ``rel='fixes'`` link; ``meta.params.gripe_id`` does not stand in for
+    it (gr399837)."""
+    gid = _open_gripe(store, "needs a fixes edge")
+    run_backlog_groom_pass(store)
+    todo_id = _groomer_todos(store)[0]["id"]
+
+    fixes = store.links_for(todo_id, direction="out", relation="fixes")
+    assert [link.dst_ref_id for link in fixes] == [gid]
+
+
+def test_dispatched_job_carries_the_fixes_link(store: Store) -> None:
+    """The job row — not just the todo — must carry the edge: the handler
+    resolves the gripe from the *job*. Dispatch minted link-less jobs that
+    died at event 0 and were re-minted forever by the sweeper."""
+    gid = _open_gripe(store, "dispatch must carry the edge")
+    run_backlog_groom_pass(store)
+    todo_id = _groomer_todos(store)[0]["id"]
+
+    run_dispatch_pass(store)
+
+    with store.pool.connection() as conn:
+        job_id = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "AND retired_at IS NULL",
+            (todo_id,),
+        ).fetchone()[0]
+    fixes = store.links_for(job_id, direction="out", relation="fixes")
+    assert [link.dst_ref_id for link in fixes] == [gid]
+
+
+def test_dispatch_falls_back_to_params_gripe_id(store: Store) -> None:
+    """A todo minted before the groomer wrote the link still dispatches a
+    working job — otherwise the already-parked ones stay broken forever."""
+    gid = _open_gripe(store, "minted before the link existed")
+    run_backlog_groom_pass(store)
+    todo_id = _groomer_todos(store)[0]["id"]
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM links WHERE src_ref_id = %s AND relation = 'fixes'",
+            (todo_id,),
+        )
+
+    run_dispatch_pass(store)
+
+    with store.pool.connection() as conn:
+        job_id = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
+            "AND retired_at IS NULL",
+            (todo_id,),
+        ).fetchone()[0]
+    fixes = store.links_for(job_id, direction="out", relation="fixes")
+    assert [link.dst_ref_id for link in fixes] == [gid]
