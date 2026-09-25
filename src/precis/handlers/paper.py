@@ -1071,7 +1071,12 @@ class PaperHandler(Handler):
         :mod:`precis.ingest.paper_meta_enrich` writes — see
         ``_paper_format.ENTRY_TYPE_CHOICES`` for the vocabulary the web
         edit form offers); ``doi`` / ``arxiv`` replace this ref's alias
-        via :meth:`Store.set_ref_identifier`. A manual ``journal`` /
+        via :meth:`Store.set_ref_identifier` — except ``doi=''`` /
+        ``arxiv=''`` (an explicit *empty string*, not the omitted-field
+        ``None`` default), which instead **clears** that identifier via
+        :meth:`Store.clear_ref_identifier` (gr353804: a wrong DOI —
+        e.g. an SI record stuck holding an unrelated paper's DOI —
+        otherwise had no MCP-reachable door to remove). A manual ``journal`` /
         ``entry_type`` edit stamps no provenance key — unlike authors
         (``meta.authors_source``), nothing in the enrich pass tracks
         provenance for these two fields, so there's nothing to keep
@@ -1103,6 +1108,16 @@ class PaperHandler(Handler):
             meta_patch["entry_type"] = entry_type.strip()
         has_doi = bool(doi and str(doi).strip())
         has_arxiv = bool(arxiv and str(arxiv).strip())
+        # gr353804: '' (explicit empty string) means "clear this
+        # identifier"; None / omitted means "leave it alone" — the same
+        # "blank = keep existing" contract the docstring already
+        # promises for every other field, except here blank is
+        # overloaded: the *string* '' is the one blank value that DOES
+        # act (as a clear), while None stays inert. `doi.strip()`
+        # deliberately reads on a non-None value only, so a caller who
+        # explicitly passes doi=None (the default) never trips this.
+        doi_clear = doi is not None and not str(doi).strip()
+        arxiv_clear = arxiv is not None and not str(arxiv).strip()
         if (
             new_title is None
             and year is None
@@ -1110,6 +1125,8 @@ class PaperHandler(Handler):
             and not meta_patch
             and not has_doi
             and not has_arxiv
+            and not doi_clear
+            and not arxiv_clear
         ):
             raise BadInput(
                 "edit(kind='paper') needs at least one field to change",
@@ -1124,6 +1141,8 @@ class PaperHandler(Handler):
                 meta_patch=meta_patch,
                 doi=doi if has_doi else None,
                 arxiv=arxiv if has_arxiv else None,
+                doi_clear=doi_clear,
+                arxiv_clear=arxiv_clear,
             )
         changed: list[str] = []
         doi_edit_check: tuple[str, str] | None = None
@@ -1147,15 +1166,24 @@ class PaperHandler(Handler):
                 # unreviewed. Not double-stamped: nothing else on this
                 # write path touches ``human_verified_at``.
                 self.store.set_human_verified(ref_id, by="agent", conn=conn)
-            for scheme, value in (("doi", doi), ("arxiv", arxiv)):
-                if (
-                    value
-                    and str(value).strip()
-                    and self.store.set_ref_identifier(
+            for scheme, value, clear in (
+                ("doi", doi, doi_clear),
+                ("arxiv", arxiv, arxiv_clear),
+            ):
+                if value and str(value).strip():
+                    if self.store.set_ref_identifier(
                         ref_id, scheme, str(value), source="edit", conn=conn
-                    )
+                    ):
+                        changed.append(scheme)
+                elif clear and self.store.clear_ref_identifier(
+                    ref_id, scheme, source="edit", conn=conn
                 ):
-                    changed.append(scheme)
+                    # A no-op clear (nothing to remove) deliberately
+                    # doesn't land here — "no change" is the honest
+                    # response, not a false "cleared" claim (gr353804
+                    # ask: "a clean no-op message" for the nothing-to-
+                    # clear case).
+                    changed.append(f"{scheme} cleared")
             if "doi" in changed and updated.title and updated.title.strip():
                 # Just capture inputs here — the Crossref round-trip in
                 # _doi_edit_warning happens after commit (below), never
@@ -1282,6 +1310,8 @@ class PaperHandler(Handler):
         meta_patch: dict[str, Any],
         doi: str | None,
         arxiv: str | None,
+        doi_clear: bool = False,
+        arxiv_clear: bool = False,
     ) -> Response:
         """Preview a bibliographic metadata patch without writing it.
 
@@ -1351,8 +1381,12 @@ class PaperHandler(Handler):
             )
         if doi:
             lines.append(f"doi: {old_ids.get('doi', '(none)')!r} → {doi!r}")
+        elif doi_clear:
+            lines.append(f"doi: {old_ids.get('doi', '(none)')!r} → (cleared)")
         if arxiv:
             lines.append(f"arxiv: {old_ids.get('arxiv', '(none)')!r} → {arxiv!r}")
+        elif arxiv_clear:
+            lines.append(f"arxiv: {old_ids.get('arxiv', '(none)')!r} → (cleared)")
         body = "\n".join(f"  {line}" for line in lines) if lines else "  (no change)"
         return Response(
             body=(

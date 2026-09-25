@@ -1354,6 +1354,9 @@ def edit(
     # 'paper', arxiv=…) upgrades a title-only stub's identifier (replaces the
     # ref's alias via Store.set_ref_identifier) — the repair path for a stub
     # minted without one, instead of an agent minting a duplicate DOI stub.
+    # doi='' / arxiv='' (empty string, not the omitted-field None default)
+    # instead CLEARS this ref's own identifier (gr353804) — a wrong DOI
+    # otherwise had no door to remove.
     # Declared at the verb level so strict-schema MCP clients don't strip
     # them — PaperHandler.edit already accepted both (gr262482/gr250273).
     doi: str | None = None,

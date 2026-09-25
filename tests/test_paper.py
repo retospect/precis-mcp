@@ -1681,6 +1681,48 @@ class TestPaperEdit:
         ids = store.identifiers_for_refs([ref_id])[ref_id]
         assert ids["doi"] == "10.2/new"
 
+    def test_edit_doi_empty_string_clears_the_alias(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr353804: ``doi=''`` (explicit empty string) is the door to
+        remove a wrong identifier — there was previously no way to
+        clear one at all. A follow-up edit setting a fresh DOI on the
+        now-cleared ref then succeeds (nothing stale is left behind to
+        collide)."""
+        ref_id = _seed_paper(store, slug="wang2020state", doi="10.1/wrong")
+        resp = handler.edit(id=ref_id, doi="")
+        assert "doi cleared" in resp.body
+        ids = store.identifiers_for_refs([ref_id])[ref_id]
+        assert "doi" not in ids
+
+        handler.edit(id=ref_id, doi="10.2/correct")
+        ids = store.identifiers_for_refs([ref_id])[ref_id]
+        assert ids["doi"] == "10.2/correct"
+
+    def test_edit_doi_empty_string_does_not_touch_another_refs_doi(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Clearing scopes to rows the target ref actually owns — a ref
+        that never held the DOI (because a different ref owns it) has
+        nothing to clear, and that other ref's row survives untouched;
+        the response is a clean no-op, not an error."""
+        owner_id = _seed_paper(store, slug="owner2020paper", doi="10.1/owned")
+        other_id = _seed_paper(store, slug="other2020paper", doi="")
+        resp = handler.edit(id=other_id, doi="")
+        assert "doi cleared" not in resp.body
+        ids = store.identifiers_for_refs([owner_id])[owner_id]
+        assert ids["doi"] == "10.1/owned"
+
+    def test_edit_doi_empty_string_on_ref_with_no_doi_is_a_noop(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Clearing when there's nothing to clear doesn't raise."""
+        ref_id = _seed_paper(store, slug="wang2020state", doi="")
+        resp = handler.edit(id=ref_id, doi="")
+        assert "doi cleared" not in resp.body
+        ids = store.identifiers_for_refs([ref_id])[ref_id]
+        assert "doi" not in ids
+
     def test_edit_requires_a_field(self, store: Store, handler: PaperHandler) -> None:
         ref_id = _seed_paper(store, slug="wang2020state")
         with pytest.raises(BadInput):

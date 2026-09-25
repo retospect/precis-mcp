@@ -139,6 +139,36 @@ def test_edit_paper_doi_upgrades_a_title_only_stub_over_the_mcp_door(
     assert identifiers.get("doi") == "10.1234/upgrade-door-test"
 
 
+def test_edit_paper_doi_empty_string_clears_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """gr353804: ``edit(kind='paper', id=..., doi='')`` through the real
+    MCP callable clears a wrong identifier — the door that was
+    previously missing entirely (``doi=None``/omitted is a no-op, so
+    there was no way to remove a bad DOI short of a human SQL DELETE).
+    A dict-shaped ``payload["doi"]`` of ``''`` must survive the
+    ``clean = {k: v for k, v in args.items() if v is not None}``
+    None-stripping in ``runtime/dispatch.py`` — only ``None`` is
+    stripped there, not the empty string this door relies on."""
+    mint_out = tools_core.put(
+        kind="paper", title="A Wrong-DOI Paper Stub", doi="10.1234/wrong-door-test"
+    )
+    m = re.search(r"paper id=(\d+)", mint_out)
+    assert m is not None, mint_out
+    ref_id = int(m.group(1))
+    assert store.identifiers_for_refs([ref_id]).get(ref_id, {}).get("doi") == (
+        "10.1234/wrong-door-test"
+    )
+
+    out = tools_core.edit(kind="paper", id=ref_id, doi="")
+
+    assert f"updated paper id={ref_id}" in out
+    assert "doi cleared" in out
+    identifiers = store.identifiers_for_refs([ref_id]).get(ref_id, {})
+    assert "doi" not in identifiers
+
+
 def test_edit_structure_ops_reach_the_handler_over_the_mcp_door(
     mounted_runtime: PrecisRuntime,
 ) -> None:

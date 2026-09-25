@@ -390,6 +390,46 @@ class IdentifiersMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def clear_ref_identifier(
+        self,
+        ref_id: int,
+        scheme: str,
+        *,
+        source: str = "web-edit",
+        conn: Connection | None = None,
+    ) -> bool:
+        """Delete this ref's own ``(scheme)`` identifier row, if any.
+
+        gr353804: the only door to fix a wrong identifier was
+        :meth:`set_ref_identifier`, which can only *replace* a value —
+        there was no way to remove one outright (e.g. an SI record that
+        must not carry any DOI once its parent owns the correct one).
+        Scoped to rows this ref itself owns via the ``ref_id`` filter in
+        the ``DELETE`` — it can never touch another ref's row for the
+        same value, so there is no collision case to refuse here (unlike
+        :meth:`set_ref_identifier`, which writes a new value that might
+        already belong to someone else).
+
+        Returns True when a row was actually removed, False when this
+        ref had no identifier for ``scheme`` (a clean no-op, not an
+        error).
+        """
+        s = (scheme or "").strip().lower()
+        if not s:
+            return False
+
+        def _do(c: Connection) -> bool:
+            cur = c.execute(
+                "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
+                (ref_id, s),
+            )
+            return cur.rowcount > 0
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
     def suggest_cite_key(
         self,
         authors: Any,

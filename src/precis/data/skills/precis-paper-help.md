@@ -167,7 +167,10 @@ unfindable; repair it with `edit(kind='paper', id='<slug>', title=…,
 authors=[…])`, which rebuilds the card. A title-only stub's *identifier* is
 repairable the same way — `edit(kind='paper', id='<slug>', doi='10.…')` (or
 `arxiv=`) upgrades it in place, so prefer that over minting a second,
-DOI-bearing stub and orphaning the first. ⚠ `year=` is accepted by the
+DOI-bearing stub and orphaning the first. A *wrong* identifier is removable
+the same door — `doi=''` (empty string, not omitted) clears this ref's own
+DOI without touching who owns it elsewhere; `arxiv=''` clears likewise. ⚠
+`year=` is accepted by the
 handler but not yet exposed on the `edit` wire schema, so it is silently
 dropped — see `docs/backlog/mcp-verb-kwarg-parity.md`.
 
