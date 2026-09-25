@@ -22,6 +22,35 @@ from precis.workers.executors._common import (
 )
 
 
+def _clock(dt: datetime) -> str:
+    """Format ``dt``'s wall-clock time as e.g. ``"3:17pm"`` — a portable
+    stand-in for ``dt.strftime("%-I:%M%p").lower()``. ``%-I`` (no leading
+    zero on the 12-hour clock) is a glibc-only strftime extension; Windows'
+    CRT raises ``ValueError: Invalid format string`` on it. Test-fixture
+    helper only — the classifier itself never *formats* a clock, it only
+    *parses* one via :data:`~precis.utils.llm.quota.QUOTA_RESET_PATTERN`."""
+    hour12 = dt.hour % 12 or 12
+    meridiem = "am" if dt.hour < 12 else "pm"
+    return f"{hour12}:{dt.minute:02d}{meridiem}"
+
+
+def test_clock_format_matches_glibc_strftime_i_directive() -> None:
+    """Pins :func:`_clock`'s output against fixed instants so it stays
+    byte-identical to glibc's ``%-I:%M%p`` (lowercased) without ever
+    invoking that non-portable directive — and documents that the string
+    it builds never contains a bare ``%-`` directive."""
+    assert _clock(datetime(2026, 1, 1, 15, 17, tzinfo=UTC)) == "3:17pm"
+    assert _clock(datetime(2026, 1, 1, 0, 0, tzinfo=UTC)) == "12:00am"
+    assert _clock(datetime(2026, 1, 1, 12, 0, tzinfo=UTC)) == "12:00pm"
+    assert _clock(datetime(2026, 1, 1, 9, 5, tzinfo=UTC)) == "9:05am"
+    for dt in (
+        datetime(2026, 1, 1, 15, 17, tzinfo=UTC),
+        datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    ):
+        assert "%-" not in _clock(dt)
+
+
 @pytest.mark.parametrize(
     ("reason", "expected_hours"),
     [
@@ -65,7 +94,7 @@ def test_classifier_prefers_shorter_rate_limit_horizon() -> None:
 def test_classify_transient_backoff_hours_weekly_quota_reset_parses() -> None:
     now = datetime.now(UTC)
     target = now + timedelta(hours=2, minutes=17)
-    clock = target.strftime("%-I:%M%p").lower()  # e.g. "3:17pm"
+    clock = _clock(target)  # e.g. "3:17pm"
     reason = (
         f"ClaudeAgentError: API error 429 - You've hit your weekly limit "
         f"· resets {clock} (UTC)"
@@ -82,7 +111,7 @@ def test_classify_transient_backoff_hours_session_quota_reset_other_tz() -> None
     now = datetime.now(UTC)
     target = now + timedelta(hours=1, minutes=40)
     local = target.astimezone(ZoneInfo("America/Los_Angeles"))
-    clock = local.strftime("%-I:%M%p").lower()
+    clock = _clock(local)
     reason = f"You've hit your session limit · resets {clock} (America/Los_Angeles)"
 
     hours = classify_transient_backoff_hours(reason)
@@ -109,7 +138,7 @@ def test_classify_transient_backoff_hours_extra_usage_reset_parses() -> None:
     to the generic 429/usage-limit horizons."""
     now = datetime.now(UTC)
     target = now + timedelta(hours=3, minutes=25)
-    clock = target.strftime("%-I:%M%p").lower()
+    clock = _clock(target)
     reason = f"You're out of extra usage · resets {clock} (UTC)"
 
     hours = classify_transient_backoff_hours(reason)
@@ -173,7 +202,7 @@ def test_record_failure_stamps_retry_after_at_quota_reset_instant(
     job_id = _fresh_job(store)
     now = datetime.now(UTC)
     target = now + timedelta(hours=5, minutes=3)
-    clock = target.strftime("%-I:%M%p").lower()
+    clock = _clock(target)
     reason = f"API error 429 - You've hit your weekly limit · resets {clock} (UTC)"
 
     record_failure(store, job_id, reason, gripe_rollback=None)

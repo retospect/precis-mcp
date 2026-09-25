@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -476,6 +477,10 @@ def test_compat_shim_makes_gpr_lml_gradient_scalar(
     assert grad.shape == (3,)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="unix-socket path limit is a POSIX constraint",
+)
 def test_ray_tmp_dir_is_short_enough_for_unix_sockets() -> None:
     """ray's plasma socket lives ~70 bytes below the temp dir; AF_UNIX caps the
     whole path at 107. The cluster scratch workdir blew that (job 366190)."""
