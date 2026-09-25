@@ -14,8 +14,10 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 
@@ -41,7 +43,16 @@ PENDING_RUN = {
 
 
 def _load() -> ModuleType:
-    loader = importlib.machinery.SourceFileLoader("main_ci_status", str(SCRIPT))
+    # scripts/main-ci-status has no .py suffix (it's an executable, not a
+    # package module). Load from a byte-identical `.py`-suffixed COPY, not
+    # the real dotless path directly: pytest-testmon fingerprints every
+    # executed file by extension (`filename.rsplit(".", 1)[1]`) and
+    # IndexErrors on one that has none, which INTERNALERRORs any
+    # `--impacted` run that touches this test (gr450298, gr449802) — same
+    # convention as tests/test_coderef_structural.py.
+    tmp_copy = Path(tempfile.mkdtemp(prefix="main_ci_status_py_")) / "main_ci_status.py"
+    shutil.copyfile(SCRIPT, tmp_copy)
+    loader = importlib.machinery.SourceFileLoader("main_ci_status", str(tmp_copy))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     mod = importlib.util.module_from_spec(spec)

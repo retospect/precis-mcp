@@ -190,7 +190,20 @@ COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
 # Docker VM ceiling with every sibling worktree's — cap concurrency so runs
 # queue briefly instead of OOM-killing each other at random (exit 137).
 source "${WORKTREE}/scripts/lib/gate-slot.sh"
-trap gate_slot_release EXIT
+# TESTMON_LOG stays empty outside --impacted mode; cleanup() no-ops on it
+# then (see the testmon-exit-guard block near the bottom for why impacted
+# mode captures pytest's output to a file instead of streaming it raw).
+TESTMON_LOG=""
+cleanup() {
+    gate_slot_release
+    # `if`, not `[[ ]] && …`: an EXIT trap's own exit status becomes the
+    # script's exit status, and `&&` on a false test would silently turn
+    # every non-impacted (TESTMON_LOG unset) run's real 0 into a bogus 1.
+    if [[ -n "$TESTMON_LOG" ]]; then
+        rm -f "$TESTMON_LOG"
+    fi
+}
+trap cleanup EXIT
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
 # --typecheck : reuses the compose project/mount above but skips the test-db
@@ -255,6 +268,13 @@ if [[ "$IMPACTED" == "1" ]]; then
     TESTMON_ARGS=(--testmon)
     TESTMON_ENV=(-e "TESTMON_DATAFILE=/app/.testmondata")
     NPROC=(-n0)
+    # pytest-testmon's own bookkeeping can INTERNALERROR on an extensionless
+    # file that reached its fingerprint set (get_file, testmon_core.py ~93)
+    # — sometimes AFTER pytest already printed a clean "N passed" summary,
+    # so the raw exit code stops meaning "tests failed" (gr450298, gr449802).
+    # Capture the run to a file (still streamed live via tee) so
+    # testmon-exit-guard.py can tell a real failure from testmon's own crash.
+    TESTMON_LOG="$(mktemp "${TMPDIR:-/tmp}/precis-test-testmon.XXXXXX.log")"
 fi
 
 # Fast mode: deselect the whole DB suite (auto-applied `db` marker) AND the
@@ -296,11 +316,32 @@ done
 # prefix as pytest (so a UV_WITH bridge is honoured here too) and fails loud,
 # before pytest starts, naming the missing module(s) and the fix. One extra
 # `uv run` in the same container — no second container spin-up.
-compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
-    "${THREAD_CAP_ENV[@]}" \
-    "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
-    "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
-    -v "${WORKTREE}":/app precis-dev \
-    bash -lc 'uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py && uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
-    _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
-    "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "$@"
+if [[ -n "$TESTMON_LOG" ]]; then
+    # --impacted: stream to the terminal AND capture, so a post-run guard can
+    # see the same text a human would tail (see the TESTMON_LOG comment
+    # above). set +e/-e brackets the pipeline: `pipefail` makes a nonzero
+    # pytest exit fail the whole statement, which would otherwise trip
+    # `set -e` before PYTEST_RC is read.
+    set +e
+    compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
+        "${THREAD_CAP_ENV[@]}" \
+        "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
+        "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
+        -v "${WORKTREE}":/app precis-dev \
+        bash -lc 'uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py && uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
+        _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
+        "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "$@" \
+        2>&1 | tee "$TESTMON_LOG"
+    PYTEST_RC=${PIPESTATUS[0]}
+    set -e
+    python3 "${WORKTREE}/scripts/lib/testmon-exit-guard.py" "$TESTMON_LOG" "$PYTEST_RC" "$WORKTREE"
+else
+    compose run --rm --no-deps -e UV_LINK_MODE=copy -e UV_WITH="$UV_WITH" \
+        "${THREAD_CAP_ENV[@]}" \
+        "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
+        "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
+        -v "${WORKTREE}":/app precis-dev \
+        bash -lc 'uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py && uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
+        _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
+        "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "$@"
+fi
