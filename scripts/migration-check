@@ -35,6 +35,38 @@ for wt in "$MAIN_ROOT" "$MAIN_ROOT"/.claude/worktrees/*; do
     done
 done >> "$rows"
 
+# Branchless branches (docs/backlog/inflight-sessionless-branches.md): a
+# branch git's worktree admin has no directory for at all is invisible to the
+# filesystem walk above — its migrations/*.sql only exist inside the branch's
+# own git tree, read via `git show`/`ls-tree`, never a working directory.
+# Same skip list as scripts/inflight: main itself, `ci/*` (scripts/ship
+# --remote's throwaway gate pushes), and any branch a live worktree is
+# actually sitting on.
+MAIN_BRANCH="$(git -C "$MAIN_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
+LIVE_BRANCHES=$'\n'"$MAIN_BRANCH"$'\n'
+for wt in "$MAIN_ROOT" "$MAIN_ROOT"/.claude/worktrees/*; do
+    [[ -d "$wt" ]] || continue
+    b="$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null)" || continue
+    LIVE_BRANCHES="${LIVE_BRANCHES}${b}"$'\n'
+done
+
+n_branches=0
+while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    case "$branch" in ci/*) continue ;; esac
+    case $LIVE_BRANCHES in *$'\n'"$branch"$'\n'*) continue ;; esac
+    have_any=0
+    while IFS= read -r rel; do
+        [[ -z "$rel" ]] && continue
+        base="$(basename "$rel")"
+        [[ "$base" =~ ^[0-9]{4}_ ]] || continue
+        num="${base:0:4}"
+        have_any=1
+        printf '%s\t%s\t%s\n' "$num" "$branch" "$base"
+    done < <(git -C "$MAIN_ROOT" ls-tree -r --name-only "$branch" -- "$MIGDIR" 2>/dev/null)
+    [[ "$have_any" == 1 ]] && n_branches=$((n_branches + 1))
+done < <(git -C "$MAIN_ROOT" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null) >> "$rows"
+
 # A collision worth flagging = a worktree introduces a slug at a number BEYOND
 # what main already carries. Main's own historical duplicate numbers (e.g. two
 # 0037_* shipped long ago) are accepted reality — every worktree carries them,
@@ -76,4 +108,8 @@ if [[ -n "$collisions" ]]; then
     exit 1
 fi
 
-[[ "$QUIET" == 1 ]] || echo "✓ migration numbers: no collisions across main + $((n_trees - 1)) worktree(s)"
+if [[ "$QUIET" != 1 ]]; then
+    msg="✓ migration numbers: no collisions across main + $((n_trees - 1)) worktree(s)"
+    [[ "$n_branches" -gt 0 ]] && msg="$msg + $n_branches branchless branch(es)"
+    echo "$msg"
+fi

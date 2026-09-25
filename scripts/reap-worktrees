@@ -182,6 +182,40 @@ sweep_ci_refs() {
     fi
 }
 
+# reap_branchless_branches — a local branch scripts/inflight's own
+# %(worktreepath) reports as checked out NOWHERE (docs/backlog/
+# inflight-sessionless-branches.md): no worktree means no lock, no
+# .claude/purpose, no live session possible, so none of the grace-period /
+# fresh-purpose guards above have anything to protect against — a
+# `safe_remove` verdict there is immediately safe to `git branch -D`. Any
+# other bucket (currently only `stranded`: real unmerged commits with no
+# worktree left to reclaim them from) is reported and never touched.
+reap_branchless_branches() {
+    local name branch bucket verdict base
+    while IFS=$'\t' read -r name branch bucket verdict base; do
+        [ -z "$branch" ] && continue
+        case "$bucket" in
+            safe_remove)
+                if [ "$DRY_RUN" = 1 ]; then
+                    echo "reap-worktrees --dry-run: would delete branchless branch ${branch} (0 unmerged commits vs ${base}, no worktree)"
+                elif git branch -D "$branch" >/dev/null 2>&1; then
+                    echo "reap-worktrees: deleted branchless branch ${branch} (0 unmerged commits vs ${base}, no worktree)"
+                fi
+                ;;
+            stranded)
+                echo "reap-worktrees: stranded: ${branch} (${verdict} vs ${base}) — no worktree, not removing"
+                ;;
+        esac
+    done < <(printf '%s' "$JSON" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+base = data.get("base", "main")
+for wt in data.get("worktrees", []):
+    if wt.get("worktree") is None and wt.get("branch"):
+        print("\t".join([wt.get("name", ""), wt.get("branch", ""), wt.get("bucket", ""), wt.get("verdict", ""), base]))
+')
+}
+
 JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
 [ -z "$JSON" ] && exit 0
 
@@ -195,7 +229,12 @@ done < <(printf '%s' "$JSON" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 for wt in data.get("worktrees", []):
-    if wt.get("bucket") == "safe_remove":
+    # wt.get("worktree") filters out a branchless branch (worktree: null,
+    # emit_branch) explicitly, in Python where the field is unambiguous --
+    # tab is IFS whitespace, and bash read collapses a run of adjacent
+    # IFS-whitespace delimiters into one no matter how IFS is set, so an
+    # empty path field here would not reliably land in path on the bash side.
+    if wt.get("bucket") == "safe_remove" and wt.get("worktree"):
         print("\t".join([wt.get("name", ""), wt.get("path", ""), wt.get("branch", "")]))
 ')
 
@@ -273,6 +312,7 @@ else
 fi
 
 sweep_ci_refs
+reap_branchless_branches
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
     echo "reap-worktrees: nothing to reap"

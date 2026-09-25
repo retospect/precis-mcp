@@ -192,6 +192,61 @@ while IFS= read -r wt_line; do
 done < <(git worktree list --porcelain 2>/dev/null)
 emit "$path" "$head" "$branch" "$locked"   # trailing record with no blank after it
 
+emit_branch() { # emit_branch <branch> <head> — a local branch git's own
+  # worktree admin reports as checked out NOWHERE (empty %(worktreepath)).
+  # Invisible to the loop above, so an unmerged one sat with no session, no
+  # purpose line, and no reap advisory (docs/backlog/
+  # inflight-sessionless-branches.md). SESSION is always "—" (no worktree,
+  # no lock possible); VS-main reuses verdict_field verbatim — it needs only
+  # <head>/<branch> refs, never a working tree, so the squash-absorbed
+  # content-equality fallback still applies. PURPOSE skips the
+  # .claude/purpose lookup (no path to read it from) straight to the newest
+  # branch-unique commit subject.
+  local branch=$1 head=$2
+  local verd purp last bucket
+  verd=$(verdict_field "$head" "$branch")
+  purp=$(git log "$BASE".."$branch" --no-merges --format='%s' 2>/dev/null | head -1)
+  [ -z "$purp" ] && purp='(no purpose set)'
+  purp=$(trunc "$purp" 58)
+  last=$(trunc "$(git log -1 --format='%cr — %s' "$branch" 2>/dev/null)" 46)
+  ROWS+=("(no worktree) ${branch}|—|—|${verd}|${purp}|${last}")
+
+  # 0 unmerged commits vs $BASE = safe to `git branch -D`; anything else is
+  # real stranded work reap-worktrees must only ever report, never delete.
+  if [[ "$verd" == ↑* ]]; then bucket='stranded'; else bucket='safe_remove'; fi
+
+  if [ "$JSON_MODE" = 1 ]; then
+    local sep=$'\x1f'
+    JSONROWS+=("${branch}${sep}${sep}${branch}${sep}${bucket}${sep}—${sep}—${sep}${verd}${sep}")
+  fi
+}
+
+# --- branchless branches -----------------------------------------------
+# A branch git's worktree admin has no path for at all is invisible to the
+# porcelain loop above by construction. Skip: $BASE itself, `ci/*` (scripts/
+# ship --remote's throwaway gate pushes — reaped separately by
+# sweep_ci_refs), and — belt and braces alongside %(worktreepath) itself —
+# any branch a directory under .claude/worktrees is actually sitting on
+# (catches a worktree whose git admin entry is present but for some reason
+# %(worktreepath) came back empty; harmless double-check otherwise).
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)" 2>/dev/null)"
+LIVE_BRANCHES=$'\n'"$BASE"$'\n'
+if [ -n "$MAIN_ROOT" ]; then
+  for wt in "$MAIN_ROOT"/.claude/worktrees/*; do
+    [ -d "$wt" ] || continue
+    b=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || continue
+    LIVE_BRANCHES="${LIVE_BRANCHES}${b}"$'\n'
+  done
+fi
+
+while IFS=$'\t' read -r branch head wtpath; do
+  [ -z "$branch" ] && continue
+  case "$branch" in ci/*) continue ;; esac
+  [ -n "$wtpath" ] && continue
+  case $LIVE_BRANCHES in *$'\n'"$branch"$'\n'*) continue ;; esac
+  emit_branch "$branch" "$head"
+done < <(git for-each-ref refs/heads --format='%(refname:short)%09%(objectname)%09%(worktreepath)' 2>/dev/null)
+
 # --- render ---------------------------------------------------------------
 if [ "$JSON_MODE" = 1 ]; then
   STASH_COUNT=$(git stash list 2>/dev/null | grep -c .)
@@ -217,6 +272,10 @@ for rec in raw.split("\x1e") if raw else []:
         "session": session,
         "dirty": dirty,
         "verdict": verdict,
+        # additive: a branchless branch (emit_branch) always carries "" for
+        # path (no worktree to have one); every real worktree rows own path
+        # doubles as its "worktree" value. null is the sole "no worktree" tell.
+        "worktree": path or None,
     }
     if diffstat:
         entry["diffstat"] = diffstat
