@@ -603,6 +603,29 @@ class TestPhaseAwaitDryTicks:
         assert out.state["punt_ticks"] == 4
         assert out.state["tick_failures"] == 1
 
+    def test_lit_only_quest_ticks_through_busy_sim_queue(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr347550: a literature-only quest (``meta.compute_lane == "off"`` —
+        # no reaction_config, no candidate structures, nothing dispatchable
+        # to the GPU node) has no stake in the node-wide compute queue and
+        # must not be starved by an unrelated GPU backlog — the tick still
+        # runs its non-compute (search/reasoning) stages while the sim queue
+        # is reported busy, unlike a compute-lane quest (the starvation-gate
+        # tests above), which correctly still defers wholesale.
+        calls = _stub_tick(monkeypatch, _Outcome(searches_run=2))
+        _stub_pending(monkeypatch, [[], []])  # idle before AND after the tick
+        _stub_queued(monkeypatch, qt._max_queued_sims())  # node queue full
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
+            retired_at=None, meta={"compute_lane": "off"}
+        )
+        out = qt._dispatch(ctx, qt.SPEC)
+        assert isinstance(out, Yield)
+        assert len(calls) == 1  # the tick RAN despite the busy queue
+        assert calls[0]["compute"] is False
+        assert not any("deferring" in text for _, text in ctx.chunks)
+
 
 class TestTickSlicing:
     """quest-tick-slicing: ``run_quest_tick(sliced=True)`` hands back a

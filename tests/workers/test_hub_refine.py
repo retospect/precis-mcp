@@ -1390,3 +1390,63 @@ def test_reverify_non_corroborating_memos_and_is_not_rejudged(store: Any) -> Non
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert mock_verify2.call_count == 0
+
+
+def test_reverify_stamps_a_keep_memoed_pinned_edge_instead_of_skipping(
+    store: Any,
+) -> None:
+    """gr369540: a pinned edge already KEEP-memoed under the current sha (by
+    a prior reground audit) must be stamped from that memo, not skipped —
+    skipping left every KEEP-judged withheld edge unstamped forever, since
+    the memo that would settle it is exactly what blocked the re-verify from
+    ever reaching it."""
+    embedder = make_mock_bge_m3()
+    sentence = "The catalyst retains 95% activity after 500 cycles."
+    hub = _seed_hub(store, sentence=sentence)
+    paper, chunk_id = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="reverify-keep",
+        text="A cycling measurement statement.",
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk_id}"},
+        set_by="agent",
+    )
+    # Simulate a prior reground audit pass (stage 2) already having
+    # strict-judged this exact passage KEEP under the current sha.
+    store.update_ref(
+        hub,
+        meta_patch={
+            "reground_seen": {
+                f"{paper}:{chunk_id}": {
+                    "sha": claim_sha(sentence),
+                    "verdict": "KEEP",
+                    "reason": "primary content substantiating the claim",
+                    "at": datetime.now(UTC).isoformat(),
+                }
+            }
+        },
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    # The KEEP memo settles it directly — the verifier is never re-consulted.
+    assert mock_verify.call_count == 0
+
+    edges = _edges_from(store, paper)
+    assert len(edges) == 1
+    _dst, relation, meta = edges[0]
+    assert relation == "corroborates"
+    assert meta["support"] == "yes"
+    assert meta["support_reason"] == "primary content substantiating the claim"
+    assert meta["caveats"] == []
+    assert meta["verified_by"] == "hub-refine"
+    assert meta["verified_at"]
+    assert meta["verified_claim_sha"] == claim_sha(sentence)
+    assert meta["source_handle"] == f"pc{chunk_id}"
