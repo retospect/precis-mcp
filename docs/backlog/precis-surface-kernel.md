@@ -375,3 +375,39 @@ Terrones & Terrones, *New J. Phys.* 5 (2003) 126 is not in the store and
 `[S27]` pa343409 has no chunks. Import both, and search prior art:
 TPMS-triangulate-and-dualise is very likely published — cite it rather
 than implying novelty.
+
+## The ring census cannot see the chemistry (dogfood, 2026-09-26)
+
+Slice 1 shipped in `27f5fc3f` and its acceptance measurement was the ring
+histogram: Schwarz P at `cell_A=8.0, n=17` gives `{5:114, 6:700, 7:138}`,
+zero rings outside `{5,6,7}`, `count(5)−count(7) == 6·chi == −24`. All of
+that is true and none of it is enough.
+
+**The histogram is scale-invariant.** It depends only on `n` — the census at
+`cell_A=8.0` and at `cell_A=45.8` is bit-identical. So it says nothing about
+whether the atoms sit at carbon distances, and they do not: at the config
+above the mean C–C bond is **0.248 Å** against graphene's 1.42, about 5.7×
+too short, putting ~1912 atoms on a ~150 Å² surface at roughly 33× graphene's
+areal density. `cell_A` and `n` are independent parameters and exactly one
+pairing per `n` yields carbon (`cell_A ≈ 45.8 Å` at `n=17`). Filed as
+gripe 451269; the input-surface friction found alongside it is 451270.
+
+This is the *same trap* as the counting-residual note above, one layer up.
+That note says `counting_residual == 0` is algebraically automatic and so
+"does not evidence a tiling". The ring histogram is the next number of that
+kind: automatic in the scale, and so it does not evidence a *structure*.
+Bond length is the first quantity in this stack that is neither count- nor
+scale-invariant.
+
+Two consequences for how this package is accepted, not just for the bug:
+
+- **A uniform rescale is not the fix.** At the corrected `cell_A` the mean
+  is 1.420 Å but the spread is 0.726–2.373 Å. `remesh` equalises *valence*,
+  not edge length — its tangential smoothing has no edge-length term. Either
+  add one, or measure the achievable spread and gate on it explicitly.
+- **Every future acceptance number gets asked what it cannot see.** The
+  omission was structural, not careless: 13 tpms tests exist covering
+  envelope, all-carbon, chi, bond count, reps, ports, even-n, family,
+  histogram, raw scaffold and the gyroid refusal — and none asserts a bond
+  length, though `tests/test_se_atomic_generators.py`'s own `_bond_lengths`
+  helper is already used by the cnt, fullerene and cone families.
