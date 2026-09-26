@@ -342,6 +342,49 @@ class TestAcquireLegBoundedNotUnconditional:
         assert store.links_for(qid, direction="out", relation="related-to") == []
 
 
+class TestNonMaterialsQuestNoUnrelatedServesLink:
+    """qu401863 regression (quest-tick-incident-fix.md motivation): a
+    non-materials quest's fallback lit-search must not link an unrelated
+    corpus paper as a ``serves`` server. Unlike ``TestRelevanceFloor``
+    above (synthetic weak/strong scores through a stub ``search_fn``),
+    this runs the REAL lexical leg (:func:`_default_paper_search` ->
+    ``search_refs_lexical``'s ``websearch_to_tsquery`` AND-of-stems) against
+    papers shaped like the ones qu401863 actually accreted — the fix here
+    is item 3 (a domain-neutral fallback query), not the floor: a floor
+    alone would have ranked these papers HIGHLY for the old catalysis-
+    appended query and linked them anyway."""
+
+    def test_fallback_query_links_no_unrelated_paper(self, store: Any) -> None:
+        from precis.workers.job_types import quest_tick as qt
+
+        h = _handler(store)
+        qid = _created_id(
+            h.put(text="A standing flow of money for open, independent research")
+        )
+        # No meta.reaction_config -> _fallback_queries emits the
+        # domain-neutral facet set (item 3), not the catalysis one.
+        unrelated_titles = (
+            "DFT study of hydrogen storage on metal vacancies",
+            "Black hole thermodynamics and the holographic principle",
+            "Postbiotics in gut microbiome modulation",
+        )
+        unrelated = [seed_ref(store, title=t, kind="paper") for t in unrelated_titles]
+
+        for slice_count in range(3):
+            queries = qt._fallback_queries(store, qid, slice_count)
+            assert queries  # the fallback still asks the literature something
+            # No explicit search_fn -> run_search_step's own default
+            # (_default_paper_search, the real corpus-only lexical leg).
+            step = run_search_step(store, qid, queries)
+            assert step.papers_linked == 0
+
+        served = {
+            ln.src_ref_id
+            for ln in store.links_for(qid, direction="in", relation="serves")
+        }
+        assert served.isdisjoint(unrelated)
+
+
 class TestCliQuestSet:
     """``precis quest set`` — the operator lever for an incident (the MCP
     verb path already covered end-to-end in

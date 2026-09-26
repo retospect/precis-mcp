@@ -367,9 +367,15 @@ def test_prefill_skips_heading_residue_and_ranks_by_claim(
     resp = client.get(f"/claim/fi{hub}")
     assert resp.status_code == 200
     # The heading fragment is disqualified and the claim-relevant sentence
-    # beats the earlier meta-discourse one.
-    assert "The anisotropy ratio doubles roughly every two years" in resp.text
-    assert "Introduction**" not in resp.text
+    # beats the earlier meta-discourse one — scoped to the approve
+    # textarea's suggested payload (what this ranks/derives); the
+    # withheld-edges panel elsewhere on the page shows the RAW grounding
+    # passage verbatim by design (gr353764), heading residue and all, so
+    # a whole-page assertion would false-fail on that unrelated feature.
+    payload_field = resp.text.split('<textarea name="payload"', 1)[1]
+    payload_field = payload_field.split("</textarea>", 1)[0]
+    assert "The anisotropy ratio doubles roughly every two years" in payload_field
+    assert "Introduction**" not in payload_field
 
 
 def _seed_hypothesis(
@@ -682,6 +688,38 @@ def test_signoff_door_from_the_web(client: TestClient, runtime_with_store) -> No
     )
     assert resp.status_code == 303
     assert withheld_edges(store, hub) == []
+
+
+def test_withheld_row_carries_its_passage_and_wraps_full_width(
+    client: TestClient, runtime_with_store
+) -> None:
+    """gr353764: a withheld-edge row must show the pinned chunk handle and
+    a quoted excerpt of its grounding passage (the same one the evidence
+    view renders), not just relation+paper — and the panel must sit at
+    full content width, not squeezed into the DAG/side-panel grid's
+    lg:col-span-2 slice. gr264778: the row's own note/sign-off/remove
+    controls must wrap (flex-wrap), like the sibling 'Add evidence edge'
+    form already does, instead of overflowing a narrow pane."""
+    store = _store(runtime_with_store)
+    paper, chunk, _sha = _seed_paper(store)
+    hub = _seed_hub(store, "A withheld-passage claim.", paper, chunk)
+
+    resp = client.get(f"/claim/fi{hub}")
+    assert resp.status_code == 200
+    assert "Withheld evidence edges (1)" in resp.text
+    # the pinned chunk handle (real pc<chunk_id>, not the paper's ref id)…
+    assert f"pc{chunk}" in resp.text
+    # …and its verbatim grounding passage, quoted.
+    assert "Tensorial analysis." in resp.text
+    # the control row wraps at narrow widths.
+    assert "flex flex-wrap items-center gap-2" in resp.text
+    # the panel is a sibling of the DAG/side-panel grid, not nested in
+    # its lg:col-span-2 slice: "Add evidence edge" (still inside that
+    # slice) now closes BEFORE "Withheld evidence edges" opens, whereas
+    # pre-fix the withheld panel sat inside the slice ahead of it.
+    assert resp.text.index("Add evidence edge") < resp.text.index(
+        "Withheld evidence edges"
+    )
 
 
 def test_evidence_add_and_remove_doors(client: TestClient, runtime_with_store) -> None:

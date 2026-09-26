@@ -47,9 +47,10 @@
 </dl>
 
 {# Author byline table (precis.utils.authors module docstring) — position,
-   name, source tier chip, verified tick, per-author links. ``author_rows``
-   is empty for a paper that hasn't been through set_paper_authors yet (the
-   flat authors_display dd above covers that case). #}
+   name (+ ORCID iD icon when the row carries one, gr351776a), source tier
+   chip, verified tick, per-author links. ``author_rows`` is empty for a
+   paper that hasn't been through set_paper_authors yet (the flat
+   authors_display dd above covers that case). #}
 {% if author_rows %}
 <div class="border-t border-slate-100 pt-2">
   <p class="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Authors</p>
@@ -59,7 +60,24 @@
       {% set display_name = ([a.given, a.middle, a.family] | select | join(' ')) if (a.given or a.family) else a.name_raw %}
       <tr>
         <td class="pr-2 py-1 text-slate-400 align-top w-5">{{ a.position }}</td>
-        <td class="pr-2 py-1 align-top">{{ display_name }}</td>
+        <td class="pr-2 py-1 align-top">
+          {{ display_name }}
+          {# ORCID iD icon (gr351776a) — only when the paper_authors row
+             carries one; no placeholder otherwise. Inline SVG (the public
+             ORCID iD mark) so no new asset/dependency is needed. #}
+          {% if a.links.orcid %}
+          <a class="orcid-icon ml-1 inline-flex align-middle" href="{{ a.links.orcid }}"
+             target="_blank" rel="noopener" title="ORCID iD {{ a.orcid }}"
+             aria-label="ORCID iD {{ a.orcid }}">
+            <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
+              <circle cx="128" cy="128" r="128" fill="#A6CE39"/>
+              <path fill="#FFFFFF" d="M86.3,186.2H70.9V79.1h15.4V186.2z"/>
+              <path fill="#FFFFFF" d="M108.9,79.1h41.6c39.6,0,57,28.3,57,53.6c0,27.5-21.5,53.6-56.8,53.6h-41.8V79.1z M124.3,172.4h24.5c34.9,0,42.9-26.5,42.9-39.7c0-21.5-13.7-39.7-43.7-39.7h-23.7V172.4z"/>
+              <circle cx="78.6" cy="56.8" r="10.1" fill="#FFFFFF"/>
+            </svg>
+          </a>
+          {% endif %}
+        </td>
         <td class="pr-2 py-1 align-top">
           <span class="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">{{ a.source }}</span>
         </td>
@@ -67,8 +85,7 @@
           {%- if a.verified_at %}✓{% endif -%}
         </td>
         <td class="pr-2 py-1 align-top whitespace-nowrap">
-          {% if a.links.orcid %}<a class="text-sky-700 hover:underline" href="{{ a.links.orcid }}" target="_blank" rel="noopener">ORCID</a>{% endif %}
-          {% if a.links.openalex %}<a class="ml-1 text-sky-700 hover:underline" href="{{ a.links.openalex }}" target="_blank" rel="noopener">OpenAlex</a>{% endif %}
+          {% if a.links.openalex %}<a class="text-sky-700 hover:underline" href="{{ a.links.openalex }}" target="_blank" rel="noopener">OpenAlex</a>{% endif %}
           {% if a.links.scholar %}<a class="ml-1 text-sky-700 hover:underline" href="{{ a.links.scholar }}" target="_blank" rel="noopener">Scholar</a>{% endif %}
         </td>
       </tr>

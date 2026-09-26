@@ -603,6 +603,29 @@ class TestPhaseAwaitDryTicks:
         assert out.state["punt_ticks"] == 4
         assert out.state["tick_failures"] == 1
 
+    def test_lit_only_quest_ticks_through_busy_sim_queue(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr347550: a literature-only quest (``meta.compute_lane == "off"`` —
+        # no reaction_config, no candidate structures, nothing dispatchable
+        # to the GPU node) has no stake in the node-wide compute queue and
+        # must not be starved by an unrelated GPU backlog — the tick still
+        # runs its non-compute (search/reasoning) stages while the sim queue
+        # is reported busy, unlike a compute-lane quest (the starvation-gate
+        # tests above), which correctly still defers wholesale.
+        calls = _stub_tick(monkeypatch, _Outcome(searches_run=2))
+        _stub_pending(monkeypatch, [[], []])  # idle before AND after the tick
+        _stub_queued(monkeypatch, qt._max_queued_sims())  # node queue full
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
+            retired_at=None, meta={"compute_lane": "off"}
+        )
+        out = qt._dispatch(ctx, qt.SPEC)
+        assert isinstance(out, Yield)
+        assert len(calls) == 1  # the tick RAN despite the busy queue
+        assert calls[0]["compute"] is False
+        assert not any("deferring" in text for _, text in ctx.chunks)
+
 
 class TestTickSlicing:
     """quest-tick-slicing: ``run_quest_tick(sliced=True)`` hands back a
@@ -998,6 +1021,49 @@ class TestFallbackLitSearch:
         )
         for forbidden in ("DFT", "dopant", "single-atom-alloy", "barrier"):
             assert forbidden not in generic_facets
+
+    def test_non_materials_quest_yields_cheaply_on_a_quiet_slice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """qu401863 regression, coordinator layer: a funding-flavoured quest
+        (no ``reaction_config``, ``compute_lane`` left at its default) that
+        emits no ``searches`` of its own still gets exactly ONE bounded
+        fallback lit-search per quiet slice — not a runaway — and the tick
+        yields normally with nothing dispatched, regardless of whether that
+        search finds anything (see ``TestNonMaterialsQuestNoUnrelatedServesLink``
+        in ``test_quest_tagging.py`` for the real-corpus proof that it
+        shouldn't find anything)."""
+        _stub_tick(monkeypatch, _Outcome(searches_run=0))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])  # nothing dispatched -> idle after
+
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
+            title="A standing flow of money for open, independent research",
+            meta={},
+        )
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_run_search_step(
+            store: Any, quest_id: int, queries: list[str], **kw: Any
+        ) -> Any:
+            calls.append({"quest_id": quest_id, "queries": queries, **kw})
+            # A real corpus with no funding-related literature: the floor
+            # (or the plain lack of lexical overlap) links nothing.
+            return SimpleNamespace(papers_linked=0)
+
+        monkeypatch.setattr(
+            "precis.quest.search.run_search_step", _fake_run_search_step
+        )
+
+        out = qt._dispatch(ctx, qt.SPEC)
+
+        assert isinstance(out, Yield)  # completes the slice, no error
+        assert len(calls) == 1  # exactly one bounded fallback query, not a spree
+        for forbidden in ("DFT", "dopant", "single-atom-alloy", "barrier"):
+            assert forbidden not in " ".join(calls[0]["queries"])
+        assert any("fallback lit-search" in text for _kind, text in ctx.chunks)
 
 
 class TestRegistration:

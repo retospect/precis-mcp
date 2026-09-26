@@ -108,6 +108,8 @@
   ansible.builtin.stat:
     path: "{{ asa_bot_grimoire_dir }}"
   register: asa_bot_grimoire_stat
+  vars:
+    ansible_remote_tmp: "~/.ansible/tmp"
 
 - name: Warn when grimoire dir is missing on controller
   when: not asa_bot_grimoire_stat.stat.exists
@@ -119,6 +121,8 @@
       controller — skipping 'Deploy SOUL.md' and 'Sync specialist subagent
       definitions'. Set asa_bot_grimoire_dir to the grimoire checkout path
       if this host is expected to ship SOUL.md / specialist agents.
+  vars:
+    ansible_remote_tmp: "~/.ansible/tmp"
 
 - name: Deploy SOUL.md
   when: asa_bot_grimoire_stat.stat.exists

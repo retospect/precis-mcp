@@ -38,17 +38,25 @@ rule, not a row predicate.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.nanopub import evidence, gates
 from precis.store._nanopub_ops import PublishRow
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store import Store
 
 log = logging.getLogger(__name__)
+
+#: A grounding handle's ``pc<chunk_id>`` shape — mirrors
+#: ``nanopub.evidence._PC_HANDLE``; kept as its own copy rather than an
+#: import of that private name (same duplication as ``gates.py``'s own
+#: ``integral_chunk_id``).
+_PC_HANDLE = re.compile(r"^pc(\d+)$")
 
 #: Inbound paper→hub evidence relations (mirrors ``taproot.hub.HUB_ROLES``).
 EVIDENCE_RELATIONS = ("establishes", "corroborates", "contradicts")
@@ -80,6 +88,32 @@ class WithheldEdge:
     #: withheld as *stale* (claim edited after verification) rather than
     #: missing. False for the plain unverified shape.
     stale: bool = False
+    #: The grounding chunk's ``pc<id>`` handle — the Phase-3 chase pointer
+    #: (``links.meta['source_handle']``) when set, else the handle of the
+    #: ``links.src_chunk_id`` the paper→hub edge pins directly (same
+    #: precedence as ``taproot.seniority._grounding_handle``). ``None``
+    #: when the edge grounds no chunk at all (gr353764: withheld rows
+    #: otherwise show no passage, indistinguishable from one another).
+    chunk_handle: str | None = None
+    #: The grounding chunk's verbatim text, when :attr:`chunk_handle`
+    #: resolved to a live chunk — the same excerpt the evidence view
+    #: renders for a kept edge. ``None`` when there's no chunk_handle or
+    #: the chunk has since vanished.
+    passage: str | None = None
+
+
+def _grounding_chunk_id(src_chunk_id: int | None, meta: dict[str, Any]) -> int | None:
+    """The numeric chunk id one withheld edge grounds on, same precedence
+    as ``taproot.seniority._grounding_handle``: the Phase-3 chase's
+    ``meta['source_handle']`` when it is a ``pc<id>`` handle, else the
+    ``links.src_chunk_id`` the edge pins directly. A legacy non-``pc``
+    ``source_handle`` (e.g. ``slug~ord``) resolves to no chunk, same as
+    :func:`precis.nanopub.evidence._resolve_grounding`."""
+    stored = meta.get("source_handle")
+    if stored:
+        m = _PC_HANDLE.match(str(stored))
+        return int(m.group(1)) if m else None
+    return src_chunk_id
 
 
 def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
@@ -105,7 +139,7 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
         rows = conn.execute(
             """
             SELECT l.link_id, l.src_ref_id, r.title, l.relation,
-                   l.meta->>'support'
+                   l.meta->>'support', l.src_chunk_id, l.meta
               FROM links l
               JOIN refs r ON r.ref_id = l.src_ref_id AND r.retired_at IS NULL
              WHERE l.dst_ref_id = %(hub)s
@@ -121,16 +155,39 @@ def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
             """,
             {"hub": hub_ref_id, "sha": live_sha},
         ).fetchall()
-    return [
-        WithheldEdge(
-            link_id=int(r[0]),
-            paper_ref_id=int(r[1]),
-            paper_title=str(r[2] or ""),
-            relation=str(r[3]),
-            stale=r[4] is not None,
+
+    chunk_ids_by_link: dict[int, int] = {}
+    for r in rows:
+        link_id = int(r[0])
+        chunk_id = _grounding_chunk_id(r[5], r[6] or {})
+        if chunk_id is not None:
+            chunk_ids_by_link[link_id] = chunk_id
+    chunks_by_id = {
+        c.chunk_id: c
+        for c in evidence.fetch_chunks(store, list(set(chunk_ids_by_link.values())))
+    }
+
+    edges: list[WithheldEdge] = []
+    for r in rows:
+        link_id = int(r[0])
+        chunk_id = chunk_ids_by_link.get(link_id)
+        chunk = chunks_by_id.get(chunk_id) if chunk_id is not None else None
+        edges.append(
+            WithheldEdge(
+                link_id=link_id,
+                paper_ref_id=int(r[1]),
+                paper_title=str(r[2] or ""),
+                relation=str(r[3]),
+                stale=r[4] is not None,
+                chunk_handle=(
+                    handle_registry.try_format("paper", chunk_id, chunk=True)
+                    if chunk_id is not None
+                    else None
+                ),
+                passage=chunk.text if chunk is not None else None,
+            )
         )
-        for r in rows
-    ]
+    return edges
 
 
 def remove_evidence_edge(

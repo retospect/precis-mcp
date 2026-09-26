@@ -25,8 +25,10 @@ itself just dispatched.
 **Liveness + backpressure.** Like ``good_search``, the wait uses an
 ``at_time`` heartbeat (not bare ``children_done``) so a sim stuck
 ``STATUS:queued`` can't park the loop forever. No new batch is proposed
-while the previous is in flight (per-quest backpressure); a slice defers
-when spark's compute queue is already deep (starvation gate).
+while the previous is in flight (per-quest backpressure); a slice of a
+compute-lane quest defers when spark's compute queue is already deep
+(starvation gate) — a weave or lit-only quest (``meta.compute_lane ==
+"off"``) has no stake in that queue and is never deferred by it.
 
 A slice that dispatches nothing on a successful tick backs off and retries
 rather than resting, on one of two budgets by whether the model *engaged*:
@@ -830,10 +832,12 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     back on the next slice. Each of those is at most ONE LLM call, so a
     coordinator slice killed by a node reboot / OOM / deploy bounce costs
     one stage rather than the whole (up to 4-call, multi-hour) tick. Only
-    the FIRST slice of a tick runs the backpressure + starvation gates and
-    the weave-body routing: a *resume* is mid-tick, and re-testing the
-    pending set there would see the sims the tick itself just dispatched and
-    defer — throwing the checkpoint away.
+    the FIRST slice of a tick runs the backpressure gate, the weave-body
+    routing, and the starvation gate (in that order — gr347550: routing a
+    weave/lit-only quest away from the starvation gate before it is
+    evaluated, rather than after, is the whole fix): a *resume* is mid-tick,
+    and re-testing the pending set there would see the sims the tick itself
+    just dispatched and defer — throwing the checkpoint away.
     """
     from precis.dispatch import Hub
     from precis.quest.search import make_acquiring_search
@@ -859,34 +863,47 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
                 {"slice_count": slice_count, **_carry_budgets(state)}, pending
             )
 
-        # Starvation gate: don't stack a batch onto an already-deep compute queue.
-        queued = _queued_sim_count(ctx.store)
-        if queued >= _max_queued_sims():
-            ctx.append_chunk(
-                "job_event",
-                f"tick #{slice_count}: deferring — {queued} sim(s) queued node-wide "
-                f"(≥ {_max_queued_sims()}); waiting for the queue to drain",
-            )
-            now = time.time()
-            return Yield(
-                state={
-                    "phase": "await",
-                    "slice_count": slice_count,
-                    "child_job_ids": [],
-                    # A defer is not a tick — preserve both give-up budgets.
-                    **_carry_budgets(state),
-                },
-                wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
-            )
-
         # Rung 6e-2: a quest marked ``meta.quest_body == "weave"`` (a
         # paper-writing/topic-dossier quest — see
         # ``precis.quest.weave_tick.mark_weave_quest``) runs the weave body
-        # instead of the catalyst propose-experiment tick below. Checked here
-        # (not up-front in ``_dispatch``) so it still benefits from the
-        # backpressure/starvation-gate checks above unchanged.
+        # instead of the catalyst propose-experiment tick below. Checked
+        # ahead of the starvation gate (gr347550): a weave tick never touches
+        # the compute queue (no autocatpath_explore/struct_relax dispatch —
+        # see ``_phase_weave_tick``), so it has no stake in that queue and
+        # must not be starved by an unrelated GPU backlog. Still benefits
+        # from the backpressure check above unchanged.
         if _quest_body(ctx.store, quest_id) == QUEST_BODY_WEAVE:
             return _phase_weave_tick(ctx, quest_id, params, state, slice_count)
+
+        # Starvation gate: don't stack a batch onto an already-deep compute
+        # queue — but only for a quest that actually has a compute lane to
+        # stack onto (gr347550). ``meta.compute_lane == "off"`` (a lit-only
+        # quest — no reaction_config, no candidate structures, nothing
+        # dispatchable to the GPU node) has no stake in that queue either;
+        # gating on ``_quest_compute_enabled`` keeps its search/reasoning
+        # stages running regardless of an unrelated compute backlog, while a
+        # quest with a live compute lane still defers the whole tick exactly
+        # as before (correct there — it would otherwise stack a fresh batch
+        # onto an already-deep queue).
+        if _quest_compute_enabled(ctx.store, quest_id):
+            queued = _queued_sim_count(ctx.store)
+            if queued >= _max_queued_sims():
+                ctx.append_chunk(
+                    "job_event",
+                    f"tick #{slice_count}: deferring — {queued} sim(s) queued node-wide "
+                    f"(≥ {_max_queued_sims()}); waiting for the queue to drain",
+                )
+                now = time.time()
+                return Yield(
+                    state={
+                        "phase": "await",
+                        "slice_count": slice_count,
+                        "child_job_ids": [],
+                        # A defer is not a tick — preserve both give-up budgets.
+                        **_carry_budgets(state),
+                    },
+                    wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
+                )
 
     search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store))
     outcome = run_quest_tick(

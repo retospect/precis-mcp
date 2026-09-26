@@ -1,7 +1,7 @@
 {% extends "base.html.j2" %}
 {% block title %}Drive{% endblock %}
 {% block content %}
-<div class="mb-3 flex items-start gap-3" x-data="{ open: false, kind: 'cad' }">
+<div class="mb-3 flex items-start gap-3" x-data="{ open: false, kind: 'draft' }">
   <div class="min-w-0">
     <h1 class="text-lg font-semibold">Drive</h1>
     <p class="text-sm text-slate-500">
@@ -43,11 +43,11 @@
         <label class="block text-xs font-medium text-slate-600 mb-1">Kind</label>
         <select x-model="kind" name="kind"
                 class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm bg-white">
+          <option value="draft" selected>Draft (document)</option>
           <option value="cad">CAD (3D solid)</option>
           <option value="structure">DFT (atomistic cell)</option>
           <option value="figure">Figure (SVG canvas)</option>
           <option value="mermaid">Mermaid (diagram)</option>
-          <option value="draft">Draft (document)</option>
         </select>
       </div>
       {# Draft genre: only /drafts/new consumes `doctype`; hidden for cad/structure/figure.

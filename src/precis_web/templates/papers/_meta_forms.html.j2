@@ -155,6 +155,16 @@
     </label>
     <label class="block">
       <span class="text-slate-500">Abstract</span>
+      {# One-click hard-wrap strip (gr349107) — a publisher/PDF-pasted
+         abstract carries a newline every ~80 chars; this joins the lines
+         of each paragraph into one, client-side only (a blank line still
+         starts a new paragraph). Left in the editor for review before
+         Save — never auto-applied. #}
+      <button type="button" onclick="__paperUnwrapAbstract(this)"
+              class="unwrap-abstract-btn ml-2 rounded border border-slate-300 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-100"
+              title="join hard-wrapped lines within each paragraph into one line">
+        ⤒ Unwrap
+      </button>
       <textarea name="abstract" rows="4"
                 class="w-full rounded border border-slate-300 px-2 py-1">{{ prefill.abstract if prefill else (abstract or '') }}</textarea>
     </label>
@@ -207,6 +217,31 @@ if (!window.__paperFillBlanks) {
       if (msg) { msg.textContent = 'Lookup failed.'; msg.classList.add('text-rose-600'); }
     }
     btn.disabled = false;
+  };
+}
+</script>
+
+{# Abstract "⤒ Unwrap" handler (gr349107) — same guarded-singleton-global
+   pattern as ``__paperFillBlanks`` above. Pure client-side text massage:
+   splits on blank-line paragraph breaks, joins each paragraph's own lines
+   with a space, then rejoins paragraphs on a blank line. Never touches the
+   server; the operator still reviews + Saves. #}
+<script>
+if (!window.__paperUnwrapAbstract) {
+  window.__paperUnwrapAbstract = function (btn) {
+    const form = btn.closest('form');
+    const ta = form ? form.querySelector('[name="abstract"]') : null;
+    if (!ta) return;
+    ta.value = ta.value
+      .split(/\n[ \t]*\n/)
+      .map((para) =>
+        para
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0)
+          .join(' ')
+      )
+      .join('\n\n');
   };
 }
 </script>

@@ -771,7 +771,9 @@ async def detail(
 ) -> HTMLResponse | RedirectResponse:
     """Paper detail: metadata sidebar + PDF.js reader. ``?chunk=N`` (a
     citation click) surfaces that chunk's text as a highlighted card.
-    ``?tab=Meta`` (or Navigate / Jump) opens that sidebar tab.
+    ``?tab=Meta`` (or Navigate / Jump) opens that sidebar tab; with no
+    ``tab`` given the page opens on Meta (gr351776b) — that's what an
+    operator checking or fixing a record wants first.
 
     Addressable by cite_key slug (canonical) or numeric id; a numeric id
     that owns a slug 301-redirects to the slug URL so links settle on the
@@ -808,7 +810,7 @@ async def detail(
         ref,
         triage=bool(triage),
         cited=_cited_chunk(store, ref.id, chunk),
-        initial_tab=tab.strip().capitalize(),
+        initial_tab=tab.strip().capitalize() or "Meta",
         template="_reader/reader.html.j2" if in_pane else "papers/detail.html.j2",
         in_pane=in_pane,
     )

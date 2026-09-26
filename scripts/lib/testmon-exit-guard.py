@@ -22,6 +22,18 @@ the copy-to-a-``.py``-suffixed-temp-file workaround already established by
 It is the second line of defence: distinguish "tests failed" from "testmon's
 own bookkeeping crashed" from the captured pytest log text, so a caller that
 only checks the exit code is not misled either way.
+
+gr261537: it also owns the SECOND, unrelated warning `scripts/test
+--impacted` needs after a run — testmon's affected-tests selection can
+balloon past the point where it's cheaper than a plain full run (a
+central-module diff can pull in ~half the suite, which then runs at the
+forced ``-n0`` instead of the normal ``-n6``). pytest's own end-of-run
+summary line already carries the counts to catch this: pytest-testmon's
+``pytest_deselected`` hook (``pytest_testmon.py``) makes every deselected
+test show up in that line as an ordinary ``"N deselected"`` category
+alongside pytest's own ``passed``/``failed``/etc — the same line
+:func:`decide_exit_code` already parses for a clean summary. See
+:func:`testmon_selection_warning`.
 """
 
 from __future__ import annotations
@@ -89,6 +101,64 @@ def decide_exit_code(log_text: str, pytest_exit_code: int) -> tuple[int, str | N
     )
 
 
+# A summary-line part is "<count> <category>", e.g. "6200 passed",
+# "28 skipped", "7302 deselected" — only categories that occurred appear at
+# all (pytest never prints "0 failed").
+_SUMMARY_PART_RE = re.compile(r"(\d+) ([a-z]+)")
+
+# gr261537: warn once testmon's selection crosses this fraction of the suite
+# it evaluated — past this point the forced -n0 serial run routinely takes
+# longer than a plain `scripts/test`'s full -n6 run.
+_SELECTION_WARN_THRESHOLD = 0.5
+
+
+def testmon_selection_counts(log_text: str) -> tuple[int, int] | None:
+    """Return ``(selected, total)`` test counts from the run's LAST summary
+    line, or ``None`` if no summary line is present (e.g. a crash before
+    pytest could print one, or a run with no tests collected at all).
+
+    ``selected`` sums every category testmon actually ran or attempted
+    (passed/failed/skipped/error/xfailed/xpassed); ``deselected`` is
+    testmon's own category (via its ``pytest_deselected`` hook) for tests it
+    chose to skip. ``total`` — selected + deselected — is the size of the
+    suite testmon evaluated, i.e. what a non-impacted run would collect.
+    """
+    bodies = _SUMMARY_RE.findall(log_text)
+    if not bodies:
+        return None
+    selected = 0
+    deselected = 0
+    for count_s, category in _SUMMARY_PART_RE.findall(bodies[-1]):
+        if category == "deselected":
+            deselected += int(count_s)
+        else:
+            selected += int(count_s)
+    total = selected + deselected
+    return (selected, total) if total else None
+
+
+def testmon_selection_warning(log_text: str) -> str | None:
+    """Return the gr261537 WARNING when testmon selected more than
+    ``_SELECTION_WARN_THRESHOLD`` of the suite it evaluated, or ``None``.
+
+    Names the counts and the cheaper alternative rather than a bare
+    "selection is large" — a caller can act on "6200/13500 tests" in a way
+    they can't act on a generic warning (gr261537 comment 2).
+    """
+    counts = testmon_selection_counts(log_text)
+    if counts is None:
+        return None
+    selected, total = counts
+    if selected <= total * _SELECTION_WARN_THRESHOLD:
+        return None
+    return (
+        f"WARNING: testmon selected {selected}/{total} tests "
+        f"({selected * 100 // total}% of the suite) — --impacted forces "
+        "-n0 (serial); a plain `scripts/test` runs the full suite at -n6 "
+        "and likely finishes sooner on a diff this broad. See gr261537."
+    )
+
+
 def clear_testmon_datafiles(worktree: Path) -> list[str]:
     """Delete the (possibly now-inconsistent) testmon map so the next
     ``--impacted`` run rebuilds it from scratch, instead of layering new
@@ -114,6 +184,12 @@ def main(argv: list[str]) -> int:
     exit_code, message = decide_exit_code(log_text, int(raw_code))
     if message:
         print(message, file=sys.stderr)
+
+    # gr261537: independent of the exit-code decision above — a run can be
+    # a genuine pass/fail AND still have selected most of the suite.
+    selection_warning = testmon_selection_warning(log_text)
+    if selection_warning:
+        print(selection_warning, file=sys.stderr)
 
     if worktree is not None and testmon_signature_present(log_text):
         removed = clear_testmon_datafiles(worktree)

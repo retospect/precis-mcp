@@ -115,6 +115,18 @@ def test_drive_new_dropdown_offers_draft_doctype(client) -> None:
     assert ":required=\"kind === 'draft'\"" in r.text
 
 
+def test_drive_new_defaults_kind_to_draft(client) -> None:
+    """gr348556: the '+ New' Kind dropdown used to default to CAD on a page
+    mostly listing papers — a first-time user had to scan an unlabelled
+    5-item dropdown before any draft field appeared. Draft is now the
+    default, both for Alpine's initial ``x-model`` state and the plain
+    HTML ``selected`` option (no-JS fallback)."""
+    r = client.get("/drive")
+    assert r.status_code == 200
+    assert "x-data=\"{ open: false, kind: 'draft' }\"" in r.text
+    assert '<option value="draft" selected>Draft (document)</option>' in r.text
+
+
 def test_pres_editor_routes_registered(client) -> None:
     """The pres slide-deck editor wires four endpoints (reader / pdf /
     bibtex / edit). Guards the app-factory registration + path shapes."""
@@ -2306,9 +2318,12 @@ def test_detail_tab_query_param_selects_meta(client) -> None:
     assert ", 'Meta'," in resp.text
 
 
-def test_detail_defaults_to_navigate_tab(client) -> None:
-    """A plain paper opens on Navigate."""
+def test_detail_defaults_to_meta_tab(client) -> None:
+    """A plain paper opens on Meta (gr351776); ``?tab=`` still overrides."""
     resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    assert ", 'Meta'," in resp.text
+    resp = client.get("/papers/smith2024?tab=Navigate")
     assert resp.status_code == 200
     assert ", 'Navigate'," in resp.text
 
@@ -5549,6 +5564,46 @@ def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
     assert "which venue?" in resp.text
     # The answer form still targets the canonical /asks write route.
     assert 'action="/asks/14634/answer"' in resp.text
+
+
+def test_needs_you_ask_context_citations_are_clickable(client, monkeypatch) -> None:
+    """gr415953: an ask's reading context — the draft passage quoted inline
+    on /needs-you — cites resources by handle (``[pa456]``/``[jo123]``/
+    ``[td789]``); those must render as clickable anchors (linkify_refs'
+    standard citation format), not literal bracketed text."""
+    from precis_web.routes import needs_you as needs_you_mod
+
+    monkeypatch.setattr(
+        needs_you_mod,
+        "_load_asks",
+        lambda store, **kw: [
+            {
+                "id": 14634,
+                "title": "Write the technical section",
+                "created_at": None,
+                "questions": ["which venue?"],
+                "tags": ["ask-user:which venue?"],
+                "history": [{"question": "seen [jo123]?", "answer": "yes, [td789]"}],
+                "context": {
+                    "draft": {"title": "Bound draft", "url": "/smartdraft/x"},
+                    "before": "context cites [pa456] here.",
+                    "focus": "the focal passage cites [pa456] too.",
+                    "after": "trailing context, also [pa456].",
+                },
+            }
+        ],
+    )
+    resp = client.get("/needs-you")
+    assert resp.status_code == 200
+    # The bracket citation resolves to the standard record-handle anchor —
+    # same href convention every other kind:ref mention on the site uses.
+    assert 'href="/r/paper/456"' in resp.text
+    # The raw bracketed form never leaks through unlinked.
+    assert "[pa456]" not in resp.text
+    assert "[jo123]" not in resp.text
+    assert "[td789]" not in resp.text
+    assert 'href="/r/job/123"' in resp.text
+    assert 'href="/r/todo/789"' in resp.text
 
 
 def test_needs_you_renders_proposed_hypotheses(client, monkeypatch) -> None:

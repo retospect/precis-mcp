@@ -78,7 +78,12 @@ unverified forever. Corroborating verdicts get the full
 ``support``/``caveats``/``verified_by``/``verified_at``/``verified_claim_sha``
 stamp (fingerprinted ``'hub-refine'``); non-corroborating ones are memoed
 into ``meta.reground_seen`` (judged once per ``claim_sha``, additive-only),
-capped at :data:`_REVERIFY_PER_PASS` calls/hub/pass.
+capped at :data:`_REVERIFY_PER_PASS` calls/hub/pass. An edge already
+KEEP-memoed under the current sha by the reground audit above (stage 2)
+is stamped straight from that memo (gr369540) rather than skipped — a
+skip there would leave a KEEP-judged pinned edge withheld forever, since
+the audit's own memo is exactly what would otherwise block this re-verify
+from ever reaching it.
 
 **Reopen gate vs. decomposition.** A compound hub never reaches step 6
 (excluded at step 1), so retitling it costs nothing here and does NOT
@@ -1639,6 +1644,7 @@ def _audit_edges(
         seen[key] = {
             "sha": plan.claim_sha,
             "verdict": verdict.verdict,
+            "reason": verdict.reason,
             "at": datetime.now(UTC).isoformat(),
         }
         if verdict.verdict == "KEEP":
@@ -2625,8 +2631,12 @@ def _reverify_pinned_edges(
     **withheld** (no ``support``, no ``publish_signoff``) and
     **unverified-stamped** (``support`` present but not trustworthy: no
     ``verified_by``, the mint-time default, or no ``verified_claim_sha``,
-    a verdict from before that stamp existed). Each is re-read by the
-    minter's own verifier
+    a verdict from before that stamp existed). An edge already KEEP-memoed
+    under this ``sha`` by the reground audit (stage 2 above) is stamped
+    straight from that memo (gr369540) — never skipped, and never re-read
+    by the verifier below (the judge already read the passage against the
+    sentence once). Everything else is re-read by the minter's own
+    verifier
     (:func:`~precis.workers._chase_llm._verify_support_with_caveats`):
 
     * corroborating → stamped in the six-key shape
@@ -2657,7 +2667,28 @@ def _reverify_pinned_edges(
         if spent >= _REVERIFY_PER_PASS:
             break
         key = _seen_key(edge.source_ref_id, edge.chunk_id)
-        if seen.get(key, {}).get("sha") == sha:
+        memo = seen.get(key)
+        if memo and memo.get("sha") == sha:
+            # gr369540: the reground audit already strict-judged this exact
+            # passage under this sha. A KEEP memo means the judge already
+            # read the passage against the sentence — stamp the edge from
+            # that verdict (the same shape a fresh corroborating re-verify
+            # below would write) instead of skipping it, which otherwise
+            # left every KEEP-judged pinned edge withheld forever (reground
+            # and re-verify cancelling each other out). A PRUNE/CONTRADICTS
+            # memo is correctly left alone — skip, no re-verify, no spend.
+            if memo.get("verdict") == "KEEP":
+                patch = {
+                    "support": "yes",
+                    "support_reason": memo.get("reason") or "reground audit: KEEP",
+                    "caveats": [],
+                    **_verified_stamp(sha),
+                }
+                conn.execute(
+                    "UPDATE links SET meta = COALESCE(meta, '{}'::jsonb) || %s "
+                    "WHERE link_id = %s",
+                    (Jsonb(patch), edge.link_id),
+                )
             continue  # judged once per claim_sha (audit or an earlier pass)
         if not edge.chunk_text or edge.chunk_ord is None:
             continue  # pinned chunk retired/deleted — repair-evidence territory

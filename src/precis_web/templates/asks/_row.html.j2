@@ -60,13 +60,13 @@
       {% if a.context.handle %}<span class="ml-1 font-mono text-slate-300">{{ a.context.handle }}</span>{% endif %}
     </div>
     {% if a.context.before %}
-    <p class="text-xs text-slate-400 break-words">{{ a.context.before }}</p>
+    <p class="text-xs text-slate-400 break-words">{{ a.context.before | linkify_refs }}</p>
     {% endif %}
     {% if a.context.focus %}
-    <p class="text-sm text-slate-700 border-l-2 border-emerald-400 pl-2 my-1 break-words">{{ a.context.focus }}</p>
+    <p class="text-sm text-slate-700 border-l-2 border-emerald-400 pl-2 my-1 break-words">{{ a.context.focus | linkify_refs }}</p>
     {% endif %}
     {% if a.context.after %}
-    <p class="text-xs text-slate-400 break-words">{{ a.context.after }}</p>
+    <p class="text-xs text-slate-400 break-words">{{ a.context.after | linkify_refs }}</p>
     {% endif %}
   </div>
   {% endif %}
@@ -81,8 +81,8 @@
     <div class="mt-1 space-y-2">
       {% for h in a.history %}
       <div class="rounded border border-slate-200 bg-white px-2 py-1.5">
-        {% if h.question %}<div class="text-slate-500"><span class="font-semibold">asked:</span> {{ h.question }}</div>{% endif %}
-        {% if h.answer %}<div class="text-slate-700"><span class="font-semibold">you:</span> {{ h.answer }}</div>{% endif %}
+        {% if h.question %}<div class="text-slate-500"><span class="font-semibold">asked:</span> {{ h.question | linkify_refs }}</div>{% endif %}
+        {% if h.answer %}<div class="text-slate-700"><span class="font-semibold">you:</span> {{ h.answer | linkify_refs }}</div>{% endif %}
       </div>
       {% endfor %}
     </div>

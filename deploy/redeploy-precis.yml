@@ -1016,6 +1016,13 @@
 # is now unmanaged, drifts a release behind, and is the same stale-sha diagnostic
 # trap. Remove it — but ONLY on `data`. `inference` still runs a live worker off
 # /opt/precis/venv (20b installs there), so the removal is `data`-scoped via `when`.
+#
+# `data` also carries an /opt/precis/embedder-venv relic from before 19a excluded
+# it (2026-08-10) — same exclusion, same stale-sha trap, and gr260308 found its
+# companion com.precis.embedder-watchdog LaunchDaemon (precis_embedder_watchdog
+# role) still loaded and restart-looping against a `com.precis.embedder` job that
+# was never installed there. Remove both, macOS-only (`data` has no Linux member
+# today, but gate on os_family so a future member doesn't hit a no-op launchctl).
 - name: "Remove vestigial precis venvs off non-owning hosts"
   hosts:
     - data
@@ -1031,6 +1038,26 @@
         path: /opt/precis/venv
         state: absent
       when: inventory_hostname in groups['data']
+    - name: Absent /opt/precis/embedder-venv on the DB node (embedder excluded there 2026-08-10; relic on a stale sha, gr260308)
+      ansible.builtin.file:
+        path: /opt/precis/embedder-venv
+        state: absent
+      when: inventory_hostname in groups['data']
+    - name: Bootout the vestigial com.precis.embedder-watchdog LaunchDaemon on the DB node (macOS, tolerate not-loaded, gr260308)
+      when:
+        - inventory_hostname in groups['data']
+        - os_family == "darwin"
+      ansible.builtin.command: launchctl bootout system/com.precis.embedder-watchdog
+      register: _embedder_watchdog_bootout
+      changed_when: _embedder_watchdog_bootout.rc == 0
+      failed_when: false        # rc!=0 == already unloaded; the file removal below is the real state
+    - name: Remove the vestigial com.precis.embedder-watchdog plist on the DB node (macOS, gr260308)
+      when:
+        - inventory_hostname in groups['data']
+        - os_family == "darwin"
+      ansible.builtin.file:
+        path: /Library/LaunchDaemons/com.precis.embedder-watchdog.plist
+        state: absent
 
 # ── 4. Prove convergence: every MANAGED precis venv runs the deployed sha ──
 # Deploy is only done when every venv a role installs is actually ON the ref
