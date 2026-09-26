@@ -70,8 +70,6 @@ COF-300 E, H.
 
 ## Tooling gaps surfaced (repo work)
 
-- gr344147: table edit door cannot reach `\caption` / `\mcitebox` /
-  footnote text — three hand edits above are the cost.
 - `tools search` degrades to lexical silently when the local embedder
   returns 429 (`embedder_service.py` `max_inflight`=4, saturated by
   sibling gate stacks); the caller cannot tell. Surface the mode in the

@@ -2771,8 +2771,9 @@ class DraftHandler(Handler):
             if replace_count == 0:
                 shown = find if find is not None else pattern_src
                 raise BadInput(
-                    f"no cell matches /{shown}/ in {chunk.dc} — nothing "
-                    "replaced, the table was left unchanged.",
+                    f"no cell, caption or note matches /{shown}/ in "
+                    f"{chunk.dc} — nothing replaced, the table was left "
+                    "unchanged.",
                     next=f"get(kind='draft', id={chunk.dc!r})",
                 )
         if dry_mode is not None:

@@ -938,21 +938,87 @@ def patch_latex_cell(text: str, row1: int, col0: int, value: str) -> str | None:
     return text[:start] + lead + value + trail + text[end:]
 
 
+def _caption_inner_span(text: str) -> tuple[int, int] | None:
+    """Position span of the first ``\\caption{...}``'s inner content in
+    `text` (position-preserving sibling of :func:`_extract_caption`; a
+    starred ``\\caption*`` matches too). ``None`` when there is no caption
+    or its braces don't balance."""
+    m = _CAPTION_CMD_RE.search(text)
+    if not m:
+        return None
+    end = _find_balanced(text, m.end() - 1)
+    if end is None:
+        return None
+    return m.end(), end - 1
+
+
+def _post_tabular_span(text: str) -> tuple[int, int]:
+    """Position span of `text` AFTER the closing ``\\end{tabular…}`` of the
+    outer table environment — footnote/note prose trailing the grid
+    (gr344147). Empty (``len(text), len(text)``) when the tabular body
+    runs to the end of `text` (the bare-captured-inner or unmatched-
+    ``\\begin`` fallbacks of :func:`_tabular_env_span`, neither of which
+    leaves anything after the body to widen into)."""
+    shadow = _latex_position_shadow(text)
+    _, env_end = _tabular_env_span(shadow)
+    if env_end >= len(text):
+        return len(text), len(text)
+    m = re.match(r"\\end\{[^}]*\}", text[env_end:])
+    if not m:
+        return len(text), len(text)
+    start = env_end + m.end()
+    return start, len(text)
+
+
 def patch_latex_table_text(
     text: str, pattern: re.Pattern[str], replacement: str
 ) -> tuple[str, int]:
-    """Apply a find/sub substitution directly to the row/cell area of raw
-    LaTeX `text` — the LaTeX sibling of :func:`find_replace_cells`. The
-    caption/label/colspec (everything before the first data cell) are
-    never in scope, so they survive untouched even if `pattern` would
-    otherwise match inside them. Returns the patched text plus the
-    replacement count."""
+    """Apply a find/sub substitution directly to raw LaTeX `text` — the
+    LaTeX sibling of :func:`find_replace_cells`. Tries the row/cell area
+    (everything between the colspec and the closing ``\\end{tabular…}``)
+    first, exactly as before; the label/colspec stay out of scope there,
+    so they survive untouched even if `pattern` would otherwise match
+    inside them.
+
+    A body match wins outright (every occurrence in the body is
+    replaced, same as before). Only when the body has ZERO matches does
+    the search widen to the caption (``\\caption{...}``'s inner content)
+    and to any note/footnote text after ``\\end{tabular…}`` (gr344147: a
+    cite macro in a caption or a trailing note is real content the
+    renderer linkifies the same as a cell, so refusing it as "no cell
+    matches" forced hand edits outside the tool). A pattern that matches
+    in BOTH the caption and the note is ambiguous — refuse rather than
+    guess which one the caller meant. A match confined to one of the two
+    replaces every occurrence there, same all-matches semantics as the
+    body path.
+
+    Returns the patched text plus the replacement count."""
     shadow = _latex_position_shadow(text)
     env_start, env_end = _tabular_env_span(shadow)
     rows_start = _skip_colspec(shadow, env_start)
     body = text[rows_start:env_end]
     new_body, n = pattern.subn(replacement, body)
-    return text[:rows_start] + new_body + text[env_end:], n
+    if n:
+        return text[:rows_start] + new_body + text[env_end:], n
+    cap_span = _caption_inner_span(text)
+    note_start, note_end = _post_tabular_span(text)
+    cap_hit = cap_span is not None and pattern.search(text[cap_span[0] : cap_span[1]])
+    note_hit = note_start < note_end and pattern.search(text[note_start:note_end])
+    if cap_hit and note_hit:
+        raise BadInput(
+            f"/{pattern.pattern}/ matches both the caption and a note after "
+            "the table — ambiguous, nothing replaced.",
+            next="narrow find=/sub= so it matches only the caption or only "
+            "the note, or edit that one span directly",
+        )
+    if cap_span is not None and cap_hit:
+        start, end = cap_span
+        new_inner, n2 = pattern.subn(replacement, text[start:end])
+        return text[:start] + new_inner + text[end:], n2
+    if note_hit:
+        new_note, n2 = pattern.subn(replacement, text[note_start:note_end])
+        return text[:note_start] + new_note + text[note_end:], n2
+    return text, 0
 
 
 def table_payload(

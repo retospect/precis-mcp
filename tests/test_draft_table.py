@@ -1146,13 +1146,119 @@ def test_edit_table_latex_sub_bad_replacement_template_is_badinput(
 
 def test_edit_table_latex_sub_no_match_refuses(draft: DraftHandler, hub: Hub) -> None:
     """``sub=`` with a valid regex that matches nothing in the raw LaTeX
-    refuses (zero replacements) — the LaTeX-path sibling of the
-    canonical-table ``find=`` no-match refusal."""
+    (body, caption, or any trailing note) refuses (zero replacements) —
+    the LaTeX-path sibling of the canonical-table ``find=`` no-match
+    refusal."""
     tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
     before = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert before is not None
-    with pytest.raises(BadInput, match="no cell matches"):
+    with pytest.raises(BadInput, match="no cell, caption or note matches"):
         draft.edit(id=tc.dc, sub={"find": "no-such-substring-zzz", "replace": "y"})
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+# ── LaTeX in-place patching: caption/note widening (gr344147) ──────────
+#
+# The patcher used to scope find=/sub= to the tabular row/cell area only,
+# so a \cite/\ref living in the caption or in footnote text trailing
+# \end{tabular} could never be reached, even though the renderer
+# linkifies that text the same as a cell (docs/backlog/boxel-42995-
+# citation-residue.md's three hand edits were the cost).
+
+_POC_ROLES_LATEX_WITH_NOTE = _POC_ROLES_LATEX + (
+    "\n\\vspace{2mm}\n"
+    "\\footnotesize Values from the 2019 pilot batch\\cite{legacy2019}.\n"
+)
+
+_DUAL_MATCH_LATEX = (
+    "\\caption{Summary table (see the alpha row).}\n"
+    "\\begin{tabular}{ll}\n"
+    "\\toprule\n"
+    "Label & Value \\\\\n"
+    "alpha & 1 \\\\\n"
+    "\\bottomrule\n"
+    "\\end{tabular}\n"
+    "\\footnotesize Note: the alpha row is the baseline.\n"
+)
+
+
+def test_edit_table_latex_find_matches_caption_when_body_has_no_match(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ``find=`` that matches nothing in the row/cell body but does
+    match the caption (here, the ``\\ref`` target inside
+    ``\\caption{}``) is patched in place there instead of refusing."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX)
+    draft.edit(id=tc.dc, find="por-summary", text="poc-notes")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "\\ref{sec:poc-notes}" in chunk.text
+    # body/label untouched — the row/cell area never saw this edit
+    assert "\\label{tab:poc-roles}" in chunk.text
+    assert "XOR & --- &" in chunk.text
+
+
+def test_edit_table_latex_find_matches_post_tabular_note(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ``find=`` that matches nothing in the body or caption but does
+    match trailing footnote text after ``\\end{tabular}`` is patched
+    there."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX_WITH_NOTE)
+    draft.edit(id=tc.dc, find="legacy2019", text="legacy2020")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "\\cite{legacy2020}" in chunk.text
+    # body/caption untouched
+    assert "\\label{tab:poc-roles}" in chunk.text
+    assert "XOR & --- &" in chunk.text
+    assert "PoC circuit roles" in chunk.text
+
+
+def test_edit_table_latex_find_body_match_wins_over_caption_and_note(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ``find=`` present in the body AND the caption AND a trailing
+    note replaces only the body occurrence(s) — the row/cell area is
+    tried first and, on any match there, wins outright without even
+    looking at the caption/note."""
+    tc = _flagged_latex_chunk(draft, hub, _DUAL_MATCH_LATEX)
+    draft.edit(id=tc.dc, find="alpha", text="beta")
+    chunk = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert chunk is not None
+    assert "beta & 1" in chunk.text  # body cell replaced
+    assert "see the alpha row" in chunk.text  # caption untouched
+    assert "the alpha row is the baseline" in chunk.text  # note untouched
+
+
+def test_edit_table_latex_find_matches_both_caption_and_note_is_ambiguous(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ``find=`` absent from the body but present in BOTH the caption
+    and a trailing note refuses as ambiguous rather than guessing which
+    one the caller meant — chunk left untouched."""
+    tc = _flagged_latex_chunk(draft, hub, _DUAL_MATCH_LATEX)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="ambiguous"):
+        draft.edit(id=tc.dc, find="alpha row", text="beta row")
+    after = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert after is not None
+    assert after.text == before.text
+
+
+def test_edit_table_latex_find_no_match_anywhere_refuses(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ``find=`` absent from the body, caption, AND any trailing note
+    refuses with the widened error message naming all three."""
+    tc = _flagged_latex_chunk(draft, hub, _POC_ROLES_LATEX_WITH_NOTE)
+    before = hub.live_store.drafts.get_draft_chunk(tc.dc)
+    assert before is not None
+    with pytest.raises(BadInput, match="no cell, caption or note matches"):
+        draft.edit(id=tc.dc, find="no-such-substring-zzz", text="y")
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
     assert after is not None
     assert after.text == before.text
