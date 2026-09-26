@@ -55,6 +55,19 @@
     <input type="checkbox" id="bt3d-connections" checked />
     connections
   </label>
+  {% if has_atomic %}
+  <div class="flex items-center gap-2">
+    <label for="bt3d-smooth" class="text-xs text-slate-600" title="0 = full atomic detail, 100 = smoothed surface coloured by scaffold deviation">
+      atomic ↔ smooth
+    </label>
+    <input type="range" id="bt3d-smooth" min="0" max="100" value="0" step="1" class="w-32" />
+  </div>
+  <div id="bt3d-smooth-legend" class="hidden items-center gap-1 text-[11px] text-slate-500">
+    <span>deviation</span>
+    <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #e0f2fe, #1d4ed8, #7f1d1d);"></span>
+    <span id="bt3d-smooth-legend-min">0.00</span>–<span id="bt3d-smooth-legend-max">0.00</span> Å
+  </div>
+  {% endif %}
 </form>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -202,6 +215,15 @@
     explodeButton: document.getElementById("bt3d-explode"),
     connectionsToggle: document.getElementById("bt3d-connections"),
     sceneUrl: {{ scene_url | tojson }},
+    {% if has_atomic %}
+    atomicUrl: {{ atomic3d_url | tojson }},
+    smoothEls: {
+      slider: document.getElementById("bt3d-smooth"),
+      legend: document.getElementById("bt3d-smooth-legend"),
+      legendMin: document.getElementById("bt3d-smooth-legend-min"),
+      legendMax: document.getElementById("bt3d-smooth-legend-max"),
+    },
+    {% endif %}
     onSelectBlock: (name) => { if (window.designChatAddHandle) window.designChatAddHandle(name); },
     {% if note_url %}
     noteUrls: { save: {{ note_url | tojson }}, rewrite: {{ note_rewrite_url | tojson }} },

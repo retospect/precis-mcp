@@ -290,9 +290,80 @@ spacing-constrained. `SurfaceReport.positive_defect_frac` remains the
 honest gate to read before trusting per-vertex curvature; it just turns
 out to pass much earlier than the bad table implied.
 
+### The counting residual is automatic — it does not evidence a tiling
+
+**Measured 2026-09-26, after the dual landed.** Slice 1's acceptance line
+`counting_residual(hist, 0, chi) == 0` (and equivalently
+`sum(6 - ring_size) == 6*chi`) is an algebraic identity of any closed
+triangulation, not a property of a good tiling: ring sizes are the
+triangulation's vertex degrees, so their sum is `2E`, and
+`6V - 2E == 6*chi` follows from `E == 3F/2` and `chi == V - E + F` alone.
+It therefore holds for the raw marching-cubes dual and would hold for an
+arbitrarily bad one. Keep it as a cheap wiring check; do NOT read it as
+evidence the net is schwarzite-like. **The ring histogram itself is the
+measurement.**
+
+Raw dual, Schwarz P at `a = 8`, `n = 17` (no remesh): `V,E,F = 1080, 3252,
+2168`, `chi = -4`, every dual atom exactly 3-valent (the "3-valence is sp2
+for free" claim holds), but the census is `{4: 158, 5: 114, 6: 532, 7: 108,
+8: 158, 9: 10}` — 49.3 % hexagons, with 4- and 9-rings that are not real sp2
+carbon. Gyroid `n = 17` is worse. So the remesh loop is the whole
+difference between a scaffold and a tiling, and the histogram is how to tell
+which one you have.
+
+**Ruling (Reto, 2026-09-26): rings are `{5, 6, 7}` only.** Pentagons are
+legitimate sp2 carbon — every fullerene is pentagons and hexagons — so
+degree 5 is an acceptable remesh outcome, not a defect to reject. What is
+forbidden is 4-rings and below and 8-rings and above, which is exactly the
+population the raw dual produces. This replaces the earlier `{6, 7}`-only
+reading of the heptagon-placement section: valence optimisation still ranks
+toward 6, but only degrees `<= 4` and `>= 8` are inadmissible, and the
+isolated-heptagon rule drops from a hard filter to a soft preference. Under
+`{5, 6, 7}` the counting identity reads `count(5) - count(7) == 6*chi`
+(`-24` on P), with both counts free to be nonzero — still automatic, so
+still not evidence. The acceptance criterion for the remesh loop is
+therefore: **every degree in `{5, 6, 7}`, asserted hard**, with hexagon
+dominance (`count(6) / total >= 0.8`) as the quality goal.
+
+### The remesh loop: flips are necessary but NOT sufficient
+
+**Decided 2026-09-26, after two build attempts at the full loop collapsed
+under their own size.** An edge flip replaces the edge shared by triangles
+`(a,b,c)` and `(a,b,d)` with the edge `(c,d)`: degrees change by
+`-1,-1,+1,+1` while `V`, `E` and `F` each stay put. So chi is preserved
+*structurally* — there is nothing to assert-and-hope about — and, decisively,
+the periodic `wrap` pairing never needs surgery. Split and collapse both
+change vertex counts and drag wrap-pair bookkeeping in behind them, which is
+where the complexity that killed the earlier attempts actually lived.
+
+**That reasoning was wrong about sufficiency, and the flip-only loop measured
+it.** Flips move the degree census but cannot change how many vertices exist,
+so a degree-4 vertex in a locked neighbourhood has no admissible flip that
+relieves it. Measured on Schwarz P `n=17`: 326 of 1080 welded vertices start
+outside `{5,6,7}`; flip-only converges to 155, census
+`{4:81, 5:108, 6:681, 7:136, 8:64, 9:10}`, hexagon share 49 % → 63 %.
+Identical at 12 and 30 iterations, so it is a plateau, not an under-run. Of
+those 155, **zero are on the wrap seam**, so the frozen-seam simplification is
+not the limitation and should be kept.
+
+The operation that removes a degree-4 vertex is an edge COLLAPSE; the one that
+relieves a degree-8 or -9 vertex is a SPLIT. Both change `V`, `E` and `F` but
+leave chi invariant (collapse: −1 vertex, −3 edges, −2 faces; split the
+reverse), so the chi assertion still holds. They are therefore required for the
+`{5,6,7}` ruling, not merely for edge-length isotropy, and were added on top of
+the working flip loop rather than built from scratch. The guard that matters on
+collapse is the **link condition** — the intersection of the two endpoints'
+one-ring links must be exactly the two vertices opposite the edge — since
+violating it silently produces non-manifold geometry. Keep refusing both
+operators on seam vertices and wrap-crossing edges: nothing needing repair
+lives there.
+
 ### Deliberately out of slice 1
 
-Area minimisation (the nodal surface is taken as given); the direction
+Isotropic edge *length* as a target in its own right (split and collapse are
+in, but driven by valence repair, not by an edge-length band). Area
+minimisation (the nodal surface is taken
+as given); the direction
 field; `smooth:` grammar; the asymmetric-unit enumeration (slice 2 —
 C216's unit is ~5 atoms and one mirror-straddling heptagon, so it is
 enumerable rather than searchable); `view='surface'` on the se handler

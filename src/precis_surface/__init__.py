@@ -36,6 +36,13 @@ Modules:
 - :mod:`precis_surface.curvature` -- discrete differential-geometry
   operators (angle-defect and cotangent-Laplacian Gaussian/mean
   curvature) on a bare ``Mesh``, independent of how it was built.
+- :mod:`precis_surface.dual` -- the triangle dual of a
+  :class:`~precis_surface.periodic_mesh.PeriodicMesh`'s welded quotient
+  (triangle -> atom, degree-``n`` vertex -> ``n``-ring, 3-valence for
+  free): ``DualNet``, periodic bond image shifts, and ``unroll`` for
+  tiling a finite supercell.
+- :mod:`precis_surface.remesh` -- degree-controlled isotropic remeshing
+  loop, see its docstring.
 """
 
 from __future__ import annotations

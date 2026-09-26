@@ -65,6 +65,15 @@ _CASES: dict[str, dict[str, object]] = {
     "fullerene": {"atoms": 60},
     "cone": {"pentagons": 2, "length_A": 12.0},
     "cyclodextrin": {"variant": "alpha"},
+    # tpms/schwarzite share one builder; both keys are exercised because
+    # the roster assertion below is over the registry, not the function.
+    # remesh=False: this file checks envelope unit-suffixing only, not ring
+    # purity, so it stays on the cheapest (unremeshed) realization rather
+    # than paying the default remesh loop's cost for a fact it's not
+    # checking (tpms.py module docstring's {5,6,7} ruling only applies to
+    # the default, remeshed path).
+    "tpms": {"family": "P", "cell_A": 8.0, "n": 11, "remesh": False},
+    "schwarzite": {"family": "P", "cell_A": 8.0, "n": 11, "remesh": False},
     "hexfold": {
         "spec": (
             "hexfold 0.1\n\nlattice: element=C sigma=1.42\n\n"
@@ -104,7 +113,10 @@ def test_generator_envelope_carries_its_unit_on_every_length(name: str) -> None:
         f"{env.count(ENVELOPE_UNIT)} {ENVELOPE_UNIT} suffixes — a bare "
         "number would be multiplied by nothing at the ingest boundary"
     )
-    assert alias in {"cyl", "sphere", "tcone", "torus"}
+    # ``box`` joined the set with the tpms/schwarzite families: a cubic
+    # TPMS supercell's envelope is a box, and forcing it into one of the
+    # round primitives would overstate the keep-in volume.
+    assert alias in {"box", "cyl", "sphere", "tcone", "torus"}
 
 
 @pytest.mark.parametrize("name", sorted(_CASES))

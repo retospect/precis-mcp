@@ -34,6 +34,10 @@ from precis_se.atomic.generators import GENERATORS, GeneratedBlock, GeneratorErr
 from precis_se.atomic.generators._types import ENVELOPE_UNIT, fmt_length_A
 from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
 from precis_se.atomic.generators.sugars import build_cyclodextrin
+from precis_se.atomic.generators.tpms import build_tpms
+from precis_surface.dual import dualise
+from precis_surface.level_set import schwarz_p, schwarz_p_grad
+from precis_surface.periodic_mesh import periodic_mesh
 
 
 def _spec_A(envelope: str) -> cad_dsl.ShapeSpec:
@@ -483,8 +487,11 @@ def _scene_from_block(block: GeneratedBlock) -> StructScene:
         build_cnt({"n": 6, "m": 0, "length_A": 15.0}),
         build_fullerene({"atoms": 60}),
         build_cone({"pentagons": 2, "length_A": 15.0}),
+        # remesh=False: cheap fixture for an envelope-containment check,
+        # unrelated to the {5,6,7} ring-purity ruling (module docstring).
+        build_tpms({"family": "P", "cell_A": 8.0, "n": 11, "remesh": False}),
     ],
-    ids=["cnt", "fullerene", "cone"],
+    ids=["cnt", "fullerene", "cone", "tpms"],
 )
 def test_generator_envelope_fit_reports_nothing(block: GeneratedBlock) -> None:
     """gripe 286160 regression: every convex-family generator's declared
@@ -505,6 +512,39 @@ def test_generator_envelope_fit_reports_nothing(block: GeneratedBlock) -> None:
     # nm-se-merge.md: no handler-side pre-conversion any more).
     stored_env = ingest_envelope(block.envelope)
     assert atomic_validate.envelope_fit(stored_env, scene) is None
+
+
+def test_tpms_atoms_inside_envelope() -> None:
+    """The shared ``envelope_fit`` smoke test above only proves "no atom
+    protrudes past the margin" -- an envelope declared absurdly oversized
+    would pass that just as well, silently hiding a unit/frame mixup
+    (Å atoms vs. a metres-scaled or otherwise mismeasured ``box:``). Check
+    the actual box params directly (module docstring: centred x/y, base at
+    z=0, precis.cad.primitives.box's own convention -- build_tpms shifts
+    coords to match) AND that the atom cloud isn't a speck in a cavernous
+    box, i.e. it actually exercises containment rather than vacuously
+    passing. ``remesh=False``: this is an envelope-containment check,
+    unrelated to the {5,6,7} ring-purity ruling (module docstring), so it
+    keeps the cheap unremeshed fixture."""
+    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 11, "remesh": False})
+    spec = _spec_A(block.envelope)
+    assert spec.alias == "box"
+    w, d, h = spec.params["w"], spec.params["d"], spec.params["h"]
+    x, y, z = block.coords[:, 0], block.coords[:, 1], block.coords[:, 2]
+    assert np.all(x >= -w / 2.0 - 1e-6)
+    assert np.all(x <= w / 2.0 + 1e-6)
+    assert np.all(y >= -d / 2.0 - 1e-6)
+    assert np.all(y <= d / 2.0 + 1e-6)
+    assert np.all(z >= -1e-6)
+    assert np.all(z <= h + 1e-6)
+    envelope_diag = math.sqrt(w * w + d * d + h * h)
+    cloud_diag = float(
+        np.linalg.norm(block.coords.max(axis=0) - block.coords.min(axis=0))
+    )
+    # "envelope big enough to contain anything" cannot pass this: the
+    # scaffold's own atom cloud must span a real fraction of the declared
+    # box, not sit as a speck inside a wildly oversized one.
+    assert cloud_diag > 0.5 * envelope_diag
 
 
 def test_cyclodextrin_envelope_fit_protrusion_is_bounded() -> None:
@@ -562,7 +602,15 @@ def test_cone_missing_params_rejected() -> None:
 
 
 def test_registry_has_round_1_and_round_2_generators() -> None:
-    assert set(GENERATORS) == {"cnt", "fullerene", "cone", "cyclodextrin", "hexfold"}
+    assert set(GENERATORS) == {
+        "cnt",
+        "fullerene",
+        "cone",
+        "cyclodextrin",
+        "hexfold",
+        "tpms",
+        "schwarzite",
+    }
     for builder in GENERATORS.values():
         assert callable(builder)
 
@@ -584,3 +632,149 @@ def test_generate_block_is_a_generated_block_type() -> None:
     block = build_fullerene({"atoms": 60})
     assert isinstance(block, GeneratedBlock)
     assert block.provenance
+
+
+# ── tpms (docs/backlog/precis-surface-kernel.md "Slice 1 -- the dual
+#    route") ───────────────────────────────────────────────────────────
+
+
+def test_tpms_p_reachable_through_the_registry_like_cnt() -> None:
+    assert GENERATORS["tpms"] is build_tpms
+    assert GENERATORS["schwarzite"] is build_tpms
+    block = GENERATORS["tpms"]({"family": "P", "cell_A": 8.0, "n": 17})
+    assert isinstance(block, GeneratedBlock)
+
+
+def test_tpms_p_all_carbon_and_chi_per_cell() -> None:
+    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    assert block.elements == ["C"] * len(block.elements)
+    assert block.topology["chi_per_cell"] == -4
+    assert block.topology["family"] == "P"
+
+
+def test_tpms_p_bond_count_is_3_over_2_atoms_minus_rim_deficits() -> None:
+    """The dual graph is exactly 3-regular per periodic cell (every
+    triangle has 3 edges); `reps=(1,1,1)` drops every wrap-crossing bond
+    (both cell axes' neighbour is out of the 1-cell box), so the realized
+    bond count is `3/2 * atoms - (dropped wrap bonds)` -- checked against
+    an independent recomputation of the base periodic net, not against the
+    generator's own bookkeeping. `remesh=False`: this is a statement about
+    the dual-graph construction itself (3-regularity holds on any
+    triangulation, remeshed or not), so it is checked against the RAW
+    periodic net below, not a remeshed one -- keeping this test's own
+    from-scratch fixture and the generator's output in lock-step."""
+    cell_A, n = 8.0, 17
+    block = build_tpms(
+        {"family": "P", "cell_A": cell_A, "n": n, "reps": (1, 1, 1), "remesh": False}
+    )
+    n_atoms = len(block.elements)
+
+    pm = periodic_mesh(
+        lambda pts: schwarz_p(pts, cell_A),
+        a=cell_A,
+        n=n,
+        grad=lambda pts: schwarz_p_grad(pts, cell_A),
+    )
+    dnet = dualise(
+        pm,
+        f=lambda pts: schwarz_p(pts, cell_A),
+        grad=lambda pts: schwarz_p_grad(pts, cell_A),
+    )
+    assert len(dnet.atoms) == n_atoms
+    wrap_bonds = int(np.sum(np.any(dnet.shifts != 0, axis=1)))
+    assert wrap_bonds > 0, "fixture has no wrap-crossing bonds to drop"
+    expected_bonds = (3 * n_atoms) // 2 - wrap_bonds
+    assert (3 * n_atoms) % 2 == 0
+    assert len(block.bonds) == expected_bonds
+    for _i, _j, order, kind in block.bonds:
+        assert order == pytest.approx(4.0 / 3.0)
+        assert kind == "aromatic"
+
+
+def test_tpms_p_reps_2x1x1_doubles_atoms() -> None:
+    block1 = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    block2 = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (2, 1, 1)})
+    assert len(block2.elements) == 2 * len(block1.elements)
+
+
+def test_tpms_rim_ports_point_outward_and_flag_sp2_rim() -> None:
+    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    assert block.ports  # reps=(1,1,1) has open boundary on every axis
+    for p in block.ports:
+        assert p.roles == ["covalent", "sp2-rim"]
+        assert p.expected_element == "C"
+        norm = float(np.linalg.norm(p.direction))
+        assert norm == pytest.approx(1.0, abs=1e-6)
+
+
+def test_tpms_even_n_rejected() -> None:
+    with pytest.raises(GeneratorError, match="odd"):
+        build_tpms({"family": "P", "cell_A": 8.0, "n": 16})
+
+
+def test_tpms_bad_family_rejected() -> None:
+    with pytest.raises(GeneratorError, match="family"):
+        build_tpms({"family": "X", "cell_A": 8.0})
+
+
+def test_tpms_missing_cell_A_rejected() -> None:
+    with pytest.raises(GeneratorError, match="cell_A"):
+        build_tpms({"family": "P"})
+
+
+def test_tpms_gyroid_family_builds_and_reports_chi() -> None:
+    """`remesh=False`: gyroid's default (remeshed) path currently REFUSES
+    on the {5,6,7} ruling (its known seam-freeze residual, covered by
+    ``test_tpms_gyroid_default_remesh_refuses_pending_seam_fix`` below) --
+    this test's own intent is chi_per_cell, which the remesh loop leaves
+    invariant either way, so it stays on the raw scaffold rather than
+    getting entangled with that unrelated refusal."""
+    block = build_tpms(
+        {"family": "G", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1), "remesh": False}
+    )
+    assert block.topology["chi_per_cell"] == -8
+
+
+def test_tpms_p_default_remesh_ring_histogram_is_within_567() -> None:
+    """The default (``remesh`` param defaults to ``True``) path enforces
+    the {5,6,7} ruling at the product boundary (tpms.py module docstring's
+    "Ring purity is enforced" section) -- measured exact histogram for
+    Schwarz P at cell_A=8.0, n=17, reps=(1,1,1)."""
+    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    rings = block.topology["rings"]
+    assert set(rings) <= {5, 6, 7}
+    assert rings == {5: 114, 6: 700, 7: 138}
+
+
+def test_tpms_p_remesh_false_yields_the_raw_scaffold() -> None:
+    """The ``remesh=False`` escape hatch (tpms.py module docstring) skips
+    both the remesh loop and its {5,6,7} enforcement -- the raw
+    marching-cubes dual keeps ring sizes the ruling forbids, on purpose,
+    so a caller can inspect what the raw scaffold produced."""
+    block = build_tpms(
+        {"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1), "remesh": False}
+    )
+    rings = block.topology["rings"]
+    outside = {k: v for k, v in rings.items() if k not in (5, 6, 7)}
+    assert outside, (
+        f"expected the raw scaffold to have rings outside {{5,6,7}}: {rings}"
+    )
+    assert rings == {4: 158, 5: 114, 6: 532, 7: 108, 8: 158, 9: 10}
+
+
+def test_tpms_gyroid_default_remesh_refuses_pending_seam_fix() -> None:
+    """KNOWN LIMITATION, not a regression: gyroid's frozen wrap seam
+    (precis_surface.remesh's module docstring) leaves 20 (of 1365) welded
+    vertices no admissible collapse/split/flip can reach, so its default
+    (remeshed) path REFUSES rather than silently emit disallowed ring
+    sizes -- the intended behaviour per the ruling (tpms.py module
+    docstring's "Ring purity is enforced" section). DELETE OR FLIP this
+    test once that seam-freeze residual is fixed and gyroid generates
+    cleanly by default."""
+    with pytest.raises(GeneratorError) as excinfo:
+        build_tpms({"family": "G", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    msg = str(excinfo.value)
+    assert "4: 13" in msg
+    assert "8: 5" in msg
+    assert "9: 2" in msg
+    assert "seam" in msg

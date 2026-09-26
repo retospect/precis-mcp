@@ -403,6 +403,357 @@ function _startScaleBar(viewer, viewerEl, sceneScale) {
   requestAnimationFrame(tick);
 }
 
+// ── atomic ↔ smooth overlay (gr450675) ──────────────────────────────────
+//
+// scene3d.json's own ``Shapes`` tree only ever carries box/solid envelope
+// geometry — an atomic block's real atoms/bonds/scaffold-deviation are a
+// different shape (per-atom arrays, not a mesh tree) served separately by
+// ``atomic3d.json`` (:func:`precis_web.routes.blocktree_view.
+// _atomic3d_response`), so a plain (non-atomic) design fetches none of
+// this. The slider LERPs every atom/bond/surface vertex between the raw
+// atomic positions and the Taubin-smoothed ones the server already
+// computed — no per-tick server round trip.
+//
+// KNOWN SIMPLIFICATION: the vendored three-cad-viewer bundle exports no
+// ``THREE`` and no public scene accessor. It DOES construct its internal
+// studio-manager with ``getScene:()=>this.rendered.scene`` (grep the
+// bundle), which means ``viewer._rendered.scene`` is the live THREE.Scene
+// — a private field, reached the SAME documented way this file's own
+// scale-bar overlay already reaches ``viewer._rendered.camera`` above
+// (guarded end-to-end, degrades to "no overlay" rather than breaking the
+// primary viewer). The overlay's own three.js objects are built from a
+// SEPARATE vendored copy (``/static/three/three.module.min.js`` — the
+// ``cad`` viewer's own, a different revision than the one bundled inside
+// three-cad-viewer): mixing two three.js module instances is not
+// something either project promises to support, but a plain
+// Mesh/LineSegments/BufferGeometry object only needs the long-stable,
+// duck-typed ``isMesh``/``isObject3D`` contract ``WebGLRenderer``
+// traverses by, not class identity — this rendered correctly end to end
+// in manual verification. A future bump of either vendored copy that
+// changes that contract would need this reach revisited.
+const _ATOMIC_CPK = {
+  H: "#ffffff", He: "#d9ffff", B: "#ffb5b5", C: "#909090",
+  N: "#3050f8", O: "#ff0d0d", F: "#90e050", Si: "#f0c8a0",
+  P: "#ff8000", S: "#ffff30", Cl: "#1ff01f", Br: "#a62929",
+  I: "#940094", Ni: "#50d050", Cu: "#c88033", Pd: "#006985",
+  Pt: "#d0d0e0", Au: "#ffd123",
+}; // fmt: skip
+const _ATOMIC_CPK_DEFAULT = "#ff2fa0";
+//: Å → the atomic3d.json ``coords``/``smooth`` arrays' own units (scene
+//: display units, already ``world metres × scene.scale`` — server side).
+const _ATOMIC_A_TO_M = 1e-10;
+const _ATOM_RADIUS_A = 0.3;
+const _BOND_RADIUS_A = 0.12;
+//: gr450675 Playwright investigation, Cause B — a LEGIBILITY floor, not a
+//: physical van-der-Waals radius: the Å-true radii above render sub-pixel
+//: once the camera auto-fits a multi-block assembly whose blocks differ
+//: greatly in size. Floors the atom radius at this fraction of the
+//: scene's own bounding-box diagonal (computed post-render off the same
+//: private ``viewer._rendered.scene`` this overlay already reaches
+//: below), never SHRINKING it below the true physical radius — a design
+//: small enough that the physical radius already clears this floor is
+//: left untouched. Bond radius keeps the Å-true 0.3:0.12 ratio to
+//: whichever of the two (physical or floored) wins.
+const _ATOM_LEGIBILITY_FRACTION = 0.01;
+//: The deviation legend's sequential ramp — the SAME 3 stops the
+//: template's legend swatch gradient uses (detail3d.html.j2), so the bar
+//: and the surface colouring always agree.
+const _DEVIATION_STOPS = [
+  [0.0, [0xe0, 0xf2, 0xfe]],
+  [0.5, [0x1d, 0x4e, 0xd8]],
+  [1.0, [0x7f, 0x1d, 0x1d]],
+];
+
+function _deviationColor(t) {
+  const clamped = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < _DEVIATION_STOPS.length - 1; i++) {
+    const [t0, c0] = _DEVIATION_STOPS[i];
+    const [t1, c1] = _DEVIATION_STOPS[i + 1];
+    if (clamped >= t0 && clamped <= t1) {
+      const f = t1 > t0 ? (clamped - t0) / (t1 - t0) : 0;
+      return [0, 1, 2].map((k) => (c0[k] + (c1[k] - c0[k]) * f) / 255);
+    }
+  }
+  return [1, 1, 1];
+}
+
+//: A hidden-at-load, honest-absence overlay (module docstring): no atomic
+//: blocks, a fetch failure, or an unreachable private scene all degrade to
+//: "the slider/legend never appear" (the template already omits them
+//: server-side whenever ``has_atomic`` is false; this covers the rarer
+//: rev-mismatch/fetch-failure cases too), never a broken primary viewer.
+async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
+  const [THREE, data] = await Promise.all([
+    import("/static/three/three.module.min.js"),
+    fetch(atomicUrl).then((r) => {
+      if (!r.ok) throw new Error(`atomic3d fetch failed (${r.status})`);
+      return r.json();
+    }),
+  ]);
+  if (!data.blocks || !data.blocks.length) return;
+  const scene = viewer && viewer._rendered && viewer._rendered.scene;
+  if (!scene) return;
+
+  const devMax = data.deviation_max || 0;
+  const atomRPhysical = _ATOM_RADIUS_A * _ATOMIC_A_TO_M * (data.scale || 1);
+  //: The scene-wide legibility floor (Cause B) — derived from the WHOLE
+  //: multi-block assembly's own bounding diagonal, since that (not any
+  //: one block's own size) is what the shared auto-fit camera actually
+  //: frames.
+  let legibilityFloorR = 0;
+  const bbox = new THREE.Box3().setFromObject(scene);
+  if (!bbox.isEmpty()) {
+    legibilityFloorR = bbox.getSize(new THREE.Vector3()).length() * _ATOM_LEGIBILITY_FRACTION;
+  }
+  const yAxis = new THREE.Vector3(0, 1, 0);
+
+  //: A block whose own atoms sit much closer together than the scene-wide
+  //: legibility floor (gr450675 live verification: 60-atom C60 "cage" in
+  //: the same assembly as a 920-atom "scaffold" — the floor sized for the
+  //: bigger block inflated the cage's atoms past half its own ~1.4 Å bond
+  //: length, fusing every atom into one solid blob, worse than the
+  //: sub-pixel bug this floor exists to fix) needs its OWN per-block cap:
+  //: never let atom radius exceed this fraction of the block's shortest
+  //: bond, so neighbouring balls keep a visible stick between them —
+  //: same convention real ball-and-stick renderers use (atoms smaller
+  //: than bonds), just anchored to whichever radius wins above. Physical
+  //: radius still always wins if even IT exceeds the cap (an
+  //: honest render of a genuinely tight-bonded structure, not a bug).
+  const _ATOM_MAX_BOND_FRACTION = 0.45;
+
+  function atomBondRadiiFor(b) {
+    let minBond = Infinity;
+    for (const [i, j] of b.bonds || []) {
+      const a = b.coords[i], c = b.coords[j];
+      const d = Math.hypot(a[0] - c[0], a[1] - c[1], a[2] - c[2]);
+      if (d > 0 && d < minBond) minBond = d;
+    }
+    let atomR = Math.max(atomRPhysical, legibilityFloorR);
+    if (Number.isFinite(minBond)) {
+      atomR = Math.min(atomR, Math.max(atomRPhysical, minBond * _ATOM_MAX_BOND_FRACTION));
+    }
+    const bondR = atomR * (_BOND_RADIUS_A / _ATOM_RADIUS_A);
+    return { atomR, bondR };
+  }
+
+  function orientBond(mesh, a, b, bondR) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    const len = Math.hypot(dx, dy, dz) || 1e-12;
+    mesh.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+    mesh.scale.set(bondR, len, bondR);
+    const dir = new THREE.Vector3(dx, dy, dz).normalize();
+    mesh.quaternion.setFromUnitVectors(yAxis, dir);
+  }
+
+  const group = new THREE.Group();
+  group.name = "bt3d-atomic-overlay";
+  scene.add(group);
+
+  const sphereGeo = new THREE.SphereGeometry(1, 12, 8);
+  const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1);
+  const blocks = [];
+
+  // gr450675 Playwright investigation, Cause A — a block's pre-existing
+  // ENVELOPE solid (the vendored viewer's default "refined" abstraction
+  // level) is opaque and sits AROUND the atoms/smoothed surface this
+  // overlay draws, hiding them completely. Cage it instead: drop only
+  // its SHAPE (fill) mesh, leaving its EDGE mesh, so it reads as a
+  // containing wireframe rather than a solid — ONLY for blocks that
+  // actually have an overlay (matched by uid via findPathEndingInId, the
+  // module docstring's own leaf-id scheme).
+  //
+  // NOT done via the public `viewer.setState()`/`getStates()` pair: that
+  // API is keyed by the vendored TREEVIEW's own name-joined path (e.g.
+  // ``"/Structural envelopes/cage"``, confirmed live), a different
+  // addressing scheme than the uid-suffixed leaf ``id`` this file's own
+  // `findPathEndingInId`/`updatePart`/`recolour` all use — this overlay
+  // only ever has the latter. `updatePart` (the id-keyed public API
+  // `recolour` above already reaches through) also doesn't fit: its
+  // unchanged-geometry fast path writes color/alpha onto the JSON model
+  // only, never the live mesh material (confirmed live: no visual
+  // change). The vendored per-leaf `ObjectGroup` itself — reached the
+  // same id-keyed `viewer._rendered.nestedGroup.groups[path]` map
+  // `updatePart` uses internally — exposes the one method that actually
+  // does what we need: `setShapeVisible(false)` flips just the fill
+  // mesh's `material.visible`, leaving the edge mesh alone (confirmed
+  // live, unlike a low-opacity material: a finely-tessellated envelope's
+  // OWN many overlapping semi-transparent triangles would otherwise
+  // still read as solid). `setShapeVisible(true)` is the exact restore
+  // target on failure below, so a build error degrades to today's
+  // opaque envelope rather than a permanently ghosted block.
+  const cagedEnvelopePaths = [];
+  function _envelopeGroup(path) {
+    return viewer._rendered && viewer._rendered.nestedGroup
+      ? viewer._rendered.nestedGroup.groups[path]
+      : null;
+  }
+  function cageEnvelope(path) {
+    if (!path) return;
+    try {
+      const grp = _envelopeGroup(path);
+      if (!grp) return;
+      grp.setShapeVisible(false);
+      cagedEnvelopePaths.push(path);
+    } catch (err) {
+      console.error("blocktree-3d: envelope cage failed for", path, err);
+    }
+  }
+  function restoreEnvelopes() {
+    for (const path of cagedEnvelopePaths) {
+      try {
+        const grp = _envelopeGroup(path);
+        if (grp) grp.setShapeVisible(true);
+      } catch (err) {
+        console.error("blocktree-3d: envelope restore failed for", path, err);
+      }
+    }
+    cagedEnvelopePaths.length = 0;
+  }
+
+  try {
+    for (const b of data.blocks) {
+      cageEnvelope(sceneShapes ? findPathEndingInId(sceneShapes, b.uid) : null);
+      const { atomR, bondR } = atomBondRadiiFor(b);
+      const n = b.elements.length;
+      const atomMeshes = [];
+      for (let i = 0; i < n; i++) {
+        const colour = _ATOMIC_CPK[b.elements[i]] || _ATOMIC_CPK_DEFAULT;
+        const mat = new THREE.MeshStandardMaterial({
+          color: colour,
+          transparent: true,
+        });
+        const mesh = new THREE.Mesh(sphereGeo, mat);
+        mesh.scale.setScalar(atomR);
+        group.add(mesh);
+        atomMeshes.push(mesh);
+      }
+      const bondMeshes = [];
+      for (const [i, j] of b.bonds || []) {
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0x808080,
+          transparent: true,
+        });
+        const mesh = new THREE.Mesh(cylGeo, mat);
+        group.add(mesh);
+        bondMeshes.push({ mesh, i, j });
+      }
+
+      // The smoothed surface — fan-triangulated rings, coloured per vertex
+      // by aberration (gr450675's own "colour by deviation" ask).
+      const positions = new Float32Array(n * 3);
+      const colors = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        const t = devMax > 0 ? (b.deviation[i] || 0) / devMax : 0;
+        const [r, g, bl] = _deviationColor(t);
+        colors[i * 3] = r;
+        colors[i * 3 + 1] = g;
+        colors[i * 3 + 2] = bl;
+      }
+      const indices = [];
+      for (const face of b.faces || []) {
+        for (let k = 1; k < face.length - 1; k++) {
+          indices.push(face[0], face[k], face[k + 1]);
+        }
+      }
+      const surfGeo = new THREE.BufferGeometry();
+      surfGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      surfGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      surfGeo.setIndex(indices);
+      const surfMesh = new THREE.Mesh(
+        surfGeo,
+        new THREE.MeshBasicMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          transparent: true,
+        })
+      );
+      surfMesh.visible = false;
+      group.add(surfMesh);
+
+      blocks.push({
+        coords: b.coords,
+        smooth: b.smooth,
+        atomMeshes,
+        bondMeshes,
+        bondR,
+        surfMesh,
+        surfPositions: positions,
+      });
+    }
+  } catch (err) {
+    restoreEnvelopes();
+    scene.remove(group);
+    throw err;
+  }
+
+  function applyT(t) {
+    for (const blk of blocks) {
+      const { coords, smooth, atomMeshes, bondMeshes, bondR, surfMesh, surfPositions } = blk;
+      const n = atomMeshes.length;
+      const lerped = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const c = coords[i], s = smooth[i];
+        const x = c[0] + (s[0] - c[0]) * t;
+        const y = c[1] + (s[1] - c[1]) * t;
+        const z = c[2] + (s[2] - c[2]) * t;
+        lerped[i] = [x, y, z];
+        const mesh = atomMeshes[i];
+        mesh.position.set(x, y, z);
+        mesh.material.opacity = 1 - t;
+        mesh.visible = t < 0.999;
+        surfPositions[i * 3] = x;
+        surfPositions[i * 3 + 1] = y;
+        surfPositions[i * 3 + 2] = z;
+      }
+      for (const { mesh, i, j } of bondMeshes) {
+        orientBond(mesh, lerped[i], lerped[j], bondR);
+        mesh.material.opacity = 1 - t;
+        mesh.visible = t < 0.999;
+      }
+      surfMesh.geometry.attributes.position.needsUpdate = true;
+      surfMesh.geometry.computeVertexNormals();
+      surfMesh.material.opacity = t;
+      surfMesh.visible = t > 0.001;
+    }
+    try {
+      viewer.update(true);
+    } catch (err) {
+      // Best-effort — see recolour's own try/catch for the convention.
+      console.error("blocktree-3d: atomic overlay redraw failed", err);
+    }
+  }
+
+  applyT(0);
+  if (smoothEls.legend) {
+    smoothEls.legend.classList.remove("hidden");
+    // Tailwind's `hidden` (display:none) and a plain `flex` utility carry
+    // equal specificity — an inline style always wins over either, so
+    // this is the one reliable way to un-hide a flex row from JS without
+    // depending on utility declaration order in the generated stylesheet.
+    smoothEls.legend.style.display = "flex";
+  }
+  if (smoothEls.legendMin) smoothEls.legendMin.textContent = "0.00";
+  if (smoothEls.legendMax) smoothEls.legendMax.textContent = devMax.toFixed(2);
+  if (smoothEls.slider) {
+    // Coalesce a drag's rapid-fire `input` events to at most one `applyT`
+    // (full per-atom lerp + mesh update + `viewer.update(true)`) per
+    // animation frame — same requestAnimationFrame-gated-by-a-pending-flag
+    // idiom as _startScaleBar's tick loop above and the resize handler
+    // below. The flush reads `slider.value` fresh rather than caching the
+    // value at schedule time, so whichever event arrived last before the
+    // frame fires — including the drag's trailing edge — is the one that
+    // lands; no separate flush-on-end handler needed.
+    let sliderRAF = null;
+    smoothEls.slider.addEventListener("input", () => {
+      if (sliderRAF !== null) return;
+      sliderRAF = requestAnimationFrame(() => {
+        sliderRAF = null;
+        applyT(Number(smoothEls.slider.value) / 100);
+      });
+    });
+  }
+}
+
 export async function blocktreeViewer3D({
   viewerEl,
   mermaidEl,
@@ -410,6 +761,8 @@ export async function blocktreeViewer3D({
   explodeButton,
   connectionsToggle,
   sceneUrl,
+  atomicUrl,
+  smoothEls,
   noteUrls,
   noteEls,
   // Design chat (design-workbench build, slice 3): called with the block
@@ -846,4 +1199,11 @@ export async function blocktreeViewer3D({
 
   // ── scale bar overlay (gr340030) ─────────────────────────────────────
   _startScaleBar(viewer, viewerEl, data.scale);
+
+  // ── atomic ↔ smooth overlay (gr450675) ───────────────────────────────
+  if (atomicUrl && smoothEls && smoothEls.slider) {
+    _setupAtomicOverlay(viewer, atomicUrl, smoothEls, data.shapes).catch((err) => {
+      console.error("blocktree-3d: atomic overlay failed", err);
+    });
+  }
 }

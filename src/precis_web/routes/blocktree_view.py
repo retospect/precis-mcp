@@ -91,20 +91,33 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+import numpy as np
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.blocktree.types import BlockNode, Tree
+from precis.cad.tessellate import apply_rigid
+from precis.cad.vec import as_vec3 as cad_as_vec3
+from precis.cad.vec import pose as cad_pose
 from precis.design import history as design_history
 from precis.dispatch import Hub
 from precis.errors import NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.structure.probe import detect_bonds
+from precis.viz3d.sheetsmooth import deviation as sheet_deviation
+from precis.viz3d.sheetsmooth import ring_faces, smooth_sheet
 from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.ops import effective_envelope as se_effective_envelope
 from precis_web import design_chat, design_turn
-from precis_web.blocktree_3d import CHANGED_COLOUR, Scene3D, build_scene, tint_blocks
+from precis_web.blocktree_3d import (
+    CHANGED_COLOUR,
+    Scene3D,
+    build_scene,
+    scene_scale,
+    tint_blocks,
+)
 from precis_web.blocktree_svg import (
     AXES,
     COLOUR_CHANNELS,
@@ -784,6 +797,13 @@ async def _view3d_page(
             status_code=404,
         )
     block_names = sorted(tree.blocks)
+    # gr450675 — the atomic↔smooth slider only renders when the design has
+    # something for it to draw; a plain box/solid design pays for none of
+    # the extra fetch/JS.
+    has_atomic = any(
+        getattr(node, "bound_kind", None) == "structure"
+        for node in tree.blocks.values()
+    )
     level = level if level in LEVELS else "refined"
     isolate = isolate if isolate in tree.blocks else None
     # Validate BEFORE embedding anywhere downstream (scene_url, and from
@@ -805,6 +825,16 @@ async def _view3d_page(
     scene_url = f"/{kind}/{quote(slug, safe='')}/scene3d.json?{scene_qs}"
     # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
     detail_2d_url = f"/{kind}/{quote(slug, safe='')}/2d?{common_qs}"
+    # gr450675 — the atomic↔smooth overlay's own fetch; registered for
+    # ``se`` only today (the route the slug's kind can't resolve if this
+    # blocktree kind never registers one), same ``rev`` carry-through as
+    # ``scene_url`` above.
+    atomic3d_url = (
+        f"/{kind}/{quote(slug, safe='')}/atomic3d.json"
+        + (f"?rev={axis.shown}" if rev is not None else "")
+        if kind == "se"
+        else ""
+    )
     # Comment-on-selection (slice 2, se only today — the routes are
     # registered per kind, so a second blocktree kind opts in by adding
     # its own note routes; the template hides the panel when unset). A
@@ -844,6 +874,8 @@ async def _view3d_page(
             "overrides": overrides,
             "block_names": block_names,
             "scene_url": scene_url,
+            "has_atomic": has_atomic,
+            "atomic3d_url": atomic3d_url,
             "detail_2d_url": detail_2d_url,
             "note_url": note_url,
             "note_rewrite_url": note_rewrite_url,
@@ -1026,6 +1058,157 @@ async def _scene3d_response(
     )
 
 
+#  ── atomic ↔ smooth overlay (gr450675) ────────────────────────────────
+#
+# One extra per-render JSON, alongside scene3d.json rather than folded into
+# it: an atomic block's raw atom/bond/ring geometry is a different shape
+# from the box/solid ``Shapes`` tree above (and most designs have none),
+# so a design with no atomic block pays for none of this.
+
+#: The atomistic enclave crossing (:mod:`precis_se.atomic.validate`'s
+#: permanent seam, ``_A_TO_M``) — a bound ``structure`` scene's atoms sit
+#: in the block's own LOCAL frame at identity pose (that module's
+#: ``envelope_fit`` docstring: "the same local frame every atomic
+#: generator emits atoms into"), so converting Å -> m is the only step
+#: before the block's own ``node.pose``/``node.rot`` place it in the
+#: design, exactly like :func:`~precis_web.blocktree_3d.world_mesh` places
+#: an envelope's own vertices. This module is outside
+#: ``tests/test_se_atomic_angstrom_seam.py``'s scope (``src/precis_se``
+#: only); the factor is not duplicated in that package, it is inlined
+#: here for the same reason ``atomic/validate.py`` inlines it — comparing
+#: design-space metres against atomistic-scale Å needs it exactly once.
+_ATOMIC_A_TO_M = 1e-10
+
+#: Ring perception's own size cap (:func:`~precis.viz3d.sheetsmooth.
+#: ring_faces`) — generous enough for every sp² generator's real faces
+#: (pentagon/hexagon) with headroom, small enough that a badly-bonded
+#: scene (accidental long cycle) doesn't blow up the per-edge BFS.
+_ATOMIC_MAX_RING = 8
+
+
+def _atomic_block_payload(
+    store: Store, node: Any, *, block_uid: int, name: str, scale: float
+) -> dict[str, Any] | None:
+    """One ``blocks[]`` entry of ``atomic3d.json`` for a single se block
+    bound to a ``structure`` design (module docstring), or ``None`` for an
+    unbound block or one whose binding no longer resolves
+    (``dangling_binding`` is the validator finding for that — this route
+    just omits it, the same honest-absence convention
+    :func:`~precis_web.blocktree_3d.world_mesh` uses for a bad envelope)."""
+    if getattr(node, "bound_kind", None) != "structure" or not getattr(
+        node, "bound", None
+    ):
+        return None
+    try:
+        struct_ref = resolve_live_slug_ref(store, kind="structure", id=node.bound)
+    except NotFound:
+        return None
+    scene, _handles = store.structure_load(struct_ref.id)
+    labels = list(scene.atoms)
+    if not labels:
+        return None
+    label_to_idx = {label: i for i, label in enumerate(labels)}
+    elements = [scene.atoms[label].element for label in labels]
+    cart_A = np.array(
+        [scene.cell.frac_to_cart(scene.atoms[label].frac) for label in labels],
+        dtype=np.float64,
+    )
+    bonds_src = scene.bonds if scene.bonds else detect_bonds(scene)
+    bond_idx: list[tuple[int, int]] = []
+    for b in bonds_src:
+        i, j = label_to_idx.get(b.i), label_to_idx.get(b.j)
+        if i is None or j is None or i == j:
+            continue
+        bond_idx.append((i, j))
+    faces = ring_faces(len(elements), bond_idx, max_ring=_ATOMIC_MAX_RING)
+    smooth_A = smooth_sheet(cart_A, bond_idx)
+    dev_A = sheet_deviation(cart_A, smooth_A)
+
+    # Same world placement as world_mesh: identity-local-frame metres,
+    # posed by the block's own pose/rot, then the scene's display scale.
+    xf = cad_pose(cad_as_vec3(list(node.pose)), cad_as_vec3(list(node.rot)))
+    world_coords = apply_rigid(xf, cart_A * _ATOMIC_A_TO_M) * scale
+    world_smooth = apply_rigid(xf, smooth_A * _ATOMIC_A_TO_M) * scale
+
+    return {
+        "uid": block_uid,
+        "name": name,
+        "elements": elements,
+        "coords": world_coords.tolist(),
+        "smooth": world_smooth.tolist(),
+        # The aberration signal itself is reported in Å (an atomistic-scale
+        # displacement) regardless of the scene's own display scale — the
+        # legend needs a physically meaningful unit, not a display factor.
+        "deviation": dev_A.tolist(),
+        "bonds": [list(pair) for pair in bond_idx],
+        "faces": [list(ring) for ring in faces],
+        "units": "scene",
+    }
+
+
+def _build_atomic3d(
+    store: Store, kind: str, ref_id: int, *, rev: int | None
+) -> tuple[list[dict[str, Any]], float]:
+    """Off the event loop, mirroring :func:`_build_scene3d`'s own rev
+    handling: the live tree by default, or the ``rev`` snapshot — every
+    atomic block bound to a ``structure`` design, regardless of the level/
+    isolate plan (an atomic block's chemistry does not depend on whether
+    its container is currently shown collapsed as a box)."""
+    adapter = _ADAPTERS[kind]
+    if rev is None:
+        tree: Tree[BlockNode, Any] = adapter.load_tree(store, ref_id)
+        uid_by_name = _uid_by_name(store, kind, ref_id)
+    else:
+        axis = _revision_axis(store, ref_id, rev)
+        tree = _tree_at(store, kind, ref_id, axis)
+        uid_by_name = _uids_of(tree)
+    scale = scene_scale(tree, adapter.effective_envelope)
+    blocks: list[dict[str, Any]] = []
+    for name, node in tree.blocks.items():
+        block_uid = uid_by_name.get(name)
+        if block_uid is None:
+            continue
+        try:
+            payload = _atomic_block_payload(
+                store, node, block_uid=block_uid, name=name, scale=scale
+            )
+        except Exception:
+            # A per-block failure (a corrupt bound scene, a bond graph the
+            # ring perceiver chokes on) must not blank the WHOLE overlay —
+            # every other block still renders; see this module's honest-
+            # absence convention throughout.
+            log.exception(
+                "atomic3d payload failed for %s %s block %s", kind, ref_id, name
+            )
+            continue
+        if payload is not None:
+            blocks.append(payload)
+    return blocks, scale
+
+
+async def _atomic3d_response(
+    request: Request, kind: str, slug: str, *, rev: int | None = None
+) -> Response:
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, kind, slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    def _build() -> tuple[list[dict[str, Any]], float]:
+        return _build_atomic3d(store, kind, ref.id, rev=rev)
+
+    try:
+        blocks, scale = await asyncio.to_thread(_build)
+    except _NoSuchRevision as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    deviation_max = max((max(b["deviation"], default=0.0) for b in blocks), default=0.0)
+    return JSONResponse(
+        {"blocks": blocks, "scale": scale, "deviation_max": deviation_max},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def _view3d_redirect(request: Request, kind: str, slug: str) -> Response:
     """gr337745 moved the 3D view off ``/{kind}/{slug}/view3d`` onto the
     bare slug URL — a PERMANENT redirect (308, GET-only so 307 vs 308
@@ -1122,6 +1305,11 @@ async def se_scene3d(
     return await _scene3d_response(
         request, "se", slug, level=level, isolate=isolate, overrides=overrides, rev=rev
     )
+
+
+@router.get("/se/{slug}/atomic3d.json")
+async def se_atomic3d(request: Request, slug: str, rev: int | None = None) -> Response:
+    return await _atomic3d_response(request, "se", slug, rev=rev)
 
 
 # ── comment-on-selection → interview note (slice 2 of

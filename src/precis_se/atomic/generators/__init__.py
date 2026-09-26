@@ -47,7 +47,11 @@ uses; L4 mechanics-ceiling metrics (build order (iii)) live in
 curved-sp² family behind one ``spec`` text param (topology-only `.hx`
 notation; sheets/tubes/cones/fullerenes/defects/attachments as one
 compiler), with hexfold itself a lazy optional import, not a declared
-dependency.
+dependency. Round 5: ``tpms``/``schwarzite``
+(:mod:`precis_se.atomic.generators.tpms`) — periodic Schwarz P/D/gyroid
+carbon scaffolds via :mod:`precis_surface`'s level-set/marching-cubes/dual
+pipeline (docs/backlog/precis-surface-kernel.md "Slice 1 — the dual
+route"), a preview scaffold ahead of the degree-controlled remesh loop.
 """
 
 from __future__ import annotations
@@ -63,6 +67,7 @@ from precis_se.atomic.generators._types import (
 from precis_se.atomic.generators.hexfold_spec import build_hexfold
 from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
 from precis_se.atomic.generators.sugars import build_cyclodextrin
+from precis_se.atomic.generators.tpms import build_tpms
 
 Generator = Callable[[dict[str, Any]], GeneratedBlock]
 
@@ -76,6 +81,11 @@ GENERATORS: dict[str, Generator] = {
     "cone": build_cone,
     "cyclodextrin": build_cyclodextrin,
     "hexfold": build_hexfold,
+    "tpms": build_tpms,
+    #: alias -- schwarzite-class carbon nets are the tpms family's whole
+    #: point (module docstring), so the more chemistry-recognizable name
+    #: reaches the same builder.
+    "schwarzite": build_tpms,
 }
 
 __all__ = [
