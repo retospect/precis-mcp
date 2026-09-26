@@ -28,8 +28,20 @@ identical. Python 3.13 dedents docstrings at compile time (gh-81283) and
 3.12 does not, so `server.py` handing `__doc__` to FastMCP unchanged
 shipped four extra spaces on every continuation line of all eight verb
 docstrings. Fixed by `_verb_description()` (`inspect.cleandoc`) at the
-registration site — which also cuts ~400 B off every real cold start in
-prod, since the agent image builds on `python:3.12-slim-bookworm`.
+registration site.
+
+Which interpreter each surface runs matters here, and it is not uniform:
+
+| surface | python | paid the 396 B |
+| --- | --- | --- |
+| `/opt/mcps/venv` — prod web + MCP | 3.14 | no |
+| agent container (`docker/Dockerfile:60`) | 3.12 | yes |
+| local gate container | 3.12 | yes — the red |
+
+So the saving is real but narrower than "every prod MCP session": the
+main prod surface is 3.14 and already dedented. The reason the fix is
+worth having is that it makes the ratchet measure the same thing
+everywhere, instead of guarding a number only one interpreter produces.
 
 **Delete this section once that ships.** What follows is the part that
 outlives it.
