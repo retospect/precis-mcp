@@ -730,11 +730,16 @@ def store() -> Iterator[Store]:
             "or start a server to run db-tagged tests"
         )
     _truncate_data_tables(_active_dsn())
+    from precis import secrets as _secrets
     from precis import settings as _settings
     from precis.budget import meter as _budget_meter
 
     _budget_meter.bind_store(None)
     _settings.invalidate()
+    # Same shape as the settings cache: ~60s TTL keyed by secret name, not by
+    # Store, so a resolved secret would otherwise answer across the per-test
+    # TRUNCATE for the rest of the process (gr451657).
+    _secrets.invalidate()
     s = Store.connect(_active_dsn())
     dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
     before = _live_backends(dbname) if _LEAKCHECK else set()
