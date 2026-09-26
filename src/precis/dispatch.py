@@ -462,6 +462,7 @@ def _try(
     hub: Hub,
     disabled: frozenset[str] = frozenset(),
     reasons: dict[str, str] | None = None,
+    failed_imports: dict[str, str] | None = None,
     **kw: Any,
 ) -> Any | None:
     """Construct a handler, auto-register it, swallow missing-dep errors.
@@ -564,6 +565,16 @@ def _try(
         log.warning("%s init failed: %s", getattr(cls, "__name__", cls), exc)
         if spec is not None:
             hub.loadabilities[spec.kind] = loadability_from_exception(spec, exc)
+        if failed_imports is not None and isinstance(exc, ImportError):
+            # Only the ImportError branch — a missing/broken dependency
+            # (the gr451358 "missing wheel package" incident) — feeds the
+            # boot-summary WARN escalation below. InitError (store not
+            # wired, env not set) and the network/DB hiccups are routine
+            # degrade modes on plenty of healthy deployments and would
+            # make that line cry wolf on every stateless boot.
+            failed_imports[
+                spec.kind if spec is not None else getattr(cls, "__name__", str(cls))
+            ] = str(exc)
         return None
     if spec is not None:
         hub.loadabilities[spec.kind] = Loadability(kind=spec.kind, loaded=True)
@@ -579,7 +590,7 @@ def _try(
 PLUGIN_GROUP = "precis.handlers"
 
 
-def _load_plugins(hub: Hub) -> None:
+def _load_plugins(hub: Hub, failed_imports: dict[str, str] | None = None) -> None:
     """Discover and register third-party handlers via entry-points.
 
     A plugin package advertises a handler class in its own
@@ -609,6 +620,16 @@ def _load_plugins(hub: Hub) -> None:
     claim a built-in kind hits
     :class:`DuplicateRegistration` and is logged; the built-in
     wins.
+
+    ``failed_imports``, when passed, collects ``{name: error}`` for the
+    two failure points that are genuinely an import problem (``ep.load()``
+    failing outright, or construction raising ``ImportError``) — the
+    gr451358 "missing wheel package silently dropped a kind fleet-wide"
+    incident. :func:`boot` uses it to escalate its final kind-count log
+    line to WARN. Deliberate ``InitError`` / registration-collision /
+    other-exception failures are excluded — those are routine outcomes
+    (a plugin that can't run here, a name collision) and would make that
+    line cry wolf on every boot that has one.
     """
     try:
         eps = _entry_points(group=PLUGIN_GROUP)
@@ -627,6 +648,8 @@ def _load_plugins(hub: Hub) -> None:
                 type(exc).__name__,
                 exc,
             )
+            if failed_imports is not None:
+                failed_imports[name] = f"{type(exc).__name__}: {exc}"
             continue
 
         cls_name = getattr(cls, "__name__", repr(cls))
@@ -640,6 +663,8 @@ def _load_plugins(hub: Hub) -> None:
                 cls_name,
                 exc,
             )
+            if failed_imports is not None and isinstance(exc, ImportError):
+                failed_imports[name] = str(exc)
             continue
         except Exception as exc:
             log.warning(
@@ -733,6 +758,11 @@ def boot(
         if mcp_read_only:
             log.info("precis dispatch boot: read-only DSN — skipping boot writes")
 
+    # {kind_or_plugin_name: error} for the ImportError-flavored failures
+    # only (see ``_try`` / ``_load_plugins`` docstrings) — feeds the
+    # boot-summary WARN escalation at the end of this function.
+    failed_imports: dict[str, str] = {}
+
     def _gated(cls: Callable[..., Any], **kw: Any) -> Any | None:
         """Local _try alias capturing ``hub`` + the parsed prohibition
         set. Each call site keeps only its handler-specific kwargs."""
@@ -741,6 +771,7 @@ def boot(
             hub=hub,
             disabled=kinds_disabled,
             reasons=kinds_disabled_reasons,
+            failed_imports=failed_imports,
             **kw,
         )
 
@@ -1131,7 +1162,7 @@ def boot(
     # Built-ins win on kind-name collisions because they register
     # first; a plugin attempting to claim an already-registered kind
     # is logged and skipped.
-    _load_plugins(hub)
+    _load_plugins(hub, failed_imports)
 
     # Boot-time auto-upsert: every enabled hub kind lands in the
     # ``kinds`` table so the FK target stays in sync with the code
@@ -1161,11 +1192,26 @@ def boot(
             # going dark.
             log.exception("precis dispatch boot: kinds upsert failed (non-fatal)")
 
-    log.info(
-        "precis dispatch boot: %d kinds live: %s",
-        len(hub.kinds),
-        sorted(hub.kinds),
-    )
+    if failed_imports:
+        # gr451358: a missing wheel package (or any other genuine import
+        # break) dropped a kind fleet-wide with only a per-handler WARN
+        # buried mid-boot — nothing paged, and the outage surfaced only
+        # via a web 502. Naming the casualties on the one line every
+        # boot already emits makes it grep/alertable without reading the
+        # full boot log.
+        log.warning(
+            "precis dispatch boot: %d kinds live: %s — %d handler import(s) FAILED: %s",
+            len(hub.kinds),
+            sorted(hub.kinds),
+            len(failed_imports),
+            {k: failed_imports[k] for k in sorted(failed_imports)},
+        )
+    else:
+        log.info(
+            "precis dispatch boot: %d kinds live: %s",
+            len(hub.kinds),
+            sorted(hub.kinds),
+        )
     return hub
 
 

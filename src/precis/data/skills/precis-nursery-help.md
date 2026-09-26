@@ -44,6 +44,7 @@ the push merges dark and everything else stays pull-only.
 | `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
 | `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
+| `kind-shrinkage` | a `(host, process)`'s registered-kind roster (`kind_provider`) lost a kind it advertised in an earlier boot — a broken handler import (missing/broken package) or a deliberate disable/removal | 30 d lookback · **critical** |
 
 `orphan` enforces the strategic invariant: every open todo must trace to
 a `rotation_root` ancestor. It raises **no alert** (`_NO_ALERT`, Reto's
@@ -66,8 +67,9 @@ panel for pull-style monitoring.
 
 The three **worker-health** detectors watch daemon liveness / work
 flow, not the todo graph; together with `orphaned-coordinator`,
-`nas-denied`, and `host-dark` (NAS unreadable / heartbeat itself dark)
-they make up the `critical` categories (a new one fires the one-shot
+`nas-denied`, `host-dark` (NAS unreadable / heartbeat itself dark), and
+`kind-shrinkage` (a host/process's registered-kind roster shrank) they
+make up the `critical` categories (a new one fires the one-shot
 Discord ping). `host-dark` is the deliberate complement to `dead-worker`:
 a dead single-writer host's own heartbeat goes stale right along with
 it, so `dead-worker`'s gate self-suppresses (one dead host must not fan

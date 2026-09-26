@@ -36,6 +36,8 @@ from precis.workers.nursery import (
     EMBED_LANE_STALL_WINDOW_MIN,
     HOST_DARK_LOOKBACK_DAYS,
     HOST_DARK_SILENCE_MIN,
+    KIND_ROSTER_BOOT_SLOP_MIN,
+    KIND_ROSTER_LOOKBACK_DAYS,
     LANE_SKIP_MIN_CANCELLED,
     LANE_SKIP_WINDOW_H,
     LONG_WAIT_DAYS,
@@ -54,6 +56,7 @@ from precis.workers.nursery import (
     _detect_dispatch_stalls,
     _detect_embed_lane_stalled,
     _detect_host_dark,
+    _detect_kind_shrinkage,
     _detect_lane_skipping,
     _detect_long_waits,
     _detect_nas_denied,
@@ -66,6 +69,7 @@ from precis.workers.nursery import (
     _detect_stalled_recurrings,
     _detect_stuck_doable,
     _detect_worker_restart_storms,
+    _kind_roster_regressions,
     _restart_storm_detail,
     run_nursery_pass,
 )
@@ -1180,6 +1184,24 @@ def _seed_heartbeat(
         conn.commit()
 
 
+def _seed_kind_provider(
+    store: Store, host: str, process: str, slugs: list[str], *, minutes_ago: float
+) -> None:
+    """Insert ``kind_provider`` rows for one ``(host, process)`` boot, all
+    sharing one ``last_seen`` — mirrors one
+    ``upsert_kind_providers`` executemany call."""
+    with store.pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO kind_provider (slug, host, process, last_seen) "
+                "VALUES (%s, %s, %s, now() - (%s || ' minutes')::interval) "
+                "ON CONFLICT (slug, host, process) DO UPDATE SET "
+                "last_seen = EXCLUDED.last_seen",
+                [(slug, host, process, minutes_ago) for slug in slugs],
+            )
+        conn.commit()
+
+
 def _host() -> str:
     return f"th-{uuid4().hex[:8]}"
 
@@ -1928,5 +1950,160 @@ def test_run_nursery_pass_raises_critical_for_nas_denied_and_auto_resolves(
     alerts_after = list_open_alerts(store)
     assert not any(
         a["source"] == "nursery:nas-denied" and host in (a["title"] or "")
+        for a in alerts_after
+    )
+
+
+# ── kind-shrinkage (gr451358: roster regression) ────────────────────
+
+
+def test_kind_roster_regressions_flags_a_dropped_kind() -> None:
+    """prior {a,b,c} vs current {a,b} → missing names c."""
+    assert _kind_roster_regressions({"a", "b", "c"}, {"a", "b"}) == {"c"}
+
+
+def test_kind_roster_regressions_equal_sets_is_empty() -> None:
+    assert _kind_roster_regressions({"a", "b"}, {"a", "b"}) == set()
+
+
+def test_kind_roster_regressions_growth_is_empty() -> None:
+    """current gaining a kind is not a regression."""
+    assert _kind_roster_regressions({"a", "b"}, {"a", "b", "c"}) == set()
+
+
+def test_kind_roster_regressions_empty_prior_is_empty() -> None:
+    """No earlier boot on record ⇒ nothing to regress against."""
+    assert _kind_roster_regressions(set(), {"a", "b"}) == set()
+
+
+def test_kind_shrinkage_detector_flags_dropped_kind(store: Store) -> None:
+    """A (host, process) whose latest boot's roster lost a kind vs its
+    prior boot fires — the gr451358 shape."""
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=120)
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    key = f"kind-shrinkage:{host}:serve"
+    hits = [f for f in findings if f.fingerprint_key == key]
+    assert len(hits) == 1
+    assert hits[0].category == "kind-shrinkage"
+    assert hits[0].ref_id is None
+    assert "se" in hits[0].title
+
+
+def test_kind_shrinkage_detector_ignores_stable_roster(store: Store) -> None:
+    """Same roster across two boots — no regression."""
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=120)
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings
+    )
+
+
+def test_kind_shrinkage_detector_ignores_growth(store: Store) -> None:
+    """A roster that only gained a kind since the prior boot is fine."""
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper"], minutes_ago=120)
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings
+    )
+
+
+def test_kind_shrinkage_detector_ignores_first_ever_boot(store: Store) -> None:
+    """Only one boot on record (no prior roster) ⇒ nothing to regress
+    against — a fresh host/process must not alarm on first sight."""
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings
+    )
+
+
+def test_kind_shrinkage_detector_ignores_boots_past_lookback(store: Store) -> None:
+    """A prior roster older than KIND_ROSTER_LOOKBACK_DAYS doesn't count as
+    evidence — mirrors the dead-worker / host-dark lookback floors."""
+    host = _host()
+    _seed_kind_provider(
+        store,
+        host,
+        "serve",
+        ["paper", "se", "todo"],
+        minutes_ago=(KIND_ROSTER_LOOKBACK_DAYS + 1) * 24 * 60,
+    )
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings
+    )
+
+
+def test_kind_shrinkage_detector_scopes_to_process(store: Store) -> None:
+    """Two processes on the same host each get their own comparison —
+    one dropping a kind doesn't flag the other."""
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper", "se"], minutes_ago=120)
+    _seed_kind_provider(store, host, "serve", ["paper"], minutes_ago=1)
+    _seed_kind_provider(store, host, "worker", ["paper", "se"], minutes_ago=120)
+    _seed_kind_provider(store, host, "worker", ["paper", "se"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    assert any(f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:worker" for f in findings
+    )
+
+
+def test_kind_shrinkage_within_boot_slop_is_one_boot(store: Store) -> None:
+    """Rows within KIND_ROSTER_BOOT_SLOP_MIN of the max last_seen are the
+    *same* boot, not a spurious prior/current split."""
+    host = _host()
+    # One boot, upserted a few seconds apart in practice — well inside slop.
+    assert KIND_ROSTER_BOOT_SLOP_MIN > 0
+    _seed_kind_provider(store, host, "serve", ["paper"], minutes_ago=1.5)
+    _seed_kind_provider(store, host, "serve", ["todo"], minutes_ago=0.0)
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings
+    )
+
+
+def test_run_nursery_pass_raises_critical_for_kind_shrinkage_and_auto_resolves(
+    store: Store,
+) -> None:
+    """End to end: a dropped kind becomes an open critical alert, and
+    resolves once a later boot's roster is back to the earlier shape."""
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=120)
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    run_nursery_pass(store)
+
+    alerts = list_open_alerts(store)
+    mine = [
+        a
+        for a in alerts
+        if a["source"] == "nursery:kind-shrinkage" and host in (a["title"] or "")
+    ]
+    assert len(mine) == 1
+    assert mine[0]["severity"] == "critical"
+
+    # se comes back on a later boot.
+    _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=0)
+    run_nursery_pass(store)
+
+    alerts_after = list_open_alerts(store)
+    assert not any(
+        a["source"] == "nursery:kind-shrinkage" and host in (a["title"] or "")
         for a in alerts_after
     )

@@ -69,6 +69,12 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
   >= :data:`LANE_SKIP_RATIO` × succeeded — a handler's "clean skip" path
   (the gr179498 container gate) running as the lane's *normal* outcome,
   invisible to err/warn counts and child-failed bubbles (gr346813).
+* **kind-shrinkage** (``critical``) — a ``(host, process)``'s registered-
+  kind roster (``kind_provider``) lost a kind it advertised in an earlier
+  boot — gr451358 (a missing wheel package silently dropped ``se`` fleet-
+  wide; nothing alerted until the web 502). Complements the boot-time WARN
+  escalation in :func:`precis.dispatch.boot`, which fires once per broken
+  boot; this fires on every nursery pass until the roster is fixed.
 
 Each finding → an ``alert`` under ``alert_source = nursery:<category>``,
 deduped on ``fingerprint = "<category>:<ref_id>"`` (:mod:`precis.alerts`);
@@ -231,6 +237,28 @@ DISPATCH_STALL_MINUTES = 15
 #: as "alive" for stretches while nothing was actually completing).
 EMBED_LANE_STALL_WINDOW_MIN = 60
 
+#: How close two ``kind_provider`` rows' ``last_seen`` must be to count as
+#: the same boot for :func:`_detect_kind_shrinkage` — every kind a process
+#: registers is upserted in one ``executemany`` transaction
+#: (:func:`precis.store._kinds_ops.upsert_kind_providers`), so same-boot
+#: rows land within low single-digit seconds of each other. 2 minutes is
+#: generous headroom for a slow boot without risking folding two
+#: genuinely separate (fast, back-to-back) boots into one "roster".
+KIND_ROSTER_BOOT_SLOP_MIN = 2
+
+#: How far back a stale ``kind_provider`` row still counts as "the prior
+#: boot's roster" for :func:`_detect_kind_shrinkage`. Mirrors
+#: :data:`DEAD_WORKER_LOOKBACK_DAYS` / :data:`HOST_DARK_LOOKBACK_DAYS`,
+#: but with a caveat those two don't have: ``kind_provider`` rows are
+#: never pruned (no retention job touches the table), so a kind still
+#: missing after this many days ages out of the comparison and the
+#: alert self-resolves as if fixed — the exact gr176223 trap, just with
+#: no natural retention floor to bound it against. Accepted for now
+#: (a regression this stale has had a month of restarts to get noticed
+#: some other way); widen if a genuinely-persistent case is caught only
+#: because someone happened to look past 30 days.
+KIND_ROSTER_LOOKBACK_DAYS = 30
+
 #: ``lane-skipping``: a job_type whose runs are mostly ``STATUS:cancelled``
 #: (a handler's deliberate "clean skip" — e.g. the gr179498 container gate)
 #: is a lane that is DOWN while looking clean — cancelled is not failed, so
@@ -272,6 +300,7 @@ _SEVERITY: dict[str, str] = {
     "host-dark": "critical",
     "embed-lane-stalled": "critical",
     "lane-skipping": "warn",
+    "kind-shrinkage": "critical",
 }
 
 
@@ -334,6 +363,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Symptom]]], ...] = (
     ("dispatch-stall", lambda s: _detect_dispatch_stalls(s)),
     ("embed-lane-stalled", lambda s: _detect_embed_lane_stalled(s)),
     ("lane-skipping", lambda s: _detect_lane_skipping(s)),
+    ("kind-shrinkage", lambda s: _detect_kind_shrinkage(s)),
 )
 
 
@@ -1802,6 +1832,120 @@ def _detect_lane_skipping(store: Store) -> list[Symptom]:
                     "a handler's clean-skip path is the lane's normal outcome, so "
                     "nothing else (err/warn counts, child-failed) shows it. "
                     f"Newest skip says: {why}"
+                ),
+            )
+        )
+    return out
+
+
+# ── kind roster shrinkage (gr451358) ────────────────────────────────
+
+
+def _kind_roster_regressions(prior: set[str], current: set[str]) -> set[str]:
+    """Kinds ``prior`` advertised that ``current`` doesn't — the shrinkage.
+
+    Pure set difference — factored out so the regression rule itself
+    (as opposed to :func:`_detect_kind_shrinkage`'s SQL boot-roster
+    shaping) is unit-testable without a database. Growth (``current``
+    gaining a kind) and an empty ``prior`` (no earlier boot on record —
+    nothing to regress against) both return the empty set; only a kind
+    present before and absent now counts.
+    """
+    return prior - current
+
+
+def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
+    """A ``(host, process)``'s registered-kind roster shrank since its
+    previous boot — gr451358.
+
+    ``kind_provider`` (``store/_kinds_ops.py``) is upserted at every boot
+    with a fresh ``last_seen`` for every kind the process currently
+    advertises. A kind a process used to advertise but stopped simply
+    never gets its ``last_seen`` bumped again — no boot deletes the row,
+    it just goes stale. So for one ``(host, process)``, the rows
+    clustered around ``max(last_seen)`` (within
+    :data:`KIND_ROSTER_BOOT_SLOP_MIN`) are the *current* boot's roster,
+    and older rows — still within :data:`KIND_ROSTER_LOOKBACK_DAYS` —
+    are the *prior* boot's. :func:`_kind_roster_regressions` does the
+    actual comparison; this function only shapes the two sets per host/
+    process and turns a non-empty result into a finding.
+
+    This is the 2026-09-26 incident: a missing wheel package made a
+    plugin's ``ep.load()`` raise, ``se`` silently dropped out of every
+    fleet MCP server's roster (58 → 57 kinds), and nothing paged — only
+    a web 502 got anyone to look. The boot-summary WARN escalation
+    (:func:`precis.dispatch.boot`) catches the *cause* going forward at
+    the moment it happens; this detector is the one that actually pages
+    on every later nursery pass too, since a WARN line is easy to miss
+    in a scroll of startup logs and the boot process for a headless
+    fleet member has no reader at all.
+
+    A ``(host, process)`` seen for the first time has no rows older than
+    the boot-slop window, so :meth:`prior` is empty and nothing fires —
+    first sight is not a regression. Severity is ``critical``: a lost
+    kind is a capability outage for every route through that host,
+    mirroring ``dead-worker`` / ``host-dark``.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH latest AS (
+                SELECT host, process, max(last_seen) AS boot_ts
+                  FROM kind_provider
+                 GROUP BY host, process
+            ),
+            current AS (
+                SELECT kp.host, kp.process,
+                       array_agg(kp.slug) AS kinds
+                  FROM kind_provider kp
+                  JOIN latest l ON l.host = kp.host AND l.process = kp.process
+                 WHERE kp.last_seen >= l.boot_ts - (%(slop)s || ' minutes')::interval
+                 GROUP BY kp.host, kp.process
+            ),
+            prior AS (
+                SELECT kp.host, kp.process,
+                       array_agg(kp.slug) AS kinds
+                  FROM kind_provider kp
+                  JOIN latest l ON l.host = kp.host AND l.process = kp.process
+                 WHERE kp.last_seen < l.boot_ts - (%(slop)s || ' minutes')::interval
+                   AND kp.last_seen > l.boot_ts - (%(lookback)s || ' days')::interval
+                 GROUP BY kp.host, kp.process
+            )
+            SELECT p.host, p.process, p.kinds, c.kinds, l.boot_ts
+              FROM prior p
+              JOIN latest l ON l.host = p.host AND l.process = p.process
+              JOIN current c ON c.host = p.host AND c.process = p.process
+             ORDER BY p.host, p.process
+             LIMIT 50
+            """,
+            {
+                "slop": KIND_ROSTER_BOOT_SLOP_MIN,
+                "lookback": KIND_ROSTER_LOOKBACK_DAYS,
+            },
+        ).fetchall()
+    out: list[Symptom] = []
+    for host, process, prior_kinds, current_kinds, boot_ts in rows:
+        missing = _kind_roster_regressions(
+            set(prior_kinds or []), set(current_kinds or [])
+        )
+        if not missing:
+            continue
+        names = ", ".join(sorted(missing))
+        out.append(
+            Symptom(
+                category="kind-shrinkage",
+                ref_id=None,
+                fingerprint_key=f"kind-shrinkage:{host}:{process}",
+                title=f"{process} on {host} lost kind(s): {names}",
+                detail=(
+                    f"{process} on {host} advertised [{names}] in an earlier boot "
+                    f"but not its latest ({_hours_since(boot_ts):.1f}h ago). Either "
+                    "a handler import broke (missing/broken package — check that "
+                    "boot's `precis dispatch boot:` log line, which escalates to "
+                    "WARN and names the failed import(s) when this is the cause), "
+                    "or the kind was deliberately disabled/removed "
+                    "(PRECIS_KINDS_DISABLED, a retired plugin). This alert "
+                    "self-resolves once the roster is stable across a later boot."
                 ),
             )
         )

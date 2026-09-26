@@ -926,3 +926,111 @@ def test_plugin_empty_entry_points_is_noop(
 
     hub = boot(store=None)
     assert {"calc", "provenance"}.issubset(hub.kinds)
+
+
+# ---------------------------------------------------------------------------
+# gr451358 — boot-summary WARN escalation on a failed handler import
+# ---------------------------------------------------------------------------
+
+
+def test_boot_summary_warns_on_plugin_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The final ``N kinds live`` boot-summary line escalates to WARNING
+    and names the plugin when its ``ep.load()`` raises ``ImportError`` —
+    the 2026-09-26 "missing wheel package silently dropped a kind
+    fleet-wide" incident (gr451358). The per-handler WARN
+    (``test_plugin_load_import_error_is_logged``) already existed and was
+    easy to miss in a scroll of startup logs; this is the one line every
+    boot emits that must be loud."""
+
+    def _raises_at_load() -> object:
+        raise ImportError("simulated: no module named precis_se")
+
+    _patch_entry_points(monkeypatch, [_FakeEP("se", _raises_at_load)])
+
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        boot(store=None)
+
+    summary = [rec for rec in caplog.records if "kinds live" in rec.message]
+    assert len(summary) == 1
+    assert summary[0].levelno == logging.WARNING
+    assert "se" in summary[0].message
+    assert "simulated: no module named precis_se" in summary[0].message
+
+
+def test_boot_summary_stays_info_on_construction_error_not_import(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A plugin ``InitError`` (missing optional dep declared cleanly, not
+    a broken import) does NOT escalate the summary line — that's a
+    routine, expected degrade on plenty of healthy deployments, and
+    escalating it would make the summary line cry wolf on every boot
+    that has one."""
+    _patch_entry_points(monkeypatch, [_FakeEP("needs-dep", _PluginNeedsDep)])
+
+    with caplog.at_level(logging.INFO, logger="precis.dispatch"):
+        boot(store=None)
+
+    summary = [rec for rec in caplog.records if "kinds live" in rec.message]
+    assert len(summary) == 1
+    assert summary[0].levelno == logging.INFO
+
+
+def test_boot_summary_stays_info_on_clean_boot(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No failed imports at all ⇒ the summary line is unchanged (INFO)."""
+    _patch_entry_points(monkeypatch, [])
+
+    with caplog.at_level(logging.INFO, logger="precis.dispatch"):
+        boot(store=None)
+
+    summary = [rec for rec in caplog.records if "kinds live" in rec.message]
+    assert len(summary) == 1
+    assert summary[0].levelno == logging.INFO
+
+
+def test_try_records_import_error_in_failed_imports(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``_try``'s ``failed_imports`` out-param collects ``{kind: error}``
+    for the ``ImportError`` branch only — the same routine/genuine split
+    the boot-summary escalation relies on."""
+
+    class _NeedsMissingModule(Handler):
+        spec = KindSpec(
+            kind="needsmod",
+            title="Needs a missing module",
+            description="Simulates an optional-dep import failure.",
+            supports_get=True,
+        )
+
+        def __init__(self, *, hub: Hub) -> None:
+            _ = hub
+            raise ImportError("no module named fictional_dep")
+
+        def get(self, **kw):
+            return Response(body="never")
+
+    r = Hub()
+    failed: dict[str, str] = {}
+    with caplog.at_level(logging.WARNING, logger="precis.dispatch"):
+        result = _try(_NeedsMissingModule, hub=r, failed_imports=failed)
+    assert result is None
+    assert failed == {"needsmod": "no module named fictional_dep"}
+
+
+def test_try_does_not_record_init_error_in_failed_imports() -> None:
+    """A deliberate ``InitError`` (store not wired, env not set) is a
+    routine degrade mode, not an import failure — it must NOT land in
+    ``failed_imports`` or the boot-summary line would cry wolf on every
+    stateless boot."""
+    r = Hub()
+    failed: dict[str, str] = {}
+    result = _try(_BadConfig, hub=r, failed_imports=failed)
+    assert result is None
+    assert failed == {}
