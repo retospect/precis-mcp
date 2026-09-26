@@ -140,6 +140,95 @@ def test_strategic_dashboard_keeps_open_root_with_no_picks(
     assert "0 picks in 7d" in snap
 
 
+def test_strategic_dashboard_flags_stale_root_all_todos_done(
+    handler: TodoHandler, store: Store
+) -> None:
+    """All-descendant-todos-done, no jobs, no parked leaf → STALE-ROOT."""
+    root = handler.put(text="All done", meta={"rotation_root": True})
+    root_id = id_of(root.body)
+    leaf = handler.put(text="leaf", parent_id=root_id)
+    leaf_id = id_of(leaf.body)
+    handler.tag(id=leaf_id, add=["STATUS:done"])
+
+    snap = _strategic_dashboard(store)
+    assert f"[td{root_id}] All done" in snap
+    assert "STALE-ROOT" in snap
+
+
+def test_strategic_dashboard_not_stale_with_open_descendant_job(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Todos all done, but a non-terminal ``kind='job'`` descendant is
+    still queued under the root — must NOT flag STALE-ROOT (gr451821:
+    the ``subtree`` CTE used to be ``kind='todo'``-only, so a dispatched
+    ``plan_tick`` job never counted against "subtree all done")."""
+    root = handler.put(text="Job in flight", meta={"rotation_root": True})
+    root_id = id_of(root.body)
+    leaf = handler.put(text="leaf", parent_id=root_id)
+    leaf_id = id_of(leaf.body)
+    handler.tag(id=leaf_id, add=["STATUS:done"])
+    store.insert_ref(
+        kind="job",
+        slug=None,
+        title="plan_tick",
+        meta={"job_type": "plan_tick"},
+        parent_id=root_id,
+    )
+    # freshly minted job carries no STATUS: tag yet — must still count as open.
+
+    snap = _strategic_dashboard(store)
+    assert f"[td{root_id}] Job in flight" in snap
+    assert "STALE-ROOT" not in snap
+
+
+def test_strategic_dashboard_stale_with_terminal_descendant_job(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Same shape, but the job has reached a terminal STATUS → STALE-ROOT
+    still fires (a finished job doesn't keep the root stale forever)."""
+    from precis.store.types import Tag
+
+    root = handler.put(text="Job finished", meta={"rotation_root": True})
+    root_id = id_of(root.body)
+    leaf = handler.put(text="leaf", parent_id=root_id)
+    leaf_id = id_of(leaf.body)
+    handler.tag(id=leaf_id, add=["STATUS:done"])
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="plan_tick",
+        meta={"job_type": "plan_tick"},
+        parent_id=root_id,
+    )
+    store.add_tag(job.id, Tag.closed("STATUS", "succeeded"), set_by="system")
+
+    snap = _strategic_dashboard(store)
+    assert f"[td{root_id}] Job finished" in snap
+    assert "STALE-ROOT" in snap
+
+
+def test_strategic_dashboard_not_stale_with_unresolved_decision_leaf(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A descendant todo parked on ``ask-user:`` — even one that also
+    carries a terminal ``STATUS:done``/``won't-do`` tag — disqualifies
+    STALE-ROOT: the standing "parked, needs a human" marker
+    (``_doable_exclusion_clause``'s registry, same one ``dispatch.py``
+    gates candidacy on) means the leaf isn't actually resolved."""
+    from precis.store.types import Tag
+
+    root = handler.put(text="Waiting on a human", meta={"rotation_root": True})
+    root_id = id_of(root.body)
+    leaf = handler.put(text="leaf", parent_id=root_id)
+    leaf_id = id_of(leaf.body)
+    handler.tag(id=leaf_id, add=["STATUS:done"])
+    store.add_tag(leaf_id, Tag.open("ask-user:which vendor?"), set_by="agent")
+
+    snap = _strategic_dashboard(store)
+    assert f"[td{root_id}] Waiting on a human" in snap
+    assert "STALE-ROOT" not in snap
+
+
 def test_build_prompt_has_all_directive_sections(store: Store) -> None:
     prompt = _build_prompt(store)
     assert "DEEP REVIEW" in prompt

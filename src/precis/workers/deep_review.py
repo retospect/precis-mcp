@@ -12,10 +12,12 @@ shim for the same pattern.
 from __future__ import annotations
 
 from precis.handlers._todo_guards import todo_root_sql
+from precis.handlers._todo_views import _doable_exclusion_clause
 from precis.store import Store
 from precis.utils import handle_registry
 from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.prompt import AssemblyContext, Layer, Module
+from precis.workers.executors._common import TERMINAL as _JOB_TERMINAL
 from precis.workers.review import (
     _SHARED_TRAILING_MODULES,
     Reviewer,
@@ -46,7 +48,30 @@ MIN_INTERVAL_HOURS = 144
 
 
 def _strategic_dashboard(store: Store) -> str:
-    """Compact strategic dashboard: one line per strategic with 7d picks."""
+    """Compact strategic dashboard: one line per strategic with 7d picks.
+
+    ``STALE-ROOT`` used to fire off a ``subtree`` CTE filtered to
+    ``kind = 'todo'`` alone, so it never saw the ``kind='job'``
+    descendants (``plan_tick`` jobs etc., parented under a todo via
+    ``parent_id``) — a root could read "subtree all done" while a job
+    was still queued/running under it (gr451821). ``desc_job_open``
+    below counts non-terminal descendant jobs the same CTE reaches;
+    "terminal" is the executors' closed ``STATUS:*`` set
+    (:data:`precis.workers.executors._common.TERMINAL`) — a job with
+    no ``STATUS:`` tag yet (freshly minted) is treated as open, not
+    terminal, since ``meta.last_status`` is quest_tick-only and no
+    other signal exists that early.
+
+    ``desc_decision_pending`` disqualifies separately: a descendant
+    todo carrying one of the standing "parked, needs a human/retry
+    decision" ``OPEN`` tags (:func:`_doable_exclusion_clause` — the
+    same ``ask-user`` / ``waiting-for:`` / ``halt`` / ``child-failed:``
+    registry ``dispatch.py`` and ``_todo_views.py`` already gate
+    dispatch candidacy on) is not "done" in the sense this flag cares
+    about even if its ``STATUS`` tag happens to read ``done``/``won't-
+    do`` — the tag is the load-bearing signal a human hasn't actually
+    resolved the leaf yet.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
@@ -84,18 +109,50 @@ def _strategic_dashboard(store: Store) -> str:
                            SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                             WHERE rt.ref_id = st.ref_id AND t.namespace = 'STATUS'
                               AND t.value IN ('done', 'won''t-do')
-                       )) AS desc_open
+                       )) AS desc_open,
+                   (SELECT count(*) FROM refs j
+                     WHERE j.kind = 'job' AND j.retired_at IS NULL
+                       AND j.parent_id IN (
+                           SELECT st.ref_id FROM subtree st WHERE st.strategic_id = s.ref_id
+                       )
+                       AND NOT EXISTS (
+                           SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                              AND t.value = ANY(%(job_terminal)s)
+                       )) AS desc_job_open,
+                   (SELECT count(*) FROM subtree st
+                     WHERE st.strategic_id = s.ref_id AND st.ref_id <> s.ref_id
+                       AND EXISTS (
+                           SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                            WHERE rt.ref_id = st.ref_id AND t.namespace = 'OPEN'
+                              AND {_doable_exclusion_clause()}
+                       )) AS desc_decision_pending
               FROM strat s
              ORDER BY s.ref_id
             """,
+            {"job_terminal": list(_JOB_TERMINAL)},
         ).fetchall()
     if not rows:
         return "(no strategic todos yet)"
     lines: list[str] = []
-    for s_id, title, size, picks, desc_total, desc_open in rows:
+    for (
+        s_id,
+        title,
+        size,
+        picks,
+        desc_total,
+        desc_open,
+        desc_job_open,
+        desc_decision_pending,
+    ) in rows:
         first = (title or "").splitlines()[0]
         handle = handle_registry.format_handle("todo", int(s_id))
-        stale = int(desc_total or 0) > 0 and int(desc_open or 0) == 0
+        stale = (
+            int(desc_total or 0) > 0
+            and int(desc_open or 0) == 0
+            and int(desc_job_open or 0) == 0
+            and int(desc_decision_pending or 0) == 0
+        )
         flag = "  [STALE-ROOT: subtree all done]" if stale else ""
         lines.append(
             f"[{handle}] {first}  ({int(size or 0)} descendants, "
