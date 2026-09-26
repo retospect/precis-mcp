@@ -1349,6 +1349,106 @@ def test_base_template_vendors_htmx_and_alpine_no_unpkg_cdn() -> None:
     assert '<script src="/static/alpine.min.js" defer></script>' in html
 
 
+# ── gr356760: smartdraft paragraph lists (block-level, markdown-only) ──
+# Nested/ordered markdown bullet lines used to render as plain
+# ``whitespace-pre-wrap`` text (literal ``- ``/4-space-indent characters
+# visible) — no block-level list transform existed anywhere in the
+# rendering stack. ``markdown=True`` now recognises consecutive
+# ``-``/``*``/``N.`` lines as a list block.
+
+
+def test_flat_markdown_list_renders_ul_li() -> None:
+    out = str(linkify_refs("- one\n- two\n- three", markdown=True))
+    assert out == "<ul><li>one</li><li>two</li><li>three</li></ul>"
+
+
+def test_star_marker_also_renders_ul() -> None:
+    out = str(linkify_refs("* alpha\n* beta", markdown=True))
+    assert out == "<ul><li>alpha</li><li>beta</li></ul>"
+
+
+def test_ordered_markdown_list_renders_ol_li() -> None:
+    out = str(linkify_refs("1. first\n2. second\n3. third", markdown=True))
+    assert out == "<ol><li>first</li><li>second</li><li>third</li></ol>"
+
+
+def test_nested_markdown_list_two_space_indent() -> None:
+    out = str(linkify_refs("- top\n  - nested\n- top2", markdown=True))
+    assert out == ("<ul><li>top<ul><li>nested</li></ul></li><li>top2</li></ul>")
+
+
+def test_nested_markdown_list_four_space_indent() -> None:
+    """The gripe's exact reported shape: a 4-space-indented sub-bullet."""
+    out = str(linkify_refs("- top\n    - nested\n- top2", markdown=True))
+    assert out == ("<ul><li>top<ul><li>nested</li></ul></li><li>top2</li></ul>")
+
+
+def test_nested_ordered_inside_bullet_list() -> None:
+    out = str(linkify_refs("- outer\n  1. inner one\n  2. inner two", markdown=True))
+    assert out == (
+        "<ul><li>outer<ol><li>inner one</li><li>inner two</li></ol></li></ul>"
+    )
+
+
+def test_list_item_text_still_escaped_and_linkified() -> None:
+    """A list item's text runs through the SAME escape/linkify(/inline-
+    markdown) pipeline ordinary prose gets — a ``kind:ref`` still becomes
+    an anchor and a raw ``<script>`` is still inert."""
+    out = str(
+        linkify_refs(
+            "- see paper:acheson26 for <script>x</script>\n- **bold** item",
+            markdown=True,
+        )
+    )
+    assert 'href="/r/paper/acheson26"' in out
+    assert "<script>x</script>" not in out and "&lt;script&gt;" in out
+    assert "<strong>bold</strong>" in out
+
+
+def test_list_requires_markdown_flag() -> None:
+    """Without ``markdown=True`` list lines are untouched literal text —
+    lists are gated the same way bold/italic/code already are."""
+    out = str(linkify_refs("- one\n- two"))
+    assert "<ul>" not in out and "<li>" not in out
+    assert "- one" in out and "- two" in out
+
+
+def test_blank_line_ends_a_list_run() -> None:
+    out = str(linkify_refs("- one\n- two\n\nnot a list item", markdown=True))
+    assert out.count("<ul>") == 1
+    assert "not a list item" in out
+    assert "<li>not a list item</li>" not in out
+
+
+def test_prose_paragraph_without_lists_is_byte_identical() -> None:
+    """The load-bearing regression guard: a markdown paragraph with no
+    list-marker lines must render EXACTLY what the pre-existing single-pass
+    renderer (``_linkify_prose_core``, what ``_linkify_prose`` WAS before
+    this list transform wrapped it) produced — same bytes, not just
+    "looks similar"."""
+    from precis_web.linkify import _linkify_prose_core
+
+    text = (
+        "Yield was **2.63 mmol** per gram, see paper:acheson26 for the\n"
+        "full write-up. The *directly bonded* pair forms at 3.1 mmol g<sup>-1</sup>."
+    )
+
+    def _norm(s: str) -> str:
+        return re.sub(r"refpop-[0-9a-f]{10}", "refpop-X", s)
+
+    # Each call mints a fresh random popover id (see
+    # test_pinned_finding_handle_renders_same_anchor_as_bare above) — not
+    # part of the "byte-identical" claim, so normalise it before comparing.
+    before = _norm(_linkify_prose_core(text, markdown=True))
+    after = _norm(str(linkify_refs(text, markdown=True)))
+    assert after == before
+    assert "<strong>2.63 mmol</strong>" in after
+    assert "<em>directly bonded</em>" in after
+    assert "<sup>-1</sup>" in after
+    assert 'href="/r/paper/acheson26"' in after
+    assert "<ul>" not in after and "<ol>" not in after
+
+
 # ---- gr298594: repo-wide no-CDN guard ---------------------------------
 #
 # gr298015 (above) only pinned base.html.j2 (htmx/alpine). gr298594 found

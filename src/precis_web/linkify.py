@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from html import escape
 
 from markupsafe import Markup
@@ -1024,7 +1024,156 @@ _COMBINED_PATTERN = re.compile(
 )
 
 
+#: A block-level list-item line: leading-space indent, a ``-``/``*`` bullet
+#: or ``N.`` numbered marker, then a required run of spaces/tabs before the
+#: item text. Deliberately line-anchored (``^``/``$`` against one already-
+#: split line, never ``re.MULTILINE`` over the whole blob) so it only ever
+#: classifies one line at a time for :func:`_split_list_blocks`.
+_LIST_ITEM_RE = re.compile(r"^( *)([-*]|\d+\.)[ \t]+(.*)$")
+
+
+def _split_list_blocks(text: str) -> list[tuple[bool, list[str]]]:
+    """Split ``text`` into ``(is_list_run, lines)`` runs: a list run is one
+    or more CONSECUTIVE lines matching :data:`_LIST_ITEM_RE` (a blank line
+    or any non-list line ends the run); everything else groups into prose
+    runs. ``"\\n".join`` of every line in order reconstructs ``text``
+    exactly, so a text with no list lines round-trips as a single prose
+    run — the byte-identical no-lists case falls out of this for free."""
+    blocks: list[tuple[bool, list[str]]] = []
+    for line in text.split("\n"):
+        is_item = _LIST_ITEM_RE.match(line) is not None
+        if blocks and blocks[-1][0] == is_item:
+            blocks[-1][1].append(line)
+        else:
+            blocks.append((is_item, [line]))
+    return blocks
+
+
+class _ListLevel:
+    """One open ``<ul>``/``<ol>`` in :func:`_render_list_run`'s nesting
+    stack — mutable so the in-progress ``<li>`` can be tracked and closed
+    at the right moment (only when a sibling arrives or the level pops)."""
+
+    __slots__ = ("indent", "li_open", "tag")
+
+    def __init__(self, indent: int, tag: str) -> None:
+        self.indent = indent
+        self.tag = tag
+        self.li_open = False
+
+
+def _render_list_run(lines: list[str], render_line: Callable[[str], str]) -> str:
+    """Nested ``<ul>``/``<ol>`` HTML for one consecutive run of list-marker
+    lines (as split out by :func:`_split_list_blocks`).
+
+    A real indent stack, not a fixed 2-/4-space multiple — any indent
+    increase (2, 4, or otherwise) opens one nested level, so mixed-width
+    authors still nest correctly; a decrease pops back down. Marker shape
+    decides the tag per level (``-``/``*`` → ``ul``, ``N.`` → ``ol``); a
+    marker-type change at the SAME indent closes and reopens rather than
+    mixing tags in one list. A deeper level's opening ``<ul>``/``<ol>`` is
+    spliced in before its parent ``<li>`` is closed, so it nests INSIDE
+    that ``<li>`` — not as a sibling of it. ``render_line`` renders each
+    item's text through the same escape/linkify(/inline-markdown) pipeline
+    prose already gets, so a ``kind:ref`` or ``**bold**`` inside a list
+    item is unchanged from before this existed."""
+    parts: list[str] = []
+    stack: list[_ListLevel] = []
+
+    def _close_level() -> None:
+        level = stack.pop()
+        if level.li_open:
+            parts.append("</li>")
+        parts.append(f"</{level.tag}>")
+
+    for line in lines:
+        m = _LIST_ITEM_RE.match(line)
+        assert m is not None  # every line here passed _LIST_ITEM_RE already
+        indent = len(m.group(1))
+        tag = "ol" if m.group(2)[0].isdigit() else "ul"
+        content = m.group(3)
+
+        while stack and stack[-1].indent > indent:
+            _close_level()
+
+        if not stack or stack[-1].indent < indent:
+            parts.append(f"<{tag}>")
+            stack.append(_ListLevel(indent, tag))
+        elif stack[-1].tag != tag:
+            _close_level()
+            parts.append(f"<{tag}>")
+            stack.append(_ListLevel(indent, tag))
+        elif stack[-1].li_open:
+            parts.append("</li>")
+
+        parts.append(f"<li>{render_line(content)}")
+        stack[-1].li_open = True
+
+    while stack:
+        _close_level()
+    return "".join(parts)
+
+
 def _linkify_prose(
+    prose: str,
+    footnotes: dict[tuple[str, str, str | None], int] | None = None,
+    *,
+    markdown: bool = False,
+    compact: bool = False,
+    local: frozenset[str] | None = None,
+    callouts: dict[str, str] | None = None,
+    claims: frozenset[str] | None = None,
+    pending_claims: Mapping[str, int] | None = None,
+    refuted_claims: Mapping[str, int] | None = None,
+    hypothesis_claims: frozenset[str] | None = None,
+) -> str:
+    """Wraps :func:`_linkify_prose_core` with a block-level list transform,
+    ``markdown``-only: consecutive lines matching :data:`_LIST_ITEM_RE`
+    become nested ``<ul>``/``<ol>``/``<li>`` (see :func:`_render_list_run`),
+    each item's text still running through the ordinary escape/linkify(/
+    inline-markdown) core. Text with no list lines round-trips through a
+    single prose block, so it is byte-identical to calling the core
+    directly — see :func:`_split_list_blocks`. ``markdown=False`` skips
+    the split entirely (zero cost, zero behaviour change) — lists are a
+    markdown-mode feature, same gate as bold/italic/code."""
+    if not markdown:
+        return _linkify_prose_core(
+            prose,
+            footnotes,
+            markdown=markdown,
+            compact=compact,
+            local=local,
+            callouts=callouts,
+            claims=claims,
+            pending_claims=pending_claims,
+            refuted_claims=refuted_claims,
+            hypothesis_claims=hypothesis_claims,
+        )
+
+    def _render_line(line: str) -> str:
+        return _linkify_prose_core(
+            line,
+            footnotes,
+            markdown=markdown,
+            compact=compact,
+            local=local,
+            callouts=callouts,
+            claims=claims,
+            pending_claims=pending_claims,
+            refuted_claims=refuted_claims,
+            hypothesis_claims=hypothesis_claims,
+        )
+
+    out: list[str] = []
+    for is_list, lines in _split_list_blocks(prose):
+        if is_list:
+            out.append(_render_list_run(lines, _render_line))
+        else:
+            out.append(_render_line("\n".join(lines)))
+    return "".join(out)
+
+
+def _linkify_prose_core(
     prose: str,
     footnotes: dict[tuple[str, str, str | None], int] | None = None,
     *,
@@ -1048,7 +1197,10 @@ def _linkify_prose(
 
     ``markdown`` renders the bold/code subset over the escaped gaps (the
     draft reader). ``compact`` collapses bare ``§``/``¶`` refs to a 1-char
-    superscript sigil so they don't break reading flow."""
+    superscript sigil so they don't break reading flow. Called per-block
+    by :func:`_linkify_prose` (the block-level list-transform wrapper) —
+    this function itself never sees a multi-block split, only either the
+    whole prose (no lists) or one already-carved block/list-item's text."""
     if not prose:
         return ""
 
