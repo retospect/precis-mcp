@@ -1,6 +1,6 @@
 """Repair evidence edges that assert support while anchoring no passage.
 
-Design: ``docs/backlog/evidence-edges-assert-support-with-no-passage.md``.
+Design: ``docs/backlog/evidence-edge-verification.md``.
 A July batch left 369 evidence edges whose ``meta`` reads, verbatim,
 ``{"caveats": [], "support": "yes", "source_handle": null}`` with
 ``src_chunk_id IS NULL`` — an affirmative support verdict for a passage

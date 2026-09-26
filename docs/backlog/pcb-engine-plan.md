@@ -1929,3 +1929,578 @@ that:
 - **Coarse-level crossings blowup**: the pre-L3 placeholder is `C(m,2)` ≈ 2·10⁶
   at 2000 segments, saturating any below-L3 scoring. Moot in-loop (the engine
   pins L4) but poisons seed-stage or tree-node scoring — clamp or exclude it.
+
+---
+
+# Absorbed 2026-09-26
+
+## Intent canonical, films derived
+
+_Grouped 2026-09-26; was `pcb-feature-model-vs-layer-films`, status draft, prio high._
+
+**Audit 2026-09-26: same work as S9 (pcb/features.py); nothing shipped.**
+
+The next application of this build's recurring principle (sketch canonical
+→ copper derived; text canonical → strokes derived): **functional intent is
+canonical, and the mask/paste/silk films are projections of it.**
+
+### The precise claim (not "layers are just output")
+
+**Copper layers are physically real.** A 4-layer board has four copper
+planes; z-order drives coupling, return paths and impedance. A conductor
+must name its layer.
+
+**Mask, paste and silk are not real in that sense.** They exist only to
+express intent *about* copper. They should never be primary storage.
+
+So: *layers are real for conductors; films are derived from intent.*
+
+### Why boolean decoding is lossy, not merely inelegant
+
+The natural decode rule — copper ∧ ¬mask ∧ ¬hole ⇒ SMT pad — conflates
+functionally distinct things:
+
+| Intent | copper | mask opening | paste | hole |
+|---|---|---|---|---|
+| SMT pad | ✓ | ✓ | ✓ | — |
+| **Thermal pad** | ✓ | ✓ (one) | **windowpaned grid** | — |
+| **Test point** | ✓ | ✓ | **none** | — |
+| **Tented via** | ✓ | ✗ | — | ✓ |
+| Covered trace | ✓ | ✗ | — | — |
+| **Via-in-pad** | ✓ | ✓ | ✓ | ✓ plugged+plated |
+
+A thermal pad's paste windowpane **cannot be derived** from
+copper-and-mask-opening; get it wrong and the part floats on molten solder.
+A test point is layer-identical to an SMT pad minus one film. A tented via
+decodes as a covered trace. The stack cannot represent these distinctions,
+so an intent-first model is *strictly more expressive*, not just tidier.
+
+### Sketch of the model
+
+Features, each knowing how to project itself into films:
+
+- `SolderablePad{shape, pos, side, paste: full|windowpane|none}`
+- `Conductor{layer, geometry}` — layer is real, keep it
+- `Keepout{extent, layers, excludes: conductor|component|both}`
+- `Hole{dia, plated, plugged}`
+- `Marking{content, side}` → silk
+- `Pour{layer, net}`
+
+Projection to the gerber model is a pure function; the existing
+`pcb/gerber.py` writer stays as the projection target, unchanged.
+
+### What it buys
+
+**Better DRC rules, not just faster ones.** "Are these two *solderable
+pads* too close" is a solder-bridging rule with a different threshold than
+trace-to-trace clearance. "Does a conductor enter a keepout" becomes a
+direct query rather than a layer-mask intersection. Fewer rules, each more
+precise.
+
+**Interrogable footprints.** "Does this footprint have 8 solderable pads,
+and where?" becomes answerable — exactly what `view='pinout'`, connector
+intake and escape routing need and cannot currently get.
+
+**Speed, honestly:** fewer objects, and clearance queries filterable by
+semantic pair type (pad↔pad, conductor↔keepout) instead of all-pairs across
+every film; optimizer deltas touch features rather than re-deriving four
+layers. Real, but secondary to expressiveness — do not sell it as the main
+benefit.
+
+### The honest cost
+
+EasyEDA footprint data arrives **layer-shaped**, so ingest must *lift*
+layers into features — the very inference this avoids. That is acceptable
+**only** because it happens once, at the boundary, with ambiguities
+recorded rather than silently resolved. Confining the inference is the
+goal; eliminating it is not possible.
+
+Watch for: a lift that guesses wrong writes a permanently wrong footprint.
+Record confidence and the evidence used, and make unresolved cases loud.
+
+### Lower late, and never lift back
+
+Features are the **IR**; films are the **target**. Everything internal —
+optimizer, DRC, rendering, escape routing — works on features. Lowering to
+mask/paste/silk happens **once, at export**, as the last step.
+
+**Lowering is one-way and terminal.** Nothing inside the system may read
+films back. Code that consumes the gerber model and infers intent is a
+*decompiler*, and boolean layer-decoding is exactly that: reconstructing
+something you had and discarded. The classic compiler error is emitting
+machine code and then trying to optimize the machine code.
+
+**Enforceable invariant** (same shape as the dead-export test): the gerber
+model has exactly **one producer** (the lowering pass) and **one consumer**
+(`pcb/gerber.py`'s writer). Anything else touching it is a bug and a test
+should say so.
+
+This also explains an earlier oddity: `realize.to_gerber_model` with zero
+callers was a lowering step with no terminus — correct structure, missing
+end. The fix was never to give it more callers *inside* the system.
+
+### Blast radius
+
+Additive, not a rewrite: define features → lift at ingest → project to the
+existing gerber model. Sits *above* today's representation.
+
+### Timing
+
+Decide before pad handling calcifies. Instance pad placement is being
+written now (`pcb-fab-output-unwired.md`); if features are the target, that
+transform should eventually emit features rather than layer shapes. The
+transform mathematics is identical either way, so the in-flight work is not
+wasted — but do not accrete more layer-shaped pad logic on top of it.
+
+> **Consider for the paper.** "Manufacturing output formats make poor
+> internal models" generalizes past PCB: the film stack is a
+> photoplotting artifact from the 1970s that most tools still use as their
+> data model, forcing semantics to be recovered by boolean decode. See
+> `pcb-paper-benchmark-selection.md` §CONSIDER FOR THE PAPER.
+
+## Residuals from the 2026-08-28 session
+
+_Grouped 2026-09-26; was `pcb-residual-defects-0828`, status draft, prio high._
+
+**Audit 2026-09-26: shipped §3 drills, §9 measures-as-cost-terms; partial §1 (ir.inst_bottom, no SIDE_FLIP), §5, §8; open §2 §4 §6 §7 §10 §11.**
+
+Found by *walking the lifecycle* of a footprint and of a via, and by
+rendering an actual SVG and looking at it — not by reading code. Each is
+the same family this build keeps producing: a correct-looking component
+that is unreachable, or two components implementing one rule.
+
+Being fixed separately (agent dispatched 2026-08-28): the `via_count`
+cost/realize divergence — `_via_count` reads `ir.n_vias`, `add_via` has
+zero callers, `realize._vias_for_track` emits the real ones. Not repeated
+here.
+
+### 1. `SIDE_FLIP` is not board side — and the IR cannot express board side
+
+`seg_side` is documented as *"which side of an **obstacle** a connection
+takes"* — a rubber-band routing concept. It has nothing to do with
+populating the bottom of the board.
+
+Meanwhile `PcbIR` has `inst_x`, `inst_y`, `inst_rot`, `inst_fixed_*`,
+`inst_extended_part` — and **no per-instance board side at all**. The DB
+has it (`pcb_instances.layer`), the store returns it, `padplace` reads it
+and mirrors correctly for the gerbers. The optimizer's IR drops it.
+
+Consequences:
+- A bottom-side part exports correctly and is **invisible to placement**.
+- The second-side assembly step-function cost (user, 2026-08-28: *"if you
+  put anything on the other side, it's the cost, even just 1, so it's not
+  per part"*) has nowhere to attach.
+- **The trap**: whoever implements that cost will find `SIDE_FLIP` /
+  `seg_side`, assume it is the hook, and wire an assembly penalty onto a
+  routing variable. It would look right and be entirely wrong.
+
+Fix: add `inst_layer` to the IR; rename or clearly re-document `seg_side`
+so the collision cannot mislead. Note the DB column is `layer`, not
+`side` — match it, do not introduce a third spelling.
+
+### 2. Crossings are answered geometrically, not topologically
+
+`cost._crossings` uses a **geometric sweep-line** over straight-line
+segments at L3 (with a coarse fallback below). But the L2 combinatorial
+embedding — which `ir.py`'s docstring insists is stored **explicitly** and
+*"never, ever derived from L3 coordinates"* — is the actual topological
+answer to "what does this wire cross".
+
+So we store the authoritative representation and then consult the derived
+one. Two representations of one fact; the usual outcome follows.
+
+Not necessarily a bug today (the geometric count is real), but it means
+the topological invariant the IR exists to protect is not what any cost
+term reads. Decide deliberately: either the crossings term reads L2, or
+the docstring's claim about why L2 is stored explicitly needs weakening.
+
+### 3. SVG: drills are invisible — **FIXED 2026-08-29**
+
+`drills` is in `svg.DEFAULT_INCLUDE` and `render_board` draws bare holes
+on top of copper; the handler's `level='board'` model supplies them via
+`_drc_drills`. See `pcb-engine-plan.md` §"SVG drills". Original text kept
+below for the detection-method record.
+
+
+`svg.DEFAULT_INCLUDE` is `{outline, copper, pours, pads, vias, silk}` —
+**no `drills`**. The model carries a `drills` list and `render_board`
+ignores it. Verified by rendering: two solder-on nuts with 3.2 mm holes
+render as solid discs.
+
+On a through-hole board every hole silently vanishes from what we call a
+publication-quality figure.
+
+### 4. SVG: every figure is y-mirrored
+
+`svg.py` documents the choice: *"Coordinate convention — deliberately NOT
+flipped"*, model mm coordinates straight into SVG's y-down space, because
+it keeps arc sweep-flag arithmetic and text placement trivially correct.
+
+Verified by rendering: a part at y=5 draws at the **top** of the image.
+That is a **mirror, not a rotation** — a reader cannot fix it by turning
+the page, and silkscreen text will render upside-down once text lands.
+
+The stated reason is real, but the cost is paid by every consumer of every
+figure rather than once inside `_arc_flags`. Revisit before any figure
+reaches the paper.
+
+### 5. A layer change on a current-annotated net changes required width
+
+Deliberately out of scope for the `via_count` fix; filed here so it is not
+lost. Measured via `rules.ipc2221_track_width_mm`: 10 A needs 7.19 mm on
+an outer layer and **18.72 mm on an inner one** (2.6×, because internal
+copper is sandwiched in dielectric and cannot shed heat).
+
+So moving a segment of a high-current net to an inner layer does not just
+add a via — it triples the width that net requires, and nothing in the
+cost function knows. Once `via_count` is honest, this is the next term:
+the layer decision on an annotated net must be priced by the width it
+implies.
+
+### 6. `part_footprints.model_3d` has no producer and no consumer
+
+The column exists in `0047_pcb_kind.sql` and the baseline schema, and
+appears **nowhere else in the repo**. Meanwhile EasyEDA's 3D model
+reference lives in the `SVGNODE` primitive, which `parse_component` skips.
+
+Give it a producer when the `SVGNODE` lift lands (see
+`pcb-component-model.md` §Features, `Body.model_ref`), or drop the column.
+A schema field with neither end wired is indistinguishable from one that
+works.
+
+### 7. Ingest skips primitive classes silently
+
+`parse_component` handles `PAD` and `TRACK`; `HOLE`, `TEXT`, `SVGNODE`,
+`SOLIDREGION`, `CIRCLE`, `ARC` are skipped with a comment and no signal.
+
+`HOLE` is NPTH — mounting holes. `TEXT` is the refdes anchor the label
+constraint needs. `SVGNODE` is the 3D reference above. Dropping `HOLE`
+silently is the entire reason the solder-on nut appeared to need special
+modelling: its defining feature was discarded at ingest and nobody could
+see it.
+
+**Fail loudly on an unparsed primitive class** (or record it as an
+explicit gap on the row). Skipping silently is how "tested but
+unreachable" gets built.
+
+### 9. TWO live cost functions — and measures are priced only by the demoted one
+
+*Fable review, 2026-08-28. The largest defect in the build, and it is the
+same generator as the other eight, at the largest possible grain.*
+
+Verified by grep, not by reading prose:
+
+- `measures` appears **0 times** in `cost.py` and **0 times** in
+  `optimize.py`. Every hit is the English word "measured/measurement" in a
+  docstring. It appears **25 times in `place.py`**.
+- `place.autoplace` is the Slice-4 annealer with hardcoded
+  `W_CROSS=100, W_LEN=1, W_MEASURE=10`. It **reads measures** and **has a
+  wirelength term**.
+- `cost.py`'s docstring says "ONE cost function" and "**No wirelength
+  term** … Do not add one back."
+
+So the two engines disagree on both the objective *and* what inputs
+exist. Which runs depends on the verb: `op='place'` enqueues
+`workers/job_types/pcb_place.py` → `optimize.py`+`cost.py` (**ignores
+measures**); `_place_and_store` → `place.autoplace` (`handlers/pcb.py:873`,
+**honours measures**) is reached only from the **Freerouting round-trip**,
+the path we ourselves demoted.
+
+Net effect: **every measure the agent states is invisible to the engine we
+call the system.** `view='measures'` still evaluates and displays them, so
+they look wired. `precis-measures-help` documents the `place.py` weights
+as if they were the objective. This is "tested but unreachable" applied to
+the entire intent-expression feature.
+
+Fix direction: pick one engine. If `optimize.py` is the system, measures
+must become registered cost terms reading `operands`, and `place.py`'s
+objective is deleted or quarantined behind a loud deprecation — **not left
+as a second opinion.** Do not design more cost terms before this is
+settled; you would be extending the wrong one 50% of the time.
+
+### 10. Nothing reads the L2 embedding — anywhere
+
+Stronger than §2 above, which undersold it as "decide deliberately whether
+the crossings term reads L2". Verified: `rotation_darts`, `rotation_index`
+and `validate_embedding` have **zero production readers** — only `ir.py`
+itself and tests. `ir.py`'s docstring calls the explicit embedding "the
+invariant this module exists to protect"; the crossings answer is computed
+from L3 geometry in `cost.py` and maintained geometrically in
+`optimize.py`.
+
+So it is the tenth member of the dead-plumbing family this document was
+written to catalogue (`add_via`, `model_3d`, `SIDE_FLIP` at ~15% of the
+move budget, drills unrendered, measures unpriced) — and the biggest one,
+missed *while writing the list*.
+
+**The one test that catches all of them.** `cost.py` already has the right
+pattern: the registry-driven move-reachability property ("every registered
+term must take two distinct values under random moves"). Generalize it —
+every IR field, schema column and move kind must have a mechanically
+asserted **producer and consumer**. That single test subsumes §§1, 3, 6, 9,
+10 as a class. The docs kept proposing more model; the defect generator
+was unwatched plumbing.
+
+### 11. Margin aggregation: don't build `max + ε·mean` — it cannot be tested
+
+This session proposed replacing the exact `max` over margin penalties with
+`max + ε·mean`, plus a property test asserting it "orders like max". Fable
+killed both halves; recording the kill so nobody rebuilds it.
+
+- **The property test is unsatisfiable.** "For any two states with
+  different maxima, `max + ε·mean` orders like `max`" is false for every
+  ε > 0 — choose maxima differing by δ < ε·(mean difference) and the order
+  flips. Only a lexicographic comparison satisfies it exactly, and SA needs
+  a scalar energy for `exp(−Δ/T)`. Any honest generator finds the
+  counterexample, so the test would end up quietly rigged.
+- **Exact `max` already violates `optimize.py`'s own doctrine** — "every
+  cost term must decompose into local contributions with an efficient
+  delta". `max` does not decompose; when the argmax improves, the engine
+  must rescan or heap the whole penalty list per move.
+- **The standard answer is to schedule the smoothing, and the dial
+  exists.** Log-sum-exp `risk = τ·ln Σ exp(pᵢ/τ)` with τ annealed down
+  alongside the existing `schedule`: `max ≤ LSE ≤ max + τ·ln n`, gradient
+  everywhere, exact max recovered as τ→0, O(1) delta via a running sum.
+- **Stronger still — drop `max` and just sum the hardened penalties.**
+  `hardened_penalty` is already superlinear with a schedule-sharpened
+  barrier; summing convex per-constraint penalties under escalating
+  hardness *is* the penalty method (and is what PathFinder-style negotiated
+  congestion does for routing). At `schedule=1`, `hardened(0.99) ≈ 4.6` vs
+  500 nets at 5% ≈ 1.25 — convexity makes the worst constraint govern at
+  the hard end by itself, and early-schedule mean-sensitivity is not a bug,
+  it is **the gradient the plateau lacks**. Then `Family` stops controlling
+  aggregation entirely and only controls normalization (USD vs
+  fraction-of-budget) — one whole mechanism deleted.
+
+That last point follows from a principle already written down here:
+*"convexity IS the schedule — one mechanism, not two."* `max` was the
+second mechanism all along.
+
+### 8. The JLC scope probe could not fail — fixed in the doc, verify the claim
+
+The probe in `pcb-guided-place-route.md` had two bugs, both live-fixed
+2026-08-28: `c.available()` on a property (raised `TypeError` before
+probing anything), and — worse — `component_info` returns `None` both
+when credentials are absent *and* when the part is not found, so with no
+credentials it never reached the network and the probe printed
+`RESULT: success`.
+
+A diagnostic whose success path is reachable without doing the thing it
+diagnoses. **Measured: credentials do not resolve on melchior** under a
+bare ssh + `/opt/mcps/venv/bin/python` — but that is not proof the vault
+is empty, because a bare `python -c` never calls `secrets.bind_store` and
+has no DSN, so the DB vault was never consulted. A human with the web
+service's `PRECIS_DATABASE_URL` must run the corrected probe.
+
+## Round-3 review findings + feature asks (user, 2026-09-01)
+
+_Grouped 2026-09-26; was `pcb-review-round3-0901`, status draft, prio high._
+
+**Audit 2026-09-26: items 1-7 done, 8 subsumed, 9/10/14 shipped via round 4; open = 12 (post-route rip-up shortening) and 12b (sensitivity classes, isthmus-weighted stitch scoring; net-class half belongs to pcb-lazy-netlist-and-checks slice 9).**
+
+From peeking at the regenerated `board_nano.svg` / `board_motor.svg`.
+Diagnoses verified in-session. **Items 1-7 are DONE** (this worktree,
+full pcb sweep 1524 green; deltas noted per item where the implementation
+diverged from the first plan), **[filed]** items need their own cycle.
+
+### Diagnosed defects
+
+1. **[DONE] ~40 small vias in rows along the nano board's bottom edge**
+   (0.25mm drill, marching through the S/N patch). They are GND plane
+   stitching vias (`realize._stitch_plane_fragments` stage-1 sprinkle),
+   but `_grid_candidates` enumerates the overlap grid bottom-row-first
+   and `max_sprinkle_vias_per_overlap` (24) accepts the FIRST 24 — so
+   the whole budget clusters into the lowest rows instead of spreading
+   over the overlap. Fix: allocate the budget per disjoint part of the
+   overlap (a small island always gets its via) and spread each part's
+   share evenly across its candidates. User refinement (2026-09-01):
+   ideal placement is inside small islands and ISTHMUSES (necks that
+   are only thinly connected on some layer) — the per-part allocation
+   covers islands now; narrowness-weighted candidate scoring is the
+   follow-on (see item 13's sensitivity work, same cost-shaping pass).
+2. **[DONE — inverted] Stitch vias walk under silk furniture** (the S/N
+   patch is a *writing surface* — a via bump under the Sharpie area
+   defeats it). Shipped the opposite direction from the first plan: the
+   furniture placement (title block + S/N patch) is route-independent,
+   so instead of grid claims the builders now AVOID vias (soft — scored
+   fewest-vias fallback, `silk.via_obstacles`) and part courtyards
+   (hard, inflated bbox obstacles in `_board_furniture`), with deeper
+   ladders (edge-slide for the title, edge-centre rects for S/N, six
+   fiducial rungs) so corner mounting hardware can't evict them.
+3. **[DONE — via SVG mask, not ring union] White corners in the "N".**
+   `gerber_view._region_els` renders [solid ring + clear rings] as ONE
+   `fill-rule="evenodd"` path; where two knockout letter strokes overlap
+   (the N's corner joints) the double-count flips the region back to
+   filled. Fix: union overlapping clear rings before emitting the path
+   (geometry fix in the viewer; real gerber clear polarity is idempotent
+   so the artefact exists only in this renderer).
+4. **[DONE] `npth_clearance: 4` on the nano board** — the four corner
+   mounting holes are never claimed on the routing grid (same family as
+   the fiducial copper-claim leak, root-caused 08-31). Fix: claim them
+   (hole + annulus + clearance) before `_stamp_pads`.
+
+### Feature asks
+
+5. **[DONE] M4 solder nuts in each corner.** Mounting holes become
+   `style: "solder_nut"`: plated hole + copper annulus both sides
+   (SMTSO-M4-class: 5.6mm drill, ~8mm ring), rendered + gerber'd +
+   DRC'd as plated (pad clearance, not npth), claimed per item 4.
+   Corner centres move inboard so the ring clears the edge rule.
+6. **[DONE] Rounded board corners.** Outline feature gains optional
+   `corner_radius_mm`; the handler polygonizes the rounding at IR build
+   (arc facets), so pours/DRC/fiducials/silk all inherit it through the
+   one outline polygon. Fixtures set a radius.
+7. **[DONE] Label side consistency.** `silk._refdes_candidates` orders
+   ring directions "nearest straight up first"; user wants labels on a
+   consistent side (right, else bottom) so arrays read tidy. Reorder the
+   preference sweep; keep the existing global obstacle avoidance.
+8. **[MOSTLY SUBSUMED] Via-out-of-silk relaxation.** A via near C5
+   (motor board, also L1/U1) clipped silk ink. Refdes labels already
+   avoid vias at candidate time, and the furniture now does too (item
+   2), so the remaining exposure is a via clipping a COURTYARD stroke
+   (which cannot relocate) — the original idea (post-silk via nudge
+   reusing `_shove_vias`) stays filed for that case only. (The "push
+   min-gap via pairs apart" half was WITHDRAWN by the user 2026-09-01:
+   non-sensitive signals run tight — close vias are fine, see 12b.)
+9. **[filed] Placement groups ("super footprint").** J1/J2 are the two
+   header rows of a nano daughterboard and must hold their exact
+   relative offset; optimize needs rigid group moves (members anneal as
+   one body). Generalizes to any repeated-connector cluster.
+10. **[filed] Repeated-pattern tiling pressure.** Q1..Q4 / J4-J7 style
+    repeated subcircuits should get IDENTICAL internal layout (detect
+    isomorphic groups, replicate one layout). Big; interacts with 9.
+    The shipped `alignment` term (0.002 USD/pair) is the lightweight
+    stand-in already pulling R's into rows.
+11. **[filed] Nano netlist deep integration.** Replace the J1/J2
+    header pair with the nano's own netlist integrated into the board
+    (drop the daughterboard), USB-C connector with an edge-affinity
+    constraint ("rubber-banded to the board edge"). Needs: netlist
+    source, new fixture, edge-affinity placement term. Own spec when
+    picked up.
+12b. **[filed] Signal sensitivity classes + tight-bundle routing**
+    (user, 2026-09-01). The LLM marks sensitive signals on the netlist
+    (none on the current fixtures); sensitive nets get special rules —
+    cross power at 90°, GND guard either side, spacing floors. NON-
+    sensitive nets are the default and should run TIGHT: parallel
+    bundles without extra spacing, vias allowed close together (this
+    withdraws the via-island spreading idea). Stitch-via placement
+    should eventually prefer isthmuses — thin necks in a plane
+    fragment — over open field (narrowness-weighted candidate score).
+    Needs: a net-class/sensitivity attribute on the IR, router cost
+    shaping per class, and the guard/crossing rules. Own spec when
+    picked up.
+
+14. **[filed] Placer is blind to mounting holes.** The ROUTER now claims
+    them (item 4) and pours antipad them, but `optimize.py`'s anneal has
+    no hole keepout: it can legally park a part's courtyard over a
+    corner solder nut, and only the route pass (no_path near the corner)
+    or courtyard DRC would complain downstream. Fix: mounting holes as
+    static courtyard obstacles in the anneal (same polygon machinery as
+    part courtyards). Today's fixtures centre their packs away from the
+    corners, so this is latent, not observed.
+
+12. **[filed] Post-route wire shortening.** Wires longer than needed;
+    `_collapse_straight` already pulls taut within the corridor, the
+    residual slack is maze detours around since-vanished congestion.
+    A bounded rip-up-and-reroute pass (re-route each net against the
+    final grid, keep if strictly shorter) is the standard fix.
+
+**Verify before delete-on-ship:** regenerate both boards; user re-peeks
+(stitch rows spread, S/N writable + clean N, nuts + rounded corners
+visible, labels consistent, C5/R1-R4 vias relaxed).
+
+## Round-4 review findings + feature asks (user, 2026-09-01)
+
+_Grouped 2026-09-26; was `pcb-review-round4-0901`, status draft, prio high._
+
+**Audit 2026-09-26: items 1-9 done; open = 10 (bottom-side placer SIDE_FLIP for instances) and 11 (tiling v2 mid-anneal co-optimisation).**
+
+From peeking at the round-3 regenerated `board_motor.svg` /
+`board_nano.svg`. Diagnoses verified in-session before dispatch.
+
+### Motor board
+
+1. **[DONE — fixture → top; full support filed as item 10] "C3 on the
+   bottom, why?"** — `motor_power_reference.json` declares C3
+   `"layer": "bottom"` (added with the second reference board,
+   74390332, to exercise bottom silk). Diagnosis: the component-side
+   declaration is HALF-honoured — the handler's refdes→layer map feeds
+   only `silk.build_model_silkscreen` (mirrored bottom silk); pads,
+   mask, paste and routing all still emit on F_Cu ("F_Cu · pad · pin
+   C3.2" in the very same SVG). A bottom part today is a silk-only lie
+   in the gerbers. Fix now: C3 back to top. Full bottom-side support =
+   item 10.
+2. **[DONE — router-side ink field] Vias near U1/C5 still clip silk** (nano: D4 too). Labels
+   already avoid vias; the residual clips are COURTYARD strokes, which
+   cannot relocate. Root fix at the source: courtyard-stroke rings are
+   placement-derived and known BEFORE routing — add a soft via-site
+   penalty (not hard block) under the future courtyard ink
+   (`world_courtyard_rings` + silk clearance) so the router stops
+   dropping vias there. Replaces the filed post-silk nudge idea.
+3. **[DONE] Fiducials span all layers.** Currently flashed on
+   `layers[0]` only. Emit the copper disc on EVERY copper layer, mask
+   opening on BOTH sides, pour antipads on all layers, router keepout
+   claims on all layers. Silkscreen stays deliberately EMPTY at the
+   fiducial (a silk-free zone IS the alignment feature; ink there
+   would defeat the optical target).
+4. **[DONE] Pin-1 marks only where polarity exists.** R/C/L/FB refdes
+   families get NO pin-1 dot unless polarized: explicit
+   `"polarized": true` on the component, or label matching
+   ELEC/TANT/POL. Nano C1 (CAP-ELEC…) is the live test case. All other
+   families (D, Q, U, J, LED…) keep the mark.
+5. **[DONE — film render] "Solder mask layers are empty."** Two findings: (a) B_Mask
+   had only nut rings because the ONLY bottom part is the C3 half-lie
+   (item 1) — correct once C3 is top; (b) the real UX bug: mask
+   gerbers contain openings that sit exactly on the pads, so toggling
+   the layer shows nothing new. Render mask layers in the viewer as
+   what they ARE physically: a translucent film over the whole board
+   with the openings cut out (reuse the SVG `<mask>` machinery from
+   round 3).
+
+### Nano board
+
+6. **[DONE] J1/J2 rigid group ("super footprint").** Components gain
+   `"group": "<name>"` (+ per-member `group_offset {x, y, rot}` fixing
+   internal geometry — J1/J2 at the nano's real 15.24 mm row pitch).
+   The anneal moves a group as ONE rigid body: translate/rotate apply
+   to all members about the group centroid, internal offsets locked,
+   legality checked per member. Fits the existing multi-instance
+   `Move` shape (SWAP already carries 2 instances).
+7. **[DONE — v1, rigid tiles stamped from instance 0] Repeated-pattern tiling.** Components gain
+   `"pattern": "<name>"` + `"pattern_instance": <n>`. All instances of
+   a pattern share ONE internal layout (leader = instance 0; followers
+   stamp the leader's internal member offsets at seed) and anneal as
+   rigid bodies — identical tiles by construction, the alignment term
+   pulls them into rows. Nano: channels {J4,Q1,R1,D1} … {J7,Q4,R4,D4}.
+   V2 (filed): co-optimize the shared internal layout mid-anneal;
+   automatic isomorphic-subcircuit detection.
+8. **[DONE] Placer blind to mounting holes — now OBSERVED** (Q3 overlaps
+   the top-left nut, R1 possibly fully under it, C1 clipping). Round-3
+   item 14 promoted: mounting holes (ring dia + courtyard clearance)
+   become static courtyard obstacles in the anneal
+   (`_placement_is_legal` + overlap term), read off
+   `ir.mounting_holes`.
+
+### Viewer
+
+9. **[DONE] Hierarchical mouseover.** Titles lead with the layer, then
+   position, then what the element belongs to: "F_Cu · (x, y) mm ·
+   pad 1 of Q4 · net OUT4"; tracks/regions carry their net; keep the
+   existing escape rules. Viewer-only formatting + ownership plumb.
+
+### Filed
+
+10. **[filed] Full bottom-side component support.** `"layer":
+    "bottom"` must flow past silk into `pads_for_ir` (mirrored B_Cu
+    pads), mask/paste sides, router pad-layer starts, and a placer
+    SIDE_FLIP-for-instances move. Until then the loader should warn on
+    (or reject) bottom parts rather than half-honour them.
+11. **[filed] Tiling v2** — mid-anneal shared-layout co-optimization;
+    automatic isomorphic-group detection (round-3 item 10's full
+    scope).
+
+**Verify before delete-on-ship:** regenerate both boards; user
+re-peeks (C3 top, no courtyard via clips, fiducials on every copper
+layer + both masks, no pin-1 dots on R/C except C1, mask film
+renders, J1/J2 locked, channels tiled identically, nothing under the
+nuts, hierarchical tooltips).

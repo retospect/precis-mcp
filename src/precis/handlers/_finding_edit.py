@@ -1,6 +1,6 @@
 """``edit(kind='finding', ...)`` — pick_candidate / title / unacquirable_note.
 
-Split out of ``finding.py`` (docs/backlog/codereview-handler-size-cleanups.md):
+Split out of ``finding.py`` (docs/backlog/codereview-residuals.md):
 this state machine (~350 lines across three mutually-exclusive ops) only
 ever touched ``self.store``/``self.kind``, never any other handler state,
 so it moves as free functions taking the store (and the finding kind

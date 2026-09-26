@@ -1898,7 +1898,7 @@ def test_poll_seed_partial_detached_running_then_done(
 ) -> None:
     """The happy path: running while gated, done (with the child's result)
     once released. The scratch dir SURVIVES "done" (a failed persist must be
-    retryable — docs/backlog/autocatpath-seed-child-killed-shredding.md), a
+    retryable — docs/backlog/autocatpath-seed-health.md), a
     re-poll is idempotent, and ``finalize_seed_partial_detached`` reclaims
     the dir once the caller has persisted."""
     import os

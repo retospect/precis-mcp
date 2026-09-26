@@ -128,7 +128,7 @@ class SkillFrontmatter:
     #: variant (:mod:`precis.skill_index.chunker`) alongside
     #: ``summary`` — embedded standalone so an agent's intent query
     #: matches question-to-question instead of question-to-prose. See
-    #: ``docs/backlog/skill-question-targets-and-injection.md`` §1.
+    #: ``docs/backlog/mcp-surface-economy.md`` §1.
     answers: tuple[str, ...] = ()
 
     #: ISO-ish date the skill was last edited. Authored manually.

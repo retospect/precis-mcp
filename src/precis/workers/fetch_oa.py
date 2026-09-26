@@ -105,7 +105,7 @@ _SOURCE_ARXIV = "fetcher:arxiv"
 _SOURCE_S2 = "fetcher:s2"
 _SOURCE_OPENALEX_CONTENT = "fetcher:openalex_content"
 
-# Markup-first legs (docs/backlog/markup-first-ingest.md). Run *before*
+# Markup-first legs (docs/backlog/dark-features-activation.md). Run *before*
 # the PDF cascade when PRECIS_FETCH_MARKUP is set, so a structured
 # full-text source is preferred as the chunk source; the PDF cascade
 # still runs afterwards to acquire the printable.
@@ -1906,7 +1906,7 @@ def _markup_fetch_enabled() -> bool:
     """Whether the markup-first pass runs. Gated by ``PRECIS_FETCH_MARKUP``.
 
     Default-off: markup ingest is new; opt in per-host once the stub
-    backlog has been exercised. See docs/backlog/markup-first-ingest.md.
+    backlog has been exercised. See docs/backlog/dark-features-activation.md.
     """
     return os.environ.get("PRECIS_FETCH_MARKUP", "0").strip().lower() in (
         "1",

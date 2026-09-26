@@ -1135,7 +1135,7 @@ def _finite_json(value: Any) -> Any:
     (e.g. an empty-set ``min()`` seeded with ``inf``) fails the whole write
     with ``InvalidTextRepresentation``. That once discarded 48 finished GPU
     seed results and misclassified them as ``infra:child-killed``
-    (docs/backlog/autocatpath-seed-child-killed-shredding.md). ``None`` is
+    (docs/backlog/autocatpath-seed-health.md). ``None`` is
     the honest jsonb spelling of "no finite value here".
     """
     if isinstance(value, float) and not math.isfinite(value):

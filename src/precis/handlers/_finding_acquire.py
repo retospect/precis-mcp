@@ -1,6 +1,6 @@
 """Acquisition-mode (claim-first) mint — ``put(kind='finding', wants=...)``.
 
-Split out of ``finding.py`` (docs/backlog/codereview-handler-size-cleanups.md):
+Split out of ``finding.py`` (docs/backlog/codereview-residuals.md):
 this was the single largest cohesive block in that handler (~290 lines) and
 touches nothing from ``NumericRefHandler``'s CRUD contract — only the store
 and a small callback for the pub_id-collision response, both passed in

@@ -1,6 +1,6 @@
 """``get(kind='finding', view='evidence')`` rendering (Taproot Phase 2c).
 
-Split out of ``finding.py`` (docs/backlog/codereview-handler-size-cleanups.md):
+Split out of ``finding.py`` (docs/backlog/codereview-residuals.md):
 this rendering pass only ever touched ``self.store``, never any other
 handler state, so it moves cleanly as free functions taking the store
 directly. ``FindingHandler.get`` calls :func:`render_evidence_view`.

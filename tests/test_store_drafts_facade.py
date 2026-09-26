@@ -1,7 +1,7 @@
 """Pins the ``store.drafts`` (:class:`DraftStore`) carve finished in
 ``docs/backlog/codereview-store-decomposition.md``, plus the
 ``store.drafts.review`` (:class:`DraftReviewStore`) carve started in
-``docs/backlog/codereview-handler-size-cleanups.md``.
+``docs/backlog/codereview-residuals.md``.
 
 Not a test of draft *semantics* (``test_draft_handler.py`` owns that) — just
 that the carve holds its final shape: drafts is composed, not mixed in, and

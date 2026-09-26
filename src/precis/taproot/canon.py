@@ -122,7 +122,7 @@ def not_hypothesis_predicate_sql(*, ref_alias: str = "r") -> str:
     apart — for *reading* the corpus a hypothesis is a claim hub. It
     matters for passes that go looking for supporting evidence: widening a
     conjecture (``hub_refine``) is a confirmation engine
-    (``docs/backlog/claim-review-mechanism.md``) — it manufactures the
+    (``docs/backlog/nanopub-corpus-remediation.md``) — it manufactures the
     evidence a hypothesis's own gates refuse it.
 
     Reads ``refs.meta->>'artifact_type'``

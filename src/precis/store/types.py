@@ -1093,7 +1093,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # blocking STATUS: transition. No author-facing `TRUST:` axis in v1 —
     # trust is the absence of a concern edge (§4, R3).
     "STALE": frozenset({"retracted-premise"}),
-    # Taproot Phase-2 predecessor (open #11, docs/backlog/taproot-phase2-hub-node.md).
+    # Taproot Phase-2 predecessor (open #11, docs/backlog/taproot.md).
     # A `finding`-ref discriminator written by
     # the `axis:taproot` classifier pass (data/axes/taproot.yaml): `TAPROOT:claim`
     # = a grounded world-claim (the taproot claim hub + evidence edges attach

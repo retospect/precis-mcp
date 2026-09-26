@@ -17,7 +17,7 @@ Shipped: **Phase 1** (flat canonicalizer, `src/precis/taproot/canon.py`,
 gate passed at over-merge 0/238) and **Phase 2 except slice 2d**
 (`finding`-as-hub, evidence vocab migration `0094`, `hub.py` write door,
 evidence view, `\cite{}`→originators export; the 2d `citation`-card
-dedup remainder is [`taproot-phase2-hub-node.md`](./taproot-phase2-hub-node.md)).
+dedup remainder is [`taproot-phase2-hub-node.md`](#absorbed-2026-09-26)).
 Build tickets + the fixture story live in git history.
 
 ## Motivation / why
@@ -231,7 +231,7 @@ the body above; full argument in git history. Still open:
 
 1. **Phase 1 — canonicalization. SHIPPED** (gate: over-merge ~0).
 2. **Phase 2 — hub node. SHIPPED except slice 2d**
-   ([`taproot-phase2-hub-node.md`](./taproot-phase2-hub-node.md)).
+   ([`taproot-phase2-hub-node.md`](#absorbed-2026-09-26)).
 3. **Phase 3 — forward resolution.** Turn on + finish `chase`, wire the
    Axis-A pipeline to edges, draft-side response policies. First user
    value; ingest-only, bounded volume. W1 landed dark; further slices
@@ -244,3 +244,39 @@ the body above; full argument in git history. Still open:
 This spec stays `status: draft` — it is the shared model + decisions
 log, not a fixer pick-up; the phases are the shippable grain. It
 graduates to an ADR when the phases land, reconciling with ADR 0054.
+
+---
+
+# Absorbed 2026-09-26
+
+## Taproot Phase 2 — slice 2d, citation-card dedup
+
+_Grouped 2026-09-26; was `taproot-phase2-hub-node`, status draft._
+
+Context: Phase 2 promoted `finding` to the claim hub node. Slices 2a
+(TAPROOT classifier axis, `data/axes/taproot.yaml`), 2b (evidence vocab
+migration `0094` + the single write door `src/precis/taproot/hub.py`), 2c
+(`view='evidence'` + `seniority.py::derive_evidence`), and 2e
+(cite→originators export, `src/precis/cli/resolve.py`) are SHIPPED —
+present-state in the `src/precis/taproot/` package docstring; full Phase-2
+decomposition + locked decisions in git history of
+`docs/backlog/taproot.md`. The one unshipped slice:
+
+**2d — citation-card dedup.** Stop double-counting citation cards vs the
+hub's `card_combined` in ANN retrieval (taproot.md open #3 residual): when a
+claim hub exists, the `citation`-kind cards covering the same claim/passage
+compete with the hub card in embedding search, inflating the same claim into
+multiple hits. Depends on 2b (shipped), so it is unblocked.
+
+Related unbuilt Phase-3+ items tracked elsewhere / later: the S2
+global-citation-count originator fallback (seniority), the integrity axis
+(Phase 4), the corpus-wide backfill sweep (`taproot-reground.md` owns the
+reconcile worker).
+
+### Acceptance
+
+- A claim covered by both a hub card and citation card(s) surfaces once in
+  ANN-backed search cohorts (no duplicate hit for the same claim), with the
+  hub card winning.
+- No body chunks mutated (`ord >= 0` append-only); only `ord < 0` card
+  variants are DELETE/re-INSERTed by a registered synthesis pass.

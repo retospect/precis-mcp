@@ -69,7 +69,7 @@ class WebConfig:
     #: addressee (``user:<owner>``) of an ``ask-user`` pause. Mirrors
     #: ``precis.config.PrecisConfig.owner``; both read ``PRECIS_OWNER``.
     #: Defaults to ``"owner"`` (generalises the formerly hard-coded
-    #: ``"reto"``). See ``docs/backlog/user-identity-and-ask-routing.md``.
+    #: ``"reto"``). See ``docs/backlog/identity-and-access.md``.
     owner: str = "owner"
     #: Install the HTTP Basic gate (:mod:`precis_web.auth`) in front of
     #: every route and mount. See the module docstring for why this is

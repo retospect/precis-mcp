@@ -16,7 +16,7 @@ article's end matter. 7b979887 (gr346458 asks a+b) made the pass refuse
 such blocks (`usable_context`, non-terminal `context_sentence_no_abstract`
 stamp), so those papers now converge to *no* sentence — honest, but the
 feature is dark for ~90% of its cohort. Crossref/S2 abstract enrichment
-(`docs/backlog/abstract-fallback-crossref-s2.md`) does not close it:
+(`docs/backlog/crossref-enrichment.md`) does not close it:
 `refs.meta->>'abstract'` exists on 59 of the 841.
 
 Reto, 2026-09-18 (gr346458 ask c): a synthetic abstract is possible, but

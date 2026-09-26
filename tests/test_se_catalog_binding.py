@@ -42,7 +42,7 @@ def _ensure_fastener_specs(store: Store) -> None:
     """Guarantee 0093's category-scoped spec seed before minting.
 
     Works around a test-DB defect (see
-    ``docs/backlog/component-seed-guard-misses-scoped-specs.md``): on the
+    ``docs/backlog/test-db-seed-xdist-isolation.md``): on the
     gate's per-worker clones these rows are absent while 0093's
     *universal* specs and 0152's are present, so a series mint silently
     skips four specs and the catalog derivation later reports "screw

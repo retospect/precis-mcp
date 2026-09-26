@@ -295,7 +295,7 @@ no longer has.
   computed a threshold 1000× too small and reasoned *"0.001 V/µm, well
   below the claimed 1 V/µm"*. The claim is the faithful reading; the
   corrupted reason is now durable provenance on the edge. Filed as
-  `docs/backlog/pdf-extraction-drops-micro-sign-in-units.md`.
+  `docs/backlog/ingest-strips-greek-glyphs.md`.
 
 ## Hand-fix pass 2026-08-30 — 18 failing → 11
 
@@ -562,7 +562,7 @@ whether that rate is real debt or noise.
 
 ### Also open
 - Phase 5 (adversarial pass for uncited assertions) never started.
-- `docs/backlog/pdf-extraction-drops-micro-sign-in-units.md` and
+- `docs/backlog/ingest-strips-greek-glyphs.md` and
   `compound-hub-posture-ignores-conjunct-evidence.md` are unshipped.
 
 ## Blocker — `claude` on melchior is logged out

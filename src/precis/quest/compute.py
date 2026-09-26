@@ -107,7 +107,7 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       - ``neb_optimizer="neb-ode"`` (0.8): ASE's adaptive NEBOptimizer vs.
         dense-Hessian BFGS — ~5× fewer MLIP evals for the same barrier on
         Pd(111)+N* in the screening regime
-        (docs/backlog/autocatpath-seed-wall-overruns.md).
+        (docs/backlog/autocatpath-seed-health.md).
       - ``neb_batched=True`` (0.9, MACE-dtype fix 0.9.1, tether-guard fix
         0.11): one MLIP forward per step over all interior images instead
         of serial — physics-identical, runtime self-check degrades to

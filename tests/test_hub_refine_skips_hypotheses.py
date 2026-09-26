@@ -4,7 +4,7 @@
 `STATUS:canonical`, and `mint_hub` writes both tags on every hub it makes —
 including a hypothesis. Left alone, the widening pass would go searching for
 evidence that supports a guess, which is the failure
-`docs/backlog/claim-review-mechanism.md` names in as many words: *"it will
+`docs/backlog/nanopub-corpus-remediation.md` names in as many words: *"it will
 find support for whatever the claim already says, including claims that are
 wrong."* A hypothesis is the worst possible input, since the type exists
 precisely because nothing supports it yet.

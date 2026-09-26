@@ -16,7 +16,7 @@
     the narrow policy so widening it forces the templates to be fixed first
 - **Scope decided with Reto**: precis-web only (not the embedder service,
   not the MCP network transport — the latter keeps its bearer token).
-- **Deliberately NOT** `docs/backlog/user-identity-and-ask-routing.md`.
+- **Deliberately NOT** `docs/backlog/identity-and-access.md`.
   That spec is about *routing* asks to a named human and de-hard-coding
   "reto"; this one is about *authenticating* HTTP callers. They meet at
   one column (`abbrev`) and are otherwise independent.

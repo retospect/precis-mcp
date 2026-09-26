@@ -38,7 +38,7 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_OA_FETCH` | Unpaywall/OA fetch leg | `0` | Single-fetcher design — two hosts fetching races the shared inbox (gripe history). |
 | `PRECIS_GP_FETCH` | Google-Patents fetch leg | `0` | Same single-fetcher rationale. |
 | `PRECIS_OPENALEX_MIN_CREDITS` | Low-balance alert floor for the paid OpenAlex leg (raw daily credits; content fetch = 100) | `2000` | Replaces the dropped `PRECIS_OPENALEX_CONTENT_AUTO` gate. `PRECIS_OPENALEX_CONTENT_KEY` (vault) is the sole spend opt-in; this floor drives the `fetch_oa:openalex_balance` alert. |
-| `PRECIS_CLASSIFY_ENABLED` | Chunk-tag classify pass | off | Default-OFF by design; enable as a single-node trickle like `PRECIS_SUMMARIZE_LLM`. Activation: [`docs/backlog/classifier-corpus-enablement.md`](../backlog/classifier-corpus-enablement.md). |
+| `PRECIS_CLASSIFY_ENABLED` | Chunk-tag classify pass | off | Default-OFF by design; enable as a single-node trickle like `PRECIS_SUMMARIZE_LLM`. Activation: [`docs/backlog/dark-features-activation.md`](../backlog/dark-features-activation.md). |
 | `PRECIS_PAPER_GLOSSARY_ENABLED` | Per-paper glossary pass | off | Slice built, dark by design. |
 | `PRECIS_SANDBOX_ENABLED` | Register the `sandbox_run` executor pass | off | Deploying the `code-sandbox` container alone is not enough — the pass that dispatches to it never registers without this flag. Activation: [`docs/backlog/dark-features-activation.md`](../backlog/dark-features-activation.md). |
 | `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | Autonomous GPU/token spend — operator's call. `PRECIS_QUEST_WEEKLY_CHARS` must be set too (§9). Activation: [`docs/backlog/quest-loop-activation.md`](../backlog/quest-loop-activation.md). |
@@ -49,7 +49,7 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_FRICTION_REFLECT` | Friction-reflection pass | off | Staged — prerequisite recorded in [`docs/backlog/friction-reflection-enable.md`](../backlog/friction-reflection-enable.md). |
 | `PRECIS_ORACLE_AUTO_REINGEST` | Reingest on oracle sync | `1` (on) | |
 | `PRECIS_BACKFILL_CITATION_RECALL` | Citation-recall backfill | `1` (on) | |
-| `PRECIS_FETCH_MARKUP` | Markup-first fetch leg | `0` | Ships dark; flipping is gated on the PDF-race decision — [`docs/backlog/markup-first-ingest.md`](../backlog/markup-first-ingest.md). |
+| `PRECIS_FETCH_MARKUP` | Markup-first fetch leg | `0` | Ships dark; flipping is gated on the PDF-race decision — [`docs/backlog/dark-features-activation.md`](../backlog/dark-features-activation.md). |
 | `PRECIS_PATCH_PDFS` | Patch PDFs on ingest | `1` (on) | |
 | `PRECIS_LAYER2_FIXER` | Layer-2 plaintext fixer | off | Kept dark deliberately — fate: [`docs/backlog/tex-layer2-fixer-fate.md`](../backlog/tex-layer2-fixer-fate.md). |
 | `PRECIS_DIAGRAM_AGENTIC` | Agentic diagram-propose path | off | Explicit override; unset ⇒ auto (agentic when an MCP config is present). Activation: [`docs/backlog/dark-features-activation.md`](../backlog/dark-features-activation.md). |

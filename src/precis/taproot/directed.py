@@ -41,7 +41,7 @@ Two argument steps, only the first is new here:
 raises :class:`QualifyUnavailable` rather than degrading to
 ``supported=False`` — an LLM outage must never read as "the passage doesn't
 support this" (the exact silent-noclaim failure mode
-``docs/backlog/taproot-backfill-llm-outage-silent-noclaim.md`` names). An
+``docs/backlog/taproot-backfill-defects.md`` names). An
 unparseable-but-successful response *does* degrade to unsupported: the
 model responded, so that really is (or looks like) a semantic judgment,
 not an infra failure.

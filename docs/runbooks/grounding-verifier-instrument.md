@@ -2,7 +2,7 @@
 
 The verifier prompt used by the dr42995 grounding audit lived only in
 session transcripts and is lost; this file is its reconstruction from
-`docs/backlog/grounding-verification-rubric.md` and the audit's rubric
+`docs/backlog/evidence-edge-verification.md` and the audit's rubric
 corrections, frozen so that reliability measurements (test-retest,
 cross-rung) run the *same instrument* every time. **Do not edit wording
 casually** — any change makes new runs incomparable with old ones. Revise

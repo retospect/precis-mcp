@@ -221,3 +221,23 @@ not have, and worth remembering when a diagnosis lane goes quiet: check
   the `deploy-pinned-sha-race` memory), but the assert aborts the play,
   so the daemon bounces after it never ran — new code on disk, old code
   resident. Fix is ff + re-run, and the re-run is what actually matters.
+
+---
+
+# Absorbed 2026-09-26
+
+## Dark-factory workflow follow-ups
+
+_Grouped 2026-09-26; was `dark-factory-followups`._
+
+Ship/deploy loop is live; these workflow additions remain.
+
+- /testfeature <prompt>: an agent loop exercising the MCP surface
+  (scripts/exercise-mcp seed) that finds bugs, fixes, /go; turn/cost-capped.
+- /checklogs: read the recent LLM-error surface (prod agentlog + alert +
+  failed kind='job' + error ref_events; local logs), cluster the top-N
+  recurring failures, fix root cause, /go.
+- Widen scripts/ship auto-fix to anything the gate can resolve without
+  judgment (import sort, trivial mypy stubs).
+- Deferred: holdout scenarios (anti-overfit eval outside the repo);
+  digital-twin fidelity; auto-deploy as a daemon (vs /go-chained).

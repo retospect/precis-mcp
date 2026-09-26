@@ -1,6 +1,6 @@
 """Taproot Phase 2 — the single write door for claim hubs + evidence edges.
 
-Build ticket: ``docs/backlog/taproot-phase2-hub-node.md``; governance:
+Build ticket: ``docs/backlog/taproot.md``; governance:
 taproot evidence relations; design: ``docs/backlog/taproot.md`` §"The core
 model".
 
@@ -1423,7 +1423,7 @@ def attach_motivation(
     motivation out of :data:`HUB_ROLES` is load-bearing: ``hub_refine``
     widens a claim by searching for supporting evidence, and aiming that at
     a conjecture makes a confirmation engine of it
-    (``docs/backlog/claim-review-mechanism.md``) — a motivator prompted the
+    (``docs/backlog/nanopub-corpus-remediation.md``) — a motivator prompted the
     guess, never supports it.
 
     ``meta['source_handle']`` grounds the edge at a specific passage,

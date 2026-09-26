@@ -1,7 +1,7 @@
 """``search(cited=<draft>)`` / ``search(hubbed=...)`` — the inclusion
 mirror of ``uncited=`` and the claim-hub-supporter facet
 (the read-for-question loop (skill precis-read-for-question) slice 4), plus the toc readiness
-line (docs/backlog/embed-status-hint-three-state.md).
+line (docs/backlog/embed-freshness.md).
 
 Mirrors ``tests/test_uncited_search.py``'s style: end-to-end through the
 runtime dispatcher, real store, real ``DraftHandler``/taproot hub writes.
@@ -350,7 +350,7 @@ def test_finding_cross_kind_fanout_honours_uncited(
     assert fi_handle not in body
 
 
-# ── embed backlog scoping (docs/backlog/embed-status-hint-three-state.md) ──
+# ── embed backlog scoping (docs/backlog/embed-freshness.md) ──
 
 
 @pytest.mark.db

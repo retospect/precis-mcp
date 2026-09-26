@@ -10,7 +10,7 @@ are the product's runtime docs, but nothing tests that an agent *given* a
 skill completes the task the skill teaches. Skill edits ship on prose review
 alone. Every feedback loop we have is post-hoc: the LLM-confusion signal
 `/whatneedsdoing` mines from prod transcripts, and the planned injection
-ledger ([skill-question-targets-and-injection](./skill-question-targets-and-injection.md)
+ledger ([skill-question-targets-and-injection](./mcp-surface-economy.md)
 §3). The external pattern is Claude Code's `claude plugin eval` — per-skill
 eval suites (prompt + success criterion) run against a live model, JSON
 report, CI-runnable.

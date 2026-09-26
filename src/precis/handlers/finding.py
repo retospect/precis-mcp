@@ -59,7 +59,7 @@ The chase worker (C5: ``precis.workers.chase``) does not live here
 ``links`` graph + ``chunks`` table directly; it does **not** create
 ``citation`` records under Path B (B-ii).
 
-Module split (docs/backlog/codereview-handler-size-cleanups.md):
+Module split (docs/backlog/codereview-residuals.md):
 ``FindingHandler`` still subclasses
 :class:`~precis.handlers._numeric_ref.NumericRefHandler` — it genuinely
 uses the shared CRUD contract (``tag``/``delete``, ``get``'s view

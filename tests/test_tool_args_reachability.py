@@ -12,7 +12,7 @@ alike — all three bottom out in ``core.put``.
 It survived because the handler tests call ``PcbHandler.put(...)`` directly
 in Python, bypassing the tool function entirely. The tests exercised a
 handler the tool surface could not reach: "tested but structurally
-unreachable" (``docs/backlog/pcb-residual-defects-0828.md``), applied to a
+unreachable" (``docs/backlog/pcb-engine-plan.md``), applied to a
 kind's whole write surface.
 
 These tests are deliberately signature-level and DB-free, so they run

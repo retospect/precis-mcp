@@ -685,7 +685,7 @@ def _cluster_instances(ir: PcbIR, *, max_cluster_size: int) -> list[list[int]]:
 def _merge_pattern_clusters(ir: PcbIR, clusters: list[list[int]]) -> list[list[int]]:
     """Union-merge any :func:`_cluster_instances` clusters that share a
     PATTERN-group member — a real, measured defect
-    (docs/backlog/pcb-review-round4-0901.md's nano fixture repro, 2026-09):
+    (docs/backlog/pcb-engine-plan.md's nano fixture repro, 2026-09):
     connectivity clustering has no notion of "pattern" membership, and a
     tile's genuine netlist edges (say, a diode-to-transistor-to-connector
     star) can lose the GREEDY heaviest-edge-first union to an unrelated,

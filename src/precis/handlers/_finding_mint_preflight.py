@@ -1,7 +1,7 @@
 """``get(kind='finding', id='fi<id>', view='mint-preflight')`` — run the real
 mint gates against a candidate payload, read-only.
 
-`docs/backlog/nanopub-mcp-surface-gaps.md` §1 ("do this one"), measured
+`docs/backlog/claim-publication-nanopub-ots.md` §1 ("do this one"), measured
 during the 124-hub nanobud campaign: `nanopub/gates.py::run_mint_gates` was
 callable only from `mint.py::approve` and the CLI, so agents preparing
 approve payloads **reimplemented the gates locally** — verbatim-quote

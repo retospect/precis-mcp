@@ -1,6 +1,6 @@
 """Repairing evidence edges that assert support with no passage
 (`src/precis/taproot/repair_evidence.py` + `precis taproot repair-evidence`),
-per `docs/backlog/evidence-edges-assert-support-with-no-passage.md`.
+per `docs/backlog/evidence-edge-verification.md`.
 
 DB-backed (real `refs`/`chunks`/`links` via the `store` fixture) but never
 networked: every test injects `verify_batch_fn`, so the LLM verify step is a

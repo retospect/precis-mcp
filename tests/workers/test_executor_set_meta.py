@@ -1,7 +1,7 @@
 """``executors._common.set_meta`` must survive non-finite floats.
 
 Regression pin for the batch-2 seed shredding
-(docs/backlog/autocatpath-seed-child-killed-shredding.md): Python's json
+(docs/backlog/autocatpath-seed-health.md): Python's json
 round-trips ``Infinity``/``NaN`` but Postgres ``jsonb`` rejects the tokens,
 so an unsanitized ``Jsonb(fields)`` write raised
 ``InvalidTextRepresentation`` — discarding 48 finished GPU seed results and

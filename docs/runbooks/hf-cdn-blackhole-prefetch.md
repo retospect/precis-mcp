@@ -38,7 +38,7 @@ stat: `stat -f %z <file>` (caspar is macOS).
 Add `retries/delay/until` to the two download tasks in
 `deploy/roles/llamacpp/tasks/download.yml` so a bad-IP hit retries onto a
 reachable CDN IP. Tracked in
-`docs/backlog/llamacpp-serving-deploy-hardening.md`, which also covers the
+`docs/backlog/llamacpp-fleet-ops.md`, which also covers the
 sibling gotcha found the same day: the role default
 `llamacpp_git_ref: "master"` tracks llama.cpp HEAD, and a broken upstream
 HEAD fails the `build` tag fleet-wide (serving survives — the existing

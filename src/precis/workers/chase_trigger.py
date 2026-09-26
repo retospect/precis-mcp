@@ -99,7 +99,7 @@ _CLAIM_HUB_SQL = claim_hub_predicate_sql()
 #: A hypothesis hub carries the same TAPROOT:claim + STATUS:canonical tags,
 #: so without this the widening pass would go hunting for evidence that
 #: supports a guess — a confirmation engine aimed at exactly the thing
-#: nothing supports yet (docs/backlog/claim-review-mechanism.md).
+#: nothing supports yet (docs/backlog/nanopub-corpus-remediation.md).
 _NOT_HYPOTHESIS_SQL = not_hypothesis_predicate_sql()
 
 #: Bump to force a lazy re-sweep of the whole corpus (every chunk re-probed

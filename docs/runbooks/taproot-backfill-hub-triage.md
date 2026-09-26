@@ -56,7 +56,7 @@ Bucketing:
 - **MERGE?** — claim is anaphoric. Find the world-claim twin (same content,
   proper subject) and merge; these are near-duplicates that defeated
   `block()`'s ANN because a narrative restatement embeds differently. Feed them
-  to `docs/backlog/claim-hub-dedup-sweep.md`.
+  to `docs/backlog/nanopub-corpus-remediation.md`.
 - **REGROUND** — claim is assertive but `has_grounding_prose` is False. Run
   `precis taproot repair-evidence --cohort prose-less --draft <dr>` (dry-run by
   default; `--apply` to write). It re-verifies the hub's claim against **only**
@@ -91,7 +91,7 @@ Two things that baseline showed, worth carrying forward:
   ("dopaminergic degeneration diminishes ventilatory drive") is a fragment
   grounded on perfectly good body prose. Bad grounding and empty claim
   correlate, but neither implies the other — which is why the buckets are two
-  axes, not one. → `docs/backlog/taproot-backfill-fragment-claims.md`
+  axes, not one. → `docs/backlog/taproot-backfill-defects.md`
 
 ## 4. Related
 
@@ -100,9 +100,9 @@ Two things that baseline showed, worth carrying forward:
   `reground.candidate_passages` (so re-grounding, chase and evidence repair
   never offer a title page), and selectable as `repair-evidence --cohort
   prose-less`.
-- The fragment cause: `docs/backlog/taproot-backfill-fragment-claims.md`.
+- The fragment cause: `docs/backlog/taproot-backfill-defects.md`.
 - The evidence-side mirror (a paper's lit-review paragraph accepted as
-  evidence): `docs/backlog/taproot-evidence-section-gating.md`.
+  evidence): `docs/backlog/taproot-claim-quality.md`.
 
 ## Cohort B catches truncation artifacts, not just front matter
 

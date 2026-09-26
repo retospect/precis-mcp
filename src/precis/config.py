@@ -66,7 +66,7 @@ class PrecisConfig(BaseSettings):
     Defaults to ``"owner"`` so a fresh install reads correctly with no
     config. Reto's instance sets ``PRECIS_OWNER=elmsfeuer`` to line up
     with the existing ``user:elmsfeuer`` tags. See
-    ``docs/backlog/user-identity-and-ask-routing.md``.
+    ``docs/backlog/identity-and-access.md``.
 
     Set via ``PRECIS_OWNER`` in the env.
     """

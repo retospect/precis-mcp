@@ -133,7 +133,7 @@ class PresInput:
 class MarkupInput:
     """Structured full text (JATS / Elsevier XML / arXiv HTML / LaTeX).
 
-    Markup-first ingest (docs/backlog/markup-first-ingest.md): the body
+    Markup-first ingest (docs/backlog/dark-features-activation.md): the body
     chunks come from ``markup_path`` via
     :func:`precis.ingest.pipeline.extract_paper_from_markup` — **Marker
     is never run**.

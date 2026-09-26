@@ -1,4 +1,4 @@
-"""Vocabulary-compaction gate (``docs/backlog/vocab-compaction-stages.md``,
+"""Vocabulary-compaction gate (``docs/backlog/vocab-compaction.md``,
 ``docs/glossary.md``) — pure AST/text, no DB, fast.
 
 Three independent checks:
@@ -126,7 +126,7 @@ _RESERVED_CLASS_ALLOWLIST: dict[str, set[str]] = {
     # prompt Block is a separate pending rename decision, not folded in.
     "Block": {"src/precis/utils/prompt/model.py"},
     # parse-fragment types, pre-existing (not part of stage B's chunk facade
-    # rename — see docs/backlog/vocab-compaction-stages.md stage B note).
+    # rename — see docs/backlog/vocab-compaction.md stage B note).
     "Chunk": {
         "src/precis/skill_index/chunker.py",
         "src/precis/draftimport/tex.py",
@@ -196,7 +196,7 @@ _RETIRED_NAMES = {
     "PassBand",
     "format_patent_citation",
     "_extract_json",
-    # Stage C persisted-key renames (docs/backlog/vocab-compaction-stages.md):
+    # Stage C persisted-key renames (docs/backlog/vocab-compaction.md):
     # these were never a def/class name themselves (dataclass fields / dict
     # keys / DB columns), so this only catches a *new* def/class reusing the
     # bare word — belt-and-suspenders alongside the migrations that renamed
@@ -206,7 +206,7 @@ _RETIRED_NAMES = {
     "tier_tag",
     "claim_ref_id",
     "PRECIS_BACKFILL_CITATION_LENS",
-    # Stage D surface renames (docs/backlog/vocab-compaction-stages.md):
+    # Stage D surface renames (docs/backlog/vocab-compaction.md):
     # `_dispatch_pass` (cli/worker.py closure) -> `_minter_pass`, matching
     # the registry rename `dispatch` -> `minter`; `block_pos`/`block_slug`
     # (utils/file_id.py::format_write_result kwargs) -> `chunk_pos`/
@@ -215,7 +215,7 @@ _RETIRED_NAMES = {
     "_dispatch_pass",
     "block_pos",
     "block_slug",
-    # Stage E surface renames (docs/backlog/vocab-compaction-stages.md):
+    # Stage E surface renames (docs/backlog/vocab-compaction.md):
     # the web Tasks-tab route module's helpers renamed with its
     # `/tasks` -> `/todo` route (`routes/todo.py`); `Store.soft_delete_ref`
     # -> `retire_ref` (+ the same-shaped `soft_delete_todo_subtree` /
@@ -290,13 +290,13 @@ _RETIRED_PHRASES = [
     "trust tier",
     "the blocks table",
     "verified-by-refine",
-    # Stage D surface renames (docs/backlog/vocab-compaction-stages.md):
+    # Stage D surface renames (docs/backlog/vocab-compaction.md):
     # the dispatch-worker skill id, and the patent/edgar search-leg kwarg
     # (now `precis-minter-help` / `reach='remote'`).
     "precis-dispatch-help",
     "source='remote'",
     'source="remote"',
-    # Stage E surface renames (docs/backlog/vocab-compaction-stages.md):
+    # Stage E surface renames (docs/backlog/vocab-compaction.md):
     # task->todo (the web Tasks tab, the "task line"/`text=` title, the
     # tree skill's old id) and the retire/soft-delete unification (bare
     # "task"/"deleted_at" are NOT banned here -- both collide too heavily

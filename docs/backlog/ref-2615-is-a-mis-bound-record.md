@@ -63,6 +63,6 @@ Check whether other hubs cite ref 2615 before repairing.
 ## Related
 
 `docs/backlog/nanobud-claim-remediation.md` — fi269509 is one of its
-hubs. `docs/backlog/pdf-extraction-drops-micro-sign-in-units.md` is a
+hubs. `docs/backlog/ingest-strips-greek-glyphs.md` is a
 different defect in the same "the evidence is not what it claims to be"
 family.

@@ -3,7 +3,7 @@
 The point of this view is that it runs the REAL
 `precis.nanopub.gates.run_mint_gates`, not a copy: the nanobud campaign's
 hand-rolled local mirror is exactly what it exists to retire
-(`docs/backlog/nanopub-mcp-surface-gaps.md` §1). So these tests assert on
+(`docs/backlog/claim-publication-nanopub-ots.md` §1). So these tests assert on
 real gate slugs, and one of them pins the mirror-rot property directly.
 """
 

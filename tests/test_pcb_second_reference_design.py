@@ -100,7 +100,7 @@ def test_has_through_hole_parts_and_no_half_supported_bottom_parts(
     pads/mask/paste/routing all still emit top-side), so an authored
     bottom part is a silk-only lie in the gerbers. C3 was flipped back
     to top in review round 4; full bottom-side support is
-    docs/backlog/pcb-review-round4-0901.md item 10, and this assertion
+    docs/backlog/pcb-engine-plan.md item 10, and this assertion
     flips back with it."""
     labels = {c["refdes"]: c["label"] for c in design["components"]}
     tht_refdes = {

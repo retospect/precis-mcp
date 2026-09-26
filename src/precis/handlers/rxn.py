@@ -27,7 +27,7 @@ in the design doc.
 
 Duplication note: the registry/value machinery is deliberately the ``material``
 shape. Factoring the three copies (material, component, rxn) onto a shared core
-is tracked in ``docs/backlog/material-component-shared-core.md`` — doing it
+is tracked in ``docs/backlog/codereview-residuals.md`` — doing it
 here would mean editing two shipped kinds to land a third.
 
 See ``precis-rxn-help``.
