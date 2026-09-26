@@ -207,6 +207,11 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 - **trace** walks series 2-pin parts (a resistor/cap in line) automatically; a
   multi-pin part terminates the auto-walk — you supply the next hop from the
   datasheet ([[precis-datasheet-help]]).
+- **Peeking at a rendered board** (`tests/test_pcb_render_fixture.py` → SVG →
+  `qlmanage`) is an occasional human confirmation, not the iteration loop —
+  the numeric views above are cheaper and are what place/route actually
+  score against. Default to a 600px peek in-loop; reserve full 1800px
+  (`PRECIS_PCB_PEEK_SIZE`) for milestone/acceptance renders.
 
 ## Fill in a missing footprint — `op='footprint'`
 

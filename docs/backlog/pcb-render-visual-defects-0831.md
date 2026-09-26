@@ -9,7 +9,12 @@ prio: high
 Reported by the user peeking at `board_motor.svg`, `board_nano.svg`
 (handler id `renderfixture`), `board_seed1/2.svg` in the worktree root
 (regenerate: `tests/test_pcb_render_fixture.py` env-gated utility, or the
-fab-render test; view via `qlmanage -t -s 1800 -o /tmp/pcbpeek *.svg`).
+fab-render test; view via
+`qlmanage -t -s "${PRECIS_PCB_PEEK_SIZE:-600}" -o /tmp/pcbpeek *.svg`).
+**Two-tier peeks (gr292748):** default `-s 600` for in-loop placement/route
+checks — a placement-sanity read at 600px is ~1/9th the pixels of 1800px;
+reserve full `-s 1800` (`PRECIS_PCB_PEEK_SIZE=1800`) for milestone/acceptance
+renders only.
 
 ## Status after the 2026-08-31 fix session (this worktree, unshipped)
 
