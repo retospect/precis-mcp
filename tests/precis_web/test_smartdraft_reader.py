@@ -645,6 +645,50 @@ def test_smartdraft_reader_renders_three_panes(
     assert "Collaborate" in body  # right pane header
 
 
+def test_smartdraft_meta_tab_shows_writer_will_not_run_when_authoring_off(
+    smartdraft_client: TestClient,
+) -> None:
+    """gr348555: right after creating a draft, a human should be able to
+    tell whether the writer will run without decoding "auto-author" —
+    ``SmartDraftFakeStore`` reports auto-author OFF (the fresh-draft
+    default), so the Meta tab's plain-language line says so."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert "Writer: will not run (auto-author off)" in r.text
+    assert "Writer: will run" not in r.text
+
+
+class AuthoringOnFakeStore(SmartDraftFakeStore):
+    """Same fixture, but auto-author is ON — exercises the other branch of
+    the Meta tab's plain-language writer-status line (gr348555)."""
+
+    def draft_authoring_enabled(self, ref_id: int) -> bool:
+        return True
+
+
+@pytest.fixture
+def authoring_on_runtime() -> FakeRuntime:
+    return FakeRuntime(AuthoringOnFakeStore())
+
+
+@pytest.fixture
+def authoring_on_client(authoring_on_runtime: FakeRuntime, tmp_path) -> TestClient:
+    app = create_app(
+        runtime=authoring_on_runtime, web_config=WebConfig(corpus_dir=tmp_path)
+    )
+    return TestClient(app)
+
+
+def test_smartdraft_meta_tab_shows_writer_will_run_when_authoring_on(
+    authoring_on_client: TestClient,
+) -> None:
+    """The other half of gr348555: auto-author ON reads as "will run"."""
+    r = authoring_on_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert "Writer: will run" in r.text
+    assert "will not run" not in r.text
+
+
 def test_smartdraft_ask_uses_structured_llm_selector(
     smartdraft_client: TestClient,
 ) -> None:
@@ -733,6 +777,30 @@ def test_smartdraft_block_review_indicator_reflects_ledger_state(
     assert 'class="sd-review sd-review-dot human"' in r3.text
     assert f"sdReviewRetract('{dc3}')" in r3.text
     assert f"id%3D{dc3}%20view%3Dreview-diff" in r3.text
+
+
+def test_smartdraft_empty_review_dot_has_plain_language_tooltip(
+    smartdraft_client: TestClient,
+) -> None:
+    """gr348557: the grey "empty" review dot beside a heading/paragraph
+    right after creation used to carry no explanation at all. Its
+    ``title=`` now leads with a plain-language headline before the
+    per-checker jargon matrix, and the top-bar legend (previously only
+    🟢/🟡/🔴 paragraph-grounding) now names the grey state too."""
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)
+    r = smartdraft_client.get(f"/smartdraft/sdt?focus={dc2}")
+    assert r.status_code == 200
+    class_idx = r.text.index('sd-review-dot empty"')
+    prefix = r.text[:class_idx]
+    title_start = prefix.rindex('title="') + len('title="')
+    title_end = r.text.index('"', title_start)
+    tooltip = r.text[title_start:title_end]
+    assert "review pending" in tooltip
+    assert "no check has run on this block yet" in tooltip
+    # The legend that already explained 🟢/🟡/🔴 paragraph grounding now
+    # also names the grey per-block review dot.
+    assert "review pending" in r.text
+    assert "⚪" in r.text
 
 
 def test_smartdraft_review_dropdown_uses_ledger_persona_vocabulary(

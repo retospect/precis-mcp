@@ -307,7 +307,7 @@
     </div>
 
     <div class="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-slate-500">
-      <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation)">🟢 sourced · 🟡 pending · 🔴 unsourced</span>
+      <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation). ⚪ review pending (the small dot beside a heading/paragraph — no check has run on that block yet) is a separate, per-block review state; hover it for details.">🟢 sourced · 🟡 pending · 🔴 unsourced · ⚪ review pending</span>
       {{ sd_review_badge(ident, rollup, checker_counts, hub_stats, shape_stats) }}
       <a href="/nanopub?draft=dr{{ ref.id }}" class="hover:text-slate-800"
          title="the /nanopub workbench, scoped to the claim hubs this draft cites — review &amp; sign what's left">review claims</a>
@@ -1246,6 +1246,14 @@
           <button class="underline {% if authoring_enabled %}text-amber-600 hover:text-amber-800{% else %}text-slate-500 hover:text-slate-800{% endif %}"
                   title="{% if authoring_enabled %}auto-author is ON — grounded personas edit the draft; click to turn OFF{% else %}auto-author is OFF — review personas only file findings; click to turn ON{% endif %}">✎ auto-author: {{ 'ON' if authoring_enabled else 'OFF' }}</button>
         </form>
+        {# gr348555: a plain-language answer to "will anything happen to this
+           draft on its own?" — the auto-author toggle above answers the same
+           question but only to someone who already knows what "auto-author"
+           means. #}
+        <span class="text-slate-400"
+              title="{% if authoring_enabled %}auto-author is ON — the writer personas will pick this draft up on the next pass{% else %}auto-author is OFF — nothing writes to this draft until you turn it on above{% endif %}">
+          Writer: {% if authoring_enabled %}will run{% else %}will not run (auto-author off){% endif %}
+        </span>
       </div>
 
       {# ── Actions: duplicate (Phase-1 fork → new draft) and delete. Both are

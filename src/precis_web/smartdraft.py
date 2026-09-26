@@ -940,6 +940,20 @@ _MACHINE_PERSONAS: tuple[str, ...] = ("flow", "cites")
 _SECTION_PERSONAS: tuple[str, ...] = ("structure", "adversarial")
 _STATUS_SYMBOL: dict[str, str] = {"current": "✓", "stale": "⚠", "never": "–"}
 
+#: Plain-language headline per :func:`review_indicator` ``state``, prefixed
+#: to the tooltip ahead of the per-checker matrix (gr348557): a reader who
+#: doesn't know the persona vocabulary (``flow``/``cites``/``structure``/…)
+#: still gets a one-line answer to "what does this dot mean" before the
+#: jargon. Grey/``empty`` is the state every block starts in right after
+#: creation — the one the dogfood screenshot caught with no explanation at
+#: all.
+_STATE_HEADLINE: dict[str, str] = {
+    "empty": "review pending — no check has run on this block yet",
+    "machine": "machine-reviewed — awaiting human sign-off",
+    "human": "human-reviewed — approved at the current text",
+    "dirty": "edited since human approval — re-review needed",
+}
+
 
 def _age_str(at: Any) -> str:
     """A terse ``"2h ago"``/``"3d ago"`` for the tooltip — ``""`` when
@@ -1064,11 +1078,12 @@ def review_indicator(
     else:
         state = "empty"
 
+    headline = _STATE_HEADLINE[state]
     return {
         "state": state,
         "human": human,
         "matrix": matrix,
-        "tooltip": "\n".join(r["line"] for r in matrix),
+        "tooltip": headline + "\n" + "\n".join(r["line"] for r in matrix),
     }
 
 
