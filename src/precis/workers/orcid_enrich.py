@@ -79,6 +79,20 @@ _STATE_KEY = "orcid_enrich:last_run"
 _DEFAULT_BATCH_LIMIT = 100
 _BATCH_ENV_VAR = "PRECIS_ORCID_ENRICH_BATCH"
 
+#: Retry backoff for a node whose fetch failed: hold it back
+#: ``min(fail_count, _MAX_BACKOFF_STEPS) * _BACKOFF_STEP_HOURS`` before
+#: trying again (6h, 12h, … capped at 30h).
+#:
+#: Without this the pass had no failure memory at all — a node that fails
+#: never gets ``meta.fetched_at``, so the claim query re-picked it every
+#: pass forever. Measured on prod 2026-09-26: 18 nodes failing 28× each in
+#: 24h = 501 of the fleet's 516 ERROR rows (97%), and 18 of every 100-node
+#: batch spent on rows already known to fail, against a 93k-node claimable
+#: backlog. A permanently-dead iD (deleted/withdrawn record) still costs
+#: one attempt per capped window instead of one per pass.
+_BACKOFF_STEP_HOURS = 6
+_MAX_BACKOFF_STEPS = 5
+
 #: Gentle-by-decision pacing (precis.utils.authors module docstring): the
 #: ORCID public API allows far more, but this tier deliberately trickles.
 _MAX_FETCHES_PER_SECOND = 2.0
@@ -142,6 +156,15 @@ def _claim_batch(store: Store, *, limit: int) -> list[int]:
                             WHERE ri.ref_id = o.ref_id
                               AND ri.id_kind = 'cite_key'
                               AND ri.id_value LIKE 'orcid:%%'))
+           -- ...and the same reasoning for one that HAS failed: hold it
+           -- back for a widening window instead of re-failing it every
+           -- pass (see _BACKOFF_STEP_HOURS / _record_failure).
+           AND (o.meta->>'fetch_failed_at' IS NULL
+                OR (o.meta->>'fetch_failed_at')::timestamptz
+                   < now() - (least(
+                         greatest(coalesce((o.meta->>'fetch_fail_count')::int, 1), 1),
+                         %s
+                     ) * %s * interval '1 hour'))
          ORDER BY (
              SELECT max(l.dst_ref_id) FROM links l
               WHERE l.src_ref_id = o.ref_id AND l.relation = 'authored'
@@ -149,8 +172,40 @@ def _claim_batch(store: Store, *, limit: int) -> list[int]:
          LIMIT %s
     """
     with store.pool.connection() as conn:
-        rows = conn.execute(sql, (limit,)).fetchall()
+        rows = conn.execute(
+            sql, (_MAX_BACKOFF_STEPS, _BACKOFF_STEP_HOURS, limit)
+        ).fetchall()
     return [int(r[0]) for r in rows]
+
+
+def _record_failure(store: Store, ref_id: int) -> None:
+    """Stamp this node's failure so :func:`_claim_batch` holds it back.
+
+    ``meta.fetch_failed_at`` is the last attempt; ``meta.fetch_fail_count``
+    counts consecutive failures and widens the backoff. A success needs no
+    counter reset — ``store_orcid_record`` sets ``meta.fetched_at``, which
+    drops the node out of the claim query for good.
+
+    Best-effort: a failed stamp must not abort the batch (the node simply
+    stays claimable, i.e. today's behaviour), so this never raises.
+    """
+    ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    prior = 0
+    if ref is not None:
+        try:
+            prior = int((ref.meta or {}).get("fetch_fail_count") or 0)
+        except (TypeError, ValueError):
+            prior = 0
+    try:
+        store.stamp_ref_meta(
+            ref_id,
+            {
+                "fetch_failed_at": datetime.now(UTC).isoformat(),
+                "fetch_fail_count": prior + 1,
+            },
+        )
+    except Exception:
+        log.exception("orcid_enrich: could not stamp failure on node %d", ref_id)
 
 
 def _orcid_id_for_node(store: Store, ref_id: int) -> str | None:
@@ -238,9 +293,11 @@ def run_once(
 
     ``claimed`` counts nodes selected this pass; ``ok`` counts nodes
     fetched + stored + cross-checked; ``failed`` counts nodes whose fetch
-    raised (logged, node left unvisited — ``meta.fetched_at`` stays unset
-    so it's retried next pass). Idle passes (no dsn, throttled, or
-    missing credentials) return all zeros and claim nothing.
+    raised — logged, ``meta.fetched_at`` left unset, and the node stamped
+    (:func:`_record_failure`) so :func:`_claim_batch` holds it back for a
+    widening window rather than re-failing it on every pass. Idle passes
+    (no dsn, throttled, or missing credentials) return all zeros and claim
+    nothing.
     """
     idle = BatchResult(handler="orcid_enrich", claimed=0, ok=0, failed=0)
     if not store.dsn or not _due(store):
@@ -260,12 +317,14 @@ def run_once(
         orcid_id = _orcid_id_for_node(store, ref_id)
         if orcid_id is None:
             log.warning("orcid_enrich: node %d has no resolvable orcid_id", ref_id)
+            _record_failure(store, ref_id)
             failed += 1
             continue
         try:
             record = fetch(orcid_id)
         except Exception:
             log.exception("orcid_enrich: node %d (%s) fetch failed", ref_id, orcid_id)
+            _record_failure(store, ref_id)
             failed += 1
             continue
         finally:

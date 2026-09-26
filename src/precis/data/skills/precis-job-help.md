@@ -370,6 +370,26 @@ CLI. Header line states the resolved filter + UTC cutoff; each row is
 matching`. No queryable surface exists for this table anywhere else
 in the agent surface (no Bash, no raw SQL) — this is it.
 
+## Has a fix reached the fleet yet?
+
+```python
+get(kind='job', id='/builds')             # per host/process build, last 24h
+get(kind='job', id='/builds?since=168')   # widen to a week
+```
+
+Every claim stamps the claiming worker's `version@sha` on the job
+(`meta.lease_code`, alongside `lease_host`/`lease_process`), so the jobs
+table records what code actually ran where. Each row is
+`host process version@sha jobs=N last=<UTC>`.
+
+A fix is live on a process when that process's newest build sha is the fix
+or a descendant of it. Read per **process**, not per host: one host can run
+several worker units, and an env or code difference between two units of the
+same host is a common failure shape that per-host reading hides. Two builds
+for the same host/process in the window is a restart boundary — read the
+newest. `precis-status` answers a different question (the build serving
+*your own* process, which in a container is not the fleet's).
+
 ## See also
 
 - [[precis-gripe-help]] — the bug tracker

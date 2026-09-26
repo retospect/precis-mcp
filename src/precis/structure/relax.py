@@ -34,6 +34,7 @@ in Å; never converted to SI here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
 
@@ -495,8 +496,58 @@ def _dftd3_wrap(calc, *, device: str = "cpu", dtype: str = "float64"):
     return SumCalculator([calc, d3])
 
 
+#: How many distinct ``(family, dispersion)`` MLIP calculators to keep
+#: loaded. Three families × two dispersion states is the whole space, and a
+#: long-lived worker realistically touches one or two.
+_ML_CALC_CACHE_MAX = 6
+
+
+@lru_cache(maxsize=_ML_CALC_CACHE_MAX)
+def _cached_ml_calculator(family: str, dispersion: bool):
+    """Build — once per ``(family, dispersion)`` — the torch-backed ASE
+    calculator, and hold it for the life of the process.
+
+    **Why this is cached (gr450103).** Every call constructs a full torch
+    ``nn.Module`` with its weights at ``float64``. ``struct_relax`` exposes
+    only ``dispatch`` (no submit/poll), so each relax runs inline in the
+    long-lived ``job_ssh_node`` worker; an uncached build left a discarded
+    model per dispatch that the allocator never returned to the OS. Measured
+    on castor 2026-09-25: RSS ~117 GB after two days on a 122 GB box, its
+    16 GB swap exhausted, ``kswapd0`` at 84% CPU and the handler silent for
+    ~48 h — starved, not blocked; a restart came back at 216 MB. This
+    mirrors the loaded-once-per-process discipline ``BgeM3Embedder``
+    (``precis/embedder.py``) already follows.
+
+    **Reuse is safe, concurrent use is not.** An ASE ``Calculator`` keys its
+    cached ``results`` on the atoms' state, so handing the same instance to
+    one relax after another recomputes correctly — that is the ordinary ASE
+    pattern. It is NOT safe to drive one instance from two threads at once;
+    the lane that runs these is serial by construction (``precis worker
+    --only job_ssh_node --batch-size 1``, playbook 43, one dispatch at a
+    time under a capacity-1 ``gpu`` slot). Keep it that way, or give each
+    worker thread its own calculator.
+
+    The caller (:func:`_ml_calculator`) has already normalised ``family``
+    and probed every import, so this raises no ``RelaxUnsupported`` of its
+    own; an exception here is a genuine backend failure and is deliberately
+    not cached (``lru_cache`` only stores successful returns).
+    """
+    if family == "mace_mp":
+        from mace.calculators import mace_mp
+
+        return mace_mp(default_dtype="float64", dispersion=dispersion)
+    if family == "mace_off":
+        from mace.calculators import mace_off
+
+        calc = mace_off(default_dtype="float64")
+        return _dftd3_wrap(calc) if dispersion else calc
+    from chgnet.model.dynamics import CHGNetCalculator
+
+    return CHGNetCalculator()
+
+
 def _ml_calculator(model: str, *, dispersion: bool = False):
-    """Instantiate an ASE calculator for an MLIP, or raise RelaxUnsupported.
+    """Return a cached ASE calculator for an MLIP, or raise RelaxUnsupported.
 
     The import is isolated here so a missing backend gives one clean
     ``RelaxUnsupported`` with an install hint, never a stray ImportError.
@@ -507,11 +558,17 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
     ``RelaxUnsupported`` rather than either a stray ImportError deep inside
     ``mace_mp`` or — far worse — a silently uncorrected relax reported as a
     dispersion-corrected one.
+
+    Normalisation, those probes and every ``RelaxUnsupported`` stay on this
+    (uncached) side of :func:`_cached_ml_calculator` on purpose: the probes
+    are what make the error messages clean, they must re-run on every call
+    so a backend that disappears is still reported, and only the expensive
+    model build belongs in the cache.
     """
     name = (model or "mace_mp").lower().replace("-", "_")
     if name in ("mace", "mace_mp", "mace_mp_0"):
         try:
-            from mace.calculators import mace_mp
+            from mace.calculators import mace_mp  # noqa: F401
         except ImportError as exc:
             raise RelaxUnsupported(
                 "relax rung 'ml' (MACE) needs the [dft-ml] extra — "
@@ -525,10 +582,10 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
                     "dispersion=True (DFT-D3 on top of MACE) needs torch-dftd — "
                     "pip install 'precis-mcp[dft-ml]'"
                 ) from exc
-        return mace_mp(default_dtype="float64", dispersion=dispersion)
+        return _cached_ml_calculator("mace_mp", dispersion)
     if name in ("mace_off", "mace_off23"):
         try:
-            from mace.calculators import mace_off
+            from mace.calculators import mace_off  # noqa: F401
         except ImportError as exc:
             raise RelaxUnsupported(
                 "relax rung 'ml' (MACE-OFF) needs the [dft-ml] extra — "
@@ -542,8 +599,7 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
                     "dispersion=True (DFT-D3 on top of MACE-OFF) needs "
                     "torch-dftd — pip install 'precis-mcp[dft-ml]'"
                 ) from exc
-        calc = mace_off(default_dtype="float64")
-        return _dftd3_wrap(calc) if dispersion else calc
+        return _cached_ml_calculator("mace_off", dispersion)
     if name == "chgnet":
         if dispersion:
             raise RelaxUnsupported(
@@ -551,13 +607,13 @@ def _ml_calculator(model: str, *, dispersion: bool = False):
                 "for a dispersion-corrected relax"
             )
         try:
-            from chgnet.model.dynamics import CHGNetCalculator
+            from chgnet.model.dynamics import CHGNetCalculator  # noqa: F401
         except ImportError as exc:
             raise RelaxUnsupported(
                 "relax rung 'ml' (CHGNet) needs the [dft-ml] extra — "
                 "pip install 'precis-mcp[dft-ml]'"
             ) from exc
-        return CHGNetCalculator()
+        return _cached_ml_calculator("chgnet", False)
     raise RelaxUnsupported(
         f"unknown MLIP model {model!r} (try 'mace_mp', 'mace_off', or 'chgnet')"
     )

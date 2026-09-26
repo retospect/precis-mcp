@@ -1346,6 +1346,118 @@ def test_ml_calculator_dispersion_needs_torch_dftd(monkeypatch) -> None:
         relax_mod._ml_calculator("mace_mp", dispersion=True)
 
 
+def _fake_mace(monkeypatch: pytest.MonkeyPatch, builds: list[dict]) -> None:
+    """Install a stand-in ``mace.calculators`` that records every build.
+
+    Keeps these tests offline and torch-free: what is under test is how many
+    times the factory is called, not what it returns.
+    """
+    import sys
+    import types
+
+    def _mace_mp(**kw: object) -> object:
+        builds.append(dict(kw))
+        return object()  # a distinct instance per build, so identity is a probe
+
+    def _mace_off(**kw: object) -> object:
+        builds.append(dict(kw))
+        return object()
+
+    pkg = types.ModuleType("mace")
+    calcs = types.ModuleType("mace.calculators")
+    # monkeypatch.setattr, not attribute assignment: a ModuleType declares
+    # no attributes, so plain assignment costs a `type: ignore` each (and
+    # the repo ratchets those, tests/test_type_ignore_ratchet.py) while a
+    # bare setattr() with a constant name is a ruff error. This is typed,
+    # lint-clean, and undone for us at teardown.
+    monkeypatch.setattr(calcs, "mace_mp", _mace_mp, raising=False)
+    monkeypatch.setattr(calcs, "mace_off", _mace_off, raising=False)
+    monkeypatch.setattr(pkg, "calculators", calcs, raising=False)
+    monkeypatch.setitem(sys.modules, "mace", pkg)
+    monkeypatch.setitem(sys.modules, "mace.calculators", calcs)
+
+
+@pytest.fixture
+def _clean_ml_calc_cache():
+    """The MLIP calculator cache is process-wide — clear it around any test
+    that plants a fake backend, so no fake leaks into a later test."""
+    import importlib
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+    relax_mod._cached_ml_calculator.cache_clear()
+    yield relax_mod
+    relax_mod._cached_ml_calculator.cache_clear()
+
+
+def test_ml_calculator_loads_the_model_once_per_family(
+    monkeypatch: pytest.MonkeyPatch, _clean_ml_calc_cache
+) -> None:
+    """gr450103: ``struct_relax`` runs inline in a long-lived worker, so a
+    per-dispatch model build leaked until the box swapped (castor reached
+    ~117 GB RSS over two days and the handler went silent ~48 h). The second
+    call must hand back the SAME calculator, not build another."""
+    relax_mod = _clean_ml_calc_cache
+    builds: list[dict] = []
+    _fake_mace(monkeypatch, builds)
+
+    first = relax_mod._ml_calculator("mace_mp")
+    second = relax_mod._ml_calculator("mace_mp")
+
+    assert first is second
+    assert len(builds) == 1, builds
+
+
+def test_ml_calculator_cache_is_keyed_on_model_and_dispersion(
+    monkeypatch: pytest.MonkeyPatch, _clean_ml_calc_cache
+) -> None:
+    """Caching must not blur the physics: a dispersion-corrected calculator
+    is a different object from an uncorrected one, and an alias of the same
+    family reuses the same entry rather than loading a second copy."""
+    relax_mod = _clean_ml_calc_cache
+    builds: list[dict] = []
+    _fake_mace(monkeypatch, builds)
+    monkeypatch.setattr(relax_mod, "_dftd3_wrap", lambda calc, **_kw: ("d3", calc))
+
+    plain = relax_mod._ml_calculator("mace_mp")
+    corrected = relax_mod._ml_calculator("mace_mp", dispersion=True)
+    assert plain is not corrected
+    assert [b.get("dispersion") for b in builds] == [False, True]
+
+    # "mace", "mace-mp" and "mace_mp_0" all normalise onto one entry
+    assert relax_mod._ml_calculator("mace") is plain
+    assert relax_mod._ml_calculator("mace-mp") is plain
+    assert len(builds) == 2, builds
+
+    # a different family is its own entry
+    off = relax_mod._ml_calculator("mace_off")
+    assert off is not plain
+    assert len(builds) == 3
+
+
+def test_ml_calculator_still_raises_after_a_backend_disappears(
+    monkeypatch: pytest.MonkeyPatch, _clean_ml_calc_cache
+) -> None:
+    """The import probes stay outside the cache: a cached success must not
+    turn a later missing backend into a silent pass."""
+    relax_mod = _clean_ml_calc_cache
+    builds: list[dict] = []
+    _fake_mace(monkeypatch, builds)
+    assert relax_mod._ml_calculator("mace_mp") is not None
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_mace(name, *args, **kwargs):
+        if name.startswith("mace"):
+            raise ImportError("no mace (test)")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_mace)
+    with pytest.raises(RelaxUnsupported, match="dft-ml"):
+        relax_mod._ml_calculator("mace_mp")
+
+
 def test_ml_calculator_chgnet_rejects_dispersion() -> None:
     """CHGNet has no D3 to add — say so instead of ignoring the flag."""
     import importlib

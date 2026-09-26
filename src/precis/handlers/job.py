@@ -53,6 +53,9 @@ _LOGS_MAX_SINCE_HOURS = 24 * 7
 _LOGS_DEFAULT_LIMIT = 100
 _LOGS_MAX_LIMIT = 200
 _LOGS_MESSAGE_TRUNC = 300
+#: Default window for the ``/builds`` fleet-build view. A day covers a
+#: normal deploy + restart cycle; every lane claims something within it.
+_BUILDS_DEFAULT_SINCE_HOURS = 24
 
 
 def _idem_lock_key(idem: str) -> int:
@@ -150,7 +153,7 @@ class JobHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "logs")
+        return ("recent", "logs", "builds")
 
     def _list_view(self, view: str) -> Response | None:
         # '/logs' and '/logs?handler=...&since=...' both route here —
@@ -158,7 +161,106 @@ class JobHandler(NumericRefHandler):
         if view == "logs" or view.startswith("logs?"):
             _, _, query_string = view.partition("?")
             return self._render_logs_view(query_string)
+        if view == "builds" or view.startswith("builds?"):
+            _, _, query_string = view.partition("?")
+            return self._render_builds_view(query_string)
         return super()._list_view(view)
+
+    def _render_builds_view(self, query_string: str) -> Response:
+        """``id='/builds?since=<hrs>'`` — which build each worker is running.
+
+        Every claim stamps ``meta.lease_code`` (``<version>@<short sha>``)
+        alongside ``meta.lease_host`` / ``meta.lease_process``
+        (``workers/executors/_common.py``'s lease-identity stamp), so the
+        jobs table already records what code actually ran where. This view
+        is that aggregate: one row per ``(host, process, lease_code)`` seen
+        in the window, newest first.
+
+        **Why it exists.** "Has this fix reached the fleet yet?" had no
+        queryable answer, and the gap was not harmless: a reader can see the
+        build serving its own session (``precis-status``), but an agent-lane
+        or containerised reader sees its own ephemeral venv, not the
+        cluster's. The 2026-09-26 doctor tick spent its whole P0 on
+        "``b58a18a0`` has not reached melchior 8 days later" — it had been
+        live for 11 hours, and the same claim had accumulated 19 comments on
+        gr346813 and a fresh "deploy it" ask each tick. The evidence was
+        sitting in ``refs.meta`` the whole time, one aggregate away.
+
+        Two builds for one ``(host, process)`` inside a short window is a
+        restart boundary, not a conflict — read the newest. Two builds on
+        *different* processes of one host is the 20b/20e split (a per-unit
+        env or code difference), which is exactly what it looks like.
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        since_hours = _parse_logs_int(
+            params.get("since"),
+            default=_BUILDS_DEFAULT_SINCE_HOURS,
+            field="since",
+            example="since=24 (default) — hours to look back, max 168",
+        )
+        if since_hours <= 0:
+            raise BadInput(
+                f"since={since_hours} must be a positive number of hours",
+                next="since=24 (default) — hours to look back, max 168",
+            )
+        since_hours = min(since_hours, _LOGS_MAX_SINCE_HOURS)
+        cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
+
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT COALESCE(r.meta->>'lease_host', '?')    AS host,
+                       COALESCE(r.meta->>'lease_process', '?') AS process,
+                       r.meta->>'lease_code'                   AS lease_code,
+                       count(*)                                AS jobs,
+                       max(r.updated_at)                        AS last_seen
+                  FROM refs r
+                 WHERE r.kind = 'job'
+                   AND r.meta ? 'lease_code'
+                   AND r.updated_at >= %(cutoff)s
+                 GROUP BY 1, 2, 3
+                 ORDER BY 1, 2, max(r.updated_at) DESC
+                """,
+                {"cutoff": cutoff},
+            ).fetchall()
+
+        header = (
+            f"# fleet builds — from job lease stamps, since={since_hours}h "
+            f"(cutoff {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')})\n"
+            "# one row per host/process/build; newest build per process "
+            "is what it is running now"
+        )
+        if not rows:
+            body = (
+                f"{header}\n"
+                "no job in this window carries a lease stamp — either nothing "
+                "was claimed (check get(kind='job', id='/logs?level=INFO')) or "
+                "every claimant predates the lease-code stamp."
+            )
+            body += render_next_section(
+                [
+                    (
+                        "get(kind='job', id='/builds?since=168')",
+                        "widen the window to a full week",
+                    )
+                ]
+            )
+            return Response(body=body)
+
+        lines = [header, ""]
+        for host, process, lease_code, jobs, last_seen in rows:
+            seen = as_utc(last_seen)
+            seen_str = seen.strftime("%Y-%m-%dT%H:%M:%SZ") if seen else "?"
+            lines.append(
+                f"{host} {process} {lease_code or 'unstamped'} "
+                f"jobs={jobs} last={seen_str}"
+            )
+        lines.append("")
+        lines.append(
+            f"{len(rows)} host/process/build row(s). A fix is live on a "
+            "process when its newest build's sha is that fix or a descendant."
+        )
+        return Response(body="\n".join(lines))
 
     def _render_logs_view(self, query_string: str) -> Response:
         """``id='/logs?handler=<name>&host=<h>&level=<L>&since=<hrs>&q=<sub>&limit=<n>'``

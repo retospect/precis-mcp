@@ -126,6 +126,106 @@ def test_handler_filter_matches_logger_column(jobs: JobHandler, store: Store) ->
     assert "embed chatter" not in resp.body
 
 
+# -- '/builds': which build each worker is actually running ----------------
+
+
+def _seed_leased_job(
+    store: Store,
+    *,
+    host: str,
+    process: str,
+    lease_code: str,
+    hours_ago: float = 0.0,
+) -> int:
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="leased job",
+        meta={
+            "job_type": "fake",
+            "executor": "coordinator",
+            "lease_host": host,
+            "lease_process": process,
+            "lease_code": lease_code,
+        },
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - (%s || ' hours')::interval "
+            "WHERE ref_id = %s",
+            (hours_ago, ref.id),
+        )
+        conn.commit()
+    return int(ref.id)
+
+
+def test_builds_view_reports_the_build_per_host_and_process(
+    jobs: JobHandler, store: Store
+) -> None:
+    """The gap this closes: "has this fix reached the fleet?" had no
+    queryable answer, so the 2026-09-26 doctor tick filed a P0 to deploy a
+    commit that had been live for 11 hours. Every claim already stamps
+    ``meta.lease_code``; this view aggregates it."""
+    _seed_leased_job(
+        store, host="melchior", process="precis-worker", lease_code="8.35.1@4db6836b"
+    )
+    _seed_leased_job(
+        store,
+        host="melchior",
+        process="precis-worker-agentlane",
+        lease_code="8.35.1@aaaaaaaa",
+    )
+
+    resp = jobs.get(id="/builds")
+
+    assert "melchior precis-worker 8.35.1@4db6836b" in resp.body
+    assert "melchior precis-worker-agentlane 8.35.1@aaaaaaaa" in resp.body
+
+
+def test_builds_view_keeps_two_processes_on_one_host_apart(
+    jobs: JobHandler, store: Store
+) -> None:
+    """The 20b/20e split is the whole point of grouping by process: an env or
+    code difference between two units of one host must not average away."""
+    _seed_leased_job(
+        store, host="melchior", process="precis-worker", lease_code="8.35.1@newer"
+    )
+    _seed_leased_job(
+        store,
+        host="melchior",
+        process="precis-worker-agentlane",
+        lease_code="8.35.1@older",
+    )
+
+    body = jobs.get(id="/builds").body
+
+    assert "2 host/process/build row(s)" in body
+
+
+def test_builds_view_window_excludes_older_claims(
+    jobs: JobHandler, store: Store
+) -> None:
+    """A build seen only outside the window is not what the process runs
+    now; the default day-long window drops it, a wider one finds it."""
+    _seed_leased_job(
+        store,
+        host="castor",
+        process="precis-worker-compute",
+        lease_code="8.30.0@ancient",
+        hours_ago=72,
+    )
+
+    assert "8.30.0@ancient" not in jobs.get(id="/builds").body
+    assert "8.30.0@ancient" in jobs.get(id="/builds?since=168").body
+
+
+def test_builds_view_says_so_when_nothing_is_stamped(
+    jobs: JobHandler, store: Store
+) -> None:
+    resp = jobs.get(id="/builds")
+    assert "no job in this window carries a lease stamp" in resp.body
+
+
 def test_handler_filter_matches_the_runner_cycle_row_payload(
     jobs: JobHandler, store: Store
 ) -> None:

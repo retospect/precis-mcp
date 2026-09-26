@@ -41,16 +41,36 @@ does not mean no deploy visibility:
 get(kind="skill", id="precis-status")  # Build block: git_sha_short, git_source, build_time
 ```
 
-`precis-status` reports the build actually serving this MCP — on the agent
-lane that is the deployed venv, recovered from the installed wheel's
-`direct_url.json` (`git_source: vcs-install`). When a gripe comment names a
-fix commit, compare it against that sha before writing "needs confirmation
-it landed": if the running sha is newer than the fix and a scheduled run of
-the affected job has succeeded since, the fix IS deployed and verified —
-say so, don't queue it to a human. You cannot resolve the alert yourself,
-but a resolved-looking condition plus a matching build is a confirmation,
-not an open question. What you still cannot see: which *other* hosts run
-which sha, and anything needing raw SQL.
+`precis-status` reports the build actually serving this MCP. Trust it only
+for THIS process: when your tick runs in a container or an ephemeral venv it
+reports `git_sha: unknown` or its own image's sha, NOT what the fleet runs.
+
+For the fleet, read the builds view — every job claim stamps the claiming
+worker's version and sha, so the jobs table already records what code ran
+where:
+
+```python
+get(kind='job', id='/builds')        # one row per host/process/build, 24h
+get(kind='job', id='/builds?since=168')  # widen to a week
+```
+
+**Never file a "deploy X" ask without checking it first.** A fix is live on
+a process when that process's newest build sha is the fix or a descendant of
+it. Read per PROCESS, not per host: one host runs several worker units
+(e.g. a collapsed worker and a dedicated agent lane) and an env or code
+difference between two units of the same host is a real, common failure
+shape — grouping them together hides it. Two builds for the SAME
+host/process inside the window is just a restart boundary; read the newest.
+
+This matters because getting it wrong is expensive and self-perpetuating: a
+2026-09-26 tick made "fix X has not reached this host in 8 days" its P0 and
+filed a deploy ask for it, when that build had been live for 11 hours — and
+the same wrong claim had already accumulated 19 comments on one gripe, one
+per tick. A backlog that does not drain is not evidence of a missing deploy;
+check the build, then look for a terminal state that needs a human (a
+bounded-retry cap latching, for instance) before blaming the deploy.
+
+What you still cannot see: anything needing raw SQL.
 
 **Your own tick is not in your evidence.** The alert state you read at
 Step 1 is a snapshot from before this tick did anything, including before

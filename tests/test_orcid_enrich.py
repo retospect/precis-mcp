@@ -132,6 +132,98 @@ class TestFetchAndStore:
         ref = store.get_ref(kind="orcid", id=_SLUG)
         assert ref is not None
         assert not (ref.meta or {}).get("fetched_at")
+        # ...and the failure is remembered, so the next pass holds it back
+        assert (ref.meta or {}).get("fetch_failed_at")
+        assert (ref.meta or {}).get("fetch_fail_count") == 1
+
+
+class TestFailureBackoff:
+    """A node whose fetch fails never gets ``meta.fetched_at``, so without a
+    failure memory the claim query re-picked it every pass forever — prod
+    2026-09-26: 18 nodes × 28 failures in 24h = 501 of the fleet's 516 ERROR
+    rows, and 18 of every 100-node batch burned on rows already known to
+    fail (against a 93k-node claimable backlog).
+
+    These drive :func:`orcid_enrich._claim_batch` directly rather than
+    ``run_once``: the pass is throttled to one run per refresh window
+    (``_due``), so a second ``run_once`` in one test claims nothing no
+    matter what the backoff does — it would pass for the wrong reason.
+    """
+
+    STEP = orcid_enrich._BACKOFF_STEP_HOURS
+
+    @staticmethod
+    def _stamp_failure(
+        store: Store, ref_id: int, *, hours_ago: float, count: int
+    ) -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "  'fetch_failed_at', (now() - (%s || ' hours')::interval)::text,"
+                "  'fetch_fail_count', %s::int) "
+                "WHERE ref_id = %s",
+                (hours_ago, count, ref_id),
+            )
+            conn.commit()
+
+    def _claimed(self, store: Store) -> list[int]:
+        return orcid_enrich._claim_batch(store, limit=10)
+
+    def test_never_failed_node_is_claimable(self, store: Store) -> None:
+        ref_id = _orcid_node(store)
+        assert self._claimed(store) == [ref_id]
+
+    def test_just_failed_node_is_held_back(self, store: Store) -> None:
+        ref_id = _orcid_node(store)
+        self._stamp_failure(store, ref_id, hours_ago=0.1, count=1)
+        assert self._claimed(store) == []
+
+    def test_node_is_claimable_once_its_window_elapses(self, store: Store) -> None:
+        ref_id = _orcid_node(store)
+        self._stamp_failure(store, ref_id, hours_ago=self.STEP + 1, count=1)
+        assert self._claimed(store) == [ref_id]
+
+    def test_window_widens_with_the_failure_count(self, store: Store) -> None:
+        """The same gap that was long enough after one failure is not after
+        two — a permanently-dead iD costs one attempt per widening window,
+        not one per pass."""
+        ref_id = _orcid_node(store)
+        self._stamp_failure(store, ref_id, hours_ago=self.STEP + 1, count=2)
+        assert self._claimed(store) == []
+        self._stamp_failure(store, ref_id, hours_ago=2 * self.STEP + 1, count=2)
+        assert self._claimed(store) == [ref_id]
+
+    def test_window_stops_widening_at_the_cap(self, store: Store) -> None:
+        """A huge failure count must not push the retry out to never."""
+        ref_id = _orcid_node(store)
+        capped_h = orcid_enrich._MAX_BACKOFF_STEPS * self.STEP
+        self._stamp_failure(store, ref_id, hours_ago=capped_h + 1, count=9999)
+        assert self._claimed(store) == [ref_id]
+
+    def test_healthy_node_is_unaffected_by_a_sibling_in_backoff(
+        self, store: Store
+    ) -> None:
+        """The throughput half of the bug: the held-back node frees its slot
+        instead of consuming one every pass."""
+        failing = _orcid_node(store)
+        self._stamp_failure(store, failing, hours_ago=0.1, count=1)
+        other_id = "0000-0002-1825-0098"
+        healthy = _orcid_node(store, slug=f"orcid:{other_id}", orcid_id=other_id)
+        assert self._claimed(store) == [healthy]
+
+    def test_a_fetched_node_is_never_reclaimed_even_with_a_stale_count(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``fetched_at`` still wins outright, so a node that failed a few
+        times and then succeeded needs no counter reset."""
+        _stub_credentials(monkeypatch, present=True)
+        ref_id = _orcid_node(store)
+        # 3 failures ⇒ a 3-step window; sit just past it so it is claimable
+        self._stamp_failure(store, ref_id, hours_ago=3 * self.STEP + 1, count=3)
+        record = _record()
+        result = run_once(store, fetch_fn=lambda _oid: record, sleep_fn=lambda _s: None)
+        assert (result.claimed, result.ok) == (1, 1)
+        assert self._claimed(store) == []
 
 
 class TestCrossCheck:
