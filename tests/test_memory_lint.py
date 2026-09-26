@@ -88,6 +88,18 @@ def lint_repo(tmp_path: Path) -> Path:
 
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "add memory-lint")
+    # memory-lint only reads a hex token as a sha when it contains an a-f
+    # letter, so a plain digit run (a byte count, a year) isn't mistaken for
+    # a commit. That makes an all-digit short sha a ~1-in-150 fixture draw
+    # that empties the scan's sha list: the landed-thread tests below would
+    # miss their line, and the open-work-words test would pass for the wrong
+    # reason. Re-roll the commit until the short form carries a letter.
+    for attempt in range(50):
+        if any(c in "abcdef" for c in _landed_sha(repo)):
+            break
+        _git(repo, "commit", "-q", "--amend", "-m", f"add memory-lint {attempt}")
+    else:  # pragma: no cover - 50 consecutive all-digit shas
+        pytest.fail("no fixture sha with a hex letter after 50 attempts")
     return repo
 
 
