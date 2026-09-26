@@ -106,8 +106,8 @@ Notable env vars (see the header comment in this script for full docs):
   PRECIS_CLUSTER_DIR, PRECIS_DEPLOY_EXTRA_VARS, PRECIS_DEPLOY_ALLOW_STALE,
   PRECIS_DEPLOY_NO_LOG, PRECIS_DEPLOY_LOG_DIR, PRECIS_DEPLOY_FROM_TREE,
   PRECIS_OVERLAY_DIR, PRECIS_DEPLOY_SKIP_CATPATH_WHEEL, PRECIS_CATPATH_DIR,
-  PRECIS_DEPLOY_LOCK_WAIT, PRECIS_DEPLOY_CANARY, PRECIS_DEPLOY_CANARY_TIMEOUT_S,
-  PRECIS_DEPLOY_CANARY_DB_HOST.
+  PRECIS_DEPLOY_SKIP_WHEEL_SMOKE, PRECIS_DEPLOY_LOCK_WAIT, PRECIS_DEPLOY_CANARY,
+  PRECIS_DEPLOY_CANARY_TIMEOUT_S, PRECIS_DEPLOY_CANARY_DB_HOST.
 USAGE
 }
 for _a in "$@"; do
@@ -692,6 +692,22 @@ if [[ -z "${PRECIS_DEPLOY_SKIP_CATPATH_WHEEL:-}" \
         say "autocatpath wheel → $(basename "$_WHEEL") (floor >=${_FLOOR})"
         EXTRA_ARGS+=(-e autocatpath_wheel="$_WHEEL")
     fi
+fi
+
+# ── 1b. wheel smoke (gr451360) ──────────────────────────────────────────
+# scripts/wheel-smoke builds the wheel this deploy is about to ship,
+# installs it into a scratch venv, and imports precis_web.app from a cwd
+# with no repo src/ on sys.path — the check that would have caught the
+# 2026-09-26 outage (a package missing from
+# [tool.hatch.build.targets.wheel] packages) before it went out, instead of
+# after nginx started 502ing. Same reason the ping and the autocatpath wheel
+# above abort here: better to fail before touching a host.
+# PRECIS_DEPLOY_SKIP_WHEEL_SMOKE=1 bypasses (e.g. a hand-verified emergency
+# redeploy where the extra ~30s matters more than the check).
+if [[ -z "${PRECIS_DEPLOY_SKIP_WHEEL_SMOKE:-}" ]]; then
+    say "wheel smoke: build + scratch-venv install + import (gr451360)"
+    "${REPO_ROOT}/scripts/wheel-smoke" \
+        || die "scripts/wheel-smoke failed — the wheel this deploy would ship does not import cleanly outside the source tree. Fix it, or PRECIS_DEPLOY_SKIP_WHEEL_SMOKE=1 to bypass (not recommended). (gr451360)"
 fi
 
 # ── 2. deploy ───────────────────────────────────────────────────────────

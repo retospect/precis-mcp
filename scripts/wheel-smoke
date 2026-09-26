@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# scripts/wheel-smoke — artifact-level check that the built precis-mcp wheel
+# is actually installable and importable, standalone, with no repo `src/`
+# on `sys.path`.
+#
+# gr451360: on 2026-09-26 prod 502'd because `src/precis_surface` was missing
+# from `[tool.hatch.build.targets.wheel] packages` in pyproject.toml — every
+# test passed anyway, because every test runs from a worktree, where `src/`
+# is on `sys.path` regardless of what the wheel declares.
+# tests/test_wheel_packages_cover_src.py (443d8295) catches a *declared*
+# mismatch (a package under src/ missing from the `packages` list), but
+# nothing before this built the wheel and imported it for real — an
+# undeclared runtime dependency, a source-tree-only import (an implicit
+# relative import that works only because a sibling package happens to
+# already be on sys.path), or a packaging config that hatchling silently
+# accepts but produces a wheel missing something, would all still pass
+# every test. This script closes that gap: build the wheel, install it into
+# a scratch venv, and import from a cwd that does NOT contain this repo's
+# `src/`.
+#
+# Not run in the six CI shards and not gated on nightly (per gr451360
+# comment 2) — it builds a wheel and does a real network pip install, too
+# slow/heavy for the per-push gate. It runs from tests/test_wheel_smoke.py
+# (@pytest.mark.slow, so scripts/test --fast / --impacted / the ship gate's
+# default all skip it) and pre-deploy from scripts/deploy (see there).
+#
+# Extras: mirrors deploy/roles/precis_web/tasks/main.yml's
+# `precis-mcp[web,pcb,estimate]` install — the actual extra set prod
+# installs into the venv that serves precis_web.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+TMPDIR_SMOKE="$(mktemp -d "${TMPDIR:-/tmp}/wheel-smoke.XXXXXX")"
+cleanup() { rm -rf "$TMPDIR_SMOKE"; }
+trap cleanup EXIT
+
+echo "wheel-smoke: HEAD=${HEAD_SHA}"
+
+echo "wheel-smoke: building wheel"
+(cd "$REPO_ROOT" && uv build --wheel --out-dir "$TMPDIR_SMOKE")
+WHEEL="$(find "$TMPDIR_SMOKE" -maxdepth 1 -name '*.whl' | head -1)"
+[[ -n "$WHEEL" ]] || { echo "wheel-smoke: no wheel produced in ${TMPDIR_SMOKE}" >&2; exit 1; }
+echo "wheel-smoke: built $(basename "$WHEEL")"
+
+echo "wheel-smoke: creating scratch venv"
+if ! uv venv "${TMPDIR_SMOKE}/venv" --python 3.13 >/dev/null 2>&1; then
+    # 3.13 unavailable/unfetchable here — fall back to whatever interpreter
+    # uv already has on hand rather than failing the whole check on a
+    # version pin unrelated to what this script is testing.
+    uv venv "${TMPDIR_SMOKE}/venv"
+fi
+VENV_PY="${TMPDIR_SMOKE}/venv/bin/python"
+
+echo "wheel-smoke: installing $(basename "$WHEEL")[web,pcb,estimate]"
+uv pip install --python "$VENV_PY" "${WHEEL}[web,pcb,estimate]"
+
+# cwd is the scratch dir, not the repo, so this repo's src/ is NOT on
+# sys.path — an import that only worked because a worktree run happens to
+# have src/ on sys.path (the exact gr451360 shape) fails here instead of
+# silently passing.
+(
+    cd "$TMPDIR_SMOKE"
+    "$VENV_PY" -c "
+import precis_web.app, precis_se, precis.dispatch
+precis_web.app.create_app()
+print('wheel-smoke ok')
+"
+)

@@ -256,6 +256,7 @@ def _run_deploy(
     env = _test_env(
         PRECIS_DEPLOY_ALLOW_STALE="1",
         PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
         PRECIS_DEPLOY_FROM_TREE="",
         PRECIS_CLUSTER_DIR=str(cluster_dir),
         PRECIS_DEPLOY_NO_LOG="1",

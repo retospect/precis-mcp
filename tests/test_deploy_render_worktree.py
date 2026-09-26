@@ -182,6 +182,7 @@ def _run_deploy(
 ) -> subprocess.CompletedProcess[str]:
     env = _test_env(
         PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
         PRECIS_DEPLOY_NO_LOG="1",
         RENDER_RECORD=str(record),
     )

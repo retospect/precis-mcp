@@ -63,6 +63,14 @@ that gap (never blocks on it):
   incident this fixes was a stale worktree pinned to an old sha rolling the
   whole fleet backward. Equal-sha (no-op redeploy) and a missing marker
   (first-ever deploy) both proceed; `--force-rollback` is the sole override.
+- **Wheel smoke** (gr451360): before touching any host, `scripts/deploy`
+  also runs `scripts/wheel-smoke`, which builds the wheel, installs it into
+  a scratch venv, and imports `precis_web.app` with no repo `src/` on
+  `sys.path` — the artifact-level check that would have caught the
+  2026-09-26 outage (a package missing from
+  `[tool.hatch.build.targets.wheel] packages`, invisible to every
+  worktree-run test) before it went out; `PRECIS_DEPLOY_SKIP_WHEEL_SMOKE=1`
+  bypasses it.
 - At the **start** of a ship, if the oldest undeployed commit is older than
   `PRECIS_DEPLOY_STALE_HOURS` (default `1`), `scripts/ship` prints a loud
   `⚠ deploy lag` warning — the "begin of next ship burst" moment is the

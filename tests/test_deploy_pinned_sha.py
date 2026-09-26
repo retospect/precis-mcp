@@ -227,6 +227,7 @@ def _run_deploy(
 ) -> subprocess.CompletedProcess[str]:
     env = _test_env(
         PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
         PRECIS_DEPLOY_FROM_TREE="",
         PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
         PRECIS_DEPLOY_NO_LOG="1",
@@ -446,6 +447,7 @@ def test_canary_path_pins_a_local_sha(fx: Fixture, tmp_path: Path) -> None:
     env_bin = _make_fake_bin(tmp_path)
     env = _test_env(
         PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
         PRECIS_DEPLOY_FROM_TREE="",
         PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
         PRECIS_DEPLOY_NO_LOG="1",
@@ -482,6 +484,7 @@ def test_canary_path_refuses_a_sha_no_remote_branch_reaches(
     env_bin = _make_fake_bin(tmp_path)
     env = _test_env(
         PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
+        PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
         PRECIS_DEPLOY_FROM_TREE="",
         PRECIS_CLUSTER_DIR=str(fx.cluster_dir),
         PRECIS_DEPLOY_NO_LOG="1",
