@@ -1979,6 +1979,7 @@ def test_shove_vias_on_by_default():
     assert RealizeConfig().shove_vias is True
 
 
+@pytest.mark.slow  # 22s in the 2026-09-26 gate profile
 def test_shove_vias_never_increases_segment_count_or_breaks_connectivity():
     """Shoving a via can only remove copper or leave it unchanged -- never
     add a bend, never change which segments routed, and never touch

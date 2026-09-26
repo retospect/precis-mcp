@@ -218,6 +218,7 @@ COLLARED_PILLAR = PILLAR.replace(
 )
 
 
+@pytest.mark.slow  # 324s in the 2026-09-26 gate profile
 def test_collared_pillar_is_over_curved() -> None:
     # the seam already supplies six heptagons; the collar doubles them:
     # euler.residual -6 (WARN), and the collar lands far from the hole

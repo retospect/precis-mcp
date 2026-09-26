@@ -284,6 +284,7 @@ def _jointed_pair_ops(
     ]
 
 
+@pytest.mark.slow  # 40s in the 2026-09-26 gate profile
 def test_dof_probe_runs_at_nano_scale() -> None:
     """The axis-travel probe on a nanometre prismatic pair must run (not
     crash, not skip) and report travel in metres."""

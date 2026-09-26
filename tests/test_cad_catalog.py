@@ -24,6 +24,11 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.cad import CadHandler
 
+# The BOM roll-up test alone was 378s in the 2026-09-26 gate profile — the
+# single slowest test in the suite — with two more at ~44s. See the `slow`
+# marker in tests/conftest.py.
+pytestmark = pytest.mark.slow
+
 # --- kernel ---------------------------------------------------------------
 
 

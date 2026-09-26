@@ -96,7 +96,11 @@ Tiers, fastest to most complete — pick by what you changed:
 - **`--impacted`** is the tightest inner loop: `pytest-testmon` maps
   test↔code and runs just the tests a working-tree change touches (the first
   run builds the map; later runs are sub-second when nothing relevant
-  changed). Use it while iterating on a specific edit.
+  changed). Use it while iterating on a specific edit. It also deselects
+  `slow` by default (gr261537) — testmon's map doesn't know the marker, so a
+  central-module diff could otherwise pull the heavy cluster into a selection
+  that is *also* forced to `-n0`, making impacted mode slower than a plain
+  full run. Pass your own `-m` to override.
 - **`--fast`** runs the **fast set** — `-m 'not db and not slow'`: skips every
   test that touches a `store`/`hub` fixture (auto-marked `db` in
   `tests/conftest.py`) *and* the heavy `slow` compute cluster. Both exclusions
@@ -109,20 +113,47 @@ Tiers, fastest to most complete — pick by what you changed:
   substitutes for the full run there.
 
 - **`-m 'not slow'`** keeps the DB suite but drops the `slow`-marked heavy
-  cluster (real materials/chemistry compute — see the marker in
-  `tests/conftest.py`). That one cluster is ~65% of the suite's wall-clock, so
-  this is a big cut while still exercising almost every code path. Use it when
-  you want broad DB coverage without paying for the glacial compute tests.
+  cluster (real materials/chemistry/pcb compute — see the marker in
+  `tests/conftest.py`). That one cluster dominates the suite's wall-clock, so
+  this is a big cut while still exercising almost every code path. As of this
+  change it is also the local ship gate's default lane — so all three local
+  lanes (`--impacted`, `--fast`, the gate) now agree on deselecting `slow`,
+  and CI is the only place that runs it. See below.
 
-None of these substitute for a full run before shipping — testmon's map can
-miss an indirect dependency, `--fast` deselects the entire DB suite, and
-`-m 'not slow'` skips the heavy cluster. The ship gate (and `/go` before a
-deploy) always runs everything.
+Neither of the first two substitutes for a broad run before shipping —
+testmon's map can miss an indirect dependency, and `--fast` deselects the
+entire DB suite.
 
-`scripts/ship` (via `/land`, `/go`) runs the **authoritative** full
-pre-merge gate (`ruff` + `mypy` + `pytest`, in-container). Everything above
-is the fast loop that gets you to a green gate cheaply — the gate is what
-actually decides mergeability.
+`scripts/ship` (via `/land`, `/go`) runs the **authoritative** pre-merge gate
+(`ruff` + `mypy` + `pytest`, in-container). Everything above is the fast loop
+that gets you to a green gate cheaply — the gate is what actually decides
+mergeability.
+
+**The local gate's default lane is `-m 'not slow'`.** The `slow` cluster is a
+handful of tests holding a large share of wall-clock: on 2026-09-25 a full
+local gate took 2h08m and spent 90+ of those minutes on the last ~5% of the
+run, five of six xdist workers idle. At that duration `/go` could not win a
+CAS race against a `/qland` burst — main moved underneath two consecutive
+gates before either reached its squash-merge. So the local gate deselects the
+cluster and `/go` gets its verdict in minutes.
+
+What still covers it, so nothing is actually ungated:
+
+- **check.yml's 6 Linux shards carry no `-m` filter** — every push to `main`
+  and every `ci/**` pre-merge gate runs the whole cluster.
+- The nightly full matrix runs it on 3.12, macOS and Windows too.
+
+The trade, taken deliberately: a `slow`-cluster regression can reach the
+cluster via `/go` and be caught by CI minutes later, rather than being
+blocked before deploy. `scripts/ship --slow` (or `PRECIS_GATE_SLOW=1`)
+restores the authoritative full set — use it when the change *is* in the slow
+cluster's subsystem.
+
+One interaction to know about: the full gate's diff-coverage check measures
+only what the gate run executed, so deselecting the slow cluster removes
+exactly the tests that cover the pcb/se/hexfold `src/` lines. A genuinely
+well-tested change there can therefore fail diff-cover at 90%. `scripts/ship`
+says so in the failure text; re-run with `--slow` before writing new tests.
 
 ## Raw SQL ⇒ a real-PG test — FakeStore is blind to SQL
 

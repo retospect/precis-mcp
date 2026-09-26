@@ -44,6 +44,11 @@ from tests.test_se_fasten_seatclamp import _ensure_fastener_specs
 from tests.test_se_print_views import _mint_slug
 from tests.test_se_simp_bridge import _job_params, _simp_op
 
+# Print-intent resolution drives the same export kernel as
+# test_se_print_manufacture — 33-37s per test in the 2026-09-26 gate profile.
+# See the `slow` marker in tests/conftest.py.
+pytestmark = pytest.mark.slow
+
 _MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 

@@ -6457,6 +6457,7 @@ class TestFrontierTreeDossierChunk:
             "# fresh narrative\n\nsomething new"
         )
 
+    @pytest.mark.slow  # 130s in the 2026-09-26 gate profile
     def test_regenerated_at_end_of_tick_after_harvest(self, store: Any) -> None:
         from precis.quest import dossier as dossier_mod
 

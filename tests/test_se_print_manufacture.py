@@ -48,6 +48,10 @@ from tests.test_se_simp_bridge import _job_params
 
 __all__ = ["handler", "register_se_simp"]  # fixtures re-exported for pytest
 
+# 3mf/CAD export over real geometry — a dozen tests at 26-78s in the
+# 2026-09-26 gate profile. See the `slow` marker in tests/conftest.py.
+pytestmark = pytest.mark.slow
+
 _PITCH = 0.0005
 _GAP = 0.001
 _PIN_R = 0.004
