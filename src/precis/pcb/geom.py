@@ -209,10 +209,11 @@ def bboxes_disjoint(
 
 def sweep_line_crossings(segments: list[tuple[int, Point, Point]]) -> int:
     """Count genuine crossings among ``segments`` — ``(group_id, p1, p2)``
-    triples, e.g. a net id, so two segments sharing a ``group_id`` (spokes
-    of the same star hub) NEVER count against each other, regardless of
-    geometry: real board segments only fan out from a shared point by
-    construction, not by a routing conflict (this is the primary
+    triples, e.g. a net id, so two segments sharing a ``group_id`` (edges of
+    one net's spanning tree) NEVER count against each other, regardless of
+    geometry: two pieces of copper on the SAME electrical node may touch or
+    cross freely — that is not a routing conflict, it is one node (this is
+    the primary
     "shared-endpoint" degenerate case — the same-``group_id`` check is a
     stronger, exact version of :func:`shares_endpoint`'s coordinate-based
     one, kept as a belt-and-suspenders second line of defense inside

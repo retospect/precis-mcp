@@ -546,14 +546,65 @@ def positions(ir: pcb_ir.PcbIR) -> dict[str, tuple[float, float, float]]:
     return out
 
 
-def content_hash(graph: dict[str, Any], params: dict[str, Any]) -> str:
+def content_hash(
+    graph: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    session_state: dict[str, Any] | None = None,
+) -> str:
     """A stable digest of the netlist+placement+params an op runs against
     — the ``content-hash`` half of the ``(design, op, content-hash)``
     idempotency key (backlog, verbatim). Deliberately excludes the
     volatile ``route_status``/``board_id`` summary fields
     :meth:`Store.pcb_graph` also carries — including those would make a
     route job's OWN write-back change the hash of an otherwise-identical
-    re-submit, defeating idempotency."""
+    re-submit, defeating idempotency.
+
+    ``session_state`` (gr266041) covers the six extra store surfaces
+    :mod:`precis.workers.job_types.pcb_place`/``pcb_route`` read that
+    ``graph``/``params`` don't: features (outline/mounting holes),
+    route-topology overrides, pin swaps, plane assignments, measures, and
+    fixed copper. Callers (:meth:`PcbHandler._enqueue_op`) hand in the RAW
+    store rows (``Store.pcb_features_list``/``pcb_routes_get``/
+    ``pcb_pin_swaps_list``/``pcb_planes_list``/``pcb_measures_list``/
+    ``pcb_fixed_copper_list``, verbatim) — the narrowing to a stable,
+    human-authored projection happens HERE, not at the call site, so
+    there is exactly one place that can get it wrong.
+
+    Deliberately excluded, and why:
+
+    - ``pcb_routes_get``'s ``status``/``fail``/``meta``/``tree``/
+      ``layer_assign`` — all job-written checkpoint fields the SAME
+      ``pcb_route`` run persists back (:meth:`Store.pcb_routes_write`).
+      Only ``topology`` (the human/``pin_side`` override) is hashed per
+      net.
+    - any ``pcb_planes_list``/``pcb_pin_swaps_list`` row whose
+      ``source`` is ``'derived'`` — optimizer write-back
+      (:meth:`Store.pcb_planes_replace_derived`/
+      :meth:`Store.pcb_pin_swaps_replace_derived`). Only ``source ==
+      'authored'`` rows are hashed.
+
+    Hashing the job-written side of either surface would repeat this
+    function's own ``route_status``/``board_id`` hazard one layer down:
+    a completed job's write-back would change the digest of an
+    otherwise-identical resubmit and mint a fresh duplicate job on every
+    single re-check — the opposite failure from the one this parameter
+    exists to fix. ``None`` (the default) reproduces the pre-gr266041
+    digest byte-for-byte, so no in-flight idempotency key changes shape
+    on deploy.
+
+    Expected ``session_state`` shape (each key optional, missing ==
+    empty), matching the store methods' own return shapes verbatim::
+
+        {
+            "features": Store.pcb_features_list(ref_id),
+            "routes": Store.pcb_routes_get(ref_id),
+            "pin_swaps": Store.pcb_pin_swaps_list(ref_id),
+            "planes": Store.pcb_planes_list(ref_id),
+            "measures": Store.pcb_measures_list(ref_id),
+            "fixed_copper": Store.pcb_fixed_copper_list(board_id),
+        }
+    """
     instances = sorted(
         (i["refdes"], i.get("x"), i.get("y"), i.get("rot"), i.get("fixed"))
         for i in graph.get("instances") or []
@@ -567,12 +618,67 @@ def content_hash(graph: dict[str, Any], params: dict[str, Any]) -> str:
         for n in graph.get("nets") or []
     )
     stackup = (graph.get("board") or {}).get("stackup")
-    payload = json.dumps(
-        {"instances": instances, "nets": nets, "stackup": stackup, "params": params},
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.blake2b(payload.encode("utf-8"), digest_size=12).hexdigest()
+    payload: dict[str, Any] = {
+        "instances": instances,
+        "nets": nets,
+        "stackup": stackup,
+        "params": params,
+    }
+    if session_state is not None:
+        state = session_state
+        features = sorted(
+            (
+                f.get("ftype"),
+                f.get("x"),
+                f.get("y"),
+                f.get("rot"),
+                f.get("layer"),
+                f.get("fixed"),
+                json.dumps(f.get("geom"), sort_keys=True, default=str),
+                f.get("note"),
+            )
+            for f in state.get("features") or []
+        )
+        routes = sorted(
+            (net_name, json.dumps(row.get("topology"), sort_keys=True, default=str))
+            for net_name, row in (state.get("routes") or {}).items()
+        )
+        pin_swaps = sorted(
+            (p.get("refdes"), p.get("pin"), p.get("net"))
+            for p in state.get("pin_swaps") or []
+            if p.get("source", "authored") == "authored"
+        )
+        planes = sorted(
+            (p.get("layer"), p.get("net"), p.get("region_hint"))
+            for p in state.get("planes") or []
+            if p.get("source", "authored") == "authored"
+        )
+        measures = sorted(
+            (
+                m.get("metric"),
+                m.get("direction"),
+                m.get("goal"),
+                m.get("strength"),
+                m.get("weight"),
+                tuple(m.get("operands") or []),
+                m.get("reason"),
+            )
+            for m in state.get("measures") or []
+        )
+        fixed_copper = sorted(
+            json.dumps(fc, sort_keys=True, default=str)
+            for fc in state.get("fixed_copper") or []
+        )
+        payload["session_state"] = {
+            "features": features,
+            "routes": routes,
+            "pin_swaps": pin_swaps,
+            "planes": planes,
+            "measures": measures,
+            "fixed_copper": fixed_copper,
+        }
+    payload_json = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.blake2b(payload_json.encode("utf-8"), digest_size=12).hexdigest()
 
 
 __all__ = [

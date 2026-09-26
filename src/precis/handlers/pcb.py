@@ -508,7 +508,28 @@ class PcbHandler(Handler):
             params["iters"] = int(opts["iters"])
         if opts.get("seed") is not None:
             params["seed"] = int(opts["seed"])
-        digest = pcb_session.content_hash(graph, params)
+        board_id = (graph.get("board") or {}).get("board_id")
+        # Raw store rows, verbatim -- `content_hash` itself does the
+        # narrowing (job-written-field exclusion, authored-vs-derived
+        # filtering) so there is exactly one place that can get it wrong.
+        session_state = {
+            "features": self.store.pcb_features_list(ref.id),
+            "routes": self.store.pcb_routes_get(ref.id),
+            "pin_swaps": self.store.pcb_pin_swaps_list(ref.id),
+            "planes": self.store.pcb_planes_list(ref.id),
+            "measures": self.store.pcb_measures_list(ref.id),
+            # `pcb_fixed_copper_list` is keyed by board_id, not ref_id --
+            # `graph["board"]["board_id"]` is already in hand from the
+            # `pcb_graph` call above (`_pcb_board_meta`), so this costs no
+            # extra round trip. A board-less design (no `pcb_boards` row
+            # yet) has nothing authored to hash here.
+            "fixed_copper": (
+                self.store.pcb_fixed_copper_list(int(board_id))
+                if board_id is not None
+                else []
+            ),
+        }
+        digest = pcb_session.content_hash(graph, params, session_state=session_state)
         job_resp = self.hub.sibling("job").put(
             job_type=f"pcb_{op}",
             executor="job_inproc",
@@ -844,7 +865,16 @@ class PcbHandler(Handler):
                 for i in graph["instances"]
                 if i["x"] is not None and i["y"] is not None
             }
-            wires = ratsnest.build_airwires(placed, graph["nets"])
+            # gr449579 / td450119: the side set is what makes the MST's via
+            # bias fire. Resolved HERE from the same `pcb_instances.layer`
+            # predicate everything else reads — `ratsnest` deliberately
+            # never re-derives top/bottom itself.
+            bottom = frozenset(
+                i["refdes"]
+                for i in graph["instances"]
+                if padplace.is_bottom_instance(i)
+            )
+            wires = ratsnest.build_airwires(placed, graph["nets"], bottom=bottom)
             if view == "feasibility":
                 f = place.route_feasibility(wires)
                 return Response(

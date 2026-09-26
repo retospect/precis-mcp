@@ -2697,9 +2697,9 @@ def _plane_fanout(
     to-silk-softly preference -- see this section's module note.
 
     One stub plus one drop via per PIN, not per segment. A net's segments
-    are a star from ``member_pins[0]`` (``ir.from_graph``), so per-segment
-    fanout emitted the hub pin's stub once per connection and gave the leaf
-    pins nothing at all — and it drew each stub on ``ir.seg_layer``, the L1
+    are a spanning TREE over its pins (``ir.from_graph``), so per-segment
+    fanout emitted a stub once per tree EDGE — several for a high-degree pin,
+    none for a pin the tree happened to reach once — and it drew each stub on ``ir.seg_layer``, the L1
     sketch layer, which for a pad on ``PAD_LAYER`` means a stub that starts
     on a layer its own pad is not on. Both bugs are the same mistake:
     treating a plane connection as a property of a *connection* when it is
@@ -4661,11 +4661,11 @@ def _snap_to_pads(
     The far end is always the target pad, so it always snaps. **The near
     end snaps only when the path did not attach to its own net's copper**,
     which :attr:`maze.RoutePath.attached` reports and no distance test can:
-    ``ir.from_graph`` decomposes a net into a STAR from ``member_pins[0]``,
-    so every connection shares one hub pin and the trunk runs right past
-    that pad. The earlier proximity proxy therefore fired on branches that
+    ``ir.from_graph`` decomposes a net into a spanning TREE over its pins,
+    so adjacent connections share a pin and the trunk runs right past that
+    pad. The earlier proximity proxy therefore fired on branches that
     had attached to the trunk — dragging the head off the trunk and onto
-    the hub pad, on whichever layer the branch happened to be. Measured on
+    the shared pad, on whichever layer the branch happened to be. Measured on
     seed 2: SDA in five pieces, three B.Cu branches sitting on the
     coordinates of an F.Cu pad they were never connected to, with DRC
     clean and nothing reported unrouted. Snapping an attached head is not

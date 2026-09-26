@@ -1031,10 +1031,10 @@ class OccupancyGrid:
 
         # Multi-source: this net's own already-routed copper is a legal
         # place to start, because connecting to a net means reaching ANY
-        # point of it, not one designated pad. Without this the segment
-        # decomposition's hub pad has to carry every one of its net's
-        # connections through its own escape corridor — 26 GND segments
-        # radiating from one pin, of which about two fit.
+        # point of it, not one designated pad. Without this, every pad the
+        # segment decomposition gives a high degree has to carry all of its
+        # tree edges through its own escape corridor — measured at 26 GND
+        # segments radiating from one pin, of which about two fit.
         g_score: dict[int, float] = {}
         came: dict[int, int] = {}
         closed: set[int] = set()

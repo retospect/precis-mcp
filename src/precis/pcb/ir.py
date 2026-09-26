@@ -763,6 +763,58 @@ def _parse_instance_groups(
     )
 
 
+def _net_tree_edges(
+    member_pins: list[int],
+    *,
+    pin_instance: list[int],
+    inst_bottom: list[bool],
+) -> list[tuple[int, int]]:
+    """The two-pin edges that decompose one net into segments — still a
+    **star**, but rooted at a hub chosen for board SIDE rather than for
+    authoring order (todo 450119, option (b)).
+
+    The defect: a star's cross-side segment count is the number of members
+    that are NOT on the hub's side, so picking the hub by authoring order
+    priced the net's vias on an irrelevant fact. ``J_INSTR -> U_TEMP ->
+    R_BLEED`` with ``U_TEMP`` on the back needed two vias when the author
+    wrote ``U_TEMP`` first and one when they did not. Rooting at the
+    MAJORITY side makes the count ``len(minority)`` regardless of order.
+
+    **Why a star and not the minimum spanning tree.** The MST is strictly
+    better on via count — one crossing for any net, against ``len(minority)``
+    here — and it was built and measured first (option (a), the recommended
+    one). It **regressed the ESP32-C3 acceptance board**: 2–4 `connectivity`
+    DRC errors at every seed, where the criterion for the whole place+route
+    build is zero. The router depends on the star shape more than its own
+    docstrings admit — every segment of a net shares the hub pad, so the
+    trunk necessarily runs past it and each branch has somewhere already-
+    routed to attach to (see :meth:`precis.pcb.maze.OccupancyGrid.route`'s
+    multi-source start and ``realize``'s ``attached`` handling). A chain
+    topology removes that guarantee. Restoring it is a router change, not a
+    netlist change, so it belongs to its own round; until then the star is
+    load-bearing and this docstring is the warning.
+
+    Ties break on the first member in the (already sorted) member order, so
+    a net with no side split reproduces the previous decomposition
+    byte-for-byte: hub is ``member_pins[0]``.
+    """
+    if len(member_pins) < 2:
+        return []
+    bottoms = [bool(inst_bottom[pin_instance[p]]) for p in member_pins]
+    # Majority side wins; on an exact tie the first member's side wins, which
+    # keeps the single-side case identical to the pre-450119 behaviour.
+    n_bottom = sum(bottoms)
+    hub_on_bottom = n_bottom * 2 > len(bottoms) or (
+        n_bottom * 2 == len(bottoms) and bottoms[0]
+    )
+    hub_index = next(
+        (i for i, b in enumerate(bottoms) if b == hub_on_bottom),
+        0,
+    )
+    hub = member_pins[hub_index]
+    return [(hub, p) for i, p in enumerate(member_pins) if i != hub_index]
+
+
 def from_graph(
     graph: dict[str, Any],
     *,
@@ -783,12 +835,15 @@ def from_graph(
     fallback) — that guess belongs to a consumer that has decided it wants
     one (see :attr:`PcbIR.outline`'s own docstring).
 
-    **Segment decomposition is a star per net** (first member is the hub):
-    a design *choice* the netlist records at L0, not something geometry
-    dictates — a net's electrical meaning doesn't care which two-pin edges
-    represent it, only that they span every member. An MST/Steiner
-    alternative is a future move class (`re-root the star`), not a
-    correctness requirement of this slice.
+    **Segment decomposition is a star per net, rooted at a SIDE-CHOSEN hub**
+    (:func:`_net_tree_edges`, todo 450119): a design *choice* the netlist
+    records at L0, not something geometry dictates — a net's electrical
+    meaning doesn't care which two-pin edges represent it, only that they
+    span every member. The hub used to be whichever member the author wrote
+    first, which priced the net's vias on an irrelevant fact; it is now the
+    member on the majority board side. Read that function's docstring before
+    replacing the star with a spanning tree — it records what broke when
+    that was tried.
 
     L1 layers and L3 positions are left **unset** unless the graph already
     supplies them, matching what the netlist/placement store actually
@@ -827,6 +882,18 @@ def from_graph(
         pin_net.append(net_id)
         return pid
 
+    # Placement and board side, read BEFORE the net loop: segment
+    # decomposition picks its hub by board side (`_net_tree_edges`).
+    inst_x = np.full(n_inst, np.nan)
+    inst_y = np.full(n_inst, np.nan)
+    for inst in instances:
+        i = refdes_to_id[inst["refdes"]]
+        if inst.get("x") is not None:
+            inst_x[i] = float(inst["x"])
+        if inst.get("y") is not None:
+            inst_y[i] = float(inst["y"])
+    inst_is_bottom = [padplace.is_bottom_instance(inst) for inst in instances]
+
     net_name: list[str] = []
     net_domain: list[str] = []
     net_class: list[str] = []
@@ -843,11 +910,24 @@ def from_graph(
         current = net.get("est_current_a")
         net_current_a.append(math.nan if current is None else float(current))
         members = net.get("members") or []
-        member_pins = [_pin(m["refdes"], m.get("pin") or "1", net_id) for m in members]
-        for other in member_pins[1:]:
+        member_pins: list[int] = []
+        seen_pins: set[int] = set()
+        for m in members:
+            pid = _pin(m["refdes"], m.get("pin") or "1", net_id)
+            # A net listing the same (refdes, pin) twice used to produce a
+            # segment from a pin to ITSELF, which is not a connection and
+            # which the MST below cannot key unambiguously anyway.
+            if pid not in seen_pins:
+                seen_pins.add(pid)
+                member_pins.append(pid)
+        for pin_a, pin_b in _net_tree_edges(
+            member_pins,
+            pin_instance=pin_instance,
+            inst_bottom=inst_is_bottom,
+        ):
             seg_net.append(net_id)
-            seg_pin_a.append(member_pins[0])
-            seg_pin_b.append(other)
+            seg_pin_a.append(pin_a)
+            seg_pin_b.append(pin_b)
 
     for u in graph.get("unconnected") or []:
         _pin(u["refdes"], u["pin"], NO_NET)
@@ -914,15 +994,6 @@ def from_graph(
         rotation_index[p + 1] = rotation_index[p] + len(darts_by_pin[p])
         flat_darts.extend(darts_by_pin[p])
 
-    inst_x = np.full(n_inst, np.nan)
-    inst_y = np.full(n_inst, np.nan)
-    for inst in instances:
-        i = refdes_to_id[inst["refdes"]]
-        if inst.get("x") is not None:
-            inst_x[i] = float(inst["x"])
-        if inst.get("y") is not None:
-            inst_y[i] = float(inst["y"])
-
     (
         inst_group,
         inst_group_offset_dx,
@@ -944,9 +1015,7 @@ def from_graph(
         inst_extended_part=np.array(
             [bool(inst.get("extended_part")) for inst in instances], dtype=bool
         ),
-        inst_bottom=np.array(
-            [padplace.is_bottom_instance(inst) for inst in instances], dtype=bool
-        ),
+        inst_bottom=np.array(inst_is_bottom, dtype=bool),
         instance_part_lcsc=_obj_array([inst.get("part_lcsc") for inst in instances]),
         pin_instance=np.array(pin_instance, dtype=np.int32),
         pin_label=_obj_array(pin_label),

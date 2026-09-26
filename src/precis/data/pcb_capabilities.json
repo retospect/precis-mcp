@@ -162,5 +162,13 @@
       {"max_voltage_v": 300, "b1_internal_mm": 0.2, "b2_external_uncoated_mm": 1.25, "b4_external_coated_mm": 0.4},
       {"max_voltage_v": 500, "b1_internal_mm": 0.25, "b2_external_uncoated_mm": 2.5, "b4_external_coated_mm": 0.8}
     ]
+  },
+  "coating_extent_mm": {
+    "source": null,
+    "retrieved": null,
+    "process": "parylene",
+    "note": "Maximum finished-board extent the CONFORMAL COATING step can accept -- a property of the coater's chamber and fixturing, not of the fab (gr414481: an EWOD board a fab will happily make can still be too large to parylene). A separate top-level key for the same reason as 'ipc2221b_conductor_spacing_mm' -- it is a process constraint, not one fab's process capability -- and for a second reason: every figure in 'rows' is a MINIMUM while this is a MAXIMUM, which would invert headroom() and the house_default >= jlc_min margin invariant. precis.pcb.capabilities.coating_extent_mm() is the only sanctioned reader -- never index this key directly from a generator. max_width_mm and max_height_mm are BOTH null because the figure is a physical fact about the coater in use and has not been supplied. Null means UNKNOWN, not 'no limit': a caller must say out loud that the extent went unchecked rather than report a clean result. Fill both in, with 'source' naming the coater and 'retrieved' the date it was read off, to turn the check on.",
+    "max_width_mm": null,
+    "max_height_mm": null
   }
 }
