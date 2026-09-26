@@ -2,7 +2,6 @@
 status: ready
 title: claim conflict search — every claim hunts its own opposition, at mint and retroactively, with coverage tracked
 model: opus
-blocked-by: disputes-edge-nonblocking-disagreement
 ---
 
 # Claim conflict search — at mint, and retroactively, with a coverage ledger

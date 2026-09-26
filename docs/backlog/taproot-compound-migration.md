@@ -2,7 +2,6 @@
 status: draft
 title: Taproot compound→atomic migration — corpus-wide apply, blocked on regrounding
 model: opus
-blocked-by: fisheye-conjunct-of-surfacing
 ---
 
 # Taproot compound→atomic migration

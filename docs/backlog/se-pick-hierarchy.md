@@ -3,7 +3,7 @@ status: draft
 title: se viewer — cross-scale pick → hierarchical reference → prompt token
 prio: medium
 model: opus
-blocked-by: hexfold-integration, se-datum-measure-eval
+blocked-by: hexfold-integration
 ---
 
 # Pick anything, get every level it belongs to, cite one in the prompt

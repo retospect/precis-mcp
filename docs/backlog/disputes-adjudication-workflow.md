@@ -2,7 +2,6 @@
 status: draft
 title: "disputes adjudication — a claim about two claims, five verdicts, and the derived `contradicts`"
 model: opus
-blocked-by: disputes-edge-nonblocking-disagreement
 ---
 
 # Disputes adjudication workflow (Part 2 of the `disputes` split)
