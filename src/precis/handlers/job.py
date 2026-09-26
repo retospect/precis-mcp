@@ -124,6 +124,11 @@ class JobHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
+        # put() genuinely branches on mode= — the sole recognised value
+        # is the retry surface (put(id=N, mode='retry')); every other
+        # value is rejected (gr343755 — a real one-element vocabulary,
+        # not the "every mode= rejected" `()` shape).
+        modes=("retry",),
     )
 
     kind: ClassVar[str] = "job"
@@ -463,9 +468,14 @@ class JobHandler(NumericRefHandler):
                     f"link(kind='job', id=N, target=..., mode='add'|'remove')"
                 ),
             )
-        if mode is not None or untags is not None or unlink is not None:
+        # mode= is fully handled above: KindSpec.modes=('retry',)
+        # (gr343755) means the dispatch gate already rejects any value
+        # other than 'retry'/None before this method runs, and 'retry'
+        # already returned above — so by this point mode is always
+        # None and needs no further check here.
+        if untags is not None or unlink is not None:
             raise BadInput(
-                "mode= / untags= / unlink= are not accepted on job put",
+                "untags= / unlink= are not accepted on job put",
                 next="use tag() / link() / delete() against an existing job",
             )
         if job_type is None or not str(job_type).strip():

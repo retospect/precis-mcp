@@ -90,6 +90,10 @@ class MessageHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
+        # put() recognises mode= (it's a declared kwarg below) but
+        # rejects every value — messages are immutable, so there's no
+        # create/import-style mode axis at all (gr343755).
+        modes=(),
     )
 
     kind: ClassVar[str] = "message"
@@ -147,11 +151,9 @@ class MessageHandler(NumericRefHandler):
                     "get(kind='skill', id='precis-message-help') for the full surface",
                 ],
             )
-        if mode is not None:
-            raise BadInput(
-                "mode= is not accepted on put for kind='message'",
-                next="omit mode=",
-            )
+        # mode= rejection: KindSpec.modes=() on this handler (gr343755)
+        # — the dispatch-level gate rejects any supplied mode= before
+        # this method is ever called.
         if untags is not None:
             raise BadInput(
                 "untags= is not accepted on put",

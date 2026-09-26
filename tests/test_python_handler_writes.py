@@ -527,7 +527,7 @@ def test_kind_spec_supports_seven_verb_surface() -> None:
     assert PythonHandler.spec.supports_edit is True
     assert PythonHandler.spec.supports_delete is True
     # ``put`` only carries ``create`` after the cutover.
-    assert tuple(PythonHandler.spec.modes) == _SUPPORTED_PUT_MODES
+    assert PythonHandler.spec.modes == _SUPPORTED_PUT_MODES
     assert _SUPPORTED_PUT_MODES == ("create",)
 
 

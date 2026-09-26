@@ -764,7 +764,7 @@ def test_import_supports_put_advertised_in_spec() -> None:
     """KindSpec.supports_put + modes must be honest."""
     for cls in (WebsearchHandler, ThinkHandler, ResearchHandler):
         assert cls.spec.supports_put is True
-        assert "import" in cls.spec.modes
+        assert cls.spec.modes is not None and "import" in cls.spec.modes
 
 
 # ── /recent listing view ─────────────────────────────────────────────

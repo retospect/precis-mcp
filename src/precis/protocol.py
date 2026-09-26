@@ -165,29 +165,41 @@ class KindSpec:
     can_own_jobs: bool = False
 
     views: tuple[str, ...] = ()  # supported view= values
-    #: Supported ``mode=`` values for ``put``. Populate only for a kind
-    #: whose ``put`` *branches on* ``mode`` (dispatches differently per
-    #: value, or explicitly rejects any value) — leave the default `()`
-    #: for a kind whose ``put`` doesn't take a ``mode`` parameter at all,
-    #: or silently ignores an unrecognised one via ``**_kw``. An empty
-    #: tuple is therefore ambiguous between "no mode= concept applies"
-    #: and "every mode= is rejected" (gripe's put is the latter) — both
-    #: read the same to a caller: omit ``mode=``. See ``edit_modes``
-    #: for the parallel declaration on ``edit``, and
-    #: ``precis.handlers._mode_help.require_mode`` for the shared
-    #: enforcement helper that reads this field (gr292913).
-    modes: tuple[str, ...] = ()
-    #: Supported ``mode=`` values for ``edit``. Same non-empty-only-if-
-    #: branching convention as ``modes`` above, but for the ``edit``
-    #: verb's ``mode=`` — a *distinct* vocabulary (region-rewrite ops
-    #: like ``'find-replace'``/``'append'``/``'insert'``/``'replace'``,
-    #: or a single-mode kind like ``todo``/``memory`` that only accepts
+    #: Supported ``mode=`` values for ``put``, or ``None``. Two
+    #: sentinels, deliberately distinct (gr343755 ruling, replacing the
+    #: ambiguous shared-``()`` default that used to mean either one):
+    #:
+    #: - ``None`` (the default): ``put`` has no ``mode=`` concept at
+    #:   all for this kind — it doesn't take the parameter, or silently
+    #:   ignores an unrecognised one via ``**_kw``. A caller-supplied
+    #:   ``mode=`` is rejected at dispatch the same way any other kwarg
+    #:   the handler doesn't accept would be.
+    #: - ``()``: ``put`` *branches on* ``mode`` — actually recognises
+    #:   the parameter — but explicitly rejects every value (e.g. a
+    #:   kind whose ``put`` shape has no mode axis, but wants a clear
+    #:   error rather than swallowing the kwarg). ``message`` is the
+    #:   canonical example.
+    #: - a non-empty tuple: the declared vocabulary; any other supplied
+    #:   value is rejected.
+    #:
+    #: See ``edit_modes`` for the parallel declaration on ``edit``, and
+    #: ``precis.handlers._mode_help.require_mode`` plus
+    #: :mod:`precis.runtime.dispatch`'s mode gate for the enforcement
+    #: that reads this field.
+    modes: tuple[str, ...] | None = None
+    #: Supported ``mode=`` values for ``edit``, or ``None``. Same
+    #: three-way sentinel convention as ``modes`` above (``None`` = no
+    #: concept, ``()`` = recognised but always rejected, non-empty =
+    #: the vocabulary), but for the ``edit`` verb's ``mode=`` — a
+    #: *distinct* vocabulary (region-rewrite ops like
+    #: ``'find-replace'``/``'append'``/``'insert'``/``'replace'``, or a
+    #: single-mode kind like ``todo``/``memory`` that only accepts
     #: ``'replace'``). Kept separate from ``modes`` rather than folded
     #: into one field because ``put`` and ``edit`` modes never overlap
     #: in practice (create/import vs. region-rewrite) and conflating
     #: them would make a kind that supports both verbs report the union
     #: as if either verb accepted every value in it.
-    edit_modes: tuple[str, ...] = ()
+    edit_modes: tuple[str, ...] | None = None
 
     requires_env: tuple[str, ...] = ()  # all must be set or kind is hidden
     #: Secrets that must resolve (env → DB vault → file) or the kind

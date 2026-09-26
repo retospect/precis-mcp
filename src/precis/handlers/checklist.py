@@ -103,7 +103,16 @@ class ChecklistHandler(Handler):
         placement="artifact",
         corpus_role="none",
         views=_VIEWS,
-        edit_modes=_EDIT_OPS,
+        # NOT edit_modes=_EDIT_OPS: checklist's edit() selector is
+        # op=, a distinct kwarg from mode= (edit() has no mode=
+        # parameter at all — **_kw swallows the tools/core.py wrapper's
+        # forced mode='find-replace' default silently). edit_modes is
+        # specifically the mode= vocabulary; declaring _EDIT_OPS there
+        # was dead metadata before gr343755 gave the field a live
+        # dispatch-level reader, and would now falsely reject every
+        # checklist edit() call under a wrong mode= framing. See
+        # KindSpec.edit_modes / _EDIT_OPS's own use in the op=
+        # validation just below.
     )
 
     def __init__(self, *, hub: Hub) -> None:

@@ -75,6 +75,24 @@ _VERBS: tuple[Verb, ...] = _ALL_VERBS
 #: declares it explicitly and is unaffected either way.
 _ALWAYS_TOLERATED_TOP_LEVEL_KWARGS = frozenset({"mode", "verdict", "page", "page_size"})
 
+#: ``tools/core.py::edit``'s own non-``None`` default for ``mode=``
+#: (``"find-replace"``, the file-kind idiom) — the specific value
+#: behind the comment above: every MCP ``edit()`` call carries this in
+#: ``clean`` whether or not the caller ever mentioned ``mode=``, so it
+#: can never be read as "the caller asked for find-replace" versus
+#: "the caller didn't think about mode= at all". :meth:`DispatchMixin.
+#: _validate_mode` (gr343755) exempts exactly this value from its
+#: ``KindSpec.edit_modes`` membership check for that reason — a kind
+#: whose only accepted mode is something else entirely (``todo``/
+#: ``quest``/``memory``: ``edit_modes=('replace',)``) still has a
+#: mode-agnostic edit path (e.g. todo's meta-only ``llm_tier`` park,
+#: gr439934) that must not be rejected just because the wrapper always
+#: fills this slot in. ``put``'s wrapper default is ``None`` (see
+#: ``tools/core.py::put``), so no equivalent exemption is needed there
+#: — an omitted ``mode=`` truly arrives as ``None``, which the gate
+#: already treats as "not supplied".
+_EDIT_MODE_WRAPPER_DEFAULT = "find-replace"
+
 #: Sentinel key used by `precis.server` to forward the MCP tool's
 #: ``args={...}`` payload through to the dispatcher without colliding
 #: with the explicit positional kwargs. The dispatcher pops it before
@@ -1378,6 +1396,8 @@ class DispatchMixin(RuntimeShape):
         # Strip None args so handlers see absence as missing.
         clean = {k: v for k, v in args.items() if v is not None}
 
+        self._validate_mode(handler, verb, kind, clean)
+
         # gr334695: a caller kwarg that isn't one of this handler's own
         # explicit params, nor forwarded anywhere via its own **kwargs
         # catch-all (walking the cooperative-inheritance chain — see
@@ -1451,6 +1471,59 @@ class DispatchMixin(RuntimeShape):
         if verb == "get" and self._is_id_empty(args.get("id")):
             response = self._maybe_append_kind_skill_footer(response, kind)
         return response
+
+    @staticmethod
+    def _validate_mode(
+        handler: Handler, verb: str, kind: str, clean: dict[str, Any]
+    ) -> None:
+        """Validate a supplied ``mode=`` against ``KindSpec.modes``/
+        ``edit_modes`` before the handler ever sees it (gr343755).
+
+        Only ``put``/``edit`` carry a ``mode=`` vocabulary; other verbs
+        are untouched. A no-op when ``mode=`` wasn't supplied (``clean``
+        already has ``None`` values stripped, so "supplied" here means
+        "the caller passed a non-``None`` value").
+
+        Reads the three-way sentinel on the relevant ``KindSpec`` field
+        (``modes`` for ``put``, ``edit_modes`` for ``edit``):
+
+        - ``None`` (no ``mode=`` concept declared): leaves the current
+          behaviour untouched — a handler that parses ``mode=`` itself
+          (or ignores it) keeps doing so; this gate doesn't second-guess
+          a kind that hasn't opted into the declared vocabulary.
+        - ``()`` (declared but rejects every value): raises, naming the
+          kind — the same "not accepted" shape as an unrecognised
+          top-level kwarg.
+        - non-empty tuple: membership check; raises listing the allowed
+          values when ``mode`` isn't one of them.
+
+        ``edit`` additionally exempts
+        :data:`_EDIT_MODE_WRAPPER_DEFAULT` — see its docstring for why
+        that specific value can never be trusted as caller intent.
+        """
+        if verb not in ("put", "edit"):
+            return
+        mode = clean.get("mode")
+        if mode is None:
+            return
+        if verb == "edit" and mode == _EDIT_MODE_WRAPPER_DEFAULT:
+            return
+        allowed = handler.spec.edit_modes if verb == "edit" else handler.spec.modes
+        if allowed is None:
+            return
+        if mode in allowed:
+            return
+        if allowed:
+            options_str = " | ".join(repr(m) for m in allowed)
+            raise BadInput(
+                f"{verb}(kind={kind!r}) only supports mode={options_str}, got {mode!r}",
+                options=list(allowed),
+                next=f"{verb}(kind={kind!r}, ..., mode={allowed[0]!r})",
+            )
+        raise BadInput(
+            f"mode= is not accepted on {verb} for kind={kind!r}, got {mode!r}",
+            next=f"omit mode= — {verb}(kind={kind!r}, ...) doesn't take one",
+        )
 
     @staticmethod
     def _is_id_empty(id_val: Any) -> bool:

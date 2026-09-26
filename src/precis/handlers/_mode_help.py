@@ -14,6 +14,16 @@ declaration and the enforcement are now the same source, so they can't
 disagree. Handlers that branch on ``mode=`` should declare the accepted
 set on their ``KindSpec`` (``modes=`` for ``put``, ``edit_modes=`` for
 ``edit``) and call this instead of raising their own ``BadInput``.
+
+``KindSpec.modes``/``edit_modes`` carries a ``None``/``()``/non-empty
+three-way sentinel (gr343755): ``None`` means "no mode= concept",
+``()`` means "recognises mode= but rejects every value", non-empty is
+the declared vocabulary. A handler only calls :func:`require_mode` when
+it *does* branch on ``mode=``, so both of the falsy states (``None`` and
+``()``) collapse to the same outcome here — "mode= is not accepted" —
+and only the non-empty case differs (membership check). The
+:mod:`precis.runtime.dispatch` mode gate is the dispatch-level twin of
+this same three-way read, enforced before the handler is even called.
 """
 
 from __future__ import annotations
@@ -40,7 +50,7 @@ def require_mode(*, spec: KindSpec, verb: Verb, mode: str) -> None:
     checked.
     """
     allowed = spec.edit_modes if verb == "edit" else spec.modes
-    if mode in allowed:
+    if allowed is not None and mode in allowed:
         return
     if allowed:
         if len(allowed) == 1:
