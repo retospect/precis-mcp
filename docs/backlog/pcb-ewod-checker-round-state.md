@@ -7,12 +7,23 @@ model: opus
 
 # EWOD checker round — resume state
 
-Written 2026-09-25. **This is a resume pointer, not a spec.** Delete it once
-the DRC re-measure has run and its outcome is recorded on the gripes.
+Written 2026-09-25, still live 2026-09-26. **This is a resume pointer, not a
+spec.**
 
-The round's goal is one thing: **an honest DRC error count on prod design
-`ewod-dogfood-2`.** Every item below is either in service of that or a defect
-found while pursuing it.
+**Do not delete it on the old criterion.** It used to say "delete once the DRC
+re-measure has run and its outcome is recorded on the gripes". The re-measure
+HAS run (`a55ae1728cea44a9`, recorded on gr449483) — but the round did not end
+there, and three things below outlived it:
+
+1. the re-measure is **confounded** (checkers and geometry moved together), so
+   the connectivity question it was built to settle is still open;
+2. the 2.25 mm pitch verdict is **negative** and worth not re-deriving;
+3. the array now collides with its own driver chip — an open layout call.
+
+Delete this file when those three are resolved, not before. The round's goal
+was one thing — **an honest DRC error count on prod `ewod-dogfood-2`** — and
+every item below is either in service of that or a defect found while
+pursuing it.
 
 ## The governing finding
 
