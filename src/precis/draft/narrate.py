@@ -49,7 +49,14 @@ _SKIP_KINDS = frozenset({"ulist", "olist", "figure", "table", "code", "term"})
 _DEFAULT_CJK_VOICE = "jf_alpha"
 _DEFAULT_CJK_LANG = "ja"
 
-# Inline draft handles / citations: [pc12], [[dc4]], [§a~3]. Dropped for the ear.
+# Inline draft handles / citations: [pc12], [[dc4]], [§a~3] — and, per
+# gr372774, any kind's 2-letter-prefix handle riding inline in cast/brief
+# prose ([fi<id>] finding, [pc<id>]/[pa<id>] paper cites, adjacent runs like
+# [fi1][fi2] included). Every kind prefix in this codebase is exactly 2
+# lowercase letters, so this one pattern already covers all of them — no
+# per-kind list to keep in sync. Dropped for the ear; the trailing
+# whitespace collapse in speakable() below cleans up the space a removed
+# handle leaves behind.
 _REF = re.compile(r"\[\[[^\]]+\]\]|\[(?:[a-z]{2}\d+[a-z0-9~]*|§[^\]]+)\]")
 _DISPLAY_MATH = re.compile(r"\$\$.+?\$\$", re.DOTALL)
 _INLINE_MATH = re.compile(r"\$[^$]+\$")

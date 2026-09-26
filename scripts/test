@@ -284,6 +284,23 @@ fi
 FAST_ARGS=()
 if [[ "$FAST" == "1" ]]; then FAST_ARGS=(-m "not db and not slow"); fi
 
+# gr261537: testmon's affected-tests selection doesn't know about the `slow`
+# marker at all — a central-module diff can pull the 81 heavy real-EMT
+# autocatpath sim tests (tests/test_pathway_plugin.py, already marked `slow`)
+# into a selection that's ALSO forced to -n0, so impacted mode ends up slower
+# than a plain full `scripts/test -n6`. Exclude `slow` by default under
+# --testmon, same as --fast does, unless the caller passed their own `-m`
+# (checked the same way NPROC checks for a caller-supplied `-n` above) or is
+# already running --fast (whose `-m` already excludes `slow`).
+TESTMON_MARKER_ARGS=()
+if [[ "$IMPACTED" == "1" && "$FAST" != "1" ]]; then
+    HAS_CALLER_MARKER=0
+    for a in "$@"; do [[ "$a" == -m* ]] && HAS_CALLER_MARKER=1; done
+    if [[ "$HAS_CALLER_MARKER" == "0" ]]; then
+        TESTMON_MARKER_ARGS=(-m "not slow")
+    fi
+fi
+
 # Take a fleet-wide gate slot just before the heavyweight container run (the
 # tiny tmpfs test-db above doesn't need one).
 gate_slot_acquire
@@ -330,7 +347,7 @@ if [[ -n "$TESTMON_LOG" ]]; then
         -v "${WORKTREE}":/app precis-dev \
         bash -lc 'uv run --no-sync ${UV_WITH} python3 scripts/lib/check-core-deps.py && uv run --no-sync ${UV_WITH} pytest -q --no-header --tb=short -p no:warnings "$@"' \
         _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
-        "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "$@" \
+        "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" "$@" \
         2>&1 | tee "$TESTMON_LOG"
     PYTEST_RC=${PIPESTATUS[0]}
     set -e

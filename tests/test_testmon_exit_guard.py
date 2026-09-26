@@ -14,6 +14,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 _GUARD = (
     Path(__file__).resolve().parents[1] / "scripts" / "lib" / "testmon-exit-guard.py"
 )
@@ -131,6 +133,89 @@ def test_real_failure_alongside_a_testmon_crash_is_not_masked() -> None:
     )
     code, msg = guard.decide_exit_code(log, pytest_exit_code=1)
     assert code != 0
+
+
+# ── testmon_selection_counts / testmon_selection_warning (gr261537) ─────
+
+
+def test_selection_counts_none_with_no_summary_line() -> None:
+    assert guard.testmon_selection_counts("collecting ...\n") is None
+
+
+def test_selection_counts_splits_selected_vs_deselected() -> None:
+    log = "collecting ...\n========= 100 passed, 6200 deselected in 12.34s =========\n"
+    assert guard.testmon_selection_counts(log) == (100, 6300)
+
+
+def test_selection_counts_treats_failed_and_skipped_as_selected() -> None:
+    log = (
+        "collecting ...\n"
+        "== 2 failed, 90 passed, 8 skipped, 900 deselected in 40.00s ==\n"
+    )
+    # selected = 2 + 90 + 8 = 100; total = 100 + 900 = 1000
+    assert guard.testmon_selection_counts(log) == (100, 1000)
+
+
+def test_selection_counts_none_when_nothing_was_collected() -> None:
+    log = "collecting ...\n========= no tests ran in 0.01s =========\n"
+    assert guard.testmon_selection_counts(log) is None
+
+
+def test_selection_warning_absent_under_threshold() -> None:
+    log = "collecting ...\n========= 100 passed, 900 deselected in 5.00s =========\n"
+    assert guard.testmon_selection_warning(log) is None
+
+
+def test_selection_warning_absent_exactly_at_half() -> None:
+    # selected == total * 0.5 must NOT warn — the gripe's threshold is
+    # "more than half", not "half or more".
+    log = "collecting ...\n========= 500 passed, 500 deselected in 5.00s =========\n"
+    assert guard.testmon_selection_warning(log) is None
+
+
+def test_selection_warning_present_over_half_names_the_counts() -> None:
+    log = (
+        "collecting ...\n========= 6202 passed, 6200 deselected in 300.00s =========\n"
+    )
+    msg = guard.testmon_selection_warning(log)
+    assert msg is not None
+    assert "WARNING" in msg
+    assert "6202/12402" in msg
+    assert "-n6" in msg and "-n0" in msg
+    assert "gr261537" in msg
+
+
+def test_selection_warning_absent_with_no_summary_line() -> None:
+    assert guard.testmon_selection_warning("collecting ...\n") is None
+
+
+def test_selection_warning_uses_the_last_summary_line_when_several_present() -> None:
+    # A retried/crash-recovered run can print more than one "====" summary
+    # line; only the LAST one reflects the real, final outcome.
+    log = (
+        "collecting ...\n"
+        "========= 6000 passed, 100 deselected in 10.00s =========\n"
+        "========= 10 passed, 90 deselected in 1.00s =========\n"
+    )
+    assert guard.testmon_selection_counts(log) == (10, 100)
+
+
+# ── main() reports the selection warning too (gr261537) ─────────────────
+
+
+def test_main_prints_selection_warning_alongside_a_clean_pass(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log_file = tmp_path / "run.log"
+    log_file.write_text(
+        "collecting ...\n========= 6202 passed, 6200 deselected in 300.00s =========\n",
+        encoding="utf-8",
+    )
+
+    rc = guard.main([str(log_file), "0", str(tmp_path)])
+
+    assert rc == 0
+    assert "WARNING: testmon selected 6202/12402 tests" in capsys.readouterr().err
 
 
 # ── clear_testmon_datafiles ─────────────────────────────────────────────

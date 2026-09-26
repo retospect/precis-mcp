@@ -61,6 +61,18 @@ def test_speakable_strips_handles_math_and_markdown():
     assert "`" not in out and "run" in out
 
 
+def test_speakable_strips_finding_and_paper_citation_handles():
+    # gr372774: the audio reader must never speak inline [fi<id>]/[pc<id>]/
+    # [pa<id>] citation notation, including adjacent runs, and must not
+    # leave a doubled space behind — while unrelated bracket text survives.
+    raw = "Results [fi349172][fi349170] agree with [pc456] and [pa789], per [note]."
+    out = speakable(raw)
+    assert "[fi349172]" not in out and "[fi349170]" not in out
+    assert "[pc456]" not in out and "[pa789]" not in out
+    assert "  " not in out
+    assert out == "Results agree with and , per [note]."
+
+
 def test_speakable_collapses_whitespace():
     assert speakable("a   b\n\nc") == "a b c"
 
