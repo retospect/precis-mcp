@@ -390,11 +390,17 @@ def test_pinned_reports_how_far_behind_main_the_pin_is(
 def test_literal_sha_deploy_requires_the_local_checkout_to_contain_it(
     fx: Fixture, tmp_path: Path
 ) -> None:
-    """Case (f): ansible renders deploy/ templates from the local checkout
-    while the venvs install the target sha. For a literal sha there is no
-    ``origin/<sha>`` ref, so the freshness guard used to no-op completely and
-    a sha deploy got no skew check at all. Now the target commit itself must
-    be contained in HEAD."""
+    """Case (f), legacy ``PRECIS_DEPLOY_FROM_TREE=`` path only.
+
+    When ansible renders deploy/ templates from the local checkout while the
+    venvs install the target sha, the target commit must at least be
+    contained in HEAD — for a literal sha there is no ``origin/<sha>`` ref,
+    so the freshness guard used to no-op completely.
+
+    The default path no longer renders from the checkout at all; it uses a
+    detached worktree at the target sha (tests/test_deploy_render_worktree.py),
+    which removes the skew rather than guarding it. This covers the escape
+    hatch, which still needs the guard."""
     fakebin = _make_fake_bin(tmp_path)
     fx.set_marker(fx.base)
     # A stale worktree: checked out at `gated`, asked to deploy a LATER sha
@@ -413,9 +419,11 @@ def test_literal_sha_deploy_requires_the_local_checkout_to_contain_it(
 def test_literal_sha_deploy_notes_a_checkout_ahead_of_the_target(
     fx: Fixture, tmp_path: Path
 ) -> None:
-    """The /go case: HEAD contains the target but has moved past it. Allowed —
-    that is what pinning means — but said out loud, because the templates and
-    the installed code no longer come from the same tree."""
+    """Legacy ``PRECIS_DEPLOY_FROM_TREE=`` path: HEAD contains the target but
+    has moved past it. Allowed — that is what pinning means — but said out
+    loud, because the templates and the installed code then come from
+    different trees. On the default path they cannot: the render worktree is
+    checked out at the target sha."""
     fakebin = _make_fake_bin(tmp_path)
     fx.set_marker(fx.base)
 

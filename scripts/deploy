@@ -319,8 +319,28 @@ _acquire_deploy_lock() {
         sleep 10; waited=$((waited + 10))
     done
     echo $$ > "${_LOCK_DIR}/pid"
-    trap 'rm -rf "$_LOCK_DIR"' EXIT
+    trap '_deploy_cleanup' EXIT
     trap 'exit 130' INT TERM
+}
+# Set once the render worktree below exists; the EXIT trap has to clean up
+# BOTH it and the lock, and a second `trap ... EXIT` would silently replace
+# the first rather than add to it.
+_DEPLOY_TREE=""
+# Every command here is no-fail, and the triggering status is captured and
+# re-raised explicitly. Under `set -e` a failing command inside an EXIT trap
+# aborts the REST OF THE TRAP and overwrites the shell's exit status — so a
+# worktree teardown that loses a race with a leftover .ansible/tmp file would
+# both leak the lock (the rm below never runs) and report a completed deploy
+# as failed. Verified: `x() { echo A; false || false; echo B; }; trap x EXIT`
+# under `set -euo pipefail` with `exit 0` prints A, never B, and exits 1.
+_deploy_cleanup() {
+    local rc=$?
+    if [[ -n "$_DEPLOY_TREE" ]]; then
+        git -C "$REPO_ROOT" worktree remove --force "$_DEPLOY_TREE" 2>/dev/null \
+            || rm -rf "$_DEPLOY_TREE" 2>/dev/null || true
+    fi
+    rm -rf "$_LOCK_DIR" 2>/dev/null || true
+    exit "$rc"
 }
 _acquire_deploy_lock
 
@@ -341,11 +361,42 @@ if [[ -z "${PRECIS_DEPLOY_NO_LOG:-}" ]]; then
     ls -1t "$DEPLOY_LOG_DIR"/*.log 2>/dev/null | tail -n +51 | xargs rm -f 2>/dev/null || true
 fi
 
+# ── render worktree: templates come from the TARGET SHA, not this checkout ──
+# ansible renders deploy/ roles+templates from a filesystem tree while the
+# venvs install precis-mcp@<ref> from git. Those were two different sources of
+# truth: the invoking checkout's HEAD, and the pinned sha. Every consequence
+# of that split was a rule someone had to remember — sync before deploying,
+# never edit the tree mid-deploy, and (the reason this exists) a sibling
+# landing on main could invalidate a deploy that had already pinned its sha.
+#
+# For a literal-sha target — the /go path, since ship pins the gated sha — we
+# check that sha out into a throwaway detached worktree and render from there.
+# HEAD == target by construction, so the skew class is gone rather than
+# guarded, and main is free to move under a running deploy.
+#
+# A ref-NAME target (main, a tag) still renders from this checkout: the
+# playbook resolves the name itself via ls-remote at pin time, so resolving it
+# a second time here could disagree. The freshness guard below still covers
+# that path.
+if [[ -n "${PRECIS_DEPLOY_FROM_TREE-1}" && "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+    _wt_root="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/precis-deploy-tree"
+    # The deploy lock is already held, so a leftover here is a dead run's, not
+    # a live one's. `worktree remove` first so git forgets the registration;
+    # rm -rf alone would leave a stale entry that blocks the re-add.
+    git -C "$REPO_ROOT" worktree remove --force "$_wt_root" 2>/dev/null || true
+    rm -rf "$_wt_root"
+    git -C "$REPO_ROOT" worktree add --detach --quiet "$_wt_root" "$REF" 2>/dev/null \
+        || die "could not check out ${REF:0:12} into a render worktree at ${_wt_root} — is the commit present in this repo? (fetch it, or set PRECIS_DEPLOY_FROM_TREE= to render from this checkout)"
+    _DEPLOY_TREE="$_wt_root"
+    say "rendering deploy/ templates from a detached worktree at ${REF:0:12} (this checkout's HEAD is not used)"
+fi
+
 # ── freshness guard: ansible renders roles/templates from THIS checkout, while
 # the venvs install precis-mcp@<ref> from git — a local tree behind origin/<ref>
 # deploys NEW code with STALE units (bit us 2026-08-03: workers restarted
 # without the §F-b env exports). Refuse the skew unless explicitly overridden.
-if [[ -z "${PRECIS_DEPLOY_ALLOW_STALE:-}" ]]; then
+# Inert when the render worktree above took over: there is no skew to find.
+if [[ -z "${PRECIS_DEPLOY_ALLOW_STALE:-}" && -z "$_DEPLOY_TREE" ]]; then
     git -C "$REPO_ROOT" fetch -q origin "$REF" 2>/dev/null || true
     _remote="$(git -C "$REPO_ROOT" rev-parse -q --verify "origin/${REF}" 2>/dev/null || true)"
     if [[ -n "$_remote" ]] && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_remote" HEAD; then
@@ -452,8 +503,12 @@ fi
 INV_ARGS=()
 PRECIS_DEPLOY_FROM_TREE="${PRECIS_DEPLOY_FROM_TREE-1}"
 if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
-    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    CLUSTER_DIR="$(cd "${_script_dir}/.." && pwd)/deploy"
+    if [[ -n "$_DEPLOY_TREE" ]]; then
+        CLUSTER_DIR="${_DEPLOY_TREE}/deploy"
+    else
+        _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        CLUSTER_DIR="$(cd "${_script_dir}/.." && pwd)/deploy"
+    fi
     if [[ -d "${CLUSTER_DIR}/inventory" ]]; then
         say "install-from-tree: deploying from ${CLUSTER_DIR} (local overlay)"
     else
