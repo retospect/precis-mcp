@@ -348,3 +348,12 @@ def test_a_ref_name_target_still_renders_from_the_checkout(
     assert "precis-deploy-tree" not in rendered, (
         f"a ref-name deploy should render from the checkout:\n{rendered}"
     )
+
+
+def test_the_wheel_smoke_builds_from_the_render_worktree() -> None:
+    """The gr451360 preflight must smoke the artifact that ships: for a
+    literal-sha target that is the detached render worktree, not the
+    invoking checkout (the two-sources-of-truth split this file exists to
+    kill). Static check — the runtime tests above skip the smoke."""
+    text = DEPLOY_SRC.read_text(encoding="utf-8")
+    assert 'scripts/wheel-smoke" "${_DEPLOY_TREE:-$REPO_ROOT}"' in text

@@ -704,9 +704,14 @@ fi
 # above abort here: better to fail before touching a host.
 # PRECIS_DEPLOY_SKIP_WHEEL_SMOKE=1 bypasses (e.g. a hand-verified emergency
 # redeploy where the extra ~30s matters more than the check).
+# The wheel is built from the render worktree at the TARGET sha when there
+# is one (709faf58: a literal-sha deploy renders from a detached tree, not
+# from this checkout), so the smoke tests the artifact that ships; a
+# ref-name target has no render tree and builds this checkout, which is
+# also what it deploys. Absolute paths only — cwd is CLUSTER_DIR here.
 if [[ -z "${PRECIS_DEPLOY_SKIP_WHEEL_SMOKE:-}" ]]; then
     say "wheel smoke: build + scratch-venv install + import (gr451360)"
-    "${REPO_ROOT}/scripts/wheel-smoke" \
+    "${REPO_ROOT}/scripts/wheel-smoke" "${_DEPLOY_TREE:-$REPO_ROOT}" \
         || die "scripts/wheel-smoke failed — the wheel this deploy would ship does not import cleanly outside the source tree. Fix it, or PRECIS_DEPLOY_SKIP_WHEEL_SMOKE=1 to bypass (not recommended). (gr451360)"
 fi
 

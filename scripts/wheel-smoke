@@ -30,16 +30,24 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+# Optional $1: the source tree to build from. scripts/deploy passes its
+# detached render worktree at the TARGET sha (709faf58) so the smoke proves
+# the artifact that ships, not whatever checkout the operator is standing
+# in — the two-sources-of-truth split that worktree exists to kill. Bare
+# invocations (tests, a hand check) build this checkout.
+SRC_ROOT="${1:-$REPO_ROOT}"
+[[ -f "${SRC_ROOT}/pyproject.toml" ]] \
+    || { echo "wheel-smoke: ${SRC_ROOT} has no pyproject.toml" >&2; exit 2; }
+HEAD_SHA="$(git -C "$SRC_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 
 TMPDIR_SMOKE="$(mktemp -d "${TMPDIR:-/tmp}/wheel-smoke.XXXXXX")"
 cleanup() { rm -rf "$TMPDIR_SMOKE"; }
 trap cleanup EXIT
 
-echo "wheel-smoke: HEAD=${HEAD_SHA}"
+echo "wheel-smoke: source=${SRC_ROOT} HEAD=${HEAD_SHA}"
 
 echo "wheel-smoke: building wheel"
-(cd "$REPO_ROOT" && uv build --wheel --out-dir "$TMPDIR_SMOKE")
+(cd "$SRC_ROOT" && uv build --wheel --out-dir "$TMPDIR_SMOKE")
 WHEEL="$(find "$TMPDIR_SMOKE" -maxdepth 1 -name '*.whl' | head -1)"
 [[ -n "$WHEEL" ]] || { echo "wheel-smoke: no wheel produced in ${TMPDIR_SMOKE}" >&2; exit 1; }
 echo "wheel-smoke: built $(basename "$WHEEL")"
