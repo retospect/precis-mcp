@@ -220,7 +220,12 @@ from typing import Any
 from shapely.geometry import LineString  # type: ignore[import-untyped]
 
 from precis.pcb import DEFAULT_STACKUP
-from precis.pcb.capabilities import CapabilityRow, capability_for, conductor_spacing_mm
+from precis.pcb.capabilities import (
+    CapabilityRow,
+    capability_for,
+    coating_extent_mm,
+    conductor_spacing_mm,
+)
 
 Point = tuple[float, float]
 
@@ -1984,6 +1989,70 @@ def _find_plaza_escape(
     return None
 
 
+def _coating_verdict(name: str, width_mm: float, height_mm: float) -> dict[str, Any]:
+    """Screen the electrode array against the conformal-coating step's own
+    maximum extent, and report which of three things happened (gr414481).
+
+    An EWOD board is only finished once it is parylene-coated, and the
+    coater's chamber caps the part it can accept independently of anything
+    the fab can etch. Nothing in this package checked that before this
+    function existed — the gripe's premise of "a second limit beside the
+    fab cap" was generous, there was no board-extent cap of any kind.
+
+    **The polarity, stated because a screen is only sound in one
+    direction** (docs/backlog/pcb-lazy-netlist-and-checks.md section
+    1g-bis). What is measured here is the ARRAY's mask extent, and the
+    finished board is always at least that large — outline margin,
+    connectors and the sink grid all sit outside it. So:
+
+    - array too big  => the BOARD is certainly too big. Decisive, refuse.
+    - array fits     => says nothing about the board. Never report this as
+      "the board will coat"; the ledger records ``scope: 'array'`` so the
+      claim stays the one actually tested.
+
+    A ``None`` limit means the figure has not been supplied, NOT that
+    there is no limit — see :func:`precis.pcb.capabilities.
+    coating_extent_mm`. That case returns ``checked: False`` with a reason
+    rather than passing quietly, so a reader of the ledger can tell "we
+    did not check" from "we checked and it is fine".
+    """
+    extent = [round(width_mm, 4), round(height_mm, 4)]
+    limit = coating_extent_mm()
+    if limit is None:
+        return {
+            "checked": False,
+            "scope": "array",
+            "array_mm": extent,
+            "reason": (
+                "no coating extent configured -- this array's size has NOT "
+                "been screened against the parylene step; fill "
+                "coating_extent_mm in src/precis/data/pcb_capabilities.json "
+                "to turn the check on"
+            ),
+        }
+    max_w, max_h = limit
+    if width_mm > max_w + 1e-9 or height_mm > max_h + 1e-9:
+        raise ValueError(
+            f"ewod_pad_array: {name}'s electrode array is "
+            f"{width_mm:.3f}x{height_mm:.3f}mm, past the "
+            f"{max_w:.3f}x{max_h:.3f}mm the coating step accepts -- and the "
+            "finished board is larger still (outline margin, connectors and "
+            "the sink grid sit outside the array). Reduce rows/cols or pitch, "
+            "split the design across cards, or raise coating_extent_mm if the "
+            "coater changed"
+        )
+    return {
+        "checked": True,
+        "scope": "array",
+        "array_mm": extent,
+        "limit_mm": [max_w, max_h],
+        "note": (
+            "the ARRAY fits the coating step; the finished board is larger "
+            "and is not screened here"
+        ),
+    }
+
+
 def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpansion:
     rows, cols = _resolve_grid(params)
     variant = str(params.get("variant") or "full")
@@ -2505,6 +2574,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
 
     half_extent_x = cols * sizing["pitch"] / 2.0 + sizing["gap"]
     half_extent_y = rows * sizing["pitch"] / 2.0 + sizing["gap"]
+    coating = _coating_verdict(name, 2.0 * half_extent_x, 2.0 * half_extent_y)
     mask_poly = [
         [x_anchor - half_extent_x, y_anchor - half_extent_y],
         [x_anchor + half_extent_x, y_anchor - half_extent_y],
@@ -2534,6 +2604,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
             "pads_unusable": n_unusable,
             "plazas": len(plaza_set),
         },
+        "coating": coating,
         # docs/backlog/pcb-pre-place-route-blocks.md Slice 2 -- the
         # per-tile escape-fabric report: `tiles` keyed the same way
         # `plazas` is ("P{row}_{col}", plus "rim:R{row}C{col}" for a

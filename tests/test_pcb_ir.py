@@ -727,10 +727,29 @@ def _place(graph, coords):
     return graph
 
 
+def _segment_between(ir, inst_a: int, inst_b: int) -> int:
+    """The segment joining two instances, looked up rather than assumed.
+
+    Segment ORDER is a property of the decomposition (a side-aware MST since
+    td450119), not of the netlist, so a test that wants a particular pair
+    must ask for it — indexing ``0`` silently re-pins whichever edge the
+    tree builder happened to emit first.
+    """
+    want = {inst_a, inst_b}
+    for s in range(ir.n_segments):
+        ends = {
+            int(ir.pin_instance[int(ir.seg_pin_a[s])]),
+            int(ir.pin_instance[int(ir.seg_pin_b[s])]),
+        }
+        if ends == want:
+            return s
+    raise AssertionError(f"no segment joins instances {inst_a} and {inst_b}")
+
+
 def test_nearest_other_instance_returns_distance_and_realizing_id():
     graph = _place(_star_graph(), [(0.0, 0.0), (10.0, 0.0), (0.0, 5.0), (100.0, 100.0)])
     ir = from_graph(graph)
-    found = nearest_other_instance(ir, 0)  # segment U1-U2 (endpoints 0, 1)
+    found = nearest_other_instance(ir, _segment_between(ir, 0, 1))  # U1-U2
     assert found is not None
     gap, nearest_id = found
     assert nearest_id == 2  # U3 at (0,5) is closer to U1 than U4 is to either endpoint

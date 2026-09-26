@@ -264,10 +264,39 @@ def conductor_spacing_mm(
     raise AssertionError("unreachable: bands cover [0, top band] by construction")
 
 
+def coating_extent_mm() -> tuple[float, float] | None:
+    """The largest finished board the conformal-coating step accepts, as
+    ``(max_width_mm, max_height_mm)`` — or ``None`` when no limit has been
+    configured (gr414481).
+
+    ``None`` means UNKNOWN, never "no limit". A caller that treats an
+    absent figure as a pass turns "we did not check" into "it is fine",
+    which is this package's own recurring failure (see
+    :meth:`precis.store._pcb_ops.PcbMixin.pcb_drc_findings_latest`'s
+    docstring: "no run yet means 'not yet', not 'clean'"). Every caller
+    must therefore branch on ``None`` explicitly and SAY that the extent
+    went unchecked.
+
+    Why this is not a capability row: the coater's chamber is a property
+    of the *process step*, not of the fab that etched the board — a board
+    JLC will happily make can still be too large to parylene. It is also a
+    MAXIMUM, and every figure in ``rows`` is a MINIMUM, so putting it there
+    would invert :func:`headroom` and the ``house_default >= jlc_min``
+    margin invariant. Same reasoning as
+    ``ipc2221b_conductor_spacing_mm``; see the JSON key's own ``note``.
+    """
+    table = _load_raw().get("coating_extent_mm") or {}
+    w, h = table.get("max_width_mm"), table.get("max_height_mm")
+    if w is None or h is None:
+        return None
+    return float(w), float(h)
+
+
 __all__ = [
     "FIELDS",
     "CapabilityRow",
     "capability_for",
+    "coating_extent_mm",
     "conductor_spacing_mm",
     "design_value",
     "headroom",
