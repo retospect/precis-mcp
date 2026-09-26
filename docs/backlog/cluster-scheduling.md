@@ -90,7 +90,8 @@ Cost is dominated by one producer: `dream` (~79 % of cluster LLM spend,
 
 - **§A — remaining cadences onto the live scheduler.** Fold the three
   fleet-singleton cadences — `dream` (gateway, 15-min), `reconcile` (caspar,
-  daily), `anki_sync` (30-min) — via a **host-affinity** field on `Cadence`
+  daily), `anki_sync` (daily since 2026-09-26; 30-min when folded) — via a
+  **host-affinity** field on `Cadence`
   (affinity, not a separate daemon); retire their plists and `dream-pass.sh`;
   correct the stale "ships DARK" comments. **Per-host passes are NOT
   scheduler cadences:** `heartbeat` (+ its capability probe) must fire on

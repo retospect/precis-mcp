@@ -98,6 +98,21 @@ def _sync_one_user(
             f"mirror.{claim_note}"
         )
 
+    # No-op shortcut: nothing to push and nothing to retire means this tick
+    # cannot change either side, so skip the AnkiWeb round-trip entirely — no
+    # ``sync_login``, no ``sync_collection``. Previously a user with zero cards
+    # still cost a full password authentication plus two sync calls per fire.
+    #
+    # Deliberately NOT widened to "specs unchanged since the last sync":
+    # reviews happen on AnkiWeb, so the remote side moves even when local
+    # content doesn't, and skipping on a local-only fingerprint would freeze
+    # ``meta.anki_stats`` for anyone who reviews without authoring new cards.
+    if not specs and not retire_ids:
+        return (
+            f"{prefix}: nothing to sync (0 cards, 0 retired ref(s)) — "
+            f"skipped the AnkiWeb round-trip.{claim_note}"
+        )
+
     creds = get_user_credentials(store, login)
     if creds is None:  # pragma: no cover - anki_logins() already filtered these out
         raise AnkiSyncMisconfigured(
@@ -175,7 +190,7 @@ def run_anki_sync(
       credentials configured, or ``cfg.anki_mirror_dir`` is unset (a caller
       should surface this once, loudly; the cadence wrapper logs it like any
       other cadence exception). No configured users at all is NOT this case
-      — the cadence fires every 30 minutes and must not spam errors when
+      — the cadence fires on its own schedule and must not spam errors when
       nobody has visited ``/account`` yet, so that returns a summary line
       instead.
     * :class:`precis.anki.sync.AnkiNotInstalled` — the ``anki`` wheel isn't

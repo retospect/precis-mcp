@@ -45,7 +45,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.runner import BatchResult
@@ -215,20 +215,100 @@ def _run_doctor_tick_mint(store: Store, batch_size: int) -> None:
     log.info("scheduler: minted doctor_tick job for window %s", idem_key)
 
 
+#: ``anki_sync`` failure backoff (§A). A failed tick holds the *cadence* back
+#: ``min(fail_count, _ANKI_MAX_BACKOFF_STEPS) * _ANKI_BACKOFF_STEP_HOURS``
+#: before the next attempt — the whole-account analogue of
+#: ``orcid_enrich``'s per-node ``meta.fetch_fail_count`` idiom. There is no
+#: per-ref row to stamp here (one sync covers an entire AnkiWeb account), so
+#: the state lives in two ``app_state`` settings.
+#:
+#: Why: nothing in ``precis.anki`` handles a 429, a backoff or a retry — an
+#: expired password, an AnkiWeb outage or a throttle we cannot even observe
+#: previously re-ran at full cadence indefinitely. Backoff is a *cadence*
+#: concern on purpose: a human running ``precis anki-sync`` by hand is
+#: debugging and must never be told to come back in 30 hours.
+_ANKI_BACKOFF_STEP_HOURS = 6
+_ANKI_MAX_BACKOFF_STEPS = 5
+_ANKI_FAIL_COUNT_KEY = "anki_sync:fail_count"
+_ANKI_NEXT_ATTEMPT_KEY = "anki_sync:next_attempt_at"
+
+
+def _anki_fail_count(store: Store) -> int:
+    """Consecutive ``anki_sync`` cadence failures; 0 when unset/unparsable."""
+    try:
+        return max(0, int(store.get_setting(_ANKI_FAIL_COUNT_KEY) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _anki_backoff_until(store: Store) -> datetime | None:
+    """When the next cadence attempt is allowed, or None if unthrottled."""
+    from precis.utils.timeutil import as_utc
+
+    raw = store.get_setting(_ANKI_NEXT_ATTEMPT_KEY)
+    return as_utc(raw) if raw else None
+
+
+def _anki_record_failure(store: Store) -> None:
+    """Widen the backoff after a failed tick. Best-effort: a failed stamp must
+    not mask the sync error the caller is about to re-raise."""
+    count = _anki_fail_count(store) + 1
+    hours = min(count, _ANKI_MAX_BACKOFF_STEPS) * _ANKI_BACKOFF_STEP_HOURS
+    try:
+        store.set_setting(_ANKI_FAIL_COUNT_KEY, str(count))
+        store.set_setting(
+            _ANKI_NEXT_ATTEMPT_KEY,
+            (datetime.now(UTC) + timedelta(hours=hours)).isoformat(),
+        )
+    except Exception:
+        log.exception("scheduler: could not record anki_sync backoff")
+
+
+def _anki_clear_backoff(store: Store) -> None:
+    """Drop the backoff after a clean tick. Best-effort, same reasoning."""
+    if not _anki_fail_count(store) and not store.get_setting(_ANKI_NEXT_ATTEMPT_KEY):
+        return
+    try:
+        store.set_setting(_ANKI_FAIL_COUNT_KEY, "0")
+        store.set_setting(_ANKI_NEXT_ATTEMPT_KEY, "")
+    except Exception:
+        log.exception("scheduler: could not clear anki_sync backoff")
+
+
 def _run_anki_sync(store: Store, batch_size: int) -> None:
     """One AnkiWeb sync tick, fired from the melchior-pinned ``anki_sync``
     cadence (§A) instead of the retired standalone 30-min launchd timer.
     Reads the fix/project flags from config (env), matching the plist's
     ``PRECIS_ANKI_FIX_ENABLED`` / ``PRECIS_ANKI_PROJECT_ENABLED``; the
     pg advisory lock in :func:`precis.workers.anki_sync.run_anki_sync` still
-    serializes against a concurrent manual ``precis anki-sync`` run."""
+    serializes against a concurrent manual ``precis anki-sync`` run.
+
+    Wrapped in the failure backoff above: a throttled tick logs and returns
+    without touching AnkiWeb, a failure widens the window and re-raises so
+    the generic cadence wrapper still logs it, and a clean tick clears it."""
     from precis.config import load_config
     from precis.workers.anki_sync import run_anki_sync
 
+    until = _anki_backoff_until(store)
+    now = datetime.now(UTC)
+    if until is not None and now < until:
+        log.info(
+            "scheduler: anki_sync — backing off after %d consecutive failure(s); "
+            "next attempt %s",
+            _anki_fail_count(store),
+            until.isoformat(),
+        )
+        return
+
     cfg = load_config()
-    summary = run_anki_sync(
-        store, cfg, fix=cfg.anki_fix_enabled, project=cfg.anki_project_enabled
-    )
+    try:
+        summary = run_anki_sync(
+            store, cfg, fix=cfg.anki_fix_enabled, project=cfg.anki_project_enabled
+        )
+    except Exception:
+        _anki_record_failure(store)
+        raise
+    _anki_clear_backoff(store)
     log.info("scheduler: anki_sync — %s", summary)
 
 
@@ -563,9 +643,15 @@ CADENCES: tuple[Cadence, ...] = (
         resolve_interval=_dream_resolve_interval,
         spends=True,
     ),
+    # Once a day (Reto's call 2026-09-26), not the old 30 minutes. AnkiWeb is
+    # someone else's server and the old cadence bought nothing: 48 fires/day
+    # per account, each one a fresh ``sync_login`` with the password plus two
+    # ``sync_collection`` round-trips, against a card set that changes a
+    # handful of times a week. Off the exact day (24h29m) so it doesn't pile
+    # onto the same tick as the other daily cadences below.
     Cadence(
         name="anki_sync",
-        interval_s=1800,
+        interval_s=24 * 3600 + 29 * 60,
         run=_run_anki_sync,
         host_affinity="melchior",
         eligible=_anki_sync_eligible,

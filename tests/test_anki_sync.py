@@ -9,6 +9,7 @@ installs it only on the sync runner).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -476,6 +477,11 @@ class TestRunAnkiSyncFanOut:
         _add_user(store, "alice", "al")
         _configure_creds(monkeypatch, "reto", "reto@example.com")
         _configure_creds(monkeypatch, "alice", "alice@example.com")
+        # Each user needs a card: with nothing to push and nothing to retire the
+        # no-op shortcut skips the AnkiWeb round-trip, so a card-less fan-out
+        # would never reach sync_tick at all.
+        store.insert_ref(kind="anki", slug=None, title="{{c1::x}}", owner_login="reto")
+        store.insert_ref(kind="anki", slug=None, title="{{c1::y}}", owner_login="alice")
 
         def _fake_sync_tick(*, mirror_path, **kw):
             if "/alice/" in mirror_path:
@@ -487,3 +493,158 @@ class TestRunAnkiSyncFanOut:
             run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
         message = str(exc_info.value)
         assert "reto" in message and "alice" in message and "boom" in message
+
+
+class TestNoOpShortcut:
+    """Nothing to push and nothing to retire ⇒ no AnkiWeb round-trip at all."""
+
+    def test_card_less_user_skips_the_ankiweb_roundtrip(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from precis.anki import sync as sync_mod
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+
+        def _boom(**kw):
+            raise AssertionError("sync_tick must not be reached with nothing to sync")
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _boom)
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert "nothing to sync" in summary
+        assert "skipped the AnkiWeb round-trip" in summary
+
+    def test_one_card_is_enough_to_sync(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        from precis.anki import sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        store.insert_ref(kind="anki", slug=None, title="{{c1::x}}", owner_login="reto")
+
+        calls: list[str] = []
+
+        def _fake_sync_tick(*, mirror_path, **kw):
+            calls.append(mirror_path)
+            return SyncResult(pushed=1), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake_sync_tick)
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert len(calls) == 1
+        assert "nothing to sync" not in summary
+
+    def test_a_retired_ref_alone_still_syncs(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """No live cards but a retired one: the mirror still needs the removal."""
+        from precis.anki import sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        ref = store.insert_ref(
+            kind="anki", slug=None, title="{{c1::x}}", owner_login="reto"
+        )
+        store.retire_ref(ref.id)
+
+        calls: list[list[int]] = []
+
+        def _fake_sync_tick(*, retire_ref_ids, **kw):
+            calls.append(list(retire_ref_ids or []))
+            return SyncResult(pushed=0), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake_sync_tick)
+        run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert calls == [[ref.id]]
+
+
+class TestAnkiCadenceBackoff:
+    """A failed cadence tick backs off instead of re-running at full rate."""
+
+    def test_interval_is_daily_not_half_hourly(self) -> None:
+        from precis.workers.scheduler import CADENCES
+
+        (anki,) = [c for c in CADENCES if c.name == "anki_sync"]
+        assert anki.interval_s >= 24 * 3600, (
+            "anki_sync hits someone else's server; it must not go back to a "
+            "sub-daily cadence without a deliberate decision"
+        )
+
+    def test_failure_widens_the_window_and_success_clears_it(self, store) -> None:
+        from precis.workers import scheduler
+
+        assert scheduler._anki_backoff_until(store) is None
+
+        scheduler._anki_record_failure(store)
+        first = scheduler._anki_backoff_until(store)
+        assert scheduler._anki_fail_count(store) == 1
+        assert first is not None
+
+        scheduler._anki_record_failure(store)
+        second = scheduler._anki_backoff_until(store)
+        assert scheduler._anki_fail_count(store) == 2
+        assert second is not None and second > first
+
+        scheduler._anki_clear_backoff(store)
+        assert scheduler._anki_fail_count(store) == 0
+        assert scheduler._anki_backoff_until(store) is None
+
+    def test_backoff_is_capped(self, store) -> None:
+        from precis.workers import scheduler
+
+        for _ in range(scheduler._ANKI_MAX_BACKOFF_STEPS + 4):
+            scheduler._anki_record_failure(store)
+        until = scheduler._anki_backoff_until(store)
+        assert until is not None
+        cap_h = scheduler._ANKI_MAX_BACKOFF_STEPS * scheduler._ANKI_BACKOFF_STEP_HOURS
+        assert until - datetime.now(UTC) <= timedelta(hours=cap_h)
+
+    def test_cadence_skips_while_backing_off(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers import scheduler
+
+        def _boom(*a, **kw):
+            raise AssertionError("must not sync while backing off")
+
+        monkeypatch.setattr("precis.workers.anki_sync.run_anki_sync", _boom)
+        scheduler._anki_record_failure(store)
+        scheduler._run_anki_sync(store, 1)  # returns quietly
+
+    def test_a_failing_tick_records_backoff_and_re_raises(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.anki.sync import AnkiSyncError
+        from precis.workers import scheduler
+
+        def _fail(*a, **kw):
+            raise AnkiSyncError("boom")
+
+        monkeypatch.setattr("precis.workers.anki_sync.run_anki_sync", _fail)
+        with pytest.raises(AnkiSyncError):
+            scheduler._run_anki_sync(store, 1)
+        assert scheduler._anki_fail_count(store) == 1
+        assert scheduler._anki_backoff_until(store) is not None
+
+    def test_a_clean_tick_clears_a_prior_backoff(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.workers import scheduler
+
+        scheduler._anki_record_failure(store)
+        # Wind the window back so the gate lets this tick through.
+        store.set_setting(
+            scheduler._ANKI_NEXT_ATTEMPT_KEY,
+            (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        )
+        monkeypatch.setattr(
+            "precis.workers.anki_sync.run_anki_sync", lambda *a, **kw: "ok"
+        )
+        scheduler._run_anki_sync(store, 1)
+        assert scheduler._anki_fail_count(store) == 0
+        assert scheduler._anki_backoff_until(store) is None
