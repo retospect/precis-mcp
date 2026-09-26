@@ -101,11 +101,14 @@ not reading it off the tally.
 ## Sequence to the honest tally
 
 1. ~~Qland the two sibling worktrees.~~ Done — `3c8db49a`, `5b91abe1`.
-2. Deploy. As of 2026-09-26 the cluster is on `4db6836b` and `main` is
-   `0a4cf18d`: `scripts/deploy "$(cat .ship-sha)" --pinned`. NOTE that
-   `op='route'` and `view='drc'` run `executor='job_inproc'`, i.e. on the
-   SESSION MCP's build, not the cluster's — so a re-measure through the MCP
-   does not actually wait on this step.
+2. ~~Deploy.~~ **DONE 2026-09-26 05:19Z — cluster on `81ccb10a`, MCP install
+   on `eee5edf4`.** The note this step used to carry was half wrong and the
+   correction matters: yes, `op='route'` and `view='drc'` run
+   `executor='job_inproc'` on the MCP's build rather than the cluster's — but
+   that does NOT mean a re-measure can skip the deploy, because the MCP
+   install is itself refreshed BY the deploy. A bare `/mcp` reconnect leaves
+   it pinned. Check `get(kind='skill', id='precis-status')`'s `git_sha`
+   before trusting any measurement.
 3. Re-route **with a varied seed**. `op='route'` is idempotent per
    `(design, op, content-hash)`, and the hash covers netlist/placement state
    but NOT the code version, so an unchanged design silently returns the prior
@@ -276,6 +279,46 @@ Two separable outcomes:
 **Generalisable:** any check reporting by net name alone on a multi-member net
 invites this misreading, as does any other generator wiring a real catalog
 part's real pins onto per-cell net names.
+
+## Post-deploy dogfood, 2026-09-26 06:38Z — fixes confirmed live
+
+Cluster deployed to `81ccb10a` at 05:19Z (1h26m, dragged by castor memory
+exhaustion — gr450103). The session MCP install then swapped to `eee5edf4`,
+which contains `98889951` and so every pcb fix.
+
+**Record this, it cost an hour:** the MCP install DOES refresh with a deploy.
+Earlier restarts left it pinned at `4db6836b` only because nothing had been
+deployed. A bare `/mcp` reconnect does not move it; the deploy does. Since
+`op='route'` and `view='drc'` use `executor='job_inproc'`, the MCP's build —
+not the cluster's — is what gates whether a re-apply is safe.
+
+DRC run `469661a7`: **90 err / 169 warn, identical to `a55ae1728` rule for
+rule.** That is the correct result, not a null one — no geometry changed, and
+the fixes that landed were about how findings are worded and counted. A moved
+tally would have meant something was wrong.
+
+Routed copper beside it, since a DRC count alone is meaningless: `pcb_copper`
+46 track + 8 via; `pcb_fixed_copper` 108 track + 54 via **live** (a first read
+of 162/108 was counting retired rows — the same filter mistake this board
+keeps generating).
+
+Confirmed live on the deployed build:
+
+1. **gr451052 identity** — all nine keepout findings now read
+   `via clears ARR1_SINK_0/HVOUT44 (net ARR1_R3C4) by -0.225mm`, with
+   `pad_refdes`/`pad_pin` in `objects`. The driver collision is legible
+   instead of reading as two electrodes 10 mm apart. (Channel numbers moved —
+   R3C4 is HVOUT44, was HVOUT24 — because ruling 2's chain-order assignment
+   reassigned them at the re-apply.)
+2. **gr451046 headline** — the TOC prints `## route status: 28 failed, 34
+   realized` = 62, matching the live net count and `view='route-status'`. It
+   printed 119 before.
+3. The three severed nets read fanout 2 and plain `realized`.
+
+**A trap found while doing this:** passing `args={'rule': 'via_pad_keepout'}`
+to `view='drc'` is SWALLOWED — it returns the unfiltered report rather than
+an error, and that report is ~25 KB. Read findings from `pcb_drc_findings`
+instead. Note each `view='drc'` call mints a NEW run.
 
 ## Decisions parked with Reto
 
