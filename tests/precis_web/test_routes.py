@@ -2318,9 +2318,12 @@ def test_detail_tab_query_param_selects_meta(client) -> None:
     assert ", 'Meta'," in resp.text
 
 
-def test_detail_defaults_to_navigate_tab(client) -> None:
-    """A plain paper opens on Navigate."""
+def test_detail_defaults_to_meta_tab(client) -> None:
+    """A plain paper opens on Meta (gr351776); ``?tab=`` still overrides."""
     resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    assert ", 'Meta'," in resp.text
+    resp = client.get("/papers/smith2024?tab=Navigate")
     assert resp.status_code == 200
     assert ", 'Navigate'," in resp.text
 
