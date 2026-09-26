@@ -32,7 +32,7 @@ from typing import Any
 
 from precis.taproot.canon import MergeCandidate, Verdict, dedup_judge, nearest_hubs
 from precis.utils import handle_registry
-from precis_web.timefmt import abs_ts
+from precis_web.timefmt import abs_ts, utc_date
 
 log = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ def hub_context(
         "disputed": disputed,
         "contradicted": _contradicted_panel(contradicted),
         "disputes": open_disputes,
-        "withheld": withheld,
+        "withheld": _withheld_rows(store, withheld),
         "preflight": preflight,
         "action": action,
         "action_label": action_label,
@@ -809,6 +809,37 @@ def _contradicted_panel(contradicted: list[Any]) -> list[dict[str, Any]]:
         {"ref_id": e.ref_id, "kind": e.kind, "title": e.title, "direction": e.direction}
         for e in contradicted
     ]
+
+
+def _withheld_rows(store: Any, withheld: list[Any]) -> list[dict[str, Any]]:
+    """:func:`~precis.nanopub.preflight.withheld_edges`' rows, enriched
+    with the source paper's human-verification stamp
+    (``refs.human_verified_at``/``_by``, the Meta tab's "Mark reviewed"
+    sign-off) so the withheld-evidence list's paper titles carry the same
+    ✓ every other paper-link surface shows (gr351830). One batched
+    ``fetch_refs_by_ids`` over the distinct ``paper_ref_id`` set, not a
+    per-row fetch."""
+    paper_ids = {w.paper_ref_id for w in withheld}
+    paper_refs = store.fetch_refs_by_ids(list(paper_ids)) if paper_ids else {}
+    rows: list[dict[str, Any]] = []
+    for w in withheld:
+        paper_ref = paper_refs.get(w.paper_ref_id)
+        rows.append(
+            {
+                "link_id": w.link_id,
+                "paper_ref_id": w.paper_ref_id,
+                "paper_title": w.paper_title,
+                "relation": w.relation,
+                "stale": w.stale,
+                "chunk_handle": w.chunk_handle,
+                "passage": w.passage,
+                "reviewed_at": (
+                    utc_date(getattr(paper_ref, "human_verified_at", None)) or None
+                ),
+                "reviewed_by": getattr(paper_ref, "human_verified_by", None) or None,
+            }
+        )
+    return rows
 
 
 def _graph(

@@ -1045,6 +1045,12 @@ def _refs_row(
                 "url": f"/papers/{held_ref.slug or held_ref.id}",
                 "title": held_ref.title or "(untitled)",
                 "year": held_ref.year,
+                # The Meta tab's "Mark reviewed" stamp (gr351830) — held_ref
+                # is already the full batched ``refs`` row (_sources_rows/
+                # _cited_rows fetch it via fetch_refs_by_ids), so no extra
+                # query; the template shows the ✓ only when set.
+                "reviewed_at": utc_date(held_ref.human_verified_at) or None,
+                "reviewed_by": getattr(held_ref, "human_verified_by", None) or None,
             }
         )
         return base

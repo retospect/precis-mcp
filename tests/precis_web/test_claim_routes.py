@@ -183,6 +183,66 @@ def test_claim_view_claim_level_override_softens_and_shows_undo(
     assert 'value="clear"' in r.text
 
 
+def test_claim_view_evidence_row_marks_human_verified(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """An evidence-row paper carrying the Meta tab's ``human_verified_at``/
+    ``_by`` sign-off shows the ✓ mark + tooltip beside its title
+    (gr351830); the unverified sibling row shows no mark.
+
+    A freshly-attached ``corroborates`` edge carries no ``support`` verdict
+    yet, so it is also ``withheld_edges``-listed in the merged page's
+    Review-and-sign section (``claim/_review.html.j2``) — the mark shows
+    there too, since that's the other gr351830 site
+    (:func:`~precis_web.nanopub_render._withheld_rows`); hence TWO
+    occurrences of the tooltip for one verified paper, not one.
+
+    Uses its OWN claim sentence (not the module's shared ``_CLAIM``):
+    ``mint_hub`` converges to the same hub for two calls with an identical
+    ``(sentence, scope)`` (its pub_id is deterministic on that pair), so
+    reusing ``_CLAIM`` here would accumulate this test's evidence onto
+    whatever every OTHER test in this module already attached to it."""
+    claim = CanonicalClaim(
+        sentence="Gr351830 fixture claim: Ni foam supports OER at low overpotential.",
+        scope={"material": "Ni foam", "method": "OER"},
+    )
+    store = hub.live_store
+    claim_hub = mint_hub(store, claim)
+    originator = store.insert_ref(
+        kind="paper", slug="claim-orig-verified", title="The verified report", year=2003
+    ).id
+    follower = store.insert_ref(
+        kind="paper",
+        slug="claim-follower-unverified",
+        title="Unverified follow-up",
+        year=2007,
+    ).id
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=originator,
+        role="corroborates",
+        meta={"source_handle": "pc997"},
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    store.set_human_verified(originator, by="alice")
+
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "verified by alice on" in r.text
+    # The unverified follower's row carries no such tooltip.
+    assert "Unverified follow-up" in r.text
+    assert 'title="verified by alice' in r.text
+    # Once in the evidence table, once in the withheld-evidence list below
+    # (both are unsigned-off corroborates edges, so both surfaces render
+    # this paper) — never on the unverified follower's rows.
+    assert r.text.count('title="verified by') == 2
+
+
 def test_claim_view_originator_handle_and_star(
     claim_client: TestClient, hub: Hub
 ) -> None:

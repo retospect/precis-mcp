@@ -33,6 +33,7 @@ from precis_web.paper_links import (
     scholar_url,
     uol_url,
 )
+from precis_web.timefmt import utc_date
 
 #: Max characters of the matching chunk shown as the row preview.
 _PREVIEW_CHARS = 140
@@ -178,13 +179,19 @@ class ItemPresenter:
 
     def title_meta(self, ref: Any) -> dict[str, Any]:
         """Full (uncapped) title + journal/authors/year for the
-        title-hover popover."""
+        title-hover popover, plus the Meta tab's human-verification stamp
+        (``refs.human_verified_at``/``_by``) — the ``/drive`` search/browse
+        row's ✓ mark (gr351830), same columns every other paper-link
+        surface reads (``ref`` here is the search hit's full batched
+        ``refs`` row already; no extra query)."""
         meta = getattr(ref, "meta", None) or {}
         return {
             "title": _WS_RE.sub(" ", getattr(ref, "title", None) or "").strip(),
             "journal": (meta.get("journal") or "").strip() or None,
             "authors": author_names(getattr(ref, "authors", None)),
             "year": getattr(ref, "year", None),
+            "reviewed_at": utc_date(getattr(ref, "human_verified_at", None)) or None,
+            "reviewed_by": getattr(ref, "human_verified_by", None) or None,
         }
 
     def chunk_full(self, block: Any) -> str:

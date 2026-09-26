@@ -99,6 +99,28 @@ def test_title_meta_defaults_when_no_meta() -> None:
     assert tm["year"] is None
 
 
+def test_title_meta_carries_human_verified_stamp() -> None:
+    """The Meta tab's ``human_verified_at``/``_by`` sign-off surfaces on
+    ``title_meta`` as ``reviewed_at``/``reviewed_by`` — the ``/drive`` row's
+    ✓ mark (gr351830). Absent (unverified) → both ``None``, no mark."""
+    import datetime as _dt
+
+    p = ItemPresenter("paper")
+    verified = _ref(
+        title="Checked",
+        human_verified_at=_dt.datetime(2026, 8, 20, 9, 30, tzinfo=_dt.UTC),
+        human_verified_by="alice",
+    )
+    tm = p.title_meta(verified)
+    assert tm["reviewed_at"] == "2026-08-20"
+    assert tm["reviewed_by"] == "alice"
+
+    unverified = _ref(title="Unchecked")
+    tm = p.title_meta(unverified)
+    assert tm["reviewed_at"] is None
+    assert tm["reviewed_by"] is None
+
+
 def test_preview_prefers_gloss_over_chunk_text() -> None:
     p = ItemPresenter("paper")
     assert p.preview(_block("chunk text"), "a gloss") == "a gloss"

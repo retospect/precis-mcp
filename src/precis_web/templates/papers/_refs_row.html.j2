@@ -13,13 +13,20 @@
    from the plain positional ``row.n`` (``N.``) index it replaces.
    ``row.raw_text`` is the verbatim parsed citation line for a union row
    (a bib entry with no matching S2/held row) — shown instead of
-   ``row.title`` since a bare bib entry has no title field. #}
+   ``row.title`` since a bare bib entry has no title field.
+
+   ``row.reviewed_at``/``row.reviewed_by`` (held rows only —
+   ``routes/papers.py::_refs_row``) drive the ✓ mark (gr351830), same
+   ``refs.human_verified_*`` columns every other paper-link surface
+   reads via ``_verified_mark.html.j2``. #}
+{% import "_verified_mark.html.j2" as vm %}
 <div class="refs-row border-b border-slate-100 py-1.5 text-xs last:border-0">
   <div class="flex items-baseline gap-1.5">
     {% if row.marker %}<span class="w-8 shrink-0 text-right text-slate-400">[{{ row.marker }}]</span>
     {% elif row.n %}<span class="w-5 shrink-0 text-right text-slate-400">{{ row.n }}.</span>{% endif %}
     {% if row.held %}
     <a href="{{ row.url }}" class="font-medium text-sky-700 hover:underline">{{ row.title }}</a>
+    {{ vm.verified_mark(row.reviewed_at, row.reviewed_by) }}
     {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
     <span class="rounded bg-emerald-50 px-1 text-[10px] text-emerald-700" title="held in this corpus">held</span>
     {% elif row.raw_text %}

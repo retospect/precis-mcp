@@ -378,6 +378,7 @@
   });
 </script>
 
+{% import "_verified_mark.html.j2" as vm %}
 {% macro item_list(items) %}
 <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
   {% for row in items %}
@@ -398,6 +399,7 @@
         {% set tm = row.title_meta %}
         <span class="relative inline-block" @mouseenter="titleHover=true" @mouseleave="titleHover=false">
           <a href="{{ row.open_url }}" class="text-sky-700 hover:underline text-sm">{{ row.title }}</a>
+          {{ vm.verified_mark(tm.reviewed_at, tm.reviewed_by) if tm }}
           {# Title/metadata popover — full (uncapped) title + journal/authors/year,
              only worth a floating box when it says more than the capped row title. #}
           {% if tm and (tm.title != row.title or tm.journal or tm.authors or tm.year) %}

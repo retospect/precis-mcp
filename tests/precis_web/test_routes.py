@@ -847,6 +847,37 @@ def test_drive_search_row_shows_pdf_badge(runtime, client) -> None:
     assert ">pdf<" in resp.text
 
 
+def test_drive_search_row_marks_human_verified(runtime, client) -> None:
+    """A search-hit paper carrying the Meta tab's ``human_verified_at``/
+    ``_by`` sign-off shows the ✓ mark + tooltip (gr351830); an unverified
+    hit shows no mark."""
+    import datetime as _dt
+    from types import SimpleNamespace
+
+    from .conftest import make_ref
+
+    unverified = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
+    blk = SimpleNamespace(id=1001, ord=0, text="passage about the query")
+    runtime.store.cross_kind_hits = [(blk, unverified, 0.9)]
+    resp = client.get("/drive?q=query")
+    assert resp.status_code == 200
+    # Not "✓" bare — the row's own copy-URI button also uses that glyph.
+    assert "verified by" not in resp.text
+
+    verified = make_ref(
+        id=10,
+        kind="paper",
+        slug="smith2024",
+        title="A paper",
+        human_verified_at=_dt.datetime(2026, 8, 20, 9, 30, tzinfo=_dt.UTC),
+        human_verified_by="alice",
+    )
+    runtime.store.cross_kind_hits = [(blk, verified, 0.9)]
+    resp = client.get("/drive?q=query")
+    assert resp.status_code == 200
+    assert "verified by alice on 2026-08-20" in resp.text
+
+
 def test_drive_rows_show_per_item_tags(client) -> None:
     """Each row shows the item's own tags as chips — topical tags only;
     the reading-intent flags (buttons) and machine namespaces are hidden.

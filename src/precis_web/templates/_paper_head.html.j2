@@ -19,7 +19,13 @@
    `compact=true` collapses to a single line for dense list rows (the
    claim-page evidence rows) where a two-line block per item would be too
    tall; `show_handle=true` appends the mono handle (list rows that don't
-   already anchor on it). #}
+   already anchor on it).
+
+   Beside the title, an explicit ✓ (`_verified_mark.html.j2`) restates the
+   same `h.reviewed_at`/`h.reviewed_by` the year badge above already
+   carries — the badge alone reads as "this paper" styling, not
+   "verified", so gr351830 asked for a literal checkmark too. #}
+{% import "_verified_mark.html.j2" as vm %}
 {% macro paper_head(h, show_handle=false, compact=false) %}
 {% if compact %}
 {# tex-scope: titles can carry $…$/$$…$$ TeX (KaTeX render, base.html.j2).
@@ -28,7 +34,7 @@
 <span class="tex-scope break-words">
   {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-sky-600 px-1 text-white' if h.held else 'rounded bg-amber-600 px-1 text-white' }}{% else %}{{ 'text-sky-700' if h.held else 'text-amber-700' }}{% endif %}"
     {% if h.reviewed %}title="Reviewed ✓ {{ h.reviewed_at }}{% if h.reviewed_by %} by {{ h.reviewed_by }}{% endif %}"{% endif %}>{{ h.year }}</span> {% endif %}
-  <span class="text-slate-700">{{ h.title }}</span>
+  <span class="text-slate-700">{{ h.title }}</span> {{ vm.verified_mark(h.reviewed_at, h.reviewed_by) }}
   {% if h.journal %}<span class="italic text-slate-400"> · {{ h.journal }}</span>{% endif %}
   {% if h.first_author %}<span class="text-slate-400"> · {{ h.first_author }}{% if h.multi_author %} … {{ h.last_author }}{% endif %}</span>{% endif %}
   {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
@@ -40,7 +46,7 @@
   <p class="text-sm leading-snug break-words">
     {% if h.year %}<span class="font-semibold {% if h.reviewed %}{{ 'rounded bg-sky-600 px-1 text-white' if h.held else 'rounded bg-amber-600 px-1 text-white' }}{% else %}{{ 'text-sky-700' if h.held else 'text-amber-700' }}{% endif %}"
       {% if h.reviewed %}title="Reviewed ✓ {{ h.reviewed_at }}{% if h.reviewed_by %} by {{ h.reviewed_by }}{% endif %}"{% endif %}>{{ h.year }}</span> {% endif %}
-    <span class="font-medium text-slate-800">{{ h.title }}</span>
+    <span class="font-medium text-slate-800">{{ h.title }}</span> {{ vm.verified_mark(h.reviewed_at, h.reviewed_by) }}
     {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
   </p>
   {% if h.journal or h.first_author %}

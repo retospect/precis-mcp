@@ -6,6 +6,7 @@
    (namespaced, not splatted, so it can't shadow the reader-evidence
    context above); POST doors stay under /nanopub/fi<id>/... (unchanged —
    only the GET page moved), addressed here via the shared `hub_ref_id`. #}
+{% import "_verified_mark.html.j2" as vm %}
 <section id="review" class="mt-6 space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
   <div class="flex items-start justify-between gap-4">
     <h2 class="text-sm font-semibold text-slate-700">Review &amp; sign</h2>
@@ -313,7 +314,7 @@
     {% for w in np.withheld %}
     <div class="rounded border border-amber-200 bg-white/70 p-2 space-y-1.5">
       <p class="text-xs" title="{{ w.paper_title }}">
-        {{ w.relation }} ← {{ w.paper_title }}
+        {{ w.relation }} ← {{ w.paper_title }} {{ vm.verified_mark(w.reviewed_at, w.reviewed_by) }}
         {% if w.chunk_handle %}<span class="font-mono text-slate-400">{{ w.chunk_handle }}</span>{% endif %}
       </p>
       {% if w.passage %}

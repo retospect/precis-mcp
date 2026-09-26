@@ -109,6 +109,25 @@ def test_sources_fragment_renders_numbered_held_and_nonheld_rows(
     assert "Fetch" in text
 
 
+def test_sources_fragment_marks_reviewed_held_row(client, runtime) -> None:
+    """A held row whose paper carries the Meta tab's human-verification
+    stamp (``refs.human_verified_at/by``) shows the ✓ mark + tooltip
+    (gr351830); an unverified held row shows no mark at all."""
+    runtime.store.s2_neighbors[(10, "cites")] = [
+        _nb(s2_id="S2HELD", title="A held reference", year=2019, held_ref_id=11),
+    ]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    assert "✓" not in resp.text
+
+    runtime.store.set_human_verified(11, by="alice")
+
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    assert "✓" in resp.text
+    assert "verified by alice on" in resp.text
+
+
 def test_sources_fragment_no_fetch_button_without_identifiers(client, runtime) -> None:
     """A title-only neighbour (no doi, no s2_id) renders links-only — no
     Fetch button, since there's nothing to fetch by."""

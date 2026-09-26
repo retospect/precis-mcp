@@ -1,0 +1,21 @@
+{# The one "a human has confirmed this record" glyph — every surface that
+   renders a paper's title/link beside `refs.human_verified_at`/`_by` (the
+   Meta tab's "Mark reviewed" stamp, `routes/papers.py::toggle_human_verified`)
+   shows the SAME small ✓, so one verification reads identically everywhere
+   (gr351830): claim/evidence tables and the nanopub review page (via
+   `_paper_head.html.j2`, which already threads `reviewed_at`/`reviewed_by`
+   off `paper_ident.py::paper_head`, and the withheld-evidence list in
+   `claim/_review.html.j2`), the paper detail page's Sources/Cited
+   bibliography rows (`papers/_refs_row.html.j2`), and `/drive` search/browse
+   rows (`drive/index.html.j2`).
+
+   ``reviewed_at`` is the already-UTC-formatted ``YYYY-MM-DD`` day (or
+   ``None``/``""`` — this macro renders nothing then, no placeholder);
+   ``reviewed_by`` is the verifier identity, optional (falls back to
+   "someone" in the tooltip text rather than dropping the date-only case
+   silently). #}
+{% macro verified_mark(reviewed_at, reviewed_by=None) %}
+{%- if reviewed_at -%}
+<span class="text-emerald-600" title="verified by {{ reviewed_by or 'someone' }} on {{ reviewed_at }}">✓</span>
+{%- endif -%}
+{% endmacro %}
