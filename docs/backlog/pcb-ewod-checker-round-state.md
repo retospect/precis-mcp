@@ -178,13 +178,20 @@ It is silent twice over: the put echo says `+0 net(s)`, and `view='route-status'
 then reports the wrecked nets as `realized (dangling net (<2 members) —
 nothing to route)`. **The damage is reported in the realized column.** Repaired
 on prod by re-authoring the three connections; all three are back to fanout 2.
-The defect itself is unfixed — see gr451046, which also records a smaller
-sibling: the `_toc` summary counts `pcb_routes` rows for RETIRED nets, so it
-printed "60 failed, 59 realized" (119 rows) on a 62-net board while the proper
-view said 32/30.
 
-**Anyone re-applying a generator on a live design must check the fanout of
-every net the generator declares, before and after.**
+**gr451046 is now CLOSED — both halves fixed 2026-09-26.** `9bc27528`: the
+net-retire UPDATE skips any net still carrying a connection from a LIVE
+instance, so a net the generator does not solely own survives and the
+re-expansion attaches to it by name. `a10708e9`: the `_toc` summary drives from
+live nets and left-joins routes, exactly as `pcb_route_status` does — it used
+to count raw `pcb_routes` rows, disagreeing with `view='route-status'` in BOTH
+directions (119 rows on a 62-net board, and live routeless nets omitted). Both
+were verified in the FAILURE direction, guard removed until the tests went red,
+then restored.
+
+**Still true for OLD boards:** any design whose generator was re-applied before
+those landed may already be severed. Only `ewod-dogfood-2` was repaired.
+Symptom to look for: a net reading `realized (dangling net (<2 members))`.
 
 ### Ruling 10/11 bought two nets, not the escape class
 
