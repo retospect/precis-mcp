@@ -39,6 +39,24 @@ from precis_surface.dual import dualise
 from precis_surface.level_set import schwarz_p, schwarz_p_grad
 from precis_surface.periodic_mesh import periodic_mesh
 
+#: ``cell_A`` (Å) that puts tpms's MEAN C--C bond on graphene's 1.42 Å, one
+#: per (family, n, remesh) config used below. MEASURED per config rather than
+#: derived from a single constant: the dual edge length depends on the mesh,
+#: so P/n=17 needs 47.9 Å raw but 45.8 Å remeshed, and n=11 needs 31.7 Å.
+#: Lengths scale linearly in ``cell_A`` (the level set is geometrically
+#: similar at fixed n), so each value is exact, not fitted.
+#:
+#: These replace a blanket ``cell_A=8.0`` that every tpms test used and that
+#: produces a mean bond of 0.248 Å -- the right topology ~5.7x too small to
+#: be carbon (gr451269). The ring census depends only on ``n``, so it is
+#: bit-identical at 8.0 and 45.8 Å and every one of these tests passed while
+#: certifying non-carbon output. ``build_tpms`` now refuses that scale, so
+#: these constants are load-bearing rather than cosmetic.
+_TPMS_P11_RAW_CELL_A = 31.7
+_TPMS_P17_RAW_CELL_A = 47.9
+_TPMS_P17_CELL_A = 45.8
+_TPMS_G17_RAW_CELL_A = 47.2
+
 
 def _spec_A(envelope: str) -> cad_dsl.ShapeSpec:
     """A generator's own Å figures, read back out of its **Å-suffixed**
@@ -489,7 +507,9 @@ def _scene_from_block(block: GeneratedBlock) -> StructScene:
         build_cone({"pentagons": 2, "length_A": 15.0}),
         # remesh=False: cheap fixture for an envelope-containment check,
         # unrelated to the {5,6,7} ring-purity ruling (module docstring).
-        build_tpms({"family": "P", "cell_A": 8.0, "n": 11, "remesh": False}),
+        build_tpms(
+            {"family": "P", "cell_A": _TPMS_P11_RAW_CELL_A, "n": 11, "remesh": False}
+        ),
     ],
     ids=["cnt", "fullerene", "cone", "tpms"],
 )
@@ -526,7 +546,9 @@ def test_tpms_atoms_inside_envelope() -> None:
     passing. ``remesh=False``: this is an envelope-containment check,
     unrelated to the {5,6,7} ring-purity ruling (module docstring), so it
     keeps the cheap unremeshed fixture."""
-    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 11, "remesh": False})
+    block = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P11_RAW_CELL_A, "n": 11, "remesh": False}
+    )
     spec = _spec_A(block.envelope)
     assert spec.alias == "box"
     w, d, h = spec.params["w"], spec.params["d"], spec.params["h"]
@@ -641,12 +663,14 @@ def test_generate_block_is_a_generated_block_type() -> None:
 def test_tpms_p_reachable_through_the_registry_like_cnt() -> None:
     assert GENERATORS["tpms"] is build_tpms
     assert GENERATORS["schwarzite"] is build_tpms
-    block = GENERATORS["tpms"]({"family": "P", "cell_A": 8.0, "n": 17})
+    block = GENERATORS["tpms"]({"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17})
     assert isinstance(block, GeneratedBlock)
 
 
 def test_tpms_p_all_carbon_and_chi_per_cell() -> None:
-    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    block = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17, "reps": (1, 1, 1)}
+    )
     assert block.elements == ["C"] * len(block.elements)
     assert block.topology["chi_per_cell"] == -4
     assert block.topology["family"] == "P"
@@ -663,7 +687,7 @@ def test_tpms_p_bond_count_is_3_over_2_atoms_minus_rim_deficits() -> None:
     triangulation, remeshed or not), so it is checked against the RAW
     periodic net below, not a remeshed one -- keeping this test's own
     from-scratch fixture and the generator's output in lock-step."""
-    cell_A, n = 8.0, 17
+    cell_A, n = _TPMS_P17_RAW_CELL_A, 17
     block = build_tpms(
         {"family": "P", "cell_A": cell_A, "n": n, "reps": (1, 1, 1), "remesh": False}
     )
@@ -692,13 +716,19 @@ def test_tpms_p_bond_count_is_3_over_2_atoms_minus_rim_deficits() -> None:
 
 
 def test_tpms_p_reps_2x1x1_doubles_atoms() -> None:
-    block1 = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
-    block2 = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (2, 1, 1)})
+    block1 = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17, "reps": (1, 1, 1)}
+    )
+    block2 = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17, "reps": (2, 1, 1)}
+    )
     assert len(block2.elements) == 2 * len(block1.elements)
 
 
 def test_tpms_rim_ports_point_outward_and_flag_sp2_rim() -> None:
-    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    block = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17, "reps": (1, 1, 1)}
+    )
     assert block.ports  # reps=(1,1,1) has open boundary on every axis
     for p in block.ports:
         assert p.roles == ["covalent", "sp2-rim"]
@@ -730,7 +760,13 @@ def test_tpms_gyroid_family_builds_and_reports_chi() -> None:
     invariant either way, so it stays on the raw scaffold rather than
     getting entangled with that unrelated refusal."""
     block = build_tpms(
-        {"family": "G", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1), "remesh": False}
+        {
+            "family": "G",
+            "cell_A": _TPMS_G17_RAW_CELL_A,
+            "n": 17,
+            "reps": (1, 1, 1),
+            "remesh": False,
+        }
     )
     assert block.topology["chi_per_cell"] == -8
 
@@ -739,11 +775,75 @@ def test_tpms_p_default_remesh_ring_histogram_is_within_567() -> None:
     """The default (``remesh`` param defaults to ``True``) path enforces
     the {5,6,7} ruling at the product boundary (tpms.py module docstring's
     "Ring purity is enforced" section) -- measured exact histogram for
-    Schwarz P at cell_A=8.0, n=17, reps=(1,1,1)."""
-    block = build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    Schwarz P at n=17, reps=(1,1,1). The histogram is SCALE-INVARIANT: it
+    depends only on ``n``, so it is bit-identical at cell_A=8.0 and at the
+    carbon-scale 45.8 Å. That is exactly why it could not catch gr451269 —
+    this test is a statement about tiling, never about chemistry."""
+    block = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17, "reps": (1, 1, 1)}
+    )
     rings = block.topology["rings"]
     assert set(rings) <= {5, 6, 7}
     assert rings == {5: 114, 6: 700, 7: 138}
+
+
+def test_tpms_p_mean_bond_is_carbon() -> None:
+    """gr451269: tpms shipped with no bond-length assertion while this same
+    file already applied ``_bond_lengths`` to cnt, fullerene AND cone — so
+    the one family whose scale is caller-controlled was the one nobody
+    measured, and it emitted a 0.248 Å mean for a month. Recomputed from
+    coords/bonds, per this module's docstring, not read off ``topology``.
+
+    Asserts the MEAN only. The spread is genuinely wide (see the next test)
+    and tightening it is the open remesh work, so a range assert of the
+    cnt/cone kind would fail here for a reason that has nothing to do with
+    what this test is for.
+    """
+    block = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17, "reps": (1, 1, 1)}
+    )
+    lengths = _bond_lengths(block.coords, block.bonds)
+    assert lengths
+    assert sum(lengths) / len(lengths) == pytest.approx(1.42, abs=0.02)
+
+
+def test_tpms_refuses_a_cell_A_that_is_not_carbon() -> None:
+    """The scale is caller-controlled and ``cell_A``/``n`` are independent,
+    so a plausible-looking pair silently yields the right topology at the
+    wrong scale. cell_A=8.0, n=17 was the *documented example* and is ~5.7x
+    too small; the refusal has to name the cell_A that works, because
+    nothing else in the output tells the caller which knob was wrong.
+    """
+    with pytest.raises(GeneratorError) as excinfo:
+        build_tpms({"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1)})
+    msg = str(excinfo.value)
+    assert "0.248" in msg, msg
+    # it derives the fix rather than just rejecting
+    assert "45.8" in msg, msg
+
+
+def test_tpms_reports_the_bond_spread_it_does_not_yet_fix() -> None:
+    """gr451269 part c, PENDING: at the corrected ``cell_A`` the mean is
+    carbon but individual bonds run ~0.73-2.38 Å, because the remesh
+    equalises vertex degree and not edge length. Pinned as a KNOWN-BAD
+    range so the spread is visible in ``topology`` and so the remesh
+    edge-length work has a test that must change when it lands.
+
+    TIGHTEN THIS when remesh grows an edge-length term. The measured
+    surprise worth keeping: remeshing makes the spread WORSE, not better
+    (raw at n=17 is 0.974-2.182 Å, remeshed 0.727-2.375 Å) — ring purity is
+    bought with edge-length uniformity.
+    """
+    block = build_tpms(
+        {"family": "P", "cell_A": _TPMS_P17_CELL_A, "n": 17, "reps": (1, 1, 1)}
+    )
+    topo = block.topology
+    assert topo["bond_mean_A"] == pytest.approx(1.42, abs=0.02)
+    assert topo["bond_min_A"] < 1.0, "spread unexpectedly tight -- see docstring"
+    assert topo["bond_max_A"] > 2.0, "spread unexpectedly tight -- see docstring"
+    lengths = _bond_lengths(block.coords, block.bonds)
+    assert min(lengths) == pytest.approx(topo["bond_min_A"], abs=1e-3)
+    assert max(lengths) == pytest.approx(topo["bond_max_A"], abs=1e-3)
 
 
 def test_tpms_p_remesh_false_yields_the_raw_scaffold() -> None:
@@ -752,7 +852,13 @@ def test_tpms_p_remesh_false_yields_the_raw_scaffold() -> None:
     marching-cubes dual keeps ring sizes the ruling forbids, on purpose,
     so a caller can inspect what the raw scaffold produced."""
     block = build_tpms(
-        {"family": "P", "cell_A": 8.0, "n": 17, "reps": (1, 1, 1), "remesh": False}
+        {
+            "family": "P",
+            "cell_A": _TPMS_P17_RAW_CELL_A,
+            "n": 17,
+            "reps": (1, 1, 1),
+            "remesh": False,
+        }
     )
     rings = block.topology["rings"]
     outside = {k: v for k, v in rings.items() if k not in (5, 6, 7)}

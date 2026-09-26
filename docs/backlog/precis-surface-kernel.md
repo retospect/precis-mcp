@@ -411,3 +411,31 @@ Two consequences for how this package is accepted, not just for the bug:
   histogram, raw scaffold and the gyroid refusal — and none asserts a bond
   length, though `tests/test_se_atomic_generators.py`'s own `_bond_lengths`
   helper is already used by the cnt, fullerene and cone families.
+
+### Part (a) landed 2026-09-26 — the scale error is no longer generatable
+
+`build_tpms` now measures the mean C–C bond of what it just built and
+refuses outside `[1.2, 1.7]` Å, naming the `cell_A` that *would* work at the
+requested `n` (derived, not tabulated: lengths scale linearly in `cell_A`, so
+one measurement is exact). `cell_A=8.0, n=17` — the config this document
+called known-good — now raises instead of emitting 0.248 Å carbon. Three
+tests cover it, and `topology` gained `bond_mean_A` / `bond_min_A` /
+`bond_max_A`.
+
+Gated on the **mean**, not the spread, on purpose: gating on the spread today
+would refuse every input and take the family offline, since part (c) below is
+unfixed. The spread is reported instead, so the remesh work has a number to
+move.
+
+Every tpms test had to be re-based off `cell_A=8.0` — they were certifying
+non-carbon output, and the scale-invariant histogram let them. The
+carbon-scale `cell_A` differs per config (P/n=11 raw 31.7 Å, P/n=17 raw
+47.9 Å, P/n=17 remeshed 45.8 Å, G/n=17 raw 47.2 Å), which is why the check
+derives the value rather than holding a constant.
+
+**New measurement, and it inverts the intuition: remesh makes the spread
+worse.** Schwarz P at n=17 is 0.974–2.182 Å raw and 0.727–2.375 Å remeshed.
+Ring purity is bought *with* edge-length uniformity, so part (c) is not
+"tighten a loop that already nearly works" — the loop is actively moving in
+the wrong direction on this metric, and an edge-length term has to fight the
+valence term rather than merely supplement it.

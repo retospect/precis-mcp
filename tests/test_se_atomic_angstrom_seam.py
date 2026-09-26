@@ -72,8 +72,11 @@ _CASES: dict[str, dict[str, object]] = {
     # than paying the default remesh loop's cost for a fact it's not
     # checking (tpms.py module docstring's {5,6,7} ruling only applies to
     # the default, remeshed path).
-    "tpms": {"family": "P", "cell_A": 8.0, "n": 11, "remesh": False},
-    "schwarzite": {"family": "P", "cell_A": 8.0, "n": 11, "remesh": False},
+    # cell_A=31.7 is not arbitrary: it is the value that puts the mean C-C
+    # bond on 1.42 Å at n=11, and build_tpms now REFUSES anything outside
+    # the carbon window (gr451269). The previous 8.0 gave 0.38 Å bonds.
+    "tpms": {"family": "P", "cell_A": 31.7, "n": 11, "remesh": False},
+    "schwarzite": {"family": "P", "cell_A": 31.7, "n": 11, "remesh": False},
     "hexfold": {
         "spec": (
             "hexfold 0.1\n\nlattice: element=C sigma=1.42\n\n"

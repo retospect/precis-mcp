@@ -126,6 +126,27 @@ _MAX_REPS = 8
 #: :mod:`precis_se.atomic.generators.sp2`'s CNT/cone families.
 _BOND_ORDER = 4.0 / 3.0
 
+#: Graphene C--C sigma bond (Å) -- ``hexfold.lattice``'s sigma_A.
+_SIGMA_CC_A = 1.42
+
+#: Refusal window on the MEAN C--C bond (Å). ``cell_A`` and ``n`` are
+#: independent knobs and only one pairing per ``n`` lands on carbon, so a
+#: plausible-looking pair silently produces a net at the wrong scale --
+#: gr451269 shipped with the documented example (P, cell_A=8.0, n=17) at
+#: 0.248 Å, every bond ~5.7x too short and ~33x graphene's areal density.
+#: Nothing else caught it: the ring census depends only on ``n``, so it is
+#: bit-identical at 8.0 and 45.8 Å.
+#:
+#: Gated on the mean, NOT the spread, and deliberately: at the corrected
+#: ``cell_A`` the mean is right but individual bonds still run 0.726-2.373 Å,
+#: because the remesh equalises vertex degree and not edge length (the fix is
+#: an edge-length term in ``precis_surface.remesh``, gr451269 part c). Gating
+#: on the spread today would refuse every input and take the family offline;
+#: gating on the mean catches the scale error, which is the actual defect.
+#: The measured spread is reported in ``topology`` either way.
+_MEAN_BOND_MIN_A = 1.2
+_MEAN_BOND_MAX_A = 1.7
+
 
 def _validate_params(
     raw: dict[str, Any],
@@ -304,6 +325,29 @@ def build_tpms(
         )
     bonds = [(i, j, _BOND_ORDER, "aromatic") for i, j in bond_pairs]
 
+    # Is this carbon at all? See _MEAN_BOND_MIN_A for why the mean and not
+    # the spread. Measured here rather than derived in _validate_params
+    # because the mesh -> dual -> unroll chain sets the scale: a fitted
+    # constant per family would be one more number that can drift from the
+    # code it predicts.
+    _pairs = np.asarray(bond_pairs, dtype=np.intp).reshape(-1, 2)
+    _d = np.linalg.norm(coords[_pairs[:, 0]] - coords[_pairs[:, 1]], axis=1)
+    bond_mean_A = float(_d.mean())
+    if not (_MEAN_BOND_MIN_A <= bond_mean_A <= _MEAN_BOND_MAX_A):
+        suggested_cell_A = cell_A * _SIGMA_CC_A / bond_mean_A
+        raise GeneratorError(
+            f"tpms family={family} cell_A={cell_A!r} n={n}: mean C-C bond is "
+            f"{bond_mean_A:.3f} Å, outside the carbon window "
+            f"[{_MEAN_BOND_MIN_A}, {_MEAN_BOND_MAX_A}] (graphene is "
+            f"{_SIGMA_CC_A} Å) -- this is not carbon, it is the right "
+            f"topology at the wrong scale. 'cell_A' and 'n' are independent: "
+            f"at n={n}, cell_A≈{suggested_cell_A:.1f} Å puts the mean on "
+            f"{_SIGMA_CC_A} Å. Note the bond spread is not yet fixed by this "
+            f"check (gr451269): the remesh equalises vertex degree, not edge "
+            f"length, so individual bonds stay uneven even at the corrected "
+            f"cell_A."
+        )
+
     rim_directions = _rim_port_directions(dnet, reps)
     ports = [
         GeneratedPort(
@@ -342,6 +386,12 @@ def build_tpms(
         "pentagons": hist.get(5, 0),
         "n_atoms_per_cell": len(dnet.atoms),
         "n_bonds_per_cell": len(dnet.bonds),
+        # Reported, not gated: the mean is checked above, the spread is the
+        # open part of gr451269. Surfacing it is what makes the remesh
+        # edge-length work measurable from the outside.
+        "bond_mean_A": round(bond_mean_A, 4),
+        "bond_min_A": round(float(_d.min()), 4),
+        "bond_max_A": round(float(_d.max()), 4),
     }
     ring_desc = "ring histogram" if ring_purity_enforced else "raw ring histogram"
     scaffold_desc = (
