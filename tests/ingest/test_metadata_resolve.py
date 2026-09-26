@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from precis.ingest.metadata_resolve import (
+    MISMATCH_TAG,
     TRIAGE_TAG,
     _title_candidates,
     _triage_refs,
@@ -93,6 +94,20 @@ def _has_triage(store: Store, ref_id: int) -> bool:
     return row is not None
 
 
+def _has_mismatch_tag(store: Store, ref_id: int) -> bool:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id=rt.tag_id "
+            "WHERE rt.ref_id=%s AND t.namespace='OPEN' AND t.value=%s",
+            (ref_id, MISMATCH_TAG.value),
+        ).fetchone()
+    return row is not None
+
+
+def _identifiers(store: Store, ref_id: int) -> dict[str, str]:
+    return store.identifiers_for_refs([ref_id]).get(ref_id, {})
+
+
 # ── Track 1: DOI → Crossref ───────────────────────────────────────
 
 
@@ -133,6 +148,106 @@ def test_track1_crossref_junk_title_discarded(store: Store) -> None:
         store, apply=True, crossref_fn=_fake_crossref(meta), s2_fn=_no_call
     )
     assert _verdict(out, rid).verdict == "discard"
+
+
+# ── gr353804: zero-overlap guard withholds a mis-resolved identity ─
+
+
+def test_track1_zero_overlap_parks_instead_of_applying(store: Store) -> None:
+    """pa2615's shape: a stored (wrong) DOI resolves via Crossref to an
+    unrelated paper's title that shares no distinctive word with this
+    ref's own chunk 0 — the write must be withheld, the wrong DOI
+    cleared, and the ref tagged + annotated for a human, not silently
+    resolved."""
+    rid = _triage_paper(
+        store,
+        slug="si2615",
+        title="",
+        doi="10.1099/wrong-mining-doi",
+        chunk0=(
+            "Supplementary Information\nSection S1: Additional NMR spectra "
+            "for the ligand-exchange reaction discussed in the main text. "
+            "Figure S3 shows the corresponding infrared absorption bands "
+            "recorded on the purified crystalline sample."
+        ),
+    )
+    meta: dict[str, Any] = {
+        "title": "A novel hybrid carbon material for supercapacitor electrodes",
+        "authors": [{"name": "A. Miner"}],
+        "year": 2022,
+        "doi": "10.1099/wrong-mining-doi",
+    }
+    out = resolve_triage(
+        store, apply=True, crossref_fn=_fake_crossref(meta), s2_fn=_no_call
+    )
+    r = _verdict(out, rid)
+    assert r.verdict == "parked" and r.reason == "registry-title-zero-overlap"
+    assert r.token_overlap == 0
+
+    ref = _ref(store, rid)
+    assert ref.title == ""  # never assigned
+    assert (ref.meta or {}).get("registry_mismatch") == {
+        "doi": "10.1099/wrong-mining-doi",
+        "registry_title": meta["title"],
+        "overlap": 0,
+    }
+    assert _identifiers(store, rid).get("doi") is None  # wrong DOI cleared
+    assert _has_mismatch_tag(store, rid)
+    assert _has_triage(store, rid)  # still needs a human
+
+
+def test_track1_short_chunk0_does_not_trigger_the_guard(store: Store) -> None:
+    """A too-short chunk 0 can't corroborate OR refute the registry hit —
+    the guard abstains and the normal auto-apply path still runs."""
+    rid = _triage_paper(
+        store,
+        slug="short0",
+        title="",
+        doi="10.1234/real",
+        chunk0="Cover page",
+    )
+    meta: dict[str, Any] = {
+        "title": "Unrelated Registry Title About Something Else Entirely",
+        "authors": [],
+        "year": 2020,
+        "doi": "10.1234/real",
+    }
+    out = resolve_triage(
+        store, apply=True, crossref_fn=_fake_crossref(meta), s2_fn=_no_call
+    )
+    r = _verdict(out, rid)
+    assert r.verdict == "auto"
+    assert _ref(store, rid).title == meta["title"]
+
+
+def test_track1_human_verified_ref_is_never_touched(store: Store) -> None:
+    """gr353804: a human-verified ref is skipped outright, even when its
+    stored DOI would otherwise resolve to a zero-overlap title."""
+    rid = _triage_paper(
+        store,
+        slug="verified1",
+        title="",
+        doi="10.1099/wrong-mining-doi",
+        chunk0=(
+            "Supplementary Information\nSection S1: Additional NMR spectra "
+            "for the ligand-exchange reaction discussed in the main text. "
+            "Figure S3 shows the corresponding infrared absorption bands "
+            "recorded on the purified crystalline sample."
+        ),
+    )
+    store.set_human_verified(rid, by="reto")
+    meta: dict[str, Any] = {
+        "title": "A novel hybrid carbon material for supercapacitor electrodes",
+        "authors": [],
+        "year": 2022,
+        "doi": "10.1099/wrong-mining-doi",
+    }
+    out = resolve_triage(
+        store, apply=True, crossref_fn=_fake_crossref(meta), s2_fn=_no_call
+    )
+    r = _verdict(out, rid)
+    assert r.verdict == "miss" and r.reason == "human-verified-skip"
+    assert _identifiers(store, rid).get("doi") == "10.1099/wrong-mining-doi"
 
 
 # ── Track 2: title search → S2 ────────────────────────────────────

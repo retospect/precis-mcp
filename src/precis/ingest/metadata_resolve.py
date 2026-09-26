@@ -18,8 +18,21 @@ front-matter → discard list). Track 2 auto-applies only at/above
 with an affirmative year match on both sides (query-vs-hit similarity is
 near-tautological for a scraped query, so it can't corroborate alone).
 ``[_REVIEW_SIM, _AUTO_SIM)`` is surfaced for review, never auto-written.
-Nothing is deleted here;
-not-a-paper candidates (book cruft, held-without-chunks) are only flagged.
+Not-a-paper candidates (book cruft, held-without-chunks) are only flagged.
+
+**Zero-overlap guard (gr353804).** An otherwise-``auto`` verdict on either
+track is rerouted to ``parked`` — the one write this module does perform
+outside ``apply``/``discard`` — when the registry title shares zero
+distinctive tokens with the ref's own chunk-0 text (see
+:func:`_guard_registry_mismatch` /
+:func:`~precis.ingest.verify_metadata.title_overlap`) — the mis-resolved-
+identity signature that let an SI PDF (pa2615) take an unrelated 2022
+mining paper's DOI + title. :func:`park_mismatch` (the ``parked`` sibling
+of :func:`apply_resolution`) never writes the candidate title/authors,
+tags :data:`MISMATCH_TAG` for a human, records what was withheld in
+``meta.registry_mismatch``, and — Track 1 only — clears the stored DOI
+that produced the mismatch (the one delete this module performs). Never
+fires on a ref carrying ``human_verified_at``.
 
 Reuses ``lookup_crossref`` / ``lookup_s2`` (both carry tenacity backoff),
 ``update_paper_fields`` + ``set_ref_identifier`` + ``rewrite_cards``, and
@@ -41,6 +54,7 @@ from precis.ingest.cards import rewrite_cards
 from precis.ingest.crossref import lookup_crossref
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.ingest.semantic_scholar import lookup_s2
+from precis.ingest.verify_metadata import content_tokens, title_overlap
 from precis.liveness import drain_sleep
 from precis.store import Store, Tag
 from precis.utils.authors import to_name_dicts
@@ -52,6 +66,19 @@ _AUTO_SIM = 0.85
 _REVIEW_SIM = 0.6
 
 TRIAGE_TAG = Tag.open("needs-triage")
+
+#: gr353804: a registry (Crossref/S2) hit that shares zero distinctive
+#: tokens with the paper's own chunk-0 text — the mis-resolved-identity
+#: signature (pa2615: an SI PDF that took an unrelated 2022 mining
+#: paper's DOI + title). No "needs review"/"paper-meta" tag already exists
+#: for this specific failure mode, so this mints one.
+MISMATCH_TAG = Tag.open("paper-meta:title-mismatch")
+
+#: Below this many distinctive tokens, chunk 0 is too short (a cover page,
+#: a scan, a near-empty stub) to corroborate OR refute a registry hit —
+#: :func:`_guard_registry_mismatch` abstains rather than risk a false
+#: park on a legitimately thin first chunk.
+_MIN_CHUNK_TOKENS = 8
 
 #: Book front-matter DOIs (Elsevier `b<isbn>` chapter DOIs) whose Crossref
 #: record is itself "Index" / "Dedication" — not a paper.
@@ -94,7 +121,7 @@ class Resolution:
     """The verdict + recovered metadata for one triage paper."""
 
     ref_id: int
-    verdict: str  # 'auto' | 'review' | 'discard' | 'miss'
+    verdict: str  # 'auto' | 'review' | 'discard' | 'miss' | 'parked'
     track: str  # 'doi' | 'title' | '-'
     reason: str
     title: str = ""
@@ -107,6 +134,10 @@ class Resolution:
     doi: str | None = None
     arxiv: str | None = None
     sim: float | None = None
+    #: gr353804 — set only by :func:`_guard_registry_mismatch` (verdict
+    #: 'parked'): the :func:`~precis.ingest.verify_metadata.title_overlap`
+    #: count that tripped it (always 0).
+    token_overlap: int | None = None
 
     def line(self) -> str:
         sim = f" sim={self.sim:.2f}" if self.sim is not None else ""
@@ -226,6 +257,39 @@ def _similarity(store: Store, a: str, b: str) -> float:
     return float(row[0]) if row and row[0] is not None else 0.0
 
 
+def _chunk0_text(store: Store, ref_id: int) -> str:
+    """Ref's own first body chunk (``ord=0``), or ``""`` if it has none."""
+    rows = store.chunks.list_chunks_for_ref(ref_id, pos_range=(0, 0))
+    return rows[0].text or "" if rows else ""
+
+
+def _guard_registry_mismatch(store: Store, res: Resolution) -> Resolution:
+    """gr353804: reroute an otherwise-``auto`` verdict to ``parked`` when
+    the registry title shares zero distinctive tokens with the paper's own
+    chunk 0 — Track 1 has no other content check at all (it trusts
+    whatever Crossref returns for the *stored* DOI, and that DOI is
+    exactly what can be wrong — pa2615's SI PDF carried an unrelated 2022
+    mining paper's DOI); Track 2's trigram gate only compares the query
+    string to the hit's title, never to the paper's real text.
+
+    A no-op for every other verdict, and for ``auto`` when chunk 0 is too
+    short to judge (< :data:`_MIN_CHUNK_TOKENS` distinctive tokens — a
+    cover page, a scan, a chunkless title-only stub) — see
+    :func:`~precis.ingest.verify_metadata.title_overlap`.
+    """
+    if res.verdict != "auto" or not res.title:
+        return res
+    chunk_text = _chunk0_text(store, res.ref_id)
+    if len(content_tokens(chunk_text)) < _MIN_CHUNK_TOKENS:
+        return res
+    overlap = title_overlap(res.title, chunk_text)
+    if overlap > 0:
+        return res
+    res.token_overlap = overlap
+    res.verdict, res.reason = "parked", "registry-title-zero-overlap"
+    return res
+
+
 def _from_meta(ref_id: int, meta: dict[str, Any], *, track: str) -> Resolution:
     """Shape a resolver dict into a Resolution (verdict filled by caller)."""
     return Resolution(
@@ -256,6 +320,11 @@ def _resolve_one(
     call_timeout: float = _DEFAULT_CALL_TIMEOUT,
 ) -> Resolution:
     rid = ref.id
+    # gr353804: a human already vetted this ref's identity — never let an
+    # automated re-resolution (registry OR the zero-overlap park below)
+    # touch it, auto-apply or not.
+    if getattr(ref, "human_verified_at", None) is not None:
+        return Resolution(rid, "miss", "-", "human-verified-skip")
     # Not-a-paper: a held-flag with no ingested body is a broken import.
     if ref.pdf_sha256 is not None:
         with store.pool.connection() as conn:
@@ -282,7 +351,7 @@ def _resolve_one(
             res.verdict, res.reason = "discard", "resolved-title-junk"
             return res
         res.verdict, res.reason = "auto", "crossref-resolved"
-        return res
+        return _guard_registry_mismatch(store, res)
 
     # ── Track 2: title search recovers a DOI ─────────────────────────
     # Try each candidate title from the first few chunks; keep the S2 hit whose
@@ -338,7 +407,7 @@ def _resolve_one(
             res.verdict, res.reason = "review", f"recovered-doi-owned-by-#{owner}"
             return res
     res.verdict, res.reason = "auto", "s2-title-resolved"
-    return res
+    return _guard_registry_mismatch(store, res)
 
 
 def _stored_doi(store: Store, ref_id: int) -> str | None:
@@ -390,6 +459,42 @@ def apply_resolution(
             keywords=[],
         )
         store.remove_tag(res.ref_id, TRIAGE_TAG, conn=conn)
+
+
+def park_mismatch(
+    store: Store, res: Resolution, *, source: str = "resolve-metadata"
+) -> None:
+    """Write a ``verdict='parked'`` (gr353804) resolution onto the ref:
+    tag it :data:`MISMATCH_TAG` for human review, record what was
+    withheld in ``meta.registry_mismatch``, and — Track 1 only, where a
+    *stored* DOI is what produced the mismatched title — clear that DOI
+    so the wrong identifier stops being offered/refetched. Track 2 never
+    stored a DOI here (it was only a recovery candidate), so there's
+    nothing to clear.
+
+    Deliberately the mirror image of :func:`apply_resolution`: never
+    writes ``title``/``authors``/``doi`` from ``res`` onto the ref — the
+    whole point of ``parked`` is that the registry hit must NOT become
+    this ref's identity — and never drops :data:`TRIAGE_TAG`, so the ref
+    stays visible in the needs-triage queue instead of silently
+    resolving.
+    """
+    with store.tx() as conn:
+        store.add_tag(res.ref_id, MISMATCH_TAG, conn=conn)
+        store.update_paper_fields(
+            res.ref_id,
+            meta_patch={
+                "registry_mismatch": {
+                    "doi": res.doi,
+                    "registry_title": res.title,
+                    "overlap": res.token_overlap or 0,
+                }
+            },
+            source=source,
+            conn=conn,
+        )
+        if res.track == "doi" and res.doi:
+            store.clear_ref_identifier(res.ref_id, "doi", source=source, conn=conn)
 
 
 def _triage_refs(store: Store, limit: int | None) -> list[Any]:
@@ -460,6 +565,12 @@ def resolve_triage(
             except Exception:
                 log.exception("resolve-metadata: apply #%s failed", ref.id)
                 res.verdict, res.reason = "review", "apply-failed"
+        elif apply and res.verdict == "parked":
+            try:
+                park_mismatch(store, res)
+            except Exception:
+                log.exception("resolve-metadata: park #%s failed", ref.id)
+                res.verdict, res.reason = "review", "park-failed"
         results.append(res)
         # Space out only the calls that touched the network (doi/title
         # tracks that weren't a pre-network skip like book-frontmatter-doi).
@@ -472,4 +583,10 @@ def resolve_triage(
     return results
 
 
-__all__ = ["Resolution", "apply_resolution", "resolve_triage"]
+__all__ = [
+    "MISMATCH_TAG",
+    "Resolution",
+    "apply_resolution",
+    "park_mismatch",
+    "resolve_triage",
+]

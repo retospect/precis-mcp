@@ -6,6 +6,8 @@ from precis.ingest.verify_metadata import (
     _doi_prefix_in_text,
     _normalize,
     _word_overlap_score,
+    content_tokens,
+    title_overlap,
     verify_metadata,
 )
 
@@ -366,3 +368,59 @@ class TestWordOverlapVerifyGate:
         )
         verified, warnings = verify_metadata(header, text)
         assert verified is True, f"expected verified, got warnings: {warnings}"
+
+
+class TestTitleOverlap:
+    """gr353804: the pure token-overlap function the metadata_resolve
+    zero-overlap guard uses to decide whether a registry title genuinely
+    relates to the paper's own chunk 0."""
+
+    def test_pa2615_shape_is_zero(self):
+        """The gripe's concrete case: an SI PDF's chunk 0 shares no
+        distinctive word with the unrelated mining paper's registry
+        title it was wrongly resolved to."""
+        registry_title = "A novel hybrid carbon material for supercapacitor electrodes"
+        chunk_text = (
+            "Supplementary Information\nSection S1: Additional NMR spectra "
+            "for the ligand-exchange reaction discussed in the main text. "
+            "Figure S3 shows the corresponding infrared absorption bands "
+            "recorded on the purified crystalline sample."
+        )
+        assert title_overlap(registry_title, chunk_text) == 0
+
+    def test_normal_paper_overlaps(self):
+        """A correctly-resolved paper's chunk 0 restates title words."""
+        registry_title = "High-resolution imaging of graphene heterostructures"
+        chunk_text = (
+            "High-resolution imaging of graphene heterostructures reveals "
+            "moire patterns at twisted bilayer interfaces."
+        )
+        assert title_overlap(registry_title, chunk_text) > 0
+
+    def test_short_chunk_still_computes_honestly(self):
+        """``title_overlap`` itself has no length floor — it's the call
+        site's job (metadata_resolve's ``_MIN_CHUNK_TOKENS``) to abstain
+        on a too-short chunk. Confirm the pure function still returns 0
+        (not e.g. raising) on a short, unrelated blurb."""
+        assert title_overlap("Some Distinct Paper Title Here", "cover page") == 0
+
+    def test_stopwords_and_short_tokens_dont_count(self):
+        assert title_overlap("the a of to as is", "the a of to as is") == 0
+
+    def test_case_insensitive(self):
+        assert (
+            title_overlap("GRAPHENE Heterostructures", "graphene heterostructures") == 2
+        )
+
+    def test_empty_inputs(self):
+        assert title_overlap("", "some text") == 0
+        assert title_overlap("some title", "") == 0
+        assert title_overlap("", "") == 0
+
+
+class TestContentTokens:
+    def test_drops_stopwords_and_short_tokens(self):
+        assert content_tokens("the a of graphene is") == frozenset({"graphene"})
+
+    def test_lowercases(self):
+        assert content_tokens("GRAPHENE") == frozenset({"graphene"})

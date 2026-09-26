@@ -180,6 +180,40 @@ def _word_overlap_score(norm_title: str, norm_text: str) -> float:
     return 100.0 * hits / len(title_words)
 
 
+def content_tokens(text: str) -> frozenset[str]:
+    """Lowercase alphanumeric tokens (≥4 chars), stopwords dropped.
+
+    The shared tokenizer for :func:`title_overlap` (gr353804) — deliberately
+    a plainer cut than :func:`_word_overlap_score`'s substring matching:
+    that function tolerates pluralisation/prefix variants on purpose (a
+    *real* paper's title vs its own PDF text), while ``title_overlap``
+    exists to catch the opposite case — a registry hit with NO genuine
+    relationship to the PDF at all — where exact-token intersection is
+    the cleaner signal (no risk of a short substring like "the" tucked
+    inside an unrelated word inflating the count; ``\\w`` already excludes
+    that here since stopwords are filtered post-tokenization, not via
+    substring).
+    """
+    return frozenset(
+        w for w in re.findall(r"[a-z0-9]{4,}", text.lower()) if w not in _STOPWORDS
+    )
+
+
+def title_overlap(registry_title: str, chunk_text: str) -> int:
+    """Count of distinctive tokens ``registry_title`` shares with ``chunk_text``.
+
+    Pure — lowercase both, tokenize with :func:`content_tokens` (≥4-char
+    alphanumeric, stopwords dropped), intersect. Zero means the two share
+    no distinctive word at all: for a real paper, chunk 0 (its own first
+    body text) almost always restates several title words verbatim, so a
+    hard zero — checked alongside a minimum chunk-token count so a short/
+    blank first chunk can't trivially produce it — is the signature of a
+    mis-resolved identity (gr353804: an SI PDF that took an unrelated
+    2022 mining paper's DOI + title via a registry lookup with no content
+    cross-check)."""
+    return len(content_tokens(registry_title) & content_tokens(chunk_text))
+
+
 def _doi_prefix_in_text(doi: str, text: str) -> bool:
     """True if a prefixed form of *doi* appears in *text*.
 

@@ -1178,6 +1178,13 @@ def _health_ctx(store: Store, cfg: Any) -> dict[str, Any]:
         or {"spin_loops": [], "failed_passes": []},
         "corpus_dir": "  ".join(str(p) for p in cfg.corpus_dirs),
         "app_version": _app_version(),
+        # gr353804: papers whose registry title shares zero distinctive
+        # tokens with their own chunk 0 — see
+        # precis.health_checks.registry_title_mismatch.
+        "title_mismatch": _safe(
+            lambda: health_checks.registry_title_mismatch_check(store)
+        )
+        or {"n_sampled": 0, "n_mismatch": 0, "n_tagged": 0},
     }
 
 

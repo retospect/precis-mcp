@@ -307,6 +307,99 @@ def paper_authors_drift_check(store: Any) -> dict[str, Any]:
         return paper_authors_drift(conn)
 
 
+#: Bound on :func:`registry_title_mismatch`'s scan — most-recent live
+#: papers only, so it stays a cheap one-join query even on a large corpus.
+_TITLE_MISMATCH_SAMPLE = 2000
+
+#: Same abstain floor as the ingest-time guard
+#: (``precis.ingest.metadata_resolve._MIN_CHUNK_TOKENS``) — a chunk 0 this
+#: short can't corroborate OR refute a title either way.
+_TITLE_MISMATCH_MIN_CHUNK_TOKENS = 8
+
+
+def registry_title_mismatch(conn: Any) -> dict[str, Any]:
+    """Live papers (most-recent :data:`_TITLE_MISMATCH_SAMPLE`) whose
+    registry title shares zero distinctive tokens with their own chunk
+    ``ord=0`` text — the same
+    :func:`~precis.ingest.verify_metadata.title_overlap` test the
+    ingest-time guard (gr353804) uses, run here as a retrospective corpus
+    scan so papers ingested before the guard existed still surface.
+
+    Returns ``{"n_sampled", "n_mismatch", "n_tagged"}``: ``n_mismatch /
+    n_sampled`` is the scan's ratio over the bounded window; ``n_tagged``
+    is the *un*-bounded count of live papers already carrying the guard's
+    own ``paper-meta:title-mismatch`` tag (a caught-at-ingest subset,
+    typically much smaller — only papers ingested since the guard
+    shipped). Degrades to ``{"n_sampled": -1, "n_mismatch": 0, "n_tagged":
+    -1}`` on a query error (mirrors :func:`paper_authors_drift`'s "didn't
+    lie" convention), rolling back so a caller running more checks on the
+    same connection isn't poisoned.
+    """
+    # Import here, not at module top: precis.ingest is a much heavier
+    # package (Marker, pdf2doi, etc. transitively) than this otherwise
+    # dependency-light "one liveness truth" module wants to always pay for.
+    from precis.ingest.verify_metadata import content_tokens, title_overlap
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT p.title, c.text
+              FROM (SELECT ref_id, title FROM refs
+                     WHERE kind = 'paper' AND retired_at IS NULL
+                     ORDER BY ref_id DESC
+                     LIMIT %(limit)s) p
+              LEFT JOIN chunks c ON c.ref_id = p.ref_id AND c.ord = 0
+            """,
+            {"limit": _TITLE_MISMATCH_SAMPLE},
+        ).fetchall()
+    except Exception:
+        log.exception("health_checks: registry_title_mismatch scan failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_checks: rollback after title-mismatch scan failed")
+        return {"n_sampled": -1, "n_mismatch": 0, "n_tagged": -1}
+
+    n_sampled = len(rows)
+    n_mismatch = sum(
+        1
+        for title, text in rows
+        if title
+        and text
+        and len(content_tokens(text)) >= _TITLE_MISMATCH_MIN_CHUNK_TOKENS
+        and title_overlap(title, text) == 0
+    )
+
+    try:
+        tagged_row = conn.execute(
+            """
+            SELECT count(*)::int FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'paper' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'paper-meta:title-mismatch'
+            """
+        ).fetchone()
+        n_tagged = int(tagged_row[0]) if tagged_row else 0
+    except Exception:
+        log.exception("health_checks: title-mismatch tag count failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception(
+                "health_checks: rollback after title-mismatch tag count failed"
+            )
+        n_tagged = -1
+
+    return {"n_sampled": n_sampled, "n_mismatch": n_mismatch, "n_tagged": n_tagged}
+
+
+def registry_title_mismatch_check(store: Any) -> dict[str, Any]:
+    """:func:`registry_title_mismatch` over a fresh connection of its own."""
+    with store.pool.connection() as conn:
+        return registry_title_mismatch(conn)
+
+
 def fetch_freshness_timestamps(
     conn: Any, signals: Iterable[tuple[str, str]]
 ) -> dict[str, FreshnessProbe]:

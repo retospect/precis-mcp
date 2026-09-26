@@ -174,6 +174,16 @@ DOI without touching who owns it elsewhere; `arxiv=''` clears likewise. ⚠
 handler but not yet exposed on the `edit` wire schema, so it is silently
 dropped — see `docs/backlog/mcp-verb-kwarg-parity.md`.
 
+The needs-triage backfill (`precis.ingest.metadata_resolve`, "Bucket B")
+guards against pulling in the *wrong* identity in the first place
+(gr353804): when a Crossref/S2 registry hit's title shares zero
+distinctive words with the paper's own chunk-0 text (e.g. an SI PDF that
+would otherwise take an unrelated paper's DOI), it withholds the write
+instead — tags the ref `paper-meta:title-mismatch`, records the withheld
+`doi`/`title` under `meta.registry_mismatch` on the Meta tab, and clears
+any stored DOI that caused the mismatch. Never touches a ref with
+`human_verified_at` set.
+
 ## Resolving a duplicate ref
 ## `already belongs to ref id=N` — what now?
 ## An identifier collision blocked my edit — how do I fix it?

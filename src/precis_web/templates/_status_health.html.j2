@@ -41,6 +41,13 @@
   <span class="ml-2 text-slate-300">·</span>
   <span class="text-xs uppercase tracking-wide text-slate-400 ml-2">version</span>
   <span class="ml-1 font-mono text-slate-700">{{ app_version }}</span>
+  <span class="ml-2 text-slate-300">·</span>
+  <span class="text-xs uppercase tracking-wide text-slate-400 ml-2"
+        title="Live papers (most-recent {{ title_mismatch.get('n_sampled', 0) }} sampled) whose registry title shares zero distinctive words with their own chunk 0 (gr353804); n_tagged = already caught by the ingest-time guard.">
+    registry title mismatch
+  </span>
+  <span class="ml-1 font-mono text-slate-700">{{ title_mismatch.get('n_mismatch', 0) }}/{{ title_mismatch.get('n_sampled', 0) }}</span>
+  <span class="text-slate-400">({{ title_mismatch.get('n_tagged', 0) }} tagged)</span>
 </div>
 
 <!-- Machines: the reconciled host strip (heartbeat sensors + capability

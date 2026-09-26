@@ -1156,6 +1156,27 @@ def test_status_kind_chips_link_into_drive(client, monkeypatch) -> None:
     assert "/drive?k=paper&amp;folder=*" in resp.text
 
 
+def test_status_health_renders_registry_title_mismatch_line(
+    client, monkeypatch
+) -> None:
+    """gr353804: the Health sub-tab renders the registry-title-mismatch
+    ratio + tagged count as a plain line — the doctor's published
+    "system-health metrics" surface, per :func:`precis.health_checks.
+    registry_title_mismatch`."""
+    from precis_web.routes import status as status_mod
+
+    monkeypatch.setattr(
+        status_mod.health_checks,
+        "registry_title_mismatch_check",
+        lambda store: {"n_sampled": 1234, "n_mismatch": 3, "n_tagged": 2},
+    )
+    resp = client.get("/status?tab=health")
+    assert resp.status_code == 200
+    assert "registry title mismatch" in resp.text
+    assert "3/1234" in resp.text
+    assert "2 tagged" in resp.text
+
+
 def test_folder_options_survives_cyclic_parent_chain() -> None:
     """A corrupted ``folder`` table where a folder is its own ancestor
     (300 -> parent 301 -> parent 300) must not stack-overflow the

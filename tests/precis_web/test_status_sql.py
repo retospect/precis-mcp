@@ -405,3 +405,46 @@ def test_health_ctx_surfaces_reserve_latest_error_and_top_cpu(store: Any) -> Non
     assert hb["reserve"]["actor"] == "ops"
     assert hb["top_cpu"] == [{"cmd": "postgres", "cpu": 42.0}]
     assert hb["errors_6h"]["latest"]["line"] == "disk full"
+
+
+def test_health_ctx_surfaces_registry_title_mismatch(store: Any) -> None:
+    """gr353804: the Health sub-tab's ``title_mismatch`` metric, end to
+    end through ``_health_ctx`` — a live paper whose registry title
+    shares no distinctive word with its own chunk 0 counts toward
+    ``n_mismatch``, and a paper already carrying the guard's
+    ``paper-meta:title-mismatch`` tag counts toward ``n_tagged``."""
+    mismatched = store.insert_ref(
+        kind="paper",
+        slug="mismatch-pa1",
+        title="A novel hybrid carbon material for supercapacitor electrodes",
+    )
+    matched = store.insert_ref(
+        kind="paper", slug="matched-pa1", title="Graphene Heterostructure Imaging"
+    )
+    tagged = store.insert_ref(kind="paper", slug="tagged-pa1", title="")
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES (%s, 0, "
+            "'paragraph', %s)",
+            (
+                mismatched.id,
+                "Supplementary Information about an unrelated ligand-exchange "
+                "reaction with corresponding infrared absorption spectra.",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES (%s, 0, "
+            "'paragraph', %s)",
+            (
+                matched.id,
+                "Graphene Heterostructure Imaging reveals moire patterns at "
+                "twisted bilayer interfaces.",
+            ),
+        )
+        store.add_tag(tagged.id, Tag.open("paper-meta:title-mismatch"), conn=conn)
+
+    ctx = _health_ctx(store, SimpleNamespace(corpus_dirs=[]))
+    tm = ctx["title_mismatch"]
+    assert tm["n_sampled"] >= 3
+    assert tm["n_mismatch"] >= 1
+    assert tm["n_tagged"] >= 1
