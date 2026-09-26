@@ -391,3 +391,29 @@ instead. Note each `view='drc'` call mints a NEW run.
 - HV507 has 12 non-channel NAMES across 13 pads and `_real_pin_offsets` is
   first-wins, so one pad stays invisible even after declare-all-pads. Needs a
   ruling.
+
+## Round 9 supersedes the "per-net clearance" lead (2026-09-26)
+
+**Next round is specced in `pcb-ewod-perimeter-driver-round.md`. Read it
+before picking anything up from this file.**
+
+Four measured probes retired the lead recorded just above. Per-net
+dilation (slice 9) buys ~3 nets, not a round: forcing the maze clearance
+from 0.15 mm down to an unmanufacturable 0.05 mm moved escapes 13->16 of
+54. Pitch moved it 2, lifting the layer lock moved it 2. What moved it 9
+was not claiming the generator's own escape fabric as an obstacle.
+
+**But the fixture lies.** All of those were measured on
+`test_pcb_ewod_dogfood.py`, whose HV507 stand-in is `_grid_footprint(
+cols=9)` -- a SOLID grid with ~31 interior pads that are unreachable by
+construction at any clearance the grid dilates by. Prod's real C639448 is
+a PQFP-80: 80 pads, ZERO interior (verified against prod 2026-09-26).
+That is why the fixture sits at 13/54 and prod at 34/62. Fix the fixture
+to a peripheral ring and re-measure before designing to any of it -- the
+regeneration recipe is in the round-9 item.
+
+The real direction: the driver sits UNDER the array (`sink_grid`), which
+is what forces the via fabric, the B.Cu congestion AND gr451052's
+collision. The generator's own coating check already asserts the opposite
+topology ("connectors and the sink grid all sit outside it"). Move the
+driver off the array.
