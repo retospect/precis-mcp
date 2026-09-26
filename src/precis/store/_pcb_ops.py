@@ -2386,10 +2386,11 @@ class PcbMixin:
         component/instance/pins it owns (freeing ``refdes`` — both carry
         a partial-unique index ``WHERE retired_at IS NULL``), hard-deletes
         its netconns (``pcb_netconns`` has no ``retired_at`` — "re-wire =
-        delete+insert" is its own table comment), retires its nets (named
-        ``f"{name}_..."`` — see :func:`precis.pcb.generators.
-        _expand_ewod_pad_array`'s net-naming, unique to this generator so
-        no foreign net can collide with the LIKE match), and retires its
+        delete+insert" is its own table comment), retires the nets it
+        SOLELY owns (named ``f"{name}_..."`` — see :func:`precis.pcb.
+        generators._expand_ewod_pad_array`'s net-naming — but NEVER one a
+        foreign live instance is still connected to; see that query's own
+        comment and gr451046), and retires its
         mask_open feature (tagged ``note='generator:{name}'`` at emission
         time, the same free-text-column-doubles-as-a-tag convention
         ``layer`` already uses for a mask_open region's side).
@@ -2432,9 +2433,36 @@ class PcbMixin:
                 "UPDATE pcb_components SET retired_at = now() WHERE component_id = %s",
                 (component_id,),
             )
+        # A net the generator declares but SOMEONE ELSE also joined is NOT
+        # the generator's to retire (gr451046). `pcb_netconns` has no
+        # `retired_at` — a connection is live exactly while its instance and
+        # its net are — and the DELETE above only clears connections for
+        # instances this generator owns. So retiring such a net by name left
+        # a foreign component's connection pointing into the graveyard,
+        # while the re-expansion minted a fresh net under the SAME NAME that
+        # only the generator's own connections joined. Net identity is
+        # `net_id`; treating the NAME as recreatable silently disconnected
+        # real authored work — on `ewod-dogfood-2` it severed the top-plate
+        # terminal and the serial header, and `view='route-status'` then
+        # reported both in the *realized* column as "dangling net, nothing
+        # to route".
+        #
+        # By the time this runs, this generator's own instances are retired
+        # and their connections deleted, so any net still carrying a
+        # connection from a LIVE instance is by construction joined by
+        # something the generator does not own. Leave those alone: the
+        # re-expansion's insert path resolves a net BY NAME (the same reason
+        # a re-apply extends the array component rather than duplicating
+        # it), so the generator's new connections land on the very row the
+        # foreign component is still sitting on.
         conn.execute(
             "UPDATE pcb_nets SET retired_at = now() "
-            "WHERE ref_id = %s AND name LIKE %s AND retired_at IS NULL",
+            "WHERE ref_id = %s AND name LIKE %s AND retired_at IS NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM pcb_netconns nc "
+            "  JOIN pcb_instances i ON i.instance_id = nc.instance_id "
+            "  WHERE nc.net_id = pcb_nets.net_id AND i.retired_at IS NULL"
+            ")",
             (ref_id, generator_name + "\\_%"),
         )
         conn.execute(
