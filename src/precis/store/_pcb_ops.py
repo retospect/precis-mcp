@@ -902,9 +902,14 @@ class PcbMixin:
         self, conn: Connection, ref_id: int
     ) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, int]]:
         """The board row (board_id/name/stackup/fold_lines), the design's
-        net_classes (name -> rules), and a route-status summary (counts by
-        :class:`pcb_routes.status`; empty = all-unrouted) — shared by
-        :meth:`pcb_load` (TOC) and :meth:`pcb_graph` (the eyes)."""
+        net_classes (name -> rules), and a route-status summary — shared by
+        :meth:`pcb_load` (TOC) and :meth:`pcb_graph` (the eyes).
+
+        The summary counts LIVE nets by their route status and agrees with
+        :meth:`pcb_route_status` net-for-net by construction: same driving
+        table, same retired-net filter, same 'unrouted' default for a net
+        with no row. It used to count ``pcb_routes`` rows instead, which
+        disagreed in both directions at once — see that query's comment."""
         board_row = conn.execute(
             "SELECT board_id, name, stackup, fold_lines FROM pcb_boards "
             "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
@@ -930,12 +935,28 @@ class PcbMixin:
         }
         route_status: dict[str, int] = {}
         if board is not None:
+            # Drive from the live NETS and left-join the routes — the exact
+            # shape :meth:`pcb_route_status` (the `view='route-status'`
+            # query) already uses, and for both of its reasons (gr451046).
+            #
+            # Counting `pcb_routes` rows directly, as this did, was wrong
+            # twice over. It kept rows for RETIRED nets, which a generator
+            # re-apply produces routinely — on `ewod-dogfood-2` that printed
+            # "60 failed, 59 realized", 119 rows, for a 62-net board. And it
+            # omitted live nets with no route row at all, which the sibling
+            # counts as 'unrouted'. So the headline a caller sees first and
+            # the detailed view disagreed in BOTH directions. One rule, two
+            # call sites, drifted — this module's standing defect.
             route_status = {
-                r[0]: int(r[1])
+                str(r[0]): int(r[1])
                 for r in conn.execute(
-                    "SELECT status, count(*) FROM pcb_routes "
-                    "WHERE board_id = %s GROUP BY status",
-                    (board["board_id"],),
+                    "SELECT COALESCE(rt.status, 'unrouted'), count(*) "
+                    "FROM pcb_nets n "
+                    "LEFT JOIN pcb_routes rt "
+                    "  ON rt.net_id = n.net_id AND rt.board_id = %s "
+                    "WHERE n.ref_id = %s AND n.retired_at IS NULL "
+                    "GROUP BY COALESCE(rt.status, 'unrouted')",
+                    (board["board_id"], ref_id),
                 ).fetchall()
             }
         return board, net_classes, route_status
