@@ -116,6 +116,7 @@ def _job_params(store: Store, parent_id: int) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow  # 47s in the 2026-09-26 gate profile
 def test_cantilever_op_enqueues_and_the_job_realizes_a_field_leaf_design(
     handler: SeHandler, store: Store, register_se_simp: Any
 ) -> None:

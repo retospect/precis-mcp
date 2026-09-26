@@ -150,6 +150,10 @@ REMOTE="${PRECIS_SHIP_REMOTE:-0}"
 # (gr343941 — the FIFO slot ticket is that gripe's remaining scope).
 REMOTE_FALLBACK=0
 REMOTE_CI_RETRIES=0
+# --slow (or PRECIS_GATE_SLOW=1): run the `slow`-marked cluster in the full
+# local gate too. Default is to DESELECT it — see the SLOW_ARGS block in the
+# full-gate branch for why, and what covers it instead.
+SLOW="${PRECIS_GATE_SLOW:-0}"
 MSG=""
 while :; do
     case "${1:-}" in
@@ -158,12 +162,13 @@ while :; do
         --quick)    QUICK=1; shift ;;
         --remote)   REMOTE=1; shift ;;
         --full)     FULL=1; shift ;;
+        --slow)     SLOW=1; shift ;;
         # git-commit muscle memory: accept -m/--message rather than letting
         # the literal "-m" become the shipped subject and the real message
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote --full -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote --full --slow -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
@@ -878,8 +883,26 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             # can run each mutant against just its covering tests.
             COV_ARGS="--cov=src --cov-report=xml:coverage.xml"
             [[ "$MUTATE" == 1 ]] && COV_ARGS+=" --cov-context=test"
-            PYTEST_CMD="uv run pytest -q -n ${PYTEST_N} ${COV_ARGS}"
-            say "integration gate (ruff autofix · mypy · import contracts · pytest+cov) — ${GATE_MODE} gate, -n ${PYTEST_N}"
+            # The `slow` cluster (pcb/se render · route · optimize · E2E
+            # kernels) is a small number of tests holding a large share of the
+            # gate's wall clock — the 2026-09-25 full gate spent 90+ of its 128
+            # minutes on the last ~5% of the run with five of six xdist workers
+            # idle, which is what made /go unable to win a CAS race against a
+            # qland burst. Deselecting it is safe because check.yml's 6 Linux
+            # shards carry NO -m filter, so every push to main and every
+            # ci/<branch> gate still runs the whole cluster, as does the
+            # nightly full matrix. The trade, taken deliberately: a pcb/se
+            # regression can reach the cluster and be caught by CI minutes
+            # later rather than blocked here. --slow / PRECIS_GATE_SLOW=1
+            # restores the authoritative full set.
+            SLOW_ARGS=""
+            SLOW_LANE="full"
+            if [[ "$SLOW" != 1 ]]; then
+                SLOW_ARGS=" -m 'not slow'"
+                SLOW_LANE="fast (-m 'not slow'; --slow for the full set)"
+            fi
+            PYTEST_CMD="uv run pytest -q -n ${PYTEST_N} ${COV_ARGS}${SLOW_ARGS}"
+            say "integration gate (ruff autofix · mypy · import contracts · pytest+cov) — ${GATE_MODE} gate, -n ${PYTEST_N}, ${SLOW_LANE} lane"
         fi
         run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run lint-imports && ${PYTEST_CMD}" \
             || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
@@ -907,9 +930,18 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             DIFF_COVER_MIN="${PRECIS_DIFF_COVER_MIN:-90}"
             if [[ -f coverage.xml ]] && command -v uvx >/dev/null 2>&1; then
                 say "diff-coverage gate — changed src lines need tests (min ${DIFF_COVER_MIN}%)"
+                # The fast lane deselects the `slow` cluster, which is exactly
+                # the set that covers the pcb/se src lines — so a genuinely
+                # well-tested pcb change fails here for a reason that has
+                # nothing to do with its tests. Say so, rather than leaving a
+                # bare red.
+                SLOW_HINT=""
+                if [[ "$SLOW" != 1 ]]; then
+                    SLOW_HINT=" NOTE: this gate ran the FAST lane (-m 'not slow'), so tests in the slow cluster did not execute — if the uncovered lines are pcb/se/hexfold, re-run with --slow before writing new tests."
+                fi
                 uvx -q 'diff-cover>=9' coverage.xml --compare-branch=origin/main \
                     --fail-under="$DIFF_COVER_MIN" \
-                    || die "diff coverage under ${DIFF_COVER_MIN}% — the report above lists the untested changed lines. Add tests for them (or, deliberately, PRECIS_DIFF_COVER_MIN=0) and re-run scripts/ship."
+                    || die "diff coverage under ${DIFF_COVER_MIN}% — the report above lists the untested changed lines. Add tests for them (or, deliberately, PRECIS_DIFF_COVER_MIN=0) and re-run scripts/ship.${SLOW_HINT}"
             else
                 echo "WARNING: coverage.xml or uvx missing — skipping the diff-coverage gate"
             fi

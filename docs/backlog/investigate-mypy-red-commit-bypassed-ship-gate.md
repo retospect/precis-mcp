@@ -1,41 +1,50 @@
 ---
 status: idea
-title: How did a mypy-red commit (13b28625) reach origin/main past the ship gate?
+title: qland is the gate bypass — add a cheap pre-qland lint+mypy check
 ---
 
-# How did a mypy-red commit reach main past the ship gate?
+# qland is the gate bypass — add a cheap pre-qland check
 
-## What
-On 2026-08-12, `origin/main` HEAD `13b28625` ("fix(llm): bypass llama-server
-prompt cache on the local rung") was **mypy-red on its own**: it added
-`extra_body = {"cache_prompt": False}` in
-`src/precis/utils/llm/router.py` (`_dispatch_local_tools`-ish path), which
-narrowed the inferred type to `dict[str, bool]` and collided with the `else`
-branch's `openrouter_routing(...) or None` (`dict[str, Any] | None`) —
-`error: Incompatible types in assignment [assignment]`. The next worktree to
-ship (`18f45335`) hit it during its gate and had to annotate `extra_body:
-dict[str, Any] | None` to unblock. That symptom is fixed; the process
-question is not.
+## Answered: how a mypy-red commit reaches main
+The original question (2026-08-12, `13b28625` mypy-red on `origin/main`) is
+answered, and not by a force-push or a host/container mypy divergence:
+**`/qland` is an intentional ungated merge path** (`scripts/ship --quick`:
+commit WIP → sync → squash-merge, no gate). Nothing is bypassed; the gate
+was never run.
 
-## Why it matters
-`scripts/ship` runs `mypy src tests` in full (not `--impacted`) before the
-squash-merge, so a deterministic assignment error like this **should** have
-blocked `13b28625`'s own ship. It didn't. Either the gate was bypassed
-(force-push / `PRECIS_GATE_N=0` / merge outside `scripts/ship`) or there's a
-host-vs-container mypy divergence for this construct (cf. auto-memory
-`live-model-tests-need-host-claude`, and commit 2c351913 on per-module
-`warn_unused_ignores` host/CI divergence). If the gate is bypassable, the
-ship-gate guarantee is weaker than assumed — worth knowing.
+2026-09-25 is the same failure at scale. A qland burst put `main` in a state
+that was red four independent ways at once:
 
-## Investigate
-- `git show 13b28625 --stat`; check its ship provenance (was it squashed via
-  `scripts/ship`, or pushed another way?).
-- Reproduce: `git stash`-free checkout of `13b28625` in a worktree, run
-  `scripts/test` / the gate's `mypy src tests` — does it fail in-container?
-  If it passes in-container but failed for `18f45335`, chase the divergence.
-- If genuinely bypassable, tighten `scripts/ship` (or document the escape
-  hatch that allowed it).
+- ruff format drift in 3 pcb test files (`3c8db49a`)
+- `tests/test_backlog_groom.py:371,395` — `.fetchone()[0]` with no `None`
+  check, a mypy `[index]` error
+- 4 mypy errors in `tests/test_quest_tagging.py` (`7707cb1c`) — an invariant
+  `list[tuple[int, float]]` vs `list[tuple[int, float | None]]`, and
+  `SimpleNamespace` passed where `argparse.Namespace` was expected
+- `test_net_islands_false_flags_a_genuinely_touching_diagonal_escape_as_split`
+  — `aa861102` (07:23) fixed the disk model, then `3c8db49a` (08:05, branched
+  *after* it) added a characterization test asserting the bug was still live
+
+Cost: main sat red for ~6h, two sessions independently diagnosed the same
+four failures, and one `/go` burned two full 2h10m local gates before the
+first one even reached its squash-merge.
+
+## The cheap fix
+Every one of those four is caught by **ruff + mypy alone — no pytest**, which
+runs in ~3 min against the warm container. `scripts/ship --quick` should run
+that much before the squash-merge. It keeps qland's reason for existing
+(don't pay the 2h pytest suite per tree in a burst) while making it
+structurally impossible to qland a commit that reddens the *next* tree's
+gate — which is what actually costs the hours.
+
+The residual risk qland still accepts, deliberately: a test-level failure
+that only pytest sees. That is the trade qland is for.
+
+## Also worth doing
+- `3c8db49a`'s test was written against a tree that already contained
+  `aa861102`'s fix, so the author cannot have run it. A pre-qland check
+  catches the lint/mypy class but not this one — only running the new test
+  once does. Worth a line in the qland skill: *run the tests you added.*
 
 ## Not in scope
-The type error itself — already fixed in `18f45335`. This item is only the
-"how did it get past the gate" forensic.
+The four fixes themselves — all shipped in `4db6836b`.

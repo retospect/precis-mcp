@@ -23,8 +23,11 @@ main; if main moves meanwhile, ship drops the lock, re-syncs and re-runs CI
 gate ~10 min) so a burst can't loop forever. Squawk on new
 migration SQL stays host-side. `--remote --impacted` = opt-in local impacted
 pre-gate first; bare `--impacted` = legacy local-only gate). **`/go`** = ship
-with the full LOCAL suite + diff-coverage gate (changed src lines need
-tests) + `scripts/deploy` of the **gated sha** (`--pinned`, never bare —
+with the LOCAL suite + diff-coverage gate (changed src lines need
+tests; the gate's default lane is `-m 'not slow'` — the slow cluster is
+covered by check.yml's unfiltered 6 shards on every push, `--slow` /
+`PRECIS_GATE_SLOW=1` restores the full set) + `scripts/deploy` of the
+**gated sha** (`--pinned`, never bare —
 bare re-resolves `main` and can ship an ungated sibling qland), plus a
 budgeted advisory mutation pass
 (`scripts/mutate-diff`). **`/qland`** = ungated burst-land

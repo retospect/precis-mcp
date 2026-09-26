@@ -372,10 +372,14 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "slow: heavy compute/E2E test (10s+); ~65% of suite wall-clock lives "
-        "in the marked cluster. `scripts/test -m 'not slow'` runs "
-        "full-minus-glacial; the ship gate still runs it. See "
-        "docs/conventions/testing.md.",
+        "slow: heavy compute/E2E test (10s+); a large share of suite "
+        "wall-clock lives in the marked cluster. Deselected by default in "
+        "every LOCAL lane — `scripts/test --fast`, `scripts/test --impacted` "
+        "(gr261537) and, since this marker's cluster grew, the ship gate "
+        "itself (`scripts/ship --slow` or PRECIS_GATE_SLOW=1 restores the "
+        "full set). The marked cluster is still run on every push by "
+        "check.yml's 6 Linux shards, which carry no -m filter, and by the "
+        "nightly matrix. See docs/conventions/testing.md.",
     )
 
 

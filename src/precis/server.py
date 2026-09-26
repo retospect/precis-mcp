@@ -710,6 +710,26 @@ def _install_command_profile() -> None:
     mcp.tool(description=_COMMAND_TOOL_DESCRIPTION, **_TOOL_KW)(_offload_sync(precis))
 
 
+def _verb_description(fn: Callable[..., Any]) -> str:
+    """Return ``fn``'s docstring with the common leading indent stripped.
+
+    Python 3.13 dedents docstrings at compile time (gh-81283); 3.12 does
+    not. Handing ``__doc__`` to FastMCP unchanged therefore makes the
+    ``tools/list`` payload ~400 B larger on 3.12 than on 3.13 for the
+    same source — four spaces on every continuation line of all eight
+    verb docstrings, paid by every connecting agent on its first
+    message. The agent image builds on ``python:3.12-slim-bookworm``,
+    so prod was on the expensive side of that split while the only
+    gating CI legs (six Linux shards) are 3.13 and never saw it.
+
+    ``inspect.cleandoc`` removes the *common* indent and keeps relative
+    indentation, so nested/indented blocks inside a description survive.
+    Normalising here also makes ``tests/test_token_budget.py``'s byte
+    ratchet measure the same thing on both interpreters.
+    """
+    return inspect.cleandoc(fn.__doc__ or "")
+
+
 def _register_tools_from_registry() -> None:
     """Register the active ``PRECIS_MCP_PROFILE`` tool surface with FastMCP."""
     if _mcp_profile() == "command":
@@ -722,7 +742,9 @@ def _register_tools_from_registry() -> None:
         # thread; ``TOOL_REGISTRY[...]["func"]`` itself is left untouched,
         # so the CLI adapter and the command profile's ``precis()`` (which
         # both call it directly, synchronously) are unaffected.
-        mcp.tool(**_TOOL_KW)(_offload_sync(tool_info["func"]))
+        mcp.tool(description=_verb_description(tool_info["func"]), **_TOOL_KW)(
+            _offload_sync(tool_info["func"])
+        )
 
         # Apply special schema constraints for edit tool
         if tool_name == "edit":

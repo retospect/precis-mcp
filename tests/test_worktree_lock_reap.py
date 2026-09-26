@@ -345,6 +345,7 @@ sleep 60
     _git(primary, "worktree", "unlock", str(b))
 
 
+@pytest.mark.slow  # 61s in the 2026-09-26 gate profile (sleeps, not compute)
 def test_live_locked_session_survives_reap_then_dead_lock_is_still_reaped(
     repo_trio: dict[str, Path],
     tmp_path: Path,

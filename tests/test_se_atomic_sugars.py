@@ -41,6 +41,11 @@ from precis_se.atomic.generators._types import ENVELOPE_UNIT
 from precis_se.atomic.generators.sugars import build_cyclodextrin
 from precis_se.handler import SeHandler
 
+# The cyclodextrin VSEPR fallback builds real ring geometry — 41s/56s/73s for
+# the alpha/beta/gamma params in the 2026-09-26 gate profile. See the `slow`
+# marker in tests/conftest.py.
+pytestmark = pytest.mark.slow
+
 _MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 

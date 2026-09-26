@@ -99,6 +99,7 @@ def cad(store):
     return CadHandler(hub=Hub(store=store))
 
 
+@pytest.mark.slow  # 31s in the 2026-09-26 gate profile
 def test_connectivity_marks_only_the_welded_contact(cad):
     # a (@0) and b (@8mm) overlap 2mm; c (@14mm) overlaps b by 4mm but is
     # clear of a — a-b declared welded, b-c is an undeclared penetration.

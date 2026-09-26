@@ -17,6 +17,12 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.cad import CadHandler
 
+# Whole module is the CAD kernel's heavy path: every test here ran 24s+ in the
+# 2026-09-26 gate profile, and the two sweep tests were 161s and 156s. See the
+# `slow` marker in tests/conftest.py — deselected from the local ship gate by
+# default, still run by check.yml's unfiltered shards on every push.
+pytestmark = pytest.mark.slow
+
 _FLANGE = """
 component flange
 plate     add  cyl:r25mmh8mm

@@ -23,6 +23,10 @@ from precis.cad.relate import (
 )
 from precis.cad.vec import pose, translation, vec3
 
+# DOF probing over real SDFs — 30s+ per test in the 2026-09-26 gate profile.
+# See the `slow` marker in tests/conftest.py.
+pytestmark = pytest.mark.slow
+
 # ---------------------------------------------------------------------------
 # component SDF sign correctness (foundation)
 # ---------------------------------------------------------------------------
