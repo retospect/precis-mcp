@@ -5,7 +5,8 @@ as a small design language and *probes* it analytically, never pixels. This rout
 is the *human* affordance on the same data — see the solid rotate, click a
 feature, and edit it by natural-language instruction.
 
-* ``GET  /cad`` — the design list.
+* ``GET  /cad`` — retired into the unified Drive surface; redirects to the
+  ``kind=cad`` facet preset.
 * ``GET  /cad/{slug}`` — one design: an interactive 3D viewer (parts coloured,
   cuts translucent) beside an analysis/export panel + the edit-by-prompt box.
 * ``GET  /cad/{slug}/model.gltf`` — the viewer/download glTF (features | solid).
@@ -77,9 +78,6 @@ router = APIRouter(tags=["cad"])
 
 log = logging.getLogger(__name__)
 
-#: Cap the design list — this is a browse surface, not an export.
-_LIST_LIMIT = 100
-
 #: Streamed-export content types.
 _EXPORT_MEDIA = {
     "scad": "text/plain; charset=utf-8",
@@ -87,43 +85,6 @@ _EXPORT_MEDIA = {
     "3mf": "model/3mf",
     "step": "application/step",
 }
-
-
-# ── list ─────────────────────────────────────────────────────────────────
-def _list_rows(store: Store) -> list[dict[str, Any]]:
-    """Live cad designs, newest first, with node + part counts."""
-    sql = """
-        SELECT r.ref_id,
-               (SELECT id_value FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'
-                 ORDER BY created_at DESC LIMIT 1)             AS slug,
-               r.title,
-               (SELECT count(*) FROM cad_nodes n
-                 WHERE n.ref_id = r.ref_id
-                   AND n.retired_at IS NULL)                   AS n_nodes,
-               (SELECT count(DISTINCT n.component) FROM cad_nodes n
-                 WHERE n.ref_id = r.ref_id
-                   AND n.retired_at IS NULL)                   AS n_parts,
-               r.updated_at
-          FROM refs r
-         WHERE r.kind = 'cad'
-           AND r.retired_at IS NULL
-         ORDER BY r.ref_id DESC
-         LIMIT %s
-    """
-    with store.pool.connection() as conn:
-        rows = conn.execute(sql, (_LIST_LIMIT,)).fetchall()
-    return [
-        {
-            "ref_id": int(r[0]),
-            "slug": r[1],
-            "title": r[2] or r[1],
-            "n_nodes": int(r[3]),
-            "n_parts": int(r[4]),
-            "updated": _ago(r[5]),
-        }
-        for r in rows
-    ]
 
 
 # ── detail context (node list + analysis) ────────────────────────────────
@@ -419,14 +380,13 @@ def _require_ref(store: Store, slug: str) -> Any:
 
 # ── routes ───────────────────────────────────────────────────────────────
 @router.get("/cad", response_class=HTMLResponse)
-async def cad_list(request: Request) -> HTMLResponse:
-    store = get_store(request)
-    rows = _list_rows(store)
-    return templates.TemplateResponse(
-        request,
-        "cad/list.html.j2",
-        {"active_tab": "cad", "designs": rows, "total": len(rows)},
-    )
+async def cad_list() -> RedirectResponse:
+    """Retired into the unified Drive surface — redirects to the
+    ``kind=cad`` facet preset (same target as ``_drive_back.html.j2``'s
+    back-link). The workbench (``/cad/{slug}`` and everything under it) is
+    unaffected.
+    """
+    return RedirectResponse(url="/drive?k=cad&folder=*&sort=recency")
 
 
 @router.get("/cad/{slug}", response_class=HTMLResponse)

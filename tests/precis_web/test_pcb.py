@@ -19,10 +19,17 @@ from precis_web.config import WebConfig
 # ── FakeStore degradation ────────────────────────────────────────────────
 
 
-def test_pcb_list_empty(client: TestClient) -> None:
-    r = client.get("/pcb")
-    assert r.status_code == 200
-    assert "No pcb designs yet" in r.text
+def test_pcb_index_redirects_to_drive_kind_pcb(client: TestClient) -> None:
+    """``/pcb`` (the list) is retired into the unified Drive surface —
+    it redirects to the ``kind=pcb`` facet preset, the same target
+    ``_drive_back.html.j2``'s back-link uses. The workbench
+    (``/pcb/{slug}`` and its SVG endpoints) is unaffected — see
+    ``test_pcb_detail_404``/``test_detail_shows_vitals_and_both_panes``
+    below, which prove the ``{slug}`` route still resolves and isn't
+    swallowed by this redirect."""
+    r = client.get("/pcb", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=pcb&folder=*&sort=recency"
 
 
 def test_pcb_detail_404(client: TestClient) -> None:
@@ -78,13 +85,6 @@ def _seed(runtime_with_store, slug: str = "web_pcb") -> None:
             ],
         },
     )
-
-
-def test_list_shows_seeded_design(pcb_client, runtime_with_store) -> None:
-    _seed(runtime_with_store, slug="web_listed_pcb")
-    r = pcb_client.get("/pcb")
-    assert r.status_code == 200
-    assert "web_listed_pcb" in r.text
 
 
 def test_detail_drc_tally_counts_only_error_severity_not_warn(

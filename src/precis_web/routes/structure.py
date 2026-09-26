@@ -6,7 +6,8 @@ whole point of the IR). This route is the *human* affordance on top of the same
 data — for the person who wants to actually **see** the cell rotate and read the
 compute history.
 
-* ``GET /structure`` — the design list (atoms / runs / latest energy).
+* ``GET /structure`` — retired into the unified Drive surface; redirects to
+  the ``kind=structure`` facet preset.
 * ``GET /structure/{slug}`` — one design: an interactive 3D cell viewer
   (initial vs DFT-relaxed geometry) beside the **run-cube** panel — every
   fidelity-ladder pass with its energy, forces, and the content-addressed
@@ -1003,15 +1004,13 @@ def _latest_proposal(store: Store, ref_id: int) -> dict[str, Any] | None:
 
 
 @router.get("/structure", response_class=HTMLResponse)
-async def structure_list(request: Request) -> HTMLResponse:
-    """The design list."""
-    store = get_store(request)
-    rows = _list_rows(store)
-    return templates.TemplateResponse(
-        request,
-        "structure/list.html.j2",
-        {"active_tab": "structure", "designs": rows, "total": len(rows)},
-    )
+async def structure_list() -> RedirectResponse:
+    """Retired into the unified Drive surface — redirects to the
+    ``kind=structure`` facet preset (same target as ``_drive_back.html.j2``'s
+    back-link). The workbench (``/structure/{slug}`` and everything under
+    it) is unaffected.
+    """
+    return RedirectResponse(url="/drive?k=structure&folder=*&sort=recency")
 
 
 @router.get("/structure/{slug}", response_class=HTMLResponse)

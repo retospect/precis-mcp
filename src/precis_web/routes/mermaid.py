@@ -9,7 +9,8 @@ shared vocabulary + a chat on the right that drives the shared
 
 Routes:
 
-* ``GET  /mermaid`` — the diagram list.
+* ``GET  /mermaid`` — retired into the unified Drive surface; redirects to
+  the ``kind=mermaid`` facet preset.
 * ``GET  /mermaid/{slug}`` — the editor.
 * ``GET  /mermaid/{slug}/render.svg`` — the sanitized rendered SVG (``<img>`` src).
 * ``POST /mermaid/{slug}/turn`` — run one turn (form ``message=``) → JSON.
@@ -27,7 +28,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.responses import Response as RawResponse
 
 from precis.errors import NotFound
@@ -43,8 +44,6 @@ if TYPE_CHECKING:
 router = APIRouter(tags=["mermaid"])
 
 log = logging.getLogger(__name__)
-
-_LIST_LIMIT = 100
 
 
 def _docs(store: Store, ref_id: int) -> tuple[str, str, str, list[str]]:
@@ -83,18 +82,13 @@ def _rendered_svg(source: str) -> str:
 
 
 @router.get("/mermaid", response_class=HTMLResponse)
-async def mermaid_list(request: Request) -> HTMLResponse:
-    store = get_store(request)
-    refs = store.list_refs(kind="mermaid", limit=_LIST_LIMIT)
-    rows = [
-        {"slug": r.slug, "title": r.title or r.slug, "handle": f"mm{r.id}"}
-        for r in refs
-    ]
-    return templates.TemplateResponse(
-        request,
-        "mermaid/list.html.j2",
-        {"active_tab": "mermaid", "diagrams": rows},
-    )
+async def mermaid_list() -> RedirectResponse:
+    """Retired into the unified Drive surface — redirects to the
+    ``kind=mermaid`` facet preset (same target as ``_drive_back.html.j2``'s
+    back-link). The workbench (``/mermaid/{slug}`` and everything under it)
+    is unaffected.
+    """
+    return RedirectResponse(url="/drive?k=mermaid&folder=*&sort=recency")
 
 
 @router.get("/mermaid/{slug}", response_class=HTMLResponse)

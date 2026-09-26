@@ -986,6 +986,21 @@ def test_drive_includes_memory_kind(runtime, client) -> None:
     assert "memory" in runtime.store.search_kinds
 
 
+def test_drive_includes_news_kind(runtime, client) -> None:
+    """Regression: ``news`` is an ingested source document like ``web`` or
+    ``wikipedia``, but it was absent from ``_DEFAULT_SOURCE_KINDS`` — so
+    9592 prod rows sat in no Drive scope bucket at all, unreachable from a
+    fresh session by either browse or search. Same defect class as the
+    design kinds this branch widened the default for."""
+    from precis_web.routes.items import _DEFAULT_SOURCE_KINDS
+
+    assert "news" in _DEFAULT_SOURCE_KINDS
+    resp = client.get("/drive")
+    assert '"news"' in resp.text
+    client.get("/drive?q=anything")
+    assert "news" in runtime.store.search_kinds
+
+
 def test_drive_tag_suggest_endpoint(client) -> None:
     """The autocomplete backend substring-matches tags; <2 chars is empty."""
     assert client.get("/drive/tags/suggest?q=c").json() == []
@@ -1139,6 +1154,76 @@ def test_drive_unfaceted_kind_renders_other_chip(runtime, client) -> None:
     assert resp.status_code == 200
     assert runtime.store.recent_kinds == ["job"]
     assert 'value="job"' in resp.text
+
+
+def test_drive_fresh_session_default_scope_returns_design_kind_hit(
+    runtime, client, monkeypatch
+) -> None:
+    """Regression: a fresh session (no ``k=``, no cookie) used to fall back
+    to ``_DEFAULT_SOURCE_KINDS`` alone — the literature kinds, no se/pcb/
+    component/material/structure/figure — so a brand-new Drive session could
+    never find a design artifact by browsing (prod: 5 se refs incl.
+    unicycle-mk2, 12 component, 2 pcb, 2 material, 1120 structure, none
+    reachable before this fix). The widened default is the union of
+    ``_DEFAULT_SOURCE_KINDS`` with the Author (placement='artifact') and
+    Design facets — check both that the kind filter itself widened and
+    that an actual design-kind row renders."""
+    from .conftest import make_ref
+
+    design_ref = make_ref(
+        id=901, kind="pcb", slug="unicycle-mk2", title="Unicycle MK2 PCB"
+    )
+    orig_src = runtime.store._recent_src
+
+    def patched_src(kinds, **kw):
+        rows = orig_src(kinds, **kw)
+        if "pcb" in kinds:
+            rows = [design_ref, *rows]
+        return rows
+
+    monkeypatch.setattr(runtime.store, "_recent_src", patched_src)
+
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    for design_kind in ("pcb", "component", "material", "structure", "figure"):
+        assert design_kind in runtime.store.recent_kinds
+    assert "Unicycle MK2 PCB" in resp.text
+
+
+def test_drive_scope_toggle_buckets_and_url_roundtrip(runtime, client) -> None:
+    """The Mine/Sources/Machine scope toggle resolves each bucket's kind
+    list when neither a real submit nor an explicit ``k=`` overrides it
+    (``k=`` still wins when both are present — the toggle is a preset, not
+    an override), and ``scope=`` round-trips into the pager URL the same
+    way ``state=``/``paper_chunks=`` already do."""
+    from precis_web.routes.drive import _MACHINE_KINDS
+    from precis_web.routes.items import _DEFAULT_SOURCE_KINDS
+
+    resp = client.get("/drive?scope=sources")
+    assert resp.status_code == 200
+    assert set(runtime.store.recent_kinds) == set(_DEFAULT_SOURCE_KINDS)
+
+    # Machine — the ~70% of live prod refs (orcid/job bookkeeping) a human
+    # never browses row by row, and that has no facet chip of its own.
+    resp = client.get("/drive?scope=machine")
+    assert resp.status_code == 200
+    assert set(runtime.store.recent_kinds) == set(_MACHINE_KINDS)
+
+    # Mine — everything authored/placed: Author + Design + Work.
+    resp = client.get("/drive?scope=mine")
+    assert resp.status_code == 200
+    assert "todo" in runtime.store.recent_kinds
+    assert "pcb" in runtime.store.recent_kinds
+
+    # An explicit k= still wins over scope.
+    resp = client.get("/drive?scope=machine&k=paper")
+    assert resp.status_code == 200
+    assert runtime.store.recent_kinds == ["paper"]
+
+    # scope= round-trips into the pager URL like state=/paper_chunks=.
+    resp = client.get("/drive?scope=machine&page=2")
+    assert resp.status_code == 200
+    assert "scope=machine" in resp.text
 
 
 def test_status_kind_chips_link_into_drive(client, monkeypatch) -> None:

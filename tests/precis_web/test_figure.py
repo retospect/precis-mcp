@@ -22,10 +22,16 @@ _CIRCLE = (
 # ── FakeStore degradation ────────────────────────────────────────────────
 
 
-def test_figure_list_empty(client: TestClient) -> None:
-    r = client.get("/figure")
-    assert r.status_code == 200
-    assert "No figures yet" in r.text
+def test_figure_index_redirects_to_drive_kind_figure(client: TestClient) -> None:
+    """``/figure`` (the list) is retired into the unified Drive surface — it
+    redirects to the ``kind=figure`` facet preset, the same target
+    ``_drive_back.html.j2``'s back-link uses. The workbench
+    (``/figure/{slug}``) is unaffected — ``test_figure_detail_404`` below
+    proves the ``{slug}`` route still resolves and isn't swallowed by this
+    redirect."""
+    r = client.get("/figure", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=figure&folder=*&sort=recency"
 
 
 def test_figure_detail_404(client: TestClient) -> None:
@@ -79,13 +85,6 @@ def test_source_svg_served_and_sanitized(fig_client, runtime_with_store) -> None
     assert "script" not in r.text.lower()
 
 
-def test_list_shows_seeded_figure(fig_client, runtime_with_store) -> None:
-    _seed(runtime_with_store, slug="web_listed")
-    r = fig_client.get("/figure")
-    assert r.status_code == 200
-    assert "web_listed" in r.text
-
-
 def test_turn_route_returns_json(fig_client, runtime_with_store, monkeypatch) -> None:
     _seed(runtime_with_store, slug="web_turn")
 
@@ -118,14 +117,7 @@ def test_turn_route_rejects_empty(fig_client, runtime_with_store) -> None:
     assert r.status_code == 400
 
 
-# ── creation from the UI (Drive "+ New" + the /figure button) ────────────
-
-
-def test_list_has_new_figure_button(client: TestClient) -> None:
-    r = client.get("/figure")
-    assert r.status_code == 200
-    assert "New figure" in r.text
-    assert 'action="/drive/new"' in r.text  # the DRY create path
+# ── creation from the UI (Drive "+ New") ─────────────────────────────────
 
 
 def test_drive_dropdown_offers_figure(fig_client) -> None:

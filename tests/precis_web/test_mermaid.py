@@ -22,10 +22,16 @@ _FLOW = "flowchart TD\n  intake[Intake] --> ship[Ship]"
 # ── FakeStore degradation ────────────────────────────────────────────────
 
 
-def test_mermaid_list_empty(client: TestClient) -> None:
-    r = client.get("/mermaid")
-    assert r.status_code == 200
-    assert "No mermaid diagrams yet" in r.text
+def test_mermaid_index_redirects_to_drive_kind_mermaid(client: TestClient) -> None:
+    """``/mermaid`` (the list) is retired into the unified Drive surface —
+    it redirects to the ``kind=mermaid`` facet preset, the same target
+    ``_drive_back.html.j2``'s back-link uses. The workbench
+    (``/mermaid/{slug}``) is unaffected — ``test_mermaid_detail_404`` below
+    proves the ``{slug}`` route still resolves and isn't swallowed by this
+    redirect."""
+    r = client.get("/mermaid", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=mermaid&folder=*&sort=recency"
 
 
 def test_mermaid_detail_404(client: TestClient) -> None:
@@ -67,13 +73,6 @@ def test_detail_shows_source_and_vocab(mm_client, runtime_with_store) -> None:
     assert "a two-step pipeline" in r.text
     assert "Shared vocabulary" in r.text
     assert "Implementation notes" in r.text
-
-
-def test_list_shows_seeded_diagram(mm_client, runtime_with_store) -> None:
-    _seed(runtime_with_store, slug="web_listed")
-    r = mm_client.get("/mermaid")
-    assert r.status_code == 200
-    assert "web_listed" in r.text
 
 
 def test_turn_route_returns_json(mm_client, runtime_with_store, monkeypatch) -> None:

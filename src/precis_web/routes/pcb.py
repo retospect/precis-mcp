@@ -4,7 +4,8 @@ The pcb kind is otherwise a text/MCP surface (the LLM authors a netlist
 and reads graphs, never pixels). This route is the human affordance on the
 same data:
 
-* ``GET  /pcb`` — the design list.
+* ``GET  /pcb`` — retired into the unified Drive surface; redirects to the
+  ``kind=pcb`` facet preset.
 * ``GET  /pcb/{slug}`` — one design: the fab-level board render beside the
   net-label schematic, with the netlist/route/DRC vitals above.
 * ``GET  /pcb/{slug}/board.svg`` — the fab SVG (embedded via ``<object>``
@@ -25,7 +26,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.responses import Response as RawResponse
 
 from precis.dispatch import Hub
@@ -40,8 +41,6 @@ if TYPE_CHECKING:
 router = APIRouter(tags=["pcb"])
 
 log = logging.getLogger(__name__)
-
-_LIST_LIMIT = 100
 
 
 def _handler(store: Store) -> PcbHandler:
@@ -68,18 +67,13 @@ def _vitals(store: Store, ref_id: int) -> dict[str, Any]:
 
 
 @router.get("/pcb", response_class=HTMLResponse)
-async def pcb_list(request: Request) -> HTMLResponse:
-    store = get_store(request)
-    refs = store.list_refs(kind="pcb", limit=_LIST_LIMIT)
-    rows = [
-        {"slug": r.slug, "title": r.title or r.slug, "handle": f"pc{r.id}"}
-        for r in refs
-    ]
-    return templates.TemplateResponse(
-        request,
-        "pcb/list.html.j2",
-        {"active_tab": "pcb", "designs": rows},
-    )
+async def pcb_list() -> RedirectResponse:
+    """Retired into the unified Drive surface — redirects to the ``kind=pcb``
+    facet preset (same target as ``_drive_back.html.j2``'s back-link, so the
+    detail page's "back" arrow and this retired index agree). The workbench
+    (``/pcb/{slug}`` and its SVG endpoints below) is unaffected.
+    """
+    return RedirectResponse(url="/drive?k=pcb&folder=*&sort=recency")
 
 
 @router.get("/pcb/{slug}", response_class=HTMLResponse)

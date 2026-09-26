@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis_web.deps import get_store
-from precis_web.item_view import item_row
+from precis_web.item_view import COMPONENT_BADGE_SPECS, item_row
 from precis_web.routes.flags import FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 if TYPE_CHECKING:
@@ -62,6 +62,7 @@ _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
     "pres",
     "web",
     "wikipedia",
+    "news",
     "youtube",
     "perplexity-reasoning",
     "perplexity-research",
@@ -72,6 +73,23 @@ _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
     "memory",
     "conv",
 )
+
+#: Design/artifact kinds that predate ``KindSpec.placement`` and so are
+#: declared ``placement='stream'`` by default (component/material/pcb —
+#: see ``KindSpec.placement`` in ``protocol.py``), even though in every
+#: sense that matters to a human browsing Drive they're an authored
+#: design the operator made, not a collected source. ``se``/``structure``/
+#: ``figure`` already carry ``placement='artifact'`` and reach Drive
+#: through the live-hub ``artifact_kinds()`` facet (``item_view.py``) —
+#: this is the small hand-curated remainder placement introspection
+#: alone won't catch. Deliberately *not* folded into
+#: ``_DEFAULT_SOURCE_KINDS`` above, which stays the literal "Source"
+#: facet row (collected/ingested docs) — ``routes/drive.py`` unions this
+#: list into the *default search scope* instead, keeping the Source row
+#: semantically honest. The coupled taxonomy audit (see that constant's
+#: own docstring) will want a real placement bucket for this; noting the
+#: gap here rather than solving it structurally.
+_DESIGN_KINDS: tuple[str, ...] = ("pcb", "component", "material")
 
 #: Results per page — shared by the /drive + /items browse and search
 #: lists. Large by design: this is a self-hosted daily-use tool where
@@ -96,6 +114,128 @@ def _parse_date(raw: str) -> datetime | None:
     except ValueError:
         return None
     return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
+
+
+def _se_summaries_bulk(store: Store, ref_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Per-``se``-design level/block/bound-structure summary, batched over
+    ``ref_ids`` (the page's ``se`` rows only) in one query — the same
+    columns ``routes/design.py``'s ``_levels`` reads per block (never
+    geometry), aggregated to one row per design since a Drive row has
+    space for a badge, not a tree. Empty input skips the query."""
+    if not ref_ids:
+        return {}
+    sql = """
+        SELECT ref_id,
+               count(*)                                                AS n_blocks,
+               bool_or(envelope IS NOT NULL)                            AS has_l1,
+               bool_or(dof IS NOT NULL OR objectives IS NOT NULL
+                       OR process_overrides IS NOT NULL)                AS has_l2,
+               bool_or(bound_kind IS NOT NULL)                          AS has_l3,
+               count(*) FILTER (WHERE bound_kind = 'structure')         AS n_bound
+          FROM se_blocks
+         WHERE ref_id = ANY(%s) AND retired_at IS NULL
+         GROUP BY ref_id
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (ref_ids,)).fetchall()
+    out: dict[int, dict[str, Any]] = {}
+    for ref_id, n_blocks, has_l1, has_l2, has_l3, n_bound in rows:
+        level = "L3" if has_l3 else "L2" if has_l2 else "L1" if has_l1 else "L0"
+        out[int(ref_id)] = {
+            "level": level,
+            "blocks": int(n_blocks),
+            "bound_structures": int(n_bound),
+        }
+    return out
+
+
+def _structure_summaries_bulk(
+    store: Store, ref_ids: list[int]
+) -> dict[int, dict[str, Any]]:
+    """Per-``structure`` atom/run/energy-ladder summary, batched over
+    ``ref_ids`` — the same three facts ``routes/structure.py``'s
+    ``_list_rows`` shows per row, three small queries here restricted to
+    this page's ids instead of one query per every live structure. Empty
+    input skips all three queries."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        atom_rows = conn.execute(
+            "SELECT ref_id, count(*) FROM struct_atoms "
+            "WHERE ref_id = ANY(%s) AND retired_version IS NULL "
+            "GROUP BY ref_id",
+            (ref_ids,),
+        ).fetchall()
+        run_rows = conn.execute(
+            "SELECT ref_id, count(*) FROM struct_runs "
+            "WHERE ref_id = ANY(%s) GROUP BY ref_id",
+            (ref_ids,),
+        ).fetchall()
+        last_rows = conn.execute(
+            "SELECT DISTINCT ON (ref_id) ref_id, energy, fidelity "
+            "FROM struct_runs "
+            "WHERE ref_id = ANY(%s) AND status = 'succeeded' "
+            "AND energy IS NOT NULL "
+            "ORDER BY ref_id, id DESC",
+            (ref_ids,),
+        ).fetchall()
+    out: dict[int, dict[str, Any]] = {
+        int(rid): {"atoms": 0, "runs": 0, "last_energy": None, "last_fidelity": None}
+        for rid in ref_ids
+    }
+    for rid, n in atom_rows:
+        out[int(rid)]["atoms"] = int(n)
+    for rid, n in run_rows:
+        out[int(rid)]["runs"] = int(n)
+    for rid, energy, fidelity in last_rows:
+        out[int(rid)]["last_energy"] = float(energy)
+        out[int(rid)]["last_fidelity"] = fidelity
+    return out
+
+
+def _component_summaries_bulk(
+    store: Store, ref_ids: list[int]
+) -> dict[int, dict[str, Any]]:
+    """Current value of the Drive-row badge specs
+    (:data:`precis_web.item_view.COMPONENT_BADGE_SPECS`) per component,
+    batched over ``ref_ids`` — one ``component_spec_values`` query,
+    ``DISTINCT ON`` per ``(component_ref_id, spec_id)`` picking the current
+    value the same way ``store/_component_ops.py``'s ``_CURRENT_ORDER``
+    does for a single component. Empty input skips the query."""
+    if not ref_ids:
+        return {}
+    sql = """
+        SELECT DISTINCT ON (component_ref_id, spec_id)
+               component_ref_id, spec_id, value_text
+          FROM component_spec_values
+         WHERE component_ref_id = ANY(%s) AND spec_id = ANY(%s)
+         ORDER BY component_ref_id, spec_id, as_of DESC NULLS LAST, created_at DESC
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (ref_ids, list(COMPONENT_BADGE_SPECS))).fetchall()
+    out: dict[int, dict[str, Any]] = {}
+    for rid, spec_id, value_text in rows:
+        out.setdefault(int(rid), {})[spec_id] = value_text
+    return out
+
+
+def _design_facts_bulk(store: Store, refs: list[Any]) -> dict[int, dict[str, Any]]:
+    """Batched per-kind design facts for the ``se``/``structure``/
+    ``component`` Drive-row presenters (``item_view.py``'s
+    ``SePresenter``/``StructurePresenter``/``ComponentPresenter``) — one
+    query per kind actually present among ``refs`` (never fired for a page
+    with none of the three), keyed by ref id so :func:`item_row` can pass
+    each ref its own facts dict. ``pcb``/``material``/``figure`` need no
+    query at all (their facts live on ``ref.meta``, already loaded per
+    ref), so they're not in here."""
+    by_kind: dict[str, list[int]] = {}
+    for r in refs:
+        by_kind.setdefault(getattr(r, "kind", ""), []).append(r.id)
+    out: dict[int, dict[str, Any]] = {}
+    out.update(_se_summaries_bulk(store, by_kind.get("se", [])))
+    out.update(_structure_summaries_bulk(store, by_kind.get("structure", [])))
+    out.update(_component_summaries_bulk(store, by_kind.get("component", [])))
+    return out
 
 
 def _run_search(
@@ -145,6 +285,7 @@ def _run_search(
     summaries = store.chunks.chunk_summaries_bulk(
         [(ref.id, block.ord) for block, ref, _ in hits]
     )
+    design_facts = _design_facts_bulk(store, [ref for _, ref, _ in hits])
     # A search hit matched a chunk, so the ref is ingested by definition.
     rows = [
         item_row(
@@ -156,6 +297,7 @@ def _run_search(
             tags=tags_bulk.get(ref.id),
             identifier=idents.get(ref.id),
             summary=summaries.get((ref.id, block.ord)),
+            design=design_facts.get(ref.id),
         )
         for block, ref, score in hits
     ]
@@ -227,6 +369,7 @@ def _recent_rows(
     ingested = store.refs_with_body_chunks(ref_ids)
     tags_bulk = store.ref_tags_bulk(ref_ids)
     idents = store.paper_identifiers(ref_ids)
+    design_facts = _design_facts_bulk(store, refs)
     rows = [
         item_row(
             r,
@@ -236,6 +379,7 @@ def _recent_rows(
             has_chunks=r.id in ingested,
             tags=tags_bulk.get(r.id),
             identifier=idents.get(r.id),
+            design=design_facts.get(r.id),
         )
         for r in refs
     ]

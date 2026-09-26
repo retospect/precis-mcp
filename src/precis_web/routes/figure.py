@@ -12,7 +12,8 @@ route is the *human* affordance on the same data: a 3-pane canvas —
 
 Routes:
 
-* ``GET  /figure`` — the figure list.
+* ``GET  /figure`` — retired into the unified Drive surface; redirects to
+  the ``kind=figure`` facet preset.
 * ``GET  /figure/{slug}`` — the 3-pane editor.
 * ``GET  /figure/{slug}/source.svg`` — the sanitized SVG (the ``<img>`` src).
 * ``POST /figure/{slug}/turn`` — run one :func:`precis.figure.turn.run_turn`
@@ -29,7 +30,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.responses import Response as RawResponse
 
 from precis.errors import NotFound
@@ -44,8 +45,6 @@ if TYPE_CHECKING:
 router = APIRouter(tags=["figure"])
 
 log = logging.getLogger(__name__)
-
-_LIST_LIMIT = 100
 
 
 def _viewbox(ref: Any, svg: str) -> tuple[float, float, float, float]:
@@ -88,18 +87,13 @@ def _bindings(store: Store, ref_id: int) -> list[dict[str, Any]]:
 
 
 @router.get("/figure", response_class=HTMLResponse)
-async def figure_list(request: Request) -> HTMLResponse:
-    store = get_store(request)
-    refs = store.list_refs(kind="figure", limit=_LIST_LIMIT)
-    rows = [
-        {"slug": r.slug, "title": r.title or r.slug, "handle": f"fg{r.id}"}
-        for r in refs
-    ]
-    return templates.TemplateResponse(
-        request,
-        "figure/list.html.j2",
-        {"active_tab": "figure", "figures": rows},
-    )
+async def figure_list() -> RedirectResponse:
+    """Retired into the unified Drive surface — redirects to the
+    ``kind=figure`` facet preset (same target as ``_drive_back.html.j2``'s
+    back-link). The workbench (``/figure/{slug}`` and everything under it)
+    is unaffected.
+    """
+    return RedirectResponse(url="/drive?k=figure&folder=*&sort=recency")
 
 
 @router.get("/figure/{slug}", response_class=HTMLResponse)

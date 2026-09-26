@@ -17,7 +17,13 @@ proposal's decisions log) requires a dedicated presenter for every
 source/artifact kind, which is a separate per-kind pass (tracked in
 ``OPEN-ITEMS.md``), not a mechanical follow-on to this module. A kind
 needing a richer peek registers a subclass in
-:data:`_PRESENTER_CLASSES` (seeded here with ``youtube``'s thumbnail).
+:data:`_PRESENTER_CLASSES` — seeded with ``youtube``'s thumbnail, then
+grown with one presenter per design/artifact kind (``se``/``structure``/
+``pcb``/``component``/``material``/``figure``/``mermaid``) so retiring
+their standalone list routes (``/se``, ``/structure``, ``/pcb``, …) into
+Drive chips loses no information a row can cheaply carry — "cheaply"
+meaning off ``ref.meta`` or a lookup batched once per page by the caller
+(``routes/items.py``), never a per-row query or file read.
 """
 
 from __future__ import annotations
@@ -238,7 +244,13 @@ class ItemPresenter:
             {"type": "tag", "kind": self.kind, "id": ident, "label": "tag"},
         ]
 
-    def state(self, ref: Any, *, has_chunks: bool) -> list[dict[str, str]]:
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
         """Pipeline-state badges for the row (paper-family kinds only, plus
         `pathway`'s own compute-status badge).
 
@@ -255,6 +267,11 @@ class ItemPresenter:
         Surfaces the same ``computing``/``failed``/``superseded`` states the
         detail page's banner does (the orphaned-pathway-stub sweep,
         :func:`precis.quest.loop._reconcile_orphaned_pathways`).
+
+        ``design`` is this ref's slice of a batched per-page lookup
+        (``routes/items.py``'s ``_design_facts_bulk``) — ``None`` for every
+        kind but ``se``/``structure``/``component``, which override this
+        method to render it; the base implementation ignores it.
         """
         if self.kind == "pathway":
             status = (getattr(ref, "meta", None) or {}).get("status")
@@ -375,12 +392,319 @@ class YoutubePresenter(ItemPresenter):
         return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
 
+def _fmt_num(v: float) -> str:
+    """``123.0`` → ``"123"``, ``123.4`` → ``"123.4"`` — a badge-sized
+    number, never a trailing ``.0``. Mirrors
+    ``precis.diagram.handler``'s private ``_num`` (not imported: that
+    module is core-only, this is a display-layer duplicate of one line)."""
+    return str(int(v)) if v == int(v) else str(v)
+
+
+class SePresenter(ItemPresenter):
+    """``se`` design tree — the level reached (L0 block-graph through L3
+    realized solids; see the package docstring's six-level IR) plus block
+    / bound-structure counts, straight off the batched per-page lookup
+    (``routes/items.py``'s ``_se_summaries_bulk``, one ``se_blocks`` query
+    for however many ``se`` rows are on the page — never per-row). Stands
+    in for the retiring ``/design`` tree list's one useful glance: how far
+    along this design is, without opening it."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        if not design:
+            return badges
+        level = design.get("level")
+        if level:
+            badges.append(
+                {
+                    "label": level,
+                    "cls": "bg-indigo-100 text-indigo-700",
+                    "title": f"highest IR level reached: {level} (see se-kind.md)",
+                }
+            )
+        n_blocks = design.get("blocks") or 0
+        if n_blocks:
+            noun = "block" if n_blocks == 1 else "blocks"
+            badges.append(
+                {
+                    "label": f"{n_blocks} {noun}",
+                    "cls": "bg-slate-100 text-slate-600",
+                    "title": f"{n_blocks} live block(s) in the design tree",
+                }
+            )
+        n_bound = design.get("bound_structures") or 0
+        if n_bound:
+            badges.append(
+                {
+                    "label": f"{n_bound} bound",
+                    "cls": "bg-teal-100 text-teal-700",
+                    "title": (
+                        f"{n_bound} atomic-mode block(s) bound to a structure design"
+                    ),
+                }
+            )
+        return badges
+
+
+class StructurePresenter(ItemPresenter):
+    """``structure`` design — atom count, run count, and the most recent
+    successful relax's energy-ladder rung, off the batched per-page lookup
+    (``routes/items.py``'s ``_structure_summaries_bulk``, three queries for
+    however many ``structure`` rows are on the page, mirroring
+    ``routes/structure.py``'s ``_list_rows`` per-row shape but batched).
+    The one-glance summary ``/structure`` currently gives per row."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        if not design:
+            return badges
+        n_atoms = design.get("atoms") or 0
+        if n_atoms:
+            badges.append(
+                {
+                    "label": f"{n_atoms} atoms",
+                    "cls": "bg-slate-100 text-slate-600",
+                    "title": f"{n_atoms} live atom(s)",
+                }
+            )
+        n_runs = design.get("runs") or 0
+        if n_runs:
+            badges.append(
+                {
+                    "label": f"{n_runs} runs",
+                    "cls": "bg-slate-100 text-slate-600",
+                    "title": f"{n_runs} relax run(s) recorded",
+                }
+            )
+        last_fidelity = design.get("last_fidelity")
+        last_energy = design.get("last_energy")
+        if last_fidelity and last_energy is not None:
+            badges.append(
+                {
+                    "label": f"{last_fidelity} {_fmt_num(round(last_energy, 2))} eV",
+                    "cls": "bg-emerald-100 text-emerald-700",
+                    "title": (
+                        f"last successful relax: {last_fidelity} rung, "
+                        f"{last_energy:.4f} eV"
+                    ),
+                }
+            )
+        return badges
+
+
+class PcbPresenter(ItemPresenter):
+    """``pcb`` board — the last autoplace/route run's own summary, read
+    straight off ``ref.meta`` (``last_place``/``last_route``, stamped in
+    place by ``PcbHandler``'s ``place``/``route`` ops — see
+    ``handlers/pcb.py``) with no extra query at all. The board SVG +
+    schematic stay ``/pcb/<slug>``-only; step 4 (retiring that route into a
+    Drive chip) is what would ever change that."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        meta = getattr(ref, "meta", None) or {}
+        last_route = meta.get("last_route")
+        if isinstance(last_route, dict):
+            realized = int(last_route.get("realized") or 0)
+            failed = int(last_route.get("failed") or 0)
+            cls = "bg-rose-100 text-rose-700" if failed else "bg-sky-100 text-sky-700"
+            badges.append(
+                {
+                    "label": f"routed {realized}/{realized + failed}",
+                    "cls": cls,
+                    "title": (
+                        f"last route: {realized} realized, {failed} failed net(s)"
+                    ),
+                }
+            )
+        elif isinstance(meta.get("last_place"), dict):
+            badges.append(
+                {
+                    "label": "placed",
+                    "cls": "bg-sky-100 text-sky-700",
+                    "title": "components placed, not yet routed",
+                }
+            )
+        return badges
+
+
+#: Universal component specs surfaced as Drive-row badges — the fastener
+#: facts an ISO title doesn't spell out (head form / drive type / thread
+#: size, migrations 0093/0163). ``drive_size`` (a bare mm number, only
+#: legible paired with ``drive_type``) is deliberately left for the
+#: detail page rather than crowding a fourth badge onto a Drive row.
+COMPONENT_BADGE_SPECS: tuple[str, ...] = ("thread_size", "drive_type", "head_form")
+
+
+class ComponentPresenter(ItemPresenter):
+    """procurable ``component`` — the category (free, off ``ref.meta``,
+    same as every other component read) plus the fastener facts an ISO
+    title doesn't spell out, off the batched per-page current-spec-value
+    lookup (``routes/items.py``'s ``_component_summaries_bulk`` — one
+    ``component_spec_values`` query for however many ``component`` rows
+    are on the page, picking the current value the same way
+    ``store/_component_ops.py``'s ``_CURRENT_ORDER`` does for a single
+    part)."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        meta = getattr(ref, "meta", None) or {}
+        category = meta.get("category")
+        if category:
+            badges.append(
+                {
+                    "label": str(category),
+                    "cls": "bg-slate-100 text-slate-600",
+                    "title": "component category",
+                }
+            )
+        specs = design or {}
+        thread_size = specs.get("thread_size")
+        if thread_size:
+            badges.append(
+                {
+                    "label": str(thread_size),
+                    "cls": "bg-violet-100 text-violet-700",
+                    "title": f"thread size: {thread_size}",
+                }
+            )
+        drive_type = specs.get("drive_type")
+        if drive_type:
+            badges.append(
+                {
+                    "label": f"{drive_type} drive",
+                    "cls": "bg-violet-100 text-violet-700",
+                    "title": f"drive type: {drive_type}",
+                }
+            )
+        head_form = specs.get("head_form")
+        if head_form:
+            badges.append(
+                {
+                    "label": f"{head_form} head",
+                    "cls": "bg-violet-100 text-violet-700",
+                    "title": f"head form: {head_form}",
+                }
+            )
+        return badges
+
+
+class MaterialPresenter(ItemPresenter):
+    """engineering ``material`` — the material class, free off
+    ``ref.meta`` (migration 0092: ``meta = {aliases, material_class,
+    composition/formula, notes}``, set at entity-write time). The
+    per-property sourced values (``material_values``) are the real
+    handbook content but live in a separate fact table — worth a query at
+    2 prod rows, but out of scope for the no-N+1 pass this presenter is
+    part of; the class alone is the one free fact."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        meta = getattr(ref, "meta", None) or {}
+        material_class = meta.get("material_class")
+        if material_class:
+            badges.append(
+                {
+                    "label": str(material_class),
+                    "cls": "bg-amber-100 text-amber-700",
+                    "title": "material class",
+                }
+            )
+        return badges
+
+
+class FigurePresenter(ItemPresenter):
+    """``figure`` SVG canvas — the canvas size, free off
+    ``ref.meta['viewbox']`` (``[x, y, w, h]``, stamped by
+    ``DiagramHandler``/``SvgLang`` at put/edit time — ``diagram/handler.py``,
+    ``figure/svg.py``). The assembled SVG itself stays
+    ``/figure/<slug>``-only — rendering it here would mean reading +
+    compositing the draft body chunks per row, exactly the per-row cost
+    this pass rules out."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        meta = getattr(ref, "meta", None) or {}
+        box = meta.get("viewbox")
+        if isinstance(box, (list, tuple)) and len(box) == 4:
+            try:
+                w, h = float(box[2]), float(box[3])
+            except (TypeError, ValueError):
+                return badges
+            badges.append(
+                {
+                    "label": f"{_fmt_num(w)}×{_fmt_num(h)}",
+                    "cls": "bg-slate-100 text-slate-600",
+                    "title": "canvas size (viewBox)",
+                }
+            )
+        return badges
+
+
+class MermaidPresenter(ItemPresenter):
+    """``mermaid`` diagram — currently identical to the generic default.
+
+    Unlike ``figure``, ``MermaidLang.bounds_meta_key`` is unused
+    (``read_bounds``/``default_bounds`` are always ``None`` — mermaid
+    auto-lays-out, no coordinate frame — ``mermaid/mermaid.py``), so
+    ``ref.meta`` carries only ``{"render": "mermaid"}``: nothing free to
+    badge. A real per-row fact (node/edge count) lives only in the parsed
+    source text, which would mean reading + compiling the draft body chunk
+    per row — the per-row cost this pass rules out. This class exists as
+    the registered seam (so the eventual real datum has a home + this
+    docstring records why it isn't here yet), not because it renders
+    anything beyond :class:`ItemPresenter` today."""
+
+
 #: Per-kind presenter overrides — the registry seam for a kind whose
 #: hover/thumbnail/actions need more than the generic default. Grow this
 #: as kinds adopt a richer presenter; see the module docstring for why
 #: this isn't yet a total ``@abstractmethod`` mapping over every kind.
 _PRESENTER_CLASSES: dict[str, type[ItemPresenter]] = {
     "youtube": YoutubePresenter,
+    "se": SePresenter,
+    "structure": StructurePresenter,
+    "pcb": PcbPresenter,
+    "component": ComponentPresenter,
+    "material": MaterialPresenter,
+    "figure": FigurePresenter,
+    "mermaid": MermaidPresenter,
 }
 
 
@@ -392,13 +716,21 @@ def presenter_for(kind: str) -> ItemPresenter:
 
 
 #: Kinds declared ``placement='artifact'`` that fall back to when the live hub
-#: isn't reachable (mirrors ``routes/drive.py``'s ``_artifact_kinds``
-#: fallback — kept in sync by hand since both are small, static lists).
-#: ``tests/test_kind_totality.py`` pins this equal to the live
-#: ``placement_kinds(specs, "artifact")`` derivation (minus ``folder``, same as
-#: :func:`artifact_kinds` below excludes) so a newly-declared artifact kind
-#: failing to land here fails CI instead of only ever showing up when the
-#: hub happens to be reachable.
+#: isn't reachable — the sole facet resolver is :func:`artifact_kinds` below
+#: (``routes/drive.py`` once carried a near-identical, never-called
+#: ``_artifact_kinds``; it was dead code and has been removed).
+#: ``tests/test_kind_totality.py`` pins the core (``precis.handlers``)
+#: portion of this equal to the live ``placement_kinds(specs, "artifact")``
+#: derivation (minus ``folder``, same as :func:`artifact_kinds` below
+#: excludes) so a newly-declared core artifact kind failing to land here
+#: fails CI instead of only ever showing up when the hub happens to be
+#: reachable. Also carries every plugin-declared artifact kind this build
+#: ships (``se``/``pathway``/``protein``/``route`` — entry points under
+#: ``[project.entry-points."precis.handlers"]``, not under
+#: ``precis.handlers`` itself, so they're outside that derivation's scope
+#: by design — see ``kind_facts.all_declared_specs``'s docstring): a hub
+#: that fails to construct still needs the Author facet to reach an ``se``
+#: row, exactly the gap this constant exists to fill.
 _ARTIFACT_KIND_FALLBACK: tuple[str, ...] = (
     "cad",
     "checklist",
@@ -406,8 +738,12 @@ _ARTIFACT_KIND_FALLBACK: tuple[str, ...] = (
     "figure",
     "make",
     "mermaid",
+    "pathway",
     "plan",
+    "protein",
+    "route",
     "rxn",
+    "se",
     "structure",
     "todo",
 )
@@ -445,6 +781,7 @@ def item_row(
     tags: list[tuple[str, str]] | None = None,
     identifier: str | None = None,
     summary: str | None = None,
+    design: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one unified-list row view-model from a search hit.
 
@@ -454,7 +791,10 @@ def item_row(
     hit). ``has_chunks`` drives the stub/ingested state badges (a search
     hit matched a chunk, so it's ``True``; a recent-list ref is probed).
     ``tags`` are the ref's raw ``(namespace, value)`` tags → the per-row
-    chips.
+    chips. ``design`` is this one ref's slice of the caller's batched
+    ``se``/``structure``/``component`` facts lookup (``None`` for every
+    other kind, or when the caller has none to offer) — see
+    :meth:`ItemPresenter.state`.
     """
     p = presenter_for(getattr(ref, "kind", ""))
     return {
@@ -466,7 +806,7 @@ def item_row(
         "thumbnail": p.thumbnail(ref),
         "actions": p.actions(ref),
         "created_at": getattr(ref, "created_at", None),
-        "state": p.state(ref, has_chunks=has_chunks),
+        "state": p.state(ref, has_chunks=has_chunks, design=design),
         "tags": _display_tags(tags),
         "links": p.links(identifier),
         "score": score,

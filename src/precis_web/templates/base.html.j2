@@ -84,11 +84,16 @@
              per-kind lists into Drive kind/state facet presets (Oracle's
              "roll the dice" and Patents' OPS remote-search are MCP/CLI
              affordances, not web routes, so nothing web-facing was lost).
-             Structures/CAD/Figures/Mermaid keep their own tab: each
-             carries kind-specific columns (parts, atoms, energy, turns, …)
-             Drive's generic row rendering doesn't reproduce; Clusters is
-             likewise a bespoke visualization with no Drive equivalent. #}
-          {% set browse = [('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/structure'), ('cad','CAD','/cad'), ('pcb','PCB','/pcb'), ('figure','Figures','/figure'), ('mermaid','Mermaid','/mermaid'), ('nanopub','Nanopubs','/nanopub')] %}
+             Structures/CAD/PCB/Figures/Mermaid's own list pages are
+             likewise retired now that a Drive row carries real per-kind
+             state (design.py's dedicated ItemPresenters — atom/run/energy,
+             level/block counts, routed/placed, canvas size, …); these
+             entries link straight to the ``kind=`` facet preset (the same
+             target ``/pcb`` etc. now redirect to) rather than bouncing
+             through the retired route. Their workbenches
+             (``/structure/{slug}`` etc.) are unaffected. Clusters is
+             a bespoke visualization with no Drive equivalent. #}
+          {% set browse = [('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('nanopub','Nanopubs','/nanopub')] %}
           {% set browse_keys = browse | map(attribute=0) | list %}
           <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
             <button type="button" @click="open=!open"

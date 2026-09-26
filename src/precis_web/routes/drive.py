@@ -56,6 +56,7 @@ from precis_web.routes.flags import (
 )
 from precis_web.routes.items import (
     _DEFAULT_SOURCE_KINDS,
+    _DESIGN_KINDS,
     _PAGE_SIZE,
     _folder_options,
     _parse_date,
@@ -119,33 +120,34 @@ _KIND_ICON = {
 #: normalization — the tag itself no longer exists).
 _WORK_KINDS: tuple[str, ...] = ("quest", "todo")
 
+#: The "Machine" scope-toggle bucket — kinds that are machine-produced
+#: bookkeeping a human essentially never browses row-by-row in Drive
+#: (``orcid`` + ``job`` alone are ~70% of live prod refs: 106,015 +
+#: 103,402). There is no ``KindSpec.placement`` value that isolates this
+#: class today: orcid/job/agentlog/alert/llm/provenance are all the
+#: *default* ``placement='stream'`` — the same bucket as memory/conv/
+#: news, which a human very much does want to browse — so this is a
+#: hand-curated list, not a placement-derived one (discovered while
+#: building this toggle; the coupled taxonomy audit should grow
+#: ``placement`` a real bucket for this rather than leaving it here by
+#: hand). ``citation`` is deliberately excluded: it's an agent-drafted,
+#: verifier-confirmed claim→source record (curated evidentiary content,
+#: closer to "Mine" than a machine-emitted log), not bookkeeping.
+_MACHINE_KINDS: tuple[str, ...] = (
+    "orcid",
+    "job",
+    "agentlog",
+    "alert",
+    "llm",
+    "provenance",
+)
+
 #: ``folder=*`` — the "anywhere" sentinel for the folder facet: no folder
 #: scope *and* no top-level filing filter, so filed artifacts list beside
 #: unfiled ones. The plain landing (``folder=``) hides anything filed; a
 #: whole-kind pivot (the Status page's "Refs by kind" chips) needs the
 #: complete set or its count contradicts the chip that linked here.
 _FOLDER_ANY = "*"
-
-
-def _artifact_kinds(request: Request) -> list[str]:
-    """Kinds declared ``placement='artifact'`` in this build (minus folder).
-
-    Read from the live hub so a future placeable kind (pcb, …) joins
-    the Drive surface by declaration, with no route edit.
-    """
-    try:
-        hub = get_runtime(request).hub
-        out = []
-        for k in sorted(hub.kinds):
-            handler = hub.handler_for(k)
-            spec = getattr(handler, "spec", None)
-            if spec is not None and getattr(spec, "placement", None) == "artifact":
-                if k != "folder":
-                    out.append(k)
-        return out
-    except Exception:
-        log.debug("drive: hub artifact-kind introspection failed", exc_info=True)
-        return ["draft", "structure", "cad", "todo"]
 
 
 def _doctypes() -> list[dict[str, Any]]:
@@ -312,6 +314,7 @@ async def index(
     tag: list[str] = Query(default_factory=list),
     state: str = "all",
     paper_chunks: str = "both",
+    scope: str = "",
     folder: str = "",
     cited_by: str = "",
     page: int = 1,
@@ -359,23 +362,89 @@ async def index(
     Kind selection persists in an ``items_kinds`` cookie (unchanged
     name — pre-dates the merge, no reason to churn a cookie key): an
     explicit submit (``submitted=1``) sets it; a fresh visit with no
-    ``k=`` reads it (or defaults to every source kind). An explicit
+    ``k=`` reads it (or defaults to the Source ∪ Author/Design kinds —
+    everything collected plus everything made, per the page's own
+    tagline — never Work or Machine, matching the pre-existing
+    exclusion of quest/todo/orcid/job from the default). An explicit
     ``k=`` in the URL is authoritative even without ``submitted`` — a
     deep link (Status's "Refs by kind" chips, a shared URL) means the
     kinds it names — but only a real form submit writes the cookie, so
     such a drive-by scope can't overwrite the operator's saved pick.
+
+    ``scope=mine``/``=sources``/``=machine`` is a coarse preset toggle
+    over the same ``k=`` kind chips — "Mine" (everything authored/
+    placed: the Author + Design facets, plus Work), "Sources"
+    (``_DEFAULT_SOURCE_KINDS``, the collected/ingested row), "Machine"
+    (``_MACHINE_KINDS`` — orcid/job bookkeeping a human never browses
+    row by row). It resolves only when neither ``submitted`` nor an
+    explicit ``k=`` is present — the same precedence a deep-linked
+    ``k=`` already has over the cookie — so a scope click's own kind
+    checkboxes (which it also sets) still round-trip as the real ``k=``
+    on the next submit; ``scope=`` itself just rides along (a hidden
+    field, like ``cited_by``) so the active bucket highlight survives a
+    resubmit and a bookmarked/shared ``?scope=`` link resolves the same
+    kind set with no ``k=`` at all.
     """
     store = get_store(request)
     q = (q or "").strip()
 
+    runtime = get_runtime(request)
+    hub = getattr(runtime, "hub", None)
+    artifact_kind_defs = artifact_kinds(hub)
+    # Third chip row: keep the Work kinds out of the Author facet so a
+    # placement='artifact' work kind (``todo``) lists once, under "Work".
+    work_kind_defs = list(_WORK_KINDS)
+    artifact_kind_defs = [kk for kk in artifact_kind_defs if kk not in _WORK_KINDS]
+    # Fourth chip row ("Design") — placement-less design kinds (see
+    # _DESIGN_KINDS's docstring); gated on live hub membership same as
+    # artifact_kind_defs, but hub=None (no runtime wired, e.g. a bare
+    # test double) — or a hub whose ``.kinds`` raises — falls back to the
+    # static list rather than hiding the facet entirely or 500ing the
+    # page (mirrors item_view.artifact_kinds()'s own try/except).
+    if hub is None:
+        design_kind_defs = [kk for kk in _DESIGN_KINDS if kk not in artifact_kind_defs]
+    else:
+        try:
+            hub_kinds = hub.kinds
+            design_kind_defs = [
+                kk
+                for kk in _DESIGN_KINDS
+                if kk not in artifact_kind_defs and kk in hub_kinds
+            ]
+        except Exception:
+            log.debug(
+                "drive: hub kind introspection failed for the Design facet",
+                exc_info=True,
+            )
+            design_kind_defs = [
+                kk for kk in _DESIGN_KINDS if kk not in artifact_kind_defs
+            ]
+
     url_kinds = [x.strip() for x in k if x.strip()]
+    scope = (scope or "").strip().lower()
+    _scope_kinds = {
+        "sources": list(_DEFAULT_SOURCE_KINDS),
+        "mine": [*artifact_kind_defs, *design_kind_defs, *work_kind_defs],
+        "machine": list(_MACHINE_KINDS),
+    }
     if submitted or url_kinds:
         selected_kinds = url_kinds
+    elif scope in _scope_kinds:
+        selected_kinds = _scope_kinds[scope]
     else:
         cookie = request.cookies.get("items_kinds", "")
-        selected_kinds = [x for x in cookie.split(",") if x] or list(
-            _DEFAULT_SOURCE_KINDS
-        )
+        # Decision (b): _DEFAULT_SOURCE_KINDS stays the literal "Source"
+        # facet row; the fresh-session default *scope* is the union with
+        # the Author + Design kinds so a brand-new session's search can
+        # return an se/pcb/component/structure/material/figure hit — the
+        # drive-front-door design-kinds gap (prod: 5 se refs incl.
+        # unicycle-mk2, 12 component, 2 pcb, 2 material, 1120 structure,
+        # none reachable before this fix).
+        selected_kinds = [x for x in cookie.split(",") if x] or [
+            *_DEFAULT_SOURCE_KINDS,
+            *artifact_kind_defs,
+            *design_kind_defs,
+        ]
     tags = [t.strip() for t in tag if t.strip()]
     # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
     # drive/index.html.j2's nav chip) — kept as a familiar URL even though
@@ -453,19 +522,20 @@ async def index(
             )
             selected_kinds = ["paper"]  # the worklist is papers, whatever the chips say
 
-    runtime = get_runtime(request)
-    hub = getattr(runtime, "hub", None)
-    artifact_kind_defs = artifact_kinds(hub)
-    # Third chip row: keep the Work kinds out of the Author facet so a
-    # placement='artifact' work kind (``todo``) lists once, under "Work".
-    work_kind_defs = list(_WORK_KINDS)
-    artifact_kind_defs = [k for k in artifact_kind_defs if k not in _WORK_KINDS]
     # A deep link can scope to a kind that has no chip — Status's "Refs by
     # kind" lists every kind in ``refs`` (job, finding, citation, …), not
     # just the browsable facets. Render those as an "Other" chip row so the
     # scope is visible and, more importantly, survives the next form submit
-    # instead of silently vanishing with no input to serialize it.
-    _faceted = {*_DEFAULT_SOURCE_KINDS, *artifact_kind_defs, *work_kind_defs}
+    # instead of silently vanishing with no input to serialize it. (hub /
+    # artifact_kind_defs / work_kind_defs / design_kind_defs were already
+    # resolved above, ahead of the kind-selection block, since the default
+    # scope needs them too.)
+    _faceted = {
+        *_DEFAULT_SOURCE_KINDS,
+        *artifact_kind_defs,
+        *work_kind_defs,
+        *design_kind_defs,
+    }
     other_kind_defs = [kk for kk in selected_kinds if kk not in _faceted]
 
     rows: list[dict[str, Any]] = []
@@ -596,6 +666,11 @@ async def index(
         _pager_params.append(("folder", folder_raw))
     if cited_by:
         _pager_params.append(("cited_by", cited_by))
+    if scope:
+        # Round-trips the active Mine/Sources/Machine highlight across
+        # pagination — ``k=`` (appended below) already carries the real
+        # filter; this is memory for which preset button lit it up.
+        _pager_params.append(("scope", scope))
     if has_schedule:
         # Re-append the "Schedules" sentinel stripped out above (post-query)
         # so paging preserves it and the active-filter chip still renders.
@@ -678,6 +753,8 @@ async def index(
             "kind_defs": list(_DEFAULT_SOURCE_KINDS),
             "artifact_kind_defs": artifact_kind_defs,
             "work_kind_defs": work_kind_defs,
+            "design_kind_defs": design_kind_defs,
+            "machine_kind_defs": list(_MACHINE_KINDS),
             "other_kind_defs": other_kind_defs,
             "selected_kinds": selected_kinds,
             "tags": tags,
@@ -686,6 +763,7 @@ async def index(
             "until": until,
             "state": state,
             "paper_chunks": pc,
+            "scope": scope,
             "folder": folder_raw,
             "cited_by": cited_by,
             "cited_by_title": cited_by_title,

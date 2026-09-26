@@ -99,7 +99,7 @@
 {% endif %}
 
 <form method="get" action="/drive" class="mb-4 space-y-2"
-      x-data='itemsFilter({{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ work_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }}, {{ paper_chunks | tojson }})'>
+      x-data='itemsFilter({{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ work_kind_defs | tojson }}, {{ design_kind_defs | tojson }}, {{ machine_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }}, {{ paper_chunks | tojson }}, {{ scope | tojson }})'>
   {# submitted=1 tells the server the checkboxes are authoritative (so
      "none checked" means none, and the choice is remembered in a cookie). #}
   <input type="hidden" name="submitted" value="1" />
@@ -107,6 +107,12 @@
      isn't silently dropped on the first form interaction (the "clear scope ×"
      link is the only way out). #}
   {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
+  {# Mine/Sources/Machine scope-toggle memory — reactive (:value, always
+     rendered) so a resubmit after tweaking search/sort/tags carries
+     forward whichever bucket button is lit, and a bare ``?scope=`` link
+     (no ``k=``) resolves the same kind set server-side with nothing to
+     check. #}
+  <input type="hidden" name="scope" :value="scope" />
   <div class="flex flex-wrap items-end gap-2">
     <div class="flex-1 min-w-[16rem]" data-tour="drive-search">
       <label class="block text-xs text-slate-500 mb-0.5">Search</label>
@@ -165,9 +171,33 @@
     </button>
   </div>
 
+  {# Scope quick-filter — a coarse bucket over the same `k=` kind chips
+     below: "Mine" (Author + Design + Work — everything authored/placed),
+     "Sources" (the Source row — collected/ingested), "Machine" (orcid/
+     job/… bookkeeping, ~70% of live prod refs, that has no chip row of
+     its own since a human essentially never browses it row by row).
+     Clicking a bucket sets the checkboxes below to that bucket's kinds
+     (still the real ``k=`` on submit — an explicit chip tweak or a
+     deep-linked ``k=`` always wins, see routes/drive.py's `index`
+     docstring); `scope=` itself just round-trips which button is lit. #}
+  <div class="flex flex-wrap items-center gap-1.5 text-xs">
+    <span class="text-slate-500 mr-1">Scope</span>
+    <button type="button" @click="setScope('mine')"
+            class="px-2 py-0.5 rounded border cursor-pointer"
+            :class="scope === 'mine' ? 'bg-indigo-100 border-indigo-300 text-indigo-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'">Mine</button>
+    <button type="button" @click="setScope('sources')"
+            class="px-2 py-0.5 rounded border cursor-pointer"
+            :class="scope === 'sources' ? 'bg-indigo-100 border-indigo-300 text-indigo-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'">Sources</button>
+    <button type="button" @click="setScope('machine')"
+            class="px-2 py-0.5 rounded border cursor-pointer"
+            :class="scope === 'machine' ? 'bg-indigo-100 border-indigo-300 text-indigo-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'">Machine</button>
+  </div>
+
   {# Kind chips — click to toggle; All / None; remembered via cookie.
-     Two facets: "Source" (ingested docs + cached answers) and "Author"
-     (role='artifact' — drafts, cad, structure, …). #}
+     Facets: "Source" (ingested docs + cached answers), "Author"
+     (role='artifact' — drafts, cad, structure, …) and "Design" (the
+     placement-less design kinds — pcb/component/material, see
+     items.py's _DESIGN_KINDS). #}
   <div class="flex flex-wrap items-center gap-1.5 text-xs">
     <span class="text-slate-500 mr-1">Source</span>
     <button type="button" @click="allKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">All</button>
@@ -257,6 +287,25 @@
   </div>
   {% endif %}
 
+  {# Design — placement-less design kinds (pcb/component/material) that
+     don't qualify for the Author facet's placement='artifact' filter but
+     are still first-class authored designs (se/structure/figure already
+     show up under Author). Its own row, not folded into Author, so the
+     "no facet chip → Other only" gap this closes stays visible as a
+     named row rather than silently merged. #}
+  {% if design_kind_defs %}
+  <div class="flex flex-wrap items-center gap-1.5 text-xs">
+    <span class="text-slate-500 mr-1">Design</span>
+    <template x-for="kk in designKinds" :key="kk">
+      <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
+             :class="kinds.includes(kk) ? 'bg-violet-100 border-violet-300 text-violet-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
+        <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
+        <span x-text="kk"></span>
+      </label>
+    </template>
+  </div>
+  {% endif %}
+
   {# ── Work: quests + todos, plus the recurring-schedule preset. A third
      facet beside Source/Author. These kinds carry no embedded chunks, so
      they list in the no-query browse view (a text query matches only the
@@ -327,11 +376,14 @@
 
 <script>
   document.addEventListener('alpine:init', () => {
-    Alpine.data('itemsFilter', (sourceKinds, artifactKinds, workKinds, selectedKinds, selectedTags, paperChunks) => ({
+    Alpine.data('itemsFilter', (sourceKinds, artifactKinds, workKinds, designKinds, machineKinds, selectedKinds, selectedTags, paperChunks, initialScope) => ({
       sourceKinds: sourceKinds,
       artifactKinds: artifactKinds,
       workKinds: workKinds,
+      designKinds: designKinds,
+      machineKinds: machineKinds,
       kinds: selectedKinds,
+      scope: initialScope || '',
       tags: selectedTags,
       paperChunks: paperChunks || 'both',
       tagQuery: '',
@@ -345,8 +397,18 @@
         clearTimeout(this._t);
         this._t = setTimeout(() => this.$root.requestSubmit(), delay);
       },
-      allKinds() { this.kinds = [...this.sourceKinds, ...this.artifactKinds]; },
+      allKinds() { this.kinds = [...this.sourceKinds, ...this.artifactKinds, ...this.designKinds]; },
       noKinds() { this.kinds = []; },
+      // Mine/Sources/Machine scope toggle — sets the checkbox-backed
+      // `kinds` array to the bucket's kind list (still the real ``k=``
+      // on submit, via the existing $watch above) and remembers which
+      // button is lit via `scope` (the hidden field it's bound to).
+      setScope(name) {
+        this.scope = name;
+        if (name === 'sources') this.kinds = [...this.sourceKinds];
+        else if (name === 'mine') this.kinds = [...this.artifactKinds, ...this.designKinds, ...this.workKinds];
+        else if (name === 'machine') this.kinds = [...this.machineKinds];
+      },
       ppCount() { return this.perplexityKinds.filter(k => this.kinds.includes(k)).length; },
       togglePerplexity() {
         if (this.ppCount() === this.perplexityKinds.length) {

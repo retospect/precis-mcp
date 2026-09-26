@@ -32,10 +32,16 @@ rim       add  cyl:r30mmh4mm    @0mm,0mm,8mm
 # ── FakeStore degradation paths ──────────────────────────────────────────
 
 
-def test_cad_list_empty(client: TestClient) -> None:
-    r = client.get("/cad")
-    assert r.status_code == 200
-    assert "No cad designs yet" in r.text
+def test_cad_index_redirects_to_drive_kind_cad(client: TestClient) -> None:
+    """``/cad`` (the list) is retired into the unified Drive surface — it
+    redirects to the ``kind=cad`` facet preset, the same target
+    ``_drive_back.html.j2``'s back-link uses. The workbench
+    (``/cad/{slug}``) is unaffected — ``test_cad_detail_404`` below proves
+    the ``{slug}`` route still resolves and isn't swallowed by this
+    redirect."""
+    r = client.get("/cad", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=cad&folder=*&sort=recency"
 
 
 def test_cad_detail_404(client: TestClient) -> None:

@@ -12,7 +12,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from precis_web.item_view import (
+    _ARTIFACT_KIND_FALLBACK,
+    ComponentPresenter,
+    FigurePresenter,
     ItemPresenter,
+    MaterialPresenter,
+    MermaidPresenter,
+    PcbPresenter,
+    SePresenter,
+    StructurePresenter,
     YoutubePresenter,
     artifact_kinds,
     item_row,
@@ -313,8 +321,12 @@ def test_artifact_kinds_falls_back_when_hub_is_none() -> None:
         "figure",
         "make",
         "mermaid",
+        "pathway",
         "plan",
+        "protein",
+        "route",
         "rxn",
+        "se",
         "structure",
         "todo",
     ]
@@ -344,8 +356,130 @@ def test_artifact_kinds_falls_back_on_hub_error() -> None:
         "figure",
         "make",
         "mermaid",
+        "pathway",
         "plan",
+        "protein",
+        "route",
         "rxn",
+        "se",
         "structure",
         "todo",
     ]
+
+
+def test_se_presenter_renders_level_block_and_bound_badges() -> None:
+    ref = _ref(kind="se", id=9, slug="hub", title="Hub design")
+    p = presenter_for("se")
+    assert isinstance(p, SePresenter)
+    badges = p.state(
+        ref,
+        has_chunks=False,
+        design={"level": "L2", "blocks": 4, "bound_structures": 1},
+    )
+    labels = [b["label"] for b in badges]
+    assert labels == ["L2", "4 blocks", "1 bound"]
+
+
+def test_se_presenter_no_badges_without_batched_design() -> None:
+    """No design dict (e.g. a page with zero ``se`` rows never ran the
+    batched lookup) degrades to no extra badges, not a crash."""
+    ref = _ref(kind="se", id=9, slug="hub")
+    assert presenter_for("se").state(ref, has_chunks=False) == []
+
+
+def test_structure_presenter_renders_atom_run_energy_badges() -> None:
+    ref = _ref(kind="structure", id=3, slug="hex-block")
+    p = presenter_for("structure")
+    assert isinstance(p, StructurePresenter)
+    badges = p.state(
+        ref,
+        has_chunks=True,
+        design={
+            "atoms": 128,
+            "runs": 4,
+            "last_energy": -123.456,
+            "last_fidelity": "dft",
+        },
+    )
+    labels = [b["label"] for b in badges]
+    assert "128 atoms" in labels
+    assert "4 runs" in labels
+    assert any(label.startswith("dft ") and label.endswith("eV") for label in labels)
+
+
+def test_pcb_presenter_renders_routed_badge_from_meta() -> None:
+    """No batched lookup at all — reads straight off ``ref.meta``."""
+    ref = _ref(
+        kind="pcb",
+        id=2,
+        slug="sensor-node",
+        meta={"last_route": {"realized": 5, "failed": 1}},
+    )
+    p = presenter_for("pcb")
+    assert isinstance(p, PcbPresenter)
+    badges = p.state(ref, has_chunks=False)
+    assert any(b["label"] == "routed 5/6" for b in badges)
+
+
+def test_pcb_presenter_renders_placed_badge_without_route() -> None:
+    ref = _ref(
+        kind="pcb", id=2, slug="sensor-node", meta={"last_place": {"iters": 200}}
+    )
+    badges = presenter_for("pcb").state(ref, has_chunks=False)
+    assert any(b["label"] == "placed" for b in badges)
+
+
+def test_component_presenter_renders_category_and_spec_badges() -> None:
+    ref = _ref(
+        kind="component",
+        id=4,
+        slug="m6x35-cap",
+        title="M6x35 hexagon socket head cap screw (ISO 4762)",
+        meta={"category": "fastener"},
+    )
+    p = presenter_for("component")
+    assert isinstance(p, ComponentPresenter)
+    badges = p.state(
+        ref,
+        has_chunks=False,
+        design={"thread_size": "M6", "drive_type": "hex", "head_form": "cap"},
+    )
+    labels = [b["label"] for b in badges]
+    assert labels == ["fastener", "M6", "hex drive", "cap head"]
+
+
+def test_material_presenter_renders_material_class_badge() -> None:
+    ref = _ref(kind="material", id=5, slug="al-6061", meta={"material_class": "alloy"})
+    p = presenter_for("material")
+    assert isinstance(p, MaterialPresenter)
+    badges = p.state(ref, has_chunks=False)
+    assert any(b["label"] == "alloy" for b in badges)
+
+
+def test_figure_presenter_renders_canvas_size_badge() -> None:
+    ref = _ref(kind="figure", id=6, slug="wiring", meta={"viewbox": [0, 0, 256, 128]})
+    p = presenter_for("figure")
+    assert isinstance(p, FigurePresenter)
+    badges = p.state(ref, has_chunks=False)
+    assert any(b["label"] == "256×128" for b in badges)
+
+
+def test_mermaid_presenter_has_no_free_batched_datum_yet() -> None:
+    """Documents the gap rather than fabricating a badge: mermaid's
+    ``bounds_meta_key`` is unused, so ``ref.meta`` carries nothing a row
+    can show beyond the generic default."""
+    ref = _ref(kind="mermaid", id=7, slug="flow", meta={"render": "mermaid"})
+    p = presenter_for("mermaid")
+    assert isinstance(p, MermaidPresenter)
+    assert p.state(ref, has_chunks=False) == ItemPresenter("mermaid").state(
+        ref, has_chunks=False
+    )
+
+
+def test_se_present_in_artifact_kind_fallback() -> None:
+    """``se`` is a plugin handler (``precis_se.handler:SeHandler``), not a
+    core ``precis.handlers`` module, but it's ``placement='artifact'`` like
+    every other design kind — the Author facet must still reach it when
+    the live hub isn't reachable (gap this fallback existed to close for
+    the core kinds, previously missed for the plugin ones)."""
+    assert "se" in _ARTIFACT_KIND_FALLBACK

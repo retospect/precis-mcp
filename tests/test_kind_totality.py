@@ -150,13 +150,33 @@ def test_refeye_claim_relations_matches_taproot_hub_derivation() -> None:
     assert live == CLAIM_RELATIONS
 
 
+#: Plugin-declared ``placement='artifact'`` kinds — ``se``/``pathway``/
+#: ``protein``/``route``, shipped via
+#: ``[project.entry-points."precis.handlers"]`` (``precis_se``/
+#: ``precis_pathway``/``precis_bio``/``precis_chem``), never through a
+#: plain walk of ``precis.handlers`` itself. ``all_declared_specs()`` scopes
+#: itself to core handlers *on purpose* (its own docstring, mirroring this
+#: file's docstring on ``test_handle_registry.py``'s same scoping choice),
+#: so ``_ARTIFACT_KIND_FALLBACK`` — which genuinely does need every
+#: plugin-declared artifact kind, since it's the Author facet's answer for
+#: exactly the case where the live hub (and so plugin introspection) isn't
+#: reachable — is hand-maintained *ahead* of the derivation below by
+#: this documented, known set, the same "invariant pin" style this file
+#: already uses for ``EVIDENCE_SRC_KINDS``/``_DOC_KINDS``. A fifth plugin
+#: artifact kind still needs a human to notice and add itself here.
+_PLUGIN_ARTIFACT_KINDS: frozenset[str] = frozenset(
+    {"se", "pathway", "protein", "route"}
+)
+
+
 def test_artifact_kind_fallback_matches_live_role_derivation() -> None:
     """``precis_web.item_view._ARTIFACT_KIND_FALLBACK`` (used whenever no
     hub is reachable) must equal the ``placement='artifact'`` set minus
     ``folder`` — the same exclusion ``artifact_kinds()`` applies when a
-    hub IS reachable."""
+    hub IS reachable — unioned with the known plugin artifact kinds
+    (:data:`_PLUGIN_ARTIFACT_KINDS`) that derivation can't see."""
     live = kind_facts.placement_kinds(_specs(), "artifact") - {"folder"}
-    assert frozenset(_ARTIFACT_KIND_FALLBACK) == live
+    assert frozenset(_ARTIFACT_KIND_FALLBACK) == live | _PLUGIN_ARTIFACT_KINDS
 
 
 def test_taproot_evidence_src_kinds_is_a_corpus_role_evidence_subset() -> None:

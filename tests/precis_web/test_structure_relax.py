@@ -25,3 +25,23 @@ def test_relax_rejects_unknown_fidelity(client: TestClient) -> None:
     )
     assert resp.status_code == 400
     assert "unknown fidelity" in resp.text
+
+
+def test_structure_index_redirects_to_drive_kind_structure(
+    client: TestClient,
+) -> None:
+    """``/structure`` (the list) is retired into the unified Drive surface —
+    it redirects to the ``kind=structure`` facet preset, the same target
+    ``_drive_back.html.j2``'s back-link uses. The workbench
+    (``/structure/{slug}``) is unaffected — ``test_structure_detail_404``
+    below proves the ``{slug}`` route still resolves and isn't swallowed by
+    this redirect."""
+    r = client.get("/structure", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/drive?k=structure&folder=*&sort=recency"
+
+
+def test_structure_detail_404(client: TestClient) -> None:
+    r = client.get("/structure/nope")
+    assert r.status_code == 404
+    assert "not found" in r.text.lower()

@@ -1,9 +1,10 @@
 {% extends "base.html.j2" %}
+{% from "_drive_back.html.j2" import drive_back %}
 {% block title %}{{ title }} — PCB{% endblock %}
 {% block content %}
 
 <div class="mb-3 flex items-baseline gap-3 flex-wrap">
-  <a href="/pcb" class="text-xs text-slate-400 hover:text-slate-600">← designs</a>
+  {{ drive_back('pcb', 'PCB') }}
   <h1 class="text-lg font-semibold">{{ title }}</h1>
   <span class="text-xs text-slate-400">{{ slug }}</span>
   <span class="text-xs text-slate-500">{{ n_parts }} part(s) · {{ n_nets }} net(s)</span>
