@@ -390,6 +390,70 @@ class TestLoadConfig:
             load_config_from_env()
 
 
+# ── max_turns: gr451357 ────────────────────────────────────────────
+#
+# call_claude_agent's own default (20) is a one-shot-tool-call size, not an
+# autonomous-engineer-with-tests size — fix_gripe's agent needs its own,
+# larger, configurable ceiling (mirrors plan_tick's PRECIS_PLAN_TICK_MAX_TURNS).
+
+
+class TestMaxTurnsConfig:
+    def test_default_is_120(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.delenv("PRECIS_FIX_GRIPE_MAX_TURNS", raising=False)
+        cfg = load_config_from_env()
+        assert cfg.max_turns == 120
+
+    def test_env_override_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_MAX_TURNS", "40")
+        cfg = load_config_from_env()
+        assert cfg.max_turns == 40
+
+    def test_malformed_override_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_MAX_TURNS", "not-an-int")
+        cfg = load_config_from_env()
+        assert cfg.max_turns == 120
+
+    def test_reaches_call_claude_agent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The configured value (not call_claude_agent's own default) is
+        the one that reaches the chokepoint."""
+        from precis.utils import claude_agent as ca_mod
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        captured: dict[str, Any] = {}
+
+        def _fake_call(prompt, **kw):
+            captured.update(kw)
+            return object()
+
+        monkeypatch.setattr(ca_mod, "call_claude_agent", _fake_call)
+
+        cfg = FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/precis-fix-work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-8",
+            timeout_seconds=900,
+            max_turns=77,
+        )
+        fix_gripe._spawn_claude(cfg, clone_dir, "the prompt")
+        assert captured["max_turns"] == 77
+
+
 # ── resolve_repo_for_gripe: tag-driven multi-repo ─────────────────
 
 
@@ -780,6 +844,7 @@ class TestSpawnClaudeCallShape:
         assert captured["require_container"] is True  # no ack set
         assert captured["model"] == "claude-opus-4-8"
         assert captured["timeout_s"] == 900.0
+        assert captured["max_turns"] == 120  # gr451357 default (self._cfg())
 
         env_base = captured["env_base"]
         assert "ANTHROPIC_API_KEY" in env_base
@@ -991,6 +1056,91 @@ class TestRunExceptionMapping:
         outcome = self._run_with_spawn(monkeypatch, tmp_path, _noop)
         assert outcome.status == "failed"
         assert "no commits pushed" in outcome.summary_text
+
+
+# ── run(): a resolved gripe skips clean (gr451170 fix 1) ───────────
+#
+# A stale/duplicate/re-minted job whose gripe was already resolved — by a
+# human, or by an earlier fix attempt — while this one sat queued must not
+# attempt a fix on it at all. The check runs right after the gripe is
+# resolved, before any clone/agent effort.
+
+
+class TestTerminalGripeSkip:
+    @staticmethod
+    def _cfg() -> FixGripeConfig:
+        return FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/precis-fix-work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-8",
+            timeout_seconds=1800,
+        )
+
+    @staticmethod
+    def _terminal_store(status: str) -> object:
+        class _Store:
+            def get_ref(self, **_kw: object) -> _FakeBlock:
+                return _FakeBlock("bug")  # only .text is unused here
+
+            def tags_for(self, _ref_id: int) -> list[str]:
+                return [f"STATUS:{status}"]
+
+            def list_chunks_for_ref(self, _ref_id: int) -> list[object]:
+                raise AssertionError(
+                    "run() must skip before reading the gripe's body chunks"
+                )
+
+        return _Store()
+
+    @pytest.mark.parametrize("status", ["done", "wontfix"])
+    def test_skips_before_any_repo_or_agent_work(
+        self, monkeypatch: pytest.MonkeyPatch, status: str
+    ) -> None:
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+        spawn_calls: list[object] = []
+        monkeypatch.setattr(
+            fix_gripe, "_spawn_claude", lambda *a, **kw: spawn_calls.append((a, kw))
+        )
+
+        outcome = fix_gripe.run(
+            store=self._terminal_store(status),
+            job_id=1,
+            gripe_id=42,
+            config=self._cfg(),
+        )
+
+        assert isinstance(outcome, RunOutcome)
+        assert outcome.status == "skipped"
+        assert status in outcome.summary_text
+        assert status in outcome.gripe_comment_text
+        assert outcome.branch is None
+        assert outcome.sha is None
+        assert spawn_calls == []
+
+    def test_live_status_proceeds_past_the_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A live status (``open`` here) must NOT hit the skip path — proven
+        by reaching (and erroring inside) the body-chunk read that follows
+        it, same probe idiom as the skip test above uses to prove the
+        opposite."""
+
+        class _Store:
+            chunks = property(lambda self: self)
+
+            def get_ref(self, **_kw: object) -> _FakeBlock:
+                return _FakeBlock("bug")
+
+            def tags_for(self, _ref_id: int) -> list[str]:
+                return ["STATUS:open"]
+
+            def list_chunks_for_ref(self, _ref_id: int) -> list[object]:
+                raise AssertionError("reached-past-terminal-check")
+
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+        with pytest.raises(AssertionError, match="reached-past-terminal-check"):
+            fix_gripe.run(store=_Store(), job_id=1, gripe_id=42, config=self._cfg())
 
 
 # ── trusted-side push: §H cycle a write-back design ────────────────

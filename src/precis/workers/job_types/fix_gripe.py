@@ -61,6 +61,31 @@ log = logging.getLogger(__name__)
 # ``project:`` used on todos.
 _REPO_TAG_NAMESPACE = "repo"
 
+#: gripe ``STATUS:`` values that mean "resolved, don't touch it" (mirrors
+#: ``handlers/gripe.py``'s documented status vocabulary's terminal end —
+#: ``open|triaged|ready_for_fix|in_review`` are all still live). Read by
+#: :func:`run` (gr451170 fix 1) and by ``executors.claude_inproc`` (fix 2,
+#: the failure-rollback guard) so a stale/duplicate job — or a failure
+#: racing a human/earlier-attempt resolution — can never resurrect a
+#: gripe that's already ``done``/``wontfix``.
+_TERMINAL_GRIPE_STATUSES = frozenset({"done", "wontfix"})
+
+
+def _gripe_status(store: Any, gripe_id: int) -> str | None:
+    """The gripe's current ``STATUS:`` tag value, or ``None`` if unset.
+
+    Reads via ``store.tags_for`` — the same access pattern
+    :func:`resolve_repo_for_gripe` uses for its ``repo:`` tag lookup —
+    rather than ``executors._common.current_status``, which needs a live
+    ``Connection``; ``run()`` only ever gets a plain ``store`` (tests pass
+    narrow stubs exposing ``tags_for``/``get_ref`` only).
+    """
+    for t in store.tags_for(gripe_id):
+        s = str(t)
+        if s.startswith("STATUS:"):
+            return s.split(":", 1)[1]
+    return None
+
 
 # ── Declared metadata (read by the dispatcher and the runner) ──────
 
@@ -101,6 +126,14 @@ class FixGripeConfig:
     #: from ``PRECIS_FIX_REPOS`` JSON; gripes carrying a ``repo:``
     #: tag must match a key here or the job is rejected.
     repos: dict[str, Path] = field(default_factory=dict)
+    #: Per-attempt ``--max-turns`` ceiling for the fix agent's
+    #: ``claude -p`` subprocess (gr451357). ``call_claude_agent``'s own
+    #: default (20) is sized for a one-shot tool call, not an autonomous
+    #: engineer that has to explore the repo, write a fix, and run tests
+    #: before committing — 20 turns starves it mid-investigation. Mirrors
+    #: ``plan_tick``'s ``_max_turns``/``PRECIS_PLAN_TICK_MAX_TURNS`` knob.
+    #: Override via ``PRECIS_FIX_GRIPE_MAX_TURNS``.
+    max_turns: int = 120
 
 
 def load_config_from_env() -> FixGripeConfig:
@@ -140,7 +173,33 @@ def load_config_from_env() -> FixGripeConfig:
         or resolve_model(Tier.FRONTIER),
         timeout_seconds=int(os.environ.get("PRECIS_FIX_TIMEOUT_SECONDS", "1800")),
         repos=repos,
+        max_turns=_max_turns(),
     )
+
+
+#: :attr:`FixGripeConfig.max_turns`'s default — see that field's docstring.
+_DEFAULT_MAX_TURNS: int = 120
+
+
+def _max_turns() -> int:
+    """The fix agent's ``--max-turns`` ceiling.
+
+    Reads ``PRECIS_FIX_GRIPE_MAX_TURNS`` (an int) or falls back to
+    :data:`_DEFAULT_MAX_TURNS`. A malformed value logs and falls back
+    rather than crashing the job (mirrors ``plan_tick._max_turns``).
+    """
+    raw = os.environ.get("PRECIS_FIX_GRIPE_MAX_TURNS")
+    if not raw:
+        return _DEFAULT_MAX_TURNS
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning(
+            "fix_gripe: PRECIS_FIX_GRIPE_MAX_TURNS=%r is not an int; using %d",
+            raw,
+            _DEFAULT_MAX_TURNS,
+        )
+        return _DEFAULT_MAX_TURNS
 
 
 def _parse_repos_env(raw: str | None) -> dict[str, Path]:
@@ -436,6 +495,36 @@ def run(
     ref = store.get_ref(kind="gripe", id=gripe_id)
     if ref is None:
         raise RuntimeError(f"fix_gripe: gripe id={gripe_id} not found")
+
+    # gr451170: a stale/duplicate/re-minted job whose gripe was already
+    # resolved (by a human, or by an earlier fix attempt) while this one
+    # sat queued must not attempt a fix, and — critically — must not let
+    # a subsequent failure re-open a closed gripe. Skip clean, before any
+    # clone/agent effort, and leave the gripe's status untouched.
+    gripe_status = _gripe_status(store, gripe_id)
+    if gripe_status in _TERMINAL_GRIPE_STATUSES:
+        wall = time.perf_counter() - t0
+        log.info(
+            "fix_gripe: gripe:%d is already STATUS:%s — skipping fix attempt "
+            "(gr451170)",
+            gripe_id,
+            gripe_status,
+        )
+        return RunOutcome(
+            status="skipped",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: the "
+                f"gripe is already STATUS:{gripe_status} — nothing to fix. "
+                f"Took {wall:.1f}s."
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] fix attempt skipped: gripe is "
+                f"already STATUS:{gripe_status}. No action taken."
+            ),
+            branch=None,
+            sha=None,
+            wall_seconds=wall,
+        )
 
     # Pick the repo per the gripe's ``repo:<name>`` tag (multi-repo
     # deployments) or the single-repo fallback.
@@ -813,6 +902,10 @@ def _spawn_claude(cfg: FixGripeConfig, clone_dir: Path, prompt: str) -> Any:
         envelope=envelope,
         require_container=not _unsandboxed_ack(),
         timeout_s=float(cfg.timeout_seconds),
+        # gr451357: call_claude_agent's own default (20) is a one-shot-call
+        # size, not an autonomous-engineer-with-tests size; cfg.max_turns
+        # (PRECIS_FIX_GRIPE_MAX_TURNS, default 120) replaces it.
+        max_turns=cfg.max_turns,
         # No MCP server for fix_gripe — it never reaches the precis DB.
         mcp_config=None,
     )

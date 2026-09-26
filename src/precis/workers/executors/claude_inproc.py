@@ -1271,14 +1271,65 @@ def _job_params(store: Store, job_ref_id: int) -> dict[str, Any]:
     return dict(row[0])
 
 
+def _coerce_gripe_id(raw: Any) -> int | None:
+    """``params.gripe_id`` may be an int, a numeric string, or garbage —
+    coerce leniently, never raise (a malformed param must degrade to "no
+    id found", not crash the dispatch)."""
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _reopen_gripe_unless_terminal(
+    store: Store, gripe_id: int, conn: Connection
+) -> None:
+    """Roll a gripe back to ``STATUS:open`` after a failed/skipped fix
+    attempt — UNLESS it's already terminal (``done``/``wontfix``).
+
+    gr451170: a fix attempt that fails (or is skipped) after the gripe
+    was independently resolved — by a human, or by an earlier attempt —
+    while this one was still running must not resurrect it. Read the
+    CURRENT status (not a snapshot from job start) so this always sees
+    whatever landed most recently.
+    """
+    from precis.workers.job_types.fix_gripe import _TERMINAL_GRIPE_STATUSES
+
+    if _current_status(conn, gripe_id) in _TERMINAL_GRIPE_STATUSES:
+        return
+    _set_status(store, gripe_id, "open", conn=conn)
+
+
 def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
     """fix_gripe dispatch: find the linked gripe, invoke, transition."""
+    params = _job_params(store, ref_id)
     gripe_id = _linked_gripe_id(store, ref_id)
+    if gripe_id is None:
+        # gr451352: the link is the normal way this dispatch finds its
+        # gripe, but a job minted without one (e.g. a pre-link-backfill
+        # code path) still carries the id in meta.params — the same
+        # fallback dispatch.py's own mint path (_carry_fixes_link) uses.
+        # Fall back to it, and backfill the missing link with the SAME
+        # store call _carry_fixes_link uses, so later queries (including
+        # a re-run of THIS function) see it too.
+        gripe_id = _coerce_gripe_id(params.get("gripe_id"))
+        if gripe_id is not None:
+            with store.pool.connection() as conn:
+                store.add_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=gripe_id,
+                    relation="fixes",
+                    set_by="system",
+                    conn=conn,
+                )
+                conn.commit()
     if gripe_id is None:
         _record_failure(
             store,
             ref_id,
-            "fix_gripe job has no link='gripe:<id>' rel='fixes'",
+            "fix_gripe job has no link='gripe:<id>' rel='fixes' and no params.gripe_id",
             gripe_rollback=None,
         )
         return
@@ -1289,7 +1340,7 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             store=store,
             job_id=ref_id,
             gripe_id=gripe_id,
-            params=_job_params(store, ref_id),
+            params=params,
         )
     except Exception as exc:
         wall = time.perf_counter() - t0
@@ -1303,8 +1354,9 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             )
             _set_status(store, ref_id, _FAILED, conn=conn)
             _set_meta(conn, ref_id, wall_seconds=wall)
-            # Roll gripe back to open per failure-rollback policy.
-            _set_status(store, gripe_id, "open", conn=conn)
+            # Roll gripe back to open per failure-rollback policy — unless
+            # it's already terminal (gr451170).
+            _reopen_gripe_unless_terminal(store, gripe_id, conn)
             _append_chunk(
                 store,
                 gripe_id,
@@ -1331,16 +1383,20 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
             _set_status(store, gripe_id, "in_review", conn=conn)
         elif outcome.status == "skipped":
-            # GLM/OpenRouter fleet-flip safety gate (backend=openai) — a
-            # clean no-op, not a failure: no bubble, gripe just stays open
-            # for a re-attempt once the backend reverts. Mirrors the
-            # cooperative-cancel treatment above (STATUS:cancelled, no
-            # failure bubble).
+            # GLM/OpenRouter fleet-flip safety gate (backend=openai), the
+            # container-unavailable fail-closed gate, or a gr451170
+            # already-terminal gripe — a clean no-op, not a failure: no
+            # bubble. A retryable skip leaves the gripe open for a
+            # re-attempt (mirrors the cooperative-cancel treatment above,
+            # STATUS:cancelled, no failure bubble); an already-terminal
+            # gripe is left exactly as it was.
             _set_status(store, ref_id, _CANCELLED, conn=conn)
-            _set_status(store, gripe_id, "open", conn=conn)
+            _reopen_gripe_unless_terminal(store, gripe_id, conn)
         else:
             _set_status(store, ref_id, _FAILED, conn=conn)
-            _set_status(store, gripe_id, "open", conn=conn)
+            # Roll gripe back to open per failure-rollback policy — unless
+            # it's already terminal (gr451170).
+            _reopen_gripe_unless_terminal(store, gripe_id, conn)
             # Slice-5 failure bubble: tag the parent todo if any.
             # Inside the same tx so the status + bubble commit
             # together; orphan jobs (legacy, no parent_id) just no-op.
