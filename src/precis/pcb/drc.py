@@ -1135,16 +1135,30 @@ def check_via_pad_keepout(
             if gap >= required - _EPS:
                 continue
             pad_net, pad_layer = pad.get("net"), pad.get("layer")
+            # Name the pad by its PART, not only by its net (gr451052).
+            # A net name is not a location: a net with several members has
+            # a pad per member, in different places, and reporting only the
+            # net invites reading `pad[ARR1_R3C4]` as "the R3C4 electrode"
+            # when it is the driver IC's own land that happens to sit on
+            # that electrode's channel. That misreading cost a whole
+            # investigation, which concluded the check was broken when it
+            # was right. `pads_for_ir` already puts `refdes`/`pin` on every
+            # pad, synthesized ones included, so this is free.
+            pad_refdes, pad_pin = pad.get("refdes"), pad.get("pin")
+            pad_id = (
+                f"{pad_refdes}/{pad_pin} (net {pad_net})"
+                if pad_refdes and pad_pin
+                else f"pad[{pad_net}]"
+            )
             findings.append(
                 DrcFinding(
                     rule="via_pad_keepout",
                     severity="error",
                     where=(
-                        f"via[{via_net}] @ ({vx}, {vy}) <-> "
-                        f"pad[{pad_net}] on {pad_layer}"
+                        f"via[{via_net}] @ ({vx}, {vy}) <-> {pad_id} on {pad_layer}"
                     ),
                     detail=(
-                        f"via clears pad[{pad_net}] by {gap:.3f}mm, needs "
+                        f"via clears {pad_id} by {gap:.3f}mm, needs "
                         f"{required:.3f}mm (JLC min {field}, "
                         f"{capability.process}) — a via drilled into a solder "
                         "land starves the joint regardless of net"
@@ -1155,6 +1169,8 @@ def check_via_pad_keepout(
                             "via_x": vx,
                             "via_y": vy,
                             "pad_net": pad_net,
+                            "pad_refdes": pad_refdes,
+                            "pad_pin": pad_pin,
                             "pad_layer": pad_layer,
                         },
                     ),

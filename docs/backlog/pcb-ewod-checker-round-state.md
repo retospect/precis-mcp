@@ -47,15 +47,16 @@ for those trees.
 | `3c8db49a` | `drc.check_via_pad_keepout` polygon-aware (gr346004) + `ratsnest` side-aware via bias (gr449579) + generator anchor diagnostics |
 | `5b91abe1` | rect/obround pads use their real outline in `connectivity` and `check_outline_containment` (gr450064, gr449709 — both now `STATUS:done`) |
 
-So **all four** checker fixes are on `main`, not one of three. What remains
-is that none of them is DEPLOYED.
+So **all four** checker fixes are on `main`, not one of three. THREE of
+them are also deployed: the deploy-state marker reads `4db6836b`, written
+2026-09-25 13:41:15Z. Only `5b91abe1` (rect/obround outlines) post-dates it,
+and that one is in the `0a4cf18d` ship. The "103 commits undeployed" figure
+this file used to carry is long stale.
 
-The ratsnest fix is **no longer inert**: `ir.from_graph` now decomposes each
-net with `ratsnest.mst_edges` (renamed from `_mst_edges`, made public for
-exactly this second caller), passing the `bottom` set built from
-`padplace.is_bottom_instance`. That is td450119 (a), and it also closes the
-"ships dead" half. Segment decomposition is therefore a side-aware spanning
-tree, not a star from the net's first member.
+The ratsnest fix is **no longer inert**: its `bottom` set is now built from
+`padplace.is_bottom_instance` and passed at `handlers/pcb.py`'s ratsnest view.
+Segment decomposition itself stays a STAR — see the td450119 entry below for
+why the spanning tree was reverted.
 
 ## The baseline, recorded so the re-measure stays checkable
 
@@ -89,15 +90,22 @@ not reading it off the tally.
 ## Sequence to the honest tally
 
 1. ~~Qland the two sibling worktrees.~~ Done — `3c8db49a`, `5b91abe1`.
-2. `/go` — full gate + deploy of the gated sha. A deploy is required, not just
-   a merge: 103 commits on `main` were undeployed as of 2026-09-25.
+2. Deploy. As of 2026-09-26 the cluster is on `4db6836b` and `main` is
+   `0a4cf18d`: `scripts/deploy "$(cat .ship-sha)" --pinned`. NOTE that
+   `op='route'` and `view='drc'` run `executor='job_inproc'`, i.e. on the
+   SESSION MCP's build, not the cluster's — so a re-measure through the MCP
+   does not actually wait on this step.
 3. Re-route **with a varied seed**. `op='route'` is idempotent per
    `(design, op, content-hash)`, and the hash covers netlist/placement state
    but NOT the code version, so an unchanged design silently returns the prior
    job's result even across a deploy.
-4. Re-measure DRC. Prediction, recorded so it is checkable: the 132-error tally
-   roughly halves and `connectivity` drops hardest. If it does not, the
-   root-cause story in gr449483 comment 2 is wrong.
+4. Re-measure DRC. ~~Prediction: the tally roughly halves and `connectivity`
+   drops hardest.~~ **RUN 2026-09-25 23:46:09Z, `a55ae1728cea44a9`: 132 err /
+   162 warn -> 90 err / 169 warn.** The tally fell by a third, not half, and
+   `connectivity` did NOT drop hardest (-16, against clearance's -31 errors
+   and -47 warnings). That does not refute gr449483 comment 2, because the
+   geometry moved in the same step; settling it needs the checkers re-run
+   against the OLD fabric offline.
 5. Only then decide what is actually broken.
 
 Note that `op='route'` does **not** re-run the generator — see td450118.
@@ -206,6 +214,50 @@ points at spec slice 9 (per-net clearance in the maze grid, because
 `realize._realize_maze` dilates every net by ONE max-across-classes
 clearance) rather than at more geometry. gr347037 stays parked until someone
 measures that directly.
+
+## The array now collides with its own driver chip — a LAYOUT call (gr451052)
+
+The fresh DRC run after td450118 shows nine `via_pad_keepout` errors, up from
+two. They are **real**, and the two-hour detour spent proving they were not is
+the more useful record.
+
+What they report: a plaza escape via belonging to one electrode sits
+**0.008–0.225 mm from the HV507 driver's own solder land for an unrelated
+channel**, against a 0.090 mm minimum. That is the solder-wicking risk the rule
+exists to catch. It is new, caused by td450118 growing the array (pitch
+2.0 → 2.25) over a driver footprint whose real pin positions were never checked
+against escape-via placement.
+
+**The misreading, recorded because it is a trap the whole board is shaped
+like.** The findings name the pad by NET, and on this board a net name is not a
+location: every one of the 54 escape nets has two members in two different
+places — the electrode on F.Cu and a driver channel pin on B.Cu. So
+`pad[ARR1_R3C4]` was read as "the R3C4 electrode", 10 mm away, and the findings
+were declared arithmetically impossible. All nine name **B.Cu** pads, and no
+electrode body is ever on B.Cu. Verified twice: the structured `pad_layer`
+column (9 of 9) and the live netlist (each net exactly two members, ARR1/RxCy
+plus ARR1_SINK_0/HVOUTn).
+
+**The fix that was one step away would have done real harm.** Loosening the
+check, or filtering findings whose named net sits far from the via's own net,
+would have deleted a genuine fab defect AND very likely re-opened the two
+ARR1_RESV false positives `3c8de49a` fixed — same code path.
+
+Two separable outcomes:
+
+1. **Shipped:** the finding now names `<refdes>/<pin> (net <net>)` and carries
+   `pad_refdes`/`pad_pin` in its `objects`, so this cannot be misread the same
+   way twice. `pads_for_ir` already put both on every pad, so it was free.
+   Nothing else in the checker, `_copper_item_polygon`, `pads_for_ir` or the
+   generator needed changing — a replay of the array's own generator through
+   `expand → build_ir → pads_for_ir → check` produces zero findings.
+2. **Reto's call, not made here:** move the sink, reassign channels so a via's
+   neighbours are its own net, or teach the generator's via placement to
+   respect the sink's real footprint.
+
+**Generalisable:** any check reporting by net name alone on a multi-member net
+invites this misreading, as does any other generator wiring a real catalog
+part's real pins onto per-cell net names.
 
 ## Decisions parked with Reto
 
