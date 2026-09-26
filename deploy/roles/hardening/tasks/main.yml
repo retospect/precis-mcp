@@ -111,6 +111,15 @@
       logger -t daily-update "Starting macOS software update"
       /usr/sbin/softwareupdate --install --all --agree-to-license 2>&1 | logger -t daily-update
 
+      # Tailscale is installed via Homebrew with `state: present` (never
+      # `latest` — see deploy/roles/tailscale/tasks/main.yml), so nothing else
+      # upgrades it and the fleet drifts (gr273966). Upgrade it here, as the
+      # brew-owning deploy user; `|| true` so a brew hiccup never blocks the
+      # reboot. The reboot below restarts tailscaled, picking up the new
+      # binary — no separate kickstart needed.
+      logger -t daily-update "Upgrading Tailscale via Homebrew"
+      sudo -u deploy /opt/homebrew/bin/brew upgrade tailscale 2>&1 | logger -t daily-update || true
+
       # Gracefully drain Postgres before the reboot. Otherwise `shutdown`
       # SIGTERMs the postmaster into a "smart" shutdown that blocks on
       # pgbouncer's held connections; it gets SIGKILLed mid-shutdown and leaves

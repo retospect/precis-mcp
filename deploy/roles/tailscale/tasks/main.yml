@@ -3,6 +3,10 @@
 
 - name: Install Tailscale (macOS)
   when: os_family == "darwin"
+  # state: present, not latest — `latest` would upgrade+restart tailscaled
+  # mid-deploy, interrupting the live web funnel. Upgrades instead ride the
+  # nightly daily-update-reboot.sh script (deploy/roles/hardening), whose
+  # subsequent reboot restarts tailscaled on its own schedule (gr273966).
   community.general.homebrew:
     name: tailscale
     state: present
