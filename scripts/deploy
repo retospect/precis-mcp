@@ -792,10 +792,14 @@ else
     say "canary deploy: verifying ${CANARY}'s heartbeat (host_heartbeat.host='${DB_HOST}') freshens (timeout ${CANARY_TIMEOUT_S}s)"
     _elapsed=0
     _green=""
+    [[ -x "${REPO_ROOT}/scripts/prod-psql" ]] \
+        || die "canary verify: could not run ${REPO_ROOT}/scripts/prod-psql (missing or not executable) — treated as red (fail closed).
+mixed state: ${CANARY} may be on new code (${_target_sha}), the rest of the fleet is untouched (still on old code).
+${_rollback_hint}"
     while (( _elapsed < CANARY_TIMEOUT_S )); do
-        _ts_epoch="$(PRECIS_PROD_PSQL_OPTS="-At" scripts/prod-psql \
+        _ts_epoch="$(PRECIS_PROD_PSQL_OPTS="-At" "${REPO_ROOT}/scripts/prod-psql" \
             "SELECT extract(epoch from ts)::bigint FROM host_heartbeat WHERE host = '${DB_HOST}';")" \
-            || die "canary verify: scripts/prod-psql failed reaching prod — treated as red (fail closed).
+            || die "canary verify: scripts/prod-psql query failed reaching prod — treated as red (fail closed).
 mixed state: ${CANARY} may be on new code (${_target_sha}), the rest of the fleet is untouched (still on old code).
 ${_rollback_hint}"
         _now="$(date +%s)"
