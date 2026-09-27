@@ -6,11 +6,66 @@ prio: normal
 
 # 27 papers to fetch by hand
 
-**Status 2026-09-27:** Reto retrieved 26 of the 27 by hand into the ingest
-inbox; they should land within the hour. `448244` (Boys–Bernardi 1970, Mol
-Phys) is **not available** — pre-digital, no scan obtainable. That one stays
-a permanent stub, so its citing chunk keeps a legacy `[pa448244]` cite and
-must not be counted as pending. Expected end state: 41 of 42 sources fetched.
+**Status 2026-09-27:** Reto retrieved all 26 obtainable papers by hand into
+the ingest inbox and they landed — **41 of 42 sources fetched**. `448244`
+(Boys–Bernardi 1970, Mol Phys) is **not available** — pre-digital, no scan
+obtainable. It stays a permanent stub, so its citing chunk keeps a legacy
+`[pa448244]` cite and must not be counted as pending.
+
+## Conversion result (jobs 453381 + 453483)
+
+Two `taproot_backfill` passes ran on `dft-accuracy-hydrogen-bonding`. Pass 1
+regrounded `[pa]`→`[pc]` (64 scanned, 27 converted, 0 failed); pass 2
+promoted to `[fi]` hubs (64 scanned, 25 converted, 0 failed). Final cite
+state over the draft's 64 body chunks — chunks can carry more than one
+marker kind, so these do not sum to 64:
+
+| marker | chunks |
+|---|---|
+| `[fi]` finding hubs | 24 |
+| `[pc]` chunk-level grounding | 16 |
+| `[pa]` legacy whole-paper | 14 |
+
+Pass 2 outcome tally (82 cite-level outcomes):
+
+| outcome | n | meaning |
+|---|---|---|
+| `new` | 43 | hub minted and cited |
+| `reground` | 3 | matched an existing hub |
+| `no-claim` | 17 | the draft's own passage yields no extractable claim |
+| `reground-nomatch` | 12 | **the cited paper contains no supporting passage** |
+| `stub-fetch-first` | 7 | supporter has no body text yet |
+
+### The 12 `reground-nomatch` are a provenance finding, not a bug
+
+`reground-nomatch` (`taproot/backfill.py` `_plan_reground`) means the locate
+step read the fetched paper and found nothing supporting the claim the draft
+attributes to it. It fails safe: no rewrite, the prose keeps its `[pa]`, so
+the weak cite stays visibly legacy rather than being laundered into a hub.
+
+That is the expected signature of this draft's provenance. These citations
+were minted by a `DREAM:acquire` pass on 2026-09-24 that also fabricated
+author bylines (Bader credited on three papers published after his 2012
+death). A fabricated byline and an unsupported claim come from the same
+defect: the pass invented a plausible-looking citation. So 12 cites whose
+papers do not support them is a floor on the fabrication, not noise —
+**each of the 12 needs a human read before the draft is trustworthy.**
+The 17 `no-claim` are a different and more benign thing: prose that states
+something too general to host a falsifiable finding.
+
+### Remaining work
+
+1. **Read the 12 `reground-nomatch` cites** — job `453483`'s `job_event`
+   chunks name the draft chunk ids. Either the claim needs a different
+   source or the claim itself is wrong.
+2. **A third pass** once the markup backlog drains. 5 of the 41 fetched
+   papers (`448202`, `448204`, `448212`, `448230`, `448231` — the water/DFT
+   cluster) have `fetch_ok` but **zero body chunks**, and no event records a
+   failure. They are part of a **914-ref cluster-wide** fetched-but-unchunked
+   backlog. Until they chunk, their cite runs return `stub-fetch-first`.
+   A fresh job re-scans everything (`done_chunk_ids` lives on the job ref,
+   not the draft), so the third pass is safe and cheap.
+3. `448244`'s chunk keeps `[pa]` permanently.
 
 Sources cited by draft `dr448178` ("DFT Accuracy for Hydrogen Bonding") that
 the OA fetch pass cannot get. All 27 have a DOI and are already `prio=1`;
