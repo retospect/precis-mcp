@@ -1,0 +1,339 @@
+{
+  "band_active": {
+    "headline": "Turns over, active: TOF = 5 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "band_fast": {
+    "headline": "Turns over, fast: TOF = 1e+04 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "band_inactive": {
+    "headline": "Turns over, essentially inactive: TOF = 1e-07 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "band_slow_but_finite": {
+    "headline": "Turns over, slow but finite: TOF = 0.0001 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "bracket_agrees_is_not_a_gate": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "bracket_disagrees": {
+    "headline": "Not determined: 1 step with no computed barrier changes the answer.",
+    "lines": [
+      "The TOF lies between 0.00066 and 30.5 /site/s (slow limit = the step never happens, fast limit = its optimistic bound). Missing: NO@N->NO@O. Everything below is provisional until those barriers are computed."
+    ],
+    "caveats": [],
+    "tone": "dead"
+  },
+  "bracket_empty_load_bearing": {
+    "headline": "Not determined: 2 steps with no computed barrier change the answer.",
+    "lines": [
+      "The TOF lies between 0.00066 and 30.5 /site/s (slow limit = the step never happens, fast limit = its optimistic bound). Missing: NO@N->NO@O, NO@O->N@O. Everything below is provisional until those barriers are computed."
+    ],
+    "caveats": [],
+    "tone": "dead"
+  },
+  "compound": {
+    "headline": "Runs backwards: net NH3 consumption at 0.002 /site/s, so the stated product pressure is high enough to drive the cycle in reverse.",
+    "lines": [
+      "Product-inhibited: the surface sits at θ(NH3@fcc) = 0.880, so NH3 is not leaving it.",
+      "Not fully selective: side product N2 at 1.1e-05 /site/s also leaves the surface -- 90% of net gas production is NH3.",
+      "Rate control sits on NO*->NOH* (X_RC = +0.77).",
+      "Strongest thermodynamic brake: NO@fcc (X_TRC = -0.61) -- stabilising it further slows the cycle."
+    ],
+    "caveats": [
+      "the network has 2 absorbing components, so these coverages and the TOF are the ODE at t = 1e+06 s from one starting coverage, not a unique steady state",
+      "p(NH3) was never stated, so the 1 bar reference is doing the work in its gas-exchange rates",
+      "1 step's aggregated ΔE disagrees with its endpoint energies by more than 0.05 eV"
+    ],
+    "tone": "warn"
+  },
+  "coverage_no_dominant": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "No single intermediate dominates (largest is NO@fcc at θ = 0.300)."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "coverage_null_is_absent": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "The surface is saturated in H@fcc (θ = 0.970) -- that is the most abundant reaction intermediate, and nothing else holds appreciable coverage."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "coverage_product_inhibited": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Product-inhibited: the surface sits at θ(NH3@fcc) = 0.920, so NH3 is not leaving it."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "coverage_saturated_other": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "The surface is saturated in NO@fcc (θ = 0.710) -- that is the most abundant reaction intermediate, and nothing else holds appreciable coverage."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "drc_shared": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Rate control is shared, no step above 0.5: a->b (+0.30), c->d (+0.25), e->f (+0.20)."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "drc_single_step": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Rate control sits on NO*->NOH* (X_RC = +0.80)."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "drc_unusable": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Rate control is UNUSABLE here: the largest X_RC is H2NO+H->NH2OH at -74.67, far outside the physical 0-1 range, which means the linearisation the sensitivity is taken about is not a well-conditioned steady state."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_active": {
+    "headline": "Turns over, fast: TOF = 110 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_brake": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Strongest thermodynamic brake: NO@fcc (X_TRC = -0.51) -- stabilising it further slows the cycle."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_dominant_coverage": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "The surface is saturated in NO@fcc (θ = 0.510) -- that is the most abundant reaction intermediate, and nothing else holds appreciable coverage."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_inactive": {
+    "headline": "Turns over, slow but finite: TOF = 1.1e-06 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_noise": {
+    "headline": "Turns over, essentially inactive: TOF = 1.1e-08 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_single_drc": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Rate control sits on a->b (X_RC = +0.51)."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_slow": {
+    "headline": "Turns over, active: TOF = 0.011 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_over_unusable_drc": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Rate control is UNUSABLE here: the largest X_RC is a->b at +2.10, far outside the physical 0-1 range, which means the linearisation the sensitivity is taken about is not a well-conditioned steady state."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_under_active": {
+    "headline": "Turns over, active: TOF = 90 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_under_brake": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_under_dominant_coverage": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "The surface is saturated in * (θ = 0.510) -- that is the most abundant reaction intermediate, and nothing else holds appreciable coverage."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_under_inactive": {
+    "headline": "Turns over, essentially inactive: TOF = 9e-07 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_under_noise": {
+    "headline": "Does not turn over: TOF = 9e-09 /site/s, indistinguishable from zero.",
+    "lines": [],
+    "caveats": [],
+    "tone": "warn"
+  },
+  "edge_under_single_drc": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Rate control is shared, no step above 0.5: a->b (+0.49), c->d (+0.20)."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_under_slow": {
+    "headline": "Turns over, slow but finite: TOF = 0.009 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "edge_under_unusable_drc": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Rate control sits on a->b (X_RC = +1.90)."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "endpoint_mismatch_many": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [
+      "2 steps' aggregated ΔE disagrees with its endpoint energies by more than 0.05 eV"
+    ],
+    "tone": "ok"
+  },
+  "endpoint_mismatch_one": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [
+      "1 step's aggregated ΔE disagrees with its endpoint energies by more than 0.05 eV"
+    ],
+    "tone": "ok"
+  },
+  "nullity_gt_one": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [
+      "the network has 2 absorbing components, so these coverages and the TOF are the ODE at t = 1e+06 s from one starting coverage, not a unique steady state"
+    ],
+    "tone": "ok"
+  },
+  "nullity_null_t_end": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [
+      "the network has 3 absorbing components, so these coverages and the TOF are the ODE at t = nan s from one starting coverage, not a unique steady state"
+    ],
+    "tone": "ok"
+  },
+  "pressure_defaulted_new_wording": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [
+      "p(NH3) was never stated, so the 1 bar reference is doing the work in its gas-exchange rates"
+    ],
+    "tone": "ok"
+  },
+  "pressure_defaulted_pre_0_18_wording": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [
+      "p(NH3) was never stated, so the 1 bar reference is doing the work in its gas-exchange rates"
+    ],
+    "tone": "ok"
+  },
+  "pressure_defaulted_two_gases": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [
+      "p(NH3, N2) was never stated, so the 1 bar reference is doing the work in those gas-exchange rates"
+    ],
+    "tone": "ok"
+  },
+  "pressure_defaulted_unparsed_wording": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "side_products_many": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Not fully selective: side products N2 at 1.1e-05 /site/s, N2O at 4e-06 /site/s also leave the surface -- 94% of net gas production is NH3."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "side_products_one": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Not fully selective: side product N2 at 1.1e-05 /site/s also leaves the surface."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  },
+  "tof_below_noise": {
+    "headline": "Does not turn over: TOF = 1e-12 /site/s, indistinguishable from zero.",
+    "lines": [],
+    "caveats": [],
+    "tone": "warn"
+  },
+  "tof_missing": {
+    "headline": "No turnover number: the solve did not return a TOF.",
+    "lines": [],
+    "caveats": [],
+    "tone": "warn"
+  },
+  "tof_negative": {
+    "headline": "Runs backwards: net NH3 consumption at 0.0044 /site/s, so the stated product pressure is high enough to drive the cycle in reverse.",
+    "lines": [],
+    "caveats": [],
+    "tone": "warn"
+  },
+  "tof_nonfinite": {
+    "headline": "No turnover number: the solve did not return a TOF.",
+    "lines": [],
+    "caveats": [],
+    "tone": "warn"
+  },
+  "trc_brake": {
+    "headline": "Turns over, slow but finite: TOF = 0.00032 /site/s.",
+    "lines": [
+      "Strongest thermodynamic brake: NO@fcc (X_TRC = -0.90) -- stabilising it further slows the cycle."
+    ],
+    "caveats": [],
+    "tone": "ok"
+  }
+}
