@@ -38,6 +38,7 @@ from typing import Any
 import numpy as np
 
 import hexfold
+from hexfold.build import Port as HxPort
 from hexfold.build import build
 from hexfold.canon import canonical_json
 from hexfold.check import check
@@ -61,6 +62,29 @@ _SUPPORTED_FIDELITIES = ("check", "stick")
 #: Physics tiers named in spec §15.2 but not wired into this generator —
 #: precis's relaxation ladder runs those as background jobs, not here.
 _UNWIRED_FIDELITIES = ("geo", "emt", "ml")
+
+
+#: The lattice tag every hexfold port carries (GeneratedPort.lattice): the
+#: sp2 hexagonal lattice; rims are its port type.
+_LATTICE = "sp2-hex"
+
+
+def _rim_type_str(port: HxPort) -> str | None:
+    """``"z12"`` / ``"a10"`` from ``Port.rim_type`` (SPEC 10), ``None`` for
+    a mixed rim."""
+    rt = port.rim_type
+    return None if rt is None else f"{rt[0]}{rt[1]}"
+
+
+def _rim_payload(port: HxPort) -> dict[str, Any]:
+    """The hexfold instance of the typed port payload (GeneratedPort
+    docstring): one rim, its edge-word, dangling count and rim type."""
+    return {
+        "kind": "rim",
+        "word": port.word,
+        "N": port.size,
+        "type": _rim_type_str(port),
+    }
 
 
 def _se_port_name(hx_name: str) -> str:
@@ -200,6 +224,8 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
                 roles=["covalent"],
                 expected_element=elements[atom_index],
                 atoms=ring,
+                lattice=_LATTICE,
+                payload=_rim_payload(port),
             )
         )
 
@@ -217,6 +243,8 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
                 "atoms": list(p.dangling) if p.dangling else list(p.atoms),
                 "word": p.word,
                 "B": p.b,
+                "lattice": _LATTICE,
+                "type": _rim_type_str(p),
             }
             for _name, p in net.ports
         },

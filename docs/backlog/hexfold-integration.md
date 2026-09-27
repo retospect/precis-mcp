@@ -138,3 +138,83 @@ README becomes a pointer here.
   hexfold's own suite).
 - Follow-on (not this item): `cnt`/`fullerene`/`cone` generators collapse
   into hexfold specs so there is one lattice implementation.
+
+## Ruling 2026-09-27 — target and order after `opening(port=)`
+
+Reto: the target is "a generic framework to build arbitrary shapes …
+Drexler's/Diamond Age nano machines", not any one box. Framing recorded
+in `diamondoid-pattern-language.md`: se is the generic part system, each
+shape language is a generator behind a **port type**; hexfold is the sp²
+composed-from-parts language, `precis_surface` the freeform sp² one,
+diamondoid (sp³ volume) the missing third.
+
+Order for the assembly-as-conversation layer, all §28 items (this is tick
+state against §28 and §25, not a second roadmap). **Revised 2026-09-27
+(evening)** after the hierarchical-resolved-block discussion recorded in
+`diamondoid-pattern-language.md`:
+
+0. **Seam decay measurement** — relax a hexfold piece free and fused
+   (`precis.structure.georelax.relax_graph` over `stick` seeds), per-atom
+   displacement against graph distance from the rim, read off the decay
+   length per rim type (zigzag, armchair). Sets the seam radius and
+   validates the frozen-interior scheme everything below assumes. Numbers
+   land in `diamondoid-pattern-language.md`; a test pins the decay.
+1. Declare the **rim standard** in the spec (§10/§7) — two rim types,
+   multiples of 6, the 30° grain-boundary adapter; proposal in
+   `hexfold-seam-type-catalogue.md`. Same slice: **reserve the port
+   payload** — `GeneratedPort` grows `lattice` + a typed `payload` slot,
+   hexfold fills `{kind: rim, word, N, type}`; the sp³ facet is the second
+   instance later. First, so `options` searches a typed space.
+2. `options(handle, wish)` (§25.3, "the one genuinely new verb") over the
+   existing `fit.alternatives` (`build.py::_fit_alternatives_finding`,
+   built for `len` and `k` only). Wish = target + band; the band is the
+   inner/outer tolerance shell.
+3. `fit` on domain sets + chain propagation from pinned ends (§12.1 0.2,
+   §22.3) and `sheet(W,H)` Å-extent snap *reporting*, wired to se's L2
+   measures / `stackup` for referential tolerance. Confirmed unbuilt
+   2026-09-27: no `domain`/`propagat` in `build.py`.
+4. §28 step 4 — symbolic chain solver with stub geometry backend.
+5. **Block joiner over resolved blocks** (se side; two blocks + port pair +
+   seam type → seam motif, re-relax the two seam radii, `seam.leak`
+   check, composite). Until here hexfold whole-spec composition is the
+   joiner.
+6. `catalogue` view + `hexfold_cache` (§26), keyed by environment type
+   (bulk cell, edge motif), not block instance. Confirmed unbuilt.
+7. Seam vertices (step 7) — pillbox and rectangular box are both examples,
+   not the target; the corner-type quantisation is in
+   `hexfold-sp3-seam.md`.
+
+Not a search per part: §22.3 stands — one `options` call per wish, the
+budget/placement split (§22.1) is the guard against spending the pentagon
+budget greedily. Skill: extend `precis-hexfold-help`, no second skill.
+Diamondoid scope: **ruled in the framework, out of the next build slices**
+(2026-09-27); only the port payload (step 1) is reserved now. The sp³
+interior fill is trivial and deferrable — see the diamondoid item.
+
+**Steps 0 and 1 built (2026-09-27).** Step 0: seam decay measured and
+pinned (`tests/test_hexfold_seam_decay.py`; numbers under "Seam decay,
+measured" in the diamondoid item — 5 shells zigzag, 1 shell armchair on
+the geo rung; `seam.leak` must be defined on bond/angle changes, not
+displacement). Step 1: `Port.rim_type`, `rim.nonstandard` INFO, spec §10
+rim standard, `GeneratedPort.lattice`/`payload` filled by `build_hexfold`.
+
+**Step 2 built (2026-09-27, hexfold side).** `hexfold.options.options`
++ CLI `hexfold options`; `tests/hexfold/test_options.py`. Not built: the
+se handler ("new handler" in §25.3) — a thin op over this function once
+step 5 says what a handle is on a resolved block; collar `{Rxk @fit}` and
+`sheet(W,H)` handles wait for step 3's domain fits.
+
+**Residual from step 0 — fused seed placement.** `_place_seeds` filed
+every fuse/bond transform under the destination instance and read it back
+as the source's, so each neighbour got the transform computed for the other
+side (mirrored behind the far rim; 8–78 Å crossing bonds in every
+multi-instance example; `stick` then telescoped the halves). Fixed for
+fuses, with the rim-frame normal now signed against the owning instance's
+centroid (`tests/hexfold/test_place_seeds.py`). Still seeding long crossing
+bonds after the fix, each a separate placement path and each worth its own
+look before the block joiner (step 5) relies on seeds: bud `@` links
+(`nanobud_87/96.hx`, `_bond_transform`), k ≥ 3 seams (`sheet_pill_bump.hx`,
+`flanged_doughnut.hx`), fuses into `cap` hole rims (`valve_shell.hx`,
+17.9 Å), and armchair fuses spaced one σ apart along the normal when their
+dangling bonds are 30° off-axis (crossing bond σ/cos 30°, harmless — stick
+closes it). `tube_ring_closure.hx` is a genuine loop and cannot be rigid.

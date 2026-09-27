@@ -3,7 +3,8 @@
 Never raises for structural problems.  Phase-1 codes:
 euler.chi, euler.residual, euler.closed_unreachable, internal.euler,
 valence.over, valence.under, cut.overlap, ring.size.unusual,
-port.symmetry, and the geometry tier (geom.*) when ``geometry=True``.
+port.symmetry, rim.nonstandard (INFO, SPEC 10 rim standard), and the
+geometry tier (geom.*) when ``geometry=True``.
 Phase-2 codes: seam.rings, annot.sublattice, fit.unsolvable, fit.alternatives,
 hole.missing, port.unknown, frag.unrealized, annot.host_sublattices;
 an sp3 atom is allowed 4 bonds before valence.over fires.
@@ -70,6 +71,29 @@ def _findings_from_net(net: Net) -> list[Finding]:
                     where=a.instance,
                 )
             )
+    # rim standard (SPEC 10): INFO, never WARN -- chiral ends, cap rims
+    # and hole rims are legal bespoke interfaces; this only says which
+    # ports are outside the two-type, multiples-of-6 library series.
+    for name, p in net.ports:
+        rt = p.rim_type
+        if rt is None:
+            reason = "mixed rim (neither pure zigzag nor pure armchair)"
+        elif rt[0] == "z" and rt[1] % 6 != 0:
+            reason = f"zigzag N={rt[1]} is not a multiple of 6"
+        else:
+            continue
+        out.append(
+            Finding(
+                "rim.nonstandard",
+                Severity.INFO,
+                f"port {name}: {reason}",
+                where=name,
+                data=(
+                    ("type", None if rt is None else f"{rt[0]}{rt[1]}"),
+                    ("N", p.size),
+                ),
+            )
+        )
     # ring census + counting law
     pn: dict[int, int] = {}
     # k>=3 seam faces belong to no sheet and to no census (SPEC 6.3); their

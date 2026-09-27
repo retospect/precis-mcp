@@ -83,6 +83,27 @@ ERROR (a `bond`/`terminate` names an atom or port that no longer exists)
 `geom.summary`/`geom.bond.*`/`geom.angle.dev`/`geom.join.*` INFO/WARN ·
 `annot.sublattice`/`annot.host_sublattices` INFO.
 
+## Rim types (spec §10)
+
+A rim's type is `(kind, N)` from its dangling pattern: `tube(n,0)` ends
+are zigzag `z<n>`, `tube(n,n)` ends armchair `a<2n>`, chiral ends and
+cap/hole rims are mixed. Fuse needs equal `N` only; zigzag onto
+armchair at equal `N` is the 30° grain-boundary adapter (5-7 seam
+rings). Prefer zigzag `N` in multiples of 6 so caps, washers and lids
+interoperate; `rim.nonstandard` INFO marks the rest. se ports carry it
+as `lattice="sp2-hex"`, `payload={kind: rim, word, N, type}`.
+
+## Options (spec §25.3)
+
+`hexfold.options.options(spec, handle, wish)` / `hexfold options FILE
+HANDLE`: state a wish at one fit site and get the realisable values
+near it. Handles `t.len` (periods; `target_A`/`band_A` in Å) and
+`a.out.k` (phase steps, modular). Wish = target + band, or nothing for
+the plain fit family. Returns `options` (clean, ranked by distance then
+seam ring, residual, index), `rejected` (in band but does not build,
+with the ERROR codes) and `applied` (what a plain build picks). One call
+per wish; it does not search across sites.
+
 ## Rules
 
 - Counting is a diagnostic, not a gate; `geom.*` describes the stick

@@ -79,6 +79,39 @@ class Port:
     def size(self) -> int:
         return len(self.dangling)
 
+    @property
+    def rim_type(self) -> tuple[str, int] | None:
+        """SPEC 10 rim type: ``("z", N)`` for a pure zigzag rim, ``("a", N)``
+        for a pure armchair rim, ``None`` for anything mixed.
+
+        Read off the rim walk's dangling pattern, not the edge-word: the
+        word records turn magnitudes (every lattice turn is 60 degrees, so
+        both pure rims are ``z^n``), while the type is the *arrangement* of
+        the degree-2 atoms -- alternating with degree-3 atoms (``SD``
+        period, dangling bonds at 90 degrees to the rim line) for zigzag,
+        in bonded pairs (``SSDD`` period, 60 degrees) for armchair.  N is
+        the dangling count; two rims fuse iff N matches, and a pure-z onto
+        pure-a fuse of equal N is the 30-degree grain-boundary adapter
+        (its seam rings are the 5-7 line, reported by ``seam.rings``).
+        Chiral tube ends, cap rims and hole rims are mixed.  Derived, never
+        serialised into the authored sections (the content hash is
+        unchanged); the se generator mirrors it into its port payload.
+        """
+        n = len(self.atoms)
+        nd = len(self.dangling)
+        if n == 0 or nd == 0 or n != 2 * nd:
+            return None
+        dang = set(self.dangling)
+        pat = [a in dang for a in self.atoms]
+        for r in range(2):
+            if all(pat[i] == ((i + r) % 2 == 1) for i in range(n)):
+                return ("z", nd)
+        if n % 4 == 0:
+            for r in range(4):
+                if all(pat[i] == ((i + r) % 4 >= 2) for i in range(n)):
+                    return ("a", nd)
+        return None
+
 
 @dataclass(frozen=True)
 class SeamRecord:
@@ -2236,17 +2269,24 @@ def _atom_ref_ord(
         return None, None
 
 
-def _frame(pos: np.ndarray, dang: tuple[int, ...]) -> tuple[np.ndarray, np.ndarray]:
+def _frame(
+    pos: np.ndarray, dang: tuple[int, ...], inst_c: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Rim frame from dangling-atom seed positions: centroid + normal.
 
     The normal is the least-variance axis of the dangling ring, signed to
-    point away from the instance centroid (outward through the opening).
+    point away from the instance centroid ``inst_c`` (outward through the
+    opening).  ``inst_c`` must be the owning *instance's* centroid: the
+    whole-net mean is a different point once several instances share the
+    array, and for a hole rim near a sheet's centre it made the sign a
+    coin toss.
     """
     pts = pos[list(dang)]
     c = pts.mean(axis=0)
     cov = (pts - c).T @ (pts - c)
     n = np.linalg.eigh(cov)[1][:, 0]
-    inst_c = pos.mean(axis=0)
+    if inst_c is None:
+        inst_c = pos.mean(axis=0)
     if float(n @ (c - inst_c)) < 0:
         n = -n
     return c, n
@@ -2299,15 +2339,19 @@ def _fuse_transform(
     q_dang: tuple[int, ...],
     k: int,
     sigma: float,
+    inst_c_p: np.ndarray | None = None,
+    inst_c_q: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """(R, t) mapping instance Q's seed so its port faces P's fused port.
 
     Centroids coincide offset by sigma along P's rim normal; normals are
     antiparallel; the residual twist about the normal pairs
-    ``P.dangling[i]`` with ``Q.dangling[(k-i) mod N]``.
+    ``P.dangling[i]`` with ``Q.dangling[(k-i) mod N]``.  ``inst_c_p`` /
+    ``inst_c_q`` are the two instances' own seed centroids (rim-normal
+    sign, see :func:`_frame`).
     """
-    c_p, n_p = _frame(pos, p_dang)
-    c_q, n_q = _frame(pos, q_dang)
+    c_p, n_p = _frame(pos, p_dang, inst_c_p)
+    c_q, n_q = _frame(pos, q_dang, inst_c_q)
     r0 = _rot_min(n_q, -n_p)
     n = len(p_dang)
     # best twist about n_p: circular mean of the angular offsets
@@ -2379,18 +2423,27 @@ def _place_seeds(
     for a in net.atoms:
         inst_ords.setdefault(a.instance, []).append(a.ord)
 
+    inst_cent = {k_: pos[v].mean(axis=0) for k_, v in inst_ords.items()}
+
     edges: dict[str, list[tuple[str, np.ndarray, np.ndarray]]] = {}
 
     def add(inst_a: str, inst_b: str, r: np.ndarray, t: np.ndarray) -> None:
-        edges.setdefault(inst_b, []).append((inst_a, r, t))
+        # (r, t) maps inst_b's local seed so its port faces inst_a's port:
+        # file it under inst_a, the instance whose placement it hangs off.
+        # (Keying by inst_b handed every neighbour the transform computed
+        # for the *other* side, mirroring it behind the far rim -- every
+        # fused example seeded with 8-78 A crossing bonds and stick's
+        # spring stage then telescoped the halves into each other.)
+        edges.setdefault(inst_a, []).append((inst_b, r, t))
 
     for _pn, p_dang, _qn, q_dang, k in fuse_frames:
         ia, ib = inst_of[p_dang[0]], inst_of[q_dang[0]]
         if ia == ib:
             continue
-        r, t = _fuse_transform(pos, p_dang, q_dang, k, sigma)
+        c_a, c_b = inst_cent[ia], inst_cent[ib]
+        r, t = _fuse_transform(pos, p_dang, q_dang, k, sigma, c_a, c_b)
         add(ia, ib, r, t)
-        r2, t2 = _fuse_transform(pos, q_dang, p_dang, k, sigma)
+        r2, t2 = _fuse_transform(pos, q_dang, p_dang, k, sigma, c_b, c_a)
         add(ib, ia, r2, t2)
     for ai, bi in bond_links:
         ia, ib = inst_of[ai], inst_of[bi]
@@ -2412,7 +2465,9 @@ def _place_seeds(
         for nxt, r_e, t_e in sorted(edges.get(cur, []), key=lambda x: x[0]):
             if nxt in placed:
                 continue
-            placed[nxt] = (r_e @ r_c, r_e @ t_c + t_e)
+            # global(nxt) = place(cur) o edge: the edge transform is in the
+            # pre-placement local frames of both instances.
+            placed[nxt] = (r_c @ r_e, r_c @ t_e + t_c)
             queue.append(nxt)
     if len(placed) == len(inst_ords):
         pass

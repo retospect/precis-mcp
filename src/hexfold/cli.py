@@ -14,6 +14,7 @@ from . import __version__
 from .build import build
 from .canon import canonical_json
 from .check import check
+from .options import Wish, options
 from .report import ParseError, Profile, Severity
 from .stick import stick
 
@@ -58,6 +59,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file")
     p.add_argument("-o", "--out")
     p.add_argument("--no-h", action="store_true", help="hide termination atoms")
+
+    p = sub.add_parser(
+        "options",
+        help="realisable values near a wish at one fit site (SPEC 25.3)",
+    )
+    p.add_argument("file")
+    p.add_argument("handle", help="'<inst>.len' or '<src port>.k'")
+    p.add_argument("--target", type=float, help="periods (len) or steps (k)")
+    p.add_argument("--band", type=float, help="half-width, same unit as --target")
+    p.add_argument("--target-A", dest="target_a", type=float, help="len only")
+    p.add_argument("--band-A", dest="band_a", type=float, help="len only")
+    p.add_argument("--json", action="store_true")
 
     args = ap.parse_args(argv)
     try:
@@ -115,6 +128,35 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.out).write_text(out, encoding="utf-8")
             else:
                 sys.stdout.write(out)
+            return 0
+        if args.cmd == "options":
+            wish = Wish(
+                target=args.target,
+                band=args.band,
+                target_A=args.target_a,
+                band_A=args.band_a,
+            )
+            try:
+                res = options(text, args.handle, wish)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            if args.json:
+                print(json.dumps(res.to_dict(), sort_keys=True))
+                return 0
+            unit = res.unit
+            print(
+                f"{res.handle}: applied {res.applied} {unit}; "
+                f"{len(res.options)} option(s), {len(res.rejected)} rejected"
+            )
+            for o in res.options:
+                extra = f" = {o.value_A:.2f} A" if o.value_A is not None else ""
+                print(
+                    f"  {o.value:>4}{extra}  distance {o.distance:g}  "
+                    f"seam {o.cost[0]:g} residual {o.cost[1]:g}"
+                )
+            for o in res.rejected:
+                print(f"  {o.value:>4}  rejected: {', '.join(o.errors)}")
             return 0
         if args.cmd == "view":
             try:

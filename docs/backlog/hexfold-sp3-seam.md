@@ -74,3 +74,33 @@ model, per-sheet χ, and the 0.2 exclusions), §11.3 (`seam … atoms=sp2`;
   object they correspond to.
 - One seam-vertex example (three seam lines meeting) builds, or the spec
   records precisely why it cannot on the hex lattice.
+
+## Seam vertices: the box corner cannot be a regular 90° corner (2026-09-27)
+
+The rectangular box is the seam-vertex test piece (6 sheets, 12 creases,
+8 corners; creases are k=2, K=0, geometry not topology — the bend is the
+smooth layer's). Before designing the vertex, the counting law fixes what
+a corner may carry, and the answer is not the obvious one:
+
+- Closed trivalent net, genus 0: `P − H = 6χ = 12`. A cube has 8 corners
+  and `12/8` is not an integer, so **eight identical corners with
+  defect-free edges do not exist**; the residual check would correctly
+  refuse it.
+- Two symmetric ways out, both shape changes: (a) 12 pentagons, corners
+  alternating 2 and 1 in a tetrahedral pattern, no heptagons — but a
+  2-pentagon corner (2π/3) is sharper than 90° and a 1-pentagon corner
+  (π/3) flatter, so the object is a tetrahedrally distorted cube;
+  (b) 3 pentagons per corner (24) plus exactly 1 heptagon per edge (12),
+  `24 − 12 = 12`, full cubic symmetry — but every edge then carries a
+  heptagon, so the edges are seams with charge, not creases.
+- General statement: a corner's angular defect is quantised in π/3, so
+  **shape is quantised, not only dimensions** — a 90° corner is not on the
+  menu, only multiples of 60°. The feasibility conversation (spec §25.2)
+  should return the nearest realizable corner type the way it returns the
+  nearest realizable radius.
+
+Consequence for this item: the seam-vertex motif has to be designed per
+corner *type* (1, 2 or 3 pentagons meeting three creases, or a 3-pentagon
+vertex meeting three charged edges), not as one "box corner". Pillbox and
+rectangular box both enter the example set once the vertex exists (Reto,
+2026-09-27: "just examples, fine to add them to the set").

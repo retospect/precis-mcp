@@ -138,3 +138,34 @@ seam vertices are), §11.3 (`seam.type`, the strengthened edge-word rule,
 the k ≥ 4 semantics), §29 (retire the fixed-α premise; Q6 unchanged).
 Then `text.py` (selector), `build.py` (motifs), `check.py` (refusal
 codes). No precis-side change.
+
+## Rim standard (proposed 2026-09-27, for the spec's §10/§7)
+
+Reto, 2026-09-27: "Would we benefit from standardizing edges (straight
+carbon bonds at 90 deg from edge or something)?" — yes, and it is mostly
+declaring what the spec already practises. The catalogue above already
+established that seam type and rim edge-word are one decision, so a
+library of parts needs a **typed** rim, not a free one.
+
+- **Two rim types, not one.** "Bonds at 90° from the edge" is the zigzag
+  rim (α = 90°); armchair is α = 60°. They are the only pure rims the
+  lattice offers and they are not interchangeable: 120° three-sheet sp²
+  seams need zigzag, 90° four-sheet sp³ seams need armchair. A generic
+  framework needs both.
+- **Rim type = (edge-word, N).** Two rims join iff both match, up to phase
+  k. Mixed edge-words (chiral tube ends, `z5·a3·z2`) are bespoke
+  interfaces; the standard library restricts itself to `(n,0)`, `(n,n)`,
+  lattice-aligned sheet cuts and the `(6k,0)` lids — all pure.
+- **Preferred numbers: multiples of 6 for zigzag.** Already implicit in
+  `cap(6k,0)`, washer rule k ≥ r+3, "Δn ≥ 12 only". Declaring the series
+  means every cap, washer, tube and lid interoperates by construction.
+- **One adapter type.** Zigzag ↔ armchair is a 30° lattice rotation across
+  the boundary — a graphene grain boundary, a line of 5-7 pairs, zero net
+  curvature. It is the periodic `57` glyph and the only adapter the
+  two-type standard needs.
+
+Why it matters beyond hexfold: the rim type is the sp² instance of the
+**port type** that makes se generic across lattices (see
+`diamondoid-pattern-language.md` — a `(hkl)` facet with termination is
+the sp³ instance). `options(handle, wish)` (spec §25.3) should search a
+typed space, so this lands before it.

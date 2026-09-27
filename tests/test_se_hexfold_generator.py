@@ -56,6 +56,27 @@ def test_hexfold_tube_counts_and_ports() -> None:
     cad_dsl.parse(block.envelope, require_units=True)
 
 
+def test_hexfold_ports_carry_the_lattice_tag_and_rim_payload() -> None:
+    """The port *type* seam (GeneratedPort.lattice/payload): every hexfold
+    port is an ``sp2-hex`` rim and its payload is the SPEC 10 rim instance
+    -- word, dangling count and rim type -- mirrored into
+    ``topology.ports`` for consumers that read the block, not the ports."""
+    block = _build(TUBE_SPEC)
+    assert {p.lattice for p in block.ports} == {"sp2-hex"}
+    for p in block.ports:
+        assert p.payload is not None
+        assert p.payload["kind"] == "rim"
+        assert p.payload["N"] == 10
+        assert p.payload["type"] == "a10"  # tube(5,5): armchair, N = 2n
+        assert p.payload["word"]
+        mirrored = block.topology["ports"][p.name]
+        assert mirrored["lattice"] == "sp2-hex"
+        assert mirrored["type"] == "a10"
+    # the pre-existing single-atom generators leave both unset
+    cnt = GENERATORS["cnt"]({"n": 6, "m": 6, "length_A": 8.0})
+    assert all(p.lattice is None and p.payload is None for p in cnt.ports)
+
+
 def test_hexfold_nanobud_sp3_bonds_are_order_one() -> None:
     block = _build(NANOBUD_SPEC)
     assert block.hybridizations is not None

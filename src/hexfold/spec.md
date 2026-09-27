@@ -265,6 +265,10 @@ seams.**
 | `fullerene(N, iso=k)` | closed cage, 12 pentagons | v1: `C60` only [S11]; general Goldberg later |
 | `junction(k)` `[spec 0.2]` | sphere with k tube holes | χ = 2 − k ⇒ 6(k−2) heptagons (or half as many octagons); k = 3 is the pair of pants [S3]; C3-symmetric Y-junctions per CoNTub v2 [S5] |
 
+Pure rims (§10 rim type): `tube(n,0)` ends are zigzag `("z", n)`,
+`tube(n,n)` ends armchair `("a", 2n)`, the `cap(6k,0)` lid's rim zigzag
+`("z", 6k)`; chiral ends, `cap(5,5)` and every hole rim are mixed.
+
 Every primitive is a **decorated lattice patch**: a region of the flat lattice
 plus a cut prescription (§8). Tubes/cones/sheets differ only in defect content
 and identification of boundary.
@@ -331,6 +335,38 @@ outward normal (`dir`, or `axis` for tube ends). Edge-word alphabet:
 Written run-length: `z5·a3·z2`. Canonical form is the lexicographically minimal
 rotation, traversed counter-clockwise as seen along the surface's *inward*
 normal (Booth's algorithm; O(n)).
+
+*Erratum (2026-09-27):* the implemented letters record the **turn
+magnitude** at each rim vertex — `z` for a 60° turn, `a` for a 120° turn
+(`defects.rim_word`). Every turn on an undefected lattice is 60°, so a
+pure zigzag rim *and* a pure armchair rim both read `z^n`; `a` appears
+only at flake corners. The zigzag/armchair distinction is the rim type
+below, not the word.
+
+**Rim type** `[impl 0.2, 2026-09-27]`. Rim type = `(kind, N)`, read off
+the walk's **dangling pattern** (`Port.rim_type`): degree-2 atoms
+alternating with degree-3 atoms (`SD` period) is **zigzag** `("z", N)`,
+degree-2 atoms in bonded pairs (`SSDD` period) is **armchair** `("a",
+N)`; anything else — chiral tube ends, cap rims, hole rims — is mixed
+(`None`), a bespoke interface. `N` is the dangling count. The two pure
+types are not interchangeable: a zigzag rim's dangling bonds sit at 90°
+to the rim line, an armchair's at 60°, so a 120° three-sheet sp² seam
+needs zigzag and a 90° four-sheet sp³ seam needs armchair (§6.2, the
+seam-type catalogue in `docs/backlog/`). Two rims fuse iff `N` matches,
+up to the phase `k` — unchanged; a pure-zigzag onto pure-armchair fuse of
+equal `N` is the **30° grain-boundary adapter**, its seam rings the
+alternating 5-7 line reported by `seam.rings`. **Preferred series:** `N ∈
+6ℤ` for zigzag (matches `cap(6k,0)`, the washer rule k ≥ r+3, `Δn ≥ 12`),
+so every library cap, washer, tube and lid interoperates by construction.
+`rim.nonstandard` (INFO) marks a mixed rim or a zigzag `N ∉ 6ℤ`; INFO
+because chiral tubes, caps and holes are legal and existing specs stay
+clean. Pure rims come from `tube(n,0)` and `tube(n,n)` ends and
+`cap(5,5)`; the `cap(6k,0)` lid and every hole rim are mixed (they still
+fuse — `N` is the only hard rule). The type is derived and is **not** written into
+the authored sections (content hash unchanged); the se generator carries
+it in its port payload (`GeneratedPort.lattice = "sp2-hex"`, `payload =
+{kind: rim, word, N, type}`) — the sp² instance of the port type that
+makes se generic across lattices (`docs/backlog/diamondoid-pattern-language.md`).
 
 Boundary term `B` in §6: each rim contributes its combinatorial
 attribution (consistency value); the JSON form carries `B` per rim plus
@@ -453,7 +489,15 @@ Unsolvable → `fit.unsolvable` (ERROR) with the nearest commensurate values in
   solution up to a cap of 64, ranks by the cost below, applies the first,
   and reports the rest as `fit.alternatives` (INFO, `data.alternatives =
   [{value, cost}]`). The `options` verb (§25.3) is this family surfaced as
-  ranked candidates.
+  ranked candidates — `[impl 0.2, 2026-09-27]` `hexfold.options.options(spec,
+  handle, wish)`: handle `<inst>.len` (periods; the wish may be in Å,
+  converted through the tube period `a·|T|`) or `<src port>.k` (steps of
+  N, modular distance); wish = target + band (the tolerance shell) or
+  don't-care; every in-band value is built and ranked `(distance, seam
+  ring, |residual|, index)` — distance is cost (1) below, supplied by the
+  wish where a `smooth:` section would otherwise supply it; in-band values
+  that do not build are returned as rejections with their ERROR codes (the
+  feasibility conversation of §25.2). CLI `hexfold options`.
 - **Cost, in order:** (1) distance to the smooth target, *only when a
   `smooth:` section is present* — this is what makes a collar on a bumped
   sheet put heptagons on the outside of the bend; (2) smallest maximum
@@ -536,6 +580,7 @@ no ERROR. No `__bool__`.
 | `ring.size.unusual` | WARN | ring outside 4..8 |
 | `port.mismatch` | ERROR | seam: dangling count or edge-word incompatible across its k rims |
 | `port.symmetry` | ERROR | collar order does not divide gcd(n,m) |
+| `rim.nonstandard` `[impl 0.2]` | INFO | rim outside the two-type standard (§10): mixed dangling pattern, or zigzag `N ∉ 6ℤ` (`data.type`, `data.N`) |
 | `collar.far` | WARN | solved collar sits > `2·r_hole + 3` cells from the hole centre |
 | `fit.unsolvable` | ERROR | no commensurate value; nearest in `data` |
 | `fit.alternatives` `[spec 0.2]` | INFO | the ranked remainder of a `fit` family (`data.alternatives`) |
@@ -1064,7 +1109,7 @@ integer refusal becomes a design conversation.
 | `nearest_atom`, `surface_coords` | **new** `view='surface'` (small) |
 | `catalogue(kind, filters)` | **new** `view='catalogue'` over the cache (small) |
 | `move(handle, dir, dist)` | **new** op `move_handle`, relative moves in the rim frame (small) |
-| `options(handle, wish)` | **new handler** — the one genuinely new verb: `fit.alternatives` surfaced as ranked candidates |
+| `options(handle, wish)` | **new handler** — the one genuinely new verb: `fit.alternatives` surfaced as ranked candidates. hexfold side `[impl 0.2]` (`hexfold.options`, §12.1); the se handler is a thin op over it once the block joiner fixes what a handle is on a resolved block |
 
 ### 26. Catalogue and cache
 
@@ -1136,7 +1181,9 @@ drive the order: the box (step 3) and the rotary ratchet valve
 1. **Fold-in** (this repo): `src/hexfold/` + `tests/hexfold/` + root
    `hexfold/` export seed; cherry-pick the `feat/hexfold-integration`
    generator and skill; import-boundary test; MIT marked.
-2. **0.2 discrete work**: `port`/`rim` vocabulary and `seam.rings`;
+2. **0.2 discrete work**: `port`/`rim` vocabulary and `seam.rings`
+   (rim **type** added 2026-09-27: `Port.rim_type`, `rim.nonstandard`;
+   `options(handle, wish)` over the `len`/`k` families, 2026-09-27);
    `seam` k ≥ 3 with per-sheet χ (§6.3, §11.3), acceptance = the
    sheet-pill-bump closed seam; `registry.closure`; `fit` families and
    `fit.alternatives`; sectioned file with the generated block and
@@ -1280,6 +1327,32 @@ scope, seam vertices out (§6.4); registry closure as integer arithmetic
   isolation boundary and the quantum-region cut line; charge-pattern
   coupling across a 3–4 Å gap over mechanical gearing; the smooth mapper
   takes over above ~1–2 nm radius, atoms are explicit below.
+
+- **2026-09-27 — rim standard and port payload.** Two rim types (zigzag,
+  armchair) read from the dangling pattern, one adapter (the 30° grain
+  boundary), preferred series `N ∈ 6ℤ` for zigzag; mixed rims stay legal
+  (INFO `rim.nonstandard`, never WARN). The type is derived, not
+  authored, so no content hash moves. se's `GeneratedPort` gains
+  `lattice` + `payload` for exactly two lattices — the hexfold rim now,
+  the diamondoid facet later; se never branches on the payload. Do not
+  re-ask whether the edge-word alphabet should be redefined to carry the
+  type: it records turns, and changing it would move every hash.
+- **2026-09-27 — `options` is a wish over the fit families, not a
+  search.** One call per wish (§22.3); it builds every in-band candidate
+  of one `len`/`k` site and ranks by distance first. Rejections are part
+  of the answer. Collars and sheet extents wait for domain fits (step 3);
+  the se handler waits for the block joiner. Do not re-ask whether
+  `options` should search across sites — the chain solver (§22.3) owns
+  cross-site propagation.
+- **2026-09-27 — fused seed placement.** `_place_seeds` filed each
+  fuse/bond transform under the *destination* instance and read it back as
+  the source's, so every neighbour received the transform computed for
+  the other side (mirrored behind the far rim; 8–78 Å crossing bonds in
+  every multi-instance example; `stick` then telescoped the halves).
+  Fixed, with the rim-frame normal signed against the owning instance's
+  centroid rather than the whole net's. Residual: bud (`@`) links, k ≥ 3
+  seams and fuses into `cap` hole rims still seed long crossing bonds
+  (`docs/backlog/hexfold-integration.md`).
 
 ### 31. Sources
 

@@ -80,6 +80,21 @@ class GeneratedPort:
     #: handler's ``add_port`` op has no column for it — the ring-port hook
     #: named in docs/backlog/hexfold-integration.md).
     atoms: list[int] | None = None
+    #: The port's **type**, the one thing that makes se generic across
+    #: shape languages (docs/backlog/diamondoid-pattern-language.md):
+    #: ``lattice`` names the lattice family the port belongs to
+    #: (``"sp2-hex"`` for hexfold rims; ``"sp3-diamond"`` reserved for the
+    #: diamondoid facet ports) and ``payload`` is that language's typed
+    #: port description -- for a hexfold rim ``{"kind": "rim", "word",
+    #: "N", "type"}`` with ``type`` the SPEC 10 rim type (``"z12"``,
+    #: ``"a10"`` or ``None`` when mixed); for a diamondoid facet, later,
+    #: ``{"kind": "facet", "hkl", "cell", "termination", "offset",
+    #: "dimer_row"}``.  se itself never branches on the payload: two
+    #: ports join iff their lattice tags agree and the shape language says
+    #: the payloads are compatible.  ``None``/``None`` for a single-atom
+    #: port with no lattice (the pre-existing generators).
+    lattice: str | None = None
+    payload: dict[str, Any] | None = None
 
 
 @dataclass
