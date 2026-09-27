@@ -129,25 +129,54 @@ def _resolve_fidelity(params: dict[str, Any]) -> str:
     return fidelity
 
 
-def _envelope(coords: np.ndarray) -> str:
-    """Bounding cylinder about the principal axis, the same shape the CNT
-    generator emits (``cyl:r<h>``) — radius = max distance off the first
-    PCA axis plus the vdW margin, height = the axis extent plus 2× the
-    margin. Deterministic: the axis sign is fixed so its
-    largest-magnitude component is positive."""
+def _canonical_frame(coords: np.ndarray) -> tuple[np.ndarray, str]:
+    """Move the stick coordinates into the frame the block's ``cyl:r<>h<>``
+    envelope is read in, and return that envelope.
+
+    ``envelope_fit`` (:mod:`precis_se.atomic.validate`) reads a cylinder
+    envelope in the block's local frame as **the z axis, z ∈ [0, h],
+    radially centred on the origin** — the frame the ``cnt`` generator
+    emits into. Until 2026-09-27 this generator described a cylinder about
+    a PCA axis through the centroid but left the atoms where the stick
+    relaxation put them, so only a tube that happened to lie along z ever
+    fit (a sheet protruded 28 Å, C60 1.7 Å — dogfood). Coordinates are
+    derived, not part of the format (module docstring), so the fix is to
+    put the atoms where the envelope says they are: the principal axis
+    that gives the smallest containing cylinder becomes +z (sign fixed so
+    its largest-magnitude component is positive), the radial centroid the
+    origin, and the lowest atom sits one vdW margin above z=0. Radius =
+    max radial distance + margin, height = axial extent + 2× margin, so
+    every atom is inside the margin by construction. Deterministic for a
+    given input (``eigh`` is)."""
     centroid = coords.mean(axis=0)
     centered = coords - centroid
     cov = centered.T @ centered
     _w, vecs = np.linalg.eigh(cov)
-    axis = vecs[:, -1]
-    pivot = int(np.argmax(np.abs(axis)))
-    if axis[pivot] < 0:
-        axis = -axis
-    along = centered @ axis
-    perp = centered - np.outer(along, axis)
-    radius = float(np.linalg.norm(perp, axis=1).max()) + VDW_MARGIN_A
-    height = float(along.max() - along.min()) + 2.0 * VDW_MARGIN_A
-    return f"cyl:r{fmt_length_A(radius)}h{fmt_length_A(height)}"
+    best: tuple[float, np.ndarray, float, float, np.ndarray] | None = None
+    for k in range(3):
+        axis = vecs[:, k]
+        pivot = int(np.argmax(np.abs(axis)))
+        if axis[pivot] < 0:
+            axis = -axis
+        along = centered @ axis
+        perp = centered - np.outer(along, axis)
+        radius = float(np.linalg.norm(perp, axis=1).max()) + VDW_MARGIN_A
+        height = float(along.max() - along.min()) + 2.0 * VDW_MARGIN_A
+        volume = radius * radius * height
+        if best is None or volume < best[0] - 1e-9:
+            best = (volume, axis, radius, height, along)
+    assert best is not None
+    _volume, e3, radius, height, along = best
+    # e1: the world axis least aligned with e3, made orthonormal; e2 closes
+    # a right-handed basis. Rows of ``rot`` are the new axes.
+    world = np.eye(3)[int(np.argmin(np.abs(e3)))]
+    e1 = world - float(world @ e3) * e3
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(e3, e1)
+    rot = np.stack([e1, e2, e3])
+    framed = centered @ rot.T
+    framed[:, 2] += VDW_MARGIN_A - float(along.min())
+    return framed, f"cyl:r{fmt_length_A(radius)}h{fmt_length_A(height)}"
 
 
 def _port_direction(coords: np.ndarray, atoms: tuple[int, ...]) -> list[float]:
@@ -215,7 +244,7 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
     except (ValueError, KeyError, IndexError) as exc:
         raise GeneratorError(_internal_message(exc)) from exc
 
-    coords = stick(net)
+    coords, envelope = _canonical_frame(stick(net))
     elements = [a.element for a in net.atoms]
     hybridizations = [a.hyb for a in net.atoms]
     sp3 = {i for i, a in enumerate(net.atoms) if a.hyb == "sp3"}
@@ -301,7 +330,7 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         f"seed={net.seed_kind}; coordinates derived, not part of the format"
     )
     return GeneratedBlock(
-        envelope=_envelope(coords),
+        envelope=envelope,
         ports=ports,
         topology=topology,
         provenance=provenance,

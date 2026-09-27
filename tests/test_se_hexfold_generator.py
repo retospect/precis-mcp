@@ -7,13 +7,18 @@ hexfold is vendored at ``src/hexfold/`` — no import skip needed.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from precis.cad import dsl as cad_dsl
 from precis.store import Store
-from precis_se.atomic.generate import prepare_generate
+from precis.structure.scene import Atom as StructAtom
+from precis.structure.scene import Scene as StructScene
+from precis_se.atomic import validate as atomic_validate
+from precis_se.atomic.generate import generated_cell, ingest_envelope, prepare_generate
 from precis_se.atomic.generators import GENERATORS, GeneratorError
-from precis_se.atomic.generators._types import GeneratedBlock
+from precis_se.atomic.generators._types import ENVELOPE_UNIT, GeneratedBlock
+from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
 from precis_se.ops import SeTree
 
 TUBE_SPEC = """\
@@ -391,3 +396,51 @@ def test_hexfold_internal_crash_is_named_not_swallowed(
     monkeypatch.setattr(mod, "build", boom)
     with pytest.raises(GeneratorError, match="hexfold internal error.*File a gripe"):
         _build(TUBE_SPEC)
+
+
+_FRAME_SPECS = {
+    "tube": TUBE_SPEC,
+    "sheet": SHEET_A_SPEC,
+    "sheet_tube_cap": (
+        "hexfold 0.2\nlattice: element=C sigma=1.42\n\ns: sheet(25A, 12)\n"
+        "t: tube(fit in {(5,5),(6,6)}, len=3)\nc: cap(5,5)\n"
+        "t.out --fuse k=0--> c.in\n"
+    ),
+    "c60": "hexfold 0.2\nlattice: element=C sigma=1.42\n\nb: fullerene(C60)\n",
+    "nanobud": NANOBUD_SPEC,
+}
+
+
+def _scene_of(block: GeneratedBlock) -> StructScene:
+    """The GeneratedBlock -> Scene conversion ``prepare_generate`` does,
+    so ``envelope_fit`` sees the atoms exactly as a design would."""
+    scene = StructScene(cell=generated_cell(block.coords))
+    for element, cart in zip(block.elements, block.coords, strict=True):
+        label = scene.next_label(element)
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(np.asarray(cart, dtype=float)))
+        scene.atoms[label] = StructAtom(
+            label=label, element=element, frac=frac, hybridization="sp2"
+        )
+    return scene
+
+
+@pytest.mark.parametrize("name", sorted(_FRAME_SPECS))
+def test_hexfold_atoms_sit_inside_their_cylinder_envelope(name: str) -> None:
+    """``envelope_fit`` reads ``cyl:r<>h<>`` as the z axis, z in [0, h],
+    radially centred on the origin. The generator used to describe a
+    cylinder about a PCA axis but leave the atoms unmoved, so every
+    non-tube block protruded (sheet 28 A, C60 1.7 A -- dogfood
+    2026-09-27). Now the coordinates are moved into the envelope's frame,
+    so no hexfold block protrudes -- flat, closed, fused or multi-part."""
+    block = _build(_FRAME_SPECS[name])
+    assert (
+        atomic_validate.envelope_fit(ingest_envelope(block.envelope), _scene_of(block))
+        is None
+    )
+    z = block.coords[:, 2]
+    assert z.min() == pytest.approx(VDW_MARGIN_A, abs=1e-6)
+    radial = np.linalg.norm(block.coords[:, :2], axis=1)
+    spec = cad_dsl.parse(block.envelope.replace(ENVELOPE_UNIT, ""))
+    assert spec.alias == "cyl"
+    assert radial.max() == pytest.approx(spec.params["r"] - VDW_MARGIN_A, abs=1e-3)
+    assert z.max() == pytest.approx(spec.params["h"] - VDW_MARGIN_A, abs=1e-3)
