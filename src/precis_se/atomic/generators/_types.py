@@ -98,6 +98,27 @@ class GeneratedPort:
 
 
 @dataclass
+class GeneratedMeasure:
+    """One length anchor a generator knows about its own block, in Å --
+    the se-kind L2 seam (:mod:`precis_se.measures`): ``prepare_generate``
+    mints it as an ``add_measure`` on the block (unit ``m``, strength
+    ``gauge``), so the user's tolerance *relations* onto
+    ``<block>.<name>`` are evaluated by the existing ``stackup`` with no
+    generator-specific code.  ``min_A``/``max_A`` is the band of requests
+    that realise the same discrete value -- for a hexfold sheet extent the
+    snap cell (``docs/backlog/hexfold-integration.md`` step 3): the
+    tolerance the lattice grants for free, declared as a band so
+    ``view='freedom'`` and stack-up see it as slack, not as a mismatch.
+    ``None``/``None`` for a point (a tube radius)."""
+
+    name: str
+    value_A: float
+    min_A: float | None = None
+    max_A: float | None = None
+    reason: str | None = None
+
+
+@dataclass
 class GeneratedBlock:
     """Everything one ``generate`` op call needs from a generator.
 
@@ -154,3 +175,7 @@ class GeneratedBlock:
     #: ``prepare_generate`` returns a ``None`` pending — nothing is added
     #: to the tree or minted.
     dry_run: bool = False
+    #: Length anchors (:class:`GeneratedMeasure`) the generator declares on
+    #: its block -- ``prepare_generate`` turns each into an ``add_measure``.
+    #: Empty for the pre-existing generators.
+    measures: list[GeneratedMeasure] = field(default_factory=list)

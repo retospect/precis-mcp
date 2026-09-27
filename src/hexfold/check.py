@@ -6,6 +6,8 @@ valence.over, valence.under, cut.overlap, ring.size.unusual,
 port.symmetry, rim.nonstandard (INFO, SPEC 10 rim standard), and the
 geometry tier (geom.*) when ``geometry=True``.
 Phase-2 codes: seam.rings, annot.sublattice, fit.unsolvable, fit.alternatives,
+fit.propagated (roll-up domains, hexfold.domains), extent.snap (Angstrom
+sheet extents, hexfold.extent),
 hole.missing, port.unknown, frag.unrealized, annot.host_sublattices;
 an sp3 atom is allowed 4 bonds before valence.over fires.
 0.2: ``spec`` may be a ``.hx.json`` sectioned-JSON string; when it carries a

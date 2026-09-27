@@ -42,10 +42,12 @@ from hexfold.build import Port as HxPort
 from hexfold.build import build
 from hexfold.canon import canonical_json
 from hexfold.check import check
+from hexfold.extent import measures as hx_measures
 from hexfold.report import BuildError, HexfoldError
 from hexfold.stick import stick
 from precis_se.atomic.generators._types import (
     GeneratedBlock,
+    GeneratedMeasure,
     GeneratedPort,
     GeneratorError,
     fmt_length_A,
@@ -233,6 +235,20 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
     for member_ring in net.rings:
         rings[len(member_ring)] = rings.get(len(member_ring), 0) + 1
 
+    # length anchors (hexfold.extent.measures): sheet extents with the
+    # snap cell as band, tube lengths with the snap period, tube radii as
+    # points -- se L2 measures the user's relations stack up against
+    measures = [
+        GeneratedMeasure(
+            name=m.name,
+            value_A=m.value_A,
+            min_A=m.min_A,
+            max_A=m.max_A,
+            reason=m.reason,
+        )
+        for m in hx_measures(net)
+    ]
+
     topology: dict[str, Any] = {
         "hexfold": hexfold.__version__,
         "spec": spec,
@@ -254,6 +270,7 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         "n_atoms": len(net.atoms),
         "n_bonds": len(net.bonds),
         "rings": rings,
+        "measures": [m.to_dict() for m in hx_measures(net)],
     }
     provenance = (
         f"hexfold {hexfold.__version__} spec ({len(net.atoms)} atoms, "
@@ -269,4 +286,5 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         coords=coords,
         bonds=bonds,
         hybridizations=hybridizations,
+        measures=measures,
     )

@@ -13,8 +13,10 @@ SPEC 12.1, the hook ``_rank_fit`` leaves at 0 for a plain ``build``.
 Handles (0.2): ``"<inst>.len"`` -- a tube's length in whole translation
 periods (the wish may be in Angstrom, converted through the tube's period
 ``a * |T|``); ``"<src port>.k"`` -- a fuse's rotational phase in steps of
-the rim symmetry N (distance is modular).  Collars ``{Rxk @fit}`` and
-``sheet(W,H)`` extents come with domain fits (integration step 3).
+the rim symmetry N (distance is modular).  Roll-up domains
+(:mod:`hexfold.domains`) and Angstrom sheet extents (:mod:`hexfold.extent`)
+resolve inside ``build``; an ``options`` handle over a domain and over
+collars ``{Rxk @fit}`` is not exposed yet.
 """
 
 from __future__ import annotations

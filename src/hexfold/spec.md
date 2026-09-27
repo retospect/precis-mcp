@@ -258,7 +258,7 @@ seams.**
 
 | primitive | parameters | notes |
 |---|---|---|
-| `sheet(W, H, rim=…)` | extent in lattice cells or Å; rim edge-word (§10) | flat, χ contribution via rim |
+| `sheet(W, H, rim=…)` | extent in lattice cells or Å (`[impl 0.2]` `25A`/`25Å` snaps to whole cells along the lattice vector, `a = √3σ`, reported as `extent.snap`); rim edge-word (§10) | flat, χ contribution via rim; a rhombic patch (`W` cells along `a₁`, `H` along `a₂`) |
 | `tube(n, m, len=L\|fit, hand=+\|−)` | roll-up `(n,m)`, `0 ≤ m ≤ n`; length in unit cells or `fit` | rotational symmetry order `g = gcd(n,m)`; `hand` only meaningful for `0<m<n`; radius `R = a√(n²+nm+m²)/2π` [S9] |
 | `cone(P)` | `P ∈ 1..5` pentagons at apex | derived opening angle `sin(θ/2) = 1 − P/6` [S10]; `P=6` is a cap, `P=0` a disc |
 | `cap(n, m)` | C60 hemisphere or flat lid, port `in` | Two members. `(5,5)`: C60 cut perpendicular to a C5 axis (30 atoms, 10 dangling, 6 pentagons). `(6k, 0)`, k ≥ 1: the flat lid — the `hex(k−1)` flake (§28.3), the same cell complex a `- hex(k−1)@…` hole removes from a sheet; rim all-zigzag with 6k dangling atoms, `B_expected +6` (a flat disc, §6.1); the lid carries no pentagons itself — fusing it onto a `(6k,0)` tube produces six pentagons as seam rings at the flake's six corners, at any registry. A `cap(6k,0) - hex(r)@…` hole punched in the lid is a **washer**, port `hole` alongside `in`, rule k ≥ r+3 (the washer at least two rings wide, else the hole clips the lid's own rim — `cut.overlap`); fusing a narrower neck into `hole` mints six heptagons, fusing a wider bulge onto `in` mints six pentagons — the radius-changing shell (§28.3). Every other `(n,m)` is `build.kind` — a C3-axis hemisphere is not a cap (its seam is `{5:3,7:6}`, leaving the end over-curved); armchair `(n,n)` lids are open (need the k=1 registry and a corner-arc analysis) |
@@ -509,6 +509,21 @@ Unsolvable → `fit.unsolvable` (ERROR) with the nearest commensurate values in
   whole catalogue, §26). Chains of parts with `fit` members are solved by
   propagation from the pinned ends (§22.3); because the constraints are
   integer equalities, propagation flows both directions.
+  `[impl 0.2, 2026-09-27]` `hexfold.domains`: the roll-up parameter of
+  `tube`/`cap` takes the domain; bare `fit` is the catalogue — tube: the
+  two pure rim types `(n,0)`, `(n,n)` for `n` 3..34 (64 members, the
+  family cap), cap: `(5,5)` and `(6k,0)` k ≤ 10. Every `fuse` is the
+  equality of its rims' dangling counts `N` (§10: type may differ), every
+  k ≥ 3 `seam` identifies its rims pairwise; `N` of a domain value is
+  arithmetic (tube end `n+m`, `cap(5,5)` 10, `cap(6k,0)` 6k), `N` of a
+  pinned rim is read off one probe build with the fuses removed. Arc
+  consistency to a fixpoint, then the surviving Cartesian product is
+  built and ranked by the cost below; `fit.propagated` (INFO) records
+  each domain's before/after and which connect pruned it; an emptied
+  domain is `fit.unsolvable` naming the connect, the `N` it needed and
+  the `N` the domain offered. Domains resolve before menus and before
+  `len=fit`. Not yet: collar `{r×k @fit}` domains, `options` handles on
+  domains.
 
 Collar semantics (0.1): `fuse{r×k @fit}` on a connect places `k` `r`-ring
 defects around the destination hole at the smallest radius whose
@@ -584,6 +599,8 @@ no ERROR. No `__bool__`.
 | `collar.far` | WARN | solved collar sits > `2·r_hole + 3` cells from the hole centre |
 | `fit.unsolvable` | ERROR | no commensurate value; nearest in `data` |
 | `fit.alternatives` `[spec 0.2]` | INFO | the ranked remainder of a `fit` family (`data.alternatives`) |
+| `fit.propagated` `[impl 0.2]` | INFO | a roll-up domain before/after chain propagation (`data.before`, `data.after`, `data.pruned_by`, `data.unpinned`) |
+| `extent.snap` `[impl 0.2]` | INFO | an Å sheet extent snapped to whole cells (`data.requested_A`, `data.cells`, `data.realised_A`, `data.delta_A`, `data.period_A`) |
 | `registry.redundant` | INFO | acyclic: in register by construction |
 | `registry.closure` `[spec 0.2]` | WARN (STRICT: ERROR) | cycle residual in symmetry steps (`data.cycle`, `data.residual`) |
 | `seam.rings` `[spec 0.2]` | INFO | ring census along a seam (was `fuse.seam`); `data.rings`, `data.k` |
@@ -750,7 +767,10 @@ terminate: post.out = H
 ```
 
 Grammar (informal): one statement per line; `#` comments; instance lines
-`name: primitive(args) [- hole]* [xN]`; connect lines `src --verb[{menu}] [k=]--> dst`;
+`name: primitive(args) [- hole]* [xN]` — an argument may be a domain
+`fit` or `fit in {(n,m),(n,m),…}` (§12.1; commas inside `{}`/`()` do not
+split arguments) or an Å length `25A`/`25Å` (§7); connect lines
+`src --verb[{menu}] [k=]--> dst`;
 `seam`, `port`, `origin`, `registry`, `terminate`, `frag`, `bond`, `lattice`,
 `prov`, `smooth:` keywords. Whitespace-insensitive except line breaks; the
 `smooth:` block is delimited by its keyword and the next non-indented
@@ -1183,7 +1203,9 @@ drive the order: the box (step 3) and the rotary ratchet valve
    generator and skill; import-boundary test; MIT marked.
 2. **0.2 discrete work**: `port`/`rim` vocabulary and `seam.rings`
    (rim **type** added 2026-09-27: `Port.rim_type`, `rim.nonstandard`;
-   `options(handle, wish)` over the `len`/`k` families, 2026-09-27);
+   `options(handle, wish)` over the `len`/`k` families, 2026-09-27;
+   roll-up domains + chain propagation `hexfold.domains` and Å sheet
+   extents `hexfold.extent` with the se measure anchors, 2026-09-27);
    `seam` k ≥ 3 with per-sheet χ (§6.3, §11.3), acceptance = the
    sheet-pill-bump closed seam; `registry.closure`; `fit` families and
    `fit.alternatives`; sectioned file with the generated block and
@@ -1337,6 +1359,16 @@ scope, seam vertices out (§6.4); registry closure as integer arithmetic
   the diamondoid facet later; se never branches on the payload. Do not
   re-ask whether the edge-word alphabet should be redefined to carry the
   type: it records turns, and changing it would move every hash.
+- **2026-09-27 — chain propagation is arithmetic on rim `N`, not a
+  build.** A fuse constrains `N` only (§10), a tube end has `n+m`, a cap
+  a table value, so propagation over a chain is arc consistency over
+  integer equalities; the builder is called for the pinned ends once
+  (probe) and for the surviving combinations. The se side receives the
+  resolved lengths as **measures with the snap cell as band**
+  (`hexfold.extent.measures` → `GeneratedBlock.measures` → `add_measure`);
+  the user's relations onto them are ordinary `stackup` rows. No
+  second tolerance model. Do not re-ask whether hexfold should evaluate
+  tolerances itself.
 - **2026-09-27 — `options` is a wish over the fit families, not a
   search.** One call per wish (§22.3); it builds every in-band candidate
   of one `len`/`k` site and ranks by distance first. Rejections are part

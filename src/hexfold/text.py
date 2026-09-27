@@ -114,7 +114,10 @@ _IDENT = r"[A-Za-z_][\w.]*"
 _KV = r"[\w.\-]+\s*=\s*[^\s#]+"
 
 _PRIM_RE = re.compile(
-    rf"^(?P<name>{_IDENT})\s*:\s*(?P<prim>{_IDENT})\s*\((?P<args>[^)]*)\)"
+    # args allow one level of nested parentheses so a domain set literal
+    # ``fit in {(5,5),(6,6)}`` (SPEC 12.1 0.2) reads as one argument
+    rf"^(?P<name>{_IDENT})\s*:\s*(?P<prim>{_IDENT})\s*"
+    rf"\((?P<args>(?:[^()]|\([^()]*\))*)\)"
     rf"(?P<rest>.*)$"
 )
 _HOLE_RE = re.compile(
@@ -161,9 +164,30 @@ def _parse_kv_pairs(text: str) -> tuple[tuple[str, str], ...]:
     return tuple(out)
 
 
+def _split_args(argtext: str) -> list[str]:
+    """Split an argument list on top-level commas only: commas inside
+    ``{...}`` or ``(...)`` belong to a domain set literal (SPEC 12.1 0.2,
+    ``fit in {(5,5),(6,6)}``)."""
+    out: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in argtext:
+        if ch in "({":
+            depth += 1
+        elif ch in ")}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    out.append("".join(cur))
+    return out
+
+
 def _parse_params(argtext: str, lineno: int) -> tuple[tuple[str, str], ...]:
     out = []
-    for i, part in enumerate(argtext.split(",")):
+    for i, part in enumerate(_split_args(argtext)):
         part = part.strip()
         if not part:
             continue

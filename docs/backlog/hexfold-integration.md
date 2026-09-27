@@ -201,8 +201,23 @@ rim standard, `GeneratedPort.lattice`/`payload` filled by `build_hexfold`.
 **Step 2 built (2026-09-27, hexfold side).** `hexfold.options.options`
 + CLI `hexfold options`; `tests/hexfold/test_options.py`. Not built: the
 se handler ("new handler" in §25.3) — a thin op over this function once
-step 5 says what a handle is on a resolved block; collar `{Rxk @fit}` and
-`sheet(W,H)` handles wait for step 3's domain fits.
+step 5 says what a handle is on a resolved block; `options` handles over
+roll-up domains and collars `{Rxk @fit}` are still unexposed.
+
+**Step 3 built (2026-09-27).** `hexfold.domains` — roll-up domains
+`fit` / `fit in {…}` on `tube`/`cap`, arc consistency on rim `N` over
+fuses and seams from the pinned ends (one probe build reads pinned `N`),
+surviving product built and ranked, `fit.propagated` INFO, conflict →
+`fit.unsolvable` with needs/offers/constraint; domains resolve before
+`len=fit`. `hexfold.extent` — Å sheet extents snap to cells with
+`extent.snap`, `measures(net)` = sheet `W`/`H`, tube `len` (band = snap
+cell/period) and tube `R`. se: `GeneratedMeasure`,
+`GeneratedBlock.measures`, `prepare_generate` mints `add_measure` rows
+(m, gauge) so user relations onto `<block>.<inst>_W` stack up through
+the existing `stackup` (`tests/test_se_hexfold_generator.py`). Not
+built: collar domains; Å for tube `len` (the `options` Å wish covers the
+query side); a per-connect `N` read for `@`-site hole destinations
+(propagation uses the minted hexagon's 6).
 
 **Residual from step 0 — fused seed placement.** `_place_seeds` filed
 every fuse/bond transform under the destination instance and read it back

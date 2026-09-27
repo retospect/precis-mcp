@@ -47,6 +47,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
 
 
+#: Å → m for generated measures (the envelope crosses through the cad DSL
+#: parser; a measure is a bare number in the measure's unit, so the same
+#: multiply happens here, once, next to the envelope's).
+_A_TO_M = 1e-10
+
+
 def ingest_envelope(config: str) -> str:
     """The m-boundary for a *generated* envelope (`precis/utils/units.py`'s
     ingest boundary, mirroring cad's own shipped posture —
@@ -220,6 +226,26 @@ def prepare_generate(
                 if port.rot is not None:
                     port_op["rot"] = port.rot
             apply_ops(tree, [port_op])
+        # Length anchors (GeneratedMeasure): the generator's discrete
+        # parameters as se measures in metres, the realisable band as
+        # min/max -- from here on the user's relations onto
+        # ``<block>.<name>`` are ordinary stack-up rows.
+        for gm in block.measures:
+            m_op: dict[str, Any] = {
+                "op": "add_measure",
+                "block": block_name,
+                "name": gm.name,
+                "value": gm.value_A * _A_TO_M,
+                "unit": "m",
+                "strength": "gauge",
+            }
+            if gm.min_A is not None:
+                m_op["min"] = gm.min_A * _A_TO_M
+            if gm.max_A is not None:
+                m_op["max"] = gm.max_A * _A_TO_M
+            if gm.reason:
+                m_op["reason"] = gm.reason
+            apply_ops(tree, [m_op])
     except OpError as exc:
         raise BadInput(str(exc)) from exc
 

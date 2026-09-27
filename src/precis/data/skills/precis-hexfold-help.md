@@ -74,7 +74,9 @@ per sheet, `data.sheet`) · `euler.closed_unreachable` ERROR ·
 the circumference — wider tube) · `ring.size.unusual` WARN (outside
 4..8; seam faces exempt) · `port.mismatch`/`port.symmetry` ERROR ·
 `fit.unsolvable` ERROR · `fit.alternatives` INFO (the ranked rest of a
-`fit` family) · `seam.rings` INFO (ring census along a fuse or `seam`,
+`fit` family) · `fit.propagated` INFO (a roll-up domain before/after
+chain propagation) · `extent.snap` INFO (an Å sheet extent snapped to
+cells, `data.delta_A`) · `seam.rings` INFO (ring census along a fuse or `seam`,
 `data.k`) · `registry.closure` WARN (a part-graph cycle closes with a
 phase residual, `data.residual` of `data.period`) · `gen.stale` WARN
 (`.hx.json` generated block behind its authored hash) · `op.dangling`
@@ -103,6 +105,29 @@ the plain fit family. Returns `options` (clean, ranked by distance then
 seam ring, residual, index), `rejected` (in band but does not build,
 with the ERROR codes) and `applied` (what a plain build picks). One call
 per wish; it does not search across sites.
+
+## Domains and chains (spec §12.1, §22.3)
+
+A roll-up may be a domain: `tube(fit in {(5,5),(6,6)}, len=3)`,
+`cap(fit)` (catalogue: `(5,5)` and the `(6k,0)` lids; `tube(fit)` is the
+64 pure zigzag/armchair roll-ups). Pin either end of a chain and
+propagation resolves the middle: every fuse equates its rims' `N`
+(`n+m` for a tube end), arc consistency prunes each domain, the
+survivors are built and ranked (all-hexagon seam beats the 5-7
+adapter). Read `fit.propagated` for what pruned what; an emptied domain
+is `fit.unsolvable` with `needs`/`offers`/`constraint`. Domains resolve
+before `len=fit`.
+
+## Å extents and se measures (spec §7)
+
+`sheet(25A, 12)` snaps to whole cells along the lattice vector
+(`a = 2.46 Å`) and reports `extent.snap` with the delta. The generated
+se block declares its lengths as measures — `<inst>_W`, `<inst>_H`,
+`<inst>_len` (value = realised length, `min`/`max` = the snap cell: the
+requests that land on the same integer) and `<inst>_R` (a point). Relate
+your own measures to them (`relation.source = "<block>.<inst>_W"`) and
+`view='measures'` stacks the tolerance up; a `tol` tighter than the
+snap delta is a `mismatch`.
 
 ## Rules
 

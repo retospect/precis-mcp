@@ -333,7 +333,14 @@ def canonical_json(net_or_spec: Net | Spec | str) -> str:
             from .text import parse
 
             net_or_spec = parse(net_or_spec)
-    spec = net_or_spec.spec if isinstance(net_or_spec, Net) else net_or_spec
+    if isinstance(net_or_spec, Net):
+        spec = net_or_spec.spec
+    else:
+        # resolve first: a domain fit or an Angstrom extent (SPEC 12.1
+        # 0.2, SPEC 7) is authored text, and the canonical form is the
+        # resolved spec -- exactly as ``len=fit`` has always hashed as
+        # the length it resolved to.
+        spec = build(net_or_spec, strict=False).spec
     canon_spec = canonicalise(spec)
     net = build(canon_spec, strict=False)
     d = net.authored_dict()

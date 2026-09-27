@@ -19,7 +19,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from . import __version__, menus
+from . import __version__, domains, menus
 from .defects import (
     Defect,
     Patch,
@@ -31,6 +31,7 @@ from .defects import (
     glyph_footprint,
     run_length,
 )
+from .extent import snap_extents
 from .fullerene import C60Data
 from .ids import AtomPath
 from .lattice import (
@@ -871,10 +872,15 @@ _FIT_CAP = 64  # SPEC 12.1: every fit site enumerates its family up to this
 
 
 def _set_fit_len(spec: Spec, length: int) -> Spec:
-    """Return spec with every tube len=fit param replaced by ``length``."""
+    """Return spec with every tube len=fit param replaced by ``length``
+    (the ``len``/positional-2 key only: a roll-up domain ``fit`` on key
+    ``0`` is :mod:`hexfold.domains`' business)."""
     out_insts = []
     for inst in spec.instances:
-        params = tuple((k, str(length) if v == "fit" else v) for k, v in inst.params)
+        params = tuple(
+            (k, str(length) if v == "fit" and k in ("len", "2") else v)
+            for k, v in inst.params
+        )
         out_insts.append(replace(inst, params=params))
     return replace(spec, instances=tuple(out_insts))
 
@@ -922,6 +928,158 @@ def _fit_alternatives_finding(
             ("param", param),
         ),
     )
+
+
+def _domain_cost(net: Net) -> tuple[float, float]:
+    """SPEC 12.1 cost terms (2) and (3) for a built candidate: the largest
+    seam ring across every ``seam.rings`` census, and the summed
+    ``|euler.residual|`` over its sheets."""
+    mx = 0.0
+    resid = 0.0
+    for f in net.report.findings:
+        d = dict(f.data)
+        if f.code == "seam.rings":
+            rings = d.get("rings") or {}
+            if rings:
+                mx = max(mx, float(max(int(k) for k in rings)))
+        elif f.code == "euler.residual":
+            resid += abs(float(d.get("residual", 0)))
+    return mx, resid
+
+
+def _solve_domains(
+    spec: Spec, profile: Profile, strict: bool, extra: list[Finding]
+) -> Net:
+    """Resolve every roll-up domain (SPEC 12.1 0.2, :mod:`hexfold.domains`):
+    propagate the rim equalities from the pinned ends, then build each
+    surviving combination (Cartesian product in domain order, capped at
+    ``_FIT_CAP``), rank the clean ones by the SPEC 12.1 cost tuple and
+    apply the first.  Reports ``fit.propagated`` (INFO) per domain
+    instance, ``fit.alternatives`` (``param="domain"``) for the ranked
+    remainder, and ``fit.unsolvable`` (ERROR) when propagation empties a
+    domain or no combination builds cleanly."""
+    prop = domains.propagate(
+        spec, probe=lambda s: build(s, profile=profile, strict=False)
+    )
+    names = sorted(prop.before)
+    where = ",".join(names)
+    first = spec.instance(names[0])
+    span = first.span if first is not None else None
+
+    def propagated() -> list[Finding]:
+        out = []
+        for name in names:
+            inst = spec.instance(name)
+            out.append(
+                Finding(
+                    "fit.propagated",
+                    Severity.INFO,
+                    f"{name}: domain {len(prop.before[name])} -> "
+                    f"{len(prop.after[name])} value(s) after propagation"
+                    + (
+                        f" (pruned by {'; '.join(prop.pruned_by[name])})"
+                        if name in prop.pruned_by
+                        else ""
+                    ),
+                    where=name,
+                    span=inst.span if inst is not None else None,
+                    data=(
+                        ("after", [list(v) for v in prop.after[name]]),
+                        ("before", [list(v) for v in prop.before[name]]),
+                        ("pruned_by", list(prop.pruned_by.get(name, []))),
+                        ("unpinned", list(prop.unpinned)),
+                    ),
+                )
+            )
+        return out
+
+    if prop.conflict is not None:
+        c = prop.conflict
+        report = profile.apply_all(
+            extra
+            + propagated()
+            + [
+                Finding(
+                    "fit.unsolvable",
+                    Severity.ERROR,
+                    f"{c.instance}: no domain value fits {c.constraint} "
+                    f"(needs N in {list(c.needs)}, domain offers "
+                    f"{list(c.offers)})",
+                    where=c.instance,
+                    span=c.span,
+                    data=(
+                        ("constraint", c.constraint),
+                        ("instance", c.instance),
+                        ("needs", list(c.needs)),
+                        ("offers", list(c.offers)),
+                    ),
+                )
+            ]
+        )
+        raise BuildError(report)
+
+    combos = list(itertools.product(*(prop.after[n] for n in names)))
+    truncated = len(combos) > _FIT_CAP
+    combos = combos[:_FIT_CAP]
+    candidates: list[tuple[Any, float, float, Any]] = []
+    nets: dict[int, Net] = {}
+    rejected: list[dict[str, Any]] = []
+    for idx, combo in enumerate(combos):
+        spec2 = spec
+        for name, value in zip(names, combo):
+            spec2 = domains.set_value(spec2, name, value)
+        try:
+            net = build(spec2, profile=profile, strict=False)
+        except BuildError as exc:
+            codes = sorted({f.code for f in exc.report.errors()})
+            rejected.append({"value": [list(v) for v in combo], "errors": codes})
+            continue
+        if not net.report.ok:
+            codes = sorted({f.code for f in net.report.errors()})
+            rejected.append({"value": [list(v) for v in combo], "errors": codes})
+            continue
+        mx, resid = _domain_cost(net)
+        combo_value = {n: list(v) for n, v in zip(names, combo)}
+        candidates.append((combo_value, mx, resid, idx))
+        nets[idx] = net
+    if not candidates:
+        report = profile.apply_all(
+            extra
+            + propagated()
+            + [
+                Finding(
+                    "fit.unsolvable",
+                    Severity.ERROR,
+                    f"{where}: none of {len(combos)} domain combination(s) "
+                    f"builds cleanly (errors seen: "
+                    f"{', '.join(sorted({c for r in rejected for c in r['errors']}))})"
+                    + (
+                        f"; {len(prop.unpinned)} equality(ies) could not be "
+                        "pinned by the probe build"
+                        if prop.unpinned
+                        else ""
+                    ),
+                    where=where,
+                    span=span,
+                    data=(
+                        ("rejected", rejected),
+                        ("truncated", truncated),
+                        ("unpinned", list(prop.unpinned)),
+                    ),
+                )
+            ]
+        )
+        raise BuildError(report)
+    ranked = _rank_fit(candidates)
+    winner = ranked[0]
+    winner_net = nets[winner[3]]
+    applied = winner[0]
+    alts = _fit_alternatives_finding("domain", where, span, applied, ranked[1:])
+    findings = list(winner_net.report.findings) + [alts] + propagated() + list(extra)
+    report = profile.apply_all(findings)
+    if strict and not report.ok:
+        raise BuildError(report)
+    return replace(winner_net, report=report)
 
 
 def _registry_redundant_findings(net: Net) -> list[Finding]:
@@ -1094,6 +1252,25 @@ def build(
         if isinstance(spec_text_or_ast, str)
         else spec_text_or_ast
     )
+    # Angstrom sheet extents snap to whole cells first (SPEC 7,
+    # hexfold.extent): the snap findings ride on whichever net this call
+    # ends up returning.  The recursive builds below see cells only.
+    spec, snap_findings = snap_extents(spec, _lattice_from_spec(spec))
+
+    # Domain fits (SPEC 12.1 0.2 / 22.3, hexfold.domains) resolve before
+    # menus and before len=fit: each candidate combination is a full
+    # spec that goes through this same function.
+    try:
+        has_domains = domains.has_domains(spec)
+    except domains.DomainError as exc:
+        raise BuildError(
+            profile.apply_all(
+                snap_findings + [Finding("fit.unsolvable", Severity.ERROR, str(exc))]
+            )
+        ) from exc
+    if has_domains:
+        return _solve_domains(spec, profile, strict, snap_findings)
+
     spec = menus.expand(spec)
 
     # len=fit (SPEC section 8): the smallest integer len for which the
@@ -1122,7 +1299,8 @@ def build(
                     break
         if winner_net is None:
             report = profile.apply_all(
-                [
+                snap_findings
+                + [
                     Finding(
                         "fit.unsolvable",
                         Severity.ERROR,
@@ -1147,11 +1325,13 @@ def build(
             winner,
             ranked[1:],
         )
-        report = profile.apply_all(list(winner_net.report.findings) + [finding])
+        report = profile.apply_all(
+            list(winner_net.report.findings) + [finding] + snap_findings
+        )
         return replace(winner_net, report=report)
 
     lat = _lattice_from_spec(spec)
-    findings: list[Finding] = []
+    findings: list[Finding] = list(snap_findings)
     # registry.redundant / registry.closure (SPEC 12.2) are decided from
     # the part graph, only known after connects are applied below; see
     # the check_registry(net) call near the end of this function.

@@ -258,3 +258,106 @@ def test_prepare_generate_dry_run_alias_returns_none_pending(store: Store) -> No
     assert pending is None
     assert "euler.chi" in echo
     assert "probe" not in tree.blocks
+
+
+# ── generated measures (hexfold-integration.md step 3) ────────────────
+
+SHEET_A_SPEC = """\
+hexfold 0.2
+
+lattice: element=C sigma=1.42
+
+s: sheet(25A, 12)
+"""
+
+
+def test_hexfold_block_carries_length_anchors_with_snap_bands() -> None:
+    """A sheet authored in Å snaps to whole cells (``extent.snap``) and the
+    block declares the realised extent as a measure whose band is the
+    snap cell; tubes declare ``len`` (band = snap period) and ``R`` (a
+    point)."""
+    block = _build(SHEET_A_SPEC)
+    codes = [f["code"] for f in block.topology["report"]["findings"]]
+    assert "extent.snap" in codes
+    by_name = {m.name: m for m in block.measures}
+    assert set(by_name) == {"s_W", "s_H"}
+    w = by_name["s_W"]
+    a = 1.42 * 3**0.5
+    assert w.value_A == pytest.approx(10 * a, abs=1e-6)
+    assert w.min_A == pytest.approx(9.5 * a, abs=1e-6)
+    assert w.max_A == pytest.approx(10.5 * a, abs=1e-6)
+    assert w.reason and "snap cell" in w.reason
+    assert [m["name"] for m in block.topology["measures"]] == ["s_W", "s_H"]
+
+    tube = _build(TUBE_SPEC)
+    names = {m.name for m in tube.measures}
+    assert names == {"post_len", "post_R"}
+    r = next(m for m in tube.measures if m.name == "post_R")
+    assert r.min_A is None and r.max_A is None
+    assert r.value_A == pytest.approx(a * (75**0.5) / (2 * 3.141592653589793), abs=1e-4)
+
+
+def test_prepare_generate_lands_measures_and_stackup_uses_them(store: Store) -> None:
+    """The generated anchors are ordinary se measures: ``prepare_generate``
+    mints them in metres on the block, and a user relation onto
+    ``sheet.s_W`` is evaluated by ``stackup`` -- agreeing within the
+    relation's tolerance, or a ``mismatch`` beyond it."""
+    from precis_se.measures import stackup
+    from precis_se.ops import apply_ops
+
+    tree = SeTree()
+    _echo, pending = prepare_generate(
+        store,
+        tree,
+        {
+            "op": "generate",
+            "generator": "hexfold",
+            "params": {"spec": SHEET_A_SPEC},
+            "name": "sheet",
+        },
+        "hx-design",
+    )
+    assert pending is not None
+    got = {m.name: m for m in tree.measures if m.block == "sheet"}
+    assert set(got) == {"s_W", "s_H"}
+    w = got["s_W"]
+    a_m = 1.42e-10 * 3**0.5
+    assert w.unit == "m" and w.strength == "gauge"
+    assert w.value == pytest.approx(10 * a_m, rel=1e-9)
+    assert w.min_value == pytest.approx(9.5 * a_m, rel=1e-9)
+    assert w.max_value == pytest.approx(10.5 * a_m, rel=1e-9)
+    assert not stackup(tree.measures)  # clean anchors produce no rows
+
+    # the user's requested 25 Å, related to the realised extent with a
+    # half-Å tolerance: the 0.405 Å snap delta is inside it
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "add_measure",
+                "block": "sheet",
+                "name": "width_req",
+                "value": 25e-10,
+                "relation": {"source": "sheet.s_W", "offset": 0.0, "tol": 0.5e-10},
+            }
+        ],
+    )
+    rows = {r.measure: r for r in stackup(tree.measures)}
+    assert rows["sheet.width_req"].problem is None
+    assert rows["sheet.width_req"].derived == pytest.approx(10 * a_m, rel=1e-9)
+
+    # a tighter tolerance than the snap delta is a stack-up mismatch
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "add_measure",
+                "block": "sheet",
+                "name": "width_tight",
+                "value": 25e-10,
+                "relation": {"source": "sheet.s_W", "offset": 0.0, "tol": 0.1e-10},
+            }
+        ],
+    )
+    rows = {r.measure: r for r in stackup(tree.measures)}
+    assert rows["sheet.width_tight"].problem_kind == "mismatch"
