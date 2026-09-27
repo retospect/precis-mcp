@@ -1378,6 +1378,21 @@ def _realize_maze(
         n_layers=len(ir.stackup) or 1,
         bounds=_outline_clip(ir, edge_inset),
     )
+    # Appended AFTER `grid_for`, deliberately. The grid's pitch is cut
+    # from the point set it is given, so feeding it these lands would
+    # re-cut the pitch board-wide off pads that no net routes to -- a
+    # global change paid for a local obstacle. They still claim their
+    # cells, because `_stamp_pads` below rasterises a claim wherever it
+    # falls; the pitch just is not chosen for them.
+    pads.extend(
+        _unclaimed_pad_claims(
+            ir,
+            [str(entry.get("name") or "") for entry in ir.stackup],
+            signal_layers,
+            footprints,
+            n_board_layers,
+        )
+    )
     plane_ids = [s for s in ids if int(ir.net_plane_layers[int(ir.seg_net[s])]) != 0]
     route_ids = [s for s in ids if s not in set(plane_ids)]
     # Shortest-first is the opening order. A short connection has the
@@ -1666,6 +1681,16 @@ def _claim_fiducial_keepouts(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
 #: candidate count (those sentinels are ``n_nets + n_pins + k`` for a
 #: handful of corner sites), so the two claim families can never collide.
 _MOUNTING_HOLE_NET_OFFSET = 4096
+#: Sentinel-net offset for unclaimed footprint lands
+#: (:func:`_unclaimed_pad_claims`), the THIRD family sharing this band.
+#: Above the mounting-hole one for the same reason it exists: a QFP with
+#: 11 unclaimed lands and a board with 4 fiducial candidate sites both
+#: start counting at ``k = 0``, so without an offset the first land and
+#: the first fiducial are the same synthetic net — and
+#: :meth:`~precis.pcb.maze.OccupancyGrid.stamp_shape`'s contest test is
+#: ``owner != net_id``, so two claimants sharing an id read as one and
+#: silently reassign instead of going CONTESTED.
+_UNCLAIMED_PAD_NET_OFFSET = 8192
 
 
 def _claim_mounting_holes(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
@@ -5570,24 +5595,23 @@ def _unclaimed_pad_rows(
     cached footprint carries. Copper could therefore be routed straight
     through a pad the gerbers then make: a real short (gr451276).
 
-    **DETECTION ONLY, for now.** This reaches DRC (`_drc_pads`), the
-    plane pours (`_pad_blockers`), the fixed-copper connectivity model and
-    `to_gerber_model` — every consumer of :func:`pads_for_ir`. It does NOT
-    reach the maze router, which stamps :func:`pad_geometry` over
-    ``ir.pin_*`` in :func:`_route_pass`. So a track drawn through an
-    unclaimed land is REPORTED by `view='drc'`, not prevented. Claiming
-    these in the router's grid destabilised it (dangling GND tracks on the
-    EWOD dogfood, root cause not yet found) and is its own item — see
-    `docs/backlog/pcb-escape-and-driver-chain.md`.
+    **Two consumers, because there are two pad paths.**
+    :func:`_unclaimed_footprint_pads` reshapes these for
+    :func:`pads_for_ir` — DRC's ``_drc_pads``, the plane pours
+    (:func:`_pad_blockers`), the fixed-copper connectivity model,
+    :func:`to_gerber_model`. :func:`_unclaimed_pad_claims` reshapes the
+    SAME rows for the maze router, which builds its own claim list from
+    :func:`pad_geometry` over ``ir.pin_*`` and would otherwise never see
+    them. Detection without that second half only REPORTS the short after
+    the router has drawn it — measured on the EWOD dogfood, 24
+    ``track[...] <-> pad[]`` clearance errors at 0.000mm.
 
-    The ``(inst_id, raw_pad, placed_pad)`` shape is kept because the
-    router half needs each pad's raw ``rot``, which the placed dict drops.
+    The ``(inst_id, raw_pad, placed_pad)`` shape is what lets both share
+    one answer: the router half needs each pad's raw ``rot``, which the
+    placed dict drops, and the instance id to resolve its mount side.
 
-    **Pad IDENTITY, not label, decides claimed-ness.** A label can name
-    several pads -- a split thermal slug maps two numbers to one ``EP``,
-    and this module's own ``_real_pad_sizes`` takes the FIRST and ignores
-    the rest. Mirroring that first-wins rule exactly is what makes the
-    second half of such a slug land here instead of vanishing again.
+    **LABEL, not pad identity, decides claimed-ness** — see the filter
+    below for the defect the other rule caused.
 
     **An instance whose pin/pad join FAILED contributes nothing.** When a
     wired pin's label is not a ``pin_map`` name, that pin already falls
@@ -5692,6 +5716,73 @@ def _unclaimed_pad_rows(
                 pad["part_lcsc"] = str(part_lcsc)
             rows.append((inst_id, raw, pad))
     return rows
+
+
+def _unclaimed_pad_claims(
+    ir: PcbIR,
+    layers: list[str],
+    signal_layers: list[int],
+    footprints: dict[str, dict[str, Any]] | None,
+    n_board_layers: int,
+) -> list[tuple[Point, int, maze.PadShape, tuple[int, ...]]]:
+    """The ROUTER-shaped half of :func:`_unclaimed_pad_rows` — every
+    unclaimed footprint pad as a claim :func:`_realize_maze` can append to
+    its ``pads`` list, so the occupancy grid refuses to route through a
+    land the fab output flashes (gr451276's second half).
+
+    Owner ids continue the per-pin NC sentinel scheme
+    (:func:`_realize_maze`'s own ``net = ir.n_nets + pid``), in this
+    module's THIRD synthetic band: ``ir.n_nets + ir.n_pins +
+    _UNCLAIMED_PAD_NET_OFFSET + k``. The offset is load-bearing --
+    :func:`_claim_fiducial_keepouts` already owns bare ``n_nets + n_pins
+    + k`` and :func:`_claim_mounting_holes` owns that plus 4096, and all
+    three stamp the SAME grid. Distinct per pad, so two unclaimed lands
+    are never read as one shared net and nothing -- including another
+    unclaimed land -- may route through either.
+
+    Shapes come off the PLACED dict, which is already in board
+    coordinates, rather than re-running :func:`_pad_shape` over a
+    ``PadGeom``: ``place_footprint_pads`` has done the mirror/rotate for
+    the centre, the polygon ring and (on a 90-degree multiple) the w/h
+    swap. The raw pad's own ``rot`` is why this function takes the raw row
+    too -- axis-alignment is a property of instance rotation PLUS the
+    footprint's per-pad rotation, and the placed dict drops the latter.
+    """
+    claims: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]] = []
+    base = int(ir.n_nets) + int(ir.n_pins) + _UNCLAIMED_PAD_NET_OFFSET
+    for k, (inst_id, raw, pad) in enumerate(
+        _unclaimed_pad_rows(ir, layers, footprints)
+    ):
+        x, y = float(pad["x"]), float(pad["y"])
+        w = float(pad.get("w") or 0.0)
+        h = float(pad.get("h") or w)
+        shape = str(pad.get("shape") or "")
+        ring = pad.get("poly")
+        if shape == "polygon" and ring:
+            claim = maze.PadShape(
+                "poly",
+                x,
+                y,
+                poly=tuple((float(vx), float(vy)) for vx, vy in ring),
+            )
+        elif shape == "circle":
+            claim = maze.PadShape("circle", x, y, w, h)
+        elif shape in ("rect", "obround") and padplace.pad_axis_aligned(
+            float(ir.inst_rot[inst_id]) + float(raw.get("rot") or 0.0)
+        ):
+            claim = maze.PadShape("rect", x, y, w, h)
+        else:
+            # Same conservative fallback :func:`_pad_shape` takes for an
+            # oblique rotation or an unrecognised shape word.
+            diameter = math.hypot(w, h)
+            claim = maze.PadShape("circle", x, y, diameter, diameter)
+        layer_idxs = (
+            tuple(range(n_board_layers))
+            if pad.get("drill")
+            else (_side_layer(ir, inst_id, signal_layers),)
+        )
+        claims.append(((x, y), base + k, claim, layer_idxs))
+    return claims
 
 
 def _unclaimed_footprint_pads(

@@ -1605,6 +1605,70 @@ def test_pads_for_ir_places_unclaimed_pads_through_the_instance_pose():
     assert extra["h"] == pytest.approx(0.6)
 
 
+def test_unclaimed_pad_claims_reach_the_router_grid_with_distinct_owners():
+    """gr451276's ROUTER half. ``pads_for_ir`` feeds DRC, the plane pours
+    and the gerber model — NOT the maze router, which builds its own claim
+    list from ``pad_geometry`` over ``ir.pin_*``. So a pad no pin claims
+    needs a second entry, or DRC reports a short the router was free to
+    draw (measured on the EWOD dogfood: 24 ``track[...] <-> pad[]``
+    clearance errors at 0.000mm, all of them gone once these claims land).
+
+    Each land gets its OWN owner id in this module's THIRD synthetic
+    band: distinct from every real net, from ``maze.FREE``/``CONTESTED``,
+    from every NC pin's sentinel, from the fiducial and mounting-hole
+    bands that stamp the same grid, and from each other — two unclaimed
+    lands are not one shared net, and nothing may route through either."""
+    from precis.pcb import realize as pcb_realize
+
+    ir = from_graph(_multi_package_graph(), stackup=DEFAULT_STACKUP)
+    footprints = {
+        "U0": {
+            "pads": [
+                {"number": "1", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
+                {"number": "2", "x": 2.0, "y": 0.5, "w": 0.6, "h": 0.4},
+                {"number": "9", "x": -2.0, "y": 0.5, "w": 0.6, "h": 0.4},
+            ],
+            "pin_map": {"1": {"name": "1"}, "9": {"name": "NC1"}},
+        }
+    }
+    layers = [layer["name"] for layer in DEFAULT_STACKUP]
+    claims = pcb_realize._unclaimed_pad_claims(
+        ir,
+        layers,
+        pcb_realize._signal_layers(ir),
+        footprints,
+        len(DEFAULT_STACKUP),
+    )
+    assert len(claims) == 2, f"both of U0's unclaimed lands, once each: {claims}"
+    points = {(round(p[0], 4), round(p[1], 4)) for p, _owner, _shape, _lay in claims}
+    assert points == {(2.0, 0.5), (-2.0, 0.5)}
+    owners = [owner for _p, owner, _shape, _lay in claims]
+    assert len(set(owners)) == len(owners), "two lands are never one net"
+    # Three claim families stamp the SAME grid and all three count from
+    # `n_nets + n_pins`: fiducial candidate sites (bare), mounting holes
+    # (+4096), unclaimed lands (+8192). Asserted against the other two
+    # bands rather than a literal, so adding a fourth family that forgets
+    # its offset fails here instead of silently sharing an owner id with
+    # a land -- `stamp_shape`'s contest test is `owner != net_id`, so two
+    # claimants sharing an id read as one and reassign instead of going
+    # CONTESTED.
+    fiducial_base = ir.n_nets + ir.n_pins
+    hole_base = fiducial_base + pcb_realize._MOUNTING_HOLE_NET_OFFSET
+    assert min(owners) > hole_base, (
+        "an owner id must clear every real net, every NC pin's own "
+        f"`ir.n_nets + pid` sentinel, and both other synthetic bands: "
+        f"{owners} vs fiducial {fiducial_base} / hole {hole_base}"
+    )
+    # The claim carries the pad's TRUE shape, not an enclosing disc --
+    # the same fine-pitch fix `_pad_shape` applies to a claimed pad.
+    shapes = {s.kind for _p, _owner, s, _lay in claims}
+    assert shapes == {"rect"}
+    # One outer layer for an SMD land, resolved by the instance's own
+    # mount side, exactly as `pads_for_ir` resolves it over layer NAMES.
+    top = pcb_realize._signal_layers(ir)[0]
+    assert all(lay == (top,) for _p, _owner, _shape, lay in claims)
+
+
 def test_pads_for_ir_invents_no_pads_for_a_synthesized_footprint():
     """No cached footprint means no unclaimed pads to discover: a
     landpattern is synthesized FROM the netlist's pins, so anything beyond

@@ -1,0 +1,7 @@
+
+[33m⚠ deploy state uncertain: a deploy of 6008588c started 1h ago and never recorded success (died red or still running) — scripts/deploy to retry.[0m
+
+[1m▶ rebuilding Tailwind CSS (static production build)[0m
+→ src/precis_web/static/tailwind.css
+
+[1m▶ committing WIP[0m

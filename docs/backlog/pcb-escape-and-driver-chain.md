@@ -30,13 +30,19 @@ Escape yield on `tests/test_pcb_ewod_dogfood.py`, seed 1, 54 escape nets.
 | arm | realized | `no_path` | `congestion` | vias |
 | --- | --- | --- | --- | --- |
 | old GRID-footprint fixture | 13 / 54 | 35 | 6 | 7 |
-| **ring fixture, as shipped** | **35 / 54** | 13 | 6 | 10 |
+| ring fixture, lands unclaimed by the router | 35 / 54 | 13 | 6 | 10 |
+| **ring fixture, as shipped (item 2)** | **28 / 54** | — | — | — |
 | sink moved outside the array | 32 / 54 | 15 | 7 | 5 |
 | **escape fabric not claimed as an obstacle** | **46 / 54** | 4 | 4 | 5 |
 | clearance forced 0.15 → 0.093 | 35 / 54 | 10 | 9 | 10 |
 | "any signal layer" escape class | 42 / 54 | 12 | 0 | 25 |
 | fabric not claimed + any signal layer | 54 / 54 | 0 | 0 | 26 |
 
+0. **35 IS NOT THE BASELINE ANY MORE — 28 IS.** Every row above except
+   the last was measured while the router could route through unclaimed
+   footprint lands, which it did: 24 DRC clearance errors at 0.000mm.
+   Item 2 closed that on 2026-09-27 and the honest number dropped to 28.
+   Read every other row as "n, of which some were shorts".
 1. **The FIXTURE was most of the wall.** The old stand-in was
    `_grid_footprint(cols=9)`: a solid pad grid with ~31 INTERIOR pads,
    unreachable at any clearance the maze dilates by. The real C639448 is
@@ -52,11 +58,10 @@ Escape yield on `tests/test_pcb_ewod_dogfood.py`, seed 1, 54 escape nets.
 4. **Clearance is worth zero** (35 → 35). The `max()` collapse in
    `realize.py` is a real defect with no measurable payoff. File, forget.
 5. **The fabric is the one measured lever**: 35 → 46, `no_path` 13 → 4.
-6. **The realized escapes are REAL copper, and the assignment is already
-   ordered.** Audited 2026-09-27
-   (`tests/test_pcb_escape_audit_probe.py`, throwaway), re-run after the
-   pad-set fix: of the realized escapes, zero carry an explanatory
-   `note` (so none is a
+6. **The realized escapes are single-island copper, and the assignment
+   is already ordered** — but "single island" was never "clearance-legal",
+   see point 0. Audited 2026-09-27 (throwaway probe, deleted): of the
+   realized escapes, zero carry an explanatory `note` (so none is a
    dangling-net freebie counted as realized) and zero have copper in more
    than one island per `connectivity.net_islands` over the exact fab
    copper. EVERY failure DOES hold copper, in ≥2 pieces — electrode stub
@@ -117,50 +122,84 @@ and backed out. 3 must be MEASURED before it is built.
    prevented. Yield is therefore unchanged at 35/54, and that null is
    explained, not evidence. Item 2 below is the routing half.
 
-2. **Claim unclaimed pads in the ROUTER's grid** (the other half of
-   gr451276, and the half that answers Reto's actual words: "no wire can
-   route thru it, even if it is nc"). **Attempted 2026-09-27 and backed
-   out — do not retry without reading this.**
+2. ~~**Claim unclaimed pads in the ROUTER's grid**~~ — **SHIPPED
+   2026-09-27**, the half that answers Reto's actual words ("no wire can
+   route thru it, even if it is nc"). `_unclaimed_pad_claims` reshapes
+   `_unclaimed_pad_rows`' output as `(point, owner, PadShape, layers)`
+   4-tuples appended to `_realize_maze`'s `pads` list, owner =
+   `ir.n_nets + ir.n_pins + _UNCLAIMED_PAD_NET_OFFSET + k`, extending the
+   per-pin NC sentinel scheme that already keeps `NO_NET` distinct from
+   `maze.FREE`. **The offset is load-bearing** — three claim families
+   stamp one grid and all count from `n_nets + n_pins`: fiducial
+   candidate sites (bare), mounting holes (+4096), unclaimed lands
+   (+8192). Without it the first land and the first fiducial share an
+   owner id, and `stamp_shape`'s contest test is `owner != net_id`, so
+   two claimants read as one and reassign instead of going CONTESTED.
+   Caught in review, pre-ship. Appended AFTER
+   `maze.grid_for`, deliberately: the grid's pitch is cut from the point
+   set it is handed, so feeding it lands no net routes to would re-cut
+   the pitch board-wide for a purely local obstacle.
 
-   Mechanism that worked: a 4-tuple `(point, owner, PadShape, layers)`
-   appended to `_realize_maze`'s `pads` list, owner =
-   `ir.n_nets + ir.n_pins + k`, extending the per-pin NC sentinel scheme
-   that already keeps `NO_NET` distinct from `maze.FREE`.
+   **What it bought, measured on the dogfood at seed 1:**
 
-   **What broke:** `test_dogfood_route_op_routes_real_geometry...` (SLOW
-   — only the unfiltered lane runs it). Two GND tracks come out dangling,
-   e.g. a B.Cu track ending at `(14.514, -5.672)` where a dump shows no
-   pad, no via and no other copper within 2 mm, while GND still reports
-   `realized` with no note. Measured yield with it in: **35 → 28** (the
-   lands cost 7 escapes), so the effect is real and the change is worth
-   finishing.
+   | | before | after |
+   | --- | --- | --- |
+   | DRC clearance ERRORS | 24 | **0** |
+   | DRC clearance warns | 134 | 132 |
+   | escapes realized | 35 / 54 | **28 / 54** |
+   | GND | `failed`, copper in 2 islands | `realized`, **1 island** |
 
-   **Ruled out** (identical failing coordinates in all four variants, so
-   none of these is the cause): feeding the extra points to
-   `maze.grid_for` (which re-cuts the grid pitch board-wide — keep them
-   out of it regardless, that reasoning stands); stamp ORDER vs
-   `_stamp_pads`' pass-3 `claim_centre` (tried first and last);
-   pad-identity vs label claiming.
+   Every one of the 24 was `track[ARR1_RxCy] <-> pad[]` at **0.000mm** —
+   six escape nets (R1C5, R2C5, R3C5, R5C4, R6C3, R6C4) drawing B.Cu
+   straight across a land the gerbers flash. **The yield drop is the
+   point.** An escape that shorts an NC land was never realized; it was
+   reported as realized. 28 is the first number on this fixture that
+   means what it says, and it is the baseline every later arm compares to.
 
-   **One real bug found and fixed on the way, worth keeping:** claiming a
-   pin's own extra same-label pads (a split thermal slug, an EWOD
-   electrode's body + stub taper) as "unclaimed" gives them `net=""`,
-   which drops them from their net's pad set AND makes them foreign
-   obstacles to their own net. A pad is unclaimed iff its label matches NO
-   pin; `_real_pad_sizes`' "first wins" decides which pad's SIZE stands
-   for a pin, not which pads belong to it.
+   **The "dangling GND tracks" that backed this out on the first attempt
+   were a TEST defect, not a router one.** `_route_pass` calls
+   `grid.route` with `attach` at its default `True`, so a later segment
+   of a net may start anywhere on copper that net already owns — a
+   T-junction into an earlier run instead of a second trip back to the
+   pad. Measured: GND seg 59 started **0.000mm** from GND's own earlier
+   B.Cu run, and `connectivity.net_islands` called GND one component. The
+   dogfood assertion accepted an endpoint at a pad, at fixed copper, or
+   at one of the net's own routed VIA centres — not on one of its own
+   routed TRACKS, which is exactly what attach produces. Fixed by adding
+   that third target, with the two runs' own half-widths as the tolerance
+   (their copper bodies overlap) rather than an epsilon: the stored
+   polyline is filleted, so an anchor placed exactly on the raw path sits
+   hundredths off the rounded corner that actually ships.
 
-   **Next suspect, untested:** `_stamp_pads` pass 2 populates
-   `grid._pads`, which `via_clears_pads`/`_pad_keepout_mask` read as the
-   via keep-out, and `_straighten(shove_vias=...)` moves vias after a path
-   is built. A via refused or shoved without its track following would
-   produce exactly this dangling shape. Start by re-running with
-   `config.straighten` off and with via shoving off, separately.
+   **That third target is checked TRANSITIVELY**, seeded from tracks
+   ending at a real pad / fixed-copper point / own routed via and
+   propagated to fixpoint. A pairwise version would let two tracks that
+   touch only each other excuse one another and float free of every pad
+   — gripe 338983's signature, the thing the assertion exists to catch.
+   A `is_dogbone` stub is anchored by construction (it ends at its own
+   drop via), which is why it is exempt from the assertion but is still
+   a legal thing to attach to.
 
-   **Residual gap either way:** the non-first pads of a multi-pad pin stay
-   invisible to the router and DRC, since both index per pin. Closing that
-   needs those pads carried WITH their pin's net, not as netless
-   obstacles.
+   Four hypotheses were ruled out before that, all producing
+   byte-identical failing coordinates, and none was the cause: feeding
+   the extra points to `maze.grid_for`; stamp ORDER vs `_stamp_pads`'
+   pass-3 `claim_centre`; pad-identity vs label claiming;
+   `config.straighten` (turning it off moved the coordinate and kept the
+   failure). The lesson is the same one item 1 recorded: four variants
+   agreeing is evidence the *hypothesis class* is wrong, not that the
+   next variant will be right — dump the object instead.
+
+   **One real bug found on the way, kept:** claiming a pin's own extra
+   same-label pads (a split thermal slug, an EWOD electrode's body + stub
+   taper) as "unclaimed" gives them `net=""`, which drops them from their
+   net's pad set AND makes them foreign obstacles to their own net. A pad
+   is unclaimed iff its label matches NO pin; `_real_pad_sizes`' "first
+   wins" decides which pad's SIZE stands for a pin, not which pads belong
+   to it.
+
+   **Residual gap:** the non-first pads of a multi-pad pin stay invisible
+   to the router and DRC, since both index per pin. Closing that needs
+   those pads carried WITH their pin's net, not as netless obstacles.
 
 3. **Rim exit — MEASURE BEFORE BUILDING.** Reto, 2026-09-27: "the escape
    is just the needful vias we'll need in any case (except for the most
@@ -175,7 +214,7 @@ and backed out. 3 must be MEASURED before it is built.
    (`_noop_fixed_copper`) unclaimed ALL 54 nets' fabric including the
    interior, and let routes pass through foreign vias — which is why the
    doc calls it illegal. Dropping only the rim triples is a different,
-   unmeasured arm. Add it to `test_pcb_round9_probe.py` first.
+   unmeasured arm. Measure it first — see "Probe recipe" below.
 
    **Three blockers, all verified in code, that the naive change hits:**
    - A pin whose native pad layer is outside the class lock routes ONLY
@@ -328,16 +367,33 @@ real number in item 1.
 
 ## Probe recipe
 
-`tests/test_pcb_round9_probe.py` (landed; delete on ship) carries the
-arms. Each monkeypatches `precis.pcb.realize`: `_claim_fixed_copper` → no-op
-for the fabric arm; `_net_class_layers` → all signal layers for the layer
-arm (**which is why that arm is invalid — it admits F.Cu**);
+Write a `@pytest.mark.slow` throwaway that imports `_seed`,
+`_drain_one_job` and the `pcb` fixture from
+`tests/test_pcb_ewod_dogfood.py`, calls `pcb.put(op='route', seed=1)`,
+and writes a JSON/JSONL row per arm. Results go to the worktree root,
+never `/tmp` — `scripts/test` runs in a container and only the worktree
+is mounted. Delete it on ship; the numbers belong in the table above,
+the file does not.
+
+Each arm monkeypatches `precis.pcb.realize`: `_claim_fixed_copper` →
+no-op for the fabric arm; `_net_class_layers` → all signal layers for
+the layer arm (**which is why that arm is invalid — it admits F.Cu**);
 `_resolve_track_rules` AND `RealizeConfig` together for clearance, since
 the config default is a floor and any net without a class override falls
-through to the fab house tier. Sink placement is moved by wrapping
-`generators._REGISTRY["ewod_pad_array"]`. Results go to a JSONL at the
-worktree root, never `/tmp` — `scripts/test` runs in a container and only
-the worktree is mounted.
+through to the fab house tier; `_unclaimed_pad_claims` → `[]` to measure
+against the pre-item-2 board. Sink placement is moved by wrapping
+`generators._REGISTRY["ewod_pad_array"]`.
+
+**Measure DRC, not just yield.** Build DRC's own model
+(`{"layers", "copper": pcb_copper_list(...), "pads": pcb._drc_pads(...)}`)
+and run `drc.check_clearance` against
+`capability_for(drc.process_for_stackup(stackup))`, plus
+`connectivity.net_islands` over the same model. Escape yield alone could
+not tell "routed" from "routed through a land" — that is how 35/54 stood
+for a week with 24 shorts under it. To spy on the router itself,
+monkeypatch `realize._tracks_from_path` (it is handed the `RoutePath`,
+so `.points` and `.vias` are both there) and `realize._realize_maze`
+(for the `ir`).
 
 ## Target + blast radius
 

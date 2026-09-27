@@ -855,7 +855,113 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
         vias_by_net.setdefault(net, []).append(
             (float(c["x"]), float(c["y"]), _span_layers(span))
         )
-    for track in tracks:
+
+    # This net's OWN routed track copper, per layer — the third legal
+    # thing an endpoint may land on. `OccupancyGrid.route`'s multi-source
+    # start (``attach=True``, the default `_route_pass` uses) lets a later
+    # connection of a net begin anywhere on copper that net already owns,
+    # which draws a T-junction into an earlier track instead of a second
+    # run back to the pad. That is real, placed, same-net copper and it is
+    # LESS copper than the alternative; `connectivity.net_islands` models
+    # a track as a capsule and reports the junction as one component.
+    # Before this was modelled here, an attach-formed T read as "ends
+    # nowhere real" and the assertion below fired on a correct board
+    # (2026-09-27, GND seg 59 starting 0.000mm from GND's own earlier
+    # B.Cu run, while `net_islands` said GND was one piece).
+    runs_by_net: dict[
+        str, list[tuple[int, str, float, tuple[float, float], tuple[float, float]]]
+    ] = {}
+    for k, t in enumerate(tracks):
+        for seg in t["segments"]:
+            runs_by_net.setdefault(str(t["net"]), []).append(
+                (
+                    k,
+                    str(t.get("layer")),
+                    float(t.get("width_mm") or 0.0),
+                    (float(seg["start"][0]), float(seg["start"][1])),
+                    (float(seg["end"][0]), float(seg["end"][1])),
+                )
+            )
+
+    def _point_to_segment_mm(p, a, b) -> float:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        span2 = dx * dx + dy * dy
+        t = 0.0 if span2 == 0.0 else ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / span2
+        t = max(0.0, min(1.0, t))
+        return math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy))
+
+    def _track_ends(t):
+        s = t["segments"]
+        return [
+            (float(s[0]["start"][0]), float(s[0]["start"][1])),
+            (float(s[-1]["end"][0]), float(s[-1]["end"][1])),
+        ]
+
+    def _reachable_from(t, end) -> set[str]:
+        """Every layer this endpoint's copper reaches: its own drawn
+        layer, widened by any of this net's routed vias landing within
+        the match radius (a track capped by a via reaches every layer
+        that barrel spans)."""
+        out = {str(t.get("layer"))}
+        for vx, vy, vlayers in vias_by_net.get(str(t["net"]), []):
+            if math.hypot(end[0] - vx, end[1] - vy) < 1.0:
+                out |= vlayers
+        return out
+
+    # **Anchoring is TRANSITIVE, and has to be checked as such.** Letting
+    # an endpoint sit on any same-net run would let two tracks that only
+    # ever touch each other excuse one another and float free of every
+    # pad — which is gripe 338983's signature, the exact thing this
+    # assertion exists to catch. So a T-junction only counts when the run
+    # it lands on is itself anchored: seeded from tracks with an end at a
+    # real pad / fixed-copper point / this net's own routed via, then
+    # propagated to fixpoint. A plane fan-out stub (`is_dogbone`) is
+    # anchored by construction — it ends at its own drop via — which is
+    # why it is exempt from the assertion but still a legal thing to
+    # attach to.
+    def _at_real_copper(t, end) -> bool:
+        net_t = str(t["net"])
+        if any(
+            math.hypot(end[0] - vx, end[1] - vy) < 1.0
+            for vx, vy, _ in vias_by_net.get(net_t, [])
+        ):
+            return True
+        reach = _reachable_from(t, end)
+        return any(
+            math.hypot(end[0] - tx, end[1] - ty) < 1.0 and (reach & tlayers)
+            for tx, ty, tlayers in pads_by_net.get(net_t, [])
+            + fixed_by_net.get(net_t, [])
+        )
+
+    anchored = {
+        k
+        for k, t in enumerate(tracks)
+        if t.get("is_dogbone") or any(_at_real_copper(t, e) for e in _track_ends(t))
+    }
+    while True:
+        grew = False
+        for k, t in enumerate(tracks):
+            if k in anchored:
+                continue
+            width_k = float(t.get("width_mm") or 0.0)
+            for end in _track_ends(t):
+                reach = _reachable_from(t, end)
+                if any(
+                    other in anchored
+                    and other != k
+                    and run_layer in reach
+                    and _point_to_segment_mm(end, a, b) < (run_w + width_k) / 2.0
+                    for other, run_layer, run_w, a, b in runs_by_net.get(
+                        str(t["net"]), []
+                    )
+                ):
+                    anchored.add(k)
+                    grew = True
+                    break
+        if not grew:
+            break
+
+    for track_index, track in enumerate(tracks):
         if track.get("is_dogbone"):
             continue  # a plane fan-out stub ends at its drop via, not a pad
         segs = track["segments"]
@@ -896,16 +1002,41 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
             # this path never fired here; the fix's more accurate
             # per-side pad claims now legitimately split GND's pour and
             # this pass legitimately bridges it.
-            assert own_vias_here or any(
-                math.hypot(end[0] - tx, end[1] - ty) < 1.0 and (reachable & tlayers)
-                for tx, ty, tlayers in targets
+            # An attach-formed T-junction: this end sits ON another of
+            # this net's own routed runs, on a layer its copper reaches,
+            # and that run is itself ANCHORED (see the fixpoint above —
+            # two tracks touching only each other excuse nothing).
+            # The tolerance is the two runs' own COPPER — half of each
+            # width, so the test is "these two bodies overlap", not a
+            # tuned epsilon. It has to be that rather than 0: the stored
+            # polyline is FILLETED (`_tracks_from_path`'s own corner
+            # taut-up), so an anchor the router placed exactly on the raw
+            # path sits a few hundredths off the rounded corner that
+            # actually ships. Still an order of magnitude tighter than
+            # the 1.0mm pad radius above, and it cannot excuse an
+            # endpoint in bare board.
+            track_w = float(track.get("width_mm") or 0.0)
+            on_own_run = any(
+                other != track_index
+                and other in anchored
+                and run_layer in reachable
+                and _point_to_segment_mm(end, a, b) < (run_w + track_w) / 2.0
+                for other, run_layer, run_w, a, b in runs_by_net.get(net, [])
+            )
+            assert (
+                own_vias_here
+                or on_own_run
+                or any(
+                    math.hypot(end[0] - tx, end[1] - ty) < 1.0 and (reachable & tlayers)
+                    for tx, ty, tlayers in targets
+                )
             ), (
                 f"{track['net']}: track end {end} on {track_layer} (reachable: "
                 f"{sorted(reachable)}) is nowhere near any of its own pads, "
-                f"fixed copper, or own routed vias ON A LAYER ITS COPPER "
-                f"ACTUALLY REACHES {targets} — the router and the board "
-                "disagree about where this net's copper is (gripe 338983's "
-                "signature / layer-blind pad claim)"
+                f"fixed copper, own routed vias, or own routed track runs ON "
+                f"A LAYER ITS COPPER ACTUALLY REACHES {targets} — the router "
+                "and the board disagree about where this net's copper is "
+                "(gripe 338983's signature / layer-blind pad claim)"
             )
 
     # (2) The escape gap is CLOSED: electrode escapes route through the
@@ -945,10 +1076,15 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # (`_qfp_ring_footprint`) took it to 35/54. A half-of-observed floor
     # could not tell 35 from 10, so it noticed neither that move nor a
     # regression; tightened here to a real number with a tuning margin.
-    # (gr451276's unclaimed lands do NOT enter the router's grid — see
-    # `realize._unclaimed_pad_rows` — so they do not move this number.
-    # They WILL cost about 7 escapes when the router half lands.)
-    assert len(realized_escapes) >= 30, (
+    #
+    # LOWERED 35 -> 28 on 2026-09-27 by gr451276's router half
+    # (`realize._unclaimed_pad_claims`), and the drop is the POINT, not a
+    # regression: six escape nets used to "realize" by drawing B.Cu
+    # straight across an unclaimed land at 0.000mm clearance — 24 DRC
+    # clearance ERRORS of the form `track[ARR1_RxCy] <-> pad[]`, all of
+    # which that change takes to zero. An escape that shorts a land the
+    # fab flashes was never realized; it was reported as realized.
+    assert len(realized_escapes) >= 24, (
         "electrode escapes no longer route through the plaza fabric — the "
         f"gripe-346962 wall (enclosing pad discs) is back? {diag}"
     )
@@ -985,6 +1121,39 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     drc = pcb.get(id=slug, view="drc")
     assert "(pads-only DRC — no routed copper yet)" not in drc.body
     assert "error(s)" in drc.body
+
+    # (4) **No routed copper crosses an unclaimed land** (gr451276).
+    # Reto's own words: "no wire can route thru it, even if it is nc". An
+    # unclaimed footprint pad carries no net (`net: ""`) but is real
+    # copper in the gerbers, so a track over one is a short the board
+    # reports as a clean route. `realize._unclaimed_pad_rows` made those
+    # lands VISIBLE to DRC; `_unclaimed_pad_claims` puts them in the
+    # router's own occupancy grid so they are never crossed in the first
+    # place. Measured on this fixture at seed=1: 24 such errors before,
+    # 0 after. Asserted as a count of ZERO, not a ceiling — one is a
+    # short.
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb.capabilities import capability_for
+
+    layer_names = [str(layer["name"]) for layer in design["board"]["stackup"]]
+    model = {
+        "layers": layer_names,
+        "copper": [dict(c) for c in copper],
+        "pads": pcb._drc_pads(ref.id, layer_names),
+    }
+    shorts = [
+        f
+        for f in pcb_drc.check_clearance(
+            model,
+            capability_for(pcb_drc.process_for_stackup(design["board"]["stackup"])),
+        )
+        if f.severity == "error" and "pad[]" in f.where
+    ]
+    assert not shorts, (
+        f"{len(shorts)} routed track(s) cross an unclaimed (net-less) "
+        f"footprint land: {[f.where for f in shorts[:6]]} — the router's "
+        "grid is not claiming them (realize._unclaimed_pad_claims)"
+    )
 
 
 def test_dogfood_gerber_export_zip_loads(pcb, tmp_path):
