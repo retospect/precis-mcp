@@ -34,8 +34,11 @@ import pytest
 
 from precis.pcb import generators as pcb_generators
 from precis.pcb import realize as pcb_realize
-from tests.test_pcb_ewod_dogfood import _drain_one_job, _seed
-from tests.test_pcb_ewod_dogfood import pcb  # noqa: F401  (fixture)
+from tests.test_pcb_ewod_dogfood import (
+    _drain_one_job,
+    _seed,
+    pcb,  # noqa: F401  (fixture)
+)
 
 OUT = pathlib.Path(__file__).resolve().parents[1] / ".pcb-round9-probe.jsonl"
 
@@ -74,9 +77,7 @@ def _move_sink_outside(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _noop_fixed_copper(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        pcb_realize, "_claim_fixed_copper", lambda *a, **kw: None
-    )
+    monkeypatch.setattr(pcb_realize, "_claim_fixed_copper", lambda *a, **kw: None)
 
 
 def _force_clearance(monkeypatch: pytest.MonkeyPatch, value: float) -> None:

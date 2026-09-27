@@ -185,8 +185,13 @@ def test_deploy_resolves_the_wheel_before_it_touches_any_host() -> None:
     # Anchored to an invocation LINE, not a bare substring — the script's own
     # header comment names the command too, and matching that would compare
     # against a position near the top of the file and pass no matter what.
+    # Leading `VAR=val ` env assignments are part of a real invocation line
+    # (`PYTHONUNBUFFERED=1 ansible-playbook …` unbuffers ansible's progress
+    # output), so the anchor allows them rather than reading them as absence.
     invocation = re.search(
-        r"^\s*ansible-playbook redeploy-precis\.yml", deploy, re.MULTILINE
+        r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*ansible-playbook redeploy-precis\.yml",
+        deploy,
+        re.MULTILINE,
     )
     assert invocation is not None, "no ansible-playbook invocation found"
 

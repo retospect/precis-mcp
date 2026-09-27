@@ -69,7 +69,8 @@ if [[ -n "$MAIN_ROOT" ]]; then
     echo "   path=\"$MAIN_ROOT\" (hits are repo-relative → they map onto this worktree)."
     if [[ -n "$WORKTREE_ROOT" && "$WORKTREE_ROOT" != "$MAIN_ROOT" ]]; then
         echo "   ⚠ shell/Read/Edit operate in THIS worktree: $WORKTREE_ROOT"
-        echo "     Run Bash bare (cwd is already here); never 'cd' to the MAIN path above — use 'git -C' to reach it."
+        echo "     Run Bash bare (cwd is already here); never 'cd' to the MAIN path above."
+        echo "     Other trees: a -C redirect is refused by the harness — read them with scripts/inflight --json."
     fi
     echo "🧭 exact who-calls / what-depends-on (Python): scripts/coderef callers|deps <file.py::Sym>"
     echo "   (structural, deterministic — prefer over grepping a bare symbol name)."

@@ -15,9 +15,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: execs a shebang'd repo shell script via bash",
+)
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]

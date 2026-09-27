@@ -30,12 +30,27 @@ prefix is pure redundancy on every single command. It also risks tripping
 the "`cd` in a compound command can trigger a permission prompt" footgun
 for no benefit.
 
-Run commands bare; reach another tree with `git -C <path> …` (the mandated
-way to read the primary checkout or a sibling worktree — a `cd` into the
-primary tree, siblings included, is hard-blocked by `guard-cd-to-primary.py`;
-a `cd` to an unrelated repo is not) or an **absolute path** for
-non-git ops (`ls /Users/reto/precis-mcp`, `scripts/prod-psql` with an
-explicit host var). A log audit found ~60% of Bash calls carried a redundant
+Run commands bare. **Another tree is not reachable by git at all** from a
+worktree-isolated session: a `cd` into the primary tree or a sibling is
+hard-blocked by `guard-cd-to-primary.py`, and a `-C` redirect at another tree
+is refused by the harness itself ("a worktree-isolated session's operations
+must target its own worktree"). That refusal is **not** a repo hook and cannot
+be tuned here — `guard-worktree-path.py` only auto-corrects Edit/Write paths.
+To read another worktree's state, use `scripts/inflight --json`: it derives
+per-tree dirty counts, ahead/behind, and a capped diffstat at call time. For
+non-git ops an **absolute path** is fine (`ls /Users/reto/precis-mcp`,
+`scripts/prod-psql` with an explicit host var).
+
+Do not route around that refusal with a wrapper script that shells out
+internally — the guard matches the command text, so the indirection "works",
+but it defeats a boundary the harness enforces deliberately. If
+`scripts/inflight --json` lacks a field you need, add it there.
+
+Note the guard is text-based, so it also fires on commands that merely
+*mention* the tool in a heredoc or a quoted string. When that blocks a
+legitimate edit, use the Edit/Write file tools instead of a shell script.
+
+A log audit found ~60% of Bash calls carried a redundant
 `cd` prefix — the single largest source of wasted tokens across the fleet,
 which is why this is called out explicitly rather than left as an assumed
 default.

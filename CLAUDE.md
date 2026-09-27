@@ -92,8 +92,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
 
 ## Hook/gate-enforced — one-liners, detail on demand
 
-- Container-first; shell cwd is already this worktree — never `cd`; other
-  trees via `git -C`. → `docs/conventions/container-ops.md`
+- Container-first; shell cwd is already this worktree — never `cd`. Other
+  trees are NOT reachable by `git -C` (the harness refuses it) — read them
+  with `scripts/inflight --json`. → `docs/conventions/container-ops.md`
 - Text IO names `encoding="utf-8"` (ruff PLW1514 + AST-walk test; also
   `subprocess(..., text=True)`).
 - **Timestamps are UTC, labelled `Z`/`UTC`** — `date -u`, `datetime.now(UTC)`,
