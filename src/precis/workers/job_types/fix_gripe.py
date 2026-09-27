@@ -134,6 +134,16 @@ class FixGripeConfig:
     #: ``plan_tick``'s ``_max_turns``/``PRECIS_PLAN_TICK_MAX_TURNS`` knob.
     #: Override via ``PRECIS_FIX_GRIPE_MAX_TURNS``.
     max_turns: int = 120
+    #: Per-attempt ``--max-budget-usd`` cap for the same subprocess
+    #: (gr452384 comment 4). ``call_claude_agent``'s own default ($2) is
+    #: sized for "a ~20-turn sonnet session"; once :attr:`max_turns` lifted
+    #: the turn ceiling, the $2 cap became the binding one — 5 of 6
+    #: child-failed-parked fix attempts on 2026-09-27 died with
+    #: ``Exceeded USD budget (2)`` well inside both the turn and wall-clock
+    #: budgets. Sized to the turn ceiling it accompanies. Mirrors
+    #: ``plan_tick``'s ``_max_budget_usd``/``PRECIS_PLAN_TICK_MAX_USD``.
+    #: Override via ``PRECIS_FIX_GRIPE_MAX_USD``.
+    max_usd: float = 10.0
 
 
 def load_config_from_env() -> FixGripeConfig:
@@ -174,11 +184,15 @@ def load_config_from_env() -> FixGripeConfig:
         timeout_seconds=int(os.environ.get("PRECIS_FIX_TIMEOUT_SECONDS", "1800")),
         repos=repos,
         max_turns=_max_turns(),
+        max_usd=_max_usd(),
     )
 
 
 #: :attr:`FixGripeConfig.max_turns`'s default — see that field's docstring.
 _DEFAULT_MAX_TURNS: int = 120
+
+#: :attr:`FixGripeConfig.max_usd`'s default — see that field's docstring.
+_DEFAULT_MAX_USD: float = 10.0
 
 
 def _max_turns() -> int:
@@ -200,6 +214,27 @@ def _max_turns() -> int:
             _DEFAULT_MAX_TURNS,
         )
         return _DEFAULT_MAX_TURNS
+
+
+def _max_usd() -> float:
+    """The fix agent's ``--max-budget-usd`` cap.
+
+    Reads ``PRECIS_FIX_GRIPE_MAX_USD`` (a float) or falls back to
+    :data:`_DEFAULT_MAX_USD`. A malformed value logs and falls back
+    rather than crashing the job (mirrors ``plan_tick._max_budget_usd``).
+    """
+    raw = os.environ.get("PRECIS_FIX_GRIPE_MAX_USD")
+    if not raw:
+        return _DEFAULT_MAX_USD
+    try:
+        return float(raw)
+    except ValueError:
+        log.warning(
+            "fix_gripe: PRECIS_FIX_GRIPE_MAX_USD=%r is not a float; using $%.2f",
+            raw,
+            _DEFAULT_MAX_USD,
+        )
+        return _DEFAULT_MAX_USD
 
 
 def _parse_repos_env(raw: str | None) -> dict[str, Path]:
@@ -906,6 +941,10 @@ def _spawn_claude(cfg: FixGripeConfig, clone_dir: Path, prompt: str) -> Any:
         # size, not an autonomous-engineer-with-tests size; cfg.max_turns
         # (PRECIS_FIX_GRIPE_MAX_TURNS, default 120) replaces it.
         max_turns=cfg.max_turns,
+        # gr452384 comment 4: the $2 library default was the next ceiling
+        # in line once max_turns lifted; cfg.max_usd
+        # (PRECIS_FIX_GRIPE_MAX_USD, default $10) replaces it.
+        max_usd=cfg.max_usd,
         # No MCP server for fix_gripe — it never reaches the precis DB.
         mcp_config=None,
     )

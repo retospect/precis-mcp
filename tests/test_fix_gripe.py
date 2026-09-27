@@ -454,6 +454,70 @@ class TestMaxTurnsConfig:
         assert captured["max_turns"] == 77
 
 
+# ── max_usd: gr452384 comment 4 ───────────────────────────────────
+#
+# Once max_turns lifted the turn ceiling, call_claude_agent's own $2 budget
+# default became the binding one ("Exceeded USD budget (2)" on 5 of 6 parked
+# fix attempts, 2026-09-27). Same shape as max_turns: configurable, sized to
+# the turn ceiling it accompanies, and the configured value must reach the
+# chokepoint.
+
+
+class TestMaxUsdConfig:
+    def test_default_is_ten_dollars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.delenv("PRECIS_FIX_GRIPE_MAX_USD", raising=False)
+        cfg = load_config_from_env()
+        assert cfg.max_usd == 10.0
+
+    def test_env_override_parsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_MAX_USD", "2.5")
+        cfg = load_config_from_env()
+        assert cfg.max_usd == 2.5
+
+    def test_malformed_override_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_MAX_USD", "two dollars")
+        cfg = load_config_from_env()
+        assert cfg.max_usd == 10.0
+
+    def test_reaches_call_claude_agent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from precis.utils import claude_agent as ca_mod
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        captured: dict[str, Any] = {}
+
+        def _fake_call(prompt, **kw):
+            captured.update(kw)
+            return object()
+
+        monkeypatch.setattr(ca_mod, "call_claude_agent", _fake_call)
+
+        cfg = FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/precis-fix-work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-8",
+            timeout_seconds=900,
+            max_usd=6.5,
+        )
+        fix_gripe._spawn_claude(cfg, clone_dir, "the prompt")
+        assert captured["max_usd"] == 6.5
+
+
 # ── resolve_repo_for_gripe: tag-driven multi-repo ─────────────────
 
 

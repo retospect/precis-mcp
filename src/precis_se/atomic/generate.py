@@ -41,16 +41,11 @@ from precis.structure import Bond as StructBond
 from precis.structure import Scene as StructScene
 from precis.structure.cell import Cell as StructCell
 from precis_se.atomic.generators import GENERATORS, GeneratorError
+from precis_se.atomic.validate import A_to_m
 from precis_se.ops import OpError, SeTree, apply_ops
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
-
-
-#: Å → m for generated measures (the envelope crosses through the cad DSL
-#: parser; a measure is a bare number in the measure's unit, so the same
-#: multiply happens here, once, next to the envelope's).
-_A_TO_M = 1e-10
 
 
 def ingest_envelope(config: str) -> str:
@@ -230,19 +225,22 @@ def prepare_generate(
         # parameters as se measures in metres, the realisable band as
         # min/max -- from here on the user's relations onto
         # ``<block>.<name>`` are ordinary stack-up rows.
+        # A measure is a bare number in the measure's unit, so the Å → m
+        # multiply happens here — via validate's A_to_m, the one allowed
+        # structure-enclave crossing, never a local factor (the seam test).
         for gm in block.measures:
             m_op: dict[str, Any] = {
                 "op": "add_measure",
                 "block": block_name,
                 "name": gm.name,
-                "value": gm.value_A * _A_TO_M,
+                "value": A_to_m(gm.value_A),
                 "unit": "m",
                 "strength": "gauge",
             }
             if gm.min_A is not None:
-                m_op["min"] = gm.min_A * _A_TO_M
+                m_op["min"] = A_to_m(gm.min_A)
             if gm.max_A is not None:
-                m_op["max"] = gm.max_A * _A_TO_M
+                m_op["max"] = A_to_m(gm.max_A)
             if gm.reason:
                 m_op["reason"] = gm.reason
             apply_ops(tree, [m_op])

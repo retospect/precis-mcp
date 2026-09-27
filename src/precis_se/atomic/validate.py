@@ -311,6 +311,15 @@ def m_to_A(value_m: float) -> float:
     return value_m * _M_TO_A
 
 
+def A_to_m(value_A: float) -> float:
+    """An atomistic-scale length (Å) said in design-space metres — the
+    inverse of :func:`m_to_A`, for the same reason: a generator that
+    turns its Å-native parameters into se measures (``atomic/generate.py``'s
+    ``GeneratedMeasure`` rows) borrows the crossing from here rather than
+    spelling ``1e-10`` as a second seam."""
+    return value_A * _A_TO_M
+
+
 #: A frame's unit x/y/z columns, each a plain 3-list — dimensionless (unit
 #: vectors have no length unit to cross, unlike :func:`bound_port_origin`'s
 #: origin), so this is the SAME frame whether read off Å or m coordinates.
