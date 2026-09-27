@@ -125,6 +125,9 @@ stock-termination DRC. A design wanting eight independently-addressed
 switches at room temperature should be told it is over budget, with the
 number quoted, rather than discovering it in the lab.
 
+→ Built as `chain.channel_budget` / `chain.spectral_crosstalk` in
+`docs/backlog/se-walker-light-protocol.md`.
+
 ## Photo-charge coupling
 
 A separate coupling mode Reto raised: light → **charge** rather than light →

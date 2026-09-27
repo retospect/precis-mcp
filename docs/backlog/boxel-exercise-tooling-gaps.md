@@ -159,6 +159,10 @@ meshed — it is a deliberate trade, not an oversight. But it means a block
 cannot stretch, bend, or twist *as a body*. There is no compliant member, no
 spring, no elastic envelope.
 
+Chains (DNA helices, protein traces) keep this rule: each segment is rigid;
+bending lives *between* segments and is settled by `relax_chain`
+(`docs/backlog/se-nucleic-acid.md`), never by deforming an envelope.
+
 ### Why this matters more for `nm` than for `se`
 
 A steel beam is stiff enough that rigid-body is a fine approximation, and
