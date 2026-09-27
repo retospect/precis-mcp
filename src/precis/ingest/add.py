@@ -508,6 +508,41 @@ def _valid_fold_stub(ref_id: int, *, kind: str, conn: Any) -> int | None:
     return int(row[0]) if row is not None else None
 
 
+def _warn_skipped_cite_key_match(conn: Any, *, stem: str, exclude_ref_id: int) -> None:
+    """Log a near-miss: a live, ``pdf_sha256 IS NULL`` ref shares ``stem``
+    as its ``cite_key`` but :func:`_reconcile_orphan_stub`'s kind/body
+    guard disqualified it (not ``kind='paper'``, or it carries live body
+    chunks). This is exactly the shape of the 2026-09-27 incident (a
+    ``draft`` ref matched by filename) minus the guard that now stops it
+    — surfacing it at WARNING so the next near-miss is visible instead of
+    silent until it becomes a second incident.
+    """
+    row = conn.execute(
+        """
+        SELECT r.ref_id, r.kind
+          FROM ref_identifiers ri
+          JOIN refs r ON r.ref_id = ri.ref_id
+         WHERE ri.id_kind = 'cite_key'
+           AND lower(ri.id_value) = %s
+           AND r.pdf_sha256 IS NULL
+           AND r.retired_at IS NULL
+           AND r.ref_id <> %s
+         LIMIT 1
+        """,
+        (stem, exclude_ref_id),
+    ).fetchone()
+    if row is not None:
+        log.warning(
+            "precis_add: cite_key match ref_id=%s kind=%s for stem=%r skipped "
+            "by _reconcile_orphan_stub's paper/no-body-chunks guard "
+            "(survivor ref_id=%s) — not reconciled",
+            row[0],
+            row[1],
+            stem,
+            exclude_ref_id,
+        )
+
+
 def _reconcile_orphan_stub(
     store: Store,
     *,
@@ -533,6 +568,21 @@ def _reconcile_orphan_stub(
     provenance, soft-delete), mirroring
     :meth:`precis.handlers.memory.MemoryHandler.supersede`.
 
+    INVARIANT (prod incident 2026-09-27, ref 348633): a cite_key match
+    is only ever a candidate here when it is (a) ``kind = 'paper'`` —
+    the OA fetcher only ever mints ``paper`` stubs (see
+    :func:`precis.ingest.paper_hygiene.requeue_stranded_fetches` for the
+    same ``kind='paper'`` + ``pdf_sha256 IS NULL`` stub signature) — and
+    (b) carries no live body chunks (``ord >= 0``), the definition of a
+    metadata-only stub (see ``db_writer._has_body_chunks``). Draft slugs
+    are also stored as ``id_kind='cite_key'`` identifiers, and a draft
+    never has a ``pdf_sha256``; without this guard, ingesting a draft's
+    own exported PDF (``<slug>.pdf``) matched the draft's cite_key here
+    and retired it as a "content-duplicate-stub" of the new paper,
+    destroying its (non-empty) body. Never relax either half of the
+    guard to catch a same-kind duplicate — that's a different, identifier-
+    based dedup path, not this filename fallback.
+
     Returns the merged stub's ref_id, or ``None`` when there's nothing
     to reconcile (a plain re-drop of an existing PDF, or the survivor
     *is* the stub just upgraded in place).
@@ -547,14 +597,22 @@ def _reconcile_orphan_stub(
           JOIN refs r ON r.ref_id = ri.ref_id
          WHERE ri.id_kind = 'cite_key'
            AND lower(ri.id_value) = %s
+           AND r.kind = 'paper'
            AND r.pdf_sha256 IS NULL
            AND r.retired_at IS NULL
            AND r.ref_id <> %s
+           AND NOT EXISTS (
+                 SELECT 1 FROM chunks c
+                  WHERE c.ref_id = r.ref_id
+                    AND c.ord >= 0
+                    AND c.retired_at IS NULL
+               )
          LIMIT 1
         """,
         (stem, survivor_ref_id),
     ).fetchone()
     if row is None:
+        _warn_skipped_cite_key_match(conn, stem=stem, exclude_ref_id=survivor_ref_id)
         return None
     stub_id = int(row[0])
 

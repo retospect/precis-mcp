@@ -499,6 +499,94 @@ class TestReconcileOrphanStub:
             conn.commit()
         assert merged is None
 
+    def test_ignores_live_draft_sharing_the_cite_key(self, store, caplog):
+        """Prod incident 2026-09-27 (ref 348633): a ``draft``'s slug is
+        stored as an ``id_kind='cite_key'`` identifier just like a paper's,
+        and a draft never carries a ``pdf_sha256``. Ingesting the draft's
+        own exported PDF (``<slug>.pdf``) must never match it here and
+        retire it — the guard is ``kind='paper'`` AND no live body chunks,
+        and this draft is neither."""
+        draft = store.insert_ref(
+            kind="draft", slug="mydraft26", title="My Draft With A Body"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (draft.id, "body text of the draft"),
+            )
+            conn.commit()
+
+        survivor = store.insert_ref(
+            kind="paper", slug="newpaper26", title="New Paper Of The Same Name"
+        )
+        with store.pool.connection() as conn:
+            with caplog.at_level("WARNING", logger="precis.ingest.add"):
+                merged = _reconcile_orphan_stub(
+                    store,
+                    survivor_ref_id=survivor.id,
+                    file_stem="mydraft26",
+                    conn=conn,
+                )
+            conn.commit()
+        assert merged is None
+
+        with store.pool.connection() as conn:
+            draft_row = conn.execute(
+                "SELECT retired_at, meta->>'superseded_by' FROM refs WHERE ref_id=%s",
+                (draft.id,),
+            ).fetchone()
+            link = conn.execute(
+                "SELECT 1 FROM links WHERE dst_ref_id=%s AND relation='supersedes'",
+                (draft.id,),
+            ).fetchone()
+            nchunks = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (draft.id,),
+            ).fetchone()[0]
+        # Draft survives untouched: not retired, no supersede stamp/link,
+        # body chunks intact.
+        assert draft_row is not None
+        assert draft_row[0] is None
+        assert draft_row[1] is None
+        assert link is None
+        assert nchunks == 1
+        # The near-miss is visible at WARNING, naming the ref and its kind.
+        assert any(
+            f"ref_id={draft.id}" in r.message and "kind=draft" in r.message
+            for r in caplog.records
+        )
+
+    def test_ignores_paper_stub_that_carries_body_chunks(self, store):
+        """A paper-kind cite_key match that already has ingested body
+        chunks is not an orphan *metadata-only* stub — never collapse it,
+        even though it satisfies the ``kind='paper'`` half of the guard."""
+        held = store.insert_ref(kind="paper", slug="held26", title="Already Has A Body")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', %s)",
+                (held.id, "body text"),
+            )
+            conn.commit()
+
+        survivor = store.insert_ref(kind="paper", slug="newpaper27", title="New")
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="held26",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged is None
+
+        with store.pool.connection() as conn:
+            held_row = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id=%s", (held.id,)
+            ).fetchone()
+        assert held_row is not None and held_row[0] is None
+
 
 class TestSidecarFold:
     """A fetched PDF whose *extracted* identity doesn't dedup against any
