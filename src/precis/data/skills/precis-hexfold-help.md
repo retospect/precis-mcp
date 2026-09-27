@@ -56,6 +56,46 @@ b @ h/(7,0,A):0 [9-6]
 single-instance spec keeps bare `in`/`out`). Each carries its dangling
 ring and the hexfold path (`hx`) in `topology.ports`.
 
+## Joining parts: rims and `fuse`
+
+Every primitive exposes named rims; a `fuse` glues two rims of equal
+dangling count `N`, written **inside the arrow**:
+
+```text
+hexfold 0.2
+lattice: element=C sigma=1.42
+
+s: sheet(25A, 12)
+t: tube(fit in {(5,5),(6,6)}, len=3)
+c: cap(5,5)
+t.out --fuse k=0--> c.in
+```
+
+| primitive | rims | notes |
+|---|---|---|
+| `tube(n,m,len=)` | `in`, `out` | `N = n+m`; a `- hexagon@…` hole adds `hole` |
+| `cap(n,m)` | `in` | `cap(5,5)` N=10; `cap(6k,0)` lid N=6k; a hole adds `hole` |
+| `sheet(W,H)` | `rim` | the outer boundary (mixed type, `rim.nonstandard` INFO) |
+| `cone(P)` | `base` | the open frustum end; `fullerene(C60)` has no rim (it attaches via `@`) |
+
+`k` is the rotational phase (`0..N-1`); `--bond-->` adds single covalent
+edges instead of a seam; `seam <name>: A.r == B.r == C.r` is the k ≥ 3
+form. The verb-first spelling `fuse P --> Q` is not a statement.
+
+## Iterating: check, then edit
+
+`fidelity="check"` on a `put` still creates the (empty) design row, and a
+second `put` on the same id is a **full replace** that drops any minted
+block. Iterate with `edit(kind='se', id=..., ops=[...])` once the design
+exists. A refused spec comes back as `line:col: message` (ParseError) or
+as the rendered report (ERROR findings); `hexfold internal error …` means
+a compiler bug — file a gripe with the spec.
+
+After minting, the build report (`extent.snap`, `fit.propagated`,
+`seam.rings`, …) is under `get(kind='se', id=..., view='block',
+args={'name': '<block>'})` → "## generated". Before minting, run the
+same spec with `fidelity="check"`.
+
 ## Nanobud menus (attachments)
 
 | menu | construction | citation |
@@ -125,9 +165,12 @@ before `len=fit`.
 se block declares its lengths as measures — `<inst>_W`, `<inst>_H`,
 `<inst>_len` (value = realised length, `min`/`max` = the snap cell: the
 requests that land on the same integer) and `<inst>_R` (a point). Relate
-your own measures to them (`relation.source = "<block>.<inst>_W"`) and
-`view='measures'` stacks the tolerance up; a `tol` tighter than the
-snap delta is a `mismatch`.
+your own measures to them (`relation.source = "<block>.<inst>_W"`,
+grammar in [[precis-se-help]] `add_measure`) and `view='measures'` stacks
+the tolerance up: the `status` column says `ok`, or that the declared
+value disagrees with the derived one beyond the accumulated tolerance;
+`view='drc'` reports the same as a `tolerance_mismatch` warning. A `tol`
+tighter than the snap delta is exactly that case.
 
 ## Rules
 

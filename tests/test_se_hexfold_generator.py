@@ -361,3 +361,33 @@ def test_prepare_generate_lands_measures_and_stackup_uses_them(store: Store) -> 
     )
     rows = {r.measure: r for r in stackup(tree.measures)}
     assert rows["sheet.width_tight"].problem_kind == "mismatch"
+
+
+def test_hexfold_check_mode_surfaces_parse_errors_as_text() -> None:
+    """``fidelity='check'`` is the path a caller iterates a spec on, so a
+    ParseError must come back as ``line:col: message`` in a GeneratorError
+    -- not escape as an internal error (dogfood 2026-09-27: every guess at
+    the fuse grammar read ``internal error in put: ParseError``)."""
+    with pytest.raises(GeneratorError, match=r"^\d+:\d+: "):
+        _build(
+            "hexfold 0.2\nt: tube(5,5,len=3)\nfuse t.out --> t.in k=0\n",
+            fidelity="check",
+        )
+
+
+def test_hexfold_internal_crash_is_named_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-hexfold exception out of the compiler is a hexfold bug; the
+    caller gets told so with the exception text, in both fidelities."""
+    from precis_se.atomic.generators import hexfold_spec as mod
+
+    def boom(*_a: object, **_k: object) -> object:
+        raise ValueError("invalid literal for int() with base 10: 'fit'")
+
+    monkeypatch.setattr(mod, "check", boom)
+    with pytest.raises(GeneratorError, match="hexfold internal error.*invalid literal"):
+        _build(TUBE_SPEC, fidelity="check")
+    monkeypatch.setattr(mod, "build", boom)
+    with pytest.raises(GeneratorError, match="hexfold internal error.*File a gripe"):
+        _build(TUBE_SPEC)

@@ -400,7 +400,10 @@ when both endpoints are lattice sites.
 
 #### 11.2 `fuse` — a seam of multiplicity two `[impl 0.1]`
 
-    fuse  P --> Q  k=<phase>      delete nothing further; glue two rims rim-to-rim
+    P --fuse k=<phase>--> Q       delete nothing further; glue two rims rim-to-rim
+
+(e.g. `t.out --fuse k=0--> c.in`; the verb and its phase sit inside the
+arrow. A bare `fuse P --> Q` line is not a statement and is refused.)
 
 `fuse` pairs the two rims' **dangling atoms** (the degree-2 atoms of each
 rim walk, in cyclic order — `rim.dangling` in the JSON): `P.dangling[i]` is

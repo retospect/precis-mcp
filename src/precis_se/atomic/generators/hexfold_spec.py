@@ -159,6 +159,18 @@ def _port_direction(coords: np.ndarray, atoms: tuple[int, ...]) -> list[float]:
     return [float(x) for x in direction / norm]
 
 
+def _internal_message(exc: Exception) -> str:
+    """A hexfold crash that is not a :class:`HexfoldError` is a compiler
+    bug, not a spec error -- say so, with the exception text, instead of
+    letting the dispatcher print ``internal error … (see server log)``,
+    which the caller cannot read."""
+    return (
+        f"hexfold internal error while compiling the spec: "
+        f"{type(exc).__name__}: {exc} -- the spec parsed; this is a hexfold "
+        "bug, not a spec mistake. File a gripe with the spec text."
+    )
+
+
 def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
     """``{"spec": "<.hx text>", "fidelity"?: "check"|"stick", "geometry"?:
     bool}`` — build the spec into atoms/bonds/ports (``fidelity="stick"``,
@@ -173,7 +185,16 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
 
     if fidelity == "check":
         geometry = bool(params.get("geometry", True))
-        report = check(spec, geometry=geometry)
+        try:
+            report = check(spec, geometry=geometry)
+        except HexfoldError as exc:
+            # A ParseError renders as ``line:col: message`` -- the one
+            # error a check-mode caller iterates on, so it must reach them
+            # as text, not as ``internal error … (see server log)``
+            # (dogfood 2026-09-27).
+            raise GeneratorError(str(exc)) from exc
+        except (ValueError, KeyError, IndexError) as exc:
+            raise GeneratorError(_internal_message(exc)) from exc
         return GeneratedBlock(
             envelope="",
             ports=[],
@@ -191,6 +212,8 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         raise GeneratorError(exc.report.render(verbose=True)) from exc
     except HexfoldError as exc:  # ParseError and friends carry no Report
         raise GeneratorError(str(exc)) from exc
+    except (ValueError, KeyError, IndexError) as exc:
+        raise GeneratorError(_internal_message(exc)) from exc
 
     coords = stick(net)
     elements = [a.element for a in net.atoms]
