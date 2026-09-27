@@ -9,7 +9,9 @@ Todo-tree detectors (each one SQL query → finding rows):
   open leaf must root under some strategic.
 * **stale claims** — ``claimed-by:<x>`` held > ``STALE_CLAIM_HOURS=3``;
   age from ``ref_tags.created_at`` (same source the ingest lock TTL uses).
-* **long waits** — ``waiting-for:*`` held > ``LONG_WAIT_DAYS=7``.
+* **long waits** — ``waiting-for:*`` held > ``LONG_WAIT_DAYS=7``, except
+  the targets in :data:`_LONG_WAIT_EXEMPT_TARGETS` (``waiting-for:reto``,
+  the human's own queue — see there for why).
 * **stuck doable** — a dispatch candidate (``dispatch.py::_candidate_parent_ids``'s
   signal: ``meta.executor``/``llm_tier``/``OPEN:executor:*``) with none of
   the doable-exclusion tags
@@ -75,6 +77,8 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
   wide; nothing alerted until the web 502). Complements the boot-time WARN
   escalation in :func:`precis.dispatch.boot`, which fires once per broken
   boot; this fires on every nursery pass until the roster is fixed.
+  **Raises nothing today** — :data:`_NO_ALERT` suppresses it after 0/12
+  true positives on its first pass (gr452084); the count is still logged.
 
 Each finding → an ``alert`` under ``alert_source = nursery:<category>``,
 deduped on ``fingerprint = "<category>:<ref_id>"`` (:mod:`precis.alerts`);
@@ -314,7 +318,21 @@ _SEVERITY: dict[str, str] = {
 #: count is still logged per pass), so re-arming is one line and no query is
 #: lost. A suppressed category still runs its resolve sweep with an empty
 #: live set, which is what clears the pile already open.
-_NO_ALERT: frozenset[str] = frozenset({"orphan"})
+#: ``kind-shrinkage`` joins it 2026-09-26, the day after it shipped:
+#: its first nursery pass minted 12 ``critical`` alerts and **none of the
+#: 12 was real** (gr452084 — six compared a process against its own
+#: roster from 42-62 days earlier because the lookback is anchored to
+#: ``max(last_seen)`` rather than ``now()``, five named the deliberately
+#: retired ``nm`` kind, four named the ``PRECIS_ROOT``-gated
+#: ``markdown``/``plaintext``/``tex``). Suppression is the right verb
+#: rather than dismissing those 12 by hand: :func:`precis.alerts.raise_alert`
+#: dedups on ``resolved_at IS NULL AND retired_at IS NULL``, so resolving
+#: or deleting a row lets the next pass INSERT a fresh one with
+#: ``is_new=True`` and re-page it. Suppressed, the resolve sweep runs with
+#: an empty live set and all 12 clear on the first pass. Re-arm when
+#: gr452084's three defects are fixed — the detector keeps running and
+#: logging its count meanwhile, so nothing is lost.
+_NO_ALERT: frozenset[str] = frozenset({"orphan", "kind-shrinkage"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,8 +586,23 @@ def _detect_stale_claims(store: Store) -> list[Symptom]:
 # ── long waits ────────────────────────────────────────────────────
 
 
+#: ``waiting-for:`` targets whose long wait is deliberately NOT an alert.
+#: ``reto`` is the human's own decision queue: those rows are already read
+#: on ``/asks`` and restated in every doctor report, so re-publishing each
+#: one as an alert at day 7 adds a channel without adding a reader — the
+#: same argument that suppressed ``orphan`` in :data:`_NO_ALERT`. It also
+#: closed a loop: the doctor reads its own asks' long-wait alerts and files
+#: a *fresh* ask to dismiss them (td451912, 2026-09-26), so the channel fed
+#: itself. With 161 asks open on 2026-09-26 the day-7 rollover was due to
+#: mint ~20 alerts a day for the following week. A wait on a machine
+#: dependency — a slow API, an ingest that takes weeks — is still a real
+#: condition and still alerts.
+_LONG_WAIT_EXEMPT_TARGETS: frozenset[str] = frozenset({"waiting-for:reto"})
+
+
 def _detect_long_waits(store: Store) -> list[Symptom]:
-    """Leaves with ``waiting-for:*`` tagged more than ``LONG_WAIT_DAYS``.
+    """Leaves with ``waiting-for:*`` tagged more than ``LONG_WAIT_DAYS``,
+    excluding the targets in :data:`_LONG_WAIT_EXEMPT_TARGETS`.
 
     The wait may still be legitimate (a slow API, a paper that takes
     weeks to ingest) but past the threshold the operator probably
@@ -586,7 +619,8 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'waiting-for:%%'
-               AND rt.created_at < now() - %s::interval
+               AND t.value <> ALL(%(exempt)s::text[])
+               AND rt.created_at < now() - %(age)s::interval
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
                        WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
@@ -595,7 +629,10 @@ def _detect_long_waits(store: Store) -> list[Symptom]:
              ORDER BY r.ref_id
              LIMIT 50
             """,
-            (f"{LONG_WAIT_DAYS} days",),
+            {
+                "exempt": sorted(_LONG_WAIT_EXEMPT_TARGETS),
+                "age": f"{LONG_WAIT_DAYS} days",
+            },
         ).fetchall()
     out: list[Symptom] = []
     for r in rows:

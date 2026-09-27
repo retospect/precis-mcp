@@ -313,6 +313,39 @@ def test_long_wait_detector_ignores_fresh_wait(
     assert rid not in ids
 
 
+def test_long_wait_detector_exempts_the_human_decision_queue(
+    handler: TodoHandler, store: Store
+) -> None:
+    """``waiting-for:reto`` rows are read on ``/asks`` and restated in the
+    doctor report, so alerting each one at day 7 added a channel without a
+    reader — and fed a loop where the doctor filed a fresh ask to dismiss
+    its own asks' alerts (td451912). 161 open asks were due to mint ~20
+    alerts a day."""
+    r = handler.put(text="Decide the taproot_edges freshness budget")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("waiting-for:reto"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:reto", (LONG_WAIT_DAYS + 1) * 24)
+
+    findings = _detect_long_waits(store)
+
+    assert rid not in {f.ref_id for f in findings}
+
+
+def test_long_wait_detector_still_flags_a_machine_dependency(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The exemption is one target, not the category: a wait on a slow API
+    or a long ingest is still a real condition worth an alert."""
+    r = handler.put(text="Waiting on the crossref backfill")
+    rid = _id_of(r.body)
+    store.add_tag(rid, Tag.open("waiting-for:crossref"), set_by="agent")
+    _backdate_tag(store, rid, "waiting-for:crossref", (LONG_WAIT_DAYS + 1) * 24)
+
+    findings = _detect_long_waits(store)
+
+    assert rid in {f.ref_id for f in findings}
+
+
 # ── stuck doable ──────────────────────────────────────────────────
 
 
@@ -2078,32 +2111,48 @@ def test_kind_shrinkage_within_boot_slop_is_one_boot(store: Store) -> None:
     )
 
 
-def test_run_nursery_pass_raises_critical_for_kind_shrinkage_and_auto_resolves(
-    store: Store,
-) -> None:
-    """End to end: a dropped kind becomes an open critical alert, and
-    resolves once a later boot's roster is back to the earlier shape."""
+def test_kind_shrinkage_is_detected_but_never_alerted(store: Store) -> None:
+    """gr452084: the first pass after this detector shipped minted 12
+    critical alerts and none of the 12 was real, so the category is
+    suppressed while its defects are open. Detection is kept — the count
+    still goes to the log, and re-arming is one entry in ``_NO_ALERT``."""
     host = _host()
     _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=120)
     _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
 
+    assert _detect_kind_shrinkage(store)  # detection is kept
+
     run_nursery_pass(store)
 
-    alerts = list_open_alerts(store)
-    mine = [
-        a
-        for a in alerts
-        if a["source"] == "nursery:kind-shrinkage" and host in (a["title"] or "")
-    ]
-    assert len(mine) == 1
-    assert mine[0]["severity"] == "critical"
+    assert [
+        a for a in list_open_alerts(store) if a["source"] == "nursery:kind-shrinkage"
+    ] == []
 
-    # se comes back on a later boot.
-    _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=0)
-    run_nursery_pass(store)
 
-    alerts_after = list_open_alerts(store)
-    assert not any(
-        a["source"] == "nursery:kind-shrinkage" and host in (a["title"] or "")
-        for a in alerts_after
+def test_kind_shrinkage_alerts_already_open_are_resolved_by_the_next_pass(
+    store: Store,
+) -> None:
+    """The 12 rows minted before suppression drain themselves rather than
+    being dismissed by hand — hand-resolving would let ``raise_alert``
+    re-INSERT them as new criticals and re-page on the following pass."""
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=120)
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+    raise_alert(
+        store,
+        source="nursery:kind-shrinkage",
+        fingerprint=f"kind-shrinkage:{host}",
+        title=f"[kind-shrinkage] serve on {host} lost kind(s): se",
+        detail="raised before the category was suppressed",
+        severity="critical",
     )
+    assert [
+        a for a in list_open_alerts(store) if a["source"] == "nursery:kind-shrinkage"
+    ]
+
+    result = run_nursery_pass(store)
+
+    assert [
+        a for a in list_open_alerts(store) if a["source"] == "nursery:kind-shrinkage"
+    ] == []
+    assert result.ok >= 1  # counted as resolved, not as raised
