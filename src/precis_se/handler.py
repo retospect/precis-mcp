@@ -2763,9 +2763,17 @@ def _measure_row(m: Any, tree: Any = None) -> dict[str, str]:
         "datum": m.datum or "frame",
         "derived": "—",
     }
-    if tree is not None:
+    is_feature_measure = bool(
+        (m.relation or {}).get("feature") or (m.datum and m.datum != "frame")
+    )
+    if tree is not None and is_feature_measure:
         # The geometric number beside the declared one — evaluation is
-        # cheap (envelope ray exits, no field solve) and stateless.
+        # cheap (envelope ray exits, no field solve) and stateless. Only a
+        # measure that names a feature (or a non-frame datum) is a
+        # geometric measurement; a plain anchor or a source-related
+        # measure has nothing to derive, and evaluating it just appended
+        # "no 'feature' selector … nothing to measure" to every row
+        # (dogfood 2026-09-27).
         try:
             mv = se_datums.evaluate_measure(tree, m)
         except (se_datums.MeasureError, cad_dsl.DslError):

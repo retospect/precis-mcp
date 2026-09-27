@@ -734,3 +734,26 @@ def test_c17_measure_row_survives_evaluate_measure_raising(
     monkeypatch.setattr(handler_mod.se_datums, "evaluate_measure", boom)
     row = handler_mod._measure_row(spec, tree)
     assert row["derived"] == "—"
+
+
+def test_c17_plain_and_source_related_measures_carry_no_feature_noise() -> None:
+    """A measure with neither a ``feature`` selector nor a non-frame datum
+    is not a geometric measurement, so the view must not append "no
+    'feature' selector … nothing to measure" to its reason (dogfood
+    2026-09-27: every generated anchor row carried it). A feature measure
+    is still evaluated."""
+    from precis_se import handler as handler_mod
+
+    tree = _tree({"name": "b", "envelope": "box:w0.04d0.02h0.01"})
+    anchor = _measure("b", "w", value=0.04, reason="generated anchor")
+    row = handler_mod._measure_row(anchor, tree)
+    assert row["reason"] == "generated anchor"
+    assert row["derived"] == "—"
+    related = _measure(
+        "b", "w_req", value=0.04, relation={"source": "b.w", "tol": 1e-3}
+    )
+    row = handler_mod._measure_row(related, tree)
+    assert "nothing to measure" not in row["reason"]
+    feat = _measure("b", "side", value=0.02, relation={"feature": "face:b.side1"})
+    row = handler_mod._measure_row(feat, tree)
+    assert row["derived"] != "—"
