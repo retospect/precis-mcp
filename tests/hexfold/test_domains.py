@@ -220,3 +220,16 @@ a.in --fuse k=0--> t.out
     assert p["len"].isdigit() and int(p["len"]) >= 1
     params = {dict(f.data)["param"] for f in codes["fit.alternatives"]}
     assert params == {"domain", "len"}
+
+
+def test_check_accepts_a_domain_spec_and_reports_the_propagation() -> None:
+    """``check`` (the se ``fidelity='check'`` tier) must run its post-build
+    passes on the RESOLVED spec: ``port.symmetry`` used to ``int()`` the
+    raw ``fit in {…}`` text and die with ``ValueError`` (dogfood 2026-09-27)."""
+    from hexfold.check import check
+
+    report = check(_CHAIN)
+    assert report.ok
+    codes = {f.code for f in report.findings}
+    assert "fit.propagated" in codes
+    assert "port.symmetry" not in codes

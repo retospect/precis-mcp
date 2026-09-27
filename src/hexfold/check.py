@@ -360,8 +360,10 @@ def check(
             report = Report(report.findings + (f,)).sorted()
         return report
     findings.extend(_findings_from_net(net))
-    # port.symmetry: collar order k must divide gcd(n,m) of the tube it binds
-    findings.extend(_port_symmetry(ast))
+    # port.symmetry: collar order k must divide gcd(n,m) of the tube it binds.
+    # Read the RESOLVED spec on the net, not the authored one: a roll-up
+    # domain (``tube(fit in {…})``) is text until build resolves it.
+    findings.extend(_port_symmetry(net.spec))
     if geometry:
         findings.extend(_geometry_findings(net, profile))
     if generated_of is not None and (f := _gen_stale_finding(ast, generated_of)):
