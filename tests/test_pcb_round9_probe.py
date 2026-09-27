@@ -96,12 +96,34 @@ def _force_clearance(monkeypatch: pytest.MonkeyPatch, value: float) -> None:
     monkeypatch.setattr(pcb_realize, "RealizeConfig", patched_cfg)
 
 
+def _unlock_layers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let escapes use every signal layer, not just B.Cu.
+
+    **This arm is INVALID and kept only so the number is not re-derived
+    as a fact.** ``signal_layers`` includes F.Cu, which carries the
+    electrode field, so the 42/54 and 54/54 it produced were bought by
+    routing escapes across the very plane the board exists to control.
+    ``DEFAULT_STACKUP`` makes In1/In2 PLANE layers, so B.Cu is the only
+    routing layer this board has — the escape class's own
+    ``escape_layers`` default (every signal layer the field does not own)
+    already resolves to exactly that, and widens only when the design
+    authors a stackup with inner signal layers.
+    """
+
+    def patched(ir: Any, n: int, config: Any, signal_layers: Any) -> Any:
+        return list(signal_layers), None
+
+    monkeypatch.setattr(pcb_realize, "_net_class_layers", patched)
+
+
 _ARMS = [
     "baseline",
     "sink_outside",
     "fabric_noop",
     "sink_outside_fabric_noop",
     "clearance_093",
+    "layers_unlocked",
+    "layers_unlocked_fabric_noop",
 ]
 
 
@@ -114,6 +136,8 @@ def test_probe_round9_levers(pcb, store, monkeypatch, arm) -> None:  # noqa: F81
         _noop_fixed_copper(monkeypatch)
     if arm == "clearance_093":
         _force_clearance(monkeypatch, 0.093)
+    if "layers_unlocked" in arm:
+        _unlock_layers(monkeypatch)
 
     slug = _seed(pcb)
     ref = store.get_ref(kind="pcb", id=slug)

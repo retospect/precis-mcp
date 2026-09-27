@@ -2105,6 +2105,50 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     chain_pins: list[tuple[int, int, str]] = []
     x_anchor = float(params.get("x", 0.0))
     y_anchor = float(params.get("y", 0.0))
+    # Which layers an escape may use. DESIGN data, not engine policy --
+    # the board decides, the generator passes it through.
+    #
+    # The DEFAULT states the actual rule rather than one stackup's answer
+    # to it: **every SIGNAL layer the electrode field does not own.** The
+    # electrodes are F.Cu by construction, so an escape may never use it
+    # -- a trace across the electrode plane disturbs the very field the
+    # board exists to control (measured 2026-09-27: lifting the layer
+    # restriction to "any signal layer" promptly routed escapes on F.Cu).
+    #
+    # The default is computed from ``DEFAULT_STACKUP``, which evaluates to
+    # ``["B.Cu"]`` -- identical to the value Rulings 2026-09-19 item 7
+    # hardcoded, because In1/In2 are PLANE layers there, so B.Cu is the
+    # only routing layer that stackup actually has. The ruling was not
+    # costing anything; the STACKUP is.
+    #
+    # **This does NOT read the design's own stackup.** A generator is
+    # expanded from its params alone (`_REGISTRY`'s contract) and has no
+    # board context, so a design with a different stackup still gets
+    # DEFAULT_STACKUP's answer here and must pass ``escape_layers``
+    # explicitly. Threading the real stackup in is the honest fix and
+    # belongs with `put(stackup=...)` (unbuilt) -- until then this is a
+    # default, not a derivation.
+    #
+    # Preference needs no prohibition either way: ``maze.VIA_COST_MM``
+    # already charges every layer transition, so the router stays on the
+    # outermost available layer unless a detour costs more than a via.
+    escape_layers = [str(x) for x in (params.get("escape_layers") or [])]
+    if params.get("escape_layers") is not None and not escape_layers:
+        raise ValueError("escape_layers: empty -- omit it to take the default")
+    if "F.Cu" in escape_layers:
+        raise ValueError(
+            "escape_layers: F.Cu carries the electrode field -- an escape "
+            "routed across it disturbs the very field the board exists to "
+            "control"
+        )
+    if len(set(escape_layers)) != len(escape_layers):
+        raise ValueError(f"escape_layers: duplicate layer in {escape_layers}")
+    if not escape_layers:
+        escape_layers = [
+            str(layer["name"])
+            for layer in DEFAULT_STACKUP
+            if layer.get("role") == "signal" and str(layer["name"]) != "F.Cu"
+        ]
 
     # A diagonal escape's via slot sits only `gap*sqrt(2)` from the
     # diagonally-adjacent electrode's own corner (round-2 stress-test
@@ -2646,6 +2690,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         "reserve": sorted(reserve),
         "plazas": sorted([list(p) for p in plaza_set]),
         "pad_sizes": canonical_pad_sizes,
+        "escape_layers": escape_layers,
         "sink_grid": (
             {
                 "part": sink_cfg.part,
@@ -2679,7 +2724,10 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         copper=copper,
         net_classes={
             net_class: {"clearance_mm": gap_clearance_mm},
-            escape_class: {"clearance_mm": gap_clearance_mm, "layers": ["B.Cu"]},
+            escape_class: {
+                "clearance_mm": gap_clearance_mm,
+                "layers": list(escape_layers),
+            },
         },
     )
 

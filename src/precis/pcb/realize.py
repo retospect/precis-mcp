@@ -5300,6 +5300,14 @@ class PadGeom:
     axis_aligned: bool = True
 
 
+#: Which pin a raw footprint pad belongs to — :func:`precis.pcb.padplace.
+#: pad_label`, the one implementation, re-exported under this module's own
+#: name because three copies of the rule had accumulated (two of them in
+#: this file). Aliased rather than wrapped so there is nothing here to
+#: drift.
+_footprint_pad_label = padplace.pad_label
+
+
 def _real_pad_sizes(
     ir: PcbIR, inst_id: int, fp: dict[str, Any]
 ) -> dict[
@@ -5377,12 +5385,7 @@ def _real_pad_sizes(
     for raw in fp.get("pads") or []:
         if not raw.get("poly"):
             continue
-        entry = pin_map.get(str(raw.get("number")))
-        name = (
-            str(entry.get("name"))
-            if isinstance(entry, dict) and entry.get("name") is not None
-            else str(raw.get("number") or "")
-        )
+        name = _footprint_pad_label(raw, pin_map)
         if name in raw_poly_by_name:
             # FIRST poly-bearing raw pad for this pin wins — matches the
             # `out[name]` "first wins" convention two lines below exactly,
@@ -5421,12 +5424,7 @@ def _real_pad_sizes(
     # layer-entry shares one raw pad so this cannot disagree with itself.
     raw_rot_by_name: dict[str, float] = {}
     for raw in fp.get("pads") or []:
-        entry = pin_map.get(str(raw.get("number")))
-        name = (
-            str(entry.get("name"))
-            if isinstance(entry, dict) and entry.get("name") is not None
-            else str(raw.get("number") or "")
-        )
+        name = _footprint_pad_label(raw, pin_map)
         if name in raw_rot_by_name:
             continue
         raw_rot_by_name[name] = float(raw.get("rot") or 0.0)
@@ -5555,6 +5553,165 @@ def pad_geometry(
     return out
 
 
+def _unclaimed_pad_rows(
+    ir: PcbIR,
+    layers: list[str],
+    footprints: dict[str, dict[str, Any]] | None,
+) -> list[tuple[int, dict[str, Any], dict[str, Any]]]:
+    """``(inst_id, raw_pad, placed_pad)`` for every REAL footprint pad that
+    no netlist pin of its instance claims.
+
+    **A pad is physical.** It occupies board space and nothing may route
+    through it whether or not a net names it: a manufacturer's NC pin, an
+    unconnected corner land, the second half of a split thermal slug.
+    Everything that asks "where are the pads" walks ``ir.pin_*``, so
+    before this those pads existed in exactly ONE place -- the fab output,
+    where :func:`precis.pcb.padplace.board_pads` flashes every pad the
+    cached footprint carries. Copper could therefore be routed straight
+    through a pad the gerbers then make: a real short (gr451276).
+
+    **DETECTION ONLY, for now.** This reaches DRC (`_drc_pads`), the
+    plane pours (`_pad_blockers`), the fixed-copper connectivity model and
+    `to_gerber_model` — every consumer of :func:`pads_for_ir`. It does NOT
+    reach the maze router, which stamps :func:`pad_geometry` over
+    ``ir.pin_*`` in :func:`_route_pass`. So a track drawn through an
+    unclaimed land is REPORTED by `view='drc'`, not prevented. Claiming
+    these in the router's grid destabilised it (dangling GND tracks on the
+    EWOD dogfood, root cause not yet found) and is its own item — see
+    `docs/backlog/pcb-escape-and-driver-chain.md`.
+
+    The ``(inst_id, raw_pad, placed_pad)`` shape is kept because the
+    router half needs each pad's raw ``rot``, which the placed dict drops.
+
+    **Pad IDENTITY, not label, decides claimed-ness.** A label can name
+    several pads -- a split thermal slug maps two numbers to one ``EP``,
+    and this module's own ``_real_pad_sizes`` takes the FIRST and ignores
+    the rest. Mirroring that first-wins rule exactly is what makes the
+    second half of such a slug land here instead of vanishing again.
+
+    **An instance whose pin/pad join FAILED contributes nothing.** When a
+    wired pin's label is not a ``pin_map`` name, that pin already falls
+    back to a landpattern-synthesized pad at a synthesized offset
+    (:func:`pad_geometry`'s own documented fallback) -- and its real pad
+    would then look unclaimed here, so the SAME physical pad would be
+    emitted twice, at two coordinates, on two different "nets", making
+    every pair a spurious zero-gap clearance error. Skipping the instance
+    keeps the old behaviour (pad invisible) rather than inventing a
+    contradiction; the pin-name mismatch is the defect to fix, and
+    ``check_synthesized_footprint`` already reports it.
+
+    Only an instance with a REAL cached footprint contributes: a
+    synthesized landpattern is generated FROM the netlist's pins, so it
+    has no pads beyond them to discover, and inventing lands there would
+    be the "never invent geometry" the fab path already refuses. An
+    unplaced instance (NaN pose) contributes nothing either, matching
+    :func:`precis.pcb.padplace.board_pads`'s own rule.
+    """
+    if not footprints or not layers:
+        return []
+    rows: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+    for inst_id in range(ir.n_instances):
+        refdes = str(ir.instance_refdes[inst_id])
+        fp = footprints.get(refdes) or {}
+        raw_pads = fp.get("pads") or []
+        if not raw_pads:
+            continue
+        x = float(ir.inst_x[inst_id])
+        y = float(ir.inst_y[inst_id])
+        if math.isnan(x) or math.isnan(y):
+            continue
+        pin_map = fp.get("pin_map") or {}
+        pin_labels = {
+            str(ir.pin_label[p])
+            for p in range(ir.n_pins)
+            if int(ir.pin_instance[p]) == inst_id
+        }
+        # `place_footprint_pads` resolves a pad's label the same way: the
+        # `pin_map` name when there is one, else the bare pad number. Ask
+        # on the RAW pads so only unclaimed ones are handed to it --
+        # filtering its output would have to re-derive that mapping from
+        # an already-transformed dict.
+        labels = [_footprint_pad_label(pad, pin_map) for pad in raw_pads]
+        if pin_labels - set(labels):
+            continue  # join failed for at least one pin -- see docstring
+        # A pad is unclaimed iff its label matches NO pin of this
+        # instance. **All** same-label pads are claimed, not just the
+        # first: several pads sharing one label are one electrical node
+        # (this module's `_real_pad_sizes` documents the shape — an EWOD
+        # electrode's body plus its own stub taper, a split thermal slug),
+        # and `_real_pad_sizes`' "first wins" decides which pad's SIZE
+        # stands for the pin, NOT which pads belong to it.
+        #
+        # An earlier version of this filter took first-wins to mean
+        # ownership and handed the rest to this function. That gave a
+        # pin's own extra pads `net=""`, which (a) dropped them from their
+        # net's pad set, so a track legitimately ending on one read as
+        # ending in empty space, and (b) made them FOREIGN obstacles to
+        # the very net they belong to. Caught by
+        # `test_dogfood_route_op_routes_real_geometry...` on GND.
+        #
+        # KNOWN RESIDUAL: the non-first pads of a multi-pad pin are still
+        # invisible to the router's grid and DRC's pad set, since both
+        # index per pin. Closing that needs these pads carried WITH their
+        # pin's net rather than as netless obstacles — a separate change.
+        extras = [
+            pad
+            for pad, label in zip(raw_pads, labels, strict=True)
+            if label not in pin_labels
+        ]
+        if not extras:
+            continue
+        rot = float(ir.inst_rot[inst_id])
+        inst = {
+            "x": x,
+            "y": y,
+            "rot": 0.0 if math.isnan(rot) else rot,
+            "refdes": refdes,
+            "layer": "bottom" if bool(ir.inst_bottom[inst_id]) else "top",
+        }
+        # ONE outer layer, not the whole stackup: a drilled pad makes
+        # `place_footprint_pads` emit a row per copper layer, but
+        # `pads_for_ir`'s per-pin loop emits a single row carrying `drill`
+        # and lets `drc.py::clearance_pairs_indexed` read that as "spans
+        # every layer". Passing the whole list here would give an
+        # unclaimed THT pad a different shape from a claimed one and
+        # multiply every finding about it by the layer count.
+        placed, _drills = padplace.place_footprint_pads(
+            extras,
+            inst,
+            layers=[_side_layer(ir, inst_id, layers)],
+            pin_map=pin_map,
+        )
+        part_lcsc = ir.instance_part_lcsc[inst_id]
+        for raw, pad in zip(extras, placed, strict=True):
+            # Real measured geometry by construction -- this path exists
+            # only where a cached footprint does, so `export_fab`'s
+            # synthesized-geometry refusal must never trip on these.
+            pad["synthesized"] = False
+            if part_lcsc:
+                pad["part_lcsc"] = str(part_lcsc)
+            rows.append((inst_id, raw, pad))
+    return rows
+
+
+def _unclaimed_footprint_pads(
+    ir: PcbIR,
+    layers: list[str],
+    footprints: dict[str, dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """The model-shaped half of :func:`_unclaimed_pad_rows` — every
+    unclaimed footprint pad as a :mod:`precis.pcb.gerber` pad dict.
+
+    Keyed by pad number and never promoted to a pin: no net, no IR pin id,
+    no place in connectivity. These are obstacles and clearance subjects,
+    nothing more; ``net`` is the empty string, the same "a pad with no net
+    is skipped" convention :mod:`precis.pcb.connectivity` already applies
+    to an NC pin's pad. ``pin`` carries the footprint's own label purely
+    so a DRC finding can name the thing it hit.
+    """
+    return [pad for _inst_id, _raw, pad in _unclaimed_pad_rows(ir, layers, footprints)]
+
+
 def pads_for_ir(
     ir: PcbIR,
     layers: list[str],
@@ -5584,6 +5741,18 @@ def pads_for_ir(
     *near* its pad is not connected to it — and the flag is what stops
     synthesized geometry from quietly becoming a gerber. See
     :func:`precis.pcb.gerber.export_fab`'s refusal.
+
+    **Unclaimed footprint pads are in here too (gr451276)** — a real
+    cached footprint's pads that no netlist pin names (NC pins, dead
+    corner lands, the second half of a split thermal slug). They are
+    physical: they take up space and the gerbers flash them, so every
+    consumer of this function must see them or it is checking a different
+    board than the one that gets made. See
+    :func:`_unclaimed_footprint_pads`; they carry no net and are never
+    promoted to pins. The maze router does NOT read its grid from this
+    function (it stamps :func:`pad_geometry` over ``ir.pin_*`` directly),
+    so these are reported by DRC, not avoided by the router — see
+    :func:`_unclaimed_pad_rows`.
 
     **``paste``/``mask``/``role``/``drill`` ride along too (gr341578)**,
     sourced the same way :func:`~precis.pcb.padplace.place_footprint_pads`
@@ -5740,6 +5909,13 @@ def pads_for_ir(
                     "pin": "1",
                 }
             )
+    # Footprint pads no pin claims (gr451276) — see
+    # :func:`_unclaimed_footprint_pads`. Appended here rather than folded
+    # into the per-pin loop above because they are NOT pins: they have no
+    # `pid`, no net and no entry in any `ir.pin_*` array, and the one
+    # thing every consumer of this function actually needs from them is
+    # that they occupy space.
+    out.extend(_unclaimed_footprint_pads(ir, layers, footprints))
     return out
 
 

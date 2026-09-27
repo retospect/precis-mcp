@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from precis.pcb import DEFAULT_STACKUP, gerber
+from precis.pcb import DEFAULT_STACKUP, gerber, padplace
 from precis.pcb import drc as pcb_drc
 from precis.pcb.capabilities import capability_for
 from precis.pcb.connectivity import net_islands
@@ -1521,6 +1521,99 @@ def test_pads_for_ir_prefers_a_real_footprint_pad_over_synthesis():
     assert real_pad["shape"] == "rect"
     # U1 has no cached footprint in `footprints` -- still synthesized.
     assert by_net["P0"]["synthesized"] is True
+
+
+def test_pads_for_ir_emits_footprint_pads_no_net_claims():
+    """gr451276 — a pad is physical. A cached footprint's pads that the
+    netlist never names (NC pins, dead corner lands, an unwired thermal
+    slug) occupy board space and the gerbers flash them, so the router's
+    obstacle set and DRC's pad set must see them too or they are checking
+    a different board than the one that gets made.
+
+    Not promoted to pins: no net, and ``pin`` carries the footprint's own
+    label so a finding can name the thing it hit."""
+    ir = from_graph(_multi_package_graph(), stackup=DEFAULT_STACKUP)
+    footprints = {
+        "U0": {
+            "pads": [
+                # Claimed: net N0 names U0 pin "1".
+                {"number": "1", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
+                # Unclaimed, and not even named by `pin_map` — the bare
+                # pad number is the only label it has.
+                {"number": "2", "x": 2.0, "y": 0.5, "w": 0.6, "h": 0.4},
+                # Unclaimed but pin_map-named: declared by the footprint,
+                # never wired by this design.
+                {"number": "9", "x": -2.0, "y": 0.5, "w": 0.6, "h": 0.4},
+            ],
+            "pin_map": {"1": {"name": "1"}, "9": {"name": "NC1"}},
+        }
+    }
+    pads = pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP], footprints)
+    u0 = [p for p in pads if p["refdes"] == "U0"]
+    by_pin = {p["pin"]: p for p in u0}
+    assert set(by_pin) == {"1", "2", "NC1"}, (
+        f"every U0 footprint pad must be in the model, claimed or not: {by_pin}"
+    )
+    # U0 sits at the origin unrotated, so footprint-local IS board space.
+    assert (by_pin["2"]["x"], by_pin["2"]["y"]) == pytest.approx((2.0, 0.5))
+    assert by_pin["2"]["w"] == pytest.approx(0.6)
+    assert by_pin["2"]["h"] == pytest.approx(0.4)
+    for pin in ("2", "NC1"):
+        assert by_pin[pin]["net"] == "", (
+            "an unclaimed pad belongs to no net -- attributing one would "
+            "hand `connectivity.net_islands` a phantom member"
+        )
+        assert by_pin[pin]["synthesized"] is False, (
+            "this path only exists where a real cached footprint does, so "
+            "`export_fab`'s synthesized refusal must not trip on it"
+        )
+    assert by_pin["1"]["net"] == "N0"
+
+
+def test_pads_for_ir_places_unclaimed_pads_through_the_instance_pose():
+    """An unclaimed pad is transformed by the SAME mirror/rotate rule its
+    claimed neighbours are (``padplace.place_footprint_pads``, reused
+    rather than re-derived) — a pad the router avoids at the wrong
+    coordinate is worse than one it cannot see, since it blocks empty
+    board and leaves the real copper unguarded."""
+    graph = _multi_package_graph()
+    graph["instances"][0]["rot"] = 90.0
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    unclaimed: dict[str, Any] = {"number": "2", "x": 2.0, "y": 0.0, "w": 0.6, "h": 0.4}
+    footprints = {
+        "U0": {
+            "pads": [
+                {"number": "1", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
+                unclaimed,
+            ],
+            "pin_map": {"1": {"name": "1"}},
+        }
+    }
+    pads = pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP], footprints)
+    extra = next(p for p in pads if p["refdes"] == "U0" and p["pin"] == "2")
+    # Asserted against `place_pad_point` itself, not a hand-computed
+    # coordinate: the invariant is "the SAME transform the claimed pads
+    # get", and re-deriving the rotation here would be a second copy of
+    # the rule, free to drift from it.
+    want = padplace.place_pad_point(unclaimed, {"x": 0.0, "y": 0.0, "rot": 90.0})
+    assert (extra["x"], extra["y"]) == pytest.approx(want)
+    assert (extra["x"], extra["y"]) != pytest.approx((2.0, 0.0)), (
+        "the instance pose must actually have been applied"
+    )
+    # A rect pad at an effective 90 degrees swaps w/h, same as a claimed one.
+    assert extra["w"] == pytest.approx(0.4)
+    assert extra["h"] == pytest.approx(0.6)
+
+
+def test_pads_for_ir_invents_no_pads_for_a_synthesized_footprint():
+    """No cached footprint means no unclaimed pads to discover: a
+    landpattern is synthesized FROM the netlist's pins, so anything beyond
+    them would be invented geometry -- the one thing the fab path already
+    refuses to do."""
+    ir = from_graph(_multi_package_graph(), stackup=DEFAULT_STACKUP)
+    pads = pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    assert len(pads) == ir.n_pins
+    assert all(p["net"] for p in pads)
 
 
 def test_pad_geometry_real_override_survives_instance_rotation():

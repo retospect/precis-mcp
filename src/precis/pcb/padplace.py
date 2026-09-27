@@ -102,6 +102,26 @@ def _rotate_cw(x: float, y: float, deg: float) -> tuple[float, float]:
     return x * c + y * s, -x * s + y * c
 
 
+def pad_label(pad: dict[str, Any], pin_map: dict[str, Any] | None) -> str:
+    """Which pin one raw footprint pad belongs to: the ``pin_map`` entry's
+    ``name`` when the footprint declares one for this pad number, else the
+    pad number itself.
+
+    **The one implementation** (gr451276). Three hand copies of this
+    five-line resolution had accumulated — here, and twice in
+    :func:`precis.pcb.realize._real_pad_sizes` — which is the same "one
+    rule, N call sites, drifted" defect :func:`precis.pcb.realize.
+    pads_for_ir`'s own docstring records for pad position and size. It has
+    to agree everywhere, because :func:`precis.pcb.realize.
+    _unclaimed_pad_rows` decides whether a pad is claimed by a pin using
+    exactly this answer: disagree, and a pad either vanishes from the
+    obstacle set or is claimed twice."""
+    entry = (pin_map or {}).get(str(pad.get("number")))
+    if isinstance(entry, dict) and entry.get("name") is not None:
+        return str(entry["name"])
+    return str(pad.get("number") or "")
+
+
 def is_bottom_instance(inst: dict[str, Any]) -> bool:
     """Same string convention :mod:`precis.pcb.export` already uses
     (``cpl_csv``/``specctra_dsn``) — never a second parallel parse.
@@ -234,12 +254,7 @@ def place_footprint_pads(
         if shape in ("rect", "obround") and _swap_wh(total_rot):
             w, h = h, w
 
-        entry_dict = pin_map.get(str(pad.get("number")))
-        pin_name = (
-            str(entry_dict.get("name"))
-            if isinstance(entry_dict, dict) and entry_dict.get("name") is not None
-            else str(pad.get("number") or "")
-        )
+        pin_name = pad_label(pad, pin_map)
         net = pin_to_net.get(pin_name, "")
 
         drill = pad.get("drill")
@@ -367,6 +382,7 @@ def board_pads(
 __all__ = [
     "board_pads",
     "is_bottom_instance",
+    "pad_label",
     "place_footprint_pads",
     "place_pad_point",
 ]

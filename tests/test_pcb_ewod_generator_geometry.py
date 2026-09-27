@@ -311,6 +311,51 @@ def test_pad_sizes_merged_pad_keeps_constant_gap_against_its_neighbours():
         assert d == pytest.approx(gap, abs=1e-6), f"{neighbour_pin}: gap={d}"
 
 
+def test_escape_layers_defaults_to_every_signal_layer_but_the_field():
+    """The escape net class must name layers, and the default must state
+    the RULE (every signal layer the electrode field does not own) rather
+    than a hardcoded answer. On ``DEFAULT_STACKUP`` that is ``["B.Cu"]``,
+    since In1/In2 are plane layers there."""
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": [4, 4]})
+    assert exp.canonical_params["escape_layers"] == ["B.Cu"]
+    escape_class = next(
+        rules for name, rules in exp.net_classes.items() if name.endswith("_escape")
+    )
+    assert escape_class["layers"] == ["B.Cu"]
+
+
+def test_escape_layers_is_authorable_as_design_data():
+    """Which layers an escape may use is the BOARD's call, not the
+    engine's — a design with inner signal layers passes them through."""
+    exp = G.expand(
+        "ewod_pad_array", "ARR", {"grid": [4, 4], "escape_layers": ["In2.Cu", "B.Cu"]}
+    )
+    assert exp.canonical_params["escape_layers"] == ["In2.Cu", "B.Cu"]
+    escape_class = next(
+        rules for name, rules in exp.net_classes.items() if name.endswith("_escape")
+    )
+    assert escape_class["layers"] == ["In2.Cu", "B.Cu"]
+
+
+def test_escape_layers_refuses_the_electrode_layer():
+    """Measured 2026-09-27: lifting the layer restriction to "any signal
+    layer" promptly routed escapes across F.Cu, the electrode plane. The
+    param must not be a way to ask for that again."""
+    with pytest.raises(ValueError, match="F.Cu carries the electrode field"):
+        G.expand(
+            "ewod_pad_array", "ARR", {"grid": [4, 4], "escape_layers": ["F.Cu", "B.Cu"]}
+        )
+
+
+def test_escape_layers_refuses_an_empty_list_and_duplicates():
+    with pytest.raises(ValueError, match="omit it to take the default"):
+        G.expand("ewod_pad_array", "ARR", {"grid": [4, 4], "escape_layers": []})
+    with pytest.raises(ValueError, match="duplicate layer"):
+        G.expand(
+            "ewod_pad_array", "ARR", {"grid": [4, 4], "escape_layers": ["B.Cu", "B.Cu"]}
+        )
+
+
 def test_pad_sizes_rejects_a_span_covering_a_plaza_cell():
     # docs/backlog/pcb-ewod-multitile.md decisions log: "merged pads never
     # cover a plaza (would short the 8 escape nets)" -- P1_1 is the

@@ -630,6 +630,32 @@ def test_dogfood_drc_pads_sit_where_the_exported_copper_does(pcb):
         local_footprints=pcb.store.pcb_local_footprints_for(ref.id),
     )
 
+    # gr451276 — the driver's real footprint declares pads the netlist
+    # never names: `_qfp_ring_footprint` pads 69 pins out to an 80-pad
+    # ring, leaving 11 `NC<n>` lands. The gerber writer flashes all 80, so
+    # DRC and the router must see all 80 — copper routed through an
+    # unnamed land is a real short, and before this fix `pads_for_ir`
+    # walked `ir.pin_*` and could not see one.
+    def _sink_pins(pads):
+        return {
+            str(p["pin"])
+            for p in pads
+            if str(p.get("refdes") or "").startswith("ARR1_SINK")
+        }
+
+    sink_exported = _sink_pins(exported)
+    nc_lands = {pin for pin in sink_exported if pin.startswith("NC")}
+    assert len(nc_lands) == 11, (
+        f"the stand-in's 80-pad ring should leave 11 NC lands: {sorted(nc_lands)}"
+    )
+    assert nc_lands <= _sink_pins(drc_pads), (
+        "NC lands the gerber flashes are missing from the DRC/router pad "
+        f"set: {sorted(nc_lands - _sink_pins(drc_pads))}"
+    )
+    assert _sink_pins(drc_pads) == sink_exported, (
+        "the two pad sources must describe the same 80 lands"
+    )
+
     # The array's own electrodes only: their footprint is the one with no
     # package-family label for the synthesis to approximate, so this is
     # where the defect was metres-wide rather than tenths of a millimetre.
@@ -913,7 +939,16 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # own net count slightly). Floor set to half the observed count, same
     # "a tuning wobble can't redden it" margin every earlier floor here
     # used.
-    assert len(realized_escapes) >= 6, (
+    #
+    # Later correction, MEASURED on this fixture at seed=1: swapping the
+    # grid-shaped HV507 stand-in for a real peripheral ring
+    # (`_qfp_ring_footprint`) took it to 35/54. A half-of-observed floor
+    # could not tell 35 from 10, so it noticed neither that move nor a
+    # regression; tightened here to a real number with a tuning margin.
+    # (gr451276's unclaimed lands do NOT enter the router's grid — see
+    # `realize._unclaimed_pad_rows` — so they do not move this number.
+    # They WILL cost about 7 escapes when the router half lands.)
+    assert len(realized_escapes) >= 30, (
         "electrode escapes no longer route through the plaza fabric — the "
         f"gripe-346962 wall (enclosing pad discs) is back? {diag}"
     )
@@ -923,27 +958,26 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
         problems = ((routes.get(net) or {}).get("fail") or {}).get("problems") or []
         assert problems, f"escape net {net} failed to route with NO recorded reason"
 
-    # (3) Rulings 2026-09-19 item 7: "the escape is plaza via -> B.Cu
-    # track -> sink pad, nothing else" -- every escape net's ROUTER-drawn
-    # copper (`fixed` is absent/False; the authored plaza via/neck stub
-    # is `fixed: True` and does not count, module docstring's own
-    # distinction) is B.Cu-only, with no router-added via at all (a via
-    # would mean the router itself crossed off B.Cu somewhere).
+    # (3) An escape never routes on the ELECTRODE layer. Rulings
+    # 2026-09-19 item 7 wrote this as `"layers": ["B.Cu"]`; since
+    # 2026-09-27 the generator derives it instead — every signal layer
+    # the electrode field does not own — which on DEFAULT_STACKUP is the
+    # same ["B.Cu"], because In1/In2 are PLANE layers and B.Cu is the
+    # only routing layer this board has.
+    #
+    # The assertion is written against the RULE, not that one answer, so
+    # it keeps holding when the stackup gains inner signal layers (which
+    # needs `put(stackup=...)`, unbuilt): whatever layers open up, F.Cu
+    # stays closed. Routing a trace across the electrode plane disturbs
+    # the field the board exists to control — measured 2026-09-27, an
+    # "any signal layer" escape class promptly did exactly that.
     router_tracks = [t for t in tracks if not t.get("fixed")]
     escape_track_layers = {
         t["layer"] for t in router_tracks if t["net"] in set(realized_escapes)
     }
-    assert escape_track_layers <= {"B.Cu"}, (
-        "a realized escape net's router-drawn copper touched a layer "
-        f"other than B.Cu: {escape_track_layers}"
-    )
-    router_via_escape_nets = {
-        c["net"] for c in copper if c.get("ctype") == "via" and not c.get("fixed")
-    } & set(escape_nets)
-    assert not router_via_escape_nets, (
-        f"the router placed its own via on escape net(s) "
-        f"{router_via_escape_nets} — the B.Cu-only lock should make that "
-        "impossible"
+    assert "F.Cu" not in escape_track_layers, (
+        "an escape routed on F.Cu, which the electrode array owns: "
+        f"{escape_track_layers}"
     )
 
     # Post-route DRC is the FULL check now (routed copper exists), not the
