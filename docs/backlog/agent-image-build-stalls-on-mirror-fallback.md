@@ -1,6 +1,6 @@
 ---
 status: idea
-title: the agent image build takes an hour-plus on a cold deps layer — probably cache invalidation, not a stall; instrumented 2026-09-26
+title: the agent image build wedged on an apt/nodesource fetch and the watchdog kill ABORTED the deploy instead of retrying (2026-09-27); hour-plus cold-deps runs are a separate, benign cause
 ---
 
 # The agent image build's hour-plus runs are probably not a stall
@@ -152,3 +152,69 @@ Two things to weigh once there is a second data point:
 ## Not in scope
 The mirror fallback itself (gr307314) — it works, and it is what keeps the
 build possible at all when the registry is unreachable.
+
+## Second data point, 2026-09-27 — the watchdog fired, and the abort is a new defect
+
+The deploy of `6008588c` (18:39–19:03Z,
+`.deploy-logs/20260927-183925-6008588c4851….log`) is the second data point
+this item was waiting on. It lands on the **genuine wedge** branch, not the
+cold-cache one, and it exposes a second problem the instrumentation did not
+anticipate.
+
+What the controller log shows, verified here: the last task is `docker build
+--target agent` (`:524`), inside the final play "(Re)build the precis-agent
+image where the container executor lane runs". ~14 `ASYNC POLL` lines at
+`started=True finished=False`, then:
+
+    [ERROR]: Task failed: [Errno 2] No such file or directory
+    Origin: .../33-precis-agent-image.yml:524:11
+    fatal: [melchior]: FAILED! => {"changed": false, "msg": "Task failed: [Errno 2] No such file or directory"}
+    melchior : ok=185 changed=25 unreachable=0 failed=1
+
+Reported from melchior's host-side trail by the session that ran it (not yet
+verified here — the trail has not been captured into this repo): the build
+went quiet **908 s into the `apt-get` step (#22, Debian/nodesource fetch)**,
+the 900 s progress watchdog killed it, **rc 130**.
+
+### Three findings
+
+1. **The stall is real and the stuck step is now named.** 900 s of silence in
+   an `apt-get` fetch is not a slow cold build — so the silence ceiling did
+   exactly the job it was built for, and the cold-cache reading does not
+   explain this one. The wedged fetch is `apt`/nodesource, i.e. name
+   resolution or egress inside the deploy user's colima VM, which puts the
+   DNS reading back on the table with a concrete step attached.
+
+2. **The retries ladder did not engage — this aborts the deploy.** The task
+   carries `retries: 3`, `delay: 30`, `until: (agent_build.rc | default(1))
+   == 0` and `failed_when: false`, and the comments assert a watchdog kill is
+   "a non-zero rc like any other, so the retries/until ladder picks it up
+   unchanged". Observed: one attempt, a `FileNotFoundError` raised as a task
+   ERROR, play aborted. A task-level exception short-circuits `until` and
+   `failed_when` both, so gr335099's whole point — that a killed build costs
+   one retry, not the deploy — did not hold. A candidate mechanism worth
+   checking first: `_agent_build_wrapper` resolves to
+   `{{ _agent_build_dir }}/deploy/playbooks/files/precis-agent-build.sh`,
+   inside the **sha-scoped** build dir that the cleanup task wipes per-sha; if
+   that dir goes away between the kill and the retry, the retry's own exec
+   raises exactly `[Errno 2]`.
+
+3. **The trail did not reach the controller.** `failed_when: false` exists so
+   the diagnostics and the "Read the build's progress trail from the host"
+   slurp still run on a build that never converged. A raised exception skips
+   them: grepping the controller log for `WATCHDOG`, `rc=130`, `apt-get`,
+   `#22`, `nodesource` returns nothing. The 09-26 design — "the next stall
+   records itself" — held on the host and failed at delivery, so reading it
+   still took a manual ssh. Fixing (2) fixes this as a side effect; if (2)
+   turns out to be hard, the slurp wants to be in a `block`/`always` instead.
+
+### Blast radius, for the record
+
+The failing play is the last one, after "Bounce all precis daemons" and the
+asa refresh, and melchior's recap is `ok=185 changed=25 failed=1` — so every
+venv install and daemon bounce completed on all six hosts. Venvs were uniform
+at `6008588c`; what stayed stale is melchior's resident `precis-agent` image,
+still labelled `d9a7f115`. "Mixed fleet" overstates it. The consequence that
+does bite: with `PRECIS_AGENT_CONTAINER=1` on the agent lane, container-
+executed agentic jobs on melchior keep running the old image, so a code fix
+shipped to the venvs is not live for them until an image rebuild succeeds.
