@@ -27,9 +27,12 @@ don't; refused on a pre-CHE graph). Loop + levers: skill
 ``results_json``/``graph_json`` are ``autocatpath.pipeline.analyze``'s
 output (>= 0.5.2) verbatim — traps/poisons/selectivity/CHE/``score``
 (>= 0.6.0) — not a local mirror. The aggregate additionally runs the
-engine's **microkinetics in-process** post-combine (``runner.run_kinetics``,
+engine's **microkinetics** post-combine (``runner.run_kinetics_subprocess``,
 mirrors the ``autocatpath kinetics`` CLI; feature-detected, engine >= 0.15;
-failure → ``results_json.kinetics_error``, never fails the run).
+failure → ``results_json.kinetics_error``, never fails the run). It runs in a
+killable child under ``PRECIS_AUTOCATPATH_KINETICS_SECONDS`` (default 900, 0 =
+unbounded in-process): the solve is a diagnostic bonus, and job 449981 showed
+an unbounded one can hold a worker for 11h on work that measures 33s.
 ``_dispatch_common`` reduces this to the scalar summary quest harvests:
 barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 (from ``results_json.score``), the CHE route scalars ``U_L``/``U_opt``/

@@ -30,9 +30,10 @@ import hashlib
 import io
 import json
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from autocatpath import __version__, provenance
 from autocatpath.config import Config
@@ -1129,6 +1130,163 @@ def run_kinetics(config: dict[str, Any], artifact: PathwayArtifact) -> None:
         results_json["kinetics_error"] = str(exc)
 
 
+#: Wall-clock ceiling for the kinetics solve, in seconds. Measured cost on a
+#: real production aggregate (job 449981's own inputs, engine 0.22.0): **29
+#: seconds**. 900 is thirty times that — generous enough that a slow-but-
+#: healthy solve is never cut off, small enough that a wedged one cannot eat
+#: a worker. Set to 0 to run in-process with no ceiling (what every caller
+#: did before this existed).
+_KINETICS_TIMEOUT_ENV = "PRECIS_AUTOCATPATH_KINETICS_SECONDS"
+_DEFAULT_KINETICS_TIMEOUT_S = 900
+
+
+def _kinetics_timeout_s() -> int:
+    try:
+        return max(0, int(os.environ.get(_KINETICS_TIMEOUT_ENV, "")))
+    except ValueError:
+        return _DEFAULT_KINETICS_TIMEOUT_S
+
+
+def run_kinetics_subprocess(
+    config: dict[str, Any],
+    artifact: PathwayArtifact,
+    *,
+    timeout: int | None = None,
+) -> None:
+    """:func:`run_kinetics` under a wall-clock ceiling, in a killable child.
+
+    Same contract as :func:`run_kinetics` — mutates ``artifact["results_json"]``
+    in place, returns nothing, and **never raises**. A timeout is just another
+    ``kinetics_error``, so the aggregate this rides on still succeeds and
+    persists, exactly as it does for an engine that lacks the module or a
+    solve that throws.
+
+    WHY THIS EXISTS. ``run_kinetics``'s own docstring calls kinetics "a
+    diagnostic bonus riding on a successful aggregate, never load-bearing",
+    but it had no ceiling of any kind and its ``try/except`` cannot interrupt
+    a hang. ``autocatpath_aggregate`` job 449981 was claimed four times
+    between 2026-09-25 18:00Z and 2026-09-26 07:25Z — once per deploy bounce,
+    via the epoch reclaim arm — and each time wrote its "combining N seed
+    partial(s)" chunk and then nothing, while its worker grew to ~117 GB. The
+    same job's work, replayed against its real inputs on the same engine
+    version, takes **33 seconds end to end**. Whatever made those runs
+    diverge, a 29-second diagnostic must not be able to hold a worker for
+    eleven hours.
+
+    The cause is not established (see
+    ``docs/backlog/autocatpath-aggregate-ran-11h-on-a-33s-job.md``), which is
+    the second reason for the subprocess: a timeout lands a *legible*
+    ``kinetics_error`` where today there is only silence, so the next
+    occurrence identifies itself instead of needing another archaeology pass.
+
+    Only a separate process can enforce this. A thread cannot be killed out
+    of a numpy call, and the suspect path — ``kinetics._evolve``'s BDF
+    ``solve_ivp`` fallback — is exactly that. Same reasoning, same machinery
+    as :func:`run_seed_partial_subprocess` (gr191351).
+
+    ``timeout=0`` (or ``PRECIS_AUTOCATPATH_KINETICS_SECONDS=0``) restores the
+    old unbounded in-process behaviour.
+    """
+    results_json = artifact["results_json"]
+    budget = _kinetics_timeout_s() if timeout is None else max(0, timeout)
+    if budget == 0:
+        run_kinetics(config, artifact)
+        return
+
+    import subprocess
+    import tempfile
+
+    request = {
+        "mode": "kinetics",
+        "config": config,
+        # Only what run_kinetics actually reads off results_json. Sending the
+        # whole artifact would drag structures_extxyz through two JSON hops
+        # for nothing.
+        "nodes": results_json.get("nodes"),
+        "edges": results_json.get("edges"),
+        "score": results_json.get("score"),
+    }
+    with tempfile.TemporaryDirectory(prefix="autocatpath-kinetics-") as td:
+        req_path = os.path.join(td, "request.json")
+        out_path = os.path.join(td, "result.json")
+        with open(req_path, "w", encoding="utf-8") as fh:
+            json.dump(request, fh)
+
+        try:
+            proc = subprocess.run(
+                _child_cmd(req_path, out_path),
+                timeout=budget,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # subprocess.run has SIGKILLed the child by here, so the worker
+            # pass is free again — the whole point.
+            log.warning("autocatpath kinetics: timed out after %ss", budget)
+            results_json["kinetics_error"] = (
+                f"kinetics timed out after {budget}s and was killed "
+                f"({_KINETICS_TIMEOUT_ENV} raises the ceiling; 0 disables it). "
+                "The aggregate itself is unaffected."
+            )
+            return
+
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError):
+            # No envelope at all: the child died before it could write one
+            # (OOM-killed, import failure, segfault in the engine). Its
+            # stderr is the only diagnosis available, so carry the tail.
+            tail = (proc.stderr or proc.stdout or "").strip()[-500:]
+            results_json["kinetics_error"] = (
+                f"kinetics child exited {proc.returncode} without a result"
+                + (f": {tail}" if tail else "")
+            )
+            return
+
+    if "kinetics" in payload:
+        results_json["kinetics"] = payload["kinetics"]
+    else:
+        results_json["kinetics_error"] = payload.get(
+            "kinetics_error", "kinetics child returned no result"
+        )
+
+
+def _kinetics_child(req: dict[str, Any], out_path: str) -> int:
+    """Child half of :func:`run_kinetics_subprocess`.
+
+    Rebuilds the minimal artifact shape :func:`run_kinetics` reads, runs it,
+    and writes back whichever of ``kinetics``/``kinetics_error`` it produced.
+    Written atomically for the same reason the seed child's envelope is
+    (``os.replace``; see :func:`_subprocess_main`).
+    """
+    artifact: dict[str, Any] = {
+        "results_json": {
+            "nodes": req.get("nodes"),
+            "edges": req.get("edges"),
+            "score": req.get("score"),
+        }
+    }
+    try:
+        run_kinetics(req["config"], cast("PathwayArtifact", artifact))
+        rj = artifact["results_json"]
+        payload = (
+            {"kinetics": rj["kinetics"]}
+            if "kinetics" in rj
+            else {"kinetics_error": rj.get("kinetics_error", "no result")}
+        )
+    except Exception as exc:  # pragma: no cover - run_kinetics never raises
+        payload = {"kinetics_error": f"{type(exc).__name__}: {exc}"}
+
+    tmp_path = f"{out_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    os.replace(tmp_path, out_path)
+    return 0
+
+
 def _snapshot_yaml(cfg: Config) -> str:
     import yaml
 
@@ -1160,6 +1318,11 @@ def _subprocess_main(argv: list[str]) -> int:
     req_path, out_path = argv[1], argv[2]
     with open(req_path, encoding="utf-8") as fh:
         req = json.load(fh)
+    # `mode` defaults to "seed" so a request file written by an older build
+    # — the detached protocol leaves them on disk to be polled later — still
+    # parses after this key was introduced.
+    if req.get("mode") == "kinetics":
+        return _kinetics_child(req, out_path)
     try:
         result = run_seed_partial(
             req["config"],

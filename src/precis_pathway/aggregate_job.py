@@ -165,11 +165,20 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     # Microkinetics is a diagnostic bonus riding on the just-aggregated
-    # pathway, in-process, right here — `run_kinetics` never raises (any
-    # failure, including a deployed engine that predates the `kinetics`
-    # module, lands as `results_json["kinetics_error"]`), so this can never
-    # fail the aggregate itself.
-    runner.run_kinetics(artifact["config"], artifact)
+    # pathway — `run_kinetics_subprocess` never raises (any failure, including
+    # a deployed engine that predates the `kinetics` module, a solve that
+    # throws, or the wall-clock ceiling firing, lands as
+    # `results_json["kinetics_error"]`), so this can never fail the aggregate
+    # itself.
+    #
+    # Out-of-process and BOUNDED, not in-process as it was: this job wrote its
+    # "combining N seed partial(s)" chunk four times between 2026-09-25 18:00Z
+    # and 2026-09-26 07:25Z and never got further, holding a worker that grew
+    # to ~117 GB, while the same work on the same inputs measures 33s. A
+    # ceiling cannot fix a cause nobody has established yet, but it stops a
+    # diagnostic from eating a node, and it turns the next occurrence into a
+    # legible `kinetics timed out` instead of silence.
+    runner.run_kinetics_subprocess(artifact["config"], artifact)
     r = artifact["results_json"]
     if isinstance(r.get("kinetics"), dict):
         tof = r["kinetics"].get("tof")

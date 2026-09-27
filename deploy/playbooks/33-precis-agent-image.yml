@@ -183,6 +183,21 @@
     # (not on stock macOS).
     _agent_pull_timeout_sec: "{{ precis_agent_pull_timeout_sec | default(600) }}"
     _agent_build_timeout_sec: "{{ precis_agent_build_timeout_sec | default(3600) }}"
+    # PROGRESS ceiling, complementing the total-elapsed one above. The async
+    # watchdog cannot tell a legitimate cold build (43 min, measured) from a
+    # wedged registry fetch until it trips; silence can. 900s of NO build
+    # output is not a slow step, and a false kill only costs one retry off
+    # the ladder below. See files/precis-agent-build.sh.
+    _agent_build_stall_sec: "{{ precis_agent_build_stall_sec | default(900) }}"
+    # Outside the sha-scoped build dir (which the cleanup task below wipes
+    # per-sha) so the trail from the LAST build survives to be compared with
+    # this one — the whole point is that a stall is only legible next to a
+    # normal run.
+    _agent_build_log: "{{ _agent_build_base_dir }}/build-{{ _agent_image_ref }}.log"
+    # Rides in the build-context tarball (git archive of the target sha), so
+    # it is always the wrapper that matches the code being built — no
+    # separate copy task, no version skew.
+    _agent_build_wrapper: "{{ _agent_build_dir }}/deploy/playbooks/files/precis-agent-build.sh"
   tasks:
     - name: Probe the container runtime (docker/colima) — absence is a clean no-op
       ansible.builtin.command: "{{ _agent_container_bin }} version --format '{{ '{{' }}.Server.Version{{ '}}' }}'"
@@ -401,6 +416,24 @@
         _agent_pull_via_mirror: >-
           {{ 'PULL_SOURCE=mirror' in (agent_pull_probe.stdout | default('')) }}
 
+    # The fallback has always been SILENT on the happy path: the pre-pull
+    # echoes its reason to stderr and stamps PULL_SOURCE, but nothing printed
+    # either, so "was the canonical registry reachable during that deploy?"
+    # was unanswerable after the fact — and that is the first question every
+    # slow-build post-mortem asks. Reported unconditionally: the mirror path
+    # succeeding is exactly the case that leaves no other trace.
+    - name: "Report which registry the build images came from (gr307314)"
+      when: agent_runtime.rc == 0
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: pull source =
+          {{ 'mirror.gcr.io (canonical registry unreachable through the daemon)'
+             if (_agent_pull_via_mirror | default(false) | bool)
+             else 'canonical registry' }}
+          {{ ('— canonical failure was: '
+              ~ (agent_pull_probe.stderr | default('') | trim | truncate(600)))
+             if (_agent_pull_via_mirror | default(false) | bool) else '' }}
+
     - name: Read the resident precis-agent image's baked sha (OCI label)
       when: agent_runtime.rc == 0
       ansible.builtin.shell: |
@@ -483,14 +516,33 @@
             path: "{{ _agent_build_dir }}/build-context.tar"
             state: absent
 
+        - name: Make the build wrapper executable (git-archive mode bit, belt and braces)
+          ansible.builtin.file:
+            path: "{{ _agent_build_wrapper }}"
+            mode: "0755"
+
         - name: docker build --target agent (BuildKit; label stamps the built sha)
           # When the pre-pull fell back to mirror.gcr.io, point the build's two
           # registry fetches there too: BUILDKIT_SYNTAX overrides the
           # `# syntax=` frontend ref, PYTHON_IMAGE the FROM base name (digest
           # pin unchanged — same bytes, different registry). gr307314.
+          #
+          # Wrapped in files/precis-agent-build.sh: --progress=plain makes
+          # BuildKit narrate every step into a host-side log, and the wrapper
+          # kills a build that has written NOTHING for _agent_build_stall_sec.
+          # Two things that buys us, both absent before — the log survives an
+          # async kill (a killed `command` task has no stdout at all, as the
+          # note below says), and a stall is now caught by silence rather than
+          # by the hour-long total-elapsed ceiling. The wrapper exits 124 on a
+          # watchdog kill, which is a non-zero rc like any other, so the
+          # retries/until ladder below picks it up unchanged.
           ansible.builtin.command:
             cmd: >-
+              {{ _agent_build_wrapper }}
+              {{ _agent_build_log }}
+              {{ _agent_build_stall_sec }}
               {{ _agent_container_bin }} build
+              --progress=plain
               --target agent
               -t {{ _agent_image }}
               --label org.precis.sha={{ _agent_image_ref }}
@@ -522,15 +574,57 @@
           # instead of retrying (defeating the ladder this watchdog exists
           # for). default() every field so timeout counts as a failed attempt.
           until: (agent_build.rc | default(1)) == 0
-          changed_when: >-
-            'Successfully' in ((agent_build.stdout | default('')) + (agent_build.stderr | default('')))
-            or 'naming to' in ((agent_build.stdout | default('')) + (agent_build.stderr | default('')))
+          # The docker output now goes to the host-side log, not to this
+          # task's stdout, so the old "'Successfully'/'naming to' in stdout"
+          # sniff would read as never-changed. rc is the better signal
+          # anyway: this whole block is already gated on the image being
+          # stale, so reaching a zero exit here IS the change.
+          changed_when: (agent_build.rc | default(1)) == 0
           # failed_when deferred to false (gr335099): the fatal assert moves
           # to the end of this block so the diagnostics tasks right below —
           # and the cleanup tasks after them — still run on a build that
           # never converged, instead of the host halting mid-block with no
           # capture and a stale build dir/tarball left behind.
           failed_when: false
+
+        # ── timing + progress trail, captured on EVERY build, not just a
+        # failed one. This is the gap that made the three 2026-09-26
+        # incidents (3684s / 92s / 7329s) undiagnosable: all of them ended
+        # GREEN, so the failure-gated diagnostics below never ran and nothing
+        # recorded where the time went. A slow success is the symptom here.
+        - name: "Read the build's progress trail from the host (survives an async kill)"
+          ansible.builtin.slurp:
+            src: "{{ _agent_build_log }}"
+          register: agent_build_trail
+          failed_when: false
+
+        - name: "Report agent-image build timing + progress tail"
+          vars:
+            # splitlines() over split('\n'): a literal \n inside a Jinja
+            # string is an escaping trap across YAML quoting styles, and the
+            # method needs no argument. Character classes over \d for the
+            # same reason.
+            _trail: "{{ (agent_build_trail.content | default('') | b64decode).splitlines() }}"
+            # No capture group, so regex_search returns the matched string
+            # (not a one-element list needing `first`, which raises on a
+            # miss). A killed wrapper never printed this line at all — hence
+            # the default, which must survive `default(omit)`-style falsiness,
+            # so default(..., true).
+            _elapsed: >-
+              {{ (agent_build.stdout | default('')
+                  | regex_search('BUILD_ELAPSED_SEC=[0-9]+')
+                  | default('BUILD_ELAPSED_SEC=?', true))
+                 | replace('BUILD_ELAPSED_SEC=', '') }}
+          ansible.builtin.debug:
+            msg: >-
+              {{ inventory_hostname }}: agent image build rc={{ agent_build.rc
+                 | default('timed out at the ' ~ _agent_build_timeout_sec ~ 's async ceiling') }},
+              elapsed {{ _elapsed }}s, pull source
+              {{ 'mirror.gcr.io' if (_agent_pull_via_mirror | default(false) | bool) else 'canonical' }}{{
+                 ' — WATCHDOG FIRED: the build went silent for '
+                 ~ _agent_build_stall_sec ~ 's; the last step below is where it wedged'
+                 if 'BUILD_STALLED=1' in (agent_build.stdout | default('')) else '' }}
+              | last progress: {{ _trail[-25:] | join(' / ') | truncate(2000) }}
 
         # ── diagnostics (gr335099) — same shape as the pre-pull preflight's:
         # captured on a terminal build failure, before the fatal assert at
@@ -573,6 +667,12 @@
             set -uo pipefail
             find "{{ _agent_build_base_dir }}" -mindepth 1 -maxdepth 1 -type d \
               ! -name "{{ _agent_image_ref }}" -exec rm -rf {} +
+            # Progress trails are files, not dirs, so the prune above spares
+            # them by construction — keep a month of them (they are a few KB
+            # each and comparing a stall against a normal run is the point),
+            # then let them go.
+            find "{{ _agent_build_base_dir }}" -mindepth 1 -maxdepth 1 -type f \
+              -name 'build-*.log' -mtime +30 -exec rm -f {} +
           args:
             executable: /bin/bash
           changed_when: false
@@ -594,7 +694,11 @@
             fail_msg: >-
               {{ inventory_hostname }}: `{{ _agent_container_bin }} build --target agent`
               failed after {{ _agent_build_timeout_sec }}s async ceiling x3 retries
-              (rc={{ agent_build.rc | default('timed out') }}) — gr335099. Diagnostics
+              (rc={{ agent_build.rc | default('timed out') }}) — gr335099. rc=124 means
+              the PROGRESS watchdog killed it: the build wrote nothing for
+              {{ _agent_build_stall_sec }}s, which is a wedge, not a slow build — the
+              trail at {{ _agent_build_log }} on the host names the step it died on,
+              and the timing report a few tasks up has its tail. Diagnostics
               (buildx inspect + builder logs, if any) were captured above before this
               assert. Fix per the mirror-fallback assert's guidance a few tasks up if
               this is a registry-reachability mode; otherwise inspect the build

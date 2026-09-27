@@ -284,7 +284,15 @@ _rollout_converged() {
 _run_rollout_playbook() {
     local play_out rc=0
     play_out="$(mktemp)"
-    if ! ansible-playbook "$@" 2>&1 | tee "$play_out"; then
+    # PYTHONUNBUFFERED: ansible is python, and python block-buffers stdout
+    # when it is a pipe — which it is here (and again at the whole-script
+    # `exec > >(tee …)`). The effect is that during a single long task the
+    # live log receives NOTHING, including the `ASYNC POLL` lines that prove
+    # an async task is still being polled. That is why `tail -F` on a deploy
+    # log looked dead through the 2026-09-26 agent-image builds and `ps` was
+    # the only liveness check. Line-buffering costs nothing and makes the
+    # live log honest.
+    if ! PYTHONUNBUFFERED=1 ansible-playbook "$@" 2>&1 | tee "$play_out"; then
         rc=1
     fi
     if [[ "$rc" -ne 0 ]] && _rollout_converged "$play_out"; then
@@ -780,7 +788,7 @@ else
 
     say "canary deploy: phase 1 — ${CANARY} only (pinned ${_target_sha:0:8})"
     _phase1_start="$(date +%s)"
-    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+    PYTHONUNBUFFERED=1 ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
         --limit "$CANARY" \
         "${SHA_ARGS[@]}" \
         ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
@@ -816,7 +824,7 @@ mixed state: ${CANARY} may be on new code (${_target_sha}), the rest of the flee
 ${_rollback_hint}"
 
     say "canary deploy: ${CANARY} verified fresh on new code — phase 2 (rest of the fleet)"
-    ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+    PYTHONUNBUFFERED=1 ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
         --limit "all:!${CANARY}" \
         "${SHA_ARGS[@]}" \
         ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \

@@ -2427,11 +2427,12 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     monolith = runner.run_pathway(cfg, force_backend="emt")
     assert _json_eq(got.meta["results"]["nodes"], monolith["results_json"]["nodes"])
 
-    # slice A: kinetics runs right after the aggregate, in-process — either a
-    # real solve (`kinetics`) or a diagnostic note (`kinetics_error`, e.g. a
-    # deployed engine predating the module, or a solve that couldn't
-    # converge on this tiny fan-out network); either way it never fails the
-    # aggregate itself (`ctx.status == "succeeded"`, asserted above), and
+    # slice A: kinetics runs right after the aggregate — in a bounded child
+    # process since 2026-09-26 — yielding either a real solve (`kinetics`) or
+    # a diagnostic note (`kinetics_error`, e.g. a deployed engine predating
+    # the module, a solve that couldn't converge on this tiny fan-out
+    # network, or the wall-clock ceiling firing); either way it never fails
+    # the aggregate itself (`ctx.status == "succeeded"`, asserted above), and
     # exactly one of the two keys lands.
     r = got.meta["results"]
     assert ("kinetics" in r) != ("kinetics_error" in r)
@@ -2449,6 +2450,10 @@ def test_aggregate_job_dispatch_folds_in_kinetics_when_engine_has_it(
     from precis_pathway import runner as runner_mod
 
     canned = {"tof": 7.5e-2}
+    # See the sibling missing-module test: the solve is out-of-process by
+    # default now, so stub the in-process function AND take the documented
+    # `…_SECONDS=0` hatch, or the child would ignore the stub entirely.
+    monkeypatch.setenv(runner_mod._KINETICS_TIMEOUT_ENV, "0")
     monkeypatch.setattr(
         runner_mod,
         "run_kinetics",
@@ -2489,6 +2494,12 @@ def test_aggregate_job_dispatch_kinetics_missing_engine_module_never_fails(
     from precis_pathway import aggregate_job
     from precis_pathway import runner as runner_mod
 
+    # The solve now runs in a child process by default, which a monkeypatched
+    # `_import_kinetics` cannot reach. `…_SECONDS=0` is the documented escape
+    # hatch back to in-process, and using it here keeps this test on the real
+    # folding path instead of stubbing the call it is meant to exercise. The
+    # bounded path has its own coverage in tests/test_pathway_kinetics_timeout.py.
+    monkeypatch.setenv(runner_mod._KINETICS_TIMEOUT_ENV, "0")
     monkeypatch.setattr(runner_mod, "_import_kinetics", lambda: None)
 
     cfg = _yaml_dict(FANOUT)
