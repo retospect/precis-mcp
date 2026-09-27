@@ -15,10 +15,12 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 
 | host       | OS / init      | role       | runs |
 |------------|----------------|------------|------|
-| melchior   | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers + the `dream_agent`/`anki_sync` scheduler-lease cadences, §A) + web + asa-bot |
-| caspar     | macOS / launchd| data (NFS) | system worker + embedder + Postgres (prod DB) + backups |
+| melchior   | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers + the `dream_agent`/`anki_sync` scheduler-lease cadences, §A) + drain workers + watch + web + embedder + asa-bot + `tts` |
 | balthazar  | macOS / launchd| scheduler  | system worker + embedder |
-| spark      | Linux / systemd| inference  | system worker + embedder + GPU (relax/AlphaFold) |
+| caspar     | macOS / launchd| data (NFS) | Postgres (prod DB) + backups + NFS export — **no precis venv, no worker, no embedder** (daemon-free by design; the deploy only lands a constraints file) |
+| castor     | Linux / systemd| serving + compute | distributed llama.cpp half of `llm.chain.big` (paired with pollux) + heartbeat-only worker (playbook 20c) + GPU-pinned `retrosynth` |
+| pollux     | Linux / systemd| serving + compute | the other llama.cpp half + heartbeat-only worker + GPU-pinned `dft` / `fold` |
+| spark      | Linux / systemd| standalone | **ZERO precis units.** Permanently off cluster duty since 2026-08-29 (Reto's call) — dedicated to paper work. In `linux` + `nfs_clients` only, for base-OS management and the NAS mount. Do not re-add it to a service group; `inference` is left empty as the guard. |
 
 ## Log files (all under `/var/log/` unless noted)
 

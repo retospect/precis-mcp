@@ -12,8 +12,10 @@ half.
     precis draft audio <slug|id> [--voice af_heart] [--lang en-us]
                                  [--speed 1.0] [--max-segments N] [--publish]
 
-Runs on a host with the `[tts]` extra + Kokoro model files + ffmpeg (the
-inference node, `spark`). `--publish` drops the episode on the private
+Runs on a host with the `[tts]` extra + Kokoro model files + ffmpeg — the
+gateway, `melchior`, which is the only host advertising `tts` in
+`resource_slots` since spark went off cluster duty (2026-08-29).
+`--publish` drops the episode on the private
 podcast feed (`precis podcast add` / `/podcast/feed.xml`). `--max-segments`
 previews a long draft. `speakable()` strips handles/citations/math/markdown
 for the ear; math is currently spoken as "equation" (LaTeX→speech is

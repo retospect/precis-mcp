@@ -40,8 +40,11 @@ request path, ADR 0044 compute lane). No per-engine MCP servers.
   Tree-Builder request/response schema against the instance's
   `/docs`** (flagged in `askcos.py`).
 - **AlphaFold (4b):** `roles/alphafold` asserts the
-  `alphafold3:ready` image + models on spark; wire
-  `PRECIS_FOLD_NODE=spark`, `PRECIS_FOLD_MODELS_DIR`,
+  `alphafold3:ready` image + models on the fold node — **`pollux`, not
+  `spark`**: spark went permanently off cluster duty 2026-08-29 and the
+  GPU-pinned lanes moved to the twins (`dft`/`fold` → pollux,
+  `retrosynth` → castor; see `deploy/inventory/hosts.yml`, `compute`
+  group). Wire `PRECIS_FOLD_NODE=pollux`, `PRECIS_FOLD_MODELS_DIR`,
   `PRECIS_FOLD_IMAGE`, an XLA cache mount; un-dark the kind. Verify
   at first live run (flagged best-effort in `alphafold.py`): output
   subdir naming, `summary_confidences.json` key names, de-novo
