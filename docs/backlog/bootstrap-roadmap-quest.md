@@ -2,7 +2,7 @@
 status: draft
 title: Bootstrap roadmap quest — a `roadmap` tick body that grows a capability/pathway/rung DAG from measured gaps
 prio: high
-model: opus
+model: fable
 blocked-by: quest-bodies
 ---
 
@@ -225,10 +225,16 @@ growth. Dossiers stay per quest and are rewritten.
   its own thin-support/no-literature, and its bridge role can only mint
   rungs (not sub-pathways). Root-only ticking would be simpler; decide at
   `ready` after the first dry-run.
-- **The prod data, for the record (Reto runs these; needs `/mcp reconnect`;
-  writes land in PROD):**
-  1. `put(kind='quest', text="A liquid-phase, room-temperature chain of assemblers, each built by the one before it, ending at diamondoid and graphenic parts\n\nRubric: highest rung reached per capability · number of capabilities met with cited numbers · every rung liquid-phase and ≤ 60 °C · product survives drying", tags=['PRIO:high'])` → `qu<B>`; `link(kind='quest', id=<B>, target='quest:161906', rel='serves')`; `edit(kind='quest', id=<B>, meta={'quest_body': 'roadmap', 'compute_lane': 'off'})` (until `roadmap` ships, mint it `STATUS:dormant` so the materials body never ticks it).
-  2. Pathway quests (each `serves quest:<B>`, `quest_body: roadmap`, dormant): DNA-scaffold toolhead (origami + photocontrolled walker + λ-orthogonal ligation); light-driven mechanical assembly (= qu330435 re-parented: `link(kind='quest', id=330435, target='quest:<B>', rel='serves')`, then drop its `serves qu161906` edge); protein / enzymatic machinery; scanning-probe assembly in liquid; λ-orthogonal covalent alphabet.
-  3. Capability quests (each `serves quest:<B>`, `rubric_objectives` set): positional accuracy (`nm`, min) · bond-making toolhead (bond set count, max) · readout/error correction (error per step, min) · feedstock delivery (molecules/s, max) · replication (rung builds next rung: yes/no) · drying without collapse (yes/no) · addressable channels (count, max).
-  4. Dormant the spinning cluster until the body exists: `tag(kind='quest', id=N, add=['STATUS:dormant'])` for 330435, 347422, 347481, 347482, 347483, 347484. Their loops wind down; nothing is lost.
-  5. Papers: `put(kind='paper', doi=...)` for each verified DOI in Reto's list (10.1002/anie.201901933, 10.1038/ncomms13672, 10.1039/d1sc06154b, 10.1002/chem.201705939, 10.1039/C8SC03379J, 10.1002/anie.201004779, 10.1002/anie.201901272, 10.1038/nnano.2010.190, 10.1038/ncomms9102, 10.1039/D2NH00565D, 10.1038/nnano.2014.264, 10.1186/s12896-018-0439-9, 10.1073/pnas.2410164121) then `link(kind='paper', id=..., target='quest:<pathway>', rel='serves')`. The two unconfirmed DOIs (Menzel 2019 λ-orthogonal bond formation; Seeman 2010 assembly line) go through `search(kind='semanticscholar', …)` first — `paper-acquisition-s2-gap` applies.
+- **Prod data — DONE 2026-09-27 (all dormant, `quest_body=roadmap`,
+  `compute_lane=off`; activate nothing until the body ships):** root
+  `qu453863` (serves qu161906). Pathways: qu453865 DNA-scaffold toolhead ·
+  qu453866 protein/enzymatic · qu453867 scanning-probe in liquid · qu453868
+  λ-orthogonal covalent alphabet · qu330435 light-driven mechanical
+  (re-parented; its `serves qu161906` edge dropped; qu347422 + qu347481-4
+  stay under it, all dormant). Capabilities (with `rubric_objectives`):
+  qu453869 positional accuracy · qu453870 bond-making toolhead · qu453874
+  readout/error correction · qu453875 feedstock delivery · qu453876
+  replication · qu453877 drying without collapse · qu453878 addressable
+  channels. Papers: 14 stubs linked (8 → DNA-scaffold incl. Seeman pa347475,
+  6 → alphabet incl. Menzel = 10.1002/anie.201901275, Leigh walker →
+  qu330435). `put(kind='paper')` takes no `link=`; link by `pa<id>` after.
