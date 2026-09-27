@@ -2,6 +2,7 @@
 status: ready
 title: stable, registered failure ids for alerts — enumerable rule catalogue + addressable get + agent-facing health panel
 prio: normal
+model: sonnet
 ---
 
 # Stable failure ids for alerts (the PCB-DRC property, applied to health)
@@ -158,6 +159,14 @@ the current row happens to be closed.
    `meta.acked_until` (+ `acked_by`) is filtered by *readers*. Ack is
    orthogonal to state, so dedup keeps bumping the row and
    `resolve_stale_alerts` still auto-closes it when the condition clears.
+
+   *Separable.* This item is about silencing, not identity — nothing in the
+   Motivation's incident calls for it, it has its own reader set
+   (`list_open_alerts`, the `/alerts` badge, `_check_alert_backlog_rot`, the
+   remediation router, `precis-alert-help`), AC7 stands alone, and it has no
+   ordering dependency on items 1–5 either way. Ship it as its own item if
+   this one gets large; it is bundled here only because D4's design fell out
+   of the same sitting.
 7. **Skill routing**: one owning skill that says *health question → call
    this read first, never improvise*, plus a warning label that for
    lazily-loaded services process-absence ≠ down. Cross-link from
@@ -176,7 +185,7 @@ the current row happens to be closed.
 * **No new evaluator.** `health_checks.py` stays the single truth; item 5
   aggregates existing functions, it does not recompute anything.
 * **No change to severity semantics** or to what pages vs. what digests —
-  see `health-digest-degraded-severity-gate` for the adjacent open question
+  see `docs/backlog/ops-gate-hygiene.md` (absorbed `health-digest-degraded-severity-gate` on 2026-09-26) for the adjacent open question
   about `degraded` being set by info-severity findings.
 * **Not replacing `/status` or `/alerts`.** Both keep rendering; `/status`
   is refactored onto the aggregate function but its output is unchanged.
@@ -191,7 +200,12 @@ the current row happens to be closed.
 
 1. A registry module enumerates every rule id; the registry length matches
    the audited count, and each entry carries a description + default
-   severity + subject-variable names.
+   severity + subject-variable names. "Audited count" means a FRESH audit
+   run at build time, not the figures cached in this spec — prod drifts
+   (39 distinct sources / 307 slash-bearing fingerprints when this was
+   written on 2026-09-25; 40 / 327 two days later). The invariant the
+   numbers support — zero `alert_source` values contain `/` — is what must
+   be re-confirmed, not the counts.
 2. A test fails if a `raise_alert` call site uses an unregistered rule id.
    Verified by adding an unregistered raise in a scratch branch and watching
    it go red.
@@ -219,7 +233,14 @@ the current row happens to be closed.
    first move for "is X up".
 9. **The original incident is replayable**: asked "is the embedder
    healthy?", an agent following the skills reaches the correct answer in
-   one call, on a system where the embedder is idle-unloaded.
+   one call, on a system where the embedder is idle-unloaded. Checked as a
+   scripted replay, not a judgment call: a test asserts that the panel read
+   for the embedder's rule id returns `healthy` (on throughput) while the
+   process is absent — i.e. the one call an agent is told to make returns
+   the right answer under exactly the condition that misled the 2026-09-24
+   diagnosis. The prose habit half (that agents actually make that call
+   rather than reaching for `ps`) is covered by AC8's content checks, not
+   here.
 
 ## Target + blast radius
 
@@ -296,7 +317,7 @@ catalog model ids (`deepseek/deepseek-v4-pro`) via `admit:oversize` and
 Reserving `/` would therefore churn ~325 live alerts across 4+ code sites.
 Split-on-first is the only viable grammar — see D1.
 
-## Decisions log
+## Open questions / decisions log
 
 All five open questions resolved 2026-09-25 by investigation against the
 code and prod. Three overturned the leaning they were filed with.
