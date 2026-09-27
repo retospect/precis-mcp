@@ -118,6 +118,79 @@ def _grid_footprint(
     return {"pads": pads, "pin_map": pin_map}
 
 
+def _qfp_ring_footprint(
+    pin_names: list[str],
+    *,
+    sides: tuple[int, int, int, int] = (16, 24, 16, 24),
+    pitch: float = 0.8,
+    x_half: float = 8.5,
+    y_half: float = 11.5,
+    pad_w: float = 0.35,
+    pad_h: float = 0.35,
+) -> dict[str, Any]:
+    """A RING-shaped (QFP) stand-in, shaped like the real part — sibling
+    of :func:`_grid_footprint` and a port of
+    ``tests/test_pcb_island_terminal_polygon.py``'s ``_ring_footprint``
+    (which is per-side-symmetric; this one takes the four side counts
+    separately, because the real package is not square).
+
+    **Why this replaced the grid stand-in for the sink** (2026-09-26): a
+    grid puts pads in the package INTERIOR, and an interior pad at 1.0mm
+    pitch with 0.5mm pads leaves 0.5mm between pad edges — less than the
+    0.15mm-per-side the maze grid dilates every pad by, so interior pads
+    are unreachable *by construction*. Prod's real C639448 is a PQFP-80:
+    80 pads, **ZERO interior**, 17x23mm (queried against prod). The grid
+    fixture therefore manufactured a routing wall the real board does not
+    have, and every escape-yield number measured on it was measured
+    against that artifact. ``_ring_footprint``'s own docstring had
+    already recorded the same point for gr339236.
+
+    Defaults match the real part's measured extent: 16/24/16/24 pads at
+    0.8mm on a 17x23mm ring = 80 pads. ``pin_names`` shorter than the pad
+    count leaves the remainder named ``NC<n>`` — which makes this the
+    free test vehicle for gr451276 (a part with MORE footprint pads than
+    the netlist declares). Pads are square, like both stand-ins before
+    it: this is a fixture for pad GEOMETRY and package TOPOLOGY, never a
+    datasheet-accurate land pattern.
+    """
+    n_bottom, n_right, n_top, n_left = sides
+
+    def _walk(n: int) -> list[float]:
+        span = (n - 1) * pitch
+        return [-span / 2.0 + i * pitch for i in range(n)]
+
+    positions: list[tuple[float, float]] = []
+    for x in _walk(n_bottom):  # bottom edge, left -> right
+        positions.append((x, -y_half))
+    for y in _walk(n_right):  # right edge, bottom -> top
+        positions.append((x_half, y))
+    for x in reversed(_walk(n_top)):  # top edge, right -> left
+        positions.append((x, y_half))
+    for y in reversed(_walk(n_left)):  # left edge, top -> bottom
+        positions.append((-x_half, y))
+
+    pads = []
+    pin_map = {}
+    for i, (x, y) in enumerate(positions):
+        number = str(i + 1)
+        name = pin_names[i] if i < len(pin_names) else f"NC{i - len(pin_names) + 1}"
+        pads.append(
+            {
+                "number": number,
+                "shape": "RECT",
+                "x": x,
+                "y": y,
+                "w": pad_w,
+                "h": pad_h,
+                "rot": 0.0,
+                "layer": "F.Cu",
+                "drill": None,
+            }
+        )
+        pin_map[number] = {"name": name, "tags": []}
+    return {"pads": pads, "pin_map": pin_map}
+
+
 @pytest.fixture
 def pcb(store):
     return PcbHandler(hub=Hub(store=store))
@@ -353,7 +426,10 @@ def _design() -> dict[str, Any]:
 def _seed(pcb) -> str:
     design = _design()
     pcb.put(id="ewod-dogfood-1", args=design)
-    pcb.store.part_footprint_put(_HV507_LCSC, _grid_footprint(_HV507_PINS, cols=9))
+    # RING, not a grid: the real C639448 is a PQFP-80 with no interior
+    # pads. See _qfp_ring_footprint's docstring for why a grid stand-in
+    # invalidated every escape-yield number measured before 2026-09-26.
+    pcb.store.part_footprint_put(_HV507_LCSC, _qfp_ring_footprint(_HV507_PINS))
     pcb.store.part_footprint_put(
         _TEMP_SENSOR_LCSC, _grid_footprint(_TEMP_SENSOR_PINS, cols=4)
     )

@@ -6,6 +6,31 @@ prio: high
 
 # EWOD round 9 — drive the array from OUTSIDE it
 
+## Governing constraint: the CODE and the PCB stay separate
+
+Reto, 2026-09-26. The engine in this repo is a **general capability whose
+job is to let an LLM fulfil arbitrary text requests for boards**. Any
+particular board -- including every EWOD one -- is DATA authored through
+the MCP, not code. Apply the test to every item below: is this a general
+primitive, or is it this board's parameters? "Engine, but only EWOD uses
+it" is a smell.
+
+**This sharpens the root cause.** It is not merely that the driver sits
+under the array. It is that `ewod_pad_array` HARDCODES placement and pins
+every instance `fixed='both'`, so the engine's general placement
+machinery is dead code on this board: `optimize` already carries
+TRANSLATE / ROTATE / SWAP, a `crossings` cost term and
+`courtyard_overlap`, and none of them can act on a pinned part. The
+general fix is therefore NOT "the generator places the driver outside the
+array" -- that is more special-casing -- but "the generator declares a
+keep-clear CONSTRAINT and stops pinning, and the existing placer solves
+it". Driver-outside-array becomes an emergent result.
+
+The same test applies to the rest of this campaign: mechanical layers
+(gr451662) are generic 2D layers with a masking/process-order model, not
+"EWOD adhesive"; the datum frame is generic assembly registration with a
+tolerance budget, not an EWOD stack.
+
 ## Motivation / why
 
 Round 8 shipped a board where 34 of 62 nets realize. Four measured
@@ -134,11 +159,65 @@ grid all sit outside it" (`generators.py`, `_coating_verdict`) while
 
 ## Open questions / decisions log
 
-- **Fresh board vs. amend `ewod-dogfood-2`?** Leaning fresh: the topology
-  change is large enough that a diff against the old board is not
-  informative, and a new vehicle can carry the controller/USB/power the
+- **Fresh board vs. amend `ewod-dogfood-2`?** FRESH (Reto, 2026-09-26).
+  The topology change is large enough that a diff against the old board
+  teaches nothing, and a new vehicle carries the controller/USB/power the
   old one lacks. Board size is free to change.
-- **Controller + USB + power on-board.** Wanted. Needs part picks.
+- **Part picks — DECIDED (Reto, 2026-09-26):**
+  - Controller: **ESP32-C3 module**. The repo's existing PCB acceptance
+    vehicle is already an ESP32-C3, so the footprint and the whole
+    place/route/fab-render path are proven on it; module form avoids RF
+    layout and the crystal.
+  - Power in: **USB-C PD at 20V**, negotiated by a **HUSB238** over I2C
+    (runtime-selectable drive voltage was worth the added dependency).
+  - HV: **discrete boost**, inductor + HV FET + HV diode, 20V -> 250V.
+    12.5x is single-stage territory off 20V, and EWOD draws almost no
+    current. Watch creepage, diode recovery, and feedback-divider burden.
+  - Array: **8x8 at 2.25mm**, one HV507 — unchanged, because that is the
+    case that actually stresses escape routing.
+- **Power budget must carry LEDs that are NOT on this board yet** (Reto,
+  2026-09-26: "We'll put them later, they are for indication and for
+  biochem, so I just want the power budget to be ok"). Indication LEDs
+  are noise; **biochem LEDs (fluorescence excitation) are the entire
+  budget** and can be watts each.
+
+  The load nobody should worry about is the HV side. EWOD is capacitive
+  with no DC path: an electrode of ~2mm^2 over ~5um parylene (er~3.15) is
+  roughly 20pF, so switching all 64 to 250V at 100Hz is tens of microamps
+  -- under 10mW. The HV section's draw is its converter's quiescent and
+  the HV507's, not the array. Estimate, not measurement: the parylene
+  thickness is the sensitive term and is not yet fixed (see gr414481).
+
+  Rough budget: ESP32-C3 ~0.5W typical / ~1.2W peak on wifi TX, logic +
+  HV507 + HUSB238 under 0.5W, HV boost ~1W with losses. Call it **3W**
+  for everything that exists today. A 20V/3A contract leaves ~57W; a
+  45W charger leaves ~42W; a 30W one leaves ~27W. LEDs are the only
+  claimant on that headroom.
+
+  **Decisions this forces NOW, because they are free now and a re-spin
+  later:**
+  1. Size the **20V distribution** (input path, fuse, TVS, bulk cap,
+     trace widths per IPC-2221B) for the full **3A**, not for the ~150mA
+     the present design actually draws. Copper is free at layout time.
+  2. Reserve the LED rail off **20V**, not off 3.3V. Biochem LEDs want
+     constant-current drivers; leave a defined interface rather than
+     discovering later that the only spare rail is the logic one.
+  3. Firmware must **read the negotiated PD contract** and cap LED
+     current to it. A 30W charger cannot serve a 20W LED plus the board,
+     and HUSB238 will happily hand back a lower-current PDO.
+  4. Thermal: parylene is a thermal insulator and coats whatever it
+     covers. If the board dissipates tens of watts under a coating,
+     that interacts with gr414481's coating-extent question -- decide
+     whether coating is whole-board or array-only BEFORE the LED power
+     lands.
+
+- **PD boot order is a real design constraint, not a detail.** HUSB238
+  negotiates over I2C, so VBUS is **5V at power-on and 20V only after
+  firmware runs**. Two consequences: (a) the 3.3V rail must come from a
+  wide-input converter (or a 20V-tolerant LDO — fine here, the logic
+  draws almost nothing) because its input swings 5V -> 20V; (b) the HV
+  boost must be held **inhibited** until PD has settled, or it will try
+  to make 250V from 5V at every power-on.
 - **Edge-insertion connectors have no representation.** A side-insertion
   connector MUST sit on the board edge with a specific outward
   orientation, and nothing in the part/footprint model records that, so
