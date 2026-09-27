@@ -36,7 +36,7 @@ Pass 2 outcome tally (82 cite-level outcomes):
 | `reground-nomatch` | 12 | **the cited paper contains no supporting passage** |
 | `stub-fetch-first` | 7 | supporter has no body text yet |
 
-### The 12 `reground-nomatch` are a provenance finding, not a bug
+### The 12 `reground-nomatch` are a groundability signal, not a fabrication count
 
 `reground-nomatch` (`taproot/backfill.py` `_plan_reground`) means the locate
 step read the fetched paper and found nothing supporting the claim the draft
@@ -80,31 +80,53 @@ host a falsifiable finding.
 
 ### Remaining work
 
-1. **Fix the cause-3 cites** (see above) — only those are prose defects.
-   `dc4089804`/`pa448241` is confirmed; the other 7 chunks
-   (`dc4091164`, `dc4091165`, `dc4089529`, `dc4089530`, `dc4089716`,
-   `dc4089728`, `dc4089730`, `dc4089814`, `dc4090673`) have not each been
-   classified into cause 1/2/3 yet. Run the `ILIKE`-over-supporter check per
-   pair first; do not rewrite prose on the strength of the nomatch label
-   alone.
-1b. **Table-bound evidence is a real gap** (cause 1). If a claim's support
-   is only ever in a table, no amount of re-running grounds it. Worth a
-   gripe against the locate step rather than per-draft workarounds.
-2. **A third pass** once the markup backlog drains. 5 of the 41 fetched
-   papers (`448202`, `448204`, `448212`, `448230`, `448231` — the water/DFT
-   cluster) have `fetch_ok` but **zero body chunks**, and no event records a
-   failure. They are part of a **914-ref cluster-wide** fetched-but-unchunked
-   backlog. Until they chunk, their cite runs return `stub-fetch-first`.
-   A fresh job re-scans everything (`done_chunk_ids` lives on the job ref,
-   not the draft), so the third pass is safe and cheap.
-3. `448244`'s chunk keeps `[pa]` permanently.
+1. **Fix the cause-3 cites** — only those are prose defects.
+   `dc4089804`/`pa448241` is the one confirmed case. The other nine chunks
+   carrying a nomatch (`dc4091164`, `dc4091165`, `dc4089529`, `dc4089530`,
+   `dc4089716`, `dc4089728`, `dc4089730`, `dc4089814`, `dc4090673`) have
+   **not** each been classified into cause 1/2/3. Run the
+   `ILIKE`-over-supporter check per pair first; do not rewrite prose on the
+   strength of the nomatch label alone.
+2. **Table-bound evidence** (cause 1) is filed as `gr453835` — if a claim's
+   support exists only in a table, no amount of re-running will ground it,
+   so this needs the locate step fixed rather than per-draft workarounds.
+2. **Re-extract 5 papers by hand — nothing will do it for you.** `448202`,
+   `448204`, `448212`, `448230`, `448231` (the water/DFT cluster) have
+   `fetch_ok` but **zero body chunks**, and no event records a failure.
+   Until they have text, their cite runs return `stub-fetch-first`.
+
+   An earlier revision of this file said they would chunk "once the markup
+   backlog drains." That was wrong, and the mistake is worth keeping visible
+   because it is the same shape as the rest of this file: a thing that had
+   given up looked like a thing that was waiting. There is **no queue these
+   refs are in**:
+
+   - `markup-backfill` (`paper_hygiene.requeue_front_matter_only_papers`)
+     cannot reach them. It requires "(b) between 1 and
+     `_FRONT_MATTER_MAX_CHUNKS` body chunks" plus a `fetcher:elsevier`
+     event — zero chunks is excluded by construction, and these are ACS/AIP.
+   - `requeue_stranded_fetches` cannot reach them either: it gates on
+     `pdf_sha256 IS NULL`, and these have a `pdf_sha256`.
+   - `cli.stats._query_stubs` drops them from the stub backlog outright
+     ("a stub that has a PDF is no longer a stub"), while
+     `routes.status._paper_summary` counts them as `held`.
+
+   So the 914 cluster-wide fetched-but-unchunked refs are **not a backlog**.
+   Nothing claims them and nothing reports them. Re-ingest these five
+   directly. Tracked as a gripe — see the fetched-but-no-body item.
+3. **A third backfill pass** after those five have text. A fresh job
+   re-scans every chunk (`done_chunk_ids` lives on the job ref, not the
+   draft), so it is safe and cheap to re-run.
+4. `448244`'s chunk keeps `[pa]` permanently.
 
 Sources cited by draft `dr448178` ("DFT Accuracy for Hydrogen Bonding") that
-the OA fetch pass cannot get. All 27 have a DOI and are already `prio=1`;
-every one has returned `no_oa_version`, 23 of them five or more times. There
-is no open-access PDF to find — the pass is working correctly and reporting
-that. Until each has text, it cannot be chunked, cannot host findings, and
-its citing chunks keep legacy `[pa]` cites.
+the OA fetch pass could not get. All 27 have a DOI and were already
+`prio=1`, and every one had returned `no_oa_version`. Note on counting: a
+single cascade pass writes one event per leg (~5–14), so the raw
+`no_oa_version` event count is **not** an attempt count — these refs had
+roughly one to two passes each, not five to seven retries. Until a paper has
+text it cannot be chunked, cannot host findings, and its citing chunks keep
+legacy `[pa]` cites.
 
 Provenance caveat: these refs were minted by a `DREAM:acquire` pass on
 2026-09-24 with **fabricated author bylines** (Bader is credited on three
@@ -195,9 +217,31 @@ Other (4)
 
 ## Open question — 448193 has an arXiv id and still failed
 
-`448193` (SCAN, PRL 115 036402) carries `arxiv:1504.03028` in
-`ref_identifiers` yet still logged `no_oa_version`. arXiv is
-unconditionally open, so either the fetch pass does not consult the arXiv
-identifier on a `no_oa_version` fallback, or it consulted it and failed for
-another reason. Worth a look independent of this draft — it would affect
-every paper whose only OA route is a preprint.
+**Answered 2026-09-27 — arXiv *is* consulted, and the guess above was
+wrong.** `_try_arxiv` runs unconditionally as leg 9 of 11 in `_run_cascade`
+whenever `StubRef.arxiv` is set. What actually happened to `448193` in its
+one pass (2026-09-24 12:52–12:57Z):
+
+- unpaywall / openalex / europepmc / core → `no_oa_version` (correct, APS is
+  closed).
+- **`fetcher:arxiv` → `fetch_failed`**, `_ssl.c:993: The handshake operation
+  timed out`. Transient on the fetch host, not arXiv: 19 handshake timeouts
+  across 64 refs / 324 fetcher events in that two-hour window.
+- `fetcher:openalex_content` → `no_oa_version` — the **last** event, and
+  therefore the verdict `precis stubs` displays.
+
+So two defects compound, and neither is "arXiv is not tried":
+
+1. **The verdict is the latest event.** A paid-cache miss overwrote "a known
+   green route exists and its download failed transiently." The
+   human-facing list then asserts "no OA copy exists", which is false — this
+   paper was one GET from free and was queued for hand purchase from APS.
+2. **The backoff counts events, not passes.** `claim_stubs_to_fetch` derives
+   `attempts` from `count(*)` over `fetcher:%` events; one cascade writes
+   10–14 of them, so `24h * 2^(attempts-1)` hits the 720h cap on the first
+   pass. A single transient TLS timeout therefore costs a 30-day wait. The
+   docstring describes per-pass doubling; the SQL does per-event.
+
+This is the same per-event-vs-per-pass defect that makes the whole 13,307
+stub backlog unreadable — see the `no_oa_version` gripe, which reached it
+from the opposite direction. Fixing that one query fixes both.
