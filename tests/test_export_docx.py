@@ -1017,6 +1017,179 @@ def test_hub_finding_multiple_originators_renders_two_marks(
     assert "A — first report" in text and "B — second report" in text
 
 
+def test_hub_finding_multi_cite_gets_doi_ul_hyperlink_runs(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """Cite-links: each numbered mark gets a small doi/UL hyperlink-run
+    pair right after it (mirrors the LaTeX exporter's ``\\href`` pair),
+    and none at all with both ``doi_links=False`` and
+    ``library_links=False``."""
+    from precis.taproot.hub import attach_evidence
+    from precis.utils import handle_registry
+
+    hub_ref = _mint_hub_claim(hub.live_store)
+    a = hub.live_store.insert_ref(
+        kind="paper", slug="docxa21", title="A — first report", year=2001, meta={}
+    ).id
+    b = hub.live_store.insert_ref(
+        kind="paper", slug="docxb22", title="B — second report", year=2002, meta={}
+    ).id
+    citer = hub.live_store.insert_ref(
+        kind="paper", slug="docxc29", title="Citer", year=2009, meta={}
+    ).id
+    for p in (a, b, citer):
+        attach_evidence(
+            hub.live_store, hub_ref_id=hub_ref, paper_ref_id=p, role="corroborates"
+        )
+    hub.live_store.add_link(src_ref_id=citer, dst_ref_id=a, relation="cites")
+    hub.live_store.add_link(src_ref_id=citer, dst_ref_id=b, relation="cites")
+    hub.live_store.insert_ref_identifiers(a, [("doi", "10.1/docxa21", "manual")])
+    hub.live_store.insert_ref_identifiers(b, [("doi", "10.1/docxb22", "manual")])
+    finding_handle = handle_registry.format_handle("finding", hub_ref)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dhub4", title="T", project=pid)
+    draft.put(
+        id="dhub4",
+        chunk_kind="paragraph",
+        text=f"Living citation [{finding_handle}].",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dhub4")
+    out = tmp_path / "dhub4.docx"
+    res = export_docx(hub.live_store, ref, target_path=out)
+    assert res.cited_slugs == ["docxa21", "docxb22"]
+
+    hrefs = {
+        r.target_ref
+        for r in docx.Document(str(out)).part.rels.values()
+        if r.reltype.endswith("hyperlink")
+    }
+    assert "https://doi.org/10.1/docxa21" in hrefs
+    assert "https://doi.org/10.1/docxb22" in hrefs
+    assert sum("uol.primo.exlibrisgroup.com" in h for h in hrefs) == 2
+
+    out_off = tmp_path / "dhub4-off.docx"
+    export_docx(
+        hub.live_store,
+        ref,
+        target_path=out_off,
+        doi_links=False,
+        library_links=False,
+    )
+    rels_off = docx.Document(str(out_off)).part.rels
+    assert not any(r.reltype.endswith("hyperlink") for r in rels_off.values())
+
+
+def test_doi_and_library_link_switches_are_independent(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """``doi_links`` and ``library_links`` are independent: doi-on/
+    library-off emits only the doi hyperlink; doi-off/library-on emits
+    only the library-search hyperlink."""
+    a = hub.live_store.insert_ref(
+        kind="paper", slug="docxindep1", title="A", year=2001, meta={}
+    ).id
+    hub.live_store.insert_ref_identifiers(a, [("doi", "10.1/docxindep1", "manual")])
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dindep", title="T", project=pid)
+    draft.put(
+        id="dindep",
+        chunk_kind="paragraph",
+        text="See [§docxindep1].",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dindep")
+
+    out_doi_only = tmp_path / "dindep-doi.docx"
+    export_docx(
+        hub.live_store,
+        ref,
+        target_path=out_doi_only,
+        doi_links=True,
+        library_links=False,
+    )
+    hrefs_doi_only = {
+        r.target_ref
+        for r in docx.Document(str(out_doi_only)).part.rels.values()
+        if r.reltype.endswith("hyperlink")
+    }
+    assert "https://doi.org/10.1/docxindep1" in hrefs_doi_only
+    assert not any("uol.primo.exlibrisgroup.com" in h for h in hrefs_doi_only)
+
+    out_lib_only = tmp_path / "dindep-lib.docx"
+    export_docx(
+        hub.live_store,
+        ref,
+        target_path=out_lib_only,
+        doi_links=False,
+        library_links=True,
+    )
+    hrefs_lib_only = {
+        r.target_ref
+        for r in docx.Document(str(out_lib_only)).part.rels.values()
+        if r.reltype.endswith("hyperlink")
+    }
+    assert "https://doi.org/10.1/docxindep1" not in hrefs_lib_only
+    assert any("uol.primo.exlibrisgroup.com" in h for h in hrefs_lib_only)
+
+
+def test_hub_finding_doi_hyperlink_percent_encodes_reserved_chars(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """A legacy DOI with reserved URL chars (``<`` / ``>`` / ``;`` here)
+    must be percent-encoded in the hyperlink relationship target — a raw
+    ``<`` is not well-formed URL syntax."""
+    from precis.taproot.hub import attach_evidence
+    from precis.utils import handle_registry
+
+    hub_ref = _mint_hub_claim(hub.live_store)
+    a = hub.live_store.insert_ref(
+        kind="paper", slug="docxa41", title="A — legacy DOI", year=1998, meta={}
+    ).id
+    citer = hub.live_store.insert_ref(
+        kind="paper", slug="docxc49", title="Citer", year=2009, meta={}
+    ).id
+    for p in (a, citer):
+        attach_evidence(
+            hub.live_store, hub_ref_id=hub_ref, paper_ref_id=p, role="corroborates"
+        )
+    hub.live_store.add_link(src_ref_id=citer, dst_ref_id=a, relation="cites")
+    hub.live_store.insert_ref_identifiers(
+        a,
+        [
+            (
+                "doi",
+                "10.1002/(SICI)1097-0258(19980815/30)17:15/16<1661::AID-SIM968>3.0.CO;2-2",
+                "manual",
+            )
+        ],
+    )
+    finding_handle = handle_registry.format_handle("finding", hub_ref)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dhub5", title="T", project=pid)
+    draft.put(
+        id="dhub5",
+        chunk_kind="paragraph",
+        text=f"Living citation [{finding_handle}].",
+        at={"last": True},
+    )
+    ref = hub.live_store.get_ref(kind="draft", id="dhub5")
+    out = tmp_path / "dhub5.docx"
+    res = export_docx(hub.live_store, ref, target_path=out)
+    assert res.cited_slugs == ["docxa41"]
+
+    hrefs = {
+        r.target_ref
+        for r in docx.Document(str(out)).part.rels.values()
+        if r.reltype.endswith("hyperlink")
+    }
+    assert any("%3C1661" in h for h in hrefs)
+    assert not any("<" in h or ">" in h or ";" in h for h in hrefs)
+
+
 def test_hub_finding_no_evidence_renders_no_cite(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:

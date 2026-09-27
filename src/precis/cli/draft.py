@@ -70,6 +70,20 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "warnings.",
     )
     ex.add_argument(
+        "--no-doi-links",
+        action="store_true",
+        help="Skip the doi hyperlink run normally appended after each "
+        "in-text \\cite{...} mark. Default: on. Independent of "
+        "--no-library-links.",
+    )
+    ex.add_argument(
+        "--no-library-links",
+        action="store_true",
+        help="Skip the library-discovery-search hyperlink run normally "
+        "appended after each in-text \\cite{...} mark. Default: on. "
+        "Independent of --no-doi-links.",
+    )
+    ex.add_argument(
         "--database-url",
         default=None,
         help="Override PRECIS_DATABASE_URL.",
@@ -271,7 +285,12 @@ def _run_export(args: argparse.Namespace) -> None:
             sys.exit(2)
         out = Path(args.out) if args.out else Path("export") / str(ref.slug or ref.id)
         result = export_draft(
-            store, ref, target_dir=out, include_sources=args.include_sources
+            store,
+            ref,
+            target_dir=out,
+            include_sources=args.include_sources,
+            doi_links=not args.no_doi_links,
+            library_links=not args.no_library_links,
         )
     finally:
         store.close()

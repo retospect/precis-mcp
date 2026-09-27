@@ -44,18 +44,26 @@ Pull the same lists any time without exporting:
 ```
 precis draft export <slug> [--out DIR]   # → main.tex + refs.bib + preamble.tex
 precis draft export <slug> --pdf          # …and run latexmk to produce main.pdf
+precis draft export <slug> [--no-doi-links] [--no-library-links]
 precis draft remarkable <slug> [--folder /Precis] [--dry-run]
 ```
 
 ```python
-put(kind='job', job_type='draft_export', parent_id=<project-todo-id>, params={'draft': '<slug>'})
+put(kind='job', job_type='draft_export', parent_id=<project-todo-id>, params={'draft': '<slug>', 'doi_links': True, 'library_links': True})
 ```
 
 Exports are one-way and disposable (re-export, never hand-edit). Resolves
 automatically: each block gets `\label{chunk:<handle>}`, `[dc<id>]`
 cross-refs become `\cref{chunk:h}`; each `[pc<id>]`/`[fi<id>]` citation
 resolves to its paper and becomes `\cite{}`, `refs.bib` carrying one
-entry per cited paper (DOI/arXiv when known); every defined abbreviation
+entry per cited paper (DOI/arXiv when known). LaTeX/docx also append a
+small `doi` link (DOI, or the arXiv abstract page when there's no DOI)
+and a library-discovery-search link (labelled per install, default `UL`
+for the University of Limerick) after each citation — two independent
+on-by-default switches, `doi_links`/`--no-doi-links` and
+`library_links`/`--no-library-links`; the search URL and label are
+per-install config on `PrecisConfig` (`PRECIS_LIBRARY_SEARCH_URL`,
+`PRECIS_LIBRARY_LABEL`). Every defined abbreviation
 becomes a `\newacronym`, first use full and later `\gls{…}`, with a
 page-number list in the glossary; `[me<id>]`/cross-draft `[dc<id>]` links
 render to nothing (provenance only). The byline becomes an `authblk`
@@ -69,6 +77,9 @@ paper) or the export marks a stub + warns.
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
 - **Word/.docx** — toolchain-free and **synchronous**, with render-time
   acronym first-use expansion + an auto acronyms list.
+
+## reMarkable sends and snapshots
+
 - **reMarkable** (`precis draft remarkable`, needs a device credential —
   per-user only, the signed-in user's own `/account` pairing (`--user
   <login>` on the CLI; required for an actual upload) — there is no

@@ -21,6 +21,7 @@ var and assert the field it populates.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from precis.config import PrecisConfig
 
@@ -34,6 +35,13 @@ _ENV_VAR_BINDINGS: tuple[tuple[str, str, str], ...] = (
     ("PRECIS_LOG_LEVEL", "log_level", "DEBUG"),
     ("PRECIS_DEFAULT_CORPUS", "default_corpus", "my-corpus"),
     ("PRECIS_OWNER", "owner", "elmsfeuer"),
+    (
+        "PRECIS_LIBRARY_SEARCH_URL",
+        "library_search_url",
+        "https://example.org/find?q={query}",
+    ),
+    ("PRECIS_LIBRARY_LABEL", "library_label", "MyLib"),
+    ("PRECIS_LIBKEY_LIBRARY_ID", "libkey_library_id", "9999"),
 )
 
 
@@ -102,3 +110,26 @@ def test_double_prefixed_form_is_not_honoured(
         "PRECIS_PRECIS_ROOT should not populate the root field — "
         "that was the exact silent-bug mode we renamed to fix."
     )
+
+
+def test_library_search_url_rejects_missing_query_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A template with no ``{query}`` placeholder would silently drop the
+    search term at render time (:func:`precis.utils.paper_links.library_url`)
+    — reject it at config load instead, naming the env var in the error."""
+    monkeypatch.setenv("PRECIS_LIBRARY_SEARCH_URL", "https://example.org/find?q=")
+    with pytest.raises(ValidationError, match="PRECIS_LIBRARY_SEARCH_URL"):
+        PrecisConfig()
+
+
+def test_library_search_url_rejects_duplicate_query_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ``{query}`` placeholders is as broken as zero — reject it too."""
+    monkeypatch.setenv(
+        "PRECIS_LIBRARY_SEARCH_URL",
+        "https://example.org/find?q={query}&alt={query}",
+    )
+    with pytest.raises(ValidationError, match="PRECIS_LIBRARY_SEARCH_URL"):
+        PrecisConfig()

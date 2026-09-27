@@ -757,6 +757,80 @@ def test_hub_finding_multiple_originators_renders_multi_cite(store) -> None:
     assert ctx.cited == ["latxa01", "latxb02"]  # both land in the .bib
 
 
+def test_hub_finding_multi_cite_gets_doi_ul_link_group(store) -> None:
+    """Normal-mode cite-links: a hub cite with two DOI-bearing originator
+    papers gets one small doi/UL ``\\href`` pair per distinct paper, right
+    after the combined ``\\cite{...}`` — and none at all with both
+    ``doi_links=False`` and ``library_links=False``."""
+    hub = mint_hub(store, _HUB_CLAIM)
+    a = store.insert_ref(
+        kind="paper", slug="latxa11", title="A — first report", year=2001, meta={}
+    ).id
+    b = store.insert_ref(
+        kind="paper", slug="latxb12", title="B — second report", year=2002, meta={}
+    ).id
+    citer = store.insert_ref(
+        kind="paper", slug="latxc19", title="Citer", year=2009, meta={}
+    ).id
+    for p in (a, b, citer):
+        attach_evidence(store, hub_ref_id=hub, paper_ref_id=p, role="corroborates")
+    store.add_link(src_ref_id=citer, dst_ref_id=a, relation="cites")
+    store.add_link(src_ref_id=citer, dst_ref_id=b, relation="cites")
+    store.insert_ref_identifiers(a, [("doi", "10.1/latxa11", "manual")])
+    store.insert_ref_identifiers(b, [("doi", "10.1/latxb12", "manual")])
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx)
+
+    assert r"\cite{latxa11,latxb12}" in out
+    assert out.count(r"\href{https://doi.org/10.1/latxa11}{doi}") == 1
+    assert out.count(r"\href{https://doi.org/10.1/latxb12}{doi}") == 1
+    assert out.count("uol.primo.exlibrisgroup.com") == 2  # one UL link/paper
+
+    ctx_off = latex._Ctx(
+        keymap={},
+        known_handles=set(),
+        store=store,
+        doi_links=False,
+        library_links=False,
+    )
+    out_off = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx_off)
+    assert r"\cite{latxa11,latxb12}" in out_off
+    assert r"\href" not in out_off
+
+
+def test_cite_link_doi_and_library_switches_are_independent(store) -> None:
+    """``doi_links`` and ``library_links`` are independent switches: doi-on/
+    library-off emits only the ``doi`` run; doi-off/library-on emits only
+    the library-search run."""
+    a = store.insert_ref(
+        kind="paper", slug="latxdoi1", title="A", year=2001, meta={}
+    ).id
+    store.insert_ref_identifiers(a, [("doi", "10.1/latxdoi1", "manual")])
+
+    ctx_doi_only = latex._Ctx(
+        keymap={},
+        known_handles=set(),
+        store=store,
+        doi_links=True,
+        library_links=False,
+    )
+    out = latex._render_inline("see [§latxdoi1].", ctx_doi_only)
+    assert r"\href{https://doi.org/10.1/latxdoi1}{doi}" in out
+    assert "uol.primo.exlibrisgroup.com" not in out
+
+    ctx_library_only = latex._Ctx(
+        keymap={},
+        known_handles=set(),
+        store=store,
+        doi_links=False,
+        library_links=True,
+    )
+    out = latex._render_inline("see [§latxdoi1].", ctx_library_only)
+    assert r"\href{https://doi.org/10.1/latxdoi1}{doi}" not in out
+    assert "uol.primo.exlibrisgroup.com" in out
+
+
 def test_hub_finding_corroborator_only_fallback(store) -> None:
     # No intra-supporter `cites` edge held -> no derived originator; the
     # living citation falls back to the corroborator(s) rather than

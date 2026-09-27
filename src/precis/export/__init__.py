@@ -6,7 +6,14 @@ claim artifacts" (:mod:`._nanopub_appendix`), and the "Data package"
 appendix (:mod:`._data_package` — 7 pt monospace tables + JSON embedded
 in the PDF via ``embedfile`` + a ``data-package.json`` sidecar, generated
 from snapshots frozen into figure chunks at mint time so the numbers
-always match the plotted pixels)."""
+always match the plotted pixels).
+
+Inline cite-link group (LaTeX/docx, independent ``doi_links``/
+``library_links`` switches, both default on): a ``doi`` hyperlink plus a
+per-install library-discovery-search hyperlink appended right after each
+citation marker. ``._cite_ids`` holds the shared "DOI, else arXiv id,
+else none" lookup both exporters memoize per export; the pure URL
+builders live in :mod:`precis.utils.paper_links`."""
 
 from __future__ import annotations
 

@@ -40,6 +40,14 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # ?ignore_retractions=1 — the sources appendix records which cited
         # papers were overridden (see precis.export.retraction).
         "ignore_retractions": {"type": "boolean"},
+        # Append the doi hyperlink run after each in-text \cite{...} mark
+        # (precis.export.latex.render_body's doi_links). Default on.
+        # Independent of library_links.
+        "doi_links": {"type": "boolean"},
+        # Append the library-discovery-search hyperlink run after each
+        # in-text \cite{...} mark (render_body's library_links). Default
+        # on. Independent of doi_links.
+        "library_links": {"type": "boolean"},
     },
     "required": ["draft"],
     "additionalProperties": False,
@@ -227,6 +235,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             include_sources=include_sources,
             doc_type=_resolve_doc_type(ctx),
             retraction_override=retraction_override,
+            doi_links=bool(params.get("doi_links", True)),
+            library_links=bool(params.get("library_links", True)),
         )
     except Exception as exc:
         log.warning("draft_export: render failed for %s", slug, exc_info=True)

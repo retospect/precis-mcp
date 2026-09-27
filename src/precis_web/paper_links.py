@@ -6,63 +6,33 @@ publisher/arXiv page, the University of Limerick Primo discovery search,
 Google Scholar, and a direct LibKey full-text link. Input is a
 ``stub_backlog``-style identifier — a bare DOI (``10.…``),
 ``arxiv:<id>``, or ``s2:<hash>``.
+
+The pure URL builders (:func:`doi_url`, :func:`uol_url`,
+:func:`libkey_url`, ``_search_token``) live in
+:mod:`precis.utils.paper_links` — core, no ``precis_web`` import — so the
+LaTeX/docx export pipeline can use them without depending on the web
+package. Re-exported here so existing imports keep working.
 """
 
 from __future__ import annotations
 
 from urllib.parse import quote
 
-#: Our LibKey (Third Iron) library id — University of Limerick, the
-#: institution behind the ``uol.primo`` proxy. Found at
-#: ``libkey.io/choose-library``; it is the ``libraries/<id>`` segment in
-#: the captured full-text-file link. Injecting it overrides any
-#: browser-side affiliation so the link resolves via UoL's entitlements.
-_LIBKEY_LIBRARY_ID = "2545"
+from precis.utils.paper_links import (
+    _search_token,
+    doi_url,
+    libkey_url,
+    uol_url,
+)
 
-
-def doi_url(identifier: str) -> str:
-    """Publisher / arXiv URL for a DOI or ``arxiv:`` identifier (else '')."""
-    if not identifier:
-        return ""
-    if identifier.startswith("arxiv:"):
-        return f"https://arxiv.org/abs/{identifier.removeprefix('arxiv:')}"
-    if identifier.startswith("10."):
-        return f"https://doi.org/{identifier}"
-    return ""
-
-
-def _search_token(identifier: str) -> str:
-    """Bare term to feed a library / scholar search box.
-
-    DOIs and arXiv numbers search cleanly; an opaque S2 hash does not, so
-    it returns ``""`` (the UoL / Scholar links are then suppressed). The
-    ``arxiv:`` prefix is stripped so the bare number is searched.
-    """
-    if not identifier:
-        return ""
-    if identifier.startswith("arxiv:"):
-        return identifier.removeprefix("arxiv:")
-    if identifier.startswith("10."):
-        return identifier
-    return ""
-
-
-def uol_url(identifier: str) -> str:
-    """University of Limerick Primo discovery search for the identifier.
-
-    The tenant/view (``vid``), the institution-plus-central-index scope,
-    and the ``any,contains,<term>`` query are the load-bearing parts; the
-    term is percent-encoded (``/`` → ``%2F``).
-    """
-    token = _search_token(identifier)
-    if not token:
-        return ""
-    q = quote(token, safe="")
-    return (
-        "https://uol.primo.exlibrisgroup.com/discovery/search"
-        "?vid=353UOL_INST:353UOL_VU1&search_scope=MyInst_and_CI"
-        f"&lang=en&sortby=rank&tab=TAB1&query=any,contains,{q}"
-    )
+__all__ = [
+    "arxiv_pdf_url",
+    "doi_url",
+    "libkey_url",
+    "scholar_title_url",
+    "scholar_url",
+    "uol_url",
+]
 
 
 def scholar_url(identifier: str) -> str:
@@ -78,7 +48,7 @@ def scholar_title_url(title: str) -> str:
     """Google Scholar search on a bare *title* (a Sources/Cited row link).
 
     :func:`scholar_url` above only accepts an identifier-shaped token
-    (DOI / arXiv id, via :func:`_search_token`) — an S2 neighbour row
+    (DOI / arXiv id, via ``_search_token``) — an S2 neighbour row
     without either (opaque ``s2:`` hash, or no identifier at all) still
     has a title, which is the only usable Scholar query left. Same query
     shape as :func:`scholar_url`, keyed on the title text instead.
@@ -106,24 +76,3 @@ def arxiv_pdf_url(identifier: str) -> str:
     if not identifier.startswith("arxiv:"):
         return ""
     return f"https://arxiv.org/pdf/{identifier.removeprefix('arxiv:')}"
-
-
-def libkey_url(identifier: str) -> str:
-    """Direct LibKey full-text link for a DOI (else '').
-
-    LibKey's documented library-specific form is
-    ``libkey.io/libraries/<id>/<DOI-or-PMID>`` — appending a raw DOI (or
-    PMID) resolves straight to the article's full-text-file / speedbump,
-    skipping the Primo keyword search. Only DOIs qualify: arXiv preprints
-    have their own free PDF (``doi_url``) and an opaque S2 hash is not a
-    LibKey key, so both return ``""``.
-
-    The DOI's own ``/`` stays a path separator (multi-segment DOIs are
-    normal); every other reserved char (``<>();:`` in legacy Wiley DOIs)
-    is percent-encoded so the URL is well-formed, and LibKey decodes it
-    back to the DOI.
-    """
-    if not identifier.startswith("10."):
-        return ""
-    doi = quote(identifier, safe="/")
-    return f"https://libkey.io/libraries/{_LIBKEY_LIBRARY_ID}/{doi}"

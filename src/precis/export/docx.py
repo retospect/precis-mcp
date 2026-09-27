@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
 )
@@ -64,6 +65,7 @@ from precis.export._trust_marks import (
     unverified_claims_entries,
 )
 from precis.export.latex import (
+    _CITE_ENTRY_TYPES,
     _COMBINED,
     _MATH,
     _PATENT_DOC_TYPE,
@@ -78,6 +80,7 @@ from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 from precis.utils.mentions import COMPUTED_EVIDENCE_KINDS, parse_pin_suffix
+from precis.utils.paper_links import doi_url, uol_url
 from precis.utils.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -171,6 +174,30 @@ class _Ctx:
     endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
+    #: Append the doi hyperlink run after each plain ``[n]`` citation
+    #: marker — mirrors ``export/latex.py``'s ``_Ctx.doi_links``. No effect
+    #: in patent/endnote mode (their own citation rendering).
+    doi_links: bool = True
+    #: Append the library-discovery-search hyperlink run (labelled
+    #: ``config.library_label``) after each plain ``[n]`` marker — mirrors
+    #: ``export/latex.py``'s ``_Ctx.library_links``. Independent of
+    #: ``doi_links``.
+    library_links: bool = True
+    #: Link text for the library-search run (mirrors ``export/latex.py``'s
+    #: ``_Ctx.library_label``) — read from config ONCE by
+    #: :func:`export_docx` (not per cite site). An empty string (the
+    #: dataclass default, used by tests that construct ``_Ctx`` directly)
+    #: falls back to :func:`~precis.config.load_config` in
+    #: ``__post_init__``.
+    library_label: str = ""
+    #: Search-URL template for the library-search run, mirrors
+    #: ``export/latex.py``'s ``_Ctx.library_search_url`` — same
+    #: once-per-export loading and test-fallback rule as
+    #: :attr:`library_label`.
+    library_search_url: str = ""
+    #: ``{ref_id: identifier}`` memo, mirrors ``export/latex.py``'s
+    #: ``_Ctx._identifier_cache``.
+    _identifier_cache: dict[int, str] = field(default_factory=dict, repr=False)
     #: Trust-mark bookkeeping (the trust-surfaces export marking), mirrors
     #: ``export/latex.py``'s ``_Ctx.trust`` — set in ``__post_init__``.
     trust: Any = None
@@ -189,6 +216,12 @@ class _Ctx:
             from precis.export._trust_marks import TrustTracker
 
             self.trust = TrustTracker(self.store)
+        if not self.library_label or not self.library_search_url:
+            from precis.config import load_config
+
+            cfg = load_config()
+            self.library_label = self.library_label or cfg.library_label
+            self.library_search_url = self.library_search_url or cfg.library_search_url
 
     @property
     def patent_mode(self) -> bool:
@@ -243,10 +276,13 @@ def _standalone_equation_numbers(chunks: list[Any]) -> dict[str, int]:
     return numbers
 
 
-def _add_hyperlink(paragraph: Any, url: str, text: str) -> None:
+def _add_hyperlink(
+    paragraph: Any, url: str, text: str, *, size_pt: float | None = None
+) -> None:
     """Append a real external hyperlink run to ``paragraph`` (python-docx
     has no native helper). Styled blue + underlined so it reads as a link.
-    Used for a ROR affiliation id."""
+    Used for a ROR affiliation id, and (``size_pt`` set) the small doi/UL
+    cite-link runs (:func:`_cite_link_group`) — ``w:sz`` is half-points."""
     from docx.opc.constants import RELATIONSHIP_TYPE as RT
     from docx.oxml.ns import qn
     from docx.oxml.shared import OxmlElement
@@ -262,6 +298,10 @@ def _add_hyperlink(paragraph: Any, url: str, text: str) -> None:
     underline = OxmlElement("w:u")
     underline.set(qn("w:val"), "single")
     rpr.append(underline)
+    if size_pt is not None:
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), str(int(size_pt * 2)))
+        rpr.append(sz)
     run.append(rpr)
     t = OxmlElement("w:t")
     t.text = text
@@ -308,6 +348,8 @@ def export_docx(
     target_path: Path,
     citations: str = "plain",
     doc_type: str | None = None,
+    doi_links: bool = True,
+    library_links: bool = True,
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -319,7 +361,11 @@ def export_docx(
     * ``"endnote"`` — native EndNote *Cite While You Write* fields
       (``ADDIN EN.CITE`` + ``EN.REFLIST``), so EndNote recognizes and can
       reformat / manage the citations (see :mod:`precis.export.endnote`).
-    """
+
+    ``doi_links=False`` / ``library_links=False`` independently turn off
+    the small doi / library-search hyperlink runs normally appended after
+    each plain ``[n]`` marker (:func:`_cite_link_group`) — both default on;
+    no effect in patent/endnote mode."""
     from docx import Document
 
     from precis.export import guard_exportable
@@ -331,6 +377,9 @@ def export_docx(
         doc_type = ws.doc_type if ws else ""
     chunks = store.drafts.reading_order(ref.id)
     handles = {c.handle for c in chunks}
+    from precis.config import load_config
+
+    cfg = load_config()
     ctx = _Ctx(
         store=store,
         known_handles=handles,
@@ -338,6 +387,10 @@ def export_docx(
         endnote=(citations == "endnote"),
         doc_type=doc_type,
         eq_numbers=_standalone_equation_numbers(chunks),
+        doi_links=doi_links,
+        library_links=library_links,
+        library_label=cfg.library_label,
+        library_search_url=cfg.library_search_url,
     )
 
     doc = Document()
@@ -908,6 +961,61 @@ def _inline_source_cite(
     paragraph.add_run(text)
 
 
+#: Font size (pt) for the doi/UL cite-link runs — small enough to read as
+#: an annotation next to the ``[n]`` marker, not body text.
+_CITE_LINK_PT = 7.0
+
+
+def _paper_identifier(ref_id: int, ctx: _Ctx) -> str:
+    """The one identifier a cite-link pair hangs off: a DOI, else an
+    ``arxiv:``-prefixed arXiv id, else ``""`` (:func:`paper_identifier`,
+    shared with ``export/latex.py`` — same ``identifiers_for_refs`` alias
+    source as :func:`_resolve_source`'s ``url`` field, so the inline link
+    can't disagree with the References entry). Memoized on ``ctx``."""
+    if ref_id in ctx._identifier_cache:
+        return ctx._identifier_cache[ref_id]
+    fn = getattr(ctx.store, "identifiers_for_refs", None)
+    identifier = paper_identifier(ref_id, fn)
+    ctx._identifier_cache[ref_id] = identifier
+    return identifier
+
+
+def _cite_link_group(slug: str, ctx: _Ctx, paragraph: Any) -> None:
+    """Append the small ``doi`` / library-search hyperlink run(s) right
+    after a plain ``[n]`` citation marker — mirrors
+    ``export/latex.py::_cite_link_group``. ``ctx.doi_links`` and
+    ``ctx.library_links`` are independent (either can run alone). No-op
+    when both are off, there's no store, the slug doesn't resolve, or it
+    carries neither a DOI nor an arXiv id (an arXiv-only paper reuses the
+    ``doi``-labelled run for its arXiv abstract page, dropping the library
+    run only if :func:`uol_url` can't build one)."""
+    if not ctx.doi_links and not ctx.library_links:
+        return
+    if ctx.store is None:
+        return
+    get_ref = getattr(ctx.store, "get_ref", None)
+    if not callable(get_ref):
+        return
+    pref = None
+    for kind, _etype in _CITE_ENTRY_TYPES:
+        pref = get_ref(kind=kind, id=slug)
+        if pref is not None:
+            break
+    if pref is None:
+        return
+    identifier = _paper_identifier(pref.id, ctx)
+    if ctx.doi_links:
+        first = doi_url(identifier)
+        if first:
+            paragraph.add_run(" ")
+            _add_hyperlink(paragraph, first, "doi", size_pt=_CITE_LINK_PT)
+    if ctx.library_links:
+        ul = uol_url(identifier, search_url_template=ctx.library_search_url)
+        if ul:
+            paragraph.add_run(" ")
+            _add_hyperlink(paragraph, ul, ctx.library_label, size_pt=_CITE_LINK_PT)
+
+
 def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> None:
     """Emit a numbered citation marker — a superscript ``[n]`` keyed on the
     **paper**. The numbered **References** section at the document end
@@ -943,6 +1051,7 @@ def _cite(slug: str, ctx: _Ctx, paragraph: Any, chunk_id: int | None = None) -> 
         return
     run = paragraph.add_run(f"[{n}]")
     run.font.superscript = True
+    _cite_link_group(slug, ctx, paragraph)
 
 
 def _resolve_source(

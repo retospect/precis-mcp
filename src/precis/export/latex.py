@@ -45,6 +45,7 @@ from pylatexenc.latexencode import (
     get_builtin_uni2latex_dict,
 )
 
+from precis.export._cite_ids import paper_identifier
 from precis.export._data_package import (
     SECTION_TITLE as _DATA_PACKAGE_SECTION_TITLE,
 )
@@ -77,6 +78,7 @@ from precis.export._trust_marks import (
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
+from precis.utils.paper_links import doi_url, uol_url
 from precis.utils.workspace import Workspace
 
 if TYPE_CHECKING:
@@ -778,6 +780,35 @@ class _Ctx:
     footnote_refs: bool = (
         False  # reMarkable mode: source cites → self-contained footnotes
     )
+    #: Append the ``doi`` run after each in-text ``\cite{...}`` mark (normal
+    #: mode only — patent/footnote modes have their own citation rendering
+    #: and are unaffected). ``--no-doi-links`` / ``params.doi_links=False``
+    #: turns it off, independently of ``library_links``.
+    doi_links: bool = True
+    #: Append the library-discovery-search run (labelled
+    #: :attr:`precis.config.PrecisConfig.library_label`) after each in-text
+    #: ``\cite{...}`` mark. ``--no-library-links`` /
+    #: ``params.library_links=False`` turns it off, independently of
+    #: ``doi_links``.
+    library_links: bool = True
+    #: Link text for the library-search run appended by
+    #: :func:`_cite_link_group` (:attr:`precis.config.PrecisConfig.
+    #: library_label`). Read from config ONCE by :func:`render_body` (not
+    #: per cite site) and threaded through here; an empty string (the
+    #: dataclass default, used by tests that construct ``_Ctx`` directly)
+    #: falls back to :func:`~precis.config.load_config` in
+    #: ``__post_init__``.
+    library_label: str = ""
+    #: Search-URL template for :func:`_cite_link_group`'s library link
+    #: (:attr:`precis.config.PrecisConfig.library_search_url`) — same
+    #: once-per-export loading and test-fallback rule as
+    #: :attr:`library_label`.
+    library_search_url: str = ""
+    #: ``{ref_id: identifier}`` memo for :func:`_paper_identifier` — a
+    #: repeatedly-cited paper (a common case: the same source backing
+    #: several passages) would otherwise re-query ``identifiers_for_refs``
+    #: at every cite site.
+    _identifier_cache: dict[int, str] = field(default_factory=dict, repr=False)
     #: Trust-mark bookkeeping (the trust-surfaces export marking) — set in
     #: ``__post_init__`` from ``store`` so every existing call site that
     #: only ever passed ``store=`` keeps working unchanged.
@@ -788,6 +819,12 @@ class _Ctx:
             from precis.export._trust_marks import TrustTracker
 
             self.trust = TrustTracker(self.store)
+        if not self.library_label or not self.library_search_url:
+            from precis.config import load_config
+
+            cfg = load_config()
+            self.library_label = self.library_label or cfg.library_label
+            self.library_search_url = self.library_search_url or cfg.library_search_url
 
     @property
     def patent_mode(self) -> bool:
@@ -1104,6 +1141,76 @@ def _inline_paper_by_slug(slug: str, ctx: _Ctx) -> str:
     return _encode_unicode(_latex_escape(text))
 
 
+def _paper_identifier(ref_id: int, ctx: _Ctx) -> str:
+    """The one identifier a cite-link group hangs off: a DOI, else an
+    ``arxiv:``-prefixed arXiv id, else ``""`` (:func:`paper_identifier`,
+    shared with ``export/docx.py``). Same alias source
+    (``identifiers_for_refs``) as :func:`_paper_dois` / ``build_bib``'s
+    ``doi``/``eprint`` fields, so the inline link can't disagree with the
+    bibliography entry it sits next to. Memoized on ``ctx`` — a paper cited
+    several times would otherwise re-query per cite site."""
+    if ref_id in ctx._identifier_cache:
+        return ctx._identifier_cache[ref_id]
+    fn = getattr(ctx.store, "identifiers_for_refs", None)
+    identifier = paper_identifier(ref_id, fn)
+    ctx._identifier_cache[ref_id] = identifier
+    return identifier
+
+
+def _cite_link_group(bases: list[str], ctx: _Ctx) -> str:
+    """The compact ``doi`` / library-search hyperlink pair appended right
+    after a normal-mode ``\\cite{...}`` mark, one entry per distinct cited
+    paper (``bases``, in citation order) that resolves to a DOI or arXiv id.
+    ``""`` when both ``ctx.doi_links``/``ctx.library_links`` are off,
+    there's no store, or none of the papers carry an identifier — so an
+    ordinary source-less cite (or an export with both switches off) renders
+    byte-for-byte as before this feature.
+
+    ``ctx.doi_links`` and ``ctx.library_links`` are independent: either can
+    run alone. A DOI paper's ``doi`` run links ``https://doi.org/<doi>``;
+    the library run (labelled :attr:`precis.config.PrecisConfig.
+    library_label`) links this install's discovery search
+    (:mod:`precis.utils.paper_links`). An arXiv-only paper reuses the
+    ``doi``-labelled slot for its arXiv abstract page (still searchable by
+    arXiv id) and drops the library run only if :func:`uol_url` can't build
+    one. A paper with neither identifier contributes nothing."""
+    if not ctx.doi_links and not ctx.library_links:
+        return ""
+    if ctx.store is None:
+        return ""
+    get_ref = getattr(ctx.store, "get_ref", None)
+    if not callable(get_ref):
+        return ""
+    library_label = ctx.library_label
+    parts: list[str] = []
+    for base in bases:
+        pref = None
+        for kind, _etype in _CITE_ENTRY_TYPES:
+            pref = get_ref(kind=kind, id=base)
+            if pref is not None:
+                break
+        if pref is None:
+            continue
+        identifier = _paper_identifier(pref.id, ctx)
+        doi_link = doi_url(identifier) if ctx.doi_links else ""
+        lib_link = (
+            uol_url(identifier, search_url_template=ctx.library_search_url)
+            if ctx.library_links
+            else ""
+        )
+        if not doi_link and not lib_link:
+            continue
+        pieces = []
+        if doi_link:
+            pieces.append(_tex_url(doi_link, "doi"))
+        if lib_link:
+            pieces.append(_tex_url(lib_link, library_label))
+        parts.append("\\,".join(pieces))
+    if not parts:
+        return ""
+    return "{\\scriptsize " + "\\ ".join(parts) + "}"
+
+
 def _cite(slug: str, ctx: _Ctx) -> str:
     # Cite the PAPER, not the chunk: ``a~3`` / ``a~9`` → one \cite{a} and
     # one bib entry (biblatex collapses repeated cites; build_bib resolves
@@ -1120,7 +1227,7 @@ def _cite(slug: str, ctx: _Ctx) -> str:
         )
     if base not in ctx.cited:
         ctx.cited.append(base)
-    return f"\\cite{{{base}}}"
+    return f"\\cite{{{base}}}" + _cite_link_group([base], ctx)
 
 
 def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
@@ -1145,7 +1252,7 @@ def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
     for k in keys:
         if k not in ctx.cited:
             ctx.cited.append(k)
-    return f"\\cite{{{','.join(keys)}}}"
+    return f"\\cite{{{','.join(keys)}}}" + _cite_link_group(keys, ctx)
 
 
 #: Longest excerpt (chars) quoted into a reMarkable footnote before it's
@@ -1492,7 +1599,7 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
     return f"\\footnote{{{body}}}\x02"  # \x02: adjacency sentinel, see _render_inline
 
 
-def _tex_url(url: str) -> str:
+def _tex_url(url: str, text: str | None = None) -> str:
     """A clickable, visibly-printed URL that survives being INSIDE another
     macro's argument (the hub footnote): ``\\href`` with ``#``/``%``
     escaped and ``~`` as ``\\string~`` in the target (hyperref re-reads
@@ -1508,7 +1615,9 @@ def _tex_url(url: str) -> str:
     ``&``) get the same backslash treatment as ``#``/``%`` — the escapes
     hyperref documents for a URL in a moving argument (``\\$`` is NOT one
     of them: it renders as ``\\protect\\textdollar``, hence the encoding).
-    """
+
+    ``text`` overrides the visible link text (default: the URL itself) —
+    the cite-link group's short ``doi`` / ``UL`` labels use this."""
     encoded = quote(url, safe="/:#?=&@~!*()',;-._")
     target = (
         encoded.replace("%", "\\%")
@@ -1517,7 +1626,7 @@ def _tex_url(url: str) -> str:
         .replace("_", "\\_")
         .replace("&", "\\&")
     )
-    return f"\\href{{{target}}}{{{_tex(url)}}}"
+    return f"\\href{{{target}}}{{{_tex(text if text is not None else url)}}}"
 
 
 def _chunk_id_of(handle: str) -> int | None:
@@ -1726,7 +1835,13 @@ _SECTION_CMD = ["section", "subsection", "subsubsection", "paragraph"]
 
 
 def render_body(
-    store: Store, ref: Any, *, doc_type: str = "", footnote_refs: bool = False
+    store: Store,
+    ref: Any,
+    *,
+    doc_type: str = "",
+    footnote_refs: bool = False,
+    doi_links: bool = True,
+    library_links: bool = True,
 ) -> RenderResult:
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
@@ -1737,9 +1852,17 @@ def render_body(
     citation into a self-contained numbered ``\\footnote`` — human cite +
     bibliography number + the referenced chunk excerpt — so the draft reads
     offline without a round-trip to the reference list. The end bibliography
-    is still built (the footnote's ``[N]`` matches it)."""
+    is still built (the footnote's ``[N]`` matches it).
+
+    ``doi_links=False`` / ``library_links=False`` independently turn off the
+    ``doi`` / library-search runs normal mode otherwise appends after each
+    ``\\cite{...}`` mark (:func:`_cite_link_group`) — no effect in
+    patent/footnote mode, which never emit ``\\cite`` at all."""
     chunks = store.drafts.reading_order(ref.id)
     abbrevs: dict[str, str] = store.drafts.defined_abbrevs(ref.id)
+    from precis.config import load_config
+
+    cfg = load_config()
     ctx = _Ctx(
         keymap=_acronym_keymap(abbrevs),
         known_handles={c.dc for c in chunks},
@@ -1747,6 +1870,10 @@ def render_body(
         legacy_to_dc={c.handle: c.dc for c in chunks},
         doc_type=doc_type,
         footnote_refs=footnote_refs,
+        doi_links=doi_links,
+        library_links=library_links,
+        library_label=cfg.library_label,
+        library_search_url=cfg.library_search_url,
     )
     lines: list[str] = []
     # Open list environments (migration 0037): ulist→itemize, olist→
@@ -2308,6 +2435,8 @@ def export_draft(
     doc_type: str | None = None,
     remarkable: bool = False,
     retraction_override: list[Any] | None = None,
+    doi_links: bool = True,
+    library_links: bool = True,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -2321,7 +2450,11 @@ def export_draft(
 
     ``retraction_override`` (only meaningful with ``include_sources=True``)
     is forwarded to :func:`build_source_appendix` — see there for what it
-    records."""
+    records.
+
+    ``doi_links=False`` / ``library_links=False`` independently turn off the
+    inline ``doi`` / library-search runs (:func:`render_body`) — default
+    both on."""
     from precis.export import guard_exportable
 
     guard_exportable(ref)
@@ -2339,7 +2472,14 @@ def export_draft(
     # bibliography, so it yields to patent-spec mode (in-text cites, no bib).
     remarkable = remarkable and not patent_mode
 
-    rendered = render_body(store, ref, doc_type=doc_type, footnote_refs=remarkable)
+    rendered = render_body(
+        store,
+        ref,
+        doc_type=doc_type,
+        footnote_refs=remarkable,
+        doi_links=doi_links,
+        library_links=library_links,
+    )
     acronyms_tex = build_acronyms(rendered.acronyms, rendered.acronym_keys)
     # A patent specification has no bibliography — everything is cited
     # in-text, so ``cited_slugs`` stays empty and refs.bib is a stub.

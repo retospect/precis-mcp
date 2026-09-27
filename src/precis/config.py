@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARN", "WARNING", "ERROR"]
@@ -374,6 +375,44 @@ class PrecisConfig(BaseSettings):
     """Upper bound (USD) of the ``cheap`` cost band; above it a call is
     ``expensive`` and subject to the breaker. ``PRECIS_BUDGET_CHEAP_MAX_USD``.
     Read by :mod:`precis.budget.bands`."""
+
+    # ── Library discovery links (export citations) ──────────────────────
+    library_search_url: str = (
+        "https://uol.primo.exlibrisgroup.com/discovery/search"
+        "?vid=353UOL_INST:353UOL_VU1&search_scope=MyInst_and_CI"
+        "&lang=en&sortby=rank&tab=TAB1&query=any,contains,{query}"
+    )
+    """Search-URL template for this install's library discovery service
+    (e.g. a Primo/Alma instance) — identifies which institution's catalogue
+    a cited paper's "library" link searches. Must contain the literal
+    ``{query}`` placeholder, filled at build time with a percent-encoded
+    search token (:func:`precis.utils.paper_links.uol_url`). Defaults to
+    the University of Limerick's Primo discovery search. Set via
+    ``PRECIS_LIBRARY_SEARCH_URL``."""
+
+    @field_validator("library_search_url")
+    @classmethod
+    def _library_search_url_has_one_query_placeholder(cls, v: str) -> str:
+        if v.count("{query}") != 1:
+            raise ValueError(
+                "PRECIS_LIBRARY_SEARCH_URL must contain the literal "
+                f"'{{query}}' placeholder exactly once (found {v.count('{query}')}): {v!r}"
+            )
+        return v
+
+    library_label: str = "UL"
+    """Link-text label for the library-search link appended next to an
+    exported citation (:mod:`precis.export.latex` / ``export/docx.py``).
+    Defaults to ``"UL"`` — the University of Limerick. Set via
+    ``PRECIS_LIBRARY_LABEL``."""
+
+    libkey_library_id: str = "2545"
+    """Our LibKey (Third Iron) library id — identifies which institution's
+    entitlements a direct LibKey full-text link resolves through. It is
+    the ``libraries/<id>`` segment of a LibKey URL
+    (:func:`precis.utils.paper_links.libkey_url`), found at
+    ``libkey.io/choose-library``. Defaults to the University of Limerick's
+    id. Set via ``PRECIS_LIBKEY_LIBRARY_ID``."""
 
 
 def load_config() -> PrecisConfig:
