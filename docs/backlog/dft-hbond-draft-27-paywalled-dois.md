@@ -43,21 +43,53 @@ step read the fetched paper and found nothing supporting the claim the draft
 attributes to it. It fails safe: no rewrite, the prose keeps its `[pa]`, so
 the weak cite stays visibly legacy rather than being laundered into a hub.
 
-That is the expected signature of this draft's provenance. These citations
-were minted by a `DREAM:acquire` pass on 2026-09-24 that also fabricated
-author bylines (Bader credited on three papers published after his 2012
-death). A fabricated byline and an unsupported claim come from the same
-defect: the pass invented a plausible-looking citation. So 12 cites whose
-papers do not support them is a floor on the fabrication, not noise —
-**each of the 12 needs a human read before the draft is trustworthy.**
-The 17 `no-claim` are a different and more benign thing: prose that states
-something too general to host a falsifiable finding.
+**Read on 2026-09-27; the first reading of them was wrong.** An earlier
+revision of this file called the 12 "a floor on the fabrication" by analogy
+to the fabricated bylines. That does not survive checking the papers. All 9
+implicated refs are real papers with real body text (43–487 body chunks,
+except `448225` at 8), so nothing here is an invented source. The 12 split
+into three causes with different remedies:
+
+1. **Evidence lives in a table → locate cannot ground it.** `dc4091165`
+   cites `pa4737` (deep-learning XC functional, 2025) for "on WATER27 the
+   same functionals spread from 0.77 to 7.27 kcal/mol". That paper *does*
+   contain WATER27, S66 and the literal `7.27` — inside a markdown table
+   with GGA / meta-GGA / Hybrid columns. The citation is correct; the
+   reground step cannot match a claim to a table row. This is a mechanism
+   limit, and the likely largest bucket.
+2. **The draft's framing is an inference past the paper's sentence.**
+   `dc4091164` cites `pa448237` for "the reference data itself carries about
+   0.1 kcal/mol of uncertainty". The paper contains "0.1 kcal" three times
+   but never the word "uncertainty" — a defensible paraphrase with no
+   locatable supporting sentence. Needs a human call, not a fix.
+3. **Genuine over-attribution.** `dc4089804` cites `pa448241` (r2SCAN) for
+   "hydrogen-bond lengths within about 0.02 to 0.05 Å". That paper never
+   mentions "hydrogen bond" at all and contains no "0.05". The r2SCAN paper
+   is a general functional paper, not an H-bond geometry benchmark — the
+   claim is attributed to a source that does not make it. **This is the
+   bucket that actually needs correcting in the prose.**
+
+So `reground-nomatch` is not a fabrication detector. It is a
+*groundability* signal, and only cause 3 is a citation defect. Triage by
+checking whether the cited paper contains the claim's numbers at all before
+touching the prose — a cheap SQL `ILIKE` over the supporter's chunks
+separates cause 3 from causes 1 and 2 in one query.
+
+The 17 `no-claim` are a separate and more benign thing: prose too general to
+host a falsifiable finding.
 
 ### Remaining work
 
-1. **Read the 12 `reground-nomatch` cites** — job `453483`'s `job_event`
-   chunks name the draft chunk ids. Either the claim needs a different
-   source or the claim itself is wrong.
+1. **Fix the cause-3 cites** (see above) — only those are prose defects.
+   `dc4089804`/`pa448241` is confirmed; the other 7 chunks
+   (`dc4091164`, `dc4091165`, `dc4089529`, `dc4089530`, `dc4089716`,
+   `dc4089728`, `dc4089730`, `dc4089814`, `dc4090673`) have not each been
+   classified into cause 1/2/3 yet. Run the `ILIKE`-over-supporter check per
+   pair first; do not rewrite prose on the strength of the nomatch label
+   alone.
+1b. **Table-bound evidence is a real gap** (cause 1). If a claim's support
+   is only ever in a table, no amount of re-running grounds it. Worth a
+   gripe against the locate step rather than per-draft workarounds.
 2. **A third pass** once the markup backlog drains. 5 of the 41 fetched
    papers (`448202`, `448204`, `448212`, `448230`, `448231` — the water/DFT
    cluster) have `fetch_ok` but **zero body chunks**, and no event records a
