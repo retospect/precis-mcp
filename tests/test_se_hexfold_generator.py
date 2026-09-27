@@ -444,3 +444,55 @@ def test_hexfold_atoms_sit_inside_their_cylinder_envelope(name: str) -> None:
     assert spec.alias == "cyl"
     assert radial.max() == pytest.approx(spec.params["r"] - VDW_MARGIN_A, abs=1e-3)
     assert z.max() == pytest.approx(spec.params["h"] - VDW_MARGIN_A, abs=1e-3)
+
+
+def test_generated_record_is_persisted_and_rendered_in_the_block_view(
+    store: Store,
+) -> None:
+    """After minting, the build report must be readable: ``finish_generate``
+    lands a trimmed record (spec, rings, counts, report, measures -- not
+    the per-atom regions/ports) on the structure ref's ``meta['generated']``
+    and ``view='block'`` renders it as ``## generated`` (dogfood
+    2026-09-27: ``extent.snap``/``fit.propagated`` for a minted block were
+    unreachable through every se view)."""
+    from precis_se.atomic.generate import finish_generate
+    from precis_se.handler import _render_block
+
+    tree = SeTree()
+    _echo, pending = prepare_generate(
+        store,
+        tree,
+        {
+            "op": "generate",
+            "generator": "hexfold",
+            "params": {"spec": _FRAME_SPECS["sheet_tube_cap"]},
+            "name": "blk",
+        },
+        "hx-rec",
+    )
+    assert pending is not None and pending.generated is not None
+    assert set(pending.generated) >= {"generator", "spec", "report", "rings", "n_atoms"}
+    assert "regions" not in pending.generated and "ports" not in pending.generated
+    finish_generate(store, tree, pending)
+
+    ref = store.get_ref(kind="structure", id=pending.struct_slug)
+    assert ref is not None
+    rec = (ref.meta or {})["generated"]
+    codes = {f["code"] for f in rec["report"]["findings"]}
+    assert {"extent.snap", "fit.propagated", "seam.rings"} <= codes
+
+    body = _render_block(tree, tree.blocks["blk"], store, ref_id=0)
+    assert "## generated (hexfold)" in body
+    assert "extent.snap" in body and "fit.propagated" in body
+    assert "spec (regeneration input):" in body and "t.out --fuse k=0--> c.in" in body
+
+    # A later plain re-save (a relax would do this) keeps the record.
+    store.structure_save(
+        slug=pending.struct_slug,
+        title=pending.title,
+        scene=pending.scene,
+        version=2,
+        card_text=pending.card_text,
+    )
+    ref2 = store.get_ref(kind="structure", id=pending.struct_slug)
+    assert ref2 is not None and "generated" in (ref2.meta or {})

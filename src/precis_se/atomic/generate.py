@@ -104,6 +104,13 @@ class PendingGenerate:
     card_text: str
     provenance: str
     ports_map: dict[str, str]
+    #: The generator's build record, persisted on the minted structure
+    #: ref's ``meta["generated"]`` (:func:`generated_record`) so
+    #: ``view='block'`` can show the report after minting -- the generate
+    #: echo only digests it, and a check-mode re-run is not the same build
+    #: (dogfood 2026-09-27: ``extent.snap``/``fit.propagated`` for a minted
+    #: block were unreachable through every se view).
+    generated: dict[str, Any] | None = None
 
 
 def prepare_generate(
@@ -296,6 +303,7 @@ def prepare_generate(
         card_text=card_text,
         provenance=block.provenance,
         ports_map=ports_map,
+        generated=generated_record(gen_name, block.topology),
     )
     topo = ", ".join(f"{k}={_topo_brief(v)}" for k, v in block.topology.items())
     echo = (
@@ -305,6 +313,36 @@ def prepare_generate(
         f"({topo})"
     )
     return echo, pending
+
+
+#: ``GeneratedBlock.topology`` keys kept in the persisted build record.
+#: Deliberately NOT ``regions``/``ports``/``canonical_json``: those carry
+#: every atom ordinal (kilobytes per block, the same reason the echo
+#: digests them) and the ports already live on the se block.
+_GENERATED_RECORD_KEYS = (
+    "hexfold",
+    "spec",
+    "report",
+    "rings",
+    "n_atoms",
+    "n_bonds",
+    "seed_kind",
+    "measures",
+    "chiral_index",
+    "radius_A",
+)
+
+
+def generated_record(gen_name: str, topology: dict[str, Any]) -> dict[str, Any]:
+    """The trimmed, JSON-ready build record ``finish_generate`` persists on
+    the structure ref (``meta["generated"]``): the generator's name plus
+    the :data:`_GENERATED_RECORD_KEYS` it reported. Rendered by
+    ``view='block'`` (:func:`precis_se.handler._render_block`)."""
+    record: dict[str, Any] = {"generator": gen_name}
+    for key in _GENERATED_RECORD_KEYS:
+        if key in topology:
+            record[key] = topology[key]
+    return record
 
 
 def _topo_brief(value: object, limit: int = 80) -> str:
@@ -360,6 +398,9 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
         version=1,
         card_text=pending.card_text,
         description=pending.provenance,
+        meta_extra=(
+            {"generated": pending.generated} if pending.generated is not None else None
+        ),
     )
     node.bound_kind = "structure"
     node.bound = pending.struct_slug

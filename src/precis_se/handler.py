@@ -2360,6 +2360,86 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
     return "\n".join(lines)
 
 
+def _generated_section(store: Any, node: SeBlock) -> list[str]:
+    """``## generated`` — the generator's build record a ``generate`` op
+    persisted on the bound structure ref (``meta["generated"]``,
+    :func:`precis_se.atomic.generate.generated_record`): what the block
+    was compiled from, its ring census, and the build report's findings
+    (``extent.snap``, ``fit.propagated``, ``seam.rings``, …). Empty for a
+    block that was not generated, is unbound, or whose structure predates
+    the record (2026-09-27); a store that cannot resolve the slug degrades
+    to nothing rather than failing the whole view."""
+    if node.bound_kind != "structure" or not node.bound or store is None:
+        return []
+    try:
+        ref = store.get_ref(kind="structure", id=node.bound)
+    except Exception:
+        return []
+    rec = (getattr(ref, "meta", None) or {}).get("generated") if ref else None
+    if not isinstance(rec, dict):
+        return []
+    lines = [f"## generated ({rec.get('generator', '?')})"]
+    facts = []
+    for key in (
+        "hexfold",
+        "seed_kind",
+        "n_atoms",
+        "n_bonds",
+        "chiral_index",
+        "radius_A",
+    ):
+        if key in rec:
+            facts.append(f"{key}={rec[key]}")
+    rings = rec.get("rings")
+    if isinstance(rings, dict) and rings:
+        census = ", ".join(
+            f"{k}:{v}" for k, v in sorted(rings.items(), key=lambda kv: int(kv[0]))
+        )
+        facts.append(f"rings={{{census}}}")
+    if facts:
+        lines.append("  ".join(facts))
+    spec = rec.get("spec")
+    if isinstance(spec, str) and spec.strip():
+        lines.append("")
+        lines.append("spec (regeneration input):")
+        lines.append("```")
+        lines.append(spec.rstrip("\n"))
+        lines.append("```")
+    report = rec.get("report") if isinstance(rec.get("report"), dict) else None
+    findings = report.get("findings") if report is not None else None
+    if report is not None and isinstance(findings, list) and findings:
+        lines.append("")
+        lines.append(
+            f"report: {'ok' if report.get('ok') else 'NOT ok'} — "
+            f"{len(findings)} finding(s)"
+        )
+        rows = []
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            span = f.get("span")
+            rows.append(
+                {
+                    "severity": str(f.get("severity", "")),
+                    "code": str(f.get("code", "")),
+                    "where": str(f.get("where") or "—"),
+                    "message": str(f.get("message", "")),
+                    "span": f"{span[0]}:{span[1]}"
+                    if isinstance(span, list) and len(span) == 2
+                    else "—",
+                }
+            )
+        lines.append(
+            render_agent_table(
+                rows, schema=["severity", "code", "where", "message", "span"]
+            )
+        )
+    elif report is not None:
+        lines.append("")
+        lines.append("report: ok — no findings")
+    return lines
+
+
 def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
     # The uid is shown because it is the ADDRESS that survives a relabel —
     # args={'name': '#41'} reaches this block whatever it is called
@@ -2413,6 +2493,11 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
                 schema=["measure", "value", "relation", "strength", "reason"],
             )
         )
+
+    generated = _generated_section(store, node)
+    if generated:
+        lines.append("")
+        lines.extend(generated)
 
     # Blocktree slice 2 — declared states + transitions
     # (docs/backlog/blocktree-library-build-plan.md §Slice 2). A LOCAL

@@ -161,6 +161,7 @@ class StructureMixin:
         description: str = "",
         relax_summary: dict[str, Any] | None = None,
         conn: Connection | None = None,
+        meta_extra: dict[str, Any] | None = None,
     ) -> tuple[Any, bool]:
         """Create-or-replace a design from a Scene. Returns ``(ref, created)``.
 
@@ -169,6 +170,13 @@ class StructureMixin:
         record_revision`) so the new version and its record commit or roll
         back as one; without it the save is its own transaction, as
         before.
+
+        ``meta_extra`` — caller-owned ``refs.meta`` keys written alongside
+        the structure-owned ones (``_STRUCTURE_OWNED_META_KEYS``): a
+        generator's build record (``generated``), for instance. They are
+        NOT in the owned set, so a later plain save (a relax, an edit)
+        preserves them like any other foreign key; a later save that
+        passes the same key replaces it.
         """
         existing = self.get_ref(kind="structure", id=slug)
         created = existing is None
@@ -185,6 +193,13 @@ class StructureMixin:
             meta["description"] = description
         if relax_summary is not None:
             meta["last_relax"] = relax_summary
+        if meta_extra:
+            clash = set(meta_extra) & _STRUCTURE_OWNED_META_KEYS
+            if clash:
+                raise ValueError(
+                    f"meta_extra may not set structure-owned key(s): {sorted(clash)}"
+                )
+            meta.update(meta_extra)
         with nullcontext(conn) if conn is not None else self.tx() as conn:
             if created:
                 ref = self.insert_ref(
