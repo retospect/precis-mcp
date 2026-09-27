@@ -72,6 +72,18 @@ gripes since the deploy. Three stacked causes:
    those mints mostly cancel on the agent lane** (a cancelled fix todo is
    not `done`, so it blocks a re-mint for that gripe — no spin, but no
    fix either). Deploy first if the cancel noise matters.
+4. **Ceilings, 2026-09-26/27.** With the lane running, complex fixes died
+   first on `claude_agent`'s default `max_turns=20` (fixed 09b9a9bb:
+   `PRECIS_FIX_GRIPE_MAX_TURNS`, default 120) and then on its default
+   `--max-budget-usd 2` — "Exceeded USD budget (2)" on 5 of 6 parked fix
+   attempts 2026-09-27 (gr452384 comment 4; fixed 735d9a5f:
+   `PRECIS_FIX_GRIPE_MAX_USD`, default $10). **Neither knob is rendered by
+   any deploy template** — prod runs the code defaults. A different prod
+   ceiling must go into 20b's `_l_b_fix_env` AND 20e's mirror of it (the
+   agent lane is the process that wins most fix claims; an env added to
+   one unit is invisible to the other — cause 2 above); setting it in a
+   shell or plist by hand does nothing durable. Next ceiling in line is
+   `PRECIS_FIX_TIMEOUT_SECONDS` (1800, already in the env dict).
 
 ## Doctor report and morning brief: quality findings (2026-09-20)
 

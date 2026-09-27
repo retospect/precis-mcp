@@ -1891,6 +1891,62 @@ def _kind_roster_regressions(prior: set[str], current: set[str]) -> set[str]:
     return prior - current
 
 
+def _live_kind_registry() -> frozenset[str]:
+    """Kinds the running code currently knows how to register —
+    :func:`_detect_kind_shrinkage`'s retired-vs-lost distinction
+    (gr452084 defect 3).
+
+    Two sources, unioned:
+
+    - :func:`precis.utils.kind_facts.all_declared_specs` — every
+      built-in ``precis.handlers`` module's class-level ``KindSpec``,
+      kept only when :meth:`~precis.protocol.KindSpec.is_available`
+      is true (its declared ``requires_env``/``requires_secret``/
+      ``requires_setting`` all resolve in *this* process). A kind
+      whose module still exists but is credential-gated off here
+      (``patent`` without an EPO OPS key, ``math`` without
+      ``WOLFRAM_APP_ID``) reads as "known but unavailable" and drops
+      out, same as a genuinely retired kind. A kind with no handler
+      module at all (``nm``, folded into ``se``'s ``atomic`` mode) is
+      never in this set.
+    - Plugin **entry-point names** under
+      :data:`precis.dispatch.PLUGIN_GROUP` — deliberately the bare
+      metadata, never ``ep.load()``. Loading is the exact call that
+      raised in the 2026-09-26 incident (a missing wheel broke
+      ``se``'s import); the entry point's declaration survives that
+      failure because the package is still installed, only one of its
+      transitive imports isn't. Checking the name only, without
+      importing, is what keeps a fleet-wide plugin outage firing
+      instead of self-suppressing — the case this detector exists for.
+
+    A slug in neither set was retired from the codebase (or never
+    existed); :func:`_detect_kind_shrinkage` treats it like a
+    deliberate removal, not a regression.
+
+    Not a complete "known but unavailable here" oracle. File-root
+    kinds (``markdown``/``plaintext``/``tex``) gate on ``PRECIS_ROOT``
+    through an outer ``if`` in :func:`precis.dispatch.boot`, not a
+    declared ``KindSpec.requires_env`` — so they read as available
+    here even on a process with no root configured, and a genuine
+    root-driven loss for one of them still fires. A pure optional-
+    package gate (``calc``/sympy, ``provenance``/habanero) isn't
+    declared on the spec either and has the same gap. Both are a
+    documented residual, not a silently swallowed one.
+    """
+    from precis import dispatch as _dispatch
+    from precis.utils import kind_facts
+
+    declared = {
+        spec.kind for spec in kind_facts.all_declared_specs() if spec.is_available()
+    }
+    # Through the module attribute (not a rebound `from ... import
+    # entry_points`) so tests can stub it the same way
+    # ``tests/test_dispatch.py``'s ``_patch_entry_points`` does for
+    # ``_load_plugins`` itself.
+    plugins = {ep.name for ep in _dispatch._entry_points(group=_dispatch.PLUGIN_GROUP)}
+    return frozenset(declared | plugins)
+
+
 def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
     """A ``(host, process)``'s registered-kind roster shrank since its
     previous boot — gr451358.
@@ -1902,10 +1958,30 @@ def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
     it just goes stale. So for one ``(host, process)``, the rows
     clustered around ``max(last_seen)`` (within
     :data:`KIND_ROSTER_BOOT_SLOP_MIN`) are the *current* boot's roster,
-    and older rows — still within :data:`KIND_ROSTER_LOOKBACK_DAYS` —
-    are the *prior* boot's. :func:`_kind_roster_regressions` does the
-    actual comparison; this function only shapes the two sets per host/
-    process and turns a non-empty result into a finding.
+    and the rows clustered around the next-most-recent ``last_seen``
+    below that — still within :data:`KIND_ROSTER_LOOKBACK_DAYS` — are
+    the *immediately preceding* boot's, and only that boot's:
+    :func:`_kind_roster_regressions` does the actual comparison; this
+    function only shapes the two sets per host/process and turns a
+    non-empty (and registry-confirmed, see below) result into a
+    finding.
+
+    Two gr452084 guards on top of the plain roster diff:
+
+    - **Recency anchor.** ``latest`` only considers a ``(host,
+      process)`` whose current boot is within
+      :data:`DEAD_WORKER_LOOKBACK_DAYS` of ``now()``. A process that
+      stopped booting weeks ago isn't a kind-shrinkage finding — it's
+      ``dead-worker``'s job — and comparing its last two boots forever
+      re-reports the same ancient transition on every later pass.
+    - **Registry cross-check.** A ``missing`` kind that isn't in
+      :func:`_live_kind_registry` was retired from (or is currently
+      credential- or environment-gated out of) the code, not lost — gr452084's
+      ``nm`` false positives (absorbed into ``se``, gone from every
+      entry point) are exactly this. This must not become "no host
+      currently advertises it": the ``se`` incident this detector
+      exists for (gr451358) *is* a fleet-wide, still-registered kind
+      going dark, and has to keep firing.
 
     This is the 2026-09-26 incident: a missing wheel package made a
     plugin's ``ep.load()`` raise, ``se`` silently dropped out of every
@@ -1930,6 +2006,8 @@ def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
                 SELECT host, process, max(last_seen) AS boot_ts
                   FROM kind_provider
                  GROUP BY host, process
+                HAVING max(last_seen) > now()
+                        - (%(dead_worker_lookback)s || ' days')::interval
             ),
             current AS (
                 SELECT kp.host, kp.process,
@@ -1939,13 +2017,21 @@ def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
                  WHERE kp.last_seen >= l.boot_ts - (%(slop)s || ' minutes')::interval
                  GROUP BY kp.host, kp.process
             ),
-            prior AS (
-                SELECT kp.host, kp.process,
-                       array_agg(kp.slug) AS kinds
+            prior_boot AS (
+                SELECT kp.host, kp.process, max(kp.last_seen) AS boot_ts
                   FROM kind_provider kp
                   JOIN latest l ON l.host = kp.host AND l.process = kp.process
                  WHERE kp.last_seen < l.boot_ts - (%(slop)s || ' minutes')::interval
                    AND kp.last_seen > l.boot_ts - (%(lookback)s || ' days')::interval
+                 GROUP BY kp.host, kp.process
+            ),
+            prior AS (
+                SELECT kp.host, kp.process,
+                       array_agg(kp.slug) AS kinds
+                  FROM kind_provider kp
+                  JOIN prior_boot pb ON pb.host = kp.host AND pb.process = kp.process
+                 WHERE kp.last_seen >= pb.boot_ts - (%(slop)s || ' minutes')::interval
+                   AND kp.last_seen <= pb.boot_ts
                  GROUP BY kp.host, kp.process
             )
             SELECT p.host, p.process, p.kinds, c.kinds, l.boot_ts
@@ -1958,13 +2044,16 @@ def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
             {
                 "slop": KIND_ROSTER_BOOT_SLOP_MIN,
                 "lookback": KIND_ROSTER_LOOKBACK_DAYS,
+                "dead_worker_lookback": DEAD_WORKER_LOOKBACK_DAYS,
             },
         ).fetchall()
+    registry = _live_kind_registry()
     out: list[Symptom] = []
     for host, process, prior_kinds, current_kinds, boot_ts in rows:
         missing = _kind_roster_regressions(
             set(prior_kinds or []), set(current_kinds or [])
         )
+        missing &= registry
         if not missing:
             continue
         names = ", ".join(sorted(missing))

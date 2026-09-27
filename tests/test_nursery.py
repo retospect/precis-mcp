@@ -1990,6 +1990,33 @@ def test_run_nursery_pass_raises_critical_for_nas_denied_and_auto_resolves(
 # ── kind-shrinkage (gr451358: roster regression) ────────────────────
 
 
+class _FakePluginEP:
+    """Stand-in for ``importlib.metadata.EntryPoint`` — exposes only the
+    ``name`` attribute :func:`_live_kind_registry` reads."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _patch_plugin_kinds(monkeypatch: pytest.MonkeyPatch, kinds: list[str]) -> None:
+    """Stub ``precis.dispatch._entry_points`` so
+    :func:`_live_kind_registry`'s plugin half returns exactly ``kinds`` —
+    mirrors ``tests/test_dispatch.py``'s ``_patch_entry_points``.
+
+    Needed because the real installed entry-point metadata in this dev
+    image can lag the worktree's current ``pyproject.toml`` (e.g. still
+    advertising a plugin a later commit renamed or dropped) — the
+    kind-shrinkage registry tests need a deterministic plugin set, not
+    whatever this container happened to have baked in.
+    """
+    from precis import dispatch as _d
+
+    def _fake(*, group: str) -> list[_FakePluginEP]:
+        return [_FakePluginEP(k) for k in kinds] if group == _d.PLUGIN_GROUP else []
+
+    monkeypatch.setattr(_d, "_entry_points", _fake)
+
+
 def test_kind_roster_regressions_flags_a_dropped_kind() -> None:
     """prior {a,b,c} vs current {a,b} → missing names c."""
     assert _kind_roster_regressions({"a", "b", "c"}, {"a", "b"}) == {"c"}
@@ -2009,9 +2036,12 @@ def test_kind_roster_regressions_empty_prior_is_empty() -> None:
     assert _kind_roster_regressions(set(), {"a", "b"}) == set()
 
 
-def test_kind_shrinkage_detector_flags_dropped_kind(store: Store) -> None:
+def test_kind_shrinkage_detector_flags_dropped_kind(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A (host, process) whose latest boot's roster lost a kind vs its
     prior boot fires — the gr451358 shape."""
+    _patch_plugin_kinds(monkeypatch, ["se"])
     host = _host()
     _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=120)
     _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
@@ -2080,9 +2110,12 @@ def test_kind_shrinkage_detector_ignores_boots_past_lookback(store: Store) -> No
     )
 
 
-def test_kind_shrinkage_detector_scopes_to_process(store: Store) -> None:
+def test_kind_shrinkage_detector_scopes_to_process(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two processes on the same host each get their own comparison —
     one dropping a kind doesn't flag the other."""
+    _patch_plugin_kinds(monkeypatch, ["se"])
     host = _host()
     _seed_kind_provider(store, host, "serve", ["paper", "se"], minutes_ago=120)
     _seed_kind_provider(store, host, "serve", ["paper"], minutes_ago=1)
@@ -2111,11 +2144,125 @@ def test_kind_shrinkage_within_boot_slop_is_one_boot(store: Store) -> None:
     )
 
 
-def test_kind_shrinkage_is_detected_but_never_alerted(store: Store) -> None:
+def test_kind_shrinkage_detector_ignores_a_process_that_stopped_booting(
+    store: Store,
+) -> None:
+    """A (host, process) whose *latest* boot is itself older than
+    :data:`DEAD_WORKER_LOOKBACK_DAYS` never enters the comparison — a
+    process that stopped booting weeks ago is ``dead-worker``'s finding,
+    not a roster regression re-reported forever against real time
+    (gr452084 defect 1)."""
+    host = _host()
+    stale_current_min = (DEAD_WORKER_LOOKBACK_DAYS + 5) * 24 * 60
+    _seed_kind_provider(
+        store,
+        host,
+        "serve",
+        ["paper", "se", "todo"],
+        minutes_ago=stale_current_min + 120,
+    )
+    _seed_kind_provider(
+        store, host, "serve", ["paper", "todo"], minutes_ago=stale_current_min
+    )
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings
+    )
+
+
+def test_kind_shrinkage_compares_only_the_immediately_preceding_boot(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three boots for one ``(host, process)``: ``concept`` drops out
+    between the first and second (already stale news by the time the
+    third boot happens), while ``se`` is still present at the second
+    boot and only drops out at the third (fresh, as of the boot
+    immediately before it). Both are real, currently-registered kinds —
+    the registry cross-check (defect 3) can't be why either is or isn't
+    reported here; only which boot ``prior`` resolves to can.
+
+    ``kind_provider`` upserts in place (``ON CONFLICT ... DO UPDATE``),
+    so a kind's row only moves forward in time on a boot that
+    re-advertises it — a kind dropped and never revived keeps the
+    ``last_seen`` of its last real boot forever. That's what makes this
+    fixture reproduce three genuinely distinct boots' evidence in one
+    table: ``concept``'s row is stuck at boot 1, ``se``'s at boot 2, and
+    ``paper``'s (always advertised) at boot 3.
+
+    The immediately-preceding-boot comparison must single out ``se``
+    (missing since the boot right before this one) and leave out
+    ``concept`` (already missing a boot earlier — not fresh news, and
+    self-resolved once its own pass fired). The old flattened-window
+    ``prior`` folded *both* stale rows into one 30-day high-water-mark
+    set regardless of which boot each belonged to, so it would have
+    reported ``concept`` too, re-litigating an already-known loss on
+    every later pass (gr452084 defect 2)."""
+    _patch_plugin_kinds(monkeypatch, ["se"])
+    host = _host()
+    _seed_kind_provider(
+        store, host, "serve", ["paper", "se", "concept"], minutes_ago=200
+    )
+    _seed_kind_provider(store, host, "serve", ["paper", "se"], minutes_ago=100)
+    _seed_kind_provider(store, host, "serve", ["paper"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    key = f"kind-shrinkage:{host}:serve"
+    hits = [f for f in findings if f.fingerprint_key == key]
+    assert len(hits) == 1
+    assert "se" in hits[0].title
+    assert "concept" not in hits[0].title
+
+
+def test_kind_shrinkage_detector_suppresses_a_retired_kind(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prior roster naming a kind no longer declared anywhere in the
+    code (``nm``, absorbed into ``se``'s ``atomic`` mode — the nm→se
+    merge dropped its handler and entry point entirely) reads as a
+    retirement, not a regression — gr452084 defect 3."""
+    _patch_plugin_kinds(monkeypatch, ["se"])  # nm is NOT one of them
+    host = _host()
+    _seed_kind_provider(store, host, "serve", ["paper", "nm", "todo"], minutes_ago=120)
+    _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:serve" for f in findings
+    )
+
+
+def test_kind_shrinkage_detector_still_fires_for_a_fleet_wide_registered_loss(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A kind that's still declared in the code (``se``, a live plugin
+    entry point) going missing on every host at once must still fire.
+    The registry cross-check must never collapse to 'no host currently
+    advertises it' — that would suppress exactly the gr451358 incident
+    (``se`` dropping out fleet-wide) this detector exists to catch."""
+    _patch_plugin_kinds(monkeypatch, ["se"])
+    host_a = _host()
+    host_b = _host()
+    for host in (host_a, host_b):
+        _seed_kind_provider(
+            store, host, "serve", ["paper", "se", "todo"], minutes_ago=120
+        )
+        _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    hit_keys = {f.fingerprint_key for f in findings}
+    assert f"kind-shrinkage:{host_a}:serve" in hit_keys
+    assert f"kind-shrinkage:{host_b}:serve" in hit_keys
+
+
+def test_kind_shrinkage_is_detected_but_never_alerted(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr452084: the first pass after this detector shipped minted 12
     critical alerts and none of the 12 was real, so the category is
     suppressed while its defects are open. Detection is kept — the count
     still goes to the log, and re-arming is one entry in ``_NO_ALERT``."""
+    _patch_plugin_kinds(monkeypatch, ["se"])
     host = _host()
     _seed_kind_provider(store, host, "serve", ["paper", "se", "todo"], minutes_ago=120)
     _seed_kind_provider(store, host, "serve", ["paper", "todo"], minutes_ago=1)
