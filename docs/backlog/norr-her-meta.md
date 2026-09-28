@@ -81,18 +81,22 @@ measurand list or the pooled FE numbers are incomparable.
 Sequence decided 2026-09-27; steps 3–5 are the work.
 
 1. ~~Hub census~~ — done above.
-2. **Fix the measurand list from the census.** Proposed (closed, with
-   declared reference states / conventions per entry):
-   NH3 Faradaic efficiency (%, at stated potential); NH3 yield rate
-   (canonical µmol h⁻¹ cm⁻², with the mass-normalised form kept separate,
-   never converted); applied potential (V vs RHE; SHE/SCE/Ag-AgCl converted
-   only when pH is stated, else kept with its reference); HER overpotential
-   at 10 mA cm⁻² (mV) and Tafel slope; ΔG_H* (eV, with functional and
-   reference state); NORR limiting potential (V, with the potential-
-   determining step named); stability duration (h, with the retained-FE
-   criterion). Qualifiers on every value: feed (NO gas / nitrite / nitrate /
-   plasma-NOx / none for HER), electrolyte + concentration, pH, cell type,
-   catalyst family tag. Categorical qualifiers are stored, not inferred.
+2. **Generate the measurand list — `taxonomy-bootstrap.md`.** Reto 09-28: no
+   signed-off static list; the list is a versioned artifact produced by the
+   census → discovery → normalisation → selection procedure, with per-entry
+   provenance and the adopted thresholds (≥30 hubs per entry, ≥15 per join
+   side, 0.80 A/B stability, >10% escapes ⇒ regenerate). The seven
+   hand-written entries below are the **comparison baseline**, not the list:
+   NH3 Faradaic efficiency (%); NH3 yield rate per area AND per mass as two
+   entries, never converted; applied potential (V vs RHE; other references
+   converted only when pH is stated); HER overpotential @10 mA cm⁻² + Tafel
+   slope; ΔG_H* (eV, functional + reference state, ΔE never pooled with ΔG);
+   NORR limiting potential (V, PDS named, separate from onset); stability (h,
+   retention criterion). Required qualifiers on every value: feed (NO gas /
+   nitrite / nitrate / plasma-NOx / none for HER), electrolyte +
+   concentration, pH, cell type, catalyst family, **normalisation basis**.
+   Categorical qualifiers are stored, not inferred. The round starts on
+   `list.v1.yaml`, frozen; deviations are logged as escapes.
 3. **20-paper round on the pilot as is.** Papers: supporters of hubs in the
    two dense cell pairs, split ~12 experimental / ~8 DFT, chosen so each
    experimental paper has a DFT counterpart on the same catalyst family.
@@ -152,4 +156,18 @@ dir only until step 5. No `src/precis/` change until the port trigger.
   triple count decide.
 - **Open:** does a reader round on the 20 papers use the pilot's format v4
   unchanged, or apply item 2 (condition role) first since feed/electrolyte
-  are exactly the conditions that role disambiguates.
+  are exactly the conditions that role disambiguates. Note the role enum is
+  now `context | preparation | model` (`operating` → `context`), agreed with
+  `measures-substrate`.
+- **Decided 2026-09-28 (with shoestring-quest, Reto ruling):** landing shape
+  for extracted values is `measures-substrate.md` (hub ref + `measures` row +
+  anchored evidence edge; subject = the PAPER by default; `literal NOT NULL`;
+  reference + normalisation columns; `source_attribution` guard), and
+  measurands/subjects are `taxon` nodes from `term-taxonomy.md` (ships
+  first). The "new kind or finding subtype" question is closed as neither.
+  Extracted conditions become measures rows too, one per condition with its
+  own anchors — matching quantbind's condition items.
+- **Decided 2026-09-28:** the machinery is domain-neutral; the list and the
+  required-conditions-per-measurand rule are campaign configuration
+  (`taxonomy-bootstrap.md`), so quantbind item 2's temperature guard becomes
+  a registry rule, not a chemistry patch.

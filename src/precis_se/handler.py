@@ -2477,9 +2477,9 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
         "root's parent is world)"
     )
     lines.append(f"rot: [{_fmt_rot3(node.local_rot)}]")
-    world_differs = list(node.pose) != list(node.local_pose) or list(
-        node.rot
-    ) != list(node.local_rot)
+    world_differs = list(node.pose) != list(node.local_pose) or list(node.rot) != list(
+        node.local_rot
+    )
     if world_differs:
         lines.append(
             f"world pose: [{_fmt3(node.pose)}] m  (composed from ancestors "

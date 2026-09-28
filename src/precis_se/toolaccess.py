@@ -51,7 +51,12 @@ from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis_se.ops import SeTree, effective_envelope
-from precis_se.validate import ValidationIssue, _aabb_clear, _is_ancestor, _posed_component
+from precis_se.validate import (
+    ValidationIssue,
+    _aabb_clear,
+    _is_ancestor,
+    _posed_component,
+)
 
 _PACKAGED_DATA = "precis.data"
 _FILE = "driver_envelopes.json"

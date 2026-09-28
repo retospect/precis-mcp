@@ -256,9 +256,9 @@ def build_prompt(
         "which is a fresh scratch scene in the fragment's own local "
         "frame)\n"
     )
-    world_differs = list(node.pose) != list(node.local_pose) or list(
-        node.rot
-    ) != list(node.local_rot)
+    world_differs = list(node.pose) != list(node.local_pose) or list(node.rot) != list(
+        node.local_rot
+    )
     if world_differs:
         pose_lines += (
             f"world pose: [{_fmt_vec(node.pose)}] m   "
