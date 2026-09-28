@@ -49,6 +49,12 @@ The shape is already in the tree twice (`material` mig 0092, `component` mig
 0093 which copies `material_values` verbatim). A third copy is the house
 pattern, not a new invention:
 
+`docs/backlog/measures-substrate.md` is generalising `material_values`
+into a shared `measures` record (any subject ref, literal kept, anchored
+evidence edges) that both `material` and, on a follow-on, `component` are
+meant to run on — so a third verbatim copy here should wait for that item
+rather than cite `component_spec_values` as precedent.
+
 - **entity** — slug ref. `meta` carries the **canonical reaction uid** (see the
   Python-surface section — LinChemIn's `ChemicalEquation.uid`, measured
   canonical across SMILES spelling and reactant order; *not* RInChI, which the

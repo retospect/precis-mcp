@@ -39,6 +39,7 @@ from precis.quest.dossier import (
     rewrite_dossier,
 )
 from precis.quest.tick import TickSlice, build_tick_prompt, run_quest_tick
+from precis.quest.weave_tick import QUEST_BODY_INQUIRY, QUEST_BODY_MATERIALS
 
 
 def _mk_quest(store: Any, text: str) -> int:
@@ -3367,3 +3368,221 @@ class TestServersSummaryHandles:
         quest = store.get_ref(kind="quest", id=qid)
         prompt = build_tick_prompt(store, quest)
         assert f"[{expected_handle}]" in prompt
+
+
+class TestQuestBodyInquiry:
+    """docs/backlog/quest-bodies-inquiry.md — the third ``meta.quest_body``
+    value: read/reason/synthesise, no proposal menu, no Pareto frontier.
+    ``materials`` (the default, unset) keeps today's code paths untouched."""
+
+    # AC1: the assembled prompt must contain none of these four tokens.
+    _MATERIALS_ONLY_TOKENS = (
+        "measured barriers",
+        "awaiting a sim",
+        "candidate materials to simulate",
+        '"structure": {"cell"',  # the proposals schema's worked example
+    )
+
+    def test_inquiry_prompt_has_no_materials_tokens(self, store: Any) -> None:
+        qid = _mk_quest(store, "A literature-synthesis striving")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest, quest_body=QUEST_BODY_INQUIRY)
+        for token in self._MATERIALS_ONLY_TOKENS:
+            assert token not in prompt, token
+        # still the shared reasoning apparatus — not a stripped-down stub
+        assert "## Dialectic blocks" in prompt
+        assert "ledger_ops" in prompt
+        assert "no proposal menu and no Pareto frontier" in prompt
+
+    def test_materials_default_still_carries_the_tokens(self, store: Any) -> None:
+        # Sanity check on the token list itself: an unmarked (materials)
+        # quest's prompt DOES carry them — so the inquiry test above is
+        # proving something real, not vacuously true of every prompt.
+        qid = _mk_quest(store, "A generic materials striving")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        for token in self._MATERIALS_ONLY_TOKENS:
+            assert token in prompt, token
+
+    def test_default_unset_resolves_to_materials(self, store: Any) -> None:
+        # AC5: empty meta resolves to materials — no `quest_body` argument at
+        # all reproduces exactly today's assembled prompt (already pinned
+        # byte-for-byte against the pre-refactor snapshot for the
+        # reaction_config fixture; this is the same claim for a bare quest).
+        # Two identical quests (rather than one quest called twice) since
+        # the first `build_tick_prompt` call lazily seeds the dossier —
+        # calling it again on the SAME quest would compare against that
+        # now-different state, not the unset-vs-explicit-default claim.
+        text = "A striving with no quest_body meta at all"
+        qid_a = _mk_quest(store, text)
+        qid_b = _mk_quest(store, text)
+        quest_a = store.get_ref(kind="quest", id=qid_a)
+        quest_b = store.get_ref(kind="quest", id=qid_b)
+        assert (quest_a.meta or {}).get("quest_body") is None
+        assert build_tick_prompt(store, quest_a) == build_tick_prompt(
+            store, quest_b, quest_body=QUEST_BODY_MATERIALS
+        )
+
+    def test_materials_body_uses_the_existing_hooks_not_a_reimplementation(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # AC4b: the materials body's creed/proposal/ranking hooks ARE
+        # `_reaction_context`/`_frontier_summary` — not a parallel
+        # implementation of the same idea.
+        calls: list[str] = []
+        orig_reaction_context = tick_mod._reaction_context
+        orig_frontier_summary = tick_mod._frontier_summary
+
+        def _spy_reaction_context(*a: Any, **kw: Any) -> Any:
+            calls.append("_reaction_context")
+            return orig_reaction_context(*a, **kw)
+
+        def _spy_frontier_summary(*a: Any, **kw: Any) -> Any:
+            calls.append("_frontier_summary")
+            return orig_frontier_summary(*a, **kw)
+
+        monkeypatch.setattr(tick_mod, "_reaction_context", _spy_reaction_context)
+        monkeypatch.setattr(tick_mod, "_frontier_summary", _spy_frontier_summary)
+
+        qid = _mk_quest(store, "A materials striving")
+        quest = store.get_ref(kind="quest", id=qid)
+        build_tick_prompt(store, quest, quest_body=QUEST_BODY_MATERIALS)
+        assert calls == ["_frontier_summary", "_reaction_context"]
+
+        calls.clear()
+        build_tick_prompt(store, quest, quest_body=QUEST_BODY_INQUIRY)
+        assert calls == []  # inquiry never touches either hook
+
+    def test_inquiry_tick_mints_no_relax_or_autocatpath_job_even_if_the_model_proposes(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # AC2: the inquiry prompt carries no `proposals` schema at all, but
+        # this pins the structural backstop too — a model that ignores the
+        # prompt and emits a `proposals` entry anyway must still never reach
+        # `run_compute_step` (the call that materialises a `structure` and
+        # dispatches the relax/autocatpath job the `jobs` table would show).
+        calls: list[list[dict[str, Any]]] = []
+
+        def _fake_run_compute_step(
+            _store: Any, _quest_id: int, proposals: list[dict[str, Any]], **_kw: Any
+        ) -> Any:
+            calls.append(list(proposals or []))
+            return compute_mod.ComputeStep(
+                candidates_created=0,
+                sims_dispatched=0,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[],
+                graduated=0,
+            )
+
+        monkeypatch.setattr(compute_mod, "run_compute_step", _fake_run_compute_step)
+
+        qid = _mk_quest(store, "A literature-synthesis striving")
+        payload = {
+            "logbook": [],
+            "dossier_text": "",
+            "proposals": [
+                {"name": "Fe adatom", "rationale": "x", "structure": _tick_spec("Fe")}
+            ],
+        }
+        out = run_quest_tick(
+            store,
+            qid,
+            dispatch_fn=_fake_dispatch(payload),
+            compute=True,
+            quest_body=QUEST_BODY_INQUIRY,
+        )
+        assert out.status == "succeeded"
+        assert out.sims_dispatched == 0
+        assert calls == [[]]  # run_compute_step, if called at all, saw nothing
+
+
+class TestQuestBodyManualEntryPoints:
+    """The bug this reader fixes: commit 5798b76e wired ``quest_body``
+    through the autonomous coordinator (``_phase_tick``) only — both manual
+    entry points (the ``precis quest tick`` CLI, ``precis quest run``'s
+    allocator) never read ``meta.quest_body`` at all, so an inquiry-marked
+    quest silently ticked as materials through either. Driven through
+    ``precis.cli.quest._cmd_tick`` (not ``build_tick_prompt``/
+    ``run_quest_tick`` with an explicit ``quest_body=`` kwarg) — calling
+    those directly is exactly what let the CLI's own omission through
+    review undetected."""
+
+    def test_cli_dry_run_on_inquiry_quest_has_no_materials_tokens(
+        self, store: Any, capsys: Any
+    ) -> None:
+        from argparse import Namespace
+
+        from precis.cli.quest import _cmd_tick
+
+        qid = _mk_quest(store, "A literature-synthesis striving (CLI dry-run)")
+        store.stamp_ref_meta(qid, {"quest_body": QUEST_BODY_INQUIRY})
+
+        _cmd_tick(store, Namespace(id=qid, dry_run=True, tier=None, compute=False))
+        printed = capsys.readouterr().out
+        for token in TestQuestBodyInquiry._MATERIALS_ONLY_TOKENS:
+            assert token not in printed, token
+
+    def test_cli_dry_run_on_unmarked_quest_still_has_materials_tokens(
+        self, store: Any, capsys: Any
+    ) -> None:
+        # Positive control through the SAME CLI path — proves the assertion
+        # above is discriminating a real routing difference, not vacuous.
+        from argparse import Namespace
+
+        from precis.cli.quest import _cmd_tick
+
+        qid = _mk_quest(store, "A generic materials striving (CLI dry-run)")
+
+        _cmd_tick(store, Namespace(id=qid, dry_run=True, tier=None, compute=False))
+        printed = capsys.readouterr().out
+        for token in TestQuestBodyInquiry._MATERIALS_ONLY_TOKENS:
+            assert token in printed, token
+
+    def test_cli_live_tick_on_inquiry_quest_dispatches_nothing(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # Mirrors TestQuestBodyInquiry's AC2 test, but through the manual CLI
+        # entry point and its real (non-injectable) dispatch — the router's
+        # `route` is monkeypatched instead of passing `dispatch_fn` (the CLI
+        # exposes no such kwarg), and `compute_mod.run_compute_step` is
+        # patched the same way (`_stage_compute` re-imports it by name each
+        # call, so the patch intercepts the real path).
+        from argparse import Namespace
+
+        from precis.cli.quest import _cmd_tick
+        from precis.utils.llm import router
+
+        calls: list[list[dict[str, Any]]] = []
+
+        def _fake_run_compute_step(
+            _store: Any, _quest_id: int, proposals: list[dict[str, Any]], **_kw: Any
+        ) -> Any:
+            calls.append(list(proposals or []))
+            return compute_mod.ComputeStep(
+                candidates_created=0,
+                sims_dispatched=0,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[],
+                graduated=0,
+            )
+
+        monkeypatch.setattr(compute_mod, "run_compute_step", _fake_run_compute_step)
+
+        qid = _mk_quest(store, "A literature-synthesis striving (CLI live tick)")
+        store.stamp_ref_meta(qid, {"quest_body": QUEST_BODY_INQUIRY})
+
+        payload = {
+            "logbook": [],
+            "dossier_text": "",
+            "proposals": [
+                {"name": "Fe adatom", "rationale": "x", "structure": _tick_spec("Fe")}
+            ],
+        }
+        monkeypatch.setattr(router, "route", _fake_dispatch(payload))
+
+        _cmd_tick(store, Namespace(id=qid, dry_run=False, tier=None, compute=True))
+
+        assert calls == [[]]  # run_compute_step, if called at all, saw nothing

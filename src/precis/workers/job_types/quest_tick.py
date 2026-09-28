@@ -64,7 +64,8 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.allocator import active_quest_ids
-from precis.quest.weave_tick import QUEST_BODY_META_KEY, QUEST_BODY_WEAVE
+from precis.quest.body import quest_body_marker
+from precis.quest.weave_tick import QUEST_BODY_MATERIALS, QUEST_BODY_WEAVE
 from precis.utils.env import env_int
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
@@ -396,19 +397,24 @@ def _quest_body(store: Store, quest_id: int) -> str | None:
     ``"weave"`` (:data:`precis.quest.weave_tick.QUEST_BODY_WEAVE`) routes
     ``_phase_tick`` to the paper-writing weave body instead of the default
     catalyst ``run_quest_tick`` — see :func:`precis.quest.weave_tick.
-    mark_weave_quest`. Same defensive shape as ``_quest_status`` (a missing/
-    exception-raising ``get_ref`` — the common case in unit tests that don't
-    stub it — degrades to the catalyst default, not a crash).
+    mark_weave_quest`. ``"inquiry"`` (:data:`precis.quest.weave_tick.
+    QUEST_BODY_INQUIRY`, docs/backlog/quest-bodies-inquiry.md) stays on the
+    SAME ``run_quest_tick`` call but threads the marker through as its
+    ``quest_body`` — a read/reason/synthesise striving, no proposal menu, no
+    forced-proposal ladder. ``None`` (the vast majority — every catalyst
+    quest seeded by :mod:`precis.quest.catalyst_seed`, and any quest that
+    predates this axis) is never inferred into either — the caller
+    normalises it to :data:`~precis.quest.weave_tick.QUEST_BODY_MATERIALS`.
+    Same defensive shape as ``_quest_status`` (a missing/exception-raising
+    ``get_ref`` — the common case in unit tests that don't stub it —
+    degrades to ``None``, not a crash).
+
+    Delegates to :func:`precis.quest.body.quest_body_marker` — the shared
+    reader every tick entry point (this coordinator, the manual CLI, the
+    allocator) now calls, so the marker is read + normalised at exactly one
+    place regardless of which one ticks a given quest.
     """
-    try:
-        ref = store.get_ref(kind="quest", id=quest_id)
-    except Exception:
-        return None
-    if ref is None:
-        return None
-    meta = ref.meta or {}
-    val = meta.get(QUEST_BODY_META_KEY)
-    return str(val) if val is not None else None
+    return quest_body_marker(store, quest_id)
 
 
 #: Quest meta key holding the compute-lane switch. ``"off"`` makes every
@@ -853,6 +859,16 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     # fallback-query rotation and the job_event labels read.
     slice_count = int(state.get("slice_count") or 0) + (0 if resume else 1)
 
+    # Rung 6e-2 / quest-bodies-inquiry: the quest's ``meta.quest_body`` marker,
+    # normalised to the materials default when unset — never inferred from
+    # any other meta (docs/backlog/quest-bodies-inquiry.md: a live materials
+    # campaign can carry none of `reaction_config`/`compute_lane`/
+    # `rubric_objectives` and must not be silently demoted). Read every
+    # slice (cheap, mirrors `_quest_compute_enabled` below) rather than
+    # carried in `state`, so flipping the marker mid-loop takes effect on
+    # the very next tick.
+    body = _quest_body(ctx.store, quest_id) or QUEST_BODY_MATERIALS
+
     if resume is None:
         # Backpressure: never dispatch a new batch while this quest's sims are
         # still in flight (defensive — _phase_await only routes here when idle).
@@ -872,7 +888,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         # see ``_phase_weave_tick``), so it has no stake in that queue and
         # must not be starved by an unrelated GPU backlog. Still benefits
         # from the backpressure check above unchanged.
-        if _quest_body(ctx.store, quest_id) == QUEST_BODY_WEAVE:
+        if body == QUEST_BODY_WEAVE:
             return _phase_weave_tick(ctx, quest_id, params, state, slice_count)
 
         # Starvation gate: don't stack a batch onto an already-deep compute
@@ -906,6 +922,15 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
                 )
 
     search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store))
+    # quest-bodies-inquiry: the third arm. Unlike weave (a wholly separate
+    # ``weave_tick`` function above), ``inquiry`` reuses this SAME
+    # ``run_quest_tick`` call — same logbook/dossier/ledger/dialectic/
+    # lit-search machinery as the materials default — just a different
+    # prompt body and no forced-proposal commit ladder (see
+    # ``run_quest_tick``'s ``quest_body`` param). ``compute`` stays keyed on
+    # ``_quest_compute_enabled`` regardless of body — an inquiry quest still
+    # wants its lit-search leg to run; it just never emits a `structure` to
+    # materialise.
     outcome = run_quest_tick(
         ctx.store,
         quest_id,
@@ -915,6 +940,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         job_ref_id=ctx.ref_id,
         embedder=_build_search_embedder(ctx.store),
         tick_state=resume,
+        quest_body=body,
         sliced=True,
     )
     if isinstance(outcome, TickSlice):

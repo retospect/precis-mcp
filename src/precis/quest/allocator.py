@@ -354,10 +354,17 @@ def run_allocator_pass(
         return {"enabled": True, "cooled": len(cooled), "picked": None}
 
     from precis.quest import tick as tick_mod
+    from precis.quest.body import resolved_quest_body
     from precis.workers.job_types.quest_tick import _quest_compute_enabled
 
     effective_compute = compute and _quest_compute_enabled(store, pick.quest_id)
-    outcome = tick_mod.run_quest_tick(store, pick.quest_id, compute=effective_compute)
+    # Same marker every tick entry point reads (precis.quest.body) — a manual
+    # `precis quest run` on an inquiry-marked quest must not silently tick it
+    # as materials (quest-bodies-inquiry.md's manual-entry-point gap).
+    body = resolved_quest_body(store, pick.quest_id)
+    outcome = tick_mod.run_quest_tick(
+        store, pick.quest_id, compute=effective_compute, quest_body=body
+    )
     if outcome.status == "paused":
         # Window-scoped breaker pause, not a real tick. Don't burn the pick
         # (no EWMA/pick bump → no premature cooling) and report a skip so the

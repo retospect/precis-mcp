@@ -46,6 +46,7 @@ from precis.quest.logbook import (
     append_entry,
     clamp_entry_type,
 )
+from precis.quest.weave_tick import QUEST_BODY_INQUIRY, QUEST_BODY_MATERIALS
 from precis.reading.cast_common import _TOKENS_PER_WORD
 from precis.utils import handle_registry
 from precis.utils.llm.json_reply import extract_json_object
@@ -1208,6 +1209,7 @@ def build_tick_prompt(
     *,
     review: bool = False,
     narrative_override: str | None = None,
+    quest_body: str = QUEST_BODY_MATERIALS,
 ) -> str:
     """Assemble the full rolling-context prompt for one tick.
 
@@ -1223,6 +1225,20 @@ def build_tick_prompt(
     growth-ratchet gate needs the ladder's own harvest as progress evidence,
     :func:`run_quest_tick`) — without this, a ladder rebuild would show the
     model its OWN previous-tick narrative and ask it to act on stale context.
+
+    ``quest_body`` (docs/backlog/quest-bodies-inquiry.md) selects which
+    template renders the shared context below. Default
+    :data:`~precis.quest.weave_tick.QUEST_BODY_MATERIALS` is **today's
+    unchanged path** — every value below feeds ``_PROMPT_TEMPLATE`` exactly
+    as before this parameter existed, including the frontier/results-table/
+    axis-notes/reaction-context sections and the ``proposals`` schema.
+    :data:`~precis.quest.weave_tick.QUEST_BODY_INQUIRY` renders
+    ``_PROMPT_TEMPLATE_INQUIRY`` instead: the same striving/dossier/
+    dialectic/ledger/gaps/logbook/servers/literature/skill-injection
+    context, but no Pareto frontier and no ``proposals`` schema — a striving
+    that reads, reasons, and synthesises has no candidate materials to
+    propose and nothing ever converges. The caller decides the body
+    (never inferred here from other meta).
     """
     qid = quest.id
     stmt = quest.title or f"quest {qid}"
@@ -1243,33 +1259,9 @@ def build_tick_prompt(
         store, qid, n=_LOGBOOK_TAIL_REVIEW if review else _LOGBOOK_TAIL
     ) or ["- (no logbook entries yet)"]
     servers = _servers_summary(store, qid) or ["- (nothing serves this quest yet)"]
-    # Always-on measurement table (rung 4c's review banner used to be the only
-    # place this rendered; the local tick reasons from the same numbers now).
-    # Computed ONCE here and threaded into _frontier_summary / _reaction_context
-    # (→ _explorers_creed → _champion / tried_set_summary) — those each used to
-    # independently re-run quest_frontier (a live-candidate scan + a
-    # struct_runs read per candidate), so a reaction-quest tick that also
-    # fires the commit ladder was repeating this ~6× per tick.
-    from precis.quest.frontier import quest_frontier
-
-    fr = quest_frontier(store, qid)
-    frontier_text = _frontier_summary(store, qid, fr=fr)
-    results_table = _results_table_section(store, qid, fr=fr)
     literature = _literature_section(store, qid)
 
-    if review:
-        banner = (
-            "## FRONTIER REVIEW — you are the senior reviewer\n"
-            "Enough has accumulated to step back. Review the evidence + the "
-            "Pareto frontier below, decide what it means, rewrite the dossier, "
-            "and set 1–3 strategic **directions** for the next phase (in the "
-            "`directions` field). Rule out what's beaten.\n\n"
-        )
-    else:
-        banner = ""
-
-    return _PROMPT_TEMPLATE.format(
-        review_banner=banner,
+    common = dict(
         statement=stmt,
         prio=prio,
         momentum=momentum.label,
@@ -1286,17 +1278,51 @@ def build_tick_prompt(
         gaps="\n".join(gap_lines),
         logbook="\n".join(tail),
         servers="\n".join(servers),
-        frontier=frontier_text,
-        results_table=results_table,
-        axis_notes=_axis_reading_notes(fr),
         literature=literature,
-        reaction_context=_reaction_context(store, quest, fr=fr),
         skill_injection=_skill_injection_section(stmt),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
-        proposal_cap=max_proposals_per_tick(),
         narrative_word_target=narrative_budget.config_from_meta(
             getattr(quest, "meta", None)
         ).target_words,
+    )
+
+    if quest_body == QUEST_BODY_INQUIRY:
+        banner = _INQUIRY_REVIEW_BANNER if review else ""
+        return _PROMPT_TEMPLATE_INQUIRY.format(review_banner=banner, **common)
+
+    # QUEST_BODY_MATERIALS (default) — today's unchanged path.
+    # Always-on measurement table (rung 4c's review banner used to be the only
+    # place this rendered; the local tick reasons from the same numbers now).
+    # Computed ONCE here and threaded into _frontier_summary / _reaction_context
+    # (→ _explorers_creed → _champion / tried_set_summary) — those each used to
+    # independently re-run quest_frontier (a live-candidate scan + a
+    # struct_runs read per candidate), so a reaction-quest tick that also
+    # fires the commit ladder was repeating this ~6× per tick.
+    from precis.quest.frontier import quest_frontier
+
+    fr = quest_frontier(store, qid)
+    frontier_text = _frontier_summary(store, qid, fr=fr)
+    results_table = _results_table_section(store, qid, fr=fr)
+
+    if review:
+        banner = (
+            "## FRONTIER REVIEW — you are the senior reviewer\n"
+            "Enough has accumulated to step back. Review the evidence + the "
+            "Pareto frontier below, decide what it means, rewrite the dossier, "
+            "and set 1–3 strategic **directions** for the next phase (in the "
+            "`directions` field). Rule out what's beaten.\n\n"
+        )
+    else:
+        banner = ""
+
+    return _PROMPT_TEMPLATE.format(
+        review_banner=banner,
+        frontier=frontier_text,
+        results_table=results_table,
+        axis_notes=_axis_reading_notes(fr),
+        reaction_context=_reaction_context(store, quest, fr=fr),
+        proposal_cap=max_proposals_per_tick(),
+        **common,
     )
 
 
@@ -1501,6 +1527,186 @@ tree (skip it for a genuinely new direction). A re-proposed spec you've \
 already tried gets you a `duplicate proposal` note in the log, not a fresh \
 simulation — check the frontier table / recent log before re-proposing. \
 Propose nothing if the next step is analysis, not a new material."""
+
+
+#: The frontier-review banner for an ``inquiry`` quest (docs/backlog/
+#: quest-bodies-inquiry.md) — the :data:`_PROMPT_TEMPLATE` review banner
+#: names "the Pareto frontier" and "Rule out what's beaten", neither of
+#: which exist for a body with no candidate materials; this is the same
+#: "step back and set strategic directions" ask without either.
+_INQUIRY_REVIEW_BANNER = (
+    "## REVIEW — you are the senior reviewer\n"
+    "Enough has accumulated to step back. Review the evidence below, decide "
+    "what it means, rewrite the dossier, and set 1–3 strategic "
+    "**directions** for the next phase (in the `directions` field).\n\n"
+)
+
+
+#: The ``inquiry`` body's prompt (docs/backlog/quest-bodies-inquiry.md) — a
+#: striving that reads, reasons, and synthesises rather than searching a
+#: materials space. Shares every context section :data:`_PROMPT_TEMPLATE`
+#: does (striving, dossier, dialectic, ledger, gaps, logbook, servers,
+#: literature, skill injection) but drops the two materials-only pieces: the
+#: Pareto frontier (there is no candidate structure to converge) and the
+#: `proposals` schema (there is nothing to build a `structure` for). The
+#: `dialectic_ops`/`ledger_ops` machinery, the dossier-format rules, and the
+#: model-authored-entry clamp (:func:`_sanitize_model_entry`) are unchanged —
+#: this body reuses them, not a reimplementation.
+_PROMPT_TEMPLATE_INQUIRY = """\
+You are advancing a long-running research programme toward a perpetual striving \
+(a "quest"). This is ONE bounded step of local reasoning — not the whole \
+project. Ground everything in the context below; do not invent results you have \
+no evidence for.
+
+{review_banner}## The striving
+{statement}
+(priority {prio}; momentum: {momentum} — {momentum_detail})
+
+## Current dossier (the living synthesis — you will rewrite it)
+{dossier}
+
+## Dialectic blocks (live hypotheses — maintain via `dialectic_ops`, do NOT restate in `dossier_text`)
+{dialectic}
+
+## Ruled-out ledger (do NOT re-propose these directions)
+{ledger_constraints}
+
+## Open ledger directions (already pinned — transition/refine these, don't re-add them)
+{ledger_open}
+
+## Gaps (the exploration queue — what is thin or unanswered)
+{gaps}
+
+## Recent logbook (episodic — what happened, most recent last)
+{logbook}
+
+## What serves this quest
+{servers}
+
+{literature}{skill_injection}
+## Your step
+This is an INQUIRY — a striving that reads, reasons, and synthesises. There is \
+no proposal menu and no Pareto frontier: nothing here converges on a candidate \
+material, so don't reach for one. Do ONE increment of thinking: interpret the \
+state, pick the most promising next direction to close a gap, and note what \
+you'd try (a search to run, a question to resolve, a synthesis to write). Then \
+rewrite the dossier to reflect current understanding.
+
+**Progress means new external evidence, not more restating.** If there are open \
+hypotheses above, your job is to *close* them — resolve one with evidence \
+(a `result`) or kill it (a `dead-end`) — NOT to restate it as a fresh \
+hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
+When the answer lies in the literature you don't yet hold (a `no-literature` or \
+`thin-support` gap, or a hypothesis that points at "published data"), emit \
+`searches` to go get it instead of hypothesising in a vacuum. A plain keyword \
+`query` works, but add a `hypothetical` (see the `searches` field below) when \
+a question-phrased query keeps missing — phrase it as one or two sentences \
+that could appear verbatim in the abstract of the paper you wish existed, NOT \
+as a question: retrieval matches documents, not questions (this is HyDE).
+
+**The dialectic lives in blocks, not prose.** Each live hypothesis's \
+argument state — its supports, its steelman counter, its ONE discriminating \
+experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
+section above and the field below), addressed by the hypothesis's `[fi…]` \
+handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
+their content — it is the synthesis layer only (what changed, what it \
+means, what to do next). When new evidence bears on a hypothesis, emit a \
+`support` or `counter` op citing that evidence's handle inline; when a \
+hypothesis is resolved either way, emit `settle` with one linked sentence. \
+A block showing "experiment: (MISSING …)" owes a discriminating experiment — \
+name the ONE piece of evidence (a search, a source) that would settle it, \
+with pre-registered branch predictions, via an `experiment` op.
+
+When you rule out or complete a *direction* that must never be revisited, pin \
+it to the ledger via `ledger_ops` (permanently preserved); `dossier_text` \
+is rewritten every tick, so a rule-out placed only there is forgotten.
+
+The ledger is a TREE of directions, not a flat list: a node is one durable \
+direction (`open`/`active`/`tried`/`ruled-out`), and refining a direction \
+into a variant is a CHILD node under it, not a new unrelated bullet — so \
+"tried c, then tried c-with-x and c-with-y" reads as one branch, not three \
+unconnected facts. Use `ledger_ops`, a list of ops applied in order:
+- `{{"op": "add", "text": "<direction>", "parent": "<optional: exact text of \
+the existing node this refines/varies>", "status": "<optional, default open>"}}`
+- `{{"op": "mark", "node": "<exact text of the existing node>", "status": \
+"<open|active|tried|ruled-out>", "parent": "<optional: exact text of its \
+parent, only needed when that node's text is ambiguous>"}}`
+Address a node by quoting its EXISTING text exactly (case doesn't matter) — \
+there are no ids. An op that can't resolve its node (not found, or the same \
+text in two branches with no disambiguating `parent`) is silently dropped. \
+**Upsert discipline**: check the open/active list above FIRST. If an existing \
+node already covers the thought you're about to add, `mark` it instead — \
+transition its status, or refine it with a CHILD `add` under its exact text \
+— rather than `add`-ing a rephrased restatement of it as a new unrelated \
+node. (The system also merges an obvious near-duplicate `add` into the \
+existing node rather than duplicating it, but that's a backstop, not \
+license to skip checking — a merge advances/no-ops silently and teaches the \
+ledger nothing a `mark` wouldn't have said more precisely.) Only `add` a \
+node that is a genuinely new direction. Ruling out a \
+direction implicitly rules out its still-open children in what you're shown \
+next tick — you do not need to mark each child individually.
+
+## Dossier format
+`dossier_text` is a precis `draft` — stored and displayed as chunks, so the \
+chunk IS the block structure. Write blank-line-separated paragraphs of prose. \
+BLOCK-level markdown has no renderer and shows up as literal characters to the \
+reader: no `#`/`##` headings, no `-`/`*` bullet lists, no code fences, no \
+tables. INLINE markup does render and is welcome where it earns its place: \
+`**bold**`, `*italic*`, `` `code` ``, `<sub>`/`<sup>`, and `$…$` math (KaTeX — \
+use it for formulae and chemical species, e.g. `$NH_3$`, `$C_{{60}}$`). \
+Reference anything by copying its exact handle in square brackets from the \
+context above: `[pc<id>]`/`[pa<id>]` literature (see above), `[fi<id>]` a \
+finding, `[cn<id>]` a served concept (the gaps section), `[ql<id>]` a logbook \
+entry (the recent-logbook section) — never invent one: parentheses don't \
+linkify and a made-up handle resolves to nothing. \
+EVERY quantitative value carries its handle inline — including comparison \
+numbers recalled from earlier ticks. A number you cannot source from the \
+context above, flag as unsourced rather than stating bare.
+
+Respond with EXACTLY ONE JSON object and nothing else:
+{{
+  "logbook": [
+    {{"entry_type": "<one of: {entry_types}>", "text": "<one concise entry>"}}
+  ],
+  "searches": ["<0–3 literature searches to ground this quest — papers found \
+are linked as servers and feed the next step. Either a plain keyword string, \
+or {{\"query\": \"<short keyword phrasing, for the external engine>\", \
+\"hypothetical\": \"<optional — one or two sentences that could appear \
+verbatim in the abstract of the paper you wish existed, not a question \
+(HyDE)>\"}}>"],
+  "dossier_text": "<the FULL rewritten dossier: current understanding, best \
+leads so far, what's ruled out, open questions — plain prose per the format \
+above>",
+  "ledger_ops": [
+    {{"op": "add", "text": "<one durable, permanently-pinned direction — a \
+strategy tried/settled/still open, not a single fact or citation>",
+      "parent": "<optional>", "status": "<optional, default open>"}},
+    {{"op": "mark", "node": "<exact existing node text>", "status": \
+"<open|active|tried|ruled-out>", "parent": "<optional>"}}
+  ],
+  "dialectic_ops": [
+    {{"op": "open", "hypothesis": "fi<id>"}},
+    {{"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
+with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
+one handle is REQUIRED — an unanchored support/counter is dropped>"}},
+    {{"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
+against it, evidence handles inline — same anchor requirement>"}},
+    {{"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
+discriminating piece of evidence to gather>", "predicts": "<pre-registered \
+branch predictions: what each outcome would mean>"}},
+    {{"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
+sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}}
+  ],
+  "directions": ["<0–3 strategic directions — set these on a review>"]
+}}
+
+Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
+state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
+`decision` on direction are the most useful. Aim for roughly {narrative_word_target} \
+words in `dossier_text` — but that's a target, not a hard cap: growth is \
+fine when it reflects genuinely new evidence (a ruling, a result), not when \
+it's restated history. A rewrite that grows well past its previous length \
+with nothing new to show for it gets bounced back to you to compress."""
 
 
 # ── model call + parsing ──────────────────────────────────────────────
@@ -2054,6 +2260,13 @@ class _TickRun:
     job_ref_id: int | None
     embedder: Any
     st: dict[str, Any]
+    #: The quest's body (docs/backlog/quest-bodies-inquiry.md) — threaded to
+    #: :func:`build_tick_prompt` and gates the commit ladder (:meth:`_stage_
+    #: compute`): only :data:`~precis.quest.weave_tick.QUEST_BODY_MATERIALS`
+    #: ever forces a "you must propose now" re-prompt, since only it has a
+    #: proposal menu to force. Default preserves today's behaviour for every
+    #: existing call site (unit tests included).
+    quest_body: str = QUEST_BODY_MATERIALS
     #: In-process mirror of the agentlog-parked blob, so an un-sliced run
     #: never reads back what it just wrote. A *resumed* slice starts cold
     #: and loads it from the agentlog on first use.
@@ -2267,7 +2480,9 @@ class _TickRun:
         else:
             resolved_tier = Tier.MEDIUM
 
-        prompt = build_tick_prompt(store, qref, review=is_review)
+        prompt = build_tick_prompt(
+            store, qref, review=is_review, quest_body=self.quest_body
+        )
 
         # Open a run-attribution record (kind='agentlog') carrying the full
         # assembled prompt — the twin of ``plan_tick``'s own agentlog wiring
@@ -2629,23 +2844,41 @@ class _TickRun:
         from precis.quest.compute import dispatch_search, run_compute_step
 
         store, quest_id, by = self.store, self.quest_id, self.by
-        proposals = _tick_proposals(self.payload())
+        # The inquiry body's prompt carries no `proposals` schema at all
+        # (docs/backlog/quest-bodies-inquiry.md) — this is the structural
+        # backstop for a model that emits one anyway: never materialise a
+        # `structure` or dispatch a relax/autocatpath job for it, mirroring
+        # `_sanitize_model_entry`'s clamp of a model-authored `result`/
+        # `milestone` (the prompt says not to, code never trusts that alone).
+        proposals = (
+            []
+            if self.quest_body == QUEST_BODY_INQUIRY
+            else _tick_proposals(self.payload())
+        )
 
         # Structure search slot ("search, don't guess" — backlog item 4):
         # an opt-in `meta.search` on the quest spends this tick's WIP slot
         # on a struct_search job instead of an LLM-authored proposal. Own
         # try/except (mirrors run_compute_step's below) — a raise here must
         # never crash the tick.
+        #
+        # Same inquiry backstop as the `proposals` clamp above: an operator
+        # who sets BOTH `meta.search` and `meta.quest_body="inquiry"` has a
+        # self-contradictory config (a striving declared to converge on
+        # nothing, opted into a search that mints a real struct_search job)
+        # — never dispatch it, don't even attempt the read/idem-key work.
         search_dispatched = 0
-        try:
-            search_note = dispatch_search(store, quest_id)
-        except Exception:
-            log.exception(
-                "run_quest_tick: dispatch_search raised for quest %s — "
-                "skipping this tick's search slot",
-                quest_id,
-            )
-            search_note = None
+        search_note: str | None = None
+        if self.quest_body != QUEST_BODY_INQUIRY:
+            try:
+                search_note = dispatch_search(store, quest_id)
+            except Exception:
+                log.exception(
+                    "run_quest_tick: dispatch_search raised for quest %s — "
+                    "skipping this tick's search slot",
+                    quest_id,
+                )
+                search_note = None
         if search_note:
             if search_note.startswith("search["):
                 search_dispatched = 1
@@ -2719,7 +2952,16 @@ class _TickRun:
         stall = int(self._quest_meta().get("ticks_since_experiment", 0) or 0) + 1
         self.st["stall"] = stall
         force_every = int(os.environ.get("PRECIS_QUEST_FORCE_EXPERIMENT_EVERY", "2"))
-        self.st["stage"] = "ladder" if stall >= force_every else "finish"
+        # The commit ladder forces a "you must propose now" re-prompt — a
+        # directive that only makes sense for the materials body (the only
+        # one with a `structure`/proposal menu to force). An `inquiry` quest
+        # never proposes by design (docs/backlog/quest-bodies-inquiry.md), so
+        # it must never enter the ladder regardless of how long it's stalled.
+        self.st["stage"] = (
+            "ladder"
+            if stall >= force_every and self.quest_body == QUEST_BODY_MATERIALS
+            else "finish"
+        )
         return None
 
     def _commit_prompt(self) -> str:
@@ -3040,6 +3282,7 @@ def run_quest_tick(
     job_ref_id: int | None = ...,
     embedder: Any | None = ...,
     tick_state: dict[str, Any] | None = ...,
+    quest_body: str = ...,
     sliced: Literal[False] = ...,
 ) -> QuestTickOutcome: ...
 
@@ -3058,6 +3301,7 @@ def run_quest_tick(
     job_ref_id: int | None = ...,
     embedder: Any | None = ...,
     tick_state: dict[str, Any] | None = ...,
+    quest_body: str = ...,
     sliced: Literal[True],
 ) -> QuestTickOutcome | TickSlice: ...
 
@@ -3075,6 +3319,7 @@ def run_quest_tick(
     job_ref_id: int | None = None,
     embedder: Any | None = None,
     tick_state: dict[str, Any] | None = None,
+    quest_body: str = QUEST_BODY_MATERIALS,
     sliced: bool = False,
 ) -> QuestTickOutcome | TickSlice:
     """Run one structured research step against ``quest_id``.
@@ -3091,6 +3336,10 @@ def run_quest_tick(
     (optional) powers a HyDE `searches` entry's corpus leg
     (:func:`precis.quest.search.run_search_step`); ``None`` degrades that leg
     to fused-lexical-only, same as `search()` with no embedder configured.
+    ``quest_body`` (docs/backlog/quest-bodies-inquiry.md) selects the tick's
+    prompt + whether the commit ladder may force a proposal — default
+    :data:`~precis.quest.weave_tick.QUEST_BODY_MATERIALS` is today's
+    unchanged behaviour; the caller decides, never inferred here.
 
     **Slicing.** By default this runs the whole tick — every stage in the
     banner above — in one call and returns its :class:`QuestTickOutcome`.
@@ -3113,6 +3362,7 @@ def run_quest_tick(
         job_ref_id=job_ref_id,
         embedder=embedder,
         st=dict(tick_state) if tick_state else {"stage": "llm"},
+        quest_body=quest_body,
     )
     while True:
         outcome = run.step()

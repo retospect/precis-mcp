@@ -1,9 +1,10 @@
 ---
 id: precis-quest-writing-help
 title: precis — writing a quest that stays a quest
-summary: judgment for authoring a striving — vision vs BHAG vs SMART, one-sentence + plain-language + no-jargon checklist, why technique/paper content belongs in the dossier not the statement, and why quests must stay few
+summary: judgment for authoring a striving — vision vs BHAG vs SMART, choosing the tick body (materials/weave/inquiry), one-sentence + plain-language + no-jargon checklist, why technique/paper content belongs in the dossier not the statement, and why quests must stay few
 answers:
   - how do I tell a vision apart from a BHAG or a SMART goal when writing a quest?
+  - which quest_body should I set — materials, weave, or inquiry?
   - what's the one-sentence test for a well-written quest?
   - where does the technical detail go if not in the quest itself?
   - why should quests stay few in number?
@@ -43,6 +44,40 @@ A quest belongs at the **vision** tier only. Confusing it with a BHAG
 (give it a finish line) or a SMART goal (give it a technique name and a
 benchmark number) is the single most common way a quest goes wrong —
 it stops orienting and starts describing one experiment.
+
+## Choosing a body: does this striving search a materials space?
+
+The autonomous tick (the coordinator loop [[precis-quest-help]] describes)
+has three bodies, selected by `meta.quest_body` at mint time (or patched
+in later, `edit(kind='quest', id=N, meta={'quest_body': '...'})`):
+
+- **materials** (the default — leave `quest_body` unset) — a catalyst/
+  materials-discovery search: propose a candidate `structure`, simulate
+  it, rank the Pareto frontier, repeat. Pick this whenever the striving's
+  progress is measured by *converging on a design* — "a palladium
+  catalyst that ammonia-oxidises below 0.5 eV", not "understand ammonia
+  oxidation mechanisms".
+- **`"weave"`** — a paper-writing/topic-dossier quest: integrate served
+  papers into a living review draft. Pick this for a striving whose deed
+  is a written synthesis, not a discovered material.
+- **`"inquiry"`** — reads, reasons, and synthesises; no proposals, no
+  Pareto frontier. Pick this for a striving that has **no candidate
+  materials to search over at all** — a literature-synthesis quest, a
+  landscape survey, an open standing question the tick should keep
+  chewing on via lit-search and dossier revision rather than design
+  proposals it has nothing to build.
+
+Get this wrong in the unmarked direction and the tick still runs, just
+uselessly: a `materials`-body tick asked to search a space that doesn't
+exist (no chemistry to propose) can never produce anything it recognises
+as progress — it narrates instead, forever. Get it wrong the other way
+(marking a genuine materials search as `inquiry`) and it can propose but
+never will, because the body was told not to. When in doubt, default:
+leave `quest_body` unset unless the striving is unmistakably
+literature-only or paper-writing — an accidental `materials` body on a
+non-materials quest degrades to "reasons but proposes nothing" (mildly
+wasteful prompt real estate); an accidental `inquiry` on a real materials
+search silently caps its deed count at zero.
 
 ## The one-sentence test
 

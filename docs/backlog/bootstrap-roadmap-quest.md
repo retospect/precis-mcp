@@ -3,7 +3,6 @@ status: draft
 title: Bootstrap roadmap quest — a `roadmap` tick body that grows a capability/pathway/rung DAG from measured gaps
 prio: high
 model: fable
-blocked-by: quest-bodies
 ---
 
 # Bootstrap roadmap quest — a `roadmap` tick body that grows a capability/pathway/rung DAG from measured gaps
@@ -97,7 +96,17 @@ never dispatches relax/autocatpath).
 recomputes the ledger; any (capability, key) whose best supply improved since
 the previous ledger chunk gets a code-stamped `milestone` entry on the
 capability AND the root ("supply on `positional_accuracy_nm` improved 6.0 →
-2.1 [fi…]"). The model cannot emit `milestone`.
+2.1 [fi…]").
+
+The model cannot emit `milestone` — and that half is **already enforced**,
+not new work: `quest/tick.py::_sanitize_model_entry` clamps any
+model-authored `result`/`milestone`/`cost` entry down to `observation`
+against its `_MODEL_ALLOWED_ENTRY_TYPES` allowlist, on the standard
+`_stage_apply` path this body reuses (found by the `quest-bodies` readiness
+review, 2026-09-27). So this item builds only the *positive* half — the
+code-stamped deed on a ledger improvement — and inherits the clamp. A
+roadmap tick that stamps nothing therefore reports a deed count of zero
+honestly, with no prompt rule needed.
 
 **Stall / halt:** a tick that changes no gap count and no ledger value is a
 dry tick; reuse the existing `consecutive_dry_rests` escalation
@@ -213,9 +222,21 @@ growth. Dossiers stay per quest and are rewritten.
 
 ## Open questions / decisions log
 
-- **Where does `supply` live when a rung is done?** Decided: derived at read
-  time (max over `meta.supply` and done rungs' `produces`); nothing copies
-  numbers between nodes, so a retracted finding only needs its hub edited.
+- **Where does `supply` live when a rung is done?** Decided 2026-09-27
+  (revised): derived at read time from the `measures` table
+  (`knowledge-mesh.md`): best over measures whose `key` is a rubric axis
+  and whose owning hub/structure serves the capability, plus done rungs'
+  `produces`. **`meta.supply` is dropped** from this spec; `meta.demand`
+  stays. Nothing copies numbers between nodes, so a retracted finding
+  only needs its hub edited. The supply role therefore mints hubs +
+  measure rows, never a quest-meta number.
+- **Dossier shape (Reto, 2026-09-27):** the roadmap body does NOT rewrite
+  a narrative. It writes a capped *framing* chunk (a few sentences,
+  handles only, no bare numbers, length cap enforced in code) plus the
+  regenerated capability-ledger chunk. Reports are views (ledger · series
+  · contradictions · coverage) and a cached render stamped with the graph
+  revision; a written document goes through the weave body. The
+  narrative growth-ratchet gate does not apply to this body.
 - **Axes vocabulary.** Decided: reuse `rubric_objectives` `{key, sense}` on
   the capability quest; no new registry. `unit` is a free string in v1.
 - **Model tiers.** demand/supply Sonnet, bridge Opus, via the existing

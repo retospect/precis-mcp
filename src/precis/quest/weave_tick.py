@@ -63,6 +63,22 @@ QUEST_BODY_META_KEY = "quest_body"
 #: The marker value for a paper-writing / topic-dossier quest.
 QUEST_BODY_WEAVE = "weave"
 
+#: The default body — an unmarked quest (the vast majority) gets today's
+#: catalyst/materials-discovery tick unchanged. Never inferred from other
+#: meta (``reaction_config``/``compute_lane``/``rubric_objectives``) — only
+#: an explicit ``meta.quest_body`` opts a quest out of it (docs/backlog/
+#: quest-bodies-inquiry.md: a live materials campaign can carry none of
+#: those keys and must not be silently demoted).
+QUEST_BODY_MATERIALS = "materials"
+
+#: The marker value for a read/reason/synthesise striving that isn't a
+#: materials search (docs/backlog/quest-bodies-inquiry.md) — same
+#: ``run_quest_tick`` machinery (logbook, dossier, ledger, dialectic,
+#: lit-search) as the materials body, minus the proposal menu and the
+#: Pareto frontier, neither of which apply to a striving with no candidate
+#: structures.
+QUEST_BODY_INQUIRY = "inquiry"
+
 
 def mark_weave_quest(store: RefMetaStore, quest_id: int) -> None:
     """Flag ``quest_id`` as a weave-body quest — the coordinator's ``_phase_tick``
@@ -338,6 +354,8 @@ def weave_tick(
 
 
 __all__ = [
+    "QUEST_BODY_INQUIRY",
+    "QUEST_BODY_MATERIALS",
     "QUEST_BODY_META_KEY",
     "QUEST_BODY_WEAVE",
     "mark_weave_quest",

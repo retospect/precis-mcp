@@ -274,17 +274,26 @@ def add_parser(subparsers: Any) -> None:
 
 
 def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.body import resolved_quest_body
     from precis.quest.tick import build_tick_prompt, run_quest_tick
+
+    # Same marker every tick entry point reads (precis.quest.body) — a quest
+    # marked `meta.quest_body="inquiry"` must get the inquiry prompt/tick
+    # here exactly as it does through the autonomous coordinator, not the
+    # materials default (this was the manual-CLI gap in quest-bodies-inquiry.md).
+    body = resolved_quest_body(store, args.id)
 
     if args.dry_run:
         qref = store.get_ref(kind="quest", id=args.id)
         if qref is None:
             print(f"quest {args.id}: not found")
             return
-        print(build_tick_prompt(store, qref))
+        print(build_tick_prompt(store, qref, quest_body=body))
         return
 
-    outcome = run_quest_tick(store, args.id, tier=args.tier, compute=args.compute)
+    outcome = run_quest_tick(
+        store, args.id, tier=args.tier, compute=args.compute, quest_body=body
+    )
     msg = (
         f"quest {outcome.quest_id}: tick {outcome.status} — "
         f"{outcome.logbook_added} logbook entr"

@@ -45,6 +45,7 @@ from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.protocol import KindSpec
+from precis.quest import weave_tick as _weave_tick
 from precis.quest.logbook import (
     BY_VALUES as _BY_VALUES,
 )
@@ -688,11 +689,26 @@ class QuestHandler(NumericRefHandler):
         budget, ``args={'budget': N}`` overrides): rows drop from the tail of
         the LAST band first (awaiting-a-sim → provisional → dominated →
         frontier), each band keeping an ``(+K omitted)`` line, so the
-        confirmed frontier is the last thing to lose a row (gr345353)."""
+        confirmed frontier is the last thing to lose a row (gr345353).
+
+        An ``inquiry``-body quest (docs/backlog/quest-bodies-inquiry.md) has
+        no candidate materials AND NEVER WILL — it reads, reasons, and
+        synthesises, no proposals. Said plainly, ahead of computing a
+        frontier at all, rather than falling through to
+        :func:`_frontier_empty_lines`'s "(none converged yet)", which reads
+        as "nothing has converged" when the truth is "nothing ever will"."""
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        meta = ref.meta or {}
+        if meta.get(_weave_tick.QUEST_BODY_META_KEY) == _weave_tick.QUEST_BODY_INQUIRY:
+            return (
+                f"# frontier — quest {ref.id}: {head}\n\n"
+                "this is an inquiry — it reads, reasons, and synthesises; it "
+                "has no proposals and no Pareto frontier (see view='dossier' "
+                "for its living synthesis)."
+            )
         from precis.quest import frontier as frontier_mod
 
         fr = frontier_mod.quest_frontier(self.store, ref.id)
-        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         objs = " · ".join(f"{k} ({s})" for k, s in fr.objectives)
         lines = [f"# frontier — quest {ref.id}: {head}", f"objective: {objs}", ""]
 

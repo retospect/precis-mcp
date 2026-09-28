@@ -232,7 +232,12 @@ class TestAllocatorPass:
 
         seen: list[bool | None] = []
 
-        def _fake_tick(_store: Any, qid: int, *, compute: bool = True) -> Any:
+        def _fake_tick(
+            _store: Any, qid: int, *, compute: bool = True, **_kw: Any
+        ) -> Any:
+            # **_kw absorbs `quest_body=`, which run_allocator_pass now always
+            # threads (quest-bodies-inquiry.md's manual-entry-point fix). This
+            # test is about the compute lane, not the body.
             seen.append(compute)
             return SimpleNamespace(status="succeeded", quest_id=qid)
 
@@ -242,3 +247,28 @@ class TestAllocatorPass:
         out = alloc.run_allocator_pass(store, enabled=True, compute=True)
         assert out["picked"] == q
         assert seen == [False]
+
+    def test_inquiry_marked_quest_ticks_with_the_inquiry_body(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # The allocator's manual-entry-point gap (quest-bodies-inquiry.md):
+        # `run_allocator_pass` used to omit `quest_body` entirely, so
+        # `precis quest run` on an inquiry-marked quest silently ticked it
+        # as materials. It must now thread the same marker the CLI and the
+        # coordinator do (precis.quest.body.resolved_quest_body).
+        from precis.quest import tick as tick_mod
+
+        seen: list[str | None] = []
+
+        def _fake_tick(
+            _store: Any, qid: int, *, quest_body: str | None = None, **_kw: Any
+        ) -> Any:
+            seen.append(quest_body)
+            return SimpleNamespace(status="succeeded", quest_id=qid)
+
+        monkeypatch.setattr(tick_mod, "run_quest_tick", _fake_tick)
+        q = _mk_quest(store, "A literature-synthesis striving", prio="PRIO:urgent")
+        alloc._merge_meta(store, q, {"quest_body": "inquiry"})
+        out = alloc.run_allocator_pass(store, enabled=True)
+        assert out["picked"] == q
+        assert seen == ["inquiry"]

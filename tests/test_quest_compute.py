@@ -2669,6 +2669,42 @@ class TestProvisionalFrontier:
         assert "── awaiting a sim" not in body
 
 
+class TestFrontierViewInquiryBody:
+    """docs/backlog/quest-bodies-inquiry.md AC3: ``view='frontier'`` on an
+    ``inquiry`` quest says the body has no frontier, distinct from today's
+    "(none converged yet)" — which reads as "nothing has converged" when the
+    truth is "nothing ever will"."""
+
+    def test_says_no_frontier_instead_of_none_converged_yet(self, store: Any) -> None:
+        qid = _mk_quest(store, "A literature-synthesis striving")
+        store.stamp_ref_meta(qid, {"quest_body": "inquiry"})
+        # Even with a live (unconverged) candidate serving the quest — the
+        # exact shape that renders "(none converged yet)" on the materials
+        # body — the inquiry override must win, checked before the frontier
+        # is even computed.
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert "none converged yet" not in body
+        assert "no proposals and no Pareto frontier" in body
+
+    def test_materials_default_unaffected(self, store: Any) -> None:
+        # A quest with no quest_body marker keeps today's behaviour — the
+        # same unconverged-candidate shape still renders "(none converged
+        # yet)", not the inquiry message.
+        qid = _mk_quest(store, "A materials striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert "none converged yet" in body
+
+
 # ── frontier qualifies on the quest's CURRENT objective axes (gr263257) ─
 # The trusted split (`pareto_split`, via `_objectives_for`'s per-quest
 # `rubric_objectives` read) is generic over ANY declared axis vector — a

@@ -178,6 +178,9 @@ embeds, so it doubles as "what would the next tick see right now".
 `view='results'` and `view='frontier'` are **budgeted** like the tick's
 copy (2500 tokens; rows drop from the tail, never the newest ten, and the
 body says `(+K … rows omitted)`); `args={'budget': 8000}` widens it.
+On an `inquiry`-body quest (see "Patch quest meta" below) `view='frontier'`
+says plainly that the body has no Pareto frontier instead of rendering an
+empty one — it never proposes, so nothing ever converges.
 `view='series'` re-cuts the same rows as **controlled comparisons**: one
 block per set of candidates that share a base and differ in exactly one
 axis (`dopant · n_dopant · site · coads`), so a difference down a block is
@@ -364,8 +367,17 @@ that's wedged.
   write path itself, since before it nothing could set `compute_lane` on
   a *live* quest at all). Any other value, or the key's absence, keeps
   compute on.
-- **`quest_body`** — routes the tick to the weave (paper-writing) body
-  instead of the catalyst research loop; see `mark_weave_quest`.
+- **`quest_body`** — which tick body runs the loop. Unset (the default) is
+  the catalyst/materials-discovery body above, unchanged. `"weave"` routes
+  to the paper-writing body instead; see `mark_weave_quest`. `"inquiry"` is
+  a third body for a striving that reads, reasons, and synthesises rather
+  than searching a materials space — same logbook/dossier/ledger/dialectic/
+  lit-search machinery, but **no proposal menu and no Pareto frontier**
+  (`view='frontier'` says so plainly instead of "(none converged yet)").
+  Never inferred from other meta (a live materials quest can carry no
+  `reaction_config`/`compute_lane`/`rubric_objectives` at all) — set it
+  explicitly when a striving genuinely has no candidate materials to
+  propose, e.g. a literature-synthesis or landscape-mapping quest.
 - **`rubric_objectives`** — the frontier's measured-axis override, see
   "A research tick" above.
 

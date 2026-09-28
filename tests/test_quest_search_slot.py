@@ -240,3 +240,57 @@ class TestSearchSlotInTick:
         assert out.status == "succeeded"
         assert len(calls) == 1 and len(calls[0]) == 1
         assert _job_count_for_parent(store, seed_ref.id) == 0
+
+
+class TestInquiryBodyBlocksSearch:
+    """Second, separate fix: ``meta.search`` opts a quest into a real
+    ``struct_search`` dispatch — self-contradictory on a quest ALSO marked
+    ``meta.quest_body="inquiry"`` (a striving declared to converge on
+    nothing here). ``_stage_compute``'s inquiry guard must block
+    ``dispatch_search`` itself, not just the LLM ``proposals`` path."""
+
+    def test_search_opt_in_is_not_dispatched_on_an_inquiry_quest(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.quest.weave_tick import QUEST_BODY_INQUIRY
+
+        def _fake_run_compute_step(
+            _store: Any,
+            _quest_id: int,
+            proposals: list[dict[str, Any]],
+            **_kw: Any,
+        ) -> Any:
+            n = 1 if proposals else 0
+            return compute_mod.ComputeStep(
+                candidates_created=n,
+                sims_dispatched=n,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[],
+                graduated=0,
+            )
+
+        monkeypatch.setattr(compute_mod, "run_compute_step", _fake_run_compute_step)
+
+        quest_id = _mk_quest(store)
+        seed_ref = _mk_seed(store)
+        _serve(store, quest_id, seed_ref.id)
+        store.stamp_ref_meta(
+            quest_id,
+            {
+                "search": {"seed": seed_ref.slug, **_SEARCH_CFG},
+                "quest_body": QUEST_BODY_INQUIRY,
+            },
+        )
+
+        out = run_quest_tick(
+            store,
+            quest_id,
+            dispatch_fn=TestSearchSlotInTick._disp,
+            compute=True,
+            quest_body=QUEST_BODY_INQUIRY,
+        )
+
+        assert out.status == "succeeded"
+        assert out.sims_dispatched == 0
+        assert _job_count_for_parent(store, seed_ref.id) == 0
