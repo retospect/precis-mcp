@@ -1382,8 +1382,9 @@ def _op_add_measure(tree: SeTree, op: dict[str, Any]) -> None:
     band and/or ``relation`` (``{'source': 'block.measure', 'scale': <×>,
     'offset', 'tol'}``), all optional (a measure may exist as a named
     handle first — suggestive by contract); plus ``unit`` (m | count |
-    ratio | deg, default m) and ``origin`` (user | proposed, default
-    user). A relation source that doesn't exist YET is accepted (a
+    ratio | deg, default m) and ``origin`` (user | proposed | generated,
+    default user; ``generated`` is what an atomic generator stamps on the
+    length anchors it declares). A relation source that doesn't exist YET is accepted (a
     forward reference inside one ops batch is normal); an unresolvable
     relation is DRC's read-time finding."""
     block, name = _measure_shared(tree, op, opname="add_measure")

@@ -87,9 +87,11 @@ form. The verb-first spelling `fuse P --> Q` is not a statement.
 `fidelity="check"` on a `put` still creates the (empty) design row, and a
 second `put` on the same id is a **full replace** that drops any minted
 block. Iterate with `edit(kind='se', id=..., ops=[...])` once the design
-exists. A refused spec comes back as `line:col: message` (ParseError) or
-as the rendered report (ERROR findings); `hexfold internal error …` means
-a compiler bug — file a gripe with the spec.
+exists. A refused spec comes back as `line:col: message` (ParseError —
+including `unknown parameter 'length' for tube — known: hand, len, m, n`
+for a keyword outside the primitive's vocabulary) or as the rendered
+report (ERROR findings); `hexfold internal error …` means a compiler bug —
+file a gripe with the spec.
 
 After minting, the build report (`extent.snap`, `fit.propagated`,
 `seam.rings`, …) is under `get(kind='se', id=..., view='block',

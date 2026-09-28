@@ -144,8 +144,13 @@ written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
   block's prose after creation; on a template, not an instance.
 - `add_measure` — `block`, `name` (req) · `value`/`min`/`max` · `unit`
   `m|count|ratio|deg` · `relation` `{source: "block.measure", scale,
-  offset, tol}` · `strength` `hard|soft|gauge` (default gauge) ·
-  `reason` · `origin` · `datum` — the feature the measure is declared
+  offset, tol}` · `strength` `hard|soft|gauge` (default gauge; `hard`
+  on a measure with a toleranced relation makes its stack-up
+  `tolerance_mismatch` an error instead of a warning — that is the one
+  place hardness is consumed, so `hard` anywhere else draws
+  `minimum_constraint`) · `reason` · `origin` `user|proposed|generated`
+  (generators stamp their length anchors `generated`) · `datum` — the
+  feature the measure is declared
   against: `frame` (default; prismatic → the three pose-frame faces,
   rotational → axis + base face) · `port:<name>` · `face:<block>.<tag>`
   · `axis:<block>`. Resolved through the block's cad primitive at read

@@ -2394,7 +2394,9 @@ def test_measures_view_renders_table_and_stackup(handler: SeHandler) -> None:
     _l2_design(handler)
     resp = handler.get(id="cart1", view="measures")
     assert "hub.od_d" in resp.body
-    assert "= hub.od_d + 0.0002 ± 5e-05" in resp.body
+    # offset/tol humanized like the neighbouring cells (gr454488 #6), not
+    # raw metres next to "16.2 mm"
+    assert "= hub.od_d + 200 µm ± 50 µm" in resp.body
     assert "stack-up" in resp.body
     assert "16.2 mm" in resp.body  # derived value, via the neat formatter
     assert "hard" in resp.body

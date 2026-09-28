@@ -153,6 +153,46 @@ def _err(msg: str, lineno: int, col: int = 1) -> ParseError:
     return ParseError(msg, (lineno, col))
 
 
+#: Keyword parameters each primitive understands (SPEC 5 signatures; the
+#: builder reads them via ``_param``). A key outside this set is a
+#: ParseError at its own column — before this check an unknown keyword
+#: was kept as inert data, ``len`` silently defaulted to 1, and a typo
+#: like ``length=3`` surfaced downstream as ``fit.unsolvable`` /
+#: ``port.mismatch`` pointing at a correct domain and fuse (gr454563).
+#: ``None`` = no vocabulary to hold the primitive to (``stack`` is parsed
+#: but has no builder yet).
+_PRIM_KEYWORDS: dict[str, frozenset[str] | None] = {
+    "sheet": frozenset({"W", "H", "rim"}),
+    "tube": frozenset({"n", "m", "len", "hand"}),
+    "cone": frozenset({"P", "rad"}),
+    "cap": frozenset({"n", "m"}),
+    "fullerene": frozenset({"N", "iso"}),
+    "stack": None,
+}
+
+
+def _check_keywords(
+    prim: str,
+    params: tuple[tuple[str, str], ...],
+    line: str,
+    args_start: int,
+    lineno: int,
+) -> None:
+    known = _PRIM_KEYWORDS.get(prim)
+    if known is None:
+        return
+    for key, _value in params:
+        if key.isdigit() or key in known:
+            continue
+        at = line.find(f"{key}=", args_start)
+        col = at + 1 if at >= 0 else args_start + 1
+        raise _err(
+            f"unknown parameter {key!r} for {prim} — known: {', '.join(sorted(known))}",
+            lineno,
+            col,
+        )
+
+
 def _parse_kv_pairs(text: str) -> tuple[tuple[str, str], ...]:
     out = []
     for tok in text.split():
@@ -329,6 +369,8 @@ def parse(text: str) -> Spec:
             prim = mi["prim"]
             if prim not in ("sheet", "tube", "cone", "cap", "fullerene", "stack"):
                 raise _err(f"unknown primitive {prim!r}", lineno, 2)
+            params = _parse_params(mi["args"], lineno)
+            _check_keywords(prim, params, line, mi.start("args"), lineno)
             rest2 = mi["rest"].strip()
             rep = _REPEAT_RE.search(rest2)
             repeat = 1
@@ -370,7 +412,7 @@ def parse(text: str) -> Spec:
                 Instance(
                     name=name,
                     kind=prim,
-                    params=_parse_params(mi["args"], lineno),
+                    params=params,
                     holes=tuple(holes),
                     defects=tuple(defects),
                     repeat=repeat,

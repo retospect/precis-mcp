@@ -41,9 +41,9 @@ import hexfold
 from hexfold.build import Port as HxPort
 from hexfold.build import build
 from hexfold.canon import canonical_json
-from hexfold.check import check
+from hexfold.check import check, geometry_findings
 from hexfold.extent import measures as hx_measures
-from hexfold.report import BuildError, HexfoldError
+from hexfold.report import BuildError, HexfoldError, Report
 from hexfold.stick import stick
 from precis_se.atomic.generators._types import (
     GeneratedBlock,
@@ -179,11 +179,24 @@ def _canonical_frame(coords: np.ndarray) -> tuple[np.ndarray, str]:
     return framed, f"cyl:r{fmt_length_A(radius)}h{fmt_length_A(height)}"
 
 
+#: A rim whose centroid sits closer to the body centroid than this fraction
+#: of the rim's own radius has no outward direction (a sheet's ``rim`` is
+#: the whole boundary and encloses the centroid; the residual is the
+#: flat-perturbed seed's z-jitter, ~1e-3 of the radius). Below it the
+#: direction is the canonical-frame axis, deterministic, not noise
+#: (gr454488 residual 2). A tube end or cap rim sits ≥ 0.3 radii out.
+_DEGENERATE_RIM_FRACTION = 0.05
+
+
 def _port_direction(coords: np.ndarray, atoms: tuple[int, ...]) -> list[float]:
-    rim = coords[list(atoms)].mean(axis=0)
+    rim_atoms = coords[list(atoms)]
+    rim = rim_atoms.mean(axis=0)
     direction = rim - coords.mean(axis=0)
     norm = float(np.linalg.norm(direction))
-    if norm < 1e-9:
+    rim_radius = (
+        float(np.linalg.norm(rim_atoms - rim, axis=1).max()) if len(atoms) else 0.0
+    )
+    if norm < 1e-9 or norm < _DEGENERATE_RIM_FRACTION * rim_radius:
         return [0.0, 0.0, 1.0]
     return [float(x) for x in direction / norm]
 
@@ -245,6 +258,11 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         raise GeneratorError(_internal_message(exc)) from exc
 
     coords, envelope = _canonical_frame(stick(net))
+    # The persisted record carries the same geometry tier the check echo
+    # shows (bond/angle deviations, geom.summary) — a reader of
+    # ``## generated`` could not otherwise tell whether the minted
+    # geometry is sane (gr454488 residual 3).
+    report = net.report.merge(Report(tuple(geometry_findings(net))))
     elements = [a.element for a in net.atoms]
     hybridizations = [a.hyb for a in net.atoms]
     sp3 = {i for i, a in enumerate(net.atoms) if a.hyb == "sp3"}
@@ -317,7 +335,7 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
             for _name, p in net.ports
         },
         "regions": {name: list(ords) for name, ords in net.regions},
-        "report": net.report.to_dict(),
+        "report": report.to_dict(),
         "seed_kind": net.seed_kind,
         "n_atoms": len(net.atoms),
         "n_bonds": len(net.bonds),

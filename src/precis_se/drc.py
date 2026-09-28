@@ -580,6 +580,12 @@ def drc(tree: SeTree) -> DrcReport:
         if f"{m.block}.{m.name}" in sourced:
             continue
         if m.relation is not None:
+            # A toleranced relation IS a consumer: the stack-up below
+            # turns a hard measure's mismatch into an error (a target
+            # against a substrate pitch is the textbook hard invariant —
+            # gr454488 residual 8).
+            if m.relation.get("tol") is not None:
+                continue
             src_block = str(m.relation.get("source", "")).rpartition(".")[0]
             if src_block and frozenset({m.block, src_block}) in demanded_pairs:
                 continue
@@ -589,7 +595,8 @@ def drc(tree: SeTree) -> DrcReport:
                 subject=f"{m.block}.{m.name}",
                 detail=(
                     "'hard' gates realization, but nothing consumes the "
-                    "hardness — no relation sources this measure and no "
+                    "hardness — no relation sources this measure, it "
+                    "carries no toleranced relation of its own, and no "
                     "mechanism demands it. Consider 'gauge' (or 'soft' if "
                     "it is an objective): declare invariants, not "
                     "preferences (set_measure)"
@@ -604,12 +611,17 @@ def drc(tree: SeTree) -> DrcReport:
         "malformed": ("malformed_relation", "error"),
         "unit_mismatch": ("unit_mismatch", "error"),
     }
+    strength_of = {f"{m.block}.{m.name}": m.strength for m in tree.measures}
     for res in stack:
         if res.problem is None:
             continue
         rule, severity = _STACK_RULES.get(
             res.problem_kind or "", ("unresolvable_relation", "error")
         )
+        # 'hard' is where the stack-up consumes strength: a hard measure
+        # that disagrees with its derivation gates, a gauge one reports.
+        if rule == "tolerance_mismatch" and strength_of.get(res.measure) == "hard":
+            severity = "error"
         findings.append(
             ValidationIssue(
                 rule=rule,

@@ -8,7 +8,7 @@ invariant tier: joints (kinematic class × mechanism —
 :mod:`precis_se.joints`), named measures with tolerance relations
 (:mod:`precis_se.measures`), and loads; slice 4's interrogation ledger
 (:mod:`precis_se.notes`) and design-freedom vocabulary (interval
-measures, ``origin: user|proposed``, relation ``scale``, the closed unit
+measures, ``origin: user|proposed|generated``, relation ``scale``, the closed unit
 registry — :mod:`precis_se.freedom`). Maps onto the verbs as of this
 round (se slices 1-3 + 4's store half, docs/backlog/se-kind.md "Ship
 order"):
@@ -884,6 +884,9 @@ class SeHandler(Handler):
                 tree,
                 bound_scenes=bound_scenes,
                 bound_full_scenes=bound_full_scenes,
+                generated_bound=se_atomic_render.bound_generated_slugs(
+                    self.store, tree
+                ),
             )
         )
         header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]
@@ -2798,6 +2801,16 @@ def _fmt_len(v: float) -> str:
     return format_quantity(v, "length")
 
 
+def _fmt_rel_quantity(v: Any, unit: str) -> str:
+    """A relation's ``offset``/``tol`` through the unit formatter when it
+    is a number; ``repr`` otherwise (a hand-corrupted stored relation must
+    render legibly and be flagged by DRC, never crash the view)."""
+    try:
+        return _fmt_in_unit(float(v), unit)
+    except (TypeError, ValueError):
+        return repr(v)
+
+
 def _fmt_in_unit(v: float | None, unit: str) -> str:
     """``_fmt_len``'s neat-formatter gloss for metre measures; a bare
     ``:g`` + unit word for the rest of the closed registry."""
@@ -2826,10 +2839,15 @@ def _measure_row(m: Any, tree: Any = None) -> dict[str, str]:
         if m.relation.get("source"):
             scale = m.relation.get("scale", 1)
             scale_part = "" if scale == 1 else f"{_fmt_num(scale)} × "
+            # offset/tol are in the measure's unit: humanize them like the
+            # value/band/derived cells beside them, so ``± 50 pm`` reads
+            # next to ``2.46 nm`` and a mistyped exponent shows
+            # (gr454488 residual 6). A corrupt stored number still
+            # renders (repr) rather than crashing the read path.
             rel = (
                 f"= {scale_part}{m.relation['source']} "
-                f"+ {_fmt_num(m.relation.get('offset', 0))} "
-                f"± {_fmt_num(m.relation.get('tol', 0))}"
+                f"+ {_fmt_rel_quantity(m.relation.get('offset', 0), m.unit)} "
+                f"± {_fmt_rel_quantity(m.relation.get('tol', 0), m.unit)}"
             )
         if m.relation.get("feature"):
             rel = (

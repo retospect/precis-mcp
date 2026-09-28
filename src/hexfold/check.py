@@ -334,6 +334,15 @@ def _gen_stale_finding(ast: Spec, generated_of: str) -> Finding | None:
     )
 
 
+def geometry_findings(net: Net, profile: Profile = Profile.DEFAULT) -> list[Finding]:
+    """The geometry tier (``geom.*``) over an already-built net — what
+    ``check(spec, geometry=True)`` adds on top of the topological report.
+    Public so a caller that already holds the ``Net`` (se's stick build)
+    can put the same findings on the persisted record instead of only on
+    the throwaway check echo (gr454488 residual 3)."""
+    return _geometry_findings(net, profile)
+
+
 def check(
     spec: str | Spec,
     *,

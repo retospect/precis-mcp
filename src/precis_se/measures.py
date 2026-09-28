@@ -42,6 +42,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis.utils.units import format_quantity
+
 _RELATION_KEYS = frozenset({"source", "offset", "tol", "scale", "feature"})
 
 #: The closed unit registry (se-kind.md slice 4): metres, dimensionless
@@ -52,7 +54,9 @@ UNITS = ("m", "count", "ratio", "deg")
 #: Who owns a number (se-kind.md slice 4, the RFdiffusion
 #: fixed-motif/free-scaffold split): ``user`` is contract, ``proposed``
 #: is a propose job's own revisable choice.
-ORIGINS = ("user", "proposed")
+#: ``generated``: declared by an atomic generator (hexfold's extents,
+#: lengths, radii) — a band the tool owns, not a user's number.
+ORIGINS = ("user", "proposed", "generated")
 
 
 class MeasureError(ValueError):
@@ -362,17 +366,21 @@ def _agreement_problem(
     tol = res.tol_accum
     band = declared_band(m)
     u = m.unit
+    # Same neat formatter as the measures table's value/band/derived
+    # columns — a status line in raw metres next to ``2.46 nm ± 50 pm``
+    # cells hid a mistyped exponent (gr454488 residual 6).
+    q = _quantity
     if band is not None and m.value is not None and not (band[0] <= m.value <= band[1]):
         return (
-            f"declared {m.value:g} {u} lies outside this measure's own "
-            f"declared band [{band[0]:g}, {band[1]:g}] {u}",
+            f"declared {q(m.value, u)} lies outside this measure's own "
+            f"declared band [{q(band[0], u)}, {q(band[1], u)}]",
             "mismatch",
         )
     if res.derived is not None:
         if m.value is not None and abs(m.value - res.derived) > tol:
             return (
-                f"declared {m.value:g} {u} disagrees with derived "
-                f"{res.derived:g} {u} beyond the accumulated ±{tol:g} {u}",
+                f"declared {q(m.value, u)} disagrees with derived "
+                f"{q(res.derived, u)} beyond the accumulated ±{q(tol, u)}",
                 "mismatch",
             )
         if (
@@ -381,9 +389,9 @@ def _agreement_problem(
             and not (band[0] - tol <= res.derived <= band[1] + tol)
         ):
             return (
-                f"derived {res.derived:g} {u} falls outside the declared "
-                f"band [{band[0]:g}, {band[1]:g}] {u} beyond the "
-                f"accumulated ±{tol:g} {u}",
+                f"derived {q(res.derived, u)} falls outside the declared "
+                f"band [{q(band[0], u)}, {q(band[1], u)}] beyond the "
+                f"accumulated ±{q(tol, u)}",
                 "mismatch",
             )
     if res.derived_min is not None and res.derived_max is not None:
@@ -391,9 +399,9 @@ def _agreement_problem(
             res.derived_min - tol <= m.value <= res.derived_max + tol
         ):
             return (
-                f"declared {m.value:g} {u} falls outside the derived band "
-                f"[{res.derived_min:g}, {res.derived_max:g}] {u} beyond "
-                f"the accumulated ±{tol:g} {u}",
+                f"declared {q(m.value, u)} falls outside the derived band "
+                f"[{q(res.derived_min, u)}, {q(res.derived_max, u)}] beyond "
+                f"the accumulated ±{q(tol, u)}",
                 "mismatch",
             )
         if (
@@ -402,10 +410,19 @@ def _agreement_problem(
             and (res.derived_max + tol < band[0] or res.derived_min - tol > band[1])
         ):
             return (
-                f"derived band [{res.derived_min:g}, {res.derived_max:g}] "
-                f"{u} is disjoint from the declared band "
-                f"[{band[0]:g}, {band[1]:g}] {u} beyond the accumulated "
-                f"±{tol:g} {u}",
+                f"derived band [{q(res.derived_min, u)}, {q(res.derived_max, u)}] "
+                f"is disjoint from the declared band "
+                f"[{q(band[0], u)}, {q(band[1], u)}] beyond the accumulated "
+                f"±{q(tol, u)}",
                 "mismatch",
             )
     return (None, None)
+
+
+def _quantity(v: float, unit: str) -> str:
+    """``2.46 nm`` for metre values (the shared neat formatter), a bare
+    ``:g`` plus the unit word for the rest of the closed registry — the
+    one formatter every measure-facing string uses."""
+    if unit == "m":
+        return format_quantity(v, "length")
+    return f"{v:g} {unit}"

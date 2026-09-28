@@ -176,7 +176,7 @@ def prepare_generate(
     # The caller gets the report as the echo and a ``None`` pending, so
     # the deferred-write half has nothing to finish.
     if block.dry_run:
-        return f"{gen_name} dry-run for block {block_name!r}:\n{block.provenance}", None
+        return f"{gen_name} check for block {block_name!r}:\n{block.provenance}", None
 
     # Slug-collision preflight: structure_save is create-or-replace, and
     # "axle"-style block names are exactly the shared vocabulary a
@@ -211,6 +211,11 @@ def prepare_generate(
             add_op[passthrough] = op[passthrough]
     try:
         apply_ops(tree, [add_op])
+        # generate is the one op that knows the realization is atomistic
+        # (it mints the structure and binds it below), so it states the
+        # mode; leaving it unassigned made DRC ask the user to resolve a
+        # mode_binding_mismatch the tool itself created (gr454488 #1).
+        apply_ops(tree, [{"op": "set_mode", "block": block_name, "mode": "atomic"}])
         for port in block.ports:
             port_op: dict[str, Any] = {
                 "op": "add_port",
@@ -243,6 +248,10 @@ def prepare_generate(
                 "value": A_to_m(gm.value_A),
                 "unit": "m",
                 "strength": "gauge",
+                # Declared by the generator, not authored: a later
+                # set_measure is then visibly an override of a generated
+                # band, not of a user's number (gr454488 #5).
+                "origin": "generated",
             }
             if gm.min_A is not None:
                 m_op["min"] = A_to_m(gm.min_A)

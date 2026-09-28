@@ -906,7 +906,9 @@ def _binding_findings(
 
 
 def _envelope_fit_findings(
-    tree: SeTree, bound_full_scenes: dict[str, StructScene]
+    tree: SeTree,
+    bound_full_scenes: dict[str, StructScene],
+    generated_bound: frozenset[str] = frozenset(),
 ) -> list[ValidationIssue]:
     """``envelope_fit`` (warn) — the L1↔L5 agreement check (module
     docstring): a bound block's realized atoms should sit inside its
@@ -951,6 +953,25 @@ def _envelope_fit_findings(
             )
             continue
         atom_label, protrusion = worst
+        # A block whose desc says a generator minted it, bound to a
+        # structure carrying no ``generated`` build record, predates the
+        # 2026-09-27 framing fix (224e665c): its atoms were stored in the
+        # generator's raw frame with a PCA-axis envelope, and nothing
+        # re-frames on read. The remedy is a regenerate from the spec,
+        # not a wider envelope (gr454488 residual 7).
+        legacy = (
+            str(node.descr or "").startswith("hexfold ")
+            and node.bound is not None
+            and node.bound not in generated_bound
+        )
+        remedy = (
+            "generated before the 2026-09-27 framing fix (no build record "
+            "on the structure) — remove_block, then generate again from "
+            "the same spec; do NOT widen the envelope"
+            if legacy
+            else "the L1 envelope and the L5 realized atoms have drifted "
+            "apart; widen the envelope or rebind"
+        )
         findings.append(
             ValidationIssue(
                 rule="envelope_fit",
@@ -959,9 +980,7 @@ def _envelope_fit_findings(
                     f"atom {atom_label!r} (in bound structure "
                     f"{node.bound!r}) protrudes {protrusion:.3g} Å "
                     f"beyond block {node.name!r}'s declared envelope "
-                    f"{env!r} (+{VDW_MARGIN_A:g} Å vdW margin) — the L1 "
-                    "envelope and the L5 realized atoms have drifted "
-                    "apart; widen the envelope or rebind"
+                    f"{env!r} (+{VDW_MARGIN_A:g} Å vdW margin) — {remedy}"
                 ),
                 severity="warn",
             )
@@ -1123,6 +1142,7 @@ def validate_atomic(
     *,
     bound_scenes: dict[str, dict[str, str] | None] | None = None,
     bound_full_scenes: dict[str, StructScene] | None = None,
+    generated_bound: frozenset[str] = frozenset(),
 ) -> list[ValidationIssue]:
     """Every atomic-mode finding (empty = clean, as far as *chemistry*
     goes — :func:`precis_se.validate.validate` owns the rest, and the
@@ -1131,7 +1151,10 @@ def validate_atomic(
     ``bound_full_scenes`` (module docstring) — omitted or missing a slug
     simply skips the checks that need it, rather than raising, so a caller
     that hasn't wired binding/envelope-fit hydration still gets every
-    other finding.
+    other finding. ``generated_bound`` names the bound structure slugs
+    that carry a generator build record (``meta['generated']``), so an
+    ``envelope_fit`` protrusion on a generator-minted block can tell a
+    pre-framing-fix legacy block from a genuine drift.
 
     A design with no chemistry in it at all (no bond/interaction connect,
     no ``structure`` binding) produces nothing here — every check below is
@@ -1139,7 +1162,9 @@ def validate_atomic(
     findings: list[ValidationIssue] = []
     findings.extend(_port_capability_findings(tree))
     findings.extend(_binding_findings(tree, bound_scenes or {}))
-    findings.extend(_envelope_fit_findings(tree, bound_full_scenes or {}))
+    findings.extend(
+        _envelope_fit_findings(tree, bound_full_scenes or {}, generated_bound)
+    )
     findings.extend(_port_pose_findings(tree, bound_full_scenes or {}))
     findings.extend(_port_rot_findings(tree, bound_full_scenes or {}))
     findings.extend(_connect_cycle_findings(tree))

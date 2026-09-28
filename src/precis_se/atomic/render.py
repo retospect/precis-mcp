@@ -108,6 +108,21 @@ def hydrate_bound_scenes(
     return bound_scenes, bound_full_scenes
 
 
+def bound_generated_slugs(store: Store, tree: SeTree) -> frozenset[str]:
+    """The bound ``structure`` slugs whose ref carries a generator build
+    record (``meta['generated']``, written by ``finish_generate`` since
+    2026-09-27). ``validate_atomic(generated_bound=…)`` uses it to tell a
+    legacy pre-framing-fix block from a genuine envelope drift."""
+    out: set[str] = set()
+    for n in tree.blocks.values():
+        if n.bound_kind != "structure" or not n.bound:
+            continue
+        ref = store.get_ref(kind="structure", id=n.bound)
+        if ref is not None and isinstance((ref.meta or {}).get("generated"), dict):
+            out.add(n.bound)
+    return frozenset(out)
+
+
 def render_mechanics(store: Store, tree: SeTree) -> str:
     """``view='mechanics'`` — advisory (never-gating) L4 ceilings
     (:mod:`precis_se.atomic.mechanics`'s module docstring): per-block Euler
