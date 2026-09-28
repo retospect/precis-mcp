@@ -137,6 +137,55 @@ rings). Prefer zigzag `N` in multiples of 6 so caps, washers and lids
 interoperate; `rim.nonstandard` INFO marks the rest. se ports carry it
 as `lattice="sp2-hex"`, `payload={kind: rim, word, N, type}`.
 
+## Joining resolved blocks (spec §22.2)
+
+`join` composes two already-**generated** blocks (each its own `generate`
+call, independently minted) into a new composite block over a matched
+port pair — a block-level equivalent of `fuse`, for when the two parts
+were never in the same spec:
+
+```json
+{"op": "join", "name": "composite", "a": "tube_a.out", "b": "tube_b.in",
+ "seam": "auto", "k": 0, "seam_radius": {"a": 8, "b": 2}}
+```
+
+`a`/`b` are `<block>.<port>` — either side may itself be an earlier
+join's composite (a composite is a resolved block too, so a chain of
+joins works). `seam` is `auto` (default; `fuse` for equal rim types,
+`adapter` for a zigzag↔armchair grain boundary — an explicit value that
+disagrees is `seam.mismatch`), `k` a phase (`0..N-1`, or `"fit"` — ranked
+the same way `fuse`'s `k=fit` is, surfacing `fit.alternatives`).
+`seam_radius` overrides the per-side shell radius the re-relax touches
+(table default by rim type, zigzag 8 / armchair 2 shells); dispatch is by
+the two ports' shared `lattice` tag (`join.lattice` if absent or
+mismatched — today only `"sp2-hex"` hexfold rims are wired).
+
+The composite is a new atomic block, envelope a bounding cylinder in
+`a`'s own frame (`a`'s atoms untouched; `b`'s are rigidly placed), bound
+to a fresh `structure` design holding `a`'s atoms then `b`'s. `a`/`b`
+become its children (re-parented, `b` gets a `set_pose`) and keep their
+own refs — a regenerate never patches a composite, it names the parts'
+block/structure/version in the build record instead. The consumed
+ports (`a`'s `pa`, `b`'s `pb`) get one `connect kind='bond'` recording
+the seam; every OTHER port on `a`/`b` becomes a composite port
+(`<block>_<port>`, `b`'s carried over with its direction rotated).
+
+Findings land in the build record (`view='block'` → "## generated
+(join)"): `seam.rings` (census), `seam.adapter`/`seam.strain` INFO,
+`seam.leak` WARN (re-relax perturbed geometry past the seam radius —
+raise `seam_radius` or resolve a longer block), `seam.terminated` INFO (a
+non-carbon atom inside the re-relaxed sub-graph), `port.mismatch` ERROR
+(rim sizes differ — nothing minted), `join.lattice` ERROR (no shared
+port type), `join.stale` ERROR (the block's stored atoms no longer agree
+with a rebuild of its own generator record — regenerate first).
+
+Slice 1 is the **stick rung** only: both parts must be `fidelity="stick"`
+hexfold blocks (or composites of them), and the re-relax runs
+`stick_relax_pinned` over the seam sub-graph. A later slice adds the
+`geo` rung (`join.rung` gates a mismatch) and joint placement across a
+part-graph *cycle* (three-or-more-way joins today only chain linearly,
+one pair at a time).
+
 ## Options (spec §25.3)
 
 `hexfold.options.options(spec, handle, wish)` / `hexfold options FILE

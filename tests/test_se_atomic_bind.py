@@ -173,11 +173,13 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     table can't see them — the union is what ``put``/``edit`` accept.
     ``realize`` (se-print-implementer.md) joined the atomic mode's
     original 3 as the first non-atomic store-write-deferred op, reusing
-    the same interception seam."""
+    the same interception seam; ``join`` (docs/backlog/
+    hexfold-integration.md step 5) is the second."""
     assert set(HANDLER_LEVEL_OPS) == {
         "bind_structure",
         "unbind_structure",
         "generate",
+        "join",
         "realize",
     }
     assert set(HANDLER_LEVEL_OPS).isdisjoint(known_ops())

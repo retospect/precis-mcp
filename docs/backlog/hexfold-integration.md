@@ -264,3 +264,29 @@ placement, i.e. the block joiner; `_place_seeds` is single-rooted at
 `origin` (a fused component unreachable from it stays unplaced; no example
 needs it yet); armchair fuses seeded sigma/cos 30 apart are harmless.
 `tube_ring_closure.hx` is a genuine loop and cannot be rigid.
+
+**Step 5 slice 1 built (2026-09-28).** `hexfold.join` (the pure numpy
+half, `src/hexfold/join.py`: `Block`, `block_from_net`, `rank_k`, `place`,
+`compose`, `SEAM_RADIUS`, the `Relaxer` protocol, `stick_relax_pinned`'s
+pin-mask refactor) plus `precis_se.atomic.join` (the store-aware `join`
+op, `src/precis_se/atomic/join.py`): compose two already-resolved blocks
+over a matched port pair into a new composite se block, on the stick
+rung, re-relaxing only the seam sub-graph. Design calls decided in
+`nanomachine-slice-5-joiner.md`: (1) the composite is a new parent block
++ new `structure` ref with `a`/`b` as posed children, never an in-place
+merge; (2) slice-1 rung is stick with a pinned relax, geo-only deferred;
+(3) join-time rings/zones come from rebuilding each side's topology off
+its own generator record (recursively, through a chain of earlier
+joins) rather than persisting rings/regions/walks — the prerequisite
+this needed is `GeneratedPort.lattice`/`payload`/its dangling ring's
+atom *labels* now landing in the stored port's `annotations` (only for a
+typed — today hexfold — port; the pre-existing single-atom generators'
+ports are unchanged). Findings `seam.rings`, `seam.adapter`,
+`seam.leak`, `seam.strain`, `seam.radius.unmeasured`, `seam.terminated`,
+`fit.alternatives`, `port.mismatch`, `join.lattice`, `seam.mismatch`,
+`join.stale`. Still owed: slice 2 (the geo rung, `join.rung` gating a
+rung mismatch, leak thresholds re-measured on that rung) and slice 3
+(`place_graph` joint placement across a part-graph cycle, wired into
+`_place_seeds` as its third pass — the seed-placement residuals above,
+`flanged_doughnut.hx`/`tube_ring_closure.hx`, are exactly what that
+slice retires).

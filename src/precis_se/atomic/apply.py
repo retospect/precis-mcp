@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import PendingGenerate, finish_generate, prepare_generate
+from precis_se.atomic.join import PendingJoin, finish_join, prepare_join
 from precis_se.atomic.vocab import check_dof_axis_ports
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
@@ -50,7 +51,13 @@ PendingJob = SimpRequest | ManufactureRequest
 #: both the real dispatch below and the unknown-op error's roster read from
 #: (gripe 334767: the roster used to come from ``known_ops()`` alone,
 #: silently omitting these from what was actually accepted).
-HANDLER_LEVEL_OPS = ("bind_structure", "unbind_structure", "generate", "realize")
+HANDLER_LEVEL_OPS = (
+    "bind_structure",
+    "unbind_structure",
+    "generate",
+    "join",
+    "realize",
+)
 
 
 def all_op_names() -> frozenset[str]:
@@ -130,6 +137,7 @@ def apply_ops_with_atomic(
     roster = all_op_names()
     echoes: list[str] = []
     pending_generates: list[PendingGenerate] = []
+    pending_joins: list[PendingJoin] = []
     pending_realizes: list[PendingRealize] = []
     pending_dof_checks: list[str] = []
     for op in ops:
@@ -149,6 +157,12 @@ def apply_ops_with_atomic(
             echoes.append(echo)
             if pending is not None:  # dry-run blocks mint nothing
                 pending_generates.append(pending)
+            continue
+        if name == "join":
+            echo, join_pending = prepare_join(store, tree, op, design_slug)
+            echoes.append(echo)
+            if join_pending is not None:
+                pending_joins.append(join_pending)
             continue
         if name == "realize":
             strategy = str(op.get("strategy") or "analytic").strip().lower()
@@ -193,6 +207,8 @@ def apply_ops_with_atomic(
                 pending_dof_checks.append(block_name)
     for pending in pending_generates:
         finish_generate(store, tree, pending)
+    for join_pending in pending_joins:
+        finish_join(store, tree, join_pending)
     for realize_pending in pending_realizes:
         finish_realize(store, tree, realize_pending)
     for block_name in pending_dof_checks:

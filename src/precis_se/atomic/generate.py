@@ -196,6 +196,33 @@ def prepare_generate(
             f"{struct_slug!r}) first if this is a genuine re-generate"
         )
 
+    # Mint the structure Scene + every atom's label up front (ordinal i =
+    # array position = labels[i]) so a port's ``annotations`` can name its
+    # dangling-ring atoms by label in the add_port loop below -- unlike
+    # ``finish_generate``'s deferred store write, this can't wait:
+    # ``scene.next_label`` needs each atom already inserted into
+    # ``scene.atoms`` before minting the next one of the same element (its
+    # own docstring), so the label a port wants has to exist before that
+    # port's op runs, not after every op has validated.
+    scene = StructScene(cell=generated_cell(block.coords))
+    labels: list[str] = []
+    for i, (element, cart) in enumerate(zip(block.elements, block.coords, strict=True)):
+        label = scene.next_label(element)
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(np.asarray(cart, dtype=float)))
+        scene.atoms[label] = StructAtom(
+            label=label,
+            element=element,
+            frac=frac,
+            hybridization=(
+                block.hybridizations[i]
+                if block.hybridizations is not None
+                else block.hybridization
+            ),
+        )
+        labels.append(label)
+    for i, j, order, kind in block.bonds:
+        scene.bonds.append(StructBond(i=labels[i], j=labels[j], order=order, kind=kind))
+
     add_op: dict[str, Any] = {
         "op": "add_block",
         "name": block_name,
@@ -225,6 +252,23 @@ def prepare_generate(
                 "direction": port.direction,
                 "expected_element": port.expected_element,
             }
+            # The port *type* seam (docs/backlog/hexfold-integration.md
+            # step 5's prerequisite): only when the generator actually
+            # typed the port (``lattice`` set — today only hexfold rims) —
+            # the pre-existing single-atom generators' ports stay
+            # annotation-free, unchanged, since they carry no lattice/
+            # payload/ring of their own to store. ``atoms`` is the port's
+            # dangling ring (or, for a single-atom port, just its own
+            # atom) by REAL label, so a later ``join`` op can read the
+            # ring straight off the stored port without touching the
+            # generator again.
+            if port.lattice is not None:
+                ring = list(port.atoms) if port.atoms is not None else [port.atom_index]
+                port_op["annotations"] = {
+                    "lattice": port.lattice,
+                    "payload": port.payload,
+                    "atoms": [labels[i] for i in ring],
+                }
             # Only when the generator actually stated one — add_port reads
             # an absent 'pose' as "no stored pose", and a null rot with a
             # null pose would be refused as a rotation with no origin.
@@ -262,25 +306,6 @@ def prepare_generate(
             apply_ops(tree, [m_op])
     except OpError as exc:
         raise BadInput(str(exc)) from exc
-
-    scene = StructScene(cell=generated_cell(block.coords))
-    labels: list[str] = []
-    for i, (element, cart) in enumerate(zip(block.elements, block.coords, strict=True)):
-        label = scene.next_label(element)
-        frac = scene.cell.wrap(scene.cell.cart_to_frac(np.asarray(cart, dtype=float)))
-        scene.atoms[label] = StructAtom(
-            label=label,
-            element=element,
-            frac=frac,
-            hybridization=(
-                block.hybridizations[i]
-                if block.hybridizations is not None
-                else block.hybridization
-            ),
-        )
-        labels.append(label)
-    for i, j, order, kind in block.bonds:
-        scene.bonds.append(StructBond(i=labels[i], j=labels[j], order=order, kind=kind))
 
     # Port -> atom element gate, run here against the in-memory atoms (the
     # exact check ``bind_structure`` runs, moved earlier so

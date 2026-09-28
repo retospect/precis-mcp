@@ -68,6 +68,7 @@ layer the design was authored in; everything below is regenerated (§23).
 | stick geometry | `[impl 0.1]` | `hexfold.stick` |
 | seams k ≥ 3, registry closure, fit families, sectioned file | `[spec 0.2]` | `hexfold` |
 | symbolic chain solver | `[impl 0.2]` | `hexfold.chain` (integer, stdlib only; stub geometry backend) |
+| block joiner over resolved blocks | `[impl 0.2]` | `hexfold.join` (stick rung; the se op is `precis_se/atomic/join.py`) |
 | smooth layer | `[design]` | `precis_surface` (kernel) + `hexfold.smooth` (carbon binding, parse/emit) |
 | physics tiers | exists in precis | `precis.structure` ladder |
 
@@ -623,6 +624,10 @@ no ERROR. No `__bool__`.
 | `annot.sublattice` | INFO | per attachment bond: same/cross sublattice |
 | `annot.host_sublattices` | INFO | per-menu summary of host-sublattice counts |
 | `terminate.done` | INFO | port passivated: `data` counts per element |
+| `seam.adapter` `[impl 0.2]` | INFO | `hexfold.join.compose`: rim types differ (pure-z onto pure-a, equal N) -- the 30° grain-boundary adapter (`data.a_type`, `data.b_type`) |
+| `seam.leak` `[impl 0.2]` | WARN | `hexfold.join.compose`: bond-length/angle change beyond the re-relaxed seam radius (guard band, shells r+1..r+2) exceeds the rung's threshold (`data.block`, `data.port`, `data.r`, `data.shell`, `data.max_dl`, `data.max_dtheta`) |
+| `seam.strain` `[impl 0.2]` | INFO | `hexfold.join.compose`: rms/max bond-length deviation from sigma over the re-relaxed (movable) atoms (`data.rms_A`, `data.max_A`, `data.bonds`) |
+| `seam.radius.unmeasured` `[impl 0.2]` | INFO | `hexfold.join.compose`: a mixed rim (no `Port.rim_type`) has no measured decay length, so the join falls back to the conservative zigzag radius (`data.side`, `data.radius`) |
 
 Profiles are **passed, not set** (no module-global state):
 `Profile(promote=frozenset, demote=frozenset, ignore=frozenset,
@@ -1133,6 +1138,7 @@ integer refusal becomes a design conversation.
 | `catalogue(kind, filters)` | **new** `view='catalogue'` over the cache (small) |
 | `move(handle, dir, dist)` | **new** op `move_handle`, relative moves in the rim frame (small) |
 | `options(handle, wish)` | **new handler** — the one genuinely new verb: `fit.alternatives` surfaced as ranked candidates. hexfold side `[impl 0.2]` (`hexfold.options`, §12.1); the se handler is a thin op over it once the block joiner fixes what a handle is on a resolved block |
+| block joiner (§22.2) | **new** op `join` — `precis_se/atomic/join.py`, over `hexfold.join.compose` (`src/hexfold/join.py`) `[impl 0.2]`, built 2026-09-28 (slice 1: stick rung) |
 
 ### 26. Catalogue and cache
 
@@ -1283,6 +1289,23 @@ drive the order: the box (step 3) and the rotary ratchet valve
    **drag-vs-torque check** over all ganged wheels. `options(handle,
    wish)` (§25.3) takes the valve's whitelist / blacklist / throughput
    wish; the clearance field and pocket extractor are read-only queries.
+
+**Block joiner (`docs/backlog/hexfold-integration.md` ruling step 5),
+built 2026-09-28 (slice 1: stick rung)**: `hexfold.join` (`Block`,
+`block_from_net`, `rank_k`, `place`, `compose`, `SEAM_RADIUS`, the
+`Relaxer` protocol) composes two already-resolved blocks over a matched
+port pair on the stick rung, reproducing a whole-spec fuse's atom/bond/
+seam-ring census while leaving everything outside the seam radius
+bit-for-bit untouched; `seam.adapter`, `seam.leak`, `seam.strain`,
+`seam.radius.unmeasured`, `seam.terminated` findings (§13). The se op
+(`precis_se/atomic/join.py`'s `join` op, store-aware prepare/finish over
+`compose`, dispatched by the joined ports' `lattice` annotation) is built
+too: it rebuilds each side's topology from its own generator record
+(recursively, through a chain of earlier joins), mints a composite
+`structure` design plus se block/ports/connect, and persists the build
+record as `meta['generated']`. The geo-rung relaxer (`join.rung`) and
+joint placement across part-graph cycles follow in a later slice
+(`docs/backlog/hexfold-integration.md` step 5).
 
 Out of scope until the above holds: general Goldberg fullerenes, surface
 tiling from a target SDF (the 30 nm oval box), rdkit realisation of

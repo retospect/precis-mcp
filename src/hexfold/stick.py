@@ -12,6 +12,13 @@ vertex), soft non-bonded repulsion — as plain gradient descent with a fixed
 step and a fixed iteration count.  Accumulation order is fixed via
 ``np.add.at`` over index arrays, so the same input gives the same bytes.
 This is a preview, not physics.
+
+The relaxation loop itself is :func:`stick_relax_pinned` (explicit
+positions/bonds/rest-lengths/springs in, an optional per-atom 0/1 movable
+mask), so :mod:`hexfold.join`'s seam re-relax can reuse it over a
+composite with everything outside the seam radius pinned; ``stick_info``
+is just its no-mask caller plumbing the seed/rest-length/angle-spring setup
+from a ``Net``.
 """
 
 from __future__ import annotations
@@ -92,6 +99,67 @@ def _rep_pairs(pos: np.ndarray, bonded: np.ndarray, lim: float) -> np.ndarray:
     return np.stack([ii, jj], axis=1)
 
 
+def stick_relax_pinned(
+    pos: np.ndarray,
+    bonds: np.ndarray,
+    brest: np.ndarray,
+    springs: np.ndarray,
+    sigma: float,
+    *,
+    iters: int = _ITERS,
+    movable: np.ndarray | None = None,
+) -> tuple[np.ndarray, float]:
+    """The vectorised spring relaxation loop, factored out of
+    :func:`stick_info` so :mod:`hexfold.join` can re-relax only a seam
+    radius of a composite (the rest of the plumbing -- seed choice,
+    per-bond rest length, ring-chord angle springs -- stays with the
+    caller, which already has the net or block to build them from).
+
+    ``pos`` (N,3), ``bonds`` (M,2) int ordinal pairs, ``brest`` (M,) their
+    rest lengths, ``springs`` (K,3) ``(i, j, rest)`` ring-chord angle
+    springs, ``sigma`` the lattice spacing (repulsion cutoff scale).
+    ``movable`` is an optional per-atom 0/1 float mask -- every force this
+    atom receives is scaled by it each iteration, so 0 pins the atom
+    exactly in place while it still exerts its own spring/repulsion force
+    on its neighbours; ``None`` (:func:`stick_info`'s call) is the same as
+    an all-ones mask and reproduces its output byte-for-byte.
+    """
+    pos = pos.copy()
+    n = len(pos)
+    mv = movable if movable is not None else np.ones(n, dtype=np.float64)
+    bonded = np.zeros((n, n), dtype=bool)
+    bonded[bonds[:, 0], bonds[:, 1]] = True
+    bonded[bonds[:, 1], bonds[:, 0]] = True
+    si = springs[:, 0].astype(np.int64)
+    sj = springs[:, 1].astype(np.int64)
+    bonded[si, sj] = True
+    bonded[sj, si] = True
+    srest = springs[:, 2]
+
+    pairs = _rep_pairs(pos, bonded, _REP_MARGIN * _REP_CUT * sigma)
+    f = np.zeros_like(pos)
+    for it in range(iters):
+        if it % _REFRESH == 0:
+            pairs = _rep_pairs(pos, bonded, _REP_MARGIN * _REP_CUT * sigma)
+        f = _spring_forces(pos, bonds[:, 0], bonds[:, 1], brest, _K_BOND)
+        f += _spring_forces(pos, si, sj, srest, _K_ANGLE)
+        if len(pairs):
+            pi, pj = pairs[:, 0], pairs[:, 1]
+            d = pos[pj] - pos[pi]
+            r = np.linalg.norm(d, axis=1)
+            near = r < _REP_CUT * sigma
+            pi, pj, d = pi[near], pj[near], d[near]
+            r = r[near]
+            r = np.where(r == 0.0, 1e-9, r)
+            rf = -_K_REP * (_REP_CUT * sigma - r)[:, None] * d / r[:, None]
+            np.add.at(f, pi, rf)
+            np.add.at(f, pj, -rf)
+        f *= mv[:, None]
+        pos += _DT * f
+    max_force = float(np.linalg.norm(f, axis=1).max()) if len(f) else 0.0
+    return pos, max_force
+
+
 def stick_info(net: Net) -> tuple[np.ndarray, float]:
     """Relaxed stick coordinates and the final max force magnitude."""
     if net.seed3 is not None:
@@ -105,7 +173,6 @@ def stick_info(net: Net) -> tuple[np.ndarray, float]:
     else:
         pos = _spectral_seed(net)
     sig = net.lattice.sigma_A
-    n = len(net.atoms)
 
     bonds = np.array([(i, j) for i, j, _ in net.bonds], dtype=np.int64)
     # per-bond rest length: sigma_CH when an endpoint is a termination
@@ -121,36 +188,7 @@ def stick_info(net: Net) -> tuple[np.ndarray, float]:
         dtype=np.float64,
     )
     springs = np.array(_angle_springs(net), dtype=np.float64)
-    bonded = np.zeros((n, n), dtype=bool)
-    bonded[bonds[:, 0], bonds[:, 1]] = True
-    bonded[bonds[:, 1], bonds[:, 0]] = True
-    si = springs[:, 0].astype(np.int64)
-    sj = springs[:, 1].astype(np.int64)
-    bonded[si, sj] = True
-    bonded[sj, si] = True
-    srest = springs[:, 2]
-
-    pairs = _rep_pairs(pos, bonded, _REP_MARGIN * _REP_CUT * sig)
-    f = np.zeros_like(pos)
-    for it in range(_ITERS):
-        if it % _REFRESH == 0:
-            pairs = _rep_pairs(pos, bonded, _REP_MARGIN * _REP_CUT * sig)
-        f = _spring_forces(pos, bonds[:, 0], bonds[:, 1], brest, _K_BOND)
-        f += _spring_forces(pos, si, sj, srest, _K_ANGLE)
-        if len(pairs):
-            pi, pj = pairs[:, 0], pairs[:, 1]
-            d = pos[pj] - pos[pi]
-            r = np.linalg.norm(d, axis=1)
-            near = r < _REP_CUT * sig
-            pi, pj, d = pi[near], pj[near], d[near]
-            r = r[near]
-            r = np.where(r == 0.0, 1e-9, r)
-            rf = -_K_REP * (_REP_CUT * sig - r)[:, None] * d / r[:, None]
-            np.add.at(f, pi, rf)
-            np.add.at(f, pj, -rf)
-        pos += _DT * f
-    max_force = float(np.linalg.norm(f, axis=1).max()) if len(f) else 0.0
-    return pos, max_force
+    return stick_relax_pinned(pos, bonds, brest, springs, sig)
 
 
 def stick(net: Net) -> np.ndarray:

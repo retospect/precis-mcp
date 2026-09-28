@@ -2414,6 +2414,37 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
         facts.append(f"rings={{{census}}}")
     if facts:
         lines.append("  ".join(facts))
+    # ``join``'s own facts (docs/backlog/hexfold-integration.md step 5
+    # slice 1): the two parts it was composed from and the seam itself —
+    # a join record carries no ``spec``/``rings`` of its own (module
+    # docstring: composed at read time, never persisted whole), so these
+    # are its only shape-specific lines.
+    if rec.get("generator") == "join":
+        parts = rec.get("parts")
+        if isinstance(parts, list):
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                lines.append(
+                    f"  part {part.get('block')}: {part.get('structure')} "
+                    f"v{part.get('version')} port={part.get('port')} "
+                    f"n_atoms={part.get('n_atoms')}"
+                )
+        seam = rec.get("seam")
+        if isinstance(seam, dict) and seam:
+            rings = seam.get("rings")
+            census = (
+                ", ".join(
+                    f"{k}:{v}"
+                    for k, v in sorted(rings.items(), key=lambda kv: int(kv[0]))
+                )
+                if isinstance(rings, dict) and rings
+                else "{}"
+            )
+            lines.append(
+                f"  seam: motif={seam.get('motif')} k={seam.get('k')} "
+                f"N={seam.get('N')} rings={{{census}}} radius={seam.get('radius')}"
+            )
     spec = rec.get("spec")
     if isinstance(spec, str) and spec.strip():
         lines.append("")
