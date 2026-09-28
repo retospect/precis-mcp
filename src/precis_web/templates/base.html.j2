@@ -47,7 +47,8 @@
 </head>
 <body class="h-full text-slate-800">
   <div class="min-h-full">
-    <header class="bg-slate-900 text-slate-100">
+    <header data-headroom
+            class="sticky top-0 z-30 bg-slate-900 text-slate-100 transition-transform duration-200 motion-reduce:transition-none motion-reduce:duration-0">
       <div class="mx-auto max-w-6xl px-4">
         {# Nav, by attention priority (the rationalized target information
            architecture; see also precis_web.nav):
@@ -200,6 +201,69 @@
         </nav>
       </div>
     </header>
+    <script>
+      // Reveal-on-scroll-up ("headroom") for the shared nav header, every
+      // page (not a per-template opt-in — this is the ONE header block).
+      // `header` stays `sticky`, not `fixed`: sticky keeps its normal-flow
+      // slot reserved, so hiding it via `transform` never reflows the page
+      // below and needs no spacer element. Down-scroll slides it off
+      // (`-translate-y-full`, toggled on `header` itself); ANY up-scroll,
+      // or being within the header's own height of the top, shows it —
+      // that top-of-page band is what keeps rest-state free of hide/reveal
+      // flicker on a page that loads already scrolled to an anchor.
+      // Reduced motion is handled purely by the `motion-reduce:` classes
+      // above, no branch needed here.
+      //
+      // Scroll events are coalesced onto one requestAnimationFrame per
+      // frame (the `ticking` latch) rather than doing this work on every
+      // raw scroll event — a fast trackpad fling on a long smartdraft can
+      // fire dozens per frame. Every callback below takes a named
+      // parameter even where unused, for the same empty-parens ban the
+      // popover-coordination script downstream documents.
+      {
+        const header = document.querySelector('[data-headroom]');
+        if (header) {
+          let lastY = window.scrollY;
+          let hiddenNow = false;
+          let ticking = false;
+
+          const setHidden = wantHidden => {
+            if (wantHidden === hiddenNow) return;
+            hiddenNow = wantHidden;
+            header.classList.toggle('-translate-y-full', wantHidden);
+          };
+
+          // Keyboard focus inside the nav (tabbing through it) must never
+          // slide the header away underneath the user, so `focusInside`
+          // overrides scroll direction unconditionally.
+          const evaluate = _frameTime => {
+            const y = window.scrollY;
+            const nearTop = y <= header.offsetHeight;
+            const scrollingUp = y < lastY;
+            const focusInside = header.contains(document.activeElement);
+            setHidden(!(nearTop || scrollingUp || focusInside));
+            lastY = y;
+            ticking = false;
+          };
+
+          window.addEventListener(
+            'scroll',
+            _e => {
+              if (ticking) return;
+              ticking = true;
+              window.requestAnimationFrame(evaluate);
+            },
+            { passive: true },
+          );
+          // No scroll event fires while tabbing — focusin must reveal (and
+          // hold) the header on its own; focusout re-evaluates against the
+          // current scroll position so it can resume hiding once focus has
+          // actually left.
+          header.addEventListener('focusin', _e => setHidden(false));
+          header.addEventListener('focusout', _e => window.setTimeout(evaluate, 0));
+        }
+      }
+    </script>
     <script>
       // Custom named-window links (target="precis-paper" — the shared
       // paper-reading window) are opened via window.open instead of the

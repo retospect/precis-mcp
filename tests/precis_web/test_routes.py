@@ -44,6 +44,18 @@ def test_healthz(client) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+def test_nav_header_carries_headroom_hook(client) -> None:
+    """The shared header (base.html.j2) is `sticky`, not merely in-flow, and
+    carries the `data-headroom` hook its reveal-on-scroll-up script
+    (`querySelector('[data-headroom]')`) and any future per-page styling key
+    off — asserted on a rendered page rather than the template source so a
+    future markup shuffle that drops the attribute fails a real request."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert '<header data-headroom' in resp.text
+    assert 'sticky top-0' in resp.text
+
+
 # ── /api/llm/resolve — the structured-selector preview endpoint ──────────
 
 

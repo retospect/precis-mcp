@@ -2130,6 +2130,28 @@ def build_bib(store: RefLookupStore, slugs: list[str], warnings: list[str]) -> s
                 f"  eprint = {{{alias['arxiv']}}},\n  archiveprefix = {{arXiv}}"
             )
         entry_type = entry_type_by_slug[slug]
+        if entry_type == "article":
+            # A paper: venue/journal (+ volume/number/pages, once an
+            # enricher starts filling them) from meta — matches the
+            # docx exporter's precedence (docx.py's ``_cite_endnote``
+            # source dict) so both renderers agree on the venue string.
+            meta = pref.meta or {}
+            journal = str(
+                meta.get("venue")
+                or meta.get("journal")
+                or meta.get("container_title")
+                or ""
+            ).strip()
+            if journal:
+                fields.append(f"  journaltitle = {{{_tex(journal)}}}")
+            for bib_key, meta_key in (
+                ("volume", "volume"),
+                ("number", "number"),
+                ("pages", "pages"),
+            ):
+                value = str(meta.get(meta_key) or "").strip()
+                if value:
+                    fields.append(f"  {bib_key} = {{{_tex(value)}}}")
         if entry_type == "manual":
             # A datasheet: vendor → @manual organization, sub-type → the
             # howpublished genre label, and the documented part (if recorded

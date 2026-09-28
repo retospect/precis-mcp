@@ -1630,6 +1630,101 @@ def test_build_bib_datasheet_carries_vendor_subtype_and_part() -> None:
     assert warnings == []
 
 
+def test_build_bib_article_emits_journaltitle_from_meta_journal() -> None:
+    """An @article with no meta.venue falls back to meta.journal — the
+    'In: (2026)' empty-venue defect (ref 450227, Surface Science)."""
+    store = _BibStore(
+        {
+            ("paper", "azobenzene"): _bibref(
+                450227,
+                "azobenzene",
+                "paper",
+                title="Isomerization of Azobenzene Derivatives",
+                year=2026,
+                meta={"journal": "Surface Science"},
+            )
+        }
+    )
+    warnings: list[str] = []
+    bib = latex.build_bib(store, ["azobenzene"], warnings)
+    assert "journaltitle = {Surface Science}" in bib
+
+
+def test_build_bib_article_venue_wins_over_journal() -> None:
+    store = _BibStore(
+        {
+            ("paper", "p1"): _bibref(
+                1,
+                "p1",
+                "paper",
+                title="T",
+                year=2020,
+                meta={"venue": "Venue Name", "journal": "Journal Name"},
+            )
+        }
+    )
+    bib = latex.build_bib(store, ["p1"], [])
+    assert "journaltitle = {Venue Name}" in bib
+    assert "Journal Name" not in bib
+
+
+def test_build_bib_article_no_journal_omits_field() -> None:
+    """No venue/journal/container_title in meta → no journaltitle field at
+    all (not an empty one) — the exact scenario that used to render as a
+    bare 'In: (2026)' in the compiled PDF."""
+    store = _BibStore(
+        {
+            ("paper", "p1"): _bibref(1, "p1", "paper", title="T", year=2020, meta=None)
+        }
+    )
+    bib = latex.build_bib(store, ["p1"], [])
+    assert "journaltitle" not in bib
+
+
+def test_build_bib_article_journal_ampersand_escaped() -> None:
+    store = _BibStore(
+        {
+            ("paper", "p1"): _bibref(
+                1,
+                "p1",
+                "paper",
+                title="T",
+                year=2020,
+                meta={"journal": "Chemistry & Physics"},
+            )
+        }
+    )
+    bib = latex.build_bib(store, ["p1"], [])
+    assert "journaltitle = {Chemistry \\& Physics}" in bib
+
+
+def test_build_bib_article_passes_through_volume_number_pages() -> None:
+    """volume/number/pages have no corpus source today (0/44485 papers) but
+    the field should pass through unmodified once an enricher fills them —
+    forward-compatible plumbing, not a derivation."""
+    store = _BibStore(
+        {
+            ("paper", "p1"): _bibref(
+                1,
+                "p1",
+                "paper",
+                title="T",
+                year=2020,
+                meta={
+                    "journal": "Surface Science",
+                    "volume": "42",
+                    "number": "3",
+                    "pages": "100-110",
+                },
+            )
+        }
+    )
+    bib = latex.build_bib(store, ["p1"], [])
+    assert "volume = {42}" in bib
+    assert "number = {3}" in bib
+    assert "pages = {100-110}" in bib
+
+
 def test_build_bib_unresolved_slug_stubs_with_warning() -> None:
     """A slug that matches no paper/patent/datasheet still degrades to a
     compile-safe stub + a warning."""
