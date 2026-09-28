@@ -288,3 +288,52 @@ def test_concurrence_alert_across_encodings(store: Any, monkeypatch: Any) -> Non
     assert mirror.concurrence_scan(store) == 1
     # Fingerprint-deduped: a re-scan is quiet.
     assert mirror.concurrence_scan(store) == 0
+
+
+def test_concurrence_scan_skips_and_resolves_our_own_round_tripped_artifact(
+    store: Any, monkeypatch: Any
+) -> None:
+    """al265434: the registry mirror pulls our own published artifacts
+    back too — a mirror row whose code IS one of our own
+    ``nanopub_publish.trusty_uri`` codes is a round-trip of our own
+    nanopub, not an external concurrence. A stale alert from before this
+    exclusion existed must resolve, and a genuinely foreign match must
+    still raise."""
+    from precis.alerts import open_alert_severity, raise_alert
+
+    hub, row = _signed_hub(
+        store, monkeypatch, "DFT shows a self-round-trip claim holds."
+    )
+    own_code = str(row.trusty_uri).rsplit("/", 1)[-1]
+    _plain_row(store, own_code, aida_uri=str(row.aida_uri))
+
+    fingerprint = f"concurrence:{own_code}:fi{hub}"
+    raise_alert(
+        store,
+        source="nanopub_mirror",
+        fingerprint=fingerprint,
+        title="stale self-match alert",
+        severity="info",
+        subject_ref_id=hub,
+    )
+    assert (
+        open_alert_severity(store, source="nanopub_mirror", fingerprint=fingerprint)
+        == "info"
+    )
+
+    # A genuinely foreign artifact asserting the same sentence.
+    _plain_row(store, "RA" + "f" * 43, aida_uri=str(row.aida_uri))
+
+    assert mirror.concurrence_scan(store) == 1  # only the foreign one is new
+    assert (
+        open_alert_severity(store, source="nanopub_mirror", fingerprint=fingerprint)
+        is None
+    )
+    assert (
+        open_alert_severity(
+            store,
+            source="nanopub_mirror",
+            fingerprint=f"concurrence:{'RA' + 'f' * 43}:fi{hub}",
+        )
+        == "info"
+    )

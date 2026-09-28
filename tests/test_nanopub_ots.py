@@ -285,6 +285,77 @@ def test_upgrade_sweep_skips_and_resolves_superseded_batch(
     )
 
 
+def test_upgrade_sweep_resolves_stuck_alert_on_late_upgrade(
+    store: Any, monkeypatch: Any
+) -> None:
+    """gr362311: a batch stuck long enough to raise the alert, then the
+    calendar simply delivers late — the upgrade itself must resolve the
+    alert inline, not leave it open with nothing left to fix."""
+    row = _signed_hub(store, monkeypatch, "DFT finds the late-upgrade claim holds.")
+    batch_id = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
+    assert batch_id is not None
+    _make_stuck(monkeypatch)
+
+    fingerprint = f"stuck-pending:{batch_id}"
+    from precis.alerts import open_alert_severity
+
+    # First pass, calendar still pending: raises the stuck-pending alert.
+    assert ots.upgrade_sweep(store, fetch_upgrade=_fake_still_pending) == []
+    assert (
+        open_alert_severity(store, source="nanopub_ots", fingerprint=fingerprint)
+        == "warn"
+    )
+
+    # Calendar delivers late: the batch upgrades this sweep.
+    assert ots.upgrade_sweep(store, fetch_upgrade=_fake_upgrade) == [batch_id]
+    state, _proof = store.nanopub_latest_proof(batch_id)
+    assert state == "upgraded"
+    assert (
+        open_alert_severity(store, source="nanopub_ots", fingerprint=fingerprint)
+        is None
+    )
+    assert store.nanopub_publish_row_by_id(row.id).state == "anchored"
+
+
+def test_upgrade_sweep_resolves_stale_alert_on_already_upgraded_batch(
+    store: Any, monkeypatch: Any
+) -> None:
+    """A batch that already upgraded (on an earlier sweep, before this
+    fix existed) never re-enters the pending-batches poll — its
+    stuck-pending alert must still resolve, at sweep start, not stay open
+    forever."""
+    _signed_hub(store, monkeypatch, "DFT finds the stale-alert claim holds.")
+    batch_id = ots.stamp_batch(store, calendar_url=_FAKE_CAL, submit=_fake_submit)
+    assert batch_id is not None
+    assert ots.upgrade_sweep(store, fetch_upgrade=_fake_upgrade) == [batch_id]
+    state, _proof = store.nanopub_latest_proof(batch_id)
+    assert state == "upgraded"
+
+    # Simulate a stale alert left over from before this batch ever
+    # resolved it (e.g. raised on a pre-fix sweep).
+    from precis.alerts import open_alert_severity, raise_alert
+
+    fingerprint = f"stuck-pending:{batch_id}"
+    raise_alert(
+        store,
+        source="nanopub_ots",
+        fingerprint=fingerprint,
+        title=f"OTS batch {batch_id} stuck pending",
+        detail="stale",
+        severity="warn",
+    )
+    assert (
+        open_alert_severity(store, source="nanopub_ots", fingerprint=fingerprint)
+        == "warn"
+    )
+
+    assert ots.upgrade_sweep(store, fetch_upgrade=_fake_upgrade) == []
+    assert (
+        open_alert_severity(store, source="nanopub_ots", fingerprint=fingerprint)
+        is None
+    )
+
+
 def test_sweep_pass_runs_audit_even_when_dark(store: Any, monkeypatch: Any) -> None:
     monkeypatch.delenv("PRECIS_OTS_ENABLED", raising=False)
     row = _signed_hub(store, monkeypatch, "DFT finds the dark-mode hub claim holds.")

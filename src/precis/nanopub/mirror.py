@@ -315,18 +315,44 @@ def concurrence_scan(store: Store) -> int:
     """Alert on external nanopubs asserting the same AIDA sentence as one
     of our live publish rows (spec priority 4: inbound concurrence
     without polling). Alert dedup is fingerprint-based, so re-scans are
-    quiet. Returns new alerts raised."""
-    from precis.alerts import raise_alert
+    quiet.
 
-    new = 0
+    The registry mirror pulls in everyone's artifacts, including our own
+    published ones — the round-trip fetches back exactly the trusty URI
+    we minted. Those are excluded before raising: a mirror row whose
+    ``artifact_code`` matches one of our own ``nanopub_publish.trusty_uri``
+    codes (any state — a superseded/retracted artifact is still ours) is
+    a self-match, not a concurring third party, and clears any stale open
+    alert from before this exclusion existed. Returns new alerts raised."""
+    from precis.alerts import raise_alert, resolve_alert_by_fingerprint
+
     with store.pool.connection() as conn:
         ours = conn.execute(
             "SELECT claim_ref_id, aida_uri FROM nanopub_publish "
             "WHERE aida_uri IS NOT NULL AND state NOT IN "
             "('superseded', 'retracted', 'rejected')"
         ).fetchall()
+        our_trusty = conn.execute(
+            "SELECT trusty_uri FROM nanopub_publish WHERE trusty_uri IS NOT NULL"
+        ).fetchall()
+    our_codes = {str(uri).rstrip("/").rsplit("/", 1)[-1] for (uri,) in our_trusty}
+
+    new = 0
     for claim_ref_id, aida in ours:
         for row in store.mirror_aida_matches(_aida_variants(str(aida))):
+            if row.artifact_code in our_codes:
+                if resolve_alert_by_fingerprint(
+                    store,
+                    source="nanopub_mirror",
+                    fingerprint=f"concurrence:{row.artifact_code}:fi{claim_ref_id}",
+                ):
+                    log.info(
+                        "mirror round-trip: our own artifact %s for fi%s "
+                        "seen in the registry",
+                        row.artifact_code,
+                        claim_ref_id,
+                    )
+                continue
             _alert_id, is_new = raise_alert(
                 store,
                 source="nanopub_mirror",

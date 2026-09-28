@@ -219,8 +219,13 @@ def upgrade_sweep(
     work: :meth:`~precis.store.Store.nanopub_pending_batches` already
     excludes it from the poll loop below, and this sweep additionally
     resolves any stuck-pending alert still open for it — otherwise the
-    alert fires forever with nothing left to fix. Returns the batch ids
-    upgraded this sweep."""
+    alert fires forever with nothing left to fix. The same applies when
+    the calendar simply delivers late: an upgraded batch also drops out
+    of the pending-batches poll, so this sweep resolves the stuck-pending
+    alert for every already-``upgraded`` batch up front
+    (:meth:`~precis.store.Store.nanopub_upgraded_batches`), and resolves
+    it inline the moment a batch upgrades during this sweep. Returns the
+    batch ids upgraded this sweep."""
     from datetime import datetime, timedelta
 
     from opentimestamps.core.notary import PendingAttestation
@@ -240,6 +245,18 @@ def upgrade_sweep(
                 "nanopub ots: batch %s superseded (all rows re-stamped "
                 "elsewhere) — resolved its stuck-pending alert",
                 superseded.id,
+            )
+
+    for already_upgraded in store.nanopub_upgraded_batches():
+        if resolve_alert_by_fingerprint(
+            store,
+            source="nanopub_ots",
+            fingerprint=f"stuck-pending:{already_upgraded.id}",
+        ):
+            log.info(
+                "nanopub ots: batch %s already upgraded — resolved its "
+                "stuck-pending alert",
+                already_upgraded.id,
             )
 
     for batch in store.nanopub_pending_batches():
@@ -275,6 +292,16 @@ def upgrade_sweep(
             )
             upgraded.append(batch.id)
             log.info("nanopub ots: batch %s upgraded", batch.id)
+            if resolve_alert_by_fingerprint(
+                store,
+                source="nanopub_ots",
+                fingerprint=f"stuck-pending:{batch.id}",
+            ):
+                log.info(
+                    "nanopub ots: batch %s upgraded (late) — resolved its "
+                    "stuck-pending alert",
+                    batch.id,
+                )
             continue
 
         age = datetime.now(UTC) - batch.created_at

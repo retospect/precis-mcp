@@ -11,7 +11,9 @@ One fire does, in order:
 2. **Flag scan** — derive ``retracted_by``/``superseded_by`` under the
    authoritative-retraction rule (idempotent SQL over the edge table).
 3. **Concurrence scan** — alert on external nanopubs asserting the same
-   AIDA sentence as one of our live publish rows (fingerprint-deduped).
+   AIDA sentence as one of our live publish rows (fingerprint-deduped);
+   self-published artifacts the mirror pulls back (the round-trip check,
+   not a concurrence) are excluded.
 
 DARK unless ``PRECIS_MIRROR_ENABLED`` (same posture as ``ots_sweep``):
 everything here is outbound-read-only network + local writes to the

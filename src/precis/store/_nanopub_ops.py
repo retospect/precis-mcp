@@ -652,6 +652,13 @@ class NanopubMixin:
             "SELECT 1 FROM nanopub_publish np WHERE np.batch_id = b.id)",
         )
 
+    def nanopub_upgraded_batches(self) -> list[OtsBatchRow]:
+        """Batches whose latest proof is ``upgraded`` — a completed batch
+        never re-enters :meth:`nanopub_pending_batches`'s poll loop, so a
+        stuck-pending alert opened before a *late* calendar upgrade would
+        otherwise stay open forever with nothing left to fix."""
+        return self._batches_where("latest.state = 'upgraded'")
+
     def nanopub_batches(self, *, limit: int = 500) -> list[OtsBatchRow]:
         return self._batches_where("TRUE", limit=limit)
 
