@@ -37,7 +37,20 @@ Escape yield on `tests/test_pcb_ewod_dogfood.py`, seed 1, 54 escape nets.
 | clearance forced 0.15 → 0.093 | 35 / 54 | 10 | 9 | 10 |
 | "any signal layer" escape class | 42 / 54 | 12 | 0 | 25 |
 | fabric not claimed + any signal layer | 54 / 54 | 0 | 0 | 26 |
+| **In2.Cu authored as a signal layer** | **50 / 54** | 2 | 2 | — |
 
+00. **THE GAP WAS A STACKUP PROBLEM. 28 → 50 / 54, SHIPPED 2026-09-27.**
+   Every arm above was measured on a board with exactly ONE routing
+   layer, because `DEFAULT_STACKUP` makes In1/In2 planes and nothing
+   could say otherwise. `put(args={'op':'stackup'})` now can. Declaring
+   In2.Cu `signal` (plus `escape_layers: ["B.Cu","In2.Cu"]`, which is
+   the other half — a layer nothing is allowed to use stays empty) takes
+   escapes **28 → 50 of 54**, DRC clearance errors **0 → 0**, and nets
+   whose copper is in more than one island **26 → 4**. That beats the 46
+   from the illegal arm, and it IS legal: it opens an inner layer, never
+   F.Cu, so the electrode field is untouched. Pinned by
+   `test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap`.
+   **Read every row below as "on a one-layer board".**
 0. **35 IS NOT THE BASELINE ANY MORE — 28 IS.** Every row above except
    the last was measured while the router could route through unclaimed
    footprint lands, which it did: 24 DRC clearance errors at 0.000mm.
@@ -57,7 +70,11 @@ Escape yield on `tests/test_pcb_ewod_dogfood.py`, seed 1, 54 escape nets.
    unclaimed (46 → 44). It survives only as gr451052's collision fix.
 4. **Clearance is worth zero** (35 → 35). The `max()` collapse in
    `realize.py` is a real defect with no measurable payoff. File, forget.
-5. **The fabric is the one measured lever**: 35 → 46, `no_path` 13 → 4.
+5. ~~**The fabric is the one measured lever**~~ — SUPERSEDED. It measured
+   35 → 46 with `no_path` 13 → 4, but that arm unclaimed real copper and
+   was never shippable. The LAYER is the lever, and it is legal: see
+   point 00. Fabric ownership is still the next thing to try if 50/54
+   needs to become 54/54, but it is no longer the only measured one.
 6. **The realized escapes are single-island copper, and the assignment
    is already ordered** — but "single island" was never "clearance-legal",
    see point 0. Audited 2026-09-27 (throwaway probe, deleted): of the
@@ -312,18 +329,45 @@ real number in item 1.
 
 ## Blocked on / needs deciding first
 
-- **`put(stackup=...)` authoring (Slice 3) does not exist.** This is why
-  the layer story is stuck: `DEFAULT_STACKUP` makes In1.Cu a GND plane and
-  In2.Cu a plane, so F.Cu and B.Cu are the only SIGNAL layers and F.Cu is
-  the electrode field. **B.Cu is the only routing layer this board has.**
-  The 2026-09-19 B.Cu lock was costing nothing; the stackup is. Shipped
-  2026-09-27: escape layers are now DERIVED as "every signal layer the
-  electrode field does not own", which evaluates to `["B.Cu"]` today and
-  widens by itself once inner signal layers exist — no ruling to reverse.
-- **Giving up In1 means giving up the ground plane.** For a 250V switcher
-  beside analog sensing that is a real trade, not free layers. In2 as
-  signal and In1 kept as GND gives TWO routing layers; decide before
-  building.
+- ~~**`put(stackup=...)` authoring (Slice 3) does not exist.**~~ —
+  **SHIPPED 2026-09-27** as `put(args={'op':'stackup','layers':[...]})`
+  (`handlers/pcb.py::_op_stackup`, `ir.py::validate_stackup`,
+  `store.pcb_set_stackup`). This was the whole layer story: every board
+  was born on `DEFAULT_STACKUP` and the row was never writable after, so
+  "which layers may carry a trace" was engine policy instead of design
+  data. Nothing downstream needed changing — `layer_is_routable`,
+  `layer_is_pourable` and `process_for_stackup` already read the board's
+  own stackup. Escape layers were already DERIVED ("every signal layer
+  the electrode field does not own"), so they widen by themselves.
+  **In2 as signal, In1 kept as GND is the arrangement, and it is the
+  board's call, not the engine's** — for a 250V switcher beside analog
+  sensing giving up the ground plane would be a real trade. The unknown
+  key check is load-bearing: misspell `routable` and
+  `layer_is_routable` falls back to `role`, so the instruction is
+  accepted, stored, and never honoured.
+
+  **Authoring it exposed two pour bugs, both fixed in the same round.**
+  A GND plane on In1.Cu had never been expressible, so nobody had seen
+  what `plane_pours` does with one: **61 `clearance` errors**.
+  - `_pour_planes` fed `plane_pours` router-drawn copper + pads +
+    mounting holes, never the AUTHORED `fixed_copper` rows
+    `_claim_fixed_copper` already respects on the router's grid — so the
+    fill flooded over every plaza via barrel. 61 → 7.
+  - `_pad_blockers` pinned each pad to one layer, but `pads_for_ir`'s
+    own docstring names `pad["drill"]` as the "spans every layer" signal
+    DRC reads — so an inner plane poured solid through every
+    through-hole barrel. 7 → **0**.
+
+  Both are the same shape as item 2's router bug: a fixture the pass
+  cannot see is one it draws through. Pinned by
+  `tests/test_pcb_pour_blockers.py`, including the complement (a plane
+  must still swallow its OWN authored copper), and each verified to fail
+  with the fix reverted.
+
+  **Still open on the GND-plane arm:** with In1 poured, GND lands in 3
+  islands — `_stitch_plane_fragments` does not close it. The In2-signal
+  arm without the GND plane is clean (4 islands, all failed escapes), so
+  this does not block the layer win. Own item.
 - **Router annealing: not now.** `congestion` is the smaller failure
   class and goes to 0 as soon as layers open. If a global method is ever
   needed the answer is negotiated congestion (PathFinder), not annealing —
@@ -343,10 +387,12 @@ real number in item 1.
 ## Acceptance criteria
 
 - Escape yield pinned by a REAL number in the dogfood test, re-baselined
-  on each behaviour change. 35/54 today; item 2 takes it to 28 when it
-  lands. 46 came from the illegal arm and is not a target. The floor is
-  `>= 30` now — the old `>= 6` could not tell 35 from 10, which is how
-  both the fixture swap and a 7-escape drop went unnoticed.
+  on each behaviour change. **Two baselines now, because the board has
+  two stackups**: `>= 24` on the default one-routing-layer board
+  (measured 28), `>= 46` with In2.Cu authored as signal (measured 50).
+  46 came from the illegal arm and was never a target; the layer arm
+  beat it legally. The old `>= 6` could not tell 35 from 10, which is
+  how both the fixture swap and a 7-escape drop went unnoticed.
 - **Run the SLOW lane before shipping anything in this area.**
   `test_dogfood_route_op_routes_real_geometry...` is `@slow`, so
   `scripts/test -m 'not slow'` skips it and the GitHub shards do not —
@@ -383,6 +429,13 @@ the config default is a floor and any net without a class override falls
 through to the fab house tier; `_unclaimed_pad_claims` → `[]` to measure
 against the pre-item-2 board. Sink placement is moved by wrapping
 `generators._REGISTRY["ewod_pad_array"]`.
+
+**Author the stackup in the arm, not just `escape_layers`.** The two are
+independent and a change to one alone measures nothing: a layer nothing
+is allowed to use stays empty, and a class allowed onto a layer the
+stackup calls a plane fails `layer_lock`. Round 10's arm was
+`put(args={'op':'stackup', ...})` with In2.Cu `signal` PLUS
+`escape_layers: ["B.Cu","In2.Cu"]` threaded into the generator params.
 
 **Measure DRC, not just yield.** Build DRC's own model
 (`{"layers", "copper": pcb_copper_list(...), "pads": pcb._drc_pads(...)}`)

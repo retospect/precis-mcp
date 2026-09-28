@@ -196,8 +196,14 @@ def pcb(store):
     return PcbHandler(hub=Hub(store=store))
 
 
-def _design() -> dict[str, Any]:
-    return {
+def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
+    """``escape_layers`` is DESIGN data the generator passes through (see
+    ``generators.py``'s own comment on it): omitted, the generator derives
+    "every signal layer the electrode field does not own", which on
+    ``DEFAULT_STACKUP`` is ``["B.Cu"]``. Supply it together with an
+    ``op='stackup'`` that actually makes those layers routable — the two
+    have to agree, and neither implies the other."""
+    design: dict[str, Any] = {
         "generators": [
             {
                 "name": "ARR1",
@@ -421,10 +427,13 @@ def _design() -> dict[str, Any]:
             },
         ],
     }
+    if escape_layers is not None:
+        design["generators"][0]["params"]["escape_layers"] = list(escape_layers)
+    return design
 
 
-def _seed(pcb) -> str:
-    design = _design()
+def _seed(pcb, escape_layers: list[str] | None = None) -> str:
+    design = _design(escape_layers)
     pcb.put(id="ewod-dogfood-1", args=design)
     # RING, not a grid: the real C639448 is a PQFP-80 with no interior
     # pads. See _qfp_ring_footprint's docstring for why a grid stand-in
@@ -1102,9 +1111,11 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # only routing layer this board has.
     #
     # The assertion is written against the RULE, not that one answer, so
-    # it keeps holding when the stackup gains inner signal layers (which
-    # needs `put(stackup=...)`, unbuilt): whatever layers open up, F.Cu
-    # stays closed. Routing a trace across the electrode plane disturbs
+    # it keeps holding when the stackup gains inner signal layers —
+    # `test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap`
+    # below is that case, authored through `op='stackup'`, and it re-runs
+    # this same F.Cu check. Whatever layers open up, F.Cu stays closed:
+    # routing a trace across the electrode plane disturbs
     # the field the board exists to control — measured 2026-09-27, an
     # "any signal layer" escape class promptly did exactly that.
     router_tracks = [t for t in tracks if not t.get("fixed")]
@@ -1153,6 +1164,121 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
         f"{len(shorts)} routed track(s) cross an unclaimed (net-less) "
         f"footprint land: {[f.where for f in shorts[:6]]} — the router's "
         "grid is not claiming them (realize._unclaimed_pad_claims)"
+    )
+
+
+@pytest.mark.slow
+def test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap(pcb, store):
+    """**The escape gap was a STACKUP problem, not a router problem.**
+
+    Same board, same seed, same router as
+    ``test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_
+    gap`` above — the only difference is two lines of DESIGN data:
+    In2.Cu declared ``signal`` via ``op='stackup'``, and ``escape_layers``
+    widened to match. Measured 2026-09-27:
+
+    | | B.Cu only | + In2.Cu |
+    | --- | --- | --- |
+    | escapes realized | 28 / 54 | **50 / 54** |
+    | DRC clearance errors | 0 | **0** |
+    | nets whose copper is in >1 island | 26 | **4** |
+
+    That beats the 46/54 the backlog had recorded as the measured
+    ceiling, and unlike that arm this one is LEGAL: it opens an inner
+    layer, not F.Cu, so the electrode field is never crossed (asserted
+    below). Every number before this was measured on a board that had
+    exactly one routing layer because ``DEFAULT_STACKUP`` said so and
+    nothing could say otherwise — see
+    docs/backlog/pcb-escape-and-driver-chain.md, "Blocked on".
+
+    This is the acceptance test for ``put(args={'op':'stackup'})``: the
+    engine's job is to let an LLM fulfil an arbitrary text request for a
+    board, and "give me two routing layers and keep the ground plane" was
+    a request it could not express.
+    """
+    slug = _seed(pcb, escape_layers=["B.Cu", "In2.Cu"])
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    pcb.put(
+        id=slug,
+        args={
+            "op": "stackup",
+            "layers": [
+                {"name": "F.Cu", "role": "signal"},
+                {"name": "In1.Cu", "role": "plane"},
+                {"name": "In2.Cu", "role": "signal"},
+                {"name": "B.Cu", "role": "signal"},
+            ],
+        },
+    )
+    pcb.put(id=slug, args={"op": "route", "seed": 1})
+    _drain_one_job(store, ref.id)
+
+    design = store.pcb_load(ref.id)
+    copper = store.pcb_copper_list(int(design["board"]["board_id"]))
+    status_by_net = {
+        str(r["name"]): str(r["status"]) for r in store.pcb_route_status(ref.id)
+    }
+    # `ARR1_R<row>C<col>` — the electrode nets only, the same set the
+    # route test above counts. A bare `ARR1_` prefix also catches the top
+    # plate and the power rails, which route on F.Cu by design and would
+    # make the electrode-layer assertion below vacuous.
+    escape_nets = [n for n in status_by_net if n.startswith("ARR1_R")]
+    realized = [n for n in escape_nets if status_by_net[n] == "realized"]
+    diag = f"{len(realized)}/{len(escape_nets)} escapes realized"
+
+    # A REAL number, re-baselined on the behaviour change (this item's own
+    # acceptance criterion). Measured 50/54; floored at 46 rather than
+    # pinned at 50, because the router is seeded but its rip-up ORDERING is
+    # not a contract. The thing worth catching is a collapse back toward
+    # the one-routing-layer 28, not a one- or two-escape tuning wobble.
+    assert len(realized) >= 46, (
+        f"opening In2.Cu no longer buys the escapes — {diag}; a drop toward "
+        "28 means the second routing layer stopped being reachable"
+    )
+
+    # Still zero shorts. Yield alone could not tell "routed" from "routed
+    # through a land" — that is how 35/54 stood for a week with 24 shorts
+    # under it (backlog item 2). A layer that buys yield by drawing over
+    # copper is not a win.
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb.capabilities import capability_for
+
+    layer_names = [str(layer["name"]) for layer in design["board"]["stackup"]]
+    model = {
+        "layers": layer_names,
+        "copper": [dict(c) for c in copper],
+        "pads": pcb._drc_pads(ref.id, layer_names),
+    }
+    errors = [
+        f
+        for f in pcb_drc.check_clearance(
+            model,
+            capability_for(pcb_drc.process_for_stackup(design["board"]["stackup"])),
+        )
+        if f.severity == "error"
+    ]
+    assert not errors, (
+        f"{len(errors)} clearance ERROR(s) with In2.Cu open: "
+        f"{[f.where for f in errors[:6]]} — {diag}"
+    )
+
+    # F.Cu stays closed however many layers open up. The electrode field
+    # owns it; a trace across it disturbs the field the board exists to
+    # control.
+    escape_layers_used = {
+        str(t["layer"])
+        for t in copper
+        if t.get("ctype") == "track"
+        and not t.get("fixed")
+        and str(t.get("net")) in set(realized)
+    }
+    assert "F.Cu" not in escape_layers_used, (
+        f"an escape routed on the electrode layer: {escape_layers_used}"
+    )
+    assert "In2.Cu" in escape_layers_used, (
+        "no escape actually used the newly-opened layer, so this test is "
+        f"not measuring what it claims: {escape_layers_used}"
     )
 
 

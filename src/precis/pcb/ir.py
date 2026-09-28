@@ -1139,6 +1139,114 @@ def layer_is_pourable(layer: dict[str, Any]) -> bool:
     return layer.get("role") == "plane"
 
 
+#: Keys one AUTHORED stackup layer entry may carry
+#: (:func:`validate_stackup`). An UNRECOGNISED key is REJECTED, not
+#: ignored: ``routable``/``pourable`` are exactly the pair a silent
+#: fallback hides — misspell ``routable`` as ``routeable`` and
+#: :func:`layer_is_routable` falls back to ``role``'s legacy answer, so
+#: the author's instruction is accepted, stored, and never honoured. Same
+#: class of silent miss ``handlers/pcb.py::_op_plane_net``'s
+#: one-net-per-layer guard exists to stop.
+STACKUP_LAYER_KEYS = frozenset({"name", "role", "routable", "pourable", "plane_net"})
+
+#: The two outer copper layers, by NAME. Index decides identity
+#: everywhere inside the engine (this module's own "layers are integer
+#: indexes" discipline), but three places compare these names and would
+#: silently mis-handle a stackup that spelled them differently:
+#: :func:`precis.pcb.padplace.opposite_layer` flips a bottom-mounted
+#: part's pads F.Cu<->B.Cu, :mod:`precis.pcb.generators` refuses an
+#: ``escape_layers`` containing F.Cu (the electrode field owns it), and
+#: the Gerber exporter maps layer NAME -> fab file. So an authored
+#: stackup must keep them.
+OUTER_LAYER_NAMES = ("F.Cu", "B.Cu")
+
+
+def validate_stackup(layers: Any) -> list[dict[str, Any]]:
+    """Check and normalise an AUTHORED stackup — the input side of
+    ``put(args={'op':'stackup'})``, kept here because this module already
+    owns what a stackup ENTRY means (:func:`layer_is_routable`,
+    :func:`layer_is_pourable`, :data:`precis.pcb.DEFAULT_STACKUP`).
+
+    Returns a fresh list of fresh dicts (never the caller's objects), so
+    the value that reaches the board row cannot be mutated behind it, and
+    an unknown key cannot ride along into storage. Raises
+    :class:`ValueError` naming the offending entry; the caller turns that
+    into its own error type.
+
+    **What is NOT checked here**: the layer COUNT against the DRC
+    capability table. That belongs to :func:`precis.pcb.drc.
+    process_for_stackup`, which already raises a precise message for a
+    count with no capability row — duplicating its table here would give
+    one question two answers.
+    """
+    if not isinstance(layers, list) or not layers:
+        raise ValueError("stackup: expected a non-empty list of layer entries")
+    if len(layers) < 2:
+        raise ValueError(
+            f"stackup: {len(layers)} layer(s) — a board has at least the two "
+            f"outer copper layers {list(OUTER_LAYER_NAMES)}"
+        )
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(layers):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"stackup[{i}]: expected an object, got {type(entry).__name__}"
+            )
+        unknown = sorted(set(entry) - STACKUP_LAYER_KEYS)
+        if unknown:
+            raise ValueError(
+                f"stackup[{i}]: unknown key(s) {unknown} — a stackup layer "
+                f"carries {sorted(STACKUP_LAYER_KEYS)}"
+            )
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"stackup[{i}]: needs a non-empty 'name'")
+        if name in seen:
+            raise ValueError(f"stackup[{i}]: duplicate layer name {name!r}")
+        seen.add(name)
+        clean: dict[str, Any] = {"name": name}
+        if "role" in entry:
+            role = str(entry["role"])
+            if role not in ("signal", "plane"):
+                raise ValueError(
+                    f"stackup[{i}] ({name}): role must be 'signal' or 'plane', "
+                    f"got {role!r}"
+                )
+            clean["role"] = role
+        for flag in ("routable", "pourable"):
+            if flag in entry:
+                if not isinstance(entry[flag], bool):
+                    raise ValueError(
+                        f"stackup[{i}] ({name}): {flag} must be true or false, "
+                        f"got {entry[flag]!r}"
+                    )
+                clean[flag] = entry[flag]
+        if "plane_net" in entry:
+            plane_net = str(entry["plane_net"] or "").strip()
+            if not plane_net:
+                raise ValueError(
+                    f"stackup[{i}] ({name}): plane_net must name a net, or be omitted"
+                )
+            clean["plane_net"] = plane_net
+        out.append(clean)
+    outer = (out[0]["name"], out[-1]["name"])
+    if outer != OUTER_LAYER_NAMES:
+        raise ValueError(
+            f"stackup: the first and last layers must be named "
+            f"{list(OUTER_LAYER_NAMES)}, got {list(outer)} — a bottom-side "
+            "part's pads, the Gerber file map and the escape-layer rule all "
+            "resolve those two by name"
+        )
+    if not any(layer_is_routable(layer) for layer in out):
+        raise ValueError(
+            "stackup: no routable layer — every layer is a plane, so nothing "
+            "could be routed. Give a layer role='signal', or routable=true to "
+            "let a plane layer carry traces as well"
+        )
+    return out
+
+
 def routable_layers(ir: PcbIR) -> list[int]:
     """Stackup indices that may carry a routed trace
     (:func:`layer_is_routable`) — the ONE place this question is

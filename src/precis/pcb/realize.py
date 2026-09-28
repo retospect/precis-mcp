@@ -1465,6 +1465,7 @@ def _realize_maze(
         clearance,
         max(clearance, edge_min) + 0.01,
         footprints,
+        fixed_copper,
     )
     tracks, vias = _prune_redundant_drop_vias(ir, tracks, vias, pours)
     # Deliberate stitching vias, AFTER pouring -- this pass needs the
@@ -1517,6 +1518,7 @@ def _realize_maze(
             clearance,
             max(clearance, edge_min) + 0.01,
             footprints,
+            fixed_copper,
         )
     reasons = _diagnose_all(
         ir,
@@ -2339,8 +2341,19 @@ def _pad_blockers(
     out: list[dict[str, Any]] = []
     for pad in pads_for_ir(ir, layers, footprints):
         net = str(pad.get("net") or "")
-        layer = str(pad["layer"])
         x, y = float(pad["x"]), float(pad["y"])
+        # A DRILLED pad's land is real copper on every layer, not only the
+        # outer one `pads_for_ir` reports in `pad["layer"]` — that
+        # function's own docstring says so and names `pad["drill"]` as the
+        # "spans every layer" signal DRC reads
+        # (`drc.py::clearance_pairs_indexed`). This pass did not, so an
+        # INNER plane poured solid through every through-hole barrel on
+        # the board: measured 2026-09-27 on the EWOD dogfood the first
+        # time a GND plane was authored on In1.Cu, `pour[GND] <->
+        # pad[HV_RAIL]` / `pad[I2C_SDA]` / `pad[I2C_SCL]` at -0.09mm, the
+        # pogo terminal's four through-hole rings. The fill has to yield
+        # to a hole the fab will physically drill.
+        pad_layers = list(layers) if pad.get("drill") else [str(pad["layer"])]
         if pad.get("shape") == "circle":
             out.append(
                 {
@@ -2349,17 +2362,21 @@ def _pad_blockers(
                     "x": x,
                     "y": y,
                     "dia_mm": float(pad["w"]),
-                    "layers": [layer],
+                    "layers": pad_layers,
                 }
             )
             continue
         half_w = float(pad["w"]) / 2.0
         half_h = float(pad.get("h", pad["w"])) / 2.0
-        out.append(
+        # The rect fake is a `pour`, which carries ONE `layer` key, so a
+        # drilled rectangular pad needs one item per layer rather than a
+        # `layers` list. (`_via_layer_names`' override is read for
+        # `ctype='via'` only.)
+        out.extend(
             {
                 "ctype": "pour",
                 "net": net,
-                "layer": layer,
+                "layer": pad_layer,
                 "polygon": [
                     [x - half_w, y - half_h],
                     [x + half_w, y - half_h],
@@ -2367,6 +2384,7 @@ def _pad_blockers(
                     [x - half_w, y + half_h],
                 ],
             }
+            for pad_layer in pad_layers
         )
     return out
 
@@ -2471,6 +2489,7 @@ def _pour_planes(
     clearance: float,
     edge_inset: float,
     footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Pour every plane-assigned layer over the FINISHED copper.
 
@@ -2481,6 +2500,21 @@ def _pour_planes(
     its own docstring has the defect this closes), which ``to_gerber_model``
     does NOT fold into ``model["copper"]``. Returns the pours and any
     additional unrouted segments the pouring revealed.
+
+    **AUTHORED fixed copper blocks too** (``fixed_copper`` — the same rows
+    :func:`_claim_fixed_copper` claims on the router's grid). Those rows
+    are already in :mod:`precis.pcb.gerber` model shape (``pcb_copper_
+    list`` unions them into exactly this dict shape for DRC), so they go
+    in verbatim: a fixed track carries ``layer``/``width_mm``/``segments``
+    and a fixed via carries ``x``/``y``/``dia_mm``/``span``, and ``span``
+    is layer NAMES, which is what :func:`precis.pcb.drc._via_layer_names`
+    reads. Without them a pour floods straight over an authored via
+    barrel: measured 2026-09-27 on the EWOD dogfood the first time a GND
+    plane was authored on In1.Cu — 61 ``clearance`` ERRORS, every one
+    ``pour[GND] <-> via[ARR1_RxCy]`` at -0.09mm, one per plaza via the
+    fill swallowed. Same shape of miss as the router's own
+    (docs/backlog/pcb-escape-and-driver-chain.md item 2): a fixture the
+    pass cannot see is one it draws straight through.
     """
     layer_names = [str(layer.get("name")) for layer in ir.stackup]
     # A plane LAYER carries one net (optimize._gen_plane_promote enforces
@@ -2505,6 +2539,7 @@ def _pour_planes(
             to_gerber_model(interim, ir, layers=layer_names, outline=[])["copper"]
             + _pad_blockers(ir, layer_names, footprints)
             + _mounting_hole_blockers(ir, layer_names)
+            + list(fixed_copper or [])
         )
         pours = plane_pours(
             outline=[[float(p[0]), float(p[1])] for p in ir.outline],

@@ -2215,6 +2215,24 @@ class PcbMixin:
         editor's write path."""
         return self.pcb_upsert_net_classes(ref_id, {name: rules})
 
+    def pcb_set_stackup(self, board_id: int, stackup: list[dict[str, Any]]) -> None:
+        """Replace a board's layer stackup — the write half of
+        ``put(args={'op':'stackup'})``, the counterpart to the
+        :data:`precis.pcb.DEFAULT_STACKUP` every board is BORN with in
+        :meth:`_pcb_ensure_board`.
+
+        Dumb on purpose: the entry shape is checked by
+        :func:`precis.pcb.ir.validate_stackup` and the "does this strand
+        copper already on a layer this drops" question by the handler,
+        which is the side that has the design loaded and an error type to
+        raise. This method writes what it is handed."""
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE pcb_boards SET stackup = %s "
+                "WHERE board_id = %s AND retired_at IS NULL",
+                (Jsonb(stackup), board_id),
+            )
+
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:
         """Live measures of a design."""
         with self.pool.connection() as conn:

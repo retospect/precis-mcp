@@ -176,7 +176,14 @@ _VIEWS = (
 #: enqueue a worker job (never compute inline) and the inline edits that
 #: are cheap enough to run in the request path.
 _JOB_OPS = ("place", "route")
-_INLINE_EDIT_OPS = ("move", "rip", "pin_side", "plane_net", "class_rules")
+_INLINE_EDIT_OPS = (
+    "move",
+    "rip",
+    "pin_side",
+    "plane_net",
+    "class_rules",
+    "stackup",
+)
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
 #: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
 #: the router's per-board compute, so it runs inline like the edits above,
@@ -475,6 +482,8 @@ class PcbHandler(Handler):
             return self._op_plane_net(ref, args)
         if op == "class_rules":
             return self._op_class_rules(ref, args)
+        if op == "stackup":
+            return self._op_stackup(ref, args)
         if op == "footprint":
             return self._op_footprint(ref, args)
         raise BadInput(
@@ -668,6 +677,154 @@ class PcbHandler(Handler):
             )
         self.store.pcb_set_class_rules(ref.id, name, rules)
         return Response(body=f"# net class {name!r} rules set: {rules}")
+
+    def _op_stackup(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'stackup','layers':[...]})`` — author the
+        board's copper stackup, which until now every board was STUCK on
+        (:data:`precis.pcb.DEFAULT_STACKUP`, stamped at board birth by
+        ``store.pcb_ensure_board`` and never writable after).
+
+        This is the authoring seam the engine already routes through. The
+        stackup decides which layers may carry a trace
+        (:func:`precis.pcb.ir.layer_is_routable`), which the annealer may
+        pour on its own (:func:`~precis.pcb.ir.layer_is_pourable`), and
+        which DRC capability row the board is checked against
+        (:func:`precis.pcb.drc.process_for_stackup`) — all three already
+        read the BOARD's stackup, so nothing downstream changes shape
+        here; a fact that was engine policy becomes design data.
+
+        Concretely: ``DEFAULT_STACKUP`` makes In1.Cu/In2.Cu planes, so
+        B.Cu is the only layer a 4-layer board can route on today. An
+        author who wants two routing layers and keeps the ground plane
+        says so — ``In1.Cu`` plane/GND, ``In2.Cu`` signal — instead of
+        waiting for the engine to change its mind.
+        """
+        layers = args.get("layers")
+        try:
+            stackup = pcb_ir.validate_stackup(layers)
+            # Layer COUNT is the capability table's question, not the
+            # entry validator's — asked here so a 6-layer stackup is
+            # refused at authoring time rather than at the first
+            # view='drc', with that function's own precise message.
+            pcb_drc.process_for_stackup(stackup)
+        except ValueError as exc:
+            raise BadInput(
+                str(exc),
+                next=(
+                    "args={'op':'stackup','layers':["
+                    "{'name':'F.Cu','role':'signal'},"
+                    "{'name':'In1.Cu','role':'plane','plane_net':'GND'},"
+                    "{'name':'In2.Cu','role':'signal'},"
+                    "{'name':'B.Cu','role':'signal'}]}"
+                ),
+            ) from exc
+
+        design = self.store.pcb_load(ref.id)
+        board_id = int(design["board"]["board_id"])
+        names = {entry["name"] for entry in stackup}
+
+        # Refuse to STRAND copper. Every copper row names its layer (a
+        # via names two, in `span`), and `pcb_copper_list` already unions
+        # the authored fixed-copper rows in, so one read covers both.
+        # Dropping a layer out from under them would leave rows no
+        # exporter, DRC pass or router could resolve — silently absent
+        # from the fab output rather than loudly rejected here.
+        planes = self.store.pcb_planes_list(ref.id)
+        in_use: set[str] = {str(row["layer"]) for row in planes}
+        for row in self.store.pcb_copper_list(board_id):
+            if row.get("layer"):
+                in_use.add(str(row["layer"]))
+            in_use.update(str(x) for x in (row.get("span") or []))
+        stranded = sorted(in_use - names)
+        if stranded:
+            raise BadInput(
+                f"stackup: {stranded} still carries copper or a plane "
+                "assignment on this board",
+                next=(
+                    "put(args={'op':'rip'}) to clear routed copper first, or "
+                    "keep those layers in the stackup"
+                ),
+            )
+
+        # `plane_net` on a stackup entry was a DEAD key until now — nothing
+        # in the engine read it, so DEFAULT_STACKUP's own In1.Cu/GND
+        # declaration has never poured anything. Applying it through the
+        # same `pcb_planes` write `op='plane_net'` uses makes the
+        # declaration true instead of decorative; a named net that does not
+        # exist is an error, never a silent skip.
+        declared = {e["name"]: e["plane_net"] for e in stackup if "plane_net" in e}
+        existing = {str(row["layer"]): str(row["net"]) for row in planes}
+        clashes = [
+            f"{layer} already pours {existing[layer]!r}"
+            for layer, net in declared.items()
+            if layer in existing and existing[layer] != net
+        ]
+        if clashes:
+            raise BadInput(
+                "stackup: " + "; ".join(clashes) + " — a layer is one sheet "
+                "of copper, so drop the plane_net here or reassign the layer",
+                next="put(args={'op':'plane_net','layer':'In1.Cu','net':'GND'})",
+            )
+        # CHECKED before any of it is WRITTEN. `pcb_assign_plane` returns 0
+        # for a net that does not resolve, so assigning-and-checking in one
+        # pass would leave the first declaration written and the second
+        # rejected — the board keeping half of an instruction this call
+        # then reports as an error, with the stackup itself never stored.
+        # `design["nets"]` is already in hand and already filters retired
+        # rows; a second `pcb_graph` read for the same names would be a
+        # heavier query for a fact this one carries.
+        known = {str(net["name"]) for net in design["nets"]}
+        missing = [
+            f"{layer}: no net {net!r}"
+            for layer, net in declared.items()
+            if net not in known
+        ]
+        if missing:
+            raise BadInput(
+                "stackup: " + "; ".join(missing) + " — author the nets before "
+                "declaring a plane_net for them, or omit the key",
+                next=f"get(kind='pcb', id='{ref.slug}', view='nets')",
+            )
+
+        self.store.pcb_set_stackup(board_id, stackup)
+        # The `known` check above is a READ, so a concurrent retire of one
+        # of these nets can still land between it and this loop. Re-checked
+        # on the return value rather than trusted: 0 means the assignment
+        # did not happen, and the one thing this op must never do is report
+        # success over a declaration it silently dropped. The stackup IS
+        # stored by then — that half succeeded — so the message says so.
+        for layer, net in declared.items():
+            if not self.store.pcb_assign_plane(ref.id, layer, net):
+                raise BadInput(
+                    f"stackup stored, but {layer}'s plane_net {net!r} could "
+                    "not be applied — that net stopped existing during this "
+                    "call (a concurrent edit retired it)",
+                    next=(
+                        f"put(args={{'op':'plane_net','layer':'{layer}',"
+                        f"'net':'{net}'}}) once the net is back"
+                    ),
+                )
+        routable = [e["name"] for e in stackup if pcb_ir.layer_is_routable(e)]
+        return Response(
+            body=f"# {ref.slug} stackup set — {len(stackup)} layers\n"
+            + "\n".join(
+                f"- {e['name']}: "
+                + ", ".join(
+                    filter(
+                        None,
+                        [
+                            f"role={e.get('role', '—')}",
+                            "routable" if pcb_ir.layer_is_routable(e) else None,
+                            "pourable" if pcb_ir.layer_is_pourable(e) else None,
+                            f"plane={e['plane_net']}" if "plane_net" in e else None,
+                        ],
+                    )
+                )
+                for e in stackup
+            )
+            + f"\n\nRoutable: {routable}. Takes effect on the next "
+            "put(args={'op':'route'}).",
+        )
 
     # ── footprint cache (gr341532 fix 3) ────────────────────────────────
     def _op_footprint(self, ref: Any, args: dict[str, Any]) -> Response:

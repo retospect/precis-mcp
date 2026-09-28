@@ -104,6 +104,46 @@ put(kind="pcb", id="s", args={"op": "route"})
   guarantee. A real per-segment lock (mirroring `fixed=` on instances) is
   a known gap, not shipped this slice.
 
+## Author the stackup — which layers may carry a trace
+
+```python
+put(kind="pcb", id="s", args={"op": "stackup", "layers": [
+    {"name": "F.Cu",   "role": "signal"},
+    {"name": "In1.Cu", "role": "plane", "plane_net": "GND"},
+    {"name": "In2.Cu", "role": "signal"},   # a SECOND routing layer
+    {"name": "B.Cu",   "role": "signal"},
+]})
+```
+
+Every board is born on the default stackup (`F.Cu` / `In1.Cu` plane /
+`In2.Cu` plane / `B.Cu`), which has exactly **two** routing layers, and on
+a board whose front is spoken for — an electrode field, a big connector
+land — that leaves **one**. This is usually the real reason a dense board
+will not route. Measured on the EWOD dogfood: opening `In2.Cu` as signal
+took electrode escapes from **28/54 to 50/54** with zero new DRC errors,
+having changed nothing else.
+
+- `role`: `signal` (routable) or `plane` (pourable by the annealer). Add
+  `"routable": true` / `"pourable": true` to grant the OTHER capability
+  without losing the one `role` implies — the standard real-world outer
+  layer is signal traces flowing around a copper fill, which is
+  `{"role": "signal", "pourable": true}`.
+- `plane_net`: pours that net on that layer, same as `op='plane_net'`.
+  The net must already exist.
+- First and last layers must be `F.Cu` and `B.Cu` — a bottom-side part's
+  pads, the Gerber file map and the escape-layer rule all resolve those
+  two by name. 2 or 4 layers today (the DRC capability table has rows for
+  those); `place`/`route` need 4.
+- Unknown keys are **rejected**, not ignored, so a typo (`routeable`) is
+  an error rather than an instruction silently dropped.
+- Refused if it would drop a layer that still carries copper or a plane
+  assignment — `op='rip'` first if you mean it.
+
+**A stackup is half the change.** Opening a layer does not make any net
+use it: a net class that locks `"layers"` (and the EWOD generator's
+`escape_layers`) still says where its nets may go. Widen both, or the new
+layer sits empty.
+
 ## Assign a plane
 
 ```python
