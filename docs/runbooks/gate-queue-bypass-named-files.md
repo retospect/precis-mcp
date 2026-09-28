@@ -11,6 +11,33 @@ usefully and flails on empty logs), and do not kill or stop gate containers
 (they belong to sibling sessions). Your own parked `bash scripts/test …`
 waiter holds no container, so a plain `kill <pid>` on it is safe.
 
+## First: find out who actually holds the two slots
+
+A slot is a **holder file**, not a container. `docker ps` reads backwards
+here and has misled three sessions into diagnosing a deadlock (2026-09-28).
+The authoritative read:
+
+```
+cat /Users/reto/precis-mcp/.git/precis-gate-slot-{0,1}.lock.d/holder
+  -> <worktree path> pid=<pid> host=<host>
+ps -o etime=,command= -p <pid>
+```
+
+- `precis-test-<tree>-precis-gate-1` on `tini -- sleep infinity` at ~0.7%
+  CPU is a **warm reusable container** in its normal resting state. It
+  holds **no** slot; killing it frees nothing and costs a rebuild.
+- The containers doing work are `precis-test-<tree>-precis-dev-run-*`
+  (~22% CPU, ~2.3 GiB) plus `precis-test-<tree>-precis-test-db-1` (100%+
+  CPU, ~10 GiB).
+- **`ps` elapsed far exceeding container age is queue wait, not a hang** —
+  most of a holder's elapsed time was spent waiting for the slot it now
+  holds.
+
+Never raise `PRECIS_GATE_SLOTS` to get unblocked: `scripts/lib/gate-slot.sh`
+records that a third gate into a 2-slot semaphore caused the OOM churn the
+guard exists to stop (gr202193). Wait, use the bypass below, or ask the
+holder's session.
+
 ## Recipe
 
 1. Start the test DB for this worktree's compose project (once per session):

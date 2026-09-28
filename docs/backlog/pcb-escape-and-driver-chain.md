@@ -87,10 +87,13 @@ Escape yield on `tests/test_pcb_ewod_dogfood.py`, seed 1, 54 escape nets.
    not the router claims the unclaimed lands, so the channel assignment is monotone and is NOT why they
    fail. (Straight-line proxy, not routed paths — but it is the thing
    "are they in order" asks.) Do not spend a round on channel assignment
-   or crossing minimisation **on this metric** — but note the parenthesis
-   is load-bearing and narrows the conclusion: it is AIRWIRES, so it says
-   nothing about crossings among the paths the router actually draws. See
-   item 3's 2026-09-28 redirection, which turns on exactly that gap.
+   or crossing minimisation **on this metric** — and the parenthesis is
+   load-bearing: it is AIRWIRES, so it says nothing about crossings among
+   the paths the router actually draws. **Measured 2026-09-28, the same
+   board has 78 crossings among realized paths, 51 of them between two
+   router-drawn segments** — so this zero is not evidence that crossing
+   minimisation is worthless, and citing it that way is a category error.
+   Numbers and method under item 3.
 
 ## The general primitives hiding in `ewod_pad_array`
 
@@ -294,14 +297,70 @@ and backed out. 3 must be MEASURED before it is built.
    by the existing number — it was never measured on the geometry it is
    about.
 
-   **Next step is one measurement, not a build:** count crossings among
-   the REALIZED escape paths (not airwires) on the current 50/54 run, and
-   report them per plaza corridor. If realized crossings are ~0 the
-   ordering lever really is spent and the 4 remaining failures are
-   capacity, not order. If they are not, the swap metric has something to
-   optimise and this item becomes "score swaps on routed-path crossings".
-   Either answer is cheap and decides the round. Do NOT implement a new
-   swap objective before it lands.
+   **MEASURED 2026-09-28 — Reto's read is right; the swap lever is not
+   spent.** Crossings among the REALIZED escape paths on the 50/54 run
+   (In2.Cu open, seed 1), counted with an exact orientation-sign proper
+   intersection test over `Fraction` — no epsilon — with shared endpoints
+   and T-touches excluded, then split by whether each segment is authored
+   template copper or router-drawn:
+
+   | bucket | crossings | net pairs | within plaza | between |
+   | --- | --- | --- | --- | --- |
+   | routed × routed (swappable) | **51** | 41 | 29 | 22 |
+   | routed × fixed (half) | 27 | 20 | 24 | 3 |
+   | fixed × fixed (unswappable) | **0** | 0 | 0 | 0 |
+   | total | 78 | 56 | 53 | 25 |
+
+   Same-layer crossings: **0** in every bucket, consistent with the
+   board's zero clearance violations — so none of the 78 is a latent DRC
+   bug, and all are layer-change crossings.
+
+   Two things follow. **The swappable bucket is the answer**: 51
+   crossings over 41 net pairs is nowhere near zero, so scoring swaps on
+   routed-path crossings has something real to optimise. And **the
+   authored fabric is exonerated** — fixed × fixed is exactly 0, so the
+   template's own vias and stubs never cross each other; the whole
+   crossing signature is routed-side. That is the strongest available
+   support for "keep every template via, win by ordering".
+
+   **Point 6's zero is not evidence against this and must not be cited as
+   such.** It counted straight-line airwires. Measured on the geometry
+   the claim is about, the same board has 78.
+
+   **But do not expect ordering alone to close the 4 failures.** Each of
+   them records, as its FIRST-listed problem, a board-wide capacity wall:
+
+   ```
+   gap 0.093 mm between instances (0, 1, 7) fits 0 strand(s) at
+   0.300 mm pitch, but 55 want through (… 54 escapes + VDD_LOGIC …)
+   — needs 16.500 mm
+   ```
+
+   Byte-identical across all 4. It is recorded only on the failures, but
+   that is an artefact of `pcb_routes` storing a `problems` payload only
+   for a net whose row failed — the finding's own `usage: 55` names every
+   escape plus `VDD_LOGIC` as wanting that gap. So it is one physical
+   gap, shared, admitting **zero** strands. Reordering can change which
+   nets win the alternate corridors (2 of the 4 fail with `congestion`,
+   a race outcome); it cannot widen the gap (2 fail `no_path`, walled in).
+
+   **This makes the 0.093 mm gap a PLACEMENT finding, not a routing one** —
+   instances 0, 1 and 7 are placed 16.4 mm closer than the escape fan
+   needs. That is item 4's territory (polygon keep-out + the
+   side-blindness fix), and it is now the first thing item 4 should be
+   measured against. Filed as its own item:
+   `docs/backlog/pcb-placer-starves-the-escape-corridor.md`.
+
+   **So this item becomes** "score swaps on routed-path crossings" —
+   build it. Its honest ceiling is the 51 swappable crossings and
+   whichever of the 4 failures are races, not all 4.
+
+   *Retracted from the same measurement:* a detour-ratio distribution
+   (min 0.082 / median 1.174 / max 4.453). A ratio below 1 is impossible
+   for a connected path, which proves the denominator used the wrong
+   endpoint pair (electrode body pad → sink land, where the router
+   actually connects plaza drop-via → sink). Do not quote those numbers.
+   A corrected detour metric is separate work.
 
 4. **Polygon keep-out as a placer primitive.** `optimize.py`'s only
    non-instance obstacle is mounting-hole circles
@@ -419,19 +478,28 @@ real number in item 1.
   | --- | --- | --- |
   | GND islands | 3, reporting `realized` | **1** |
   | escapes | 50 / 54 | 50 / 54 |
-  | nets not realized | 4 | 5 |
+  | nets not realized | 4 | **4** |
 
-  **The extra failure is the honest price and is worth naming.**
-  `VDD_LOGIC` (two B.Cu pads, adjacent to the two GND lands) goes
-  `realized` → `failed: congestion`, because GND's stubs now legitimately
-  occupy the B.Cu space they always should have. Every one of the 5
-  failures now reports itself; before, GND was silently in pieces while
-  reporting `realized` — the class of defect this campaign keeps finding
-  (item 2's 24 shorts under a 35/54 yield). It is `congestion`, not
-  `no_path`, and In2.Cu is open, so it is a route-ORDER problem: plane
-  fanout claims its space before the maze runs and no rip-up returns to
-  it. That is the negotiated-congestion question under "Router annealing",
-  not a geometry wall — do not re-file it as one.
+  **There was no price. The extra failure was a second bug in the same
+  fix, and this paragraph used to say otherwise.** For one commit
+  (`7b747cc0` alone) `VDD_LOGIC` went `realized` → `failed: congestion`
+  and that was written up here as the honest cost of connecting GND
+  properly — a route-ORDER problem for the negotiated-congestion question.
+  It was not. `_drop_via_site` was still checking the stub corridor on
+  `PAD_LAYER` while `_plane_fanout` drew the stub on the pin's own layer,
+  so GND's two bottom-side stubs were placed across `VDD_LOGIC`'s B.Cu
+  pads having cleared nothing — a potential short, reported one pass
+  downstream as the victim's routing failure. `169d69ee` fixed the
+  corridor check; measured after it: histogram `{'realized': 59,
+  'failed': 4}`, `VDD_LOGIC` back to `realized`, GND still one island.
+  So the board gets the GND fix for free.
+
+  **The lesson is about the label, not the layer.** A `congestion`
+  status on a net that never contended is what a clearance check asked of
+  the wrong layer looks like from downstream. Treat `congestion` on a net
+  adjacent to a plane fanout as a layer-mismatch suspect before accepting
+  it as contention — this cost a round of reasoning about router ordering
+  that had nothing to do with the defect.
 - **Router annealing: not now.** `congestion` is the smaller failure
   class and goes to 0 as soon as layers open. If a global method is ever
   needed the answer is negotiated congestion (PathFinder), not annealing —
