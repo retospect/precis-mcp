@@ -160,6 +160,22 @@ adapter). Read `fit.propagated` for what pruned what; an emptied domain
 is `fit.unsolvable` with `needs`/`offers`/`constraint`. Domains resolve
 before `len=fit`.
 
+## Chains of parts (spec §22.3, §28.4)
+
+Above the spec text, `hexfold.chain.solve(parts, bottom=, top=, wish_A=)`
+composes *parts* — abstract records, not instances: `Part(name, kind,
+value=|domain=|<don't-care>, periods=|periods_range=)`, `Part(name,
+"spacer", length_A=(min, max))`, and a resolved block via
+`part_from_payloads(name, in_payload, out_payload, length_A)` from its
+ports' `payload` and its `<inst>_len` measure. Every adjacency equates
+rim `N`; pin either end (`bottom=Rim(12,"z")`) and the middle resolves
+(`chain.propagated` / `chain.unsolvable`); then free periods and spacers
+land the total nearest `wish_A=(target, band)` (`chain.length` when
+nothing can). `ChainResult.best` is the ranked winner: deviation, then
+fewest 30° adapters (`chain.adapter`), then periods. Geometry comes from
+a backend; the stub answers from tables, no build — the same solver
+later runs over smooth collars and sp³ blocks. No se op yet.
+
 ## Å extents and se measures (spec §7)
 
 `sheet(25A, 12)` snaps to whole cells along the lattice vector

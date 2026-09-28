@@ -67,7 +67,7 @@ layer the design was authored in; everything below is regenerated (§23).
 | discrete notation, check, canon, text/JSON | `[impl 0.1]` | `hexfold` |
 | stick geometry | `[impl 0.1]` | `hexfold.stick` |
 | seams k ≥ 3, registry closure, fit families, sectioned file | `[spec 0.2]` | `hexfold` |
-| symbolic chain solver | `[design]` | `hexfold` (integer, numpy-free) |
+| symbolic chain solver | `[impl 0.2]` | `hexfold.chain` (integer, stdlib only; stub geometry backend) |
 | smooth layer | `[design]` | `precis_surface` (kernel) + `hexfold.smooth` (carbon binding, parse/emit) |
 | physics tiers | exists in precis | `precis.structure` ladder |
 
@@ -1251,10 +1251,16 @@ drive the order: the box (step 3) and the rotary ratchet valve
    piece** (the radius-changing shell above plus a pillbox rotor of two
    lids; rotor ⇄ shell as separate blocks with a revolute joint; first
    instance discrete at ~1 nm radius, the smooth/atomic boundary).
-4. **`precis_surface` stage 1**: symbolic chain solver with a **stub
-   geometry backend** — every part reports rim indices and a rough length;
-   the whole chain solves. This alone proves the interface claim, before
-   the chemistry is good.
+4. **`precis_surface` stage 1** `[impl 0.2]`: symbolic chain solver with a
+   **stub geometry backend** — every part reports rim indices and a rough
+   length; the whole chain solves. This alone proves the interface claim,
+   before the chemistry is good. Built as `hexfold.chain` (2026-09-28): a
+   `Part` is an abstract record (kind; roll-up pinned / domain /
+   don't-care; whole periods pinned / free; spacers a real band; a resolved
+   block from its port payloads via `part_from_payloads`), `solve` runs arc
+   consistency on rim `N` then a length pass against a wish (`chain.*`
+   findings), and `GeometryBackend` is the one seam the later steps swap
+   (`StubBackend` = tables, no build).
 5. Straight tubes; symmetric collars; caps from the cache; then the
    **discrete-mesh smooth solve** (§20.6), the curvature bound, seams as
    film clusters.

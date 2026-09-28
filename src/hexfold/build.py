@@ -714,6 +714,19 @@ def _assemble(
             oi, oj = ords[(key, a)], ords[(key, b)]
             bonds.append((min(oi, oj), max(oi, oj), 1))
         ring_list, rims = patch.rings_and_rims()
+        if (
+            patch.tube_nm is not None
+            and len(rims) == 2
+            and set(rims[0][0]) == set(rims[1][0])
+        ):
+            # len=1 tube: the generic walk collapses `in`/`out` into one
+            # merged rim (see _split_degenerate_tube_rims) -- split it.
+            tn, tm = patch.tube_nm
+            tlen = (
+                max(cell_index(v, tn, tm) for v in patch.flatpos if isinstance(v, Site))
+                + 1
+            )
+            rims = _split_degenerate_tube_rims(patch, tn, tm, tlen)
         for ring in ring_list:
             rings.append(_canon_ring([ords[(key, v)] for v in ring]))
         # interior ring adjacent to each rim edge, for <r> symbols
@@ -804,6 +817,50 @@ def _assemble(
         ),
         seed_kind=next(iter(kinds)) if len(kinds) == 1 else "mixed",
     ), {"ords": ords, "path_to_ord": path_to_ord}
+
+
+def _split_degenerate_tube_rims(
+    patch: Patch, n: int, m: int, length: int
+) -> list[tuple[list[Vid], list[float]]]:
+    """Split a one-period tube's merged boundary walk into its two rims.
+
+    At ``len=1`` every atom of the tube's unit-cell patch sits on the
+    surface -- there is no interior ring row left to anchor a face-orbit
+    walk on just one end, so :meth:`Patch.rings_and_rims` returns the
+    *same* whole-patch cycle walked in each direction and both ``in``/
+    ``out`` census end up with every atom (the reported defect).  The two
+    physical rims are still well defined geometrically: an atom belongs
+    to ``in`` iff its lattice bond toward the previous unit cell (cell
+    index < 0) is the one the ``len=1`` cutoff dropped, and to ``out`` iff
+    it is the bond toward the next cell (index >= ``length``) that was
+    dropped.  Each side is sorted by circumferential position for a
+    deterministic, geometrically consistent cyclic order.
+    """
+    groups: dict[str, list[Site]] = {"lo": [], "hi": []}
+    for v in patch.flatpos:
+        if not isinstance(v, Site):
+            continue
+        for nb in neighbors(v):
+            c = cell_index(nb, n, m)
+            if 0 <= c < length:
+                continue
+            groups["lo" if c < 0 else "hi"].append(v)
+            break
+    out: list[tuple[list[Vid], list[float]]] = []
+    for key in ("lo", "hi"):
+        atoms = sorted(groups[key], key=lambda v: circumferential(v, n, m))
+        n_a = len(atoms)
+        turns: list[float] = []
+        for i in range(n_a):
+            prev, cur, nxt = atoms[i - 1], atoms[i], atoms[(i + 1) % n_a]
+            d_in = patch.flatpos[cur] - patch.flatpos[prev]
+            d_out = patch.flatpos[nxt] - patch.flatpos[cur]
+            a_in = math.atan2(d_in[1], d_in[0])
+            a_out = math.atan2(d_out[1], d_out[0])
+            t = (a_out - a_in) % (2 * math.pi) - math.pi
+            turns.append(math.degrees(t))
+        out.append((cast(list[Vid], atoms), turns))
+    return out
 
 
 def _rim_cell(patch: Patch, rim: list[Vid]) -> float:

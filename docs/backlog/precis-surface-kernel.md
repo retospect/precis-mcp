@@ -42,8 +42,10 @@ build plan and the precis-side decisions only.
 
 ## State (the ordering is spec §28 — steps 4–6 and 8; this list is ticks only)
 
-- [ ] §28.4 stage 1 — symbolic chain solver with a stub geometry
-  backend; proves the interface claim before any geometry.
+- [x] §28.4 stage 1 — symbolic chain solver with a stub geometry
+  backend (`hexfold.chain`, 2026-09-28; state in
+  `hexfold-integration.md` "Step 4 built"). The smooth layer plugs in as
+  a `GeometryBackend`.
 - [ ] §28.5 — straight tubes, symmetric collars, caps from the cache;
   then the discrete-mesh smooth solve, the two-part curvature bound,
   seams as film clusters. Closed forms as seeds and oracle only.

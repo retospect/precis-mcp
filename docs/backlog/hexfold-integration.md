@@ -219,6 +219,30 @@ built: collar domains; Å for tube `len` (the `options` Å wish covers the
 query side); a per-connect `N` read for `@`-site hole destinations
 (propagation uses the minted hexagon's 6).
 
+**Step 4 built (2026-09-28).** `hexfold.chain` — the part-level layer
+above the `.hx` text: `Part` (kind; roll-up pinned / `domain` /
+don't-care = backend catalogue; `periods` pinned / free in a range;
+`spacer` with a real `(min, max)` band; `block` = an opaque pinned part
+from a resolved block's typed port payloads, `part_from_payloads`),
+`solve(parts, bottom=, top=, wish_A=)` = arc consistency on rim `N` over
+the adjacencies from the pinned ends (`chain.propagated`,
+`chain.unsolvable` needs/offers/constraint, `chain.mismatch`,
+`chain.no_rim`, `chain.too_many` above 512 combinations) then a length
+pass per surviving roll-up combination (free whole periods + spacer bands
+nearest the wish; `chain.length` with the nearest total; rank = deviation,
+adapter count, periods; `chain.adapter` INFO for z/a seams incl. typed
+pinned ends). `GeometryBackend` protocol (`catalogue`, `rim`, `pitch_A`,
+`fixed_length_A`); `StubBackend` answers from the chiral-index formulas
+with no build (pinned equal to `hexfold.lattice` / `domains.rim_n` by
+test). End parts with one rim auto-face the chain. Tests
+`tests/hexfold/test_chain.py`; the cross-generator interface proof
+`tests/test_se_hexfold_chain.py` (a hexfold-generated se block → pinned
+part from `GeneratedPort.payload` + its `_len` measure → composes with
+stub caps). Not built: a se handler op over `solve` (step 5 says what a
+chain is on a design), `hexfold chain` CLI, fuse phase `k` as a chain
+variable (affects neither `N` nor length), cone/sheet parts (a sheet is
+a `hole` wall in a chain).
+
 **Residual from step 0 — fused seed placement.** `_place_seeds` filed
 every fuse/bond transform under the destination instance and read it back
 as the source's, so each neighbour got the transform computed for the other
