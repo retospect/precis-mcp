@@ -130,6 +130,23 @@ from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.atomic.apply import PendingJob, apply_ops_with_atomic
+from precis_se.chain import layout as se_chain_layout
+from precis_se.chain import nucleic as se_nucleic
+from precis_se.chain.pairing import (
+    CROWDED,
+    PAIRED,
+    PARALLEL,
+    SINGLE,
+    derive_pairing,
+    strand_length_nt,
+)
+from precis_se.chain.vocab import (
+    HELIX_ROLE,
+    STRAND_ROLE,
+    ChainError,
+    chain_role,
+    group_domains,
+)
 from precis_se.identity import AmbiguousLabel, resolve_block
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
@@ -163,7 +180,19 @@ class SeHandler(Handler):
             "declare_dof/clear_dof/bind_structure/unbind_structure/"
             "generate/realize/set_build_frame/clear_build_frame/"
             "set_chromophore/set_optical_link/set_optics/"
-            "declare_states/declare_transitions/set_current_state); "
+            "declare_states/declare_transitions/set_current_state/"
+            "declare_helix/declare_strand/add_domain/remove_domain/"
+            "clear_chain/layout_chain); "
+            "declare_helix block= n_units= (bp) + lattice='honeycomb'|"
+            "'square' row= col= OR path={'waypoints':[[x,y,z],…]} declares "
+            "the block to BE a helix (nucleic='DNA'|'RNA', phase0=, "
+            "min_bend_radius=, min_gap= — lengths need units); "
+            "declare_strand block= sequence?= declares a strand, and "
+            "add_domain strand= helix= start= end= forward= "
+            "loop_before_nt?= geometry?= routes it (pairing is DERIVED from "
+            "co-occupancy, never declared); layout_chain block?= "
+            "max_seg_len?= materialises a helix's tube as <helix>.s<k> "
+            "children; "
             "declare_states block= states=[{'name','envelope'?,"
             "'port_pose_overrides'?,'descr'?}] declares a block's discrete "
             "states (a bistable's {loaded,bonded} or a photoswitch's "
@@ -181,7 +210,8 @@ class SeHandler(Handler):
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|"
-            "'ports'|'topology'|'measures'|'datums'|'validate'|'clearance'|'sweep'|"
+            "'ports'|'topology'|'chain'|'measures'|'datums'|'validate'|"
+            "'clearance'|'sweep'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
@@ -375,6 +405,7 @@ class SeHandler(Handler):
             "block",
             "ports",
             "topology",
+            "chain",
             "measures",
             "datums",
             "validate",
@@ -754,6 +785,8 @@ class SeHandler(Handler):
             return Response(body=_render_ports(tree))
         if v == "topology":
             return Response(body=_render_topology(tree))
+        if v == "chain":
+            return Response(body=_render_chain(tree))
         if v == "measures":
             return Response(body=_render_measures(tree))
         if v == "datums":
@@ -813,7 +846,10 @@ class SeHandler(Handler):
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
             "(args={'name':...}) | view='ports' | view='topology' "
-            "(atomic mode: threading + declared dof) | view='measures' "
+            "(L2: threading, declared dof, strand domains) | "
+            "view='chain' (nucleic acids: helices with motif/turns/segments/"
+            "occupancy, strands with their routes, derived pairing) | "
+            "view='measures' "
             "(+ stack-up) | view='datums' (datum ranking + which "
             "measures hang off each) | view='validate' | view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
@@ -2805,7 +2841,7 @@ def _render_topology(tree: SeTree) -> str:
     every live threading pair, plus every block's declared dof. Pure over
     ``tree`` (no store access — unlike ``validate``/``clearance``, a
     topology fact never depends on hydrated structure/cad data)."""
-    lines = ["# se topology (atomic mode: L2 threading + declared dof)", ""]
+    lines = ["# se topology (L2: threading, declared dof, strand domains)", ""]
     lines.append("## threading")
     if tree.threading:
         lines.append(
@@ -2841,6 +2877,181 @@ def _render_topology(tree: SeTree) -> str:
         )
     else:
         lines.append("(none)")
+    # The nucleic-acid domain's route rows share this table in the store
+    # (``se_topology`` ``kind='domain'``, migration 0015), so they share the
+    # view: one place to read every L2 topology fact. The derived pairing
+    # and the geometry live in ``view='chain'``, not here.
+    lines.append("")
+    lines.append("## domains (strand routes — se_topology kind='domain')")
+    domain_rows = [
+        {
+            "strand": d.strand,
+            "ord": str(d.ord),
+            "helix": d.helix,
+            "offsets": f"[{d.start}:{d.end})",
+            "dir": "forward" if d.forward else "reverse",
+            "loop_before": "—"
+            if d.loop_before_nt is None
+            else f"{d.loop_before_nt} nt",
+            "geometry": d.geometry or "—",
+        }
+        for d in sorted(tree.domains, key=lambda d: (d.strand, d.ord))
+    ]
+    if domain_rows:
+        lines.append(
+            render_agent_table(
+                domain_rows,
+                schema=[
+                    "strand",
+                    "ord",
+                    "helix",
+                    "offsets",
+                    "dir",
+                    "loop_before",
+                    "geometry",
+                ],
+            )
+        )
+    else:
+        lines.append("(none)")
+    return "\n".join(lines)
+
+
+def _render_chain(tree: SeTree) -> str:
+    """``view='chain'`` — the nucleic-acid domain's one readout
+    (docs/backlog/se-nucleic-acid.md): every helix with its motif, run
+    length, turns, segment tiling and occupancy; every strand with its
+    route; and the derived pairing summary.
+
+    Pure over ``tree`` like ``view='topology'`` — a chain fact is a
+    function of the declaration and the kernel arithmetic, never of
+    hydrated store data. Occupancy is DERIVED here, not stored
+    (:func:`precis_se.chain.pairing.derive_pairing`), so the table can
+    never disagree with what DRC checks.
+    """
+    lines = ["# se chain (nucleic acids: helices, strands, derived pairing)", ""]
+    pairing = derive_pairing(tree)
+    tables = group_domains(list(tree.domains))
+    helix_rows: list[dict[str, Any]] = []
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        if chain_role(node) != HELIX_ROLE:
+            continue
+        try:
+            geom = se_chain_layout.helix_geometry(node)
+        except (ChainError, KeyError, ValueError) as exc:
+            helix_rows.append(
+                {
+                    "helix": name,
+                    "motif": f"malformed — {exc}",
+                    "n": "—",
+                    "turns": "—",
+                    "site": "—",
+                    "segments": "—",
+                    "occupancy": "—",
+                }
+            )
+            continue
+        per = se_chain_layout.units_per_segment(geom)
+        counts = {PAIRED: 0, SINGLE: 0, PARALLEL: 0, CROWDED: 0}
+        for offset in range(geom.n_units):
+            occ = pairing.at(name, offset)
+            if occ is not None:
+                counts[occ.status] += 1
+        free = geom.n_units - sum(counts.values())
+        occupancy = f"{counts[PAIRED]} paired · {counts[SINGLE]} single · {free} free"
+        if counts[PARALLEL] or counts[CROWDED]:
+            occupancy += f" · {counts[PARALLEL] + counts[CROWDED]} CONFLICT"
+        lattice_site = ((node.chain or {}).get("path") or {}).get("lattice") or {}
+        site = (
+            f"{geom.lattice} ({lattice_site.get('row')},{lattice_site.get('col')})"
+            if geom.lattice and lattice_site
+            else (geom.lattice or "free path")
+        )
+        helix_rows.append(
+            {
+                "helix": name,
+                "motif": f"{geom.motif.name} ({geom.nucleic})",
+                "n": str(geom.n_units),
+                "turns": f"{geom.n_units * geom.motif.twist / (2.0 * math.pi):.2f}",
+                "site": site,
+                "segments": f"{len(se_chain_layout.segment_ranges(geom.n_units, per))}"
+                f" × {per} units",
+                "occupancy": occupancy,
+            }
+        )
+    lines.append("## helices")
+    lines.append(
+        render_agent_table(
+            helix_rows,
+            schema=["helix", "motif", "n", "turns", "site", "segments", "occupancy"],
+        )
+        if helix_rows
+        else "(none)"
+    )
+    strand_rows: list[dict[str, Any]] = []
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        if chain_role(node) != STRAND_ROLE:
+            continue
+        route = tables.by_strand.get(name, [])
+        record = node.chain or {}
+        sequence = record.get("sequence")
+        loops = [d.loop_before_nt or 0 for d in route[1:]]
+        strand_rows.append(
+            {
+                "strand": name,
+                "nucleic": str(record.get("nucleic") or "DNA"),
+                "route_nt": str(strand_length_nt(route)),
+                "sequence": f"{len(sequence)} nt" if sequence else "(none)",
+                "domains": ", ".join(
+                    f"#{d.ord} {d.helix}[{d.start}:{d.end}]{'→' if d.forward else '←'}"
+                    for d in route
+                )
+                or "(none)",
+                "loops": ", ".join(f"{n} nt" for n in loops) or "(none)",
+            }
+        )
+    lines.append("")
+    lines.append("## strands")
+    lines.append(
+        render_agent_table(
+            strand_rows,
+            schema=["strand", "nucleic", "route_nt", "sequence", "domains", "loops"],
+        )
+        if strand_rows
+        else "(none)"
+    )
+    lines.append("")
+    lines.append("## derived pairing (co-occupancy of a helix offset, never declared)")
+    if pairing.offsets:
+        runs = pairing.single_runs()
+        lines.append(
+            f"{len(pairing.pairs)} paired offset(s) · {len(pairing.singles)} "
+            f"single-stranded in {len(runs)} run(s) · {len(pairing.conflicts)} "
+            "conflict(s)"
+        )
+        lines.append("")
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "span": f"{helix}[{first}:{last + 1}]",
+                        "nt": str(last - first + 1),
+                        "contour": format_quantity(
+                            (last - first + 1) * se_nucleic.SS_CONTOUR_PER_NT_M,
+                            "length",
+                        ),
+                    }
+                    for helix, first, last in runs
+                ],
+                schema=["span", "nt", "contour"],
+            )
+            if runs
+            else "(every occupied offset is paired)"
+        )
+    else:
+        lines.append("(no domains — a helix with no strand on it is unoccupied)")
     return "\n".join(lines)
 
 
@@ -4333,6 +4544,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "block": frozenset({"name", "state"}),
     "ports": frozenset(),
     "topology": frozenset(),
+    "chain": frozenset(),
     "measures": frozenset(),
     "datums": frozenset(),
     "validate": frozenset(),

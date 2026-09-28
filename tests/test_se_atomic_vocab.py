@@ -797,7 +797,10 @@ def test_the_topology_view_says_none_rather_than_nothing(handler: SeHandler) -> 
         ),
     )
     body = handler.get(id="plain1", view="topology").body
-    assert body.count("(none)") == 2
+    # One per section, and the view has three since the nucleic-acid domain
+    # put its strand-route rows on this table too (migration 0015's
+    # se_topology kind='domain'): threading, dof, domains.
+    assert body.count("(none)") == 3
 
 
 def test_the_tree_line_marks_a_declared_dof(handler: SeHandler) -> None:

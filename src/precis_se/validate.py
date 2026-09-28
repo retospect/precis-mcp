@@ -49,6 +49,7 @@ from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.design import states as design_states
 from precis_se import bom as se_bom
+from precis_se.chain.vocab import SEGMENT_ROLE, chain_role
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 
 
@@ -275,9 +276,25 @@ def envelope_overlaps(
     cross: list[tuple[str, str]] = []
     unchecked: list[tuple[str, str]] = []
     deadline = time.monotonic() + budget_s if budget_s is not None else None
+    segments = {
+        name for name, node in tree.blocks.items() if chain_role(node) == SEGMENT_ROLE
+    }
     for i, (a_name, a_node, a_env) in enumerate(posed):
         for b_name, b_node, b_env in posed[i + 1 :]:
             if _is_ancestor(tree, a_name, b_name) or _is_ancestor(tree, b_name, a_name):
+                continue
+            # Segment↔segment pairs are ``chain_clash``'s, wholesale
+            # (docs/backlog/se-nucleic-acid.md's 2026-09-27 decision):
+            # consecutive segments of one helix are SUPPOSED to touch, a
+            # crossover's two segments likewise, and a 24-helix origami is
+            # ~192 segments ≈ 18k pairs that would eat the whole
+            # ``budget_s`` and report ``overlap_budget_exceeded`` — while
+            # the kernel's own capsule pass (exact broad phase, closed-form
+            # narrow phase) answers the same question for all of them at
+            # once. Skipped BEFORE the AABB phase, so the SDF budget goes
+            # entirely to chain-vs-non-chain pairs. Read off the chain
+            # ROLE, not the ``<helix>.s<k>`` name — a name is a label.
+            if a_name in segments and b_name in segments:
                 continue
             scale = kernel_scale((a_env, a_node), (b_env, b_node))
             if scale is None:
@@ -363,6 +380,14 @@ def validate(
             source = node.template if node.template is not None else blk
             referenced.add((source, prt))
     for node in tree.blocks.values():
+        # A ``layout_chain`` segment's ``5p``/``3p`` are anchors on a
+        # DERIVED child, not authored attachment points: the backbone's
+        # continuation from one segment into the next is the exact unit
+        # tiling, which needs no edge to say so. A 24-helix origami has 192
+        # of them, and 384 rows saying "nobody connected this" would bury
+        # every finding a designer can act on.
+        if chain_role(node) == SEGMENT_ROLE:
+            continue
         for port in node.ports.values():
             if (node.name, port.name) in referenced:
                 continue

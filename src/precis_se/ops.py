@@ -245,6 +245,41 @@ beside the others and each one's *scope* is the block it names.
   ``'alkyne'``, :data:`precis_se.atomic.vocab.COMPLEMENTARY_ROLES`), one
   port must afford each half — derived at connect time from the ports'
   ``roles`` sets and never stored as a second relation.
+
+**The nucleic-acid domain** (docs/backlog/se-nucleic-acid.md; vocabulary
+and numbers in :mod:`precis_se.chain`, geometry in :mod:`precis_chain`)
+adds six pure ops. Same rule as the atomic mode: one op table, and each
+op's scope is the block it names. The two chain ops that spend compute or
+need an optional dependency (``relax_chain``, ``fold_layout``) are
+handler-level and are not in this table.
+
+- ``declare_helix``      — the block IS a helix, and carries the
+  GEOMETRY: ``n_units`` base pairs along either a lattice site
+  (``lattice=``/``row=``/``col=``) or authored ``path`` waypoints, with
+  ``nucleic``/``motif``, ``phase0``, ``register``, ``min_bend_radius``
+  and ``min_gap``. Lengths take units and store metres; an authored
+  ``min_bend_radius`` promotes ``chain_bend`` from warn to error.
+- ``declare_strand``     — the block IS a strand, and carries the
+  route's chemistry (``sequence`` — optional; ``nucleic``). Its route is
+  ``add_domain``.
+- ``add_domain`` / ``remove_domain`` — one ordered stretch
+  ``[start, end)`` of a helix, traversed ``forward`` or back, appended to
+  a strand's 5'→3' route (``ord`` is assigned, never accepted, so the
+  route cannot grow a hole). ``loop_before_nt`` is the unpaired gap
+  before it, where **0 is a real answer** — a zero-nt crossover has one
+  bond of reach. Pairing is NEVER declared: it is derived from two
+  strands occupying one helix offset
+  (:func:`precis_se.chain.pairing.derive_pairing`).
+- ``clear_chain``        — un-declare a block's chain record, cascading
+  to whatever it gave meaning (a helix's segments and the domains along
+  it; a strand's whole route).
+- ``layout_chain``       — materialise a helix's swept tube as child
+  blocks ``<helix>.s<k>``, one per lattice repeat by default
+  (``max_seg_len=`` overrides), each with a ``cyl`` envelope from the
+  kernel's capsule pose, ports ``5p``/``3p``, and its own ``[start,
+  end]`` unit range — the ranges tiling the helix exactly, which is the
+  seam ``se-nucleic-realize-export`` reads. Re-running retires and
+  regenerates; both derived facets are stamped ``origin='proposed'``.
 """
 
 from __future__ import annotations
@@ -272,6 +307,9 @@ from precis_se.atomic.vocab import (
     vet_dof_shape,
 )
 from precis_se.bom import BomError, BomLine, vet_bom_fields
+from precis_se.chain import layout as chain_layout
+from precis_se.chain import vocab as chain_vocab
+from precis_se.chain.vocab import ChainError, DomainSpec
 from precis_se.fret import (
     FretError,
     validate_chromophore,
@@ -515,6 +553,18 @@ class SeBlock(BlockNode):
     #: orientation factor κ² can be computed from realised geometry
     #: instead of assumed.
     chromophore: dict[str, Any] | None = None
+    #: What makes this block part of a nucleic-acid chain
+    #: (:func:`precis_se.chain.vocab.validate_chain`, migration
+    #: ``0015_se_chain.sql``): ``role='helix'`` carries the GEOMETRY (motif,
+    #: centre line or lattice site, unit count, register), ``role='strand'``
+    #: the route's chemistry (sequence, nucleic), ``role='segment'`` a
+    #: ``layout_chain`` child's ``[start, end]`` unit range. Block-owned
+    #: beside ``dof``/``chromophore`` for the same reason all three are: one
+    #: per block, meaningless without it, gone when it goes. ``None`` = not
+    #: part of a chain. The *route* is NOT here — a strand's ordered domains
+    #: are :attr:`SeTree.domains`, because each is a fact about a (strand,
+    #: helix) pair rather than about one block.
+    chain: dict[str, Any] | None = None
     #: ``user | proposed`` stamps for authored facets, keyed by facet name
     #: (``'envelope'``, ``'pose'``) — slice 4's freedom vocabulary. An
     #: absent key means ``user`` (the default is never stored); a propose
@@ -574,6 +624,14 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: atomic-mode L2 threading invariants (:class:`~precis_se.atomic.
     #: vocab.ThreadingSpec`), unordered — identity is the ``(a, b)`` pair.
     threading: list[ThreadingSpec] = field(default_factory=list)
+    #: Every strand's route — the ``kind='domain'`` rows of
+    #: ``se_topology`` (:class:`precis_se.chain.vocab.DomainSpec`, migration
+    #: ``0015_se_chain.sql``). Identity is ``(strand, ord)``: unlike
+    #: ``threading``, the block pair repeats by design (a strand crosses the
+    #: same helix twice in any real origami) while the ordinal is the strand's
+    #: 5'→3' position. Unordered as a list — every consumer groups it
+    #: (:func:`precis_se.chain.vocab.group_domains`).
+    domains: list[DomainSpec] = field(default_factory=list)
     #: The design's optical context (:func:`precis_se.fret.validate_optics`)
     #: — ``{'medium_index', 'excitation_nm'?}``. The one tree-level scalar
     #: record se carries, and it earns that by being a fact about the
@@ -1118,6 +1176,25 @@ def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
     tree.threading = [
         t for t in tree.threading if t.a not in subtree and t.b not in subtree
     ]
+    # Domain rows are name-keyed the same way, and the same vacancy rule
+    # applies twice over: a removed STRAND takes its whole route, and a
+    # removed HELIX takes every domain routed along it (a domain with no
+    # helix has no offsets to occupy). The surviving strand's route closes
+    # up, since a hole in the ordinals would leave two non-adjacent domains
+    # claiming the loop between them (:func:`_renumber`).
+    if subtree and tree.domains:
+        touched = {
+            d.strand
+            for d in tree.domains
+            if d.helix in subtree and d.strand not in subtree
+        }
+        tree.domains = [
+            d
+            for d in tree.domains
+            if d.strand not in subtree and d.helix not in subtree
+        ]
+        for strand in sorted(touched):
+            _renumber(_domains_of(tree, strand))
 
 
 def _op_add_port(tree: SeTree, op: dict[str, Any]) -> None:
@@ -2520,6 +2597,299 @@ def _op_set_current_state(tree: SeTree, op: dict[str, Any]) -> None:
     node.pending_current_state = _require_name(op, "state", "set_current_state")
 
 
+# ── se-nucleic-acid slice 1 — the chain (DNA/RNA) ops ───────────────────
+# (docs/backlog/se-nucleic-acid.md; the vocabulary and the numbers are
+# :mod:`precis_se.chain`, the geometry kernel is :mod:`precis_chain`.) All
+# six are PURE over the tree, like everything else in this module: the two
+# chain ops that spend compute or need an optional dependency
+# (``relax_chain``, ``fold_layout``) are handler-level and are not here.
+
+
+def effective_chain(tree: SeTree, node: SeBlock) -> dict[str, Any] | None:
+    """The chain record "seen" at ``node`` — its own, or, when ``node`` is
+    an instance/array, its template's.
+
+    Mirrors :func:`effective_dof`/:func:`effective_chromophore` for the same
+    reason: a helix declared on a template block is genuinely a helix on
+    every instance of it, and the record is geometry *relative to the
+    declaration* (a lattice site, or waypoints), so each instance's own pose
+    places the same helix somewhere else."""
+    if node.template is not None:
+        template_node = resolve_template(tree, node.template)
+        return getattr(template_node, "chain", None)
+    return node.chain
+
+
+def _chain_owner(tree: SeTree, op: dict[str, Any], *, opname: str) -> SeBlock:
+    """The block a chain op writes to — resolved, and template-owned for the
+    same reason ``dof``/``mode`` are: an instance has no chain of its own
+    (:func:`effective_chain` resolves it from the template at read time)."""
+    return _template_owned(
+        tree, _require_name(op, "block", opname), opname=opname, what="chain"
+    )
+
+
+def _domains_of(tree: SeTree, strand: str) -> list[DomainSpec]:
+    """One strand's route, in ``ord`` order."""
+    return sorted((d for d in tree.domains if d.strand == strand), key=lambda d: d.ord)
+
+
+def _renumber(route: list[DomainSpec]) -> None:
+    """Re-index a route 0…n-1 after a removal, and drop a leading
+    ``loop_before_nt``.
+
+    A hole in the ordinals would make every loop after it undefined (the
+    loop between domains k and k+1 IS the pair, so a missing k leaves two
+    non-adjacent domains claiming to be adjacent), which
+    ``chain_dangling_domain`` reports — so the op closes the gap instead of
+    leaving one. The domain that becomes the new 5' end loses its
+    ``loop_before_nt``: there is no preceding exit for it to reach from any
+    more, and keeping the number would state a loop with one end."""
+    for i, domain in enumerate(route):
+        domain.ord = i
+    if route:
+        route[0].loop_before_nt = None
+
+
+def _op_declare_helix(tree: SeTree, op: dict[str, Any]) -> None:
+    """Declare a block to BE a helix — the geometry-carrying half of the
+    nucleic-acid decomposition.
+
+    ``block=`` plus ``n_units=`` (base pairs) and a centre line: either
+    ``lattice='honeycomb'|'square'`` with ``row=``/``col=`` (a straight
+    helix on a lattice site) or ``path={'waypoints': [[x, y, z], …]}`` with
+    units on every component. Optional: ``nucleic='DNA'|'RNA'`` (default
+    DNA) or an explicit ``motif=``, ``phase0=`` (the register offset of unit
+    0, an angle), ``register={'lattice': …}``, ``min_bend_radius=`` and
+    ``min_gap=`` (lengths — an authored bend limit promotes ``chain_bend``
+    from warn to error, since it is then the design's own claim).
+
+    Replace semantics: re-declaring a helix rewrites the record whole. Any
+    ``layout_chain`` children it already has are dropped, because a helix's
+    segments are derived from exactly the numbers this op just changed and a
+    stale tiling would still *look* like the seam a realizer trusts."""
+    node = _chain_owner(tree, op, opname="declare_helix")
+    payload = {k: v for k, v in op.items() if k not in ("op", "block")}
+    try:
+        node.chain = chain_vocab.build_helix(payload)
+    except ChainError as exc:
+        raise OpError(str(exc)) from exc
+    _drop_segments(tree, node.name)
+
+
+def _op_declare_strand(tree: SeTree, op: dict[str, Any]) -> None:
+    """Declare a block to BE a strand — the routing half.
+
+    ``block=`` plus optional ``sequence=`` and ``nucleic=`` (default DNA).
+    The sequence is optional on purpose: a 24-helix rectangle is a real
+    design long before anybody has chosen its 7 kb, and every check that
+    needs letters reports "unverifiable" rather than inventing them. The
+    route itself is ``add_domain``, not this op.
+
+    Replace semantics. Existing domains are NOT dropped — a strand's route
+    survives a sequence being filled in, which is the ordinary order of
+    work."""
+    node = _chain_owner(tree, op, opname="declare_strand")
+    payload = {k: v for k, v in op.items() if k not in ("op", "block")}
+    try:
+        node.chain = chain_vocab.build_strand(payload)
+    except ChainError as exc:
+        raise OpError(str(exc)) from exc
+
+
+def _op_add_domain(tree: SeTree, op: dict[str, Any]) -> None:
+    """Append one domain to a strand's 5'→3' route.
+
+    ``strand=`` (a strand block), ``helix=`` (a helix block), ``start=``/
+    ``end=`` (helix offsets, half-open) and ``forward=`` (which way the
+    strand runs through them). Optional: ``loop_before_nt=`` — how many
+    unpaired nucleotides bridge the previous domain's 3' exit and this
+    one's 5' entry, where **0 is a real answer** (a zero-nt crossover has
+    one backbone bond of reach, which is exactly why it is only feasible at
+    a register-correct offset — :mod:`precis_chain.loop`) — plus
+    ``geometry=`` (a Leontis–Westhof family for the whole domain) and
+    ``overrides={offset: geometry}`` for individual positions.
+
+    Appends at the end of the route; ``ord`` is assigned, not accepted, so
+    the route can never grow a hole. Pairing is never declared here — it is
+    derived from two strands occupying one offset
+    (:func:`precis_se.chain.pairing.derive_pairing`)."""
+    strand = _require_block(tree, op, "strand", "add_domain", what="strand")
+    helix = _require_block(tree, op, "helix", "add_domain", what="helix")
+    if strand == helix:
+        raise OpError(
+            "add_domain: 'strand' and 'helix' must be different blocks — a "
+            "strand routes ALONG a helix; one block cannot be both"
+        )
+    payload = {k: v for k, v in op.items() if k not in ("op", "strand", "helix")}
+    route = _domains_of(tree, strand)
+    try:
+        domain = chain_vocab.build_domain(
+            payload, strand=strand, helix=helix, ord_=len(route)
+        )
+    except ChainError as exc:
+        raise OpError(str(exc)) from exc
+    tree.domains.append(domain)
+
+
+def _op_remove_domain(tree: SeTree, op: dict[str, Any]) -> None:
+    """Drop one domain from a strand's route — ``strand=`` + ``ord=``.
+
+    Destructive by the ``remove_`` prefix rule
+    (:data:`precis_web.design_turn.DESTRUCTIVE_SE_OPS` derives off the live
+    roster), so it is a human-Apply proposal in the web turn. The rest of
+    the route closes up behind it (:func:`_renumber`)."""
+    # Lenient on the strand token the way ``remove_threading`` is: a domain
+    # may legitimately dangle (its strand block removed by hand-corrupted
+    # data — ``chain_dangling_domain``), and a token that resolves to
+    # nothing still gets to match a stored row by its text.
+    strand = _block_key_or_raw(tree, _require_name(op, "strand", "remove_domain"))
+    if op.get("ord") is None:
+        raise OpError("remove_domain needs 'ord' (the domain's index in the strand)")
+    try:
+        ord_ = int(op["ord"])
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"remove_domain 'ord' must be a whole number, got {op['ord']!r}"
+        ) from exc
+    route = _domains_of(tree, strand)
+    match = next((d for d in route if d.ord == ord_), None)
+    if match is None:
+        live = ", ".join(f"#{d.ord} on {d.helix}" for d in route) or "(none)"
+        raise OpError(f"no domain #{ord_} on strand {strand!r}. Live domains: {live}")
+    tree.domains.remove(match)
+    _renumber(_domains_of(tree, strand))
+
+
+def _drop_segments(tree: SeTree, helix: str) -> None:
+    """Remove a helix's ``layout_chain`` children — the retire half of
+    ``layout_chain``'s regenerate, also run when the helix is re-declared or
+    cleared. Goes through the core ``remove_block`` so the connect cascade
+    runs (nothing connects a segment today, but a later round's crossover
+    edges will)."""
+    stale = sorted(
+        name
+        for name, node in tree.blocks.items()
+        if chain_vocab.chain_role(node) == chain_vocab.SEGMENT_ROLE
+        and (node.chain or {}).get("helix") == helix
+    )
+    for name in stale:
+        blocktree.op_remove_block(tree, {"block": name})
+
+
+def _op_clear_chain(tree: SeTree, op: dict[str, Any]) -> None:
+    """Un-declare a block's chain record — ``block=``.
+
+    Cascades, because the record is what gave the dependent rows meaning: a
+    cleared **helix** loses its ``layout_chain`` children and every domain
+    routed along it; a cleared **strand** loses its whole route. Leaving
+    either behind would be a design that reads as routed while nothing
+    carries the geometry."""
+    node = _chain_owner(tree, op, opname="clear_chain")
+    role = chain_vocab.chain_role(node)
+    node.chain = None
+    if role == chain_vocab.HELIX_ROLE:
+        _drop_segments(tree, node.name)
+        touched = {d.strand for d in tree.domains if d.helix == node.name}
+        tree.domains = [d for d in tree.domains if d.helix != node.name]
+        for strand in sorted(touched):
+            _renumber(_domains_of(tree, strand))
+    elif role == chain_vocab.STRAND_ROLE:
+        tree.domains = [d for d in tree.domains if d.strand != node.name]
+
+
+def _op_layout_chain(tree: SeTree, op: dict[str, Any]) -> None:
+    """Materialise a helix's swept tube as child blocks ``<helix>.s<k>``.
+
+    ``block=`` one helix, or omit it for every helix in the design;
+    ``max_seg_len=`` (a length) overrides the default of **one lattice
+    repeat** per segment (21 units honeycomb, 32 square), which is what
+    makes a 24×256 bp rectangle 192 children rather than thousands.
+
+    Each child carries a ``cyl`` envelope from the kernel's capsule pose
+    (:func:`precis_chain.envelope.capsule_pose` — origin at the capsule's
+    ``a`` end, matching the cad ``cyl`` primitive's base-at-local-origin
+    convention), ports ``5p``/``3p``, and its own ``chain`` record naming
+    the inclusive ``[start, end]`` unit range it covers. **The ranges tile
+    the helix exactly** — that is the seam ``se-nucleic-realize-export``
+    needs to find the segment covering an offset, and it is why the split is
+    by unit count rather than by
+    :func:`precis_chain.envelope.capsules_along`'s uniform arc length.
+
+    Re-running retires and regenerates (a segment is derived, never
+    authored). Both derived facets are stamped ``origin='proposed'``:
+    ``envelope`` because the spec says so, and ``pose`` because
+    ``relax_chain`` moves a proposed pose freely and treats a user pose as
+    contract — a segment left unstamped would read as the designer's own
+    placement and pin the relax."""
+    max_seg_len = op.get("max_seg_len")
+    try:
+        max_seg_m = (
+            None
+            if max_seg_len is None
+            else chain_vocab.length_m(max_seg_len, "max_seg_len", "layout_chain")
+        )
+    except ChainError as exc:
+        raise OpError(str(exc)) from exc
+    if op.get("block") is not None:
+        names = [_require_block(tree, op, "block", "layout_chain")]
+        if chain_vocab.chain_role(tree.blocks[names[0]]) != chain_vocab.HELIX_ROLE:
+            raise OpError(
+                f"layout_chain: block {names[0]!r} is not a helix — "
+                "declare_helix it first (a strand has no geometry of its own; "
+                "its shape is the helices it routes along)"
+            )
+    else:
+        names = sorted(
+            name
+            for name, node in tree.blocks.items()
+            if chain_vocab.chain_role(node) == chain_vocab.HELIX_ROLE
+        )
+        if not names:
+            raise OpError(
+                "layout_chain: this design declares no helices — declare_helix "
+                "first, or name a block with block="
+            )
+    for helix in names:
+        node = tree.blocks[helix]
+        try:
+            geom = chain_layout.helix_geometry(node)
+        except ChainError as exc:
+            raise OpError(f"layout_chain: {exc}") from exc
+        per = chain_layout.units_per_segment(geom, max_seg_m)
+        _drop_segments(tree, helix)
+        for k, (start, end) in enumerate(
+            chain_layout.segment_ranges(geom.n_units, per)
+        ):
+            capsule = chain_layout.local_capsule(
+                chain_layout.segment_capsule(geom, start, end), node.pose, node.rot
+            )
+            pose, rot = chain_layout.segment_pose(capsule)
+            name = f"{helix}.s{k}"
+            tree.blocks[name] = SeBlock(
+                name=name,
+                parent=helix,
+                pose=pose,
+                rot=rot,
+                envelope=chain_layout.segment_envelope(capsule),
+                descr=f"units {start}–{end} of helix {helix}",
+                chain=chain_vocab.segment_record(helix, k, start, end),
+                origins={"envelope": "proposed", "pose": "proposed"},
+                # ``5p``/``3p`` are anchors for the realizer and the relax
+                # pass, not edges anybody connects — the backbone's
+                # continuation into the next segment IS the unit tiling. So
+                # no ``external`` annotation either (that key means
+                # "deliberately left open", which would be a mislabel);
+                # ``validate.envelope_overlaps``'s sibling check skips a
+                # segment's ports outright, for the same reason.
+                ports={
+                    end_name: PortSpec(name=end_name, roles=["backbone"])
+                    for end_name in ("5p", "3p")
+                },
+            )
+    compose_world_pose(tree)
+
+
 _OPS = {
     **blocktree.CORE_OPS,
     "add_block": _op_add_block,
@@ -2559,6 +2929,12 @@ _OPS = {
     "declare_states": _op_declare_states,
     "declare_transitions": _op_declare_transitions,
     "set_current_state": _op_set_current_state,
+    "declare_helix": _op_declare_helix,
+    "declare_strand": _op_declare_strand,
+    "add_domain": _op_add_domain,
+    "remove_domain": _op_remove_domain,
+    "clear_chain": _op_clear_chain,
+    "layout_chain": _op_layout_chain,
 }
 
 

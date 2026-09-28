@@ -101,7 +101,10 @@ skips consecutive same-helix segments and pairs sharing a crossover) ·
 crossover therefore requires exits within one bond — this IS the register
 check) · `chain_loop_slack` info · `chain_floppy` info (single-stranded span
 > coded Lp default) · `chain_dangling_domain` error · `chain_occupancy` error
-· `chain_pairing_geometry` error.
+· `chain_pairing_geometry` error · `chain_malformed` error (a stored
+`chain`/domain payload that cannot be read at all, the `malformed_joint`
+precedent — kept as its own rule, not folded into
+`chain_dangling_domain`, because a corrupt record is not a routing error).
 **Findings, handler-side** — appended in `handler.py::_render_drc` after the
 pure pass, like `se_precedent.findings(store, tree, ref_id)`: when a
 `material` Lp row exists, the pure `chain_floppy` rows are dropped and
@@ -163,9 +166,11 @@ appends the skill; glossary entries (done).
   domains, 4-nt loop; `derive_pairing` → 4 `W-W-cis`; before `relax_chain`
   the loop's domain row has no `meta.loop_curve`, after it a sampled curve
   whose ends sit within one bond of the two `backbone_exit` points.
-- 4-way junction (4 helices, 4 strands, 8 domains, 4 zero-nt crossovers at
-  register-correct offsets) authored in one `put`; `view='drc'` has no
-  `chain_*` error; shifting one crossover by 1 bp fires `chain_loop_short`.
+- Four-helix lattice ribbon (4 helices, 4 strands, 8 domains, 4 zero-nt
+  crossovers at register-correct offsets) authored in one `put`; `view='drc'`
+  has no `chain_*` error; shifting one crossover by 1 bp fires
+  `chain_loop_short`. A *radiating* four-arm (Holliday) junction is a
+  follow-up fixture, not this criterion — see the log.
 - Rectangle origami built procedurally in the test (24 helices × 256 bp
   square lattice, scaffold + ~100 staples, ≈192 segments): `layout_chain`
   < 2 s; `relax_chain` < 30 s; `view='drc'` < 5 s with zero
@@ -289,3 +294,123 @@ report `fold_unavailable` in prod.
   the realizer is `realize_chain`'s handler code + a pure `build_region`
   helper, no registry entry. Recorded here so the line above is read as
   superseded. Decided.
+
+### Slice 1 built 2026-09-28 — decisions taken during the build
+
+Storage (`0015_se_chain.sql`), the six pure ops, `derive_pairing`,
+`chain/nucleic.py`, the pure `chain_*` DRC pass, the segment↔segment
+exclusion and `view='chain'`/`view='topology'` are **built**. Slice 2
+(handler-level `relax_chain`/`fold_layout`, the `[chain]` extra, the
+handler-side findings, `meta.loop_curve`, the skills) is untouched. Each
+line below is a place the build departs from the text above, with the
+reason — read the code as authoritative where they disagree.
+
+- **B-DNA twist is `2π/10.5` exactly, not the 34.3° this spec quotes.**
+  At 34.3° a 21-bp honeycomb repeat misses two whole turns by 5.2e-3 rad,
+  five times `precis_chain.register.REGISTER_TOL`, so *every* honeycomb
+  design would report `chain_twist_register` — including the acceptance
+  criterion that says 21 bp passes. The rounded degree figure IS 2π/10.5;
+  only its precision was load-bearing.
+- **A declared lattice retunes the motif's twist**
+  (`nucleic.lattice_motif`): honeycomb 21 bp/2 turns is B-DNA's own
+  10.5 bp/turn (a no-op), square 32 bp/3 turns is 10.67 bp/turn. The spec
+  lists both numbers for one motif, which is inconsistent; the lattice's
+  repeat wins for register, because that is what the crossovers hold the
+  helix at. 256 bp on the square lattice is in register only under this
+  rule.
+- **The default clash tolerance is measured from 2.4 nm, the LOW end of
+  the measured 2.4–2.6 nm spacing, not the nominal 2.5 nm**
+  (`nucleic.HELIX_SPACING_MIN_M`). A tolerance set exactly at nominal
+  spacing is a knife-edge float comparison — the rectangle fixture
+  reported 37 spurious `chain_clash` warnings (measured) before this
+  constant existed, because a site at `row * 2.5e-9` lands a few ULP
+  inside its own gap. Both acceptance numbers still hold: 2.0 nm fires,
+  2.5 nm is clean, now with 25 % of margin.
+- **`layout_chain` splits by unit count, not
+  `precis_chain.envelope.capsules_along`.** `capsule_pose` IS used, as the
+  spec says; the *splitter* is not, because its arc-length-uniform cuts
+  land between units and the realizer seam this item owes requires the
+  child ranges to tile the helix's unit range exactly.
+- **A segment's `pose` is stamped `origin='proposed'` too**, not only its
+  `envelope`. An unstamped pose reads as `user`, which is contract, and
+  `relax_chain` would then refuse to move the very children it exists to
+  settle.
+- **Segment envelopes are bare metres** (`cyl:r1e-09h1.0354e-08`), not the
+  spec's `cyl:r<..>nmh<..>nm`: an se envelope is canonical/storage mode
+  (`precis.cad.dsl.parse`'s `require_units=False`), the same rule the
+  atomic mode's hand-authored `sphere:r2e-10` follows.
+- **A strand's `sequence` is optional.** The spec's shape lists it
+  unconditionally; a 24-helix rectangle is a real design long before its
+  7 kb exists, so every letter-dependent check reports *unverifiable*
+  instead (`N` likewise).
+- **A tenth rule, `chain_malformed` (error)**, beyond the nine listed: the
+  defence-in-depth every other stored jsonb payload in se gets
+  (`malformed_joint`). Without it a hand-corrupted record crashes the read
+  path instead of surfacing there.
+- **`register.insertions`/`deletions` are refused when non-empty** rather
+  than stored and ignored — the kernel's own reserved hook
+  (`precis_chain.register.phase_after`'s `per_unit_twist`) raises for the
+  same reason: a global twist correction nothing applies would read as
+  checked.
+- **A segment's `5p`/`3p` ports are skipped by `unconnected_port`.** They
+  are anchors on a derived child (the backbone's continuation IS the unit
+  tiling), and 192 segments × 2 ports would add 384 info rows to
+  `view='validate'`.
+- **Strand azimuths are antipodal (0, π)**, not B-DNA's real ~120°/240°
+  minor-groove pair (`nucleic.STRAND_AZIMUTH_RAD` states the consequence:
+  it moves a reach number by less than the bond it is compared against,
+  and the groove angle is an atoms-tier number).
+- **`ALLOWED_PAIRS`'s contents are a curated occupancy table**, not an
+  exhaustive one — the spec named the key, not the rows. Sourced from
+  Leontis–Westhof 2001 + the 2002 isostericity matrices, and
+  `chain_pairing_geometry`'s text says "per this table" rather than
+  claiming completeness.
+- **`_DOMAIN_COLS` carries the uid columns as well as `meta`** — the
+  uid-as-join / name-as-display rule 0009 gave every other se
+  cross-reference, which `_THREADING_COLS` already follows.
+- **The rectangle criterion's "zero `clearance` calls" is asserted over
+  `view='drc'` AND `view='validate'`.** The exclusion lives on
+  `validate.envelope_overlaps`, which `view='drc'` does not call, so
+  naming only `drc` would have made the assertion vacuous.
+- **The 4-way-junction fixture is a four-helix square-lattice ribbon with
+  four crossovers, not four radiating arms.** With one twist and one
+  `phase0` per helix, the classic four-arm ring's four crossovers cannot
+  all be register-correct: `3·(k − k₀) ≡ 16 (mod 32)` has no solution that
+  also satisfies the +y pair. The criterion's counts (4 helices, 4 strands,
+  8 domains, 4 zero-nt crossovers at register-correct offsets) all hold.
+- **The honeycomb site mapping is derived here, not transcribed**
+  (`nucleic.site_position`): `x = col·s·√3/2`, `y = s·(1.5·row +
+  0.5·((row+col) mod 2))`, chosen so every nearest neighbour is exactly
+  one spacing away and each site has three — a property the tests check
+  rather than a formula taken on trust.
+
+### Slice 1 rulings on the build's three open questions (2026-09-28)
+
+- **Strand azimuth must be fixed before slice 2 writes `meta.loop_curve`,
+  and it is not merely an atoms-tier number.** `nucleic.STRAND_AZIMUTH_RAD`
+  is antipodal `(0, π)`, which puts the two backbones diametrically opposite
+  and therefore makes the two grooves *identical in width*. That directly
+  contradicts a committed acceptance criterion in the child item
+  `se-nucleic-realize-export` ("minor/major groove 12/22 ± 1 Å from P
+  positions"), which no choice of atom template can satisfy from antipodal
+  exits. Slice 2 replaces it with the real B-DNA minor-groove pair, cited to
+  the Arnott fibre model, **before** `relax_chain` stores a single loop
+  curve — every crossover-reach and `chain_loop_short` number derives from
+  the exit azimuth, so fixing it after a consumer exists means re-tuning the
+  same thresholds twice. Slice 1's measured reaches (0.500 nm crossover,
+  2.52 nm for 3 nt, 13.23 nm for 20 nt) are expected to move; their tests
+  re-derive, they do not encode the old numbers as gospel. Decided.
+- **The four-helix ribbon fixture is accepted for this criterion, but the
+  impossibility argument behind it is NOT established.** The build reported
+  that a radiating four-arm junction "cannot" have four register-correct
+  crossovers because `3·(k − k₀) ≡ 16 (mod 32)` has no integer solution. It
+  does: 3 is invertible mod 32 (3·11 ≡ 1), so `k − k₀ ≡ 16 (mod 32)`. The
+  joint system over both crossover pairs was not written out or checked, so
+  treat "a four-arm ring cannot be register-correct" as an untested
+  conjecture, not a proven constraint — anyone building the radiating
+  fixture should solve the real system rather than trusting this line. What
+  the accepted fixture does test (register-correct zero-nt crossovers, and a
+  1 bp shift firing `chain_loop_short`) is the same in either shape.
+  Decided.
+- **`chain_malformed` stays a tenth rule**, now in the body's list above.
+  Decided.

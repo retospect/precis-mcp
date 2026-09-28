@@ -5,7 +5,9 @@ module's docstring for the full reasoning — the "Round-2 landmine" there is
 designed out here from day one): a design's blocks live in dedicated tables
 (``se_blocks``/``se_ports``/``se_connects``, migration ``0001_se_kind.sql``;
 ``se_measures`` from ``0002``, ``se_bom`` from ``0003``, ``se_notes``
-from ``0005``, ``se_topology`` — the atomic mode's L2 threading — from
+from ``0005``, ``se_topology`` — the atomic mode's L2 threading, and from
+``0015`` the nucleic-acid domain's ``kind='domain'`` route rows beside it
+(one table, two kinds, one retire pass) — from
 ``0007``, ``se_optics`` — the design's FRET medium/pump context, ONE live
 row per design rather than a ledger — from ``0010``)
 reached over the store's public connection surface (``store.tx()`` /
@@ -103,6 +105,7 @@ from precis_se import catalog
 from precis_se.atomic.vocab import ThreadingSpec
 from precis_se.bom import BomLine
 from precis_se.catalog import Derived
+from precis_se.chain.vocab import DomainSpec
 from precis_se.measures import MeasureSpec
 from precis_se.notes import NoteSpec
 from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree, compose_world_pose
@@ -122,7 +125,7 @@ _BLOCK_COLS = (
     "id, uid, parent_block_id, template_ref, template_uid, name, pose_xyz, "
     "pose_rot, envelope, array_spec, descr, use_, objectives, mode, "
     "bound_kind, bound_design, origins, dof, chromophore, process_overrides, "
-    "build_frame"
+    "build_frame, chain"
 )
 _PORT_COLS = (
     "block_id, name, roles, direction, annotations, expected_element, "
@@ -147,6 +150,11 @@ _NOTE_COLS = "name, kind, body, re, about, origin, created_at"
 #: (0009) — never a block-row FK, which would strand on the very next save
 #: (module docstring's lockstep rule).
 _THREADING_COLS = "subject_name, subject_uid, object_name, object_uid"
+#: ``se_topology`` ``kind='domain'`` rows (migration ``0015_se_chain.sql``)
+#: — the same endpoint columns plus ``meta``, which ``_THREADING_COLS``
+#: deliberately has none of: a threading row IS the fact, while a domain
+#: row carries the stretch it covers (``{ord, forward, start, end, …}``).
+_DOMAIN_COLS = "subject_name, subject_uid, object_name, object_uid, meta"
 #: ``se_optics`` (migration 0010) is the one tree-level scalar record —
 #: everything else here is a list keyed by name/pair, so it gets its own
 #: short column tuple rather than folding into one of the above.
@@ -272,6 +280,13 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             )
             threading_rows = cur.fetchall()
             cur.execute(
+                f"SELECT {_DOMAIN_COLS} FROM se_topology "
+                "WHERE ref_id = %s AND retired_at IS NULL AND kind = 'domain' "
+                "ORDER BY (meta->>'ord')::int ASC, id ASC",
+                (ref_id,),
+            )
+            domain_rows = cur.fetchall()
+            cur.execute(
                 f"SELECT {_OPTICS_COLS} FROM se_optics "
                 "WHERE ref_id = %s AND retired_at IS NULL",
                 (ref_id,),
@@ -319,6 +334,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             build_frame=dict(r["build_frame"])
             if r["build_frame"] is not None
             else None,
+            chain=dict(r["chain"]) if r["chain"] is not None else None,
         )
     for p in port_rows:
         block_row = by_id.get(p["block_id"])
@@ -404,6 +420,27 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                 b=_label(uid_to_name, t["object_uid"], t["object_name"]),
             )
         )
+    for d in domain_rows:
+        meta = dict(d["meta"] or {})
+        tree.domains.append(
+            DomainSpec(
+                strand=_label(uid_to_name, d["subject_uid"], d["subject_name"]),
+                helix=_label(uid_to_name, d["object_uid"], d["object_name"]),
+                ord=int(meta.get("ord", 0)),
+                forward=bool(meta.get("forward")),
+                start=int(meta.get("start", 0)),
+                end=int(meta.get("end", 0)),
+                geometry=meta.get("geometry"),
+                overrides=dict(meta["overrides"])
+                if meta.get("overrides") is not None
+                else None,
+                loop_before_nt=(
+                    int(meta["loop_before_nt"])
+                    if meta.get("loop_before_nt") is not None
+                    else None
+                ),
+            )
+        )
     if optics_row is not None:
         tree.optics = {
             "medium_index": optics_row["medium_index"],
@@ -474,6 +511,7 @@ def tree_to_json(tree: SeTree) -> dict[str, Any]:
         "bom": [asdict(b) for b in tree.bom],
         "notes": notes,
         "threading": [asdict(t) for t in tree.threading],
+        "domains": [asdict(d) for d in tree.domains],
         "optics": dict(tree.optics) if tree.optics is not None else None,
     }
 
@@ -528,6 +566,9 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
     tree.threading = [
         ThreadingSpec(**_known(ThreadingSpec, t))
         for t in payload.get("threading") or []
+    ]
+    tree.domains = [
+        DomainSpec(**_known(DomainSpec, d)) for d in payload.get("domains") or []
     ]
     optics = payload.get("optics")
     tree.optics = dict(optics) if optics is not None else None
@@ -898,9 +939,9 @@ def save_tree(
                 "(ref_id, uid, parent_block_id, template_ref, template_uid, "
                 " name, pose_xyz, pose_rot, envelope, array_spec, descr, "
                 " use_, objectives, mode, bound_kind, bound_design, origins, "
-                " dof, chromophore, process_overrides, build_frame) "
+                " dof, chromophore, process_overrides, build_frame, chain) "
                 "VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "RETURNING id",
                 (
                     ref_id,
@@ -934,6 +975,7 @@ def save_tree(
                     if node.process_overrides is not None
                     else None,
                     Jsonb(node.build_frame) if node.build_frame is not None else None,
+                    Jsonb(node.chain) if node.chain is not None else None,
                 ),
             ).fetchone()
             assert row is not None
@@ -1089,6 +1131,25 @@ def save_tree(
                     uid_of.get(thread.a),
                     thread.b,
                     uid_of.get(thread.b),
+                ),
+            )
+        # Domain rows share ``se_topology`` with threading (migration
+        # 0015) and are ordered WITHIN a strand, so — unlike threading's
+        # unordered pair — ``meta.ord`` is half the row's identity and the
+        # partial unique index keys on it.
+        for domain in sorted(tree.domains, key=lambda d: (d.strand, d.ord)):
+            c.execute(
+                "INSERT INTO se_topology "
+                "(ref_id, kind, subject_name, subject_uid, object_name, "
+                " object_uid, meta) "
+                "VALUES (%s,'domain',%s,%s,%s,%s,%s)",
+                (
+                    ref_id,
+                    domain.strand,
+                    uid_of.get(domain.strand),
+                    domain.helix,
+                    uid_of.get(domain.helix),
+                    Jsonb(domain.meta()),
                 ),
             )
         # ``se_optics`` is a 0-or-1-row table, not a ledger — a fresh row

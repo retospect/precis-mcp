@@ -606,6 +606,40 @@ exclusive with ``delta`` — one stroke measure) ranks rotary series by
 summed angle; a lever's ``span`` is its arm reach, scored as such; a
 rotating port with no role complementary to the arm's says ``joining:
 none`` and emits no connect, never a placeholder.
+
+**The nucleic-acid domain** (:mod:`precis_se.chain`, migration
+``0015_se_chain.sql``, docs/backlog/se-nucleic-acid.md slice 1) is se's
+second non-mechanical one, and the binding of the chemistry-free
+:mod:`precis_chain` geometry kernel onto this ladder. The decomposition is
+scadnano's: a **helix** block carries the GEOMETRY (``se_blocks.chain``
+``role='helix'`` — motif, centre line or lattice site, unit count,
+``phase0``, register), a **strand** block carries the route's chemistry
+(``role='strand'`` — sequence, DNA/RNA), and the route itself is an ordered
+list of **domains** (``se_topology`` ``kind='domain'``, one row per stretch
+``[start, end)`` of one helix, identified by ``(strand, ord)`` because a
+strand crosses the same helix twice in any real origami). **Pairing is
+derived, never declared** (:func:`precis_se.chain.pairing.derive_pairing`,
+O(total domain length)): two antiparallel occupants of one helix offset ARE
+a base pair, one is single-stranded, and anything else is a
+``chain_occupancy`` finding — so a crossover is just a 0/1-nt loop between
+adjacent helices, a toehold a single-occupancy domain, a hairpin two
+antiparallel domains on one helix. L1 is ``layout_chain``, which
+materialises a helix's swept tube as child blocks ``<helix>.s<k>`` (one
+lattice repeat each by default, ``cyl`` envelopes from the kernel's capsule
+pose) whose ``[start, end]`` unit ranges **tile the helix exactly** — the
+seam a realizer needs. L4 is the pure ``chain_*`` DRC pass
+(:func:`precis_se.chain.drc.findings`, folded into ``view='drc'``): bend,
+twist register, capsule clash, loop reach — where ``chain_loop_short`` at
+``n=0`` IS the crossover register check, since the kernel's
+``(n+1)``-bond contour convention gives a zero-nt crossover exactly one
+bond of reach — plus slack, floppy single-stranded spans, dangling
+domains, occupancy and declared Leontis–Westhof pair geometry.
+Segment↔segment pairs are excluded from :func:`precis_se.validate.
+envelope_overlaps` wholesale, because the kernel's capsule pass answers
+that question for a whole origami at once while the SDF scan would spend
+its entire budget on it. ``view='chain'`` is the readout. Every number
+(and its source) is in :mod:`precis_se.chain.nucleic`, the one place in
+the repo that states them.
 """
 
 from __future__ import annotations

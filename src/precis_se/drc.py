@@ -31,6 +31,11 @@ same posture — the L2 threading graph re-checked over stored data
 (``dangling_threading`` error, ``threaded_without_envelope`` warn) — plus
 the mode↔binding coupling in :func:`_mode_binding_findings`.
 
+The **nucleic-acid domain** (docs/backlog/se-nucleic-acid.md) adds its nine
+pure ``chain_*`` rules the same way ``fasten`` does — computed by
+:func:`precis_se.chain.drc.findings`, folded into the one findings list
+here, detailed in that module's docstring.
+
 **Connect geometric plausibility** (:mod:`precis_se.geometry_plausibility`,
 gr337040 + gr338426) closes the gap the DOF probe and the mechanism-demand
 checks (§3/3b above) both leave open: neither ever looks at whether the
@@ -57,6 +62,7 @@ from precis_se import geometry_plausibility as se_geometry
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se import stability as se_stability
+from precis_se.chain import drc as se_chain_drc
 from precis_se.measures import StackupResult, stackup
 from precis_se.ops import SeBlock, SeTree, effective_envelope
 from precis_se.validate import (
@@ -828,5 +834,14 @@ def drc(tree: SeTree) -> DrcReport:
                     severity="warn",
                 )
             )
+
+    # 9. the nucleic-acid domain's pure findings (docs/backlog/
+    # se-nucleic-acid.md slice 1 — :mod:`precis_se.chain.drc` owns the
+    # numbers and the reasoning, the same division ``se_fasten.findings``
+    # above has). Pure over the tree, like everything in this function;
+    # the handler-side chain rules (the ``material`` Lp row that re-emits
+    # ``chain_floppy``, the ViennaRNA fold checks) are appended in
+    # ``handler._render_drc`` after this returns, never inside it.
+    findings.extend(se_chain_drc.findings(tree))
 
     return DrcReport(findings=findings, stackup=stack, dof_probes=probes)
