@@ -19,6 +19,7 @@ from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.utils import handle_registry
+from precis.workers import hub_refine
 from precis.workers._chase_llm import is_corroborating
 from precis.workers.bib_mark import run_bib_mark_pass
 from precis.workers.hub_refine import (
@@ -410,6 +411,88 @@ def test_sha_reopen_reclaims_and_clears_the_rejection_memo_before_discovery(
     # The memo was cleared BEFORE discovery: the previously-rejected paper
     # is re-verified, not silently skipped by the (now-stale) memo.
     assert mock_verify2.call_count == 1
+
+
+def _mark_signed(store: Any, hub: int, state: str = "reviewed") -> None:
+    """Put ``hub`` past ``candidate`` in the publish flow — the "signed"
+    test :func:`precis.workers.hub_refine._is_hub_due` exempts arm 4 by."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO nanopub_publish (claim_ref_id, state) VALUES (%s, %s)",
+            (hub, state),
+        )
+        conn.commit()
+
+
+def test_refine_version_bump_reclaims_an_unsigned_hub(store: Any, monkeypatch) -> None:
+    """A ``REFINE_VERSION`` bump is the rules-changed lever: an unsigned
+    hub with a matching sha, no due tag and a fresh ``last_refined_at``
+    falls back out of the done-set and re-verifies, no backfill."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A refine-version bump probe claim.")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first["claimed"] == 1
+    assert (
+        _hub_meta(store, hub).get("last_refined_version") == hub_refine.REFINE_VERSION
+    )
+
+    # Baseline: not due again under the same version.
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        baseline = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert baseline == {"claimed": 0, "ok": 0, "failed": 0}
+
+    monkeypatch.setattr(hub_refine, "REFINE_VERSION", "test-next")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+    # Re-stamped at the new version, so it drains again rather than looping.
+    assert _hub_meta(store, hub).get("last_refined_version") == "test-next"
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        third = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert third == {"claimed": 0, "ok": 0, "failed": 0}
+
+
+def test_refine_version_bump_exempts_a_signed_hub(store: Any, monkeypatch) -> None:
+    """The signature freezes the claim: a hub with a ``nanopub_publish``
+    row past ``candidate`` is NOT reclaimed by a version bump alone —
+    "we changed the rules" is not a reason to re-verify reviewed work."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A signed version-exemption probe claim.")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first["claimed"] == 1
+
+    _mark_signed(store, hub)
+    monkeypatch.setattr(hub_refine, "REFINE_VERSION", "test-next")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second == {"claimed": 0, "ok": 0, "failed": 0}
+    assert mock_verify.call_count == 0
+
+
+def test_signed_hub_is_still_reclaimed_by_a_due_tag(store: Any, monkeypatch) -> None:
+    """The signature exempts arm 4 ONLY. New near evidence
+    (``TAPROOT_DUE``) must still reach a signed hub — demotion on a
+    ``contradicts`` verdict is the only route by which later evidence
+    reaches a published claim."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A signed due-tag reachability probe claim.")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first["claimed"] == 1
+
+    _mark_signed(store, hub, state="published")
+    monkeypatch.setattr(hub_refine, "REFINE_VERSION", "test-next")
+    store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+    assert store.has_tag(hub, "TAPROOT_DUE", "1") is False
 
 
 def test_backstop_hub_not_reclaimed_within_the_window(store: Any) -> None:

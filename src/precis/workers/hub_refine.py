@@ -15,7 +15,8 @@ Claimed off a **due-set**, never a blind periodic rescan
 
 1. **Claim** (:func:`_claim_hubs_due_for_refine`) — ``TAPROOT:claim``/
    ``STATUS:canonical`` findings due for refine (a ``TAPROOT_DUE`` tag,
-   never-refined, an edit reopening it, or the long backstop),
+   never-refined, an edit reopening it, a :data:`REFINE_VERSION` bump on an
+   unsigned hub, or the long backstop),
    never-refined first then oldest ``last_refined_at``, ``SKIP LOCKED``,
    capped at :func:`_hubs_per_pass`. A **compound** claim hub (a live
    inbound ``conjunct-of`` edge — it decomposed into atoms,
@@ -64,7 +65,8 @@ Claimed off a **due-set**, never a blind periodic rescan
    ``candidate``; ``anchored``/``published`` raises for a human. Demotion
    is the only two-directional move here — everything else promotes.
 6. **Stamp** — ``meta.last_refined_at``/``last_refined_sha``
-   (:func:`taproot.canon.claim_sha` at refine time) set unconditionally,
+   (:func:`taproot.canon.claim_sha` at refine time) and
+   ``last_refined_version`` (:data:`REFINE_VERSION`) set unconditionally,
    even on an empty pass, so the due-set conditions hold and the hub
    drains out until re-marked. A **sha-reopen** (stored sha ≠ live title)
    clears the rejection memo before discovery — the claim changed, so an
@@ -339,6 +341,13 @@ def _attach_disputes(
 #: ``finding.meta`` keys this pass reads/writes.
 _META_LAST_REFINED_AT = "last_refined_at"
 _META_LAST_REFINED_SHA = "last_refined_sha"
+#: The *rules* version this hub was last refined under. ``last_refined_sha``
+#: versions the claim's own text (an edit reopens it); this versions the
+#: refiner — bump :data:`REFINE_VERSION` when the discovery/verify logic
+#: changes materially and every unsigned hub falls out of the done-set and
+#: lazily re-verifies, with no backfill script. Same lever as
+#: ``chase_trigger.CHASETRIG_VERSION``, one level up.
+_META_LAST_REFINED_VERSION = "last_refined_version"
 _META_REJECTED = "taproot_rejected"
 #: Citation-following (citation-taproot-resolve, shipped — git history): a
 #: ``supports=no`` verdict against a paper reached by *following a claim's
@@ -377,6 +386,21 @@ _DUE_VALUE = "1"
 _ATTEMPT_NS = "TAPROOT_REFINE_ATTEMPT"
 _ATTEMPT_VALUE = "1"
 ATTEMPT_COOLDOWN_MIN = 30
+
+
+#: Bump to force a lazy corpus-wide re-verify (see
+#: :data:`_META_LAST_REFINED_VERSION`). A bump costs one LLM discover+verify
+#: pass per *unsigned* canonical claim hub (~1.2k), drained at
+#: :func:`_hubs_per_pass` per pass — a deliberate spend, which is why this is
+#: a hand-edited constant and not a hash of this module.
+#:
+#: **Signed hubs are exempt from this arm only** (:func:`_is_hub_due`): a hub
+#: with a ``nanopub_publish`` row past ``candidate`` has a frozen claim sha
+#: and a human review behind it, so "we changed the rules" is not on its own
+#: a reason to re-verify it. The other four arms still reach it — a fresh
+#: ``TAPROOT_DUE`` tag from new near evidence must still be able to land a
+#: ``contradicts`` verdict and demote it (module docstring step 5).
+REFINE_VERSION = "1"
 
 
 def _backstop_hours() -> float:
@@ -427,6 +451,8 @@ def _is_hub_due(
     is_due_tagged: bool,
     last_refined_at: str | None,
     last_refined_sha: str | None,
+    last_refined_version: str | None,
+    is_signed: bool,
     title: str,
     backstop_h: float,
 ) -> bool:
@@ -438,14 +464,26 @@ def _is_hub_due(
     3. edited since last refine (stored ``last_refined_sha`` absent or no
        longer matches the live title's :func:`taproot.canon.claim_sha` —
        a reopen), or
-    4. the long backstop has elapsed (nothing is ever permanently stuck if
+    4. refined under older rules (stored ``last_refined_version`` != the
+       live :data:`REFINE_VERSION`) **and not signed** — the one arm the
+       signature exempts, see that constant, or
+    5. the long backstop has elapsed (nothing is ever permanently stuck if
        a due-tag is lost to a failed pass).
+
+    ``is_signed`` means "has a ``nanopub_publish`` row past ``candidate``"
+    — the same frozen-claim test ``taproot.reword`` excludes its cohort by
+    and ``taproot.hub._publish_states_past_candidate`` blocks merges by.
+    It gates arm 4 ONLY: a signed hub still refines on new evidence, an
+    edit, or the backstop, because demotion-on-``contradicts`` is the only
+    route by which later evidence reaches a published claim.
     """
     if is_due_tagged:
         return True
     if last_refined_at is None:
         return True
     if last_refined_sha is None or last_refined_sha != claim_sha(title):
+        return True
+    if not is_signed and last_refined_version != REFINE_VERSION:
         return True
     try:
         refined_at = datetime.fromisoformat(last_refined_at)
@@ -495,7 +533,12 @@ def _claim_hubs_due_for_refine(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %(attempt_ns)s
                     AND (rt.expires_at IS NULL OR rt.expires_at > now())
-               ) AS has_attempt_lease
+               ) AS has_attempt_lease,
+               EXISTS (
+                 SELECT 1 FROM nanopub_publish np
+                  WHERE np.claim_ref_id = r.ref_id
+                    AND np.state <> 'candidate'
+               ) AS is_signed
           FROM refs r
          WHERE r.kind = 'finding'
            AND r.retired_at IS NULL
@@ -520,7 +563,7 @@ def _claim_hubs_due_for_refine(
     ).fetchall()
 
     candidates: list[tuple[int, str | None]] = []
-    for ref_id, title, meta, is_due_tagged, has_attempt_lease in rows:
+    for ref_id, title, meta, is_due_tagged, has_attempt_lease, is_signed in rows:
         if has_attempt_lease:
             # A prior attempt raised mid-loop and left its lease standing —
             # brake this hub from re-claim until it cools down, regardless
@@ -533,6 +576,8 @@ def _claim_hubs_due_for_refine(
             is_due_tagged=bool(is_due_tagged),
             last_refined_at=last_refined_at,
             last_refined_sha=last_refined_sha,
+            last_refined_version=meta.get(_META_LAST_REFINED_VERSION),
+            is_signed=bool(is_signed),
             title=str(title or ""),
             backstop_h=backstop_h,
         ):
@@ -2783,6 +2828,7 @@ def _refine_one_hub(
             meta_patch={
                 _META_LAST_REFINED_AT: datetime.now(UTC).isoformat(),
                 _META_LAST_REFINED_SHA: claim_sha(title),
+                _META_LAST_REFINED_VERSION: REFINE_VERSION,
             },
             conn=conn,
         )
@@ -3156,6 +3202,7 @@ def _refine_one_hub(
     meta_patch: dict[str, Any] = {
         _META_LAST_REFINED_AT: datetime.now(UTC).isoformat(),
         _META_LAST_REFINED_SHA: new_sha,
+        _META_LAST_REFINED_VERSION: REFINE_VERSION,
     }
     if rejected or reopened:
         # Always persist on a reopen, even an emptied memo -- that's the
