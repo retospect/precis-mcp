@@ -496,6 +496,7 @@ def extract_paper_from_markup(
     fmt: str,
     pdf_path: Path | None = None,
     source_url: str | None = None,
+    identifiers: dict[str, str] | None = None,
 ) -> PaperToWrite:
     """Build a :class:`PaperToWrite` from structured markup (no Marker).
 
@@ -515,6 +516,23 @@ def extract_paper_from_markup(
     and folds in via the shared sidecar ``ref_id``), but a direct caller
     may pass one to attach without OCR.
 
+    ``identifiers`` (gr453913) is the OA-fetch sidecar's own
+    ``id_kind → id_value`` map (see :class:`precis.ingest.fetch_sidecar.
+    FetchSidecar`) — the authoritative identity of *why this fetch ran*,
+    independent of the document's own front matter or ``source_url``.
+    ``jats``/``elsevier_xml`` are self-contained (their DOI comes out of
+    an in-document ``<article-id>``/``<prism:doi>`` element), but
+    ``arxiv_html``/``latex`` have no such element and previously derived
+    their arXiv id *exclusively* from ``source_url`` — which the
+    production watcher never sets (``MarkupInput.source_url`` stays
+    ``None`` on every real ingest), so every arxiv_html/latex markup
+    ingest raised ``MarkupParseError`` for "no source identifier". A
+    ``doi``/``arxiv`` entry here fills the gap left by a missing or
+    unparseable ``source_url`` — checked only when the parser's own
+    extraction (front matter for jats/elsevier, ``source_url`` for
+    arxiv_html/latex) came up empty, so it never overrides an identifier
+    the document itself carries.
+
     Raises :class:`precis.ingest.markup.MarkupParseError` on a parse
     failure; the caller (:func:`precis.ingest.add._ingest_markup`) then
     leaves the ref claimable for out-of-band companion-PDF recovery.
@@ -528,6 +546,11 @@ def extract_paper_from_markup(
 
     doi = normalize_doi(ext.doi) if ext.doi else None
     arxiv_id = normalize_arxiv(ext.arxiv_id) if ext.arxiv_id else None
+    if identifiers:
+        if doi is None and identifiers.get("doi"):
+            doi = normalize_doi(identifiers["doi"])
+        if arxiv_id is None and identifiers.get("arxiv"):
+            arxiv_id = normalize_arxiv(identifiers["arxiv"])
 
     pdf_sha256: str | None = None
     pdf_size_bytes: int | None = None

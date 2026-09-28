@@ -890,6 +890,14 @@ def process_pdf(
             extra_tags=routing.extra_tags,
             as_kind=as_kind,
             fold_ref_id=fold_ref_id,
+            # gr453913: arxiv_html/latex have no in-document identifier and
+            # previously derived their arXiv id ONLY from source_url, which
+            # this watcher never sets — so real ingest of those two formats
+            # always raised MarkupParseError. The OA-fetch sidecar already
+            # carries doi/arxiv/s2/cite_key in `identifiers`
+            # (precis.workers.fetch_oa._run_markup_cascade writes it); thread
+            # it through so extract_paper_from_markup can fall back to it.
+            identifiers=sidecar.identifiers if sidecar is not None else None,
         )
     elif routing.kind == "pres":
         input_ = PresInput(pdf_path=pdf, extra_tags=routing.extra_tags)

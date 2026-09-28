@@ -162,6 +162,19 @@ class MarkupInput:
     #: Same semantics as :class:`PdfInput.fold_ref_id` — the OA-fetch
     #: sidecar's authoritative stub target.
     fold_ref_id: int | None = None
+    #: The OA-fetch sidecar's own ``id_kind → id_value`` map (gr453913),
+    #: e.g. ``{"doi": ..., "arxiv": ...}`` — carried through from
+    #: :class:`precis.ingest.fetch_sidecar.FetchSidecar.identifiers`.
+    #: ``jats``/``elsevier_xml`` pull their DOI out of the document's own
+    #: front matter, so they never needed this; ``arxiv_html``/``latex``
+    #: have no in-document identifier and previously derived their arXiv
+    #: id *exclusively* from ``source_url`` — which the watcher never
+    #: sets — so every real ingest of those two formats raised
+    #: ``MarkupParseError``. This is the fallback identity source
+    #: :func:`precis.ingest.pipeline.extract_paper_from_markup` consults
+    #: when the parser's own extraction came up empty. ``None`` for a
+    #: manual drop with no sidecar.
+    identifiers: dict[str, str] | None = None
 
 
 PrecisAddInput = PdfInput | DoiInput | ArxivInput | PresInput | MarkupInput
@@ -875,6 +888,7 @@ def _ingest_markup(
             input.markup_path,
             fmt=input.fmt,
             source_url=input.source_url,
+            identifiers=input.identifiers,
         )
     except MarkupParseError as exc:
         log.error(

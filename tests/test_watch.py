@@ -1108,3 +1108,154 @@ class TestParserRegistration:
         assert "--watch" in out
         assert "--corpus-dir" in out
         assert "--no-backfill" in out
+
+
+# ---------------------------------------------------------------------------
+# gr453913 — arxiv_html/latex identity recovered from the OA-fetch sidecar
+# ---------------------------------------------------------------------------
+#
+# Deliberately real end-to-end (unlike the rest of this file's stubbed
+# ``precis_add`` orchestration tests — see the module docstring): the whole
+# defect lived at the ``MarkupInput`` construction site inside
+# ``process_pdf``, so a mocked ``precis_add``/``extract_paper_from_markup``
+# or a hand-built ``MarkupInput(..., source_url=...)`` would hide exactly
+# what broke in production. This drives the real watcher entry point against
+# a real Postgres store and a real ``write_sidecar`` — precisely the shape
+# ``precis.workers.fetch_oa`` leaves in the inbox.
+
+
+_ARXIV_HTML_453913 = b"""<!DOCTYPE html>
+<html><body>
+ <article class="ltx_document">
+  <h1 class="ltx_title ltx_title_document">Widget Transport at Scale</h1>
+  <span class="ltx_personname">Ada Lovelace</span>
+  <div class="ltx_abstract"><p>Widgets, transported.</p></div>
+  <section class="ltx_section">
+   <h2 class="ltx_title">Intro</h2>
+   <p class="ltx_p">We transport 1000 widgets per second.</p>
+  </section>
+  <ul class="ltx_biblist"><li>Ref one.</li></ul>
+ </article>
+</body></html>"""
+
+
+def _make_latex_tarball(path: Path) -> None:
+    """Write a minimal, valid arXiv-source tarball (no macro-soup) to ``path``."""
+    import io
+    import tarfile
+
+    main = (
+        r"\documentclass{article}\title{Widget Transport}\begin{document}"
+        r"\section{Intro} We transport widgets at scale. \end{document}"
+    )
+    data = main.encode()
+    with tarfile.open(path, "w:gz") as tar:
+        info = tarfile.TarInfo("main.tex")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+
+class TestProcessPdfMarkupIdentityFromSidecar:
+    """gr453913: arxiv_html/latex derived identity ONLY from
+    ``source_url``, which the production watcher never sets
+    (``MarkupInput.source_url`` stayed ``None`` on every real ingest) — so
+    every real arxiv_html/latex markup ingest raised
+    ``MarkupParseError('no source identifier')``. The OA-fetch sidecar
+    already carries the arXiv id in ``identifiers``
+    (``precis.workers.fetch_oa._run_markup_cascade`` writes it); this
+    proves it now threads through ``process_pdf`` → ``MarkupInput.
+    identifiers`` → ``extract_paper_from_markup``.
+    """
+
+    def _layout(self, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+        watch_dir = tmp_path / "inbox"
+        watch_dir.mkdir()
+        errors_dir = watch_dir / "errors"
+        duplicates_dir = errors_dir / "duplicates"
+        errors_dir.mkdir()
+        duplicates_dir.mkdir()
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        return watch_dir, errors_dir, duplicates_dir, corpus_dir
+
+    @staticmethod
+    def _paper_id_for_arxiv(store: Store, arxiv_id: str) -> str | None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT pid.id_value
+                  FROM ref_identifiers arx
+                  JOIN ref_identifiers pid
+                    ON pid.ref_id = arx.ref_id AND pid.id_kind = 'paper_id'
+                 WHERE arx.id_kind = 'arxiv' AND arx.id_value = %s
+                """,
+                (arxiv_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def test_arxiv_html_ingest_uses_sidecar_identifiers(
+        self, store: Store, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("lxml")
+        pytest.importorskip("habanero")
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+
+        markup = watch_dir / "gr453913-html.html"
+        markup.write_bytes(_ARXIV_HTML_453913)
+        write_sidecar(
+            markup,
+            # No live stub at this ref_id — falls through to a fresh insert
+            # via write_paper (whose identity is exactly what's under test).
+            ref_id=999_999_999,
+            identifiers={"arxiv": "2301.12345"},  # NO doi
+            source="fetcher:arxiv_html",
+            source_format="arxiv_html",
+        )
+
+        dest = process_pdf(
+            markup,
+            store=store,
+            watch_dir=watch_dir,
+            corpus_dir=corpus_dir,
+            corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+            errors_dir=errors_dir,
+            duplicates_dir=duplicates_dir,
+            debounce=0.01,
+            user="owner",
+        )
+
+        # Not None: neither MarkupParseError nor MarkupTriggerSpent fired —
+        # pre-fix this raised MarkupParseError("no source identifier ...").
+        assert dest is not None
+        assert self._paper_id_for_arxiv(store, "2301.12345") == "arxiv:2301.12345"
+
+    def test_latex_ingest_uses_sidecar_identifiers(
+        self, store: Store, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("habanero")
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+
+        markup = watch_dir / "gr453913-latex.tar.gz"
+        _make_latex_tarball(markup)
+        write_sidecar(
+            markup,
+            ref_id=999_999_998,
+            identifiers={"arxiv": "2301.54321"},  # NO doi
+            source="fetcher:arxiv_source",
+            source_format="latex",
+        )
+
+        dest = process_pdf(
+            markup,
+            store=store,
+            watch_dir=watch_dir,
+            corpus_dir=corpus_dir,
+            corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+            errors_dir=errors_dir,
+            duplicates_dir=duplicates_dir,
+            debounce=0.01,
+            user="owner",
+        )
+
+        assert dest is not None
+        assert self._paper_id_for_arxiv(store, "2301.54321") == "arxiv:2301.54321"
