@@ -52,8 +52,8 @@ def test_nav_header_carries_headroom_hook(client) -> None:
     future markup shuffle that drops the attribute fails a real request."""
     resp = client.get("/drive")
     assert resp.status_code == 200
-    assert '<header data-headroom' in resp.text
-    assert 'sticky top-0' in resp.text
+    assert "<header data-headroom" in resp.text
+    assert "sticky top-0" in resp.text
 
 
 # ── /api/llm/resolve — the structured-selector preview endpoint ──────────

@@ -1673,9 +1673,7 @@ def test_build_bib_article_no_journal_omits_field() -> None:
     all (not an empty one) — the exact scenario that used to render as a
     bare 'In: (2026)' in the compiled PDF."""
     store = _BibStore(
-        {
-            ("paper", "p1"): _bibref(1, "p1", "paper", title="T", year=2020, meta=None)
-        }
+        {("paper", "p1"): _bibref(1, "p1", "paper", title="T", year=2020, meta=None)}
     )
     bib = latex.build_bib(store, ["p1"], [])
     assert "journaltitle" not in bib
