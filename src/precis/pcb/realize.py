@@ -2766,8 +2766,10 @@ def _plane_fanout(
     a property of a *pin*.
 
     The stub runs outward along the pin's own land-pattern offset — away
-    from the part body, which is where the escape has to go anyway — and
-    ends in a via spanning ``PAD_LAYER`` to the plane layer. That via is
+    from the part body, which is where the escape has to go anyway — on
+    the pin's OWN copper layer (:func:`_side_layer`; a bottom-mounted part
+    gets a B.Cu stub, not an F.Cu one), and ends in a via spanning that
+    layer to the plane layer. That via is
     what :func:`precis.pcb.planes.plane_pours` deliberately does not carve
     an antipad around: it is the connection.
 
@@ -2779,6 +2781,12 @@ def _plane_fanout(
     tracks: list[RealizedTrack] = []
     vias: list[RealizedVia] = []
     failed: list[int] = []
+    # The OUTER copper pair by index, which is where a pad physically is —
+    # deliberately the whole stackup rather than :func:`_signal_layers`,
+    # because mount side decides a pad's layer and routability has no say
+    # in it. `_side_layer` reads the first/last entry, so this is the same
+    # (top, bottom) pair `pads_for_ir` picks from a stackup NAME list.
+    outer_layers = range(len(ir.stackup))
     seg_of_net: dict[int, int] = {}
     for seg_id in plane_ids:
         seg_of_net.setdefault(int(ir.seg_net[seg_id]), seg_id)
@@ -2808,8 +2816,6 @@ def _plane_fanout(
         # In1.Cu is tied into ONE net the moment any GND pin's drop via
         # spans both, no separate stitching-via pass required.
         plane_layers = plane_layers_of(int(ir.net_plane_layers[net_id]))
-        span_lo = min([PAD_LAYER, *plane_layers])
-        span_hi = max([PAD_LAYER, *plane_layers])
         rules = rules_by_net[net_id]
         for pid in range(ir.n_pins):
             if int(ir.pin_net[pid]) != net_id:
@@ -2817,13 +2823,33 @@ def _plane_fanout(
             point = pin_point(ir, pid)
             if point is None:
                 continue
+            # THIS pin's own copper layer (:func:`_side_layer`, the same
+            # bottom/top rule `pads_for_ir` builds the DRC/gerber pad set
+            # with), never the shared `PAD_LAYER` — which is exactly the
+            # mistake this docstring diagnoses for `ir.seg_layer` and then
+            # made again one line down. A bottom-mounted pin got a stub
+            # drawn on F.Cu, starting on bare board above its own pad, and
+            # a drop via spanning F.Cu->plane that never reaches B.Cu at
+            # all. Measured 2026-09-28 on the EWOD dogfood the first time a
+            # GND plane was authored on In1.Cu: GND came out `realized` in
+            # THREE islands, the two extra witnesses being its two
+            # bottom-side SMD lands (8.417, 0.358) and (19.0, 0.0), while
+            # all five GND drop vias reported span ['F.Cu', 'In1.Cu'].
+            # Silent twice over: the net reports realized, and the stray
+            # stub lands on the electrode layer this board forbids.
+            pad_layer = _side_layer(ir, int(ir.pin_instance[pid]), outer_layers)
+            # The span still reaches the FARTHEST poured layer, so a via
+            # from a bottom pad crosses (and therefore stitches) every
+            # nearer pour on the way — the property the note above relies
+            # on, now measured from the right end.
+            lo = min([pad_layer, *plane_layers])
+            hi = max([pad_layer, *plane_layers])
             dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
             norm = math.hypot(dx, dy)
             # A pin at its instance's exact centroid has no outward
             # direction to offer. +x is arbitrary but deterministic, and
             # the grid still refuses to let the stub overlap anything.
             ux, uy = (dx / norm, dy / norm) if norm > 1e-9 else (1.0, 0.0)
-            lo, hi = span_lo, span_hi
             # Deliberately the conservative ENCLOSING circle, not
             # `_pad_shape`'s true (possibly rect/poly) claim
             # `_realize_maze`'s own pad-claim loop now stamps (gripe
@@ -2860,7 +2886,7 @@ def _plane_fanout(
                 RealizedTrack(
                     seg_id,
                     net_id,
-                    PAD_LAYER,
+                    pad_layer,
                     (
                         {
                             "shape": "line",
@@ -2878,8 +2904,8 @@ def _plane_fanout(
                 maze.RoutePath(
                     net_id,
                     (
-                        (point[0], point[1], PAD_LAYER),
-                        (stub_end[0], stub_end[1], PAD_LAYER),
+                        (point[0], point[1], pad_layer),
+                        (stub_end[0], stub_end[1], pad_layer),
                     ),
                     dist(point, stub_end),
                 ),

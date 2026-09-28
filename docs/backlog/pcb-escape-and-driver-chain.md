@@ -364,10 +364,41 @@ real number in item 1.
   must still swallow its OWN authored copper), and each verified to fail
   with the fix reverted.
 
-  **Still open on the GND-plane arm:** with In1 poured, GND lands in 3
-  islands — `_stitch_plane_fragments` does not close it. The In2-signal
-  arm without the GND plane is clean (4 islands, all failed escapes), so
-  this does not block the layer win. Own item.
+  **And a third, FIXED 2026-09-28: the GND-plane arm's 3 islands were
+  not a stitching gap — `_plane_fanout` dropped every pin from `PAD_LAYER`.**
+  I had filed this as "`_stitch_plane_fragments` does not close it"; the
+  stitcher was never the pass at fault. `_plane_fanout` spans the drop via
+  `min/max([PAD_LAYER, *plane_layers])` and draws the stub on `PAD_LAYER`,
+  so a BOTTOM-mounted pin got a via F.Cu→In1.Cu that never reached B.Cu
+  and a stub on bare board above its own pad. Its docstring already
+  claimed "from the pad's own layer", and diagnoses this exact mistake one
+  paragraph earlier for `ir.seg_layer` — then repeats it. Unreachable
+  before: `DEFAULT_STACKUP` declares `plane_net: GND` on In1.Cu, but that
+  key was DEAD until `op='stackup'` applied it, so no board had ever
+  poured a plane under a bottom-side part. Fix = `_side_layer` against the
+  OUTER index pair (mount side decides a pad's layer; routability has no
+  say). Pinned by `test_pcb_realize.py::test_plane_fanout_drops_a_bottom_
+  mounted_pin_from_its_OWN_layer`, verified red without it.
+
+  Measured on the dogfood at seed 1, In1.Cu poured GND:
+
+  | | before | after |
+  | --- | --- | --- |
+  | GND islands | 3, reporting `realized` | **1** |
+  | escapes | 50 / 54 | 50 / 54 |
+  | nets not realized | 4 | 5 |
+
+  **The extra failure is the honest price and is worth naming.**
+  `VDD_LOGIC` (two B.Cu pads, adjacent to the two GND lands) goes
+  `realized` → `failed: congestion`, because GND's stubs now legitimately
+  occupy the B.Cu space they always should have. Every one of the 5
+  failures now reports itself; before, GND was silently in pieces while
+  reporting `realized` — the class of defect this campaign keeps finding
+  (item 2's 24 shorts under a 35/54 yield). It is `congestion`, not
+  `no_path`, and In2.Cu is open, so it is a route-ORDER problem: plane
+  fanout claims its space before the maze runs and no rip-up returns to
+  it. That is the negotiated-congestion question under "Router annealing",
+  not a geometry wall — do not re-file it as one.
 - **Router annealing: not now.** `congestion` is the smaller failure
   class and goes to 0 as soon as layers open. If a global method is ever
   needed the answer is negotiated congestion (PathFinder), not annealing —

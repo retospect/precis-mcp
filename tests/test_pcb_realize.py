@@ -551,6 +551,103 @@ def test_plane_flooded_on_two_layers_pours_both_and_stays_one_net_island():
     )
 
 
+def test_plane_fanout_drops_a_bottom_mounted_pin_from_its_OWN_layer():
+    """A BOTTOM-mounted pin's plane connection starts on B.Cu.
+
+    The test above pours two layers but mounts both parts on top, so it
+    could not tell ":func:`~precis.pcb.realize._plane_fanout` spans from
+    the pad's own layer" (what its docstring claims) from "spans from
+    ``PAD_LAYER``" (what the code did). Those differ for exactly one part:
+    a bottom-mounted one. For it the old code drew the stub on F.Cu —
+    bare board above its own pad — and gave it a via spanning
+    F.Cu->plane that never reached B.Cu at all, so the pin was left
+    ELECTRICALLY UNCONNECTED while its net still reported ``realized``.
+
+    Measured 2026-09-28 on the EWOD dogfood the first time a GND plane was
+    authored on In1.Cu: GND came out ``realized`` in THREE islands, the
+    two extra witnesses being its bottom-side SMD lands, and all five drop
+    vias reported ``span ['F.Cu', 'In1.Cu']``. The stray F.Cu stub is the
+    second half of the defect — on that board F.Cu carries the electrode
+    field, which nothing may cross.
+    """
+    graph = {
+        "instances": [
+            {"refdes": "G1", "x": 5.0, "y": 15.0},
+            # The whole point of the fixture: native copper is B.Cu, the
+            # LAST stackup entry, not the first.
+            {"refdes": "G2", "x": 35.0, "y": 15.0, "layer": "bottom"},
+        ],
+        "nets": [
+            {
+                "name": "GND",
+                "net_class": "ground",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "G1", "pin": "1"},
+                    {"refdes": "G2", "pin": "1"},
+                ],
+            },
+        ],
+    }
+    outline = [[0.0, 0.0], [40.0, 0.0], [40.0, 30.0], [0.0, 30.0]]
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP, outline=outline)
+    ir.promote_plane(0, 1)  # In1.Cu
+    result = realize(ir, config=RealizeConfig(fab_caps=capability_for("4layer")))
+    assert not result.unrouted, [
+        (s, r.message) for s, r in zip(result.unrouted, result.unrouted_reasons)
+    ]
+
+    bottom = len(DEFAULT_STACKUP) - 1  # B.Cu
+    g2_pin = next(
+        pid
+        for pid in range(ir.n_pins)
+        if str(ir.instance_refdes[int(ir.pin_instance[pid])]) == "G2"
+    )
+    g2_point = pin_point(ir, g2_pin)
+    assert g2_point is not None
+    # Identified by POSITION, not by index: the fanout emits one stub per
+    # pin and nothing in its contract fixes their order.
+    g2_stubs = [
+        t for t in result.tracks if tuple(t.segments[0]["start"]) == tuple(g2_point)
+    ]
+    assert g2_stubs, ("G2 got no plane stub at all", result.tracks)
+    assert {t.layer for t in g2_stubs} == {bottom}, (
+        "a bottom-mounted pin's plane stub must be drawn on B.Cu — on F.Cu "
+        "it starts on bare board above its own pad, and on this engine's "
+        "own EWOD board F.Cu is the electrode field",
+        [(t.layer, t.segments) for t in g2_stubs],
+    )
+    g2_vias = [
+        v
+        for v in result.vias
+        if any(
+            math.isclose(v.x, s.segments[0]["end"][0])
+            and math.isclose(v.y, s.segments[0]["end"][1])
+            for s in g2_stubs
+        )
+    ]
+    assert g2_vias, ("G2's stub ends in no via", result.vias)
+    for v in g2_vias:
+        assert v.layer_lo <= 1 and v.layer_hi == bottom, (
+            "a bottom-mounted pin's drop via must span its OWN layer to the "
+            "plane, not F.Cu to the plane",
+            v,
+        )
+
+    # The consequence, checked independently of how it was achieved.
+    model = to_gerber_model(
+        result,
+        ir,
+        layers=[layer["name"] for layer in DEFAULT_STACKUP],
+        outline=outline,
+    )
+    assert "GND" not in {i.net for i in net_islands(model)}, (
+        "a plane whose bottom-side pin never reached it is a net in two "
+        "pieces, however confidently the route status says realized",
+        net_islands(model),
+    )
+
+
 def test_stitch_one_net_sprinkles_a_via_and_merges_two_overlapping_sheets():
     """gr270637 — the deliberate stitching pass (module docstring's "Plane
     fragment stitching" note), exercised directly against

@@ -155,7 +155,9 @@ get(kind="pcb", id="s", view="planes")  # see what's assigned
 it, e.g. `4 layers: F.Cu/In1.Cu(GND)/In2.Cu/B.Cu`); an unknown name is
 rejected with the valid options. A plane-assigned net's pins **dog-bone
 fan out** (a short stub off the pad, no via-in-pad) instead of routing
-point-to-point — this is real and takes effect on the next `op='route'`
+point-to-point — on the pin's OWN side, so a bottom-mounted part's stub is
+on B.Cu and its drop via spans B.Cu→the plane. This is real and takes
+effect on the next `op='route'`
 run (the assignment is re-applied onto the freshly-built IR every time,
 same as the pinned sketch). **Never route ground/power beyond the
 dog-bone fanout** is the house policy this encodes; a routed trace on a
