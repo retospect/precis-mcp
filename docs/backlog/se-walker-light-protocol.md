@@ -3,7 +3,7 @@ status: ready
 title: se walker — foothold-occupancy states with per-state relaxed poses, light transitions, cursor geometry, spectral channel budget DRC, make-tree protocol
 prio: high
 model: opus
-blocked-by: se-nucleic-acid
+blocked-by: se-nucleic-realize-export
 ---
 
 # `se` walker — a DNA walker on an origami track as discrete states driven by light
@@ -260,3 +260,6 @@ recorded in that spec.
   `{xyz, rot}` with provenance implied by the writer (In-scope). Rule names
   are flat snake_case `chain_*` (house convention; the dotted spelling was a
   draft artefact). Decided.
+- 2026-09-28 `blocked-by` moved from `se-nucleic-acid` to
+  `se-nucleic-realize-export` (split off it the same day): cursor geometry
+  reads the `sites` ports only `realize_chain` mints. Decided.
