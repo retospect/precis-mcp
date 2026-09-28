@@ -2871,6 +2871,7 @@ def _plane_fanout(
                 rules,
                 config,
                 range(lo, hi + 1),
+                pad_layer,
                 pad_radius,
                 placed_via_sites,
                 _outline_clip(
@@ -3012,12 +3013,24 @@ def _drop_via_site(
     rules: NetRules,
     config: RealizeConfig,
     layers: range,
+    pad_layer: int,
     pad_radius_mm: float,
     placed_via_sites: list[tuple[float, float, float]],
     edge_clip: tuple[float, float, float, float] | None = None,
     ink_field: _InkField | None = None,
 ) -> Point | None:
     """Where this pin's drop via can legally sit, or ``None``.
+
+    ``pad_layer`` is the copper the STUB is drawn on — the pin's own side
+    (:func:`_side_layer`), which is what :func:`_plane_fanout` draws and
+    stamps it on. Checking the corridor on a hardcoded ``PAD_LAYER``
+    instead asks a bottom-mounted pin's question of the top layer: the
+    answer is about copper that is not there, and the stub then goes down
+    on B.Cu having cleared nothing. That is a short, not a near miss.
+    Measured 2026-09-28 on the EWOD dogfood, In1.Cu poured GND: GND's two
+    bottom-side stubs were placed across `VDD_LOGIC`'s B.Cu pads, and
+    `VDD_LOGIC` came out `failed: congestion` — the collision reported as
+    the victim's routing failure, one pass downstream of the cause.
 
     **Defers to courtyard ink, softly.** ``ink_field``
     (:func:`_courtyard_ink_field`) is placement-derived and known before
@@ -3128,7 +3141,7 @@ def _drop_via_site(
             n = max(1, int(reach / (grid.spec.pitch / 2.0)))
             if not all(
                 grid.disk_is_free(
-                    (PAD_LAYER,),
+                    (pad_layer,),
                     pad[0] + vx * reach * k / n,
                     pad[1] + vy * reach * k / n,
                     stub_r,

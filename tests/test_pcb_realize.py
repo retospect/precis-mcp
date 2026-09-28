@@ -2979,7 +2979,7 @@ def test_drop_via_site_prefers_ink_free_and_falls_back_to_inked_when_none_exists
     via_radius_mm = rules.via_dia_mm / 2.0
 
     baseline = pcb_realize._drop_via_site(
-        grid, pad, direction, 0, rules, config, range(0, 1), pad_radius_mm, []
+        grid, pad, direction, 0, rules, config, range(0, 1), 0, pad_radius_mm, []
     )
     assert baseline is not None
 
@@ -2995,6 +2995,7 @@ def test_drop_via_site_prefers_ink_free_and_falls_back_to_inked_when_none_exists
         rules,
         config,
         range(0, 1),
+        0,  # pad_layer — this fixture's grid has exactly one layer
         pad_radius_mm,
         [],
         ink_field=spot_field,
@@ -3027,6 +3028,7 @@ def test_drop_via_site_prefers_ink_free_and_falls_back_to_inked_when_none_exists
         rules,
         config,
         range(0, 1),
+        0,  # pad_layer — this fixture's grid has exactly one layer
         pad_radius_mm,
         [],
         ink_field=blanket_field,

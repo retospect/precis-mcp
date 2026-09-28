@@ -87,7 +87,10 @@ Escape yield on `tests/test_pcb_ewod_dogfood.py`, seed 1, 54 escape nets.
    not the router claims the unclaimed lands, so the channel assignment is monotone and is NOT why they
    fail. (Straight-line proxy, not routed paths — but it is the thing
    "are they in order" asks.) Do not spend a round on channel assignment
-   or crossing minimisation.
+   or crossing minimisation **on this metric** — but note the parenthesis
+   is load-bearing and narrows the conclusion: it is AIRWIRES, so it says
+   nothing about crossings among the paths the router actually draws. See
+   item 3's 2026-09-28 redirection, which turns on exactly that gap.
 
 ## The general primitives hiding in `ewod_pad_array`
 
@@ -269,6 +272,36 @@ and backed out. 3 must be MEASURED before it is built.
    emitted (`generators.py`), so a via-less rim pin gets no driver
    channel at all. The net class (above) and the fabric ledger's
    `pads_usable` read the same flag.
+
+   **REDIRECTED by Reto, 2026-09-28 — this is not a via-removal item any
+   more.** "I would say this is trivially routed from the vias provided by
+   the template with proper pinswapping. We just … do them in order
+   without crossing or looping around, there must be a ratsnest level
+   metric that swaps right." So: KEEP every template via, including the
+   rim's, and win by ordering the channel assignment instead. That
+   sidesteps all three blockers above — no pin loses its route start, no
+   F.Cu exit is needed, no HV rule is needed — and it is not the arm the
+   35→46 measurement discredited.
+
+   **What already exists, and what it does NOT settle.** Point 6 measured
+   "53 pin swaps settled and all 54 electrode→channel airwires cross ZERO
+   times", and concluded "do not spend a round on crossing minimisation".
+   That conclusion is narrower than it reads, because of its own
+   parenthesis: **the metric is a straight-line proxy over AIRWIRES, not
+   over routed paths.** Zero airwire crossings does not imply zero
+   crossings among the paths the router actually draws, which have to dodge
+   every plaza via and share corridors. So Reto's mechanism is not refuted
+   by the existing number — it was never measured on the geometry it is
+   about.
+
+   **Next step is one measurement, not a build:** count crossings among
+   the REALIZED escape paths (not airwires) on the current 50/54 run, and
+   report them per plaza corridor. If realized crossings are ~0 the
+   ordering lever really is spent and the 4 remaining failures are
+   capacity, not order. If they are not, the swap metric has something to
+   optimise and this item becomes "score swaps on routed-path crossings".
+   Either answer is cheap and decides the round. Do NOT implement a new
+   swap objective before it lands.
 
 4. **Polygon keep-out as a placer primitive.** `optimize.py`'s only
    non-instance obstacle is mounting-hole circles
