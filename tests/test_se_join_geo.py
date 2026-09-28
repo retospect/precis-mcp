@@ -178,6 +178,7 @@ def test_join_geo_rung_matches_whole_spec_fuse_beyond_the_guard_band(
     net_a = build(_TUBE, strict=False)
     net_b = build(_TUBE, strict=False)
     n_a = len(net_a.atoms)
+
     # instance a's own path-sorted ordinals are the same whether built
     # alone or as part of the two-instance whole spec (checked, not
     # assumed -- the same fact `tests/hexfold/test_join.py` and
@@ -194,12 +195,8 @@ def test_join_geo_rung_matches_whole_spec_fuse_beyond_the_guard_band(
 
     free_a_ord = {_bare(a.path): a.ord for a in net_a.atoms}
     free_b_ord = {_bare(a.path): a.ord for a in net_b.atoms}
-    whole_a_ord = {
-        _bare(a.path): a.ord for a in whole_net.atoms if a.instance == "a"
-    }
-    whole_b_ord = {
-        _bare(a.path): a.ord for a in whole_net.atoms if a.instance == "b"
-    }
+    whole_a_ord = {_bare(a.path): a.ord for a in whole_net.atoms if a.instance == "a"}
+    whole_b_ord = {_bare(a.path): a.ord for a in whole_net.atoms if a.instance == "b"}
     assert whole_a_ord == free_a_ord
     assert {p: o - n_a for p, o in whole_b_ord.items()} == free_b_ord
 

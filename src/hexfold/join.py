@@ -94,7 +94,10 @@ _LEAK_THRESH_DEFAULT = _LEAK_THRESH["z"]
 #: equivalent measurement showing one rim type decays differently from
 #: the other, so one number covers both, keyed the same way so the
 #: lookup in `compose` needs no special-casing).
-LEAK_THRESH_GEO: dict[str, tuple[float, float]] = {"z": (0.002, 0.15), "a": (0.002, 0.15)}
+LEAK_THRESH_GEO: dict[str, tuple[float, float]] = {
+    "z": (0.002, 0.15),
+    "a": (0.002, 0.15),
+}
 
 #: `Relaxer(elements, coords, bonds, rings, pinned_mask) -> coords`: the
 #: seam so precis can inject the geo rung (slice 2, `relax_graph`) without

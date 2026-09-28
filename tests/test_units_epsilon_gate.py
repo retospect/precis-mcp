@@ -115,6 +115,15 @@ _EXEMPT_NAMES = frozenset(
         # here (see "what this does not catch" above).
         # -- scale-free by construction (operates only on order-1 inputs) --
         "_UNIT_VEC_EPS",  # normalize()'s zero-vector guard — see vec.py docstring
+        # `precis_se/atomic/join.py`'s geo-rung early-stop: the largest
+        # single-atom displacement below which `relax_graph` stops
+        # iterating. It is Å-native because it is handed straight to
+        # `precis/structure`, the Å unit enclave, and it is a CONVERGENCE
+        # threshold, not a geometric predicate — a wrong value costs
+        # iterations (too small: burn the full budget; too large: stop
+        # under-relaxed), never the silent culling this gate exists to
+        # catch (gr335192's nanometre-box faces).
+        "_GEO_TOL",
         # -- documented author-stated absolute, decided to keep --
         # CONTACT_TOL_MM is an explicit, named, opt-in absolute band for a
         # caller that states one; CONTACT_TOL_REL (name contains "REL",

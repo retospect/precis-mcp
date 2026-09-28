@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hexfold.build import _frame, build
+from hexfold.build import Net, _frame, build
 from hexfold.join import (
     SEAM_RADIUS,
     Block,
@@ -59,8 +59,8 @@ def _kabsch_rmsd(x: np.ndarray, ref: np.ndarray) -> float:
     return float(np.sqrt(((xc @ r - yc) ** 2).sum(1).mean()))
 
 
-def _whole_spec_census(whole: object) -> dict[int, int]:
-    finding = next(f for f in whole.report.findings if f.code == "seam.rings")  # type: ignore[attr-defined]
+def _whole_spec_census(whole: Net) -> dict[int, int]:
+    finding = next(f for f in whole.report.findings if f.code == "seam.rings")
     return dict(dict(finding.data)["rings"])
 
 
