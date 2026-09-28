@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Bootstrap roadmap quest — a `roadmap` tick body that grows a capability/pathway/rung DAG from measured gaps
 prio: high
 model: fable
@@ -113,8 +113,12 @@ dry tick; reuse the existing `consecutive_dry_rests` escalation
 (`quest_tick.py::_bump_dry_rest` region) — 3 dry ticks → cool + alert.
 Minting a rung does NOT reset the dry counter (the `quest-bodies.md` perverse
 incentive: only a ledger improvement counts as engagement). Rung mint is
-near-dup matched against existing rungs on the same capability (reuse the
-attempt ledger's token-Jaccard dedup, `dossier.py::add_attempt`).
+near-dup matched against existing rungs on the same capability: call the
+token-Jaccard **measure** directly (`dossier.py::_find_near_dup_node`) over
+sibling rung titles, as a gate before the `todo` is minted. Do **not** route
+this through `add_attempt` — that writes into a single quest's own free-text
+attempt ledger and gates nothing about node creation; borrowing it as a
+side-channel would leave dossier residue per rejected mint.
 
 **Rung minting boundary:** rungs mint as `STATUS:proposed` +
 `waiting-for:reto`, `llm_tier` unset — a human flips them into the doable
@@ -178,9 +182,13 @@ downward) for a rung whose product leaves the lab despite being consumed.
 - No demand *calculator*. v1 demand role is the model reading an se part's
   measures and writing a number with its reasoning; a deterministic
   se → demand mapping is a later item.
-- No change to the materials or weave bodies; `inquiry` (blocked-by) ships
-  first and owns the prompt-stripping and frontier-says-none behaviour that
-  `roadmap` reuses.
+- No change to the materials or weave bodies. `inquiry` **has shipped**
+  (`weave_tick.py::QUEST_BODY_INQUIRY`, wired into `quest_tick.py::
+  _quest_body`/`_phase_tick`) and owns the prompt-stripping and
+  frontier-says-none behaviour that `roadmap` reuses. Note the frontier check
+  is a literal `== QUEST_BODY_INQUIRY` equality, not a catch-all for
+  non-materials bodies, so AC7 requires a real code change rather than
+  passing for free.
 - Not a plugin system. Four named bodies in one dispatch.
 - No migration: everything is `meta` + `links` + chunks.
 
@@ -209,10 +217,16 @@ downward) for a rung whose product leaves the lab despite being consumed.
    dossier has exactly one `meta.pinned='capability-ledger'` chunk after N
    ticks (regenerated, not appended).
 7. `view='frontier'` on a roadmap quest says the body has no frontier.
-8. Materials-body identity: the `quest-bodies.md` AC4 snapshot test still
-   passes; empty meta still resolves to `materials`.
+8. Materials-body identity: `tests/test_quest_tick.py::
+   test_materials_default_still_carries_the_tokens` and
+   `::test_default_unset_resolves_to_materials` still pass unchanged — a
+   fourth arm must not perturb the default. (These are the live tests; the
+   `quest-bodies.md` "AC4" this originally cited never existed — the
+   numbering came from `quest-bodies-inquiry.md`, deleted on ship.)
 9. Docs: `precis-roadmap-help` exists and `search(kind='skill', q='rung
-   consumes produces capability')` returns it top.
+   consumes produces capability')` returns it. Not "returns it first" —
+   ranking is embedding-search against a live corpus and would make the
+   assertion flaky for reasons unrelated to this body.
 
 ## Target + blast radius
 
@@ -234,14 +248,24 @@ downward) for a rung whose product leaves the lab despite being consumed.
 
 ## Open questions / decisions log
 
-- **Where does `supply` live when a rung is done?** Decided 2026-09-27
-  (revised): derived at read time from the `measures` table
-  (`knowledge-mesh.md`): best over measures whose `key` is a rubric axis
-  and whose owning hub/structure serves the capability, plus done rungs'
-  `produces`. **`meta.supply` is dropped** from this spec; `meta.demand`
-  stays. Nothing copies numbers between nodes, so a retracted finding
-  only needs its hub edited. The supply role therefore mints hubs +
-  measure rows, never a quest-meta number.
+- **Where does `supply` live when a rung is done?** Decided 2026-09-27,
+  **revised twice, final 2026-09-28: `meta.supply` stays.** The 09-27
+  revision routed supply through the `measures` table so nothing copied
+  numbers between nodes. That table does not exist, `measures-substrate.md`
+  is itself `blocked-by: term-taxonomy`, and neither is built — so the
+  revision made this item the third in a chain for a dependency it does not
+  need. Nothing in the motivation requires a general measures substrate; the
+  ask is "a deed is a capability's cited best-supply number improving,"
+  which `meta.supply` with non-empty `evidence` satisfies standalone. The
+  09-27 revision was also never propagated — Design, In-scope 2 and ACs 2–5
+  still read `meta.supply` — which made AC4's supply clause vacuous: with
+  `supply` dropped from `_META_ALLOWED_KEYS`, the write is refused for being
+  an unknown key, so the test would pass without the evidence check ever
+  being built. Reading supply from `measures` is a **v2 widening**, to be
+  specced after `term-taxonomy` → `measures-substrate` land; it is not
+  tested here. The staleness cost is accepted for v1: a retracted finding
+  needs `meta.supply` edited as well as its hub, and catching that drift is
+  `graph-gardener.md`'s problem, not this body's.
 - **Dossier shape (Reto, 2026-09-27):** the roadmap body does NOT rewrite
   a narrative. It writes a capped *framing* chunk (a few sentences,
   handles only, no bare numbers, length cap enforced in code) plus the
@@ -251,13 +275,35 @@ downward) for a rung whose product leaves the lab despite being consumed.
   narrative growth-ratchet gate does not apply to this body.
 - **Axes vocabulary.** Decided: reuse `rubric_objectives` `{key, sense}` on
   the capability quest; no new registry. `unit` is a free string in v1.
-- **Model tiers.** demand/supply Sonnet, bridge Opus, via the existing
-  per-tick tier plumbing (`quest-redispatch-tier.md` if it lands first;
-  else a `meta.roadmap_tiers` knob — decide at `ready`).
-- **Does a pathway quest itself tick?** v1: yes, same body — its gaps are
-  its own thin-support/no-literature, and its bridge role can only mint
-  rungs (not sub-pathways). Root-only ticking would be simpler; decide at
-  `ready` after the first dry-run.
+- **`model: fable` in the frontmatter is deliberate** — Reto's call, and the
+  Agent tool takes `model='fable'` directly. It is the only such value in
+  `docs/backlog/` and `TEMPLATE.md` lists only sonnet/opus/haiku, so a
+  readiness pass reads it as a typo. It is not one; do not "fix" it to
+  `opus`. Nothing in `scripts/` routes this field automatically — dispatch
+  is by hand either way.
+- **Model tiers. Decided 2026-09-28: the role picks the tier, in code, with
+  no knob.** `quest-redispatch-tier.md` is the wrong anchor — it re-scores a
+  simulation's `barrier_fidelity` ladder (`quest/compute.py::
+  redispatch_candidates`), an unrelated sense of "tier". The real per-tick
+  mechanism (`quest/loop.py::_loop_params`, `meta.loop.tier`) is fixed when
+  the coordinator job is minted and held for the job's whole life, so it
+  cannot vary by role within one quest. Shape: role selection is a pure
+  graph read, so `_phase_roadmap_tick` calls `roadmap_role(store, quest_id)`
+  **first**, builds `DispatchClient(tier=…)` at that role's tier (mirroring
+  the weave arm's own construction at `quest_tick.py`'s `source=
+  "quest_weave"` client), then calls `roadmap_tick` with it. `meta.loop.tier`
+  is ignored for this body. No `meta.roadmap_tiers` — unrequested scope.
+- **Does a pathway quest itself tick? Decided 2026-09-28: no — root and
+  capability quests only.** The earlier "yes, same body" answer contradicted
+  the gap→role table directly above it. All three roles key off a quest's own
+  `rubric_objectives`/`demand`/`supply`, and by the Design table only
+  *capability* quests carry `rubric_objectives`. A pathway's gap set is
+  therefore always the four generic ones (`thin-support`, `no-literature`,
+  `low-mastery`, `open-hypothesis`), none of which the role table maps — so a
+  ticking pathway is a guaranteed dry tick, and three dry ticks trips the
+  cool+alert escalation. Every active pathway would false-alarm on a cadence.
+  Pathways stay dormant and carry the marker only so their rungs render;
+  `mark_roadmap_quest` does not make a quest tickable on its own.
 - **Prod data — DONE 2026-09-27 (all dormant, `quest_body=roadmap`,
   `compute_lane=off`; activate nothing until the body ships):** root
   `qu453863` (serves qu161906). Pathways: qu453865 DNA-scaffold toolhead ·
