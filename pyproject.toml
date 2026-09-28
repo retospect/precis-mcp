@@ -560,7 +560,7 @@ dev = [
 autocatpath = { git = "https://github.com/retospect/catpath", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under
@@ -620,6 +620,10 @@ root_packages = [
     "precis_web",
     "asa_bot",
     "asa_slack",
+    # `precis_chain` is a root so its (deliberately empty) outbound edge to the
+    # rest of the tree is visible to the contract below — the kernel is a
+    # numpy-only package destined for its own pip, like `hexfold`.
+    "precis_chain",
 ]
 
 [[tool.importlinter.contracts]]
@@ -638,6 +642,17 @@ ignore_imports = [
 name = "surface daemons stay independent (web vs discord bridge)"
 type = "independence"
 modules = ["precis_web", "asa_bot"]
+
+[[tool.importlinter.contracts]]
+name = "precis_chain is a standalone numpy kernel: no precis/asa imports"
+type = "forbidden"
+source_modules = ["precis_chain"]
+forbidden_modules = ["precis", "precis_web", "asa_bot", "asa_slack"]
+# Direct AND transitive: unlike the two intra-precis contracts below, there is
+# no dense graph to indict here — the kernel's whole point is that its import
+# closure is numpy and the standard library. `tests/
+# test_precis_chain_import_boundary.py` is the belt to this braces (it catches a
+# `precis_se`/`precis_chem` plugin import too, which is not a root package here).
 
 [[tool.importlinter.contracts]]
 name = "slack bridge shares asa_bot runtime but never the web app"

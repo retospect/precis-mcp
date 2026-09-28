@@ -51,7 +51,29 @@ log = logging.getLogger(__name__)
 
 #: Reference-vocabulary tables whose *data* is part of the schema
 #: contract and must ride along in the baseline. Mirrors the set the
-#: second greenfield dumped by hand for ``0001_initial.sql``.
+#: second greenfield dumped by hand for ``0001_initial.sql``, plus every
+#: other table a tail migration seeds via ``INSERT ... ON CONFLICT DO
+#: NOTHING`` unconditionally (gr454487) — those rows are just as much
+#: "part of the schema" as ``kinds``/``relations``, but they live in a
+#: migration recorded as already-applied once baked into the baseline, so
+#: ``Migrator.apply_all`` never replays the ``INSERT`` on a fresh install
+#: unless the table's data rides along here too. See
+#: ``tests/test_baseline_seed_tables.py`` for the machine-checked
+#: inventory (every ``INSERT INTO`` target across every migration chain
+#: is either here or in that test's ``NOT_VOCAB`` allow-list, with a
+#: reason).
+#:
+#: Order matters for the ``pg_dump --data-only`` call in
+#: :func:`generate_baseline_sql`: FK-parent tables must be listed before
+#: their FK-child tables. In practice ``pg_dump`` topologically sorts
+#: TABLE DATA items by their FK dependency graph regardless of ``--table``
+#: order — verified 2026-09-28 against a scratch DB with an adversarial
+#: check: reversing this tuple to list ``component_specs`` *before*
+#: ``component_categories`` (its FK parent) still dumped
+#: ``component_categories`` first in the output. So this doesn't actually
+#: need to be dependency-ordered for correctness — but the tuple is kept
+#: in dependency order below anyway, as a human-readable contract, in
+#: case that pg_dump behaviour ever changes.
 SEED_TABLES: tuple[str, ...] = (
     "actors",
     "kinds",
@@ -61,6 +83,21 @@ SEED_TABLES: tuple[str, ...] = (
     "embedders",
     "summarizers",
     "artifact_kinds",
+    # component kind (0093/0152/0163): categories before specs (FK).
+    "component_categories",
+    "component_specs",
+    # material / rxn kind registries (0092/0157): standalone, no FK.
+    "material_properties",
+    "rxn_properties",
+    # design core (0162): service environments before scenarios (FK);
+    # load cases are standalone.
+    "design_service_environments",
+    "design_scenarios",
+    "design_load_cases",
+    # per-provider outbound rate-limit config (0121): standalone.
+    "external_rate_limits",
+    # default RSS/Atom feed registry (0033): standalone.
+    "news_sources",
 )
 
 #: Extensions ``pg_dump --schema=public`` omits; prepended manually so a

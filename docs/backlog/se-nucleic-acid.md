@@ -1,9 +1,8 @@
 ---
-status: draft
+status: ready
 title: se nucleic acids — helix/strand/domain model, loops, relax, register + clash DRC, ViennaRNA, dna realization, scadnano/oxDNA/PDB export
 prio: high
 model: opus
-blocked-by: precis-chain-kernel
 ---
 
 # `se` nucleic acids — DNA/RNA design in the block tree
@@ -53,8 +52,9 @@ kind-filtered load alongside threading.
 from `precis_chain.envelope.capsule_pose`, ports `5p`/`3p`; re-run retires
 and regenerates, `origins['envelope']='proposed'`; default `max_seg_len` =
 one lattice repeat, so a 7 kb design yields a few hundred children;
-straight lattice helices may use `array_block` and `pattern-groups.md` is the
-collapse mechanism). Lengths parsed at the boundary through the existing
+straight lattice helices may use `array_block`; `pattern-groups.md` would be
+the collapse mechanism but is itself draft and unbuilt — nothing in this item
+depends on it, `view='tree'` collapse is a follow-up). Lengths parsed at the boundary through the existing
 units path; stored metres/radians.
 
 **Ops, handler-level** (`precis_se/atomic/apply.py::HANDLER_LEVEL_OPS`,
@@ -68,10 +68,14 @@ user-origin poses move only under `move=`; one revision per call),
 `realize_chain` (see Atomic realization). None of these run in
 `design_turn`'s pure dry-run, so no double execution.
 
-**Derived pairing** — `precis_se/chain/pairing.py::derive_pairing(tree)`: per
+**Derived pairing** — `precis_se/chain/pairing.py::derive_pairing(tree,
+state=None)` (the `state=` kwarg exists from day one and is a no-op when
+`None`; the same kwarg sits on `relax_chain(…, state=None)` — both are
+filled in by `se-walker-light-protocol`, which must not have to change the
+signatures): per
 helix per offset the occupying (strand, domain, forward); exactly two
 antiparallel occupants → pair; one → single-stranded; two parallel or three
-or more → `chain.occupancy` error (triplex is out of scope for this cut).
+or more → `chain_occupancy` error (triplex is out of scope for this cut).
 O(total domain length), not O(n²).
 
 **Constants** — `precis_se/chain/nucleic.py`, sources in the docstring:
@@ -90,24 +94,24 @@ findings. Default dsDNA min bend radius Lp/5 = 10 nm at **warn**; an
 authored `min_bend_radius` promotes to error.
 
 **Findings, pure** — `precis_se/chain/drc.py::findings(tree)`, one call in
-`precis_se/drc.py::drc`: `chain.bend` error · `chain.twist_register` warn ·
-`chain.clash` warn (kernel capsule pass over all segments; tol = `min_gap`;
+`precis_se/drc.py::drc`: `chain_bend` error · `chain_twist_register` warn ·
+`chain_clash` warn (kernel capsule pass over all segments; tol = `min_gap`;
 skips consecutive same-helix segments and pairs sharing a crossover) ·
-`chain.loop_short` error (`|exit_a − exit_b| > (n+1)·c + tol`; a 0-nt
+`chain_loop_short` error (`|exit_a − exit_b| > (n+1)·c + tol`; a 0-nt
 crossover therefore requires exits within one bond — this IS the register
-check) · `chain.loop_slack` info · `chain.floppy` info (single-stranded span
-> coded Lp default) · `chain.dangling_domain` error · `chain.occupancy` error
-· `chain.pairing_geometry` error.
+check) · `chain_loop_slack` info · `chain_floppy` info (single-stranded span
+> coded Lp default) · `chain_dangling_domain` error · `chain_occupancy` error
+· `chain_pairing_geometry` error.
 **Findings, handler-side** — appended in `handler.py::_render_drc` after the
 pure pass, like `se_precedent.findings(store, tree, ref_id)`: when a
-`material` Lp row exists, the pure `chain.floppy` rows are dropped and
+`material` Lp row exists, the pure `chain_floppy` rows are dropped and
 re-emitted against the row's value (one row per span, never two);
-`chain.fold_disagree` warn and `chain.offtarget` warn from
+`chain_fold_disagree` warn and `chain_offtarget` warn from
 `precis_se/chain/fold.py` — fold checks bounded to strands ≤ 200 nt
 (`RNA.fold` is O(n³)); off-target via a 6-mer hash index over all strands,
-O(total length); `chain.fold_unavailable` info when `RNA` is absent.
+O(total length); `chain_fold_unavailable` info when `RNA` is absent.
 **Exclusion** — `precis_se/validate.py::envelope_overlaps` skips every
-segment↔segment pair (chain.clash owns them); the SDF budget goes to
+segment↔segment pair (chain_clash owns them); the SDF budget goes to
 chain-vs-non-chain pairs.
 
 **Views** — `view='chain'` (helices: motif, n, turns, segments, occupancy;
@@ -130,9 +134,14 @@ with `axis_atom`/`phase_atom`, attachment ports `n<i>.c5m|maj|min` for listed
 `sites` only. The structure binds to the **segment child** whose range covers
 the region (one region per segment in this cut), so `envelope_fit` checks
 the segment's own envelope against its atoms; the helix parent carries none.
-Loops realized only after `relax_chain`. A standalone
-`GENERATORS["dna"]` (sequence in, straight duplex out, no tree) is kept for
-the hairpin/junction cases. `precis/structure/export.py::to_pdb(scene)`
+Loops realized only after `relax_chain`. `GENERATORS["dna"]` is that
+realizer and is **tree-aware**, not a standalone sequence→duplex call: its
+params name a helix or a `[start, end]` region of one, and it emits the
+paired and single-stranded units in that range from `fibre.unit_frames`
+(occupancy from `derive_pairing`) — a range that contains a loop whose
+curve `relax_chain` has not yet placed raises `Unsupported` naming the loop,
+never a guessed geometry. So for the hairpin the 4-bp stem realizes on its
+own; the 4-nt loop realizes only after `relax_chain`. `precis/structure/export.py::to_pdb(scene)`
 adapter over `precis_chain.pdb.write_pdb`; `structure` `view='pdb'`.
 
 **Export** — `precis_se/chain/export.py`: scadnano JSON (helix→helix,
@@ -148,7 +157,7 @@ glossary entries (done).
 - Walkers, stations, occupancy states, light transitions, spectral budget,
   make-tree protocol (→ `se-walker-light-protocol`).
 - Protein import (→ `se-protein-chain-import`).
-- Triplexes and parallel duplexes: reported as `chain.occupancy`, not
+- Triplexes and parallel duplexes: reported as `chain_occupancy`, not
   modelled (needs a third backbone azimuth and a geometry on the third
   domain).
 - A new binding kind. Tube geometry is derived from the block's own `chain`
@@ -167,10 +176,12 @@ glossary entries (done).
 
 - Hairpin `GGGGAAAACCCC`: `fold_layout` → 1 helix (4 bp), 1 strand, 2
   domains, 4-nt loop; `derive_pairing` → 4 `W-W-cis`; `GENERATORS["dna"]`
-  realizes it; `to_pdb` text parses back via `precis_chain.pdb.read_trace`.
+  realizes the 4-bp stem (a region spanning the loop before `relax_chain`
+  → `Unsupported` naming the loop; after it, stem + loop); `to_pdb` text
+  parses back via `precis_chain.pdb.read_trace`.
 - 4-way junction (4 helices, 4 strands, 8 domains, 4 zero-nt crossovers at
   register-correct offsets) authored in one `put`; `view='drc'` has no
-  `chain.*` error; shifting one crossover by 1 bp fires `chain.loop_short`.
+  `chain_*` error; shifting one crossover by 1 bp fires `chain_loop_short`.
 - Rectangle origami built procedurally in the test (24 helices × 256 bp
   square lattice, scaffold + ~100 staples, ≈192 segments): `layout_chain`
   < 2 s; `relax_chain` < 30 s; `view='drc'` < 5 s with zero
@@ -179,10 +190,10 @@ glossary entries (done).
   match `<helix>.s<k>`; scadnano export parses, every domain appears exactly once;
   oxDNA `.top` neighbour lists form one path per strand, `.conf` line count =
   nucleotides.
-- 21 bp honeycomb range passes, 22 bp fails `chain.twist_register`; parallel
-  helices at 2.0 nm centre spacing → `chain.clash`, at 2.5 nm → clean.
-- Loop of 3 nt across 3 nm → `chain.loop_short`; 20 nt across 3 nm →
-  `chain.loop_slack`.
+- 21 bp honeycomb range passes, 22 bp fails `chain_twist_register`; parallel
+  helices at 2.0 nm centre spacing → `chain_clash`, at 2.5 nm → clean.
+- Loop of 3 nt across 3 nm → `chain_loop_short`; 20 nt across 3 nm →
+  `chain_loop_slack`.
 - Relax: two helices joined by a 2-nt loop from 6 nm settle to exit-to-exit
   ≤ 1.9 nm; poses read back `origin='proposed'`; a `user` pose is unchanged
   without `move=`; `relax_chain` appears in `HANDLER_LEVEL_OPS` and is a
@@ -195,12 +206,12 @@ glossary entries (done).
   `validate_atomic` reports no `bond_length_sanity`; `envelope_fit` clean;
   `5p` port has a measured `rot`.
 - `RNA` unimportable → `view='drc'` still renders with one
-  `chain.fold_unavailable`; installed → hairpin MFE `((((....))))` and a
-  planted 8-nt staple–staple complement → `chain.offtarget`; a 6 kb scaffold
+  `chain_fold_unavailable`; installed → hairpin MFE `((((....))))` and a
+  planted 8-nt staple–staple complement → `chain_offtarget`; a 6 kb scaffold
   is skipped by the fold check with its length named.
-- Three strands on one offset → `chain.occupancy`.
+- Three strands on one offset → `chain_occupancy`.
 - Declared `geometry:'W-H-trans'` on a domain whose letters cannot pair
-  that way → `chain.pairing_geometry`.
+  that way → `chain_pairing_geometry`.
 - All new lengths refuse bare numbers (`UnitRequiredError`) and store metres.
 
 ## Target + blast radius
@@ -209,7 +220,9 @@ glossary entries (done).
 `_VIEW_ARGS`), `precis_se/ops.py`, `persist.py`, `validate.py`, `drc.py`,
 `atomic/apply.py::HANDLER_LEVEL_OPS` + `atomic/generate.py` (new
 `realize_chain`), new `precis_se/chain/`, se-plugin migration 0015,
-`GENERATORS`, `precis/structure/export.py` + `structure` handler view,
+`GENERATORS`, `precis/structure/export.py` (adapter) +
+`src/precis/handlers/structure.py` (`_EXPORT_VIEWS` / the `view == "poscar"`
+branches are where `view='pdb'` is dispatched),
 `pyproject.toml` (`[chain]` extra = ViennaRNA), skills `precis-se-chain-help`
 / `precis-se-help` / `precis-overview`. No worker, no web route. Deploy: the
 `[chain]` extra must be added to the MCP serve role and the UV_WITH bridge
@@ -229,11 +242,60 @@ report `fold_unavailable` in prod.
   Decided, revisit at ship.
 - 2026-09-27 rectangle fixture procedural in the test. Decided.
 - 2026-09-27 (review) loop contour (n+1)·c and the register check IS
-  `chain.loop_short` at n=0; `relax_chain`/`fold_layout`/`realize_chain` are
+  `chain_loop_short` at n=0; `relax_chain`/`fold_layout`/`realize_chain` are
   handler-level; region realization needs `realize_chain` because generators
   are tree-blind; triplex out; segment↔segment pairs excluded from the SDF
   scan wholesale (connects do not save the broad phase). Decided.
-- OPEN: per-position geometry `overrides` vs a 1-bp domain — overrides
-  (proposed; keeps domain count = scadnano domain count).
-- OPEN: inter-helix spacing one constant vs per-lattice — one (2.5 nm)
-  proposed, per-design `min_gap` overrides.
+- 2026-09-28 per-position geometry is `overrides` on the domain row, not a
+  1-bp domain (keeps domain count = scadnano domain count; already the
+  `meta` shape in Storage). Decided.
+- 2026-09-28 inter-helix spacing is one constant (2.5 nm) with a per-design
+  `min_gap` override (already in Storage/Constants). Decided.
+
+- 2026-09-28 (ready gate): blocker — `GENERATORS["dna"]` is defined as
+  "sequence in, straight duplex out, no tree" but the hairpin acceptance
+  criterion has it "realize" a folded structure with a 4-nt loop (not a
+  straight duplex); the spec never says whether the generator emits atoms
+  for the stem only or for stem+loop, or how a tree-blind generator gets
+  loop/bend geometry (`precis_chain.loop.loop_curve` needs pinned exits a
+  standalone sequence-in call doesn't have). Two different builds are
+  reasonable from this text.
+- 2026-09-28 (ready gate): advisory — both `OPEN:` entries above are
+  already answered by the body text (`overrides?` is already in the domain
+  `meta` shape, line 44; 2.5 nm default + per-design `min_gap_m?` override
+  are already in Storage/Constants) — they read as unresolved only because
+  the log line was never updated to "Decided". Not a build ambiguity, but
+  the template's own rule (no blocker-severity OPEN at `status: ready`)
+  reads these as still-open; tidy the wording before flipping status.
+- 2026-09-28 (ready gate): advisory — the new `chain_*` dotted finding
+  names (`chain_bend`, `chain_clash`, `chain_loop_short`, etc.) break the
+  codebase-wide flat snake_case rule-naming convention (verified: every
+  existing `rule=` in `precis_se/drc.py`, `atomic/validate.py`,
+  `validate.py` — `bond_length_sanity`, `overlap_budget_exceeded`,
+  `mode_binding_mismatch`, 30+ names, zero dots). Not DB-enforced, so not a
+  build blocker, but an unacknowledged convention deviation worth a
+  decision line.
+- 2026-09-28 (ready gate): advisory — "straight lattice helices may use
+  `array_block` and `pattern-groups.md` is the collapse mechanism" cites
+  `docs/backlog/pattern-groups.md`, which is itself `status: draft` and
+  `blocked-by: design-state-core` (unbuilt, blocked on another unbuilt
+  item), phrased as already available. No acceptance criterion depends on
+  it (the rectangle-origami AC expects ~192 discrete segments, not a
+  collapsed representation), so it doesn't block a build — but the sentence
+  should say "future" or drop the reference, and this dependency isn't
+  declared via `blocked-by`.
+- 2026-09-28 (ready gate): advisory — "Target + blast radius" names
+  `precis/structure/export.py` + "structure handler view" but the actual
+  view dispatch (`_EXPORT_VIEWS`, the `view == "poscar"`/etc. branches) is
+  in `src/precis/handlers/structure.py`, not under `precis/structure/`.
+  Name the exact handler file so the post-deploy blast-radius check looks
+  in the right place.
+- 2026-09-28 (post-gate) resolved in the body: `GENERATORS["dna"]` is the
+  tree-aware realizer behind `realize_chain` (helix/region in, units from
+  `fibre.unit_frames`, `Unsupported` for an unrelaxed loop — hairpin AC
+  reworded to the stem); DRC rule names are flat snake_case `chain_*` (house
+  convention, dotted spelling was a draft artefact, also applied to
+  `se-walker-light-protocol`); `pattern-groups.md` reference marked
+  unbuilt/non-dependency; Target names `src/precis/handlers/structure.py`;
+  `derive_pairing(tree, state=None)` / `relax_chain(…, state=None)` carry
+  the walker's kwarg from day one as a no-op. Decided.
