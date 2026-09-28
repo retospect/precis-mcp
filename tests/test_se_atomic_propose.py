@@ -156,12 +156,74 @@ def test_build_prompt_carries_block_ports_objectives_and_steer(
     # (prompt-surface audit item 7); both must be spelled out.
     assert "bare canonical metres" in prompt
     assert "is Å, never metres" in prompt
+    # 'hub' is a root block with a zero pose — authored and world coincide,
+    # so no separate composed-world line is shown (see the nested-parent
+    # test below for the differing case).
+    assert "pose: [0, 0, 0] m" in prompt
+    assert "authored, parent frame" in prompt
+    assert "world pose" not in prompt
 
 
 def test_build_prompt_default_steer_when_absent(se_handler: SeHandler) -> None:
     tree = _seeded_tree(se_handler)
     prompt = sej.build_prompt("rotaxane1", tree, "hub", tree.blocks["hub"], [], None)
     assert "own chemical judgment" in prompt
+
+
+_NESTED_POSE_OPS = [
+    {
+        "op": "add_block",
+        "name": "base",
+        "envelope": "sphere:r3e-10",
+        "pose": [0.0, 0.1, 0.254],
+    },
+    {
+        "op": "add_block",
+        "name": "child",
+        "parent": "base",
+        "envelope": "sphere:r3e-10",
+        "pose": [0.0, 0.0, 0.016],
+    },
+]
+
+
+def test_build_prompt_labels_authored_and_composed_pose_separately(
+    se_handler: SeHandler,
+) -> None:
+    """The pose/rot risk this fix closes: :attr:`SeBlock.pose`/``rot`` are
+    the COMPOSED world placement (:func:`precis_se.ops.compose_world_pose`),
+    but every pose-writing op the proposer's output could feed
+    (add_block/instance_block/array_block/set_pose) accepts the AUTHORED,
+    parent-relative value instead. A nested block under an offset parent
+    (the unicycle-c1 regression arithmetic ``test_se_pose_compose.py``
+    pins: ``[0, 0.1, 0.254]`` parent + ``[0, 0, 0.016]`` local composes to
+    ``[0, 0.1, 0.27]``) must show BOTH, the authored value first and
+    unlabelled-ambiguity-free, the composed world value only additionally
+    and explicitly marked as not an op input — mirroring
+    ``precis_se.handler._render_block``'s ``view='block'`` wording so the
+    two surfaces teach the model/human the same vocabulary."""
+    se_handler.put(id="nested1", text=json.dumps({"ops": _NESTED_POSE_OPS}))
+    ref = se_handler.store.get_ref(kind="se", id="nested1")
+    assert ref is not None
+    tree = persist.load_tree(se_handler.store, ref.id)
+    child = tree.blocks["child"]
+    # Sanity: composition really did move this block off its authored value
+    # — otherwise the differing-value branch under test never fires.
+    assert child.local_pose == [0.0, 0.0, 0.016]
+    assert child.pose == pytest.approx([0.0, 0.1, 0.27])
+    assert child.pose != pytest.approx(child.local_pose)
+
+    prompt = sej.build_prompt("nested1", tree, "child", child, [], None)
+    authored = f"pose: [{sej._fmt_vec(child.local_pose)}] m"
+    composed = f"world pose: [{sej._fmt_vec(child.pose)}] m"
+    assert authored in prompt
+    assert "authored, parent frame" in prompt
+    # The authored line names the ops that DO accept this frame, and states
+    # plainly that the scratch build frame is neither.
+    assert "add_block/instance_" in prompt
+    assert composed in prompt
+    assert "composed from ancestors" in prompt
+    assert "not an op input" in prompt
 
 
 def test_design_findings_concatenates_se_and_atomic_checks(

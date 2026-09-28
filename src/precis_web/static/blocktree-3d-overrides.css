@@ -91,3 +91,71 @@
   padding: 0 3px;
   border-radius: 2px;
 }
+
+/* gr337746 — the "connections" group's own tree-panel eyeball (its
+ * SHAPE/fill slot, the vendored tree's icon index 0) is PERMANENTLY
+ * disabled and CANNOT be fixed without editing the vendored bundle:
+ * every drawn connect ships ``state: [3, 1]`` (blocktree_3d.
+ * connectivity_leaf — an edges-only leaf has no fill to toggle), the
+ * group node's own SHAPE state comes back the same uniform 3 ("not
+ * applicable") since all its children agree, and the vendored tree
+ * model's ``toggleNodeState(t, e, i)`` opens with
+ * ``const n = t.state[e]; if (n === Tv) return false`` — it bails on
+ * the node's CURRENT stored value, so nothing pushed at it (including
+ * the public ``setState``) can ever move it off 3. The DOM half agrees:
+ * ``renderNode``'s icon loop only wires an onclick/pointer cursor when
+ * ``state !== Tv``, so this icon gets neither — confirmed by tracing
+ * the bundle, not inferred. Rather than leave a control that LOOKS like
+ * a normal eyeball but silently does nothing, grey it out and point at
+ * the real control: the page's own "connections" checkbox
+ * (blocktree-3d.js's connections-toggle section), which drives the
+ * EDGE slot (index 1, a real working flag) directly via the viewer's
+ * public ``setState`` API. A pure-CSS hover tooltip — no vendored DOM
+ * attribute to set (this file never touches the bundle's own element
+ * construction), so no JS glue needed for this one.
+ *
+ * Selector notes (traced in the minified bundle, not inferred):
+ * - ``.tv-icon0`` IS the real class on the SHAPE-slot span: renderNode's
+ *   icon loop does ``for (const e of [0, 1]) { ...; let r =
+ *   `tv-icon tv-icon${e}`; ...; n.className = r; ... }`` — the literal
+ *   text "tv-icon0" never appears in the minified source (it's built by
+ *   template literal at runtime), which is why a plain string grep of
+ *   the bundle finds nothing; the rendered DOM carries it. Index 0 is
+ *   the SHAPE/fill icon, index 1 the EDGE icon — distinguished purely by
+ *   that trailing digit, in loop order, both children of the same
+ *   ``.tv-node-content``.
+ * - The row's ``data-path`` is NOT the uid-suffixed leaf ``id`` this
+ *   file elsewhere reads (``findPathEndingInId`` etc., see the comment
+ *   above on the atomic overlay) — the treeview builds its own state
+ *   tree via ``_buildTreeData``, keyed purely by each part's ``name``
+ *   field (``i[n.name] = ...``, ``id`` is never consulted), then joins
+ *   those names with "/" for ``t.path`` (``_buildTreeStructure``:
+ *   ``o = i == null ? s : `${i}/${s}` ``). blocktree_3d.build_scene
+ *   gives the connections group ``"name": "connections"`` — the
+ *   ``_connections`` string only appears in its ``id``
+ *   (``f"{root_id}/_connections"``), a field the treeview ignores — so
+ *   the rendered row's ``data-path`` ends in plain ``/connections``. */
+#bt3d-viewer .tv-tree-node[data-path$="/connections"] > .tv-node-content > .tv-icon0 {
+  opacity: 0.35 !important;
+  cursor: not-allowed !important;
+  position: relative;
+}
+
+#bt3d-viewer
+  .tv-tree-node[data-path$="/connections"]
+  > .tv-node-content
+  > .tv-icon0:hover::after {
+  content: "connections visibility is controlled by the page's own \"connections\" checkbox, not this icon";
+  position: absolute;
+  left: 100%;
+  top: 0;
+  margin-left: 4px;
+  white-space: nowrap;
+  font: 11px/1.2 sans-serif;
+  background: var(--tcv-bg-tooltip-color, #333);
+  color: var(--tcv-font-color, #fff);
+  border-radius: 2px;
+  padding: 2px 4px;
+  z-index: 200;
+  pointer-events: none;
+}

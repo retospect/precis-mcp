@@ -12,6 +12,16 @@ the Python-only gate stays green; CI has node and runs it for real.
 The gap this closes: before it, nothing tested this reader's client JS at
 all, which is how the gr338976 mermaid race ("the code ran but the panel
 shows raw source") reached production.
+
+A later legibility pass (reported live against se:unicycle-c1) added
+three more things the smoke script exercises: an OPENED parent draws no
+free-floating circle of its own — its hull carries the label, the click,
+and the highlight instead, while a COLLAPSED (``kind === "box"``) parent
+still gets a plain circle; a parent→child link now draws as a faint
+dashed edge (containment), distinct from and never mistaken for a solid
+connect edge; and a block's validator findings surface as a severity-
+coloured badge plus hover-detail lines, on both a plain node and an
+opened parent's hull.
 """
 
 from __future__ import annotations

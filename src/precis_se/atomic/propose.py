@@ -240,6 +240,31 @@ def build_prompt(
     validate views plus the target block's own detail and its connects'
     objective vectors."""
     dof = effective_dof(tree, node)
+    # AUTHORED (parent-frame) value only, by default — the same value the
+    # `se` handler's block view now leads with (precis_se.handler._render_
+    # block), since that is the frame every pose-writing op
+    # (add_block/instance_block/array_block/set_pose) accepts. The COMPOSED
+    # world placement (precis_se.ops.compose_world_pose) rides along,
+    # separately labelled, only when it actually differs from the authored
+    # value — informational context for reasoning about neighbouring
+    # blocks' shared space, never something these ops accept as input.
+    pose_lines = (
+        f"pose: [{_fmt_vec(node.local_pose)}] m   "
+        f"rot: [{_fmt_rot(node.local_rot)}]  (authored, parent frame — "
+        "root's parent is world; this is the frame add_block/instance_"
+        "block/array_block/set_pose accept — NOT what your ops build in, "
+        "which is a fresh scratch scene in the fragment's own local "
+        "frame)\n"
+    )
+    world_differs = list(node.pose) != list(node.local_pose) or list(
+        node.rot
+    ) != list(node.local_rot)
+    if world_differs:
+        pose_lines += (
+            f"world pose: [{_fmt_vec(node.pose)}] m   "
+            f"world rot: [{_fmt_rot(node.rot)}]  (composed from ancestors — "
+            "informational only, not an op input)\n"
+        )
     return (
         "You are filling ONE block of a nanomachine (molecular-machine) "
         "design with real chemistry — an `se` design in ATOMIC mode. You "
@@ -252,7 +277,7 @@ def build_prompt(
         f"# Target block {block_name!r}\n"
         f"envelope: {effective_envelope(tree, node) or '(none)'} "
         "(cad config text — bare canonical metres)\n"
-        f"pose: [{_fmt_vec(node.pose)}] m   rot: [{_fmt_rot(node.rot)}]\n"
+        f"{pose_lines}"
         f"desc: {node.descr or '—'}\n"
         f"use: {node.use or '—'}\n"
         f"dof: {json.dumps(dof) if dof else '—'}\n\n"

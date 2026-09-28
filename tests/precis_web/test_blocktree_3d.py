@@ -143,6 +143,36 @@ def test_build_shapes_node_doubles_id_when_a_block_has_geometry_and_children() -
     assert (
         assembly.primary_path["fork"] == "/se-x/3"
     )  # group path, not the doubled leaf
+    # viewer fix: the doubled self-leaf's LABEL carries " (envelope)" (the
+    # group and its own self-leaf are otherwise indistinguishable rows in
+    # the vendored assembly tree, both named "fork"), the PATH is
+    # unchanged, and the leaf is recorded as a "container" for the
+    # client's default-translucent behaviour.
+    assert self_leaf["name"] == "fork (envelope)"
+    assert node["name"] == "fork"
+    # ``_fork_tree`` is THREE levels deep: fork_arm (uid 4) ALSO has its
+    # own envelope plus a visible child (fork_tip) — the exact same
+    # container condition as fork itself — so it doubles its own path too
+    # (fork_tip, a genuine leaf with no children, does not). Order is
+    # pre-order (a container's own path is appended before its visible
+    # children are walked, which are themselves visited in sorted-name
+    # order) — deterministic, so an exact list compare is safe here.
+    assert assembly.container_paths == ["/se-x/3/3", "/se-x/3/4/4"]
+
+
+def test_build_shapes_node_container_paths_empty_when_leaf_has_no_children() -> None:
+    """A genuine leaf (no visible children) is never a "container" —
+    ``container_paths`` must stay empty."""
+    tree = _fork_tree()
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    assembly = Assembly3D()
+    node = build_shapes_node(
+        tree, _effective_envelope, kids, plan, _UIDS, "hub", "/se-x", assembly
+    )
+    assert node is not None
+    assert node["name"] == "hub"  # plain leaf, no " (envelope)" suffix
+    assert assembly.container_paths == []
 
 
 def test_build_shapes_node_envelope_level_collapses_fork_to_a_box_leaf() -> None:
@@ -891,3 +921,35 @@ def test_build_scene_bundles_shapes_connections_explode_and_mermaid() -> None:
     # gr340030 — the scale-bar overlay's own conversion factor, the SAME
     # multiplier already baked into every emitted coordinate above.
     assert scene.scale == scene_scale(tree, _effective_envelope)
+    # hub/rim is a flat design — no block doubles its path, so nothing is
+    # a "container" leaf (viewer fix).
+    assert scene.container_paths == []
+
+
+def test_build_scene_container_paths_flags_a_block_with_its_own_envelope_and_kids() -> (
+    None
+):
+    """End-to-end (the ``scene3d.json`` route's own call shape): ``fork``
+    has both its own envelope and a visible child (``fork_arm``), so its
+    doubled self-leaf path is reported on ``Scene3D.container_paths`` —
+    the field the client reads to default it to translucent instead of
+    the opaque solid ``_shape_leaf`` ships by default. ``fork_arm`` (uid
+    4) is ALSO a container by the same condition (its own envelope plus a
+    visible child, ``fork_tip``) — a nested container occludes its own
+    subtree for exactly the same reason the outermost one does, so it
+    must be collected too, not just the design's own root."""
+    tree = _fork_tree()
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    scene = build_scene(
+        tree,
+        _effective_envelope,
+        kids,
+        plan,
+        _UIDS,
+        root_id="/se-x",
+        root_name="x",
+        label_fn=lambda c: "tie",
+        colour_fn=lambda c: "#16a34a",
+    )
+    assert scene.container_paths == ["/se-x/3/3", "/se-x/3/4/4"]

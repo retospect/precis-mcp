@@ -45,6 +45,7 @@ from precis_se.ops import (
     SeTree,
     _connects_endpoint_pair,
     _split_endpoint,
+    local_position_from_world,
 )
 
 #: Role → the op key holding its default force density. ``undeclared``
@@ -320,5 +321,13 @@ def op_formfind(tree: SeTree, op: dict[str, Any]) -> None:
         new = result.coords[index[name]]
         if float(np.linalg.norm(new - np.asarray(node.pose, dtype=float))) <= move_tol:
             continue  # already at equilibrium — keep the pose AND its stamp
-        node.pose = [float(v) for v in new]
+        new_pose = [float(v) for v in new]
+        node.pose = new_pose
+        # The solve writes a WORLD position (its shared coordinate space);
+        # storage is parent-relative (module docstring's compose contract,
+        # precis_se.ops.compose_world_pose) — local_position_from_world
+        # decomposes it against the (already-composed, still-valid) parent
+        # this node hasn't moved. Rotation is untouched by this solve, so
+        # local_rot needs no update.
+        node.local_pose = local_position_from_world(tree, name, new_pose)
         node.origins["pose"] = "proposed"

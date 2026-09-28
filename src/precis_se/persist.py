@@ -105,7 +105,7 @@ from precis_se.bom import BomLine
 from precis_se.catalog import Derived
 from precis_se.measures import MeasureSpec
 from precis_se.notes import NoteSpec
-from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree
+from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree, compose_world_pose
 
 log = logging.getLogger(__name__)
 
@@ -292,8 +292,14 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             # cross-design one ('slug#block') round-trips as text —
             # module docstring.
             template=_label(uid_to_name, r["template_uid"], r["template_ref"]),
-            pose=list(r["pose_xyz"] or [0.0, 0.0, 0.0]),
-            rot=list(r["pose_rot"] or [0.0, 0.0, 0.0]),
+            # As stored — the block origin in the PARENT's frame
+            # (precis-se-help.md's Units section). ``pose``/``rot`` (below,
+            # via compose_world_pose) become the WORLD-frame placement
+            # every geometry consumer reads; local_pose/local_rot are what
+            # save_tree writes back, byte-identical to these bytes for any
+            # block this load→edit→save cycle never touches.
+            local_pose=list(r["pose_xyz"] or [0.0, 0.0, 0.0]),
+            local_rot=list(r["pose_rot"] or [0.0, 0.0, 0.0]),
             envelope=r["envelope"],
             descr=r["descr"],
             use=r["use_"],
@@ -408,6 +414,13 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             ),
         }
     attach_catalog(store, tree)
+    # Every block now carries its stored, parent-relative local_pose/
+    # local_rot; compose them up the parent chain into WORLD-frame pose/
+    # rot ONCE, here, so every reader of a loaded tree (validate/fasten/
+    # toolaccess/stability/the renderers/datums/measures/printing) can go
+    # on reading ``pose``/``rot`` and trust world frame, as their own
+    # docstrings already (and now correctly) claim.
+    compose_world_pose(tree)
     # Wired here, not at each call site: every reader of a loaded tree
     # (handler, web reader, jobs) then resolves a cross-design template the
     # same way, and a new reader cannot forget to (:func:`foreign_resolver`).
@@ -493,6 +506,13 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
         }
         node = SeBlock(**{**_known(SeBlock, d), "ports": ports})
         tree.blocks[node.name] = node
+    # "equals load_tree's for the same rows" (docstring) includes pose:
+    # a payload from BEFORE this engine fix has no local_pose/local_rot,
+    # only the ``pose``/``rot`` that, pre-fix, WAS the stored relative
+    # value — SeBlock.__post_init__'s empty-list sentinel already falls
+    # local_pose/local_rot back to exactly that, so composing here (same
+    # as load_tree) is correct for a pre- or post-fix snapshot alike.
+    compose_world_pose(tree)
     tree.connects = [
         ConnectSpec(**_known(ConnectSpec, c)) for c in payload.get("connects") or []
     ]
@@ -891,8 +911,14 @@ def save_tree(
                     node.template,
                     _local_template_uid(uid_of, node.template),
                     name,
-                    node.pose,
-                    node.rot,
+                    # Parent-relative, as stored (module docstring's engine
+                    # fix): NEVER node.pose/node.rot, which by this point
+                    # hold the WORLD-frame placement compose_world_pose
+                    # derived from these — writing THOSE would strand a
+                    # relative-to-parent design as an absolute one on the
+                    # very next load.
+                    node.local_pose,
+                    node.local_rot,
                     node.envelope,
                     Jsonb(node.array) if node.array is not None else None,
                     node.descr,

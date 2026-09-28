@@ -76,6 +76,12 @@ const doc = {
 };
 
 // ── fixture: hub—rim tie, plus an opened fork subtree ──────────────────
+//
+// `fork` (B3) and `fork_arm` (B4) are both OPENED parents (kind 'shape',
+// each has a shown child) — the two nodes defect 1 stops drawing as
+// free-floating circles. `fork_tip` (B5) is a genuine leaf, kind 'box'
+// only because that is what a COLLAPSED parent looks like when it has no
+// children of its own to open onto — it still gets a normal circle.
 
 const nodes = [
   { id: 'B1', name: 'hub', path: '/se-x/1', parent: null, kind: 'shape',
@@ -93,6 +99,15 @@ const connections = [
 const forces = {
   'hub.pin—rim.pin': { role: 'tie', self_stress: 0.5, declared_n: 120.0 },
 };
+// Defect 3 — a finding on an OPENED parent (fork, filed under its own
+// name even though the block is drawn as a hull, not a circle) and one
+// on a plain leaf (fork_tip), one of each severity so both badge colours
+// get exercised.
+const findings = {
+  fork: [{ severity: 'error', rule: 'dangling_connect', detail: 'block foo no longer exists' }],
+  fork_tip: [{ severity: 'warn', rule: 'unconnected_port', detail: 'no live connect references this port' }],
+};
+const OPENED_PARENTS = ['B3', 'B4']; // fork, fork_arm
 
 // ── 1. layout is deterministic, on-canvas, and non-degenerate ──────────
 
@@ -149,6 +164,19 @@ check(nodeLines[0] === 'hub', 'node tooltip leads with the block name');
 check(nodeLines.includes('envelope: cyl:r0.02h0.05'), 'node tooltip carries declared detail');
 check(nodeLines.includes('1 connect'), 'node tooltip counts connects, singular');
 
+// defect 3 — findings ride the SAME tooltip builder, severity-prefixed
+const findingLines = nodeTooltipLines(nodes[4], 0, findings.fork_tip);
+check(
+  findingLines.includes(
+    'warn: unconnected_port — no live connect references this port'
+  ),
+  'a finding line is severity-prefixed with rule and detail'
+);
+check(
+  nodeTooltipLines(nodes[0], 1).length === nodeTooltipLines(nodes[0], 1, []).length,
+  'no findings adds no lines (an empty array is the honest default)'
+);
+
 const withForce = edgeTooltipLines(connections[0], forces['hub.pin—rim.pin']);
 check(withForce.some((l) => l.includes('120') && l.includes('N')), 'edge tooltip shows the declared preload in N');
 check(
@@ -176,57 +204,139 @@ const cloud = renderTopologyCloud({
   nodes,
   connections,
   forces,
+  findings,
   onSelect: (id) => selected.push(id),
   doc,
 });
 
 const svg = container.children.find((c) => c.tagName === 'svg');
 check(!!svg, 'the cloud built an <svg> into the container');
-check(svg.byTag('circle').length === nodes.length, 'one circle per node');
-check(svg.byTag('line').length === connections.length, 'one line per connect');
+
+// defect 1 — an opened parent (fork, fork_arm) draws NO circle of its
+// own; only the 3 leaves (hub, rim, fork_tip) do. Badge circles (r=3,
+// defect 3) are excluded from this count on purpose — they are not node
+// glyphs.
+const glyphCircles = svg.byTag('circle').filter((c) => c.getAttribute('r') !== '3');
+check(
+  glyphCircles.length === nodes.length - OPENED_PARENTS.length,
+  `opened parents draw no circle of their own (expected ${
+    nodes.length - OPENED_PARENTS.length
+  } node circles, got ${glyphCircles.length})`
+);
+const forkLabel = svg.byTag('text').find((t) => t.textContent === 'fork');
+check(!!forkLabel, "an opened parent's name renders as the hull's own label");
+check(
+  forkLabel.attrs['font-style'] === 'italic',
+  'the hull label is styled as a container label (italic), not a node label'
+);
 check(
   svg.byTag('text').map((t) => t.textContent).includes('fork_arm'),
-  'nodes are labelled by name'
+  'nodes are labelled by name — including an opened parent, via its hull'
 );
-check(svg.byTag('polygon').length >= 1, 'an opened parent draws a hull behind its children');
-for (const line of svg.byTag('line')) {
+check(svg.byTag('polygon').length === OPENED_PARENTS.length, 'one hull per opened parent');
+
+// defect 2 — containment is drawn (dashed, thin, unhoverable), separate
+// from the solid coloured connect lines.
+const allLines = svg.byTag('line');
+const connectLines = allLines.filter((l) => !l.attrs['stroke-dasharray']);
+const containLines = allLines.filter((l) => l.attrs['stroke-dasharray']);
+check(connectLines.length === connections.length, 'one solid line per connect');
+check(
+  containLines.length === nodes.filter((n) => n.parent).length,
+  'one dashed containment line per parent link'
+);
+check(
+  containLines.every((l) => !(l.handlers.mousemove || []).length),
+  'containment lines carry no hover handler — not hoverable as connects'
+);
+check(
+  containLines.every((l) => l.attrs['pointer-events'] === 'none'),
+  'containment lines do not intercept pointer events either'
+);
+for (const line of allLines) {
   check(
     ['x1', 'y1', 'x2', 'y2'].every((k) => Number.isFinite(Number(line.getAttribute(k)))),
-    'every edge got finite endpoints (the panel is not blank)'
+    'every line (connect or containment) got finite endpoints'
   );
 }
 for (const g of svg.byTag('g').filter((g) => g.attrs.transform)) {
   check(/^translate\(-?\d/.test(g.attrs.transform), 'node groups are positioned');
 }
 
-// click → onSelect drives the 3D selection
-const nodeGroups = svg.byTag('g').filter((g) => (g.handlers.click || []).length);
-check(nodeGroups.length === nodes.length, 'every node is clickable');
-nodeGroups[0].fire('click');
+// defect 3 — a badge on the opened-parent hull (error, red) and on a
+// plain leaf (warn, amber).
+const badges = svg.byTag('circle').filter((c) => c.getAttribute('r') === '3');
+check(badges.length === 2, `one badge per node carrying a finding (got ${badges.length})`);
+check(
+  badges.some((c) => c.getAttribute('fill') === '#dc2626'),
+  'an error-tier finding gets a red badge'
+);
+check(
+  badges.some((c) => c.getAttribute('fill') === '#f59e0b'),
+  'a warn-tier finding gets an amber badge'
+);
+
+// click → onSelect drives the 3D selection: a plain node via its circle's
+// `g`, an opened parent via its hull polygon (defect 1's "keep it
+// clickable" requirement).
+const nodeClickTargets = svg.byTag('g').filter((g) => (g.handlers.click || []).length);
+const hullClickTargets = svg.byTag('polygon').filter((p) => (p.handlers.click || []).length);
+check(
+  nodeClickTargets.length + hullClickTargets.length === nodes.length,
+  'every node is clickable, whether via its own circle or its hull'
+);
+check(hullClickTargets.length === OPENED_PARENTS.length, 'each opened parent is clickable via its hull');
+nodeClickTargets[0].fire('click');
 check(selected.length === 1, 'clicking a node calls onSelect once');
 check(/^B\d+$/.test(selected[0]), `onSelect passes the B<uid> node id (got ${selected[0]})`);
+hullClickTargets[0].fire('click');
+check(
+  selected.includes('B3'),
+  "clicking an opened parent's hull selects that block, exactly as clicking its circle used to"
+);
 
-// highlight paints exactly one node and clears the previous one
+// highlight paints exactly one node and clears the previous one — for a
+// plain node, via its circle; for an opened parent (no circle), via its
+// hull's stroke instead (defect 1).
+const paintedCircles = () =>
+  svg.byTag('circle').filter((c) => c.getAttribute('fill') === '#f59e0b' && c.getAttribute('r') !== '3');
+const highlightedHulls = () =>
+  svg.byTag('polygon').filter((p) => p.getAttribute('stroke') === '#f59e0b');
 cloud.highlight('B2');
-const painted = () => svg.byTag('circle').filter((c) => c.getAttribute('fill') === '#f59e0b');
-check(painted().length === 1, 'highlight paints exactly one node');
-cloud.highlight('B3');
-check(painted().length === 1, 'highlighting a second node clears the first');
+check(paintedCircles().length === 1, 'highlight paints exactly one node circle');
+check(highlightedHulls().length === 0, 'no hull is highlighted for a plain-node selection');
+cloud.highlight('B3'); // fork — opened parent, no circle
+check(paintedCircles().length === 0, 'highlighting an opened parent clears the previous circle highlight');
+check(
+  highlightedHulls().length === 1,
+  "highlighting an opened parent highlights its hull's stroke instead of a circle"
+);
+cloud.highlight('B2');
+check(highlightedHulls().length === 0, 'highlighting a plain node clears a previous hull highlight');
+check(paintedCircles().length === 1, 'and repaints the circle highlight');
 
 // hover fills the tooltip with text (never markup) and leaving hides it
 const tip = container.children.find((c) => c.tagName === 'div');
 check(!!tip, 'a tooltip element exists');
-nodeGroups[0].fire('mousemove', { offsetX: 10, offsetY: 10 });
+nodeClickTargets[0].fire('mousemove', { offsetX: 10, offsetY: 10 });
 check(tip.textContent.length > 0, 'hovering a node fills the tooltip');
 check(!tip.classList.contains('hidden'), 'hovering a node shows the tooltip');
-nodeGroups[0].fire('mouseleave');
+nodeClickTargets[0].fire('mouseleave');
 check(tip.classList.contains('hidden'), 'leaving a node hides the tooltip');
+
+// defect 3 — an opened parent's hull hover lists ITS OWN findings too
+hullClickTargets[0].fire('mousemove', { clientX: 5, clientY: 5 });
+check(
+  tip.textContent.includes('error: dangling_connect'),
+  "an opened parent's hull hover lists its own validator findings"
+);
+hullClickTargets[0].fire('mouseleave');
 
 // drag pins, double-click releases
 const posOf = (id) => cloud.positions.get(id);
-nodeGroups[0].fire('pointerdown', {});
+nodeClickTargets[0].fire('pointerdown', {});
 check(posOf(nodes[0].id).pinned === true, 'pointerdown pins the dragged node');
-nodeGroups[0].fire('dblclick', {});
+nodeClickTargets[0].fire('dblclick', {});
 check(posOf(nodes[0].id).pinned === false, 'double-click releases the pin');
 
 if (failures) {

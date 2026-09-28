@@ -29,6 +29,16 @@ GROUP at ``.../<id>`` whose own shape lives one level deeper at
 `ocp_vscode`/jupyter-cadquery viewers use for the same shape XOR
 children constraint. The pick handler reads the LAST path segment as the
 id either way, so "no lookup table" still holds for that doubled leaf.
+That doubled self-leaf's LABEL (never its path) carries an extra
+``" (envelope)"`` suffix — the vendored assembly tree would otherwise
+show the block's name nested directly inside a group also carrying that
+same name, two indistinguishable rows with no way to tell which eyeball
+hides the enclosing box (a real bug report: an opaque root envelope
+enclosing an entire design, with no abstraction level that avoids it).
+Every such self-leaf's path is also collected onto
+:attr:`Assembly3D.container_paths`/:attr:`Scene3D.container_paths`, so
+the client can default these "container" leaves to translucent without
+re-deriving "doubled last path segment" itself.
 
 **Known simplifications** (this module's own honesty-header entries,
 alongside the SVG projector's convex-hull-for-concave-envelopes one):
@@ -361,6 +371,15 @@ class Assembly3D:
     #: rendered children, else the leaf path) — connectivity/mermaid/
     #: explode all key off this, not the doubled self-leaf path.
     primary_path: dict[str, str] = field(default_factory=dict)
+    #: The doubled ``.../<id>/<id>`` self-leaf paths (module docstring)
+    #: for a block that has BOTH its own geometry and visible children —
+    #: a real "container" leaf, not a plain solid. Bug report (viewer
+    #: fix): a design's root can carry its own envelope AND every visible
+    #: child, so that leaf renders as an opaque box enclosing the whole
+    #: assembly with no abstraction level that avoids it. Collected here
+    #: so the client can default these paths to translucent without
+    #: re-deriving "doubled last path segment" itself.
+    container_paths: list[str] = field(default_factory=list)
 
 
 def _shape_leaf(
@@ -507,7 +526,19 @@ def build_shapes_node(
 
     parts: list[dict[str, Any]] = []
     if mesh is not None:
-        parts.append(_shape_leaf(f"{own_path}/{block_uid}", name, mesh, _SHAPE_COLOUR))
+        # A container leaf: this block has its own envelope AND visible
+        # children, so it doubles its last path segment (module
+        # docstring). The vendored assembly tree would otherwise show
+        # ``name`` nested directly inside a group ALSO called ``name`` —
+        # two indistinguishable rows, with no way to tell which eyeball
+        # hides the enclosing box. The label carries " (envelope)"; the
+        # PATH stays the bare uid-doubled id (only the path is identity,
+        # per the module docstring) so tint_blocks/pick/mermaid-id
+        # resolution, which all key off the path's last segment, are
+        # unaffected.
+        self_path = f"{own_path}/{block_uid}"
+        parts.append(_shape_leaf(self_path, f"{name} (envelope)", mesh, _SHAPE_COLOUR))
+        assembly.container_paths.append(self_path)
     for k in visible_kids:
         child = build_shapes_node(
             tree,
@@ -1073,6 +1104,12 @@ class Scene3D:
     #: force-directed cloud's input. ``mermaid`` above stays for one
     #: release as the no-JS/render-failure fallback.
     nodes: list[TopoNode] = field(default_factory=list)
+    #: The doubled-uid self-leaf paths for every block that has both its
+    #: own geometry and visible children (:class:`Assembly3D`'s own
+    #: field docstring) — the client defaults these to translucent so an
+    #: opaque container envelope never hides what's inside it. ``[]`` for
+    #: a flat design with no such block.
+    container_paths: list[str] = field(default_factory=list)
 
 
 def build_scene(
@@ -1173,6 +1210,7 @@ def build_scene(
         mermaid=mermaid,
         scale=scale,
         nodes=nodes,
+        container_paths=list(assembly.container_paths),
     )
 
 

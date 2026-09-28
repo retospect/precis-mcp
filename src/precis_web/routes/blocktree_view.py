@@ -252,6 +252,70 @@ def _se_member_facts(tree: Any) -> dict[str, dict[str, Any]]:
     return facts
 
 
+def _se_finding_blocks(subject: str, names: set[str]) -> list[str]:
+    """Which block(s) one :class:`~precis_se.validate.ValidationIssue`'s
+    ``subject`` names, per that module's own subject conventions: a
+    single block-owned port (``block.port``), a pairwise relation
+    (``a.port—b.port`` or the bare ``a—b``, split on the em dash every
+    two-block rule uses — filed under BOTH), or a bare block name
+    (``block_without_envelope``). A subject that resolves to no real
+    block in ``names`` is dropped rather than guessed at — same drop-
+    not-guess posture as :func:`_valid_overrides_qs`. This is also what
+    silently drops the two AGGREGATE findings (``cross_scale_unverifiable``
+    and ``overlap_budget_exceeded``, both subject ``"N pair(s)"`` — never
+    a block name): neither names a resolvable block, so neither becomes a
+    per-block badge here; a panel-level note for them is future work, not
+    this pass."""
+    sides = subject.split("—") if "—" in subject else [subject]
+    out: list[str] = []
+    for side in sides:
+        block = side.split(".", 1)[0]
+        if block in names and block not in out:
+            out.append(block)
+    return out
+
+
+#: :func:`~precis_se.validate.validate`'s own default (``_OVERLAP_BUDGET_S``
+#: in precis_se/validate.py) is 30s, sized for a thorough one-off check —
+#: gripe 450524 finding 5 recorded that budget ALREADY brushed on a
+#: 20-block real design (se:unicycle-c1), leaving pairs "UNCHECKED, not
+#: clear". This helper runs on every scene3d render, off the event loop
+#: but still in the request path (module docstring's ``_build_scene3d``),
+#: so it gets its own much smaller cap: 3s bounds the worst case the
+#: topology panel ever waits on the interpenetration narrow-phase, at the
+#: cost of a design with many genuinely-close pairs seeing some of them
+#: reported ``overlap_budget_exceeded`` rather than checked. That finding
+#: (like ``cross_scale_unverifiable``) has no block-name subject, so
+#: :func:`_se_finding_blocks` drops it cleanly rather than mis-bucketing
+#: it — it is not a silent loss, it just isn't a per-block badge.
+_FINDINGS_BUDGET_S = 3.0
+
+
+def _se_block_findings(tree: Any) -> dict[str, list[dict[str, Any]]]:
+    """Validator findings for the topology panel, bucketed by the BLOCK
+    each concerns (:func:`_se_finding_blocks`) and keyed by block
+    ``name`` — the same key :class:`~precis_web.blocktree_3d.TopoNode`
+    carries, so the client joins by name with no separate lookup.
+
+    Sibling to :func:`_se_member_facts` (same seam: kind-specific
+    domain vocabulary computed here rather than in the shared scene
+    builder), and the same honesty rule applies at the call site — this
+    function itself does not swallow a validator exception; the caller
+    wraps it exactly like :func:`_se_member_facts`, degrading to ``{}``
+    (no badges) rather than 500ing the whole scene. Runs the interpene-
+    tration check on the capped :data:`_FINDINGS_BUDGET_S`, not
+    ``validate``'s own 30s default (see that constant's docstring)."""
+    findings = se_validate.validate(tree, budget_s=_FINDINGS_BUDGET_S)
+    names = set(tree.blocks)
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for f in findings:
+        for block in _se_finding_blocks(f.subject, names):
+            buckets.setdefault(block, []).append(
+                {"severity": f.severity, "rule": f.rule, "detail": f.detail}
+            )
+    return buckets
+
+
 #: The 3D/mermaid connectivity overlay's own small colour vocabulary —
 #: distinct from :func:`~precis_web.blocktree_svg.force_colour`'s tie/
 #: strut/neutral triple (that one needs a computed self-stress sign this
@@ -902,17 +966,25 @@ def _build_scene3d(
     isolate: str | None,
     level_overrides: dict[str, str],
     rev: int | None = None,
-) -> tuple[Scene3D | None, dict[str, dict[str, Any]], list[int], str | None]:
+) -> tuple[
+    Scene3D | None,
+    dict[str, dict[str, Any]],
+    dict[str, list[dict[str, Any]]],
+    list[int],
+    str | None,
+]:
     """Off the event loop, mirroring :func:`_build_svg`'s shape: the
     round-2a analogue building a :class:`~precis_web.blocktree_3d.Scene3D`
     off the SAME plan instead of an SVG string.
 
-    Returns ``(scene, member facts, changed uids, error)`` — the facts
-    (:func:`_se_member_facts`) are the topology panel's hover numbers,
-    computed here rather than in the kind-agnostic scene builder because
-    they are domain vocabulary (the same reason ``_build_svg`` calls
-    ``se_stability`` directly). ``{}`` for a kind without a stability
-    solve, or when the solve itself fails.
+    Returns ``(scene, member facts, block findings, changed uids,
+    error)`` — the facts (:func:`_se_member_facts`) are the topology
+    panel's hover numbers and the findings (:func:`_se_block_findings`)
+    are its per-block validator badges, both computed here rather than
+    in the kind-agnostic scene builder because they are domain
+    vocabulary (the same reason ``_build_svg`` calls ``se_stability``
+    directly). ``{}`` for a kind without a stability solve, or when the
+    solve/validate itself fails.
 
     ``rev`` (the scrubber) renders the ``rev-N`` snapshot instead of the
     live rows, with the blocks that changed between N−1 and N tinted
@@ -935,7 +1007,7 @@ def _build_scene3d(
         tree, kids, level=level, isolate=isolate, level_overrides=level_overrides
     )
     if plan is None:
-        return None, {}, [], err
+        return None, {}, {}, [], err
     scene = build_scene(
         tree,
         adapter.effective_envelope,
@@ -952,6 +1024,7 @@ def _build_scene3d(
     )
     tint_blocks(scene.shapes, changed, CHANGED_COLOUR)
     facts: dict[str, dict[str, Any]] = {}
+    findings: dict[str, list[dict[str, Any]]] = {}
     if adapter.has_stability:
         try:
             facts = _se_member_facts(tree)
@@ -960,7 +1033,13 @@ def _build_scene3d(
             # honest degrade (the tooltip then says there is no solve),
             # a broken topology panel is not.
             log.exception("member facts failed for %s %s", kind, slug)
-    return scene, facts, sorted(changed), None
+        try:
+            findings = _se_block_findings(tree)
+        except Exception:
+            # Same posture: a broken validator run degrades to no badges,
+            # never a 500'd topology panel.
+            log.exception("block findings failed for %s %s", kind, slug)
+    return scene, facts, findings, sorted(changed), None
 
 
 async def _scene3d_response(
@@ -985,7 +1064,11 @@ async def _scene3d_response(
     level_overrides = _parse_overrides(overrides)
 
     def _build() -> tuple[
-        Scene3D | None, dict[str, dict[str, Any]], list[int], str | None
+        Scene3D | None,
+        dict[str, dict[str, Any]],
+        dict[str, list[dict[str, Any]]],
+        list[int],
+        str | None,
     ]:
         return _build_scene3d(
             store,
@@ -1004,7 +1087,7 @@ async def _scene3d_response(
         )
 
     try:
-        scene, facts, changed_uids, err = await asyncio.to_thread(_build)
+        scene, facts, findings, changed_uids, err = await asyncio.to_thread(_build)
     except _NoSuchRevision as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     if scene is None:
@@ -1049,10 +1132,22 @@ async def _scene3d_response(
             #: Per-member force facts keyed by connect ``subject`` — empty
             #: when no solve produced any (never a fabricated zero).
             "forces": facts,
+            #: Validator findings (:func:`_se_block_findings`), bucketed by
+            #: the block they concern — the topology panel's per-node
+            #: badges. Empty when the design is clean, has no validator,
+            #: or the validate call itself failed (degrade, never a 500).
+            "findings": findings,
             "mermaid": scene.mermaid,
             # gr340030 — the scale-bar overlay's own conversion factor:
             # real SI metres = a displayed coordinate / scale.
             "scale": scene.scale,
+            # Viewer fix (user report against se:unicycle-c1): the doubled
+            # self-leaf path of every block that has both its own envelope
+            # AND visible children — an opaque one otherwise encloses the
+            # whole rendered subtree with no abstraction level that avoids
+            # it. The client defaults these to translucent. ``[]`` for a
+            # flat design with no such block.
+            "container_paths": scene.container_paths,
         },
         headers={"Cache-Control": "no-store"},
     )

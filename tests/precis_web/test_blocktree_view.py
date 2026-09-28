@@ -513,14 +513,23 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     # id this used to use. The sibling ``_connections`` group's own
     # ``edges``-type leaves are NOT block leaves (their id is a synthetic
     # ``c<i>`` per drawn link) and are excluded from this check on purpose.
+    # ``fork`` has its own envelope AND visible children (``fork_arm``), so
+    # its own doubled self-leaf carries the " (envelope)" container-leaf
+    # suffix on its LABEL (viewer fix, gr337746 neighbour) — stripped back
+    # off here since this check is about the uid/name correspondence, not
+    # that suffix (covered separately below).
     leaves: dict[str, str] = {}
+    _CONTAINER_SUFFIX = " (envelope)"
 
     def _walk(node: Any) -> None:
         if "parts" in node:
             for p in node["parts"]:
                 _walk(p)
         elif node.get("type") == "shapes":
-            leaves[node["name"]] = node["id"].rsplit("/", 1)[-1]
+            name = node["name"]
+            if name.endswith(_CONTAINER_SUFFIX):
+                name = name[: -len(_CONTAINER_SUFFIX)]
+            leaves[name] = node["id"].rsplit("/", 1)[-1]
 
     _walk(body["shapes"])
     assert leaves  # at least one leaf rendered
@@ -547,6 +556,76 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     # scene_scale is a near-noop (never a flat 1.0-only assertion — a
     # regression that hardcoded 1.0 would slip past that).
     assert isinstance(body["scale"], (int, float)) and body["scale"] > 0
+
+
+def test_se_scene3d_json_container_paths_flags_doubled_uid_leaf(
+    blocktree_client, runtime_with_store, store
+) -> None:
+    """Viewer fix (user report against se:unicycle-c1): a block with both
+    its own envelope AND visible children — ``fork``, here, which has
+    ``fork_arm`` as a visible child — doubles its last path segment
+    (``.../<uid>/<uid>``, the module docstring's "container leaf"
+    convention). That path must be reported in ``container_paths`` so the
+    client can default it to translucent, and the leaf's own display name
+    must differ from the group's (``"fork (envelope)"`` vs ``"fork"``) —
+    otherwise the vendored assembly tree shows two indistinguishable rows
+    both labelled "fork", with no way to tell which eyeball hides the
+    enclosing box. ``fork_arm`` (nested one level deeper) is ALSO a
+    container by the same condition — its own envelope plus a visible
+    child, ``fork_tip`` — and a nested container occludes its own subtree
+    for exactly the same reason the outermost one does, so it must be
+    flagged too."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json")
+    assert r.status_code == 200
+    body = r.json()
+
+    ref = store.get_ref(kind="se", id="unicycle_web")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT name, uid FROM se_blocks WHERE ref_id = %s"
+            " AND name IN ('fork', 'fork_arm') AND retired_at IS NULL",
+            (ref.id,),
+        ).fetchall()
+    uids = {str(r[0]): int(r[1]) for r in rows}
+    fork_uid = uids["fork"]
+    fork_arm_uid = uids["fork_arm"]
+    fork_self_path = f"/se-unicycle_web/{fork_uid}/{fork_uid}"
+    fork_arm_self_path = f"/se-unicycle_web/{fork_uid}/{fork_arm_uid}/{fork_arm_uid}"
+    # Order is pre-order (a container's own path is appended before its
+    # visible children are walked) — deterministic, so an exact list
+    # compare is safe here.
+    assert body["container_paths"] == [fork_self_path, fork_arm_self_path]
+
+    def _find(node: Any, node_id: str) -> Any:
+        if node.get("id") == node_id:
+            return node
+        for p in node.get("parts", []):
+            found = _find(p, node_id)
+            if found is not None:
+                return found
+        return None
+
+    group = _find(body["shapes"], f"/se-unicycle_web/{fork_uid}")
+    self_leaf = _find(body["shapes"], fork_self_path)
+    assert group is not None and self_leaf is not None
+    assert group["name"] == "fork"
+    assert self_leaf["name"] == "fork (envelope)"
+
+
+def test_se_scene3d_json_container_paths_empty_for_a_flat_design(
+    blocktree_client, runtime_with_store
+) -> None:
+    """No block in a flat design (no parent has both its own envelope AND
+    a visible child) doubles its path — ``container_paths`` must come
+    back empty rather than flagging something that isn't there."""
+    SeHandler(hub=runtime_with_store.hub).put(
+        id="flat_web", text=json.dumps({"ops": _SOCKET_OPS})
+    )
+    r = blocktree_client.get("/se/flat_web/scene3d.json")
+    assert r.status_code == 200
+    assert r.json()["container_paths"] == []
 
 
 def test_se_scene3d_json_unknown_isolate_is_400(
@@ -700,6 +779,77 @@ def test_scene3d_forces_carry_declared_preload_when_solved(
     assert r.status_code == 200
     entry = r.json()["forces"]["a.pin—b.pin"]
     assert entry["declared_n"] == pytest.approx(120.0)
+
+
+# ── validator findings, bucketed by block (defect 3, topology cloud
+#    legibility pass) ──────────────────────────────────────────────────
+
+#: crown—fork_left, echoing the live unicycle-c1 gap that motivated this:
+#: two unconnected ports on ``crown`` (warn), plus an undeclared overlap
+#: with ``fork_left`` (also warn) since they share a pose with no connect
+#: between them.
+_SOCKET_OPS: list[dict[str, Any]] = [
+    {
+        "op": "add_block",
+        "name": "crown",
+        "pose": [0, 0, 0],
+        "envelope": "box:w0.02d0.02h0.02",
+    },
+    {"op": "add_port", "block": "crown", "name": "left_socket"},
+    {"op": "add_port", "block": "crown", "name": "right_socket"},
+    {
+        "op": "add_block",
+        "name": "fork_left",
+        "pose": [0, 0, 0],
+        "envelope": "box:w0.02d0.02h0.02",
+    },
+]
+
+
+def test_scene3d_findings_bucket_by_block(blocktree_client, runtime_with_store) -> None:
+    """The endpoint must carry validator findings, bucketed by the block
+    each concerns, or the topology panel has nothing to badge — the exact
+    gap ``crown.left_socket``/``crown.right_socket`` exposed live: real
+    ``unconnected_port`` warnings the reader showed nothing for."""
+    SeHandler(hub=runtime_with_store.hub).put(
+        id="socket_web", text=json.dumps({"ops": _SOCKET_OPS})
+    )
+    r = blocktree_client.get("/se/socket_web/scene3d.json")
+    assert r.status_code == 200
+    findings = r.json()["findings"]
+    crown_unconnected = [
+        f for f in findings["crown"] if f["rule"] == "unconnected_port"
+    ]
+    assert len(crown_unconnected) == 2  # left_socket AND right_socket
+    assert all(f["severity"] == "warn" for f in crown_unconnected)
+    assert all(set(f) == {"severity", "rule", "detail"} for f in findings["crown"])
+    # a pairwise finding (undeclared_interpenetration) is filed under BOTH
+    # named blocks, not just the one whose name sorts first.
+    assert "undeclared_interpenetration" in {f["rule"] for f in findings["crown"]}
+    assert "undeclared_interpenetration" in {f["rule"] for f in findings["fork_left"]}
+
+
+def test_se_block_findings_and_subject_parsing() -> None:
+    """Unit-level coverage of the bucketing helper and its subject parser
+    (:mod:`precis_se.validate`'s own subject conventions), off a bare
+    :class:`~precis_se.ops.SeTree` — no store, no HTTP."""
+    from precis_se.ops import SeTree, apply_ops
+    from precis_web.routes.blocktree_view import _se_block_findings, _se_finding_blocks
+
+    names = {"crown", "fork_left"}
+    assert _se_finding_blocks("crown.left_socket", names) == ["crown"]
+    assert _se_finding_blocks("crown—fork_left", names) == ["crown", "fork_left"]
+    assert _se_finding_blocks("crown.a—fork_left.b", names) == ["crown", "fork_left"]
+    # the cross_scale_unverifiable aggregate's "N pair(s)" names no real
+    # block — dropped rather than guessed at.
+    assert _se_finding_blocks("3 pair(s)", names) == []
+
+    tree = apply_ops(SeTree(), _SOCKET_OPS)
+    buckets = _se_block_findings(tree)
+    assert {"unconnected_port", "undeclared_interpenetration"} <= {
+        f["rule"] for f in buckets["crown"]
+    }
+    assert "undeclared_interpenetration" in {f["rule"] for f in buckets["fork_left"]}
 
 
 def test_view3d_page_mounts_the_cloud_with_mermaid_as_fallback(

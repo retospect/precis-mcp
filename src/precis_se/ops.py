@@ -256,6 +256,9 @@ from typing import Any, cast
 
 from precis.blocktree import ops as blocktree
 from precis.blocktree.types import BlockNode, Connect, OpError, Port, Tree
+from precis.cad.vec import as_vec3 as cad_as_vec3
+from precis.cad.vec import euler_rad_from_matrix as cad_euler_rad
+from precis.cad.vec import pose as cad_pose
 from precis.design.states import StateError, validate_driver_kind
 from precis.errors import BadInput
 from precis_se import capabilities as se_caps
@@ -410,6 +413,38 @@ class SeBlock(BlockNode):
     #: ``name`` remains the key the in-memory tree is addressed by, now as
     #: a display *label*, and the uid is what survives the save.
     uid: int | None = None
+    #: The pose/rot this block was AUTHORED with — the block origin in the
+    #: **parent's** frame (root: world), bare metres/radians
+    #: (``precis-se-help.md``'s Units section — the doc this fix makes
+    #: true rather than aspirational). This is what ``se_blocks.pose_xyz``/
+    #: ``pose_rot`` actually store, and what every pose-writing op
+    #: (:func:`_op_add_block`, :func:`_op_instance_block`/
+    #: :func:`_op_array_block` via ``_commit_instance``, :func:`_op_set_pose`)
+    #: writes verbatim from its ``pose=``/``rot=`` argument — never derived
+    #: by decomposing :attr:`~precis.blocktree.types.BlockNode.pose`, so a
+    #: save that touches nothing keeps the exact bytes a prior load read
+    #: back. :attr:`~precis.blocktree.types.BlockNode.pose`/``rot``
+    #: (inherited, unit-agnostic in the base class) carry the COMPOSED
+    #: **world**-frame placement instead — :func:`compose_world_pose`'s
+    #: output, the contract every geometry consumer (validate/fasten/
+    #: toolaccess/stability/datums/measures/printing/the renderers) already
+    #: assumed. Composed once by :func:`precis_se.persist.load_tree` right
+    #: after the rows are read (and again by :func:`precis_se.persist.
+    #: tree_from_json`), and kept current through an edit by every op that
+    #: moves a block. A caller-built (``put``) tree runs the same ops from
+    #: empty, so it ends up composed too.
+    #:
+    #: Default is the EMPTY list, not ``[0, 0, 0]`` — a sentinel
+    #: :meth:`__post_init__` reads as "not given", falling back to
+    #: whatever ``pose``/``rot`` this construction call itself carried.
+    #: That is deliberately this class's pre-fix behaviour: a block built
+    #: directly (every test that hand-assembles a tree and never touches
+    #: ``persist``/``ops``, plus any future caller in the same shape) gave
+    #: only ``pose=``/``rot=`` and got exactly that value back out of
+    #: ``save_tree`` — this keeps that contract rather than silently
+    #: zeroing an un-migrated construction site's stored pose.
+    local_pose: list[float] = field(default_factory=list)
+    local_rot: list[float] = field(default_factory=list)
     array: dict[str, Any] | None = None
     #: loads on the block — the registered objectives vocabulary
     #: (:func:`precis_se.joints.validate_objectives`), real units.
@@ -509,6 +544,14 @@ class SeBlock(BlockNode):
     #: (possibly just-declared) states.
     pending_current_state: str | None = None
 
+    def __post_init__(self) -> None:
+        """:attr:`local_pose`/``local_rot``'s empty-list sentinel →
+        ``pose``/``rot`` (this class-level docstring's fallback contract)."""
+        if not self.local_pose:
+            self.local_pose = list(self.pose)
+        if not self.local_rot:
+            self.local_rot = list(self.rot)
+
 
 @dataclass
 class SeTree(Tree[SeBlock, ConnectSpec]):
@@ -561,6 +604,117 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
         # A tree whose keys and names diverged (a paste, a branch merge):
         # identity is the NODE, so hand back the key actually holding it.
         return next((k for k, v in self.blocks.items() if v is node), None)
+
+
+def compose_world_pose(tree: SeTree) -> None:
+    """Recompute every block's WORLD-frame ``pose``/``rot`` from its
+    authored, parent-relative :attr:`SeBlock.local_pose`/``local_rot`` —
+    the fix for the engine-wide "pose is documented parent-relative but
+    every consumer reads it world-frame" gap (``precis-se-help.md``'s
+    Units section was always right; nothing composed).
+
+    Run by :func:`precis_se.persist.load_tree`/``tree_from_json`` right
+    after a tree's blocks exist, and again by every pose-writing op
+    (:func:`_op_add_block`, :func:`_op_instance_block`/
+    :func:`_op_array_block`, :func:`_op_set_pose`, :func:`precis_se.
+    formfind.op_formfind`) so a reader mid-edit — most concretely
+    ``formfind`` itself, which needs *other* already-edited members'
+    current world coordinates — sees the same contract ``load_tree``'s
+    callers do. Idempotent and total over the whole tree rather than a
+    touched subtree: designs are small (tens of blocks), and recomputing
+    every block is the one strategy that can never miss a descendant whose
+    world placement just went stale because an ancestor moved.
+
+    Top-down from every block, memoized in ``resolved`` — the ``visited``-
+    guard idiom :func:`~precis_web.blocktree_svg.plan_visibility` and
+    :func:`~precis_web.blocktree_3d.build_shapes_node` both use for the
+    same reason: a stored parent cycle (hand-corrupted data; ``add_block``/
+    ``instance_block`` refuse one at write time, but nothing stops a
+    hand-edited row) must not hang this walk. A name seen twice while it
+    is still being resolved can only mean a cycle; the second visit backs
+    off and returns whatever ``pose``/``rot`` that ancestor already holds
+    (its dataclass default, if this is its first-ever compose) rather than
+    recursing forever — a corrupt tree gets a locally-arbitrary but
+    terminating placement, which is exactly what a read-time DRC finding
+    (never composition's job) is for.
+    """
+    resolving: set[str] = set()
+    resolved: set[str] = set()
+
+    def world_of(name: str) -> tuple[list[float], list[float]]:
+        node = tree.blocks[name]
+        if name in resolved or name in resolving:
+            return node.pose, node.rot
+        resolving.add(name)
+        parent_name = node.parent
+        if parent_name is None or parent_name not in tree.blocks:
+            node.pose = list(node.local_pose)
+            node.rot = list(node.local_rot)
+        else:
+            parent_pos, parent_rot = world_of(parent_name)
+            xf = cad_pose(cad_as_vec3(parent_pos), cad_as_vec3(parent_rot)).compose(
+                cad_pose(cad_as_vec3(node.local_pose), cad_as_vec3(node.local_rot))
+            )
+            node.pose = [float(v) for v in xf.t]
+            node.rot = [float(v) for v in cad_euler_rad(xf.R)]
+        resolving.discard(name)
+        resolved.add(name)
+        return node.pose, node.rot
+
+    for name in tree.blocks:
+        world_of(name)
+
+
+def local_position_from_world(
+    tree: SeTree, name: str, world_pos: list[float]
+) -> list[float]:
+    """A block's would-be :attr:`SeBlock.local_pose` for a NEW world
+    position, its rotation held fixed — the one write path that computes
+    a block's placement directly in world space instead of composing a
+    parent-relative delta (:func:`precis_se.formfind.op_formfind`'s
+    force-density solve: the coordinates it solves over, and writes back,
+    are inherently the shared space several blocks sit in together, not
+    any one of theirs). Position-only: the caller never changes
+    ``rot`` here, so :attr:`SeBlock.local_rot` is untouched and this need
+    not — and must not, ``euler_rad_from_matrix`` is not exact — touch
+    rotation at all. Requires ``name``'s PARENT already composed (true for
+    every block in a tree :func:`compose_world_pose` has run over, which
+    every ``formfind``-eligible tree has, straight out of
+    :func:`precis_se.persist.load_tree`)."""
+    node = tree.blocks[name]
+    if node.parent is None or node.parent not in tree.blocks:
+        return [float(v) for v in world_pos]
+    parent = tree.blocks[node.parent]
+    local = (
+        cad_pose(cad_as_vec3(parent.pose), cad_as_vec3(parent.rot))
+        .inverse()
+        .apply(cad_as_vec3(world_pos))
+    )
+    return [float(v) for v in local]
+
+
+def _sync_local_pose(tree: SeTree, name: str, *, pose: bool, rot: bool) -> None:
+    """After a shared/core op (:mod:`precis.blocktree.ops`, unit- and
+    frame-agnostic by design) stamps ``node.pose``/``node.rot`` with the
+    RAW value its own ``pose=``/``rot=`` argument carried — which, by this
+    module's contract, is always the parent-relative value the DSL/doc
+    documents, whether the op ran over a freshly ``put`` tree or a loaded,
+    already-composed ``edit`` one — copy exactly the component(s) that
+    changed into :attr:`SeBlock.local_pose`/``local_rot`` (the byte-exact
+    save target) and recompose the whole tree so ``pose``/``rot`` read
+    WORLD again before the next op or the response echo sees them.
+
+    ``pose``/``rot`` select which half changed (:func:`_op_set_pose` may
+    touch only one) — the untouched half's ``local_*`` must NOT be
+    overwritten with whatever the core op left sitting in ``node.pose``/
+    ``node.rot`` for that half, since for an already-composed tree that is
+    the stale WORLD value, not the relative one."""
+    node = tree.blocks[name]
+    if pose:
+        node.local_pose = list(node.pose)
+    if rot:
+        node.local_rot = list(node.rot)
+    compose_world_pose(tree)
 
 
 def apply_ops(tree: SeTree, ops: list[dict[str, Any]]) -> SeTree:
@@ -730,6 +884,7 @@ def _op_add_block(tree: SeTree, op: dict[str, Any]) -> None:
     necessarily comes later in the same call). A bad shape rolls the block
     back out rather than leaving a half-declared node behind."""
     blocktree.op_add_block(tree, op)
+    _sync_local_pose(tree, str(op["name"]).strip(), pose=True, rot=True)
     dof_raw = op.get("dof")
     if dof_raw is None:
         return
@@ -751,6 +906,7 @@ def _op_instance_block(tree: SeTree, op: dict[str, Any]) -> None:
             )
     _reject_instance_dof(tree, op, opname="instance_block")
     blocktree.op_instance_block(tree, op)
+    _sync_local_pose(tree, str(op["name"]).strip(), pose=True, rot=True)
 
 
 def _reject_instance_dof(tree: SeTree, op: dict[str, Any], *, opname: str) -> None:
@@ -847,6 +1003,7 @@ def _op_array_block(tree: SeTree, op: dict[str, Any]) -> None:
     _commit_instance(
         tree, op, name=name, template=template, parent=parent, extra={"array": spec}
     )
+    _sync_local_pose(tree, name, pose=True, rot=True)
 
 
 def _op_set_envelope(tree: SeTree, op: dict[str, Any]) -> None:
@@ -917,8 +1074,14 @@ def _stamp_origin(
 def _op_set_pose(tree: SeTree, op: dict[str, Any]) -> None:
     """The core ``set_pose`` plus the facet-origin stamp (an instance's
     pose is its own, so the stamp lands on the posed node itself)."""
+    name = _require_block(tree, op, "block", "set_pose")
     blocktree.op_set_pose(tree, op)
-    node = tree.blocks[_require_block(tree, op, "block", "set_pose")]
+    node = tree.blocks[name]
+    # set_pose may give only one of pose/rot (the core op leaves the other
+    # untouched) — sync exactly the component(s) this call actually gave,
+    # never the other, which for an already-composed tree is still WORLD
+    # (module-level compose_world_pose's docstring).
+    _sync_local_pose(tree, name, pose="pose" in op, rot="rot" in op)
     _stamp_origin(node, op, facet="pose", opname="set_pose")
 
 
@@ -1871,6 +2034,12 @@ def _op_formfind(tree: SeTree, op: dict[str, Any]) -> None:
     from precis_se import formfind as se_formfind
 
     se_formfind.op_formfind(tree, op)
+    # formfind writes solved WORLD positions straight onto node.pose (the
+    # solver's shared coordinate space) for whichever nodes it actually
+    # moved — precis_se.formfind.op_formfind itself keeps local_pose in
+    # sync for those (module docstring), so this is just the cascade: any
+    # MOVED node's descendants now have a stale composed pose/rot too.
+    compose_world_pose(tree)
 
 
 def _find_note(tree: SeTree, name: str) -> NoteSpec | None:

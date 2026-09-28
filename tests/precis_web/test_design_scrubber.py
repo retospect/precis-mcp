@@ -304,7 +304,13 @@ def test_se_scrubber_rev1_renders_the_snapshot_tree(
     assert scene.status_code == 200
     body = scene.json()
     leaves = _leaves(body["shapes"])
-    assert set(leaves) == {"fork", "hub"}
+    # ``fork`` has both its own envelope and a visible child (``hub``), so
+    # its own shape is a CONTAINER leaf and its label carries the
+    # " (envelope)" suffix (blocktree_3d.build_shapes_node) — the group and
+    # its own self-leaf would otherwise be two identically-named rows in
+    # the vendored assembly tree. Only the label; the uid path is unchanged,
+    # which is why the changed_uids tinting below still keys off it.
+    assert set(leaves) == {"fork (envelope)", "hub"}
     # At the first save everything is new — both blocks are "changed".
     uids = _uid_by_name(store, ref_id)
     assert sorted(body["changed_uids"]) == sorted([uids["fork"], uids["hub"]])
@@ -320,11 +326,14 @@ def test_se_scrubber_rev2_changed_uids_are_the_added_block(
     body = se_client.get("/se/caster_scrub/scene3d.json?rev=2").json()
     assert body["changed_uids"] == [uids["cap"]]
     leaves = _leaves(body["shapes"])
-    assert set(leaves) == {"fork", "hub", "cap"}
+    # ``cap`` makes ``hub`` a parent too, so BOTH interior blocks are now
+    # container leaves carrying the " (envelope)" label suffix; ``cap`` is
+    # the only genuine leaf. See the rev-1 test for why the suffix exists.
+    assert set(leaves) == {"fork (envelope)", "hub (envelope)", "cap"}
     # Exactly the changed block is tinted.
     assert leaves["cap"]["color"] == CHANGED_COLOUR
-    assert leaves["fork"]["color"] != CHANGED_COLOUR
-    assert leaves["hub"]["color"] != CHANGED_COLOUR
+    assert leaves["fork (envelope)"]["color"] != CHANGED_COLOUR
+    assert leaves["hub (envelope)"]["color"] != CHANGED_COLOUR
 
     # The bare scene (no rev) is the live tree, untinted, as before.
     bare = se_client.get("/se/caster_scrub/scene3d.json").json()
@@ -370,5 +379,5 @@ def test_se_without_record_still_renders(se_client, runtime_with_store, store) -
     assert 'min="1" max="1"' in page.text  # one position
     # And the scene at that one position is the live tree.
     body = se_client.get("/se/caster_scrub/scene3d.json?rev=1").json()
-    assert set(_leaves(body["shapes"])) == {"fork", "hub", "cap"}
+    assert set(_leaves(body["shapes"])) == {"fork (envelope)", "hub (envelope)", "cap"}
     assert body["changed_uids"] == []

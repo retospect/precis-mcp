@@ -105,7 +105,7 @@ from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se import toolaccess as se_toolaccess
 from precis_se.ops import ConnectSpec, SeTree, effective_envelope
-from precis_se.validate import ValidationIssue, _posed_component
+from precis_se.validate import ValidationIssue, _is_ancestor, _posed_component
 
 #: The ray-span state that means material (``precis.cad.fold`` spells the
 #: pair ``'solid' | 'void'``). Named rather than inlined because the miss
@@ -360,6 +360,12 @@ def _walk_axis(
     posed: dict[str, Any] = {}
     for name, node in sorted(tree.blocks.items()):
         if name == fastener:
+            continue
+        # Same rule as validate.envelope_overlaps: a grouping block's
+        # envelope contains the fastener rather than intersecting it, so
+        # the ray already starts inside it — walking it as material would
+        # report a "member" the height of the whole enclosing box.
+        if _is_ancestor(tree, name, fastener):
             continue
         env = effective_envelope(tree, node)
         if not env:

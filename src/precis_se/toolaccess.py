@@ -51,7 +51,7 @@ from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis_se.ops import SeTree, effective_envelope
-from precis_se.validate import ValidationIssue, _aabb_clear, _posed_component
+from precis_se.validate import ValidationIssue, _aabb_clear, _is_ancestor, _posed_component
 
 _PACKAGED_DATA = "precis.data"
 _FILE = "driver_envelopes.json"
@@ -226,6 +226,12 @@ def access(
         blocker: str | None = None
         for name, node in sorted(tree.blocks.items()):
             if name == fastener:
+                continue
+            # Same rule as validate.envelope_overlaps: a block that is an
+            # ancestor of the fastener is containment, not an obstacle — a
+            # driver reaching into a bolt inside its own grouping module's
+            # bounding envelope has not hit anything.
+            if _is_ancestor(tree, name, fastener):
                 continue
             env = effective_envelope(tree, node)
             if not env:

@@ -2241,6 +2241,13 @@ def _port_cells(port: PortSpec, *, atomic: bool, posed: bool = False) -> dict[st
 
 
 def _block_line(tree: SeTree, node: SeBlock) -> str:
+    # AUTHORED (parent-frame) value only — this is the byte-exact argument
+    # ``set_pose`` round-trips (precis_se.ops.SeBlock.local_pose/local_rot
+    # docstring). Printing the composed WORLD ``node.pose``/``node.rot``
+    # here would be a copy-paste trap: a reader pastes the tree-view number
+    # back into ``set_pose`` and the block moves a second time. See
+    # ``_render_tree``'s header line for the frame legend, and
+    # ``view='block'`` for the composed world placement when it differs.
     parts = [node.name]
     if node.template and node.array:
         parts.append(f"(array of {node.template} {_array_label(node.array)})")
@@ -2250,9 +2257,9 @@ def _block_line(tree: SeTree, node: SeBlock) -> str:
     if env:
         marker = f" (from {node.template})" if node.template else ""
         parts.append(f"env={_fmt_envelope(env)}{marker}")
-    parts.append(f"pose=[{_fmt3(node.pose)}]")
-    if any(node.rot):
-        parts.append(f"rot=[{_fmt_rot3(node.rot)}]")
+    parts.append(f"pose=[{_fmt3(node.local_pose)}]")
+    if any(node.local_rot):
+        parts.append(f"rot=[{_fmt_rot3(node.local_rot)}]")
     dof = effective_dof(tree, node)
     if dof:
         marker = f" (from {node.template})" if node.template else ""
@@ -2324,6 +2331,12 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
     if not tree.blocks:
         lines.append("\n(no blocks yet — unfilled)")
         return "\n".join(lines)
+    lines.append(
+        "(pose/rot below are each block's AUTHORED value, in its parent's "
+        "frame — root's parent is world; that is the value set_pose takes. "
+        "view='block' also shows the composed world placement when it "
+        "differs.)"
+    )
     children: dict[str | None, list[str]] = {}
     for name, node in tree.blocks.items():
         children.setdefault(node.parent, []).append(name)
@@ -2454,8 +2467,25 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
     elif node.template:
         lines.append(f"instance of: {node.template}")
     lines.append(f"parent: {node.parent or '(root)'}")
-    lines.append(f"pose: [{_fmt3(node.pose)}] m")
-    lines.append(f"rot: [{_fmt_rot3(node.rot)}]")
+    # AUTHORED (parent-frame) value — the byte-exact argument set_pose
+    # round-trips (precis_se.ops.SeBlock.local_pose/local_rot docstring).
+    # The COMPOSED world placement rides along, separately labelled, only
+    # when it actually differs — never confusable with the value above,
+    # and never the one to paste back into set_pose.
+    lines.append(
+        f"pose: [{_fmt3(node.local_pose)}] m  (authored, parent frame — "
+        "root's parent is world)"
+    )
+    lines.append(f"rot: [{_fmt_rot3(node.local_rot)}]")
+    world_differs = list(node.pose) != list(node.local_pose) or list(
+        node.rot
+    ) != list(node.local_rot)
+    if world_differs:
+        lines.append(
+            f"world pose: [{_fmt3(node.pose)}] m  (composed from ancestors "
+            "— NOT what set_pose takes)"
+        )
+        lines.append(f"world rot: [{_fmt_rot3(node.rot)}]")
     if node.template:
         # desc/use stay raw (an instance genuinely has none — those keys
         # are rejected at mint time); envelope resolves via the template,

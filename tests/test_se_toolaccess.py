@@ -95,6 +95,46 @@ def _tree(*, walls: bool) -> SeTree:
     return tree
 
 
+def _tree_in_container(*, walls: bool) -> SeTree:
+    """The same joint as ``_tree``, but every block is a child of a root
+    grouping block ``unicycle`` whose bounding envelope encloses the whole
+    assembly — the ``unicycle-c1`` shape: a module with no mode/realization
+    of its own, drawn only to bound its children."""
+    tree = _tree(walls=walls)
+    tree.blocks["unicycle"] = SeBlock(
+        name="unicycle", pose=[0, 0, -0.010], envelope="box:w0.2d0.2h0.2"
+    )
+    for name in list(tree.blocks):
+        if name != "unicycle":
+            tree.blocks[name].parent = "unicycle"
+    return tree
+
+
+class TestContainerIsNotAnObstacle:
+    """A grouping block's bounding envelope necessarily encloses every
+    fastener beneath it — that is containment, not an obstacle in the
+    driver's path (the ``envelope_overlaps`` precedent, applied here)."""
+
+    def test_the_enclosing_root_envelope_does_not_block_the_driver(self) -> None:
+        (res,) = fasten.fasten(_tree_in_container(walls=False))
+        assert res.tool is not None
+        assert "no_tool_access" not in {f.rule for f in res.findings}
+
+    def test_a_real_obstacle_inside_the_same_root_still_blocks(self) -> None:
+        """The ancestor exclusion must not swallow genuine interference —
+        the walls are siblings/descendants of the screw, not its
+        ancestors, so they still have to clear."""
+        (res,) = fasten.fasten(_tree_in_container(walls=True))
+        rules = {f.rule for f in res.findings}
+        if res.tool is None:
+            assert "no_tool_access" in rules
+            detail = next(f.detail for f in res.findings if f.rule == "no_tool_access")
+            assert "wall_" in detail
+            assert "unicycle" not in detail
+        else:
+            assert "hex key, short arm" not in res.tool
+
+
 class TestGeometry:
     def test_a_screw_in_open_air_is_driven_with_the_preferred_tool(self) -> None:
         (res,) = fasten.fasten(_tree(walls=False))

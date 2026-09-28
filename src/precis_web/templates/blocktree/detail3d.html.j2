@@ -55,6 +55,15 @@
     <input type="checkbox" id="bt3d-connections" checked />
     connections
   </label>
+  <label class="flex items-center gap-1 text-xs text-slate-600">
+    containers
+    <select id="bt3d-container-mode" class="border border-slate-300 rounded px-1 py-0.5"
+            title="a block with both its own envelope and visible children renders as a container box around them — translucent (default) lets you see inside without hiding the box entirely">
+      <option value="translucent" selected>translucent</option>
+      <option value="solid">solid</option>
+      <option value="hidden">hidden</option>
+    </select>
+  </label>
   {% if has_atomic %}
   <div class="flex items-center gap-2">
     <label for="bt3d-smooth" class="text-xs text-slate-600" title="0 = full atomic detail, 100 = smoothed surface coloured by scaffold deviation">
@@ -214,6 +223,7 @@
     topologyEl: document.getElementById("bt3d-topology"),
     explodeButton: document.getElementById("bt3d-explode"),
     connectionsToggle: document.getElementById("bt3d-connections"),
+    containerModeSelect: document.getElementById("bt3d-container-mode"),
     sceneUrl: {{ scene_url | tojson }},
     {% if has_atomic %}
     atomicUrl: {{ atomic3d_url | tojson }},

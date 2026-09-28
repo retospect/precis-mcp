@@ -760,6 +760,7 @@ export async function blocktreeViewer3D({
   topologyEl,
   explodeButton,
   connectionsToggle,
+  containerModeSelect,
   sceneUrl,
   atomicUrl,
   smoothEls,
@@ -810,6 +811,10 @@ export async function blocktreeViewer3D({
         nodes: data.nodes,
         connections: data.connections || [],
         forces: data.forces || {},
+        // Per-block validator findings (defect 3), keyed by block name —
+        // an older/partial scene payload without it degrades to no
+        // badges, never a broken panel.
+        findings: data.findings || {},
         onSelect: (nodeId) => {
           const path = findPathEndingInId(data.shapes, nodeId.replace(/^B/, ""));
           if (path) selectPath(path);
@@ -920,6 +925,73 @@ export async function blocktreeViewer3D({
 
   let viewer;
   const highlighted = new Map(); // path -> original colour, for revert
+
+  // ── container envelope mode (viewer fix: a design's ROOT can carry
+  // both its own envelope AND every visible child — module docstring's
+  // doubled-leaf "container" case, `data.container_paths`). An opaque
+  // one then encloses the whole rendered subtree with no abstraction
+  // level that avoids it, hiding everything inside. Default: translucent.
+  //
+  // `setTransparent`/`setOpacity` (NOT `setShapeVisible`) for the
+  // translucent/solid modes — traced against the vendored bundle: the
+  // per-leaf object reached via `viewer._rendered.nestedGroup.groups[path]`
+  // (the same map `_envelopeGroup` in the atomic overlay above already
+  // uses) exposes all three, but `Viewer.setObject` — the sink every
+  // eyeball click / `setState` / `hideAll`/`showAll` / tree rebuild
+  // reaches — re-applies `setShapeVisible` from the tree model's own
+  // stored state with no awareness that anything was set manually, so a
+  // manually-set `setShapeVisible` silently reverts on the next toggle.
+  // `setTransparent`/`setOpacity` are never touched by that machinery,
+  // so they survive later tree toggles. "hidden" mode is the one
+  // exception: it has no transparency equivalent, so it uses
+  // `setShapeVisible(false)` anyway — meaning it is NOT durable the same
+  // way (a later eyeball/setState/tree-rebuild can silently bring the
+  // container back), a real gap, accepted for now since it is an
+  // explicit opt-in, not the default.
+  const _CONTAINER_OPACITY = 0.25;
+
+  function _containerGroup(path) {
+    return viewer && viewer._rendered && viewer._rendered.nestedGroup
+      ? viewer._rendered.nestedGroup.groups[path]
+      : null;
+  }
+
+  function applyContainerMode(mode) {
+    for (const path of data.container_paths || []) {
+      try {
+        const grp = _containerGroup(path);
+        if (!grp) {
+          console.error("blocktree-3d: container envelope group not found for", path);
+          continue;
+        }
+        if (mode === "hidden") {
+          grp.setShapeVisible(false);
+        } else {
+          grp.setShapeVisible(true);
+          grp.setTransparent(mode === "translucent");
+          grp.setOpacity(mode === "translucent" ? _CONTAINER_OPACITY : 1.0);
+        }
+      } catch (err) {
+        // Best-effort — see recolour's own try/catch for the convention.
+        console.error("blocktree-3d: container envelope mode failed for", path, err);
+      }
+    }
+    // The setters above mutate the per-leaf ObjectGroup directly — same
+    // low-level path the atomic overlay's per-frame lerp uses (`applyT`
+    // above) — which the vendored `Viewer.setObject`/`setState` redraw
+    // hook never observes. Without an explicit repaint here the change
+    // is applied to the scene graph but the canvas keeps showing the
+    // previous frame until the next unrelated interaction (orbit drag,
+    // eyeball click, …) forces one. Match the atomic overlay's own
+    // `viewer.update(true)` call for the same reason.
+    if (viewer) {
+      try {
+        viewer.update(true);
+      } catch (err) {
+        console.error("blocktree-3d: container envelope redraw failed", err);
+      }
+    }
+  }
 
   function recolour(path, colour) {
     const part = findPart(data.shapes, path);
@@ -1073,6 +1145,7 @@ export async function blocktreeViewer3D({
     const display = new Display(viewerEl, displayOptions);
     viewer = new Viewer(display, viewerOptions, notify);
     viewer.render(data.shapes, renderOptions, viewerOptions);
+    applyContainerMode(containerModeSelect ? containerModeSelect.value : "translucent");
     const fittedHeight = _fitViewerToShell(
       viewer, viewerEl, treeWidth, initialCadWidth, initialHeight
     );
@@ -1194,6 +1267,16 @@ export async function blocktreeViewer3D({
           );
         }
       }
+    });
+  }
+
+  // ── container envelope mode select (viewer fix) ──────────────────────
+  // No page reload — same pattern as connectionsToggle above, just
+  // re-running applyContainerMode (defined above, next to the viewer's
+  // own construction) against the newly-chosen mode.
+  if (containerModeSelect) {
+    containerModeSelect.addEventListener("change", () => {
+      applyContainerMode(containerModeSelect.value);
     });
   }
 
