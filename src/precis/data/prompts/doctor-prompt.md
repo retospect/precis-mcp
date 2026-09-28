@@ -81,7 +81,11 @@ asserting a still-broken pass you are in the act of clearing.
 **`worker_logs` — you CAN read it.** `get(kind='job', id='/logs?handler=<name>
 &since=24&level=WARNING')` is a read-only view over the centralised
 `worker_logs` table (same table `precis logs` gives an operator on the CLI),
-newest-first, with a `host=`/`q=`/`limit=` filter set besides. Consult it
+newest-first, with a `host=`/`process=`/`q=`/`limit=` filter set besides.
+`process=` is an exact match on the PRECIS_PROCESS env the LaunchDaemon plist
+sets, for telling apart a host's several worker units (e.g. melchior's
+`precis-worker`, `precis-worker-agentlane`, `precis-worker-drain-1`,
+`precis-worker-drain-2`) that `host=` alone can't. Consult it
 before writing "could not confirm" or "no worker_logs/Bash access this tick"
 — that gap is closed. `handler=` takes either the short pass name
 (`'dispatch'`, `'embed'`, …) or the full dotted logger; omit it to see every

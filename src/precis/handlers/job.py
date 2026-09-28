@@ -268,7 +268,7 @@ class JobHandler(NumericRefHandler):
         return Response(body="\n".join(lines))
 
     def _render_logs_view(self, query_string: str) -> Response:
-        """``id='/logs?handler=<name>&host=<h>&level=<L>&since=<hrs>&q=<sub>&limit=<n>'``
+        """``id='/logs?handler=<name>&host=<h>&process=<p>&level=<L>&since=<hrs>&q=<sub>&limit=<n>'``
 
         Read-only view onto ``worker_logs`` (migration 0015), all params
         optional. One parameterised ``SELECT`` plus one ``COUNT`` sharing
@@ -331,6 +331,7 @@ class JobHandler(NumericRefHandler):
 
         handler = (params.get("handler") or "").strip() or None
         host = (params.get("host") or "").strip() or None
+        process = (params.get("process") or "").strip() or None
         q = (params.get("q") or "").strip() or None
 
         # Computed once in Python and bound to both queries below, so the
@@ -353,6 +354,9 @@ class JobHandler(NumericRefHandler):
         if host:
             where.append("host = %(host)s")
             sql_params["host"] = host
+        if process:
+            where.append("process = %(process)s")
+            sql_params["process"] = process
         if q:
             # ILIKE metacharacters (\, %, _) in the caller's substring
             # must be escaped, else `q=50%` matches any digit run
@@ -384,6 +388,8 @@ class JobHandler(NumericRefHandler):
             filter_bits.append(f"handler={handler!r}")
         if host:
             filter_bits.append(f"host={host!r}")
+        if process:
+            filter_bits.append(f"process={process!r}")
         if q:
             filter_bits.append(f"q={q!r}")
         header = (

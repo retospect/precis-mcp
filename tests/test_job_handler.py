@@ -29,6 +29,7 @@ def _insert_log(
     store: Store,
     *,
     host: str = "test-host",
+    process: str = "precis-worker",
     pass_: str | None = None,
     logger: str | None = None,
     level: str = "WARNING",
@@ -41,11 +42,12 @@ def _insert_log(
             "INSERT INTO worker_logs "
             "(ts, host, process, pass, level, logger, message, payload) "
             "VALUES (now() - (%(hours_ago)s || ' hours')::interval, "
-            "%(host)s, 'precis-worker', %(pass)s, %(level)s, %(logger)s, "
+            "%(host)s, %(process)s, %(pass)s, %(level)s, %(logger)s, "
             "%(message)s, %(payload)s::jsonb)",
             {
                 "hours_ago": hours_ago,
                 "host": host,
+                "process": process,
                 "pass": pass_,
                 "level": level,
                 "logger": logger,
@@ -265,6 +267,34 @@ def test_host_filter(jobs: JobHandler, store: Store) -> None:
 
     assert "alpha message" in resp.body
     assert "beta message" not in resp.body
+
+
+def test_process_filter(jobs: JobHandler, store: Store) -> None:
+    _insert_log(
+        store,
+        host="melchior",
+        process="precis-worker-agentlane",
+        message="agentlane message",
+    )
+    _insert_log(
+        store, host="melchior", process="precis-worker-drain-1", message="drain message"
+    )
+
+    resp = jobs.get(id="/logs?process=precis-worker-agentlane")
+
+    assert "agentlane message" in resp.body
+    assert "drain message" not in resp.body
+    assert "process='precis-worker-agentlane'" in resp.body
+
+
+def test_process_filter_empty_says_so_explicitly(
+    jobs: JobHandler, store: Store
+) -> None:
+    _insert_log(store, host="melchior", process="precis-worker", message="irrelevant")
+
+    resp = jobs.get(id="/logs?process=precis-worker-drain-2")
+
+    assert "no worker_logs rows match this filter" in resp.body.lower()
 
 
 # ── q= substring (case-insensitive) ──────────────────────────────────

@@ -361,6 +361,13 @@ get(kind='job', id='/logs?handler=dispatch&since=24&level=WARNING')
 get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&limit=50')
 # host=, q= (substring on message), since= (hours, max 168),
 # limit= (default 100, cap 200) all compose
+
+get(kind='job', id='/logs?process=precis-worker-agentlane')
+# process= is an exact match on the PRECIS_PROCESS env the LaunchDaemon
+# plist sets (NULL unless set) — a host running several worker units
+# (e.g. melchior's precis-worker, precis-worker-agentlane,
+# precis-worker-drain-1, precis-worker-drain-2) needs this, host= alone
+# can't tell them apart
 ```
 
 Read-only view over the centralised `worker_logs` table (migration
