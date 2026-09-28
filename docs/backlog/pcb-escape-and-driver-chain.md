@@ -89,11 +89,28 @@ Escape yield on `tests/test_pcb_ewod_dogfood.py`, seed 1, 54 escape nets.
    "are they in order" asks.) Do not spend a round on channel assignment
    or crossing minimisation **on this metric** — and the parenthesis is
    load-bearing: it is AIRWIRES, so it says nothing about crossings among
-   the paths the router actually draws. **Measured 2026-09-28, the same
-   board has 78 crossings among realized paths, 51 of them between two
-   router-drawn segments** — so this zero is not evidence that crossing
-   minimisation is worthless, and citing it that way is a category error.
-   Numbers and method under item 3.
+   the paths the router actually draws.
+
+   **⚠ THE ZERO DOES NOT REPRODUCE, AND LOOKS VACUOUS (2026-09-28).** An
+   independent probe counting straight-line crossings on the same board
+   got **158 crossings over 158 net pairs**, cross-checked with two
+   methods that agree exactly (an exact `Fraction` orientation test and
+   shapely's `.crosses()`). The difference is the ENDPOINT DEFINITION:
+   that probe used each net's OWN sink pad, while the original zero
+   appears to have measured every airwire to a single shared sink point.
+   **A star from one common endpoint cannot cross — it is crossing-free
+   by construction, not empirically.** If that is what happened, the zero
+   measured the definition, not the board; it is the vacuous-green shape
+   this repo keeps producing (cf. `pads_for_ir does not feed the router`,
+   and the two pour bugs of the same date).
+
+   This has not been confirmed against the original probe, which is
+   deleted. Treat the zero as unusable pending a pinned re-measure, and
+   do NOT cite it — in either direction. In particular the argument
+   "straight-line metrics are blind, so a swap objective needs a bent or
+   routed metric" rested on this zero and is now unsupported: a metric
+   reporting 158 is not blind, it is merely different. Item 3's
+   measurement discrepancy is the same family of problem.
 
 ## The general primitives hiding in `ewod_pad_array`
 
@@ -297,8 +314,33 @@ and backed out. 3 must be MEASURED before it is built.
    by the existing number — it was never measured on the geometry it is
    about.
 
-   **MEASURED 2026-09-28 — Reto's read is right; the swap lever is not
-   spent.** Crossings among the REALIZED escape paths on the 50/54 run
+   > **⚠ THE NUMBERS BELOW ARE DISPUTED — do not build on the specific
+   > counts.** A second, independent probe on the identical board and
+   > seed, with `src/precis/pcb/` unchanged since, could not reproduce
+   > them: it got **70 routed × routed crossings over 52 net pairs**
+   > (collinear-merged) or 76/54 (raw router segments), against the
+   > 51/41 recorded here. Segment granularity moves the number (raw vs
+   > merged) but neither value lands on 51, so at least one of the two
+   > probes is wrong and it is not yet known which. Both were throwaway,
+   > single-run, and unaudited; this block was committed treating the
+   > first as settled, which was a mistake.
+   >
+   > **What survives, and is all that survives:** realized escape paths
+   > cross MANY times — every measurement agrees the count is in the
+   > dozens, nowhere near zero. So the qualitative conclusion (the swap
+   > lever is not spent) stands. The exact counts, the buckets, and the
+   > within/between split do not.
+   >
+   > **First build step is therefore NOT the swap objective.** It is a
+   > crossing count with a PINNED method, as a real test in the suite:
+   > fix the segment-granularity convention (raw or collinear-merged),
+   > fix what counts as an escape path's endpoints, and assert the
+   > number. Two throwaway probes disagreeing by 37% is a measurement
+   > problem, and a swap objective scored on an unpinned metric cannot be
+   > evaluated. See also the straight-airwire retraction under point 6.
+
+   **MEASURED 2026-09-28, NOT REPRODUCIBLE — see the warning above.**
+   Crossings among the REALIZED escape paths on the 50/54 run
    (In2.Cu open, seed 1), counted with an exact orientation-sign proper
    intersection test over `Fraction` — no epsilon — with shared endpoints
    and T-touches excluded, then split by whether each segment is authored
@@ -354,6 +396,30 @@ and backed out. 3 must be MEASURED before it is built.
    **So this item becomes** "score swaps on routed-path crossings" —
    build it. Its honest ceiling is the 51 swappable crossings and
    whichever of the 4 failures are races, not all 4.
+
+   **The bent-airwire proxy was measured 2026-09-28 and is NOT good
+   enough alone.** Hypothesis: score swaps on a two-leg polyline
+   (electrode pad → its own plaza drop-via → channel land), cheap enough
+   for an optimizer loop. Measured against that probe's own
+   self-consistent realized ground truth (70 crossings / 52 pairs):
+
+   | | |
+   | --- | --- |
+   | bent-proxy crossings | 223 (192 net pairs) |
+   | net-pair RECALL vs realized | 21/52 = **40%** |
+   | net-pair PRECISION | 21/192 = **11%** |
+   | Spearman rho, per-plaza (n=9) | 0.608 |
+   | spread over 20 random channel permutations | 426–627, **19 distinct** |
+
+   Read: it passes the non-degeneracy gate decisively (a metric returning
+   the same score under every permutation would be useless however well
+   it correlated, and this one moves), but it **fails on recall** — an
+   optimizer driven by it would be blind to 60% of the crossings it
+   exists to remove while spending most of its effort on the 89% of
+   flagged pairs that are not real. Bending at the plaza via is right in
+   KIND and insufficient in DEGREE. So the options are a proxy with more
+   legs (actual breakout/corridor topology, not one via) or maze-lite
+   routes in the loop — a scope question, not a detail.
 
    *Retracted from the same measurement:* a detour-ratio distribution
    (min 0.082 / median 1.174 / max 4.453). A ratio below 1 is impossible
