@@ -218,3 +218,22 @@ still labelled `d9a7f115`. "Mixed fleet" overstates it. The consequence that
 does bite: with `PRECIS_AGENT_CONTAINER=1` on the agent lane, container-
 executed agentic jobs on melchior keep running the old image, so a code fix
 shipped to the venvs is not live for them until an image rebuild succeeds.
+
+## Two clean rebuilds since, 2026-09-28
+
+The next two deploys both rebuilt the image without incident on melchior:
+
+    agent image build rc=0, elapsed 184s, pull source mirror.gcr.io
+    precis-agent image rebuilt
+
+184 s against the 908 s that tripped the watchdog, same host, same
+`mirror.gcr.io` pull source, one day later. So the apt/nodesource wedge was
+transient egress, not a structural defect in the play — the image is current
+again and the blast-radius note above is closed.
+
+What this does **not** settle is findings (2) and (3), which are about the
+play's error handling rather than the stall: a task-level exception still
+short-circuits the `retries`/`until` ladder, and the progress-trail slurp
+still sits in the same block as the raising task, so the next stall — from
+any cause — will again abort the deploy and deliver no trail. Those remain
+open and are the reason this item is still here.

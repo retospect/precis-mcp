@@ -131,7 +131,7 @@ written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
   press|key|magnet|bearing|bond|integral|cable, "params"?: {…}}` —
   nested, never flat.
 
-## Ops — loads, prose, measures, modes, fabrication, BOM, notes, formfind
+## Ops — loads, prose, measures
 
 - `set_load` — exactly one of `block` | `a`+`b` (connect), then flat
   keys: `force` [N] · `torque` [N·m] · `duty` · `cycles` · `fixed`
@@ -162,6 +162,9 @@ written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
   when declared, else beyond `tol` of `value`, else not exactly `value`.
 - `set_measure` / `remove_measure` — `block`, `name` (set needs ≥1
   field; no explicit nulls — remove then re-add)
+
+## Ops — modes, binding, fabrication
+
 - `set_mode` — `block`, `mode` = `"family"` or `"family/material"` or
   null. Families: `purchase · fdm · sla · cnc-2.5ax · laser ·
   stock-cut · atomic` (e.g. `"fdm/asa"`).
@@ -172,6 +175,9 @@ written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
   `set_process_override`/`clear_process_override`
   — `block`, `field` (+ `value`) · `set_build_frame` — `block`, `down`
   [x,y,z] / `clear_build_frame` — `block`. Contracts: `precis-se-print-help`.
+
+## Ops — BOM, order, notes, formfind
+
 - `add_bom` / `remove_bom` — `block` | `a`+`b`, `item_kind`
   `component|part`, `item` (slug/C-number) · `qty` · `uom` · `reason`.
   Slugs aren't vetted at write time; `view='bom'` flags dangling ones.
@@ -181,13 +187,12 @@ purchasable leaves (`bound_kind='component'`/`'part'`, quantities
 multiplied through the arrays exactly like `view='bom'`), merged with any
 explicit `add_bom` lines naming the same item (never double-counted), plus
 a to-make table (`block · mode · qty`) for every unbound **leaf** block —
-an unbound block with children is a plain assembly of the things below
-it, not itself a thing to buy or make, so it gets no row; only a BOUND
-non-leaf gets the opposite treatment: one purchasable line saying `covers
-N block(s)`, with its children never separately ordered or listed. A
-cross-design instance (`template='<slug>#<block>'`) counts for the
-*borrowing* design at its own local quantity, resolving the binding
-through the foreign design. The honesty header mirrors `bom`'s:
+an unbound block with children is a plain assembly, so it gets no row; a
+BOUND non-leaf instead gets one purchasable line saying `covers N
+block(s)`, its children never separately ordered. A cross-design instance
+(`template='<slug>#<block>'`) counts for the *borrowing* design at its own
+local quantity, resolving the binding through the foreign design. The
+honesty header mirrors `bom`'s:
 `purchasable: P of L leaf template(s) · to make: M` — `P`/`M`/`L` count
 TEMPLATES (a merged line can carry several), while the `priced`/`massed`
 lines below count purchasable LINES — and a `total: ≥ … (partial, N of
