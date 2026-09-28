@@ -243,17 +243,24 @@ chain is on a design), `hexfold chain` CLI, fuse phase `k` as a chain
 variable (affects neither `N` nor length), cone/sheet parts (a sheet is
 a `hole` wall in a chain).
 
-**Residual from step 0 — fused seed placement.** `_place_seeds` filed
-every fuse/bond transform under the destination instance and read it back
-as the source's, so each neighbour got the transform computed for the other
-side (mirrored behind the far rim; 8–78 Å crossing bonds in every
-multi-instance example; `stick` then telescoped the halves). Fixed for
-fuses, with the rim-frame normal now signed against the owning instance's
-centroid (`tests/hexfold/test_place_seeds.py`). Still seeding long crossing
-bonds after the fix, each a separate placement path and each worth its own
-look before the block joiner (step 5) relies on seeds: bud `@` links
-(`nanobud_87/96.hx`, `_bond_transform`), k ≥ 3 seams (`sheet_pill_bump.hx`,
-`flanged_doughnut.hx`), fuses into `cap` hole rims (`valve_shell.hx`,
-17.9 Å), and armchair fuses spaced one σ apart along the normal when their
-dangling bonds are 30° off-axis (crossing bond σ/cos 30°, harmless — stick
-closes it). `tube_ring_closure.hx` is a genuine loop and cannot be rigid.
+**Seed placement residuals (from step 0), fixed 2026-09-28.** Three
+placement paths seeded 5-26 A crossing bonds that `stick()` then hid
+(every earlier test asserted post-relax lengths); each now has a
+*pre-relax* `net.seed3` case in `tests/hexfold/test_place_seeds.py`:
+nanobud `@` menus (no placement edge; now a six-point Kabsch fit from
+`_solve_bud_attach`'s pairs plus a one-sigma outward seed offset, because
+the six host atoms mix ring and second-shell atoms and have no shared rim
+normal to twist about), k >= 3 seams (placement-only `fuse_frames`
+entries per consecutive rim pair; `_place_seeds` runs real fuses first and
+seam edges only for what they cannot reach), and flat washers with two
+fused rims (outer rim forced antiparallel to the hole rim; flatness is an
+absolute extent test in sigma, not a ratio, since a wide len=1 tube has a
+small axial/transverse ratio). Still open, all step-5 inputs:
+`flanged_doughnut.hx` keeps a ~10.9 A residual on its `flange` because
+`top` (placed via the real top-wall-bottom chain) and `bottom`/`flange`
+(placed via the seam) disagree by a rotation no per-edge rigid placement
+can reconcile -- the part-graph cycle needs a joint least-squares
+placement, i.e. the block joiner; `_place_seeds` is single-rooted at
+`origin` (a fused component unreachable from it stays unplaced; no example
+needs it yet); armchair fuses seeded sigma/cos 30 apart are harmless.
+`tube_ring_closure.hx` is a genuine loop and cannot be rigid.

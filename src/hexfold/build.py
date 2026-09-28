@@ -2507,7 +2507,10 @@ def _atom_ref_ord(
 
 
 def _frame(
-    pos: np.ndarray, dang: tuple[int, ...], inst_c: np.ndarray | None = None
+    pos: np.ndarray,
+    dang: tuple[int, ...],
+    inst_c: np.ndarray | None = None,
+    forced_normal: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rim frame from dangling-atom seed positions: centroid + normal.
 
@@ -2517,9 +2520,19 @@ def _frame(
     whole-net mean is a different point once several instances share the
     array, and for a hole rim near a sheet's centre it made the sign a
     coin toss.
+
+    ``forced_normal`` bypasses the covariance/centroid computation
+    entirely (already signed by the caller): a flat, zero-thickness
+    instance (SPEC 28.3 ``cap(6k,0)``) has *two* boundaries -- a hole
+    rim and the outer rim -- whose covariance-derived normal is z-noise
+    either way, so the sign has to come from one shared plane normal per
+    instance instead (see :func:`_flat_normals`), not from each rim's own
+    ambiguous covariance.
     """
     pts = pos[list(dang)]
     c = pts.mean(axis=0)
+    if forced_normal is not None:
+        return c, forced_normal
     cov = (pts - c).T @ (pts - c)
     n = np.linalg.eigh(cov)[1][:, 0]
     if inst_c is None:
@@ -2527,6 +2540,47 @@ def _frame(
     if float(n @ (c - inst_c)) < 0:
         n = -n
     return c, n
+
+
+def _flat_normals(
+    pos: np.ndarray, inst_ords: dict[str, list[int]], sigma: float
+) -> set[str]:
+    """Names of the *flat* instances (root-caused 2026-09-28 item 3): an
+    instance is flat when its own point cloud's smallest-variance extent
+    is under half a lattice spacing (``0.5 * sigma``) -- a cap/sheet patch
+    (SPEC 28.3's zero-thickness ``cap(6k,0)`` lid, built with only a
+    small deterministic out-of-plane perturbation, ``_patch_seed3``
+    "flat-perturbed", whose ``sin(u)*cos(w)`` amplitude bounds the extent
+    at ``0.1 * sigma`` regardless of instance size -- measured 0.07-0.10
+    sigma on cap(12,0)/cap(24,0)) rather than a tube/cone/fullerene with
+    genuine 3D curvature (a ``len=1`` tube's axial extent is a fixed
+    ``2 * sigma`` no matter its circumference -- measured on
+    tube(40,0,len=1)/tube(60,0,len=1), whose *relative* smallest/largest
+    extent ratio drops to 0.09/0.06 at those diameters and would
+    misclassify them as flat under a relative threshold; the absolute
+    ``sigma``-scaled one does not, by a 4x margin either side).
+
+    Detected by extent, not by ``kind`` name, so it also covers a flat
+    ``sheet`` instance -- geometry, not vocabulary, is what makes
+    ``_frame``'s per-rim covariance normal a coin toss for a flat
+    instance's hole rim vs its outer rim (see ``_place_seeds``'
+    ``_flat_sign``, which resolves the two rims' opposite signs from the
+    hole rim's own -- already reliable -- covariance sign, not from this
+    function's extent axis).
+    """
+    out: set[str] = set()
+    for inst, idx in inst_ords.items():
+        pts = pos[idx]
+        if len(pts) < 3:
+            continue
+        c = pts.mean(axis=0)
+        cov = (pts - c).T @ (pts - c)
+        _w, v = np.linalg.eigh(cov)  # ascending eigenvalues
+        proj = (pts - c) @ v
+        extent0 = float(proj[:, 0].max() - proj[:, 0].min())
+        if extent0 < 0.5 * sigma:
+            out.add(inst)
+    return out
 
 
 def _rot_min(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -2578,6 +2632,8 @@ def _fuse_transform(
     sigma: float,
     inst_c_p: np.ndarray | None = None,
     inst_c_q: np.ndarray | None = None,
+    n_p_forced: np.ndarray | None = None,
+    n_q_forced: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """(R, t) mapping instance Q's seed so its port faces P's fused port.
 
@@ -2585,10 +2641,11 @@ def _fuse_transform(
     antiparallel; the residual twist about the normal pairs
     ``P.dangling[i]`` with ``Q.dangling[(k-i) mod N]``.  ``inst_c_p`` /
     ``inst_c_q`` are the two instances' own seed centroids (rim-normal
-    sign, see :func:`_frame`).
+    sign, see :func:`_frame`); ``n_p_forced`` / ``n_q_forced`` bypass that
+    entirely for a flat instance's rim (see :func:`_flat_normals`).
     """
-    c_p, n_p = _frame(pos, p_dang, inst_c_p)
-    c_q, n_q = _frame(pos, q_dang, inst_c_q)
+    c_p, n_p = _frame(pos, p_dang, inst_c_p, n_p_forced)
+    c_q, n_q = _frame(pos, q_dang, inst_c_q, n_q_forced)
     r0 = _rot_min(n_q, -n_p)
     n = len(p_dang)
     # best twist about n_p: circular mean of the angular offsets
@@ -2611,6 +2668,58 @@ def _fuse_transform(
     th = math.atan2(sum(math.sin(o) for o in offs), sum(math.cos(o) for o in offs))
     r = _rot_axis(n_p, th) @ r0
     t = c_p + sigma * n_p - r @ c_q
+    return r, t
+
+
+def _fuse_transform_kabsch(
+    pos: np.ndarray,
+    p_dang: tuple[int, ...],
+    q_dang: tuple[int, ...],
+    k: int,
+    sigma: float,
+    inst_c_p: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """(R, t) via a full six-point rigid best fit (Kabsch/SVD), minimising
+    sum-of-squares over the n matched pairs ``P.dangling[i]`` <->
+    ``Q.dangling[(k-i) mod N]`` directly, with no reflection (``det(R) ==
+    1``).  Used only for the nanobud menu attach (root-caused 2026-09-28
+    item 1), not the ordinary rim-to-rim :func:`_fuse_transform`: a menu
+    registration's six host atoms are a mix of a hexagon's own ring
+    vertices and its second-neighbour shell (Wang & Li 2009's 9-6/8-7
+    junction), at genuinely different distances from any single point, so
+    no shared rim normal + one twist angle describes them.  Verified
+    against nanobud_87.hx: the twist-only fit left three of the six seed
+    bonds 3.5-5.4 A short, which ``stick()`` could not fully absorb (a
+    0.69 A bud/host clash survived 3000 relax iterations); this fit caps
+    the same six at <=3.1 A -- Kabsch is the global optimum rotation for
+    a *given* correspondence, so that residual is irreducible for this
+    menu's own solved six-bond registration (the host side genuinely is
+    not a small planar rim).
+
+    The target is the host positions offset by one ``sigma`` along the
+    host rim's own outward normal (:func:`_frame`, signed against
+    ``inst_c_p``), not the bare host positions: a *uniform* shift of the
+    target only moves Kabsch's translation term (the found rotation and
+    the six residual point-to-point distances are unchanged), but it
+    rigidly carries the *whole* bud instance -- not just its six bonded
+    atoms -- one sigma further from the host surface, which is what
+    actually closed the remaining bud/host non-bonded clash (0.80 A at
+    zero offset, >1.0 A at one sigma, on nanobud_87.hx): the bud's six
+    attach atoms get pulled back in by ``stick()``'s bond springs either
+    way, but the rest of the C60 ball needs the extra clearance to clear
+    the host tube's convex surface first.
+    """
+    n = len(p_dang)
+    _c_p, n_p = _frame(pos, p_dang, inst_c_p)
+    target = pos[list(p_dang)] + sigma * n_p
+    src = pos[[q_dang[(k - i) % n] for i in range(n)]]
+    src_c = src.mean(axis=0)
+    tgt_c = target.mean(axis=0)
+    h = (src - src_c).T @ (target - tgt_c)
+    u, _s, vt = np.linalg.svd(h)
+    d = float(np.sign(np.linalg.det(vt.T @ u.T))) or 1.0
+    r = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+    t = tgt_c - r @ src_c
     return r, t
 
 
@@ -2637,17 +2746,37 @@ def _bond_transform(
 def _place_seeds(
     spec: Spec,
     net: Net,
-    fuse_frames: list[tuple[str, tuple[int, ...], str, tuple[int, ...], int]],
+    fuse_frames: list[
+        tuple[str, tuple[int, ...], str, tuple[int, ...], int, bool, bool]
+    ],
     bond_links: list[tuple[int, int]],
 ) -> tuple[tuple[tuple[float, float, float], ...] | None, str]:
     """Rigidly place per-instance seeds along the connect graph.
 
     BFS from the origin instance: each fused port aligns its neighbour by
     the fused-port frame (centroids sigma apart along the normal, normals
-    antiparallel, k-phase twist); each bond link places the dst instance
-    sigma outside the src atom.  Unconnected instances keep their local
-    seed.  Returns (seed3, seed_kind); seed_kind is "mixed" when any
-    transform was applied.
+    antiparallel, k-phase twist -- or, when the entry says so, the full
+    Kabsch best fit); each bond link places the dst instance sigma
+    outside the src atom.  Unconnected instances keep their local seed.
+    Returns (seed3, seed_kind); seed_kind is "mixed" when any transform
+    was applied.
+
+    Each ``fuse_frames`` entry has two trailing ``bool``s.  The first is
+    ``True`` for a real fuse/menu registration and ``False`` for a
+    *placement-only* entry (a k>=3 seam's consecutive-rim correspondence,
+    SPEC 11.3): both feed this BFS identically, only registry-closure
+    bookkeeping downstream tells them apart (a seam already contributes
+    its own registry edges).  The second selects the transform:
+    :func:`_fuse_transform_kabsch` instead of :func:`_fuse_transform` for
+    a nanobud menu attach (root-caused 2026-09-28 item 1), whose six
+    bonds have no shared rim normal to twist-fit about.
+
+    Single-rooted at ``spec.origin``: a fused component the BFS can't
+    reach from there is left at its own local seed (docs/backlog/
+    hexfold-integration.md "Root-caused 2026-09-28" item 2 notes a
+    multi-root BFS as a possible follow-up -- not needed by any current
+    example, since a seam's own placement-only edges are what span every
+    seam-linked instance into the one tree rooted at origin).
     """
     if net.seed3 is None:
         return net.seed3, net.seed_kind
@@ -2662,52 +2791,120 @@ def _place_seeds(
 
     inst_cent = {k_: pos[v].mean(axis=0) for k_, v in inst_ords.items()}
 
-    edges: dict[str, list[tuple[str, np.ndarray, np.ndarray]]] = {}
+    edges: dict[str, list[tuple[str, np.ndarray, np.ndarray, bool]]] = {}
 
-    def add(inst_a: str, inst_b: str, r: np.ndarray, t: np.ndarray) -> None:
+    def add(inst_a: str, inst_b: str, r: np.ndarray, t: np.ndarray, real: bool) -> None:
         # (r, t) maps inst_b's local seed so its port faces inst_a's port:
         # file it under inst_a, the instance whose placement it hangs off.
         # (Keying by inst_b handed every neighbour the transform computed
         # for the *other* side, mirroring it behind the far rim -- every
         # fused example seeded with 8-78 A crossing bonds and stick's
         # spring stage then telescoped the halves into each other.)
-        edges.setdefault(inst_a, []).append((inst_b, r, t))
+        edges.setdefault(inst_a, []).append((inst_b, r, t, real))
 
-    for _pn, p_dang, _qn, q_dang, k in fuse_frames:
+    flat = _flat_normals(pos, inst_ords, sigma)
+
+    def _local_port(name: str, inst: str) -> str:
+        return name[len(inst) + 1 :] if name.startswith(inst + ".") else name
+
+    # A flat instance's *hole* rim keeps _frame's existing per-rim
+    # covariance+centroid sign untouched: empirically (and per the
+    # backlog dossier) it is already reliable on its own -- the hole is
+    # small and near the patch's own origin, so its small deterministic
+    # seed perturbation biases the sign consistently.  Only the *outer*
+    # rim, when the same flat instance also has a hole rim in play, is
+    # forced to the outer/hole opposition (root-caused 2026-09-28 item
+    # 3): re-deriving the outer rim's own sign independently is the coin
+    # toss (both rims read as z-noise against the same near-coincident
+    # instance centroid), so it is set to the hole rim's exact negation
+    # instead of an independently recomputed axis.  A flat instance with
+    # only one rim kind in play (no conflict to resolve) is left
+    # unanchored and falls through to the unchanged `_frame` logic below.
+    hole_ref: dict[str, np.ndarray] = {}
+    outer_seen: set[str] = set()
+    for pn, p_dang, qn, q_dang, _k, _real, _kabsch in fuse_frames:
+        if _kabsch:
+            # a menu entry's names are not port names at all (e.g. the
+            # host side is a raw `inst/site` ref, not `inst.hole`/
+            # `inst.in`) -- bucketing it here by the accident that it
+            # doesn't start with "hole" would pollute outer_seen for a
+            # flat host it has no real hole/outer conflict with.
+            # (A placement-only seam entry's names *are* real port names
+            # -- e.g. flanged_doughnut's only `top.in` occurrence is via
+            # its seam, not a real fuse -- and excluding those measurably
+            # regressed flanged_doughnut's max crossing length 10.91 A ->
+            # 11.59 A by starving `top`/`bottom` of the outer-rim
+            # disambiguation, so `real=False` entries stay in this loop.)
+            continue
+        for name, dang in ((pn, p_dang), (qn, q_dang)):
+            inst = inst_of[dang[0]]
+            if inst not in flat:
+                continue
+            if _local_port(name, inst).startswith("hole"):
+                if inst not in hole_ref:
+                    _c, n_ref = _frame(pos, dang, inst_cent[inst])
+                    hole_ref[inst] = n_ref
+            else:
+                outer_seen.add(inst)
+
+    def _flat_sign(name: str, inst: str) -> np.ndarray | None:
+        if inst not in hole_ref or inst not in outer_seen:
+            return None
+        n_hole = hole_ref[inst]
+        return n_hole if _local_port(name, inst).startswith("hole") else -n_hole
+
+    for pn, p_dang, qn, q_dang, k, real, kabsch in fuse_frames:
         ia, ib = inst_of[p_dang[0]], inst_of[q_dang[0]]
         if ia == ib:
             continue
         c_a, c_b = inst_cent[ia], inst_cent[ib]
-        r, t = _fuse_transform(pos, p_dang, q_dang, k, sigma, c_a, c_b)
-        add(ia, ib, r, t)
-        r2, t2 = _fuse_transform(pos, q_dang, p_dang, k, sigma, c_b, c_a)
-        add(ib, ia, r2, t2)
+        if kabsch:
+            r, t = _fuse_transform_kabsch(pos, p_dang, q_dang, k, sigma, c_a)
+            add(ia, ib, r, t, real)
+            r2, t2 = _fuse_transform_kabsch(pos, q_dang, p_dang, k, sigma, c_b)
+            add(ib, ia, r2, t2, real)
+            continue
+        n_p, n_q = _flat_sign(pn, ia), _flat_sign(qn, ib)
+        r, t = _fuse_transform(pos, p_dang, q_dang, k, sigma, c_a, c_b, n_p, n_q)
+        add(ia, ib, r, t, real)
+        r2, t2 = _fuse_transform(pos, q_dang, p_dang, k, sigma, c_b, c_a, n_q, n_p)
+        add(ib, ia, r2, t2, real)
     for ai, bi in bond_links:
         ia, ib = inst_of[ai], inst_of[bi]
         if ia == ib:
             continue
         r, t = _bond_transform(pos, ai, bi, sigma)
-        add(ia, ib, r, t)
+        add(ia, ib, r, t, True)
         r2, t2 = _bond_transform(pos, bi, ai, sigma)
-        add(ib, ia, r2, t2)
+        add(ib, ia, r2, t2, True)
 
     origin = spec.origin or net.atoms[0].instance
     placed: dict[str, tuple[np.ndarray, np.ndarray]] = {
         origin: (np.eye(3), np.zeros(3))
     }
-    queue = [origin]
-    while queue:
-        cur = queue.pop(0)
-        r_c, t_c = placed[cur]
-        for nxt, r_e, t_e in sorted(edges.get(cur, []), key=lambda x: x[0]):
-            if nxt in placed:
-                continue
-            # global(nxt) = place(cur) o edge: the edge transform is in the
-            # pre-placement local frames of both instances.
-            placed[nxt] = (r_c @ r_e, r_c @ t_e + t_c)
-            queue.append(nxt)
-    if len(placed) == len(inst_ords):
-        pass
+
+    def _bfs(allow_placeholder: bool) -> None:
+        queue = list(placed)
+        while queue:
+            cur = queue.pop(0)
+            r_c, t_c = placed[cur]
+            for nxt, r_e, t_e, real_e in sorted(edges.get(cur, []), key=lambda x: x[0]):
+                if nxt in placed or (not real_e and not allow_placeholder):
+                    continue
+                # global(nxt) = place(cur) o edge: the edge transform is in
+                # the pre-placement local frames of both instances.
+                placed[nxt] = (r_c @ r_e, r_c @ t_e + t_c)
+                queue.append(nxt)
+
+    # two passes: real fuse/bond edges first, so a k>=3 seam's
+    # placement-only edges (root-caused 2026-09-28 item 2) only bridge a
+    # component the real graph can't otherwise reach -- a placement-only
+    # edge competing with a real one at the same BFS depth (e.g. a seam
+    # naming two rims also joined by a real chain through a third
+    # instance) must never win, or it overrides the real chain's accurate
+    # placement with the seam's cruder mean-frame approximation.
+    _bfs(allow_placeholder=False)
+    _bfs(allow_placeholder=True)
     if len(placed) <= 1:
         return net.seed3, net.seed_kind
     for inst, (r, t) in placed.items():
@@ -3132,7 +3329,13 @@ def _apply_connects(
     consumed_rims: list[tuple[int, ...]] = []
     rings = list(net.rings)
     fused_edges: list[tuple[int, int]] = []
-    fuse_frames: list[tuple[str, tuple[int, ...], str, tuple[int, ...], int]] = []
+    # trailing bools: (real, kabsch) -- real is True for a real fuse/menu
+    # registration, False for a k>=3 seam's placement-only entry; kabsch
+    # selects _fuse_transform_kabsch over _fuse_transform (see
+    # _place_seeds)
+    fuse_frames: list[
+        tuple[str, tuple[int, ...], str, tuple[int, ...], int, bool, bool]
+    ] = []
     bond_links: list[tuple[int, int]] = []
     attach_bonds: list[tuple[int, int]] = []
     atoms = list(net.atoms)
@@ -3212,6 +3415,38 @@ def _apply_connects(
             if got is None:
                 continue
             vbonds, sfaces, _reg = got
+            # _place_seeds placement (gr454650-adjacent root cause,
+            # docs/backlog/hexfold-integration.md "Root-caused 2026-09-28"
+            # item 1): the menu verb never fed `bond_links`/`fuse_frames`,
+            # so _place_seeds' `len(placed) <= 1` early return skipped the
+            # whole spec.  Route the solved six-bond registration through
+            # a six-point placement transform (not _bond_transform: a
+            # single staple has no twist fit, and the BFS keeps only the
+            # first edge per neighbour so five of the six pairs would be
+            # dropped) -- host atoms as p_dang, bud atoms as q_dang, k=0
+            # -- k=0's index convention pairs p_dang[i] with
+            # q_dang[(-i) % n], so q_dang is built in the matching
+            # reversed order (q_dang[j] = the bud atom actually bonded to
+            # p_dang[(-j) % n]) rather than vbonds' own order, or either
+            # transform would average six mismatched pairs instead of the
+            # six real bonds.  Flagged for _fuse_transform_kabsch, not
+            # the ordinary rim-normal _fuse_transform: the six host atoms
+            # mix a hexagon's ring vertices with its second-neighbour
+            # shell (Wang & Li 2009 9-6/8-7), with no single shared rim
+            # normal, and the twist-only fit left a bud/host clash after
+            # stick() (see _fuse_transform_kabsch's docstring).
+            n_vb = len(vbonds)
+            fuse_frames.append(
+                (
+                    c.dst,
+                    tuple(ords[(host_key, hv)] for _bv, hv in vbonds),
+                    bud_port.name,
+                    tuple(ords[(c.src, vbonds[(-j) % n_vb][0])] for j in range(n_vb)),
+                    0,
+                    True,
+                    True,
+                )
+            )
             host_subs: dict[str, int] = {"A": 0, "B": 0}
             for bv, hv in vbonds:
                 a, b = ords[(c.src, bv)], ords[(host_key, hv)]
@@ -3308,7 +3543,9 @@ def _apply_connects(
                 )
             else:
                 kk = c.k or 0
-            fuse_frames.append((p.name, p.dangling, q.name, q.dangling, kk))
+            fuse_frames.append(
+                (p.name, p.dangling, q.name, q.dangling, kk, True, False)
+            )
             new = [(p.dangling[i], q.dangling[(kk - i) % n]) for i in range(n)]
             for a, b in new:
                 bonds.append((min(a, b), max(a, b), 1))
@@ -3476,14 +3713,33 @@ def _apply_connects(
         # part-graph edges for registry closure: the bonding loop above
         # offsets only the primary rim by seam.k (_idx: rim 0 uses i, every
         # other rim uses (k - i) % n), so rim0-rim1 carries phase k and
-        # every later consecutive pair is in direct register (phase 0)
+        # every later consecutive pair is in direct register (phase 0).
+        # The same consecutive-pair correspondence, fed to `fuse_frames`
+        # as placement-only entries (the trailing False -- no bonds/atoms
+        # minted, no registry edge of their own: seam_registry_edges above
+        # already covers that), is what lets _place_seeds' BFS span every
+        # seam-linked instance (root-caused 2026-09-28 item 2: with no
+        # fuse_frames edge at all, an origin that only touches a seam left
+        # the whole spec unplaced).
         for j in range(krim - 1):
+            phase = seam.k if j == 0 else 0
             seam_registry_edges.append(
                 (
                     atoms[resolved[j].atoms[0]].instance,
                     atoms[resolved[j + 1].atoms[0]].instance,
-                    seam.k if j == 0 else 0,
+                    phase,
                     n,
+                )
+            )
+            fuse_frames.append(
+                (
+                    resolved[j].name,
+                    resolved[j].dangling,
+                    resolved[j + 1].name,
+                    resolved[j + 1].dangling,
+                    phase,
+                    False,
+                    False,
                 )
             )
         seam_records.append(SeamRecord(seam.name, seam.rims, seam.k, tuple(new_ords)))
@@ -3565,7 +3821,13 @@ def _apply_connects(
     # the sp3 relabelling below).
     inst_of_ord = {a.ord: a.instance for a in atoms}
     registry_edges: list[tuple[str, str, int, int]] = []
-    for _pn, p_dang, _qn, q_dang, fk in fuse_frames:
+    for _pn, p_dang, _qn, q_dang, fk, real, _kabsch in fuse_frames:
+        if not real:
+            # k>=3 seam placement-only entry: seam_registry_edges below
+            # already carries this pair (minted alongside the seam atoms
+            # themselves), so counting it again here would double an
+            # edge that is a tree edge or a genuine cycle either way.
+            continue
         registry_edges.append(
             (
                 inst_of_ord[p_dang[0]],
