@@ -3,6 +3,7 @@ status: draft
 title: Measures substrate — generalise material_values into `measures` (any subject ref, literal kept, reference state, anchored evidence edges) so quantbind, quests and the mesh share one number record
 prio: high
 model: opus
+blocked-by: term-taxonomy
 ---
 
 # Measures substrate — generalise `material_values` into `measures`
@@ -32,8 +33,93 @@ exact literal; no reference state / convention; per-condition evidence
 anchors dropped; one text chunk handle instead of anchored evidence
 edges; no epistemic state beyond `method`; no unit conversion.
 
-This item is the contract both trees build against. It ships first and
-alone; whichever tree reaches it ships it.
+This item is the contract both trees build against.
+
+## AMENDMENT 2026-09-28 — ordering inverted, and `measurands` is gone
+
+Two changes decided by Reto with `paper-extraction-15`. They supersede
+every mention of a `measurands` table below; that text is stale until
+this item is rewritten at build time, and a coder must read this section
+first.
+
+**1. `term-taxonomy` ships first.** This item is no longer "first and
+alone" — it is `blocked-by: term-taxonomy`, which turns the three
+parallel registries (`material_properties` 24, `component_specs` 30 +
+`component_categories` 13, `rxn_properties` 10) into `taxon` refs. So:
+
+- **Do not create a `measurands` table.** `measures` gains
+  `measurand_ref_id bigint NOT NULL REFERENCES refs (ref_id)` pointing at
+  a `kind='taxon'` node (handler-enforced, as `material_ref_id` already
+  is — `refs` has no per-kind FK).
+- Everything this item hung on `measurands` moves or dies:
+  `required_conditions` becomes a start-node `contract.required_keys`
+  entry; `aliases` is node meta; `reference_states` and `convert` stay
+  here as measure-side columns, since they are per-value conventions,
+  not per-term facts.
+- The `material_properties` compatibility view now projects **over taxon
+  refs**, not over a renamed table. The `material_values` view and its
+  `INSTEAD OF INSERT` trigger are unaffected.
+- The fold-component question is dissolved: all three registries become
+  nodes in `term-taxonomy`'s seed, so there is no "which registry
+  migrates" choice left here. Delete that decision thread on rewrite.
+
+**2. Four trust gaps, all measure-side.** The existing `tier` /
+`source_attribution` / anchored-edge machinery covers whether *the
+paper's* number is sound. It does not cover whether *we read it right*.
+
+- **`extraction_status`** — `unverified | anchor_matched | anchor_mismatch
+  | human_checked`, **computed on write, never asserted**: does `literal`
+  actually occur in the anchored span? Every existing guard checks that
+  an anchor *exists*, none checks that it *matches*, and right-paper
+  wrong-column is the dominant LLM extraction failure. A mismatch flags
+  the row, never rejects it.
+- **`trusted boolean` becomes derived, not settable.** It is a verdict
+  with no reason and no author, which contradicts the ruling (agreed for
+  taxon nodes) that truth lives on annotation `finding` rows through the
+  existing verdict/dispute path. Keep the column as a fast denormalised
+  read; compute it from findings.
+- **`derived_from bigint[]`** — a `tier='derived'` row must record its
+  input measure ids so effective trust can be computed as the **minimum
+  over inputs**. Today a value derived from one measured and one asserted
+  input is indistinguishable from a measured one.
+- **Structured writer provenance.** `set_by` is free text. The corpus
+  finding that claim errors cluster by source (fix rates 6%–62% across
+  paper clusters) means "every measure written by model M in pass P" has
+  to be a query; free text will not cluster.
+
+**3. A new `experiment` ref kind, which this item owns.** `term-taxonomy`
+holds classes only; an individual run is an instance and belongs here.
+`measures` gains `experiment_ref_id`, and the shared context of a run
+(temperature, loading, …) stops being copied into each row's `conditions`
+JSONB and becomes **measures rows with `direction='input'` against the same
+experiment** — a set temperature and a measured one have identical shape
+and differ only by direction, so `conditions` as a separate
+representation is redundant.
+
+`direction` is `input | output | covariate` and is a **different axis
+from `role`**, which stays the condition-role enum `context |
+preparation | model`. A condition row carries both: it is an input *and*
+it is context-vs-preparation-vs-model. Overloading `role` with
+input/output would break the `required_conditions` rule, which reads
+`role='context'`, on its first run. This makes "what else came out of this run" a query, and gives
+inputs the same `literal`/`tier`/provenance treatment as outputs, which
+matters because a stated reaction temperature is itself a sourced claim.
+Rules: an experiment belongs to **exactly one paper** (the one that ran
+it), `instance-of` a taxon experiment-type node, and evidence spanning
+papers (B uses A's method) is reached through the *method node's* own
+anchors, not by the experiment owning two papers — otherwise no paper
+owns its conditions when two disagree.
+
+**4. `measures` is append-only.** `chunks` is already append-only for
+body rows because in-place UPDATE strands the downstream cascade; the
+same argument applies to a reviewed number. Never UPDATE — supersede with
+a new row plus a `supersedes` pointer, with a partial index on the live
+rows. Post-review tampering then cannot happen rather than having to be
+detected, and history is free. On review, additionally hash the
+load-bearing fields (literal, value, unit, measurand, subject,
+experiment, anchor) into the review record: under append-only that hash
+should never mismatch, which makes it an invariant alarm rather than a
+routine check.
 
 ## In scope
 

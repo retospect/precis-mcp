@@ -125,6 +125,18 @@ spend). A new pathway quest mints `STATUS:dormant`; a human activates it.
 write `precis-bootstrap-<pathway>` via `put(kind='skill')`), not into prompt
 growth. Dossiers stay per quest and are rewritten.
 
+**Terminal vs intermediate rungs (the benign gate).** The root's fifth rubric
+clause — the end product is safe to handle and comes apart into harmless
+pieces after use — applies to what the chain *delivers*, not to every rung
+along the way; Reto's ruling is that intermediates get it as a preference,
+not a requirement, because the chain is run once. That split is **derived
+from the graph, not annotated**: a rung whose `produces` appears in no other
+rung's `consumes` is terminal, and the bridge role treats the benign
+capability (qu454479) as a required unmet capability when it mints or
+completes such a rung, advisory otherwise. An explicit
+`meta.rung.benign = "required"` overrides the derivation upward (never
+downward) for a rung whose product leaves the lab despite being consumed.
+
 ## In scope
 
 1. `meta.quest_body = "roadmap"` — fourth arm in
