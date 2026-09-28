@@ -89,6 +89,10 @@ _OPEN_URL_OVERRIDES: dict[str, str] = {
     "structure": "/structure/{slug}",
     "figure": "/figure/{slug}",
     "mermaid": "/mermaid/{slug}",
+    # The board workbench (fab render + net-label schematic + vitals).
+    # Without this the row fell back to ``/refs/pcb/<id>``, which 400s —
+    # ``pcb`` has no browse tab (see ``_REFS_BROWSABLE_KINDS``).
+    "pcb": "/pcb/{slug}",
     # Work-facet rows (Drive's "Work" chip row): a quest opens its hub
     # dashboard, a todo drills into just its own subtree on /todo (never
     # the full 5000-row tree). Mirrors the folder-child map in

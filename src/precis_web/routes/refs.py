@@ -2315,6 +2315,16 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     "tag",
     "provenance",
     "random",
+    # Design / supply kinds whose browse surface is Drive, but whose Drive
+    # rows (and hover previews, tag pivots) fall back to /refs/<kind>/<id>
+    # for the detail click-through: without them here every such link 400s
+    # ("no browse tab"). ``component``/``material`` have no dedicated
+    # reader at all — the generic template renders their handler card
+    # (entity + sourced-value table). ``pcb`` has one and 303s to it just
+    # below (``detail``), same as ``structure``.
+    "pcb",
+    "component",
+    "material",
 )
 
 _PER_KIND_LIMIT = 20  # cap rows per kind so 19-kind search stays readable
@@ -2350,16 +2360,20 @@ _CACHE_BACKED_KINDS: frozenset[str] = frozenset(
 #: verb and renders its markdown result instead of a row grid.
 _HANDLER_SEARCHED_KINDS: frozenset[str] = frozenset({"skill", "tag"})
 
-#: Browsable kinds that can only ever render empty in the consolidated
-#: view: ``random`` mints on demand and ``provenance`` is a report over
-#: other refs — neither has ``refs`` rows *or* a ``search`` verb. They
-#: stay in ``_REFS_BROWSABLE_KINDS`` (detail routes may still target
-#: them) but are dropped from the browser's checkboxes so the page never
-#: offers a control that returns nothing by construction.
-_CONSOLIDATED_HIDDEN_KINDS: frozenset[str] = frozenset({"random", "provenance"})
+#: Browsable kinds the consolidated browser does NOT offer as a checkbox.
+#: Two reasons: (a) it could only ever render empty — ``random`` mints on
+#: demand and ``provenance`` is a report over other refs, so neither has
+#: ``refs`` rows *or* a ``search`` verb; (b) the kind's browse surface is
+#: Drive (``pcb``/``component``/``material``), so a second grid here would
+#: be a duplicate control. Both groups stay in ``_REFS_BROWSABLE_KINDS`` —
+#: that set gates the *detail* route, which their Drive rows and hover
+#: previews still land on.
+_CONSOLIDATED_HIDDEN_KINDS: frozenset[str] = frozenset(
+    {"random", "provenance", "pcb", "component", "material"}
+)
 
 #: The kinds the consolidated browser offers as checkboxes / searches:
-#: every browsable kind minus the always-empty ones.
+#: every browsable kind minus the hidden ones.
 _CONSOLIDATED_KINDS: tuple[str, ...] = tuple(
     k for k in _REFS_BROWSABLE_KINDS if k not in _CONSOLIDATED_HIDDEN_KINDS
 )
@@ -2817,6 +2831,14 @@ async def detail(
     # the generic handler-card render is just ASCII. Send humans to the viewer.
     if kind == "structure" and ref.slug:
         return RedirectResponse(url=f"/structure/{ref.slug}", status_code=303)
+
+    # Same for a pcb board: /pcb/{slug} is the workbench (fab render +
+    # schematic + netlist/route/DRC vitals); the handler card here is the
+    # agent-facing text. Drive rows link the workbench directly
+    # (``item_view._OPEN_URL_OVERRIDES``); this catches every other
+    # surface's generic /refs fallback.
+    if kind == "pcb" and ref.slug:
+        return RedirectResponse(url=f"/pcb/{ref.slug}", status_code=303)
 
     # A finding that is a live TAPROOT:claim hub has ONE canonical view — the
     # rich /claim/<head> evidence page (originators/corroborators/grounding/
