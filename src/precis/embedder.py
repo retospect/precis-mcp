@@ -516,7 +516,27 @@ class EmbedderUnavailable(RuntimeError):
     both lit up the status "FAILED PASSES" panel with noise and, in the
     embed handler's per-row fallback, fired N more single-text requests
     that *deepened* the very overload that caused the 429.
+
+    ``retry_after_s`` / ``last_status`` (gripe #450123 option d): when
+    the service's own bounded admission queue (``embedder_service``)
+    times out, its 429 body carries a ``retry_after_s`` hint. The
+    transport only exposes ``(status, parsed_json)`` — no headers — so
+    the JSON body is the channel; :meth:`RemoteEmbedder._call` reads it
+    and threads it through here so a caller (e.g. the explicit
+    ``mode='semantic'`` search leg) can surface a concrete "retry in ~N
+    s" instead of a bare "unavailable".
     """
+
+    def __init__(
+        self,
+        msg: str,
+        *,
+        retry_after_s: float | None = None,
+        last_status: int | None = None,
+    ) -> None:
+        super().__init__(msg)
+        self.retry_after_s = retry_after_s
+        self.last_status = last_status
 
 
 def _urllib_transport(
@@ -698,6 +718,8 @@ class RemoteEmbedder:
     def _call(self, method: str, path: str, body: dict | None) -> tuple[int, dict]:
         """Try each endpoint in order, retrying retryable failures."""
         last_err: Exception | None = None
+        last_status: int | None = None
+        last_retry_after: float | None = None
         for endpoint in self._endpoints:
             url = endpoint + path
             for attempt in range(self._max_retries + 1):
@@ -710,6 +732,13 @@ class RemoteEmbedder:
                     continue
                 if status == 429 or 500 <= status < 600:
                     last_err = RuntimeError(f"HTTP {status} from {url}")
+                    last_status = status
+                    if status == 429:
+                        # The transport only returns (status, parsed_json)
+                        # — no headers — so the JSON body is the retry
+                        # hint's only channel; embedder_service puts
+                        # ``retry_after_s`` there for exactly this.
+                        last_retry_after = parsed.get("retry_after_s")
                     self._backoff(attempt)
                     continue
                 return status, parsed
@@ -718,8 +747,20 @@ class RemoteEmbedder:
         # ``return`` above and never reach here). Surface a typed
         # ``EmbedderUnavailable`` so callers can defer the batch instead
         # of marking rows failed.
+        if last_status == 429:
+            retry_hint = (
+                f"~{last_retry_after:g} s"
+                if last_retry_after is not None
+                else "shortly"
+            )
+            msg = (
+                f"embedder at capacity (429 after queueing), retry after "
+                f"{retry_hint} ({self._endpoints})"
+            )
+        else:
+            msg = f"all embedder endpoints failed ({self._endpoints})"
         raise EmbedderUnavailable(
-            f"all embedder endpoints failed ({self._endpoints})"
+            msg, retry_after_s=last_retry_after, last_status=last_status
         ) from last_err
 
     def _backoff(self, attempt: int) -> None:

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from precis.embedder import EmbedderUnavailable
 from precis.errors import Upstream
 from precis.utils.embed_query import embed_query, query_vec_for
 
@@ -75,6 +76,48 @@ def test_semantic_mode_no_embedder_still_degrades() -> None:
 def test_lexical_and_verbatim_skip_embed_entirely() -> None:
     assert query_vec_for(_RaisingEmbedder(), "kw", mode="lexical") is None
     assert query_vec_for(_RaisingEmbedder(), "kw", mode="verbatim") is None
+
+
+# --- gripe #450123 option d: capacity (retry-after) surfaces as such ---
+
+
+class _CapacityEmbedder:
+    """Raises the typed capacity failure — the queue timed out, the
+    service is not down — carrying a retry-after hint."""
+
+    def embed_one(self, q: str) -> list[float]:
+        raise EmbedderUnavailable(
+            "embedder at capacity (429 after queueing)",
+            retry_after_s=2,
+            last_status=429,
+        )
+
+
+def test_semantic_mode_capacity_error_surfaces_retry_after() -> None:
+    with pytest.raises(Upstream) as exc_info:
+        query_vec_for(_CapacityEmbedder(), "conceptual paraphrase", mode="semantic")
+    assert "capacity" in str(exc_info.value)
+    assert "~2 s" in str(exc_info.value)
+    assert "Capacity, not absence" in str(exc_info.value.next)
+
+
+class _CapacityBatchEmbedder:
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise EmbedderUnavailable(
+            "embedder at capacity (429 after queueing)",
+            retry_after_s=2,
+            last_status=429,
+        )
+
+
+def test_batch_semantic_mode_capacity_error_surfaces_retry_after() -> None:
+    from precis.handlers._paper_search import _embed_query_batch
+
+    with pytest.raises(Upstream) as exc_info:
+        _embed_query_batch(_CapacityBatchEmbedder(), ["q", "rephrase"], "semantic")
+    assert "capacity" in str(exc_info.value)
+    assert "~2 s" in str(exc_info.value)
+    assert "Capacity, not absence" in str(exc_info.value.next)
 
 
 # --- _embed_query_batch: the broad-retrieval door has the same split ---

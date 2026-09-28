@@ -29,7 +29,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>exec {{ precis_embedder_venv }}/bin/precis serve-embeddings --host {{ precis_embedder_host }} --port {{ precis_embedder_port }} --embedder {{ precis_embedder_backend }} --max-inflight {{ precis_embedder_max_inflight }} --idle-s {{ precis_embedder_idle_s }}</string>
+    <string>exec {{ precis_embedder_venv }}/bin/precis serve-embeddings --host {{ precis_embedder_host }} --port {{ precis_embedder_port }} --embedder {{ precis_embedder_backend }} --max-inflight {{ precis_embedder_max_inflight }} --queue-wait-s {{ precis_embedder_queue_wait_s }} --idle-s {{ precis_embedder_idle_s }}</string>
   </array>
 
   <key>UserName</key>

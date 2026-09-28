@@ -38,6 +38,13 @@ precis_embedder_backend: bge-m3
 # Concurrent embed requests admitted before the service returns 429.
 precis_embedder_max_inflight: 4
 
+# Bounded wait (seconds) for a caller arriving at max_inflight before the
+# service returns 429 + Retry-After, rather than shedding immediately
+# (gripe #450123: N sibling MCP containers x max_inflight against one
+# host service made an instant 429 the common case). 0 reproduces the
+# old shed-immediately behaviour.
+precis_embedder_queue_wait_s: 10
+
 # Idle-unload (§F cycle b, elastic residency): release the model's
 # weights after this many seconds with no /embed activity, reloading
 # lazily on the next one. /readyz stays 200 while idle (state field

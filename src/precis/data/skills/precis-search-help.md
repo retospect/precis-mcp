@@ -75,7 +75,7 @@ X". Pin the ranking with `mode=` when you know better:
 |---|---|---|
 | `'hybrid'` *(default)* | Lexical + semantic, fused into one order. | General recall — concepts *and* keywords. |
 | `'lexical'` | Full-text match only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
-| `'semantic'` | Embedding-similarity match only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does. No embedder wired → degrades to lexical; embedder wired but failing → a loud error, never a silent zero-hit answer. |
+| `'semantic'` | Embedding-similarity match only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does. No embedder wired → degrades to lexical; embedder wired but failing → a loud error, never a silent zero-hit answer — when the cause is the service at capacity (queue timeout, not down), the error carries a retry-after hint in seconds; capacity ≠ absence, so wait and retry rather than concluding the hit doesn't exist. |
 | `'verbatim'` | Chunks whose extracted keywords contain **all** your query words (exact containment; embedder-independent). No relevance gradient — newest chunk first. | A topical filter tighter than full-text — chunks already keyword-tagged with your term(s). Each word must appear as a *distinct* keyword, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). Empty query returns nothing. |
 
 ```python

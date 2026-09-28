@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import BadInput, NotFound, Upstream
+from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._paper_format import _clean_inline_text, _format_authors
@@ -53,7 +53,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Tag
 from precis.utils import handle_registry
-from precis.utils.embed_query import query_vec_for
+from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstream
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 
@@ -347,7 +347,10 @@ def _embed_query_batch(
     caller runs lexical-only, logged at WARNING with the traceback. An
     explicit ``mode='semantic'`` with a wired-but-failing embedder raises
     :class:`~precis.errors.Upstream` instead (gripe #254606: silent zero
-    hits read as "no matches in the corpus").
+    hits read as "no matches in the corpus") — via the same
+    :func:`~precis.utils.embed_query.semantic_unavailable_upstream`
+    helper :func:`~precis.utils.embed_query.query_vec_for` uses, so the
+    two doors can't drift.
     """
     import logging
 
@@ -364,11 +367,7 @@ def _embed_query_batch(
             exc_info=True,
         )
         if (mode or "").strip().lower() == "semantic":
-            raise Upstream(
-                "query embedder unavailable — the explicit mode='semantic' "
-                "leg cannot run (zero hits here would be a false answer)",
-                next="retry, or use mode='hybrid' to accept lexical-only degrade",
-            ) from exc
+            raise semantic_unavailable_upstream(exc) from exc
         return []
     return [v for v in vecs if v is not None]
 

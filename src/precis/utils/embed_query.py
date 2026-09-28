@@ -18,6 +18,14 @@ a wired-but-failing embedder raises loudly instead of degrading — the
 caller asked for the vector leg by name, and silently answering with
 zero hits reads as "no matches" and has corrupted a campaign (gripe
 #254606). :func:`query_vec_for` owns that split.
+
+Gripe #450123 (option d): a busy-but-alive embedder service (bounded
+admission queue timed out) is a *different* failure than a genuinely
+down one — the retry is short and the corpus is not in question.
+:func:`semantic_unavailable_upstream` builds that message once so
+:func:`query_vec_for` here and ``_embed_query_batch`` in
+``handlers/_paper_search.py`` (the batch/broad-retrieval door with the
+same mode='semantic' loudness split) can't drift apart.
 """
 
 from __future__ import annotations
@@ -25,9 +33,65 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from precis.embedder import EmbedderUnavailable
 from precis.errors import Upstream
 
 log = logging.getLogger(__name__)
+
+
+def _embedder_unavailable_cause(exc: BaseException) -> EmbedderUnavailable | None:
+    """Walk ``exc.__cause__`` for an :class:`EmbedderUnavailable`, if any.
+
+    ``RemoteEmbedder`` raises it directly, but a wrapping layer (a
+    batch helper, a retry shim) may re-raise a different exception
+    ``from`` it — walk the chain rather than assume it's ``exc`` itself.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, EmbedderUnavailable):
+            return cur
+        seen.add(id(cur))
+        cur = cur.__cause__
+    return None
+
+
+def semantic_unavailable_upstream(exc: Exception) -> Upstream:
+    """Build the ``Upstream`` raised when an explicit ``mode='semantic'``
+    leg's embed call fails — factored out so the two call sites (here,
+    and ``_paper_search._embed_query_batch``) can't drift.
+
+    When the failure chains back to an :class:`EmbedderUnavailable`
+    carrying ``retry_after_s`` (the service's bounded admission queue
+    timed out, gripe #450123), the message names the capacity cause and
+    the concrete retry window instead of a bare "unavailable" — capacity
+    is not absence, and a caller that reads a zero-hit degrade as "does
+    not exist" has corrupted campaigns before (gripe #254606).
+    """
+    cause = _embedder_unavailable_cause(exc)
+    if cause is not None and cause.retry_after_s is not None:
+        n = cause.retry_after_s
+        return Upstream(
+            "query embedder at capacity — the explicit mode='semantic' "
+            "leg cannot run (zero hits here would be a false answer); "
+            f"the service asked for a retry in ~{n:g} s",
+            next=(
+                f"wait ~{n:g} s and retry the same call; or use "
+                "mode='hybrid' to accept lexical-only degrade. Capacity, "
+                "not absence: do not conclude the hub or passage does "
+                "not exist"
+            ),
+        )
+    next_text = "retry, or use mode='hybrid' to accept lexical-only degrade"
+    if cause is not None:
+        next_text += (
+            ". Capacity, not absence: do not conclude the hub or passage does not exist"
+        )
+    return Upstream(
+        "query embedder unavailable — the explicit mode='semantic' "
+        "leg cannot run (zero hits here would be a false answer)",
+        next=next_text,
+    )
 
 
 def embed_query(embedder: Any | None, q: str) -> list[float] | None:
@@ -82,9 +146,5 @@ def query_vec_for(
                 q,
                 exc_info=True,
             )
-            raise Upstream(
-                "query embedder unavailable — the explicit mode='semantic' "
-                "leg cannot run (zero hits here would be a false answer)",
-                next="retry, or use mode='hybrid' to accept lexical-only degrade",
-            ) from exc
+            raise semantic_unavailable_upstream(exc) from exc
     return embed_query(embedder, q)

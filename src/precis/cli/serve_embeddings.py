@@ -91,6 +91,15 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "stays 200 while idle (a lazy reload happens on the next "
         "/embed). See embedder-as-service / cluster-scheduling.md §F.",
     )
+    p.add_argument(
+        "--queue-wait-s",
+        type=float,
+        default=float(os.environ.get("PRECIS_EMBEDDER_QUEUE_WAIT_S", "10")),
+        help="Bounded wait (seconds) for a caller arriving at the "
+        "--max-inflight ceiling before returning 429 + Retry-After "
+        "(default: 10); 0 reproduces the old shed-immediately "
+        "behaviour (gripe #450123).",
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -109,4 +118,5 @@ def run(args: argparse.Namespace) -> None:
         max_inflight=args.max_inflight,
         warm=not args.no_warm,
         idle_s=args.idle_s,
+        queue_wait_s=args.queue_wait_s,
     )

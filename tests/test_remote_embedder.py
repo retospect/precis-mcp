@@ -199,6 +199,29 @@ def test_429_exhaustion_raises_unavailable() -> None:
         emb.embed(["a"])
 
 
+def test_429_carries_retry_after_s_from_body() -> None:
+    """gripe #450123 option d: the service's bounded-queue 429 body puts
+    ``retry_after_s`` in the JSON (the transport exposes no headers), so
+    ``EmbedderUnavailable`` must thread it through for callers to surface."""
+
+    def transport(method, url, body, timeout):
+        if url.endswith("/model"):
+            return 200, _model_body()
+        return 429, {"error": "busy", "retry_after_s": 2}
+
+    emb = RemoteEmbedder(
+        "http://x:1",
+        expected_dim=_DIM,
+        transport=transport,
+        max_retries=1,
+        sleep=_noop_sleep,
+    )
+    with pytest.raises(EmbedderUnavailable) as exc_info:
+        emb.embed(["a"])
+    assert exc_info.value.retry_after_s == 2
+    assert exc_info.value.last_status == 429
+
+
 def test_non_retryable_4xx_returns_status() -> None:
     def transport(method, url, body, timeout):
         if url.endswith("/model"):

@@ -16,9 +16,16 @@ matches the corpus's embedding dimension before its first encode.
 Deliberately stdlib-only (``http.server``): the embedder image's only
 heavy dependency is ``sentence-transformers``; the service adds no web
 framework on top. A ``ThreadingHTTPServer`` plus a bounded admission
-semaphore gives backpressure — when the in-flight ceiling is hit, the
-service returns ``429`` + ``Retry-After`` rather than queueing
-unboundedly, and ``RemoteEmbedder``'s backoff does the rest.
+semaphore gives backpressure — when the in-flight ceiling is hit, an
+arriving request parks for up to ``queue_wait_s`` (default 10s) rather
+than shedding immediately (gripe #450123: N sibling MCP containers ×
+4 in-flight each against one host service with a global admission gate
+of 4 meant an instant 429 on every burst, and the impatient interactive
+client gave up before its own backoff even got a chance). Only once the
+queue wait itself times out does the service return ``429`` +
+``Retry-After`` — with a JSON ``retry_after_s`` body field so
+``RemoteEmbedder`` can surface the hint to its caller — and
+``RemoteEmbedder``'s own backoff does the rest.
 
 Endpoints (paths from :mod:`precis.embedder_wire`):
 
@@ -75,6 +82,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# After a caller's bounded queue wait misses admission (``queue_wait_s``,
+# default 10s), 1s is too eager a retry — the queue was already full for
+# that whole window. Used both for the ``Retry-After`` header and the
+# ``retry_after_s`` JSON body field (gripe #450123 option d).
+BUSY_RETRY_AFTER_S = 2
+
 
 class _Metrics:
     """Tiny thread-safe counter bag exposed at ``/metrics``."""
@@ -87,6 +100,12 @@ class _Metrics:
         self.rejected_429 = 0
         self.errors = 0
         self.inflight = 0
+        # Bounded wait-queue (gripe #450123 option b): how many admits
+        # had to wait at all, and the aggregate/peak wait — so the queue
+        # is visible on /metrics rather than only inferable from 429s.
+        self.queued = 0
+        self.queue_wait_s_total = 0.0
+        self.queue_wait_s_max = 0.0
 
     def render(self) -> str:
         with self._lock:
@@ -97,6 +116,9 @@ class _Metrics:
                 f"precis_embedder_rejected_429_total {self.rejected_429}\n"
                 f"precis_embedder_errors_total {self.errors}\n"
                 f"precis_embedder_inflight {self.inflight}\n"
+                f"precis_embedder_queued_total {self.queued}\n"
+                f"precis_embedder_queue_wait_seconds_total {self.queue_wait_s_total:.3f}\n"
+                f"precis_embedder_queue_wait_seconds_max {self.queue_wait_s_max:.3f}\n"
             )
 
 
@@ -120,13 +142,29 @@ class EmbedderService:
         probe_timeout_s: float = 20.0,
         probe_fail_threshold: int = 2,
         idle_s: float = 1800.0,
+        queue_wait_s: float = 10.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._embedder = embedder
         self._revision = revision
         # Admission control: at most ``max_inflight`` concurrent embed
-        # calls; beyond that callers get 429 + Retry-After.
+        # calls; beyond that a caller PARKS for up to ``queue_wait_s``
+        # (gripe #450123 option b) before getting 429 + Retry-After.
+        # ``queue_wait_s <= 0`` reproduces the old shed-immediately
+        # behaviour (a non-blocking acquire).
+        #
+        # Timeout sanity: the interactive client budget
+        # (``PrecisConfig.embedder_interactive_timeout``) is 15s, so a
+        # 10s queue wait plus the encode itself still fits inside ONE
+        # attempt rather than needing the client's own retry/backoff
+        # loop to ride out a burst; the batch client budget is 300s, so
+        # it barely notices. The wait costs the service one parked
+        # request-handler thread per waiter — bounded by the number of
+        # concurrent clients, not unbounded queued work.
         self._sem = threading.BoundedSemaphore(max_inflight)
+        self._queue_wait_s = queue_wait_s
+        self._waiters = 0
+        self._waiters_lock = threading.Lock()
         # Serialise actual encode calls — the underlying model is not
         # guaranteed thread-safe and a single GPU/MPS stream is the
         # bottleneck anyway.
@@ -504,13 +542,50 @@ class EmbedderService:
         control, so a burst of callers arriving during a reload queue on
         the reload lock rather than each independently discovering
         ``Busy``/racing a duplicate reload.
+
+        Admission itself is a bounded wait, not an immediate shed (gripe
+        #450123): a caller arriving at the ``max_inflight`` ceiling parks
+        for up to ``queue_wait_s`` before getting ``Busy`` — most bursts
+        clear within that window since ``max_inflight`` slots free up in
+        well under a second each. Only a wait that outlasts
+        ``queue_wait_s`` raises. The wait, when it happens, is logged and
+        counted (``metrics.queued`` / ``queue_wait_s_total`` /
+        ``queue_wait_s_max``) so it's visible on ``/metrics`` rather than
+        only inferable from the 429 count.
         """
         self._last_activity = self._clock()
         self._ensure_loaded_for_request()
-        if not self._sem.acquire(blocking=False):
+        t0 = self._clock()
+        with self._waiters_lock:
+            self._waiters += 1
+        try:
+            acquired = (
+                self._sem.acquire(blocking=False)
+                if self._queue_wait_s <= 0
+                else self._sem.acquire(timeout=self._queue_wait_s)
+            )
+        finally:
+            with self._waiters_lock:
+                self._waiters -= 1
+        if not acquired:
             with self.metrics._lock:
                 self.metrics.rejected_429 += 1
             raise Busy
+        waited = self._clock() - t0
+        if waited > 0.005:
+            with self.metrics._lock:
+                self.metrics.queued += 1
+                self.metrics.queue_wait_s_total += waited
+                self.metrics.queue_wait_s_max = max(
+                    self.metrics.queue_wait_s_max, waited
+                )
+            log.info(
+                "embedder: request queued %.2fs before admission "
+                "(inflight=%d, waiters≈%d)",
+                waited,
+                self.metrics.inflight,
+                self._waiters,
+            )
         with self.metrics._lock:
             self.metrics.inflight += 1
         try:
@@ -596,7 +671,9 @@ def _make_handler(service: EmbedderService) -> type[BaseHTTPRequestHandler]:
                 vectors = service.embed(req.texts)
             except Busy:
                 self._send_json(
-                    429, {"error": "busy"}, extra_headers={"Retry-After": "1"}
+                    429,
+                    {"error": "busy", "retry_after_s": BUSY_RETRY_AFTER_S},
+                    extra_headers={"Retry-After": str(BUSY_RETRY_AFTER_S)},
                 )
                 return
             except Exception as exc:  # pragma: no cover - model failure path
@@ -632,6 +709,7 @@ def serve(
     max_inflight: int = 4,
     warm: bool = True,
     idle_s: float = 1800.0,
+    queue_wait_s: float = 10.0,
 ) -> None:
     """Run the embedding service until interrupted (blocking)."""
     service = EmbedderService(
@@ -640,15 +718,18 @@ def serve(
         max_inflight=max_inflight,
         warm=warm,
         idle_s=idle_s,
+        queue_wait_s=queue_wait_s,
     )
     httpd = make_server(service, host=host, port=port)
     log.info(
-        "serving embeddings on http://%s:%d (model=%s, max_inflight=%d, idle_s=%.0f)",
+        "serving embeddings on http://%s:%d "
+        "(model=%s, max_inflight=%d, idle_s=%.0f, queue_wait_s=%.0f)",
         host,
         port,
         embedder.model,
         max_inflight,
         idle_s,
+        queue_wait_s,
     )
     try:
         httpd.serve_forever()
@@ -659,4 +740,4 @@ def serve(
         httpd.server_close()
 
 
-__all__ = ["Busy", "EmbedderService", "make_server", "serve"]
+__all__ = ["BUSY_RETRY_AFTER_S", "Busy", "EmbedderService", "make_server", "serve"]

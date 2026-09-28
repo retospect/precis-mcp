@@ -20,7 +20,7 @@ from collections.abc import Iterator
 import pytest
 
 from precis.embedder import MockEmbedder, RemoteEmbedder
-from precis.embedder_service import EmbedderService, make_server
+from precis.embedder_service import Busy, EmbedderService, make_server
 
 _DIM = 32
 
@@ -48,6 +48,19 @@ def _get(url: str) -> tuple[int, str]:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()
+
+
+def _post(url: str, payload: dict) -> tuple[int, str, dict]:
+    """POST JSON, returning ``(status, body_text, response_headers)``."""
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST", headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read().decode(), dict(resp.headers)
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode(), dict(exc.headers)
 
 
 def test_model_endpoint(service_url: str) -> None:
@@ -348,3 +361,166 @@ def test_probe_treats_lock_contention_as_healthy_not_a_failure() -> None:
         assert embedder.calls == 1  # only the post-release probe ever encoded
     finally:
         service.stop_probe()
+
+
+# ── bounded wait queue (gripe #450123 option b) ─────────────────────────
+
+
+class _BlockingEmbedder:
+    """Fake ``Embedder`` whose ``embed()`` blocks on an ``Event`` until
+    released — lets a test hold the single admission slot open long
+    enough to observe a second caller queueing behind it."""
+
+    dim = 4
+    model = "blocking"
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.entered.set()
+        self.release.wait(timeout=10.0)
+        return [[0.0] * self.dim for _ in texts]
+
+    def embed_one(self, text: str) -> list[float]:
+        return [0.0] * self.dim
+
+    def is_ready(self) -> bool:
+        return True
+
+    def warmup(self) -> None:
+        pass
+
+    def unload(self) -> None:
+        pass
+
+
+def _wait_for(predicate, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_second_caller_queues_then_is_admitted_once_first_releases() -> None:
+    embedder = _BlockingEmbedder()
+    service = EmbedderService(
+        embedder, revision="t", max_inflight=1, warm=True, queue_wait_s=5.0
+    )
+    try:
+        assert service._ready.wait(timeout=2.0)
+
+        first = threading.Thread(target=lambda: service.embed(["a"]), daemon=True)
+        first.start()
+        assert embedder.entered.wait(timeout=2.0), "first call never entered embed()"
+
+        second_result: dict[str, object] = {}
+        second = threading.Thread(
+            target=lambda: second_result.__setitem__("vecs", service.embed(["b"])),
+            daemon=True,
+        )
+        second.start()
+        # The second call is parked on the semaphore, not rejected —
+        # confirm it's actually waiting before releasing the first.
+        assert _wait_for(lambda: service._waiters >= 1)
+        assert second.is_alive()
+        # Hold the slot a little longer than the metrics' own "was this
+        # even a real wait" threshold (5ms) so the queued-wait assertions
+        # below are measuring a genuine delay, not scheduling noise.
+        time.sleep(0.05)
+
+        embedder.release.set()
+        first.join(timeout=5.0)
+        second.join(timeout=5.0)
+        assert not second.is_alive()
+        assert second_result["vecs"] == [[0.0] * 4]
+
+        assert service.metrics.queued == 1
+        assert service.metrics.queue_wait_s_total > 0
+        assert service.metrics.queue_wait_s_max > 0
+        assert service.metrics.rejected_429 == 0
+    finally:
+        service.stop_probe()
+
+
+def test_queue_wait_timeout_raises_busy_and_counts_429() -> None:
+    embedder = _BlockingEmbedder()
+    service = EmbedderService(
+        embedder, revision="t", max_inflight=1, warm=True, queue_wait_s=0.05
+    )
+    try:
+        assert service._ready.wait(timeout=2.0)
+        first = threading.Thread(target=lambda: service.embed(["a"]), daemon=True)
+        first.start()
+        assert embedder.entered.wait(timeout=2.0)
+
+        with pytest.raises(Busy):
+            service.embed(["b"])
+        assert service.metrics.rejected_429 == 1
+        assert service.metrics.queued == 0
+
+        embedder.release.set()
+        first.join(timeout=5.0)
+    finally:
+        service.stop_probe()
+
+
+def test_queue_wait_zero_sheds_immediately_like_before() -> None:
+    embedder = _BlockingEmbedder()
+    service = EmbedderService(
+        embedder, revision="t", max_inflight=1, warm=True, queue_wait_s=0
+    )
+    try:
+        assert service._ready.wait(timeout=2.0)
+        first = threading.Thread(target=lambda: service.embed(["a"]), daemon=True)
+        first.start()
+        assert embedder.entered.wait(timeout=2.0)
+
+        start = time.monotonic()
+        with pytest.raises(Busy):
+            service.embed(["b"])
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.5  # shed immediately, not a bounded wait
+        assert service.metrics.rejected_429 == 1
+        assert service.metrics.queued == 0
+
+        embedder.release.set()
+        first.join(timeout=5.0)
+    finally:
+        service.stop_probe()
+
+
+def test_http_429_body_and_header_carry_retry_after_s() -> None:
+    embedder = _BlockingEmbedder()
+    service = EmbedderService(
+        embedder, revision="t", max_inflight=1, warm=True, queue_wait_s=0.05
+    )
+    httpd = make_server(service, host="127.0.0.1", port=0)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert service._ready.wait(timeout=2.0)
+        client = RemoteEmbedder(f"http://127.0.0.1:{port}", expected_dim=4)
+        first = threading.Thread(target=lambda: client.embed(["a"]), daemon=True)
+        first.start()
+        assert embedder.entered.wait(timeout=2.0)
+
+        status, body, headers = _post(
+            f"http://127.0.0.1:{port}/embed", {"texts": ["b"]}
+        )
+        assert status == 429
+        assert headers.get("Retry-After") == "2"
+        payload = json.loads(body)
+        assert payload == {"error": "busy", "retry_after_s": 2}
+
+        embedder.release.set()
+        first.join(timeout=5.0)
+    finally:
+        service.stop_probe()
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
