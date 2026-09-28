@@ -628,6 +628,7 @@ no ERROR. No `__bool__`.
 | `seam.leak` `[impl 0.2]` | WARN | `hexfold.join.compose`: bond-length/angle change beyond the re-relaxed seam radius (guard band, shells r+1..r+2) exceeds the rung's threshold (`data.block`, `data.port`, `data.r`, `data.shell`, `data.max_dl`, `data.max_dtheta`) |
 | `seam.strain` `[impl 0.2]` | INFO | `hexfold.join.compose`: rms/max bond-length deviation from sigma over the re-relaxed (movable) atoms (`data.rms_A`, `data.max_A`, `data.bonds`) |
 | `seam.radius.unmeasured` `[impl 0.2]` | INFO | `hexfold.join.compose`: a mixed rim (no `Port.rim_type`) has no measured decay length, so the join falls back to the conservative zigzag radius (`data.side`, `data.radius`) |
+| `join.rung` `[impl 0.2]` | WARN | `precis_se.atomic.join`: `rung="geo"` forced over a still-stick-rung part (`data.a_rung`, `data.b_rung`, `data.forced`) -- rest lengths 1.42 vs 1.52 Å strain the frozen boundary; an unresolved rung MISMATCH under `rung="auto"` aborts before anything is minted instead (raised directly, never reaches the Report) |
 
 Profiles are **passed, not set** (no module-global state):
 `Profile(promote=frozenset, demote=frozenset, ignore=frozenset,
@@ -1291,7 +1292,7 @@ drive the order: the box (step 3) and the rotary ratchet valve
    wish; the clearance field and pocket extractor are read-only queries.
 
 **Block joiner (`docs/backlog/hexfold-integration.md` ruling step 5),
-built 2026-09-28 (slice 1: stick rung)**: `hexfold.join` (`Block`,
+built 2026-09-28 (slices 1-2: stick + geo rungs)**: `hexfold.join` (`Block`,
 `block_from_net`, `rank_k`, `place`, `compose`, `SEAM_RADIUS`, the
 `Relaxer` protocol) composes two already-resolved blocks over a matched
 port pair on the stick rung, reproducing a whole-spec fuse's atom/bond/
@@ -1303,9 +1304,19 @@ bit-for-bit untouched; `seam.adapter`, `seam.leak`, `seam.strain`,
 too: it rebuilds each side's topology from its own generator record
 (recursively, through a chain of earlier joins), mints a composite
 `structure` design plus se block/ports/connect, and persists the build
-record as `meta['generated']`. The geo-rung relaxer (`join.rung`) and
-joint placement across part-graph cycles follow in a later slice
-(`docs/backlog/hexfold-integration.md` step 5).
+record as `meta['generated']`.
+
+**Slice 2 (geo rung), built 2026-09-28**: `geo_relax_pinned`
+(`precis_se/atomic/join.py`, a `relax_graph` adapter over the seam
+sub-graph) plus the rung gate -- both parts' `meta['last_relax']['rung']`
+must agree (absent → stick) or it's `join.rung` (raised before anything
+is minted); an explicit `rung="stick"|"geo"` forces one, `join.rung` WARN
+when that forces `geo` over a stick-rung part (§13). `compose` gained a
+`leak_thresholds` override so the geo rung checks its own measured
+numbers (0.002 Å / 0.15°, uniform across rim type) rather than the stick
+thresholds above, measured on different physics (pinned guard band vs. a
+fully free relax). Joint placement across part-graph cycles follows in a
+later slice (`docs/backlog/hexfold-integration.md` step 5).
 
 Out of scope until the above holds: general Goldberg fullerenes, surface
 tiling from a target SDF (the 30 nm oval box), rdkit realisation of

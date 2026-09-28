@@ -255,15 +255,22 @@ entries per consecutive rim pair; `_place_seeds` runs real fuses first and
 seam edges only for what they cannot reach), and flat washers with two
 fused rims (outer rim forced antiparallel to the hole rim; flatness is an
 absolute extent test in sigma, not a ratio, since a wide len=1 tube has a
-small axial/transverse ratio). Still open, all step-5 inputs:
-`flanged_doughnut.hx` keeps a ~10.9 A residual on its `flange` because
-`top` (placed via the real top-wall-bottom chain) and `bottom`/`flange`
-(placed via the seam) disagree by a rotation no per-edge rigid placement
-can reconcile -- the part-graph cycle needs a joint least-squares
-placement, i.e. the block joiner; `_place_seeds` is single-rooted at
-`origin` (a fused component unreachable from it stays unplaced; no example
-needs it yet); armchair fuses seeded sigma/cos 30 apart are harmless.
-`tube_ring_closure.hx` is a genuine loop and cannot be rigid.
+small axial/transverse ratio). `hexfold.place.place_graph` (slice 3,
+2026-09-28: joint least-squares placement over a part-graph cycle,
+alternating Kabsch/Gauss-Seidel, wired into `_place_seeds` as a third
+pass scoped to instances not already uniquely pinned by real fuse/bond
+edges alone) closes `tube_ring_closure.hx`'s genuine 2-edge loop (24.2 A
+-> 3.7 A max crossing bond) but leaves `flanged_doughnut.hx` essentially
+unchanged (11.05 A, was 10.91 A): its real `top<->wall<->bottom`
+sub-chain has zero redundancy of its own (the k=3 seam's `top<->bottom`
+edge is the *only* source of the cycle), so nothing in that chain is up
+for grabs, and the seam's own registration disagreeing with it by a
+rotation is verified irreducible by any rigid instance placement, joint
+or not (an unweighted joint fit that also lets the real chain move
+measured worse, 11.6-11.7 A, with sub-1 A near-overlaps). `_place_seeds`
+is still single-rooted at `origin` (a fused component unreachable from it
+stays unplaced; no example needs it yet); armchair fuses seeded
+sigma/cos 30 apart are harmless.
 
 **Step 5 slice 1 built (2026-09-28).** `hexfold.join` (the pure numpy
 half, `src/hexfold/join.py`: `Block`, `block_from_net`, `rank_k`, `place`,
@@ -290,3 +297,28 @@ rung mismatch, leak thresholds re-measured on that rung) and slice 3
 `_place_seeds` as its third pass — the seed-placement residuals above,
 `flanged_doughnut.hx`/`tube_ring_closure.hx`, are exactly what that
 slice retires).
+
+**Step 5 slice 2 built (2026-09-28).** `geo_relax_pinned`
+(`precis_se/atomic/join.py`: a `relax_graph` adapter over the seam
+sub-graph `compose` hands it) plus the rung gate `_select_relaxer`: each
+side's rung comes off its own bound structure's
+`meta['last_relax']['rung']` (absent → `"stick"`); both sides agreeing
+picks that relaxer, a mismatch is `join.rung` (`BadInput`, before
+`compose` ever runs — no sane geometry to hand back for two blocks on
+different rest lengths), and the op's own `"rung": "stick"|"geo"|"auto"`
+key (default `auto`) can force one, `join.rung` WARN when that forces
+`geo` over a still-stick-rung block. `hexfold.join.compose` gained a
+keyword-only `leak_thresholds` override so the geo rung checks against
+its own measured numbers (`LEAK_THRESH_GEO`, `(0.002 Å, 0.15°)` uniform
+across rim type) rather than the stick numbers above, which are measured
+on different physics (a pinned guard band, not a fully free relax) and
+would spuriously fire on ordinary geo-rung noise. `meta['generated']
+['relaxer']` records the rung actually used. Verified end to end
+(`tests/test_se_join_geo.py`, `slow`): two `tube(8,0,len=4)` parts
+independently relaxed to geo, joined at the table radius (`seam.leak`
+silent), and diffed beyond the guard band (shell > 10) against a
+whole-spec fuse of the same two parts also relaxed to geo — measured
+max |Δbond| 0.0001 Å, max |Δangle| 0.007° (thresholds 0.002 Å / 0.15°),
+comfortably inside. Seam radii/thresholds stay stick-rung numbers for
+mixed/unmeasured rim types (unchanged from slice 1). Slice 3 built the same day
+(`place_graph`, see the seed-placement paragraph above; a `seam.cycle` finding reports the residual).

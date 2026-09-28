@@ -239,6 +239,15 @@ shape language for the motif. Built on sp2 first, after `fit` chain
 propagation; until then hexfold whole-spec composition is the joiner and
 is adequate for valve-sized assemblies.
 
+**Built** (`hexfold.join` + se `join`, slices 1-2, 2026-09-28): fuse/adapter
+motifs, seam sub-graph re-relax, `seam.leak`/`seam.strain`, both relax
+rungs. `seam.leak` thresholds by rung: stick (pinned guard band) zigzag
+`(0.0001 Å, 0.025°)`, armchair `(0.0001 Å, 2.9°)` -- per-rim-type, doubled
+from the measured stick-rung maxima (`hexfold/join.py`'s own docstring);
+geo (no pinning, `LEAK_THRESH_GEO`) `(0.002 Å, 0.15°)` uniform across rim
+type -- the SAME numbers this section's own table pins. Slice 3 (joint
+placement across part-graph cycles) is still open.
+
 ## Seam decay, measured (slice 0, 2026-09-27)
 
 The number behind the three-zone block, measured on hexfold tubes with

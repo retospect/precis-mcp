@@ -82,6 +82,20 @@ _LEAK_THRESH: dict[str, tuple[float, float]] = {
 }
 _LEAK_THRESH_DEFAULT = _LEAK_THRESH["z"]
 
+#: seam.leak thresholds for the geo rung (slice 2), overriding
+#: :data:`_LEAK_THRESH` via `compose`'s ``leak_thresholds`` keyword -- the
+#: SAME numbers `tests/test_hexfold_seam_decay.py` measures and pins
+#: (0.002 A / 0.15 deg), but measured with NO pinning at all (a free
+#: relax of the whole tube), unlike the stick numbers above (measured
+#: WITH a pinned guard band, which by construction reflects some strain
+#: back at its own boundary). Uniform across rim type -- both catalogue
+#: rim families share the one geo relaxer, unlike stick's per-type split
+#: (`_LEAK_THRESH`'s own docstring explains that split; geo has no
+#: equivalent measurement showing one rim type decays differently from
+#: the other, so one number covers both, keyed the same way so the
+#: lookup in `compose` needs no special-casing).
+LEAK_THRESH_GEO: dict[str, tuple[float, float]] = {"z": (0.002, 0.15), "a": (0.002, 0.15)}
+
 #: `Relaxer(elements, coords, bonds, rings, pinned_mask) -> coords`: the
 #: seam so precis can inject the geo rung (slice 2, `relax_graph`) without
 #: this module importing `precis.structure`.  `pinned_mask` is a 0/1
@@ -425,6 +439,19 @@ def _empty_composite(findings: list[Finding]) -> Composite:
     )
 
 
+def _thresh_for(
+    rim_type: tuple[str, int] | None, table: dict[str, tuple[float, float]]
+) -> tuple[float, float]:
+    """The ``(dl_A, dtheta_deg)`` :func:`_leak_finding` threshold for one
+    side's rim type against ``table`` (:data:`_LEAK_THRESH` by default, or
+    a caller override e.g. :data:`LEAK_THRESH_GEO`) -- a mixed/unknown rim
+    falls back to ``table``'s own ``"z"`` entry (the tighter of the two in
+    every table defined so far), same fallback :func:`compose` already used
+    inline before this was factored out for the override to reuse."""
+    key = rim_type[0] if rim_type is not None else "z"
+    return table.get(key, table.get("z", _LEAK_THRESH_DEFAULT))
+
+
 def compose(
     a: Block,
     pa: Port,
@@ -433,6 +460,7 @@ def compose(
     k: int,
     *,
     seam_radius: dict[str, int] | None = None,
+    leak_thresholds: dict[str, tuple[float, float]] | None = None,
     relax: Relaxer | None = None,
     prefix_a: str = "a",
     prefix_b: str = "b",
@@ -453,7 +481,13 @@ def compose(
     contribute nothing to a sub-relax that never moves them anyway.
     ``prefix_a``/``prefix_b`` name the composite ports (``<prefix>_<port>``
     default ``"a"``/``"b"``, unchanged) -- the se side passes the real
-    block names so a chain of joins doesn't collide."""
+    block names so a chain of joins doesn't collide. ``leak_thresholds``
+    overrides :data:`_LEAK_THRESH` (the se side passes
+    :data:`LEAK_THRESH_GEO` when ``relax`` is the geo rung, ``None`` for
+    the stick default) -- the two are measured on genuinely different
+    relax physics (see :data:`LEAK_THRESH_GEO`'s own docstring), so a geo
+    relax checked against stick's tighter numbers would spuriously fire
+    ``seam.leak`` on ordinary geo-rung noise."""
     n = len(pa.dangling)
     if len(pb.dangling) != n:
         return _empty_composite(
@@ -584,12 +618,9 @@ def compose(
     new_coords = coords.copy()
     new_coords[np.array(seam_set, dtype=np.int64)] = sub_new
 
-    thresh_a = (
-        _LEAK_THRESH.get(ta[0], _LEAK_THRESH_DEFAULT) if ta else _LEAK_THRESH_DEFAULT
-    )
-    thresh_b = (
-        _LEAK_THRESH.get(tb[0], _LEAK_THRESH_DEFAULT) if tb else _LEAK_THRESH_DEFAULT
-    )
+    thresh_table = leak_thresholds if leak_thresholds is not None else _LEAK_THRESH
+    thresh_a = _thresh_for(ta, thresh_table)
+    thresh_b = _thresh_for(tb, thresh_table)
     leak_a = _leak_finding("a", a, pa, dist_a, r_a, new_coords[:n_a], thresh_a)
     if leak_a is not None:
         findings.append(leak_a)

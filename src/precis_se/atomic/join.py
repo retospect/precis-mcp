@@ -11,12 +11,29 @@ failure" reason (:func:`prepare_join`'s docstring).
 
 ``{"op": "join", "name": "<composite>", "a": "<block>.<port>", "b":
 "<block>.<port>", "seam"?: "auto"|"fuse"|"adapter", "k"?: 0|"fit",
-"seam_radius"?: {"a": 8, "b": 2}, "parent"?: "..."}`` — dispatch is by the
-two ports' **lattice** annotation (:data:`JOINERS`, keyed the way
+"seam_radius"?: {"a": 8, "b": 2}, "rung"?: "auto"|"stick"|"geo",
+"parent"?: "..."}`` — dispatch is by the two ports' **lattice** annotation
+(:data:`JOINERS`, keyed the way
 :mod:`precis_se.atomic.generators.hexfold_spec` tags a port's
 ``GeneratedPort.lattice``): today only ``"sp2-hex"`` (hexfold rims) is
 wired; a mismatched or unrecognised lattice is ``join.lattice``, before
 anything else runs.
+
+**Rung gate** (slice 2, :func:`_select_relaxer`): each side's resolved
+rung comes off its own bound structure's ``meta['last_relax']['rung']``
+(:func:`_rung_of`, absent → ``"stick"``, the generator's untouched
+preview geometry). ``rung="auto"`` (default) picks the shared rung when
+both sides agree, or raises ``join.rung`` (:class:`~precis.errors.
+BadInput`) when they don't — relaxing one side's rest lengths against the
+other's frozen boundary is a false-leak hazard, not a join `compose` can
+paper over. An explicit ``"stick"``/``"geo"`` forces that rung regardless
+of what either side is actually relaxed to; forcing ``"geo"`` over a
+stick-rung block is allowed but records ``join.rung`` WARN (rest lengths
+1.42 vs 1.52 A strain the frozen boundary). The chosen rung's own
+:data:`~hexfold.join.Relaxer` and leak thresholds
+(:data:`~hexfold.join.LEAK_THRESH_GEO` on ``"geo"``, the stick defaults
+otherwise) both follow from this one choice, recorded verbatim as
+``meta['generated']['relaxer']``.
 
 **Rebuilding a block's topology, generically and recursively**
 (:func:`_rebuild_block`, design call 3 — "join-time rings/zones from spec
@@ -52,7 +69,7 @@ import numpy as np
 
 from hexfold.build import Port as HxPort
 from hexfold.build import _fit_alternatives_finding, build
-from hexfold.join import Block, block_from_net, compose, rank_k
+from hexfold.join import LEAK_THRESH_GEO, Block, block_from_net, compose, rank_k
 from hexfold.report import Finding as HxFinding
 from hexfold.report import Report as HxReport
 from hexfold.report import Severity as HxSeverity
@@ -61,6 +78,7 @@ from precis.errors import BadInput, NotFound
 from precis.structure import Atom as StructAtom
 from precis.structure import Bond as StructBond
 from precis.structure import Scene as StructScene
+from precis.structure.georelax import relax_graph
 from precis_se.atomic.generate import generated_cell, ingest_envelope
 from precis_se.atomic.generators._types import fmt_length_A
 from precis_se.atomic.generators.hexfold_spec import _se_port_name
@@ -83,6 +101,116 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: caps), and a documented simplification for a later slice that joins a
 #: block with sp3 attachment sites.
 _SP2_BOND_ORDER = 4.0 / 3.0
+
+#: geo rung sub-graph relax iteration budget (slice 2) -- deliberately
+#: smaller than `tests/test_hexfold_seam_decay.py`'s 4000 (a *whole*
+#: tube's free relax): the seam sub-graph :func:`~hexfold.join.compose`
+#: hands :func:`geo_relax_pinned` is the movable radius plus a two-shell
+#: guard band only, not a whole part, so it converges well inside this
+#: budget in practice -- `relax_graph`'s own ``tol=1e-4`` early-stop
+#: (:data:`_GEO_TOL`) still cuts it short whenever it does.
+_GEO_RELAX_ITERS = 2000
+_GEO_TOL = 1e-4
+
+
+def geo_relax_pinned(
+    elements: list[str],
+    coords: np.ndarray,
+    bonds: list[tuple[int, int, int]],
+    rings: list[tuple[int, ...]],
+    pinned_mask: np.ndarray,
+) -> np.ndarray:
+    """The geo-rung :data:`~hexfold.join.Relaxer` (slice 2): plain
+    :func:`~precis.structure.georelax.relax_graph` over the seam sub-graph
+    :func:`~hexfold.join.compose` hands it -- bond springs at the
+    covalent-radius sum + a VSEPR angle term at every vertex, the SAME
+    physics `tests/test_hexfold_seam_decay.py` measures the geo leak
+    thresholds against, rather than :mod:`hexfold.stick`'s ring-chord
+    springs (``rings`` is accepted only to match the shared
+    :data:`~hexfold.join.Relaxer` signature and is otherwise unused here --
+    `relax_graph` derives its own angle triples from the bond graph
+    directly). Every composite vertex is stamped uniform ``"sp2"``
+    (:data:`_SP2_BOND_ORDER`'s own docstring: "a composed block's ring
+    interiors are always sp2 in this slice"). ``pinned_mask``'s 1-meaning
+    is :data:`~hexfold.join.Relaxer`'s own convention, translated to
+    `relax_graph`'s pinned-INDEX-SET convention exactly as that type's
+    docstring spells out."""
+    del rings
+    pinned = {i for i, p in enumerate(pinned_mask) if p}
+    out = np.asarray(coords, dtype=np.float64).copy()
+    relax_graph(
+        list(elements),
+        out,
+        [(i, j) for i, j, *_rest in bonds],
+        pinned,
+        hybridizations="sp2",
+        iters=_GEO_RELAX_ITERS,
+        tol=_GEO_TOL,
+    )
+    return out
+
+
+def _rung_of(ref: Any) -> str:
+    """``ref.meta['last_relax']['rung']``, defaulting to ``"stick"`` when
+    absent (never relaxed past its generator's own preview geometry) --
+    the plan's own contract for rung detection, read straight off the
+    :func:`_rebuild_block`-loaded :class:`~precis.store.types.Ref`, the
+    same object :func:`~precis.store._structure_ops.StructureMixin.
+    structure_save` stamps ``last_relax`` onto (`relax.py`'s
+    ``_relax_summary``)."""
+    return str(((ref.meta or {}).get("last_relax") or {}).get("rung") or "stick")
+
+
+def _select_relaxer(
+    rung_a: str, rung_b: str, forced: str, sigma: float, a_block: str, b_block: str
+) -> tuple[Callable[..., np.ndarray] | None, str, HxFinding | None]:
+    """The rung gate (plan "Re-relax only the seam radii"): both parts'
+    detected rung (:func:`_rung_of`) picks the relaxer, unless ``forced``
+    (the op's own ``"rung"`` key, default ``"auto"``) overrides it.
+    ``auto`` with a rung mismatch is ``join.rung`` -- raised here as
+    :class:`~precis.errors.BadInput` immediately (like `join.lattice`,
+    `port.mismatch`, `seam.mismatch` above it), never deferred into a
+    finding list, because there is no sane geometry to hand back: relaxing
+    one side's rest lengths against the other's frozen boundary is
+    exactly the false-leak hazard the plan's "Risks" section names.
+    Forcing ``geo`` onto a stick-rung block is allowed (an explicit ask,
+    not a mismatch) but is not free -- ``join.rung`` WARN, rest lengths
+    1.42 vs 1.52 A will strain the frozen boundary. Returns
+    ``(relaxer, name, finding)`` -- ``relaxer=None`` for ``"stick"`` so
+    the caller can pass it straight through to
+    :func:`~hexfold.join.compose`'s own ``relax=None`` default (its
+    :func:`~hexfold.join._stick_relaxer` construction stays private to
+    that module, needing only ``a.sigma`` it already has -- no reason for
+    this module to duplicate it)."""
+    if forced == "geo":
+        chosen = "geo"
+    elif forced == "stick":
+        chosen = "stick"
+    elif rung_a == "geo" and rung_b == "geo":
+        chosen = "geo"
+    elif rung_a != "geo" and rung_b != "geo":
+        chosen = "stick"
+    else:
+        raise BadInput(
+            f"join.rung: {a_block} is on rung {rung_a!r} but {b_block} is on "
+            f"rung {rung_b!r} -- relax both blocks on the same rung before "
+            "joining (edit(kind='structure', id=..., ops=[{'op':'relax', "
+            "'fidelity':'geo'}]) on whichever is behind), or pass an "
+            "explicit 'rung': 'stick'|'geo' to force one"
+        )
+    finding: HxFinding | None = None
+    if chosen == "geo" and (rung_a != "geo" or rung_b != "geo"):
+        finding = HxFinding(
+            "join.rung",
+            HxSeverity.WARN,
+            f"forcing the geo rung over a stick-rung block ({a_block}="
+            f"{rung_a!r}, {b_block}={rung_b!r}) -- rest lengths 1.42 vs "
+            "1.52 A will strain the frozen boundary",
+            data=(("a_rung", rung_a), ("b_rung", rung_b), ("forced", chosen)),
+        )
+    if chosen == "geo":
+        return geo_relax_pinned, "geo", finding
+    return None, "stick", finding
 
 
 class _JoinStale(Exception):
@@ -368,6 +496,17 @@ def _hexfold_join(
             except (TypeError, ValueError) as exc:
                 raise BadInput(f"join: seam_radius[{side!r}] must be an int") from exc
 
+    rung_raw = str(op.get("rung", "auto")).strip().lower()
+    if rung_raw not in ("auto", "stick", "geo"):
+        raise BadInput(f"join: 'rung' must be auto|stick|geo, got {op.get('rung')!r}")
+    rung_a, rung_b = _rung_of(ref_a), _rung_of(ref_b)
+    relaxer, relaxer_name, rung_finding = _select_relaxer(
+        rung_a, rung_b, rung_raw, blk_a.sigma, a_block, b_block
+    )
+    if rung_finding is not None:
+        extra_findings.append(rung_finding)
+    leak_thresholds = LEAK_THRESH_GEO if relaxer_name == "geo" else None
+
     composite = compose(
         blk_a,
         pa,
@@ -375,6 +514,8 @@ def _hexfold_join(
         pb,
         k,
         seam_radius=seam_radius,
+        leak_thresholds=leak_thresholds,
+        relax=relaxer,
         prefix_a=a_block,
         prefix_b=b_block,
     )
@@ -582,7 +723,7 @@ def _hexfold_join(
         "parts": parts,
         "seam": composite.seam,
         "seam_radius": composite.seam.get("radius"),
-        "relaxer": "stick",
+        "relaxer": relaxer_name,
         "report": report,
         "n_atoms": len(composite.elements),
         "n_bonds": len(composite.bonds),

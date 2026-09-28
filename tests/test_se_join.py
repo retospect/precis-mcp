@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from hexfold.join import SEAM_RADIUS
 from precis.errors import BadInput
 from precis.store import Store
 from precis_se.atomic.generate import finish_generate, prepare_generate
@@ -266,6 +267,40 @@ def test_join_port_mismatch_mints_no_orphan(store: Store) -> None:
         )
     assert "bad" not in tree.blocks
     assert store.get_ref(kind="structure", id=f"{design_slug}-bad") is None
+
+
+def test_join_seam_radius_override_threads_through_the_op(store: Store) -> None:
+    """The op's ``seam_radius`` key (`hexfold.join.compose`'s own
+    per-side override, `tests/hexfold/test_join.py`'s
+    ``test_seam_radius_override_fires_leak_silent_at_table_radius`` at the
+    pure-numpy layer) makes it all the way from the op dict to `compose` --
+    silent at the table radius (the default `_join` calls above never pass
+    one), ``seam.leak`` fires once tightened."""
+    tree = SeTree()
+    design_slug = "hx-join-radius"
+    _generate(store, tree, "tube_a", _TUBE_Z8, design_slug)
+    _generate(store, tree, "tube_b", _TUBE_Z8, design_slug)
+
+    echo, tree = _join(
+        store,
+        tree,
+        design_slug,
+        name="composite",
+        a="tube_a.out",
+        b="tube_b.in",
+        seam_radius={"a": 1},
+    )
+    node = tree.blocks["composite"]
+    assert node.bound is not None
+    ref = store.get_ref(kind="structure", id=node.bound)
+    assert ref is not None
+    rec = (ref.meta or {})["generated"]
+    assert rec["seam_radius"] == {"a": 1, "b": SEAM_RADIUS["z"]}
+    leaks = [f for f in rec["report"]["findings"] if f["code"] == "seam.leak"]
+    assert len(leaks) == 1, rec["report"]["findings"]
+    assert leaks[0]["data"]["block"] == "a"
+    assert leaks[0]["data"]["r"] == 1
+    assert "composite" in echo
 
 
 def test_join_lattice_mismatch_on_a_hand_added_port(store: Store) -> None:

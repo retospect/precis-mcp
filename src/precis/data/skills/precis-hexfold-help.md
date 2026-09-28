@@ -146,7 +146,7 @@ were never in the same spec:
 
 ```json
 {"op": "join", "name": "composite", "a": "tube_a.out", "b": "tube_b.in",
- "seam": "auto", "k": 0, "seam_radius": {"a": 8, "b": 2}}
+ "seam": "auto", "k": 0, "seam_radius": {"a": 8, "b": 2}, "rung": "auto"}
 ```
 
 `a`/`b` are `<block>.<port>` — either side may itself be an earlier
@@ -177,13 +177,22 @@ raise `seam_radius` or resolve a longer block), `seam.terminated` INFO (a
 non-carbon atom inside the re-relaxed sub-graph), `port.mismatch` ERROR
 (rim sizes differ — nothing minted), `join.lattice` ERROR (no shared
 port type), `join.stale` ERROR (the block's stored atoms no longer agree
-with a rebuild of its own generator record — regenerate first).
+with a rebuild of its own generator record — regenerate first), `join.rung`
+ERROR (the two parts' relax rungs disagree and `rung` wasn't forced) or
+WARN (`rung` forced `geo` over a stick-rung part).
 
-Slice 1 is the **stick rung** only: both parts must be `fidelity="stick"`
-hexfold blocks (or composites of them), and the re-relax runs
-`stick_relax_pinned` over the seam sub-graph. A later slice adds the
-`geo` rung (`join.rung` gates a mismatch) and joint placement across a
-part-graph *cycle* (three-or-more-way joins today only chain linearly,
+Both the **stick** and **geo** relax rungs are wired. `rung` picks which
+(default `auto`: both parts' own `meta['last_relax']['rung']` must agree
+— absent means stick, the generator's untouched preview geometry — or
+it's `join.rung` ERROR before anything is minted; an explicit
+`"stick"`/`"geo"` forces one, and forcing `geo` over a still-stick-rung
+part is allowed but logs `join.rung` WARN, since 1.42 vs 1.52 Å rest
+lengths strain the frozen boundary). The geo rung's `seam.leak` checks
+against its own measured thresholds (0.002 Å / 0.15°, uniform across rim
+type — different physics from the stick numbers above, a pinned guard
+band vs. a fully free relax). `meta['generated']['relaxer']` records
+which rung actually ran. Joint placement across a part-graph *cycle* is
+still a later slice (three-or-more-way joins today only chain linearly,
 one pair at a time).
 
 ## Options (spec §25.3)

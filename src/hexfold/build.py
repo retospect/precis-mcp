@@ -44,6 +44,7 @@ from .lattice import (
     tube_sites,
     wrap_tube,
 )
+from .place import place_graph
 from .report import (
     BuildError,
     Finding,
@@ -2750,6 +2751,7 @@ def _place_seeds(
         tuple[str, tuple[int, ...], str, tuple[int, ...], int, bool, bool]
     ],
     bond_links: list[tuple[int, int]],
+    findings: list[Finding],
 ) -> tuple[tuple[tuple[float, float, float], ...] | None, str]:
     """Rigidly place per-instance seeds along the connect graph.
 
@@ -2777,6 +2779,29 @@ def _place_seeds(
     multi-root BFS as a possible follow-up -- not needed by any current
     example, since a seam's own placement-only edges are what span every
     seam-linked instance into the one tree rooted at origin).
+
+    Third pass (slice 3, 2026-09-28): the two-phase BFS above assigns
+    each non-root instance exactly one transform, off the first fuse/seam
+    edge that reaches it -- any *other* edge onto an already-placed
+    instance (a part-graph cycle, SPEC 12.2) is silently dropped, which
+    is exact for a tree part graph and a measured ~10.9 A crossing-bond
+    residual for a cycle (``flanged_doughnut.hx``: its real
+    ``top<->wall<->bottom`` fuse chain and its ``top<->bottom`` seam edge
+    close at registry residual 0 -- the discrete symmetry indices agree
+    -- but that is not a continuous-rotation guarantee).  When the
+    fuse/seam graph (``fuse_frames``, restricted to distinct-instance
+    edges) has a cycle, :func:`hexfold.place.place_graph` re-solves every
+    instance in the origin's fuse-connected component jointly
+    (alternating Kabsch, Gauss-Seidel) and its transforms replace the
+    BFS ones for that component; ``seam.cycle`` reports the per-edge RMS
+    residual and sweep count.  Deliberately scoped to ``fuse_frames``
+    only, excluding ``bond_links``: a bond link's single atom pair
+    carries no rim-normal registration to jointly reconcile, and the only
+    two examples where a *bond* link is the sole source of a
+    ``registry.closure`` cycle (``sheet_bud_22.hx`` / ``nanobud_22.hx``'s
+    ``[2+2]`` cycloaddition, two authored bonds onto the same lattice
+    site) must stay on the untouched two-phase BFS result (regression
+    guard: ``tests/hexfold/test_place_seeds.py`` tree-graph bit-identity).
     """
     if net.seed3 is None:
         return net.seed3, net.seed_kind
@@ -2907,6 +2932,119 @@ def _place_seeds(
     _bfs(allow_placeholder=True)
     if len(placed) <= 1:
         return net.seed3, net.seed_kind
+
+    # third pass: joint placement across a part-graph cycle (see the
+    # docstring above).  `cycle_pairs` restates `fuse_frames` as bare
+    # (instance, instance) edges -- one entry per fuse/seam edge between
+    # two distinct instances -- so a redundant edge (two entries for the
+    # same unordered pair, or a longer cycle through several instances)
+    # can be told apart from a tree with plain edge/vertex counting.
+    local_of = {
+        inst: {o: i for i, o in enumerate(idx)} for inst, idx in inst_ords.items()
+    }
+    cycle_pairs: list[tuple[str, str, bool]] = []
+    graph_edges: list[
+        tuple[str, str, list[tuple[int, int]], tuple[np.ndarray, np.ndarray]]
+    ] = []
+    for pn, p_dang, qn, q_dang, k, real, _kabsch in fuse_frames:
+        ia, ib = inst_of[p_dang[0]], inst_of[q_dang[0]]
+        if ia == ib:
+            continue
+        cycle_pairs.append((ia, ib, real))
+        n = len(p_dang)
+        pairs = [(p_dang[i], q_dang[(k - i) % n]) for i in range(n)]
+        _c_p, n_p = _frame(pos, p_dang, inst_cent[ia], _flat_sign(pn, ia))
+        _c_q, n_q = _frame(pos, q_dang, inst_cent[ib], _flat_sign(qn, ib))
+        graph_edges.append(
+            (
+                ia,
+                ib,
+                [(local_of[ia][a], local_of[ib][b]) for a, b in pairs],
+                (n_p, n_q),
+            )
+        )
+
+    if cycle_pairs and origin in {x for pair in cycle_pairs for x in pair[:2]}:
+        # component reachable from `origin` over every fuse/seam edge: a
+        # tree spanning it has exactly (size - 1) edges, so `>=` size
+        # means at least one redundant edge -- a cycle in that component
+        # specifically (not merely somewhere in the net).
+        comp_adj: dict[str, set[str]] = {}
+        for pu, pv, _real in cycle_pairs:
+            comp_adj.setdefault(pu, set()).add(pv)
+            comp_adj.setdefault(pv, set()).add(pu)
+        comp = {origin}
+        queue = [origin]
+        while queue:
+            cur = queue.pop(0)
+            for nbr in sorted(comp_adj.get(cur, ())):
+                if nbr not in comp:
+                    comp.add(nbr)
+                    queue.append(nbr)
+        comp_edges = [(pu, pv) for pu, pv, _real in cycle_pairs if pu in comp]
+        if len(comp_edges) >= len(comp):
+            # scope place_graph's authority to instances that are NOT
+            # already uniquely pinned by real fuse/bond edges alone: a
+            # placeholder (seam) edge is "the seam's cruder mean-frame
+            # approximation" (see the two-phase BFS's own priority
+            # comment above) even after a full joint Kabsch fit, so it
+            # must never move an instance the REAL sub-graph alone
+            # already determines without ambiguity (flanged_doughnut's
+            # exact top<->wall<->bottom chain, SPEC 11.3's k=3 seam
+            # naming that same top<->bottom pair a second time notwith
+            # -standing) -- verified via the SAME edge/vertex count, on
+            # the real-only sub-graph: tube_ring_closure.hx has TWO real
+            # edges between the same pair (a genuine redundancy even
+            # among reals, so that pair stays open to reconciliation),
+            # flanged_doughnut's real sub-graph is a plain tree (no
+            # redundancy at all -- the seam is the ONLY source of the
+            # cycle), so nothing in it is up for grabs.
+            real_adj: dict[str, set[str]] = {}
+            for pu, pv, real in cycle_pairs:
+                if real:
+                    real_adj.setdefault(pu, set()).add(pv)
+                    real_adj.setdefault(pv, set()).add(pu)
+            real_comp = {origin}
+            queue = [origin]
+            while queue:
+                cur = queue.pop(0)
+                for nbr in sorted(real_adj.get(cur, ())):
+                    if nbr not in real_comp:
+                        real_comp.add(nbr)
+                        queue.append(nbr)
+            real_edges_in_comp = [
+                (pu, pv) for pu, pv, real in cycle_pairs if real and pu in real_comp
+            ]
+            frozen = (
+                real_comp if len(real_edges_in_comp) == len(real_comp) - 1 else set()
+            )
+            free = comp - frozen
+
+            rims = {inst: pos[idx].copy() for inst, idx in inst_ords.items()}
+            result = place_graph(rims, graph_edges, origin, sigma=sigma)
+            placed = {
+                **placed,
+                **{k: v for k, v in result.transforms.items() if k in free},
+            }
+            free_edges = [
+                (eu, ev, rms)
+                for (eu, ev, prs, _n), rms in zip(graph_edges, result.residuals)
+                if prs and eu in comp and (eu in free or ev in free)
+            ]
+            edge_data = [{"u": eu, "v": ev, "rms": rms} for eu, ev, rms in free_edges]
+            worst = max((rms for _eu, _ev, rms in free_edges), default=0.0)
+            sev = Severity.INFO if worst < 0.3 else Severity.WARN
+            findings.append(
+                Finding(
+                    "seam.cycle",
+                    sev,
+                    f"joint placement over {len(edge_data)} cycle edge(s), "
+                    f"{len(free)} free instance(s) of {len(comp)}: max rms "
+                    f"{worst:.3f} A over {result.sweeps} sweep(s)",
+                    data=(("edges", edge_data), ("sweeps", result.sweeps)),
+                )
+            )
+
     for inst, (r, t) in placed.items():
         idx = inst_ords[inst]
         pos[idx] = pos[idx] @ r.T + t
@@ -3798,7 +3936,7 @@ def _apply_connects(
         for ai, bi in bond_links
         if ai not in seam_atom_ords and bi not in seam_atom_ords
     ]
-    seed3, seed_kind = _place_seeds(spec, net, fuse_frames, inst_bond_links)
+    seed3, seed_kind = _place_seeds(spec, net, fuse_frames, inst_bond_links, findings)
     if seed3 is not None and seam_nbrs:
         # gr347187: _place_seeds works from the pre-seam net, so seed3
         # has no rows for the seam atoms minted above -- append one row

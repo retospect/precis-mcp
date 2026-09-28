@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 
 from hexfold.build import Net, _flat_normals, build
+from hexfold.report import Severity
 from hexfold.stick import stick
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "hexfold" / "examples"
@@ -106,16 +107,25 @@ def test_fused_tube_seeds_meet_at_one_bond_length(body: str, skew_deg: float) ->
         # are already real-fuse-connected through a third instance
         # (wall): measured pre-fix max 11.43 A ('flange' unplaced); after
         # the fix, top/wall/bottom placement is exact (1.44-1.53 A, the
-        # two-phase BFS below), but 'flange' -- reachable only through
-        # the seam -- inherits a residual rotational mismatch between
-        # top's and bottom's independently-chained orientations that no
-        # per-edge rigid placement resolves (see check_registry: the
-        # part-graph cycle top-wall-bottom-flange-top closes with residual
-        # 0 discretely, but that is a k=0-everywhere triviality, not a
-        # continuous-angle guarantee) -- measured max 10.91 A, essentially
-        # unchanged; bound with a small margin over the measurement, not
-        # an assertion that this residual is fixed
-        ("flanged_doughnut.hx", 11.3),
+        # two-phase BFS below). Slice 3 (place_graph, 2026-09-28):
+        # top<->wall<->bottom's real sub-graph is a plain tree (no
+        # redundancy even among reals -- the k=3 seam's top<->bottom
+        # edge is the ONLY source of the cycle), so place_graph never
+        # moves them; only 'flange' (reachable exclusively through the
+        # seam) gets place_graph's own full six-atom Kabsch fit off
+        # 'bottom' instead of the old mean-of-neighbours seam-atom
+        # placement -- measured max 11.05 A, essentially unchanged (the
+        # top<->bottom mismatch itself -- verified irreducible by any
+        # rigid choice for wall/bottom/flange: forcing the real chain to
+        # also absorb some of it via an unweighted joint Kabsch measured
+        # WORSE, 11.6-11.7 A, with sub-1 A near-overlaps on the
+        # previously-exact top-wall/wall-bottom bonds -- is the seam's
+        # own registration disagreeing with the real chain by a rotation
+        # no rigid instance placement, joint or not, resolves); `seam
+        # .cycle` still reports it (INFO, single free instance).  Bound
+        # with a small margin over the measurement, not an assertion
+        # that the residual is fixed.
+        ("flanged_doughnut.hx", 11.2),
         # item 3, a flat washer (cap(24,0) - hex(1) hole) fused on both
         # its hole rim (to a neck tube) and its outer rim (to a bulge):
         # measured pre-fix max 17.86 A (both rims signed the same way);
@@ -234,3 +244,72 @@ def test_stick_no_longer_telescopes_the_fused_tube() -> None:
         return float(proj.max() - proj.min())
 
     assert _axial_extent(pos) > 1.9 * _axial_extent(stick(free))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # pure fuse/menu trees (no registry.closure anywhere in the
+        # spec): place_graph's third pass never triggers for these --
+        # slice 3 (place_graph, 2026-09-28) must leave every seed bit
+        # -for-bit unchanged.  sheet_bud_22.hx's [2+2] bond registers a
+        # registry.closure cycle (two authored bonds, same instance
+        # pair) but that cycle is bond_links-only, deliberately excluded
+        # from _place_seeds' third pass (see its docstring) -- included
+        # here as the regression guard for exactly that exclusion.
+        "pillar.hx",
+        "lid_pillbox.hx",
+        "sheet_bud_22.hx",
+        "nanobud_87.hx",
+        "valve_shell.hx",
+    ],
+)
+def test_tree_and_bond_only_cycle_seeds_are_bit_identical_to_two_phase_bfs(
+    name: str,
+) -> None:
+    """``_place_seeds``' third pass (``place_graph``) is wired in
+    strictly *after* the existing ``if len(placed) <= 1: return`` guard
+    and only ever mutates ``placed`` inside its own ``if cycle_pairs and
+    ...`` block -- for any spec where that block's condition is false
+    (no ``seam.cycle`` finding fires), every line the third pass added
+    is unreached, so ``net.seed3`` is provably the untouched two-phase
+    BFS result.  Verified directly once against the pre-slice-3 ``hexfold
+    .build`` (git 0bb6c93c, ``np.array_equal`` on ``net.seed3`` for all
+    five names here, plus ``nanobud_96.hx``/``sheet_pill_bump.hx``); the
+    ``seam.cycle``-absence assertion below is the durable, forward
+    -looking form of that same guarantee (a future change widening the
+    third pass's trigger condition would trip this first)."""
+    text = (_EXAMPLES / name).read_text(encoding="utf-8")
+    net = build(text, strict=False)
+    assert not any(f.code == "seam.cycle" for f in net.report.findings), name
+
+
+def test_flanged_doughnut_gets_a_seam_cycle_finding() -> None:
+    """WARN, not INFO: the single free edge (bottom<->flange) carries a
+    1.42 A rms residual, over the 0.3 A ``seam.cycle`` INFO/WARN line --
+    the seam's own registration disagreeing with the real chain (see the
+    ``test_example_seeds_have_no_long_crossing_bonds`` flanged_doughnut
+    case) is not something a single-edge Kabsch fit makes small."""
+    text = (_EXAMPLES / "flanged_doughnut.hx").read_text(encoding="utf-8")
+    net = build(text, strict=False)
+    cyc = [f for f in net.report.findings if f.code == "seam.cycle"]
+    assert len(cyc) == 1, cyc
+    assert cyc[0].severity == Severity.WARN, cyc[0]
+    data = dict(cyc[0].data)
+    assert data["edges"], data
+
+
+def test_tube_ring_closure_gets_a_seam_cycle_finding_and_improves() -> None:
+    """The two-phase BFS drops the second (``a.in --fuse k=0--> b.out``)
+    edge outright, leaving ``b`` placed from only the first -- measured
+    max crossing bond 24.25 A pre-slice-3.  place_graph reconciles both
+    (a genuine 2-edge redundancy between the same pair, k=1 vs k=0 --
+    ``registry.closure`` WARN, residual 1 of 5 symmetry steps, an
+    irreducible discrete mismatch) -- measured max 3.72 A."""
+    text = (_EXAMPLES / "tube_ring_closure.hx").read_text(encoding="utf-8")
+    net = build(text, strict=False)
+    lengths = _crossing_lengths(net)
+    assert lengths.max() < 4.0, (lengths.min(), lengths.max())
+    cyc = [f for f in net.report.findings if f.code == "seam.cycle"]
+    assert len(cyc) == 1, cyc
+    assert cyc[0].severity in (Severity.INFO, Severity.WARN), cyc[0]
