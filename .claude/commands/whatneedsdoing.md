@@ -1,7 +1,7 @@
 ---
 description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · backlog lint · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -36,7 +36,7 @@ Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summar
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
 Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build ⋅ main on CI:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; scripts/main-ci-status 2>&1 || true`
+!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— surface —'; scripts/surface-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true; echo '— main on CI —'; scripts/main-ci-status 2>&1 || true`
 
 ## Procedure
 
@@ -123,6 +123,16 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      un-`rtk`'d firehoses, redundant calls), file findings to `docs/backlog/` /
      gripes, then append a dated line to `docs/runbooks/token-review.md`. Inside
      the 7-day window it's quiet — skip it.
+   - **Surface-review cadence** (`scripts/surface-review`) — on **DUE** (last
+     pass >14 days ago) run `/surface-review`: mine the window with
+     `scripts/mine-sessions/run.sh`, read the scoreboard, fan `forensics`
+     agents over the evidence cards (plus the random arm), gate for
+     live-and-unfixed, then attach the measurement to the existing backlog
+     item / gripe — mint only what nothing covers. Append a dated line to
+     `docs/runbooks/surface-review.md`. Inside the 14-day window it's quiet —
+     skip it. Remit: the precis MCP surface (verbs, error messages, renders,
+     vocabulary, capability gaps) — distinct from token-review's harness
+     behaviour and skill-search-review's discovery ranking.
    - **DB-thrash cadence** (`scripts/db-thrash-review`) — on **DUE** (last pass
      >14 days ago) run the prod index/thrashing review: prod-hop and run the four
      `pg_stat_*` scans (long-running queries · seq-scan-heavy tables · never-used
@@ -255,7 +265,34 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    Say plainly whether the fleet is **solid** (only baseline noise) or has a
    **hot pass** (broken / noisy), and fold any hot-pass root cause into
    substrate 1 as a gripe.
-6. **Latent repo dev — LLM-confusion mining (the bug hunt).** Every
+6. **Latent repo dev — LLM-confusion mining (the bug hunt).**
+
+   **Start at the ledger, not the transcripts.** `tool_calls` (migration
+   0133, `src/precis/tool_ledger.py`) takes one row per `runtime.dispatch()`
+   at the chokepoint every verb call passes through — MCP server, CLI and
+   in-process ticks alike — so it sees interactive sessions, which the
+   transcript path never did. 30-day retention
+   (`PRECIS_TOOL_CALLS_RETENTION_DAYS`); no payload content, ever
+   (`input_keys` is argument *names* only). One prod-hop:
+   ```sql
+   SELECT verb, kind, error_type, count(*) n FROM tool_calls
+   WHERE ts > now() - interval '7 days' AND outcome='error'
+   GROUP BY 1,2,3 ORDER BY n DESC LIMIT 25;
+   ```
+   **Calibrate before you read it:** the measured error rate is ~0.8% (609
+   errors in 73,472 calls over 10 days). Errors are not where the waste is —
+   the signal is successful-but-clumsy calls. A full treatment of that is
+   the 14-day `/surface-review` pass (`docs/runbooks/surface-review.md`),
+   which mines local transcripts + the ledger + `llm_call_log` through
+   `scripts/mine-sessions/`. **If surface-review is inside its window, this
+   step is just the ledger query above** — do not re-run the deep mine here.
+
+   The transcript path below remains correct for windows predating 0133, and
+   for the payload a ledger row cannot carry. Note it has thinned out
+   sharply: a recent 10-day window held 2 `plan_tick`, 51 `quest_tick` and 30
+   `doctor_tick` transcripts.
+
+   Every
    server-side agentic run opens a `kind='agentlog'` run-attribution record
    (`precis/agentlog.py:open_log`) — `plan_tick`, `quest_tick`, and `dream`
    all do this; `cad`/`structure` propose don't even go this far. But

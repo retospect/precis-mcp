@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# scripts/surface-review — advisory 14-day cadence nudge for the MCP
+# surface review. Mirrors token-review / skill-search-review / db-thrash-review:
+# it does NOT do the review (that's a judgment session — see the runbook), it
+# only tells you WHEN one is due. Surfaced in `/whatneedsdoing`; always exits 0.
+#
+# The review mines recent agent sessions (local .jsonl + the prod tool_calls
+# ledger + llm_call_log) for where the precis MCP surface confused an agent,
+# cost more tokens than it should, or was missing a capability — then turns
+# findings into evidence on an existing backlog item, or a gripe. The
+# extraction is code (`scripts/mine-sessions/`); the judging is the pass.
+# Procedure + dated log:
+#   docs/runbooks/surface-review.md   (the `## Log` section is the clock)
+#
+# Remit boundary, so the three transcript passes don't collide:
+#   surface-review      the precis MCP surface (verbs, errors, renders, vocab)
+#   token-review        harness/agent behaviour (delegation tier, rtk, bloat)
+#   skill-search-review skill discovery ranking
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+LOG="docs/runbooks/surface-review.md"
+WINDOW_DAYS=14
+
+if [[ ! -f "$LOG" ]]; then
+    echo "surface-review: DUE (no runbook at $LOG)"; exit 0
+fi
+
+# newest dated line in the `## Log` section (any order — sort -r picks the newest date)
+last=$(awk '/^## Log/{f=1;next} f' "$LOG" \
+    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | sort -r | head -1 | tr -d '*' || true)
+
+if [[ -z "$last" ]]; then
+    echo "surface-review: DUE (no dated entry in $LOG '## Log')"; exit 0
+fi
+
+# portable YYYY-MM-DD -> epoch seconds (BSD date on macOS, GNU date on CI/Linux)
+epoch_of() { date -u -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
+last_e=$(epoch_of "$last" || true)
+now_e=$(date +%s)
+
+if [[ -z "$last_e" ]]; then
+    echo "surface-review: last entry '$last' unparseable — check $LOG"; exit 0
+fi
+
+days=$(( (now_e - last_e) / 86400 ))
+if (( days > WINDOW_DAYS )); then
+    echo "surface-review: DUE (last pass $last, ${days}d ago > ${WINDOW_DAYS}d) — run /surface-review: mine the window, judge the cards, attach evidence to existing items or file a gripe, append a dated line to $LOG."
+else
+    echo "surface-review: ok (last pass $last, ${days}d ago; due in $(( WINDOW_DAYS - days ))d)"
+fi
+exit 0

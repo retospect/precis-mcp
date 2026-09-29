@@ -17,13 +17,28 @@ The script only tells you **when** it's due; you run the pass.
 this file's `## Log` is >7 days old (or absent). Inside the window it's quiet.
 Run the pass when DUE, then append a dated line (below) — that resets the clock.
 
+## Remit boundary
+
+This pass owns **harness and agent behaviour**: delegation tier, un-`rtk`'d
+firehoses, context bloat, redundant calls. `surface-review` (14 d) owns the
+precis MCP surface itself — verbs, error messages, renders, vocabulary,
+capability gaps. `skill-search-review` (30 d) owns discovery ranking.
+Cross-reference at the edges; don't duplicate a finding into two logs.
+
 ## The pass (keep it tight — a scan, not an audit)
 
-Read a handful of recent, large local session transcripts and look for the
-**repeated** waste patterns — one-off inefficiency isn't worth a finding. The
-transcripts live under
-`~/.claude/projects/-Users-reto-precis-mcp*/*.jsonl` (one
-dir per worktree; newest/biggest first).
+Don't hand-parse transcripts — `scripts/mine-sessions/` is the committed
+extraction layer, shared with the other two passes.
+`scripts/mine-sessions/run.sh --since 7d` gives you `out/scoreboard.md` (per-
+session token totals, cache-read ratio, tool-result byte shares, the Bash
+detour census) and `out/cards/`, which is where the `detour_census`,
+`render_obesity` and `read_then_unused` detectors already did the counting
+this pass used to do by eye. Then read the **repeated** patterns off it —
+one-off inefficiency isn't worth a finding.
+
+The underlying transcripts live under `~/.claude/projects/*/*.jsonl` plus
+`*/subagents/agent-*.jsonl` (one dir per worktree; the sidechains are 91% of
+the files and were missed by earlier globs).
 
 What "waste" means here, in rough priority:
 

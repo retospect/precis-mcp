@@ -183,8 +183,12 @@ overlay:
 
 `view='toc'` (`precis-toc-help`) is a **separate, recursive drill-down**
 render for long documents (paper/skill) — you pick a range, it
-re-clusters, you drill again, and it's the one that actually works on
-`paper`/`patent`/`web`/`datasheet`/`cfp` today. `fisheye` is the
+re-clusters, you drill again, and it's the one that's widely available
+today — see `precis-toc-help`'s own `kinds:` line for the authoritative
+list (`paper`, `skill`, `draft`, `markdown`, `tex`, `plan`, `python`,
+`datasheet`, `edgar`, `cfp`). Note `patent` and `web` are **not** on it:
+`PatentHandler` supports `biblio`/`abstract`/`description`/`claims`/
+`bibtex`/`links` only, so `view='toc'` there is `Unsupported`. `fisheye` is the
 opposite move: you've already picked one node, and want its immediate
 surroundings rendered around it — live on `draft` and `finding` only
 (see the availability note above).

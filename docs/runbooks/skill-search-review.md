@@ -16,6 +16,14 @@ scripts, but judging whether a returned menu satisfied the caller needs a model
 reading the query/menu/outcome triples. The script only tells you **when** it's
 due; you run the pass.
 
+## Remit boundary
+
+This pass owns **discovery ranking**: does `search(kind='skill')` return the
+right menu, and does the matcher rank it right. `surface-review` (14 d) owns
+the precis MCP surface itself; `token-review` (7 d) owns harness and agent
+behaviour. A skill that teaches a broken call is both a discovery and a
+surface problem — cross-reference, don't duplicate.
+
 ## When
 
 `scripts/skill-search-review` prints `skill-search-review: DUE` when the newest
@@ -25,10 +33,14 @@ the clock.
 
 ## Why there's no query log to grep
 
-Skill-search tool calls are **not** durably logged. There is no `tool_calls`
-ledger (unbuilt), `worker_logs` has no `mcp_calls` logger in prod, and
-`ref_events` only records corpus mutations. The population is reconstructed from
-the two transcript stores that DO survive:
+The `tool_calls` ledger (migration 0133, `src/precis/tool_ledger.py`) now
+records one row per verb call — but it carries **no payload, ever**
+(`input_keys` is argument *names* only, by design). So it tells you *how many*
+`search(kind='skill')` calls happened and what fraction errored, and nothing
+about the query text or the returned menu. It is the right denominator and the
+wrong corpus for this audit. `worker_logs` has no `mcp_calls` logger in prod,
+and `ref_events` only records corpus mutations. The queries themselves are
+still reconstructed from the two transcript stores that survive:
 
 - **Local dev sessions** — `~/.claude/projects/*/*.jsonl`. Full fidelity: the
   `tool_use` (query) + `tool_result` (rendered menu) + the caller's next action.
@@ -40,8 +52,13 @@ the two transcript stores that DO survive:
 
 ## The pass (scripts do the reading — keep raw transcripts off the main loop)
 
-The 2026-07 audit's scratch scripts are the reference implementation; re-derive
-them (they live in a session scratchpad, not the tree). The shape:
+**Do not re-derive the parser.** `scripts/mine-sessions/` is the committed
+extraction layer — `extract.py` walks both stores into one normalized event
+stream (including the `*/subagents/*.jsonl` sidechains this audit's first
+glob missed), `redact.py` scrubs it, and `cards.py` renders evidence. Run
+`scripts/mine-sessions/run.sh --since 30d --prod`, then filter the events to
+`verb='search', kind='skill'` for this audit's population. The shape of the
+pass:
 
 1. **Extract** — one parser over both stores. Both use the same
    `message.content[]` tool_use/tool_result shape (prod's is stream-json inside

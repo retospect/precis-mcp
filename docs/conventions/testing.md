@@ -155,6 +155,20 @@ exactly the tests that cover the pcb/se/hexfold `src/` lines. A genuinely
 well-tested change there can therefore fail diff-cover at 90%. `scripts/ship`
 says so in the failure text; re-run with `--slow` before writing new tests.
 
+## Long runs: `--bg` then `--await`, never a hand-rolled log poll
+
+A gate-length run outlives a foreground tool call. `scripts/test --bg` detaches
+and prints a run id; `scripts/test --await <run-id>` blocks in bounded chunks
+until it finishes. Don't invent a `tail`/`grep` over the run log to decide
+pass/fail — a `grep` that matches nothing returns the same silence whether the
+suite passed, is still running, or died.
+
+(Mined 2026-09-29: 22 of 23 sessions that touched a backgrounded run already
+used `--await` correctly, because the detach message echoes the exact poll
+command — the affordance teaches itself. This section exists only because
+this doc, the canonical "how to run tests" page, never mentioned the
+mechanism at all.)
+
 ## Raw SQL ⇒ a real-PG test — FakeStore is blind to SQL
 
 **Any route or handler that builds/executes raw SQL must have at least one

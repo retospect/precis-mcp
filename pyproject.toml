@@ -752,7 +752,11 @@ warn_unused_ignores = true
 # CLAUDE.md scripts convention). mypy_path only widens import RESOLUTION
 # for files it's already checking; it doesn't add scripts/*.py to the
 # checked set, so the rest of scripts/ stays outside gate scope as before.
-mypy_path = "scripts"
+# `scripts/mine-sessions` is listed too because tests/test_mine_sessions_*.py
+# import its modules the same way (`sys.path` insert; the directory is
+# hyphenated, so it can never be a package). Resolution only — the miner's
+# own files still aren't in the checked set.
+mypy_path = "scripts:scripts/mine-sessions"
 # Burn-down complete 2026-08-02: every once-disabled error code
 # (no-any-return, valid-type, dict-item, method-assign, var-annotated,
 # union-attr, type-var, assignment, operator, index) is now enforced.

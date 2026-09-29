@@ -65,3 +65,40 @@ Whether anything further is wanted here at all. The docs are now correct and
 `scripts/inflight --json` covers the real need, so this may be closeable as-is.
 The two things that remain unaddressed are upstream: the deny is evadable by
 indirection, and it fires on mere mentions of git in unrelated command text.
+
+## 2026-09-29 — measured; NOT closeable as-is (gr456287)
+
+surface-review pass #1 put a number on it: **308 refusals across 97 of 99
+sessions** in a 5-day window — the highest-frequency friction signature in the
+entire corpus. Reto: *"we wanna fix that."* So the open question above is
+answered — this is not closeable.
+
+Breakdown: 95 generic "too complex", 68 git-in-a-construct, 34 `rtk`, 18
+`git -C`, 3 prod-psql, 88 other (gh, ship, deploy, docker, heredocs,
+arithmetic). Two mechanisms isolated by live probing, both new since this item
+was written:
+
+1. **`rtk git ...` is refused unconditionally**, even bare with no construct —
+   which contradicts `.claude/settings.json`'s own `Bash(rtk git:*)` allow-list
+   and the `rtk` pattern CLAUDE.md tells agents to use. The product and the
+   harness disagree, and the agent pays.
+2. **Interpreter launchers fail closed on dynamic program text regardless of
+   content.** `X=1; python3 -c "print($X)"` is refused with *zero* git anywhere:
+   relevance cannot be checked before execution, so it defaults to refuse. This
+   is the source of the 95 generic + much of the 88 "other" bucket.
+
+The static case is already precise (word-boundary matched — `github`,
+`git_sha`, `legitimate` all pass), so the gap is specifically the
+dynamic-payload branch.
+
+Worth stating plainly before anyone "fixes" the dynamic branch: per the
+indirection note above, fail-closed is **not** buying real safety — a
+throwaway `/tmp` script that shells out internally already sails through. The
+current rule taxes benign heredocs while a motivated bypass is one level of
+indirection away. That asymmetry, not the false-positive count alone, is the
+argument for loosening it.
+
+In-repo levers are limited (the guard is a harness built-in, re-confirmed:
+nothing in `scripts/hooks/` or `.claude/settings.json` emits this text):
+put the accepted-shape cheat sheet in `docs/conventions/container-ops.md`, and
+flag the two mechanisms upstream.

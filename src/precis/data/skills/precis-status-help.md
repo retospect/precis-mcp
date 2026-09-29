@@ -8,6 +8,7 @@ answers:
   - how do I check what database precis is connected to?
   - how do I tell if my build is out of date and needs a restart?
   - is the running server the same code as the checkout in front of me?
+  - what columns does a table have / where is the database schema written down?
 applies-to: precis-status (synthesised skill)
 status: active
 tags: orientation, troubleshooting
@@ -227,6 +228,27 @@ Reading it:
 - **mount path != your worktree** → different tree; a local dev MCP
   usually mounts the main repo `:ro` at prod, so worktree edits are
   invisible until you rebuild + restart pointed at the worktree.
+
+## Where the database schema is written down
+
+Before reaching for `information_schema` or `\d <table>`, read
+`docs/reference/schema.md` — it is generated from the live DB by
+`scripts/gen-schema` and lists every table with its columns and the ER
+diagram. Agents re-derive this by hand constantly (a 5-day window held 96
+`information_schema` queries across 21 sessions, several of them
+rediscovering the same tables), and it is almost always already documented.
+
+Two honest caveats, so the doc doesn't send you the wrong way:
+
+- **Check the `Source: precis_prod @ <date>` line in its header first.** The
+  doc is a snapshot, not a live view, and it has run months stale. If the
+  date is old, treat it as a strong hint rather than truth.
+- **If your table isn't listed, it may be newer than the snapshot** — that is
+  the case where introspecting the live DB is the right move, not the
+  fallback. Regenerate with `scripts/gen-schema` if you have a checkout.
+
+Repo-side file, so this route needs a checkout; a prod-only agent still has
+to introspect.
 
 ## See also
 

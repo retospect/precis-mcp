@@ -33,8 +33,25 @@ DATE="$(date -u +%Y-%m-%d)"
 # Single source of truth for the introspection query.
 SQL="$(uv run python -c 'from precis.cli.schema_doc import INTROSPECT_SQL; print(INTROSPECT_SQL)')"
 
+# The introspection walks information_schema, whose key/constraint views go
+# through `_pg_expandarray` — slow enough on this corpus to blow the server's
+# default statement_timeout and abort the whole run with "canceling statement
+# due to statement timeout" + "schema-doc: no columns found in source". That
+# is why the generated doc went ~12 weeks stale: the regenerator was broken,
+# not merely unrun. Read-only SELECTs, so a generous per-session ceiling costs
+# nothing; overridable for a slower day.
+#
+# It must be `SET LOCAL` inside an explicit transaction, NOT `PGOPTIONS`: the
+# connection goes through pgbouncer, which rejects startup parameters it does
+# not proxy ("FATAL: unsupported startup parameter in options:
+# statement_timeout"). BEGIN/COMMIT also makes the setting survive transaction
+# pooling, where a bare `SET` would not outlive its own statement. None of the
+# three emit rows under -tA, so the TSV parse downstream is unaffected.
+SCHEMA_TIMEOUT_MS="${PRECIS_SCHEMA_TIMEOUT_MS:-600000}"
+
 echo "gen-schema: introspecting ${DB_NAME} via ssh ${SSH_HOST} → ${OUT}"
-printf '%s\n' "$SQL" \
+printf 'BEGIN;\nSET LOCAL statement_timeout = %s;\n%s\nCOMMIT;\n' \
+      "$SCHEMA_TIMEOUT_MS" "$SQL" \
   | ssh -o IdentityAgent=none "$SSH_HOST" \
       "psql -X -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USER} -d ${DB_NAME} -tA -F\$'\t'" \
   | uv run precis schema-doc --from-tsv - --snapshot "${DB_NAME} @ ${DATE}" -o "$OUT"

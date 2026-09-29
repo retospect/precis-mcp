@@ -10,6 +10,16 @@ Grouped 2026-09-26 from 3 items that are sub-parts of one deliverable (each keep
 
 _Grouped 2026-09-26; was `mcp-tool-ledger`, status idea._
 
+**2026-09-29:** the *retrospective* half now exists — `scripts/mine-sessions/`
+(committed extractor + detector catalogue + evidence cards) driven by the
+14-day `/surface-review` pass (`docs/runbooks/surface-review.md`). That is a
+human-cadence pass, NOT the automated threshold detector below; it supplies
+the calibration the detector needs (what rate is abnormal) and the evidence
+cards for judging a crossing. Measured while building it: the surface's error
+rate is **0.8%** (609 / 73,472 calls, 10 d), so a threshold on
+`(verb, kind, error_type)` alone will be quiet — the auto-detector should also
+watch the `detour_census` and `retry_to_success` signals the miner computes.
+
 The `tool_calls` ledger shipped (migration 0133, `src/precis/tool_ledger.py`,
 written from `runtime/dispatch.py::dispatch_with_status`, sweeper GC; mining
 queries in the module docstring). Remaining follow-on, cheap now the table
@@ -39,6 +49,90 @@ cohort*, which is what every batch pass does.
 > Bash psql calls in dev sessions, dominated by nanopub status polling (that
 > slice → `nanopub-mcp-surface-gaps.md` §0) with corpus-audit GROUP BYs the
 > rest. `mcp-tool-ledger.md` will make future detours continuously visible.
+
+### Measured against a real window — surface-review pass #1, 2026-09-29
+
+First `/surface-review` pass (5 days: 390,590 events across local transcripts,
+the `tool_calls` ledger, `llm_call_log`, and job transcripts). Scorecard for
+the six gaps below, so a future pass argues from evidence rather than re-
+asserting the list:
+
+- **#1 similarity scores — CONFIRMED, and the diagnosis is sharper than
+  stated.** The score is not missing where it is exposed; it does not
+  *discriminate*. Two `search(kind='gripe')` reformulation bursts
+  (`job:450632`, `job:456022`; 5 and 4 consecutive re-queries) returned
+  `rank=0.02` on **every** hit, for obviously different queries. The fix is
+  "make the exposed rank mean something, or drop the column", not "expose a
+  score".
+- **#2 counts/facets — CONFIRMED, the largest single demand bucket.**
+  `table:refs` n=151 / 27 sessions and `table:worker_logs` n=66 / 8 sessions,
+  dominated by hand-rolled `GROUP BY` / `string_agg(...) FILTER` rollups.
+  Sharpest single instance: `search(kind='ref', …)` fails, and the agent's
+  very next call is `SELECT kind, count(*) FROM refs GROUP BY kind`.
+- **#3 structural/graph-shape filters — NOT supported by this window.** The
+  status/tag-join queries found are counts-and-facets shaped; nothing
+  resembling "hubs with zero evidence edges" appeared. May still be real —
+  do not re-cite it as confirmed off this pass.
+- **#4 exhaustive cohort enumeration — CONFIRMED.** `table:chunks` n=38 / 8
+  sessions plus `WHERE ref_id IN (…)` batch-existence checks.
+- **#5 corpus-health view — CONFIRMED and WIDER than written.** This
+  window's version is *fleet/ops* health, not the taproot corpus: one
+  doctor-tick session family reconstructed "is the fleet healthy" through
+  ~120 ad-hoc SELECTs (heartbeat staleness, `lease_until`, `child-failed*`
+  and `alert-state:*` counts). The item should cover an ops-health view too.
+- **#6 post-write verification — not evidenced either way this window.**
+
+**A seventh gap the list misses: schema/structure discoverability.**
+`information_schema.columns` n=64 / 21 sessions + `information_schema.tables`
+n=32 / 16 sessions = 96 calls, plus a ~79-call PCB-table long tail, agents
+independently re-deriving the same table shapes. Cause is concrete and cheap:
+`docs/reference/schema.md` says `Source: precis_prod @ 2026-07-05` — ~12
+weeks stale — is missing `pcb_drc_findings` / `pcb_routes` / `pcb_copper` /
+`pcb_local_footprints` entirely, and lists `part_footprints` with 9 columns
+where prod has 11. And `grep -rn "schema.md" src/precis/data/skills/` returns
+**zero** — nothing in the runtime surface points an agent at the doc before
+it reaches for psql. This is orthogonal to #1–#6: those are about querying
+*content*, this is about discovering *shape*. Fix: regenerate
+(`scripts/gen-schema`), add a skill `answers:` line pointing at it, and for
+prod agents with no checkout consider `get(kind='schema', id='<table>')`.
+
+**An eighth: no batch form on singleton verbs.** Measured across the window:
+**1,608 of 2,770 resolvable verb+kind calls (58%) sit inside a run of ≥4
+consecutive identical-shape singleton calls**, over 52 of 99 sessions. Split
+out into its own item — `singleton-id-no-batch-form.md` — with the ranked
+`(verb, kind)` table and the `_coerce_id` crash it also uncovered.
+
+**Instrumentation blocker for the next pass.** The biggest number this pass
+produced is an *extrapolation*, not a measurement: fleet `get(kind='gripe')`
+is 27,680 calls, but `tool_calls` carries no payload, so fleet byte volume
+was estimated by applying the local mean (4,716 B, n=645) — ≈130 MB / ≈33M
+tokens over 5 days. Adding a `result_bytes` INT to the ledger write path
+(`runtime/dispatch.py::dispatch_with_status`) would make this directly
+measurable without retaining any payload — a length is not content.
+
+**`result_bytes` alone is not enough** (Reto asked; answering here so the next
+pass doesn't re-derive it). Three columns, none retaining payload:
+
+- `result_bytes INT` — the volume question.
+- `result_count INT` — **already declared in migration 0133 as "reserved:
+  populated once Response carries a structured hit count" and still NULL.**
+  Without it you cannot separate one huge render from a hundred small hits,
+  which is exactly the render-diet-vs-pagination distinction.
+- **A correlation key that is actually set.** `agentlog_id` exists but is
+  populated on 25 of 83,721 rows (0.03%) and `source` is NULL throughout, so
+  the ledger cannot group a burst of calls into one agent's run. This is an
+  instrumentation bug, not a schema change, and it is the highest-leverage of
+  the three: it is why the 58%-singleton-runs measurement had to come from
+  local transcripts instead of the fleet-wide ledger.
+
+**2026-09-29: the seventh gap's doc half is fixed.** `scripts/gen-schema` was
+*broken*, not merely unrun — `information_schema`'s `_pg_expandarray` blew the
+server statement_timeout, and `PGOPTIONS` cannot fix it because pgbouncer
+rejects unproxied startup parameters; it needs `SET LOCAL` inside an explicit
+transaction. Fixed, and `docs/reference/schema.md` regenerated: 58 → 130
+tables, 65 → 186 FKs, snapshot now current. The skill pointer is in
+`precis-status-help`. What remains of that gap is the prod-agent case (no
+checkout ⇒ no doc), i.e. `get(kind='schema', id='<table>')`.
 
 ### Gaps, most valuable first
 
