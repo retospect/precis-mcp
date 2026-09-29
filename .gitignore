@@ -161,3 +161,6 @@ docs/codebase-map.md
 
 # Stray render dropped in the repo root by a hexfold session — scratch, not source.
 /hexfold-*.png
+
+# Throwaway scratch copies of source modules (agent before/after probes).
+.scratch_*
