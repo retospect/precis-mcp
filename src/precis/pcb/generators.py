@@ -85,6 +85,24 @@ change to the copper is invisible to boards already authored. Prod board
 after the removal deployed — that is what the bump fixes, and why any
 future edit to what this generator emits takes a bump with it.
 
+**Version 3 (2026-09-29) — sinks are placed, not pinned.** Every sink
+instance used to carry ``fixed='both'``, so the placer could not move it
+and the emitted centroid pose was final. On ``pb345846`` that centroid put
+``ARR1_SINK_0``'s solder lands directly on the array's own authored plaza
+vias — an invalid placement that no pass was permitted to repair, and
+whose 14 ``via_pad_keepout`` errors were all knowable before the router
+started. Reto's ruling: placement is the placer's job, and a lock is the
+exception for a part whose pose is a MECHANICAL constraint (nuts, screw
+holes, alignment pins, connectors). Sinks now emit no lock by default;
+:attr:`_SinkGrid.fixed` restores one per call. The centroid survives as
+the annealer's SEED, so the escape-locality argument still shapes the
+starting point — it just no longer overrides the search.
+
+The ARRAY instance keeps ``fixed='both'``, and that asymmetry is
+deliberate: its authored plaza copper is emitted into ``pcb_fixed_copper``
+in the same absolute frame and stored separately, so a placer move would
+desync instance from copper. A sink owns no authored copper.
+
 **Round 8 (gripe 338983 fixed), and what pcb-pre-place-route-blocks Slice 2
 closes on top of it.** The router/DRC pad source (``precis.pcb.realize.
 pads_for_ir``) used to place every pin at ``ir.py``'s SYNTHESIZED
@@ -344,7 +362,11 @@ class GeneratorExpansion:
     #: code change that emits different copper for identical params is
     #: invisible to every board already authored at the old version, forever.
     #: Version 2 (2026-09-29) dropped the B.Cu breakout row; version 1 boards
-    #: still carried it until this bump made them regenerate.
+    #: still carried it until this bump made them regenerate. Version 3
+    #: (2026-09-29) stopped emitting ``fixed='both'`` on sink instances, so
+    #: the placer owns a sink's position unless ``sink_grid.fixed`` says
+    #: otherwise; version 2 boards keep their locked sinks until they
+    #: regenerate.
     version: int
     #: JSON-safe, fully-defaulted params — what :mod:`precis.store._pcb_ops`
     #: diffs against the PREVIOUS apply's stored row to decide no-op vs.
@@ -1866,6 +1888,15 @@ class _SinkGrid:
     top_plate_pin: str | None
     top_plate_net: str
     power: dict[str, str]
+    #: Optional placement lock for every sink this grid emits --
+    #: ``'xy'``, ``'rot'``, ``'both'``, or ``None`` (the DEFAULT: the
+    #: placer owns the position). Ruling 2026-09-29: placement is the
+    #: placer's job and a lock is the exception, reserved for a part
+    #: whose pose is a MECHANICAL constraint (a nut, a screw hole, an
+    #: alignment pin, a board-edge connector) rather than a routing
+    #: preference. A sink's emitted ``x``/``y`` -- the centroid of its
+    #: own share of electrodes -- is a seed either way.
+    fixed: str | None
 
 
 def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
@@ -1910,6 +1941,14 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
             "sink cannot serve more channels than the part has pins for"
         )
     top_plate_pin = cfg.get("top_plate_pin")
+    fixed = cfg.get("fixed")
+    if fixed is not None and str(fixed) not in ("xy", "rot", "both"):
+        raise ValueError(
+            f"ewod_pad_array: sink_grid.fixed must be one of 'xy', 'rot', "
+            f"'both' (or omitted, which lets the placer own the position) "
+            f"-- got {fixed!r}. An unknown value would be stored, accepted, "
+            "and silently read as 'not locked' by ir.py::from_graph"
+        )
     return _SinkGrid(
         part=str(part) if part else None,
         footprint=str(footprint) if footprint else None,
@@ -1921,6 +1960,7 @@ def _parse_sink_grid(params: dict[str, Any], name: str) -> _SinkGrid | None:
         top_plate_pin=str(top_plate_pin) if top_plate_pin else None,
         top_plate_net=str(cfg.get("top_plate_net") or f"{name}_top_plate"),
         power={str(k): str(v) for k, v in dict(cfg.get("power") or {}).items()},
+        fixed=str(fixed) if fixed else None,
     )
 
 
@@ -2412,13 +2452,31 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 "y": layout.cy(mean_r0),
                 "rot": 0.0,
                 "layer": "bottom",
-                # A sink's whole reason to exist is sitting directly under
-                # ITS OWN share of electrodes (the escape-locality
-                # argument the spec's own "regular grid of HV switches
-                # directly under the array" language makes) -- letting
-                # the placer move it would defeat that, same as the
-                # array's own `fixed='both'` above.
-                "fixed": "both",
+                # SEED, not a lock (Reto's ruling 2026-09-29: "placement
+                # should always be done with the placer. Sometimes we keep
+                # a thing fixed -- nuts, screw holes, alignment pins,
+                # connectors -- but most of it should move"). The centroid
+                # above still expresses the escape-locality argument the
+                # spec's own "regular grid of HV switches directly under
+                # the array" language makes, but as a STARTING POINT the
+                # annealer may leave, not a position it is forbidden to
+                # improve on. `fixed='both'` stood here until version 3
+                # and is what put `ARR1_SINK_0`'s solder lands on top of
+                # the array's own authored plaza vias on `pb345846`: a
+                # placement no pass was allowed to fix, whose 14
+                # `via_pad_keepout` errors were all knowable before the
+                # router started (docs/backlog/
+                # pcb-placement-must-be-valid-before-routing.md).
+                #
+                # A caller who genuinely needs the lock (a sink whose
+                # position is a mechanical constraint, not a routing
+                # preference) sets `sink_grid.fixed`. Unlike the array
+                # above -- which stays locked because its authored plaza
+                # copper is emitted into `pcb_fixed_copper` in the SAME
+                # absolute frame and stored separately, so moving the
+                # instance would desync the two -- a sink owns no
+                # authored copper and has nothing to desync.
+                **({"fixed": sink_cfg.fixed} if sink_cfg.fixed else {}),
                 "pins": pin_decls,
                 "roles": ["ewod_sink"],
                 # docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19"
@@ -2630,7 +2688,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     return GeneratorExpansion(
         refdes=name,
         generator="ewod_pad_array",
-        version=2,
+        version=3,
         canonical_params=canonical_params,
         components=[component, *sink_components],
         nets=nets,

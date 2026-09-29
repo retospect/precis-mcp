@@ -283,7 +283,7 @@ def test_via_span_is_f_cu_to_b_cu_and_is_the_only_b_cu_fixed_copper():
     assert exp.ledger["fabric"]["fan"] == "router"
 
 
-def test_expansion_version_is_2_so_v1_boards_regenerate_without_a_param_change():
+def test_expansion_version_is_3_so_older_boards_regenerate_without_a_param_change():
     """The B.Cu breakout removal changed the emitted copper for UNCHANGED
     params, and ``_pcb_apply`` decides no-op vs. retire-and-reinsert on
     ``(generator, version, canonical_params)`` alone -- it never diffs the
@@ -294,14 +294,96 @@ def test_expansion_version_is_2_so_v1_boards_regenerate_without_a_param_change()
 
     So this assertion is the tripwire: if a future edit changes what
     ``ewod_pad_array`` emits for the same params, it fails, and the
-    version must go up with the edit."""
+    version must go up with the edit.
+
+    **Version 3 widened what "emits" means, because version 2's tripwire
+    would not have caught version 3's own change.** v2 pinned copper rows
+    only; dropping ``fixed='both'`` from sink instances changed the
+    expansion's output and left all of v2's assertions green -- 48 passed,
+    this one line failed. An emitted INSTANCE is output too, and a
+    placement lock decides whether the placer may touch the part at all,
+    so the lock is pinned by the two tests below."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 2
+    assert exp.version == 3
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.
     assert len(necks) == len(vias)
     assert {t["layer"] for t in necks} == {"F.Cu"}
+
+
+def test_sinks_are_emitted_unlocked_so_the_placer_owns_their_position():
+    """Ruling 2026-09-29 (Reto): "placement should always be done with the
+    placer. Sometimes we keep a thing fixed -- nuts, screw holes,
+    alignment pins, connectors -- but most of it should move." A sink is
+    not one of those; its emitted pose is the centroid of its own
+    electrode share, which is a SEED.
+
+    Version 2 emitted ``fixed='both'`` here, and on prod board
+    ``pb345846`` that locked ``ARR1_SINK_0``'s solder lands on top of the
+    array's own authored plaza vias -- an invalid placement no pass was
+    permitted to repair. The ARRAY stays locked and that asymmetry is
+    asserted too: its authored plaza copper is emitted into
+    ``pcb_fixed_copper`` in the same absolute frame and stored
+    separately, so a placer move would desync instance from copper."""
+    params = {
+        "grid": [6, 6],
+        "sink_grid": {
+            "part": "C639448",
+            "channel_pins": [f"OUT{i}" for i in range(16)],
+        },
+    }
+    exp = G.expand("ewod_pad_array", "ARR", params)
+    by_refdes = {c["refdes"]: c for c in exp.components}
+
+    sinks = [c for r, c in by_refdes.items() if r.startswith("ARR_SINK_")]
+    assert sinks, "expected at least one sink instance"
+    for sink in sinks:
+        assert not sink.get("fixed"), (
+            f"{sink['refdes']} emitted fixed={sink.get('fixed')!r} -- the "
+            "placer must own a sink's position by default"
+        )
+        # The seed survives: still positioned, just not pinned.
+        assert sink["x"] is not None and sink["y"] is not None
+
+    assert by_refdes["ARR"]["fixed"] == "both"
+
+
+def test_sink_grid_fixed_restores_the_lock_for_a_mechanical_constraint():
+    """The opt-in half of the same ruling: a sink whose pose IS a
+    mechanical constraint can still be pinned, per call, without the
+    generator deciding it for every board."""
+    params = {
+        "grid": [6, 6],
+        "sink_grid": {
+            "part": "C639448",
+            "channel_pins": [f"OUT{i}" for i in range(16)],
+            "fixed": "both",
+        },
+    }
+    exp = G.expand("ewod_pad_array", "ARR", params)
+    sinks = [c for c in exp.components if c["refdes"].startswith("ARR_SINK_")]
+    assert sinks
+    assert all(s["fixed"] == "both" for s in sinks)
+
+
+def test_sink_grid_fixed_refuses_an_unknown_value_rather_than_storing_it():
+    """``ir.py::from_graph`` resolves the lock with
+    ``(inst.get("fixed") or "") in ("xy", "both")`` -- an unknown value is
+    not an error there, it reads as NOT LOCKED. So a typo would be
+    accepted, stored, and silently ignored, which is the same
+    unknown-key-falls-back shape ``validate_stackup`` already guards
+    against for ``routable``."""
+    params = {
+        "grid": [6, 6],
+        "sink_grid": {
+            "part": "C639448",
+            "channel_pins": [f"OUT{i}" for i in range(16)],
+            "fixed": "yx",
+        },
+    }
+    with pytest.raises(ValueError, match="sink_grid.fixed"):
+        G.expand("ewod_pad_array", "ARR", params)
 
 
 # ── 6. 9x9 ────────────────────────────────────────────────────────────────

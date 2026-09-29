@@ -120,9 +120,28 @@ exported gerbers bit-for-bit.
 
 `tenting: 'on'|'off'` (plaza vias, default `'on'` — no filled/capped
 vias either way), `corner_radius` (recorded, not drawn — fab's own
-corner rounding already does the job), `sink_grid` (accepted and
-stored for a future bottom-side switch-grid generator; no routing
-effect yet).
+corner rounding already does the job).
+
+### `sink_grid` — bottom-side driver instances
+
+Live, not a stub: it emits one bottom-side component per
+`channels_per_sink` usable electrode escapes, wires each channel pin to
+its electrode net, daisy-chains the sinks `DIN`->`DOUT`, and declares
+each instance's channel pins as one pin-swap group. Needs exactly one of
+`part` (an LCSC C-number) or `footprint` (a local footprint from this
+same `put()`'s `footprints` block) — the generator wires the sink, it
+never authors the sink's own geometry — plus `channel_pins`. Shares are
+balanced by chain order, not by spatial block (`per_tiles` is removed
+and refused by name).
+
+`fixed: 'xy'|'rot'|'both'` (default: **omitted — the placer owns the
+position**). Each sink is emitted at the centroid of its own share of
+electrodes, but that is a SEED the annealer may leave. Set `fixed` only
+when a sink's pose is a mechanical constraint rather than a routing
+preference — the same reason nuts, screw holes, alignment pins and
+board-edge connectors get pinned. Pinning a sink under the electrode
+array is what put one board's solder lands on top of its own authored
+plaza vias, so prefer the default.
 
 ## See also
 

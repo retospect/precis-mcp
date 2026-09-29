@@ -33,7 +33,12 @@ import pytest
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb import session as pcb_session
-from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM, CostConfig, evaluate_cost
+from precis.pcb.cost import (
+    COURTYARD_MIN_SEPARATION_MM,
+    CostConfig,
+    courtyard_overlap_pair_term,
+    evaluate_cost,
+)
 from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
 from precis.pcb.ir import (
     COURTYARD_CLEARANCE_MM,
@@ -1936,3 +1941,90 @@ def test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_congruent():
             ux, uy = rotate_offset(tx, ty, -delta)
             assert math.isclose(ux, lx, abs_tol=1e-6)
             assert math.isclose(uy, ly, abs_tol=1e-6)
+
+
+# ── board side: the substrate is between two opposite-side parts ─────────
+def _two_part_ir(*, second_layer: str):
+    """Two one-pin instances on a generous outline, U1 authored onto
+    ``second_layer``. Positions are set here, not seeded, so both arms of
+    every test below start from the IDENTICAL geometry."""
+    graph = {
+        "instances": [
+            {"refdes": "U0"},
+            {"refdes": "U1", "layer": second_layer},
+        ],
+        "nets": [
+            {
+                "name": "N0",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [
+                    {"refdes": "U0", "pin": "a"},
+                    {"refdes": "U1", "pin": "b"},
+                ],
+            }
+        ],
+    }
+    ir = from_graph(graph, stackup=DEFAULT_STACKUP)
+    ir.outline = [(-50.0, -50.0), (50.0, -50.0), (50.0, 50.0), (-50.0, 50.0)]
+    ir.inst_x[:] = [0.0, 0.0]
+    ir.inst_y[:] = [0.0, 0.0]
+    ir.inst_rot[:] = [0.0, 0.0]
+    return ir
+
+
+def test_a_bottom_part_may_sit_under_a_top_part_but_not_under_a_top_side_twin():
+    """A bottom-side part directly under a top-side one is the ordinary
+    double-sided assembly case -- the board is between them -- and it is
+    the rule ``drc.check_courtyard_overlap`` already applies.
+
+    The same-side arm is the discriminator, and is why this is not
+    vacuous: both arms place two parts at the SAME coordinate, so
+    ``inst_bottom`` is the only thing that can separate them.
+
+    Before 2026-09-29 ``_placement_is_legal`` read no side at all, so the
+    EWOD driver sink seeded under its electrode array had no legal
+    position anywhere beneath it: measured on ``ewod-dogfood-1``,
+    required separation 25.548mm (radii 11.898 + 13.650) against an
+    actual 0.093mm, and the placer moved it 0.0mm while six unlocked
+    neighbours moved up to 23mm. Unlocking the instance could not help --
+    the illegality was in the legality test, not in the lock."""
+    same = OptimizeEngine(_two_part_ir(second_layer="top"), OptimizeConfig(seed=3))
+    assert same._placement_is_legal([(1, 0.0, 0.0)]) is False
+
+    opposite = OptimizeEngine(
+        _two_part_ir(second_layer="bottom"), OptimizeConfig(seed=3)
+    )
+    assert opposite._placement_is_legal([(1, 0.0, 0.0)]) is True
+
+
+def test_opposite_side_instances_may_be_proposed_together_in_one_move():
+    """The proposal-against-proposal arm of the same rule. A SWAP moves
+    two parts at once and those are tested against each other in a
+    separate loop from the against-the-board pass, so a side-aware first
+    loop with a side-blind second one would reject exactly the swaps that
+    put a bottom part under a top one."""
+    engine = OptimizeEngine(_two_part_ir(second_layer="bottom"), OptimizeConfig(seed=3))
+    assert engine._placement_is_legal([(0, 5.0, 5.0), (1, 5.0, 5.0)]) is True
+
+    same = OptimizeEngine(_two_part_ir(second_layer="top"), OptimizeConfig(seed=3))
+    assert same._placement_is_legal([(0, 5.0, 5.0), (1, 5.0, 5.0)]) is False
+
+
+def test_courtyard_overlap_cost_agrees_with_legality_about_board_side():
+    """The graded term must not price what legality permits. A cost that
+    still punished an opposite-side pair would steer the annealer away
+    from the legal double-sided layout -- the same
+    one-rule-two-implementations drift this term's own docstring records
+    from the flat-2mm-circle era, one axis over."""
+    config = CostConfig()
+    same = courtyard_overlap_pair_term(
+        _two_part_ir(second_layer="top"), 0, 1, Level.L3, config
+    )
+    assert same.raw > 0.0
+
+    opposite = courtyard_overlap_pair_term(
+        _two_part_ir(second_layer="bottom"), 0, 1, Level.L3, config
+    )
+    assert opposite.raw == 0.0
+    assert opposite.is_bound is False

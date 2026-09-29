@@ -41,6 +41,50 @@ only non-instance obstacle today is mounting-hole circles
 between instances must carry N strands, so nothing in its cost function
 resists closing one to 0.093 mm.
 
+## ⚠ The motivating evidence traces to the sink-under-array root cause (2026-09-29)
+
+The `gap 0.093 mm between instances (0, 1, 7)` above is **not an
+independent finding**. Measured on the `ewod-dogfood-1` fixture:
+
+- IR indices `(0, 1, 7)` resolve to `ARR1`, `ARR1_SINK_0`, `U_TEMP`.
+- The ARR1↔ARR1_SINK_0 centre separation is **0.0932 mm** — the same
+  0.093 to three decimals.
+
+So the corridor is 0.093 mm wide because `ARR1_SINK_0` is placed on top of
+the electrode array, which `pcb-placement-must-be-valid-before-routing`
+already calls invalid and
+`pcb-placer-obstacle-set-is-mounting-holes-only` explains: the sink is
+born 25.46 mm inside the separation `_placement_is_legal` requires, so the
+placer cannot move it and the gap can never open.
+
+**This does NOT close this item.** Two things survive independently:
+
+1. The general claim — that the placer has no representation of "this
+   corridor must carry N strands" — is still true, and still unfixed by
+   the root-cause work. A legal placement can still starve a corridor.
+2. The reporting claim — that a gap admitting 0 strands should surface at
+   placement time rather than as four per-net routing failures — is
+   likewise untouched.
+
+**What it DOES invalidate is this item's regression fixture.** The
+acceptance criteria name "the EWOD dogfood's 0.093 mm / 55-net / 16.5 mm
+case" as the case to assert on. That case is a placement-validity bug
+wearing a corridor costume; pinning a corridor-capacity term to those
+numbers would pin it to a board that should never have existed. This item
+needs a fixture whose placement is LEGAL and whose corridor is still too
+narrow — otherwise fixing the root cause silently guts the test.
+
+**The root cause landed 2026-09-29**, so this is no longer a prediction:
+`_placement_is_legal` and the graded term are side-aware, and the sink
+now moves 10.05 mm off the array where it moved 0.0 mm before. Whatever
+the 0.093 mm gap becomes, it is not the number above, and the acceptance
+criteria below must be rewritten against a fixture built for them before
+this item is picked up.
+
+Same shape the campaign keeps finding, one level up: three items
+(`...via-geometry...`'s 14 errors, this corridor gap, and the placement
+item itself) all took their evidence from one invalid board.
+
 ## In scope
 
 1. **Make required corridor width a placement cost.** Given the nets that

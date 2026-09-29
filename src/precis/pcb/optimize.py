@@ -2381,6 +2381,20 @@ class OptimizeEngine:
         occupancy-grid router which is otherwise incapable of producing
         one.
 
+        **Two instances on OPPOSITE board sides never collide here.**
+        The board is between them, which is the ordinary double-sided
+        assembly case and the same rule ``drc.check_courtyard_overlap``
+        applies via its ``bottom_by_refdes`` map. Before 2026-09-29 this
+        test read no side at all, so a bottom-side driver seeded under a
+        top-side array was born 25.46mm inside the separation demanded of
+        it (measured on ``ewod-dogfood-1``; radii 11.898 + 13.650 against
+        an actual 0.093) and no generated move could ever be accepted --
+        it was not merely mis-costed, it was unplaceable by construction,
+        while DRC called the identical layout clean.
+
+        Mounting holes are exempt from that exemption: a hole goes
+        THROUGH the board, so it obstructs both sides.
+
         Placement move generators call this and return ``None`` rather
         than offering the annealer an illegal state. The graded
         ``courtyard_overlap`` cost term stays: it steers the search away
@@ -2390,6 +2404,7 @@ class OptimizeEngine:
         """
         ir = self.ir
         keepout = self._keepout_r
+        bottom = ir.inst_bottom
         moving = [inst for inst, _, _ in proposals]
         rotations = rotations or {}
         proposed_poly = {
@@ -2410,6 +2425,8 @@ class OptimizeEngine:
             # polygon of NaNs that no SAT axis can separate.
             near = np.nonzero(d2 < sep * sep)[0]
             for other in near:
+                if bottom[inst] != bottom[int(other)]:
+                    continue  # opposite sides -- the board is between them
                 if convex_polygons_overlap(
                     proposed_poly[inst], self._world_courtyard(int(other))
                 ):
@@ -2422,6 +2439,8 @@ class OptimizeEngine:
                 if convex_polygons_overlap(proposed_poly[inst], hole_poly):
                     return False
             for other, ox, oy in proposals[i + 1 :]:
+                if bottom[inst] != bottom[other]:
+                    continue  # opposite sides -- the board is between them
                 sep_ij = keepout[inst] + keepout[other]
                 if (x - ox) ** 2 + (y - oy) ** 2 >= sep_ij * sep_ij:
                     continue
@@ -2444,12 +2463,14 @@ class OptimizeEngine:
         that rotated by a different convention would reserve space where
         the part's own copper is not, and look entirely plausible doing it.
 
-        Mirroring is deliberately not modelled: ``PcbIR`` carries no
-        per-instance board side, so this engine has always been
-        side-agnostic (a circle was mirror-invariant, which is why the
-        question never came up). For an asymmetric part on the bottom side
+        Mirroring is deliberately not modelled. ``PcbIR`` does carry
+        ``inst_bottom`` (:meth:`_placement_is_legal` reads it to exempt
+        opposite-side pairs), but the courtyard polygon this places is
+        derived unmirrored, so for an asymmetric part on the bottom side
         the reserved area is its unmirrored twin — same extent, reflected.
-        Fixing that needs a side on the IR, not a change here."""
+        That matters only for a SAME-side pair involving a bottom part,
+        since opposite-side pairs no longer test against each other at
+        all."""
         ir = self.ir
         px = float(ir.inst_x[inst]) if x is None else x
         py = float(ir.inst_y[inst]) if y is None else y

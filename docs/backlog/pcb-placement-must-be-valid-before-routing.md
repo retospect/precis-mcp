@@ -65,6 +65,19 @@ another cost term.
 - Deciding where the sink *should* go. Whether `ARR1_SINK_0` belongs under
   the array is design data. Reto has said he wants it moved out; that is a
   design edit, and this item is only about refusing the invalid state.
+
+  **Resolved 2026-09-29, and it was not a board edit.** The sink's pose was
+  never authored by hand: `generators.py` emitted every sink at the centroid
+  of its own electrode share *and* hardcoded `fixed='both'`, locking the
+  placer out. Reto's ruling — "placement should always be done with the
+  placer; sometimes we keep a thing fixed (nuts, screw holes, alignment pins,
+  connectors) but most of it should move" — makes this a generator change,
+  shipped as expansion version 3 with `sink_grid.fixed` as the opt-in lock.
+  A board-level `op='move'` would have been the wrong instrument anyway: the
+  regenerate retires and reinserts the instance, so the unpin has to come
+  from the generator or it is erased. The ARRAY stays locked, because its
+  authored plaza copper lives in `pcb_fixed_copper` in the same absolute
+  frame and would desync if the instance moved.
 - Auto-repairing a bad placement. Refusing is the deliverable.
 - The via-geometry defects (`pcb-via-geometry-ignores-pad-side-and-pads`),
   which are about how vias are synthesized, not about whether placement
@@ -88,6 +101,13 @@ one way worth keeping: the gate's job is to make an invalid board
 
 ## Open questions / decisions log
 
+- **Generative cause now has its own item**, filed 2026-09-29:
+  `pcb-placer-obstacle-set-is-mounting-holes-only`. The placer's only
+  geometric obstacle is a mounting hole — authored `fixed_copper` is
+  invisible to `optimize.py`/`cost.py` entirely. Refusing an invalid
+  placement (this item) and giving the placer the force that would avoid
+  one (that item) are both wanted; a gate with no cost term refuses boards
+  it could have placed.
 - **OPEN — is "no via in a pad" checkable at placement time in general?**
   Authored fixed copper yes: its geometry exists before routing. Router
   vias do not exist yet, so for those this gate can only check that the

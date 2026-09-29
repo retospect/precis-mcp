@@ -1107,6 +1107,24 @@ def courtyard_overlap_pair_term(
     refdes_a = str(ir.instance_refdes[ia])
     refdes_b = str(ir.instance_refdes[ib])
     region = f"{refdes_a}~{refdes_b}"
+    if bool(ir.inst_bottom[ia]) != bool(ir.inst_bottom[ib]):
+        # Opposite sides of the board: the substrate is between them, so
+        # intersecting courtyards are not a collision. The SAME rule
+        # ``drc.check_courtyard_overlap`` applies through its
+        # ``bottom_by_refdes`` map -- two passes named
+        # ``courtyard_overlap`` disagreeing about whether a side exists is
+        # how a bottom-side driver under a top-side array became
+        # unplaceable while DRC called the identical layout clean.
+        # Exact, not a bound: no placement choice can make this nonzero,
+        # so unlike the pre-L3 case below there is nothing undetermined.
+        return TermValue(
+            "courtyard_overlap",
+            Family.MARGIN,
+            region,
+            0.0,
+            _COURTYARD_JUSTIFICATION,
+            is_bound=False,
+        )
     if level < Level.L3:
         return TermValue(
             "courtyard_overlap",

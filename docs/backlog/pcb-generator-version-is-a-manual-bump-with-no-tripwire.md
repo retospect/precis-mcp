@@ -42,6 +42,13 @@ test in `tests/test_pcb_ewod_fabric.py` that fails if the emitted shape
 changes while the version does not. That test is generator-specific and
 hand-written. The general hole is open.
 
+**Second bump, 2026-09-29 — the contract held, by hand.** Version 2 -> 3
+dropped `fixed='both'` from sink instances (Reto's placer ruling). The
+bump was remembered because this item had just been written; nothing in
+the type, the store or the gate would have caught forgetting it. That is
+one datapoint for "manual works when the author happens to be looking at
+the item about it", which is not a mechanism.
+
 ## What is actually wrong
 
 1. **The bump is manual and the failure is silent.** Nothing in the type,
