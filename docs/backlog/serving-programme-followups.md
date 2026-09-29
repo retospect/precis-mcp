@@ -11,12 +11,11 @@ Resume pointer for the work that came out of the 2026-09-29 design session
 only carries the **order** and the **cross-item constraints**, which live in
 no single item.
 
-Landed: `911c88d9` (nine backlog items), `0ed8c933` (the load-test harness +
-its finding), `644acf08` (the residual note); `911c88d9` and `0ed8c933`
-passed a full 23,732-test suite inside tree `f8f884d1`. **Deployed but
-ungated** — fleet verified 2026-09-29 20:58 UTC (venv `direct_url.json` on
-melchior + castor): prod runs `2c5b28d6`; everything since `f8f884d1` is owed
-a settle-up `/go`.
+Landed: the nine backlog items, the load-test harness + its finding, and
+the residual note; the first two passed a full 23,732-test suite inside a
+green gate on the then-current main. **Deployed but ungated** — fleet
+verified 2026-09-29 20:58 UTC (venv `direct_url.json` on melchior + castor);
+everything landed since that green gate is owed a settle-up `/go`.
 
 **The finding that changes design** (`mcp-concurrency-load-test.md`
 `## MEASURED 2026-09-29`): one `precis serve` process serves ~28 MCP calls/s

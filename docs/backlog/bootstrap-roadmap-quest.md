@@ -270,8 +270,7 @@ downward) for a rung whose product leaves the lab despite being consumed.
 
 ## Residuals after the 2026-09-29 build (items 1–6 built, skills not)
 
-Items 1, 2, 3, 4, 5, 6 are BUILT (commits `2d6aab0a`, `1a4cb076`, `4adfe448`,
-`97f93c6b`). Item 7 (skills) is not. Remaining known gaps:
+Items 1, 2, 3, 4, 5, 6 are BUILT (four commits; blame carries them). Item 7 (skills) is not. Remaining known gaps:
 
 1. **`meta.rung.benign = "required"` cannot be stored.** The "Terminal vs
    intermediate rungs" section specifies it as an upward-only override, but
@@ -305,10 +304,10 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (commits `2d6aab0a`, `1a4cb076`, `4adfe448`,
 
 ## Resume (2026-09-29)
 
-State: the build shipped to main as `ad7dc208` (ungated `/qland`). Items 1-6
+State: the build shipped to main (ungated `/qland`). Items 1-6
 above are on main; 406 targeted tests passed pre-ship. Main itself is
 ungated. Fleet verified 2026-09-29 20:58 UTC (venv `direct_url.json` on
-melchior + castor): prod runs `2c5b28d6`, so `ad7dc208` IS deployed — ungated;
+melchior + castor): prod carries the build — deployed, ungated;
 step 3 below is the first gate it gets.
 
 Ordered:

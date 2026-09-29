@@ -372,13 +372,13 @@ already-correct boundary rule misses for the same reason as 3a (`2D` — digit
 
 ## Resume (2026-09-29)
 
-State: main holds `bfc0c03c` (blocker 1 fix) and `8e037c01` (blocker 2 prompt
-rewrite). `bfc0c03c` has a real full-suite verdict — it was inside the green
-gate at `f8f884d1` (23732 passed / 77 skipped / 6 xfailed). `8e037c01` has no
-gate verdict: it qlanded, green locally with 178 taxonomy tests + mypy clean,
+State: main holds the blocker 1 fix (dimension from the observed unit) and
+the blocker 2 prompt rewrite. The blocker 1 fix has a real full-suite
+verdict — it was inside a green gate (23732 passed / 77 skipped / 6 xfailed).
+The prompt rewrite has no gate verdict: it qlanded, green locally with 178 taxonomy tests + mypy clean,
 which is not a gate result. Fleet verified 2026-09-29 20:58 UTC (venv
-`direct_url.json` on melchior + castor): prod runs `2c5b28d6`, so `8e037c01`
-IS deployed — ungated, which is the open risk.
+`direct_url.json` on melchior + castor): prod carries the prompt rewrite —
+deployed, ungated, which is the open risk.
 
 Detail on all of the following is in "First discovery probe — 2026-09-29"
 above; this section is only the order.

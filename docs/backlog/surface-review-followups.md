@@ -15,14 +15,14 @@ The miner itself: `scripts/mine-sessions/README.md`.
 
 ## Done, landed
 
-`4a19ef6e2` — `scripts/mine-sessions/` (committed extractor + 12 detectors +
+Landed: `scripts/mine-sessions/` (committed extractor + 12 detectors +
 evidence cards + scoreboard), the `/surface-review` command + runbook +
 14-day cadence script, three doc-staleness fixes, and the `gen-schema`
 statement_timeout fix with `docs/reference/schema.md` regenerated 58→130
-tables. `b34e56f32` — `policy-gates-must-fail-distinguishably`.
+tables. Also landed: `policy-gates-must-fail-distinguishably`.
 
 **Deployed, ungated.** Fleet verified 2026-09-29 20:58 UTC (venv
-`direct_url.json` on melchior + castor): prod runs `2c5b28d6`, so the schema
+`direct_url.json` on melchior + castor): prod carries both landings, so the schema
 regen and the two changed product skills (`precis-fisheye-help`,
 `precis-status-help`) are live. Still unvalidated: both shipped via `/qland`,
 no gate ran.
