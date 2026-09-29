@@ -384,6 +384,65 @@ reason — read the code as authoritative where they disagree.
   one spacing away and each site has three — a property the tests check
   rather than a formula taken on trust.
 
+### Slice 1 dogfood, 2026-09-29 (naive agent, MCP surface, throwaway DB)
+
+A naive opus agent with only the `precis` tool and no repo access built a
+hairpin and a 4-helix square-lattice tile, then broke each deliberately
+(loop cut to 1 nt; one crossover moved 1 bp). Both breaks were caught with
+exactly one new error on exactly the changed element. **Zero call-shape
+failures across 31 calls** — every op was accepted first try from the skill
+alone, including the nested `register`/`path`/`overrides` dicts, so the
+slice-1 skill is doing its job. Derived pairing, the `(n+1)·c` contour
+arithmetic and `chain_pairing_geometry` over a G·A mismatch all behaved.
+
+- **The antipodal azimuth is load-bearing on the register rule, which
+  strengthens the case for fixing it first.** The agent reverse-engineered
+  the model from the error text alone and got "the two backbones modelled
+  2.0 nm apart, diametrically opposite, 33.75°/bp" — i.e. it read
+  `STRAND_AZIMUTH_RAD` straight out of the reported gaps. A 0-nt crossover
+  is then only reachable at a 180° phase. So the azimuth fix does not just
+  move a groove width; it moves **which offsets are register-correct**, and
+  therefore every crossover position in every design authored before it.
+  One more reason it precedes `relax_chain` and any stored `loop_curve`.
+- **But its "stricter than caDNAno" claim is confounded — do not act on
+  that number.** The report says caDNAno's square lattice permits crossovers
+  every 8 bp where this tool permits two positions in 32, and calls the model
+  4× too strict. On the square lattice the 8-bp spacing *cycles through the
+  four neighbours*; for one given neighbour pair a crossover recurs about
+  every 32 bp, which is close to the two positions the tool reported. The
+  agent flagged it as unverified itself ("I have not verified which is
+  right"). Left open deliberately: the azimuth fix rests on the groove-width
+  contradiction with `se-nucleic-realize-export`'s 12/22 Å criterion, which
+  is decisive on its own, **not** on this comparison. Reconcile the register
+  model against caDNAno properly as part of that fix, counting per-neighbour.
+- **Slice 2 additions from the dogfood** (each cheap, each a real mistake the
+  tool let through or made awkward):
+  - **No `set_domain` op.** Moving one crossover by 1 bp took `clear_chain` +
+    `declare_strand` + re-adding every domain on three strands, 11 ops for a
+    one-base-pair edit, because `remove_domain` is human-Apply gated. Add a
+    pure `set_domain(strand, ord, …)` that edits one domain in place.
+  - `chain_pairing_geometry`'s message prints the coded occupancy as an **RNA
+    alphabet** (`A·U, C·G, G·C, G·U, U·A, U·G`) to a DNA designer. `T·A` does
+    pass — the T/U folding works — but the text reads as if it would not.
+  - `view='chain'`'s `segments` column before `layout_chain` shows the default
+    `max_seg_len` (a 4-unit helix read `1 × 21 units`), not the tiling it will
+    get. Show the prospective tiling or say "not laid out".
+  - The **register rule is documented nowhere**: `chain_loop_short` is
+    described as the crossover register check at n=0, but nothing says which
+    offsets are register-correct for a lattice and pitch. It cost the agent a
+    full tile rebuild, and it was only recoverable because the finding reports
+    the gap in nm rather than just "off register" — keep that number.
+- **Two blockers for an orderable design, now their own items:**
+  `docs/backlog/se-chain-insertions-deletions.md` (the refused
+  `register.insertions`/`deletions` hook — real sheets need the twist
+  correction) and `docs/backlog/se-chain-staple-sequences.md` (no
+  complementarity fill, so the strands you would paste into an order form
+  cannot be produced; carries the missing `chain_sequence_length` check,
+  which currently lets a 17-nt sequence sit on a 9-nt route silently).
+- Undocumented but working, worth folding into the skill: `text=` accepts a
+  native dict, not only a JSON string, and `layout_chain` rides inside a
+  `put` ops list as well as `edit`.
+
 ### Slice 1 follow-ups found while writing the skill (2026-09-29)
 
 - **The slice-1 skill is written and landed** (`precis-se-chain-help.md`, plus
