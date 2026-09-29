@@ -126,6 +126,15 @@ tunable.
 
 ### Still owed
 
+* **The harness has no tests of its own.** `scripts/mcp_loadtest/` sits
+  outside mypy's `src tests` scope and no gate exercises it, so it passed
+  ruff and nothing else. It is inert on the cluster — a standalone script,
+  imported by nothing in `src/`, run only when invoked — so the exposure is
+  bit-rot, not risk: `pct()`, `tool_error()`, `CpuMeter.read()` and
+  `verdict()` are pure functions that a handful of unit tests would pin
+  cheaply, and the verdict thresholds in particular are the part most likely
+  to drift into being wrong without anyone noticing.
+
 * **Which work holds the GIL.** The measurement says ~1.17 cores of Python
   bytecode; it does not say whether that is JSON serialisation, search
   scoring, embedding, or the FastMCP layer. A `py-spy` profile at N=32 names
