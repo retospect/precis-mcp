@@ -387,6 +387,22 @@ def normalise(
 ) -> tuple[tuple[TermNode, ...], tuple[MergeSuggestion, ...]]:
     """Group stage-2 rows into candidate nodes, with merge suggestions.
 
+    **Dimension comes from the mention's observed ``raw_unit``, not from
+    stage 2's ``dimension_text``.** ``resolve_dimension`` parses its argument
+    with pint, and the model answers the dimension question in prose —
+    ``"potential"``, ``"mass per time per area"``, ``"current per geometric
+    electrode area"`` — none of which pint can parse. The first real discovery
+    run (100 hubs, 2026-09-29) resolved **5 dimensions across 182 nodes** for
+    exactly this reason, which left every node failing the promotion gate.
+    The unit in the corpus text is both parseable and better evidence than a
+    model's description of it, and `_units_seen` already reads it, so the node
+    was carrying the right answer and grouping on the wrong one.
+    ``dimension_text`` is kept on the row for audit — it is how that bug was
+    diagnosed — and is deliberately not parsed here. A row whose mention has
+    no unit resolves to ``None`` and escalates via ``_annotate_mismatches``,
+    which is the honest outcome: the alternative is letting the model invent a
+    dimension for a bare number.
+
     Grouping key is the full compare identity: ``(alias_key(measurand),
     dimension, reference_state, convention, normalisation_basis)`` —
     ``TermNode.identity()`` minus the alphabetical-vs-canonical distinction
@@ -407,7 +423,11 @@ def normalise(
     GroupKey = tuple[str, DimensionSpec | None, str | None, str | None, str | None]
     groups: dict[GroupKey, list[DiscoveredTerm]] = defaultdict(list)
     for term in terms:
-        dimension = resolve_dimension(term.dimension_text, registry, config)
+        # The OBSERVED unit, never the model's prose. See the docstring: the
+        # first real run resolved 5 dimensions out of 182 nodes because this
+        # passed `dimension_text`, which `resolve_dimension` then tried to
+        # parse with pint.
+        dimension = resolve_dimension(term.mention.raw_unit, registry, config)
         key = alias_key(term.measurand)
         groups[
             (

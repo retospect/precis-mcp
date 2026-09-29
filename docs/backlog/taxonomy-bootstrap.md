@@ -220,6 +220,93 @@ stages 1–5 write files under the campaign scratch dir). Reads prod hubs
 read-only via `scripts/prod-psql`. No change to `measures`, findings, or the
 worker. Touches `deploy/` only if the static element table needs packaging.
 
+## First discovery probe — 2026-09-29, 100 rows / 66 paid calls
+
+`precis taxonomy-bootstrap --stage all --limit 100` on `norr-her-meta`
+(snapshot v2 `ec77e84f`, salt default). 270 mentions, 204 value, 204 discovered
+rows, **0 warnings**, 182 nodes, 0 systematic, stability 0.046, 36m29s wall.
+Stage dumps under the scratch `norr-her-meta/taxonomy/`.
+
+**What the probe proved works.** One row per value mention, 204/204, no
+invented indices and no malformed JSON across 66 calls — the stage-2 index and
+JSON contracts hold on real output. The qualifier fields are genuinely
+answered, not left null: `required_conditions` 136/204, `normalisation_basis`
+93, `convention` 90, `reference_state` 77.
+
+**Blocker 1 — dimension wiring (a bug, not a tuning problem).** `normalise`
+passes the model's prose `dimension_text` into `resolve_dimension`, whose
+parameter is `raw_unit` and which parses with pint. The model returns physical
+*quantity names* (`potential`, `mass per time per area`, `current per geometric
+electrode area`), which pint cannot parse, so **5 of 182 nodes resolved a
+dimension** and 177 rejections read `no dimension resolved`. The mention's own
+stage-1 unit (`V`, `%`, `mA cm^-2`; 163/204 = 80% coverage) is present on the
+term and unused. Dimension is a hard promotion gate and part of compare
+identity, so nothing can promote until this is fixed. **Fix: resolve from
+`term.mention.raw_unit` — the observed unit in the corpus — and demote
+`dimension_text` to a cross-check.** The 159 green tests missed it because
+every fixture sets `dimension_text="V"` / `"1/s"`: the fixtures encoded the
+author's belief about the model's output rather than its output. A regression
+test must use real prose (`"potential"`).
+
+**Blocker 1 is FIXED (2026-09-29).** `normalise` resolves from
+`term.mention.raw_unit`; `dimension_text` stays on the row as audit data and is
+never parsed. Measured by replaying stage 3 over the probe's saved
+`discovered.jsonl` — free, no model calls — so the fix is validated against real
+model output and not only against fixtures: **dimensions resolved 5/182 -> 146/184**
+(109 si, 37 dimensionless), and **merge suggestions 0 -> 35**, because that gate
+requires comparable dimensions and was dark for the same root cause. Read the
+earlier "0 merge suggestions" line above as a symptom of blocker 1, not as
+evidence about vocabulary scatter. Two nodes reach `systematic` on 100 rows;
+do not over-read that, the paper and half thresholds cannot be exercised at
+this sample size. No prose-vs-unit cross-check was added: a real one needs the
+prose->dimension mapping that just failed.
+
+The fixtures were the root cause, so they carry the warning. `make_term`'s
+docstring now states that `raw_unit` feeds the dimension and that putting a
+unit token in `dimension_text` is the mistake that hid this bug from 159 green
+tests. 31 call sites moved to `raw_unit=`. Three regression tests: the probe's
+exact shape (prose `electrochemical potential` + `V` resolves), prose alone
+never inventing a dimension, and an over-merge guard (mass/time/area vs
+substance/time/area yield rates stay two nodes).
+
+**Blocker 2 — measurand granularity.** 166 distinct measurand strings over 204
+rows. Five spellings of Faradaic efficiency (`Faradaic efficiency for NH3
+production`, `NH3 Faradaic efficiency`, `Faradaic efficiency toward NH3`, …),
+five of NH3 yield rate, and some fold a condition or the normalisation basis
+into the name (`applied electrode potential at which the yield rate and
+Faradaic efficiency were measured`, `rate of NH3 production normalized to
+electrode area (yield)`). `alias_key` is lexical and cannot merge prose
+variants: **0 merge suggestions**. Only the terse `applied electrode potential`
+clustered (17). Fix is in `build_prompt`: demand a short canonical noun phrase,
+state that conditions/basis/reference belong in their own fields, and show the
+shape by example without naming candidate measurands.
+
+**Stability 0.046 is a real reading, not small-sample noise.** An earlier note
+in this session predicted the probe's number should be discounted for sample
+size. That was wrong: with 166 distinct strings over 204 rows almost no key
+appears in both halves, so the metric is correctly reporting a vocabulary that
+does not reproduce. Sample size makes it somewhat worse; the defect is the
+signal.
+
+**Blocker 3 — non-measurands promoted to measurands.** Miller indices
+(`(111)`, `surface orientation`), composition subscripts, and a `compositional
+index X labeling the PtBi-Co alloy nanoplate sample` arrive as measurands.
+These are subject/facet labels. Stage 1's boundary rule cannot catch a bare
+`(111)` — nothing precedes the digit. Needs either a stage-1 facet pattern or
+a stage-2 instruction to return no row for a label.
+
+**Cost fact that gates the full run.** 33.2 s per call (66 calls / 2189 s), of
+which 2032 s is *user CPU* — the time is burned locally, not waiting on a
+remote API, which suggests a subprocess transport rather than an API call.
+`discover` is a plain sequential `for` loop, so the full 1231 calls extrapolate
+to **11.3 hours**. Even with blockers 1-3 fixed the full run needs concurrency;
+confirm the transport first.
+
+**Order to fix:** blocker 1 (one call site + an honest fixture), then the
+prompt for 2 and 3, then re-probe the same 100 rows — the default salt is
+derived from campaign + snapshot sha, so the A/B split and the row slice are
+identical and the comparison is like-for-like. Decide concurrency last.
+
 ## Open questions / decisions log
 
 - **[decided 2026-09-28]** Sign off thresholds and procedure, never the
