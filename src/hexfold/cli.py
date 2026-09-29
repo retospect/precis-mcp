@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from .options import Wish, options
 from .report import ParseError, Profile, Severity
 from .stick import stick
 
+_MEASURE_RE = re.compile(r"^tube\(\s*(\d+)\s*,\s*(\d+)\s*\)$")
+
 
 def _read(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
@@ -25,6 +28,72 @@ def _read(path: str) -> str:
 
 def _profile(strict: bool) -> Profile:
     return Profile.STRICT if strict else Profile.DEFAULT
+
+
+def _catalogue_cmd(args: argparse.Namespace) -> int:
+    """``hexfold catalogue`` (SPEC §26, slice 6): list -- and optionally
+    measure into -- an environment catalogue.  ``file`` is a JSON dump
+    (:meth:`hexfold.catalogue.MemoryStore.to_json`), loaded if it exists
+    and written back after a ``--measure``; with no ``file`` the store is
+    seed rows only, in memory for this run."""
+    from .catalogue import (
+        BulkCell,
+        CatalogueError,
+        EdgeMotif,
+        MemoryStore,
+        measure_environment,
+    )
+
+    if args.file:
+        try:
+            store = MemoryStore.from_json(_read(args.file))
+        except FileNotFoundError:
+            store = MemoryStore.seeded()
+        except OSError as e:
+            # a real I/O error on an *existing* file (permissions, a
+            # transient mount issue): must not fall back to seed rows --
+            # a subsequent --measure write would silently overwrite
+            # whatever the file actually held with seed-only data.
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        except CatalogueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    else:
+        store = MemoryStore.seeded()
+
+    if args.measure:
+        m = _MEASURE_RE.match(args.measure.strip())
+        if m is None:
+            print(
+                f"error: cannot parse --measure {args.measure!r}; want 'tube(n,m)'",
+                file=sys.stderr,
+            )
+            return 2
+        nm = (int(m[1]), int(m[2]))
+        try:
+            edge, bulk = measure_environment(nm, rung=args.rung)
+        except CatalogueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        store.put(edge, force=args.force)
+        store.put(bulk, force=args.force)
+        if args.file:
+            Path(args.file).write_text(store.to_json(), encoding="utf-8")
+
+    if args.json:
+        print(store.to_json())
+        return 0
+    for row in store.rows():
+        k = row.key
+        kind = "edge" if isinstance(row, EdgeMotif) else "bulk" if isinstance(row, BulkCell) else "seam"
+        ident = k.rim_type if k.rim_type is not None else (k.kind or "")
+        n_disp = k.N if k.N is not None else "*"
+        print(
+            f"{k.zone:5} {kind:4} rung={k.rung:6} {ident:2} "
+            f"N={n_disp} source={row.source}"
+        )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,7 +141,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--band-A", dest="band_a", type=float, help="len only")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser(
+        "catalogue",
+        help="environment-keyed seam/bulk motifs -- list, or measure one in (SPEC §26)",
+    )
+    p.add_argument(
+        "file", nargs="?", help="catalogue JSON dump to load/save (default: seed rows)"
+    )
+    p.add_argument("--measure", help="measure one environment, e.g. 'tube(8,0)'")
+    p.add_argument("--rung", default="stick", choices=["stick", "geo"])
+    p.add_argument("--force", action="store_true", help="overwrite an existing row")
+    p.add_argument("--json", action="store_true")
+
     args = ap.parse_args(argv)
+    if args.cmd == "catalogue":
+        return _catalogue_cmd(args)
     try:
         text = _read(args.file)
     except OSError as e:

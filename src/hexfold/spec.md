@@ -69,6 +69,7 @@ layer the design was authored in; everything below is regenerated (§23).
 | seams k ≥ 3, registry closure, fit families, sectioned file | `[spec 0.2]` | `hexfold` |
 | symbolic chain solver | `[impl 0.2]` | `hexfold.chain` (integer, stdlib only; stub geometry backend) |
 | block joiner over resolved blocks | `[impl 0.2]` | `hexfold.join` (stick rung; the se op is `precis_se/atomic/join.py`) |
+| environment catalogue (edge/bulk motifs, measurement) | `[impl 0.2]` | `hexfold.catalogue` (hexfold-only, `MemoryStore`; DB-backed `CatalogueStore` is `precis_se/atomic/catalogue.py`, slice 2) |
 | smooth layer | `[design]` | `precis_surface` (kernel) + `hexfold.smooth` (carbon binding, parse/emit) |
 | physics tiers | exists in precis | `precis.structure` ladder |
 

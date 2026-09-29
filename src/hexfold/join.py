@@ -27,9 +27,12 @@ import math
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .catalogue import CatalogueStore
 
 from .build import _FIT_CAP, Net, Port, _fuse_transform, _rank_fit, _seam_faces
 from .lattice import ideal_angle_deg
@@ -467,6 +470,9 @@ def compose(
     relax: Relaxer | None = None,
     prefix_a: str = "a",
     prefix_b: str = "b",
+    rung: str = "stick",
+    catalogue: CatalogueStore | None = None,
+    relaxer: str | None = None,
 ) -> Composite:
     """Rigidly place ``b`` onto ``a`` at ``pa``/``pb`` phase ``k``, bond
     the two rims exactly as a whole-spec ``fuse`` would, and re-relax only
@@ -490,7 +496,23 @@ def compose(
     the stick default) -- the two are measured on genuinely different
     relax physics (see :data:`LEAK_THRESH_GEO`'s own docstring), so a geo
     relax checked against stick's tighter numbers would spuriously fire
-    ``seam.leak`` on ordinary geo-rung noise."""
+    ``seam.leak`` on ordinary geo-rung noise.
+
+    ``rung``/``catalogue``/``relaxer`` (SPEC §26, ``hexfold.catalogue``,
+    slice 6) let a caller resolve the radius and threshold from a measured
+    ``EdgeMotif`` instead of the module tables: per side, an explicit
+    ``seam_radius``/``leak_thresholds`` entry still wins outright; failing
+    that, ``catalogue`` (when given) is queried via
+    ``hexfold.catalogue.resolve_edge``; failing that, the ``rung``-
+    appropriate table (:data:`_LEAK_THRESH` for ``"stick"``,
+    :data:`LEAK_THRESH_GEO` for ``"geo"``) or the mixed-rim default, same
+    as before ``catalogue`` existed.  ``compose`` never writes to
+    ``catalogue`` -- read-only by design (a warm-up fill is a separate,
+    explicit call to ``hexfold.catalogue.measure_environment``).
+    ``composite.seam`` gains ``"radius_source"`` (per side: ``"explicit"``,
+    the ``resolve_edge`` label, ``"table"``, or ``"default"``) and
+    ``"rung"``.  With no ``catalogue`` and ``rung="stick"`` (the defaults),
+    every number is unchanged from before this parameter existed."""
     n = len(pa.dangling)
     if len(pb.dangling) != n:
         return _empty_composite(
@@ -550,10 +572,46 @@ def compose(
         )
     )
 
-    def side_radius(side: str, rim_type: tuple[str, int] | None) -> int:
+    def resolve_side(
+        side: str, rim_type: tuple[str, int] | None, block_sigma: float
+    ) -> tuple[int, tuple[float, float], str]:
+        row = None
+        row_label: str = ""
+        # a mixed rim (rim_type is None) never consults the catalogue --
+        # no row is ever measured for one (module docstring), and it must
+        # still fall through to the seam.radius.unmeasured finding below,
+        # not silently absorb the wildcard row `catalogue.seed_rows` puts
+        # at rim_type=None for other lookups' sake.
+        if catalogue is not None and rim_type is not None:
+            from .catalogue import resolve_edge
+
+            row, row_label = resolve_edge(
+                catalogue, rim_type[0], rim_type[1], rung, relaxer, sigma=block_sigma
+            )
         if seam_radius and side in seam_radius:
-            return seam_radius[side]
-        if rim_type is None:
+            r = seam_radius[side]
+            label = "explicit"
+        elif row is not None:
+            r = row.seam_radius
+            label = row_label
+            if rim_type is not None:
+                table_val = SEAM_RADIUS.get(rim_type[0], _SEAM_RADIUS_DEFAULT)
+                if r < table_val:
+                    findings.append(
+                        Finding(
+                            "seam.radius.narrowed",
+                            Severity.INFO,
+                            f"{side}: catalogue row {label!r} narrows the seam "
+                            f"radius from the pinned {table_val} to {r}",
+                            data=(
+                                ("side", side),
+                                ("measured", r),
+                                ("pinned", table_val),
+                                ("source", label),
+                            ),
+                        )
+                    )
+        elif rim_type is None:
             findings.append(
                 Finding(
                     "seam.radius.unmeasured",
@@ -563,11 +621,21 @@ def compose(
                     data=(("side", side), ("radius", _SEAM_RADIUS_DEFAULT)),
                 )
             )
-            return _SEAM_RADIUS_DEFAULT
-        return SEAM_RADIUS.get(rim_type[0], _SEAM_RADIUS_DEFAULT)
+            r = _SEAM_RADIUS_DEFAULT
+            label = "default"
+        else:
+            r = SEAM_RADIUS.get(rim_type[0], _SEAM_RADIUS_DEFAULT)
+            label = "table"
+        if leak_thresholds is not None:
+            th = _thresh_for(rim_type, leak_thresholds)
+        elif row is not None:
+            th = row.leak_thresh
+        else:
+            th = _thresh_for(rim_type, LEAK_THRESH_GEO if rung == "geo" else _LEAK_THRESH)
+        return r, th, label
 
-    r_a = side_radius("a", ta)
-    r_b = side_radius("b", tb)
+    r_a, thresh_a, radius_source_a = resolve_side("a", ta, a.sigma)
+    r_b, thresh_b, radius_source_b = resolve_side("b", tb, b.sigma)
 
     adj_a = _adjacency(a.bonds)
     adj_b = _adjacency(b.bonds)
@@ -613,17 +681,14 @@ def compose(
             )
         )
 
-    relaxer = relax if relax is not None else _stick_relaxer(a.sigma)
+    relax_fn = relax if relax is not None else _stick_relaxer(a.sigma)
     sub_new = np.asarray(
-        relaxer(sub_elements, sub_coords, sub_bonds, sub_rings, sub_pinned),
+        relax_fn(sub_elements, sub_coords, sub_bonds, sub_rings, sub_pinned),
         dtype=np.float64,
     )
     new_coords = coords.copy()
     new_coords[np.array(seam_set, dtype=np.int64)] = sub_new
 
-    thresh_table = leak_thresholds if leak_thresholds is not None else _LEAK_THRESH
-    thresh_a = _thresh_for(ta, thresh_table)
-    thresh_b = _thresh_for(tb, thresh_table)
     leak_a = _leak_finding("a", a, pa, dist_a, r_a, new_coords[:n_a], thresh_a)
     if leak_a is not None:
         findings.append(leak_a)
@@ -659,6 +724,8 @@ def compose(
         },
         "rings": dict(sorted(census.items())),
         "radius": {"a": r_a, "b": r_b},
+        "radius_source": {"a": radius_source_a, "b": radius_source_b},
+        "rung": rung,
     }
 
     return Composite(

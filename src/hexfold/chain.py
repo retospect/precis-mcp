@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 from math import gcd
 from typing import Any, Protocol
 
+from . import __version__
 from .report import Finding, Severity
 
 Value = tuple[int, int]
@@ -248,6 +249,72 @@ class StubBackend:
             n, m = value
             return self.a_A * math.sqrt(n * n + n * m + m * m) / (2.0 * math.pi)
         return 0.0
+
+
+class _CatalogueRead(Protocol):
+    """The one method :class:`CachedBackend` needs from a
+    ``hexfold.catalogue.CatalogueStore`` -- restated here (not imported)
+    so this module stays numpy-free at import time; the real store type
+    and ``EnvKey`` are only touched lazily, inside the methods below, when
+    a caller actually asks a question (SPEC §26 "fill and read", (b))."""
+
+    def get(self, key: Any) -> Any: ...
+
+
+class CachedBackend:
+    """:class:`GeometryBackend` over a catalogue store: ``rim``/
+    ``catalogue`` (the roll-up domain) delegate straight to ``fallback``
+    (the solver's rim/catalogue questions are combinatorial, not
+    physical -- a measured row never changes them); ``pitch_A`` prefers a
+    measured ``BulkCell`` row when one exists for ``(kind, value)`` under
+    this backend's ``rung``/``relaxer``, falling back to ``fallback``
+    otherwise (the gap a measured row closes: the geo rung's rest length
+    1.52 A vs. sigma 1.42 A makes :class:`StubBackend`'s pitch ~7% short
+    on that rung).  ``fixed_length_A`` has no bulk-cell equivalent (a
+    tube's fixed length is always 0 in every backend so far) and always
+    delegates.
+
+    The constructor parameter is named ``catalogue`` (the store) even
+    though :class:`GeometryBackend.catalogue` is a *method* name (the
+    roll-up domain) -- no collision: the store lives under a private
+    attribute, so ``self.catalogue(kind)`` calls the method, never shadows
+    it with the constructor argument."""
+
+    def __init__(
+        self,
+        catalogue: _CatalogueRead,
+        fallback: GeometryBackend | None = None,
+        rung: str = "stick",
+        relaxer: str | None = None,
+    ) -> None:
+        self._store = catalogue
+        self._fallback: GeometryBackend = fallback if fallback is not None else StubBackend()
+        self._rung = rung
+        self._relaxer = relaxer
+
+    def catalogue(self, kind: str) -> tuple[Value, ...]:
+        return self._fallback.catalogue(kind)
+
+    def rim(self, kind: str, value: Value, port: str) -> Rim | None:
+        return self._fallback.rim(kind, value, port)
+
+    def pitch_A(self, kind: str, value: Value) -> float | None:
+        row = self._bulk_row(kind, value)
+        if row is not None:
+            return float(row.pitch_A)
+        return self._fallback.pitch_A(kind, value)
+
+    def fixed_length_A(self, kind: str, value: Value) -> float:
+        return self._fallback.fixed_length_A(kind, value)
+
+    def _bulk_row(self, kind: str, value: Value) -> Any:
+        if kind != "tube":
+            return None
+        from .catalogue import EnvKey  # lazy: keeps this module numpy-free at import
+
+        relaxer = self._relaxer if self._relaxer is not None else f"{self._rung}@{__version__}"
+        key = EnvKey(zone="bulk", kind=kind, nm=value, rung=self._rung, relaxer=relaxer)
+        return self._store.get(key)
 
 
 # ---------- results ----------
