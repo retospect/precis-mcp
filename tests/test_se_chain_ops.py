@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 import precis_se
@@ -23,7 +24,7 @@ from precis.store import Store
 from precis.utils.units import UnitRequiredError
 from precis_se import persist
 from precis_se.chain import nucleic
-from precis_se.chain.layout import helix_geometry, segment_ranges
+from precis_se.chain.layout import HelixGeometry, helix_geometry, segment_ranges
 from precis_se.chain.pairing import strand_length_nt, strand_letters
 from precis_se.chain.vocab import ChainError, DomainSpec, validate_chain
 from precis_se.handler import SeHandler
@@ -225,6 +226,62 @@ def test_helix_lengths_store_metres() -> None:
     assert geom.min_bend_radius_m == pytest.approx(12e-9)
     assert geom.min_gap_m == pytest.approx(0.6e-9)
     assert geom.min_bend_radius_m != nucleic.DEFAULT_MIN_BEND_RADIUS_M
+
+
+# ── _helix_path's lattice-site straight run ──────────────────────────────
+#
+# ``_helix_path``'s ``max(n_units - 1, 1) * motif.rise`` is private; pinned
+# here as a theorem over ``helix_geometry``'s PUBLIC unit origins instead
+# (module docstring's own contract): for n_units >= 2 the straight run is
+# exactly (n_units - 1) * rise and the last unit's origin lands exactly at
+# the path end; for n_units == 1 the run is one rise long as a dummy
+# extension (a path needs 2 samples for a tangent) with the single unit at
+# the path start and nothing placed on the extra rise.
+
+
+def _lattice_helix(n_units: int) -> HelixGeometry:
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "h"},
+            {
+                "op": "declare_helix",
+                "block": "h",
+                "n_units": n_units,
+                "lattice": "square",
+                "row": 0,
+                "col": 0,
+            },
+        ],
+    )
+    return helix_geometry(tree.blocks["h"])
+
+
+def test_unit_origins_are_exactly_one_rise_apart() -> None:
+    for n_units in (2, 5):
+        geom = _lattice_helix(n_units)
+        rise = geom.motif.rise
+        origins = geom.units.origins
+        assert len(origins) == n_units
+        for k in range(n_units - 1):
+            gap = float(np.linalg.norm(origins[k + 1] - origins[k]))
+            assert gap == pytest.approx(rise, rel=1e-9), (n_units, k, gap, rise)
+        span = float(np.linalg.norm(origins[-1] - origins[0]))
+        assert span == pytest.approx((n_units - 1) * rise, rel=1e-9)
+        # The straight run ends exactly ON the last unit's origin: no unit is
+        # placed past it, so a longer path would be a phantom extension that
+        # `sample_at` hides (the origins alone cannot see it).
+        assert float(geom.path.s[-1]) == pytest.approx((n_units - 1) * rise, rel=1e-9)
+
+
+def test_one_unit_helix_places_its_single_origin_at_the_path_start() -> None:
+    geom = _lattice_helix(1)
+    assert len(geom.units.origins) == 1
+    assert np.allclose(geom.units.origins[0], geom.path.points[0])
+    # One rise of dummy extension, and exactly one — a path needs two samples
+    # to have a tangent at all.
+    assert float(geom.path.s[-1]) == pytest.approx(geom.motif.rise, rel=1e-9)
 
 
 # ── vetting ─────────────────────────────────────────────────────────────
@@ -572,6 +629,14 @@ def test_topology_view_gains_the_domain_rows(handler: SeHandler) -> None:
     assert "[0:4)" in body
     assert "forward" in body and "reverse" in body
     assert "W-W-cis" in body
+    # The ``loop_before`` cell: the hairpin's first domain (ord 0) carries
+    # no loop_before_nt (there is no preceding exit to reach from) and
+    # renders "—"; its second domain declares ``loop_before_nt=4`` and
+    # renders "4 nt". ``is → is not`` on the None-check swaps which domain
+    # gets which cell — under the mutant the loopless domain 0 renders the
+    # bare "None nt" and the real 4-nt loop renders "—" instead.
+    assert "4 nt" in body
+    assert "None nt" not in body
 
 
 def test_chain_view_is_registered_and_takes_no_args(handler: SeHandler) -> None:

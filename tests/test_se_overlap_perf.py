@@ -27,6 +27,13 @@ import numpy as np
 from precis_se.ops import SeTree, apply_ops
 from precis_se.validate import _aabb_clear, envelope_overlaps, validate
 
+#: Two straight, free-path waypoints along +z, nanometre-scale — enough to
+#: place a small ``layout_chain`` helix without the free-path/lattice
+#: distinction mattering to any of the assertions below.
+_HELIX_WAYPOINTS = {
+    "path": {"waypoints": [["0 nm", "0 nm", "0 nm"], ["0 nm", "0 nm", "10 nm"]]}
+}
+
 
 def _spread_ops(n: int, *, pitch: float = 10.0) -> list[dict]:
     """``n`` unit boxes strung out along x, ``pitch`` apart — every pair's
@@ -547,3 +554,53 @@ def test_ancestor_skip_continue_does_not_stop_the_inner_loop() -> None:
     pairs = {frozenset((x, y)): gap for x, y, gap in overlaps}
     assert pairs.get(frozenset(("a", "b"))) == -0.5
     assert frozenset(("a", "a_child")) not in pairs
+
+
+# ---------------------------------------------------------------------------
+# The segment↔segment exemption's `and` (module docstring's "Segment↔segment
+# pairs are chain_clash's, wholesale") survives flipping to `or` with none of
+# the covering tests distinguishing them. The exemption must skip an SDF pair
+# ONLY when BOTH blocks are chain segments (the kernel's own capsule pass
+# owns those); under `or` a pair where only ONE side is a segment is also
+# wrongly skipped, discarding exactly the chain-vs-non-chain overlaps the
+# budget exists to serve.
+# ---------------------------------------------------------------------------
+
+
+def test_segment_vs_plain_block_overlap_still_surfaces() -> None:
+    """A laid-out helix's segment (``h.s0``) fully containing a plain,
+    non-chain sphere must still be reported — only a segment↔segment PAIR
+    is exempt. A second helix (``h2``) placed on the exact same centre line
+    gives a genuine segment↔segment pair (``h.s0``—``h2.s0``) in the SAME
+    design, which must stay skipped either way — pinning that half of the
+    condition too, not just the mutant's failure mode."""
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "h"},
+            {"op": "declare_helix", "block": "h", "n_units": 8, **_HELIX_WAYPOINTS},
+            {"op": "layout_chain", "block": "h"},
+            {
+                "op": "add_block",
+                "name": "x",
+                "envelope": "sphere:r1e-9",
+                "pose": [0.0, 0.0, 1e-9],
+            },
+            {"op": "add_block", "name": "h2"},
+            {"op": "declare_helix", "block": "h2", "n_units": 8, **_HELIX_WAYPOINTS},
+            {"op": "layout_chain", "block": "h2"},
+        ],
+    )
+
+    overlaps, cross_scale, unchecked = envelope_overlaps(tree, budget_s=None)
+
+    assert cross_scale == []
+    assert unchecked == []
+    pairs = {frozenset((a, b)) for a, b, _gap in overlaps}
+    # The segment<->non-chain pair: a real overlap the SDF budget must see.
+    assert frozenset(("h.s0", "x")) in pairs
+    assert frozenset(("h2.s0", "x")) in pairs
+    # The segment<->segment pair: exempt either way (the kernel's own
+    # capsule pass owns it), even though h and h2 coincide exactly.
+    assert frozenset(("h.s0", "h2.s0")) not in pairs

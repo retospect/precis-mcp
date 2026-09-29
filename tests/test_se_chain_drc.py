@@ -24,7 +24,13 @@ from precis_chain.register import commensurate
 from precis_se.chain import nucleic
 from precis_se.chain.drc import LOOP_SLACK_FRACTION, findings
 from precis_se.chain.layout import helix_geometry
-from precis_se.chain.pairing import PAIRED, derive_pairing
+from precis_se.chain.pairing import (
+    PAIRED,
+    SINGLE,
+    OffsetOccupancy,
+    Pairing,
+    derive_pairing,
+)
 from precis_se.ops import OpError, SeTree, apply_ops
 
 #: The square lattice's design twist per base pair — 3 turns / 32 bp, the
@@ -361,6 +367,48 @@ def test_twenty_nt_across_three_nm_is_slack() -> None:
     assert "chain_loop_short" not in _rules(tree)
 
 
+# ── single_runs — exact contiguous-run tuples, not just a count ─────────
+#
+# ``runs[-1][2] == occ.offset - 1`` (the contiguity test) and
+# ``runs[-1][0] == occ.helix`` (the same-helix guard) both survive
+# `- → +` / `== → !=` mutation with only a run-COUNT assertion in place —
+# two separated stretches could merge, or one stretch could split, and the
+# suite stays green. These pin the exact ``(helix, first, last)`` tuples,
+# built directly on :class:`Pairing`/:class:`OffsetOccupancy` (``single_runs``
+# only reads ``.helix``/``.offset`` off ``singles``, so a bare status/offset
+# fixture is enough — no need to route this through ``derive_pairing``).
+
+
+def _single(helix: str, offset: int) -> OffsetOccupancy:
+    return OffsetOccupancy(helix=helix, offset=offset, occupants=(), status=SINGLE)
+
+
+def test_single_runs_pins_exact_tuples_for_two_separated_stretches() -> None:
+    pairing = Pairing()
+    pairing.singles = [
+        _single("h", 0),
+        _single("h", 1),
+        _single("h", 2),
+        _single("h", 10),
+        _single("h", 11),
+    ]
+    assert pairing.single_runs() == [("h", 0, 2), ("h", 10, 11)]
+
+
+def test_single_runs_fully_contiguous_stretch_is_one_run() -> None:
+    pairing = Pairing()
+    pairing.singles = [_single("h", offset) for offset in range(5)]
+    assert pairing.single_runs() == [("h", 0, 4)]
+
+
+def test_single_runs_does_not_merge_across_a_helix_boundary() -> None:
+    pairing = Pairing()
+    # Adjacent offsets (5, 6) on TWO DIFFERENT helices — contiguous by
+    # offset alone, but the guard must keep them as two one-offset runs.
+    pairing.singles = [_single("h0", 5), _single("h1", 6)]
+    assert pairing.single_runs() == [("h0", 5, 5), ("h1", 6, 6)]
+
+
 # ── occupancy + declared pair geometry ──────────────────────────────────
 
 
@@ -460,11 +508,76 @@ def test_removing_a_helix_takes_its_domains_with_it() -> None:
     assert findings(tree) == []
 
 
+def test_removing_a_strand_takes_its_domains_in_memory() -> None:
+    """The strand-side sibling of the helix removal above, asserted the
+    same way — on the in-memory tree ``remove_block`` just mutated, not a
+    store round-trip. ``persist.save_tree``/``load_tree`` retires and
+    re-inserts ``se_topology`` domain rows straight off ``tree.domains``
+    with no filter of its own, so a store round-trip would happily persist
+    and reload whatever the in-memory list already (wrongly) says — it does
+    not independently clean up a dangling domain a broken retention
+    comprehension failed to drop. This is the one place ``ops.py``'s own
+    cascade, not a downstream store detail, is on the hook."""
+    tree = _one_offset_tree(1)
+    apply_ops(tree, [{"op": "remove_block", "block": "s0"}])
+    assert tree.domains == []
+
+
 def test_a_malformed_stored_record_is_a_finding_not_a_crash() -> None:
     tree = _one_offset_tree(1)
     tree.blocks["h"].chain = {"role": "helix", "motif": "Z-DNA", "n_units": 8}
     fired = _by_rule(tree, "chain_malformed")
     assert len(fired) == 1 and fired[0].severity == "error"
+
+
+def _malformed_then_real_finding_tree() -> SeTree:
+    """Two helices, named so ``sorted(tree.blocks)`` visits the malformed
+    one FIRST: ``h0`` carries a stored record that fails ``validate_chain``
+    (the same "Z-DNA" corruption as the test above), ``h1`` is well-formed
+    but 22 honeycomb units — out of register, so it fires its own
+    ``chain_twist_register``. Both live in ``_helix_geometries``'s single
+    scan, so a ``continue → break`` on the malformed arm would stop the
+    scan at ``h0`` and never even reach ``h1``."""
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "add_block",
+                "name": "h0",
+            },
+            {
+                "op": "declare_helix",
+                "block": "h0",
+                "n_units": 8,
+                "lattice": "honeycomb",
+                "row": 0,
+                "col": 0,
+            },
+            {"op": "add_block", "name": "h1"},
+            {
+                "op": "declare_helix",
+                "block": "h1",
+                "n_units": 22,
+                "lattice": "honeycomb",
+                "row": 0,
+                "col": 1,
+            },
+        ],
+    )
+    tree.blocks["h0"].chain = {"role": "helix", "motif": "Z-DNA", "n_units": 8}
+    return tree
+
+
+def test_a_malformed_block_does_not_stop_the_scan_at_later_blocks() -> None:
+    tree = _malformed_then_real_finding_tree()
+    malformed = _by_rule(tree, "chain_malformed")
+    assert len(malformed) == 1 and malformed[0].subject == "h0"
+    # ... and h1, sorting AFTER the malformed block, still gets its own
+    # geometry realised and its own finding — which a ``break`` would have
+    # silently dropped along with every other later helix's.
+    register = _by_rule(tree, "chain_twist_register")
+    assert len(register) == 1 and register[0].subject == "h1"
 
 
 def test_no_chain_declaration_means_no_findings_and_no_work() -> None:
