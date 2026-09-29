@@ -376,7 +376,9 @@ State: main holds `bfc0c03c` (blocker 1 fix) and `8e037c01` (blocker 2 prompt
 rewrite). `bfc0c03c` has a real full-suite verdict — it was inside the green
 gate at `f8f884d1` (23732 passed / 77 skipped / 6 xfailed). `8e037c01` has no
 gate verdict: it qlanded, green locally with 178 taxonomy tests + mypy clean,
-which is not a gate result. Prod runs `b81bf3cc`; `8e037c01` is not deployed.
+which is not a gate result. Fleet verified 2026-09-29 20:58 UTC (venv
+`direct_url.json` on melchior + castor): prod runs `2c5b28d6`, so `8e037c01`
+IS deployed — ungated, which is the open risk.
 
 Detail on all of the following is in "First discovery probe — 2026-09-29"
 above; this section is only the order.

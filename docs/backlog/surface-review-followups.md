@@ -21,10 +21,11 @@ evidence cards + scoreboard), the `/surface-review` command + runbook +
 statement_timeout fix with `docs/reference/schema.md` regenerated 58→130
 tables. `b34e56f32` — `policy-gates-must-fail-distinguishably`.
 
-**Undeployed.** The running deploy is pinned to `b81bf3cce`, so the schema
+**Deployed, ungated.** Fleet verified 2026-09-29 20:58 UTC (venv
+`direct_url.json` on melchior + castor): prod runs `2c5b28d6`, so the schema
 regen and the two changed product skills (`precis-fisheye-help`,
-`precis-status-help`) take effect on the *next* deploy, not the current one.
-Also unvalidated: both shipped via `/qland`, no gate ran.
+`precis-status-help`) are live. Still unvalidated: both shipped via `/qland`,
+no gate ran.
 
 ## The order, and why it is an order
 

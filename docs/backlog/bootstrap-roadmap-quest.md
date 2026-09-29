@@ -307,7 +307,9 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (commits `2d6aab0a`, `1a4cb076`, `4adfe448`,
 
 State: the build shipped to main as `ad7dc208` (ungated `/qland`). Items 1-6
 above are on main; 406 targeted tests passed pre-ship. Main itself is
-ungated and `ad7dc208` is not deployed — prod runs `b81bf3cc`.
+ungated. Fleet verified 2026-09-29 20:58 UTC (venv `direct_url.json` on
+melchior + castor): prod runs `2c5b28d6`, so `ad7dc208` IS deployed — ungated;
+step 3 below is the first gate it gets.
 
 Ordered:
 
