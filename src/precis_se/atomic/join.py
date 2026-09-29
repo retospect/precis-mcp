@@ -13,11 +13,16 @@ failure" reason (:func:`prepare_join`'s docstring).
 "<block>.<port>", "seam"?: "auto"|"fuse"|"adapter", "k"?: 0|"fit",
 "seam_radius"?: {"a": 8, "b": 2}, "rung"?: "auto"|"stick"|"geo",
 "parent"?: "..."}`` — dispatch is by the two ports' **lattice** annotation
-(:data:`JOINERS`, keyed the way
+pair (:data:`JOINERS`, keyed on the canonical sorted 2-tuple of both
+sides' ``GeneratedPort.lattice``, the way
 :mod:`precis_se.atomic.generators.hexfold_spec` tags a port's
-``GeneratedPort.lattice``): today only ``"sp2-hex"`` (hexfold rims) is
-wired; a mismatched or unrecognised lattice is ``join.lattice``, before
-anything else runs.
+``GeneratedPort.lattice``): today only ``("sp2-hex", "sp2-hex")`` (two
+hexfold rims) is wired; a missing annotation or an unregistered pair is
+``join.lattice``, before anything else runs. Before even that: an
+endpoint that names a block already claimed as a **part** of another
+composite is ``join.part_addressed`` — the fix is an addressing one
+(join through the owning composite's own exposed port), not a lattice or
+ownership one (:func:`_addressed_part_redirect`'s docstring).
 
 **Rung gate** (slice 2, :func:`_select_relaxer`): each side's resolved
 rung comes off its own bound structure's ``meta['last_relax']['rung']``
@@ -270,6 +275,63 @@ def _resolve_join_endpoint(
     return key, port_name, port
 
 
+def _join_generated_record(store: Store, node: Any) -> dict[str, Any] | None:
+    """``node``'s bound structure's ``meta['generated']`` record, iff
+    ``node`` is itself a join composite (``generator == 'join'``) — else
+    ``None``. The change-2 discriminator lives here: "is a part of a
+    composite" tests THIS, never merely "has a parent" — an ordinary
+    assembly block used as a layout parent has no such record, and a
+    hexfold block sitting under one stays joinable (module docstring)."""
+    if node.bound_kind != "structure" or not node.bound:
+        return None
+    ref = store.get_ref(kind="structure", id=node.bound)
+    if ref is None:
+        return None
+    generated = (ref.meta or {}).get("generated") or {}
+    return generated if generated.get("generator") == "join" else None
+
+
+def _addressed_part_redirect(
+    store: Store, tree: SeTree, block_key: str, port_name: str
+) -> tuple[str, str] | None:
+    """gr456213 (2026-09-29 prod dogfood): the fix for the case
+    :func:`_hexfold_join`'s old ``join.reparented`` WARN used to merely
+    flag — a block already claimed as a **part** of a composite (per
+    :func:`_join_generated_record`) has its remaining free rim ALREADY
+    exposed as that composite's own port; addressing the part directly is
+    the same physical rim under a second name, not a second, independent
+    endpoint. Returns ``(owning composite, corrected port name)`` when
+    ``block_key`` is a part (possibly several joins deep — a part two
+    levels down needs the FULL accumulated prefix), ``None`` when it
+    names no composite's part at all.
+
+    Walks the parent chain one join composite at a time, applying the
+    same ``<part>_<port>`` prefixing :func:`_hexfold_join`'s own
+    ``side_of``/``compose`` convention stamps onto every exposed
+    composite port (never reimplemented here — this is composed forward
+    with the identical ``f"{prefix}_{name}"`` shape :func:`~hexfold.join.
+    compose` itself uses), so the corrected name is exactly the port the
+    owning composite already carries."""
+    current, accumulated, owner = block_key, port_name, None
+    while True:
+        node = tree.blocks.get(current)
+        if node is None or node.parent is None:
+            break
+        parent_key = node.parent
+        parent_node = tree.blocks.get(parent_key)
+        if parent_node is None:
+            break
+        generated = _join_generated_record(store, parent_node)
+        if generated is None:
+            break
+        parts = generated.get("parts") or []
+        if not any(isinstance(p, dict) and p.get("block") == current for p in parts):
+            break
+        accumulated = _se_port_name(f"{current}_{accumulated}")
+        current, owner = parent_key, parent_key
+    return (owner, accumulated) if owner is not None else None
+
+
 def _hx_port(block: Block, se_name: str) -> HxPort:
     """The rebuilt :class:`~hexfold.join.Block`'s :class:`~hexfold.build.
     Port` matching a stored SE port name — hexfold names ports with a
@@ -405,14 +467,20 @@ def _hexfold_join(
     tree: SeTree,
     op: dict[str, Any],
     design_slug: str,
-    lattice: str,
+    a_lattice: str,
+    b_lattice: str,
     a_block: str,
     a_port_name: str,
     b_block: str,
     b_port_name: str,
 ) -> tuple[str, PendingJoin | None]:
-    """The ``"sp2-hex"`` :data:`JOINERS` entry — everything past lattice
-    routing (:func:`prepare_join`'s docstring)."""
+    """The ``("sp2-hex", "sp2-hex")`` :data:`JOINERS` entry — everything
+    past lattice-pair routing (:func:`prepare_join`'s docstring). Both
+    lattices are handed through (rather than the one shared value the old
+    single-lattice keying implied) so a future heterojunction entry can
+    tell its two sides apart without this function changing shape again;
+    this slice's only registered pair still has ``a_lattice == b_lattice``
+    by construction."""
     block_name = op.get("name")
     if not block_name or not str(block_name).strip():
         raise BadInput("join needs 'name' (the new composite block's name)")
@@ -435,7 +503,6 @@ def _hexfold_join(
     # dropped (b is placed by the seam transform below, never by
     # whatever pose it happened to carry beforehand).
     old_a_parent = node_a.parent
-    old_b_parent = node_b.parent
     old_a_local_pose = list(node_a.local_pose) if node_a.local_pose else [0.0, 0.0, 0.0]
     old_a_local_rot = list(node_a.local_rot) if node_a.local_rot else [0.0, 0.0, 0.0]
     b_pose_dropped = not _is_identity_pose(
@@ -693,38 +760,22 @@ def _hexfold_join(
     # local_pose/local_rot (the byte-exact save target) are untouched by a
     # parent change, only what they compose AGAINST changes, exactly what
     # compose_world_pose recomputes.
-    # gr456213 (2026-09-29 prod dogfood): an endpoint already parented
-    # under a DIFFERENT composite is about to be silently pulled out of
-    # it — that composite's block tree will stop listing the part, while
-    # its own build record (``generated.parts``) and the port it still
-    # exposes (e.g. ``<part>_<port>``) keep naming/claiming the very same
-    # physical rim. Whether a part may belong to two composites at once
-    # is a semantics call nobody has made (and a hard refusal here would
-    # also break the ordinary chained-join flow, where re-parenting a
-    # fresh, previously-unparented block into the new composite is
-    # exactly the intended behaviour below) — so this WARNs, loudly,
-    # rather than refusing.
-    for side, blk_name, old_parent in (
-        ("a", a_block, old_a_parent),
-        ("b", b_block, old_b_parent),
-    ):
-        if old_parent is not None:
-            extra_findings.append(
-                HxFinding(
-                    "join.reparented",
-                    HxSeverity.WARN,
-                    f"{side}-side block {blk_name!r} was already a part of "
-                    f"composite {old_parent!r} — joining it into "
-                    f"{block_name!r} removes it from {old_parent!r}'s block "
-                    f"tree, but {old_parent!r}'s own build record and ports "
-                    f"still name/claim it",
-                    data=(
-                        ("block", blk_name),
-                        ("old_composite", old_parent),
-                        ("new_composite", block_name),
-                    ),
-                )
-            )
+    # gr456213 (2026-09-29 prod dogfood) originally WARNed here
+    # (``join.reparented``) when an endpoint was already parented under a
+    # DIFFERENT composite, rather than refusing — reparenting it would
+    # silently pull it out of that composite's block tree while its own
+    # build record (``generated.parts``) and the port it still exposes
+    # (e.g. ``<part>_<port>``) kept naming/claiming the very same physical
+    # rim. The user has since ruled that a part may NOT belong to two
+    # composites at once — :func:`prepare_join` now refuses this earlier,
+    # as ``join.part_addressed``, before either side is even rebuilt, and
+    # redirects the caller to the owning composite's own already-exposed
+    # port instead of accepting the silent reparent. Every endpoint this
+    # function still sees has therefore already cleared that gate — its
+    # own pre-join parent is either ``None`` (the ordinary chained-join
+    # case: a fresh, never-parented block on every join) or an ORDINARY,
+    # non-composite parent (a layout assembly block), which carries no
+    # build record to strand and so has nothing left to warn about.
     node_a.parent = block_name
     node_b.parent = block_name
     compose_world_pose(tree)
@@ -752,7 +803,7 @@ def _hexfold_join(
     )
     generated_record: dict[str, Any] = {
         "generator": "join",
-        "lattice": lattice,
+        "lattice": a_lattice,
         "parts": parts,
         "seam": composite.seam,
         "seam_radius": composite.seam.get("radius"),
@@ -786,16 +837,23 @@ def _hexfold_join(
     return echo, pending
 
 
-#: Dispatch by the two ports' shared ``lattice`` annotation (module
-#: docstring) — today only hexfold's sp2 rims; an sp3-diamond facet joiner
-#: registers here later without touching :func:`prepare_join`.
+#: Dispatch by the two ports' ``lattice`` annotations, keyed on the
+#: canonical **sorted 2-tuple** of both sides (module docstring) — never a
+#: single lattice string: that would hard-code the assumption that a join
+#: only ever happens within one lattice, making a heterojunction (sp2
+#: carbon onto sp3 diamondoid, or a future DNA joiner) inexpressible by
+#: construction. Today only ``("sp2-hex", "sp2-hex")`` (hexfold's own sp2
+#: rims, joined to themselves) is wired; a future heterojunction entry
+#: registers its own sorted pair here without touching
+#: :func:`prepare_join` — this dict stays a plain dict, no plugin
+#: discovery or capability negotiation.
 JOINERS: dict[
-    str,
+    tuple[str, str],
     Callable[
-        [Store, SeTree, dict[str, Any], str, str, str, str, str, str],
+        [Store, SeTree, dict[str, Any], str, str, str, str, str, str, str],
         tuple[str, PendingJoin | None],
     ],
-] = {"sp2-hex": _hexfold_join}
+] = {("sp2-hex", "sp2-hex"): _hexfold_join}
 
 
 def prepare_join(
@@ -806,17 +864,31 @@ def prepare_join(
     docstring's "orphan on partial failure" reasoning applies identically:
     a fresh composite ``structure`` design commits on its own, so its mint
     is deferred to :func:`finish_join`, run only after the whole ops list
-    has validated). Resolves both endpoints, gates on their shared
-    ``lattice`` port annotation (``join.lattice``, before anything else
-    runs — a distinct message for a missing annotation, pointing at
-    regenerating the block, vs. a genuine mismatch between two present
-    ones; a third for no registered joiner), and dispatches to the
-    matching :data:`JOINERS` entry."""
+    has validated). Resolves both endpoints, refuses an endpoint that
+    names a block already claimed as a **part** of another composite
+    (``join.part_addressed``, :func:`_addressed_part_redirect` — before
+    anything lattice-related even runs, since this is an addressing
+    defect, not a lattice one), gates on their ``lattice`` port
+    annotations (``join.lattice`` — a distinct message for a missing
+    annotation, pointing at regenerating the block, vs. no joiner
+    registered for the pair, which also covers a genuine mismatch between
+    two present ones), and dispatches to the matching :data:`JOINERS`
+    entry."""
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise BadInput("join needs 'a' and 'b' (each 'block.port')")
     a_block, a_port_name, a_spec = _resolve_join_endpoint(tree, a_raw, side="'a'")
     b_block, b_port_name, b_spec = _resolve_join_endpoint(tree, b_raw, side="'b'")
+    for blk, port_name in ((a_block, a_port_name), (b_block, b_port_name)):
+        redirect = _addressed_part_redirect(store, tree, blk, port_name)
+        if redirect is not None:
+            owner, corrected = redirect
+            raise BadInput(
+                f"join.part_addressed: {blk!r} is already a part of "
+                f"composite {owner!r} -- a part may not belong to two "
+                f"composites; its free rim is {owner!r}'s own port now, "
+                f"join '{owner}.{corrected}' instead of '{blk}.{port_name}'"
+            )
     a_lattice = a_spec.annotations.get("lattice") if a_spec.annotations else None
     b_lattice = b_spec.annotations.get("lattice") if b_spec.annotations else None
     if not a_lattice or not b_lattice:
@@ -847,18 +919,14 @@ def prepare_join(
             "can never be joined as-is. Regenerate the block through its "
             "own 'generate' op to mint the annotation, then join again."
         )
-    if a_lattice != b_lattice:
-        raise BadInput(
-            f"join.lattice: {a_block}.{a_port_name} ({a_lattice!r}) and "
-            f"{b_block}.{b_port_name} ({b_lattice!r}) don't share a "
-            "joinable lattice — both ports need a matching generated port "
-            "type"
-        )
-    joiner = JOINERS.get(a_lattice)
+    pair = tuple(sorted((a_lattice, b_lattice)))
+    joiner = JOINERS.get(pair)
     if joiner is None:
+        known = ", ".join(f"{x!r}+{y!r}" for x, y in sorted(JOINERS)) or "(none)"
         raise BadInput(
-            f"join.lattice: no joiner registered for lattice {a_lattice!r} "
-            f"(known: {', '.join(sorted(JOINERS)) or '(none)'})"
+            f"join.lattice: no joiner registered for {a_block}.{a_port_name} "
+            f"({a_lattice!r}) onto {b_block}.{b_port_name} ({b_lattice!r}) "
+            f"(known pairs: {known})"
         )
     return joiner(
         store,
@@ -866,6 +934,7 @@ def prepare_join(
         op,
         design_slug,
         a_lattice,
+        b_lattice,
         a_block,
         a_port_name,
         b_block,

@@ -631,7 +631,6 @@ no ERROR. No `__bool__`.
 | `seam.radius.unmeasured` `[impl 0.2]` | INFO | `hexfold.join.compose`: a mixed rim (no `Port.rim_type`) has no measured decay length, so the join falls back to the conservative zigzag radius (`data.side`, `data.radius`) |
 | `seam.sigma` `[impl 0.2]` | WARN | `hexfold.join.compose`: `a`/`b` were built at different `sigma` (bond length) -- the seam places and re-relaxes with `a`'s sigma only, so `b`'s bonds are strained (`data.a_sigma`, `data.b_sigma`); fix is to regenerate one side onto a shared sigma |
 | `join.rung` `[impl 0.2]` | WARN | `precis_se.atomic.join`: `rung="geo"` forced over a still-stick-rung part (`data.a_rung`, `data.b_rung`, `data.forced`) -- rest lengths 1.42 vs 1.52 Å strain the frozen boundary; an unresolved rung MISMATCH under `rung="auto"` aborts before anything is minted instead (raised directly, never reaches the Report) |
-| `join.reparented` `[impl 0.2]` | WARN | `precis_se.atomic.join`: an endpoint's block was already parented under a different composite -- joining pulls it into the new one's block tree while the old composite's build record and ports still name/claim it (`data.block`, `data.old_composite`, `data.new_composite`) |
 
 Profiles are **passed, not set** (no module-global state):
 `Profile(promote=frozenset, demote=frozenset, ignore=frozenset,
@@ -1305,12 +1304,19 @@ bit-for-bit untouched; `seam.adapter`, `seam.leak`, `seam.strain`,
 for both placement and re-relax; b's bonds strain if the two blocks
 weren't built to the same sigma) findings (§13). The se op
 (`precis_se/atomic/join.py`'s `join` op, store-aware prepare/finish over
-`compose`, dispatched by the joined ports' `lattice` annotation) is built
+`compose`, dispatched by the joined ports' `lattice` annotation *pair* --
+`JOINERS` keys on the canonical sorted 2-tuple of both sides, not a
+single shared value, so a future heterojunction entry can register
+without a within-one-lattice assumption baked into the dispatch) is built
 too: it rebuilds each side's topology from its own generator record
 (recursively, through a chain of earlier joins), mints a composite
 `structure` design plus se block/ports/connect, persists the build record
-as `meta['generated']`, and warns `join.reparented` when an endpoint's
-block was already parented under a different composite.
+as `meta['generated']`, and refuses `join.part_addressed` when an
+endpoint names a block already claimed as a *part* of another composite
+-- a part may not belong to two composites, and the fix is an addressing
+one: the message redirects to the owning composite's own already-exposed
+`<part>_<port>` name (walking the full nested chain when the part sits
+several joins deep) rather than silently re-parenting it.
 
 **Slice 2 (geo rung), built 2026-09-28**: `geo_relax_pinned`
 (`precis_se/atomic/join.py`, a `relax_graph` adapter over the seam

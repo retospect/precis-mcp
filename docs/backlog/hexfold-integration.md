@@ -322,3 +322,79 @@ max |Δbond| 0.0001 Å, max |Δangle| 0.007° (thresholds 0.002 Å / 0.15°),
 comfortably inside. Seam radii/thresholds stay stick-rung numbers for
 mixed/unmeasured rim types (unchanged from slice 1). Slice 3 built the same day
 (`place_graph`, see the seed-placement paragraph above; a `seam.cycle` finding reports the residual).
+
+## Step 5 join: prod dogfood 2026-09-29, and what it left open
+
+First real exercise of the `join` op in production (scratch design
+`hexfold-join-dogfood`, deletable). The op works: plain fuse (120 atoms,
+rings `{6:10}`, `seam.strain` rms |dl| 0.0136 Å), a chained join onto a
+composite with `k="fit"` (180 atoms, recursive `_rebuild_block` clean),
+and the 30° grain-boundary adapter (264 atoms, rings `{5:6, 7:6}`, 11 fit
+alternatives). Five findings, four of which the unit tests could not see;
+the two real defects only appeared by chaining joins in an order no test
+had tried, which is the argument for dogfooding each slice rather than
+trusting a green suite.
+
+Landed in `3cd52d01`: `seam.sigma` WARN (two parts built at different
+bond lengths — measured, σ 1.75 joined to σ 1.42 was accepted, strain
+roughly tripled and both sides leaked, but nothing named the cause;
+`compose` uses `a.sigma` for both the fuse placement and the re-relax);
+`join.lattice`'s absent-annotation branch now names the un-annotated port
+and says regeneration mints it; `seam.leak` now names which of
+`|dl|`/`|dtheta|` breached and prints the threshold beside it (it used to
+print `0.0000 A` for the measure that did *not* trip, making a genuine
+0.060°-vs-0.025° breach read as a false alarm).
+
+**Uncommitted but green at the wind-down (32 passed** across
+`tests/hexfold/test_join.py`, `tests/test_se_join.py`,
+`tests/test_se_join_geo.py`, `tests/test_hexfold_import_boundary.py`;
+ruff and mypy clean**), awaiting the user's own `/qland`:**
+- `JOINERS` re-keyed on a **sorted lattice pair**, `("sp2-hex","sp2-hex")`
+  today, looked up via `tuple(sorted((a_lattice, b_lattice)))`. The old
+  `a_lattice != b_lattice` ERROR sat in the dispatch path and thereby
+  hard-coded "a join happens within one lattice", making heterojunctions
+  (sp² onto sp³, a future DNA joiner) inexpressible by construction. A
+  mismatch now falls through to "no joiner registered", naming both
+  endpoints, both lattices and the registered pairs. Deliberately NOT
+  built: plugin discovery, entry points, capability negotiation, any
+  second joiner. The registry picks the *implementation*; the
+  implementation validates the *physics* (that is `seam.sigma`'s job) —
+  do not push element/σ into the key.
+- `join.part_addressed` ERROR replacing the `join.reparented` WARN that
+  `3cd52d01` shipped the same morning. A block already claimed as a part
+  of a composite has its free rim exposed as that composite's own port,
+  so addressing the part directly was the same rim under a second name —
+  an **addressing** defect, not an ownership one. The error redirects to
+  the correct address (full accumulated prefix several joins deep, e.g.
+  `chain3.composite_tube_a_in`). Discriminator is "parent is a join
+  composite AND names this block in its parts", never "has a parent" —
+  a block under an ordinary layout parent must stay joinable, and there
+  is a regression test for exactly that.
+
+Open, needing a decision rather than work:
+1. **`join.reparented` as an INFO on the ordinary-parent path only.**
+   Joining a block authored under a layout parent (`add_block(parent=…)`)
+   silently moves it into the composite. Not a correctness problem — the
+   layout parent makes no claim on it — but it discards authored intent,
+   and `join.pose_dropped` INFO is the precedent for reporting exactly
+   that class of thing. Not built; the user has not asked for it.
+2. **Heterojunction joiners** themselves, and **stable port identities**.
+   Composite port names concatenate on every join, so depth 3 already
+   reads `composite_tube_a_in` and deeper is unusable. se already solved
+   this for blocks with uids (`#41`, addressable as `'#41.bore'`); ports
+   want the same, with the concatenated name as a display label. Avoid
+   making the concatenated name load-bearing in the meantime.
+3. **`spec.md` §28 lists `seam.terminated` as a §13 finding, but it has
+   never had a §13 row.** Pre-existing gap, cheap to close next time §13
+   is touched (step 6 slice 3 will be).
+4. The prod scratch design `hexfold-join-dogfood` still holds the broken
+   state (`chain3` missing a part its build record claims). The fix makes
+   it unreachable going forward but does not heal the row; delete the
+   design when convenient.
+
+Gripes: 456201 (pre-annotation blocks un-joinable — RULED: regeneration
+is the remedy, no new write path), 456202 (`payload.word` does not
+distinguish rim families — NOT a bug, `rim_word` takes `abs(turn)` and
+hex rims turn ±60° everywhere, so `z12` and `a12` rims both read `z24`;
+`spec.md` has an erratum and the skill now says read `type`), 456203,
+456212, 456213 (all three fixed above).

@@ -164,8 +164,9 @@ disagrees is `seam.mismatch`), `k` a phase (`0..N-1`, or `"fit"` — ranked
 the same way `fuse`'s `k=fit` is, surfacing `fit.alternatives`).
 `seam_radius` overrides the per-side shell radius the re-relax touches
 (table default by rim type, zigzag 8 / armchair 2 shells); dispatch is by
-the two ports' shared `lattice` tag (`join.lattice` if absent or
-mismatched — today only `"sp2-hex"` hexfold rims are wired).
+the two ports' `lattice` tag *pair* (a sorted 2-tuple, `join.lattice` if
+either is absent or the pair has no registered joiner — today only
+`("sp2-hex", "sp2-hex")`, two hexfold rims, is wired).
 
 The composite is a new atomic block, envelope a bounding cylinder in
 `a`'s own frame (`a`'s atoms untouched; `b`'s are rigidly placed), bound
@@ -186,16 +187,20 @@ perturbed geometry past the seam radius, naming which of `|dl|`/
 `|dtheta|` breached and its threshold — raise `seam_radius` or resolve a
 longer block), `seam.terminated` INFO (a non-carbon atom inside the
 re-relaxed sub-graph), `port.mismatch` ERROR (rim sizes differ — nothing
-minted), `join.lattice` ERROR (a port has no `lattice` annotation —
-minted only when a block is generated, so regenerate it through its own
-`generate` op; or, with both present, a genuine mismatch naming both
-values), `join.stale` ERROR (the block's stored atoms no longer agree
-with a rebuild of its own generator record — regenerate first), `join.rung`
-ERROR (the two parts' relax rungs disagree and `rung` wasn't forced) or
-WARN (`rung` forced `geo` over a stick-rung part), `join.reparented` WARN
-(an endpoint's block was already part of another composite — joining
-pulls it into this one while the old composite's build record and ports
-still name it).
+minted), `join.part_addressed` ERROR (an endpoint names a block already
+claimed as a *part* of another composite — a part may not belong to two
+composites; the message redirects to the owning composite's own
+already-exposed port, e.g. `chain3.tube_c_out` instead of `tube_c.out`,
+walking the full nested prefix when the part sits several joins deep;
+raised before anything else, even lattice checks), `join.lattice` ERROR
+(a port has no `lattice` annotation — minted only when a block is
+generated, so regenerate it through its own `generate` op; or no
+`JOINERS` entry for the pair, which also covers a genuine mismatch
+naming both values), `join.stale` ERROR (the block's stored atoms no
+longer agree with a rebuild of its own generator record — regenerate
+first), `join.rung` ERROR (the two parts' relax rungs disagree and
+`rung` wasn't forced) or WARN (`rung` forced `geo` over a stick-rung
+part).
 
 Both the **stick** and **geo** relax rungs are wired. `rung` picks which
 (default `auto`: both parts' own `meta['last_relax']['rung']` must agree
