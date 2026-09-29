@@ -10,6 +10,7 @@ itself (the only thing that touches the router) is not called here.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from precis.taxonomy.config import CampaignConfig
 from precis.taxonomy.discovery import (
@@ -41,8 +42,8 @@ def _snapshot() -> Snapshot:
     )
 
 
-def _config(**overrides: object) -> CampaignConfig:
-    kwargs: dict[str, object] = {
+def _config(**overrides: Any) -> CampaignConfig:
+    kwargs: dict[str, Any] = {
         "campaign": "test-campaign",
         "config_version": 1,
         "snapshot": _snapshot(),
@@ -55,7 +56,7 @@ def _config(**overrides: object) -> CampaignConfig:
     from pathlib import Path
 
     kwargs["snapshot_path"] = Path()
-    return CampaignConfig(**kwargs)  # type: ignore[arg-type]
+    return CampaignConfig(**kwargs)
 
 
 def _mention(

@@ -232,7 +232,10 @@ def discover(
         if ref_raw is None:
             warnings.append(f"row missing {ref_field!r} — skipped")
             continue
-        ref_id = int(ref_raw)  # type: ignore[call-overload]
+        if not isinstance(ref_raw, (int, str)):
+            warnings.append(f"row {ref_field!r} is not an id — skipped")
+            continue
+        ref_id = int(ref_raw)
         mentions = mentions_by_ref.get(ref_id, ())
         if not mentions:
             continue

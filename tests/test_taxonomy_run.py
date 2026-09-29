@@ -17,6 +17,7 @@ from precis.taxonomy.types import (
     Anchor,
     DimensionSpec,
     Mention,
+    MentionKind,
     TermNode,
 )
 
@@ -26,10 +27,10 @@ def config():
     return load_campaign("norr-her-meta")
 
 
-def _mention(ref_id: int, kind: str = "value", literal: str = "10") -> Mention:
+def _mention(ref_id: int, kind: MentionKind = "value", literal: str = "10") -> Mention:
     return Mention(
         anchor=Anchor(source_ref_id=ref_id, start=0, end=len(literal)),
-        kind=kind,  # type: ignore[arg-type]
+        kind=kind,
         literal=literal,
     )
 

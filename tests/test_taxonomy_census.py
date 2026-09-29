@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -39,8 +40,8 @@ _REAL_SNAPSHOT_SHA256 = (
 )
 
 
-def _snapshot(**overrides: object) -> Snapshot:
-    defaults: dict[str, object] = {
+def _snapshot(**overrides: Any) -> Snapshot:
+    defaults: dict[str, Any] = {
         "source": "test fixture",
         "row_count": 0,
         "sha256": "0" * 64,
@@ -49,17 +50,17 @@ def _snapshot(**overrides: object) -> Snapshot:
         "ref_field": "ref_id",
     }
     defaults.update(overrides)
-    return Snapshot(**defaults)  # type: ignore[arg-type]
+    return Snapshot(**defaults)
 
 
-def _config(**overrides: object) -> CampaignConfig:
+def _config(**overrides: Any) -> CampaignConfig:
     """A minimal, constructible-without-YAML campaign config. Every stage-1
     test that does not specifically need the shipped ``norr-her-meta``
     campaign (its reference-electrode/normalisation-basis vocabulary) uses
     this instead, which is also what proves the number+unit grammar itself
     carries no chemistry (AC7).
     """
-    defaults: dict[str, object] = {
+    defaults: dict[str, Any] = {
         "campaign": "test",
         "config_version": 1,
         "snapshot": _snapshot(),
@@ -67,7 +68,7 @@ def _config(**overrides: object) -> CampaignConfig:
         "thresholds": Thresholds(),
     }
     defaults.update(overrides)
-    return CampaignConfig(**defaults)  # type: ignore[arg-type]
+    return CampaignConfig(**defaults)
 
 
 def _mention_texts(text: str, config: CampaignConfig | None = None) -> tuple:

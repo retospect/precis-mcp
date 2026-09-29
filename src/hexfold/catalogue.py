@@ -407,7 +407,13 @@ def seed_rows() -> list[EdgeMotif]:
     the two equal)."""
     rows: list[EdgeMotif] = []
     for rim_type in ("z", "a", None):
-        radius = join.SEAM_RADIUS.get(rim_type, join._SEAM_RADIUS_DEFAULT)  # type: ignore[arg-type]
+        # `rim_type is None` is the mixed-rim wildcard; SEAM_RADIUS is keyed by
+        # real rim types only, so the fallback IS the None case.
+        radius = (
+            join.SEAM_RADIUS.get(rim_type, join._SEAM_RADIUS_DEFAULT)
+            if rim_type is not None
+            else join._SEAM_RADIUS_DEFAULT
+        )
         for rung, table in (
             ("stick", join._LEAK_THRESH),
             ("geo", join.LEAK_THRESH_GEO),
