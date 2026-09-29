@@ -139,6 +139,14 @@ route, no new extra.
   `chain/atoms.py::build_region`. `Unsupported` on an unrelaxed loop kept.
   Advisory (caDNAno `Unsupported` fixture unnamed) → waypoint-path helix
   named in the AC. Decided.
+- 2026-09-29 PRECONDITION from `se-nucleic-acid` slice 1 (landed a7cc256f):
+  that slice set `precis_se/chain/nucleic.py::STRAND_AZIMUTH_RAD` antipodal
+  `(0, π)`. Antipodal backbones put both grooves at the same width, so this
+  item's "minor/major groove 12/22 ± 1 Å from P positions" criterion is
+  unreachable from those exits by any atom template. Slice 2 of the parent
+  replaces the constant with the real B-DNA minor-groove pair before
+  `relax_chain` writes a loop curve; do not start this item against the
+  antipodal value. Decided.
 - OPEN (advisory, not a build blocker): whether `view='export'` PDB should
   concatenate every realized region into one file with distinct chain ids
   or emit one file per region. Default for the build: one file, chain id
