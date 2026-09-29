@@ -64,18 +64,22 @@ function findPart(root, path) {
   return found;
 }
 
-// A mermaid node id is `B<block_id>` (blocktree_3d.mermaid_topology) —
-// the SAME id every leaf/group path ends in, so resolving it back to a
-// 3D path needs no lookup table either, just a reverse tree walk.
-// Prefers a GROUP match (a block with rendered children) over a bare
-// leaf, since that's the "primary path" connectivity/explode key on
-// the server side.
-function findPathEndingInId(root, blockId) {
+// A mermaid node id is `B<block_uid>` (blocktree_3d.mermaid_topology) —
+// the SAME stable uid every block node in `data.shapes` now carries as
+// its own explicit `uid` FIELD (viewer-toggles fix,
+// docs/backlog/se-viewer-tree-toggles-inert.md: `id` is a NAME path —
+// what the vendored treeview/nestedGroup both key off — so it's no
+// longer where identity lives; `uid` is). Resolving a uid back to a 3D
+// path is still just a reverse tree walk, no lookup table. Prefers a
+// GROUP match (a block with rendered children) over a bare leaf, since
+// that's the "primary path" connectivity/explode key on the server
+// side — a container block's doubled self-leaf carries the SAME uid as
+// its enclosing group, so this preference still resolves to the group.
+function findPathByUid(root, blockUid) {
   let leafMatch = null;
   let groupMatch = null;
   walkShapes(root, (n) => {
-    const segs = n.id.split("/");
-    if (segs[segs.length - 1] === String(blockId)) {
+    if (n.uid !== undefined && String(n.uid) === String(blockUid)) {
       if (n.parts) groupMatch = n.id;
       else if (!leafMatch) leafMatch = n.id;
     }
@@ -83,13 +87,24 @@ function findPathEndingInId(root, blockId) {
   return groupMatch || leafMatch;
 }
 
+//: The doubled container self-leaf's own name suffix (blocktree_3d.py's
+//: module docstring) — kept in sync with the server's literal
+//: ``f"{name} (envelope)"``.
+const _CONTAINER_LEAF_SUFFIX = " (envelope)";
+
 // A block with both its own geometry and visible children doubles its
-// last path segment (blocktree_3d's own module docstring: `.../id/id`)
-// — normalize a raw pick back to the primary (group) path so it
-// matches the connectivity metadata's own a_path/b_path keys.
+// last path segment as `.../<name>/<name (envelope)>` (blocktree_3d's
+// own module docstring, post viewer-toggles-fix: the path is
+// name-derived, so the doubled segment is no longer a literal repeat —
+// it carries the " (envelope)" suffix) — normalize a raw pick back to
+// the primary (group) path so it matches the connectivity metadata's
+// own a_path/b_path keys.
 function primaryPathOf(fullPath) {
   const segs = fullPath.split("/");
-  if (segs.length >= 2 && segs[segs.length - 1] === segs[segs.length - 2]) {
+  if (segs.length < 2) return fullPath;
+  const last = segs[segs.length - 1];
+  const parent = segs[segs.length - 2];
+  if (last === `${parent}${_CONTAINER_LEAF_SUFFIX}`) {
     return segs.slice(0, -1).join("/");
   }
   return fullPath;
@@ -559,28 +574,32 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
   // overlay draws, hiding them completely. Cage it instead: drop only
   // its SHAPE (fill) mesh, leaving its EDGE mesh, so it reads as a
   // containing wireframe rather than a solid — ONLY for blocks that
-  // actually have an overlay (matched by uid via findPathEndingInId, the
-  // module docstring's own leaf-id scheme).
+  // actually have an overlay (matched by the block's own stable `uid`
+  // field via findPathByUid, not any part of the path — viewer-toggles
+  // fix, docs/backlog/se-viewer-tree-toggles-inert.md).
   //
-  // NOT done via the public `viewer.setState()`/`getStates()` pair: that
-  // API is keyed by the vendored TREEVIEW's own name-joined path (e.g.
-  // ``"/Structural envelopes/cage"``, confirmed live), a different
-  // addressing scheme than the uid-suffixed leaf ``id`` this file's own
-  // `findPathEndingInId`/`updatePart`/`recolour` all use — this overlay
-  // only ever has the latter. `updatePart` (the id-keyed public API
-  // `recolour` above already reaches through) also doesn't fit: its
+  // NOT done via the public `viewer.setState()`/`getStates()` pair: since
+  // the viewer-toggles fix, that API's own name-joined path (e.g.
+  // ``"/Structural envelopes/cage"``) IS this file's `id`/`path` scheme
+  // (they were deliberately unified — that's the fix), but `setState`
+  // still isn't the right tool here: it round-trips through the tree
+  // MODEL, which only ever restores a node to ITS OWN stored
+  // shape/edge visibility, with no way to ask for "shape hidden, edge
+  // shown" (this overlay's actual target). `updatePart` (the public API
+  // `recolour` below already reaches through) also doesn't fit: its
   // unchanged-geometry fast path writes color/alpha onto the JSON model
   // only, never the live mesh material (confirmed live: no visual
   // change). The vendored per-leaf `ObjectGroup` itself — reached the
-  // same id-keyed `viewer._rendered.nestedGroup.groups[path]` map
-  // `updatePart` uses internally — exposes the one method that actually
-  // does what we need: `setShapeVisible(false)` flips just the fill
-  // mesh's `material.visible`, leaving the edge mesh alone (confirmed
-  // live, unlike a low-opacity material: a finely-tessellated envelope's
-  // OWN many overlapping semi-transparent triangles would otherwise
-  // still read as solid). `setShapeVisible(true)` is the exact restore
-  // target on failure below, so a build error degrades to today's
-  // opaque envelope rather than a permanently ghosted block.
+  // same `viewer._rendered.nestedGroup.groups[path]` map `updatePart`
+  // uses internally, keyed by our own `id` (now the name-chain path) —
+  // exposes the one method that actually does what we need:
+  // `setShapeVisible(false)` flips just the fill mesh's
+  // `material.visible`, leaving the edge mesh alone (confirmed live,
+  // unlike a low-opacity material: a finely-tessellated envelope's OWN
+  // many overlapping semi-transparent triangles would otherwise still
+  // read as solid). `setShapeVisible(true)` is the exact restore target
+  // on failure below, so a build error degrades to today's opaque
+  // envelope rather than a permanently ghosted block.
   const cagedEnvelopePaths = [];
   function _envelopeGroup(path) {
     return viewer._rendered && viewer._rendered.nestedGroup
@@ -612,7 +631,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
 
   try {
     for (const b of data.blocks) {
-      cageEnvelope(sceneShapes ? findPathEndingInId(sceneShapes, b.uid) : null);
+      cageEnvelope(sceneShapes ? findPathByUid(sceneShapes, b.uid) : null);
       const { atomR, bondR } = atomBondRadiiFor(b);
       const n = b.elements.length;
       const atomMeshes = [];
@@ -754,6 +773,64 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
   }
 }
 
+// ── load-time id/name path invariant self-check ─────────────────────────
+//
+// docs/backlog/se-viewer-tree-toggles-inert.md: the id/name path
+// divergence this whole module now guards against (module docstring —
+// every emitted `id` must equal the "/"-join of `name`s from the root)
+// sat behind a FULLY GREEN test suite and produced ZERO console output
+// while every tree toggle in the viewer was silently dead. That's the
+// actual failure mode worth designing against here: not "will the server
+// ever regress this" (tests cover that directly) but "if it ever does,
+// or a future change reintroduces a second addressing scheme for some
+// new node kind, will anyone notice before a user reports a dead
+// eyeball again". A loud runtime check turns that class of bug from
+// invisible into obvious the moment it recurs.
+//
+// Two independent checks, both against the vendored viewer's OWN live
+// state (never re-deriving what "should" be true, only comparing what we
+// emitted against what the vendor actually built from it):
+//   1. every `id` we emitted resolves in `viewer._rendered.nestedGroup.
+//      groups` (the registry `Viewer.setObject`/every eyeball click
+//      reaches, keyed verbatim by our own `id` — renderLoop's
+//      `this.groups[t.id] = ...`);
+//   2. the treeview's own key set (`viewer.getStates()`, built purely
+//      from `name`s) has no key outside the `id` set we emitted — the
+//      other direction of the same invariant, catching a node the
+//      treeview built that we never even accounted for.
+// Logs ONCE, with a few example divergent paths and both counts — never
+// throws, since a mismatch must degrade the viewer VISIBLY (silently
+// inert toggles are exactly what got this filed), not take down page
+// load on top of that.
+function _checkPathInvariant(viewer, shapes) {
+  try {
+    const rendered = viewer && viewer._rendered;
+    const groups = rendered && rendered.nestedGroup && rendered.nestedGroup.groups;
+    if (!groups || typeof viewer.getStates !== "function") return;
+    const emittedIds = [];
+    walkShapes(shapes, (n) => emittedIds.push(n.id));
+    const emittedSet = new Set(emittedIds);
+    const missingFromGroups = emittedIds.filter((id) => !(id in groups));
+    const stateOnlyKeys = Object.keys(viewer.getStates()).filter(
+      (k) => !emittedSet.has(k)
+    );
+    if (missingFromGroups.length === 0 && stateOnlyKeys.length === 0) return;
+    const sample = (arr) => arr.slice(0, 5).join(", ");
+    console.error(
+      "blocktree-3d: id/name path invariant violated (docs/backlog/se-viewer-tree-toggles-inert.md)" +
+        " — tree visibility toggles will be silently inert.",
+      `${missingFromGroups.length} emitted id(s) missing from viewer._rendered.nestedGroup.groups` +
+        (missingFromGroups.length ? ` (e.g. ${sample(missingFromGroups)})` : "") +
+        ";",
+      `${stateOnlyKeys.length} treeview state key(s) with no matching emitted id` +
+        (stateOnlyKeys.length ? ` (e.g. ${sample(stateOnlyKeys)})` : "") +
+        "."
+    );
+  } catch (err) {
+    console.error("blocktree-3d: path invariant self-check itself failed", err);
+  }
+}
+
 export async function blocktreeViewer3D({
   viewerEl,
   mermaidEl,
@@ -816,7 +893,7 @@ export async function blocktreeViewer3D({
         // badges, never a broken panel.
         findings: data.findings || {},
         onSelect: (nodeId) => {
-          const path = findPathEndingInId(data.shapes, nodeId.replace(/^B/, ""));
+          const path = findPathByUid(data.shapes, nodeId.replace(/^B/, ""));
           if (path) selectPath(path);
         },
       });
@@ -1027,12 +1104,16 @@ export async function blocktreeViewer3D({
         recolour(p, HIGHLIGHT_COLOUR);
       }
     }
-    const blockId = primaryPath.split("/").pop();
-    highlightTopologyNode(blockId);
+    // The path's own last segment is now the block's NAME (viewer-toggles
+    // fix, docs/backlog/se-viewer-tree-toggles-inert.md — id is a "/"-
+    // joined name chain), not its uid, so the mermaid/topology-cloud node
+    // id (`B<uid>`) has to come off the part's own `uid` field instead of
+    // being parsed back out of the path.
+    const part = findPart(data.shapes, primaryPath);
+    if (part && part.uid !== undefined) highlightTopologyNode(part.uid);
     showNotePanel(primaryPath);
-    if (typeof onSelectBlock === "function") {
-      const part = findPart(data.shapes, primaryPath);
-      if (part && part.name) onSelectBlock(part.name);
+    if (typeof onSelectBlock === "function" && part && part.name) {
+      onSelectBlock(part.name);
     }
   }
 
@@ -1145,6 +1226,7 @@ export async function blocktreeViewer3D({
     const display = new Display(viewerEl, displayOptions);
     viewer = new Viewer(display, viewerOptions, notify);
     viewer.render(data.shapes, renderOptions, viewerOptions);
+    _checkPathInvariant(viewer, data.shapes);
     applyContainerMode(containerModeSelect ? containerModeSelect.value : "translucent");
     const fittedHeight = _fitViewerToShell(
       viewer, viewerEl, treeWidth, initialCadWidth, initialHeight
@@ -1206,7 +1288,7 @@ export async function blocktreeViewer3D({
       if (!g) return;
       const m = /^flowchart-B(\d+)-/.exec(g.id);
       if (!m) return;
-      const path = findPathEndingInId(data.shapes, m[1]);
+      const path = findPathByUid(data.shapes, m[1]);
       if (path) selectPath(path);
     });
   }
@@ -1252,6 +1334,15 @@ export async function blocktreeViewer3D({
   // EDGE is a real, working visible/hidden flag though, so this checkbox
   // drives THAT slot directly via the viewer's own public ``setState``
   // API, one connectivity leaf at a time — no vendored code touched.
+  //
+  // ``c.path`` is now the SAME name-derived path the vendored treeview
+  // resolves internally (viewer-toggles fix,
+  // docs/backlog/se-viewer-tree-toggles-inert.md) — before that fix,
+  // ``c.path`` carried the old uid-suffixed scheme, so every ``setState``
+  // call here silently missed (``findNodeByPath`` walks by ``name``,
+  // never found a segment matching a uid) and this checkbox was as inert
+  // as every tree eyeball. No change needed here beyond the id scheme
+  // itself unifying — this call was already the right shape.
   if (connectionsToggle) {
     connectionsToggle.addEventListener("change", () => {
       if (!viewer) return;

@@ -28,6 +28,7 @@ from precis_web.blocktree_3d import (
     pose_spread,
     scene_scale,
     shape_json,
+    tint_blocks,
     world_mesh,
 )
 from precis_web.blocktree_svg import children_map, plan_visibility
@@ -112,7 +113,13 @@ def test_shape_json_arrays_are_internally_consistent() -> None:
 # ── shapes tree construction ─────────────────────────────────────────────
 
 
-def test_build_shapes_node_leaf_path_ends_in_the_block_uid() -> None:
+def test_build_shapes_node_leaf_path_is_the_name_chain_and_carries_a_uid_field() -> (
+    None
+):
+    """viewer-toggles fix (docs/backlog/se-viewer-tree-toggles-inert.md):
+    ``id`` must mirror the "/"-joined ``name`` chain the vendored
+    treeview computes for itself, not the block's uid — stable identity
+    across a rename now lives in the explicit ``uid`` field instead."""
     tree = _fork_tree()
     kids = children_map(tree)
     plan = plan_visibility(tree, kids, level="refined", isolate=None)
@@ -121,7 +128,8 @@ def test_build_shapes_node_leaf_path_ends_in_the_block_uid() -> None:
         tree, _effective_envelope, kids, plan, _UIDS, "hub", "/se-x", assembly
     )
     assert node is not None
-    assert node["id"] == "/se-x/1"  # hub's own uid, no lookup table needed
+    assert node["id"] == "/se-x/hub"  # name-derived, not uid-derived
+    assert node["uid"] == 1  # hub's own uid — stable identity lives here now
     assert node["type"] == "shapes" and node["subtype"] == "solid"
 
 
@@ -134,20 +142,23 @@ def test_build_shapes_node_doubles_id_when_a_block_has_geometry_and_children() -
         tree, _effective_envelope, kids, plan, _UIDS, "fork", "/se-x", assembly
     )
     assert node is not None
-    assert node["id"] == "/se-x/3"  # the group
+    assert node["id"] == "/se-x/fork"  # the group
+    assert node["uid"] == 3
     assert "parts" in node
-    self_leaf = next(p for p in node["parts"] if p["id"] == "/se-x/3/3")
+    self_leaf = next(p for p in node["parts"] if p["id"] == "/se-x/fork/fork (envelope)")
     assert self_leaf["type"] == "shapes"
-    child = next(p for p in node["parts"] if p["id"] == "/se-x/3/4")
+    assert self_leaf["uid"] == 3  # same block, same stable identity as the group
+    child = next(p for p in node["parts"] if p["id"] == "/se-x/fork/fork_arm")
     assert child["name"] == "fork_arm"
     assert (
-        assembly.primary_path["fork"] == "/se-x/3"
+        assembly.primary_path["fork"] == "/se-x/fork"
     )  # group path, not the doubled leaf
-    # viewer fix: the doubled self-leaf's LABEL carries " (envelope)" (the
-    # group and its own self-leaf are otherwise indistinguishable rows in
-    # the vendored assembly tree, both named "fork"), the PATH is
-    # unchanged, and the leaf is recorded as a "container" for the
-    # client's default-translucent behaviour.
+    # viewer fix: the doubled self-leaf's LABEL *and* its path's last
+    # segment carry " (envelope)" now (the path is name-derived, so the
+    # segment is no longer a literal id-repeat) — the group and its own
+    # self-leaf are otherwise indistinguishable rows in the vendored
+    # assembly tree, both named "fork", and the leaf is recorded as a
+    # "container" for the client's default-translucent behaviour.
     assert self_leaf["name"] == "fork (envelope)"
     assert node["name"] == "fork"
     # ``_fork_tree`` is THREE levels deep: fork_arm (uid 4) ALSO has its
@@ -157,7 +168,10 @@ def test_build_shapes_node_doubles_id_when_a_block_has_geometry_and_children() -
     # pre-order (a container's own path is appended before its visible
     # children are walked, which are themselves visited in sorted-name
     # order) — deterministic, so an exact list compare is safe here.
-    assert assembly.container_paths == ["/se-x/3/3", "/se-x/3/4/4"]
+    assert assembly.container_paths == [
+        "/se-x/fork/fork (envelope)",
+        "/se-x/fork/fork_arm/fork_arm (envelope)",
+    ]
 
 
 def test_build_shapes_node_container_paths_empty_when_leaf_has_no_children() -> None:
@@ -184,7 +198,7 @@ def test_build_shapes_node_envelope_level_collapses_fork_to_a_box_leaf() -> None
         tree, _effective_envelope, kids, plan, _UIDS, "fork", "/se-x", assembly
     )
     assert node is not None
-    assert node["id"] == "/se-x/3"
+    assert node["id"] == "/se-x/fork"
     assert node["type"] == "shapes"  # a leaf, not a group -- no 'parts'
     assert "parts" not in node
     # the box must at least cover fork's own footprint, per the box-covers-
@@ -226,7 +240,7 @@ def test_build_shapes_node_stops_on_a_stored_parent_cycle() -> None:
             _walk(p)
 
     _walk(node)
-    assert "/se-x/1" in seen_ids and "/se-x/1/2" in seen_ids
+    assert "/se-x/a" in seen_ids and "/se-x/a/b" in seen_ids
 
 
 def test_build_scene_stops_on_a_stored_parent_cycle() -> None:
@@ -246,12 +260,11 @@ def test_build_scene_stops_on_a_stored_parent_cycle() -> None:
         kids,
         plan,
         {"a": 1, "b": 2},
-        root_id="/se-x",
         root_name="x",
         label_fn=lambda c: "tie",
         colour_fn=lambda c: "#16a34a",
     )
-    assert scene.shapes["id"] == "/se-x"
+    assert scene.shapes["id"] == "/x"
 
 
 # ── connectivity + explode ────────────────────────────────────────────────
@@ -793,7 +806,6 @@ def _hub_rim_scene(pose_scale: float):
         kids,
         plan,
         {"hub": 1, "rim": 2},
-        root_id="/se-x",
         root_name="x",
         label_fn=lambda c: "tie",
         colour_fn=lambda c: "#16a34a",
@@ -902,21 +914,20 @@ def test_build_scene_bundles_shapes_connections_explode_and_mermaid() -> None:
         kids,
         plan,
         _UIDS,
-        root_id="/se-x",
         root_name="x",
         label_fn=lambda c: "tie",
         colour_fn=lambda c: "#16a34a",
     )
-    assert scene.shapes["id"] == "/se-x"
+    assert scene.shapes["id"] == "/x"
     top_ids = {p["id"] for p in scene.shapes["parts"]}
-    assert "/se-x/1" in top_ids and "/se-x/2" in top_ids
+    assert "/x/hub" in top_ids and "/x/rim" in top_ids
     connections_group = next(
-        p for p in scene.shapes["parts"] if p["id"] == "/se-x/_connections"
+        p for p in scene.shapes["parts"] if p["id"] == "/x/connections"
     )
     assert len(connections_group["parts"]) == 1
     assert connections_group["parts"][0]["type"] == "edges"
     assert len(scene.connections) == 1
-    assert set(scene.explode) == {"/se-x/1", "/se-x/2"}
+    assert set(scene.explode) == {"/x/hub", "/x/rim"}
     assert "graph LR" in scene.mermaid
     # gr340030 — the scale-bar overlay's own conversion factor, the SAME
     # multiplier already baked into every emitted coordinate above.
@@ -947,9 +958,166 @@ def test_build_scene_container_paths_flags_a_block_with_its_own_envelope_and_kid
         kids,
         plan,
         _UIDS,
-        root_id="/se-x",
         root_name="x",
         label_fn=lambda c: "tie",
         colour_fn=lambda c: "#16a34a",
     )
-    assert scene.container_paths == ["/se-x/3/3", "/se-x/3/4/4"]
+    assert scene.container_paths == [
+        "/x/fork/fork (envelope)",
+        "/x/fork/fork_arm/fork_arm (envelope)",
+    ]
+
+
+# ── id-mirrors-name-chain invariant (viewer-toggles fix,
+#    docs/backlog/se-viewer-tree-toggles-inert.md) — this bug sat behind a
+#    fully green test suite; every test below targets the INVARIANT
+#    directly (id equals the "/"-join of names from the root) rather than
+#    one design's own hardcoded paths, so it can't silently pass vacuous
+#    again the way the old assertions did. ─────────────────────────────
+
+
+def _assert_id_mirrors_name_chain(node: dict) -> None:
+    """Walk ANY ``Shapes`` node generically (root, group, leaf, the
+    connections group, a connection leaf — every kind this module emits)
+    and assert its own ``id`` is exactly the "/"-join of ``name``s from
+    the root. Generic on purpose: a test that only checks one fixture's
+    own hand-computed paths would happily pass if the id/name SCHEMES
+    still disagreed everywhere except that one fixture's shape."""
+    root_path = f"/{node['name']}"
+    assert node["id"] == root_path
+
+    def _walk(n: dict, parent_path: str) -> None:
+        for child in n.get("parts", []) or []:
+            expected = f"{parent_path}/{child['name']}"
+            assert child["id"] == expected, (child["id"], expected)
+            _walk(child, expected)
+
+    _walk(node, root_path)
+
+
+def test_build_scene_id_mirrors_name_chain_for_every_node_kind() -> None:
+    """End to end: block groups, block leaves, the doubled container
+    self-leaf, the connections group, and a connection leaf all satisfy
+    the SAME rule — the exact invariant the vendored treeview's own
+    ``_buildTreeStructure``/``getNodePath`` compute, traced live against
+    the bundle (docs/backlog/se-viewer-tree-toggles-inert.md)."""
+    tree = _fork_tree()
+    tree.connects = [
+        Connect(a_block="hub", a_port="pin", b_block="fork_tip", b_port="pin")
+    ]
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    scene = build_scene(
+        tree,
+        _effective_envelope,
+        kids,
+        plan,
+        _UIDS,
+        root_name="Structural envelopes",
+        label_fn=lambda c: "tie",
+        colour_fn=lambda c: "#16a34a",
+    )
+    _assert_id_mirrors_name_chain(scene.shapes)
+    # Sanity: the fixture actually exercised a connections group + leaf
+    # (and fork's own doubled container self-leaf) — a vacuous pass here
+    # (nothing drawn) would prove nothing about the invariant on those
+    # node kinds.
+    conn_group = next(
+        p for p in scene.shapes["parts"] if p.get("name") == "connections"
+    )
+    assert conn_group["parts"]  # at least one connection leaf walked above
+    assert scene.container_paths  # fork's doubled self-leaf walked above
+
+
+def test_build_scene_uid_field_present_and_tint_blocks_colours_by_it() -> None:
+    """Stable identity now lives in the explicit ``uid`` field, not the
+    (now rename-fragile) path — :func:`tint_blocks`, the revision
+    scrubber's own colouring path, must read it correctly."""
+    tree = _fork_tree()
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    scene = build_scene(
+        tree,
+        _effective_envelope,
+        kids,
+        plan,
+        _UIDS,
+        root_name="x",
+        label_fn=lambda c: "tie",
+        colour_fn=lambda c: "#16a34a",
+    )
+
+    def _find_leaf(node: dict, name: str) -> dict | None:
+        if node.get("type") == "shapes" and node.get("name") == name:
+            return node
+        for p in node.get("parts", []) or []:
+            found = _find_leaf(p, name)
+            if found is not None:
+                return found
+        return None
+
+    hub_leaf = _find_leaf(scene.shapes, "hub")
+    rim_leaf = _find_leaf(scene.shapes, "rim")
+    assert hub_leaf is not None and hub_leaf["uid"] == _UIDS["hub"]
+    assert rim_leaf is not None and rim_leaf["uid"] == _UIDS["rim"]
+
+    hits = tint_blocks(scene.shapes, {_UIDS["hub"]}, "#f59e0b")
+    assert hits == 1
+    assert hub_leaf["color"] == "#f59e0b"
+    assert rim_leaf["color"] != "#f59e0b"  # not in the changed set
+
+
+def test_build_shapes_node_container_leaf_path_is_parent_plus_envelope_suffix() -> (
+    None
+):
+    """The doubled container self-leaf's own path equals its GROUP
+    parent's path plus "/" plus the SAME "<name> (envelope)" string used
+    as its label — both halves of the id-mirrors-name invariant for this
+    node kind specifically."""
+    tree = _fork_tree()
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    assembly = Assembly3D()
+    node = build_shapes_node(
+        tree, _effective_envelope, kids, plan, _UIDS, "fork", "/root", assembly
+    )
+    assert node is not None
+    self_leaf = next(p for p in node["parts"] if p["name"] == "fork (envelope)")
+    assert self_leaf["id"] == f"{node['id']}/fork (envelope)"
+
+
+def test_child_path_guard_rejects_a_block_name_containing_a_slash() -> None:
+    """A name containing "/" would silently corrupt every path built off
+    it — the guard must raise rather than emit a corrupt id."""
+    tree = _tree(**{"weird/name": BlockNode(name="weird/name", envelope="cyl:r1h1")})
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    assembly = Assembly3D()
+    with pytest.raises(ValueError, match="corrupt a viewer path"):
+        build_shapes_node(
+            tree,
+            _effective_envelope,
+            kids,
+            plan,
+            {"weird/name": 1},
+            "weird/name",
+            "/se-x",
+            assembly,
+        )
+
+
+def test_build_scene_root_name_guard_rejects_a_slash() -> None:
+    tree = _tree(a=BlockNode(name="a", envelope="cyl:r1h1"))
+    kids = children_map(tree)
+    plan = plan_visibility(tree, kids, level="refined", isolate=None)
+    with pytest.raises(ValueError, match="corrupt a viewer path"):
+        build_scene(
+            tree,
+            _effective_envelope,
+            kids,
+            plan,
+            {"a": 1},
+            root_name="bad/root",
+            label_fn=lambda c: "tie",
+            colour_fn=lambda c: "#16a34a",
+        )

@@ -12,33 +12,59 @@ IDENTICALLY between the SVG and 3D readers — one plan, two renderers.
 **Data format.** ``Shapes`` — the vendored viewer's own hierarchical JSON
 tree (``static/three-cad-viewer/``, ``Data Format.md`` upstream) — is a
 tree of ``group`` (has ``parts``) / ``leaf`` (has ``shape``) nodes
-addressed by a slash path. Per the spec's "DB-minted block ids as leaf
-names... a pick returns the id with no lookup table": every LEAF's path
-ends in the block's own stable ``uid`` (``se_blocks.uid`` — the caller
+addressed by a slash path. **That ``id`` path MUST equal the "/"-join of
+every ``name`` from the root down to that node** — byte-identical to what
+the vendored treeview itself computes (traced in the minified bundle:
+``_buildTreeData``/``_buildTreeStructure`` build the tree's own state
+model keyed purely by each part's ``name``, never its ``id``, then join
+those names with "/"; ``Viewer.getStates()`` keys and the path handed to
+``Viewer.setObject`` on a tree click are that same join with one leading
+"/"). This is a hard invariant, not a style preference: the vendored
+``nestedGroup.groups`` registry that ``Viewer.setObject``/every eyeball
+click actually reaches is keyed by our raw ``id`` string verbatim
+(``renderLoop``'s ``this.groups[t.id] = ...``). If ``id`` and the
+name-chain path ever diverge, a tree click updates the tree MODEL but
+``setObject``'s ``nestedGroup.groups[path]`` lookup misses and no mesh is
+ever touched — the measured root cause of every tree toggle in the viewer
+being silently inert, with a fully green test suite and no console output
+(docs/backlog/se-viewer-tree-toggles-inert.md). Do not reintroduce a
+second, id-only namespace here; if you need a NEW stable handle, add a
+field, don't smuggle it into ``id``.
+
+Stable block identity — the thing a uid-suffixed path used to carry, so a
+rename doesn't break the revision scrubber's ``changed_uids`` colouring —
+lives in an explicit ``"uid"`` FIELD (``se_blocks.uid`` — the caller
 passes ``uid_by_name``, since that mapping needs a store round trip this
-module never makes). The uid, not the row id: ``persist.save_tree``
-rebuilds every block ROW on every save, so a path built from row ids
+module never makes) on every block node instead, read by
+:func:`tint_blocks`. The uid, not the row id: ``persist.save_tree``
+rebuilds every block ROW on every save, so identity keyed on a row id
 would change under an unrelated edit, while the uid is carried forward
-(docs/backlog/design-state-core.md item 2, "uids are the viewer path
-leaf names"). The ``name`` beside it stays the block's LABEL — the
-viewer shows that, and only the path is identity. A block that has both its own geometry
-AND visible children (a real assembly node, not just a container) can't
-be represented by one ``Shapes`` node (group XOR leaf) — it becomes a
-GROUP at ``.../<id>`` whose own shape lives one level deeper at
-``.../<id>/<id>`` (the id repeated), the same convention CadQuery's own
-`ocp_vscode`/jupyter-cadquery viewers use for the same shape XOR
-children constraint. The pick handler reads the LAST path segment as the
-id either way, so "no lookup table" still holds for that doubled leaf.
-That doubled self-leaf's LABEL (never its path) carries an extra
-``" (envelope)"`` suffix — the vendored assembly tree would otherwise
-show the block's name nested directly inside a group also carrying that
-same name, two indistinguishable rows with no way to tell which eyeball
-hides the enclosing box (a real bug report: an opaque root envelope
-enclosing an entire design, with no abstraction level that avoids it).
-Every such self-leaf's path is also collected onto
+(docs/backlog/design-state-core.md item 2). The ``name`` beside ``id``
+stays the block's LABEL — the viewer shows that, and (now) also drives
+the path.
+
+A block that has both its own geometry AND visible children (a real
+assembly node, not just a container) can't be represented by one
+``Shapes`` node (group XOR leaf) — it becomes a GROUP at ``.../<name>``
+whose own shape lives one level deeper at ``.../<name>/<name> (envelope)``
+(both the label AND the path segment carry the suffix now, since the
+path is name-derived — the vendored assembly tree would otherwise show
+``name`` nested directly inside a group ALSO called ``name``, two
+indistinguishable rows with no way to tell which eyeball hides the
+enclosing box; a real bug report: an opaque root envelope enclosing an
+entire design, with no abstraction level that avoids it). Every such
+self-leaf's path is also collected onto
 :attr:`Assembly3D.container_paths`/:attr:`Scene3D.container_paths`, so
 the client can default these "container" leaves to translucent without
 re-deriving "doubled last path segment" itself.
+
+Block names are unique TREE-WIDE today (``uid_by_name`` is a flat
+``dict[str, int]``) — stronger than the sibling-uniqueness the vendor
+actually needs (``root.children`` is a dict keyed by name) — so a
+name-derived path is unambiguous. A name containing "/" would still
+silently corrupt every path built from it and reintroduce this exact bug
+in a new form, so every join site (:func:`_child_path`/:func:`_root_path`)
+raises rather than emit a corrupt path.
 
 **Known simplifications** (this module's own honesty-header entries,
 alongside the SVG projector's convex-hull-for-concave-envelopes one):
@@ -382,17 +408,56 @@ class Assembly3D:
     container_paths: list[str] = field(default_factory=list)
 
 
+def _check_name_segment(name: str) -> None:
+    """Guard the id-mirrors-name invariant (module docstring) at every
+    join site: a name containing "/" would silently split into extra
+    path segments and corrupt the id built from it — and everything
+    built ON TOP of that corrupted id — rather than merely producing an
+    ugly one. Tree-wide name uniqueness (what we actually have) is a
+    STRONGER guarantee than the sibling uniqueness the vendored treeview
+    needs (``root.children`` is a dict keyed by name), so the only thing
+    left to police here is this character."""
+    if "/" in name:
+        raise ValueError(
+            f"name {name!r} contains '/', which would corrupt a viewer path"
+        )
+
+
+def _child_path(parent_path: str, name: str) -> str:
+    """One more "/"-joined segment onto ``parent_path`` — the SAME join
+    the vendored treeview's own ``_buildTreeStructure`` performs over
+    ``name``s (module docstring), so every id we emit stays
+    byte-identical to the path the tree computes for itself."""
+    _check_name_segment(name)
+    return f"{parent_path}/{name}"
+
+
+def _root_path(root_name: str) -> str:
+    """The design root's own ``id`` — literally what the vendored
+    treeview's ``Viewer.getStates()``/the path handed to
+    ``Viewer.setObject`` on a tree click use for the root's name segment
+    (traced in the bundle: ``TreeModel.getNodePath`` is ``"/" +
+    node.path``, and the root's own ``node.path`` is the bare name with
+    NO leading slash — the leading "/" is added by every consumer, never
+    stored). ``build_shapes_node`` is then called with this as the
+    starting ``path_prefix``, so every descendant path inherits it."""
+    _check_name_segment(root_name)
+    return f"/{root_name}"
+
+
 def _shape_leaf(
     path: str,
     name: str,
     mesh: tuple[NDArray[np.float64], NDArray[np.int64]],
     colour: str,
+    uid: int,
 ) -> dict[str, Any]:
     verts, tris = mesh
     return {
         "version": 3,
         "id": path,
         "name": name,
+        "uid": uid,
         "type": "shapes",
         "subtype": "solid",
         "state": [1, 1],
@@ -418,13 +483,15 @@ CHANGED_COLOUR = "#f59e0b"
 
 
 def tint_blocks(shapes: dict[str, Any], uids: set[int], colour: str) -> int:
-    """Recolour every solid leaf whose path ends in one of ``uids`` (the
-    module docstring's leaf-id scheme: the last segment IS the block uid)
+    """Recolour every solid leaf whose own ``"uid"`` field is in ``uids``
     — in place, on the tree :func:`build_scene` emitted. Returns how many
-    leaves were tinted. Connection leaves are ``edges``-type with a
-    synthetic ``c<i>`` id, so they never match; a collapsed ``box`` whose
-    only change is inside it does not match either (its own uid did not
-    change), which is the honest reading of "changed by uid"."""
+    leaves were tinted. ``id`` is now a "/"-joined NAME path (module
+    docstring) — a rename changes it, so identity is read from the
+    explicit ``"uid"`` field instead, never parsed back out of the path.
+    Connection leaves carry no ``"uid"`` field at all, so they never
+    match; a collapsed ``box`` whose only change is inside it does not
+    match either (its own uid did not change), which is the honest
+    reading of "changed by uid"."""
     if not uids:
         return 0
     hits = 0
@@ -437,8 +504,8 @@ def tint_blocks(shapes: dict[str, Any], uids: set[int], colour: str) -> int:
             continue
         if node.get("type") != "shapes":
             continue
-        tail = str(node.get("id", "")).rsplit("/", 1)[-1]
-        if tail.isdigit() and int(tail) in uids:
+        uid = node.get("uid")
+        if uid is not None and int(uid) in uids:
             node["color"] = colour
             hits += 1
     return hits
@@ -457,8 +524,10 @@ def build_shapes_node(
     scale: float = 1.0,
 ) -> dict[str, Any] | None:
     """Recursively build the ``Shapes`` node for ``name`` (module
-    docstring: leaf id ends in the block's uid; a node with both its own
-    geometry and visible children doubles its last segment). Records
+    docstring: ``id`` is the "/"-join of ``name``s from the root, exactly
+    matching the vendored treeview's own path — a node with both its own
+    geometry and visible children doubles its last segment,
+    ``.../<name>/<name> (envelope)``). Records
     ``name``'s own primary path into ``assembly.primary_path`` as a side
     effect. Returns ``None`` when there is nothing to draw (bad/absent
     envelope, no descendant geometry either) — dropped by the caller,
@@ -491,7 +560,7 @@ def build_shapes_node(
     if block_uid is None:
         return None
     node = tree.blocks[name]
-    own_path = f"{path_prefix}/{block_uid}"
+    own_path = _child_path(path_prefix, name)
 
     if kind == "box":
         pts: list[NDArray[np.float64]] = []
@@ -510,7 +579,7 @@ def build_shapes_node(
         lo: Vec3f = (float(mn[0]), float(mn[1]), float(mn[2]))
         hi: Vec3f = (float(mx[0]), float(mx[1]), float(mx[2]))
         assembly.primary_path[name] = own_path
-        return _shape_leaf(own_path, name, _box_mesh(lo, hi), _BOX_COLOUR)
+        return _shape_leaf(own_path, name, _box_mesh(lo, hi), _BOX_COLOUR, block_uid)
 
     # kind == "shape"
     visible_kids = sorted(k for k in kids.get(name, []) if k in plan.shown)
@@ -522,7 +591,7 @@ def build_shapes_node(
         if mesh is None:
             return None
         assembly.primary_path[name] = own_path
-        return _shape_leaf(own_path, name, mesh, _SHAPE_COLOUR)
+        return _shape_leaf(own_path, name, mesh, _SHAPE_COLOUR, block_uid)
 
     parts: list[dict[str, Any]] = []
     if mesh is not None:
@@ -531,13 +600,15 @@ def build_shapes_node(
         # docstring). The vendored assembly tree would otherwise show
         # ``name`` nested directly inside a group ALSO called ``name`` —
         # two indistinguishable rows, with no way to tell which eyeball
-        # hides the enclosing box. The label carries " (envelope)"; the
-        # PATH stays the bare uid-doubled id (only the path is identity,
-        # per the module docstring) so tint_blocks/pick/mermaid-id
-        # resolution, which all key off the path's last segment, are
-        # unaffected.
-        self_path = f"{own_path}/{block_uid}"
-        parts.append(_shape_leaf(self_path, f"{name} (envelope)", mesh, _SHAPE_COLOUR))
+        # hides the enclosing box. Both the LABEL and the PATH's last
+        # segment now carry the " (envelope)" suffix (the path is
+        # name-derived, per the module docstring, so there is no longer a
+        # bare-uid path to keep unchanged) — identity for
+        # tint_blocks/pick/mermaid-id resolution comes from the explicit
+        # ``uid`` field on this leaf, not from parsing the path.
+        self_name = f"{name} (envelope)"
+        self_path = _child_path(own_path, self_name)
+        parts.append(_shape_leaf(self_path, self_name, mesh, _SHAPE_COLOUR, block_uid))
         assembly.container_paths.append(self_path)
     for k in visible_kids:
         child = build_shapes_node(
@@ -561,6 +632,7 @@ def build_shapes_node(
         "version": 3,
         "id": own_path,
         "name": name,
+        "uid": block_uid,
         "loc": None,
         "parts": parts,
     }
@@ -785,10 +857,14 @@ def connectivity_lines(
     stability report's own ``subject`` convention,
     :mod:`precis_se.stability`) — the tree row/mermaid edge previously
     showed only the bare joint class, unidentifiable among several
-    connects to the same block."""
+    connects to the same block. This SAME ``label`` is also the line's
+    path's own last segment (module docstring's id-mirrors-name
+    invariant) — guaranteed unique here since ``subject`` embeds the
+    connect's own distinct endpoint block names, and guarded against an
+    embedded "/" the same way every other path segment is
+    (:func:`_child_path`)."""
     seen: set[tuple[str, str]] = set()
     lines: list[ConnLine] = []
-    i = 0
     witness_budget = _WITNESS_BUDGET_PER_SCENE
     for c in tree.connects:
         a_vis = _visible_ancestor(tree, c.a_block, plan.shown)
@@ -813,21 +889,21 @@ def connectivity_lines(
             if found is not None:
                 witness, witness_gap = found
         subject = f"{c.a_block}.{c.a_port}—{c.b_block}.{c.b_port}"
+        label = f"{subject} ({label_fn(c)})"
         lines.append(
             ConnLine(
-                path=f"{group_path}/c{i}",
+                path=_child_path(group_path, label),
                 a_name=a_vis,
                 b_name=b_vis,
                 a_path=a_path,
                 b_path=b_path,
-                label=f"{subject} ({label_fn(c)})",
+                label=label,
                 colour=colour_fn(c),
                 witness=witness,
                 witness_gap=witness_gap,
                 subject=subject,
             )
         )
-        i += 1
     return lines
 
 
@@ -1104,11 +1180,11 @@ class Scene3D:
     #: force-directed cloud's input. ``mermaid`` above stays for one
     #: release as the no-JS/render-failure fallback.
     nodes: list[TopoNode] = field(default_factory=list)
-    #: The doubled-uid self-leaf paths for every block that has both its
-    #: own geometry and visible children (:class:`Assembly3D`'s own
-    #: field docstring) — the client defaults these to translucent so an
-    #: opaque container envelope never hides what's inside it. ``[]`` for
-    #: a flat design with no such block.
+    #: The doubled self-leaf paths for every block that has both its own
+    #: geometry and visible children (:class:`Assembly3D`'s own field
+    #: docstring) — the client defaults these to translucent so an opaque
+    #: container envelope never hides what's inside it. ``[]`` for a flat
+    #: design with no such block.
     container_paths: list[str] = field(default_factory=list)
 
 
@@ -1119,15 +1195,21 @@ def build_scene(
     plan: VisiblePlan,
     uid_by_name: dict[str, int],
     *,
-    root_id: str,
     root_name: str,
     label_fn: Any,
     colour_fn: Any,
 ) -> Scene3D:
     """Assemble the whole round-2a bundle for one render pass — the
-    ``Shapes`` tree (assembly + a ``_connections`` sibling group carrying
+    ``Shapes`` tree (assembly + a ``connections`` sibling group carrying
     the drawn links), the connectivity metadata, the explode-along-
-    attachment offsets, and the linked mermaid topology graph."""
+    attachment offsets, and the linked mermaid topology graph.
+
+    The root's own ``id`` is derived from ``root_name`` via
+    :func:`_root_path`, never accepted as a separate argument — module
+    docstring's id-mirrors-name invariant is a hard one, so there is
+    deliberately no way for a caller to hand this function a root id that
+    disagrees with the root's own name."""
+    root_id = _root_path(root_name)
     assembly = Assembly3D()
     parts: list[dict[str, Any]] = []
     # ONE cycle-guard set shared across every render root — mirrors
@@ -1154,7 +1236,10 @@ def build_scene(
             parts.append(node)
 
     diag = pose_spread(tree) * scale
-    conn_group_path = f"{root_id}/_connections"
+    # Named "connections" (not the old "_connections") to MATCH the
+    # group's own "name" field below — module docstring's id-mirrors-name
+    # invariant.
+    conn_group_path = _child_path(root_id, "connections")
     lines = connectivity_lines(
         tree,
         plan,

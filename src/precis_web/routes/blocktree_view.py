@@ -1014,10 +1014,16 @@ def _build_scene3d(
         kids,
         plan,
         uid_by_name,
-        # gr338445: the slug, not the numeric ref id — a viewer path like
-        # ``/se-337761/_connections`` is opaque; ``/se-<slug>/_connections``
-        # tells the reader what they're looking at.
-        root_id=f"/{kind}-{slug}",
+        # viewer fix (docs/backlog/se-viewer-tree-toggles-inert.md):
+        # ``build_scene`` derives the root's own ``id`` from
+        # ``root_name`` itself (``/{root_name}``) rather than accepting a
+        # separate id — the vendored treeview's tree-click path is a
+        # "/"-join of ``name``s starting from the root's own name, so the
+        # root id MUST agree with it byte-for-byte or nothing under it
+        # ever resolves in ``nestedGroup.groups``. This superseded
+        # gr338445's old ``/{kind}-{slug}`` root id (a nicer label than
+        # the opaque numeric ref id, but no longer an option once id had
+        # to mirror the name chain).
         root_name=adapter.label,
         label_fn=adapter.connect_label,
         colour_fn=adapter.connect_colour,

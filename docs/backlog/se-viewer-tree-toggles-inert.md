@@ -65,17 +65,86 @@ so a null is a real null rather than capture jitter.
    `cageEnvelope` comment in `blocktree-3d.js` — but only as a CSS-selector
    quirk. Nothing recorded that it also severs visibility.
 
-## Intended direction
+## Intended direction — SUPERSEDED, see the RESUME POINTER below
 
-Bridge the two schemes with an explicit name-path ↔ uid-path map emitted
-server-side in the `scene3d.json` payload, rather than making `id` name-derived.
-Name-derived ids would satisfy the vendor's assumption and fix this at a stroke,
-but node identity would become the block *name*, and renaming a block would then
-break the revision scrubber, which deliberately keys on stable uids
-(`changed_uids`). This is a preference, not a settled decision.
+This section recorded the original preference: bridge the two schemes with a
+name-path ↔ uid-path map emitted server-side, on the reasoning that
+name-derived ids would make node identity the block *name* and so break the
+revision scrubber's stable-uid keying (`changed_uids`).
 
-This bridge is a prerequisite for most of
+**That reasoning was wrong and the decision was reversed.** The uid does not
+have to be encoded *in* the path — it can ride as a field on the node, which
+keeps identity stable under renames while letting the path mirror the name
+chain. A map would also have been the least DRY option available, restating
+information every node already carries. The implemented fix makes `id` equal
+the name chain; see the RESUME POINTER.
+
+This fix is a prerequisite for most of
 `docs/backlog/se-3d-viewer-ux-batch.md`, where it is currently tracked only
 under the hover item — it belongs first, not last.
 
 Owner `src/precis_web/blocktree_3d.py`, `src/precis_web/static/blocktree-3d.js`.
+
+## RESUME POINTER (2026-09-29, session wind-down)
+
+**State: fix LANDED on `main` (ungated qland, 2026-09-29). Verified at the
+pytest/mypy level only — full suite green apart from three unrelated
+pre-existing failures, clean typecheck over 2259 files, secret gate clean.
+NEVER verified against a running viewer.**
+
+**The live canvas verification in step 2 below is still OWED.** A green suite
+is not sufficient evidence for this change: the old tests passed green, with a
+clean console, for the entire period during which every visibility toggle in
+this viewer was dead (see "Why the suite stayed green"). Until someone runs the
+pixel-diff checks, treat the repair as plausible, not confirmed.
+
+The measurement phase is COMPLETE; do not redo it. Settled facts:
+
+- `viewer.setState(<uid path>, …)` is a silent no-op. `setState` → `treeview.
+  setState` → `findNodeByPath` walks `children[segment]` **by name**, so a uid
+  path dies at segment 1 and returns null.
+- The tree→scene bridge is `Viewer.setObject(path)`, whose first line is the
+  **id-keyed** `nestedGroup.groups[path]` — but it is handed a **name** path.
+- Proven back to back in one page session: `setObject('/Structural envelopes/
+  unicycle/wheel', 0, 0)` → canvas diff `n=0`; `setObject('/se-unicycle-c1/66/
+  67', 0, 0)` → `n=6351`, matching the positive control. `setObject` is correct
+  and is only ever called with the wrong key type.
+- Correct uids on the test design: `wheel` = `/se-unicycle-c1/66/67`,
+  `saddle` = `/se-unicycle-c1/66/79`. An earlier write-up mislabelled the
+  saddle measurement as the wheel.
+
+**What the WIP commit does.** Makes every emitted `id` path equal the "/"-join
+of the `name`s above it, so the treeview and `nestedGroup` key on the same
+string and the vendor works as designed — no vendored patch, no translation
+layer. The uid moves out of the path onto the node as a `uid` FIELD, so the
+revision scrubber keeps stable identity across renames. Adds a load-time
+self-check that every emitted path resolves in both key spaces.
+
+**Next steps, in order.**
+
+1. The `scripts/test` run was still in flight at wind-down; its result was never
+   seen. Re-run `scripts/test --impacted` and `scripts/test --typecheck`.
+2. Verify on the harness by canvas pixel-diff — NOT by screenshot alone and NOT
+   by the test suite. Containers were left running: `precis-web-demo` on port
+   9123, `pwtest` (playwright 1.55.0 + pillow) on the `dev_default` network;
+   target `http://precis-web-demo:9123/se/unicycle-c1?level=refined`. Probe
+   scripts from the measurement phase are in `.claude/scratch/` under the
+   `verify2-` and `setstate-` prefixes (that directory is SHARED with other
+   workers — do not assume a file there is yours).
+   Re-check, all against a pristine reload with no orbit drag: (a) the shape
+   icon on `wheel` now hides the wheel; (b) the container "hidden" mode still
+   works AND now survives a subsequent tree click — it previously survived only
+   because the mechanism that would clobber it was itself broken, so this is the
+   regression to watch; (c) the connections checkbox, which called
+   `setState(c.path, …)` with an id path and should have been inert, now works.
+3. Delete THIS FILE in the landing commit (delete-on-ship) and make sure the
+   invariant survives in the `blocktree_3d` docstrings, not here.
+
+**Why the suite stayed green.** The old tests asserted the SHAPE of the emitted
+scene JSON, which was never wrong. The defect was two disjoint key spaces, which
+no output-shape assertion can catch. Tests added by the WIP commit assert the
+INVARIANT generically instead. Keep it that way.
+
+**Still open, not started:** live scene + client-side isolate, per-block level
+chips, bidirectional hover — all in `se-3d-viewer-ux-batch.md`, all of which
+were blocked on this path fix. Then `se-mechanical-drc.md`.

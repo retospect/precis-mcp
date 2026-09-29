@@ -305,11 +305,14 @@ def test_se_scrubber_rev1_renders_the_snapshot_tree(
     body = scene.json()
     leaves = _leaves(body["shapes"])
     # ``fork`` has both its own envelope and a visible child (``hub``), so
-    # its own shape is a CONTAINER leaf and its label carries the
+    # its own shape is a CONTAINER leaf and its label (and, post
+    # viewer-toggles fix, its path's own last segment) carries the
     # " (envelope)" suffix (blocktree_3d.build_shapes_node) — the group and
     # its own self-leaf would otherwise be two identically-named rows in
-    # the vendored assembly tree. Only the label; the uid path is unchanged,
-    # which is why the changed_uids tinting below still keys off it.
+    # the vendored assembly tree. The changed_uids tinting below keys off
+    # each leaf's explicit ``uid`` FIELD (blocktree_3d.tint_blocks), not
+    # its path — the path is now name-derived and changes on a rename, so
+    # it can no longer carry stable identity.
     assert set(leaves) == {"fork (envelope)", "hub"}
     # At the first save everything is new — both blocks are "changed".
     uids = _uid_by_name(store, ref_id)

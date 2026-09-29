@@ -504,36 +504,49 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     assert r.status_code == 200
     body = r.json()
 
-    # gr338445: the root id is the design's SLUG, not its opaque numeric
-    # ref id — a viewer path like ``/se-337761`` told the reader nothing.
-    assert body["shapes"]["id"] == "/se-unicycle_web"
-    # every SOLID leaf path ends in the block's stable ``uid`` — no lookup
-    # table needed on the client to interpret a pick, and (design-state-
-    # core.md item 2) a path that survives the next save, unlike the row
-    # id this used to use. The sibling ``_connections`` group's own
-    # ``edges``-type leaves are NOT block leaves (their id is a synthetic
-    # ``c<i>`` per drawn link) and are excluded from this check on purpose.
-    # ``fork`` has its own envelope AND visible children (``fork_arm``), so
-    # its own doubled self-leaf carries the " (envelope)" container-leaf
-    # suffix on its LABEL (viewer fix, gr337746 neighbour) — stripped back
-    # off here since this check is about the uid/name correspondence, not
-    # that suffix (covered separately below).
-    leaves: dict[str, str] = {}
+    # viewer-toggles fix (docs/backlog/se-viewer-tree-toggles-inert.md):
+    # the root id is now the design's own kind LABEL (``adapter.label``),
+    # not the slug — it must equal the vendored treeview's own root path
+    # exactly, byte for byte, or nothing under it resolves in
+    # ``nestedGroup.groups``. This supersedes gr338445's old
+    # ``/se-<slug>`` scheme (a nicer id than the opaque numeric ref id,
+    # but no longer an option once id had to mirror the name chain).
+    assert body["shapes"]["id"] == "/Structural envelopes"
+
+    # Every SOLID leaf's own ``id`` is exactly its PARENT's path plus its
+    # own ``name`` — no lookup table needed on the client, and (unlike a
+    # uid-derived path) it changes on a rename, which is exactly why
+    # stable identity moved to the leaf's own explicit ``uid`` field
+    # instead. ``fork`` has its own envelope AND visible children
+    # (``fork_arm``), so its doubled self-leaf carries the "
+    # (envelope)" suffix on BOTH its label and its path's last segment
+    # (viewer fix, gr337746 neighbour) — stripped back off here since
+    # this check is about the id/name correspondence, not that suffix
+    # (covered separately below).
+    leaves: dict[str, dict[str, Any]] = {}
     _CONTAINER_SUFFIX = " (envelope)"
 
-    def _walk(node: Any) -> None:
+    def _walk(node: Any, parent_path: str | None) -> None:
         if "parts" in node:
             for p in node["parts"]:
-                _walk(p)
+                _walk(p, node["id"])
         elif node.get("type") == "shapes":
-            name = node["name"]
-            if name.endswith(_CONTAINER_SUFFIX):
-                name = name[: -len(_CONTAINER_SUFFIX)]
-            leaves[name] = node["id"].rsplit("/", 1)[-1]
+            raw_name = node["name"]  # carries " (envelope)" for a container self-leaf
+            stripped = raw_name[: -len(_CONTAINER_SUFFIX)] if raw_name.endswith(
+                _CONTAINER_SUFFIX
+            ) else raw_name
+            leaves[stripped] = {
+                "id": node["id"],
+                "uid": node["uid"],
+                # id-mirrors-name invariant: the id's own last segment is
+                # the RAW (unstripped) name, parent path plus "/" plus it.
+                "expected_id": f"{parent_path}/{raw_name}",
+            }
 
-    _walk(body["shapes"])
+    _walk(body["shapes"], None)
     assert leaves  # at least one leaf rendered
-    assert all(seg.isdigit() for seg in leaves.values())
+    for name, info in leaves.items():
+        assert info["id"] == info["expected_id"], name
     ref = store.get_ref(kind="se", id="unicycle_web")
     assert ref is not None
     with store.pool.connection() as conn:
@@ -541,9 +554,11 @@ def test_se_scene3d_json_shapes_tree_and_connections(
             "SELECT name, uid FROM se_blocks WHERE ref_id = %s AND retired_at IS NULL",
             (ref.id,),
         ).fetchall()
-    uid_by_name = {str(row[0]): str(int(row[1])) for row in rows}
-    # The path is the uid; the LABEL is what the viewer shows beside it.
-    assert leaves == {name: uid_by_name[name] for name in leaves}
+    uid_by_name = {str(row[0]): int(row[1]) for row in rows}
+    # stable identity now lives in the explicit ``uid`` field, not the path.
+    assert {name: info["uid"] for name, info in leaves.items()} == {
+        name: uid_by_name[name] for name in leaves
+    }
     # the hub—rim axial tie is drawn as a connection, labelled by its
     # kinematic class/mechanism (round 2a spec §5.8 comment 5(c)).
     assert len(body["connections"]) == 1
@@ -564,17 +579,20 @@ def test_se_scene3d_json_container_paths_flags_doubled_uid_leaf(
     """Viewer fix (user report against se:unicycle-c1): a block with both
     its own envelope AND visible children — ``fork``, here, which has
     ``fork_arm`` as a visible child — doubles its last path segment
-    (``.../<uid>/<uid>``, the module docstring's "container leaf"
-    convention). That path must be reported in ``container_paths`` so the
-    client can default it to translucent, and the leaf's own display name
-    must differ from the group's (``"fork (envelope)"`` vs ``"fork"``) —
-    otherwise the vendored assembly tree shows two indistinguishable rows
-    both labelled "fork", with no way to tell which eyeball hides the
-    enclosing box. ``fork_arm`` (nested one level deeper) is ALSO a
-    container by the same condition — its own envelope plus a visible
-    child, ``fork_tip`` — and a nested container occludes its own subtree
-    for exactly the same reason the outermost one does, so it must be
-    flagged too."""
+    (``.../<name>/<name> (envelope)``, post viewer-toggles fix,
+    docs/backlog/se-viewer-tree-toggles-inert.md — the module docstring's
+    "container leaf" convention). That path must be reported in
+    ``container_paths`` so the client can default it to translucent, and
+    the leaf's own display name must differ from the group's (``"fork
+    (envelope)"`` vs ``"fork"``) — otherwise the vendored assembly tree
+    shows two indistinguishable rows both labelled "fork", with no way to
+    tell which eyeball hides the enclosing box. ``fork_arm`` (nested one
+    level deeper) is ALSO a container by the same condition — its own
+    envelope plus a visible child, ``fork_tip`` — and a nested container
+    occludes its own subtree for exactly the same reason the outermost
+    one does, so it must be flagged too. Both self-leaves carry the SAME
+    stable ``uid`` as their enclosing group — that's what the revision
+    scrubber's ``tint_blocks`` now keys on, not the path."""
     _seed_se(runtime_with_store)
     r = blocktree_client.get("/se/unicycle_web/scene3d.json")
     assert r.status_code == 200
@@ -591,8 +609,11 @@ def test_se_scene3d_json_container_paths_flags_doubled_uid_leaf(
     uids = {str(r[0]): int(r[1]) for r in rows}
     fork_uid = uids["fork"]
     fork_arm_uid = uids["fork_arm"]
-    fork_self_path = f"/se-unicycle_web/{fork_uid}/{fork_uid}"
-    fork_arm_self_path = f"/se-unicycle_web/{fork_uid}/{fork_arm_uid}/{fork_arm_uid}"
+    root = "/Structural envelopes"
+    fork_group_path = f"{root}/fork"
+    fork_self_path = f"{fork_group_path}/fork (envelope)"
+    fork_arm_group_path = f"{fork_group_path}/fork_arm"
+    fork_arm_self_path = f"{fork_arm_group_path}/fork_arm (envelope)"
     # Order is pre-order (a container's own path is appended before its
     # visible children are walked) — deterministic, so an exact list
     # compare is safe here.
@@ -607,11 +628,17 @@ def test_se_scene3d_json_container_paths_flags_doubled_uid_leaf(
                 return found
         return None
 
-    group = _find(body["shapes"], f"/se-unicycle_web/{fork_uid}")
+    group = _find(body["shapes"], fork_group_path)
     self_leaf = _find(body["shapes"], fork_self_path)
     assert group is not None and self_leaf is not None
     assert group["name"] == "fork"
     assert self_leaf["name"] == "fork (envelope)"
+    assert group["uid"] == fork_uid
+    assert self_leaf["uid"] == fork_uid
+
+    fork_arm_self_leaf = _find(body["shapes"], fork_arm_self_path)
+    assert fork_arm_self_leaf is not None
+    assert fork_arm_self_leaf["uid"] == fork_arm_uid
 
 
 def test_se_scene3d_json_container_paths_empty_for_a_flat_design(

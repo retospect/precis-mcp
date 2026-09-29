@@ -124,17 +124,18 @@
  *   the SHAPE/fill icon, index 1 the EDGE icon — distinguished purely by
  *   that trailing digit, in loop order, both children of the same
  *   ``.tv-node-content``.
- * - The row's ``data-path`` is NOT the uid-suffixed leaf ``id`` this
- *   file elsewhere reads (``findPathEndingInId`` etc., see the comment
- *   above on the atomic overlay) — the treeview builds its own state
- *   tree via ``_buildTreeData``, keyed purely by each part's ``name``
- *   field (``i[n.name] = ...``, ``id`` is never consulted), then joins
- *   those names with "/" for ``t.path`` (``_buildTreeStructure``:
- *   ``o = i == null ? s : `${i}/${s}` ``). blocktree_3d.build_scene
- *   gives the connections group ``"name": "connections"`` — the
- *   ``_connections`` string only appears in its ``id``
- *   (``f"{root_id}/_connections"``), a field the treeview ignores — so
- *   the rendered row's ``data-path`` ends in plain ``/connections``. */
+ * - The row's ``data-path`` is built by the treeview's own state tree
+ *   (``_buildTreeData``, keyed purely by each part's ``name`` field,
+ *   ``i[n.name] = ...`` — ``id`` is never consulted there), joining those
+ *   names with "/" for ``t.path`` (``_buildTreeStructure``:
+ *   ``o = i == null ? s : `${i}/${s}` ``). blocktree_3d.build_scene gives
+ *   the connections group ``"name": "connections"``, so the rendered
+ *   row's ``data-path`` ends in ``/connections`` — since the viewer-
+ *   toggles fix (docs/backlog/se-viewer-tree-toggles-inert.md), the
+ *   group's own JSON ``id`` is ALSO name-derived and ends the same way
+ *   (``.../connections``, not the old ``.../_connections``), so this
+ *   selector now matches both the treeview row and the scene-graph node
+ *   — previously an intentional divergence, now just a plain path. */
 #bt3d-viewer .tv-tree-node[data-path$="/connections"] > .tv-node-content > .tv-icon0 {
   opacity: 0.35 !important;
   cursor: not-allowed !important;
