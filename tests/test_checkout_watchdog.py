@@ -388,6 +388,39 @@ def test_sessionless_callers_keep_once_per_process(tmp_path: Path) -> None:
     assert consume_last_exit_breadcrumb() is None
 
 
+def test_a_breadcrumb_written_after_an_empty_read_is_still_found() -> None:
+    """Regression: the reader must not latch "there was none".
+
+    Memoising the absent case made this order-dependent — whichever test
+    in an xdist worker looked first blinded every later one, which is how
+    ``test_skill.py::test_status_breadcrumb_is_consumed_not_repeated``
+    went red on CI while passing locally. Production only boots once so
+    it never saw this, but an order-dependent reader is a latent bug
+    either way.
+    """
+    assert consume_last_exit_breadcrumb() is None  # nothing on disk yet
+
+    _write_crumb()
+    with serve_ledger.session_scope(_Session()):
+        crumb = consume_last_exit_breadcrumb()
+    assert crumb is not None, "a breadcrumb written after an empty read was missed"
+
+
+def test_a_newer_breadcrumb_reopens_it_to_sessions_already_served() -> None:
+    """A fresh file supersedes the held one — a session that already saw
+    the old explanation must get the new one, not be told nothing
+    happened."""
+    _write_crumb()
+    session = _Session()
+    with serve_ledger.session_scope(session):
+        assert consume_last_exit_breadcrumb() is not None
+        assert consume_last_exit_breadcrumb() is None  # same crumb, once
+
+    _write_crumb()
+    with serve_ledger.session_scope(session):
+        assert consume_last_exit_breadcrumb() is not None
+
+
 def test_no_breadcrumb_stays_none_for_every_session(tmp_path: Path) -> None:
     with serve_ledger.session_scope(_Session()):
         assert consume_last_exit_breadcrumb() is None

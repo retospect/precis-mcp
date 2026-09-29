@@ -215,11 +215,10 @@ def _read_and_delete_breadcrumb() -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
-#: The breadcrumb this process booted after, taken from disk exactly once
-#: and then held in memory. ``_breadcrumb_taken`` distinguishes "not looked
-#: yet" from "looked, there was none" so a ``None`` isn't re-read forever.
+#: The most recent breadcrumb this process has taken off disk, held in
+#: memory so it can be served to more than one session (the file itself is
+#: gone after the first read). ``None`` until one is found.
 _breadcrumb: dict[str, object] | None = None
-_breadcrumb_taken = False
 
 #: Sessions that have already been shown :data:`_breadcrumb`. Weak on the
 #: session object exactly as ``serve_ledger`` keys its own per-session state,
@@ -252,15 +251,27 @@ def consume_last_exit_breadcrumb() -> dict[str, object] | None:
     session, keyed on the session ``serve_ledger`` already binds for the
     duration of a tool call. Sessionless callers keep the old
     once-per-process behaviour, which for them is the same thing.
+
+    **Disk is checked on every call, not once.** Memoising "there was no
+    breadcrumb" would latch that answer for the process: the first caller
+    to look before one exists would make every later caller blind to a
+    breadcrumb that appeared afterwards. A server only boots once so this
+    is invisible in production, but it made the reader order-dependent —
+    ``tests/test_skill.py::test_status_breadcrumb_is_consumed_not_repeated``
+    failed on CI whenever an earlier test in the same worker looked first.
+    A newly-appeared file therefore supersedes the held one and re-opens
+    it to every session.
     """
     from precis import serve_ledger
 
     session = serve_ledger.current_session()
     with _breadcrumb_lock:
-        global _breadcrumb, _breadcrumb_taken, _breadcrumb_served_unsessioned
-        if not _breadcrumb_taken:
-            _breadcrumb = _read_and_delete_breadcrumb()
-            _breadcrumb_taken = True
+        global _breadcrumb, _breadcrumb_served_unsessioned
+        fresh = _read_and_delete_breadcrumb()
+        if fresh is not None:
+            _breadcrumb = fresh
+            _breadcrumb_served.clear()
+            _breadcrumb_served_unsessioned = False
         if _breadcrumb is None:
             return None
         if session is None:
@@ -276,10 +287,9 @@ def consume_last_exit_breadcrumb() -> dict[str, object] | None:
 
 def _reset_breadcrumb_state_for_tests() -> None:
     """Forget what this process has taken/served (tests only)."""
-    global _breadcrumb, _breadcrumb_taken, _breadcrumb_served_unsessioned
+    global _breadcrumb, _breadcrumb_served_unsessioned
     with _breadcrumb_lock:
         _breadcrumb = None
-        _breadcrumb_taken = False
         _breadcrumb_served_unsessioned = False
         _breadcrumb_served.clear()
 
