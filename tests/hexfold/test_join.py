@@ -231,6 +231,66 @@ def test_seam_radius_override_fires_leak_silent_at_table_radius() -> None:
     assert dict(leaks[0].data)["r"] == 1
 
 
+def test_seam_leak_names_the_breached_measure_and_its_threshold() -> None:
+    """A leak WARN has to say WHICH of the two measures tripped and what
+    it tripped against.  Measured in the 2026-09-29 prod dogfood: the
+    adapter join reported `max |dl| 0.0000 A, max |dtheta| 0.060 deg`,
+    where the bond term was below its own threshold and formatted to a
+    bare zero, so a genuine angle breach (0.060 against the zigzag
+    0.025) read as a false alarm."""
+    spec1 = "hexfold 0.2\na: tube(8,0, len=3)\n"
+    a = _resolved(spec1)
+    b = _resolved(spec1)
+    tight = compose(a, a.ports["out"], b, b.ports["in"], k=0, seam_radius={"a": 1})
+    leak = next(f for f in tight.findings if f.code == "seam.leak")
+    data = dict(leak.data)
+
+    # the breached measure is named, and only the breached one
+    assert data["breached"], data
+    for name, value, key in (
+        ("|dl|", data["max_dl"], "thresh_dl"),
+        ("|dtheta|", data["max_dtheta"], "thresh_dtheta"),
+    ):
+        assert (name in data["breached"]) == (value >= data[key]), (name, data)
+
+    # ... and the message carries the threshold beside the value, so the
+    # reader can size the breach without looking up the table
+    assert " over threshold " in leak.message, leak.message
+    for name in data["breached"]:
+        assert name in leak.message, (name, leak.message)
+    assert f"{data['thresh_dtheta']:.3f} deg" in leak.message, leak.message
+
+
+def test_seam_sigma_names_both_bond_lengths_and_which_one_wins() -> None:
+    """gr456212 (2026-09-29 prod dogfood): a sigma=1.75 A block joined to
+    a sigma=1.42 A one was accepted -- strain roughly tripled and
+    `seam.leak` fired on both sides, but nothing said why. `compose`
+    only ever consults `a.sigma` for placement/relax, so the finding
+    must name both values and say which one the seam actually used."""
+    spec = "hexfold 0.2\na: tube(8,0, len=3)\n"
+    a = _resolved(spec)
+    b = replace(_resolved(spec), sigma=1.75)
+    composite = compose(a, a.ports["out"], b, b.ports["in"], k=0)
+    finding = next(f for f in composite.findings if f.code == "seam.sigma")
+    assert finding.severity == Severity.WARN
+    data = dict(finding.data)
+    assert data["a_sigma"] == pytest.approx(a.sigma)
+    assert data["b_sigma"] == pytest.approx(1.75)
+    assert f"{a.sigma:.4f}" in finding.message
+    assert "1.7500" in finding.message
+
+
+def test_seam_sigma_silent_when_equal() -> None:
+    """Two blocks off the same lattice must not spuriously fire -- the
+    tolerance has to be tight enough not to trip on ordinary float
+    round-trip noise between two independently-built copies."""
+    spec = "hexfold 0.2\na: tube(8,0, len=3)\n"
+    a = _resolved(spec)
+    b = _resolved(spec)
+    composite = compose(a, a.ports["out"], b, b.ports["in"], k=0)
+    assert not [f for f in composite.findings if f.code == "seam.sigma"]
+
+
 # ---------- second join: a composite is itself a Block ----------
 
 

@@ -303,7 +303,13 @@ def test_join_seam_radius_override_threads_through_the_op(store: Store) -> None:
     assert "composite" in echo
 
 
-def test_join_lattice_mismatch_on_a_hand_added_port(store: Store) -> None:
+def test_join_lattice_absent_names_the_port_and_the_fix(store: Store) -> None:
+    """gr456201: the overwhelmingly common ``join.lattice`` case is a
+    block that predates the ``lattice`` annotation being minted at
+    generate time (measured in prod: all 77 active ports had none) --
+    ``plain.p`` here is a stand-in for exactly that (a hand-added port
+    never carries one either). The message has to name the empty side
+    and say what to do about it, not just report a disagreement."""
     tree = SeTree()
     design_slug = "hx-join-lattice"
     _generate(store, tree, "tube_a", _TUBE_Z8, design_slug)
@@ -314,7 +320,7 @@ def test_join_lattice_mismatch_on_a_hand_added_port(store: Store) -> None:
             {"op": "add_port", "block": "plain", "name": "p", "roles": ["covalent"]},
         ],
     )
-    with pytest.raises(BadInput, match="join.lattice"):
+    with pytest.raises(BadInput, match="join.lattice") as excinfo:
         prepare_join(
             store,
             tree,
@@ -322,6 +328,46 @@ def test_join_lattice_mismatch_on_a_hand_added_port(store: Store) -> None:
             design_slug,
         )
     assert "bad" not in tree.blocks
+    message = str(excinfo.value)
+    assert "plain.p" in message
+    assert "tube_a.out" not in message  # only the EMPTY side is named
+    assert "no lattice annotation" in message
+    assert "regenerate" in message.lower()
+    assert "generate" in message
+
+
+def test_join_lattice_mismatch_names_both_values(store: Store) -> None:
+    """Both sides present but genuinely different -- a distinct message
+    from the absent case, naming both values (regenerating fixes nothing
+    here; the two ports are typed for different joiners)."""
+    tree = SeTree()
+    design_slug = "hx-join-lattice-mismatch"
+    _generate(store, tree, "tube_a", _TUBE_Z8, design_slug)
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "other", "envelope": "cyl:r2e-10h2e-09"},
+            {
+                "op": "add_port",
+                "block": "other",
+                "name": "p",
+                "roles": ["covalent"],
+                "annotations": {"lattice": "sp3-diamond"},
+            },
+        ],
+    )
+    with pytest.raises(BadInput, match="join.lattice") as excinfo:
+        prepare_join(
+            store,
+            tree,
+            {"op": "join", "name": "bad", "a": "tube_a.out", "b": "other.p"},
+            design_slug,
+        )
+    assert "bad" not in tree.blocks
+    message = str(excinfo.value)
+    assert "'sp2-hex'" in message
+    assert "'sp3-diamond'" in message
+    assert "don't share a joinable lattice" in message
 
 
 def test_join_stale_when_stored_ref_disagrees_with_its_spec(store: Store) -> None:
@@ -348,3 +394,76 @@ def test_join_stale_when_stored_ref_disagrees_with_its_spec(store: Store) -> Non
             design_slug,
         )
     assert "bad" not in tree.blocks
+
+
+def test_join_reparent_out_of_an_existing_composite_warns(store: Store) -> None:
+    """gr456213 (2026-09-29 prod dogfood repro): joining ``tube_c`` (already
+    a part of ``chain3``) into a THIRD composite is accepted -- re-parenting
+    it silently would leave ``chain3``'s block tree not listing the part its
+    own build record and exposed port still claim. No hard refusal (the
+    ordinary chained-join flow re-parents a fresh, never-parented block on
+    every join -- that must stay silent), but the second re-parent gets a
+    named WARN."""
+    tree = SeTree()
+    design_slug = "hx-join-reparent"
+    _generate(store, tree, "tube_a", _TUBE_Z8, design_slug)
+    _generate(store, tree, "tube_b", _TUBE_Z8, design_slug)
+    _generate(store, tree, "tube_c", _TUBE_Z8, design_slug)
+    _generate(store, tree, "tube_fat", _TUBE_Z8, design_slug)
+
+    _join(store, tree, design_slug, name="composite", a="tube_a.out", b="tube_b.in")
+    _join(
+        store,
+        tree,
+        design_slug,
+        name="chain3",
+        a="composite.tube_b_out",
+        b="tube_c.in",
+    )
+    # ordinary chained-join re-parenting (composite, tube_c: both freshly
+    # unparented beforehand) must NOT warn.
+    chain3_bound = tree.blocks["chain3"].bound
+    assert chain3_bound is not None
+    chain3_ref = store.get_ref(kind="structure", id=chain3_bound)
+    assert chain3_ref is not None
+    chain3_rec = (chain3_ref.meta or {})["generated"]
+    chain3_codes = {f["code"] for f in chain3_rec["report"]["findings"]}
+    assert "join.reparented" not in chain3_codes
+
+    echo, tree = _join(
+        store,
+        tree,
+        design_slug,
+        name="mixed_sigma",
+        a="tube_fat.out",
+        b="tube_c.out",
+    )
+
+    # tube_c was silently pulled out of chain3 -- structural consequence:
+    # chain3's own block tree no longer lists it as a child...
+    chain3_children = {n.name for n in tree.blocks.values() if n.parent == "chain3"}
+    assert chain3_children == {"composite"}
+    assert "tube_c" not in chain3_children
+    # ...while chain3's build record still names tube_c as a part and its
+    # port is still there.
+    assert {p["block"] for p in chain3_rec["parts"]} == {"composite", "tube_c"}
+    assert "chain3" in tree.blocks
+    assert "tube_c_out" in tree.blocks["chain3"].ports
+
+    node = tree.blocks["mixed_sigma"]
+    assert node.bound is not None
+    ref = store.get_ref(kind="structure", id=node.bound)
+    assert ref is not None
+    rec = (ref.meta or {})["generated"]
+    findings = [f for f in rec["report"]["findings"] if f["code"] == "join.reparented"]
+    assert len(findings) == 1, rec["report"]["findings"]
+    finding = findings[0]
+    assert finding["severity"] == "WARN"
+    assert finding["data"]["block"] == "tube_c"
+    assert finding["data"]["old_composite"] == "chain3"
+    assert finding["data"]["new_composite"] == "mixed_sigma"
+    assert "tube_c" in finding["message"]
+    assert "chain3" in finding["message"]
+    assert "mixed_sigma" in finding["message"]
+    assert tree.blocks["tube_c"].parent == "mixed_sigma"
+    assert "mixed_sigma" in echo

@@ -85,6 +85,20 @@ _LEAK_THRESH: dict[str, tuple[float, float]] = {
 }
 _LEAK_THRESH_DEFAULT = _LEAK_THRESH["z"]
 
+#: seam.sigma (gr456212, 2026-09-29 prod dogfood): the relative tolerance
+#: below which two blocks' ``sigma`` count as "the same number" rather
+#: than a genuine bond-length mismatch. `compose` places and relaxes
+#: using only `a.sigma` (`place`'s `_fuse_transform` call, `_stick_relaxer`
+#: below) -- a caller joining a sigma=1.75 A block to a sigma=1.42 A one
+#: was accepted silently; strain roughly tripled and both sides raised
+#: `seam.leak`, but nothing named the cause. 1e-6 relative is not a
+#: measured physical floor (unlike `_LEAK_THRESH`) -- it is a "these are
+#: not the same float" floor, far tighter than any two lattices' sigmas
+#: that are meant to differ (the smallest gap in the catalogue's own
+#: rim families is >1%) and far looser than ordinary float round-trip
+#: noise (~1e-15), so it never fires on two copies of the same lattice.
+_SIGMA_REL_TOL = 1e-6
+
 #: seam.leak thresholds for the geo rung (slice 2), overriding
 #: :data:`_LEAK_THRESH` via `compose`'s ``leak_thresholds`` keyword -- the
 #: SAME numbers `tests/test_hexfold_seam_decay.py` measures and pins
@@ -356,11 +370,26 @@ def _leak_finding(
     dl_thresh, dtheta_thresh = thresh
     if max_dl < dl_thresh and max_dtheta < dtheta_thresh:
         return None
+    # name the measure that actually tripped and print its threshold
+    # beside it: the other one is typically far below its own and formats
+    # to a bare `0.0000`, which reads as "nothing happened" and made a
+    # genuine 0.060-vs-0.025 deg angle breach look like a false alarm in
+    # the 2026-09-29 prod dogfood.
+    breached = [
+        name
+        for name, value, limit in (
+            ("|dl|", max_dl, dl_thresh),
+            ("|dtheta|", max_dtheta, dtheta_thresh),
+        )
+        if value >= limit
+    ]
     return Finding(
         "seam.leak",
         Severity.WARN,
-        f"{side}: re-relax leaked past shell {r} on {port.name} "
-        f"(max |dl| {max_dl:.4f} A, max |dtheta| {max_dtheta:.3f} deg)",
+        f"{side}: re-relax leaked past shell {r} on {port.name}: "
+        f"{' and '.join(breached)} over threshold "
+        f"(max |dl| {max_dl:.4f} of {dl_thresh:.4f} A, "
+        f"max |dtheta| {max_dtheta:.3f} of {dtheta_thresh:.3f} deg)",
         data=(
             ("block", side),
             ("port", port.name),
@@ -369,6 +398,9 @@ def _leak_finding(
             ("shell", [lo, hi]),
             ("max_dl", round(max_dl, 5)),
             ("max_dtheta", round(max_dtheta, 4)),
+            ("thresh_dl", dl_thresh),
+            ("thresh_dtheta", dtheta_thresh),
+            ("breached", breached),
         ),
         fix="raise seam_radius or resolve a longer block",
     )
@@ -528,6 +560,20 @@ def compose(
         )
 
     findings: list[Finding] = []
+    if not math.isclose(a.sigma, b.sigma, rel_tol=_SIGMA_REL_TOL):
+        findings.append(
+            Finding(
+                "seam.sigma",
+                Severity.WARN,
+                f"bond-length mismatch: a.sigma={a.sigma:.4f} A, "
+                f"b.sigma={b.sigma:.4f} A -- the seam uses a's sigma "
+                f"({a.sigma:.4f} A) for both the fuse placement and the "
+                "re-relax; b's own bonds were built to a different rest "
+                "length",
+                data=(("a_sigma", a.sigma), ("b_sigma", b.sigma)),
+                fix="regenerate one side so both blocks share one sigma before joining",
+            )
+        )
     ta, tb = pa.rim_type, pb.rim_type
     motif = "fuse"
     if ta is not None and tb is not None and ta[0] != tb[0]:

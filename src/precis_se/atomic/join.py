@@ -435,6 +435,7 @@ def _hexfold_join(
     # dropped (b is placed by the seam transform below, never by
     # whatever pose it happened to carry beforehand).
     old_a_parent = node_a.parent
+    old_b_parent = node_b.parent
     old_a_local_pose = list(node_a.local_pose) if node_a.local_pose else [0.0, 0.0, 0.0]
     old_a_local_rot = list(node_a.local_rot) if node_a.local_rot else [0.0, 0.0, 0.0]
     b_pose_dropped = not _is_identity_pose(
@@ -692,6 +693,38 @@ def _hexfold_join(
     # local_pose/local_rot (the byte-exact save target) are untouched by a
     # parent change, only what they compose AGAINST changes, exactly what
     # compose_world_pose recomputes.
+    # gr456213 (2026-09-29 prod dogfood): an endpoint already parented
+    # under a DIFFERENT composite is about to be silently pulled out of
+    # it — that composite's block tree will stop listing the part, while
+    # its own build record (``generated.parts``) and the port it still
+    # exposes (e.g. ``<part>_<port>``) keep naming/claiming the very same
+    # physical rim. Whether a part may belong to two composites at once
+    # is a semantics call nobody has made (and a hard refusal here would
+    # also break the ordinary chained-join flow, where re-parenting a
+    # fresh, previously-unparented block into the new composite is
+    # exactly the intended behaviour below) — so this WARNs, loudly,
+    # rather than refusing.
+    for side, blk_name, old_parent in (
+        ("a", a_block, old_a_parent),
+        ("b", b_block, old_b_parent),
+    ):
+        if old_parent is not None:
+            extra_findings.append(
+                HxFinding(
+                    "join.reparented",
+                    HxSeverity.WARN,
+                    f"{side}-side block {blk_name!r} was already a part of "
+                    f"composite {old_parent!r} — joining it into "
+                    f"{block_name!r} removes it from {old_parent!r}'s block "
+                    f"tree, but {old_parent!r}'s own build record and ports "
+                    f"still name/claim it",
+                    data=(
+                        ("block", blk_name),
+                        ("old_composite", old_parent),
+                        ("new_composite", block_name),
+                    ),
+                )
+            )
     node_a.parent = block_name
     node_b.parent = block_name
     compose_world_pose(tree)
@@ -774,9 +807,11 @@ def prepare_join(
     a fresh composite ``structure`` design commits on its own, so its mint
     is deferred to :func:`finish_join`, run only after the whole ops list
     has validated). Resolves both endpoints, gates on their shared
-    ``lattice`` port annotation (``join.lattice`` — no lattice, a mismatch,
-    or no registered joiner, in one message, before anything else runs),
-    and dispatches to the matching :data:`JOINERS` entry."""
+    ``lattice`` port annotation (``join.lattice``, before anything else
+    runs — a distinct message for a missing annotation, pointing at
+    regenerating the block, vs. a genuine mismatch between two present
+    ones; a third for no registered joiner), and dispatches to the
+    matching :data:`JOINERS` entry."""
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise BadInput("join needs 'a' and 'b' (each 'block.port')")
@@ -784,7 +819,35 @@ def prepare_join(
     b_block, b_port_name, b_spec = _resolve_join_endpoint(tree, b_raw, side="'b'")
     a_lattice = a_spec.annotations.get("lattice") if a_spec.annotations else None
     b_lattice = b_spec.annotations.get("lattice") if b_spec.annotations else None
-    if not a_lattice or not b_lattice or a_lattice != b_lattice:
+    if not a_lattice or not b_lattice:
+        # gr456201 (2026-09-29 prod dogfood): "don't share a joinable
+        # lattice" told the user nothing about what to do -- the actual,
+        # overwhelmingly common cause is a block generated before
+        # generate.py started minting the `lattice` annotation (design
+        # call: `port.lattice is not None` gate, generate.py:265); every
+        # one of prod's 77 active ports had an empty annotation. Name the
+        # missing side(s) and point at the one fix that exists:
+        # regenerate the block through its own `generate` op. This never
+        # writes an annotation itself -- minting one any other way is a
+        # write-path decision the user hasn't made.
+        missing = [
+            f"{blk}.{port}"
+            for blk, port, lattice in (
+                (a_block, a_port_name, a_lattice),
+                (b_block, b_port_name, b_lattice),
+            )
+            if not lattice
+        ]
+        verb = "has" if len(missing) == 1 else "have"
+        raise BadInput(
+            f"join.lattice: {' and '.join(missing)} {verb} no lattice "
+            "annotation — annotations are minted only when a block is "
+            "generated (precis_se.atomic.generate), so a block generated "
+            "before that landed, or a hand-added port, carries none and "
+            "can never be joined as-is. Regenerate the block through its "
+            "own 'generate' op to mint the annotation, then join again."
+        )
+    if a_lattice != b_lattice:
         raise BadInput(
             f"join.lattice: {a_block}.{a_port_name} ({a_lattice!r}) and "
             f"{b_block}.{b_port_name} ({b_lattice!r}) don't share a "

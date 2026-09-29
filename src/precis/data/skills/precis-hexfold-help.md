@@ -137,6 +137,13 @@ rings). Prefer zigzag `N` in multiples of 6 so caps, washers and lids
 interoperate; `rim.nonstandard` INFO marks the rest. se ports carry it
 as `lattice="sp2-hex"`, `payload={kind: rim, word, N, type}`.
 
+**Read `type`, not `word`, for the rim family.** `word` is the rim's
+*turn* word (one symbol per edge, `a` only at a genuine 120° corner such
+as a flake's), and a hex-lattice rim turns ±60° everywhere — so a zigzag
+and an armchair rim of the same `N` both read `z<2N>` (`z12` and `a12`
+rims alike carry `word: "z24"`). The families differ in the turn signs'
+*phase*, which the word discards. Spec §10's erratum says the same.
+
 ## Joining resolved blocks (spec §22.2)
 
 `join` composes two already-**generated** blocks (each its own `generate`
@@ -171,15 +178,24 @@ the seam; every OTHER port on `a`/`b` becomes a composite port
 (`<block>_<port>`, `b`'s carried over with its direction rotated).
 
 Findings land in the build record (`view='block'` → "## generated
-(join)"): `seam.rings` (census), `seam.adapter`/`seam.strain` INFO,
-`seam.leak` WARN (re-relax perturbed geometry past the seam radius —
-raise `seam_radius` or resolve a longer block), `seam.terminated` INFO (a
-non-carbon atom inside the re-relaxed sub-graph), `port.mismatch` ERROR
-(rim sizes differ — nothing minted), `join.lattice` ERROR (no shared
-port type), `join.stale` ERROR (the block's stored atoms no longer agree
+(join)"): `seam.sigma` WARN (`a`/`b` built at different bond-length
+`sigma` — the seam places and re-relaxes with `a`'s sigma only, straining
+`b`'s bonds; regenerate one side onto a shared sigma), `seam.rings`
+(census), `seam.adapter`/`seam.strain` INFO, `seam.leak` WARN (re-relax
+perturbed geometry past the seam radius, naming which of `|dl|`/
+`|dtheta|` breached and its threshold — raise `seam_radius` or resolve a
+longer block), `seam.terminated` INFO (a non-carbon atom inside the
+re-relaxed sub-graph), `port.mismatch` ERROR (rim sizes differ — nothing
+minted), `join.lattice` ERROR (a port has no `lattice` annotation —
+minted only when a block is generated, so regenerate it through its own
+`generate` op; or, with both present, a genuine mismatch naming both
+values), `join.stale` ERROR (the block's stored atoms no longer agree
 with a rebuild of its own generator record — regenerate first), `join.rung`
 ERROR (the two parts' relax rungs disagree and `rung` wasn't forced) or
-WARN (`rung` forced `geo` over a stick-rung part).
+WARN (`rung` forced `geo` over a stick-rung part), `join.reparented` WARN
+(an endpoint's block was already part of another composite — joining
+pulls it into this one while the old composite's build record and ports
+still name it).
 
 Both the **stick** and **geo** relax rungs are wired. `rung` picks which
 (default `auto`: both parts' own `meta['last_relax']['rung']` must agree

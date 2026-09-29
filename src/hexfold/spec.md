@@ -629,7 +629,9 @@ no ERROR. No `__bool__`.
 | `seam.leak` `[impl 0.2]` | WARN | `hexfold.join.compose`: bond-length/angle change beyond the re-relaxed seam radius (guard band, shells r+1..r+2) exceeds the rung's threshold (`data.block`, `data.port`, `data.r`, `data.shell`, `data.max_dl`, `data.max_dtheta`) |
 | `seam.strain` `[impl 0.2]` | INFO | `hexfold.join.compose`: rms/max bond-length deviation from sigma over the re-relaxed (movable) atoms (`data.rms_A`, `data.max_A`, `data.bonds`) |
 | `seam.radius.unmeasured` `[impl 0.2]` | INFO | `hexfold.join.compose`: a mixed rim (no `Port.rim_type`) has no measured decay length, so the join falls back to the conservative zigzag radius (`data.side`, `data.radius`) |
+| `seam.sigma` `[impl 0.2]` | WARN | `hexfold.join.compose`: `a`/`b` were built at different `sigma` (bond length) -- the seam places and re-relaxes with `a`'s sigma only, so `b`'s bonds are strained (`data.a_sigma`, `data.b_sigma`); fix is to regenerate one side onto a shared sigma |
 | `join.rung` `[impl 0.2]` | WARN | `precis_se.atomic.join`: `rung="geo"` forced over a still-stick-rung part (`data.a_rung`, `data.b_rung`, `data.forced`) -- rest lengths 1.42 vs 1.52 Å strain the frozen boundary; an unresolved rung MISMATCH under `rung="auto"` aborts before anything is minted instead (raised directly, never reaches the Report) |
+| `join.reparented` `[impl 0.2]` | WARN | `precis_se.atomic.join`: an endpoint's block was already parented under a different composite -- joining pulls it into the new one's block tree while the old composite's build record and ports still name/claim it (`data.block`, `data.old_composite`, `data.new_composite`) |
 
 Profiles are **passed, not set** (no module-global state):
 `Profile(promote=frozenset, demote=frozenset, ignore=frozenset,
@@ -1299,13 +1301,16 @@ built 2026-09-28 (slices 1-2: stick + geo rungs)**: `hexfold.join` (`Block`,
 port pair on the stick rung, reproducing a whole-spec fuse's atom/bond/
 seam-ring census while leaving everything outside the seam radius
 bit-for-bit untouched; `seam.adapter`, `seam.leak`, `seam.strain`,
-`seam.radius.unmeasured`, `seam.terminated` findings (§13). The se op
+`seam.radius.unmeasured`, `seam.terminated`, `seam.sigma` (a's sigma used
+for both placement and re-relax; b's bonds strain if the two blocks
+weren't built to the same sigma) findings (§13). The se op
 (`precis_se/atomic/join.py`'s `join` op, store-aware prepare/finish over
 `compose`, dispatched by the joined ports' `lattice` annotation) is built
 too: it rebuilds each side's topology from its own generator record
 (recursively, through a chain of earlier joins), mints a composite
-`structure` design plus se block/ports/connect, and persists the build
-record as `meta['generated']`.
+`structure` design plus se block/ports/connect, persists the build record
+as `meta['generated']`, and warns `join.reparented` when an endpoint's
+block was already parented under a different composite.
 
 **Slice 2 (geo rung), built 2026-09-28**: `geo_relax_pinned`
 (`precis_se/atomic/join.py`, a `relax_graph` adapter over the seam
