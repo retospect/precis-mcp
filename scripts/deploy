@@ -387,12 +387,32 @@ fi
 # a second time here could disagree. The freshness guard below still covers
 # that path.
 if [[ -n "${PRECIS_DEPLOY_FROM_TREE-1}" && "$REF" =~ ^[0-9a-f]{40}$ ]]; then
-    _wt_root="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/precis-deploy-tree"
-    # The deploy lock is already held, so a leftover here is a dead run's, not
-    # a live one's. `worktree remove` first so git forgets the registration;
-    # rm -rf alone would leave a stale entry that blocks the re-add.
-    git -C "$REPO_ROOT" worktree remove --force "$_wt_root" 2>/dev/null || true
-    rm -rf "$_wt_root"
+    _wt_common="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+    # PID-suffixed, not a fixed path (2026-09-29). The old fixed
+    # `precis-deploy-tree` was shared by every run, and the deploy lock does NOT
+    # serialise access to it: the window between one deploy's process dying and
+    # its EXIT trap finishing is enough for the next deploy to acquire the freed
+    # lock, create its tree, and then have the previous run's trailing trap
+    # delete that tree out from under it. Ansible, whose cwd IS that directory,
+    # then dies on `os.getcwd()` with a bare `[Errno 2]`, no PLAY RECAP, and —
+    # worst of all — `scripts/deploy` reports it as "a host is unreachable",
+    # sending the reader off to check the network. Cost two failed deploys in
+    # one session before the traceback named `getcwd`.
+    _wt_root="${_wt_common}/precis-deploy-tree-$$"
+    # Reap dead runs' trees. With a unique path per run, a crashed deploy would
+    # otherwise leak its tree forever; with the pid in the name we can tell a
+    # leftover from a live sibling's. `worktree remove` first so git forgets the
+    # registration — rm -rf alone leaves a stale entry that blocks the re-add.
+    for _stale in "${_wt_common}"/precis-deploy-tree-*; do
+        [[ -d "$_stale" ]] || continue
+        _stale_pid="${_stale##*-}"
+        # Still running (and not us): another deploy legitimately owns it.
+        if [[ "$_stale_pid" != "$$" ]] && kill -0 "$_stale_pid" 2>/dev/null; then
+            continue
+        fi
+        git -C "$REPO_ROOT" worktree remove --force "$_stale" 2>/dev/null || true
+        rm -rf "$_stale"
+    done
     git -C "$REPO_ROOT" worktree add --detach --quiet "$_wt_root" "$REF" 2>/dev/null \
         || die "could not check out ${REF:0:12} into a render worktree at ${_wt_root} — is the commit present in this repo? (fetch it, or set PRECIS_DEPLOY_FROM_TREE= to render from this checkout)"
     _DEPLOY_TREE="$_wt_root"

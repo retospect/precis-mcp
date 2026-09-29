@@ -164,3 +164,6 @@ docs/codebase-map.md
 
 # Throwaway scratch copies of source modules (agent before/after probes).
 .scratch_*
+
+# local gate/deploy run logs — never ship
+.gate-logs/

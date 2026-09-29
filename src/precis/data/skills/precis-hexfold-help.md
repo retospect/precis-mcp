@@ -168,6 +168,8 @@ the two ports' `lattice` tag *pair* (a sorted 2-tuple, `join.lattice` if
 either is absent or the pair has no registered joiner — today only
 `("sp2-hex", "sp2-hex")`, two hexfold rims, is wired).
 
+## What a join mints (spec §22.2)
+
 The composite is a new atomic block, envelope a bounding cylinder in
 `a`'s own frame (`a`'s atoms untouched; `b`'s are rigidly placed), bound
 to a fresh `structure` design holding `a`'s atoms then `b`'s. `a`/`b`
@@ -177,6 +179,8 @@ block/structure/version in the build record instead. The consumed
 ports (`a`'s `pa`, `b`'s `pb`) get one `connect kind='bond'` recording
 the seam; every OTHER port on `a`/`b` becomes a composite port
 (`<block>_<port>`, `b`'s carried over with its direction rotated).
+
+## Join findings (spec §22.2)
 
 Findings land in the build record (`view='block'` → "## generated
 (join)"): `seam.sigma` WARN (`a`/`b` built at different bond-length
@@ -201,6 +205,8 @@ longer agree with a rebuild of its own generator record — regenerate
 first), `join.rung` ERROR (the two parts' relax rungs disagree and
 `rung` wasn't forced) or WARN (`rung` forced `geo` over a stick-rung
 part).
+
+## Join relax rungs (spec §22.2)
 
 Both the **stick** and **geo** relax rungs are wired. `rung` picks which
 (default `auto`: both parts' own `meta['last_relax']['rung']` must agree
