@@ -200,17 +200,12 @@ class Store(
         Defaults fall through to :mod:`precis.store.pool` so
         ``Store.connect`` and direct ``create_pool`` calls agree on
         one source of truth (previously they diverged at 8 vs 10).
+        ``None`` is forwarded as ``None`` rather than resolved to the
+        module constant here — that is what lets ``create_pool`` apply
+        the ``PRECIS_DB_POOL_*_SIZE`` env overrides, which substituting
+        the constant at this seam would silently defeat.
         """
-        from precis.store.pool import (
-            DEFAULT_POOL_MAX_SIZE,
-            DEFAULT_POOL_MIN_SIZE,
-        )
-
-        pool = create_pool(
-            dsn,
-            min_size=min_size if min_size is not None else DEFAULT_POOL_MIN_SIZE,
-            max_size=max_size if max_size is not None else DEFAULT_POOL_MAX_SIZE,
-        )
+        pool = create_pool(dsn, min_size=min_size, max_size=max_size)
         return cls(pool, dsn=dsn)
 
     def close(self) -> None:

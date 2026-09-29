@@ -41,6 +41,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "E=\"$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh\"; [ -x \"$E\" ] && bash \"$E\" || true"
+          },
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/session-start-lock.sh\""
           },
           {

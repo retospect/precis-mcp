@@ -82,6 +82,17 @@ def unbind(token: contextvars.Token[object | None]) -> None:
     _current_session.reset(token)
 
 
+def current_session() -> object | None:
+    """The MCP session bound for this tool call, or ``None`` outside one.
+
+    Exported because the binding — not the ledger — is the reusable part:
+    ``install_watchdog``'s per-session exit breadcrumb keys off the same
+    session this module already binds, rather than standing up a second
+    contextvar that could disagree about which session a call belongs to.
+    """
+    return _current_session.get()
+
+
 @contextmanager
 def session_scope(session: object | None) -> Iterator[None]:
     """Bind ``session`` for the duration of the ``with`` block. Test/CLI convenience."""

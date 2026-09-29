@@ -59,6 +59,7 @@ from typing import Any
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
 
+from precis import inflight
 from precis.runtime import PrecisRuntime, build_runtime
 from precis.tools import TOOL_REGISTRY
 from precis.utils.walk_budget import FILE_WALK_BUDGET_S
@@ -175,18 +176,32 @@ def _offload_sync(
     async def wrapper(**kwargs: Any) -> Any:
         sem = semaphore if semaphore is not None else _get_tool_semaphore()
         async with sem:
-            # abandon_on_cancel=True: a cancelled/dropped MCP request must
-            # not pin its awaiting task (and the whole session's recovery)
-            # to the worker thread's completion — gr337045's server death:
-            # with the default False, one long CPU-bound tool call was
-            # architecturally unstoppable short of killing the process.
-            # The OS thread still runs to completion in the background
-            # (anyio can't kill it), releasing this semaphore early — the
-            # residual thread count stays bounded by anyio's default
-            # thread limiter.
-            return await anyio.to_thread.run_sync(
-                functools.partial(fn, **kwargs), abandon_on_cancel=True
-            )
+            # Count this call as in-flight for the whole time it can still
+            # produce a result, so a watchdog bounce (checkout swapped under
+            # a shared long-lived server) drains dispatch instead of failing
+            # every session mid-call — precis.inflight, and see its docstring
+            # for why this is a threading counter and not this semaphore.
+            inflight.enter()
+            try:
+                # abandon_on_cancel=True: a cancelled/dropped MCP request must
+                # not pin its awaiting task (and the whole session's recovery)
+                # to the worker thread's completion — gr337045's server death:
+                # with the default False, one long CPU-bound tool call was
+                # architecturally unstoppable short of killing the process.
+                # The OS thread still runs to completion in the background
+                # (anyio can't kill it), releasing this semaphore early — the
+                # residual thread count stays bounded by anyio's default
+                # thread limiter.
+                return await anyio.to_thread.run_sync(
+                    functools.partial(fn, **kwargs), abandon_on_cancel=True
+                )
+            finally:
+                # abandon_on_cancel means a cancelled request returns here
+                # while the OS thread keeps running. Releasing the count with
+                # the awaiting task (not the thread) is deliberate and matches
+                # the semaphore above: a dropped request is nobody's result to
+                # protect, so it must not hold a bounce open.
+                inflight.leave()
 
     wrapper.__signature__ = sig  # type: ignore[attr-defined]
     return wrapper
@@ -1073,9 +1088,17 @@ def main(
     # Exit cleanly if a deploy swaps our venv underneath us — the client
     # restarts a fresh server; staying up wedges the connection for the
     # full idle timeout (gr338977).
-    from precis.install_watchdog import start_install_watchdog
+    from precis.install_watchdog import (
+        start_checkout_watchdog,
+        start_install_watchdog,
+    )
 
     start_install_watchdog()
+    # Sibling arm for the shared long-lived session server, which imports
+    # from a source checkout `scripts/ship` resets underneath it — the one
+    # case the install arm deliberately ignores. Opt-in by
+    # PRECIS_CHECKOUT_WATCHDOG, so this is a no-op everywhere else.
+    start_checkout_watchdog()
     runtime = _init_runtime()
     _warm_embedder_background(runtime)
     _warm_md_index_background(runtime)

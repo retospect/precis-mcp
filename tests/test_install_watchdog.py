@@ -18,6 +18,7 @@ import pytest
 
 from precis import install_watchdog
 from precis.install_watchdog import (
+    CheckoutWatchdog,
     InstallWatchdog,
     _fingerprint_for,
     _install_replaced,
@@ -39,9 +40,13 @@ def _no_watchdog_outlives_its_test() -> Iterator[None]:
     """
     yield
     for thread in threading.enumerate():
-        if isinstance(thread, InstallWatchdog):
+        if isinstance(thread, InstallWatchdog | CheckoutWatchdog):
             thread.stop()
-    assert not [t for t in threading.enumerate() if isinstance(t, InstallWatchdog)]
+    assert not [
+        t
+        for t in threading.enumerate()
+        if isinstance(t, InstallWatchdog | CheckoutWatchdog)
+    ]
 
 
 def _fake_install(tmp_path: Path) -> Path:
@@ -280,10 +285,16 @@ def _breadcrumb_in_tmp(
     """
     target = tmp_path / "last-exit.json"
     monkeypatch.setattr(install_watchdog, "_breadcrumb_path", lambda: target)
+    # The breadcrumb is now taken off disk once per process and memoised
+    # (it is served once per MCP session, not once per process — see
+    # ``consume_last_exit_breadcrumb``). Without this reset the first test
+    # to read one would poison every later test in the file.
+    install_watchdog._reset_breadcrumb_state_for_tests()
     monkeypatch.setattr(install_watchdog, "_hooks_installed", False)
     monkeypatch.setattr(install_watchdog, "_crash_detail", None)
     original_excepthook = sys.excepthook
     yield target
+    install_watchdog._reset_breadcrumb_state_for_tests()
     sys.excepthook = original_excepthook
     atexit.unregister(install_watchdog._atexit_breadcrumb)
 

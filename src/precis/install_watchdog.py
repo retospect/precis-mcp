@@ -23,6 +23,17 @@ reinstall having happened.
 
 ``PRECIS_INSTALL_WATCHDOG=0`` disables it outright.
 
+A second arm watches a *source checkout* instead of an install, for the
+one deployment where the install arm is deliberately blind: the shared
+long-lived session MCP on a dev machine, which imports from a checkout and
+whose source is reset under it by ``scripts/ship``. It is opted into by
+``PRECIS_CHECKOUT_WATCHDOG=<path>`` and keyed on that tree's resolved HEAD
+sha, *not* mtimes — mtime churn is exactly why :func:`_fingerprint_for`
+refuses source trees, and a sha fires on ship/sync/qland while staying
+silent on editor saves. See :class:`CheckoutWatchdog`; unlike the install
+arm it quiesces in-flight tool calls before exiting, because its process
+serves every session on the machine rather than one.
+
 gr341515: the exit itself was invisible — the warning above only reaches
 stderr, which no MCP client surfaces, so an operator found the server
 simply gone with zero explanation. :func:`_write_exit_breadcrumb` drops a
@@ -46,6 +57,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
+from weakref import WeakKeyDictionary
 
 log = logging.getLogger(__name__)
 
@@ -185,21 +197,8 @@ def _write_exit_breadcrumb(
         log.debug("install watchdog: exit breadcrumb write failed", exc_info=True)
 
 
-def consume_last_exit_breadcrumb() -> dict[str, object] | None:
-    """Read + delete the previous run's exit breadcrumb, if any.
-
-    Called by ``handlers/skill.py`` when rendering ``precis-status``.
-    "Consume" (delete on read) is the age-out mechanism gr341515 item 3
-    asks for, picked over a TTL/staleness check for the simpler
-    invariant it gives: a breadcrumb is surfaced exactly once, ever,
-    regardless of how long the previous server stayed up or how long
-    this one waits before its first ``precis-status`` call — no
-    clock-skew or "how old is too old" judgement call needed. The
-    downside is symmetric: a breadcrumb nobody ever asks about lingers
-    until someone does, which is the *point* — the message answers "why
-    did the server I'm about to talk to not already know something",
-    not "poll this proactively".
-    """
+def _read_and_delete_breadcrumb() -> dict[str, object] | None:
+    """Take the breadcrumb file's contents, removing the file."""
     path = _breadcrumb_path()
     try:
         raw = path.read_text(encoding="utf-8")
@@ -214,6 +213,75 @@ def consume_last_exit_breadcrumb() -> dict[str, object] | None:
     except (json.JSONDecodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+#: The breadcrumb this process booted after, taken from disk exactly once
+#: and then held in memory. ``_breadcrumb_taken`` distinguishes "not looked
+#: yet" from "looked, there was none" so a ``None`` isn't re-read forever.
+_breadcrumb: dict[str, object] | None = None
+_breadcrumb_taken = False
+
+#: Sessions that have already been shown :data:`_breadcrumb`. Weak on the
+#: session object exactly as ``serve_ledger`` keys its own per-session state,
+#: so a closed session's entry is reclaimed with it.
+_breadcrumb_served: WeakKeyDictionary[object, bool] = WeakKeyDictionary()
+
+#: Whether a *sessionless* caller has already consumed the breadcrumb (the
+#: CLI, a direct handler test, a stdio server that never binds a session).
+_breadcrumb_served_unsessioned = False
+
+_breadcrumb_lock = threading.Lock()
+
+
+def consume_last_exit_breadcrumb() -> dict[str, object] | None:
+    """The previous run's exit breadcrumb — once **per MCP session**.
+
+    Called by ``handlers/skill.py`` when rendering ``precis-status``.
+    "Consume" is still the age-out mechanism gr341515 item 3 asks for,
+    picked over a TTL/staleness check for the simpler invariant it gives:
+    no clock-skew or "how old is too old" judgement call. What changed is
+    the scope of "once".
+
+    Delete-on-read was originally *per process*, which was the same thing
+    as per client while a process served exactly one. Under one shared
+    long-lived server, per-process means the first of a dozen sessions to
+    ask gets the explanation and the other eleven get the gr341515 failure
+    itself — "the server simply gone with zero explanation" — on every
+    bounce. So the file is taken from disk once at first read (it must
+    still not survive into the *next* boot) and then served once per
+    session, keyed on the session ``serve_ledger`` already binds for the
+    duration of a tool call. Sessionless callers keep the old
+    once-per-process behaviour, which for them is the same thing.
+    """
+    from precis import serve_ledger
+
+    session = serve_ledger.current_session()
+    with _breadcrumb_lock:
+        global _breadcrumb, _breadcrumb_taken, _breadcrumb_served_unsessioned
+        if not _breadcrumb_taken:
+            _breadcrumb = _read_and_delete_breadcrumb()
+            _breadcrumb_taken = True
+        if _breadcrumb is None:
+            return None
+        if session is None:
+            if _breadcrumb_served_unsessioned:
+                return None
+            _breadcrumb_served_unsessioned = True
+        else:
+            if _breadcrumb_served.get(session):
+                return None
+            _breadcrumb_served[session] = True
+        return _breadcrumb
+
+
+def _reset_breadcrumb_state_for_tests() -> None:
+    """Forget what this process has taken/served (tests only)."""
+    global _breadcrumb, _breadcrumb_taken, _breadcrumb_served_unsessioned
+    with _breadcrumb_lock:
+        _breadcrumb = None
+        _breadcrumb_taken = False
+        _breadcrumb_served_unsessioned = False
+        _breadcrumb_served.clear()
 
 
 #: Set by :func:`_excepthook` when a genuine unhandled exception reaches
@@ -314,6 +382,194 @@ class InstallWatchdog(threading.Thread):
                 )
                 sys.stderr.flush()
                 os._exit(0)
+
+
+#: ``PRECIS_CHECKOUT_WATCHDOG=<path>`` opts a process into the source-tree
+#: arm, naming the checkout to watch. Unset (every cluster daemon, every
+#: CLI run, the per-session stdio servers) leaves the arm off entirely.
+_CHECKOUT_ROOT_ENV = "PRECIS_CHECKOUT_WATCHDOG"
+
+#: Poll cadence for the checkout arm — four times tighter than the install
+#: arm's. Reading two small files is cheaper than the install arm's stat,
+#: and a bounce here costs every session at once, so the window in which
+#: sessions talk to a half-applied tree has to be short.
+_DEFAULT_CHECKOUT_INTERVAL_S = 5.0
+
+#: How long a bounce waits for in-flight tool calls before exiting anyway.
+#: Bounded on purpose: one wedged call must not hold a bounce open, which
+#: would leave every session on stale code indefinitely.
+_DEFAULT_DRAIN_TIMEOUT_S = 20.0
+
+
+def _resolve_head_sha(root: Path) -> str | None:
+    """Resolved HEAD commit of the checkout at ``root``, or ``None``.
+
+    Reads ``.git`` directly rather than shelling out to ``git rev-parse``.
+    The watched tree is typically a read-only bind mount owned by another
+    uid, where git refuses to operate at all ("dubious ownership") unless
+    the container is configured for it — and a fingerprint source that can
+    fail for reasons unrelated to the checkout moving is a fingerprint that
+    bounces the server for no reason. Three files at most, no subprocess.
+    """
+    try:
+        git_path = root / ".git"
+        if git_path.is_file():  # worktree / submodule: "gitdir: <path>"
+            pointer = git_path.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git_dir = Path(pointer.split(":", 1)[1].strip())
+            if not git_dir.is_absolute():
+                git_dir = (root / git_dir).resolve()
+        else:
+            git_dir = git_path
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head or None  # detached HEAD is already a sha
+        ref = head.split(":", 1)[1].strip()
+        loose = git_dir / ref
+        if loose.exists():
+            return loose.read_text(encoding="utf-8").strip() or None
+        # Packed refs: a freshly-cloned or gc'd tree has no loose ref file.
+        for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+            if line.startswith(("#", "^")):
+                continue
+            sha, _, name = line.partition(" ")
+            if name.strip() == ref:
+                return sha.strip() or None
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def checkout_fingerprint(root: Path) -> str | None:
+    """The watched checkout's identity: its resolved HEAD sha."""
+    return _resolve_head_sha(root)
+
+
+class CheckoutWatchdog(threading.Thread):
+    """Exit when the watched source checkout's HEAD moves.
+
+    The sibling of :class:`InstallWatchdog` for the one deployment the
+    install arm deliberately ignores: a process importing from a source
+    tree that something else rewrites — ``scripts/ship`` resetting the
+    checkout a shared session MCP serves from. Same recovery shape (exit
+    cleanly, let the supervisor bring a fresh process up), two differences:
+
+    - **Sha, not stat.** ``_fingerprint_for`` returns ``None`` for source
+      trees because every ``git checkout`` touches mtimes. A resolved HEAD
+      sha moves on ship/sync/qland and nowhere else, so an editor save
+      does not bounce the server.
+    - **Quiesce first.** This process serves every session on the machine,
+      so :mod:`precis.inflight` drains dispatch before the exit rather
+      than failing a dozen calls. Bounded — see
+      :data:`_DEFAULT_DRAIN_TIMEOUT_S`.
+
+    Supervision is Docker's ``--restart unless-stopped`` rather than
+    launchd's ``KeepAlive``; either way the clean exit is only a recovery
+    if *something* restarts the process. Without a supervisor this arm
+    turns a stale-code server into no server at all, which is why it is
+    opt-in by env rather than on by default.
+    """
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        baseline: str,
+        interval_s: float,
+        drain_timeout_s: float = _DEFAULT_DRAIN_TIMEOUT_S,
+    ) -> None:
+        super().__init__(name="checkout-watchdog", daemon=True)
+        self._root = root
+        self._baseline = baseline
+        self._interval_s = interval_s
+        self._drain_timeout_s = drain_timeout_s
+        self._stop_event = threading.Event()
+
+    def stop(self, timeout: float | None = 5.0) -> None:
+        """Ask the loop to end and wait for it (a no-op if never started)."""
+        self._stop_event.set()
+        if self.is_alive():
+            self.join(timeout)
+
+    def _bounce(self, current: str | None) -> None:
+        """Quiesce, record why, and exit. Never returns."""
+        from precis import inflight
+
+        pending = inflight.count()
+        drained = inflight.wait_for_drain(self._drain_timeout_s)
+        _write_exit_breadcrumb(
+            "checkout-changed",
+            detail=(
+                f"{self._root} HEAD {self._baseline[:12]}→"
+                f"{(current or 'unknown')[:12]}"
+                + ("" if drained else f"; {inflight.count()} call(s) still in flight")
+            ),
+        )
+        log.warning(
+            "checkout watchdog: %s moved %s→%s — exiting cleanly so the "
+            "supervisor starts a server on the new code (%s)",
+            self._root,
+            self._baseline[:12],
+            (current or "unknown")[:12],
+            f"drained {pending} in-flight call(s)"
+            if drained
+            else f"drain timed out after {self._drain_timeout_s:.0f}s",
+        )
+        sys.stderr.flush()
+        os._exit(0)
+
+    def run(self) -> None:
+        while not self._stop_event.wait(self._interval_s):
+            current = checkout_fingerprint(self._root)
+            # An unreadable HEAD is a mid-checkout race, not a move: bouncing
+            # on it would fire on transient states the next poll resolves.
+            if current is None or current == self._baseline:
+                continue
+            self._bounce(current)
+
+
+def start_checkout_watchdog(
+    *,
+    interval_s: float = _DEFAULT_CHECKOUT_INTERVAL_S,
+    drain_timeout_s: float = _DEFAULT_DRAIN_TIMEOUT_S,
+) -> CheckoutWatchdog | None:
+    """Arm the checkout arm from ``PRECIS_CHECKOUT_WATCHDOG``.
+
+    ``None`` when the env var is unset (the default everywhere), when it
+    names a path that isn't a readable checkout, or when
+    ``PRECIS_INSTALL_WATCHDOG=0`` disables watchdogs wholesale — one switch
+    covers both arms so "turn the watchdogs off" stays one thing to know.
+    """
+    raw = (os.environ.get(_CHECKOUT_ROOT_ENV) or "").strip()
+    if not raw:
+        return None
+    if os.environ.get("PRECIS_INSTALL_WATCHDOG", "1") == "0":
+        log.debug("checkout watchdog: disabled by PRECIS_INSTALL_WATCHDOG=0")
+        return None
+    root = Path(raw)
+    baseline = checkout_fingerprint(root)
+    if baseline is None:
+        log.warning(
+            "checkout watchdog: %s is not a readable git checkout — not watching "
+            "(a ship will silently serve stale code)",
+            root,
+        )
+        return None
+    thread = CheckoutWatchdog(
+        root=root,
+        baseline=baseline,
+        interval_s=interval_s,
+        drain_timeout_s=drain_timeout_s,
+    )
+    thread.start()
+    log.info(
+        "checkout watchdog armed on %s at %s (every %.0fs)",
+        root,
+        baseline[:12],
+        interval_s,
+    )
+    return thread
 
 
 def start_install_watchdog(

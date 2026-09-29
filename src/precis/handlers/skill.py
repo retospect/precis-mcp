@@ -2084,17 +2084,17 @@ _BUILD_ENV_KEYS: tuple[tuple[str, str], ...] = (
 def _render_last_exit_note() -> str | None:
     """One-line "why did the previous server end" note (gr341515).
 
-    ``None`` in the common case: no previous server on this host, or the
-    breadcrumb already reported once (and was consumed — see below) on
-    an earlier ``precis-status`` call this boot or a prior one.
+    ``None`` in the common case: no previous server on this host, or this
+    session already saw the breadcrumb on an earlier ``precis-status``
+    call.
 
     Reads via
     :func:`precis.install_watchdog.consume_last_exit_breadcrumb`, which
-    deletes the breadcrumb file as part of reading it — that delete-on-
-    read *is* the age-out gr341515 item 3 asks for, chosen over a
-    TTL/staleness check for the simpler invariant it gives: a breadcrumb
-    is surfaced exactly once, ever, with no "how old is too old"
-    judgement call.
+    takes the breadcrumb off disk once per boot and then serves it once
+    per MCP session — the age-out gr341515 item 3 asks for, chosen over a
+    TTL/staleness check for the simpler invariant it gives, with "once"
+    scoped per session so a shared server doesn't tell one caller why it
+    bounced and leave the other eleven with nothing.
     """
     from precis.install_watchdog import consume_last_exit_breadcrumb
 
@@ -2107,6 +2107,8 @@ def _render_last_exit_note() -> str | None:
         old = crumb.get("old_fingerprint") or "unknown"
         new = crumb.get("new_fingerprint") or "unknown"
         what = f"install swapped {old}→{new}"
+    elif reason == "checkout-changed":
+        what = f"source checkout moved ({crumb.get('detail') or 'no detail'})"
     elif reason == "crash":
         what = f"crashed ({crumb.get('detail') or 'no detail'})"
     elif reason == "exit":

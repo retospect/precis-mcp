@@ -13,6 +13,12 @@ bind-mount predating the `[:200]`-cap removal; repaired, see `git log`).
    (`src/precis/taproot/hub.py`) that the persisted `refs.title` round-trips
    equal to the claim sentence, so a stale caller fails loudly instead of
    silently truncating. This bug was invisible for three weeks.
-2. `precis-mcp-dev-stdio.sh` has a `--check` preflight for *dependency*
+2. ~~`precis-mcp-dev-stdio.sh` has a `--check` preflight for *dependency*
    drift but nothing warns that `/app` is N commits behind `origin/main`.
-   A staleness banner there would have caught this on day one.
+   A staleness banner there would have caught this on day one.~~
+   **Closed by `session-mcp-http-server.md`** — that launcher is deleted,
+   and the shared server's checkout watchdog
+   (`install_watchdog.CheckoutWatchdog`) exits the moment the source tree's
+   HEAD moves, so a server serving an N-commits-behind `/app` no longer
+   exists to warn about. A banner would report a state that now lasts
+   seconds. Item 1 is unaffected and still open.

@@ -127,6 +127,39 @@ def _configure_connection(conn: Connection) -> None:
 DEFAULT_POOL_MIN_SIZE: int = 2
 DEFAULT_POOL_MAX_SIZE: int = 10
 
+#: Env overrides for the two sizes above. A shared long-lived MCP server
+#: (one process serving every session on a dev machine, rather than one
+#: container per session) needs a pool sized against the *fleet* of
+#: sessions, and the deployment that decides that number is a wrapper
+#: script, not a code change — so the numbers have to be settable without
+#: editing this file. Unset / unparseable / non-positive falls back to the
+#: constant, because a bad value here must not be the thing that stops a
+#: server booting.
+POOL_MIN_SIZE_ENV = "PRECIS_DB_POOL_MIN_SIZE"
+POOL_MAX_SIZE_ENV = "PRECIS_DB_POOL_MAX_SIZE"
+
+
+def _env_pool_size(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def resolved_pool_min_size() -> int:
+    """``PRECIS_DB_POOL_MIN_SIZE`` or :data:`DEFAULT_POOL_MIN_SIZE`."""
+    return _env_pool_size(POOL_MIN_SIZE_ENV, DEFAULT_POOL_MIN_SIZE)
+
+
+def resolved_pool_max_size() -> int:
+    """``PRECIS_DB_POOL_MAX_SIZE`` or :data:`DEFAULT_POOL_MAX_SIZE`."""
+    return _env_pool_size(POOL_MAX_SIZE_ENV, DEFAULT_POOL_MAX_SIZE)
+
+
 #: Recycle idle connections after this many seconds. Kept strictly
 #: BELOW pgbouncer's ``server_idle_timeout`` (default 600s) so precis
 #: retires a pooled connection before pgbouncer tears down the server
@@ -149,8 +182,8 @@ DEFAULT_POOL_MAX_LIFETIME_SECONDS: float = 1800.0
 def create_pool(
     dsn: str,
     *,
-    min_size: int = DEFAULT_POOL_MIN_SIZE,
-    max_size: int = DEFAULT_POOL_MAX_SIZE,
+    min_size: int | None = None,
+    max_size: int | None = None,
     open_timeout: float = 10.0,
     max_idle: float = DEFAULT_POOL_MAX_IDLE_SECONDS,
     max_lifetime: float = DEFAULT_POOL_MAX_LIFETIME_SECONDS,
@@ -166,15 +199,23 @@ def create_pool(
     will block waiting for ``min_size`` healthy connections. If the DB
     is unreachable we raise ``PoolTimeout`` instead of hanging forever.
 
+    ``min_size``/``max_size`` default to ``None``, meaning "whatever
+    :data:`POOL_MIN_SIZE_ENV` / :data:`POOL_MAX_SIZE_ENV` say, else the
+    module constants". An explicit argument always wins — callers that
+    size a pool for their own reasons (tests, one-off scripts) are not
+    overridden by a machine-wide env var.
+
     ``max_idle`` and ``max_lifetime`` recycle connections on a clock
     so a NAT / firewall idle-timeout or a Postgres restart bounds the
     failure mode to one request rather than wedging the worker until
     manual intervention.
     """
+    resolved_min = resolved_pool_min_size() if min_size is None else min_size
+    resolved_max = resolved_pool_max_size() if max_size is None else max_size
     pool = ConnectionPool(
         conninfo=dsn,
-        min_size=min_size,
-        max_size=max_size,
+        min_size=resolved_min,
+        max_size=resolved_max,
         max_idle=max_idle,
         max_lifetime=max_lifetime,
         configure=_configure_connection,
