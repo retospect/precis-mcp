@@ -307,6 +307,69 @@ prompt for 2 and 3, then re-probe the same 100 rows — the default salt is
 derived from campaign + snapshot sha, so the A/B split and the row slice are
 identical and the comparison is like-for-like. Decide concurrency last.
 
+**Blocker 2 is FIXED in the prompt (2026-09-29), unmeasured until a re-probe.**
+`build_prompt` now constrains the *shape* of a measurand without naming one:
+a six-word cap (`_MEASURAND_MAX_WORDS`), an explicit per-field redirect table
+(conditions / basis / reference state / convention / subject label), an
+enumerated ban on the exact constructions the probe produced (parentheses,
+`at which …`, `of the … that …`, `normalized to …`, a clause naming which
+compared case this is), a rule for differences (`change in X` + the two cases
+in `required_conditions`), and one worked example. The example is thermal
+transport — a field this campaign does not cover — so that showing the shape
+cannot seed the vocabulary; `test_build_prompt_has_no_candidate_measurand_menu`
+still passes unchanged. The species stays in the name deliberately: FE toward
+NH3 and FE toward H2 are different numbers and the compare identity has no
+species field, so the species is part of *which* quantity this is.
+
+`parse_response` gained two warnings that are **not** failures, worded so a
+run's warning list distinguishes a working prompt from a broken one: a null
+measurand carrying a `skip_reason` reads `declined as not a measurand (…)`,
+and an over-cap measurand is **kept** with `over the 6-word cap — kept: '…'`.
+Kept, not dropped: the warning exists to count prompt non-compliance across a
+run, and dropping the row would destroy the string needed to fix the prompt.
+`dimension_text` is still asked for, now labelled in the prompt as audit-only
+prose with the unit named as what actually gets parsed — it has no consumer
+after blocker 1, but a future cross-check of prose-vs-unit needs it recorded.
+
+Prompt cost roughly tripled: 1236 → 3569 chars (~900 input tokens/call), so
+the full 1231-call run carries ~700k extra input tokens. Sonnet input at that
+volume is not the binding cost — the 11.3 h wall clock is. Every call's prompt
+shares a long identical prefix, so prompt caching is worth checking when the
+concurrency work happens.
+
+**Blocker 3 is BIGGER than recorded, and splits in two.** Counted from the
+probe's `mentions.jsonl`: of 204 `value` mentions, **41 carry no unit at all**.
+The stage-2 decline instruction above covers only part of that, and after
+blocker 1 every unit-less mention resolves to `dimension=None` — so this is now
+the dominant remaining failure mode, promoted to first-order by the very fix
+that made stage 3 correct.
+
+- **3a — Miller indices are a stage-1 false positive**, ~19 of the 41.
+  `Pd(111)`, `Ag/Cu(111)`, `Mo₂C(0001)`, `Ni₂P(001)`, `CuPd(100)`. The census
+  boundary rule (`text[start - 1].isalnum()`, `census.py` `scan_text`) already
+  rejects `SnCu111` and `Ti3C2` correctly — it fails here only because the
+  character before the digits is `(`, not a letter. Candidate rule, still
+  domain-neutral: *a parenthesised group whose entire content is a digit run of
+  length ≥3 with no decimal separator and no resolved unit is an identifier,
+  not a value.* That also rejects a bare `(100) facets` (no element prefix to
+  key on) and a sociology corpus's `(2019)`. Free to fix and free to validate —
+  stage 1 is deterministic — and it **reduces** the paid call count, so it
+  should land before the re-probe, not after.
+- **3b — stranded units, previously unrecorded.** `the potential required to
+  reach HER current densities of 10 and 30 mA cm⁻²` gives `10` no unit, because
+  the unit sits after the second number. Same for a `−0.26` limiting potential.
+  These are real measurements that now become dimensionless nodes of their own
+  — worse than a label, because a label is obviously junk and this is not.
+  Needs a shared-unit rule in `_resolve_unit` (a number followed by `and`/`,`
+  + another number + a unit borrows that unit). Design work, not a one-liner.
+
+Also in the 41, correctly and needing no fix: `1.23×`/`16.8×` relative yield
+ratios and `pH 7.0` are genuinely dimensionless quantities. `m/z 329` is a real
+mass-to-charge value; letting the model decline it is acceptable. `2` from
+`2D Cu/Fe MOF` and `3` from `3d-metal` are tokenisation noise the
+already-correct boundary rule misses for the same reason as 3a (`2D` — digit
+*before* the letter).
+
 ## Open questions / decisions log
 
 - **[decided 2026-09-28]** Sign off thresholds and procedure, never the

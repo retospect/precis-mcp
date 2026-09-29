@@ -16,13 +16,24 @@ open. Campaign qualifier vocabulary (``categorical_qualifiers``,
 visually separate from the open measurand field so the model cannot read it
 as a menu either.
 
+The vocabulary is open; the *shape* of a measurand is not. The prompt caps
+it at :data:`_MEASURAND_MAX_WORDS` words, names the field each other part of
+the answer belongs in, and shows the shape with an out-of-domain example —
+because the first probe, which asked only for "your own words", returned
+sentences rather than names and scored 0.046 A/B overlap against a signed
+0.80. :func:`build_prompt`'s docstring has the evidence.
+
 :func:`parse_response` is defensive by construction: a malformed reply, a
 missing or out-of-range mention index, or a row with no measurand each
 produce a warning string and are skipped — never an exception, never a
 fabricated :class:`~precis.taxonomy.types.DiscoveredTerm`. Warnings are
 returned, never printed and never silently dropped, so :func:`discover` can
 run over a whole snapshot and still report exactly what the model did not
-address.
+address. Two of them are not failures and are worded to say so: a null
+measurand carrying a ``skip_reason`` is the model declining a mention that
+labels rather than measures, and an over-cap measurand is *kept* with a
+warning, because dropping it would destroy the evidence about the prompt
+that the warning exists to collect.
 """
 
 from __future__ import annotations
@@ -32,7 +43,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from precis.taxonomy.config import CampaignConfig
 from precis.taxonomy.types import DiscoveredTerm, Half, Mention
@@ -42,6 +53,16 @@ from precis.taxonomy.types import DiscoveredTerm, Half, Mention
 #: to. Matched non-greedily against the whole stripped payload so a fence
 #: elsewhere in the text (there shouldn't be one) is left alone.
 _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+#: Word cap stated in :func:`build_prompt` and checked in
+#: :func:`parse_response`. Six, not three: a species-specific quantity
+#: legitimately spends words on the species (``Faradaic efficiency for
+#: NH3``, ``NH3 partial current density``), and the species is part of
+#: *which* quantity this is rather than a condition on it. Over the cap the
+#: row is kept and a warning is emitted — the model has been told the rule,
+#: so a breach is evidence about the prompt, and dropping the row would
+#: destroy exactly the evidence needed to fix it.
+_MEASURAND_MAX_WORDS: Final[int] = 6
 
 
 class DiscoveryClient(Protocol):
@@ -82,11 +103,35 @@ def build_prompt(text: str, mentions: Sequence[Mention], config: CampaignConfig)
     (``config.categorical_qualifiers``, ``config.site_classes``) is offered
     only as qualifier hints, under a heading that says so, never mixed into
     the measurand instruction.
+
+    **Open vocabulary is not the same as free-form prose.** The first probe
+    asked only for "what is being measured, in your own words" and got 166
+    distinct strings over 204 rows — A/B vocabulary overlap 0.046 against a
+    signed threshold of 0.80. The strings were not wrong, they were
+    *sentences*: five spellings of Faradaic efficiency, a measurand reading
+    ``applied electrode potential at which the yield rate and Faradaic
+    efficiency were measured`` (a condition folded into the name), another
+    reading ``rate of NH3 production normalized to electrode area (yield)``
+    (the normalisation basis folded in), and several of the form ``... of the
+    Cu surface identified as the most active support for the isolated Pd
+    atom`` (a disambiguating clause folded in). Every one of those had an
+    empty field of its own to go in.
+
+    So this prompt constrains the *shape* of the answer — short noun phrase,
+    a length cap, one worked example, and an explicit list of what belongs in
+    the other fields instead — while still never naming a candidate
+    measurand. The worked example is drawn from thermal transport, a field
+    this campaign does not cover, so that demonstrating the shape cannot seed
+    the vocabulary.
+
+    The last instruction is the one that lets the model say "no": a
+    crystallographic facet index and a composition subscript are labels, not
+    quantities, and the first probe turned them into measurands like
+    ``compositional index X`` because the prompt gave it no other move.
     """
     lines = [
         "You are reading one sentence from a scientific claim. For each "
-        "numbered mention below, describe what is being measured — in your "
-        "own words, not from a fixed list. Name it the way the paper would.",
+        "numbered mention below, name the quantity the number measures.",
         "",
         f"Sentence: {text}",
         "",
@@ -111,17 +156,66 @@ def build_prompt(text: str, mentions: Sequence[Mention], config: CampaignConfig)
         lines.append("")
     lines.extend(
         [
+            "The measurand is the NAME OF THE QUANTITY AND NOTHING ELSE. "
+            f"Write it as a short noun phrase of at most {_MEASURAND_MAX_WORDS} "
+            "words — the way a table column header or a figure axis label "
+            "reads, not the way a sentence reads. Use your own words; there "
+            "is no list to pick from. Two mentions of the same quantity, in "
+            "different papers and different sentences, must come back as the "
+            "same string.",
+            "",
+            "Everything that is not the quantity's name has its own field:",
+            "  - the conditions the value was measured at, and any clause "
+            "that picks this value out from other values of the same quantity "
+            "-> required_conditions",
+            "  - what the value is per / divided by / normalised to "
+            "-> normalisation_basis",
+            "  - what a potential or energy is measured against -> reference_state",
+            "  - the sign or direction convention -> convention",
+            "  - the material, electrode, site or structure the value belongs "
+            "to -> subject_label",
+            "",
+            'So the measurand contains no parentheses, no "at which ...", '
+            'no "of the ... that ...", no "normalized to ...", and no '
+            "clause saying which of several compared cases this one is. Do "
+            "include the chemical species when the quantity is "
+            "species-specific: that is part of which quantity it is, not a "
+            "condition.",
+            "",
+            "If the number is a difference or a change between two cases "
+            "rather than a value, name the quantity with one leading word "
+            '("change in ...", "difference in ...") and put the two cases '
+            "being compared in required_conditions.",
+            "",
+            "Example of the shape (a different field, so do not reuse these "
+            'words). For the sentence "the thermal conductivity of the '
+            "annealed film reached 42 W/m/K at 300 K, referenced to the "
+            'as-grown film", the mention 42 gives measurand "thermal '
+            'conductivity", required_conditions ["temperature 300 K"], '
+            'reference_state "as-grown film", subject_label "annealed film" '
+            '— and NOT "thermal conductivity of the annealed film at 300 K".',
+            "",
+            "Not every number measures a quantity. If a mention is an "
+            "identifier or a label rather than a measurement — a "
+            "crystallographic facet index, a composition subscript standing "
+            "for a series member, a sample or figure number, a count of "
+            "samples — do not invent a quantity for it. Return that mention "
+            'as {"index": N, "measurand": null, "skip_reason": "<why>"}.',
+            "",
             "Reply with a JSON array and nothing else — no prose, no "
             "markdown fence. One object per mention, with exactly these "
             "keys:",
             "  index (integer, matching a mention above)",
-            "  measurand (string, your own words — required)",
-            "  dimension_text (string or null)",
+            "  measurand (string — required, or null with a skip_reason)",
+            "  dimension_text (string or null — what kind of quantity this "
+            'is, in words, e.g. "potential" or "mass per time per area"; '
+            "recorded for audit only, the unit above is what is parsed)",
             "  reference_state (string or null)",
             "  convention (string or null)",
             "  normalisation_basis (string or null)",
             "  subject_label (string or null)",
             "  required_conditions (array of strings, may be empty)",
+            "  skip_reason (string, only on a null measurand)",
             "Every mention index above must appear exactly once.",
         ]
     )
@@ -179,12 +273,32 @@ def parse_response(
         seen.add(index)
         measurand = row.get("measurand")
         if not isinstance(measurand, str) or not measurand.strip():
-            warnings.append(f"mention {index}: empty or missing measurand")
+            # A null measurand WITH a reason is the model using the decline
+            # the prompt offers it, not a failure: a facet index or a
+            # composition subscript is a label, and the first probe named
+            # those as measurands only because it had no other move. Both
+            # cases skip the row; they are worded differently because one is
+            # a prompt working and the other is a prompt to fix, and a run's
+            # warning list is the only place that distinction survives.
+            reason = row.get("skip_reason")
+            if isinstance(reason, str) and reason.strip():
+                warnings.append(
+                    f"mention {index}: declined as not a measurand ({reason.strip()})"
+                )
+            else:
+                warnings.append(f"mention {index}: empty or missing measurand")
             continue
+        measurand = measurand.strip()
+        word_count = len(measurand.split())
+        if word_count > _MEASURAND_MAX_WORDS:
+            warnings.append(
+                f"mention {index}: measurand is {word_count} words, over the "
+                f"{_MEASURAND_MAX_WORDS}-word cap — kept: {measurand!r}"
+            )
         terms.append(
             DiscoveredTerm(
                 mention=mentions[index],
-                measurand=measurand.strip(),
+                measurand=measurand,
                 half=half,
                 dimension_text=_opt_str(row.get("dimension_text")),
                 reference_state=_opt_str(row.get("reference_state")),

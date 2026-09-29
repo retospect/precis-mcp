@@ -14,6 +14,7 @@ from typing import Any
 
 from precis.taxonomy.config import CampaignConfig
 from precis.taxonomy.discovery import (
+    _MEASURAND_MAX_WORDS,
     build_prompt,
     discover,
     parse_response,
@@ -306,3 +307,120 @@ def test_discover_surfaces_warnings_instead_of_crashing_on_every_call_failing() 
     assert client.calls == 2
     assert len(warnings) == 2
     assert all("failed" in w.lower() for w in warnings)
+
+
+# ── measurand SHAPE: the first probe's 0.046 A/B overlap ──
+#
+# The 2026-09-29 probe asked only for "what is being measured, in your own
+# words" and got 166 distinct strings over 204 rows. Each string below is a
+# real one from that run's `discovered.jsonl`. The vocabulary stays open —
+# these tests pin the *shape* constraints, and the menu test above still
+# forbids naming a candidate measurand anywhere in the prompt.
+
+
+def test_build_prompt_caps_the_measurand_length() -> None:
+    prompt = build_prompt("sentence", [_mention()], _config())
+    assert str(_MEASURAND_MAX_WORDS) in prompt
+    assert "at most" in prompt
+
+
+def test_build_prompt_names_the_field_each_folded_in_part_belongs_in() -> None:
+    """The probe's worst measurands each had an empty field of their own to
+    go in: `... at which the yield rate was measured` had
+    required_conditions, `... normalized to electrode area` had
+    normalisation_basis. The prompt has to say so, per field."""
+    prompt = build_prompt("sentence", [_mention()], _config())
+    for field in (
+        "required_conditions",
+        "normalisation_basis",
+        "reference_state",
+        "convention",
+        "subject_label",
+    ):
+        assert prompt.count(field) >= 2, (
+            f"{field} should appear both as a redirect and as a JSON key"
+        )
+
+
+def test_build_prompt_worked_example_is_from_another_field() -> None:
+    """A worked example shows the shape; it must not seed the vocabulary.
+    This one is thermal transport — a field norr-her-meta does not cover —
+    which is also why the no-menu test above still passes."""
+    prompt = build_prompt("sentence", [_mention()], _config())
+    assert "thermal conductivity" in prompt
+    assert "do not reuse these words" in prompt
+
+
+def test_build_prompt_offers_a_decline_for_a_label() -> None:
+    """Blocker 3: the probe returned `compositional index X` and Miller
+    indices as measurands because the prompt gave it no way to say no."""
+    prompt = build_prompt("sentence", [_mention()], _config())
+    assert "skip_reason" in prompt
+    assert "facet index" in prompt
+
+
+def test_parse_response_declined_row_is_a_decline_not_a_failure() -> None:
+    payload = json.dumps(
+        [
+            {
+                "index": 0,
+                "measurand": None,
+                "skip_reason": "Miller index identifying a facet, not a measurement",
+            }
+        ]
+    )
+    terms, warnings = parse_response(payload, [_mention()], "A")
+    assert terms == (), "a declined mention produces no term"
+    assert len(warnings) == 1
+    assert "declined" in warnings[0]
+    assert "Miller index" in warnings[0], "the reason is carried, for audit"
+    assert "empty or missing" not in warnings[0], (
+        "a working prompt must not read as a broken one in the warning list"
+    )
+
+
+def test_parse_response_null_measurand_without_a_reason_is_still_a_failure() -> None:
+    """The decline is earned by supplying a reason. A bare null is the same
+    non-answer it always was."""
+    payload = json.dumps([{"index": 0, "measurand": None}])
+    terms, warnings = parse_response(payload, [_mention()], "A")
+    assert terms == ()
+    assert len(warnings) == 1
+    assert "empty or missing measurand" in warnings[0]
+    assert "declined" not in warnings[0]
+
+
+def test_parse_response_keeps_an_over_cap_measurand_and_warns() -> None:
+    """Verbatim from the probe. The row is KEPT: this warning's whole job is
+    to count prompt non-compliance across a run, and dropping the row would
+    destroy the string needed to fix the prompt."""
+    long = (
+        "applied electrode potential at which the yield rate and Faradaic "
+        "efficiency were measured"
+    )
+    payload = json.dumps([{"index": 0, "measurand": long}])
+    terms, warnings = parse_response(payload, [_mention()], "A")
+    assert len(terms) == 1, "kept, not dropped"
+    assert terms[0].measurand == long, "kept verbatim, not truncated"
+    assert len(warnings) == 1
+    assert "over the" in warnings[0]
+    assert long in warnings[0], "the offending string is in the warning"
+
+
+def test_parse_response_is_silent_at_the_cap() -> None:
+    at_cap = " ".join(f"w{i}" for i in range(_MEASURAND_MAX_WORDS))
+    terms, warnings = parse_response(
+        json.dumps([{"index": 0, "measurand": at_cap}]), [_mention()], "A"
+    )
+    assert len(terms) == 1
+    assert warnings == (), f"{_MEASURAND_MAX_WORDS} words is at the cap, not over it"
+
+
+def test_parse_response_still_strips_and_counts_words_around_whitespace() -> None:
+    terms, warnings = parse_response(
+        json.dumps([{"index": 0, "measurand": "  cell   voltage \n"}]),
+        [_mention()],
+        "A",
+    )
+    assert terms[0].measurand == "cell   voltage", "outer whitespace only"
+    assert warnings == (), "two words, however they are spaced"
