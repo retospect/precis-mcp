@@ -84,6 +84,7 @@ from precis.structure import Atom as StructAtom
 from precis.structure import Bond as StructBond
 from precis.structure import Scene as StructScene
 from precis.structure.georelax import relax_graph
+from precis_se.atomic.catalogue import for_store
 from precis_se.atomic.generate import generated_cell, ingest_envelope
 from precis_se.atomic.generators._types import fmt_length_A
 from precis_se.atomic.generators.hexfold_spec import _se_port_name
@@ -405,6 +406,14 @@ def _rebuild_block(store: Store, struct_slug: str) -> tuple[Block, list[str], An
                 "the rebuilt part"
             ) from exc
         seam_radius = generated.get("seam_radius") or seam.get("radius")
+        # No `catalogue=` here, deliberately: this is the REPLAY of a join
+        # that already happened, and its job is to reproduce the recorded
+        # geometry exactly (the element-count check below raises
+        # `join.stale` when it does not). The catalogue is mutable shared
+        # state, so consulting it would make a replay's result depend on
+        # what someone measured since — turning every warm-up into a
+        # spurious `join.stale` across unrelated designs. The recorded
+        # `seam_radius` above is the authority for a replay.
         composite = compose(
             blk_a,
             pa,
@@ -582,6 +591,19 @@ def _hexfold_join(
         extra_findings.append(rung_finding)
     leak_thresholds = LEAK_THRESH_GEO if relaxer_name == "geo" else None
 
+    # The catalogue read (step 6 slice 2). `for_store` seeds the pinned
+    # wildcards if they are not already in `se_hexfold_catalogue` and is
+    # idempotent, so it is safe per join; `compose` is read-only on it.
+    # Today this is behaviour-neutral by construction: `seed_rows`
+    # restates `join.SEAM_RADIUS`/`_LEAK_THRESH` (a hexfold test pins the
+    # two equal), and the store withholds `source="measured"` rows from
+    # `resolve_edge` under the step 6 slice 1 ruling, so every lookup
+    # returns the same number the module constant would have. It becomes
+    # load-bearing only when a row is trusted to differ.
+    # `rung` must go with it: the catalogue is keyed by rung, so a geo
+    # join looking up stick rows would read the wrong decay length.
+    catalogue = for_store(store)
+
     composite = compose(
         blk_a,
         pa,
@@ -593,6 +615,8 @@ def _hexfold_join(
         relax=relaxer,
         prefix_a=a_block,
         prefix_b=b_block,
+        rung=relaxer_name,
+        catalogue=catalogue,
     )
     all_findings = list(extra_findings) + list(composite.findings)
     if any(f.severity == HxSeverity.ERROR for f in all_findings):

@@ -387,10 +387,21 @@ Open, needing a decision rather than work:
 3. **`spec.md` §28 lists `seam.terminated` as a §13 finding, but it has
    never had a §13 row.** Pre-existing gap, cheap to close next time §13
    is touched (step 6 slice 3 will be).
-4. The prod scratch design `hexfold-join-dogfood` still holds the broken
-   state (`chain3` missing a part its build record claims). The fix makes
-   it unreachable going forward but does not heal the row; delete the
-   design when convenient.
+4. ~~The prod scratch design `hexfold-join-dogfood` still holds the broken
+   state.~~ **Done 2026-09-29: design retired (ref 456184, 10 blocks),
+   nothing else referenced it.** The broken state was NOT "`chain3`
+   missing a part its build record claims", as this item first recorded
+   it — checked against the rows before deleting, and `chain3`'s own
+   record is self-consistent (parts `composite`/`tube_b_out` +
+   `tube_c`/`in`, 180 atoms = 120 + 60). The actual defect is the mirror
+   image: **`tube_c` is claimed as a part by two composites**, `chain3`
+   (port `in`) and `mixed_sigma` (port `out`, 120 atoms). A block can be
+   a part of only one composite — once `chain3` consumed it, its
+   remaining free rim was `chain3`'s own port, so the later join
+   addressing `tube_c` directly is exactly the `join.part_addressed`
+   ERROR landed above. That the landed fix's own motivating case is the
+   state left in prod is the confirmation the fix targets the right
+   defect; double-ownership is unreachable now.
 
 Gripes: 456201 (pre-annotation blocks un-joinable — RULED: regeneration
 is the remedy, no new write path), 456202 (`payload.word` does not
@@ -489,3 +500,43 @@ two-composite case stays the `join.part_addressed` ERROR. `spec.md` §13
 gained rows for `join.reparented`, `join.pose_dropped` and
 `join.part_addressed`, none of which had one (the same gap open item 3
 records for `seam.terminated`, which is still open).
+
+## Step 6 slice 2: built, with two things deliberately left undone (2026-09-29)
+
+The DB store is in: `se_hexfold_catalogue` (migration `precis_se/0016`,
+no `ref_id` — an environment row is not a property of a design) and
+`precis_se.atomic.catalogue`, with `hexfold.join.compose` now reading it
+on the live join path in `precis_se.atomic.join`. That read is
+behaviour-neutral by construction today, which is the point: `seed_rows`
+restates `join.SEAM_RADIUS`/`_LEAK_THRESH`, and the store withholds
+`source="measured"` rows from `resolve_edge`, so every lookup returns the
+number the module constant would have returned. The wiring exists so
+that trusting a row later is a flag, not a refactor.
+
+**The replay path in `_rebuild_block` gets no catalogue, and must not.**
+A replay's job is to reproduce a recorded join exactly; the catalogue is
+mutable shared state, so consulting it there would make one design's
+warm-up raise `join.stale` on unrelated designs that have not changed.
+
+Two things are open:
+
+1. **The automatic first-use warm-up is held.** The slice-1 ruling kept
+   it, but it does not survive its own consequence: under the ruling a
+   measured row cannot influence a join, so warming one on first use
+   would spend a full build-and-relax per new environment to produce a
+   row nothing reads. It exists as `catalogue.warm_edge(...)`, explicit
+   and opt-in, so the measurements gripe 456641 needs can still be taken.
+   Wire it to every join only once a measured row can be trusted.
+2. **`trust_measured=True` is the flip, and gripe 456641's three fixes
+   are its precondition** — assert the relaxer converged, reject a
+   non-monotone `max_disp` profile, put the measurement extent into
+   `EnvKey`. Nothing in the product sets the flag today; one test pins
+   both sides of it.
+
+**Erratum filed against `spec.md` §26** (written into the section): it
+describes a content-hash *build* cache, `hexfold_cache(key,
+format_version, generator, authored_json, generated_json, …)`, keyed by
+what was authored — and that table is still unbuilt. The environment-keyed
+catalogue of §25.3 is a different store with a different key, and slice 2
+built that one. They share the `get`/`put` protocol shape and nothing
+else. Do not widen either into the other.

@@ -1166,6 +1166,24 @@ retained affordance: a force-populate flag for benchmark runs.
   across builds. A file backend under `hexfold/catalogue/` arrives with the
   pip re-export behind the same protocol, and shipping precomputed entries
   is then a dump of the table.
+- **Erratum (2026-09-29): this section runs two different stores
+  together.** The content-hash *build* cache described above —
+  `hexfold_cache`, authored sections in, generated block out — is still
+  unbuilt. What `hexfold.catalogue` and `precis_se.atomic.catalogue`
+  actually implement is the *environment*-keyed catalogue of §25.3
+  (`view='catalogue'`): rows keyed by `EnvKey`
+  (zone/lattice/sigma/rim type/dangling count/rung/relaxer), holding
+  measured decay geometry, in table `se_hexfold_catalogue` (migration
+  `precis_se/0016`). The two share the `get`/`put` protocol shape and
+  nothing else: one is memoised construction keyed by *what was
+  authored*, the other is physics keyed by *where you are in the
+  lattice*, and a row of either is meaningless to the other. Build them
+  as separate tables. One consequence is already load-bearing: a
+  build-cache entry is only ever as wrong as the generator that made it,
+  whereas an environment row is shared across every design in the
+  database — which is why a *measured* environment row does not yet
+  outrank the pinned wildcard (`docs/backlog/hexfold-integration.md`
+  step 6 slice 1, gripe 456641).
 - **Adapters** between two rims are largely deterministic (a discrete
   curvature problem, so the generator enumerates candidates); the
   non-deterministic part is *which* candidate, which is ranking, not
