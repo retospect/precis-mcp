@@ -65,7 +65,11 @@ from typing import TYPE_CHECKING, Any
 
 from precis.quest.allocator import active_quest_ids
 from precis.quest.body import quest_body_marker
-from precis.quest.weave_tick import QUEST_BODY_MATERIALS, QUEST_BODY_WEAVE
+from precis.quest.weave_tick import (
+    QUEST_BODY_MATERIALS,
+    QUEST_BODY_ROADMAP,
+    QUEST_BODY_WEAVE,
+)
 from precis.utils.env import env_int
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
@@ -827,6 +831,157 @@ def _phase_weave_tick(
     )
 
 
+def _phase_roadmap_tick(
+    ctx: Any,
+    quest_id: int,
+    state: dict[str, Any],
+    slice_count: int,
+) -> Any:
+    """Roadmap-root leg of ``_phase_tick`` (docs/backlog/bootstrap-roadmap-
+    quest.md In-scope 1): one :func:`precis.quest.roadmap_tick.roadmap_tick`
+    call — one role (demand / supply / bridge) on one capability axis.
+
+    **The role picks the tier, in code** (the 2026-09-28 model-tiers
+    ruling): :func:`~precis.quest.roadmap_tick.roadmap_role` is a pure graph
+    read, so it runs FIRST and the ``DispatchClient`` is built at that
+    role's tier — demand/supply ``big`` (Sonnet-class), bridge ``frontier``
+    (Opus-class). ``meta.loop.tier`` / ``params.tier`` are ignored for this
+    body; unlike ``_phase_weave_tick`` there is no single client per job.
+
+    **Budgets** (spec §"Stall / halt"): a failed tick uses the shared
+    consecutive-*failed* budget verbatim. A successful tick is one of
+    three things — *improved* (a ledger value moved in its sense: the only
+    engagement; resets the dry streak AND the quest-side
+    ``consecutive_dry_rests`` escalation counter), *dry* (no gap-count
+    change and no ledger change: bumps the dry streak; at
+    ``_max_dry_ticks`` the loop rests via ``_register_dry_rest`` — the
+    existing cool-down + operator alert at 3 rests), or *changed but not
+    improved* (a demand written, a rung minted, a search run: the streak
+    is CARRIED unchanged — minting a rung is not engagement, per the
+    ``quest-bodies.md`` perverse-incentive rule). No punt budget: the
+    body has no free-text stage a model can leave empty.
+    """
+    from precis.dispatch import Hub
+    from precis.quest.roadmap_tick import roadmap_role, roadmap_tick, role_tier
+    from precis.quest.search import make_acquiring_search
+    from precis.utils.llm.router import DispatchClient, tier_from_str
+
+    def _fail(error: str) -> Any:
+        ctx.append_chunk("job_event", f"tick #{slice_count}: roadmap error — {error}")
+        fails = int(state.get("tick_failures") or 0) + 1
+        if fails >= _max_tick_failures():
+            return Done(
+                summary=(
+                    f"quest {quest_id} roadmap loop resting after {fails} "
+                    f"consecutive failed tick(s) (last: {error}). Re-armed by "
+                    "a fresh quest_tick coordinator job once the cause is "
+                    "fixed."
+                ),
+                success=False,
+                summary_meta={
+                    "slices": slice_count,
+                    "tick_failures": fails,
+                    "last_status": error,
+                },
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"tick #{slice_count}: roadmap error — backing off {_heartbeat_s()}s "
+            f"then retrying (failure {fails}/{_max_tick_failures()})",
+        )
+        return Yield(
+            state={
+                "phase": "await",
+                "slice_count": slice_count,
+                "tick_failures": fails,
+                "child_job_ids": [],
+            },
+            wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
+        )
+
+    try:
+        choice = roadmap_role(ctx.store, quest_id)
+    except Exception as exc:
+        log.exception("tick #%s: roadmap_role raised", slice_count)
+        return _fail(f"roadmap_role exception: {exc}")
+    role = choice.role if choice is not None else None
+    tier = role_tier(role)
+    client = DispatchClient(
+        tier=tier_from_str(tier), source="quest_roadmap", tools_needed=True
+    )
+
+    try:
+        result = roadmap_tick(
+            ctx.store,
+            client,
+            quest_id,
+            search_fn=make_acquiring_search(quest_id, Hub(store=ctx.store)),
+            embedder=_build_search_embedder(ctx.store),
+        )
+    except Exception as exc:  # defensive — mirrors _phase_weave_tick
+        log.exception("tick #%s: roadmap_tick raised", slice_count)
+        result = {"ok": False, "error": f"roadmap_tick exception: {exc}"}
+
+    if not result.get("ok"):
+        return _fail(str(result.get("error", "?")))
+
+    gap = result.get("gap") or {}
+    delta = result.get("ledger_delta") or {}
+    ctx.append_chunk(
+        "job_event",
+        f"tick #{slice_count}: roadmap — role {result.get('role') or 'none'} "
+        f"@{tier} on {gap.get('handle') or '-'}; {len(delta)} ledger "
+        f"improvement(s), {result.get('deeds', 0)} deed(s), gaps "
+        f"{result.get('gap_count')}; {result.get('note', '')}"[:500],
+    )
+
+    if result.get("improved"):
+        # The deed: only a ledger improvement counts as engagement — it
+        # clears the quest-side escalation counter and rebuilds state fresh.
+        _reset_dry_rest_counter(ctx.store, quest_id)
+        return Yield(
+            state={"phase": "await", "slice_count": slice_count, "child_job_ids": []},
+            wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
+        )
+
+    dry = int(state.get("dry_ticks") or 0)
+    if result.get("dry"):
+        dry += 1
+        if dry >= _max_dry_ticks():
+            rests = _register_dry_rest(ctx.store, quest_id)
+            return Done(
+                summary=(
+                    f"quest {quest_id} roadmap loop resting after {dry} "
+                    "consecutive dry tick(s) (no gap or ledger change). "
+                    "Re-armed by a fresh quest_tick coordinator job."
+                ),
+                success=True,
+                summary_meta={
+                    "slices": slice_count,
+                    "dry_ticks": dry,
+                    "last_status": "dry",
+                    "rest_reason": "dry",
+                    "consecutive_dry_rests": rests,
+                },
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"tick #{slice_count}: roadmap dry (no gap/ledger change) — backing "
+            f"off {_heartbeat_s()}s then retrying (dry {dry}/{_max_dry_ticks()})",
+        )
+    # Changed-but-not-improved carries the dry streak unchanged (a rung
+    # mint does NOT reset it); a dry tick carries the bumped count.
+    return Yield(
+        state={
+            "phase": "await",
+            "slice_count": slice_count,
+            "dry_ticks": dry,
+            "child_job_ids": [],
+        },
+        wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
+    )
+
+
 def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     """Harvest finished sims + review/propose (local LLM) + dispatch a batch.
 
@@ -890,6 +1045,13 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         # from the backpressure check above unchanged.
         if body == QUEST_BODY_WEAVE:
             return _phase_weave_tick(ctx, quest_id, params, state, slice_count)
+
+        # bootstrap-roadmap-quest: the fourth arm. Same standing as weave
+        # w.r.t. the starvation gate below — a roadmap tick never dispatches
+        # relax/autocatpath/sandbox_run (``compute_lane`` is irrelevant to
+        # the body), so it has no stake in the compute queue.
+        if body == QUEST_BODY_ROADMAP:
+            return _phase_roadmap_tick(ctx, quest_id, state, slice_count)
 
         # Starvation gate: don't stack a batch onto an already-deep compute
         # queue — but only for a quest that actually has a compute lane to

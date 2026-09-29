@@ -487,6 +487,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
+        guards.check_rung_meta(meta)
         guards.check_executor_tag(tags)
         # Workspace inheritance: if the parent carries meta.workspace
         # and this child doesn't specify its own, copy the parent's
@@ -945,6 +946,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_llm_tier_meta(meta)
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
+        guards.check_rung_meta(meta)
         guards.check_halt_remove(remove=remove)
         # Claim CAS: a worker claiming a leaf whose live lease another
         # handle holds gets a BadInput naming the holder, instead of the

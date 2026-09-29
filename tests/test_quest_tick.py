@@ -3423,6 +3423,26 @@ class TestQuestBodyInquiry:
             store, quest_b, quest_body=QUEST_BODY_MATERIALS
         )
 
+    def test_roadmap_prompts_carry_none_of_the_materials_tokens(
+        self, store: Any
+    ) -> None:
+        # bootstrap-roadmap-quest AC1: the fourth body's prompts are built
+        # by `roadmap_tick.build_role_prompt`, not `build_tick_prompt` —
+        # none of the three roles carries the materials tokens, while the
+        # materials default (test above) still does.
+        from precis.quest import roadmap_tick as rt
+        from tests.test_quest_roadmap_ledger import make_root
+
+        for demand, supply in ((None, None), (2.0, None), (2.0, 6.0)):
+            root, _cap = make_root(store, demand=demand, supply=supply)
+            choice = rt.roadmap_role(store, root)
+            assert choice is not None
+            prompt = rt.build_role_prompt(
+                store, store.get_ref(kind="quest", id=root), choice
+            )
+            for token in self._MATERIALS_ONLY_TOKENS:
+                assert token not in prompt, (choice.role, token)
+
     def test_materials_body_uses_the_existing_hooks_not_a_reimplementation(
         self, store: Any, monkeypatch: Any
     ) -> None:

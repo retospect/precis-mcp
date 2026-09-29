@@ -475,6 +475,134 @@ def test_llm_select_rejects_non_numeric_temperature(handler: TodoHandler) -> Non
         )
 
 
+# ── meta.rung (roadmap rung — "no number, no rung") ───────────────
+
+
+def _rung(**overrides: object) -> dict:
+    base: dict = {
+        "pathway": "qu161906",
+        "consumes": [
+            {"capability": "qu1", "key": "positional_accuracy_nm", "value": 6.0}
+        ],
+        "produces": [
+            {
+                "capability": "qu2",
+                "key": "cycle_time_s",
+                "value": 0.5,
+                "evidence": ["fi42"],
+            }
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_rung_valid_shape_accepted_on_put(handler: TodoHandler) -> None:
+    r = handler.put(text="rung: place one tile", meta={"rung": _rung()})
+    rid = _id_of(r.body)
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("rung") == _rung()
+
+
+def test_rung_produces_with_empty_evidence_refused(handler: TodoHandler) -> None:
+    """Acceptance criterion 4 of bootstrap-roadmap-quest.md: a produced
+    number with no citation is refused, and the message names the rule."""
+    produces = [
+        {"capability": "qu2", "key": "cycle_time_s", "value": 0.5, "evidence": []}
+    ]
+    with pytest.raises(BadInput, match="no number, no rung"):
+        handler.put(text="rung", meta={"rung": _rung(produces=produces)})
+
+
+def test_rung_produces_without_evidence_key_refused(handler: TodoHandler) -> None:
+    produces = [{"capability": "qu2", "key": "cycle_time_s", "value": 0.5}]
+    with pytest.raises(BadInput, match="no number, no rung"):
+        handler.put(text="rung", meta={"rung": _rung(produces=produces)})
+
+
+def test_rung_produces_with_prose_evidence_refused(handler: TodoHandler) -> None:
+    """Evidence must be a HANDLE, not any non-empty string.
+
+    Without this, ``evidence=['trust me']`` satisfies "no number, no rung"
+    while citing nothing — the gate would be decorative. ``is_well_formed``
+    parses against the real kind-code registry, so prose is rejected without
+    hard-coding ``fi`` (a number cited to a paper is legitimate).
+    """
+    produces = [
+        {
+            "capability": "qu2",
+            "key": "cycle_time_s",
+            "value": 0.5,
+            "evidence": ["trust me"],
+        }
+    ]
+    with pytest.raises(BadInput, match="must be handles"):
+        handler.put(text="rung", meta={"rung": _rung(produces=produces)})
+
+
+def test_rung_produces_accepts_a_non_finding_handle(handler: TodoHandler) -> None:
+    """The gate is "traceable", not "is a finding" — a paper handle passes."""
+    produces = [
+        {
+            "capability": "qu2",
+            "key": "cycle_time_s",
+            "value": 0.5,
+            "evidence": ["pa347475"],
+        }
+    ]
+    r = handler.put(text="rung", meta={"rung": _rung(produces=produces)})
+    rid = _id_of(r.body)
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["rung"]["produces"][0]["evidence"] == ["pa347475"]
+
+
+def test_rung_consumes_without_evidence_accepted(handler: TodoHandler) -> None:
+    """``consumes`` entries are requirements, not claims — no evidence."""
+    r = handler.put(text="rung", meta={"rung": _rung(produces=[])})
+    rid = _id_of(r.body)
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["rung"]["consumes"][0] == {
+        "capability": "qu1",
+        "key": "positional_accuracy_nm",
+        "value": 6.0,
+    }
+
+
+def test_rung_consumes_with_evidence_key_refused(handler: TodoHandler) -> None:
+    consumes = [{"capability": "qu1", "key": "k", "value": 1.0, "evidence": ["fi1"]}]
+    with pytest.raises(BadInput, match="unknown"):
+        handler.put(text="rung", meta={"rung": _rung(consumes=consumes)})
+
+
+def test_rung_rejects_non_quest_pathway(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="pathway"):
+        handler.put(text="rung", meta={"rung": _rung(pathway="td12")})
+
+
+def test_rung_rejects_non_numeric_value(handler: TodoHandler) -> None:
+    consumes = [{"capability": "qu1", "key": "k", "value": "six"}]
+    with pytest.raises(BadInput, match="value must be a number"):
+        handler.put(text="rung", meta={"rung": _rung(consumes=consumes)})
+
+
+def test_rung_promotable_via_tag(handler: TodoHandler) -> None:
+    """A rung's ``produces`` is updated on completion via ``tag(meta=)``
+    without a re-put — ``rung`` is on ``TAG_META_ALLOWED_KEYS`` and the
+    same evidence gate runs on that path."""
+    r = handler.put(text="rung", meta={"rung": _rung(produces=[])})
+    rid = _id_of(r.body)
+    handler.tag(id=rid, meta={"rung": _rung()})
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["rung"]["produces"][0]["evidence"] == ["fi42"]
+    bad = [{"capability": "qu2", "key": "cycle_time_s", "value": 0.5, "evidence": []}]
+    with pytest.raises(BadInput, match="no number, no rung"):
+        handler.tag(id=rid, meta={"rung": _rung(produces=bad)})
+
+
 # ── ancestry walk-on-read ─────────────────────────────────────────
 
 

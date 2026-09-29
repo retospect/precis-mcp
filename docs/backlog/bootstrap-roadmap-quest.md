@@ -120,10 +120,31 @@ this through `add_attempt` — that writes into a single quest's own free-text
 attempt ledger and gates nothing about node creation; borrowing it as a
 side-channel would leave dossier residue per rejected mint.
 
-**Rung minting boundary:** rungs mint as `STATUS:proposed` +
-`waiting-for:reto`, `llm_tier` unset — a human flips them into the doable
-rotation (same ruling as `quest-bodies.md` §pursuit item 3: the mint is the
-spend). A new pathway quest mints `STATUS:dormant`; a human activates it.
+**Rung minting boundary:** rungs mint as `STATUS:open` + `waiting-for:reto`,
+**`llm_tier` unset** — a human flips them into the doable rotation (same
+ruling as `quest-bodies.md` §pursuit item 3: the mint is the spend). A new
+pathway quest mints `STATUS:dormant`; a human activates it.
+
+*Amended 2026-09-29 (Reto: option B).* This said `STATUS:proposed`, which
+`parse_strict` refuses — `STATUS` is a closed vocabulary
+(`store/types.py::_CLOSED_VOCAB`) holding `open/doing/blocked/done/won't-do`
+plus the finding-chase values, and `proposed` is not among them, so the
+bridge role's mint would have failed at write time. Adding it was the obvious
+repair and is the wrong one: every existing query that treats
+`open|doing|blocked|done` as a partition of the todo space would skip the new
+value, turning "not picked up by the rotation" into "invisible" — and a
+proposal nobody sees is a proposal nobody sanctions.
+
+**`llm_tier` unset is the actual lock**, not the status: the dispatch worker
+selects on `meta ? 'llm_tier'` (`workers/dispatch.py` — `AND NOT (… .meta ?
+'llm_tier')` in both the parent-eligibility and candidate queries), so a rung
+without it is already not a candidate. `STATUS:open` therefore keeps rungs
+visible in ordinary todo views (intended — they need human eyes) while the
+missing `llm_tier` keeps them un-worked, and `waiting-for:reto` says why.
+Same shape as `graph-gardener.md`'s proposals, so the two agree.
+
+Consequence for AC3: assert `llm_tier` **absent** and the `waiting-for:reto`
+tag present — do not assert a `proposed` status.
 
 **Knowledge that outlives a quest** goes into a skill per pathway (agents
 write `precis-bootstrap-<pathway>` via `put(kind='skill')`), not into prompt
@@ -202,9 +223,10 @@ downward) for a rung whose product leaves the lab despite being consumed.
    emits `searches` and mints no `relax`/`autocatpath`/`sandbox_run` job.
 3. Fixture with `demand` and a worse `supply`: `quest_gaps()` yields exactly
    one `unmet-capability` gap; the tick runs `role: bridge`; a minted rung
-   lands `STATUS:proposed` + `waiting-for:reto`, `llm_tier` unset, serves
-   both the pathway and the capability, and a second identical bridge tick
-   mints **no** twin (dedup).
+   lands `STATUS:open` + `waiting-for:reto` and **carries no `llm_tier` key
+   at all** (assert absence — that is the rotation lock, not the status),
+   serves both the pathway and the capability, and a second identical bridge
+   tick mints **no** twin (dedup).
 4. `put(kind='todo', meta={'rung': {... produces: [{..., evidence: []}]}})`
    is refused with a message naming the rule; `edit(kind='quest',
    meta={'supply': {'k': {'value': 1}}})` (no evidence) is refused.
@@ -245,6 +267,41 @@ downward) for a rung whose product leaves the lab despite being consumed.
 - Skills: `precis-quest-help`, `precis-quest-writing-help`,
   `precis-roadmap-help` (new).
 - Web: `/refs/quest/<id>` hub — ledger panel for roadmap quests (can trail).
+
+## Residuals after the 2026-09-29 build (items 1–6 built, skills not)
+
+Items 1, 2, 3, 4, 5, 6 are BUILT (commits `2d6aab0a`, `1a4cb076`, `4adfe448`,
+`97f93c6b`). Item 7 (skills) is not. Remaining known gaps:
+
+1. **`meta.rung.benign = "required"` cannot be stored.** The "Terminal vs
+   intermediate rungs" section specifies it as an upward-only override, but
+   `handlers/_todo_guards.py::_RUNG_ALLOWED_KEYS` is a closed set
+   `{pathway, consumes, produces}`, so the write is refused. `rung_is_terminal()`
+   honours the key if present and the bridge honours a model-emitted one at
+   mint time, but **no door admits it** — the override is dead until `benign`
+   joins that allowlist with a value check. One-line change plus a test; not
+   done during the build because the guard file was off-limits to the agent
+   that found it.
+2. **"Lowest unmet capability" was never defined.** Implemented as "the
+   capability consumed by the most other rungs' `consumes`" (a chain-depth
+   proxy), ties by `serves` link order. Reasonable, but it is the builder's
+   reading, not a ruling — revisit if the root picks surprising capabilities.
+3. **Supply-absent rows.** With `demand` set and no supply, the ledger says
+   `unmet` and `quest_gaps()` emits `unmet-capability`, which the role table
+   routes to *bridge* — but bridging with no supply number is meaningless.
+   Role selection therefore splits unmet rows: cited supply present → bridge,
+   none → supply. The role table above should be read with that in mind.
+4. **Deed baseline on the first tick.** "Improved since the previous ledger
+   chunk" is literal: the pinned chunk carries `meta.signature` and the next
+   tick diffs it. On the very first tick the baseline is that tick's own
+   starting ledger, so pre-existing supplies seed silently while a supply the
+   first tick itself writes does get stamped.
+5. **Duplicated rung-status query.** `roadmap_tick` re-derives rung statuses
+   with its own SQL because `roadmap_ledger._rungs_for` / `_DONE_STATUSES` are
+   private. Exporting `rungs_for(store, capabilities)` from the ledger module
+   removes the duplication.
+6. Not built, by scope: the capped *framing* chunk from the §Dossier-shape
+   ruling, and the web hub ledger panel (spec already says it can trail).
 
 ## Open questions / decisions log
 
@@ -304,6 +361,20 @@ downward) for a rung whose product leaves the lab despite being consumed.
   cool+alert escalation. Every active pathway would false-alarm on a cadence.
   Pathways stay dormant and carry the marker only so their rungs render;
   `mark_roadmap_quest` does not make a quest tickable on its own.
+- **Narrowed 2026-09-29 to ROOT-ONLY ticking.** "Root and capability" has the
+  same defect one step down: the root carries no `rubric_objectives` either
+  (only capabilities do), so a root whose role selection reads only its *own*
+  meta is dry on every tick — and if root and capability both tick, both can
+  mint a rung for the same gap. So: **exactly one loop, on the root.** The
+  root's role selection scans the capability quests that `serve` it, picks the
+  highest-priority gap across them, and acts on *that* capability — which is
+  what "the lowest unmet capability first" in the Design section already
+  implies. Capability quests are data, not loops: they hold
+  `rubric_objectives`/`demand`/`supply` and are written by the root's tick,
+  never ticked themselves. One dry counter, one ledger, one writer.
+  Consequence for In-scope 3: `quest_gaps()` emits `unmet-capability` for a
+  roadmap **root** by scanning its served capabilities, with `Gap.handle` set
+  to the capability's handle — not by reading the ticked quest's own meta.
 - **Prod data — DONE 2026-09-27 (all dormant, `quest_body=roadmap`,
   `compute_lane=off`; activate nothing until the body ships):** root
   `qu453863` (serves qu161906). Pathways: qu453865 DNA-scaffold toolhead ·

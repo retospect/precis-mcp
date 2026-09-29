@@ -241,7 +241,10 @@ def add_parser(subparsers: Any) -> None:
     )
     s.add_argument("id", type=int, help="Quest ref id.")
     s.add_argument(
-        "key", help="Meta key: compute_lane, quest_body, or rubric_objectives."
+        "key",
+        help="Meta key: compute_lane, quest_body (materials|weave|inquiry|"
+        "roadmap — e.g. `precis quest set 453863 quest_body roadmap`), "
+        "rubric_objectives, demand, or supply.",
     )
     s.add_argument(
         "value",
@@ -276,12 +279,21 @@ def add_parser(subparsers: Any) -> None:
 def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.body import resolved_quest_body
     from precis.quest.tick import build_tick_prompt, run_quest_tick
+    from precis.quest.weave_tick import QUEST_BODY_ROADMAP
 
     # Same marker every tick entry point reads (precis.quest.body) — a quest
     # marked `meta.quest_body="inquiry"` must get the inquiry prompt/tick
     # here exactly as it does through the autonomous coordinator, not the
     # materials default (this was the manual-CLI gap in quest-bodies-inquiry.md).
     body = resolved_quest_body(store, args.id)
+
+    # bootstrap-roadmap-quest In-scope 6: a roadmap root runs the roadmap
+    # body here exactly as it does through the coordinator — the role
+    # picks the tier (never --tier), and --dry-run prints role + gap +
+    # the assembled prompt instead of the materials/inquiry tick context.
+    if body == QUEST_BODY_ROADMAP:
+        _cmd_roadmap_tick(store, args)
+        return
 
     if args.dry_run:
         qref = store.get_ref(kind="quest", id=args.id)
@@ -310,6 +322,55 @@ def _cmd_tick(store: Store, args: argparse.Namespace) -> None:
     if outcome.cost_usd:
         msg += f", ${outcome.cost_usd:.4f}"
     print(f"{msg} ({outcome.note})")
+
+
+def _cmd_roadmap_tick(store: Store, args: argparse.Namespace) -> None:
+    """``precis quest tick <roadmap-root>`` — one roadmap tick. ``--dry-run``
+    prints the chosen role, the gap it acts on, and the assembled prompt;
+    a live run builds the ``DispatchClient`` at the ROLE's tier (demand/
+    supply big, bridge frontier — ``--tier`` is ignored for this body, per
+    the 2026-09-28 ruling) and prints the tick's note + ledger delta."""
+    from precis.dispatch import Hub
+    from precis.quest.roadmap_tick import (
+        render_role_report,
+        roadmap_role,
+        roadmap_tick,
+        role_tier,
+    )
+    from precis.quest.search import make_acquiring_search
+    from precis.utils.llm.router import DispatchClient, tier_from_str
+
+    if args.dry_run:
+        print(render_role_report(roadmap_tick(store, None, args.id, dry_run=True)))
+        return
+
+    if args.tier:
+        print(
+            f"note: --tier {args.tier!r} ignored — the roadmap body's role picks "
+            "the tier (demand/supply big, bridge frontier)"
+        )
+    choice = roadmap_role(store, args.id)
+    tier = role_tier(choice.role if choice is not None else None)
+    client = DispatchClient(
+        tier=tier_from_str(tier), source="quest_roadmap", tools_needed=True
+    )
+    result = roadmap_tick(
+        store,
+        client,
+        args.id,
+        search_fn=make_acquiring_search(args.id, Hub(store=store)),
+    )
+    if not result.get("ok"):
+        print(f"quest {args.id}: roadmap tick failed — {result.get('error')}")
+        return
+    delta = result.get("ledger_delta") or {}
+    print(
+        f"quest {args.id}: roadmap tick — role {result.get('role') or 'none'} "
+        f"@{tier}, {len(delta)} ledger improvement(s), {result.get('deeds', 0)} "
+        f"deed(s), gaps {result.get('gap_count')}, "
+        f"{'improved' if result.get('improved') else 'dry' if result.get('dry') else 'changed'} "
+        f"({result.get('note', '')})"
+    )
 
 
 def _cmd_weave(store: Store, args: argparse.Namespace) -> None:

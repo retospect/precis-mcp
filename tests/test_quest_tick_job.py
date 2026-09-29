@@ -1329,3 +1329,172 @@ class TestJobRefIdThreadedForTranscriptPersistence:
         assert isinstance(out, Yield)
         assert len(calls) == 1
         assert calls[0]["job_ref_id"] == ctx.ref_id
+
+
+class TestRoadmapArm:
+    """bootstrap-roadmap-quest In-scope 1: the fourth ``_phase_tick`` arm.
+    ``roadmap_role`` runs FIRST and the ``DispatchClient`` is built at that
+    role's tier (demand/supply ``big``, bridge ``frontier`` — never
+    ``params.tier``); the dry streak bumps on a dry tick, carries across a
+    changed-but-not-improved tick (a rung mint), and resets only on a
+    ledger improvement (which also clears ``consecutive_dry_rests``)."""
+
+    @staticmethod
+    def _wire(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        role: str | None,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        from precis.quest.weave_tick import QUEST_BODY_ROADMAP
+        from precis.utils.llm import router
+
+        seen: dict[str, Any] = {"tiers": [], "resets": 0, "rests": 0, "calls": 0}
+        monkeypatch.setattr(qt, "_quest_body", lambda store, qid: QUEST_BODY_ROADMAP)
+        _stub_pending(monkeypatch, [[]])
+        _stub_queued(monkeypatch, 0)
+        choice = SimpleNamespace(role=role) if role is not None else None
+        monkeypatch.setattr(
+            "precis.quest.roadmap_tick.roadmap_role", lambda store, qid: choice
+        )
+
+        def _fake_tick(store: Any, client: Any, qid: int, **kw: Any) -> dict[str, Any]:
+            seen["calls"] += 1
+            seen["client_tier"] = client.tier
+            return dict(result)
+
+        monkeypatch.setattr("precis.quest.roadmap_tick.roadmap_tick", _fake_tick)
+
+        class _Client:
+            def __init__(self, *, tier: Any, source: str, tools_needed: bool) -> None:
+                self.tier = tier
+                seen["tiers"].append((tier, source, tools_needed))
+
+        monkeypatch.setattr(router, "DispatchClient", _Client)
+        monkeypatch.setattr(
+            "precis.quest.search.make_acquiring_search", lambda qid, hub: None
+        )
+        monkeypatch.setattr(qt, "_build_search_embedder", lambda store: None)
+
+        def _reset(store: Any, qid: int) -> None:
+            seen["resets"] += 1
+
+        def _rest(store: Any, qid: int) -> int:
+            seen["rests"] += 1
+            return seen["rests"]
+
+        monkeypatch.setattr(qt, "_reset_dry_rest_counter", _reset)
+        monkeypatch.setattr(qt, "_register_dry_rest", _rest)
+        return seen
+
+    @staticmethod
+    def _ok(**fields: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "ok": True,
+            "applied": True,
+            "role": "bridge",
+            "gap": {"kind": "unmet-capability", "handle": "qu9"},
+            "ledger_delta": {},
+            "improved": False,
+            "dry": False,
+            "gap_count": [3, 2],
+            "deeds": 0,
+            "note": "n",
+        }
+        base.update(fields)
+        return base
+
+    @pytest.mark.parametrize(
+        ("role", "expected"),
+        [("demand", "big"), ("supply", "big"), ("bridge", "frontier"), (None, "big")],
+    )
+    def test_role_picks_the_tier_not_params(
+        self, monkeypatch: pytest.MonkeyPatch, role: str | None, expected: str
+    ) -> None:
+        from precis.utils.llm.router import Tier
+
+        seen = self._wire(monkeypatch, role=role, result=self._ok(role=role))
+        # params.tier says 'medium' — ignored for this body.
+        out = qt._dispatch(FakeCtx(_meta(tier="medium")), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert seen["calls"] == 1
+        assert seen["tiers"] == [(Tier(expected), "quest_roadmap", True)]
+        assert seen["client_tier"] == Tier(expected)
+
+    def test_rung_mint_carries_the_dry_streak_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._wire(
+            monkeypatch, role="bridge", result=self._ok(rung_id=77, dry=False)
+        )
+        out = qt._dispatch(FakeCtx(_meta({"dry_ticks": 2})), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["dry_ticks"] == 2  # neither bumped nor reset
+        assert seen["resets"] == 0
+
+    def test_dry_tick_bumps_and_the_third_rests_with_alert(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._wire(
+            monkeypatch, role="bridge", result=self._ok(dry=True, gap_count=[3, 3])
+        )
+        out = qt._dispatch(FakeCtx(_meta({"dry_ticks": 1})), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["dry_ticks"] == 2
+        out = qt._dispatch(FakeCtx(_meta({"dry_ticks": 2})), qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is True
+        assert out.summary_meta["rest_reason"] == "dry"
+        assert out.summary_meta["dry_ticks"] == 3
+        assert seen["rests"] == 1  # _register_dry_rest → cool-down + alert
+
+    def test_no_role_is_a_dry_tick(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._wire(
+            monkeypatch,
+            role=None,
+            result=self._ok(role=None, gap=None, dry=True, gap_count=[1, 1]),
+        )
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["dry_ticks"] == 1
+
+    def test_ledger_improvement_resets_both_counters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._wire(
+            monkeypatch,
+            role=None,
+            result=self._ok(
+                role=None,
+                improved=True,
+                ledger_delta={"qu9:positional_accuracy_nm": [6.0, 1.9]},
+                deeds=2,
+            ),
+        )
+        out = qt._dispatch(FakeCtx(_meta({"dry_ticks": 2})), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert "dry_ticks" not in out.state  # state rebuilt fresh
+        assert seen["resets"] == 1
+
+    def test_failed_tick_uses_the_failure_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._wire(
+            monkeypatch, role="supply", result={"ok": False, "error": "model down"}
+        )
+        out = qt._dispatch(FakeCtx(_meta({"tick_failures": 1})), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["tick_failures"] == 2
+        monkeypatch.setattr(qt, "_max_tick_failures", lambda: 3)
+        out = qt._dispatch(FakeCtx(_meta({"tick_failures": 2})), qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is False and out.summary_meta["tick_failures"] == 3
+
+    def test_roadmap_arm_never_sees_the_starvation_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._wire(monkeypatch, role="demand", result=self._ok(role="demand"))
+        _stub_queued(monkeypatch, 10_000)  # a deep compute queue defers materials
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert seen["calls"] == 1

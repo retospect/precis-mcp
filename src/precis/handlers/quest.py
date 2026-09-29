@@ -79,15 +79,128 @@ _LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
 #: :data:`precis.workers.job_types.quest_tick.COMPUTE_LANE_META_KEY`),
 #: ``quest_body`` (catalyst vs. weave tick routing —
 #: :data:`precis.quest.weave_tick.QUEST_BODY_META_KEY`), ``rubric_objectives``
-#: (the frontier's measured-axis override, :mod:`precis.quest.frontier`).
+#: (the frontier's measured-axis override, :mod:`precis.quest.frontier`),
+#: ``demand`` / ``supply`` (a roadmap capability's per-axis requirement and
+#: best cited literature value — :func:`_check_demand_meta` /
+#: :func:`_check_supply_meta`, ``bootstrap-roadmap-quest.md``).
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before
 #: this, nothing could set ``compute_lane`` on a live quest at all — the
 #: qu401863 incident's cause 2 (``quest-tick-incident-fix.md``).
 _META_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"compute_lane", "quest_body", "rubric_objectives"}
+    {"compute_lane", "quest_body", "rubric_objectives", "demand", "supply"}
 )
+
+_DEMAND_ENTRY_KEYS: frozenset[str] = frozenset({"value", "source", "reason"})
+_SUPPLY_ENTRY_KEYS: frozenset[str] = frozenset({"value", "evidence"})
+_DEMAND_NEXT = (
+    "meta={'demand': {'<axis key>': {'value': 2.0, 'source': 'se:<slug>', "
+    "'reason': 'why the part needs it'}}}"
+)
+_SUPPLY_NEXT = "meta={'supply': {'<axis key>': {'value': 6.0, 'evidence': ['fi<id>']}}}"
+
+
+def _check_axis_map(
+    field: str, value: Any, *, allowed: frozenset[str], next_hint: str
+) -> dict[str, dict[str, Any]]:
+    """Shared shell of ``demand``/``supply``: a dict keyed by a rubric axis
+    key, each entry a dict with exactly ``allowed`` keys and a numeric
+    ``value``. Returns the validated map for the per-field checks."""
+    if not isinstance(value, dict):
+        raise BadInput(
+            f"meta.{field} must be a dict keyed by rubric_objectives axis key, "
+            f"got {type(value).__name__}",
+            next=next_hint,
+        )
+    for key, entry in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise BadInput(
+                f"meta.{field} keys must be non-empty axis-key strings, got {key!r}",
+                next=next_hint,
+            )
+        if not isinstance(entry, dict):
+            raise BadInput(
+                f"meta.{field}[{key!r}] must be a dict, got {type(entry).__name__}",
+                next=next_hint,
+            )
+        extra = set(entry) - allowed
+        if extra:
+            sorted_allowed = ", ".join(sorted(allowed))
+            raise BadInput(
+                f"meta.{field}[{key!r}] key(s) {sorted(extra)} are unknown; "
+                f"allowed keys are [{sorted_allowed}]",
+                next=next_hint,
+            )
+        num = entry.get("value")
+        if isinstance(num, bool) or not isinstance(num, (int, float)):
+            raise BadInput(
+                f"meta.{field}[{key!r}].value must be a number, got {num!r}",
+                next=next_hint,
+            )
+    return value
+
+
+def _check_demand_meta(meta: dict[str, Any]) -> None:
+    """Reject ``meta.demand`` unless every axis entry is ``{value, source,
+    reason}`` with a non-empty ``source`` (``se:<slug>`` / ``td<id>`` /
+    ``qu<id>`` — where the number came from; v1 checks the string is
+    present, not that it resolves) and a non-empty ``reason``."""
+    if "demand" not in meta:
+        return
+    demand = _check_axis_map(
+        "demand", meta["demand"], allowed=_DEMAND_ENTRY_KEYS, next_hint=_DEMAND_NEXT
+    )
+    for key, entry in demand.items():
+        for field in ("source", "reason"):
+            text = entry.get(field)
+            if not isinstance(text, str) or not text.strip():
+                raise BadInput(
+                    f"meta.demand[{key!r}].{field} must be a non-empty string "
+                    f"(source = se:<slug> / td<id> / qu<id>), got {text!r}",
+                    next=_DEMAND_NEXT,
+                )
+
+
+def _check_supply_meta(meta: dict[str, Any]) -> None:
+    """Reject ``meta.supply`` unless every axis entry is ``{value, evidence}``
+    with a NON-EMPTY ``evidence`` list of handle strings — a supply number
+    with no citation is exactly what the roadmap body exists to prevent
+    (the "no number, no rung" rule, ``bootstrap-roadmap-quest.md``)."""
+    if "supply" not in meta:
+        return
+    supply = _check_axis_map(
+        "supply", meta["supply"], allowed=_SUPPLY_ENTRY_KEYS, next_hint=_SUPPLY_NEXT
+    )
+    for key, entry in supply.items():
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            raise BadInput(
+                f"meta.supply[{key!r}] has no evidence — a supply value must "
+                "cite at least one finding handle (evidence=['fi<id>', ...]); "
+                "no number, no rung",
+                next=_SUPPLY_NEXT,
+            )
+        # Well-formed handles, not merely non-empty strings: the whole point
+        # of this gate is that a supply number is traceable, and
+        # ``evidence=['trust me']`` would satisfy a non-empty-string check
+        # while citing nothing. ``is_well_formed`` parses against the real
+        # kind-code registry, so it rejects prose without hard-coding ``fi``
+        # (a supply number cited to a paper or a structure is legitimate).
+        # It does not check the target EXISTS — that is a resolve, and a
+        # write-time guard has no business doing lookups.
+        bad = [
+            h
+            for h in evidence
+            if not isinstance(h, str) or not handle_registry.is_well_formed(h.strip())
+        ]
+        if bad:
+            raise BadInput(
+                f"meta.supply[{key!r}].evidence entries must be handles "
+                f"(fi<id> / pa<id> / …), got {bad[:3]!r}",
+                next=_SUPPLY_NEXT,
+            )
+
 
 #: ``PRIO:`` tag ↔ ``refs.prio`` column translation — the striving-weight
 #: scale the todo tree rotates on and slice 2's reweighting reads
@@ -540,10 +653,12 @@ class QuestHandler(NumericRefHandler):
 
         ``meta=`` is a **closed allowlist**
         (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_body``/
-        ``rubric_objectives``), patch-merged via ``store.stamp_ref_meta``
-        (existing keys outside the patch untouched — never a whole-dict
-        clobber). An unknown key is refused naming the allowlist, mirroring
-        ``todo.tag()``'s ``check_meta_keys_promotable`` gate. May be combined
+        ``rubric_objectives``/``demand``/``supply``), patch-merged via
+        ``store.stamp_ref_meta`` (existing keys outside the patch untouched —
+        never a whole-dict clobber). An unknown key is refused naming the
+        allowlist, mirroring ``todo.tag()``'s ``check_meta_keys_promotable``
+        gate; ``demand``/``supply`` are shape-checked (a ``supply`` axis with
+        no ``evidence`` is refused — no number, no rung). May be combined
         with ``text=`` in one call, or passed alone (no ``text=`` required)
         — the incident-response path: ``edit(kind='quest', id=N,
         meta={'compute_lane': 'off'})`` needs no statement rewrite
@@ -582,6 +697,8 @@ class QuestHandler(NumericRefHandler):
                         "set at create time via put()"
                     ),
                 )
+            _check_demand_meta(meta)
+            _check_supply_meta(meta)
             self.store.stamp_ref_meta(ref_id, meta)
             meta_changed = sorted(meta)
 
@@ -590,7 +707,7 @@ class QuestHandler(NumericRefHandler):
                 raise BadInput(
                     "edit(kind='quest', mode='replace') requires text= "
                     "(or meta= to patch compute_lane/quest_body/"
-                    "rubric_objectives)",
+                    "rubric_objectives/demand/supply)",
                     next=(
                         "edit(kind='quest', id=N, mode='replace', "
                         "text='new striving statement') or "
@@ -699,12 +816,27 @@ class QuestHandler(NumericRefHandler):
         as "nothing has converged" when the truth is "nothing ever will"."""
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         meta = ref.meta or {}
-        if meta.get(_weave_tick.QUEST_BODY_META_KEY) == _weave_tick.QUEST_BODY_INQUIRY:
+        body = meta.get(_weave_tick.QUEST_BODY_META_KEY)
+        if body == _weave_tick.QUEST_BODY_INQUIRY:
             return (
                 f"# frontier — quest {ref.id}: {head}\n\n"
                 "this is an inquiry — it reads, reasons, and synthesises; it "
                 "has no proposals and no Pareto frontier (see view='dossier' "
                 "for its living synthesis)."
+            )
+        # bootstrap-roadmap-quest AC7: the roadmap body has no frontier
+        # either — its measured state is the capability ledger (a
+        # per-axis demand-vs-supply table, not a Pareto set of candidate
+        # materials). A literal equality per body, not a catch-all for
+        # non-materials bodies: a future body must opt in here explicitly.
+        if body == _weave_tick.QUEST_BODY_ROADMAP:
+            return (
+                f"# frontier — quest {ref.id}: {head}\n\n"
+                "this is a roadmap — it has no candidate materials and no "
+                "Pareto frontier; the body has no frontier at all. Its "
+                "measured state is the capability ledger (see view='tree' "
+                "for the table, or view='dossier' for the pinned "
+                "capability-ledger chunk)."
             )
         from precis.quest import frontier as frontier_mod
 
@@ -1074,6 +1206,12 @@ class QuestHandler(NumericRefHandler):
             for b in deeds[-8:]:
                 stamp = b.created_at.date().isoformat() if b.created_at else "?"
                 lines.append(f"  ✦ {stamp}  {b.text.splitlines()[0][:80]}")
+            # bootstrap-roadmap-quest AC6: a roadmap ROOT renders its
+            # capability ledger (demand · best supply · closing rung · state
+            # per axis) — the same derived table the tick pins into the
+            # dossier. Computed over the capability servers already in hand;
+            # a non-roadmap quest pays nothing here.
+            lines += self._render_capability_ledger(ref, live_servers)
             # Health (momentum + alignment floor) + gaps — the striving's own
             # exploration queue (slice 3, precis.quest.gaps).
             lines += self._render_health_and_gaps(ref, live_servers)
@@ -1095,6 +1233,20 @@ class QuestHandler(NumericRefHandler):
                     )
                 )
         return "\n".join(lines)
+
+    def _render_capability_ledger(self, ref: Ref, live_servers: list[Ref]) -> list[str]:
+        """The capability ledger block for a roadmap-body quest (empty for
+        every other body — no ledger, no lines)."""
+        meta = ref.meta or {}
+        if meta.get(_weave_tick.QUEST_BODY_META_KEY) != _weave_tick.QUEST_BODY_ROADMAP:
+            return []
+        from precis.quest import roadmap_ledger as ledger
+
+        capabilities = [r for r in live_servers if ledger.is_capability_quest(r)][
+            : ledger.LEDGER_MAX_CAPABILITIES
+        ]
+        rows = ledger.compute_ledger_for(self.store, capabilities)
+        return ["", "── capability ledger ──", ledger.render_ledger_markdown(rows)]
 
     # ── slice 3: health (momentum + alignment) + gaps ────────────────
 

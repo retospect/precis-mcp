@@ -74,7 +74,8 @@ _LOG_KIND = "quest_log"
 class Gap:
     """One thin spot in a quest's support — a place to look next."""
 
-    kind: str  # thin-support | no-literature | low-mastery | open-hypothesis
+    kind: str  # thin-support | no-literature | low-mastery | open-hypothesis |
+    #           needs-experiment | fanout-capped | unmet-capability
     detail: str  # human-readable one-liner
     handle: str | None = None  # the node it concerns, if any
 
@@ -241,7 +242,66 @@ def quest_gaps(
             )
         )
 
+    # 6. Unmet capabilities — roadmap ROOTS only (bootstrap-roadmap-quest.md,
+    #    the 2026-09-29 root-only ruling): the root is the one loop, so its
+    #    gap list is computed over the *capability* quests that serve it,
+    #    never from its own meta. A (capability, axis) with a demand whose
+    #    best cited supply falls short, and no in-flight rung whose produces
+    #    would close it, is the bridge role's cue; Gap.handle names the
+    #    capability so the tick knows which one to act on. Gated so that no
+    #    non-roadmap quest pays a query or changes its gap list: only when a
+    #    capability-shaped server is present do we read the root's own meta.
+    gaps.extend(_unmet_capabilities(store, quest_id, live))
+
     return gaps
+
+
+def _unmet_capabilities(store: Store, quest_id: int, live: list[Ref]) -> list[Gap]:
+    from precis.quest import roadmap_ledger as ledger
+    from precis.quest.weave_tick import QUEST_BODY_META_KEY, QUEST_BODY_ROADMAP
+
+    capabilities = [r for r in live if ledger.is_capability_quest(r)]
+    if not capabilities:
+        return []
+    root = store.get_ref(kind="quest", id=quest_id)
+    if root is None or (root.meta or {}).get(QUEST_BODY_META_KEY) != QUEST_BODY_ROADMAP:
+        return []
+    checked = capabilities[: ledger.LEDGER_MAX_CAPABILITIES]
+    out: list[Gap] = []
+    for row in ledger.compute_ledger_for(store, checked):
+        if row.state != ledger.STATE_UNMET or row.demanded is None:
+            continue
+        unit = f" {row.unit}" if row.unit else ""
+        supply = f"{row.best_supply:g}{unit}" if row.best_supply is not None else "none"
+        cite = (
+            f" [{', '.join(row.best_supply_evidence)}]"
+            if row.best_supply_evidence
+            else ""
+        )
+        out.append(
+            Gap(
+                kind="unmet-capability",
+                detail=(
+                    f"{row.key}: demanded {row.demanded:g}{unit}, best supply "
+                    f"{supply}{cite}, no rung in flight would close it — "
+                    f"{row.capability_title}"
+                ),
+                handle=row.capability,
+            )
+        )
+    if len(capabilities) > len(checked):
+        skipped = len(capabilities) - len(checked)
+        out.append(
+            Gap(
+                kind="fanout-capped",
+                detail=(
+                    f"{skipped} more capability server(s) not ledgered — "
+                    "root's capability fan-out exceeds the "
+                    f"{ledger.LEDGER_MAX_CAPABILITIES}-capability cap"
+                ),
+            )
+        )
+    return out
 
 
 def _open_hypotheses(store: Store, quest_id: int) -> list[str]:

@@ -79,6 +79,31 @@ QUEST_BODY_MATERIALS = "materials"
 #: structures.
 QUEST_BODY_INQUIRY = "inquiry"
 
+#: The marker value for a capability/pathway/rung roadmap striving
+#: (docs/backlog/bootstrap-roadmap-quest.md) — a fourth ``_phase_tick`` arm
+#: running :func:`precis.quest.roadmap_tick.roadmap_tick`, whose one action
+#: per tick is chosen from a gap type (demand / supply / bridge) rather than
+#: from a proposal menu.
+#:
+#: Carried by three node roles with different consequences: only the **root**
+#: is ever ticked — its role selection scans the *capability* quests that
+#: serve it and acts on one of them. Capability quests hold
+#: ``rubric_objectives``/``demand``/``supply`` and are written by the root's
+#: tick; **pathway** quests carry the marker only so their rungs render.
+#: Neither is a loop of its own: one dry counter, one ledger, one writer.
+#: Marking a quest does not make it tickable — arming does.
+QUEST_BODY_ROADMAP = "roadmap"
+
+
+def mark_roadmap_quest(store: RefMetaStore, quest_id: int) -> None:
+    """Flag ``quest_id`` as a roadmap-body quest.
+
+    Mirrors :func:`mark_weave_quest` exactly — the minimal marker-setter for
+    an already-minted quest. Applied to roots, capabilities and pathways
+    alike; see :data:`QUEST_BODY_ROADMAP` for why only the root is ticked.
+    """
+    store.stamp_ref_meta(quest_id, {QUEST_BODY_META_KEY: QUEST_BODY_ROADMAP})
+
 
 def mark_weave_quest(store: RefMetaStore, quest_id: int) -> None:
     """Flag ``quest_id`` as a weave-body quest — the coordinator's ``_phase_tick``
@@ -357,7 +382,9 @@ __all__ = [
     "QUEST_BODY_INQUIRY",
     "QUEST_BODY_MATERIALS",
     "QUEST_BODY_META_KEY",
+    "QUEST_BODY_ROADMAP",
     "QUEST_BODY_WEAVE",
+    "mark_roadmap_quest",
     "mark_weave_quest",
     "weave_tick",
 ]

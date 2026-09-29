@@ -43,6 +43,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
+from precis.utils import handle_registry
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_ALIASES
 
 if TYPE_CHECKING:
@@ -272,6 +273,137 @@ def check_llm_select_meta(meta: dict[str, Any] | None) -> None:
                 "range; must be 0 <= t <= 2",
                 next="pick a temperature between 0 and 2",
             )
+
+
+#: ``meta.rung`` — a roadmap rung's ledger contract (the roadmap quest body,
+#: ``bootstrap-roadmap-quest.md``). ``consumes`` entries are requirements
+#: (no evidence); ``produces`` entries are claims and MUST cite finding
+#: handles — "no number, no rung". Validated at write time on both the
+#: ``put()`` and ``tag()`` paths so a rung can update its ``produces`` on
+#: completion without a re-put.
+_RUNG_ALLOWED_KEYS: frozenset[str] = frozenset({"pathway", "consumes", "produces"})
+_RUNG_ENTRY_KEYS: frozenset[str] = frozenset({"capability", "key", "value"})
+_RUNG_PRODUCES_KEYS: frozenset[str] = _RUNG_ENTRY_KEYS | {"evidence"}
+_RUNG_NEXT = (
+    "meta={'rung': {'pathway': 'qu<id>', 'consumes': [{'capability': "
+    "'qu<id>', 'key': 'axis', 'value': 1.0}], 'produces': [{'capability': "
+    "'qu<id>', 'key': 'axis', 'value': 2.0, 'evidence': ['fi<id>']}]}}"
+)
+
+
+def _is_quest_handle(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("qu") and value[2:].isdigit()
+
+
+def _check_rung_entry(entry: Any, *, where: str, produces: bool) -> None:
+    allowed = _RUNG_PRODUCES_KEYS if produces else _RUNG_ENTRY_KEYS
+    if not isinstance(entry, dict):
+        raise BadInput(
+            f"meta.rung.{where} entries must be dicts, got {type(entry).__name__}",
+            next=_RUNG_NEXT,
+        )
+    extra = set(entry) - allowed
+    if extra:
+        sorted_allowed = ", ".join(sorted(allowed))
+        raise BadInput(
+            f"meta.rung.{where} entry key(s) {sorted(extra)} are unknown; "
+            f"allowed keys are [{sorted_allowed}]",
+            next=_RUNG_NEXT,
+        )
+    missing = _RUNG_ENTRY_KEYS - set(entry)
+    if missing:
+        raise BadInput(
+            f"meta.rung.{where} entry is missing {sorted(missing)}",
+            next=_RUNG_NEXT,
+        )
+    if not _is_quest_handle(entry["capability"]):
+        raise BadInput(
+            f"meta.rung.{where}[].capability={entry['capability']!r} must be "
+            "a quest handle ('qu<id>')",
+            next=_RUNG_NEXT,
+        )
+    key = entry["key"]
+    if not isinstance(key, str) or not key.strip():
+        raise BadInput(
+            f"meta.rung.{where}[].key must be a non-empty string (a "
+            f"rubric_objectives axis key), got {key!r}",
+            next=_RUNG_NEXT,
+        )
+    value = entry["value"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BadInput(
+            f"meta.rung.{where}[].value must be a number, got {value!r}",
+            next=_RUNG_NEXT,
+        )
+    if produces:
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            raise BadInput(
+                f"meta.rung.produces[] for key={key!r} has no evidence — no "
+                "number, no rung: a produced value must cite at least one "
+                "finding handle (evidence=['fi<id>', ...])",
+                next=_RUNG_NEXT,
+            )
+        # Well-formed handles, not merely non-empty strings — see the twin
+        # gate in ``handlers/quest.py::_check_supply_meta`` for why: a rung
+        # claiming ``evidence=['trust me']`` would otherwise satisfy "no
+        # number, no rung" while citing nothing.
+        bad = [
+            h
+            for h in evidence
+            if not isinstance(h, str) or not handle_registry.is_well_formed(h.strip())
+        ]
+        if bad:
+            raise BadInput(
+                f"meta.rung.produces[] for key={key!r}: evidence entries must "
+                f"be handles (fi<id> / pa<id> / …), got {bad[:3]!r}",
+                next=_RUNG_NEXT,
+            )
+
+
+def check_rung_meta(meta: dict[str, Any] | None) -> None:
+    """Reject ``meta.rung`` unless it is a well-formed roadmap rung.
+
+    Shape: ``{pathway: 'qu<id>', consumes: [{capability, key, value}],
+    produces: [{capability, key, value, evidence: ['fi<id>', ...]}]}``.
+    ``consumes`` entries carry no evidence (they are requirements);
+    every ``produces`` entry MUST cite a non-empty ``evidence`` list — a
+    produced number with no citation is exactly what the roadmap body
+    exists to prevent (**no number, no rung**). Reject the whole call
+    rather than drop a malformed entry, mirroring
+    :func:`check_llm_select_meta`.
+    """
+    if not meta or "rung" not in meta:
+        return
+    value = meta.get("rung")
+    if not isinstance(value, dict):
+        raise BadInput(
+            f"meta.rung must be a dict, got {type(value).__name__}",
+            next=_RUNG_NEXT,
+        )
+    extra = set(value) - _RUNG_ALLOWED_KEYS
+    if extra:
+        sorted_allowed = ", ".join(sorted(_RUNG_ALLOWED_KEYS))
+        raise BadInput(
+            f"meta.rung key(s) {sorted(extra)} are unknown; allowed keys "
+            f"are [{sorted_allowed}]",
+            next=_RUNG_NEXT,
+        )
+    if not _is_quest_handle(value.get("pathway")):
+        raise BadInput(
+            f"meta.rung.pathway={value.get('pathway')!r} must be a quest "
+            "handle ('qu<id>') naming the pathway this rung serves",
+            next=_RUNG_NEXT,
+        )
+    for where in ("consumes", "produces"):
+        entries = value.get(where, [])
+        if not isinstance(entries, list):
+            raise BadInput(
+                f"meta.rung.{where} must be a list, got {type(entries).__name__}",
+                next=_RUNG_NEXT,
+            )
+        for entry in entries:
+            _check_rung_entry(entry, where=where, produces=where == "produces")
 
 
 def check_executor_tag(tags: list[str] | None) -> None:
@@ -749,6 +881,7 @@ TAG_META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "llm_tier",
         "llm_select",
         "budget_usd",
+        "rung",  # a roadmap rung's produces is updated on completion
     }
 )
 

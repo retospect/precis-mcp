@@ -181,6 +181,81 @@ class TestEdit:
         else:  # pragma: no cover - guard
             raise AssertionError("edit(mode='replace') should require text=")
 
+    # ── meta.demand / meta.supply (roadmap capability axes) ──────────
+
+    def test_edit_meta_demand_and_supply_accepted(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="Capability: positional accuracy"))
+        demand = {
+            "positional_accuracy_nm": {
+                "value": 2.0,
+                "source": "se:hexfold-valve",
+                "reason": "port pitch tolerance",
+            }
+        }
+        supply = {"positional_accuracy_nm": {"value": 6.0, "evidence": ["fi42"]}}
+        resp = h.edit(id=qid, meta={"demand": demand, "supply": supply})
+        assert "patched meta" in resp.body
+        ref = store.get_ref(kind="quest", id=qid)
+        assert ref.meta["demand"] == demand
+        assert ref.meta["supply"] == supply
+
+    def test_edit_meta_supply_empty_evidence_refused(self, store: Any) -> None:
+        """Acceptance criterion 4: a supply number with no citation is
+        refused with a message naming the rule."""
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Capability"))
+        with pytest.raises(BadInput, match="no number, no rung"):
+            h.edit(id=qid, meta={"supply": {"k": {"value": 1.0, "evidence": []}}})
+        assert "supply" not in (store.get_ref(kind="quest", id=qid).meta or {})
+
+    def test_edit_meta_supply_prose_evidence_refused(self, store: Any) -> None:
+        """Evidence must be a HANDLE, not any non-empty string — otherwise
+        ``evidence=['trust me']`` passes the citation gate while citing
+        nothing, and the rule is decorative."""
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Capability"))
+        with pytest.raises(BadInput, match="must be handles"):
+            h.edit(
+                id=qid, meta={"supply": {"k": {"value": 1.0, "evidence": ["trust me"]}}}
+            )
+        assert "supply" not in (store.get_ref(kind="quest", id=qid).meta or {})
+
+    def test_edit_meta_supply_missing_evidence_key_refused(self, store: Any) -> None:
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Capability"))
+        with pytest.raises(BadInput, match="no number, no rung"):
+            h.edit(id=qid, meta={"supply": {"k": {"value": 1}}})
+
+    def test_edit_meta_demand_requires_source_and_number(self, store: Any) -> None:
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Capability"))
+        with pytest.raises(BadInput, match="source must be a non-empty string"):
+            h.edit(id=qid, meta={"demand": {"k": {"value": 1.0, "reason": "r"}}})
+        with pytest.raises(BadInput, match="value must be a number"):
+            h.edit(
+                id=qid,
+                meta={
+                    "demand": {"k": {"value": "two", "source": "qu1", "reason": "r"}}
+                },
+            )
+
 
 class TestServesAndTree:
     def test_serves_edge_surfaces_in_tree(self, store: Any) -> None:

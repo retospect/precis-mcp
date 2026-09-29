@@ -344,3 +344,120 @@ class TestUnknownViewError:
         h = _handler(store)
         qid = _created_id(h.put(text="A striving"))
         assert h.get(id=qid, view="log").body is not None
+
+
+# ── unmet-capability (roadmap roots) ───────────────────────────────────
+
+
+class TestUnmetCapability:
+    """``unmet-capability`` fires on a roadmap ROOT by scanning the capability
+    quests that serve it (``bootstrap-roadmap-quest.md``, the 2026-09-29
+    root-only ruling) — never from the ticked quest's own meta — and
+    ``Gap.handle`` names the capability the bridge role should act on."""
+
+    def test_root_with_shortfall_yields_exactly_one_gap_on_the_capability(
+        self, store: Any
+    ) -> None:
+        from tests.test_quest_roadmap_ledger import make_root
+
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        unmet = [g for g in quest_gaps(store, root) if g.kind == "unmet-capability"]
+        assert len(unmet) == 1
+        assert unmet[0].handle == f"qu{cap}"
+        assert "positional_accuracy_nm" in unmet[0].detail
+        assert "fi42" in unmet[0].detail  # the best supply's evidence is cited
+
+    def test_met_capability_yields_no_gap(self, store: Any) -> None:
+        from tests.test_quest_roadmap_ledger import make_root
+
+        root, _cap = make_root(store, demand=2.0, supply=1.5)
+        assert "unmet-capability" not in _gap_kinds(store, root)
+
+    def test_done_rung_meeting_demand_clears_the_gap(self, store: Any) -> None:
+        from tests.test_quest_roadmap_ledger import make_root, make_rung
+
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        make_rung(store, cap, value=1.9, status="done")
+        assert "unmet-capability" not in _gap_kinds(store, root)
+
+    def test_open_rung_that_would_meet_clears_the_gap(self, store: Any) -> None:
+        from tests.test_quest_roadmap_ledger import make_root, make_rung
+
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        make_rung(store, cap, value=1.0)  # untagged → open, a promise in flight
+        assert "unmet-capability" not in _gap_kinds(store, root)
+
+    def test_open_rung_short_of_demand_keeps_the_gap(self, store: Any) -> None:
+        from tests.test_quest_roadmap_ledger import make_root, make_rung
+
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        make_rung(store, cap, value=3.0)
+        assert "unmet-capability" in _gap_kinds(store, root)
+
+    def test_no_demand_is_not_an_unmet_capability(self, store: Any) -> None:
+        # No demand → the demand role's cue, not the bridge role's.
+        from tests.test_quest_roadmap_ledger import make_root
+
+        root, _cap = make_root(store, demand=None, supply=6.0)
+        assert "unmet-capability" not in _gap_kinds(store, root)
+
+    def test_dead_end_verdict_suppresses_the_gap(self, store: Any) -> None:
+        from tests.test_quest_roadmap_ledger import make_root
+
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        _handler(store).put(
+            id=cap, text="positional_accuracy_nm: nothing plausible", entry="dead-end"
+        )
+        assert "unmet-capability" not in _gap_kinds(store, root)
+
+    def test_capability_ticked_directly_emits_nothing(self, store: Any) -> None:
+        # Capability quests are data, not loops — only the root scans.
+        from tests.test_quest_roadmap_ledger import make_root
+
+        _root, cap = make_root(store, demand=2.0, supply=6.0)
+        assert "unmet-capability" not in _gap_kinds(store, cap)
+
+    def test_non_roadmap_root_is_byte_identical(self, store: Any) -> None:
+        """A quest NOT marked roadmap, even one served by a capability-shaped
+        quest, keeps exactly the gap list it had before this gap existed."""
+        from tests.test_quest_roadmap_ledger import make_root
+
+        root, _cap = make_root(store, demand=2.0, supply=6.0)
+        before = quest_gaps(store, root)
+        assert any(g.kind == "unmet-capability" for g in before)
+        store.stamp_ref_meta(root, {"quest_body": "materials"})
+        after = quest_gaps(store, root)
+        assert after == [g for g in before if g.kind != "unmet-capability"]
+        assert [g.kind for g in after] == ["thin-support", "no-literature"]
+
+    def test_tree_view_renders_the_gap(self, store: Any) -> None:
+        from tests.test_quest_roadmap_ledger import make_root
+
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        body = _handler(store).get(id=root, view="tree").body
+        assert "unmet-capability" in body and f"[qu{cap}]" in body
+
+    def test_capability_fanout_capped_gap(self, store: Any, monkeypatch: Any) -> None:
+        from precis.quest import roadmap_ledger as ledger
+        from tests.test_quest_roadmap_ledger import make_root
+
+        monkeypatch.setattr(ledger, "LEDGER_MAX_CAPABILITIES", 1)
+        root, _cap = make_root(store, demand=2.0, supply=6.0)
+        h = _handler(store)
+        extra = _created_id(h.put(text="Capability: cycle time"))
+        h.edit(
+            id=extra,
+            meta={
+                "quest_body": "roadmap",
+                "rubric_objectives": [{"key": "cycle_time_s", "sense": "min"}],
+                "demand": {
+                    "cycle_time_s": {"value": 1.0, "source": "qu1", "reason": "r"}
+                },
+            },
+        )
+        store.add_link(src_ref_id=extra, dst_ref_id=root, relation="serves")
+        gaps = quest_gaps(store, root)
+        kinds = [g.kind for g in gaps]
+        assert kinds.count("unmet-capability") == 1
+        capped = [g for g in gaps if g.kind == "fanout-capped"]
+        assert len(capped) == 1 and "1 more capability" in capped[0].detail
