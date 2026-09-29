@@ -10,6 +10,8 @@ prepare/finish pair for ``join``.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from hexfold.join import SEAM_RADIUS
@@ -54,6 +56,21 @@ def _join(
     assert pending is not None
     finish_join(store, tree, pending)
     return echo, tree
+
+
+def _findings(store: Store, tree: SeTree, block: str) -> list[dict[str, Any]]:
+    """The stored `generated['report']['findings']` of a minted composite
+    -- the only place a join's own findings survive (the echo carries
+    counts, not codes)."""
+    bound = tree.blocks[block].bound
+    assert bound is not None
+    ref = store.get_ref(kind="structure", id=bound)
+    assert ref is not None
+    return list((ref.meta or {})["generated"]["report"]["findings"])
+
+
+def _codes(store: Store, tree: SeTree, block: str) -> set[str]:
+    return {str(f["code"]) for f in _findings(store, tree, block)}
 
 
 def test_join_mints_composite_with_ports_bond_and_record(store: Store) -> None:
@@ -609,3 +626,72 @@ def test_join_block_parented_under_an_ordinary_block_stays_joinable(
     )
     assert "from_ordinary" in echo
     assert tree.blocks["loose"].parent == "from_ordinary"
+    # a's authored parent is not lost: the composite takes its place
+    # under `frame`, which is why the a-side gets no `join.reparented`.
+    assert tree.blocks["from_ordinary"].parent == "frame"
+    assert "join.reparented" not in _codes(store, tree, "from_ordinary")
+
+
+def test_join_reports_reparented_info_for_an_ordinary_parent_on_b(
+    store: Store,
+) -> None:
+    """User ruling 2026-09-29 (`docs/backlog/hexfold-integration.md`, step
+    5 open item 1): joining a block authored under an ordinary layout
+    parent moves it into the composite. For `a` that is lossless (the
+    composite inherits the parent, asserted above); for `b` the authored
+    parent is discarded outright, so it is reported as a
+    `join.reparented` INFO -- the same "say what was silently dropped"
+    `join.pose_dropped` exists for. Not `join.part_addressed`: `frame`
+    is an ordinary assembly block, not a join composite."""
+    tree = SeTree()
+    design_slug = "hx-join-reparent-info"
+    apply_ops(
+        tree, [{"op": "add_block", "name": "frame", "envelope": "cyl:r5e-9h5e-9"}]
+    )
+    _generate(store, tree, "head", _TUBE_Z8, design_slug)
+    _echo, pending = prepare_generate(
+        store,
+        tree,
+        {
+            "op": "generate",
+            "generator": "hexfold",
+            "params": {"spec": _TUBE_Z8},
+            "name": "tail",
+            "parent": "frame",
+        },
+        design_slug,
+    )
+    assert pending is not None
+    finish_generate(store, tree, pending)
+    assert tree.blocks["tail"].parent == "frame"
+
+    _echo, tree = _join(
+        store, tree, design_slug, name="rehomed", a="head.out", b="tail.in"
+    )
+    assert tree.blocks["tail"].parent == "rehomed"
+    # a had no parent, so the composite has none either -- `frame`'s claim
+    # on `tail` is simply gone, which is exactly what the INFO reports.
+    assert tree.blocks["rehomed"].parent is None
+
+    findings = _findings(store, tree, "rehomed")
+    reparented = [f for f in findings if f["code"] == "join.reparented"]
+    assert len(reparented) == 1
+    assert reparented[0]["severity"] == "INFO"
+    assert dict(reparented[0]["data"])["old_parent"] == "frame"
+    assert dict(reparented[0]["data"])["block"] == "tail"
+
+
+def test_join_reports_no_reparented_info_when_b_had_no_parent(
+    store: Store,
+) -> None:
+    """The ordinary chained-join case: every endpoint is freshly
+    generated and never parented, so nothing is discarded and the INFO
+    must stay silent."""
+    tree = SeTree()
+    design_slug = "hx-join-reparent-quiet"
+    _generate(store, tree, "head", _TUBE_Z8, design_slug)
+    _generate(store, tree, "tail", _TUBE_Z8, design_slug)
+    _echo, tree = _join(
+        store, tree, design_slug, name="plain", a="head.out", b="tail.in"
+    )
+    assert "join.reparented" not in _codes(store, tree, "plain")

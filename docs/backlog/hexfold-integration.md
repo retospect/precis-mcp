@@ -398,3 +398,94 @@ distinguish rim families — NOT a bug, `rim_word` takes `abs(turn)` and
 hex rims turn ±60° everywhere, so `z12` and `a12` rims both read `z24`;
 `spec.md` has an erratum and the skill now says read `type`), 456203,
 456212, 456213 (all three fixed above).
+
+## Step 6 slice 1: `measure_environment`'s seam radius does not converge (2026-09-29)
+
+**Ruling for slice 2: measured rows must NOT override the pinned
+wildcards.** The sanity check the slice-1 hand-off asked for was run
+before writing any of slice 2, and it fails: `seam_radius` is not a
+property of `EnvKey`. It grows monotonically with the *length of the
+measurement tube*, which `EnvKey` does not record, on both rungs.
+
+`measure_environment((5,0), rung=…, length=L)`, all other arguments at
+their defaults:
+
+| L | depth | stick radius | geo radius |
+|---|---|---|---|
+| 6 (the `MEASURE_LEN` default) | 22 | 4 | 8 |
+| 8 | 30 | 14 | 14 |
+| 10 | 38 | 22 | 26 |
+| 12 | 46 | 30 | 34 |
+| 13 | 50 | 34 | — |
+
+Armchair is no better, and not even monotone: `(5,5)` geo reports 3 at
+`len=4` (`coverage="lower-bound"`), **0** at `len=6` and 4 at `len=8`,
+against a pinned `SEAM_RADIUS["a"] = 2`.
+
+So the two numbers that looked like a calibration disagreement —
+stick zigzag measuring 4 against a pinned 8, geo measuring exactly 8 —
+are both artefacts of `MEASURE_LEN["z"] = 6`. Neither is a measurement
+of a decay length. Had the default been 10, the same code would have
+reported 22 and 26 with `coverage="full"` and the same confidence.
+
+**Mechanism: the free relax does not converge, and the residual is read
+as un-decayed seam signal.** The stick rung is fixed-iteration gradient
+descent with no convergence check at all (its own docstring says so).
+The geo rung has one, and it starts *failing* at exactly the lengths
+where the radius runs away: `relax_graph(iters=4000, tol=1e-4)` — the
+settings `tests/test_hexfold_seam_decay.py` pins — reports
+`trace.converged is False` for `(5,0)` at `len=10` and `len=12`, and
+converges at 6 and 8.
+
+The stick `len=10` per-shell profile shows it directly: `max_disp` falls
+from 0.268 Å at shell 0 to 0.0056 Å at shell 16, and then *rises again*,
+monotonically, to 0.077 Å at shell 38 — the far, **unfused** end of the
+tube moves an order of magnitude more than the shells just past the
+seam. No physical seam decay produces that; it is the unconverged
+interior drifting, redistributed by the Kabsch alignment. The scan then
+walks outward looking for a shell past which everything is quiet, and
+finds one only near the far rim.
+
+The 3x noise multiplier is a red herring. On the geo rung the threshold
+is pinned at the `_MEASURE_FLOOR` (0.002 Å / 0.15°) for `len` 6 and 8 —
+the multiplier does not bind at all — and the radius still moves 8 → 14.
+
+### What slice 2 should do instead
+
+1. **Keep the pinned wildcards authoritative.** Store measured rows,
+   report them (`seam.radius.narrowed` already exists), but do not let
+   `resolve_edge` prefer a measured row over the pinned one until the
+   measurement is trustworthy. The DB store, the migration and the
+   first-use warm-up are all still worth building; only the override is
+   held.
+2. If the override is wanted later, `EnvKey` needs the measurement
+   extent in it (and therefore in its hash), so two rows measured at
+   different lengths cannot silently compete for the same key — today
+   they would, and whichever tube happened to warm a shared prod cache
+   would set the guard band for every subsequent join.
+3. `measure_environment` should refuse rather than report: assert the
+   relaxer converged (the geo adapter already has `trace.converged` and
+   the seam-decay test already asserts it — the library function
+   silently does not), and reject a profile whose `max_disp` is not
+   monotonically non-increasing past the seam, which is the cheap,
+   direct test for this failure.
+
+Until then the four `seam_radius` numbers pinned by `==` in
+`tests/hexfold/test_catalogue.py` and `tests/test_hexfold_seam_decay.py`
+are pinning the default tube length, not a physical quantity. They are
+still worth pinning — they make a change to this code visible — but no
+document should quote them as decay lengths.
+
+## Step 5 join open item 1: ruled (2026-09-29)
+
+`join.reparented` is back as an **INFO**, narrowed to the ordinary-parent
+path, per the user's ruling. Scope is sharper than the open item stated:
+a join discards `b`'s authored parent only. `a`'s survives — the
+composite is minted with `parent = old_a_parent` (`_hexfold_join`'s
+`add_op`), so `a`'s layout intent is carried forward, while `b`'s old
+parent is overwritten and recorded nowhere. The INFO therefore fires on
+the `b` side alone, with `data.block`/`data.old_parent`; the
+two-composite case stays the `join.part_addressed` ERROR. `spec.md` §13
+gained rows for `join.reparented`, `join.pose_dropped` and
+`join.part_addressed`, none of which had one (the same gap open item 3
+records for `seam.terminated`, which is still open).

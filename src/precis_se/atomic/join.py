@@ -295,8 +295,10 @@ def _addressed_part_redirect(
     store: Store, tree: SeTree, block_key: str, port_name: str
 ) -> tuple[str, str] | None:
     """gr456213 (2026-09-29 prod dogfood): the fix for the case
-    :func:`_hexfold_join`'s old ``join.reparented`` WARN used to merely
-    flag — a block already claimed as a **part** of a composite (per
+    :func:`_hexfold_join`'s old, differently-scoped ``join.reparented``
+    WARN used to merely flag (that code still exists, narrowed to an INFO
+    on the ordinary-layout-parent path only -- see :func:`_hexfold_join`)
+    — a block already claimed as a **part** of a composite (per
     :func:`_join_generated_record`) has its remaining free rim ALREADY
     exposed as that composite's own port; addressing the part directly is
     the same physical rim under a second name, not a second, independent
@@ -505,6 +507,11 @@ def _hexfold_join(
     old_a_parent = node_a.parent
     old_a_local_pose = list(node_a.local_pose) if node_a.local_pose else [0.0, 0.0, 0.0]
     old_a_local_rot = list(node_a.local_rot) if node_a.local_rot else [0.0, 0.0, 0.0]
+    # b's own pre-join parent, captured for the same reason as its pose:
+    # only to know whether it is about to be silently discarded. a's
+    # parent survives a join (the composite inherits it, `add_op` below);
+    # b's does not, and nothing else records it.
+    old_b_parent = node_b.parent
     b_pose_dropped = not _is_identity_pose(
         list(node_b.local_pose)
     ) or not _is_identity_pose(list(node_b.local_rot))
@@ -600,6 +607,18 @@ def _hexfold_join(
                 "b by the seam transform, never by whatever pose it "
                 "carried before",
                 data=(("block", b_block),),
+            )
+        )
+    if old_b_parent is not None:
+        extra_findings.append(
+            HxFinding(
+                "join.reparented",
+                HxSeverity.INFO,
+                f"{b_block} was authored under {old_b_parent!r} and moves "
+                f"into the composite — a join owns both endpoints, so b's "
+                f"authored parent is discarded (a's is inherited by the "
+                f"composite instead)",
+                data=(("block", b_block), ("old_parent", old_b_parent)),
             )
         )
 
@@ -775,7 +794,12 @@ def _hexfold_join(
     # own pre-join parent is either ``None`` (the ordinary chained-join
     # case: a fresh, never-parented block on every join) or an ORDINARY,
     # non-composite parent (a layout assembly block), which carries no
-    # build record to strand and so has nothing left to warn about.
+    # build record to strand. That ordinary case is not a defect, but it
+    # does discard authored intent for ``b`` (``a``'s parent is inherited
+    # by the composite above; ``b``'s is dropped outright), so it is
+    # reported as a ``join.reparented`` INFO — user ruling 2026-09-29,
+    # the same "say what was silently discarded" the neighbouring
+    # ``join.pose_dropped`` INFO exists for.
     node_a.parent = block_name
     node_b.parent = block_name
     compose_world_pose(tree)

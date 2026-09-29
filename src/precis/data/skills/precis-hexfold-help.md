@@ -204,7 +204,12 @@ naming both values), `join.stale` ERROR (the block's stored atoms no
 longer agree with a rebuild of its own generator record — regenerate
 first), `join.rung` ERROR (the two parts' relax rungs disagree and
 `rung` wasn't forced) or WARN (`rung` forced `geo` over a stick-rung
-part).
+part), `join.pose_dropped` INFO (`b` carried a pose/rot before the join;
+a join places `b` by the seam transform, so it is discarded) and
+`join.reparented` INFO (`b` was authored under an ordinary layout parent
+and moves into the composite, discarding that parent — `a`'s parent
+survives, inherited by the composite; the two-composite case is the
+`join.part_addressed` ERROR above, not this).
 
 ## Join relax rungs (spec §22.2)
 
