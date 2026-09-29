@@ -124,6 +124,17 @@ _EXEMPT_NAMES = frozenset(
         # under-relaxed), never the silent culling this gate exists to
         # catch (gr335192's nanometre-box faces).
         "_GEO_TOL",
+        # `precis_se/chain/relax.py`'s FIRE-descent convergence threshold on
+        # the max per-bead FORCE, in the bundle's own nanometre working
+        # units (the settle builds in nm and converts back, because the
+        # kernel's `tol`/`max_step` defaults are scale-bound — see
+        # `precis_chain.relax`'s Notes). Same carve-out as `_GEO_TOL` above:
+        # a force residual is not a length and not a geometric predicate, so
+        # a wrong value costs iterations or a misreported `converged` flag,
+        # never the silent culling this gate exists to catch. Deriving it
+        # from a governing length would be a category error — there is no
+        # length here to be relative to.
+        "TOL_NM",
         # -- documented author-stated absolute, decided to keep --
         # CONTACT_TOL_MM is an explicit, named, opt-in absolute band for a
         # caller that states one; CONTACT_TOL_REL (name contains "REL",

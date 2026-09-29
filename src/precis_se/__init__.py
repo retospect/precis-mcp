@@ -608,7 +608,7 @@ rotating port with no role complementary to the arm's says ``joining:
 none`` and emits no connect, never a placeholder.
 
 **The nucleic-acid domain** (:mod:`precis_se.chain`, migration
-``0015_se_chain.sql``, docs/backlog/se-nucleic-acid.md slice 1) is se's
+``0015_se_chain.sql``) is se's
 second non-mechanical one, and the binding of the chemistry-free
 :mod:`precis_chain` geometry kernel onto this ladder. The decomposition is
 scadnano's: a **helix** block carries the GEOMETRY (``se_blocks.chain``

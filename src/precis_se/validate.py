@@ -284,7 +284,7 @@ def envelope_overlaps(
             if _is_ancestor(tree, a_name, b_name) or _is_ancestor(tree, b_name, a_name):
                 continue
             # Segment↔segment pairs are ``chain_clash``'s, wholesale
-            # (docs/backlog/se-nucleic-acid.md's 2026-09-27 decision):
+            # (the chain domain's decomposition, :mod:`precis_se.chain`):
             # consecutive segments of one helix are SUPPOSED to touch, a
             # crossover's two segments likewise, and a 24-helix origami is
             # ~192 segments ≈ 18k pairs that would eat the whole

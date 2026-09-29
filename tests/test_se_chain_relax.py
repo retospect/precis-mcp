@@ -1,5 +1,5 @@
 """``relax_chain`` and the handler-side ``chain_floppy`` re-emission —
-docs/backlog/se-nucleic-acid.md slice 2 pass B2.
+:mod:`precis_se.chain.relax`.
 
 The acceptance criteria this file IS: two helices joined by a 2-nt loop
 settle to exit-to-exit ≤ 1.9 nm; settled poses come back
@@ -260,10 +260,15 @@ def test_segment_length_survives_the_settle() -> None:
     tree = _pair_tree(n_units=25)  # > one default segment → 2 bodies per helix
     geom = helix_geometry(tree.blocks["h0"])
     record = tree.blocks["h0.s0"].chain or {}
-    nominal = float(
-        np.linalg.norm(
-            geom.origin(int(record["end"])) - geom.origin(int(record["start"]))
+    # Origin to origin plus the half-rise cell at each end
+    # (:func:`precis_se.chain.layout.segment_capsule`).
+    nominal = (
+        float(
+            np.linalg.norm(
+                geom.origin(int(record["end"])) - geom.origin(int(record["start"]))
+            )
         )
+        + geom.motif.rise
     )
     op_relax_chain(None, tree, {"op": "relax_chain"})
     a = np.asarray(tree.blocks["h0.s0"].pose, dtype=float)

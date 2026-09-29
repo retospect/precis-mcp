@@ -111,7 +111,7 @@ _NAV_VIEWS = (
     "diff",
     "pov",
 )
-_EXPORT_VIEWS = ("poscar", "extxyz", "cif")
+_EXPORT_VIEWS = ("poscar", "extxyz", "cif", "pdb")
 _VIEWS = (
     *_PROBE_VIEWS,
     *_NAV_VIEWS,
@@ -1012,7 +1012,7 @@ class StructureHandler(Handler):
 
             return render_links_view(self.store, ref, sense="structure")
         if view in _EXPORT_VIEWS:
-            return self._render_export(view, scene, str(ref.slug or id))
+            return self._render_export(view, scene, str(ref.slug or id), meta=ref.meta)
         if view in _NAV_VIEWS:
             return self._render_nav(view, scene, args or {})
         if view not in _PROBE_VIEWS:
@@ -1139,14 +1139,21 @@ class StructureHandler(Handler):
             )
         )
 
-    def _render_export(self, view: str, scene: Scene, slug: str) -> Response:
-        """Emit the geometry as a file format. POSCAR/extXYZ are pure; CIF
+    def _render_export(
+        self, view: str, scene: Scene, slug: str, *, meta: dict[str, Any] | None = None
+    ) -> Response:
+        """Emit the geometry as a file format. POSCAR/extXYZ/PDB are pure; CIF
         needs ASE (the optional ``[dft]`` extra) — a missing one is Unsupported
-        with an install hint, not a crash."""
+        with an install hint, not a crash. PDB names residues from the ref's
+        ``meta['chain_atoms']`` when a ``realize_chain`` mint wrote one."""
         if view == "poscar":
             return Response(body=export.to_poscar(scene))
         if view == "extxyz":
             return Response(body=export.to_extxyz(scene))
+        if view == "pdb":
+            return Response(
+                body=export.to_pdb(scene, chain_atoms=(meta or {}).get("chain_atoms"))
+            )
         # cif
         if not export.ase_available():
             raise Unsupported(

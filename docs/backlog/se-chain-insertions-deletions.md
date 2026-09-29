@@ -1,6 +1,6 @@
 # se chain insertions/deletions — the global twist correction real origami needs
 
-IDEA (blocked-by: se-nucleic-acid). `se-nucleic-acid` slice 1 stores a
+IDEA. the shipped nucleic-acid domain (`precis_se.chain`) stores a
 `register.insertions`/`deletions` hook and **refuses it when non-empty**
 (`precis_se/chain/vocab.py::vet_register`), because no consumer applies the
 correction and silently storing one would read as checked. The 2026-09-29

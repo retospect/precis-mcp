@@ -7,8 +7,7 @@ helical register, the swept capsule tube, capsule clash with a broad phase,
 loop reach, a rigid-body settle, and PDB/mmCIF atom records. DNA origami, RNA
 folds, walker tracks and protein Calpha traces are all the same geometry
 problem at this altitude; the domain vocabulary lives in the bindings
-(``docs/backlog/se-nucleic-acid.md`` first, then
-``se-protein-chain-import``), never here.
+(``precis_se.chain`` first, then ``se-protein-chain-import``), never here.
 
 The contract
 ------------

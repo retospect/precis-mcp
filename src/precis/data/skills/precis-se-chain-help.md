@@ -1,7 +1,7 @@
 ---
 id: precis-se-chain-help
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
-summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + fifteen chain_* DRC findings check it; two handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records
+summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + fifteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB
 answers:
   - how do I declare a DNA/RNA helix and route a strand along it in se?
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
@@ -15,7 +15,9 @@ answers:
   - how do I turn a sequence's ViennaRNA fold into helices/strands/domains (fold_layout)?
   - why does view='drc' say chain_fold_unavailable, and what is chain_offtarget telling me?
   - why does declare_helix/add_domain reject a bare number?
-applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout)
+  - how do I get atoms for a region of a helix, and what happens to an unrelaxed loop (realize_chain)?
+  - how do I export a chain design to scadnano/caDNAno/oxDNA/PDB (view='export')?
+applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout|realize_chain)
 status: active
 tags: verbs, design
 kinds: se
@@ -33,12 +35,12 @@ route two strands over the same helix offsets running opposite directions
 and the pair falls out of that; see "Pairing is derived" below, the single
 most important idea here.
 
-All nine ops sit on an ordinary se block — `declare_helix`/`declare_strand`
+All ten ops sit on an ordinary se block — `declare_helix`/`declare_strand`
 mark a block `add_block` already minted, the same way `set_mode`/`declare_dof`
 do (`fold_layout` is the exception: it mints the blocks its fold needs). Seven
-are pure and auto-apply; `relax_chain` and `fold_layout` are handler-level and
-arrive as proposals. For the rest of the `se` call surface (blocks, ports,
-connects, measures, BOM, states) see [[precis-se-help]].
+are pure and auto-apply; `relax_chain`, `fold_layout` and `realize_chain` are
+handler-level and arrive as proposals. For the rest of the `se` call surface
+(blocks, ports, connects, measures, BOM, states) see [[precis-se-help]].
 
 ## Declaring a helix — `declare_helix`
 
@@ -284,6 +286,9 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 - `view='topology'` gains a "## domains" table (`strand · ord · helix ·
   offsets · dir · loop_before · geometry`) for every `add_domain` row —
   pairing and geometry checks live in `view='chain'`, not here.
+- `view='export'` (`args={'format': 'scadnano'|'cadnano'|'oxdna'|'pdb'}`) —
+  the design written out to one of the four interop formats; see
+  "Export" below.
 
 ## DRC — the fifteen `chain_*` findings
 
@@ -384,12 +389,91 @@ record for; a fold with no pairs; a strand that already routes domains
 **ViennaRNA's parameters are RNA's**, with `T` read as `U` — a DNA fold here
 is an approximation, and every message that carries one says so.
 
-## Not built yet
+## `realize_chain` — atoms for a region
 
-`realize_chain`/atoms-per-region and scadnano/caDNAno/oxDNA/PDB export are
-**not live** — don't reach for them. Everything above — the seven pure ops,
-`relax_chain`, `fold_layout`, the two views, the fifteen findings — is the
-whole live surface.
+The third handler-level op, also a **proposal**: it mints and binds a
+`structure` design, so it needs an Apply.
+
+`{'op': 'realize_chain', 'block': <helix>, 'start': <offset>, 'end':
+<offset, exclusive>, 'fidelity'?: 'allatom'|'backbone', 'sites'?:
+[<offset>, …], 'loops'?: bool}` — `fidelity` defaults `allatom`, `loops`
+defaults `false`. One region per segment child (`layout_chain` first — a
+range straddling two segments is refused naming both). Binds to the
+**segment child** `<helix>.s<k>` covering the region, structure slug
+`<design>-<segment>`; a bound segment is refused
+(`set_binding(clear=true)` first).
+
+Atoms are the Arnott B-DNA fibre templates (heavy atoms, no hydrogens)
+placed in the motif's own per-unit frames
+(`precis_se.chain.atoms.build_region`, called from
+`precis_se.atomic.generate.prepare_realize_chain`). An RNA helix is
+`Unsupported` — there is no A-RNA template, and B-DNA atoms are never
+substituted for one. An unsequenced nucleotide gets backbone atoms only
+(residue `DN`); `fidelity='backbone'` keeps P/C4'/C1' for every
+nucleotide. `loops=true` also realizes every loop of the region's strands
+whose two ends both sit inside the region — a loop with no placed curve
+is `Unsupported` naming it (`relax_chain` places curves; nothing here
+guesses one); a 0-nt crossover inside the region is just a bond, no
+special case.
+
+Ports minted on the segment: `5p`/`3p` for the first forward-strand chain,
+`r5p`/`r3p` for the first reverse one (`5p2`/`r5p2`, … for further
+chains), each with a **measured** pose and rot (`bind_structure`'s object
+form — `5p` = P with the O5' axle, `3p` = O3' with C3'; backbone fidelity
+swaps in C4'). `sites=[k, …]` adds `n<k>_c5m`/`n<k>_maj`/`n<k>_min`
+attachment ports on the forward occupant's base at offset `k` —
+underscore, not a dot (a port name can't contain `'.'`) — `allatom`
+fidelity and a sequenced base only, both refused rather than
+approximated.
+
+Bonds are connectivity only, every one order 1 — a fibre model carries no
+bond orders to assign. The echo names atom/bond/nucleotide/chain/port
+counts; `view='validate'` then runs `envelope_fit` against the segment's
+own capsule.
+
+```python
+edit(kind='se', id='design', ops=[
+    {'op': 'realize_chain', 'block': 'stem', 'start': 0, 'end': 21,
+     'sites': [10]},
+])
+```
+
+**Measured against the model**: rise 3.34 Å, C1'–C1' 10.7 Å across a
+pair, intra-strand P–P 6.26 Å (the model at 10.5 bp/turn — real crystals
+give 6.5–7.0 Å), minor/major groove as the shortest inter-strand P···P
+distance, 11.9/17.5 Å, right-handed.
+
+## Export
+
+`view='export'`, `args={'format': 'scadnano'|'cadnano'|'oxdna'|'pdb'}` —
+the only accepted arg (`precis_se.chain.export`). One direction, no
+import.
+
+- **scadnano** — helix index = declaration order; `grid`/`grid_position`
+  from the lattice, or `grid: none` + a position in nm off a free path. A
+  loop with `n > 0` nt becomes a scadnano *loopout*; the longest strand is
+  flagged `is_scaffold`.
+- **cadnano** (legacy c2) — lattice designs on **one** lattice only; a
+  waypoint-path helix is `Unsupported` naming it. Every vstrand is padded
+  to the lattice repeat (32 bp square, 21 honeycomb); a loop's nucleotides
+  become a caDNAno insertion (`loop[offset] = n`) at the exit base;
+  longest strand → `scaf`, every other strand → `stap`.
+- **oxdna** — one `## <design>.top` section then `## <design>.conf`,
+  nucleotides per strand listed 3'→5'. An unsequenced nucleotide writes
+  `N` (oxDNA needs a real base — this is a geometry export, not a
+  runnable input). Loop positions follow the placed curve when
+  `relax_chain` wrote one, else the chord between the two exits;
+  positions in oxDNA length units (0.8518 nm). A starting configuration,
+  not an equilibrium one.
+- **pdb** — every `realize_chain`-bound segment, world-posed, one chain
+  id per segment, `TER` between. `Unsupported` when nothing is realized
+  yet. `get(kind='structure', id=<slug>, view='pdb')` on one minted
+  structure writes just that region, with residue names.
+
+**Helix indices/row/col are ours, not caDNAno's.** The register walk here
+is reflected relative to caDNAno's own (a handedness convention) and
+unsettled until compared against a real caDNAno file — don't claim
+column-for-column agreement.
 
 ## See also
 

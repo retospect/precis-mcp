@@ -473,7 +473,7 @@ efficiency read in isolation overstates the link.
 
 `tree · block · ports · topology · chain · measures · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
-literature · fret · links`. There is **no `mass` view** (mass goes via
+literature · fret · links · export`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
 elicits what's missing — lead with it. `mechanics`/`literature` are
 atomic-mode-only (below); `topology` renders atomic mode's threading
@@ -572,13 +572,16 @@ route along a helix; `set_domain` edits one row in place, `remove_domain` is
 destructive) · `clear_chain` (un-declare,
 cascading) · `layout_chain` (materialise `<helix>.s<k>` segment children —
 what the 3D viewer draws). Pairing is DERIVED from two strands occupying
-one helix offset running opposite ways, never declared. Two handler-level
-ops, both proposals and never auto-applied: `relax_chain` (settle those
-segments — hinges, loop springs, excluded volume; poses back as
-`origin='proposed'`, each placed loop's curve onto its domain row) and
-`fold_layout` (a ViennaRNA MFE fold as helix/strand/domain records; needs
-the optional `[chain]` extra). `view='chain'`
-reads helices/strands/pairing; `view='topology'` gains the domain rows.
+one helix offset running opposite ways, never declared. Three
+handler-level ops, all proposals and never auto-applied: `relax_chain`
+(settle those segments — hinges, loop springs, excluded volume; poses
+back as `origin='proposed'`, each placed loop's curve onto its domain
+row), `fold_layout` (a ViennaRNA MFE fold as helix/strand/domain records;
+needs the optional `[chain]` extra) and `realize_chain` (Arnott B-DNA
+fibre atoms for one segment's region, minted and bound as a `structure`
+design). `view='chain'` reads helices/strands/pairing; `view='topology'`
+gains the domain rows; `view='export'` writes the design to
+scadnano/caDNAno/oxDNA/PDB.
 
 ## See also
 

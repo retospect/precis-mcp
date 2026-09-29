@@ -9,8 +9,8 @@ when the helix is *not* formed.
 
 **No chemistry lives here.** There is deliberately no ``B_DNA`` constant, no
 base-pair vocabulary and no nucleic-acid default anywhere in this package —
-the binding (``docs/backlog/se-nucleic-acid.md``, ``precis_se.chain.nucleic``)
-owns every number and cites its source. The kernel only knows that units
+the binding (``precis_se.chain.nucleic``) owns every number and cites its
+source. The kernel only knows that units
 repeat.
 
 All lengths are in the caller's single length unit and all angles are in

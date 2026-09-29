@@ -246,8 +246,8 @@ beside the others and each one's *scope* is the block it names.
   port must afford each half — derived at connect time from the ports'
   ``roles`` sets and never stored as a second relation.
 
-**The nucleic-acid domain** (docs/backlog/se-nucleic-acid.md; vocabulary
-and numbers in :mod:`precis_se.chain`, geometry in :mod:`precis_chain`)
+**The nucleic-acid domain** (vocabulary and numbers in
+:mod:`precis_se.chain`, geometry in :mod:`precis_chain`)
 adds seven pure ops. Same rule as the atomic mode: one op table, and each
 op's scope is the block it names. The two chain ops that spend compute or
 need an optional dependency (``relax_chain``, ``fold_layout``) are
@@ -2639,8 +2639,8 @@ def _op_set_current_state(tree: SeTree, op: dict[str, Any]) -> None:
     node.pending_current_state = _require_name(op, "state", "set_current_state")
 
 
-# ── se-nucleic-acid slice 1 — the chain (DNA/RNA) ops ───────────────────
-# (docs/backlog/se-nucleic-acid.md; the vocabulary and the numbers are
+# ── the chain (DNA/RNA) ops ────────────────────────────────────────────
+# (the vocabulary and the numbers are
 # :mod:`precis_se.chain`, the geometry kernel is :mod:`precis_chain`.) All
 # six are PURE over the tree, like everything else in this module: the two
 # chain ops that spend compute or need an optional dependency

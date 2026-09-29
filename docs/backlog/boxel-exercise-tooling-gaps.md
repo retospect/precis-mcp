@@ -161,7 +161,7 @@ spring, no elastic envelope.
 
 Chains (DNA helices, protein traces) keep this rule: each segment is rigid;
 bending lives *between* segments and is settled by `relax_chain`
-(`docs/backlog/se-nucleic-acid.md`), never by deforming an envelope.
+(`precis_se.chain`), never by deforming an envelope.
 
 ### Why this matters more for `nm` than for `se`
 

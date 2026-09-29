@@ -16,7 +16,7 @@ sampling. It has no notion of topology: a loop spring will happily pull a loop
 *through* a helix, and nothing here detects that it did. It finds a
 low-energy configuration near the one it was handed — a starting geometry that
 is already threaded wrongly stays threaded wrongly. Callers must say so
-(``docs/backlog/se-nucleic-acid.md`` states this limit in its skill).
+(the ``precis-se-chain-help`` skill states this limit for the nucleic-acid binding).
 
 Energies and the descent, in the numerical idiom of
 ``precis.structure.georelax.relax_graph`` (spring + repulsion terms summed

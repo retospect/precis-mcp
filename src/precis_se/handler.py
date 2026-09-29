@@ -789,6 +789,24 @@ class SeHandler(Handler):
             return Response(body=_render_topology(tree))
         if v == "chain":
             return Response(body=_render_chain(tree))
+        if v == "export":
+            from precis_se.chain.export import render_export
+
+            def _load_structure(slug: str) -> tuple[Any, dict[str, Any]] | None:
+                src = self.store.get_ref(kind="structure", id=slug)
+                if src is None:
+                    return None
+                scene, _handles = self.store.structure_load(src.id)
+                return scene, dict(src.meta or {})
+
+            return Response(
+                body=render_export(
+                    tree,
+                    (args or {}).get("format"),
+                    design=str(ref.slug or id),
+                    load_structure=_load_structure,
+                )
+            )
         if v == "measures":
             return Response(body=_render_measures(tree))
         if v == "datums":
@@ -2925,8 +2943,8 @@ def _segment_cell(ranges: list[tuple[int, int]], *, laid_out: bool) -> str:
     Reports the **unit counts of the ranges themselves**, never the
     ``max_seg_len`` they were cut with: a 4-unit helix on the honeycomb has
     one segment of 4 units, and printing the 21-unit cap there reads as a
-    claim about the helix (the slice-1 dogfood's complaint,
-    docs/backlog/se-nucleic-acid.md). A trailing short segment makes the
+    claim about the helix (the slice-1 dogfood's complaint). A trailing
+    short segment makes the
     spans non-uniform, so the cap is shown as a bound (``≤``) rather than a
     figure. ``laid_out=False`` says outright that these are the segments
     ``layout_chain`` *would* cut, because no child exists yet."""
@@ -2940,7 +2958,7 @@ def _segment_cell(ranges: list[tuple[int, int]], *, laid_out: bool) -> str:
 
 def _render_chain(tree: SeTree) -> str:
     """``view='chain'`` — the nucleic-acid domain's one readout
-    (docs/backlog/se-nucleic-acid.md): every helix with its motif, run
+    (:mod:`precis_se.chain`): every helix with its motif, run
     length, turns, segment tiling and occupancy; every strand with its
     route; and the derived pairing summary.
 
@@ -4599,6 +4617,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "ports": frozenset(),
     "topology": frozenset(),
     "chain": frozenset(),
+    "export": frozenset({"format"}),
     "measures": frozenset(),
     "datums": frozenset(),
     "validate": frozenset(),

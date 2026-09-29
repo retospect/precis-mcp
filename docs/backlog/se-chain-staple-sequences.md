@@ -1,6 +1,6 @@
 # se chain staple sequences — scaffold sequence in, orderable strands out
 
-IDEA (blocked-by: se-nucleic-acid). Pairing is derived from co-occupancy, so
+IDEA. Pairing is derived from co-occupancy, so
 the tool already knows, for every staple offset, which scaffold base sits
 opposite it — but nothing fills the staple's own sequence. The 2026-09-29
 dogfood put it plainly: "the thing you literally paste into an order form is

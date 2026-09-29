@@ -269,7 +269,18 @@ def segment_ranges(n_units: int, per_segment: int) -> list[tuple[int, int]]:
 
 def segment_capsule(geom: HelixGeometry, start: int, end: int) -> Capsule:
     """The kernel capsule covering unit range ``[start, end]`` — the
-    duplex radius around the chord between the two units' origins.
+    duplex radius around the chord between the two end units' **cells**:
+    half a rise before ``start``'s origin and half a rise after ``end``'s,
+    along each unit's own tangent.
+
+    Half-rise cells rather than origin-to-origin, so consecutive segments
+    tile the helix without a gap and each segment owns exactly its units'
+    span — which is also what makes a ``realize_chain`` region's atoms sit
+    inside the segment's own envelope (a nucleotide's atoms reach ~2.8 Å
+    past its origin along the axis; the half-rise plus ``envelope_fit``'s
+    vdW margin covers that, an origin-to-origin cylinder does not). A
+    one-unit segment is therefore one rise long, never a zero-length
+    capsule.
 
     Chord, not arc: a segment is one lattice repeat of an origami helix,
     and the sagitta over 21 units of a centre line bent at the 10 nm
@@ -277,7 +288,14 @@ def segment_capsule(geom: HelixGeometry, start: int, end: int) -> Capsule:
     that is what ``chain_bend`` is for, and that check reads the path's own
     samples, not the capsules.
     """
-    return Capsule(geom.origin(start), geom.origin(end), geom.motif.radius)
+    half = 0.5 * geom.motif.rise
+    t_start = np.asarray(geom.units.frames[start][:, 0], dtype=float)
+    t_end = np.asarray(geom.units.frames[end][:, 0], dtype=float)
+    return Capsule(
+        geom.origin(start) - half * t_start,
+        geom.origin(end) + half * t_end,
+        geom.motif.radius,
+    )
 
 
 def segment_envelope(capsule: Capsule) -> str:

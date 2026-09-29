@@ -73,7 +73,7 @@ _DOMAIN_META_KEYS = frozenset(
 
 #: Units per ``layout_chain`` segment when the helix declares no lattice
 #: (a lattice's own ``pitch_units`` is the default when it does — "one
-#: lattice repeat", docs/backlog/se-nucleic-acid.md). 21 bp is the
+#: lattice repeat"). 21 bp is the
 #: honeycomb repeat, ~7 nm of duplex: small enough that a curved helix's
 #: chord tracks its centre line, big enough that a 7 kb design is a few
 #: hundred children rather than thousands.
@@ -424,7 +424,7 @@ def vet_register(raw: Any, what: str, *, lattice: str | None) -> dict[str, Any]:
         raise ChainError(
             f"{what}: register {key!r} is a reserved hook with no consumer "
             "yet — the global insertion/deletion twist check is deferred "
-            "(docs/backlog/se-nucleic-acid.md 'Explicitly NOT in scope'); "
+            "(``docs/backlog/se-chain-insertions-deletions.md`` owns it); "
             "leave it empty rather than storing a correction nothing applies"
         )
     return out

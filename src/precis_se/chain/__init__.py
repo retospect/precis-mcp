@@ -1,5 +1,4 @@
-"""se's nucleic-acid domain — DNA/RNA design in the block tree
-(docs/backlog/se-nucleic-acid.md, slice 1).
+"""se's nucleic-acid domain — DNA/RNA design in the block tree.
 
 The binding between the chemistry-free :mod:`precis_chain` geometry kernel
 and se's six-level IR. The pure ops that write these records live in
@@ -68,9 +67,37 @@ they are contracts rather than conveniences:
    ``None``, so ``se-walker-light-protocol`` never has to change either
    signature.
 
-**Not built yet** (and deliberately not stubbed): everything in
-``se-nucleic-realize-export`` — atoms per region and the scadnano/caDNAno/
-oxDNA/PDB export.
+**Atoms and interop** (the third slice, 2026-09-30): ``realize_chain``
+(:func:`precis_se.atomic.generate.prepare_realize_chain`) places the
+Arnott B-DNA fibre templates (:mod:`precis_se.chain.atoms`) in one
+segment's worth of unit frames — plus its placed loops, on request — and
+binds the minted ``structure`` to that **segment child**, so
+``envelope_fit`` holds the atoms against the segment's own capsule.
+``view='export'`` (:mod:`precis_se.chain.export`) writes scadnano,
+caDNAno (lattice-only), oxDNA and PDB; ``structure`` ``view='pdb'`` writes
+one realized region. Not built: A-RNA templates (an RNA helix is refused,
+not approximated), import of any of those formats, H-bonds as bonds.
+
+**Provenance.** This domain shipped in two slices over 2026-09-27..29 and its
+``docs/backlog/`` item is gone, delete-on-ship. What that item carried now
+lives where the code it justifies is: every **number** with its primary
+source and the arithmetic that cross-checks it in
+:mod:`precis_se.chain.nucleic` (the backbone azimuth delta, the groove-width
+convention, the ``chain_loop_short`` frustration budget — each on the
+constant it belongs to); the **per-neighbour register table**, which offsets
+admit a 0-nt crossover on each lattice and why the two strand directions sit
+half a turn apart, in the ``precis-se-chain-help`` skill, since that is the
+answer an agent asks for; the **build narrative** in ``git log``. Cite this
+docstring, not the deleted item.
+
+One thing the item recorded is open and unowned, restated here because it is
+a *negative* result nobody should re-derive: the four-helix square-lattice
+ribbon fixture (``tests/test_se_chain_drc.py``, ``test_se_chain_ops.py``) was
+built alongside a claim that a radiating four-arm junction *cannot* have four
+register-correct crossovers. That claim is **false as argued** — its
+``3*(k - k0) == 16 (mod 32)`` does have solutions, 3 being invertible mod 32 —
+and the joint system over both crossover pairs was never written out. Treat
+four-arm register-correctness as an open question, not a constraint.
 """
 
 from __future__ import annotations

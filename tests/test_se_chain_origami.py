@@ -1,4 +1,4 @@
-"""The rectangle-origami acceptance criterion — se-nucleic-acid.md slice 1.
+"""The rectangle-origami acceptance criterion for :mod:`precis_se.chain`.
 
 A 24-helix × 256 bp square-lattice rectangle with a snaking scaffold and 96
 staples, built **procedurally here** (the 2026-09-27 decision: no checked-in

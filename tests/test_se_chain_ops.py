@@ -1,5 +1,5 @@
 """The chain ops, their storage round-trip and the two views —
-docs/backlog/se-nucleic-acid.md slice 1.
+:mod:`precis_se.ops`'s chain ops.
 
 Store-backed where storage is the point (migration ``0015_se_chain.sql``:
 ``se_blocks.chain`` and the ``kind='domain'`` rows of ``se_topology``), pure

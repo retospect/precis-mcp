@@ -1,4 +1,4 @@
-"""``fold_layout`` and the fold findings — docs/backlog/se-nucleic-acid.md
+"""``fold_layout`` and the fold findings — :mod:`precis_se.chain.fold`
 slice 2's last pass.
 
 The acceptance criteria this file IS: ``fold_layout`` on ``GGGGAAAACCCC``

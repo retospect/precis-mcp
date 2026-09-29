@@ -97,7 +97,7 @@ from precis.utils.llm.router import LlmRequest, Tier, route
 from precis_se import persist as se_persist
 from precis_se.atomic.apply import HANDLER_LEVEL_OPS, all_op_names
 from precis_se.atomic.bind import bind_structure, unbind_structure
-from precis_se.atomic.generate import prepare_generate
+from precis_se.atomic.generate import prepare_generate, prepare_realize_chain
 from precis_se.handler import (
     SeHandler,
     _binding_line,
@@ -195,11 +195,18 @@ _SE_STORE_AWARE_SIGNATURES: dict[str, str] = {
     "unbind_structure": "unbind_structure{block}",
     "generate": "generate{generator:cnt|fullerene|cone|cyclodextrin|hexfold,params:{…},name,parent?,pose?}",
     "realize": "realize{block,mode}",
-    # docs/backlog/se-nucleic-acid.md's two handler-level chain ops. Both
-    # spend compute, so both arrive as proposals; ``fold_layout`` also needs
+    # The nucleic-acid domain's two handler-level chain ops
+    # (:mod:`precis_se.chain`). Both spend compute, so both arrive as
+    # proposals; ``fold_layout`` also needs
     # the optional ``[chain]`` extra (ViennaRNA).
     "relax_chain": "relax_chain{move?:'all'|[helix/segment names],iters?}",
     "fold_layout": "fold_layout{strand,sequence?,nucleic?:DNA|RNA,parent?}",
+    # Atoms for one segment's worth of a helix (:mod:`precis_se.chain.atoms`)
+    # — a proposal because it mints a structure design and binds it.
+    "realize_chain": (
+        "realize_chain{block:helix,start,end,fidelity?:'allatom'|'backbone',"
+        "sites?:[offsets],loops?:bool}"
+    ),
 }
 
 #: Structure op signatures — ``structure_propose``'s vocabulary widened to
@@ -578,10 +585,15 @@ def dry_run_se(
                 prepare_generate(store, scratch, op, design_slug)
             elif name == "realize":
                 prepare_realize(store, scratch, op, design_slug)
+            elif name == "realize_chain":
+                # The pure half only (frames → atoms on the scratch tree);
+                # the mint + bind are the proposal's Apply.
+                prepare_realize_chain(store, scratch, op, design_slug)
             elif name in ("relax_chain", "fold_layout"):
-                # Deliberately NOT run here (docs/backlog/se-nucleic-acid.md:
-                # "neither runs in design_turn's pure dry-run, so no double
-                # execution") — these are the two handler-level ops whose
+                # Deliberately NOT run here: neither may run in this
+                # pure dry-run, or the work happens twice (see
+                # :mod:`precis_se.chain`) — these are the two handler-level
+                # ops whose
                 # whole cost IS the work (a FIRE settle, an O(n³) fold), and
                 # the proposal's Apply runs them for real. ``fold_layout``
                 # would also raise ``Unsupported`` here on a web host without

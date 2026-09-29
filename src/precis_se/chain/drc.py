@@ -10,9 +10,8 @@ checks) are **not** here; they are appended in
 :func:`precis_se.handler._render_drc` after this pass, like
 :func:`precis_se.precedent.findings`.
 
-Rule names are flat snake_case, the house convention
-(docs/backlog/se-nucleic-acid.md's 2026-09-28 decision — the dotted
-spelling in earlier drafts was an artefact).
+Rule names are flat snake_case, the house convention — the dotted spelling
+in earlier drafts of this domain was an artefact.
 
 What each rule is, and why it is at the tier it is:
 

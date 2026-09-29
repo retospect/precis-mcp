@@ -3,14 +3,13 @@ status: ready
 title: `fold_layout` refuses bulges, one-sided internal loops and unpaired tails
 prio: normal
 model: opus
-blocked-by: se-nucleic-acid
 ---
 
 # `fold_layout` covers hairpins and multiloops, and refuses much of the rest
 
 ## Motivation / why
 
-`fold_layout` (`src/precis_se/chain/fold.py`, se-nucleic-acid slice 2 pass C)
+`fold_layout` (`src/precis_se/chain/fold.py`)
 turns a ViennaRNA MFE dot-bracket into helix/strand/domain records. It covers
 every pseudoknot-free fold whose consecutive domains are separated by **≥ 1**
 unpaired nucleotide — a hairpin, a multiloop, any nesting of them. It refuses,

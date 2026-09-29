@@ -1,4 +1,4 @@
-"""The pure ``chain_*`` DRC rules — docs/backlog/se-nucleic-acid.md slice 1.
+"""The pure ``chain_*`` DRC rules (:mod:`precis_se.chain.drc`).
 
 Theorem-style: every assertion recomputes the property from the values the
 code under test returns (the kernel's own contour/reach/gap arithmetic, the

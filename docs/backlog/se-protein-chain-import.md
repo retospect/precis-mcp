@@ -1,6 +1,7 @@
 # se protein chain import — PDB/mmCIF → Cα trace → chain path + tube
 
-IDEA (blocked-by: se-nucleic-acid). `import_trace(block, source=
+IDEA (the nucleic-acid chain domain it builds on has shipped —
+`precis_se.chain`). `import_trace(block, source=
 'structure:<slug>'|text, chain, step='per-residue'|'per-ss-segment')` →
 `declare_helix`-analogue with protein motifs in `precis_se/chain/protein.py`
 (α-helix 0.15 nm/res, 100°/res, r 0.23 nm; β-strand 0.33 nm/res; coil 0.38 nm

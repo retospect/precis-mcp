@@ -28,8 +28,7 @@ carries its source in the comment above it.
   10.67 bp/turn — which is why :func:`lattice_motif` retunes the motif.
 - **Inter-helix centre spacing** 2.5 nm for both lattices (scadnano's
   ``helix spacing`` default; measured 2.4–2.6 nm in Douglas 2009 /
-  Ke 2009). One constant with a per-design ``min_gap`` override, per the
-  2026-09-28 decision in ``docs/backlog/se-nucleic-acid.md``.
+  Ke 2009). One constant with a per-design ``min_gap`` override.
 - **oxDNA length unit** 0.8518 nm (oxDNA's simulation unit of length) —
   carried here for the export item (``se-nucleic-realize-export``) so the
   number is transcribed once.
@@ -112,8 +111,7 @@ LP_SSDNA_M = 2.0e-9
 #: Default minimum centre-line bend radius, metres: Lp/5. A dsDNA duplex
 #: bent tighter than a fifth of its persistence length is paying real
 #: elastic energy. Reported at **warn** when it is this default and at
-#: **error** when the design authored its own ``min_bend_radius``
-#: (docs/backlog/se-nucleic-acid.md Constants).
+#: **error** when the design authored its own ``min_bend_radius``.
 DEFAULT_MIN_BEND_RADIUS_M = LP_DSDNA_M / 5.0
 
 #: Inter-helix centre-to-centre spacing, metres — one constant for both
@@ -519,8 +517,8 @@ def strand_azimuth_rad(motif: Motif, forward: bool) -> float:
     documented offset between the two crossover types (Douglas et al., *NAR*
     37:5001, 2009: scaffold crossovers "five base pairs, or half a turn,
     upstream or downstream of allowed crossover positions for the associated
-    staple helices"). See ``docs/backlog/se-nucleic-acid.md``'s 2026-09-29
-    register table.
+    staple helices"). The ``precis-se-chain-help`` skill tabulates the resulting
+    offsets per lattice and per neighbour.
     """
     half = minor_groove_span_rad(motif) / 2.0
     return -half if forward else half

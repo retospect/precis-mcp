@@ -2,7 +2,7 @@
 
 **Pairing is never declared.** A base pair exists because two strands
 occupy the same helix offset running opposite ways; that is the whole rule
-(docs/backlog/se-nucleic-acid.md's decomposition, chosen 2026-09-27). The
+(this domain's decomposition, :mod:`precis_se.chain`). The
 consequences fall out of it rather than needing their own vocabulary:
 
 - exactly two occupants, antiparallel → a **pair**;

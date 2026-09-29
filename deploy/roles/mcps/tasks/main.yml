@@ -135,7 +135,7 @@
   # chain domain's fold checks degrade to a single `chain_fold_unavailable`
   # info row forever and `fold_layout` raises `Unsupported` — silently
   # correct, and silently useless, which is the failure mode
-  # docs/backlog/se-nucleic-acid.md's Target section warns about. Not in
+  # `precis_se.chain.fold`'s docstring warns about. Not in
   # `[all]`, so it has to be named here.
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \

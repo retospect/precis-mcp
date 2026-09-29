@@ -20,6 +20,7 @@ format would convert here.
 from __future__ import annotations
 
 import io
+from typing import Any
 
 import numpy as np
 
@@ -62,6 +63,40 @@ def to_poscar(scene: Scene) -> str:
                 )
             lines.append(row)
     return "\n".join(lines) + "\n"
+
+
+def to_pdb(scene: Scene, *, chain_atoms: dict[str, Any] | None = None) -> str:
+    """PDB ``ATOM`` records over :func:`precis_chain.pdb.write_pdb` —
+    Cartesian Å, in scene atom order. ``chain_atoms`` (a ``realize_chain``
+    mint's ``meta['chain_atoms']``: per-atom ``names``/``resnames``/
+    ``resseq``/``chain_ids``) names the residues; without it every atom is
+    an ``UNK`` residue 1 on chain ``A`` named by its element, which is
+    still a valid trace for a viewer. Bonds are dropped (PDB carries none
+    for standard residues); the cell is not written."""
+    from precis_chain.pdb import write_pdb
+
+    atoms = list(scene.atoms.values())
+    coords = np.array(
+        [scene.cell.frac_to_cart(a.frac) for a in atoms], dtype=float
+    ).reshape(-1, 3)
+    n = len(atoms)
+    record = chain_atoms or {}
+
+    def _column(key: str, default: list[Any]) -> list[Any]:
+        values = record.get(key)
+        if isinstance(values, list) and len(values) == n:
+            return values
+        return default
+
+    elements = [a.element for a in atoms]
+    return write_pdb(
+        elements,
+        coords,
+        [str(v) for v in _column("names", elements)],
+        [str(v) for v in _column("resnames", ["UNK"] * n)],
+        [int(v) for v in _column("resseq", [1] * n)],
+        [str(v) for v in _column("chain_ids", ["A"] * n)],
+    )
 
 
 def to_extxyz(scene: Scene, *, constraints: bool = False) -> str:

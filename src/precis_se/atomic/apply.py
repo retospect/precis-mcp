@@ -22,7 +22,14 @@ from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis_se.atomic.bind import bind_structure, unbind_structure
-from precis_se.atomic.generate import PendingGenerate, finish_generate, prepare_generate
+from precis_se.atomic.generate import (
+    PendingGenerate,
+    PendingRealizeChain,
+    finish_generate,
+    finish_realize_chain,
+    prepare_generate,
+    prepare_realize_chain,
+)
 from precis_se.atomic.join import PendingJoin, finish_join, prepare_join
 from precis_se.atomic.vocab import check_dof_axis_ports
 from precis_se.chain.fold import op_fold_layout
@@ -59,7 +66,7 @@ HANDLER_LEVEL_OPS = (
     "generate",
     "join",
     "realize",
-    # The nucleic-acid settle (docs/backlog/se-nucleic-acid.md): handler-level
+    # The nucleic-acid settle (:mod:`precis_se.chain`): handler-level
     # because it spends compute AND reads the store — a helix's hinge
     # stiffness comes from a ``material`` persistence-length row when the
     # design has one (:mod:`precis_se.chain.relax`).
@@ -68,6 +75,10 @@ HANDLER_LEVEL_OPS = (
     # optional ``[chain]`` extra and spends O(n³) compute on scaffold-length
     # input (:mod:`precis_se.chain.fold`).
     "fold_layout",
+    # Atoms for a region of a helix (:mod:`precis_se.chain.atoms`):
+    # store-write-deferred like ``generate`` (it mints a ``structure`` and
+    # binds the segment child), and store-read for the slug preflight.
+    "realize_chain",
 )
 
 
@@ -151,6 +162,7 @@ def apply_ops_with_atomic(
     pending_generates: list[PendingGenerate] = []
     pending_joins: list[PendingJoin] = []
     pending_realizes: list[PendingRealize] = []
+    pending_chain_realizes: list[PendingRealizeChain] = []
     pending_dof_checks: list[str] = []
     for op in ops:
         if not isinstance(op, dict) or "op" not in op:
@@ -229,6 +241,14 @@ def apply_ops_with_atomic(
             echoes.append(echo)
             pending_realizes.append(realize_pending)
             continue
+        if name == "realize_chain":
+            # Pure over the tree here (frames, occupancy, placed loop
+            # curves → atoms in the segment's frame); the structure mint
+            # and the bind wait for ``finish_realize_chain`` below.
+            echo, chain_pending = prepare_realize_chain(store, tree, op, design_slug)
+            echoes.append(echo)
+            pending_chain_realizes.append(chain_pending)
+            continue
         try:
             apply_ops(tree, [op])
         except OpError as exc:
@@ -243,6 +263,8 @@ def apply_ops_with_atomic(
         finish_join(store, tree, join_pending)
     for realize_pending in pending_realizes:
         finish_realize(store, tree, realize_pending)
+    for chain_pending in pending_chain_realizes:
+        finish_realize_chain(store, tree, chain_pending)
     for block_name in pending_dof_checks:
         node = tree.blocks.get(block_name)
         if node is None or node.dof is None:

@@ -430,7 +430,7 @@ estimate = [
     "tblite>=0.7 ; sys_platform == 'darwin' or platform_machine == 'x86_64'",
 ]
 # `chain` — nucleic-acid secondary-structure prediction for the `se` chain
-# domain's fold checks (docs/backlog/se-nucleic-acid.md slice 2:
+# domain's fold checks (`precis_se.chain.fold`:
 # `fold_layout`, `chain_fold_disagree`, `chain_offtarget`). ViennaRNA is a
 # compiled SWIG extension around RNAlib, so it is an extra rather than core
 # and every use site imports it lazily — a `[chain]`-less venv reports

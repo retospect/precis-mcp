@@ -12,7 +12,7 @@ model: sonnet
 `precis_web/design_turn.py::dry_run_se` branches per handler-level op and
 falls through to `precis_se.ops.apply_ops` for everything else. It has
 branches for `bind_structure`, `unbind_structure`, `generate`, `realize` and
-(as of se-nucleic-acid slice 2) `relax_chain` — but **not for `join`**, which
+(as of the chain domain's second slice) `relax_chain` — but **not for `join`**, which
 is in `precis_se.atomic.apply.HANDLER_LEVEL_OPS` and therefore absent from
 `precis_se.ops.known_ops()`. So a model reply containing `join` reaches
 `se_apply_ops`, which reports it as an unknown op, and the turn comes back as
@@ -20,7 +20,7 @@ a `dry_run` error instead of a proposal: `join` is unreachable from the
 workbench, in a UI whose whole point is proposing ops.
 
 Found while adding the `relax_chain` skip in the same function
-(`docs/backlog/se-nucleic-acid.md` slice 2 pass B2). Not that item's op, so
+(found while building `relax_chain`). Not that domain's op, so
 it was left alone rather than fixed opportunistically. The `precis` MCP was
 disconnected in that session, so this file is the finding's only record —
 there is no gripe.

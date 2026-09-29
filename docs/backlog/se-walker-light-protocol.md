@@ -3,7 +3,6 @@ status: ready
 title: se walker — foothold-occupancy states with per-state relaxed poses, light transitions, cursor geometry, spectral channel budget DRC, make-tree protocol
 prio: high
 model: opus
-blocked-by: se-nucleic-realize-export
 ---
 
 # `se` walker — a DNA walker on an origami track as discrete states driven by light
@@ -61,7 +60,7 @@ not affordable.
   keeps its spring and loses its pin. The body's frame after descent is the
   per-state pose that `set_state_pose` stores; `chain_loop_short` at a
   station is a leg whose contour cannot span site→foothold in that state.
-  `se-nucleic-acid`'s `relax_chain` already assembles bodies/hinges/loops/
+  the chain domain's `relax_chain` already assembles bodies/hinges/loops/
   pins for helices and strands; this item adds the body as a body and the
   legs' pins from occupancy — nothing else in the solve changes.
 - **Sweep**: `_render_sweep` iterates states, applies per-state poses, runs
@@ -82,8 +81,9 @@ not affordable.
   `chain_transition_guard` when the from-state violates it.
   `Transition.requires` keeps its compose-target meaning and is not touched.
 - **Cursor geometry**: per state, world pose of the walker's attachment site
-  (a `sites` port from `realize_chain`) vs track surface and a named
-  feedstock zone → `view='stations'` (registered in `_VIEW_ARGS`).
+  (a `sites` port from `realize_chain` — `n<k>_c5m`/`n<k>_maj`/`n<k>_min` at
+  offset `k`) vs track surface and a named feedstock zone →
+  `view='stations'` (registered in `_VIEW_ARGS`).
 - **Spectral budget** `precis_se/chain/spectral.py`, handler-side (reads the
   store): every light transition and every `rxn` step in the protocol
   contributes an absorption band (`material` rows `lambda_max`, `fwhm`,
@@ -95,7 +95,7 @@ not affordable.
   `make` tree (`src/precis/handlers/make.py`), one step per transition or
   addition, `meta={illuminate:{wavelength_nm, duration_s}, station, rxn}`;
   consumed by the zone compiler in `docs/backlog/ewod-synthesis-protocol.md`.
-- Dogfood: rectangle from `se-nucleic-acid` + 3 stub-helix footholds + biped
+- Dogfood: rectangle from the chain domain + 3 stub-helix footholds + biped
   walker (two azobenzene-gated leg domains).
 
 ## Explicitly NOT in scope
@@ -152,7 +152,7 @@ Also touched, because `state=` has to reach them: `precis_se/atomic/apply.py`
 `chain_dangling_domain` are per-station) and `handler.py::_STATE_VIEWS`
 (`view='drc'` joins the state-aware views for the chain findings only; the
 non-chain rules stay state-blind, as the code comment there anticipated).
-**Owed by `se-nucleic-acid`, not built here:** `derive_pairing(tree,
+**Delivered by the chain domain (2026-09-29), not built here:** `derive_pairing(tree,
 state=None)` and `relax_chain(…, state=None)` carry the kwarg from day one as
 a no-op when `None`; this item only fills it in. Their signatures are
 recorded in that spec.
@@ -170,7 +170,7 @@ recorded in that spec.
 - 2026-09-27 (review 2) `pose` is the owning block's own pose, never a
   cross-block map (`design_states` is per block); written by a dedicated
   setter so the `declare_states` upsert cannot wipe it. Decided.
-- 2026-09-27 spectral budget lives here, not in `se-nucleic-acid`. Decided.
+- 2026-09-27 spectral budget lives here, not in the chain domain. Decided.
 - 2026-09-28 a state may swap the walker's envelope (bound vs free foot)
   through the existing `BlockState.envelope`; no work in this item, the
   sweep already applies it. Decided.
@@ -189,7 +189,7 @@ recorded in that spec.
   Target list will miss these edits.
 - 2026-09-28 (ready gate) blocker: the mechanism deriving the walker's own
   rigid pose from leg-domain occupancy is asserted, not specified.
-  se-nucleic-acid scopes `relax_chain` as "segment rigid bodies + hinges +
+  the chain domain scopes `relax_chain` as "segment rigid bodies + hinges +
   loops + crossover pins" over chain (helix/strand) blocks only; nothing
   there or here says how a non-chain block (the walker) gets a rigid pose
   registered off two foothold contact points. `formfind.py` (se's other
@@ -197,16 +197,16 @@ recorded in that spec.
   force-density solve, not applicable here. This is the load-bearing
   physics of the whole item and needs a named mechanism before a builder
   can implement "relax_chain(state=) settles the body".
-- 2026-09-28 (ready gate) blocker: se-nucleic-acid's own spec defines
+- 2026-09-28 (ready gate) blocker: the chain domain's own spec defines
   `derive_pairing(tree)` with no `state=` param and never mentions
   `relax_chain(state=)` at all — this item's In-scope assumes both gain a
   `state=` kwarg. Target does list `precis_se/chain/pairing.py` (so
   `derive_pairing`'s extension is at least owned somewhere), but never
   `atomic/apply.py` for `relax_chain` (see line above) — what must land in
-  se-nucleic-acid vs. what this item itself extends is not stated.
+  the chain domain vs. what this item itself extends is not stated.
 - 2026-09-28 (ready gate) advisory: the acceptance criterion "`view='chain'`
   lists 3 footholds single-occupied in state 0 and one paired per state
-  thereafter" presupposes `view='chain'` (se-nucleic-acid, unbuilt) either
+  thereafter" presupposes `view='chain'` (shipped in the chain domain) either
   accepts `args={'state':...}` (needs `_STATE_VIEWS`/`_VIEW_ARGS`
   registration, not in either spec's Target) or renders a per-state
   occupancy table unprompted — unstated which; a reader could build either.
@@ -217,7 +217,7 @@ recorded in that spec.
   underspecified enough that two readers build different steppers.
 - 2026-09-28 (ready gate) advisory: the occupancy value format
   `"<helix>@<offset>"` presumes single-offset (1-bp) addressing;
-  se-nucleic-acid's own log still has this OPEN ("per-position geometry
+  the chain domain's build log had this OPEN ("per-position geometry
   overrides vs a 1-bp domain" — proposed, not decided). This item's
   addressing scheme may not be well-defined by the time it starts.
 - 2026-09-28 (ready gate) advisory: `design_states.pose` embeds
@@ -245,7 +245,7 @@ recorded in that spec.
   the body-pose mechanism is the new In-scope bullet (walker body = one more
   rigid body in `relax_bundle`, foot domains pinned to `backbone_exit`, legs
   as loop springs at `(n+1)·c`, `null` = spring without pin); the `state=`
-  kwargs on `derive_pairing`/`relax_chain` are owed by `se-nucleic-acid` and
+  kwargs on `derive_pairing`/`relax_chain` were delivered by the chain domain and
   recorded in its spec. Decided.
 - 2026-09-28 (post-gate) advisories: `view='chain'` joins `_STATE_VIEWS` and
   renders occupancy for the requested state (no state → the domain rows as
@@ -260,6 +260,8 @@ recorded in that spec.
   `{xyz, rot}` with provenance implied by the writer (In-scope). Rule names
   are flat snake_case `chain_*` (house convention; the dotted spelling was a
   draft artefact). Decided.
-- 2026-09-28 `blocked-by` moved from `se-nucleic-acid` to
+- 2026-09-28 `blocked-by` moved from the chain domain to
   `se-nucleic-realize-export` (split off it the same day): cursor geometry
   reads the `sites` ports only `realize_chain` mints. Decided.
+- 2026-09-30 blocker cleared: se-nucleic-realize-export shipped
+  (realize_chain, sites ports n<k>_c5m/_maj/_min, view='export'). Decided.

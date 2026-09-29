@@ -29,6 +29,7 @@ boundary, before ``add_block`` ever sees the string — se's agent-facing
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -444,3 +445,447 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
             continue
         p.bound_design = pending.struct_slug
         p.bound_atom = atom_label
+
+
+# ── realize_chain — atoms for a region of a helix ───────────────────────
+
+
+@dataclass
+class PendingRealizeChain:
+    """A ``realize_chain`` op's deferred store write — the minted structure
+    plus the bind that follows it (:func:`finish_realize_chain`), built by
+    :func:`prepare_realize_chain` after every check has run against the
+    in-memory atoms."""
+
+    block_name: str
+    struct_slug: str
+    title: str
+    scene: StructScene
+    card_text: str
+    provenance: str
+    #: ``bind_structure``'s object-form ``ports=`` payload: each port's
+    #: atom plus the ``axis_atom``/``phase_atom`` pair that makes the bind
+    #: measure a frame into ``rot``.
+    ports_map: dict[str, dict[str, str]]
+    #: PDB naming per atom, in scene atom order — persisted on the
+    #: structure ref's ``meta['chain_atoms']`` so ``view='pdb'`` and the
+    #: se ``view='export'`` PDB can name residues (a ``structure`` scene
+    #: carries elements and labels, not residues).
+    chain_atoms: dict[str, Any]
+
+
+def _region_int(op: dict[str, Any], key: str) -> int:
+    raw = op.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise BadInput(f"realize_chain needs an integer {key!r} (a helix offset)")
+    return int(raw)
+
+
+def _loop_letters(
+    sequence: str | None, route: list[Any], after: Any
+) -> tuple[str | None, ...]:
+    """The letters of the loop that precedes domain ``after`` — the
+    strand's sequence read in route order (domains and the loops between
+    them), ``None`` per nucleotide when the strand has no sequence."""
+    n_loop = int(after.loop_before_nt or 0)
+    if sequence is None:
+        return (None,) * n_loop
+    pos = 0
+    for d in route:
+        n_before = int(d.loop_before_nt or 0)
+        if d.ord == after.ord:
+            chunk = sequence[pos : pos + n_before]
+            return tuple(chunk) + (None,) * (n_before - len(chunk))
+        pos += n_before + d.n_units
+    return (None,) * n_loop
+
+
+def prepare_realize_chain(
+    store: Store, tree: SeTree, op: dict[str, Any], design_slug: str
+) -> tuple[str, PendingRealizeChain]:
+    """``{"op": "realize_chain", "block": <helix>, "start": <offset>, "end":
+    <offset, exclusive>, "fidelity"?: "allatom"|"backbone", "sites"?:
+    [<offset>, …], "loops"?: bool}`` — the pure/in-memory half.
+
+    Every tree read happens here: the helix's per-unit frames
+    (:func:`precis_se.chain.layout.helix_geometry`), the occupancy at each
+    offset (:func:`precis_se.chain.pairing.derive_pairing`), the placed
+    loop curves on the domain rows (``meta.loop_curve``, written by
+    ``relax_chain``), and the segment child whose ``chain`` range covers
+    the region — then one pure call to
+    :func:`precis_se.chain.atoms.build_region`.
+
+    The atoms come out in the **segment child's own local frame** (its
+    nominal capsule pose, :func:`precis_chain.envelope.capsule_pose`), which
+    is the frame ``envelope_fit`` checks a bound scene in, so the segment's
+    own ``cyl`` envelope is what the atoms are held against; the helix
+    parent carries none. One region per segment: a range that straddles
+    two segments is refused naming both, so the caller cuts it at the
+    tiling.
+
+    ``loops=True`` also realizes every loop of the region's strands whose
+    two ends are both in the region. A loop with no placed curve is
+    ``Unsupported`` naming it — nothing here guesses a loop's geometry;
+    ``relax_chain`` places it. The default ``loops=False`` realizes the
+    duplex alone, which is how a hairpin's stem realizes before its loop is
+    settled.
+
+    Store use is read-only (the slug-collision preflight); the mint and
+    the bind are :func:`finish_realize_chain`'s.
+    """
+    from precis.cad.vec import as_vec3, pose
+    from precis.errors import Unsupported
+    from precis_chain.envelope import capsule_pose
+    from precis_se.chain.atoms import (
+        FIDELITIES,
+        LoopNts,
+        PlacedUnit,
+        UnitOccupant,
+        build_region,
+    )
+    from precis_se.chain.layout import helix_geometry, segment_capsule
+    from precis_se.chain.pairing import derive_pairing
+    from precis_se.chain.vocab import (
+        HELIX_ROLE,
+        SEGMENT_ROLE,
+        ChainError,
+        chain_role,
+        group_domains,
+    )
+
+    block = op.get("block")
+    if not block or not str(block).strip():
+        raise BadInput("realize_chain needs 'block' (a helix block name)")
+    key = tree.resolve_key(block)
+    if key is None:
+        raise BadInput(f"realize_chain: no such block {block!r}")
+    helix_node = tree.blocks[key]
+    if chain_role(helix_node) != HELIX_ROLE:
+        raise BadInput(
+            f"realize_chain: block {key!r} is not a helix (declare_helix "
+            "declares one; a segment child realizes through its helix)"
+        )
+    record = helix_node.chain or {}
+    nucleic_name = str(record.get("nucleic") or "DNA")
+    if nucleic_name != "DNA":
+        raise Unsupported(
+            f"realize_chain: helix {key!r} is {nucleic_name} — only the B-DNA "
+            "fibre templates are built (an A-RNA helix is not approximated "
+            "with B-DNA atoms)",
+            next="declare the helix as DNA, or file the A-RNA template as a gripe",
+        )
+    n_units = int(record.get("n_units") or 0)
+    start = _region_int(op, "start")
+    end = _region_int(op, "end")
+    if not 0 <= start < end <= n_units:
+        raise BadInput(
+            f"realize_chain: region [{start}, {end}) is not inside helix "
+            f"{key!r}'s {n_units} units (start < end, end exclusive)"
+        )
+    fidelity = str(op.get("fidelity") or "allatom").strip().lower()
+    if fidelity not in FIDELITIES:
+        raise BadInput(
+            f"realize_chain: fidelity {fidelity!r} — one of {', '.join(FIDELITIES)}"
+        )
+    raw_sites = op.get("sites") or []
+    if not isinstance(raw_sites, list) or not all(
+        isinstance(s, int) and not isinstance(s, bool) for s in raw_sites
+    ):
+        raise BadInput("realize_chain 'sites' must be a list of helix offsets")
+    sites = tuple(sorted({int(s) for s in raw_sites}))
+    for s in sites:
+        if not start <= s < end:
+            raise BadInput(
+                f"realize_chain: site {s} is outside the region [{start}, {end})"
+            )
+    want_loops = bool(op.get("loops", False))
+
+    # The segment child the region lives in.
+    segments = sorted(
+        (int((n.chain or {})["start"]), int((n.chain or {})["end"]), name)
+        for name, n in tree.blocks.items()
+        if chain_role(n) == SEGMENT_ROLE and (n.chain or {}).get("helix") == key
+    )
+    if not segments:
+        raise BadInput(
+            f"realize_chain: helix {key!r} has no segment children — run "
+            "layout_chain first (the atoms bind to the segment covering the region)"
+        )
+    covering = [s for s in segments if s[0] <= start and end - 1 <= s[1]]
+    if not covering:
+        touched = [
+            f"{name} {s}–{e}" for s, e, name in segments if s <= end - 1 and e >= start
+        ]
+        raise BadInput(
+            f"realize_chain: region [{start}, {end}) straddles segments "
+            f"{', '.join(touched)} — one region per segment; cut it at the tiling"
+        )
+    seg_start, seg_end, seg_name = covering[0]
+    seg_node = tree.blocks[seg_name]
+    if seg_node.bound_kind is not None:
+        raise BadInput(
+            f"realize_chain: segment {seg_name!r} is already bound "
+            f"(kind={seg_node.bound_kind!r}, design={seg_node.bound!r}) — "
+            "set_binding(clear=true) first"
+        )
+    struct_slug = f"{design_slug}-{seg_name}"
+    if (
+        store is not None
+        and store.get_ref(kind="structure", id=struct_slug) is not None
+    ):
+        raise BadInput(
+            f"realize_chain: a structure design already exists at "
+            f"{struct_slug!r} — never overwritten; delete(kind='structure', "
+            f"id={struct_slug!r}) first if this is a genuine re-realize"
+        )
+
+    try:
+        geom = helix_geometry(helix_node)
+    except ChainError as exc:
+        raise BadInput(f"realize_chain: {exc}") from exc
+    nominal_origin, nominal_euler, _length = capsule_pose(
+        segment_capsule(geom, seg_start, seg_end)
+    )
+    nominal = pose(
+        as_vec3([float(v) for v in nominal_origin]), as_vec3(list(nominal_euler))
+    )
+    actual = pose(
+        as_vec3([float(v) for v in seg_node.pose]),
+        as_vec3([float(v) for v in seg_node.rot]),
+    )
+    m_to_A = 1.0 / A_to_m(1.0)
+
+    pairing = derive_pairing(tree)
+    units: list[PlacedUnit] = []
+    strands_here: set[str] = set()
+    for offset in range(start, end):
+        occ = pairing.at(key, offset)
+        if occ is None:
+            continue
+        occupants = tuple(
+            UnitOccupant(strand=o.strand, ord=o.ord, forward=o.forward, letter=o.letter)
+            for o in occ.occupants
+        )
+        strands_here.update(o.strand for o in occ.occupants)
+        units.append(
+            PlacedUnit(
+                offset=offset,
+                origin_A=np.asarray(geom.units.origins[offset], dtype=float) * m_to_A,
+                frame=np.asarray(geom.units.frames[offset], dtype=float),
+                occupants=occupants,
+            )
+        )
+    if not units:
+        raise BadInput(
+            f"realize_chain: no strand occupies helix {key!r} offsets "
+            f"[{start}, {end}) — add_domain routes a strand through it first"
+        )
+
+    loops: list[LoopNts] = []
+    if want_loops:
+        tables = group_domains(list(tree.domains))
+        for strand, route in tables.by_strand.items():
+            if strand not in strands_here:
+                continue
+            node = tree.blocks.get(strand)
+            sequence = (node.chain or {}).get("sequence") if node is not None else None
+            for before, after in itertools.pairwise(route):
+                if before.helix != key or after.helix != key:
+                    continue
+                if not (
+                    start <= before.exit_offset < end
+                    and start <= after.entry_offset < end
+                ):
+                    continue
+                n_nt = int(after.loop_before_nt or 0)
+                if after.loop_curve is None:
+                    if n_nt == 0:
+                        loops.append(
+                            LoopNts(
+                                strand=strand,
+                                exit_ord=before.ord,
+                                exit_offset=before.exit_offset,
+                                entry_ord=after.ord,
+                                entry_offset=after.entry_offset,
+                                letters=(),
+                                points_A=np.zeros((2, 3)),
+                            )
+                        )
+                        continue
+                    raise Unsupported(
+                        f"realize_chain: the {n_nt}-nt loop of strand {strand!r} "
+                        f"between domains {before.ord} and {after.ord} "
+                        f"({key}[{before.exit_offset}] → {key}[{after.entry_offset}]) "
+                        "has no placed curve — nothing here guesses a loop's "
+                        "geometry",
+                        next="run relax_chain (it writes each loop's curve), then realize again",
+                    )
+                curve_world = np.asarray(after.loop_curve, dtype=float)
+                curve_nominal = np.array(
+                    [
+                        np.asarray(
+                            nominal.to_world_point(
+                                actual.to_local_point(as_vec3(list(p)))
+                            ),
+                            dtype=float,
+                        )
+                        for p in curve_world
+                    ]
+                )
+                loops.append(
+                    LoopNts(
+                        strand=strand,
+                        exit_ord=before.ord,
+                        exit_offset=before.exit_offset,
+                        entry_ord=after.ord,
+                        entry_offset=after.entry_offset,
+                        letters=_loop_letters(sequence, route, after),
+                        points_A=curve_nominal * m_to_A,
+                    )
+                )
+
+    try:
+        region = build_region(units, fidelity=fidelity, sites=sites, loops=tuple(loops))
+    except ValueError as exc:
+        raise BadInput(f"realize_chain: {exc}") from exc
+
+    # World (nominal) → the segment's local frame, once, for every atom.
+    local = (
+        np.array(
+            [
+                np.asarray(
+                    nominal.to_local_point(as_vec3(list(p * A_to_m(1.0)))), dtype=float
+                )
+                for p in region.coords_A
+            ]
+        )
+        * m_to_A
+    )
+
+    scene = StructScene(cell=generated_cell(local))
+    labels: list[str] = []
+    for element, cart in zip(region.elements, local, strict=True):
+        label = scene.next_label(element)
+        frac = scene.cell.wrap(scene.cell.cart_to_frac(np.asarray(cart, dtype=float)))
+        scene.atoms[label] = StructAtom(label=label, element=element, frac=frac)
+        labels.append(label)
+    for i, j in region.bonds:
+        # Connectivity only: a fibre model carries no bond orders, and an
+        # all-1.5 ring assignment over-sums sp² valence budgets (gripe
+        # 279306), so every bond is a single, declared, pairwise bond.
+        scene.bonds.append(
+            StructBond(i=labels[i], j=labels[j], order=1.0, kind="pairwise")
+        )
+
+    ports_map: dict[str, dict[str, str]] = {}
+    port_ops: list[dict[str, Any]] = []
+    for pname, pa in region.ports.items():
+        if pname not in seg_node.ports:
+            port_ops.append(
+                {
+                    "op": "add_port",
+                    "block": seg_name,
+                    "name": pname,
+                    "expected_element": pa.expected_element,
+                    "annotations": {**pa.annotations, "atoms": [labels[pa.atom]]},
+                }
+            )
+        ports_map[pname] = {
+            "atom": labels[pa.atom],
+            "axis_atom": labels[pa.axis_atom],
+            "phase_atom": labels[pa.phase_atom],
+        }
+    try:
+        apply_ops(tree, port_ops)
+        apply_ops(tree, [{"op": "set_mode", "block": seg_name, "mode": "atomic"}])
+    except OpError as exc:
+        raise BadInput(str(exc)) from exc
+
+    motif = geom.motif
+    provenance = (
+        f"realize_chain over {key}[{start}, {end}) at fidelity {fidelity!r}: "
+        f"{region.n_residues} nucleotide(s) on {len(units)} unit(s)"
+        f"{f' + {len(loops)} placed loop(s)' if loops else ''}; Arnott B-DNA "
+        f"fibre templates (Arnott & Hukins 1972; NAB fd_helix 'abdna') placed "
+        f"in the {motif.name} unit frames (rise {motif.rise * 1e9:.3f} nm, "
+        f"{2 * np.pi / motif.twist:.2f} bp/turn); atoms in segment "
+        f"{seg_name!r}'s own frame."
+    )
+    title = f"{seg_name} ({design_slug} realize_chain)"
+    card_text = (
+        f"{title} (atomistic structure). {provenance} {len(scene.atoms)} atoms, "
+        f"{len(scene.bonds)} bonds."
+    )
+    chain_atoms = {
+        "names": list(region.names),
+        "resnames": list(region.resnames),
+        "resseq": [int(v) for v in region.resseq],
+        "chain_ids": list(region.chain_ids),
+        "chains": dict(region.chains),
+        "fidelity": fidelity,
+        "helix": key,
+        "start": start,
+        "end": end,
+        "nucleic": nucleic_name,
+        "motif": motif.name,
+        "rise_m": float(motif.rise),
+        "twist_rad": float(motif.twist),
+        "units": [u.offset for u in units],
+    }
+    pending = PendingRealizeChain(
+        block_name=seg_name,
+        struct_slug=struct_slug,
+        title=title,
+        scene=scene,
+        card_text=card_text,
+        provenance=provenance,
+        ports_map=ports_map,
+        chain_atoms=chain_atoms,
+    )
+    chains = ", ".join(f"{cid}={strand}" for cid, strand in region.chains.items())
+    echo = (
+        f"realize_chain({key!r}[{start}, {end})): {len(scene.atoms)} atom(s), "
+        f"{len(scene.bonds)} bond(s), {region.n_residues} nucleotide(s) at "
+        f"fidelity {fidelity!r} on segment {seg_name!r} → structure "
+        f"{struct_slug!r} (chains {chains}; ports "
+        f"{', '.join(sorted(ports_map))})"
+    )
+    for note in region.notes:
+        echo += f"\n· {note}"
+    return echo, pending
+
+
+def finish_realize_chain(
+    store: Store, tree: SeTree, pending: PendingRealizeChain
+) -> None:
+    """The store-touching half — ``structure_save`` then the bind, after
+    every op in the list has validated, immediately before the caller's
+    own ``save_tree`` (the same deferral :func:`finish_generate` explains).
+    The bind goes through :func:`precis_se.atomic.bind.bind_structure`'s
+    object form, so the ports' poses and rots are *measured* off the atoms
+    the same way a hand bind measures them, and the ``envelope_fit``
+    preflight runs. Skips entirely when a later op removed the segment."""
+    from precis_se.atomic.bind import bind_structure
+
+    node = tree.blocks.get(pending.block_name)
+    if node is None:
+        return
+    store.structure_save(
+        slug=pending.struct_slug,
+        title=pending.title,
+        scene=pending.scene,
+        version=1,
+        card_text=pending.card_text,
+        description=pending.provenance,
+        meta_extra={"chain_atoms": pending.chain_atoms},
+    )
+    bind_structure(
+        store,
+        tree,
+        {
+            "op": "bind_structure",
+            "block": pending.block_name,
+            "design": pending.struct_slug,
+            "ports": pending.ports_map,
+        },
+    )

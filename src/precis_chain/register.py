@@ -9,7 +9,7 @@ number of turns.
 
 **No lattice constants live here.** ``7 bp``, ``21 bp / 2 turns``,
 ``32 bp / 3 turns`` and the honeycomb/square neighbour directions are the
-binding's numbers (``docs/backlog/se-nucleic-acid.md``); the kernel takes a
+binding's numbers (``precis_se.chain.nucleic``); the kernel takes a
 :class:`Lattice` describing whatever geometry the caller has.
 """
 
@@ -89,7 +89,7 @@ def phase_after(
     ``per_unit_twist`` is the **reserved insertion/deletion hook**: a ``(n,)``
     array of per-unit twist perturbations, for designs that add or drop a base
     to retune register. No consumer builds one yet
-    (``docs/backlog/se-nucleic-acid.md`` defers the global twist check), so
+    (``docs/backlog/se-chain-insertions-deletions.md`` owns the global twist check), so
     supplying one raises rather than quietly implying the whole
     insertion/deletion story is wired up.
     """
@@ -98,7 +98,8 @@ def phase_after(
     if per_unit_twist is not None:
         raise NotImplementedError(
             "per-unit twist perturbation (insertions/deletions) is a reserved "
-            "hook with no consumer yet — see docs/backlog/se-nucleic-acid.md"
+            "hook with no consumer yet — see "
+            "docs/backlog/se-chain-insertions-deletions.md"
         )
     return _wrap_pi(float(n) * motif.twist)
 

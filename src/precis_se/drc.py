@@ -31,7 +31,7 @@ same posture — the L2 threading graph re-checked over stored data
 (``dangling_threading`` error, ``threaded_without_envelope`` warn) — plus
 the mode↔binding coupling in :func:`_mode_binding_findings`.
 
-The **nucleic-acid domain** (docs/backlog/se-nucleic-acid.md) adds its nine
+The **nucleic-acid domain** (:mod:`precis_se.chain`) adds its nine
 pure ``chain_*`` rules the same way ``fasten`` does — computed by
 :func:`precis_se.chain.drc.findings`, folded into the one findings list
 here, detailed in that module's docstring.
@@ -835,8 +835,8 @@ def drc(tree: SeTree) -> DrcReport:
                 )
             )
 
-    # 9. the nucleic-acid domain's pure findings (docs/backlog/
-    # se-nucleic-acid.md slice 1 — :mod:`precis_se.chain.drc` owns the
+    # 9. the nucleic-acid domain's pure findings
+    # (:mod:`precis_se.chain.drc` owns the
     # numbers and the reasoning, the same division ``se_fasten.findings``
     # above has). Pure over the tree, like everything in this function;
     # the handler-side chain rules (the ``material`` Lp row that re-emits
