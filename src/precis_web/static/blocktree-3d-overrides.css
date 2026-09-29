@@ -131,7 +131,7 @@
  *   ``o = i == null ? s : `${i}/${s}` ``). blocktree_3d.build_scene gives
  *   the connections group ``"name": "connections"``, so the rendered
  *   row's ``data-path`` ends in ``/connections`` — since the viewer-
- *   toggles fix (docs/backlog/se-viewer-tree-toggles-inert.md), the
+ *   toggles fix (precis_web/blocktree_3d.py's module docstring), the
  *   group's own JSON ``id`` is ALSO name-derived and ends the same way
  *   (``.../connections``, not the old ``.../_connections``), so this
  *   selector now matches both the treeview row and the scene-graph node

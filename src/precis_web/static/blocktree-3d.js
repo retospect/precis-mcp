@@ -67,7 +67,7 @@ function findPart(root, path) {
 // A mermaid node id is `B<block_uid>` (blocktree_3d.mermaid_topology) —
 // the SAME stable uid every block node in `data.shapes` now carries as
 // its own explicit `uid` FIELD (viewer-toggles fix,
-// docs/backlog/se-viewer-tree-toggles-inert.md: `id` is a NAME path —
+// precis_web/blocktree_3d.py's module docstring: `id` is a NAME path —
 // what the vendored treeview/nestedGroup both key off — so it's no
 // longer where identity lives; `uid` is). Resolving a uid back to a 3D
 // path is still just a reverse tree walk, no lookup table. Prefers a
@@ -576,7 +576,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
   // containing wireframe rather than a solid — ONLY for blocks that
   // actually have an overlay (matched by the block's own stable `uid`
   // field via findPathByUid, not any part of the path — viewer-toggles
-  // fix, docs/backlog/se-viewer-tree-toggles-inert.md).
+  // fix, precis_web/blocktree_3d.py's module docstring).
   //
   // NOT done via the public `viewer.setState()`/`getStates()` pair: since
   // the viewer-toggles fix, that API's own name-joined path (e.g.
@@ -775,7 +775,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
 
 // ── load-time id/name path invariant self-check ─────────────────────────
 //
-// docs/backlog/se-viewer-tree-toggles-inert.md: the id/name path
+// precis_web/blocktree_3d.py's module docstring: the id/name path
 // divergence this whole module now guards against (module docstring —
 // every emitted `id` must equal the "/"-join of `name`s from the root)
 // sat behind a FULLY GREEN test suite and produced ZERO console output
@@ -817,7 +817,7 @@ function _checkPathInvariant(viewer, shapes) {
     if (missingFromGroups.length === 0 && stateOnlyKeys.length === 0) return;
     const sample = (arr) => arr.slice(0, 5).join(", ");
     console.error(
-      "blocktree-3d: id/name path invariant violated (docs/backlog/se-viewer-tree-toggles-inert.md)" +
+      "blocktree-3d: id/name path invariant violated (precis_web/blocktree_3d.py's module docstring)" +
         " — tree visibility toggles will be silently inert.",
       `${missingFromGroups.length} emitted id(s) missing from viewer._rendered.nestedGroup.groups` +
         (missingFromGroups.length ? ` (e.g. ${sample(missingFromGroups)})` : "") +
@@ -1105,7 +1105,7 @@ export async function blocktreeViewer3D({
       }
     }
     // The path's own last segment is now the block's NAME (viewer-toggles
-    // fix, docs/backlog/se-viewer-tree-toggles-inert.md — id is a "/"-
+    // fix, precis_web/blocktree_3d.py's module docstring — id is a "/"-
     // joined name chain), not its uid, so the mermaid/topology-cloud node
     // id (`B<uid>`) has to come off the part's own `uid` field instead of
     // being parsed back out of the path.
@@ -1337,7 +1337,7 @@ export async function blocktreeViewer3D({
   //
   // ``c.path`` is now the SAME name-derived path the vendored treeview
   // resolves internally (viewer-toggles fix,
-  // docs/backlog/se-viewer-tree-toggles-inert.md) — before that fix,
+  // precis_web/blocktree_3d.py's module docstring) — before that fix,
   // ``c.path`` carried the old uid-suffixed scheme, so every ``setState``
   // call here silently missed (``findNodeByPath`` walks by ``name``,
   // never found a segment matching a uid) and this checkbox was as inert

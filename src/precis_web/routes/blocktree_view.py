@@ -1014,7 +1014,7 @@ def _build_scene3d(
         kids,
         plan,
         uid_by_name,
-        # viewer fix (docs/backlog/se-viewer-tree-toggles-inert.md):
+        # viewer fix (precis_web/blocktree_3d.py's module docstring):
         # ``build_scene`` derives the root's own ``id`` from
         # ``root_name`` itself (``/{root_name}``) rather than accepting a
         # separate id — the vendored treeview's tree-click path is a

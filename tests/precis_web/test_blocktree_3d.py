@@ -116,7 +116,7 @@ def test_shape_json_arrays_are_internally_consistent() -> None:
 def test_build_shapes_node_leaf_path_is_the_name_chain_and_carries_a_uid_field() -> (
     None
 ):
-    """viewer-toggles fix (docs/backlog/se-viewer-tree-toggles-inert.md):
+    """viewer-toggles fix (precis_web/blocktree_3d.py's module docstring):
     ``id`` must mirror the "/"-joined ``name`` chain the vendored
     treeview computes for itself, not the block's uid — stable identity
     across a rename now lives in the explicit ``uid`` field instead."""
@@ -145,7 +145,9 @@ def test_build_shapes_node_doubles_id_when_a_block_has_geometry_and_children() -
     assert node["id"] == "/se-x/fork"  # the group
     assert node["uid"] == 3
     assert "parts" in node
-    self_leaf = next(p for p in node["parts"] if p["id"] == "/se-x/fork/fork (envelope)")
+    self_leaf = next(
+        p for p in node["parts"] if p["id"] == "/se-x/fork/fork (envelope)"
+    )
     assert self_leaf["type"] == "shapes"
     assert self_leaf["uid"] == 3  # same block, same stable identity as the group
     child = next(p for p in node["parts"] if p["id"] == "/se-x/fork/fork_arm")
@@ -969,7 +971,7 @@ def test_build_scene_container_paths_flags_a_block_with_its_own_envelope_and_kid
 
 
 # ── id-mirrors-name-chain invariant (viewer-toggles fix,
-#    docs/backlog/se-viewer-tree-toggles-inert.md) — this bug sat behind a
+#    precis_web/blocktree_3d.py's module docstring) — this bug sat behind a
 #    fully green test suite; every test below targets the INVARIANT
 #    directly (id equals the "/"-join of names from the root) rather than
 #    one design's own hardcoded paths, so it can't silently pass vacuous
@@ -1000,7 +1002,7 @@ def test_build_scene_id_mirrors_name_chain_for_every_node_kind() -> None:
     self-leaf, the connections group, and a connection leaf all satisfy
     the SAME rule — the exact invariant the vendored treeview's own
     ``_buildTreeStructure``/``getNodePath`` compute, traced live against
-    the bundle (docs/backlog/se-viewer-tree-toggles-inert.md)."""
+    the bundle (precis_web/blocktree_3d.py's module docstring)."""
     tree = _fork_tree()
     tree.connects = [
         Connect(a_block="hub", a_port="pin", b_block="fork_tip", b_port="pin")
@@ -1067,9 +1069,7 @@ def test_build_scene_uid_field_present_and_tint_blocks_colours_by_it() -> None:
     assert rim_leaf["color"] != "#f59e0b"  # not in the changed set
 
 
-def test_build_shapes_node_container_leaf_path_is_parent_plus_envelope_suffix() -> (
-    None
-):
+def test_build_shapes_node_container_leaf_path_is_parent_plus_envelope_suffix() -> None:
     """The doubled container self-leaf's own path equals its GROUP
     parent's path plus "/" plus the SAME "<name> (envelope)" string used
     as its label — both halves of the id-mirrors-name invariant for this

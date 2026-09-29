@@ -26,10 +26,12 @@ click actually reaches is keyed by our raw ``id`` string verbatim
 name-chain path ever diverge, a tree click updates the tree MODEL but
 ``setObject``'s ``nestedGroup.groups[path]`` lookup misses and no mesh is
 ever touched — the measured root cause of every tree toggle in the viewer
-being silently inert, with a fully green test suite and no console output
-(docs/backlog/se-viewer-tree-toggles-inert.md). Do not reintroduce a
-second, id-only namespace here; if you need a NEW stable handle, add a
-field, don't smuggle it into ``id``.
+being silently inert, with a fully green test suite and no console output.
+Re-verified against a live viewer by canvas pixel-diff after the
+unification landed (hiding a leaf: n=2848 changed pixels against a
+measured noise floor of n=0). Do not reintroduce a second, id-only
+namespace here; if you need a NEW stable handle, add a field, don't
+smuggle it into ``id``.
 
 Stable block identity — the thing a uid-suffixed path used to carry, so a
 rename doesn't break the revision scrubber's ``changed_uids`` colouring —

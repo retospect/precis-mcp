@@ -504,7 +504,7 @@ def test_se_scene3d_json_shapes_tree_and_connections(
     assert r.status_code == 200
     body = r.json()
 
-    # viewer-toggles fix (docs/backlog/se-viewer-tree-toggles-inert.md):
+    # viewer-toggles fix (precis_web/blocktree_3d.py's module docstring):
     # the root id is now the design's own kind LABEL (``adapter.label``),
     # not the slug — it must equal the vendored treeview's own root path
     # exactly, byte for byte, or nothing under it resolves in
@@ -532,9 +532,11 @@ def test_se_scene3d_json_shapes_tree_and_connections(
                 _walk(p, node["id"])
         elif node.get("type") == "shapes":
             raw_name = node["name"]  # carries " (envelope)" for a container self-leaf
-            stripped = raw_name[: -len(_CONTAINER_SUFFIX)] if raw_name.endswith(
-                _CONTAINER_SUFFIX
-            ) else raw_name
+            stripped = (
+                raw_name[: -len(_CONTAINER_SUFFIX)]
+                if raw_name.endswith(_CONTAINER_SUFFIX)
+                else raw_name
+            )
             leaves[stripped] = {
                 "id": node["id"],
                 "uid": node["uid"],
@@ -579,9 +581,9 @@ def test_se_scene3d_json_container_paths_flags_doubled_uid_leaf(
     """Viewer fix (user report against se:unicycle-c1): a block with both
     its own envelope AND visible children — ``fork``, here, which has
     ``fork_arm`` as a visible child — doubles its last path segment
-    (``.../<name>/<name> (envelope)``, post viewer-toggles fix,
-    docs/backlog/se-viewer-tree-toggles-inert.md — the module docstring's
-    "container leaf" convention). That path must be reported in
+    (``.../<name>/<name> (envelope)``, post viewer-toggles fix — the
+    ``precis_web.blocktree_3d`` module docstring's "container leaf"
+    convention). That path must be reported in
     ``container_paths`` so the client can default it to translucent, and
     the leaf's own display name must differ from the group's (``"fork
     (envelope)"`` vs ``"fork"``) — otherwise the vendored assembly tree
