@@ -283,6 +283,27 @@ def test_via_span_is_f_cu_to_b_cu_and_is_the_only_b_cu_fixed_copper():
     assert exp.ledger["fabric"]["fan"] == "router"
 
 
+def test_expansion_version_is_2_so_v1_boards_regenerate_without_a_param_change():
+    """The B.Cu breakout removal changed the emitted copper for UNCHANGED
+    params, and ``_pcb_apply`` decides no-op vs. retire-and-reinsert on
+    ``(generator, version, canonical_params)`` alone -- it never diffs the
+    rows. Without a version bump every board authored at version 1 keeps
+    its stale three-row fabric forever and the removal is unobservable in
+    production. Found by dogfooding prod board ``pb345846``, which still
+    held 54 B.Cu breakout tracks after the change had deployed.
+
+    So this assertion is the tripwire: if a future edit changes what
+    ``ewod_pad_array`` emits for the same params, it fails, and the
+    version must go up with the edit."""
+    exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
+    assert exp.version == 2
+    necks, vias = _copper_by_ctype(exp)
+    # What version 2 MEANS: two copper rows per driven electrode, and the
+    # only B.Cu terminal is the via's own far landing.
+    assert len(necks) == len(vias)
+    assert {t["layer"] for t in necks} == {"F.Cu"}
+
+
 # ── 6. 9x9 ────────────────────────────────────────────────────────────────
 
 

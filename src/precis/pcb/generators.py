@@ -77,6 +77,14 @@ the router a B.Cu landing point at the via centre, so nothing about the
 escape's connectivity contract changed — only the pre-solved runout past
 it did.
 
+The removal also took :class:`GeneratorExpansion.version` from 1 to 2, and
+it had to: the store's no-op test is ``(generator, version,
+canonical_params)`` and never looks at the emitted rows, so a code-only
+change to the copper is invisible to boards already authored. Prod board
+``pb345846`` was still holding its 54 stale B.Cu breakout tracks hours
+after the removal deployed — that is what the bump fixes, and why any
+future edit to what this generator emits takes a bump with it.
+
 **Round 8 (gripe 338983 fixed), and what pcb-pre-place-route-blocks Slice 2
 closes on top of it.** The router/DRC pad source (``precis.pcb.realize.
 pads_for_ir``) used to place every pin at ``ir.py``'s SYNTHESIZED
@@ -329,6 +337,14 @@ class GeneratorExpansion:
 
     refdes: str
     generator: str
+    #: Bump this whenever the expansion's OUTPUT SHAPE changes, even if no
+    #: param did. :meth:`precis.store._pcb_ops.PcbMixin._pcb_apply` decides
+    #: no-op vs. retire-and-reinsert on ``(generator, version,
+    #: canonical_params)`` alone — it never compares the emitted rows — so a
+    #: code change that emits different copper for identical params is
+    #: invisible to every board already authored at the old version, forever.
+    #: Version 2 (2026-09-29) dropped the B.Cu breakout row; version 1 boards
+    #: still carried it until this bump made them regenerate.
     version: int
     #: JSON-safe, fully-defaulted params — what :mod:`precis.store._pcb_ops`
     #: diffs against the PREVIOUS apply's stored row to decide no-op vs.
@@ -2614,7 +2630,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     return GeneratorExpansion(
         refdes=name,
         generator="ewod_pad_array",
-        version=1,
+        version=2,
         canonical_params=canonical_params,
         components=[component, *sink_components],
         nets=nets,
