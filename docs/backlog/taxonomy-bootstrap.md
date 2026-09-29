@@ -370,6 +370,57 @@ mass-to-charge value; letting the model decline it is acceptable. `2` from
 already-correct boundary rule misses for the same reason as 3a (`2D` — digit
 *before* the letter).
 
+## Resume (2026-09-29)
+
+State: main holds `bfc0c03c` (blocker 1 fix) and `8e037c01` (blocker 2 prompt
+rewrite). `bfc0c03c` has a real full-suite verdict — it was inside the green
+gate at `f8f884d1` (23732 passed / 77 skipped / 6 xfailed). `8e037c01` has no
+gate verdict: it qlanded, green locally with 178 taxonomy tests + mypy clean,
+which is not a gate result. Prod runs `b81bf3cc`; `8e037c01` is not deployed.
+
+Detail on all of the following is in "First discovery probe — 2026-09-29"
+above; this section is only the order.
+
+1. **Blocker 3a — Miller indices.** Fix in `census.py::scan_text`
+   (domain-neutral rule: a parenthesised group whose entire content is a
+   digit run of length ≥3, no decimal separator, no resolved unit ⇒
+   identifier, not a value). Free to fix and free to validate (stage 1 is
+   deterministic), and it reduces the paid call count — lands before the
+   re-probe.
+2. **Re-probe the same 100 rows — paid, ~66 calls, ~36 min.** Needs Reto's
+   explicit go-ahead first. `precis taxonomy-bootstrap --campaign
+   norr-her-meta --stage all --limit 100` (verify flags against
+   `src/precis/cli/taxonomy.py` — `--stage` defaults to `census`, which is
+   free; `all` is the paid path). Default salt derives from campaign +
+   snapshot sha, so the row slice and A/B split are identical to the first
+   probe — like for like. The number that matters: A/B vocabulary stability,
+   0.046 before, threshold 0.80; `freeze_run` refuses to write a list below
+   it. This is the only measurement of whether blocker 2's prompt rewrite
+   moved the number.
+3. **Blocker 3b — stranded units.** Design work, not a one-liner: a
+   shared-unit rule in `census._resolve_unit`.
+4. **Concurrency in `discover()`.** Plain sequential loop, 33.2 s/call ⇒
+   11.3 h for 1231 calls. First confirm the transport — 2032 s of 2189 s was
+   user CPU, which suggests a subprocess rather than an API call. The prompt
+   shares a long identical prefix across calls; check prompt caching.
+5. **Full run** ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
+   in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
+   catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
+   adjudicates) ⇒ one figure.
+
+**Zero-cost tool:** `replay_stage3.py` (session scratch, `norr-her-meta/`
+under the Claude projects dir; being transferred from another machine)
+replays stages 3-4 over the saved `discovered.jsonl`. It is how blocker 1 was
+validated against real model output. Use it before paying for anything.
+
+Two spec decisions owed by Reto — both already live as rows in the decisions
+log below (`domain_classes` element-symbol ids, and the `meta.axis`
+vocabulary); the first is due before the first promotion run.
+
+**Do not:** re-run the paid probe without Reto's go-ahead; trust a fixture
+over the saved probe output (the fixtures encoded the wrong belief and 159
+green tests missed blocker 1); treat green-before-landing as a gate result.
+
 ## Open questions / decisions log
 
 - **[decided 2026-09-28]** Sign off thresholds and procedure, never the

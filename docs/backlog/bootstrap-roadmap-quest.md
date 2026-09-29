@@ -303,6 +303,43 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (commits `2d6aab0a`, `1a4cb076`, `4adfe448`,
 6. Not built, by scope: the capped *framing* chunk from the §Dossier-shape
    ruling, and the web hub ledger panel (spec already says it can trail).
 
+## Resume (2026-09-29)
+
+State: the build shipped to main as `ad7dc208` (ungated `/qland`). Items 1-6
+above are on main; 406 targeted tests passed pre-ship. Main itself is
+ungated and `ad7dc208` is not deployed — prod runs `b81bf3cc`.
+
+Ordered:
+
+1. **Stage 4 — skills (in-scope item 7).** Write `precis-roadmap-help` (rung
+   meta shape, the three roles demand/supply/bridge, the no-number-no-rung
+   rule) and update `precis-quest-help` + `precis-quest-writing-help` for the
+   roadmap body. Delegate to a documenter; skills live in
+   `src/precis/data/skills/`.
+2. **Residual 1** — `benign` joins
+   `handlers/_todo_guards.py::_RUNG_ALLOWED_KEYS` with a value check
+   (`"required"` only, upward-only override) and a test.
+3. **`/go`** — full gate + deploy. The first real verification the roadmap
+   code gets.
+4. **Prod, only after 3, each step a Reto-approved write.**
+   `precis quest tick 453863 --dry-run` to see which role it picks and the
+   prompt it builds; then activate `qu453863`; then watch three ticks. Fail
+   signals: a rung minted without a number; deed count climbing while no
+   ledger value changed.
+
+Four build rulings, each cost real work — do not re-derive: root-only
+ticking (pathway quests never tick, decisions log "Does a pathway quest
+itself tick?"); `meta.supply` stays, do not read supply from `measures`
+(decisions log "Where does `supply` live when a rung is done?"); a rung is
+minted `STATUS:open` with no `llm_tier` ("Rung minting boundary" above); the
+role picks the model tier in code, no knob (decisions log "Model tiers").
+
+Watch for: acceptance criteria that pass while testing nothing — five
+instances were found in this campaign. For every AC, name the code path it
+exercises and ask whether it could pass with the feature absent. Verify
+agents' file claims with `git diff`; one agent this campaign reported edits
+it had never made.
+
 ## Open questions / decisions log
 
 - **Where does `supply` live when a rung is done?** Decided 2026-09-27,

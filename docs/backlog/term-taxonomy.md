@@ -119,9 +119,10 @@ with the candidate named and a `dedup=False` bypass, mirroring
 
 ## In scope
 
-1. **Migration (forward-only).** `taxon` kind + handle code `tn`. No
-   relation-registry change (reuses `generalises`/`specialises`). No
-   index, no materialised view.
+1. **Migration (forward-only).** `taxon` kind + handle code `tn`. One
+   relation-registry addition: `instance-of` / `has-instance` (ref → taxon
+   membership; see §Research-mesh reconciliation). Hierarchy reuses
+   `generalises`/`specialises`. No index, no materialised view.
 2. **`TaxonHandler`** (`handlers/taxon.py`) — put/get/edit/link/search on
    the `concept` numeric-ref pattern (`emits_card=True`), dedup
    suggestion on put, required-key check on put and on link.
@@ -141,6 +142,12 @@ with the candidate named and a `dedup=False` bypass, mirroring
    (`max_service_temperature` vs `temperature_max`) — dedup is a later
    curation pass, so the node count equals the legacy row count.
 6. **Runtime docs** — `precis-taxon-help`; `precis-overview` kind table.
+7. **Edge axis as a taxon (v1.5, ships after 1–6 land).** The seed mints a
+   third start node `axis`; `link(rel='specialises', meta={axis: X})` then
+   requires `X` to resolve to a taxon slug under it, and link-side filters
+   accept `axis=<slug>` widened by `under=`. Until this item ships, `axis`
+   is the unvalidated free string of the Design section. This is the
+   "hierarchical link tags" half of the 2026-09-29 mesh handoff.
 
 ## Explicitly NOT in scope
 
@@ -155,8 +162,9 @@ with the candidate named and a `dedup=False` bypass, mirroring
   earns `systematic` only by meeting the usage test. See the decisions
   log for why the compat-view objection to this does not hold.
 - Merge-as-redirect, the dedup judge, alias repointing.
-- `instance-of` / `has-instance` — no consumer in this item; register it
-  when `measures-substrate` needs it.
+- Endpoint-kind rules for relations in general (`role_spec`-style
+  src/dst kind lists). The only new check is the taxon-endpoint rule on
+  `specialises` (§Research-mesh reconciliation).
 - Truth, validity and polysemy annotations, and the term-health read.
   Those are `finding` rows through the existing verdict/dispute path and
   need no schema here.
@@ -186,7 +194,8 @@ with the candidate named and a `dedup=False` bypass, mirroring
    with the same name but a **different** `si_vector` is never offered as
    a match (the hard gate) and mints without a bypass.
 3. `link(rel='specialises', meta={axis:'composition'})` that would create
-   a cycle is refused, naming both endpoints.
+   a cycle is refused, naming both endpoints; the same link with a
+   non-taxon endpoint is refused naming the endpoint's kind.
 4. A node whose reachable start node requires `dimension_kind` cannot be
    put without one; the refusal names the start node that requires it.
 5. A node with parents on two axes returns two chains from
@@ -230,6 +239,42 @@ snapshot, not a substitute — and note the migrations seed fewer rows
 than prod holds (0092 seeds 19 of 24; 0093 seeds 10 of 13), so the seed
 must be `INSERT … SELECT` over live rows, never a hand-written list.
 
+## Research-mesh handoff (2026-09-29) — reconciliation
+
+A design handoff for an "LLM-curated research mesh" arrived 2026-09-29
+(node/edge/role tables, path-addressed hierarchical tags, insert-time
+constraints, a closure table, a writer→reviewer loop). Reto's framing of
+the ask: existing refs get **wrapped** as mesh nodes, and link tags become
+**hierarchical**. Read against this item, `knowledge-mesh.md`,
+`graph-gardener.md` and `measures-substrate.md`, the handoff is not a new
+store — it is this item plus three rulings. Each handoff point, what
+already exists, and the ruling:
+
+| handoff | exists | ruling |
+|---|---|---|
+| a `node` table for everything; kinds and roles are nodes | `refs` is that table (`refs.kind` FK → `kinds`); relations are the `relations` registry (`store/types.py::Relation`), extensible by migration | keep both registries. ~40 relations paste into a prompt, which is the handoff's own reason for keeping the role set small. Handoff Q1: `kind` stays a column. |
+| tags are nodes; a bare tag is a node with no body | `tags` is flat `(namespace, value)` + `tag_embeddings`; the `tag` kind is read-only discovery (`handlers/tag.py`); `concept` and `taxon` are ref nodes with a card | **the "wrapped node"** is a `taxon` ref. The flat `tags` table stays as the cheap membership index for closed axes; anything that needs a body, a definition or a position is a taxon. |
+| `tagged` membership role | no ref → taxon edge; this item had deferred `instance-of` to `measures-substrate` | **`instance-of` / `has-instance` moves into v1** (in-scope 1). Any existing ref of any kind joins the mesh by `link(rel='instance-of', target='taxon:…')` — no re-kinding, no new table. Reto confirmed this reading 2026-09-29. |
+| edge = one role + free tags; traversal "from an angle" filters on an edge tag | `links.relation` + free `links.meta`; here `meta.axis` is an unvalidated string | **hierarchical link tags, staged**: v1 unchanged; v1.5 = in-scope 7 (`axis` start node, `meta.axis` resolves to a taxon under it, `under=` widening on link filters). Other `meta` keys stay free. |
+| roles carry `proposed`/`core`; a recurring edge tag on one role is promoted to a role | nothing | no `proposed` relations as rows. Promotion is `graph-gardener.md`'s vocabulary-consolidation job and lands as a migration-proposal `todo` (`waiting-for:reto`), because the registry changes only by migration. |
+| `specialises` is acyclic; cycle rejected at insert; endpoints any → same kind | decided above (pre-insert ancestor check) | same, plus the endpoint rule: `TaxonHandler` refuses `specialises` unless both ends are `taxon`. Other kinds' use of the relation is untouched. |
+| materialised `closure` table | rejected above (recursive CTE, `_refs_ops.py` precedent) | stays rejected. Revisit trigger: > 10⁴ taxon nodes, or `view='path'` p95 > 50 ms on prod. |
+| `primary_parent` + stored `canonical_path` | rejected above (reparent cascade unsolved) | stays rejected. Handoff Q2: no stored primary; the display path is the shortest chain to a start node, ties by axis name, computed on read. |
+| slugs sibling-unique; `resolve(path)` | slugs non-unique, resolution-only; identity is `ref_id` | path-form ids on `get` (decisions log, 2026-09-29); ambiguity ⇒ refuse with candidates. |
+| `/x/**` and `/x/*` wildcards | `under=` / `depth=` facets | `/x/**` = `under=x`; `/x/*` = `under=x, depth=1`. No glob parser. |
+| per-role endpoint kind lists (`role_spec.src_kinds`) | only `guard_and_route_contradicts_disputes` | not generalised in v1; the taxon-endpoint rule above is the only new check. |
+| `provenance in ('machine','human')` required on every node and edge; `session_id` | `refs.set_by` / `chunks.set_by` exist but are NULL on insert (schema comment); `agentlog` + `touched` links are the per-run write set | → `curation-gate.md` (populating `set_by`, protecting human content, the reviewer loop). The handoff's `session_id` is `agentlog_id`. |
+| `status proposed/core/deprecated` | `proposed` → `systematic` earned by `taxonomy-bootstrap.md`; `retired_at` | keep. |
+| one claim per node; split a sprawling note | `knowledge-mesh.md` §5 lede-first lint | no change here. |
+| traversal grammar `role[:tag-path]`, `role!` (handoff Q3) | `knowledge-mesh.md` §2 eye ladder, no walk verb | ruled there: filter arguments on the `+1hop`/`+2hop` rungs. |
+| qualifiers on findings so "same number" ≠ "same quantity" (handoff Q5) | `measures-substrate.md` (conditions, reference, direction; identity = taxon + reference + convention) | no change. |
+
+Net new work from the handoff, all recorded above: in-scope 1 gains
+`instance-of`; in-scope 7 (axis as taxon) is new; the taxon-endpoint rule on
+`specialises` joins AC 3; the ambiguous-slug question is closed; two Reto
+rows joined the decisions log. Everything else in the handoff either
+already exists or was rejected here before it arrived.
+
 ## Open questions / decisions log
 
 - **[decided 2026-09-28, Reto]** Ships before `measures-substrate.md`,
@@ -266,8 +311,18 @@ must be `INSERT … SELECT` over live rows, never a hand-written list.
 - **[noted]** `corpus-quantitative-extraction.md` argues a measurand
   "takes arguments" and that a taxonomy breaks there. Compatible: the
   classes live here, the arguments live on the measure row.
-- **[open]** What happens when a slug resolves ambiguously (slugs are
-  not unique). v1 can return candidates and refuse; not yet decided.
-- **[open]** Which axes are core. `composition`/`periodic` are
-  computable from a formula parser; the rest are proposed per mention.
-  Moot in v1 since `axis` is unvalidated.
+- **[decided 2026-09-29]** Ambiguous slug ⇒ refuse and list the
+  candidates. Path-form ids (`get(kind='taxon',
+  id='/measurand/faradaic-efficiency')`) walk slugs from the named start
+  node, so a path is ambiguous only when two siblings share a slug — the
+  refusal names both and the caller re-issues with the handle.
+- **[open — Reto]** Which axes are core (the `meta.axis` vocabulary).
+  `composition`/`periodic` are computable from a formula parser; the rest
+  are proposed per mention. Moot in v1 since `axis` is unvalidated; due
+  before in-scope item 7 (axis as taxon) and before `taxonomy-bootstrap`'s
+  first promotion run, which is where the campaign handoff of 2026-09-29
+  filed the same question.
+- **[open — Reto]** The `norr-her-meta` campaign's element-symbol
+  `domain_classes` ids (`pd`, `cu`, …) duplicate the composition-axis nodes
+  the seed will mint. One of them has to become an alias of the other
+  before the first promotion run (`taxonomy-bootstrap.md` §Resume).

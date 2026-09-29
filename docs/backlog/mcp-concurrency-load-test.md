@@ -126,6 +126,8 @@ tunable.
 
 ### Still owed
 
+Order and cross-item constraints: `serving-programme-followups.md`.
+
 * **The harness has no tests of its own.** `scripts/mcp_loadtest/` sits
   outside mypy's `src tests` scope and no gate exercises it, so it passed
   ruff and nothing else. It is inert on the cluster — a standalone script,

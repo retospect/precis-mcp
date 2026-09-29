@@ -92,8 +92,9 @@ recorded there, not repeated here.
   each rubric key — subject may be a paper, hub or structure serving the
   capability at any depth; sense from `rubric_objectives`; rows with a
   differing `reference` compared only through a `convert` rule.
-  `bootstrap-roadmap-quest.md`'s hand-written `meta.supply` is dropped;
-  `meta.demand` stays.
+  `bootstrap-roadmap-quest.md`'s `meta.supply` stays in v1 (its final
+  2026-09-28 ruling); this adapter's supply-from-`measures` read is the v2
+  widening that body defers, not built here.
 - `view='series'` gains a `measures`-backed mode for non-structure rows,
   grouping by `conditions` names instead of `_SERIES_AXES`.
 - Intra-paper conflicts the reader binds land as `disputes` edges with
@@ -127,9 +128,12 @@ and widens sets rather than a parallel verb:
   query when one is given). The refeye docstring already reserves
   similarity for a separate **`+recall`** rung — build that rung, and let
   `+2hop` use it for its top-k; the structural leg stays deterministic.
+  Closes the 2026-07-23 graph audit's finding 4 (no aggregate/fan-in
+  graph view; `links_for` is one-ref/one-hop).
 - **Multi-origin working sets = pins.** "Near all of these handles" is a
   `WorkingSet` with several pinned eyes composed by `render_working_set`;
-  nodes demanded by more than one eye rank first. No new query.
+  nodes demanded by more than one eye rank first. No new query. Closes the
+  2026-07-23 graph audit's finding 3 (no two-ref intersection query).
 - **Ring set widening — a decision, not a consequence.** `RING_RELATIONS`
   deliberately excludes structural relations; `serves`, `blocked-by` and
   `parent` are exactly what a roadmap neighbourhood needs
@@ -150,6 +154,18 @@ and widens sets rather than a parallel verb:
 - **Browser focus page** = generalise `precis_web/draft_eyes.py` to any
   handle: pen tray, eyes with extents, click-to-refocus with breadcrumbs.
   Same renderer as the tick.
+
+**Filter grammar (handoff Q3, decided 2026-09-29).** The mesh handoff
+proposed traversal filters `role[:tag-path,...]` (e.g.
+`derived_from:/axis/mechanism`) and `role!` for the reverse direction (e.g.
+`specialises!` walks down to children). Ruling: this is not a walk verb; it
+is the filter argument of the `fisheye+1hop` / `fisheye+2hop` rungs —
+`relations=` (list of relation slugs, `!`-suffix = follow the inverse) and
+`axis=` (a taxon slug under the `axis` start node from `term-taxonomy.md`,
+widened by `under=`). Path wildcards map to facets: `/x/**` = `under=x`,
+`/x/*` = `under=x, depth=1`. No glob parser. Relation registry:
+`store/types.py::Relation`; per-relation grouping already exists in
+`utils/eye_render.py::render_eye`.
 
 **The tick's view is a working set, not a bespoke render.** The roadmap
 body (`bootstrap-roadmap-quest.md`) places eyes the way planner/dream
@@ -239,8 +255,9 @@ The 0-rows `material_values` registry is superseded by `measures` with
 ## In scope
 
 1. (moved to `measures-substrate.md`.)
-2. Frontier adapter + harvest dual-write; capability supply derived;
-   `bootstrap-roadmap-quest.md` amended (drop `meta.supply`).
+2. Frontier adapter + harvest dual-write; capability supply-from-`measures`
+   read, as a v2 widening once `bootstrap-roadmap-quest.md`'s `meta.supply`
+   is superseded — not this item's v1.
 3. Eye ladder: `+recall` and `fisheye+2hop` rungs, `ROADMAP_RELATIONS`,
    the gist-per-kind registry test, `extent=` on every kind's get, the
    generalised focus page (depends on `fisheye-level2.md`'s focus verb).
@@ -325,3 +342,9 @@ The 0-rows `material_values` registry is superseded by `measures` with
 - **Budget.** The mesher's `widen` action runs a deep campaign (agents
   fan out). Per-quest `budget_usd` is mandatory, default absent ⇒ the
   service skips the quest.
+- **Correction, 2026-09-29:** §1's frontier-adapter bullet and In-scope
+  item 2 previously said this item drops `bootstrap-roadmap-quest.md`'s
+  hand-written `meta.supply`. Wrong — that body's decisions log rules
+  `meta.supply` stays in v1 (revised twice, final 2026-09-28); the
+  supply-from-`measures` read is the v2 widening it defers. Fixed both
+  places.
