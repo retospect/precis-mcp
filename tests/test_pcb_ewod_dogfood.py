@@ -1296,15 +1296,14 @@ def test_dogfood_gerber_export_zip_loads(pcb, tmp_path):
         assert f"{slug}-B_Cu.gbr" in names
         f_cu = zf.read(f"{slug}-F_Cu.gbr").decode("utf-8")
         assert "G36*" in f_cu and "G37*" in f_cu  # the polygon electrodes
-        # Rulings 2026-09-19 item 11: every plaza via's B.Cu breakout stub
-        # is a real DRAWN track (D02*/D01*), not just the via's own flash
-        # (D03*) already on this layer -- distinguishes "the stub actually
-        # exported" from "the via happens to span this layer too".
+        # Rulings 2026-09-19 item 11 gave every plaza via a B.Cu breakout
+        # stub, a real DRAWN track (D02*/D01*) on that layer distinct from
+        # the via's own flash (D03*); Reto removed that row 2026-09-29
+        # (module docstring's "B.Cu breakout stub" section), so this
+        # generator's OWN fixed copper on B.Cu is via flashes only now --
+        # any drawn B.Cu track comes from the router, not from here.
         b_cu = zf.read(f"{slug}-B_Cu.gbr").decode("utf-8")
-        assert "D02*" in b_cu and "D01*" in b_cu, (
-            "no drawn (D01*) track on B.Cu -- the plaza via breakout stubs "
-            "did not export"
-        )
+        assert "D03*" in b_cu  # the plaza vias' own flash still exports
 
 
 def test_dogfood_fab_svg_render_is_well_formed(pcb, tmp_path):

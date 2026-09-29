@@ -162,36 +162,42 @@ def test_polygon_pad_corner_is_touched_by_a_stub_the_inscribed_circle_misses(
     assert frozenset({("ARR1", "R0C2"), ("DRV1", "1")}) not in old_pairs
 
 
-# ── 1b. Rulings 2026-09-19 item 11: the breakout far end is offered ─────
+# ── 1b. the plaza via's own centre is offered on B.Cu ────────────────────
+#
+# Rulings 2026-09-19 item 11 added a B.Cu breakout stub past each plaza
+# via, whose far end used to be the terminal checked here; Reto removed
+# that row 2026-09-29 (module docstring's own "B.Cu breakout stub"
+# section). What survives, and is checked below: the via's own B.Cu
+# terminal (the same mechanism the breakout's far end used to unify with
+# by ordinary touching-copper connectivity) is offered on its own,
+# without any breakout row to supply it.
 
 
-def test_breakout_far_end_is_offered_as_a_b_cu_island_terminal():
-    """``_realize_maze``'s island terminals already pick up EVERY fixed-
-    copper track endpoint (:func:`~precis.pcb.connectivity.
-    fixed_copper_pin_terminals`, generically, not something this item
-    needed to teach it) -- this just verifies the new B.Cu breakout's own
-    far end (not merely the via centre it starts from) is actually among
-    them for a real ``ewod_pad_array`` expansion, so the router has a
-    real landing point past the plaza's own crowded interior to start
-    from (gr347037's "pre-solved breakout")."""
+def test_via_centre_is_offered_as_a_b_cu_island_terminal():
+    """``fixed_copper_pin_terminals`` offers a via's terminal on EVERY
+    layer it spans (its own docstring) -- checked here against a real
+    ``ewod_pad_array`` expansion's plaza via, which spans F.Cu to B.Cu, so
+    the router still has a real B.Cu landing point to start an escape
+    from with no breakout row in the fabric at all."""
     expansion, model = _ewod_model(grid=[3, 3])
     terminals = pcb_connectivity.fixed_copper_pin_terminals(model)
     checked = 0
     for pin, pad_ledger in expansion.ledger["pads"].items():
-        far = pad_ledger.get("breakout")
-        if far is None:
+        via = pad_ledger.get("via")
+        if via is None:
             continue
+        assert "breakout" not in pad_ledger  # the removed row leaves no trace
         key = ("ARR1", pin)
         assert key in terminals, f"{pin}: no island terminal offered at all"
         points = {
             (round(t.point[0], 4), round(t.point[1], 4), t.layer)
             for t in terminals[key]
         }
-        assert (round(far["x"], 4), round(far["y"], 4), "B.Cu") in points, (
-            f"{pin}: breakout far end {far} not among offered terminals {points}"
+        assert (round(via["x"], 4), round(via["y"], 4), "B.Cu") in points, (
+            f"{pin}: via centre {via} not offered as a B.Cu terminal {points}"
         )
         checked += 1
-    assert checked > 0, "no driven electrode had a breakout to check"
+    assert checked > 0, "no driven electrode had a via to check"
 
 
 # ── 2. end-to-end: ewod_pad_array + a real ring-package sink footprint ──

@@ -23,17 +23,18 @@ pin's several pads now read them off ``exp.copper`` instead
 sweep folds copper shapes in alongside pad shapes so the "no short"
 property still covers the whole fabric, not just the bodies.
 
-**Rulings 2026-09-19 item 11** adds a THIRD copper row per driven
-electrode: a B.Cu breakout stub running from the plaza via outward
-(:func:`precis.pcb.generators._breakout_track_row`). It sits on a
-DIFFERENT physical layer (B.Cu) from the electrode body/neck (F.Cu), so
-:func:`_copper_shape`/:func:`_all_shapes` now carry each shape's own
-layer set alongside its geometry — the cross-net overlap sweep only
-flags a geometric intersection when the two shapes' layer sets actually
-share a layer; a B.Cu breakout passing near a foreign F.Cu electrode body
-in plain (x, y) is not a short (different physical layer), which a
-layer-blind sweep would have wrongly flagged the moment breakout
-geometry was added.
+**Rulings 2026-09-19 item 11 added, and 2026-09-29 REMOVED, a third
+copper row** per driven electrode: a B.Cu breakout stub running from the
+plaza via outward (the erstwhile ``_breakout_track_row``), closing
+gr347037's in-plaza congestion race. Reto reversed that ruling on
+2026-09-29 ("I believe the router is now much better") — see the module
+docstring's own "B.Cu breakout stub" section for the history. The via's
+own ``span`` still bridges F.Cu and B.Cu, so :func:`_copper_shape`/
+:func:`_all_shapes` still carry each shape's own layer set alongside its
+geometry — the cross-net overlap sweep only flags a geometric
+intersection when the two shapes' layer sets actually share a layer;
+that machinery predates and outlives the breakout, it was never specific
+to it.
 """
 
 from __future__ import annotations
@@ -90,10 +91,9 @@ def _copper_by_pin(
 def _copper_shape(item: dict[str, Any]) -> tuple[Polygon, frozenset[str]]:
     """The item's own geometry, paired with the set of physical layers it
     occupies — a via's ``span`` (both ends it bridges), a track's own
-    single drawn ``layer``. Rulings 2026-09-19 item 11's B.Cu breakout is
-    the first copper row this module ever emits that does NOT share a
-    layer with the electrode body/neck (both F.Cu), so the overlap sweep
-    below needs this to avoid flagging harmless cross-layer proximity."""
+    single drawn ``layer``. The via's B.Cu end does NOT share a layer with
+    the electrode body/neck (both F.Cu), so the overlap sweep below needs
+    this to avoid flagging harmless cross-layer proximity."""
     geom = item["geom"]
     if item["ctype"] == "via":
         shape = SPoint(geom["x"], geom["y"]).buffer(geom["dia_mm"] / 2.0)
@@ -109,12 +109,11 @@ def _all_shapes(
     exp: G.GeneratorExpansion, name: str = "ARR"
 ) -> list[tuple[str, frozenset[str], Polygon]]:
     """Every net's copper as one shape list — electrode bodies (``pads``,
-    always F.Cu) AND the neck track + plaza via + B.Cu breakout
-    (``copper``) — so a cross-net overlap sweep still covers the whole
-    fabric now that only the body lives in ``pads``. Each entry carries
-    its own layer set (see :func:`_copper_shape`) so the sweep can tell a
-    real short (same layer, different net) from harmless cross-layer
-    proximity."""
+    always F.Cu) AND the neck track + plaza via (``copper``) — so a
+    cross-net overlap sweep still covers the whole fabric now that only
+    the body lives in ``pads``. Each entry carries its own layer set (see
+    :func:`_copper_shape`) so the sweep can tell a real short (same layer,
+    different net) from harmless cross-layer proximity."""
     shapes: list[tuple[str, frozenset[str], Polygon]] = [
         (p["pin"], frozenset({"F.Cu"}), _shape(p)) for p in exp.footprints[0]["pads"]
     ]
@@ -179,7 +178,7 @@ def test_zigzag_gap_between_row_neighbours_is_constant(grid):
 )
 def test_no_cross_net_copper_overlap(variant, grid):
     exp = G.expand("ewod_pad_array", "ARR", {"grid": grid, "variant": variant})
-    shapes = _all_shapes(exp)  # bodies + neck tracks/vias/breakouts (copper)
+    shapes = _all_shapes(exp)  # bodies + neck tracks/vias (copper)
     n = len(shapes)
     for i in range(n):
         pin_i, layers_i, gi = shapes[i]
@@ -250,14 +249,14 @@ def test_pad_sizes_merges_a_1x2_span_into_one_pad():
     assert len(by_pin["R0C0"]) == 1  # body only -- no stub/via pad rows
     # exactly one via for the merged pad, same "one via suffices" rule as
     # any ordinary single-cell electrode -- now a copper row, not a pad.
-    # Two tracks (Rulings 2026-09-19 item 11): the F.Cu neck plus the
-    # B.Cu breakout stub outward from the via.
+    # One track: the F.Cu neck (the B.Cu breakout this used to also get,
+    # Rulings 2026-09-19 item 11, was removed 2026-09-29).
     copper_by_pin = _copper_by_pin(exp)
     vias = [c for c in copper_by_pin["R0C0"] if c["ctype"] == "via"]
     tracks = [c for c in copper_by_pin["R0C0"] if c["ctype"] == "track"]
     assert len(vias) == 1
-    assert len(tracks) == 2
-    assert {t["layer"] for t in tracks} == {"F.Cu", "B.Cu"}
+    assert len(tracks) == 1
+    assert {t["layer"] for t in tracks} == {"F.Cu"}
 
 
 def test_pad_sizes_merged_electrode_body_is_a_valid_simple_ring_and_wider_than_one_cell():
@@ -407,7 +406,7 @@ def test_no_cross_net_copper_overlap_with_a_merged_pad(variant, grid, cells):
         "ARR",
         {"grid": grid, "variant": variant, "pad_sizes": [{"cells": cells}]},
     )
-    shapes = _all_shapes(exp)  # bodies + neck tracks/vias/breakouts (copper)
+    shapes = _all_shapes(exp)  # bodies + neck tracks/vias (copper)
     n = len(shapes)
     for i in range(n):
         pin_i, layers_i, gi = shapes[i]

@@ -31,51 +31,42 @@ is, and stays, each pin's ONLY pad.
 
 **pcb-pre-place-route-blocks Slice 2 — the escape fabric is real copper,
 not pad geometry.** Every DRIVEN electrode (one with a usable plaza escape)
-gets exactly two :attr:`GeneratorExpansion.copper` rows: one ``track`` on
+gets exactly three :attr:`GeneratorExpansion.copper` rows: one ``track`` on
 F.Cu from the electrode body's own boundary anchor to its plaza via centre
-(:func:`_stub_track_row`), and one ``via`` at the plaza slot, spanning F.Cu
-to B.Cu (:func:`_via_row`). The F.Cu neck is CONSTANT-width (``stub_width``,
-the same sizing figure the old tapered pad used) — the taper existed only
-to clear a diagonal escape's own pinch point against a NEIGHBOUR
-electrode's flat corner, and :func:`_electrode_polygon`'s
-``plaza_corner_chamfer`` (round 4) already does that clearance job on the
-ELECTRODE side, so the track itself needs no taper of its own. Both rows
-carry an ``envelope`` (:func:`_fabric_envelope`) — the capability floor
-(layer count, clearance/track-width/via-size) the fabric was solved
-under — so a re-apply into a design whose rules have since moved refuses
-honestly rather than silently keeping copper that may no longer be legal
+(:func:`_stub_track_row`), one ``via`` at the plaza slot, spanning F.Cu to
+B.Cu (:func:`_via_row`), and (Rulings 2026-09-19 item 11) one B.Cu ``track``
+breaking OUT from the via, along the slot's own direction, to a point
+``slot_a`` further from the plaza centre (:func:`_breakout_track_row` /
+:func:`_breakout_far_point`) — a short, pre-solved landing past the
+plaza's own crowded interior, closing gripe 347037's congestion race (the
+router's own occupancy search was starving inside the plaza before it
+could even leave it). The F.Cu neck is CONSTANT-width (``stub_width``, the
+same sizing figure the old tapered pad used) — the taper existed only to
+clear a diagonal escape's own pinch point against a NEIGHBOUR electrode's
+flat corner, and :func:`_electrode_polygon`'s ``plaza_corner_chamfer``
+(round 4) already does that clearance job on the ELECTRODE side, so the
+track itself needs no taper of its own; the B.Cu breakout is the same
+constant ``stub_width``, the fab minimum trace width. All three rows carry
+an ``envelope`` (:func:`_fabric_envelope`) — the capability floor (layer
+count, clearance/track-width/via-size) the fabric was solved under — so a
+re-apply into a design whose rules have since moved refuses honestly
+rather than silently keeping copper that may no longer be legal
 (:meth:`precis.store._pcb_ops.PcbMixin._pcb_fixed_copper_envelope_mismatch`).
 A merged pad may never cover a plaza (:func:`_parse_pad_sizes` refuses that
 whole apply outright — 8 OTHER nets' escapes live there); a ``reserve``'d
-slot suppresses its via/stub the same as it always suppressed the old pad
-pair. All non-emissions are COUNTED, in the ledger's ``fabric`` section
-(per-tile ``{emitted, refused, suppressed}`` plus a flat reason list) —
-see :func:`_expand_ewod_pad_array`'s own fabric-bookkeeping comment.
-**B.Cu fan-out from the via's own landing to the tile's sink footprint is
-still explicitly OUT OF SCOPE this slice** (``ledger["fabric"]["fan"] ==
-"router"``): this module is pure and has no DB access to the sink's real
-pin positions, so it cannot compute that geometry; a sibling slice teaches
-the router to treat this generator's fixed copper as pre-existing
-obstacles/connectivity and finish the B.Cu run itself from the via's own
-terminal.
-
-**B.Cu breakout stub — added 2026-09-19, REMOVED 2026-09-29.** Rulings
-2026-09-19 item 11 gave the plaza via a third row, a short B.Cu ``track``
-breaking OUT from the via along the slot's own direction to a point
-``slot_a`` further from the plaza centre (the erstwhile
-``_breakout_track_row`` / ``_breakout_far_point``), to close gripe
-347037's in-plaza congestion race by giving the router's island-terminal
-search a pre-solved landing past the plaza's own crowded interior. Reto
-reversed that ruling on 2026-09-29: with the router since improved, the
-radial B.Cu breakout now mostly just constrains the router's own degrees
-of freedom on the bottom layer and creates congestion there instead — the
-fixed geometry it was pre-solving for is no longer the router's binding
-constraint. The F.Cu neck and the plaza via are unaffected; only the third,
-B.Cu row is gone. The via's own terminal (:func:`_via_row`'s docstring;
-:func:`precis.pcb.connectivity.fixed_copper_pin_terminals`) still offers
-the router a B.Cu landing point at the via centre, so nothing about the
-escape's connectivity contract changed — only the pre-solved runout past
-it did.
+slot suppresses its via/stub/breakout the same as it always suppressed the
+old pad pair. All non-emissions are COUNTED, in the ledger's new ``fabric``
+section (per-tile ``{emitted, refused, suppressed}`` plus a flat reason
+list) — see :func:`_expand_ewod_pad_array`'s own fabric-bookkeeping
+comment; each emitted breakout's far end is also recorded per pin
+(``ledger["pads"][pin]["breakout"]``). **B.Cu fan-out from the breakout's
+own far end to the tile's sink footprint is still explicitly OUT OF SCOPE
+this slice** (``ledger["fabric"]["fan"] == "router"``): this module is
+pure and has no DB access to the sink's real pin positions, so it cannot
+compute that geometry; a sibling slice teaches the router to treat this
+generator's fixed copper as pre-existing obstacles/connectivity and finish
+the B.Cu run itself — the breakout only gets that run OUT of the plaza's
+own congestion, it does not replace it.
 
 **Round 8 (gripe 338983 fixed), and what pcb-pre-place-route-blocks Slice 2
 closes on top of it.** The router/DRC pad source (``precis.pcb.realize.
@@ -1620,6 +1611,78 @@ def _via_row(
     }
 
 
+#: ``(dr, dc)`` unit-ish delta for each of :data:`_DIRECTIONS`' names, so
+#: :func:`_breakout_far_point` (Rulings 2026-09-19 item 11) can turn a
+#: slot's own direction name into a real (x, y) unit vector without
+#: re-deriving the lookup :func:`_plaza_slot_point`/:func:`_edge_anchor`
+#: each already build locally.
+_DELTA_BY_DIR: dict[str, tuple[int, int]] = {
+    name: (dr, dc) for name, dr, dc in _DIRECTIONS
+}
+
+
+def _direction_unit(direction: str) -> Point:
+    """The unit (x, y) vector pointing in ``direction`` (a
+    :data:`_DIRECTIONS` name). A cardinal's ``(dr, dc)`` is already unit
+    length; a diagonal's has magnitude ``sqrt(2)`` (both components
+    +-1), so it is normalised here rather than at each call site."""
+    dr, dc = _DELTA_BY_DIR[direction]
+    n = math.hypot(dc, dr)
+    return (dc / n, dr / n)
+
+
+def _breakout_far_point(via_pt: Point, direction: str, length: float) -> Point:
+    """The far end of a plaza via's B.Cu breakout stub (docs/backlog/
+    pcb-ewod-multitile.md "Rulings 2026-09-19" item 11, "radial B.Cu
+    breakout stubs as fixed copper") -- ``length`` (the plaza's own
+    ``slot_a``) outward from the via, along the SLOT's own direction: the
+    unit vector from the plaza centre to the slot itself (the axis for a
+    cardinal slot, the diagonal for a diagonal one) -- continuing past
+    the via in the same direction it already sits from the plaza centre,
+    not back toward the centre. A cardinal via sits at ``slot_a`` from
+    centre, so its far end lands at ``slot_a + length`` (``2*slot_a`` at
+    the default ``length=slot_a``); a diagonal via sits at ``slot_b`` on
+    each axis, so its far end lands ``length/sqrt(2)`` further out on
+    each axis -- the "~1.7mm ring, exits ~1.3mm apart" figures in the
+    ruling's own two-levers paragraph are this identity evaluated at the
+    default via/hv numbers, not a separately-tuned radius."""
+    ux, uy = _direction_unit(direction)
+    vx, vy = via_pt
+    return (vx + ux * length, vy + uy * length)
+
+
+def _breakout_track_row(
+    net_name: str, via_pt: Point, far_pt: Point, width: float, envelope: dict[str, Any]
+) -> dict[str, Any]:
+    """The B.Cu breakout stub itself — same row shape as
+    :func:`_stub_track_row` but fixed to ``B.Cu`` and running from the
+    plaza via's own centre outward to :func:`_breakout_far_point`'s far
+    end, on the same ``net_name`` the via/F.Cu neck already carry
+    (docs/backlog/pcb-ewod-multitile.md "Rulings 2026-09-19" item 11).
+    This is pre-solved fixed copper on the SAME "the fabric owns its
+    pre-routed copper" contract the plaza vias/necks already use
+    (pcb-pre-place-route-blocks Slice 2's own module-docstring section):
+    the router's island terminals (:func:`precis.pcb.connectivity.
+    fixed_copper_pin_terminals`) pick up the far end as a real landing
+    point past the plaza's own crowded interior, closing gr347037's
+    congestion race without any router change of its own — the far end
+    unions onto the via's own B.Cu terminal by ordinary touching-copper
+    connectivity (this track's OWN start point IS the via centre), the
+    same mechanism that already offers a via's terminal on every layer
+    it spans."""
+    (vx, vy), (fx, fy) = via_pt, far_pt
+    return {
+        "ctype": "track",
+        "layer": "B.Cu",
+        "net": net_name,
+        "geom": {
+            "segments": [{"shape": "line", "start": [vx, vy], "end": [fx, fy]}],
+            "width_mm": width,
+        },
+        "envelope": envelope,
+    }
+
+
 def _rim_virtual_plaza_cell(layout: _Layout, r: int, c: int) -> tuple[int, int]:
     """The hollow grid cell ``(r, c)``'s own rim via reaches toward --
     ``(r, c)`` itself when neither axis has an open direction (a
@@ -2209,10 +2272,32 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 )
                 copper.append(_via_row(net_name, via_pt, sizing, fabric_envelope))
                 ledger_pads[pin]["via"] = {"x": via_pt[0], "y": via_pt[1]}
-                # The B.Cu breakout stub this via used to also get (Rulings
-                # 2026-09-19 item 11) was removed 2026-09-29 -- see the
-                # module docstring's own "B.Cu breakout stub" section.
-                # This is a two-row fabric now: F.Cu neck + plaza via.
+                # Rulings 2026-09-19 item 11 -- the same B.Cu breakout stub
+                # a real plaza's slots get below, keyed off the SAME
+                # direction `_rim_via_point` itself placed this via along
+                # (electrode -> virtual-plaza, opposite of the slot's own
+                # outward direction). The degenerate 1x1-layout case (no
+                # open direction at all, `_rim_virtual_plaza_cell`'s own
+                # docstring) has no direction to break out along; skipped,
+                # not a real board shape.
+                rvy, rvx = vr - via_r, vc - via_c
+                if (rvy, rvx) != (0, 0):
+                    rim_slot_dir = _OPPOSITE[_DIR_BY_DELTA[(rvy, rvx)]]
+                    far_pt = _breakout_far_point(via_pt, rim_slot_dir, sizing["slot_a"])
+                    copper.append(
+                        _breakout_track_row(
+                            net_name,
+                            via_pt,
+                            far_pt,
+                            sizing["stub_width"],
+                            fabric_envelope,
+                        )
+                    )
+                    ledger_pads[pin]["breakout"] = {
+                        "x": far_pt[0],
+                        "y": far_pt[1],
+                        "layer": "B.Cu",
+                    }
                 rim_tile_key = f"rim:R{vr}C{vc}"
                 _fabric_tile(rim_tile_key)["emitted"] += 1
                 fabric_totals["emitted"] += 1
@@ -2285,11 +2370,24 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
                 )
             )
             copper.append(_via_row(net_name, via_pt, sizing, fabric_envelope))
-            # The B.Cu breakout stub this via used to also get (Rulings
-            # 2026-09-19 item 11, outward from the via along `slot_dir`)
-            # was removed 2026-09-29 -- see the module docstring's own
-            # "B.Cu breakout stub" section. This is a two-row fabric now:
-            # F.Cu neck + plaza via.
+            # Rulings 2026-09-19 item 11 -- a B.Cu breakout stub, outward
+            # from the via along the slot's OWN direction (`slot_dir`,
+            # already the plaza-centre-to-slot direction this via itself
+            # sits on -- see _plaza_slot_point's own docstring), length
+            # `slot_a` (gr347037's "pre-solved breakout": the router's
+            # island terminals then start past the plaza's crowded
+            # interior instead of inside it).
+            far_pt = _breakout_far_point(via_pt, slot_dir, sizing["slot_a"])
+            copper.append(
+                _breakout_track_row(
+                    net_name, via_pt, far_pt, sizing["stub_width"], fabric_envelope
+                )
+            )
+            ledger_pads[pin]["breakout"] = {
+                "x": far_pt[0],
+                "y": far_pt[1],
+                "layer": "B.Cu",
+            }
             plaza_ledger["slots"][slot_dir] = {"status": "used", "pin": pin}
             ledger_pads[pin]["via"] = {"x": via_pt[0], "y": via_pt[1]}
             ledger_pads[pin]["plaza"] = slot_key

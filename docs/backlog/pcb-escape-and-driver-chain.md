@@ -338,6 +338,205 @@ and backed out. 3 must be MEASURED before it is built.
    > number. Two throwaway probes disagreeing by 37% is a measurement
    > problem, and a swap objective scored on an unpinned metric cannot be
    > evaluated. See also the straight-airwire retraction under point 6.
+   >
+   > **SUPERSEDED 2026-09-29 by a better answer to "pinned how?" — see
+   > "Method, decided with Reto 2026-09-29" immediately below.** Pinning a
+   > GEOMETRIC crossing count means choosing conventions and defending
+   > them. Counting inversions of a PERMUTATION has no conventions to
+   > choose. That is the metric to build; this paragraph's "fix the
+   > segment-granularity convention" framing is the weaker version of the
+   > same goal.
+
+   ### Method, decided with Reto 2026-09-29
+
+   > **⚠ REVIEWED THE SAME DAY AND LARGELY WRONG. Read the correction
+   > block after piece 4 before building ANY of this.** Of the eight
+   > claims behind pieces 1-3, an independent review found three false
+   > (the 2n unrollings, the basin argument, the far-side-cut claim) and
+   > four true only under conditions not stated. The pieces below are
+   > kept as written because the corrections are easier to read against
+   > them; **the corrected method is the one to build.**
+
+   Design conversation, not yet built. Four pieces, in build order.
+
+   1. **Crossings as permutation INVERSIONS, not segment intersections.**
+      For a matching between pads in cyclic order (a ring of pins) and a
+      target in linear order (an escape channel), the claim is that a
+      crossing-free realization exists iff the cyclic order, cut at some
+      point and possibly reflected, equals the linear order — 2n candidate
+      unrollings — and that for a fixed assignment the minimum crossing
+      count is the number of inversions (Kendall tau), O(n log n).
+      If that holds it retires the whole disputed-counts problem: a
+      geometric count has at least three free parameters (segment
+      granularity, endpoint definition, which copper counts) and an
+      inversion count has none, so two correct implementations must agree.
+      Note this measures the TOPOLOGICAL assignment's non-planarity — the
+      lower bound a single-layer realization must respect — which is a
+      different quantity from what the router actually draws. It is the
+      right one for scoring pin swaps because it measures exactly what a
+      swap can change.
+
+   2. **Rotation and reflection as MOVE CLASSES.** The reason the current
+      annealer cannot find the right ring cut is not the objective, it is
+      the move set. Each rotation of a ring assignment is its own local
+      optimum, and walking from one to the next via adjacent pin swaps
+      passes through strictly worse states, with the barrier growing with
+      n. Adding `ROTATE_GROUP(k)` and `REFLECT_GROUP` makes states that
+      were n steps apart one step apart. Both are O(1) to propose and slot
+      into the existing `PinSwapGroup` machinery
+      (`pcb_route._resolve_pin_swap_groups`).
+
+   3. **Swap groups must NEST (Reto).** Today `pin_swap_groups` is a flat
+      list of sets on `pcb_components.meta` — the route-help skill's own
+      "no partial-exclusion syntax yet". Real swappability is a tree:
+      leaves are pins, an internal node means "my children are
+      interchangeable as units". That covers a differential pair (swap
+      within the pair AND pairs with each other), a bus (bits within a
+      lane, lanes as units), and a driver with banks. The flat case is a
+      depth-one tree. Consequence: rotation/reflection apply at every
+      node, and the metric in piece 1 must range over the orderings the
+      tree admits rather than over a flat set. This is a PQ-tree (P-node =
+      children permute freely, Q-node = children reverse only), with the
+      circular PC-tree variant matching the ring — subject to the same
+      review caveat. **What a given part's tree IS stays design data**, a
+      datasheet fact the author or generator supplies; the code's job is
+      to support nesting.
+
+   4. **Negotiated congestion for the rip-up loop**, PathFinder-style
+      (McMurchie & Ebeling 1995): every routing resource carries
+      `base + history` cost, each iteration rips up ALL nets and re-routes
+      every one against accumulated costs, letting them overlap illegally
+      at first; history rises monotonically on contested resources until
+      someone yields. Two properties earn it a place here: it makes the
+      result largely ORDER-INDEPENDENT, which is the route-ordering worry
+      left over from the VDD_LOGIC episode; and history lives on
+      RESOURCES, not nets, so a pin swap between iterations does not
+      invalidate it.
+
+      This also answers Reto's "if the board is 80% routed and we rip up
+      one wire, can we go back?" — in this scheme you never rip one wire,
+      so you never need to. Separately, if the outer discrete search does
+      want a best-so-far, the snapshot is cheap: sketch is canonical and
+      copper is derived, so the state is O(nets + pins), not O(copper).
+
+   Tracelength is the tiebreak among crossing-free assignments, not the
+   primary objective. The claim that minimum-inversions and minimum-length
+   pick the SAME cut (the far side) is part of what went out for review —
+   it may hold only for uniform spacing.
+
+   ### CORRECTION 2026-09-29 — what the review actually returned
+
+   Model it checked against: single layer, no vias, 2-pin nets, component
+   body and escape array as obstacles, so wires live in an **annulus**
+   (outer boundary = escape line ∪ board edge, inner = the pad ring).
+   That is the geometry we care about, and it is NOT the geometry the
+   textbook result applies to.
+
+   **The root error: a strip result applied to an annulus.** "Minimum
+   crossings = inversions" is true when BOTH orders are linear and wires
+   are confined to the strip between them. The ring is not that.
+
+   1. **No reflection — n unrollings, not 2n.** Disjoint arcs across an
+      annulus must respect the induced orientation, so the pad cyclic
+      order is read in a geometry-fixed sense. All n rotations are
+      realisable (wrapping the far side is a Dehn twist); the mirror is
+      not. **A `REFLECT_GROUP` move is therefore wrong** — it jumps to a
+      state with ≈ n²/4 crossings. The only way to get the mirror is
+      physical: mirror the footprint, or put the part on the other side.
+
+   2. **Inversions are an UPPER bound, not the minimum, and not a lower
+      bound.** Wires may wind individually. With wire `i` running from
+      sorted escape `a_i` to pad `b_i + w_i` (`w_i ∈ Z` its winding), the
+      crossing count is `Σ_{i<j} |w_i − w_j + [b_i > b_j]|`. Uniform `w`
+      recovers the inversion count of one cut; non-uniform `w` can beat
+      every cut (reviewer's n=4 case: best cut 2, best winding 1, with
+      one wire wrapping the other way to cross one wire instead of two).
+      Minimising over `w` is a min-cost-tension problem — the dual of
+      min-cost flow, totally unimodular, so still polynomial — but it is
+      **not counting inversions**.
+
+      Consequence for item 4 of the original piece list: a router that
+      wraps one wire the other way can legitimately produce FEWER
+      crossings than the inversion count. Treating that as a measurement
+      bug would be exactly backwards.
+
+   3. **"Definition-free" does not survive.** The inversion count is
+      canonical once two linear orders exist; *producing* those orders is
+      where the parameters live — the angular sort centre for the pad
+      ring (corner pads, double-row or non-convex footprints, ties), the
+      projection axis when escapes are not collinear, and which nets
+      participate (multi-pin, power, unconnected pads). On top of that,
+      fixed-cut vs min-over-cuts vs min-over-windings are **three
+      different numbers**. So this does not retire
+      `probe-numbers-need-a-pinned-method`; it reduces the parameter
+      count and moves the remaining ones somewhere more inspectable.
+
+   4. **The basin story is false for this objective.** Under a fixed cut
+      the inversion landscape has *no* non-global local optimum: any
+      unsorted sequence has an adjacent descent that lowers inversions by
+      exactly 1 (bubble sort), so plain greedy descent reaches the
+      optimum. Under min-over-cuts, all n rotations score 0 — there is no
+      "right rotation" for a crossing objective to find at all. The
+      inter-rotation barrier is real but small (measured 1, 2, 2 for
+      n = 4, 5, 6; ≈ ⌊(n−1)/2⌋), so "not at any usable temperature" was
+      unsupported. Rotations only matter once a **length** term
+      distinguishes them — and then the answer is to evaluate the n
+      rotations directly, not to anneal toward one.
+
+   5. **PQ/PC-trees: right definitions, wrong fit.** They need each swap
+      group's pins CONTIGUOUS in the pad order (a bank scattered around a
+      package is not a PQ language); a subgroup with a rigid internal
+      order (an op-amp gate's +/−/out) is neither P nor Q and must be a
+      compound leaf or you over-admit reversals; and a Q-node's reversal
+      is not an EDA primitive except for 2-element groups. The category
+      error: for the ring the admissible set is one big P-node, while
+      "cyclic order up to rotation" is the PLANAR set imposed by
+      geometry — and PQ/PC nodes always identify a sequence with its
+      reverse, which point 1 says is wrong here. Nested swap groups
+      remain real and worth supporting (Reto's point stands); they are
+      just not a PQ-tree.
+
+   6. **Nearest relative is level planarity, and the constrained version
+      is NP-complete.** Jünger–Leipert–Mutzel for level planarity,
+      Bachmaier–Brandenburg–Forster (PQR) for radial/cyclic. With order
+      constraints inside a level — which is what swap groups are —
+      Constrained Level Planarity is NP-complete from 4 levels
+      (Brückner–Rutter), polynomial for single-source and height ≤ 3. And
+      the PQ family answers feasibility only; it does not minimise.
+
+   7. **Far-side cut: false, and my reason for it was backwards.** With
+      the cut at the far side, the pads *nearest* the escapes land in the
+      MIDDLE of the linear order and the farthest pads sit at both ends —
+      the opposite of what was argued. Inversions do not select a cut at
+      all (every rotation scores 0); only length distinguishes them, and
+      the length-optimal rotation moves toward the antipode of the escape
+      centroid as soon as the escape column is off-centre or spacing is
+      uneven. The far-side cut is the symmetric special case.
+
+   **Scope correction that changes the build most.** For ONE ring fan
+   there is nothing to anneal: the exact answer is n rotations × sort
+   within each contiguous swap group × a min-cost-tension solve for the
+   windings. Annealing only earns its place once several components with
+   swap groups sit on BOTH ends of shared nets and couple. Say that as
+   the scope before building a search.
+
+   **Testing trap, stated so we don't walk into it.** With uniform
+   spacing, winding-minimum equals rotation-minimum for n ≤ 6 — the two
+   only diverge under non-uniform escape/pad spacing. A unit test built
+   on evenly-spaced pads would therefore pass while testing nothing,
+   which is the vacuous-green shape this campaign has already hit twice.
+
+   **What survives unreviewed:** the negotiated-congestion rip-up loop
+   (piece 4) was not among the claims sent out, and the cheap-snapshot
+   answer (sketch canonical, copper derived) is a property of this
+   codebase rather than a theorem.
+
+   **Verification status.** Points 1, 4 (the bubble-sort half) and 7 were
+   re-derived independently here and are certainly right. The n = 4
+   winding counterexample, the crossing formula, and the measured barrier
+   heights come from the reviewer's own brute force and have NOT been
+   independently reproduced — reproduce them before relying on the exact
+   figures, per this campaign's own standing lesson.
 
    **MEASURED 2026-09-28, NOT REPRODUCIBLE — see the warning above.**
    Crossings among the REALIZED escape paths on the 50/54 run
