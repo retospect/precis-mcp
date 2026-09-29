@@ -384,6 +384,22 @@ reason — read the code as authoritative where they disagree.
   one spacing away and each site has three — a property the tests check
   rather than a formula taken on trust.
 
+### Slice 1 follow-ups found while writing the skill (2026-09-29)
+
+- **The slice-1 skill is written and landed** (`precis-se-chain-help.md`, plus
+  a pointer section in `precis-se-help.md` and the `precis-overview.md` se
+  row). Slice 2 still owes the `relax_chain`/`fold_layout` rows, but "the
+  skills" are no longer wholly slice-2 work — the six pure ops, both views and
+  the ten findings are documented against the code as built.
+- **A missing finding, newly named:** two domains occupying one offset may
+  declare *different* Leontis–Westhof families, and nothing reports it — the
+  first declaring occupant wins silently. `chain_pairing_geometry` only
+  catches letters that cannot pair the declared way, not two domains
+  disagreeing with each other. `pairing.py::OffsetOccupancy`'s comment
+  claimed the DRC pass reported it; that comment was aspirational and is now
+  corrected to state the silent behaviour. Slice 2 adds the rule (suggested
+  `chain_pairing_disagree`, error, pure — both declarations are in the tree).
+
 ### Slice 1 rulings on the build's three open questions (2026-09-28)
 
 - **Strand azimuth must be fixed before slice 2 writes `meta.loop_curve`,

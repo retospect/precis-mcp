@@ -471,7 +471,7 @@ efficiency read in isolation overstates the link.
 
 ## Views (`get(kind='se', id=…, view=…)`)
 
-`tree · block · ports · topology · measures · datums · validate · clearance · sweep ·
+`tree · block · ports · topology · chain · measures · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
@@ -561,7 +561,21 @@ Atomic mode applies when a block's realization is chemistry rather than a
 solid — nested envelopes down to bond-level threading, degrees of freedom,
 and a binding into a real `structure` design.
 
+## Nucleic-acid chains (DNA/RNA design)
+
+See [[precis-se-chain-help]].
+
+Six pure ops over ordinary blocks: `declare_helix` (geometry — centre
+line, motif, unit count) · `declare_strand` (route chemistry — sequence
+optional) · `add_domain`/`remove_domain` (a strand's ordered route along a
+helix; `remove_domain` is destructive) · `clear_chain` (un-declare,
+cascading) · `layout_chain` (materialise `<helix>.s<k>` segment children —
+what the 3D viewer draws). Pairing is DERIVED from two strands occupying
+one helix offset running opposite ways, never declared. `view='chain'`
+reads helices/strands/pairing; `view='topology'` gains the domain rows.
+
 ## See also
 
 - [[precis-se-atomic-help]] — atomic-mode block trees over real chemistry
+- [[precis-se-chain-help]] — nucleic-acid helices, strands, domains, pairing
 

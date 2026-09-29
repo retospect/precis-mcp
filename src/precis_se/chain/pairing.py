@@ -65,8 +65,11 @@ class OffsetOccupancy:
     status: str
     #: The declared Leontis–Westhof family in force at this offset — a
     #: domain's ``overrides[offset]`` if it has one, else its ``geometry``.
-    #: The first declaring occupant wins and a disagreement between the two
-    #: domains is reported by the DRC pass, not resolved here.
+    #: The first declaring occupant wins, in occupant order, and a
+    #: disagreement between the two domains is **silently** resolved that
+    #: way — no finding reports it. Adding one is slice 2's work
+    #: (``docs/backlog/se-nucleic-acid.md``); until then a second domain
+    #: declaring a different family at the same offset is invisible.
     geometry: str | None = None
 
 
