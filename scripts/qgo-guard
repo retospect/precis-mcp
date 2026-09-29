@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""scripts/qgo-guard — the one refusal `/qgo` cannot delegate to a later gate.
+
+`/qgo` deploys BEFORE it validates: squash-merge ungated, push to the fleet,
+and let a periodic `--full --slow` pass find whatever broke. That trade works
+because almost everything the deploy touches is re-deployable — a bad worker,
+a bad web route, a bad handler are all one corrected deploy away from fixed,
+and the cost of shipping them is minutes of wrong behaviour on a dev cluster.
+
+Two things in this repo are NOT re-deployable, and they are why this guard
+exists:
+
+- **Migrations.** `src/*/migrations/*.sql` is forward-only by project rule
+  (never edit a sealed migration — ship a new one), and `deploy/` auto-applies
+  every pending migration through the precis-web role on each run. So an
+  ungated deploy carrying a broken migration writes production schema that no
+  later gate can undo. The repair pass can only tell you it already happened.
+- **`utils/safe_fetch.py`.** It is the SSRF boundary for agent-supplied URLs.
+  A regression there is exercised by the fleet against the open internet the
+  moment it lands; "we'll catch it in the daily pass" is not a containment
+  story for a request that already left the building.
+
+Everything else is deliberately NOT guarded here. This is not a general
+risk-review — it is a two-item list of irreversibility, and it should stay
+short. Adding "risky-looking" paths to it rebuilds the gate that `/qgo` exists
+to skip, one exception at a time.
+
+The escape hatch is `/go`: gate first, then deploy. A refusal here is not
+"this change is bad", it is "this change wants the slower path".
+
+Exit codes: 0 = clear to `/qgo`, 1 = refused (reason on stdout), 2 = usage.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from dataclasses import dataclass
+
+#: Any added/modified path under a package's migrations directory. Matched on
+#: the path's SHAPE (``src/<pkg>/migrations/…``) rather than an enumerated list
+#: of packages — there are six today (precis, precis_bio, precis_chem,
+#: precis_estimate, precis_pathway, precis_se) and a seventh must not silently
+#: fall through this guard on the day it is created.
+_MIGRATION_PARTS = ("migrations",)
+
+#: The SSRF boundary. Path-suffix matched so a move within the tree keeps the
+#: guard rather than quietly disarming it.
+_SAFE_FETCH_SUFFIX = "utils/safe_fetch.py"
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """Why `/qgo` must not run, phrased for the person reading the refusal."""
+
+    reason: str
+    paths: tuple[str, ...]
+
+    def render(self) -> str:
+        listing = "\n".join(f"  {p}" for p in self.paths)
+        return (
+            f"✖ /qgo refused — {self.reason}\n\n{listing}\n\n"
+            "This is the irreversible class: a deploy applies it to production "
+            "before anything has validated it, and no later repair pass can "
+            "undo it. Run /go instead — gate first, then deploy."
+        )
+
+
+def _is_migration(path: str) -> bool:
+    parts = path.split("/")
+    return any(part in _MIGRATION_PARTS for part in parts) and path.endswith(".sql")
+
+
+def _is_safe_fetch(path: str) -> bool:
+    return path.endswith(_SAFE_FETCH_SUFFIX)
+
+
+def evaluate(changed_paths: list[str]) -> Refusal | None:
+    """The whole decision, pure. ``changed_paths`` is the set of paths the
+    pending merge would land, repo-relative, as ``git diff --name-only`` emits
+    them. Returns ``None`` when `/qgo` may proceed."""
+    migrations = tuple(sorted(p for p in changed_paths if _is_migration(p)))
+    if migrations:
+        return Refusal(
+            reason=(
+                "this merge lands a migration, and migrations are forward-only "
+                "and auto-applied on deploy"
+            ),
+            paths=migrations,
+        )
+    safe_fetch = tuple(sorted(p for p in changed_paths if _is_safe_fetch(p)))
+    if safe_fetch:
+        return Refusal(
+            reason="this merge touches the SSRF boundary for agent-supplied URLs",
+            paths=safe_fetch,
+        )
+    return None
+
+
+def _changed_paths(base: str) -> list[str]:
+    """Paths this branch would land relative to ``base``.
+
+    Three-dot on purpose: ``git diff A..B`` compares endpoints, so a branch a
+    few commits behind main reports every sibling's landed work as a change and
+    this guard would refuse on someone else's migration. ``A...B`` diffs
+    against the merge base, which is the set this branch actually adds.
+    """
+    out = subprocess.run(
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if out.returncode != 0:
+        # No usable base (fresh clone, unborn branch): fall back to the working
+        # tree against HEAD, which still catches an uncommitted migration.
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        return [
+            line[3:].strip() for line in out.stdout.splitlines() if line[3:].strip()
+        ]
+    tracked = [p.strip() for p in out.stdout.splitlines() if p.strip()]
+    # Uncommitted work ships too — `scripts/ship` commits WIP before merging —
+    # so an untracked migration must not slip past by virtue of being untracked.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    dirty = [
+        line[3:].strip() for line in status.stdout.splitlines() if line[3:].strip()
+    ]
+    return sorted(set(tracked) | set(dirty))
+
+
+def main(argv: list[str]) -> int:
+    base = argv[1] if len(argv) > 1 else "origin/main"
+    if base in {"-h", "--help"}:
+        print(__doc__)
+        return 2
+    refusal = evaluate(_changed_paths(base))
+    if refusal is None:
+        return 0
+    print(refusal.render())
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

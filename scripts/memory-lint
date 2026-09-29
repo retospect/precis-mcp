@@ -134,7 +134,12 @@ fi
 # session; keep their combined weight visible (dev-context-diet). ~4 B/token.
 claude_b=$(wc -c < CLAUDE.md 2>/dev/null | tr -d ' ' || echo 0)
 pre_tok=$(( (bytes + claude_b) / 4 ))
-PRE_BUDGET_TOK=6000
+# Raised 6000 -> 8000 on 2026-09-29 (Reto's call), to buy room for the /qgo
+# workflow line without paying for it in a diet pass first. The budget is a
+# visibility tripwire, not a hard limit — what it protects is the fact that
+# every session pays this cost on every turn, so a raise is a deliberate
+# decision rather than a default. dev-context-diet.md still stands.
+PRE_BUDGET_TOK=8000
 if (( pre_tok > PRE_BUDGET_TOK )); then
     echo "preamble OVER budget: CLAUDE.md+MEMORY.md ≈ ${pre_tok} tok > ${PRE_BUDGET_TOK} — diet per docs/backlog/dev-context-diet.md"
 else

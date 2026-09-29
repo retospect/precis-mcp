@@ -179,7 +179,13 @@ if [[ "$REMOTE" == 1 ]] && ! command -v gh >/dev/null 2>&1; then
 fi
 
 MSG="${MSG:-${1:-}}"
-CO_AUTHOR="Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+# The trailer every commit this script mints carries. It used to hardcode one
+# specific model name, which made a false claim on every commit minted by any
+# other model — and with many sessions shipping through this script daily, that
+# is most of them. The script cannot detect the caller's model, so: a session
+# that knows its own sets PRECIS_CO_AUTHOR, and the default names no model
+# rather than naming the wrong one.
+CO_AUTHOR="Co-Authored-By: ${PRECIS_CO_AUTHOR:-Claude <noreply@anthropic.com>}"
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }

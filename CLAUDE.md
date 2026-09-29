@@ -34,7 +34,13 @@ budgeted advisory mutation pass
 (`scripts/ship --quick`: commit WIP → sync → squash-merge, NO gate) for when
 many trees are in flight — qland them one by one, then one
 `/go` gates the integrated `main` + deploys (ship skips the push when the
-tree already equals main). All abort+report on failure and are idempotent —
+tree already equals main). **`/qgo`** = the fast dev cycle: qland + deploy
+that sha **ungated**, then a repair gate only if a slot is free (never
+queued — queuing starves the 2-slot semaphore). Prod may run broken code
+until the next pass: accepted on a dev cluster, and `scripts/qgo-guard`
+hard-refuses the two things prod cannot take back (any
+`*/migrations/*.sql`, `safe_fetch.py`) — those take `/go`.
+All abort+report on failure and are idempotent —
 fix and re-run. Merge target is `main` (no `master`). Red gate: the failure
 is printed above the `✖` — read *that*, never `scripts/ship` (remote-gate
 red: ship prints the failing jobs + `gh run view <id> --log-failed`).
