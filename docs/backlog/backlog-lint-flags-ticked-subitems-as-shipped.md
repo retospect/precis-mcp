@@ -26,6 +26,11 @@ time trains sessions to ignore it — which is the failure mode, because the rea
 case it was built for (a shipped item left behind as gunk) then also gets
 ignored. It has been outstanding across this whole session.
 
+**This item reproduces the bug.** Filing it took the count from 2 to 3 —
+the check matched the `- [x]` quoted above as evidence, inside a file whose
+whole subject is that such matches are false. Any fix must make *this file*
+stop being flagged.
+
 ## Fix sketch
 
 Gate the "marked done" check on the item's own frontmatter `status:`, not on

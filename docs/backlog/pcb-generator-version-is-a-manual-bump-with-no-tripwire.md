@@ -111,3 +111,36 @@ its consequence.
   no-op for unchanged params is what makes authoring re-runnable. The bug
   is that `version` is the only thing standing between that rule and
   stale output, and nothing watches it.
+
+## The same delay reddens main, one ship later (found 2026-09-29, deployer)
+
+The version bump does not just delay the *board's* update — it delays the
+signal to the generator's own gate, and the red then lands on whoever
+ships next.
+
+`tests/test_pcb_ewod_dogfood.py`'s escape floor
+(`assert len(realized_escapes) >= 24`) is a hand-ratcheted measured count;
+every past move of it carries its measurement and cause in a comment
+above the assertion. `5fc99982` removed the B.Cu breakout stub — copper
+that *that same comment block* credits with raising this count (3 → 13
+under Rulings items 3/10/11) — and amended six test files without moving
+the floor. It stayed green, because with `version` still 1 the authored
+fixture kept emitting the old three-row fabric. `f8f884d15` bumped the
+version two commits later, the fixture regenerated, the count fell to 17,
+and `main` went red on shard 3 for a change that had already been green
+through its own ship.
+
+So the no-tripwire defect has a second cost beyond stale prod copper: a
+generator change's *tests* are also measured against the pre-bump output,
+which makes "green at ship time" mean nothing for anything the generator
+emits. A digest tripwire at gate time fixes both halves — the author sees
+the output changed while they still have the context to re-measure the
+floor in the same commit.
+
+Note for whoever re-measures: the drop from 28 to 17 is attributed to the
+deliberate stub removal, and that attribution is inference from the
+comment block's own history, not a bisect. `65070aef9` (placer legality
+reading `inst_bottom`) also landed in between and its share is
+unseparated. Per the campaign's standing verdict the placement on this
+fixture is invalid anyway (plaza vias inside `ARR1_SINK_0`'s footprint),
+so no count here is worth a bisect until that is fixed.

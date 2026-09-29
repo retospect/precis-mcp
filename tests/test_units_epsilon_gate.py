@@ -146,6 +146,24 @@ _EXEMPT_NAMES = frozenset(
     }
 )
 
+#: Exemptions pinned to ONE site, ``<path under src>::<NAME>``. Use this
+#: rather than :data:`_EXEMPT_NAMES` whenever the constant's name is generic
+#: enough that a bare-name entry would also wave through a future, unrelated
+#: constant that happens to share it — a silent hole in the gate. ``TOL_NM``
+#: is that shape: a bare unit suffix, nothing package-specific.
+_EXEMPT_SITES = frozenset(
+    {
+        # `precis_se/chain/relax.py`'s settle convergence threshold on the
+        # max per-bead force, in the chain kernel's nanometre units. Same
+        # carve-out as ``_GEO_TOL`` above and for the same reason: it is a
+        # CONVERGENCE threshold, not a geometric predicate — a wrong value
+        # costs iterations or a permanently ``converged=False`` flag, never
+        # the silent culling of real geometry this gate exists to catch.
+        # See the constant's own docstring for the 0.1 pm residual figure.
+        "precis_se/chain/relax.py::TOL_NM",
+    }
+)
+
 
 def _is_enclave(path: Path) -> bool:
     parts = path.relative_to(_SRC).parts
@@ -203,6 +221,8 @@ def _offending_constants() -> list[str]:
                 if name in _EXEMPT_NAMES:
                     continue
                 rel = path.relative_to(_SRC)
+                if f"{rel.as_posix()}::{name}" in _EXEMPT_SITES:
+                    continue
                 offenders.append(f"{rel}:{lineno} {name}")
     return offenders
 

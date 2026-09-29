@@ -1864,11 +1864,23 @@ def test_status_breadcrumb_is_consumed_not_repeated(
     )
     monkeypatch.setattr(install_watchdog, "_breadcrumb_path", lambda: target)
 
-    first = skill.get(id="precis-status")
-    assert "previous server exited" in first.body
+    # The real consumer takes the breadcrumb off disk once per PROCESS and
+    # then serves it once per session, so what this test sees depends on
+    # what else already ran in this xdist worker: any earlier test that
+    # reached the real consumer leaves ``_breadcrumb_taken`` True with a
+    # cached None, and this one then reads an empty body. That is why it
+    # passed in isolation and failed on whichever CI shard happened to pair
+    # it with such a test. Reset on the way in, and again on the way out so
+    # this test does not do to a later one what was being done to it.
+    install_watchdog._reset_breadcrumb_state_for_tests()
+    try:
+        first = skill.get(id="precis-status")
+        assert "previous server exited" in first.body
 
-    second = skill.get(id="precis-status")
-    assert "previous server exited" not in second.body
+        second = skill.get(id="precis-status")
+        assert "previous server exited" not in second.body
+    finally:
+        install_watchdog._reset_breadcrumb_state_for_tests()
 
 
 def test_categorise_buckets_the_rest_by_tag_not_into_other() -> None:
