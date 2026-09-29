@@ -445,7 +445,7 @@ trust/blocked_by status.
   defined precisely on the page (it is the largest single-step Ea on the
   route, TS minus that step's own preceding intermediate — NOT the height
   above the slab, which is the span); default y = `log_tof`; drop `energy`.
-- Verified definitions (2026-09-18): `barrier` = `precis_pathway/analysis.py::
+- Verified definitions (2026-09-18): `barrier` = `src/precis/utils/reaction_graph.py::
   rate_limiting_step` (max edge `barrier` on the root→target path, U = 0,
   NEB); `span` = `energetic_span` (Kozuch–Shaik); `log_tof` = microkinetics
   on the U = 0 free energies (`autocatpath/kinetics.py` takes no potential;

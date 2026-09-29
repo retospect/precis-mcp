@@ -128,11 +128,14 @@ packages, so they are fair game before 10-16.
    plugin's tables; core SQL must not reference a plugin's (already stated
    as a comment at `0162_design_core.sql:30`). Also measures util's exact
    size.
-2. **Move `precis_pathway/analysis.py` into core or geom.** It is "pure,
-   precis-free" by its own docstring — functions over node-link dicts.
-   Three call sites, all already function-local: `quest/figures.py:374,396`
-   and `quest/results_table.py:269`. This removes the *only* core→plugin
-   import in the tree.
+2. ~~**Move `precis_pathway/analysis.py` into core or geom.**~~ **DONE
+   2026-09-29** — now `src/precis/utils/reaction_graph.py`. The two core
+   call sites in `quest/figures.py` and `quest/results_table.py` were
+   function-local imports guarding a plugin dependency; they are module-scope
+   now, since the dependency is gone. `precis_pathway` imports it back out of
+   core (allowed direction) in `handler.py`, `toon_views.py` and
+   `_dispatch_common.py`. Verified: `grep` for a core→plugin import across
+   `src/precis/` returns nothing.
 3. **Declare `precis.skills` from one in-tree plugin** (pathway or se) and
    move its skills under that package. Exercises a built-but-never-used
    path in production, and is the cheapest possible test of the
@@ -201,7 +204,7 @@ catpath as the reference model.
 `src/precis/cli/main.py` + all 57 `cli/` modules (step 4) ·
 `src/precis/handlers/skill.py` (already supports step 3; only declarations
 change) · `src/precis/quest/{figures,results_table,compute}.py` (step 2) ·
-`src/precis_pathway/analysis.py` (moves) · `pyproject.toml` entry-point
+`pyproject.toml` entry-point
 groups · `deploy/` extras lists once wheels split.
 
 ## Open questions / decisions log

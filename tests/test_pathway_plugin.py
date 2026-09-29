@@ -711,7 +711,7 @@ def test_network_topology_and_mermaid_no_compute() -> None:
 
 
 def test_analysis_over_computed_graph() -> None:
-    from precis_pathway import analysis
+    from precis.utils import reaction_graph as analysis
 
     art = runner.run_pathway_from_yaml(BRANCH)
     g, res = art["graph_json"], art["results_json"]
@@ -734,7 +734,8 @@ def test_analysis_over_computed_graph() -> None:
 
 
 def test_toon_views_and_aligned_compare() -> None:
-    from precis_pathway import analysis, toon_views
+    from precis.utils import reaction_graph as analysis
+    from precis_pathway import toon_views
 
     a1 = runner.run_pathway_from_yaml(BRANCH)
     meta = {
@@ -1118,7 +1119,7 @@ def _store_synthetic_pathway(store: Store, slug: str, *, element: str) -> int:
 
 
 def test_analysis_at_potential_shifts_states_not_barriers() -> None:
-    from precis_pathway import analysis
+    from precis.utils import reaction_graph as analysis
 
     assert analysis.has_potential_lever(_LEVER_GRAPH)
     assert not analysis.has_potential_lever({"nodes": [{"id": "A", "rel_energy": 0.0}]})
@@ -1147,7 +1148,8 @@ def test_analysis_at_potential_shifts_states_not_barriers() -> None:
 
 
 def test_toon_views_at_potential() -> None:
-    from precis_pathway import analysis, toon_views
+    from precis.utils import reaction_graph as analysis
+    from precis_pathway import toon_views
 
     meta = _lever_meta()
     assert analysis.has_potential_lever(meta["graph"])

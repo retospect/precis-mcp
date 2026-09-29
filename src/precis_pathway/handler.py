@@ -409,7 +409,7 @@ class PathwayHandler(Handler):
             # analysis / profile / the default view at a stated potential:
             # the lever needs a computed, CHE-stamped graph — never a silent
             # zero shift on a pre-CHE run.
-            from . import analysis
+            from precis.utils import reaction_graph as analysis
 
             if not computed:
                 raise BadInput(
@@ -509,7 +509,8 @@ class PathwayHandler(Handler):
         substrate→target (same reaction), as one interleaved TOON table. With
         ``U`` (V vs RHE) every CHE-stamped candidate is re-levered first and
         the table ranks by energetic span at that potential."""
-        from . import analysis
+        from precis.utils import reaction_graph as analysis
+
         from .toon_views import compare_toon
 
         r = meta.get("results", {})

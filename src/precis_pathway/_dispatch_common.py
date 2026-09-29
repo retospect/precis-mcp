@@ -237,7 +237,7 @@ def summarize(artifact: PathwayArtifact) -> dict[str, Any]:
     summary must never fail the run/persist.
     """
     try:
-        from precis_pathway import analysis
+        from precis.utils import reaction_graph as analysis
 
         graph = artifact.get("graph_json") or {}
         results = artifact.get("results_json") or {}

@@ -17,9 +17,8 @@ from collections import Counter
 from typing import Any
 
 from precis.format import toon
+from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
-
-from . import analysis
 
 # Drill-down hint appended once a table actually carries a structure handle —
 # see gripe 161576 (structure_refs was written by ingest.py but never surfaced
@@ -465,7 +464,7 @@ def step_view(meta: dict[str, Any], pw_handle: str, edge: dict[str, Any]) -> str
     """Focused single-step view for a ``pw<id>~<source>→<target>`` selector
     (Simulation step deep-links, docs/backlog/quest-dossier-dialectic.md).
     ``edge`` is one row of ``meta['graph']['links']`` — see
-    :func:`precis_pathway.analysis._reaction_edges` for the shape."""
+    :func:`precis.utils.reaction_graph._reaction_edges` for the shape."""
     refs = meta.get("structure_refs") or {}
     source, target = edge["source"], edge["target"]
     row = {

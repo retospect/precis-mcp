@@ -1,7 +1,7 @@
 """Static (export-facing) figure renderers for the quest layer.
 
 Twin of the web SVG renderers (``build_frontier_scatter`` +
-``quest_detail.html.j2``'s inline scatter; ``precis_pathway.analysis``'s
+``quest_detail.html.j2``'s inline scatter; ``precis.utils.reaction_graph``'s
 profile view): those render **interactively** for the reader, these render
 **once, to PNG bytes**, for a draft's ``figure`` chunk / an export. Object-
 oriented matplotlib only (``matplotlib.figure.Figure`` +
@@ -45,6 +45,9 @@ from typing import TYPE_CHECKING, Any
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+
+from precis.utils.reaction_graph import reaction_path
+from precis.utils.reaction_graph import roots as _roots
 
 if TYPE_CHECKING:
     from precis.quest.frontier import FrontierResult, FrontierScatter
@@ -371,8 +374,6 @@ def _profile_root_target(
     root = target = ""
     if results:
         try:
-            from precis_pathway.analysis import roots as _roots
-
             root, target = _roots(graph, results)
         except Exception:  # pragma: no cover - defensive
             root = target = ""
@@ -388,13 +389,11 @@ def _profile_positions(
 ) -> list[dict[str, Any]]:
     """The interleaved ``[state, ‡, state, ‡, …]`` row list this module's
     snapshot/renderer share — mirrors the selection
-    :func:`precis_pathway.analysis.profile_positions` does (shortest
+    :func:`precis.utils.reaction_graph.profile_positions` does (shortest
     root→target path, supply bridges skipped as barrier-less connectors),
     but keeps ``energy``/``rel_energy``/``barrier``/``delta_e`` as separate
     columns instead of collapsing them to one ``value`` (the data-package
     needs all four, not just the plotted axis)."""
-    from precis_pathway.analysis import reaction_path
-
     path = reaction_path(graph, root, target)
     node_map = {n.get("id"): n for n in graph.get("nodes") or []}
     links = graph.get("links") or []

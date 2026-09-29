@@ -65,7 +65,7 @@ lead: the two Ag-subsurface candidates show 1 reconstruction warn each vs
 
 ### Phase 1 — precis views + ops (small, this repo)
 1. **DONE 2026-09-18** — `get(kind='pathway', view='analysis'|'profile'|'compare',
-   args={'U': x})`: `precis_pathway/analysis.py::at_potential` ports the
+   args={'U': x})`: `src/precis/utils/reaction_graph.py::at_potential` ports the
    viewer's `G(U)=G(0)+n_H·eU` shift (+ `most_endergonic_step`); `compare`
    at U ranks by span at U; a pre-CHE graph (no `n_H`) refuses the lever.
    Backlog cross-ref `pathway-profile-renderer-unification`.

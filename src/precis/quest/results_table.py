@@ -30,6 +30,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from precis.utils import reaction_graph as analysis
+
 if TYPE_CHECKING:
     from precis.quest.frontier import Candidate, FrontierResult
     from precis.store import Store
@@ -258,7 +260,7 @@ def _seeds_display(pw_meta: dict[str, Any] | None) -> str:
 
 def _rls_display(pw_meta: dict[str, Any] | None) -> str:
     """The rate-limiting step name off the pathway's own reaction graph
-    (:func:`precis_pathway.analysis.rate_limiting`'s ``step``), or ``'-'``."""
+    (:func:`precis.utils.reaction_graph.rate_limiting`'s ``step``), or ``'-'``."""
     if not pw_meta:
         return "-"
     graph = pw_meta.get("graph")
@@ -266,8 +268,6 @@ def _rls_display(pw_meta: dict[str, Any] | None) -> str:
     if not isinstance(graph, dict) or not graph or not isinstance(results, dict):
         return "-"
     try:
-        from precis_pathway import analysis
-
         root, target = analysis.roots(graph, results)
         summ = analysis.summarize(graph, root, target)
         step = (summ.get("rate_limiting") or {}).get("step")

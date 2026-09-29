@@ -29,7 +29,7 @@ from precis_pathway.handler import PathwayHandler
 _MIGRATIONS_DIR = Path(precis_pathway.__file__).parent / "migrations"
 
 # networkx node_link_data shape (edges='links') a persisted pathway carries —
-# see precis_pathway.analysis's module docstring and persist.pathway_meta.
+# see precis.utils.reaction_graph's module docstring and persist.pathway_meta.
 _GRAPH: dict[str, Any] = {
     "directed": True,
     "nodes": [{"id": "NH2*"}, {"id": "NH3*"}, {"id": "N*"}, {"id": "NH*"}],

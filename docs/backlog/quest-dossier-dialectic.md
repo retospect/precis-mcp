@@ -75,7 +75,7 @@ bodies; prune/demote serves for settled questions. Known companion defect:
 **Simulation step deep-links.** Register plugin handle codes
 (`handle_registry.PLUGIN_GROUP`, currently unused by every plugin) and mint
 stable step ids as (structure × network edge label, e.g. `NH2_H→NH3`) —
-identity already unique in `precis_pathway/analysis.py`, just not
+identity already unique in `src/precis/utils/reaction_graph.py`, just not
 addressable. Evidence edges per
 `computed-pathways-cannot-be-cited-as-claim-evidence.md`. Add a
 microkinetics digest view (Eyring rates, steady-state coverages, per-step

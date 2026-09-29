@@ -87,7 +87,7 @@ def _pd_n_scene(n_frac: tuple[float, float, float]) -> Scene:
     return scene
 
 
-#: A 3-state graph (node_link_data shape — precis_pathway.analysis's
+#: A 3-state graph (node_link_data shape — precis.utils.reaction_graph's
 #: documented ``nodes``/``links`` field set) shared by the explorer tests.
 _GRAPH3: dict[str, Any] = {
     "nodes": [
