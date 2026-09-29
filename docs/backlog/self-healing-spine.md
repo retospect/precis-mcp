@@ -525,3 +525,25 @@ code in this worktree, not vibes)
 - ~~advisory~~ **resolved 2026-08-12** — `draft` dial clarified in Layer 3:
   the doctor only ever files gripes; `backlog_groom` (default-OFF) minting
   the `fix_gripe` todos is an explicit prerequisite of that dial.
+
+## Layer-2 check queued 2026-09-29 — local-serving KV thrash
+
+Design session (Reto + agent, big-model-manage). Once a local vLLM rung
+serves (`vllm-per-node-serving.md`), a slow MCP call can stall an agent
+session long enough that its KV blocks are evicted, so the session pays full
+re-prefill on resume. Under an oversubscribed run driver that degrades
+quietly: throughput sags, nothing errors.
+
+Layer 2 is the right lane — slow rot, info/warn, pushed not polled — and the
+zero-`llm`-import constraint holds, because `vllm-per-node-serving.md` slice 3
+lands the counters in Postgres via the heartbeat pass, so the check is plain
+SQL over `host_heartbeat_log`. Gate on `vllm:num_preemptions_total` rate over
+the last hour, **not** on prefix-cache hit rate: a byte-identical shared
+prefix always hits and dominates the ratio, hiding per-session tail thrash
+inside a healthy-looking 95%.
+
+Escalation split: the doctor report (Layer 3) narrates the daily number and
+routes a config change — lowering the oversubscription cap — through its
+`## Needs a human` → `waiting-for:reto` conversion. Nursery/`kind='alert'`
+only for collapse, where the preemption rate is high enough that aggregate
+throughput actually drops.

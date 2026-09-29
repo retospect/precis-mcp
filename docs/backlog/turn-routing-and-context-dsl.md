@@ -143,3 +143,21 @@ Same discipline class as the SSRF guard.
 3. Wire **Call / Spawn** onto the existing `requested`→job /
    `derived_job_succeeded` / `dispatch` primitives, with the
    receipt-default return contract.
+
+## Demand confirmed 2026-09-29 — the resticky manager
+
+Reto, in the local-model design session (big-model-manage worktree), asked
+for "an agent or at least a skill to manage what gets unstickied and what
+gets restickied". That is the curation half above — `resticky` / `close` as
+structured tool calls with decay-by-neglect, rather than a magic-text DSL —
+plus `context-memory-hierarchy.md`'s placement rule (resident = fires
+without being asked; discovered = answers a question) and its computed
+ACTIVE/SETTLED/SPENT bands.
+
+What is new in the ask is the *driver*: he wants it run as a standing pass,
+not only as verbs a model may call. Whether that is a skill an agent invokes
+or a scheduled worker pass is undecided. The evidence it should act on is
+now available either way — `mcp-surface-economy.md` §3 reads the
+`tool_calls` ledger for injected-but-never-used, which is exactly the
+unsticky signal, and `friction-reflection-enable.md` supplies the
+self-reported counterpart.

@@ -288,7 +288,9 @@ class CachedBackend:
         relaxer: str | None = None,
     ) -> None:
         self._store = catalogue
-        self._fallback: GeometryBackend = fallback if fallback is not None else StubBackend()
+        self._fallback: GeometryBackend = (
+            fallback if fallback is not None else StubBackend()
+        )
         self._rung = rung
         self._relaxer = relaxer
 
@@ -312,7 +314,11 @@ class CachedBackend:
             return None
         from .catalogue import EnvKey  # lazy: keeps this module numpy-free at import
 
-        relaxer = self._relaxer if self._relaxer is not None else f"{self._rung}@{__version__}"
+        relaxer = (
+            self._relaxer
+            if self._relaxer is not None
+            else f"{self._rung}@{__version__}"
+        )
         key = EnvKey(zone="bulk", kind=kind, nm=value, rung=self._rung, relaxer=relaxer)
         return self._store.get(key)
 

@@ -75,7 +75,11 @@ def _geo_relaxer() -> Relaxer:
         trace = relax_graph(
             elements, c, bonds_ij, pinned, hybridizations="sp2", iters=_ITERS, tol=_TOL
         )
-        assert trace.converged, ("relaxer did not converge", trace.n_steps, trace.curve[-1])
+        assert trace.converged, (
+            "relaxer did not converge",
+            trace.n_steps,
+            trace.curve[-1],
+        )
         return c
 
     return relax

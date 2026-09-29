@@ -163,3 +163,35 @@ lint signal. Filed separately: `taproot-claim-modality-axis.md`.
 - `quest-rubric-unproducible-objectives-warning.md` — rubric changed
   mid-flight with no warning; version-freeze + dated amendments is the
   preregistration analog of the same idea.
+
+## Next instrument, queued 2026-09-29 — the run-quality judge
+
+Design session (Reto + agent, big-model-manage). The local-model programme
+(`eval-run-spine.md`, `vllm-per-node-serving.md`) needs a judge for "did this
+agent run finish *well*", scored on run records rather than claim edges. It
+is a new instrument and gets the same treatment as the grounding verifier
+rather than a fresh methodology: frozen instrument, pinned roster,
+test-retest before accuracy, gold set held out from rubric development.
+`llm-judge-reliability-data/agreement.py` and `score_vs_gold.py` run
+unchanged on a new roster.
+
+Three findings above should be treated as constraints on its design, not
+re-derived:
+
+* **Reliability does not estimate accuracy.** Judges at Fleiss κ=0.88 were
+  20% wrong against gold. A high-agreement run-quality judge tells you
+  nothing about whether it is right.
+* **Do not add majority voting.** A single replicate beat the 3-way modal
+  87% to 80%; consensus suppressed correct minority findings and cost two
+  detections.
+* **Expect under-flagging, and distrust the benign verdict.** The judges
+  never over-flagged; every error was a missed defect. Transposed: a
+  "finished well" verdict is the one needing sampled human review, not the
+  failure verdict.
+
+Two things differ from the grounding case and need thought before the first
+roster is drawn. The subject is a *run*, so the gold labels are expensive
+(an operator has to read a transcript, not a passage). And the environment
+moves — `eval-run-spine.md`'s decisions log covers why a re-run is not a
+replication, and its novel-work fraction is the contamination check that has
+to be applied to any held-out run set before it is scored.

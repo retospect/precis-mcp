@@ -74,7 +74,9 @@ def test_envkey_hash_differs_on_every_field() -> None:
 
 
 def test_row_round_trips() -> None:
-    key = EnvKey(zone="bulk", kind="tube", nm=(8, 0), rung="stick", relaxer="stick@0.2.0")
+    key = EnvKey(
+        zone="bulk", kind="tube", nm=(8, 0), rung="stick", relaxer="stick@0.2.0"
+    )
     bulk = BulkCell(
         key=key,
         radius_A=3.1315,
@@ -126,7 +128,9 @@ def test_seed_rows_restate_join_constants() -> None:
         (rt, rung) for rt in ("z", "a", None) for rung in ("stick", "geo")
     }
     for rim_type in ("z", "a", None):
-        expected_radius = SEAM_RADIUS[rim_type] if rim_type is not None else SEAM_RADIUS["z"]
+        expected_radius = (
+            SEAM_RADIUS[rim_type] if rim_type is not None else SEAM_RADIUS["z"]
+        )
         stick_row = by_key[(rim_type, "stick")]
         geo_row = by_key[(rim_type, "geo")]
         assert stick_row.seam_radius == expected_radius
@@ -325,7 +329,13 @@ def test_compose_with_no_catalogue_is_unaffected() -> None:
 def test_cached_backend_prefers_bulk_row_and_falls_back() -> None:
     store = MemoryStore()
     row = BulkCell(
-        key=EnvKey(zone="bulk", kind="tube", nm=(8, 0), rung="stick", relaxer=f"stick@{__version__}"),
+        key=EnvKey(
+            zone="bulk",
+            kind="tube",
+            nm=(8, 0),
+            rung="stick",
+            relaxer=f"stick@{__version__}",
+        ),
         radius_A=9.99,
         pitch_A=42.0,
         bond_axial_A=1.42,
@@ -356,7 +366,9 @@ def test_cached_backend_prefers_bulk_row_and_falls_back() -> None:
 def test_memory_store_json_round_trip() -> None:
     store = MemoryStore.seeded()
     restored = MemoryStore.from_json(store.to_json())
-    assert {r.key.hash() for r in restored.rows()} == {r.key.hash() for r in store.rows()}
+    assert {r.key.hash() for r in restored.rows()} == {
+        r.key.hash() for r in store.rows()
+    }
     for row in store.rows():
         assert restored.get(row.key) == row
 

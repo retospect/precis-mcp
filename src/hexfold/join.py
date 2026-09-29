@@ -631,7 +631,9 @@ def compose(
         elif row is not None:
             th = row.leak_thresh
         else:
-            th = _thresh_for(rim_type, LEAK_THRESH_GEO if rung == "geo" else _LEAK_THRESH)
+            th = _thresh_for(
+                rim_type, LEAK_THRESH_GEO if rung == "geo" else _LEAK_THRESH
+            )
         return r, th, label
 
     r_a, thresh_a, radius_source_a = resolve_side("a", ta, a.sigma)

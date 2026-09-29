@@ -129,3 +129,21 @@ read-the-ledger-and-edit-front-matter loop, no code.
 Interacts with per-job tool lists (`tick-tool-lists-and-discovery-reflex.md`)
 and `unify-backlog-gripes-discoverable.md` (same architecture over dev
 knowledge).
+
+## Demand confirmed 2026-09-29 — and §1 is unblocked
+
+Reto, independently and without having read this item, asked for "a griper
+that checks the logs for stupid MCP issues". That is §"Tool-ledger friction
+detector" above, arrived at twice from opposite directions — decent evidence
+the shape is right.
+
+It is also no longer blocked: the `tool_calls` ledger shipped (migration
+0133, `src/precis/tool_ledger.py`), which was the dependency for both §1 and
+§3. `eval-run-spine.md` adds a sequence number and an args hash to the same
+table, so the detector gains two further signals for free — repeated
+identical calls within one run (a loop), and a `(verb, kind)` whose callers
+keep retrying with the same arguments (a surface that is not saying what it
+wants).
+
+§3's calibration reading gains a second consumer: `friction-reflection-enable.md`
+wants the ledger as the behavioural check on end-of-run self-report.

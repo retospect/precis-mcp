@@ -369,7 +369,11 @@ class MemoryStore:
         return store
 
     def to_json(self) -> str:
-        kinds: dict[type, str] = {BulkCell: "bulk", EdgeMotif: "edge", SeamMotif: "seam"}
+        kinds: dict[type, str] = {
+            BulkCell: "bulk",
+            EdgeMotif: "edge",
+            SeamMotif: "seam",
+        }
         rows = [{"type": kinds[type(r)], **r.to_dict()} for r in self._rows.values()]
         return json.dumps({"rows": rows}, sort_keys=True, indent=2)
 
@@ -404,7 +408,10 @@ def seed_rows() -> list[EdgeMotif]:
     rows: list[EdgeMotif] = []
     for rim_type in ("z", "a", None):
         radius = join.SEAM_RADIUS.get(rim_type, join._SEAM_RADIUS_DEFAULT)  # type: ignore[arg-type]
-        for rung, table in (("stick", join._LEAK_THRESH), ("geo", join.LEAK_THRESH_GEO)):
+        for rung, table in (
+            ("stick", join._LEAK_THRESH),
+            ("geo", join.LEAK_THRESH_GEO),
+        ):
             thresh = join._thresh_for(
                 (rim_type, 0) if rim_type is not None else None, table
             )
@@ -598,7 +605,9 @@ def measure_environment(
         s = dist_out[o]
         row = profile.setdefault(s, [0.0, 0.0, 0.0])
         row[0] = max(row[0], float(disp[k]))
-        shell_min_dist_in[s] = min(shell_min_dist_in.get(s, 1 << 30), dist_in.get(o, 1 << 30))
+        shell_min_dist_in[s] = min(
+            shell_min_dist_in.get(s, 1 << 30), dist_in.get(o, 1 << 30)
+        )
         nbrs = adj.get(o, [])
         if nbrs:
             th_f = join._angles_at(cf, o, nbrs)

@@ -124,3 +124,16 @@ search by default, is a decision this item must make before it ships.
   judgements about people's work, and pasted third-party content. Worth an
   explicit decision on what is acceptable to make searchable, rather than
   discovering it after the fact.
+
+## Cross-subsumption with `agentlog` — answered 2026-09-29
+
+The open question above ("does this overlap `agentlog`") got a ruling in the
+local-model design session (Reto, big-model-manage worktree): **split by
+origin.** `conv` refs are for human Claude Code sessions, which is this
+item. `agentlog` plus a content-addressed blob is for machine agent runs,
+which is `eval-run-spine.md`.
+
+So the two are not competing designs for one store, and neither should grow
+into the other's territory. The redaction path specced here is the shared
+piece — `eval-run-spine.md` reuses it for captured tool payloads rather than
+re-deriving it, so whichever ships first should factor it out accordingly.

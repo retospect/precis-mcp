@@ -86,7 +86,13 @@ def _catalogue_cmd(args: argparse.Namespace) -> int:
         return 0
     for row in store.rows():
         k = row.key
-        kind = "edge" if isinstance(row, EdgeMotif) else "bulk" if isinstance(row, BulkCell) else "seam"
+        kind = (
+            "edge"
+            if isinstance(row, EdgeMotif)
+            else "bulk"
+            if isinstance(row, BulkCell)
+            else "seam"
+        )
         ident = k.rim_type if k.rim_type is not None else (k.kind or "")
         n_disp = k.N if k.N is not None else "*"
         print(
