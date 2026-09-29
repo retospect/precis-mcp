@@ -564,6 +564,30 @@ complaint, now one op that runs in `design_turn`'s dry run; and the register
 rule documented in `precis-se-chain-help.md`, with `chain_loop_short` now
 naming the landing offsets that would reach.
 
+**Landed UNGATED and never suite-verified — ownership of the triage.** Pass A
+went to `main` as **90a12c0f8** by `scripts/ship --quick` on 2026-09-29, at
+Reto's explicit instruction during a fleet wind-down. No full gate ran on it,
+and it is the third unverified layer on `main`: the last green verdict is
+`f8f884d15` (23732 passed, 1h43m), after which `b81bf3cce` was deployed with
+no verdict, this pass landed, and `8e037c015` (taxonomy discovery rewrite)
+landed ungated too. What DID run here: the targeted chain suite 264 passed,
+`scripts/test --impacted` 15427 passed / 0 failed / 295 deselected before
+crashing inside testmon's own `pytest_runtest_logreport` hook (the known
+`.testmondata` flake, which cleared the cache), `mypy src tests` clean, ruff
+clean. That is not a gate.
+
+So when the next full gate over `main` comes back red, these are the files to
+look at first and they belong to this item, not to whoever happens to be
+running the gate: `src/precis_se/chain/nucleic.py`, `chain/layout.py`,
+`chain/drc.py`, `src/precis_se/ops.py`, and `tests/test_se_chain_drc.py`,
+`test_se_chain_ops.py`, `test_se_chain_origami.py`. The likeliest failure is
+not the azimuth itself but the `chain_loop_short` `tol` (the 98 pm backbone
+frustration term): it was introduced *because* the corrected δ leaves a
+register-correct crossover 32 pm inside a 630 pm threshold, so it is the one
+number in this pass that exists to make the rest pass. It is zero for
+antipodal backbones by construction and Rothemund's 2006 supplement states the
+physics, but it deserves a second opinion before anything depends on it.
+
 ### Slice 1 rulings on the build's three open questions (2026-09-28)
 
 - **The four-helix ribbon fixture is accepted for this criterion, but the
