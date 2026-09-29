@@ -1183,6 +1183,16 @@ def _op_remove_block(tree: SeTree, op: dict[str, Any]) -> None:
     # up, since a hole in the ordinals would leave two non-adjacent domains
     # claiming the loop between them (:func:`_renumber`).
     if subtree and tree.domains:
+        # `and` here is a KNOWN EQUIVALENT MUTANT — a mutation run will report
+        # it as survived, and it is not worth re-deriving (checked 2026-09-29,
+        # byte-identical output). Widening it to `or` only over-fills
+        # ``touched`` with strands whose routes were never damaged, and
+        # :func:`_renumber` is a no-op on those: their ords are already
+        # contiguous, and its ``route[0].loop_before_nt = None`` write cannot
+        # observe anything because ``vocab.build_domain`` rejects a
+        # ``loop_before_nt`` at ``ord == 0`` and ``add_domain`` always assigns
+        # ``ord = len(route)``. The retention filter below is a different
+        # matter — that one IS distinguishable, and is pinned by a test.
         touched = {
             d.strand
             for d in tree.domains
