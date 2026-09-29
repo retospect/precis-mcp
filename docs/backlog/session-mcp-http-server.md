@@ -283,13 +283,28 @@ container nor restarts the first — same id, same `StartedAt`), AC6 and AC7
 in unit form (`tests/test_checkout_watchdog.py`), AC8
 (`test_every_session_sees_the_breadcrumb_once`, twelve sessions).
 
-**Still outstanding — these need a real deploy and a day of use, not a
-test:** AC1 in the session (as opposed to headless) client, AC2 (a `/go`
-with two or more sessions open, reporting the new sha), AC3 (a new verb
-kwarg surviving a bounce), AC4 (twelve concurrent searches measured with
-`pool.get_stats()`), AC5 (one container after a day; twelve `precis-mcp:dev`
-containers were alive when this was built and they do not reap themselves —
-the old stdio ones need a manual sweep once their sessions end).
+**Live since the gate went green (main @ 2a34fce6, deployed, 2026-09-29
+23:14Z).** The shared server was recreated onto the gated code and the
+checkout arm is armed for real: `checkout watchdog armed on /src at
+2a34fce6c026 (every 5s)`. Sizing confirmed inside the running process, not
+just in the wrapper: tool concurrency 12, pool 4/16.
+
+**Still outstanding — these need a ship and a day of use, not a test:** AC1
+in the session (as opposed to headless) client, AC2 (a ship with two or more
+sessions open, both reporting the new sha — the watchdog is now armed, so
+the next sibling ship exercises it), AC3 (a new verb kwarg surviving a
+bounce), AC4 (twelve concurrent searches measured with `pool.get_stats()`),
+AC5 (one container after a day).
+
+**Do NOT sweep the old `precis-mcp-dev-*` containers yet.** Twelve are still
+up, and the sessions that started before the config flip are still talking
+to them over their stdio pipes — killing one kills that session's MCP. They
+age out as those sessions end; only then is AC5 measurable.
+
+**Found while verifying:** gr457326 — the md-index vector warmup has no
+retry, so one slow embedder batch at boot leaves the cache cold for the
+whole process lifetime. Pre-existing and best-effort by design, but this
+item widens its blast radius from one session to all of them.
 
 ## Open questions / decisions log
 
