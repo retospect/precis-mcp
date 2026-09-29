@@ -180,6 +180,45 @@ containerized vLLM deploy specifically:
 Also note `/opt/precis/venv` on spark is a frozen orphan at 8.32.0 (`86aeff3f`,
 2026-08-29). The bench wants a fresh install, not that.
 
+**Inspected 2026-09-29 — mostly better than the notes above predicted.**
+A read-only pass over the box found no precis, llama-swap or ollama service
+running and `/etc/precis` genuinely gone, so the retirement held. Three
+corrections to the traps:
+
+* **The vLLM image is already cached locally** — `vllm/vllm-openai:v0.20.1`,
+  24 GB, sitting in the local docker store from prior use. The Docker Hub
+  egress block is *confirmed* (`registry-1.docker.io` times out at 20 s,
+  exit 28; `ghcr.io` answers 401 in 0.13 s), but it is no longer the
+  first-day blocker for this image. Pre-seeding is only needed to move to a
+  newer tag.
+* **The nvidia container runtime is already configured** — it is in
+  `/etc/docker/daemon.json` and `docker info` lists it. The trap stands as
+  written (no ansible role establishes it, so a rebuild loses it) but it does
+  not block today.
+* **Disk is not a constraint**: 3.6 TB total, 2.8 TB free on root.
+
+Four things that do need doing, none of them cluster duty:
+
+* **A hung NFS mount.** `/mnt/cluster` (autofs) does not respond — `statvfs`
+  timed out at 120 s. This blocks anything that reads the share, which
+  includes `eval-run-spine.md`'s content-addressed blob store. Fix or unmount
+  before the bench depends on it.
+* **A live graphical session.** Xorg plus gnome-shell hold the GPU (tens of
+  MB) and the box idles at load ~1.4 with nothing else running. Small, but a
+  benchmark host should not have an unaccounted background load — stop the
+  display manager before slice 0 measures anything.
+* **`uv` is absent**, and `/opt/precis` (venv, embedder-venv, kokoro-venv,
+  wheels) is orphaned and should be removed rather than reused.
+* **Stale unit files**: `llamaswap.service` (disabled) and an
+  `ollama.service.d/` drop-in with no parent unit.
+
+One claim in that pass to disregard: it read the single GB10 as meaning spark
+is *not* equivalent to castor. A DGX Spark is one GB10 superchip with 128 GB
+unified memory, so one GB10 is exactly what castor is too. The
+concurrency-curve transfer argument is unaffected. Driver 580.159.03, CUDA
+13.0; `nvidia-smi` reporting memory as "Not Supported" is normal for unified
+memory and not a fault.
+
 **Open:**
 
 * **Model choice.** Nemotron 3 Super 120B-A12B NVFP4 is built for this

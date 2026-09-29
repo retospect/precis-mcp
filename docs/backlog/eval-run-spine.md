@@ -75,9 +75,10 @@ re-run is not a replication. See the decisions log; the resolution is to
    whose blob has been swept reads as *expired*, never as an error.
 5. **Retention pin** — an eval-flagged run and its `tool_calls` rows are
    exempt from the sweeper.
-6. **Run outcome**: a terminal state, plus the re-prefill token count (see
-   `vllm-per-node-serving.md` — without it, "this run was slow" and "this run
-   was evicted four times" are the same row).
+6. **Run outcome — two columns, not one**: a mechanical terminal state and a
+   separate nullable verdict (see the decisions log), plus the re-prefill
+   token count (see `vllm-per-node-serving.md` — without it, "this run was
+   slow" and "this run was evicted four times" are the same row).
 7. **Failure-cause tag vocabulary**: `cause:missing-tool` /
    `cause:bad-hint` / `cause:reasoning-gap`. The failure corpus is
    eval-flagged runs carrying one of these, not a new store.
@@ -186,7 +187,39 @@ the agent-facing MCP surface is untouched.
   constraint (`llm-tier-ladder-cloud-cutover.md` Finding 3 measured 1.5 ms
   and eliminated it).
 
+* **Outcome is two columns, decided 2026-09-29 (Reto).** `outcome` is
+  mechanical and knowable without judgment: `completed`, `completed_empty`,
+  `halted_step_cap`, `halted_wall_clock`, `error`, `abandoned`. `verdict` is
+  a separate nullable column, filled later by the judge or by hand.
+  The reason for the split: "finished well" fuses *did it terminate cleanly*
+  with *was the work any good*, and only the first is derivable from the run
+  itself. Fusing them writes judge error into a terminal state and makes the
+  cheap question — how many runs died on the step cap last night — unanswerable
+  without trusting the judge. `completed_empty` is the case the motivation
+  section names: finished, no error, produced nothing.
+* **Blob GC: 30 days unreferenced, eval-flagged pinned. Decided 2026-09-29
+  (Reto).** Matches `agentlog`'s existing window rather than inventing a
+  second number, and the retention pin (item 5) already exempts eval-flagged
+  runs, so the policy is one rule plus the exemption that is being built
+  anyway. Sweep on *unreferenced*, not on age alone — blobs are
+  content-addressed, so the shared system+tools+skills prefix collapses to a
+  single copy across every run that used it and the stored volume is far
+  below the naive sum. Env var, because retention is expected to move.
+
 **Open:**
+
+* **Spark has 2.8 TB free (measured 2026-09-29), which loosens the reset
+  calculus.** The 74 GB restore plus 24 template clones is ~1.8 TB and fits,
+  so clone-per-run is affordable there in a way it would not have been on a
+  serving box. Reset-per-batch stays the default because it is simpler and
+  the novel-work fraction says whether more is needed — but the decision is
+  now a preference, not a disk constraint.
+* **Check the Postgres major version before planning the restore.** Spark
+  already runs Postgres 16. A dump from a newer major will not restore into
+  it, and the frozen world is defined as a restore. Confirm what prod is on
+  and either match it on the bench or plan a dump/restore path that crosses
+  the version — and confirm `pgvector` is installed there at all, since
+  nothing in the eval works without it.
 
 * **Subset extraction — needed only if clone-per-run is.** Reducing 74 GB to
   a few GB makes template cloning seconds and 24 clones tens of GB. The hard
@@ -195,16 +228,13 @@ the agent-facing MCP surface is untouched.
   over the eval tasks' seed refs, plus the operational rows (skills, `llm`
   cards, `service_config`, `resource_slots`) taken wholesale since they are
   tiny. Do not build this until the batch-reset arm says it is necessary.
-* **Resume or restart a run that fails halfway.** Needs the outcome
-  vocabulary first — there is no terminal state to resume *from* today.
-* **What "finished well" means** — the outcome vocabulary itself. Load-bearing
-  for the schema; a placeholder is acceptable to start.
+* **Resume or restart a run that fails halfway.** No longer blocked — the
+  vocabulary below gives it the state to resume *from*. `halted_step_cap` and
+  `halted_wall_clock` are the resumable ones; `error` and `completed_empty`
+  are not obviously either.
 * **Wall-clock cap per run.** A step cap exists
   (`utils/claude_agent.py::call_claude_agent`, `max_turns=20`), plus
   `utils/load_gate.py` and `workers/auto_check.py`'s `timeout_at`. There is no
   per-run wall-clock kill switch.
-* **Blob GC policy on the share** — retention is expected to evolve, but the
-  default has to be chosen now or the first months of runs are lost by
-  default.
 * Whether the failure-cause tag is agent-assigned, operator-assigned, or
   judge-assigned. Judge-assigned inherits the judge's error bars.

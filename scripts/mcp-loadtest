@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# scripts/mcp-loadtest — ramp N concurrent MCP clients at a live `precis serve`
+# and report which of the two concurrency walls you hit.
+#
+# The standing guidance is a 2-3 MCP-heavy-agent ceiling (memory
+# `mcp-fleet-concurrency-limit`). The serving plan wants ~24. This measures
+# the gap instead of assuming it, and its output names the binding constraint
+# rather than leaving "calls hang" to be re-diagnosed by hand.
+#
+# Usage:
+#   scripts/mcp-loadtest                          # default ramp 1..32, 20s/step
+#   scripts/mcp-loadtest --ramp 1,4,8 --duration 10
+#   scripts/mcp-loadtest --smoke                  # 1,2 at 5s — wiring check
+#
+# Env:
+#   PRECIS_EMBEDDER_INTERACTIVE_MAX_CONCURRENCY   the interactive embed budget
+#   PRECIS_COMPOSE                                override the compose file
+#
+# DEV DB ONLY. It creates and migrates its own `precis_loadtest` database on
+# the dev Postgres, so a run cannot disturb the test DB a sibling gate is
+# using, and never touches prod.
+#
+# Output lands in scripts/mcp_loadtest/out/<stamp>-report.md (plus raw JSON
+# and the server log, which is where a crashed server explains itself).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+WORKTREE="$PWD"
+
+ARGS=()
+for a in "$@"; do
+    if [[ "$a" == "--smoke" ]]; then
+        ARGS+=(--ramp 1,2 --duration 5)
+    else
+        ARGS+=("$a")
+    fi
+done
+
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
+[[ -f "$INFRA_COMPOSE" ]] || {
+    echo "ERR: compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)" >&2
+    exit 1
+}
+
+source "${WORKTREE}/scripts/lib/compose-project.sh"
+COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+compose() {
+    env UID="$(id -u)" GID="$(id -g)" \
+        docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"
+}
+
+echo "▶ bringing up the dev Postgres"
+compose up -d --wait precis-test-db >/dev/null
+
+DSN="postgresql://postgres@precis-test-db:5432/precis_loadtest"
+ADMIN="postgresql://postgres@precis-test-db:5432/postgres"
+
+# One BLAS thread per process, same reasoning as scripts/test: an uncapped
+# torch pool on a many-core container turns the embedder into the bottleneck
+# and we would measure that instead of the MCP surface.
+#
+# It is also a confound, because it caps the one component that could
+# otherwise use more than a core. Set PRECIS_LOADTEST_NO_THREAD_CAP=1 to
+# run the control and confirm a ceiling is not an artefact of this.
+THREAD_CAP=(
+    -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1
+    -e NUMEXPR_NUM_THREADS=1 -e VECLIB_MAXIMUM_THREADS=1
+)
+if [[ "${PRECIS_LOADTEST_NO_THREAD_CAP:-0}" == "1" ]]; then
+    THREAD_CAP=()
+    echo "▶ thread cap OFF (control run)"
+fi
+
+compose run --rm --no-deps -v "${WORKTREE}":/app \
+    ${THREAD_CAP[@]+"${THREAD_CAP[@]}"} \
+    -e "PRECIS_DATABASE_URL=${DSN}" \
+    precis-dev bash -lc '
+set -euo pipefail
+uv run --no-sync python - <<PY
+import psycopg
+with psycopg.connect("'"${ADMIN}"'", autocommit=True) as c, c.cursor() as cur:
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("precis_loadtest",))
+    if not cur.fetchone():
+        cur.execute("CREATE DATABASE precis_loadtest")
+        print("created precis_loadtest")
+    else:
+        print("reusing precis_loadtest")
+PY
+echo "▶ applying migrations"
+uv run --no-sync precis migrate >/dev/null
+echo "▶ ramping"
+uv run --no-sync python scripts/mcp_loadtest/harness.py "$@"
+' _ "${ARGS[@]}"

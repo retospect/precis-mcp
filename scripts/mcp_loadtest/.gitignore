@@ -1,0 +1,5 @@
+# Run artefacts: report, raw samples, and the server log. Each run is a
+# measurement of one machine at one moment, so they are reproduced by
+# re-running rather than kept in history. Quote numbers into the backlog
+# item instead.
+out/

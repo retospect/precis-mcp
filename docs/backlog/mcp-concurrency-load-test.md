@@ -1,5 +1,5 @@
 ---
-status: draft
+status: measured
 title: MCP concurrency load test — find the wall before the first overnight run
 prio: high
 ---
@@ -63,6 +63,81 @@ just record the discriminating facts rather than make anyone re-derive them.
   scrapes the endpoint directly and never reads Postgres; sub-second
   response is the whole point.
 
+## MEASURED 2026-09-29 — neither predicted wall is the binding constraint
+
+Built (`scripts/mcp-loadtest`, `scripts/mcp_loadtest/harness.py`) and run.
+Ramp N=1..64, 15-20 s per step, dev DB, four-verb mix. **The answer is a
+third wall that both hypotheses above missed, and it arrives long before
+either of them.**
+
+| N | canary p95 ms | pg conns | server CPU | harness CPU | calls/s |
+|---|---|---|---|---|---|
+| 1 | 16 | 2 | 0.67 | 0.04 | 24.7 |
+| 8 | 360 | 4 | 1.17 | 0.05 | 27.9 |
+| 32 | 1289 | 4 | 1.17 | 0.05 | 28.5 |
+| 64 | 2481 | 4 | 1.17 | 0.05 | 29.9 |
+
+**Aggregate throughput is flat at ~28 calls/s from N=1 to N=64.**
+Concurrency buys nothing. Latency is simply `N / 28` seconds — the curve is
+pure queueing, and the server does the same total work whether one caller or
+sixty-four are waiting.
+
+**The wall is the GIL, not the thread pool.** Server CPU pins at ~1.17 of 12
+available cores and will not climb. The anyio pool is not starved of threads;
+its threads cannot run at once, because the work is CPU-bound Python. This
+inverts the remedy the item assumed: **raising the pool size changes
+nothing**, and the open question "should the thread limiter become a tunable"
+is answered *no* — it is not the control.
+
+Four things that make the reading hard to argue with:
+
+* **The Postgres wall was never approached.** 4 connections of
+  `max_connections` 100, at every step. Hypothesis 2 is not wrong, it is
+  unreachable — something else binds two orders of magnitude earlier.
+* **The canary degrades identically to the DB verbs.** At N=64, canary p50
+  2085 ms against `get:paper` 2098 ms and semantic search 2376 ms. A
+  file-backed read that touches neither DB nor embedder is just as slow as
+  everything else, so there is one queue, not per-resource contention.
+* **The harness is excluded by measurement, not assertion.** It sits at 0.05
+  of 12 cores while the server holds 1.17. A saturated load generator
+  produces this same rising-latency curve, so the harness samples its own CPU
+  and the verdict function refuses to name a wall when the generator is the
+  busier of the two.
+* **Not an artefact of the BLAS thread cap.** A control run with
+  `PRECIS_LOADTEST_NO_THREAD_CAP=1` gives 1.18 cores and the same throughput.
+
+**Zero errors at every step, N=1 through 64.** It never fails, it only slows.
+That is worse than failing for the serving plan: an admission controller
+watching for errors would see a green system at any concurrency.
+
+### What this means for ~24 sessions
+
+One `precis serve` process serves ~28 calls/s total. At 24 concurrent
+sessions every call takes ~24x its solo latency — canary p50 measured 737 ms
+at N=24 against 4 ms at N=1. Nothing breaks; everything crawls.
+
+So the ceiling is a **latency** budget, not a breakage point. Holding canary
+p95 under ~500 ms means roughly **N=8-12 per server process**, which puts the
+24-session target at **2-3 `precis serve` processes behind a balancer** —
+process-level parallelism, since that is the only thing that defeats a GIL
+ceiling. This is now a serving-topology question, and it lands on
+`vllm-per-node-serving.md`'s admission controller rather than on a thread-pool
+tunable.
+
+### Still owed
+
+* **Which work holds the GIL.** The measurement says ~1.17 cores of Python
+  bytecode; it does not say whether that is JSON serialisation, search
+  scoring, embedding, or the FastMCP layer. A `py-spy` profile at N=32 names
+  it, and that decides whether "move the hot work out of Python" is a small
+  fix or a large one.
+* **Confirm on prod-shaped data.** This ran against a migrated but nearly
+  empty `precis_loadtest`. Row counts change the DB verbs' cost; they do not
+  obviously change a GIL ceiling, but the claim should be re-measured against
+  a restored corpus before the number is quoted as prod's.
+* **The multi-process arm.** Two or three `serve` processes behind a balancer,
+  re-ramped, to confirm throughput actually scales with processes.
+
 ## Explicitly NOT in scope
 
 * Fixing what it finds. Each wall becomes its own item with a measurement
@@ -92,8 +167,9 @@ everything else. No schema, no handlers.
 
 ## Open questions / decisions log
 
-* Should the anyio thread limiter become a tunable, or is the per-call budget
-  the right control? Answer after measuring.
+* ~~Should the anyio thread limiter become a tunable?~~ **Answered no,
+  2026-09-29.** Measurement shows the pool is not the constraint — the GIL
+  is. A bigger pool cannot help work that cannot run in parallel.
 * pgbouncer sizing for the prod path — out of scope here, but if the dev-DB
   run shows connections binding before threads do, prod pool sizing becomes a
   real question rather than a hypothetical.
