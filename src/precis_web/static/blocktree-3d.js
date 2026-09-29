@@ -532,8 +532,9 @@ function _deviationColor(t) {
 //: server-side whenever ``has_atomic`` is false; this covers the rarer
 //: rev-mismatch/fetch-failure cases too), never a broken primary viewer.
 //:
-//: Returns its own ``applyT`` (or ``null`` when the overlay degraded to
-//: absence). The slider LISTENER lives with the caller, not here: the
+//: Returns ``{applyT, setVisible}`` — the smooth-slider sink and the
+//: atoms on/off switch — or ``null`` when the overlay degraded to
+//: absence. The control LISTENERS live with the caller, not here: the
 //: overlay's meshes are injected into ``viewer._rendered.scene``, which a
 //: scene reload (``viewer.clear()``) drops, so the overlay has to be set
 //: up again per scene — and a listener attached per setup would stack up
@@ -659,15 +660,24 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
       console.error("blocktree-3d: envelope cage failed for", path, err);
     }
   }
-  function restoreEnvelopes() {
+  //: Caging is reversible, because the atoms can be switched off: with
+  //: the overlay hidden, a block whose own envelope is still caged would
+  //: render as nothing at all. So "atoms off" un-cages and "atoms on"
+  //: re-cages, over the SAME recorded path list.
+  function setEnvelopesCaged(caged) {
     for (const path of cagedEnvelopePaths) {
       try {
         const grp = _envelopeGroup(path);
-        if (grp) grp.setShapeVisible(true);
+        if (grp) grp.setShapeVisible(!caged);
       } catch (err) {
-        console.error("blocktree-3d: envelope restore failed for", path, err);
+        console.error("blocktree-3d: envelope cage toggle failed for", path, err);
       }
     }
+  }
+  //: The build-failure path: un-cage AND forget, so a half-built overlay
+  //: leaves no record behind to re-cage against.
+  function restoreEnvelopes() {
+    setEnvelopesCaged(false);
     cagedEnvelopePaths.length = 0;
   }
 
@@ -795,7 +805,32 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
   }
   if (smoothEls.legendMin) smoothEls.legendMin.textContent = "0.00";
   if (smoothEls.legendMax) smoothEls.legendMax.textContent = devMax.toFixed(2);
-  return applyT;
+
+  //: Atoms on/off (Reto, 2026-09-29, against /se/hexfold-join-dogfood):
+  //: a structure-bound design renders as atoms with its own envelope
+  //: caged away, and there was no way back to the plain block view
+  //: without leaving the page. The slider does NOT cover this — its far
+  //: end swaps atoms for the SMOOTHED SURFACE, which is still the
+  //: structure, not the envelope.
+  //:
+  //: One `THREE.Group` holds every atom, bond and surface mesh, so
+  //: hiding is one flag; the caged envelopes are the other half, and
+  //: have to come back or the block renders as empty space.
+  function setVisible(on) {
+    group.visible = on;
+    setEnvelopesCaged(on);
+    try {
+      // Same reason applyT ends with one: these mutate the scene graph
+      // under the vendored viewer's redraw hook, which never observes
+      // them — without this the canvas keeps the previous frame until
+      // some unrelated interaction forces a repaint.
+      viewer.update(true);
+    } catch (err) {
+      console.error("blocktree-3d: atom visibility redraw failed", err);
+    }
+  }
+
+  return { applyT, setVisible };
 }
 
 // ── load-time id/name path invariant self-check ─────────────────────────
@@ -871,6 +906,9 @@ export async function blocktreeViewer3D({
   levelSelect,
   isolateSelect,
   overridesInput,
+  // Atoms on/off for a structure-bound design. Optional — the template
+  // only renders it alongside the atomic↔smooth slider.
+  atomsToggle,
   sceneUrl,
   atomicUrl,
   smoothEls,
@@ -1279,7 +1317,23 @@ export async function blocktreeViewer3D({
   // atomic overlay's injected meshes are the one case, re-established by
   // `renderScene` below.
   let shownShapes = data.shapes;
-  let atomicApplyT = null;
+  //: `{applyT, setVisible}` from the current scene's atomic overlay, or
+  //: null while one is being built / when the design has no atoms.
+  let atomicOverlay = null;
+
+  //: Drives the overlay from whatever the two atomic controls currently
+  //: say. Called after every (re)build and on every control change, so
+  //: the two never disagree — the atoms checkbox wins over the slider,
+  //: and the slider is disabled while atoms are off rather than left
+  //: looking live over a hidden overlay.
+  function applyAtomState() {
+    if (!atomicOverlay) return;
+    const on = !atomsToggle || atomsToggle.checked;
+    atomicOverlay.setVisible(on);
+    if (on) atomicOverlay.applyT(Number(smoothEls.slider.value) / 100);
+    if (smoothEls.slider) smoothEls.slider.disabled = !on;
+    if (smoothEls.legend) smoothEls.legend.style.display = on ? "flex" : "none";
+  }
   // Declared here rather than beside the explode button's own listener:
   // `applyUiState` resets it on every render, and the first render runs
   // before that listener is wired.
@@ -1310,11 +1364,11 @@ export async function blocktreeViewer3D({
     // atomic payload each time (browser-cached), and the slider keeps
     // whatever position the user left it at.
     if (atomicUrl && smoothEls && smoothEls.slider) {
-      atomicApplyT = null;
+      atomicOverlay = null;
       _setupAtomicOverlay(viewer, atomicUrl, smoothEls, shapes)
-        .then((apply) => {
-          atomicApplyT = apply;
-          if (apply) apply(Number(smoothEls.slider.value) / 100);
+        .then((overlay) => {
+          atomicOverlay = overlay;
+          if (overlay) applyAtomState();
         })
         .catch((err) => {
           console.error("blocktree-3d: atomic overlay failed", err);
@@ -1519,10 +1573,11 @@ export async function blocktreeViewer3D({
       if (sliderRAF !== null) return;
       sliderRAF = requestAnimationFrame(() => {
         sliderRAF = null;
-        if (atomicApplyT) atomicApplyT(Number(smoothEls.slider.value) / 100);
+        if (atomicOverlay) atomicOverlay.applyT(Number(smoothEls.slider.value) / 100);
       });
     });
   }
+  if (atomsToggle) atomsToggle.addEventListener("change", applyAtomState);
 
   // ── live level / overrides / isolate (no page reload) ────────────────
   //

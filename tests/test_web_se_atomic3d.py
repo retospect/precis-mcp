@@ -175,3 +175,25 @@ def test_detail3d_page_has_smooth_slider_only_for_the_atomic_design(
     plain_page = atomic3d_client.get("/se/plain_se2")
     assert plain_page.status_code == 200
     assert 'id="bt3d-smooth"' not in plain_page.text
+
+
+def test_detail3d_page_has_atoms_toggle_only_for_the_atomic_design(
+    atomic3d_client, runtime_with_store
+) -> None:
+    """Reto, 2026-09-29: atoms need an off switch. The slider does not
+    provide one — its far end swaps the atoms for the SMOOTHED SURFACE,
+    which is still the structure, never the plain block envelope. Gated
+    on ``has_atomic`` exactly like the slider, so a box-only design pays
+    for neither control."""
+    _seed_c60_structure(runtime_with_store, "c60frag4")
+    _seed_atomic_se(runtime_with_store, slug="c60design4", structure_slug="c60frag4")
+    _seed_plain_se(runtime_with_store, "plain_se3")
+
+    atomic_page = atomic3d_client.get("/se/c60design4")
+    assert atomic_page.status_code == 200
+    assert 'id="bt3d-atoms"' in atomic_page.text
+    assert 'document.getElementById("bt3d-atoms")' in atomic_page.text
+
+    plain_page = atomic3d_client.get("/se/plain_se3")
+    assert plain_page.status_code == 200
+    assert 'id="bt3d-atoms"' not in plain_page.text

@@ -68,6 +68,11 @@
     </select>
   </label>
   {% if has_atomic %}
+  <label class="flex items-center gap-1 text-xs text-slate-600"
+         title="off shows the plain block envelopes instead — the slider does not do this, its far end swaps atoms for the smoothed surface, which is still the structure">
+    <input type="checkbox" id="bt3d-atoms" checked />
+    atoms
+  </label>
   <div class="flex items-center gap-2">
     <label for="bt3d-smooth" class="text-xs text-slate-600" title="0 = full atomic detail, 100 = smoothed surface coloured by scaffold deviation">
       atomic ↔ smooth
@@ -232,6 +237,7 @@
     overridesInput: document.getElementById("bt3d-overrides"),
     sceneUrl: {{ scene_url | tojson }},
     {% if has_atomic %}
+    atomsToggle: document.getElementById("bt3d-atoms"),
     atomicUrl: {{ atomic3d_url | tojson }},
     smoothEls: {
       slider: document.getElementById("bt3d-smooth"),
