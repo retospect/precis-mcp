@@ -174,13 +174,22 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     ``realize`` (se-print-implementer.md) joined the atomic mode's
     original 3 as the first non-atomic store-write-deferred op, reusing
     the same interception seam; ``join`` (docs/backlog/
-    hexfold-integration.md step 5) is the second."""
+    hexfold-integration.md step 5) is the second. ``relax_chain``
+    (docs/backlog/se-nucleic-acid.md) is the third, and the first that is
+    store-**read** rather than store-write-deferred: it needs the
+    interception only because a helix's persistence length may come from a
+    ``material`` row. ``fold_layout`` (same item) is the fourth and the
+    first that is intercepted for an **optional dependency** rather than
+    for the store: it is store-free, and handler-level because ViennaRNA
+    ships in the ``[chain]`` extra and the fold is O(n³)."""
     assert set(HANDLER_LEVEL_OPS) == {
         "bind_structure",
         "unbind_structure",
         "generate",
         "join",
         "realize",
+        "relax_chain",
+        "fold_layout",
     }
     assert set(HANDLER_LEVEL_OPS).isdisjoint(known_ops())
     assert set(HANDLER_LEVEL_OPS) <= all_op_names()

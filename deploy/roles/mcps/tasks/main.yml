@@ -130,12 +130,19 @@
   # extras — this agent-facing MCP venv gets local unit conversion
   # (get(kind='calc', q='3 ft to m')) and mermaid render/validate for free.
   # See pyproject's "Deterministic, pure-code, no-API tool deps" note.
+  #
+  # `[chain]` (ViennaRNA) is the one extra this venv needs: without it the se
+  # chain domain's fold checks degrade to a single `chain_fold_unavailable`
+  # info row forever and `fold_layout` raises `Unsupported` — silently
+  # correct, and silently useless, which is the failure mode
+  # docs/backlog/se-nucleic-acid.md's Target section warns about. Not in
+  # `[all]`, so it has to be named here.
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
       --overrides /opt/mcps/etc/uv-overrides.txt \
-      'precis-mcp @ git+https://github.com/retospect/precis-mcp@main' \
+      'precis-mcp[chain] @ git+https://github.com/retospect/precis-mcp@main' \
       acatome-meta \
       'acatome-store[embeddings]' \
       acatome-mcp \

@@ -195,6 +195,11 @@ _SE_STORE_AWARE_SIGNATURES: dict[str, str] = {
     "unbind_structure": "unbind_structure{block}",
     "generate": "generate{generator:cnt|fullerene|cone|cyclodextrin|hexfold,params:{…},name,parent?,pose?}",
     "realize": "realize{block,mode}",
+    # docs/backlog/se-nucleic-acid.md's two handler-level chain ops. Both
+    # spend compute, so both arrive as proposals; ``fold_layout`` also needs
+    # the optional ``[chain]`` extra (ViennaRNA).
+    "relax_chain": "relax_chain{move?:'all'|[helix/segment names],iters?}",
+    "fold_layout": "fold_layout{strand,sequence?,nucleic?:DNA|RNA,parent?}",
 }
 
 #: Structure op signatures — ``structure_propose``'s vocabulary widened to
@@ -573,6 +578,18 @@ def dry_run_se(
                 prepare_generate(store, scratch, op, design_slug)
             elif name == "realize":
                 prepare_realize(store, scratch, op, design_slug)
+            elif name in ("relax_chain", "fold_layout"):
+                # Deliberately NOT run here (docs/backlog/se-nucleic-acid.md:
+                # "neither runs in design_turn's pure dry-run, so no double
+                # execution") — these are the two handler-level ops whose
+                # whole cost IS the work (a FIRE settle, an O(n³) fold), and
+                # the proposal's Apply runs them for real. ``fold_layout``
+                # would also raise ``Unsupported`` here on a web host without
+                # the ``[chain]`` extra, turning a proposal into an error.
+                # Skipping is not the same as passing either to
+                # ``se_apply_ops``, which knows only the pure table and would
+                # report the op as unknown.
+                continue
             else:
                 se_apply_ops(scratch, [op])
     except (SeOpError, BadInput, NotFound, ValueError) as exc:

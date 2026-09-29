@@ -572,7 +572,12 @@ route along a helix; `set_domain` edits one row in place, `remove_domain` is
 destructive) · `clear_chain` (un-declare,
 cascading) · `layout_chain` (materialise `<helix>.s<k>` segment children —
 what the 3D viewer draws). Pairing is DERIVED from two strands occupying
-one helix offset running opposite ways, never declared. `view='chain'`
+one helix offset running opposite ways, never declared. Two handler-level
+ops, both proposals and never auto-applied: `relax_chain` (settle those
+segments — hinges, loop springs, excluded volume; poses back as
+`origin='proposed'`, each placed loop's curve onto its domain row) and
+`fold_layout` (a ViennaRNA MFE fold as helix/strand/domain records; needs
+the optional `[chain]` extra). `view='chain'`
 reads helices/strands/pairing; `view='topology'` gains the domain rows.
 
 ## See also

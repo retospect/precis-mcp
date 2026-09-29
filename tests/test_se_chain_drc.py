@@ -701,9 +701,19 @@ def test_single_runs_does_not_merge_across_a_helix_boundary() -> None:
 
 
 def _one_offset_tree(
-    n_strands: int, *, sequences: list[str] | None = None, geometry: str | None = None
+    n_strands: int,
+    *,
+    sequences: list[str] | None = None,
+    geometry: str | None = None,
+    geometries: list[str | None] | None = None,
+    nucleic_name: str = "DNA",
 ) -> SeTree:
-    """``n_strands`` strands all occupying offset 0 of one helix."""
+    """``n_strands`` strands all occupying offset 0 of one helix.
+
+    ``geometry`` sets only the first domain's declaration (the original,
+    single-declarer shape); ``geometries`` sets one per strand, ``None``
+    entries skipped, for the disagreement tests.
+    """
     tree = SeTree()
     ops: list[dict[str, Any]] = [
         {"op": "add_block", "name": "h"},
@@ -714,6 +724,7 @@ def _one_offset_tree(
             "lattice": "square",
             "row": 0,
             "col": 0,
+            "nucleic": nucleic_name,
         },
     ]
     for i in range(n_strands):
@@ -731,7 +742,10 @@ def _one_offset_tree(
             "end": 1,
             "forward": i % 2 == 0,
         }
-        if geometry is not None and i == 0:
+        if geometries is not None:
+            if geometries[i] is not None:
+                domain["geometry"] = geometries[i]
+        elif geometry is not None and i == 0:
             domain["geometry"] = geometry
         ops.append(domain)
     apply_ops(tree, ops)
@@ -776,6 +790,32 @@ def test_declared_geometry_over_bases_that_cannot_pair_that_way() -> None:
     # An unsequenced design is unverifiable, not wrong.
     blank = _one_offset_tree(2, geometry="W-H-trans")
     assert "chain_pairing_geometry" not in _rules(blank)
+
+
+def test_pairing_geometry_message_uses_dna_lettering_on_a_dna_helix() -> None:
+    # W-W-cis (the wobble family) accommodates G·U/U·G, which prints "G·T"
+    # on a DNA helix, never the RNA-alphabet "U" the table is keyed in.
+    tree = _one_offset_tree(2, sequences=["C", "C"], geometry="W-W-cis")
+    fired = _by_rule(tree, "chain_pairing_geometry")
+    assert len(fired) == 1
+    assert "G·T" in fired[0].detail
+    assert "U" not in fired[0].detail
+
+
+def test_two_domains_declaring_different_families_fires_one_disagreement() -> None:
+    tree = _one_offset_tree(2, geometries=["W-W-cis", "W-H-trans"])
+    fired = _by_rule(tree, "chain_pairing_disagree")
+    assert len(fired) == 1
+    assert fired[0].severity == "error"
+    assert fired[0].subject == "h[0]"
+    assert "W-W-cis" in fired[0].detail
+    assert "W-H-trans" in fired[0].detail
+
+
+def test_wc_alias_and_its_canonical_spelling_are_not_a_disagreement() -> None:
+    # 'WC' and 'W-W-cis' canonicalise to the same family — no disagreement.
+    tree = _one_offset_tree(2, geometries=["WC", "W-W-cis"])
+    assert "chain_pairing_disagree" not in _rules(tree)
 
 
 # ── dangling + malformed ────────────────────────────────────────────────

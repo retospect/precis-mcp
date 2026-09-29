@@ -201,6 +201,22 @@ def _axis_rotations(u0: np.ndarray, u1: np.ndarray) -> np.ndarray:
     return np.eye(3)[None, :, :] + k + scale[:, None, None] * (k @ k)
 
 
+def carry_rotation(u0: np.ndarray, u1: np.ndarray) -> np.ndarray:
+    """``(3, 3)``: the rotation this module carries an :class:`Attachment`'s
+    offset by when its body's axis turns from ``u0`` to ``u1``.
+
+    Public because a caller that wants to know where an attachment *ended up*
+    has to apply exactly the carry the settle applied internally, and
+    reimplementing Rodrigues alongside :func:`_axis_rotations` is a silent
+    drift waiting to happen — this delegates to it, so the two cannot
+    disagree. Both arguments must be unit vectors.
+    """
+    return _axis_rotations(
+        np.asarray(u0, dtype=float).reshape(1, 3),
+        np.asarray(u1, dtype=float).reshape(1, 3),
+    )[0]
+
+
 def _unit_rows(v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """``(unit rows, norms)`` for ``(N, 3)``; zero rows come back as ``+x``."""
     norms = np.linalg.norm(v, axis=1)
@@ -265,6 +281,20 @@ def relax_bundle(
         Settled positions plus the convergence record. ``converged=False`` is
         a real answer, not an error: the caller reports it rather than
         pretending the geometry is settled.
+
+    Notes
+    -----
+    **Every stiffness is in the caller's units, but ``tol`` and ``max_step``
+    are not — pick the length unit to suit them.** The defaults suit
+    coordinates of order 1: at metre-scale nucleic-acid coordinates (bodies a
+    few e-9 long) the forces are ~1e-9, below ``tol``, so this returns
+    ``converged=True`` at step 0 having moved nothing, and ``max_step`` ≈
+    3e-10 could not cross a 4 nm gap in 500 steps regardless. That is a
+    silent no-op, not an error — the first caller
+    (:mod:`precis_se.chain.relax`) builds its bundle in **nanometres** and
+    converts back for exactly this reason. A caller working at another scale
+    must either do the same or pass ``tol``/``max_step`` scaled to its own
+    coordinates.
     """
     pos0 = np.asarray(bodies, dtype=float)
     if pos0.ndim != 3 or pos0.shape[1:] != (2, 3):

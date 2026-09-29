@@ -130,6 +130,7 @@ from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.atomic.apply import PendingJob, apply_ops_with_atomic
+from precis_se.chain import findings as se_chain_findings
 from precis_se.chain import layout as se_chain_layout
 from precis_se.chain import nucleic as se_nucleic
 from precis_se.chain.pairing import (
@@ -142,6 +143,7 @@ from precis_se.chain.pairing import (
 )
 from precis_se.chain.vocab import (
     HELIX_ROLE,
+    SEGMENT_ROLE,
     STRAND_ROLE,
     ChainError,
     chain_role,
@@ -2917,6 +2919,25 @@ def _render_topology(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
+def _segment_cell(ranges: list[tuple[int, int]], *, laid_out: bool) -> str:
+    """``view='chain'``'s ``segments`` cell for one helix.
+
+    Reports the **unit counts of the ranges themselves**, never the
+    ``max_seg_len`` they were cut with: a 4-unit helix on the honeycomb has
+    one segment of 4 units, and printing the 21-unit cap there reads as a
+    claim about the helix (the slice-1 dogfood's complaint,
+    docs/backlog/se-nucleic-acid.md). A trailing short segment makes the
+    spans non-uniform, so the cap is shown as a bound (``≤``) rather than a
+    figure. ``laid_out=False`` says outright that these are the segments
+    ``layout_chain`` *would* cut, because no child exists yet."""
+    if not ranges:
+        return "—" if laid_out else "not laid out (no units)"
+    spans = {end - start + 1 for start, end in ranges}
+    size = f"{spans.pop()}" if len(spans) == 1 else f"≤{max(spans)}"
+    body = f"{len(ranges)} × {size} units"
+    return body if laid_out else f"not laid out (would be {body})"
+
+
 def _render_chain(tree: SeTree) -> str:
     """``view='chain'`` — the nucleic-acid domain's one readout
     (docs/backlog/se-nucleic-acid.md): every helix with its motif, run
@@ -2953,6 +2974,24 @@ def _render_chain(tree: SeTree) -> str:
             )
             continue
         per = se_chain_layout.units_per_segment(geom)
+        stored = sorted(
+            (
+                (child.chain or {})
+                for child in tree.blocks.values()
+                if chain_role(child) == SEGMENT_ROLE
+                and (child.chain or {}).get("helix") == name
+            ),
+            key=lambda rec: int(rec.get("ord", 0)),
+        )
+        # The stored children, when there are any — NOT a recomputed tiling.
+        # This column is a claim about the tree, and a `max_seg_len` that has
+        # changed since `layout_chain` ran would make the two disagree.
+        ranges = (
+            [(int(rec["start"]), int(rec["end"])) for rec in stored]
+            if stored
+            else se_chain_layout.segment_ranges(geom.n_units, per)
+        )
+        segments = _segment_cell(ranges, laid_out=bool(stored))
         counts = {PAIRED: 0, SINGLE: 0, PARALLEL: 0, CROWDED: 0}
         for offset in range(geom.n_units):
             occ = pairing.at(name, offset)
@@ -2975,8 +3014,7 @@ def _render_chain(tree: SeTree) -> str:
                 "n": str(geom.n_units),
                 "turns": f"{geom.n_units * geom.motif.twist / (2.0 * math.pi):.2f}",
                 "site": site,
-                "segments": f"{len(se_chain_layout.segment_ranges(geom.n_units, per))}"
-                f" × {per} units",
+                "segments": segments,
                 "occupancy": occupancy,
             }
         )
@@ -3454,10 +3492,26 @@ def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") 
     rxn's ``reaction_class`` + precedent count, a foreign template's
     design ref id) so they are read here, the one place in this render
     that already has ``store``/``ref_id`` on hand, and appended AFTER
-    ``drc()``'s own findings — never inside it."""
+    ``drc()``'s own findings — never inside it.
+
+    :func:`precis_se.chain.findings.findings` is the first handler-side
+    pass that **replaces** pure findings rather than appending: a
+    single-stranded span measured against ssDNA's coded persistence length
+    and again against the design's own ``material`` Lp row would be two
+    findings about one span, and the store-read value is strictly better
+    information. It returns the rules it supersedes alongside its rows and
+    the drop happens **here**, at the one place that owns this list —
+    never inside the pass, and never by the pass mutating what
+    ``se_drc.drc`` returned."""
     report = se_drc.drc(tree)
     report.findings.extend(se_precedent.findings(store, tree, ref_id))
     report.findings.extend(se_kinematics_drc.findings(store, tree, ref_id))
+    chain_extra = se_chain_findings.findings(store, tree, ref_id)
+    if chain_extra.supersedes:
+        report.findings = [
+            f for f in report.findings if f.rule not in chain_extra.supersedes
+        ]
+    report.findings.extend(chain_extra.rows)
     fill_line = _fill_fraction_line(tree)
     if scenario_line:
         fill_line = f"{fill_line}\n{scenario_line}"

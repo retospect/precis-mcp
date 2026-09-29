@@ -429,6 +429,24 @@ estimate = [
     "pymatgen>=2026.5",
     "tblite>=0.7 ; sys_platform == 'darwin' or platform_machine == 'x86_64'",
 ]
+# `chain` — nucleic-acid secondary-structure prediction for the `se` chain
+# domain's fold checks (docs/backlog/se-nucleic-acid.md slice 2:
+# `fold_layout`, `chain_fold_disagree`, `chain_offtarget`). ViennaRNA is a
+# compiled SWIG extension around RNAlib, so it is an extra rather than core
+# and every use site imports it lazily — a `[chain]`-less venv reports
+# `chain_fold_unavailable` (info) and keeps rendering `view='drc'`, and
+# `fold_layout` raises `Unsupported`. Not in `[all]`: same posture as
+# `estimate` — a real capability that isn't in every venv yet.
+#
+# The item's "promote to core when the wheel resolves on every CI/deploy
+# platform" condition is MET as of 2026-09-29 (measured: viennarna 2.7.2
+# resolves for manylinux x86_64, manylinux aarch64, win_amd64 and darwin, on
+# both 3.12 and 3.13), so a future promotion is a footprint decision about
+# every install carrying a compiled RNAlib, not a platform-availability one.
+# A promotion must also add `viennarna -> RNA` to
+# `scripts/lib/check-core-deps.py`'s IMPORT_NAME_OVERRIDES: the module the
+# distribution installs is `RNA`, which that script's default guess misses.
+chain = ["ViennaRNA>=2.7"]
 all = ["precis-mcp[embed,paper,web]"]
 
 [project.scripts]
@@ -533,6 +551,11 @@ dev = [
     # image. Needs a dev-image rebuild to activate the grimp verbs in-container;
     # until then their tests `importorskip("grimp")`.
     "grimp>=3",
+    # ViennaRNA (the `[chain]` extra) in the dev image, so the `se` fold
+    # checks' *installed* branch is exercised by CI and not only the
+    # `chain_fold_unavailable` degradation. Needs a dev-image rebuild to
+    # activate in-container; until then those tests `importorskip("RNA")`.
+    "ViennaRNA>=2.7",
     # Architecture contracts (`uv run lint-imports`, wired into the ship
     # gate): mechanises the layering conventions that used to live only in
     # prose — see [tool.importlinter] below. Built on grimp (already here).
@@ -809,6 +832,10 @@ module = [
     "ray.*",
     "rdkit",
     "rdkit.*",
+    # ViennaRNA's module is `RNA` and ships no stubs; it is the `[chain]`
+    # extra, absent from the dev image until it is rebuilt, and imported
+    # lazily (precis_se/chain/fold.py::rna_module).
+    "RNA",
     "semanticscholar",
     "sklearn.*",
     "soundfile",

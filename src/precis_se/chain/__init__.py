@@ -2,10 +2,16 @@
 (docs/backlog/se-nucleic-acid.md, slice 1).
 
 The binding between the chemistry-free :mod:`precis_chain` geometry kernel
-and se's six-level IR. Nothing in this subpackage touches the store: the
-ops that write these records live in :mod:`precis_se.ops`, the store-aware
-ones (``relax_chain``, ``fold_layout``) in the handler, and this package is
-the vocabulary, the numbers and the derivations in between.
+and se's six-level IR. The pure ops that write these records live in
+:mod:`precis_se.ops`; the two handler-level ones are
+:mod:`precis_se.chain.relax` (``relax_chain``) and
+:mod:`precis_se.chain.fold` (``fold_layout``). Every module here but
+:mod:`precis_se.chain.relax` and :mod:`precis_se.chain.findings` is
+store-free — those two are the ones that read a ``material``
+persistence-length row, which is exactly why the op and the finding that
+uses it are handler-level. ``fold_layout`` is store-free too and
+handler-level for the other two reasons: an optional dependency
+(ViennaRNA, the ``[chain]`` extra) and O(n³) compute.
 
 **The decomposition** (scadnano's, chosen 2026-09-27): a **helix** carries
 the geometry — a centre line, a motif, per-unit frames, a swept tube; a
@@ -36,6 +42,17 @@ antiparallel domains on one helix and a loop between them.
   length).
 - :mod:`precis_se.chain.drc` — the pure ``chain_*`` findings, called once
   from :func:`precis_se.drc.drc`.
+- :mod:`precis_se.chain.relax` — the ``relax_chain`` op: the mechanical
+  settle over the ``layout_chain`` segments, the pose write-back, and the
+  ``meta.loop_curve`` seam. Reads the store (the Lp row).
+- :mod:`precis_se.chain.fold` — the ``fold_layout`` op (a ViennaRNA MFE
+  dot-bracket as helix/strand/domain records, with a NOMINAL placement) and
+  the fold findings. The one lazy ``import RNA`` in the tree lives here, so
+  a venv without the ``[chain]`` extra still boots and still renders
+  ``view='drc'``.
+- :mod:`precis_se.chain.findings` — the handler-side findings, appended (and,
+  for ``chain_floppy``, **substituted**) by
+  :func:`precis_se.handler._render_drc`.
 
 **Two seams this slice owes the follow-up items**, stated here because
 they are contracts rather than conveniences:
@@ -51,11 +68,9 @@ they are contracts rather than conveniences:
    ``None``, so ``se-walker-light-protocol`` never has to change either
    signature.
 
-**Not in this slice** (and deliberately not stubbed): the handler-level
-``relax_chain``/``fold_layout``, the ``[chain]`` ViennaRNA extra and the
-fold findings, the ``material``-row ``chain_floppy`` re-emission, the
-``meta.loop_curve`` seam ``relax_chain`` writes, and everything in
-``se-nucleic-realize-export``.
+**Not built yet** (and deliberately not stubbed): everything in
+``se-nucleic-realize-export`` — atoms per region and the scadnano/caDNAno/
+oxDNA/PDB export.
 """
 
 from __future__ import annotations

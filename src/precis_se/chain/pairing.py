@@ -65,12 +65,19 @@ class OffsetOccupancy:
     status: str
     #: The declared Leontis–Westhof family in force at this offset — a
     #: domain's ``overrides[offset]`` if it has one, else its ``geometry``.
-    #: The first declaring occupant wins, in occupant order, and a
-    #: disagreement between the two domains is **silently** resolved that
-    #: way — no finding reports it. Adding one is slice 2's work
-    #: (``docs/backlog/se-nucleic-acid.md``); until then a second domain
-    #: declaring a different family at the same offset is invisible.
+    #: The first declaring occupant wins, in occupant order — this field's
+    #: reading never changes when a second domain disagrees, so every
+    #: existing consumer (the realizer, ``view='chain'``) keeps its answer.
+    #: :data:`declarations` below is what lets a disagreement be *seen*
+    #: without changing what wins (``drc.py``'s ``chain_pairing_disagree``).
     geometry: str | None = None
+    #: Every declaring occupant's own reading, in the same occupant order
+    #: as ``occupants`` — ``(occupant, family)`` with ``family``
+    #: canonicalised through :func:`precis_se.chain.nucleic.canonical_geometry`
+    #: so ``WC`` and ``W-W-cis`` are the same declaration, not a
+    #: disagreement. ``declarations[0]`` is always the occupant
+    #: ``geometry`` above came from — the first to declare.
+    declarations: tuple[tuple[Occupant, str], ...] = ()
 
 
 @dataclass
@@ -166,6 +173,7 @@ def derive_pairing(tree: Any, state: Any = None) -> Pairing:
 
     raw: dict[tuple[str, int], list[Occupant]] = {}
     geometry: dict[tuple[str, int], str] = {}
+    declarations: dict[tuple[str, int], list[tuple[Occupant, str]]] = {}
     all_domains = sorted(
         (d for route in tables.by_strand.values() for d in route),
         key=lambda d: (d.strand, d.ord),
@@ -174,17 +182,19 @@ def derive_pairing(tree: Any, state: Any = None) -> Pairing:
         overrides = domain.overrides or {}
         for offset in domain.offsets():
             key = (domain.helix, offset)
-            raw.setdefault(key, []).append(
-                Occupant(
-                    strand=domain.strand,
-                    ord=domain.ord,
-                    forward=domain.forward,
-                    letter=letters.get(domain.strand, {}).get((domain.ord, offset)),
-                )
+            occupant = Occupant(
+                strand=domain.strand,
+                ord=domain.ord,
+                forward=domain.forward,
+                letter=letters.get(domain.strand, {}).get((domain.ord, offset)),
             )
+            raw.setdefault(key, []).append(occupant)
             declared = overrides.get(str(offset)) or domain.geometry
-            if declared is not None and key not in geometry:
-                geometry[key] = declared
+            if declared is not None:
+                if key not in geometry:
+                    geometry[key] = declared
+                family = nucleic.canonical_geometry(declared) or declared
+                declarations.setdefault(key, []).append((occupant, family))
 
     out = Pairing()
     for key in sorted(raw):
@@ -204,6 +214,7 @@ def derive_pairing(tree: Any, state: Any = None) -> Pairing:
             occupants=occupants,
             status=status,
             geometry=geometry.get(key),
+            declarations=tuple(declarations.get(key, [])),
         )
         out.offsets[key] = record
         if status == PAIRED:

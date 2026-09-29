@@ -56,6 +56,11 @@ What each rule is, and why it is at the tier it is:
 - ``chain_pairing_geometry`` (error) — a declared Leontis–Westhof family
   over two bases that family does not accommodate
   (:func:`precis_se.chain.nucleic.pair_allowed`).
+- ``chain_pairing_disagree`` (error) — two domains at one offset declare
+  *different* Leontis–Westhof families (:mod:`precis_se.chain.pairing`'s
+  ``OffsetOccupancy.declarations``); the first-declaring occupant still wins
+  for every other purpose (``geometry``), this rule only reports that a
+  second domain said something else.
 - ``chain_malformed`` (error) — a stored ``chain`` record that does not fit
   the schema at all. Not in the spec's list; it is the same
   defence-in-depth every other stored jsonb payload in se gets
@@ -67,6 +72,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -526,53 +532,88 @@ def _loop_findings(
             )
 
 
-def _floppy_findings(
+#: What :func:`floppy_findings` says about the persistence length it
+#: measured against when the caller named no source — the pure pass's case.
+CODED_LP_NOTE = "coded default; a material Lp row with conditions overrides it"
+
+
+def floppy_findings(
     pairing: Pairing,
     loops: list[tuple[DomainSpec, DomainSpec, float, float]],
-    findings: list[ValidationIssue],
-) -> None:
-    """``chain_floppy`` — one row per single-stranded span longer than the
-    **coded** ssDNA persistence length. The handler-side pass drops these
-    and re-emits them against a ``material`` Lp row when the design has
-    one, so exactly one row per span exists either way."""
+    *,
+    lp_of: Callable[[str], tuple[float, str]] | None = None,
+) -> list[ValidationIssue]:
+    """``chain_floppy`` — one row per single-stranded span, and one per
+    loop, longer than ssDNA's persistence length.
+
+    ``lp_of(helix)`` supplies ``(Lp in metres, a note naming where it came
+    from)`` per helix; the default is the coded
+    :data:`precis_se.chain.nucleic.LP_SSDNA_M` with
+    :data:`CODED_LP_NOTE`. That hook is the whole reason this function is
+    public: the handler-side pass
+    (:func:`precis_se.chain.findings.findings`) re-emits these rows against
+    a ``material`` Lp row through **this same code**, so the two tiers can
+    never measure the same span two different ways — and it supersedes the
+    pure rows rather than adding to them, so a span is one finding either
+    way.
+    """
+    reader = lp_of or (lambda _helix: (nucleic.LP_SSDNA_M, CODED_LP_NOTE))
+    out: list[ValidationIssue] = []
     c = nucleic.SS_CONTOUR_PER_NT_M
-    lp = nucleic.LP_SSDNA_M
     for helix, first, last in pairing.single_runs():
+        lp, note = reader(helix)
         n_nt = last - first + 1
         span = n_nt * c
         if span <= lp:
             continue
-        findings.append(
+        out.append(
             ValidationIssue(
                 rule="chain_floppy",
                 subject=f"{helix}[{first}:{last + 1}]",
                 detail=(
                     f"{n_nt} nt of single-stranded span = {_len(span)} of "
-                    f"contour, past ssDNA's coded persistence length "
+                    f"contour, past ssDNA's persistence length "
                     f"{_len(lp)} — this stretch has no defined shape "
-                    "(coded default; a material Lp row with conditions "
-                    "overrides it)"
+                    f"({note})"
                 ),
                 severity="info",
             )
         )
     for _before, after, _gap, reach in loops:
+        lp, note = reader(after.helix)
         n = after.loop_before_nt or 0
         if n == 0 or reach <= lp:
             continue
-        findings.append(
+        out.append(
             ValidationIssue(
                 rule="chain_floppy",
                 subject=f"{after.strand}#{after.ord} loop",
                 detail=(
                     f"{n}-nt loop has {_len(reach)} of contour, past ssDNA's "
-                    f"coded persistence length {_len(lp)} — its shape is an "
-                    "ensemble, not a curve (coded default; a material Lp row "
-                    "with conditions overrides it)"
+                    f"persistence length {_len(lp)} — its shape is an "
+                    f"ensemble, not a curve ({note})"
                 ),
                 severity="info",
             )
         )
+    return out
+
+
+def geometry_and_loops(
+    tree: Any,
+) -> tuple[dict[str, HelixGeometry], list[tuple[DomainSpec, DomainSpec, float, float]]]:
+    """``(helix geometries, loops)`` for ``tree`` — the two derived
+    structures the handler-side passes need and must not re-derive
+    differently.
+
+    A record this pass cannot read is **dropped** here rather than
+    reported: the ``chain_malformed`` finding is :func:`findings`' to make,
+    and a second copy of it from the handler side would double every row.
+    """
+    dropped: list[ValidationIssue] = []
+    geoms = _helix_geometries(tree, dropped)
+    tables = group_domains(list(getattr(tree, "domains", []) or []))
+    return geoms, _loops(tables, geoms)
 
 
 def _occupancy_findings(pairing: Pairing, findings: list[ValidationIssue]) -> None:
@@ -604,7 +645,11 @@ def _occupancy_findings(pairing: Pairing, findings: list[ValidationIssue]) -> No
         )
 
 
-def _geometry_findings(pairing: Pairing, findings: list[ValidationIssue]) -> None:
+def _geometry_findings(
+    pairing: Pairing,
+    geoms: dict[str, HelixGeometry],
+    findings: list[ValidationIssue],
+) -> None:
     for key in sorted(pairing.offsets):
         occ = pairing.offsets[key]
         if occ.geometry is None or occ.status != PAIRED:
@@ -615,8 +660,15 @@ def _geometry_findings(pairing: Pairing, findings: list[ValidationIssue]) -> Non
         if nucleic.pair_allowed(occ.geometry, a, b):
             continue
         family = nucleic.canonical_geometry(occ.geometry) or occ.geometry
+        # ALLOWED_PAIRS is keyed in RNA lettering (T folded onto U); render
+        # it back in the helix's own alphabet so a DNA design does not read
+        # a wobble as "U·G", which pairs nowhere in a DNA design.
+        geom = geoms.get(occ.helix)
+        is_rna = geom is not None and geom.nucleic == "RNA"
+        letters = (lambda x: x) if is_rna else (lambda x: "T" if x == "U" else x)
         allowed = sorted(
-            f"{x}·{y}" for x, y in nucleic.ALLOWED_PAIRS.get(family, frozenset())
+            f"{letters(x)}·{letters(y)}"
+            for x, y in nucleic.ALLOWED_PAIRS.get(family, frozenset())
         )
         findings.append(
             ValidationIssue(
@@ -627,6 +679,39 @@ def _geometry_findings(pairing: Pairing, findings: list[ValidationIssue]) -> Non
                     f"not accommodate (coded occupancy: "
                     f"{', '.join(allowed) or '(none)'}) — change the bases or "
                     "the declared geometry"
+                ),
+                severity="error",
+            )
+        )
+
+
+def _disagree_findings(pairing: Pairing, findings: list[ValidationIssue]) -> None:
+    """``chain_pairing_disagree`` — two occupants of one offset declared
+    different Leontis–Westhof families. ``geometry``'s first-wins reading
+    (:mod:`precis_se.chain.pairing`) is unchanged; this only reports that a
+    later domain said something else, one row per offset."""
+    for key in sorted(pairing.offsets):
+        occ = pairing.offsets[key]
+        families = {family for _occupant, family in occ.declarations}
+        if len(families) < 2:
+            continue
+        winner_occupant, winner_family = occ.declarations[0]
+        who = ", ".join(
+            f"{occupant.strand}#{occupant.ord} declares {family!r}"
+            for occupant, family in occ.declarations
+        )
+        findings.append(
+            ValidationIssue(
+                rule="chain_pairing_disagree",
+                subject=f"{occ.helix}[{occ.offset}]",
+                detail=(
+                    f"{who} — one offset cannot be two families. "
+                    f"{winner_occupant.strand}#{winner_occupant.ord}'s "
+                    f"{winner_family!r} is what every other check uses "
+                    "(first declaration in domain order wins), so the other "
+                    "declaration is being ignored — change one of them to "
+                    "agree, per-position via overrides[offset] if the two "
+                    "domains need different families elsewhere"
                 ),
                 severity="error",
             )
@@ -653,6 +738,7 @@ def findings(tree: Any) -> list[ValidationIssue]:
         _clash_findings(geoms, loops, out)
     pairing = derive_pairing(tree)
     _occupancy_findings(pairing, out)
-    _geometry_findings(pairing, out)
-    _floppy_findings(pairing, loops, out)
+    _geometry_findings(pairing, geoms, out)
+    _disagree_findings(pairing, out)
+    out.extend(floppy_findings(pairing, loops))
     return out

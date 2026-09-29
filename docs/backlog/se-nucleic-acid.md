@@ -604,3 +604,273 @@ physics, but it deserves a second opinion before anything depends on it.
   Decided.
 - **`chain_malformed` stays a tenth rule**, now in the body's list above.
   Decided.
+
+### Slice 2 pass B1 built 2026-09-29 — the three dogfood/skill findings
+
+All three are **built and green** (`tests/test_se_chain_ops.py` +
+`test_se_chain_drc.py`, 60 passed), uncommitted at the time of writing.
+
+- **`chain_pairing_disagree` (error, pure)** — the rule the skill pass named.
+  `pairing.OffsetOccupancy` gains `declarations`: every occupant that declared
+  a family, canonicalised through `nucleic.canonical_geometry`, in the order
+  `geometry`'s first-wins pick uses, so `declarations[0]` **is** the winner and
+  nothing downstream changed behaviour. `WC` against `W-W-cis` is therefore not
+  a disagreement. The message says which declaration every other check is
+  using and that the other is being ignored — an offset cannot be two families,
+  so the fix is to change one, per-position via `overrides[offset]` if the two
+  domains need different families elsewhere.
+- **`chain_pairing_geometry` now prints the helix's own alphabet.**
+  `ALLOWED_PAIRS` stays RNA-keyed (`canonical_base` folds T onto U); only the
+  *message* substitutes T for U on a non-RNA helix, so the wobble reads `G·T`.
+  A helix whose geometry could not be realised defaults to DNA lettering —
+  that design already has a `chain_malformed` row.
+- **`view='chain'`'s `segments` cell was only half-fixed on the first pass, and
+  the half that remained was the dogfood's actual complaint.** Gating on
+  "laid out or not" still printed `{n} × {max_seg_len} units` afterwards, so
+  the 4-unit helix that read `1 × 21 units` before `layout_chain` read
+  `1 × 21 units` after it too. The cell now reports **the ranges' own unit
+  counts** (`1 × 4 units`), and reads them off **the stored segment children**
+  rather than a recomputed tiling — the column is a claim about the tree, and a
+  `max_seg_len` changed since `layout_chain` ran would make the two disagree.
+  A trailing short segment makes the spans non-uniform, so the cap prints as a
+  bound (`≤`) rather than a figure. Both branches are asserted.
+
+**The `[chain]` extra's promote-to-core condition is met, and it is still an
+extra.** The 2026-09-27 decision was "promote to core when the wheel resolves
+on every CI/deploy platform". Measured 2026-09-29: `viennarna 2.7.2` resolves
+for manylinux x86_64, manylinux aarch64, win_amd64 and darwin, on both 3.12
+and 3.13. It stays an extra anyway — putting a compiled RNAlib in every
+serve/worker venv for a niche capability is a footprint decision, not a
+platform one, and that is now the only question left. ViennaRNA is in the
+`dev` group too (grimp's precedent), so CI exercises the fold checks'
+*installed* branch and not only the `chain_fold_unavailable` degradation;
+that needs a dev-image rebuild to activate in-container, and until then those
+tests `importorskip("RNA")`. A promotion must also add `viennarna -> RNA` to
+`scripts/lib/check-core-deps.py`'s `IMPORT_NAME_OVERRIDES` — the module the
+distribution installs is `RNA`, which that script's default name guess misses.
+
+### Slice 2 pass B2 built 2026-09-29 — `relax_chain`, `meta.loop_curve`, and the first superseding finding
+
+`relax_chain` is live (`precis_se/chain/relax.py`, dispatched from
+`atomic/apply.py::HANDLER_LEVEL_OPS`, now 6 names). What it settles, and the
+numbers that came out:
+
+- **Two helices 6 nm apart (axes), joined by a 2-nt loop, settle to
+  exit-to-exit 1.875 nm** against the criterion's ≤ 1.9 nm, from 4.908 nm —
+  the loop's own `(2+1)·0.63 = 1.89 nm` contour, so the settle stops where the
+  backbone actually holds it rather than collapsing the exits. `converged=True`
+  in 181 FIRE steps. Note the criterion's "6 nm" is the **axis** separation:
+  the exits start 4.908 nm apart, not 6, because each sits 1 nm off its axis at
+  a groove-asymmetric azimuth.
+- **The 192-segment rectangle settles in 0.42 s** (criterion: < 30 s), 200
+  steps, `converged=True`, 119 loop springs (23 scaffold turns + 96 staple
+  crossovers) and 168 hinges, 192 proposed poses and 119 loop curves written.
+- **The bundle is built in nanometres, not metres.** At metre-scale
+  coordinates every force in a nucleic-acid design is ~1e-9, so
+  `relax_bundle`'s default `tol=1e-6` is met at step 0 and its default
+  per-step cap (5 % of a body length) is ~3e-10 — a settle that reports
+  `converged` without moving, and cannot cross 4 nm in 500 steps. Convergence
+  is checked at `TOL_NM = 1e-4` (a residual loop extension of 0.1 pm).
+- **`meta.loop_curve`** (the `se-nucleic-realize-export` seam) is a new
+  `DomainSpec` field on the LATER domain of a loop, 16 sampled points in
+  **metres**, computed from the **settled** exits with the outward radial
+  directions as the Hermite tangents. Derived, never authored: `add_domain`/
+  `set_domain` do not accept it and a `set_domain` edit drops it (a route that
+  moved no longer has the curve that was settled for it). `None` vs a list is
+  the seam, so an empty list is never stored.
+- **Write-back contract is `formfind`'s**, with one addition: a segment whose
+  pose is user contract is **hard-pinned** at both beads rather than merely
+  skipped, so the user's placement constrains the settle instead of being
+  quietly contradicted by it. Bodies start from the children's *current*
+  placement (a second `relax_chain` continues rather than resetting), and the
+  settled axis is re-scaled to the body's own length before writing, so the
+  stored `cyl` envelope and the pose cannot drift apart (the kernel's rigid
+  term is a stiff spring, not a constraint).
+- **Lp enters through the motif, not a second formula**:
+  `dataclasses.replace(motif, persistence_length=<store row>)` into
+  `relax.hinge_stiffness`, so the WLC constant stays the kernel's single copy.
+  The row is read by `relax.material_lp_m` — one reader, shared with the
+  finding below, so the settle and the check that grades it can never disagree
+  about which row won. The row's unit comes from the **property registry**
+  (`compose.unit_label`, `nm` by default), not from the value row itself;
+  a unit that will not convert to a length is treated as **absent**.
+  `tree.own_slug` is what the resolution keys on, and `persist.load_tree`
+  deliberately does not set it — so a settle only sees `material` rows when it
+  runs through the handler.
+
+**The handler-side `chain_floppy` re-emission is the first pass in `se` that
+replaces a pure finding.** `precis_se/chain/findings.py::findings` returns a
+`HandlerFindings(supersedes, rows)` and `handler.py::_render_drc` applies the
+drop — the destructive step lives at the one call site that owns the findings
+list, never inside the pass. The rows themselves come from the pure
+`chain_drc.floppy_findings(..., lp_of=)` hook, so both tiers measure a span
+through the same code; the re-emission rebuilds **every** helix's rows (the
+ones with no row keep the coded default and say so), which is what makes "one
+row per span, never two" true rather than hoped for. With no `material` row
+anywhere the pass returns nothing and the pure rows stand byte-identical.
+
+Also in this pass: `design_turn.dry_run_se` skips `relax_chain` explicitly
+(the item's "neither runs in the pure dry-run" rule) — without that branch it
+falls through to `apply_ops`, which knows only the pure table and would report
+the op as *unknown* in a proposal. **`join` still has that bug** and is
+untouched here.
+
+### Slice 2 pass C built 2026-09-29 — `fold_layout` and the fold findings
+
+`precis_se/chain/fold.py`: the `fold_layout` op (`HANDLER_LEVEL_OPS`, now 7 —
+the first entry intercepted for an **optional dependency** rather than for the
+store; it is store-free) plus the fold findings, appended through
+`chain/findings.py` (`supersedes` untouched — nothing pure measures a fold).
+Slice 2 is complete in the tree; the deploy half is NOT (below). Measured,
+with the command in each line's own terms:
+
+- **The hairpin criterion holds exactly.** `fold_layout` on `GGGGAAAACCCC` →
+  MFE `((((....))))` at −5.40 kcal/mol → 1 helix block `hp.h0` of 4 units, 1
+  strand, 2 antiparallel domains both `[0, 4)`, `loop_before_nt = 4` on the
+  second, and `derive_pairing` → 4 offsets, all `PAIRED`, all `W-W-cis`, 0
+  singles and 0 conflicts. The domains carry `geometry='W-W-cis'` explicitly:
+  every pair an MFE fold makes is cis Watson-Crick (the family that also
+  carries the G·U wobble), so the derived pairing can state a family instead
+  of leaving it undeclared — which is what makes the criterion's "4 `W-W-cis`"
+  readable off `view='chain'` rather than inferred.
+- **A dot-bracket decomposes totally, for the shapes covered.** One maximal
+  *stack* (consecutive `i+1`/`j-1` pairs) = one helix; its two sides are the
+  strand's two antiparallel domains; the domains sort by sequence position and
+  **tile the sequence exactly**, so the unpaired gaps between them are the
+  loops and the stored sequence's own length accounting stays exact. Covered:
+  a hairpin, a multiloop, and any nesting of them.
+- **What it refuses, and why refusal beat emitting.** Zero unpaired
+  nucleotides between two consecutive domains — a bulge, a one-sided internal
+  loop or a coaxial stack — is refused **naming the structure**, because the
+  nominal placement puts each helix a helix-spacing apart and a 0-nt loop
+  there is a *crossover* claim, not a stack. That refuses many real folds
+  (`GGGGAGGGGAAAACCCCCCCC` → `((((.((((....))))))))` is refused;
+  `GGGGAAAACCCCAAAAGGGGAAAACCCC` → `((((....((((....))))....))))` is laid out
+  as 2 helices/4 domains/3 loops). The follow-up that lifts it is a *coaxial
+  stacking* placement — put the second helix on the first's end instead of
+  beside it — not a change to the decomposition. Also refused: an unpaired
+  5'/3' tail (this model has no record for one — a loop exists only BETWEEN
+  two domains), a fold with no pairs, a strand that already routes domains,
+  and > 10 000 nt (`MAX_LAYOUT_NT`; scaffold length is allowed here, unbounded
+  length is not).
+- **The placement is nominal and says so** in the echo: straight helices along
+  `+z`, stacked `+x` at `HELIX_SPACING_M`. `relax_chain` is what settles it.
+- **ViennaRNA's parameters are RNA's, and a DNA fold is an approximation.**
+  RNAlib's DNA parameter set is loaded as *global process state*, which a
+  handler cannot safely mutate, so `T` is read as `U` under the Turner RNA
+  model and every message carrying a fold says so.
+- **A fourth rule, `chain_fold_skipped` (info)**, beyond the three the spec
+  named — the same argument as `chain_malformed`: a 6 kb scaffold reads as
+  fold-*checked* unless something says it was skipped. Measured: a random
+  6 000 nt scaffold produces exactly one `chain_fold_skipped` naming
+  `6000 nt is past the 200 nt` bound, and zero `chain_fold_disagree`. The
+  skill's finding count is therefore **fifteen**, not fourteen.
+- **`chain_offtarget` is a 6-mer hash index, reported at 8 nt.** The index
+  granularity (6) is what makes it O(total length); the reporting threshold is
+  `OFFTARGET_MIN_NT = 8`, the criterion's own number, because a 6-mer recurs
+  by chance about every 4 kb² of pairwise sequence. Seeds containing any
+  *intended* pair (`derive_pairing`, so "intended" means what the rest of the
+  tier means) are dropped whole, then survivors extend outward while still
+  complementary and still unintended. Measured: a 24 nt scaffold + two 12 nt
+  staples with a planted 8-nt staple–staple complement → exactly **1** row,
+  `st0[…] ↔ st1[…]`, 8 nt; the same design without the plant → **0** rows, so
+  the declared duplexes are genuinely subtracted rather than the threshold
+  hiding them. A random 6 kb scaffold → 171 chance runs ≥ 8 nt, reported as
+  the 10 longest (12, 11, 11, …) plus one row naming the remaining 161; the
+  whole pass takes 0.02 s.
+- **`chain_fold_unavailable` is one row for the design**, not one per strand,
+  and the off-target scan runs anyway (it needs no library). Measured over
+  `view='drc'` on a 2-strand design with `RNA` unimportable: the body contains
+  `chain_fold_unavailable` exactly once and still renders every other
+  section.
+- **The unavailable branch is tested unconditionally** by putting `None` in
+  `sys.modules['RNA']`, which makes the real `import RNA` raise `ImportError`
+  — so the test exercises `fold.rna_module`'s own `try`/`except` rather than a
+  monkeypatched stand-in, and it runs in a container that has no ViennaRNA.
+  Everything needing the real library `importorskip("RNA")`.
+- **`RNA` is NOT importable in the dev image** (measured: `scripts/test
+  tests/test_se_chain_fold.py` → 12 skipped), so those 12 were proven on the
+  host venv instead (`uv run pytest tests/test_se_chain_fold.py` → 21 passed,
+  2 failed only on the host's missing `fastapi`, 2 skipped for want of a DB).
+  The dev image needs a rebuild for CI to exercise the installed branch.
+- `mypy` needed `"RNA"` in pyproject's `ignore_missing_imports` list —
+  ViennaRNA ships no stubs and is absent from the gate image.
+
+**The deploy gap is real and untouched** (verified, not assumed): the `[chain]`
+extra reaches **nothing**. `deploy/roles/mcps/tasks/main.yml` installs bare
+`'precis-mcp @ git+…'` into `/opt/mcps/venv` (no extras at all — calc/mermaid
+are core); `roles/precis_web` installs `[web,pcb,estimate]`;
+`roles/precis_worker` installs `[paper]` (+`catalyst` on the plugin host);
+`roles/precis_embedder` `[embed]`. So the session/serve MCP will report
+`chain_fold_unavailable` forever and `fold_layout` will raise `Unsupported`
+until `chain` is added to the mcps role's install line. The `UV_WITH` bridge
+the Target section names is `scripts/test`'s (`scripts/test:263`), a TEST-time
+escape hatch — there is no UV_WITH anywhere under `deploy/`, so that half of
+the sentence describes the dev image, not prod. A promotion to core would also
+need `viennarna -> RNA` in `scripts/lib/check-core-deps.py`'s
+`IMPORT_NAME_OVERRIDES` (pass B1 already recorded this).
+
+### Slice 2 rulings on the three calls the passes escalated (2026-09-29)
+
+- **`chain_fold_skipped` stays, so slice 2 ships fifteen rules, not fourteen.**
+  The brief expected fourteen; pass C added a fifteenth because "a 6 kb
+  scaffold is visibly skipped, not silently" has nowhere else to live — the
+  DRC table *is* the report, and folding the skip into
+  `chain_fold_unavailable` (the library is present) or `chain_fold_disagree`
+  (nothing was compared) would make either row state something untrue. Same
+  argument `chain_malformed` won on in slice 1: a thing that was not checked
+  is its own fact. Decided.
+- **The settle does NOT write its stretch into a segment's envelope.** Pass B2
+  re-imposes the body's nominal length on write-back, so the stored
+  `cyl:…h<len>` stays exactly valid, and asked whether the settled
+  (~1 % stretched) length should go in instead. It should not: the duplex
+  length is a fact about the motif, and the stretch is an artefact of the
+  kernel's rigid spring being a penalty rather than a constraint
+  (`precis_chain.relax`'s own docstring says EV is a penalty, not a
+  projection). Writing it into geometry would let a realizer read numerical
+  slop as physics. Decided.
+- **The private-Rodrigues duplicate is gone.** `precis_chain.relax` now
+  exports `carry_rotation`, delegating to the batched `_axis_rotations` the
+  settle uses internally, and `chain/relax.py` imports it instead of
+  reimplementing it — the two cannot drift, which a hand copy guarantees they
+  eventually would. Decided.
+
+**The kernel's `tol`/`max_step` defaults are scale-bound, and this is now in
+its docstring.** Every *stiffness* `relax_bundle` takes is in the caller's own
+units, but `tol=1e-6` and `max_step` (5 % of a body length) are not: at
+metre-scale nucleic-acid coordinates every force is ~1e-9, below `tol`, so the
+settle returns `converged=True` at step 0 having moved nothing, and `max_step`
+≈ 3e-10 could not cross a 4 nm gap in 500 steps regardless. A silent no-op, not
+an error — the single most load-bearing decision in `chain/relax.py` is that it
+builds its bundle in **nanometres** and converts back.
+
+**Two numbers in the acceptance criteria were measuring something other than
+what they say.** The relax criterion's "two helices … from 6 nm" is the *axis*
+separation; the exits start 4.908 nm apart, because each sits 1 nm off its axis
+at a groove-asymmetric azimuth (pass A). Settled: 1.875 nm against the stated
+≤ 1.9 nm, whose floor is the loop's own contour at `(2+1)·0.63 = 1.89 nm` — so
+that criterion passes with 0.6 % of margin **by construction**, and would have
+been unsatisfiable had it been written 2 % tighter. The rectangle budget is the
+opposite kind of stale: 0.42 s against 30 s, for 192 bodies / 168 hinges / 119
+loop springs.
+
+**The deploy gap is closed here, and the item's description of it was wrong.**
+`deploy/roles/mcps/tasks/main.yml` installed bare `precis-mcp` into the session
+MCP venv, so prod would have reported `chain_fold_unavailable` forever — that
+line now installs `precis-mcp[chain]`. The item's Target section also named a
+"UV_WITH bridge": there is no `UV_WITH` anywhere under `deploy/`. The only one
+in the tree is `scripts/test`'s test-time escape hatch, so that clause was
+always about the dev image, not prod. The dev-image half is real and still
+open: ViennaRNA is in the `dev` group but the image has not been rebuilt, which
+is why 12 of `tests/test_se_chain_fold.py`'s 25 tests skip in-container (all 12
+verified on the host venv against ViennaRNA 2.7.2).
+
+**Pass A was gated after all, and it passed.** The pass-A log above says main
+carried three unverified layers and names the `chain_loop_short` 98 pm `tol` as
+the prime suspect for a red gate. `check.yml` runs on every push to main, and
+it ran on `b47faaf0` (pass A included): **15317 passed, 1 failed**. The single
+failure was `precis-hexfold-help.md` with an H2 section at 4221 chars against
+the 4000-char skill-chunk budget, alongside a `lint` ruff-format drift in a
+blocktree web test — neither one chain, both since fixed on main
+(green at `2c5b28d6`). The 98 pm tolerance survived a real Linux gate; retire
+that suspicion rather than carrying it into slice 3.

@@ -284,6 +284,34 @@ handler-level and are not in this table.
   end]`` unit range — the ranges tiling the helix exactly, which is the
   seam ``se-nucleic-realize-export`` reads. Re-running retires and
   regenerates; both derived facets are stamped ``origin='proposed'``.
+
+The two handler-level chain ops (:mod:`precis_se.chain.relax`,
+:mod:`precis_se.chain.fold`, dispatched by
+:data:`precis_se.atomic.apply.HANDLER_LEVEL_OPS`):
+
+- ``relax_chain``       — settle the ``layout_chain`` segments: rigid
+  bodies, hinge springs at the worm-like-chain constant, one-sided loop
+  springs between the backbone exits a loop is pinned at, hard pins on
+  every segment the settle may not move, and excluded volume at the
+  design's ``min_gap``. Poses come back ``origin='proposed'`` (a
+  ``user`` pose moves only under ``move=``), each placed loop's sampled
+  curve lands on its domain row's ``meta.loop_curve`` in metres, and one
+  call is one revision. It is handler-level because it spends compute AND
+  reads the store: a helix's persistence length comes from a ``material``
+  row when the design has one, and the summary line names which.
+  **A mechanical settle, not thermodynamics and not sampling, with no
+  topology detection** — a loop spring will pull a loop straight through a
+  helix and nothing notices.
+- ``fold_layout``       — ViennaRNA's MFE dot-bracket for a sequence, as
+  the helix/strand/domain records that represent that fold: one helix per
+  stack of the structure, two antiparallel domains on each, and the
+  unpaired stretches between consecutive domains as ``loop_before_nt``.
+  Handler-level because ViennaRNA is the optional ``[chain]`` extra
+  (``Unsupported`` when absent) and the fold is O(n³) on scaffold-length
+  input, which is allowed here and nowhere else. The placement it writes is
+  NOMINAL — straight helices a helix-spacing apart, for ``relax_chain`` to
+  settle — and a shape it does not cover (a bulge, a coaxial stack, an
+  unpaired 5'/3' tail) is refused by name rather than laid out wrongly.
 """
 
 from __future__ import annotations

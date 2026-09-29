@@ -439,6 +439,15 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                     if meta.get("loop_before_nt") is not None
                     else None
                 ),
+                # A placed loop's settled curve (``relax_chain``'s realizer
+                # seam). Absent stays absent — the distinction between "no
+                # curve" and "a curve" is the seam itself, so an empty list
+                # is never reconstructed as one.
+                loop_curve=(
+                    [[float(v) for v in point] for point in meta["loop_curve"]]
+                    if meta.get("loop_curve")
+                    else None
+                ),
             )
         )
     if optics_row is not None:

@@ -68,9 +68,9 @@ revision; the destructive slice of that same roster
 ``remove_threading``, ``disconnect``, by prefix rule off the live
 roster) and the store-aware ops in
 :data:`precis_se.atomic.apply.HANDLER_LEVEL_OPS`
-(``bind_structure``/``unbind_structure``/``generate``/``realize`` — L3,
-they spend compute or assert chemistry) are proposals until a human
-applies them — undoing a decision, not just redoing one, earns the same
+(``bind_structure``/``unbind_structure``/``generate``/``realize``/``join``/
+``relax_chain`` — L3, they spend compute, read the store or assert
+chemistry) are proposals until a human applies them — undoing a decision, not just redoing one, earns the same
 human-Apply gate as spending compute. ``SeHandler.edit(turn=)`` stamps the
 originating chat turn onto the revision row.
 
@@ -633,7 +633,16 @@ twist register, capsule clash, loop reach — where ``chain_loop_short`` at
 ``n=0`` IS the crossover register check, since the kernel's
 ``(n+1)``-bond contour convention gives a zero-nt crossover exactly one
 bond of reach — plus slack, floppy single-stranded spans, dangling
-domains, occupancy and declared Leontis–Westhof pair geometry.
+domains, occupancy and declared Leontis–Westhof pair geometry — and, for
+``chain_floppy``, a handler-side pass that **replaces** the pure rows when
+the design carries a ``material`` persistence-length row
+(:mod:`precis_se.chain.findings`, the first superseding finding in se).
+``relax_chain`` (:mod:`precis_se.chain.relax`) is the one handler-level
+chain op so far: a mechanical settle over the ``layout_chain`` segments —
+hinges at the worm-like-chain stiffness, one-sided loop springs between the
+backbone exits, excluded volume at ``min_gap`` — writing poses back
+``origin='proposed'`` and each placed loop's sampled curve onto its domain
+row's ``meta.loop_curve``.
 Segment↔segment pairs are excluded from :func:`precis_se.validate.
 envelope_overlaps` wholesale, because the kernel's capsule pass answers
 that question for a whole origami at once while the SDF scan would spend

@@ -59,7 +59,16 @@ _STRAND_KEYS = frozenset({"role", "sequence", "nucleic"})
 _SEGMENT_KEYS = frozenset({"role", "helix", "ord", "start", "end"})
 #: Keys a domain row's ``meta`` may carry.
 _DOMAIN_META_KEYS = frozenset(
-    {"ord", "forward", "start", "end", "geometry", "overrides", "loop_before_nt"}
+    {
+        "ord",
+        "forward",
+        "start",
+        "end",
+        "geometry",
+        "overrides",
+        "loop_before_nt",
+        "loop_curve",
+    }
 )
 
 #: Units per ``layout_chain`` segment when the helix declares no lattice
@@ -117,6 +126,16 @@ class DomainSpec:
     geometry: str | None = None
     overrides: dict[str, Any] | None = None
     loop_before_nt: int | None = None
+    #: The sampled curve of the loop that PRECEDES this domain, points in
+    #: metres — written by ``relax_chain`` from the settled backbone exits
+    #: (:func:`precis_se.chain.relax.op_relax_chain`) and by nothing else.
+    #: **Derived, never authored**: ``add_domain``/``set_domain`` do not
+    #: accept it, and a ``set_domain`` edit drops it, because a route that
+    #: has moved no longer has the curve that was settled for it. ``None``
+    #: means *no placed loop* and is the distinction
+    #: ``se-nucleic-realize-export`` reads, so an empty list is never
+    #: stored.
+    loop_curve: list[list[float]] | None = None
 
     @property
     def n_units(self) -> int:
@@ -155,6 +174,8 @@ class DomainSpec:
             out["overrides"] = dict(self.overrides)
         if self.loop_before_nt is not None:
             out["loop_before_nt"] = self.loop_before_nt
+        if self.loop_curve:
+            out["loop_curve"] = [[float(v) for v in point] for point in self.loop_curve]
         return out
 
 

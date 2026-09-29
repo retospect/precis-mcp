@@ -25,6 +25,8 @@ from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import PendingGenerate, finish_generate, prepare_generate
 from precis_se.atomic.join import PendingJoin, finish_join, prepare_join
 from precis_se.atomic.vocab import check_dof_axis_ports
+from precis_se.chain.fold import op_fold_layout
+from precis_se.chain.relax import op_relax_chain
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
@@ -57,6 +59,15 @@ HANDLER_LEVEL_OPS = (
     "generate",
     "join",
     "realize",
+    # The nucleic-acid settle (docs/backlog/se-nucleic-acid.md): handler-level
+    # because it spends compute AND reads the store — a helix's hinge
+    # stiffness comes from a ``material`` persistence-length row when the
+    # design has one (:mod:`precis_se.chain.relax`).
+    "relax_chain",
+    # The ViennaRNA fold (same item): handler-level because it needs the
+    # optional ``[chain]`` extra and spends O(n³) compute on scaffold-length
+    # input (:mod:`precis_se.chain.fold`).
+    "fold_layout",
 )
 
 
@@ -77,7 +88,8 @@ def apply_ops_with_atomic(
     pending_jobs: list[PendingJob] | None = None,
 ) -> str | None:
     """Walk ``ops`` in order, applying the store-aware ops here (the
-    atomic mode's 3 plus ``realize``) and everything else through the
+    atomic mode's 3, ``realize``, ``relax_chain`` and ``fold_layout``) and
+    everything else through the
     ordinary :func:`precis_se.ops.apply_ops`, one op at a time — so a
     ``bind_structure``/``generate``/``realize`` sharing a call with an
     earlier ``add_block``/``add_port`` sees exactly what that op already
@@ -163,6 +175,26 @@ def apply_ops_with_atomic(
             echoes.append(echo)
             if join_pending is not None:
                 pending_joins.append(join_pending)
+            continue
+        if name == "relax_chain":
+            # Store-read but NOT store-write-deferred: the settle only ever
+            # mutates the in-memory tree (poses + the domain rows' loop
+            # curves), so the caller's own ``save_tree`` is the one commit it
+            # is part of — one revision per call, like the pure ops.
+            try:
+                echoes.append(op_relax_chain(store, tree, op))
+            except OpError as exc:
+                raise BadInput(str(exc)) from exc
+            continue
+        if name == "fold_layout":
+            # Store-free, but handler-level: it needs the optional ``[chain]``
+            # extra (``Unsupported`` when absent — a missing dependency is not
+            # a bad op, so that one passes straight through) and it spends
+            # O(n³) compute, which is why it is never auto-applied.
+            try:
+                echoes.append(op_fold_layout(tree, op))
+            except OpError as exc:
+                raise BadInput(str(exc)) from exc
             continue
         if name == "realize":
             strategy = str(op.get("strategy") or "analytic").strip().lower()

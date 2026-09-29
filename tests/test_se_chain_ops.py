@@ -739,6 +739,35 @@ def test_chain_view_reports_the_derived_occupancy(handler: SeHandler) -> None:
     assert "4 nt" in body
 
 
+def test_chain_view_segments_column_says_not_laid_out_before_layout_chain(
+    handler: SeHandler,
+) -> None:
+    # No layout_chain yet: the segments cell must not claim a tiling exists.
+    # The stem is 4 units and the honeycomb's repeat (the default
+    # max_seg_len) is 21, so the one prospective segment is 4 units long —
+    # the cell reports the range's own span, never the cap it was cut with.
+    handler.put(id="hairpin", text=json.dumps({"ops": _hairpin_ops()}))
+    body = handler.get(id="hairpin", view="chain").body
+    assert "not laid out" in body
+    assert "would be 1 × 4 units" in body
+    assert "21 units" not in body
+
+
+def test_chain_view_segments_column_reports_real_tiling_after_layout_chain(
+    handler: SeHandler,
+) -> None:
+    handler.put(
+        id="hairpin",
+        text=json.dumps({"ops": [*_hairpin_ops(), {"op": "layout_chain"}]}),
+    )
+    body = handler.get(id="hairpin", view="chain").body
+    assert "not laid out" not in body
+    # Read off the stored children's own [start, end], so the span is the
+    # helix's 4 units — never the 21-unit cap.
+    assert "1 × 4 units" in body
+    assert "21 units" not in body
+
+
 def test_topology_view_gains_the_domain_rows(handler: SeHandler) -> None:
     handler.put(id="hairpin", text=json.dumps({"ops": _hairpin_ops()}))
     body = handler.get(id="hairpin", view="topology").body

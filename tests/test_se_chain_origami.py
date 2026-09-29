@@ -36,6 +36,7 @@ from precis.store import Store
 from precis_se import persist
 from precis_se import validate as se_validate
 from precis_se.chain.layout import helix_geometry, segment_ranges, units_per_segment
+from precis_se.chain.relax import op_relax_chain
 from precis_se.chain.vocab import SEGMENT_ROLE, chain_role
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
@@ -249,6 +250,30 @@ def test_relayout_replaces_rather_than_accumulates() -> None:
     records = [_chain_of(tree.blocks[n]) for n in coarse]
     assert min(r["start"] for r in records) == 0
     assert max(r["end"] for r in records) == N_UNITS - 1
+
+
+def test_relax_chain_settles_the_whole_rectangle_inside_the_budget() -> None:
+    """The slice-2 acceptance criterion, on the same fixture: 192 bodies,
+    119 loop springs and 168 hinges settle in under 30 s."""
+    tree = _rectangle_tree()
+    apply_ops(tree, [{"op": "layout_chain"}])
+    started = time.perf_counter()
+    echo = op_relax_chain(None, tree, {"op": "relax_chain"})
+    elapsed = time.perf_counter() - started
+    assert elapsed < 30.0, f"relax_chain took {elapsed:.2f} s — {echo}"
+    assert "settled 192 segment bodies over 24 helices" in echo
+    # Every scaffold turn and every staple crossover is a spring: 23 + 96.
+    assert "with 119 loop spring(s)" in echo
+    assert "NOT converged" not in echo, echo
+    # One pose per body, and one curve per loop that has nucleotides in it —
+    # the 96 zero-nt staple crossovers get a curve too (a 0-nt loop is a real
+    # connection with one bond of reach).
+    assert "wrote 192 proposed pose(s) and 119 loop curve(s)" in echo
+    assert all(
+        node.origins.get("pose") == "proposed"
+        for node in tree.blocks.values()
+        if chain_role(node) == SEGMENT_ROLE
+    )
 
 
 def test_drc_view_is_fast_and_never_clears_two_segments(
