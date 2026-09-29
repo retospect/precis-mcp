@@ -71,6 +71,7 @@ from precis.cli import (
     stubs,
     taproot,
     taproot_migrate,
+    taxonomy,
     title_backfill,
     tools,
     users,
@@ -168,6 +169,10 @@ def main() -> None:
 
     if args.cmd == "markup-backfill":
         markup_backfill.run(args)
+        return
+
+    if args.cmd == "taxonomy-bootstrap":
+        taxonomy.run(args)
         return
 
     if args.cmd == "title-backfill":
@@ -377,6 +382,7 @@ def _build_parser() -> argparse.ArgumentParser:
     reconcile.add_parser(sub)
     markup_backfill.add_parser(sub)
     title_backfill.add_parser(sub)
+    taxonomy.add_parser(sub)
     retire_draft_equations.add_parser(sub)
     convert_draft_lists.add_parser(sub)
     resolve_metadata.add_parser(sub)

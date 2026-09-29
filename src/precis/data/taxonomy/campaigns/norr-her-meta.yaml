@@ -1,0 +1,166 @@
+# Campaign configuration for norr-her-meta (docs/backlog/norr-her-meta.md).
+#
+# This file is the ONLY place chemistry is allowed to appear in the taxonomy
+# bootstrap (taxonomy-bootstrap.md AC8). src/precis/taxonomy/ code stays
+# domain-neutral: a number+unit grammar arbitrated by pint, an open-vocabulary
+# discovery prompt, and threshold arithmetic.
+campaign: norr-her-meta
+config_version: 1
+
+snapshot:
+  # v2, frozen 2026-09-28. v1 (sha e4fa6046, same 1664 rows) is superseded
+  # because it could not answer "how many independent PAPERS" -- it carried only
+  # n_supporters, which counts `supports` edges from 4 quest refs, not papers.
+  # The hub->paper relation is `corroborates` (+ `establishes`), paper as src.
+  # v2 adds paper_ref_ids: 620 distinct papers, 0 hubs without one, median ~3
+  # hubs per paper -- so counting hubs would inflate independence ~2.7x.
+  source: prod refs kind=finding tag=campaign:norr-her-survey (draft dr348633)
+  path: ~/.claude/projects/-Users-reto-precis-mcp/norr-her-meta/hubs.v2.jsonl
+  row_count: 1664
+  sha256: ec77e84ff9e6c67eb435c6ce74b5a32b4803386151d668c5d2f304ad5227dc1e
+  pulled_at: 2026-09-28T00:00:00Z
+  # Which JSON field holds the text stage 1 scans, which holds the row id, and
+  # which holds the source paper ids the usage test counts.
+  text_field: title
+  ref_field: ref_id
+  paper_field: paper_ref_ids
+
+# Extra pint definitions. Without these the token is emitted unitless rather
+# than guessed at -- the registry is the arbiter, so anything missing here
+# degrades to "no unit", never to a wrong dimension. Only tokens pint does not
+# already define, plus one deliberate override.
+# `molar`/`M`/`decade` were dropped: pint has them, and redefining a builtin
+# logs a warning and changes meaning for every later parse in the process.
+# `at%` IS overridden because pint's default reading is nonsense — it parses as
+# percent x technical_atmosphere.
+unit_definitions:
+  - "dec = [decade]"
+  - "wt_percent = 0.01 = wt%"
+  - "at_percent = 0.01 = at%"
+
+# Currency tokens never get an SI vector; they carry dimension_kind=currency
+# plus a code and a price base year (taxonomy-bootstrap AC7).
+currency_codes: [USD, EUR, GBP, CHF, JPY, CNY]
+
+# Unit candidates glued to a number (no intervening space) that this domain
+# writes as labels, not units. pint accepts them via its SI-prefix machinery,
+# so there is no parse error to catch: `D` is debye but "2D" is a
+# dimensionality; `15N` is isotope labelling, not 15 newtons; `5Pd@UiO-66` is a
+# loading, not 5 picodays.
+#
+# Every entry here was measured as a false positive on the 1664-hub snapshot
+# (D 16, N 5, Pd 5, C 3, H 1 after the boundary rule). The list is deliberately
+# evidence-only and deliberately NOT "all element symbols": `V` is vanadium AND
+# the volt, and glued `0.5V` is a real potential this corpus is full of, so
+# completing this list by element would destroy the single most common
+# measurement in the campaign. Add an entry when a run shows it, not before.
+#
+# Only the glued form is refused — spaced `0.5 D` and `23 N` still resolve,
+# because that spacing is how the real units get written.
+glued_unit_denylist: [D, N, C, H, Pd]
+
+# Reference-state phrases are their own mention type (stage 1). Generic forms
+# ("vs <token>", "<year> <currency>") live in the library; these are the
+# campaign's electrochemical reference electrodes and their aliases.
+reference_states:
+  - pattern: 'vs\.?\s*RHE'
+    id: rhe
+    label: reversible hydrogen electrode
+  - pattern: 'vs\.?\s*SHE'
+    id: she
+    label: standard hydrogen electrode
+  - pattern: 'vs\.?\s*NHE'
+    id: nhe
+    label: normal hydrogen electrode
+  - pattern: 'vs\.?\s*Ag\s*/\s*AgCl'
+    id: ag-agcl
+    label: silver/silver chloride electrode
+  - pattern: 'vs\.?\s*Hg\s*/\s*HgO'
+    id: hg-hgo
+    label: mercury/mercury oxide electrode
+  - pattern: 'vs\.?\s*SCE'
+    id: sce
+    label: saturated calomel electrode
+  - pattern: 'vs\.?\s*Li\s*/\s*Li\+?'
+    id: li-li
+    label: lithium metal reference
+
+# Normalisation bases. Two yield rates with the same pint dimension but
+# different bases are never pooled (norr-her-meta.md step 2: "per area AND per
+# mass as two entries, never converted"). g h^-1 g^-1 collapses to [time]^-1
+# under pint, which is exactly why the basis is stored, not derived.
+normalisation_bases:
+  - id: per-geometric-area
+    patterns: ['cm\^?-?2', 'cm⁻²', 'geometric area', 'per area']
+  - id: per-catalyst-mass
+    patterns: ['g\^?-?1(?:cat)?', 'g⁻¹', 'per mass', 'mass[- ]normalis?zed']
+  - id: per-ecsa
+    patterns: ['ECSA', 'electrochemically active surface area']
+  - id: per-active-site
+    patterns: ['per site', 'per active site', 'site[- ]normalis?zed']
+  - id: per-metal-loading
+    patterns: ['per (?:mg|g) (?:of )?(?:metal|Pd|Pt|Cu)']
+
+# Conditions every value of a given dimension must carry. This replaces
+# quantbind item 2's hardcoded temperature guard with a registry rule
+# (norr-her-meta.md decisions log, 2026-09-28).
+required_conditions:
+  default: [temperature]
+  by_measurand:
+    faradaic-efficiency: [feed, electrolyte, ph, applied-potential, cell-type]
+    yield-rate: [feed, electrolyte, ph, applied-potential, normalisation-basis]
+    applied-potential: [reference-state, electrolyte, ph]
+    overpotential: [current-density, electrolyte, ph]
+    tafel-slope: [electrolyte, ph, current-density-range]
+    adsorption-free-energy: [functional, reference-state, coverage]
+    limiting-potential: [functional, potential-determining-step]
+    stability: [feed, electrolyte, applied-potential, retention-criterion]
+
+# Categorical qualifiers are stored, never inferred (norr-her-meta.md step 2).
+# `feed` is not a tag in the survey, which is why it has to be one of these.
+categorical_qualifiers:
+  feed: [no-gas, nitrite, nitrate, plasma-nox, n2, none]
+  cell_type: [h-cell, flow-cell, mea, rde, gas-diffusion-electrode, unknown]
+
+# The curated half of the subject axes: the survey's own catalyst: tag
+# vocabulary (24 values observed in the 1664-hub snapshot) plus the class nodes
+# the tags imply. Everything here is seeded `proposed` like every other node;
+# only the usage pass can make it `systematic`.
+domain_classes:
+  axis: material-class
+  nodes:
+    - {id: catalyst, label: catalyst}
+    - {id: oxide, label: metal oxide, parents: [catalyst]}
+    - {id: chalcogenide, label: transition-metal chalcogenide, parents: [catalyst]}
+    - {id: sulfide, label: metal sulfide, parents: [chalcogenide]}
+    - {id: selenide, label: metal selenide, parents: [chalcogenide]}
+    - {id: pnictide, label: metal pnictide, parents: [catalyst]}
+    - {id: phosphide, label: metal phosphide, parents: [pnictide]}
+    - {id: nitride, label: metal nitride, parents: [pnictide]}
+    - {id: carbide, label: metal carbide, parents: [catalyst]}
+    - {id: alloy-bimetallic, label: bimetallic alloy, parents: [catalyst]}
+    - {id: pt-group-other, label: platinum-group metal catalyst, parents: [catalyst]}
+    - {id: pd, label: palladium catalyst, parents: [pt-group-other]}
+    - {id: cu, label: copper catalyst, parents: [catalyst]}
+    - {id: fe-co-ni, label: iron/cobalt/nickel catalyst, parents: [catalyst]}
+    - {id: au-ag, label: gold/silver catalyst, parents: [catalyst]}
+    - {id: sac-on-carbon, label: single-atom catalyst on carbon, parents: [catalyst]}
+    - {id: metal-free-carbon, label: metal-free carbon catalyst, parents: [catalyst]}
+    - {id: framework, label: porous crystalline framework, parents: [catalyst]}
+    - {id: mof, label: metal-organic framework, parents: [framework]}
+    - {id: cof, label: covalent organic framework, parents: [framework]}
+    - {id: ldh, label: layered double hydroxide, parents: [catalyst]}
+    - {id: mxene, label: MXene, parents: [carbide]}
+    - {id: amorphous, label: amorphous catalyst, parents: [catalyst]}
+    - {id: general, label: unspecified catalyst, parents: [catalyst]}
+  # Compound tag values in the snapshot (catalyst:sulfide-mof) map to both.
+  tag_prefix: "catalyst:"
+  tag_separator: "-"
+
+# Site classes for the termination axis's non-facet half.
+site_classes: [terrace, edge, step, kink, corner, vacancy, dual-atom, interface, defect]
+
+# Thresholds. Defaults live in the library (taxonomy-bootstrap.md
+# section Thresholds); a campaign may only tighten them, and any override is
+# recorded in list.vN.yaml.
+thresholds: {}

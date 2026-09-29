@@ -1,0 +1,134 @@
+"""``precis taxonomy-bootstrap`` — generate a campaign's measurand list.
+
+Runs the procedure in `docs/backlog/taxonomy-bootstrap.md` over the snapshot a
+campaign config pins. The list is an output, not a table someone maintains, so
+this verb is the whole interface: same campaign, same salt, same snapshot, same
+list.
+
+``--stage census`` stops before the model pass, which is the only stage that
+costs anything. ``--freeze`` is a separate flag because writing
+``list.vN.yaml`` is an act with consequences — every binding document
+afterwards cites that version.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from precis.taxonomy import discovery
+from precis.taxonomy import run as pipeline
+from precis.taxonomy.config import load_campaign
+
+
+def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Register the ``taxonomy-bootstrap`` subparser on ``sub``."""
+    parser = sub.add_parser(
+        "taxonomy-bootstrap",
+        help="Generate a campaign's measurand list from corpus usage.",
+    )
+    parser.add_argument(
+        "--campaign",
+        default="norr-her-meta",
+        help="Shipped campaign name (precis/data/taxonomy/campaigns/) or a "
+        "path to a campaign YAML.",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=["census", "all"],
+        default="census",
+        help="census: stage 1 only, deterministic and free (default). "
+        "all: stages 1-4, which spends model calls on discovery.",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Directory for stage dumps and the frozen list. Default: a "
+        "'taxonomy' directory beside the snapshot file.",
+    )
+    parser.add_argument(
+        "--salt",
+        default=None,
+        help="A/B split salt. Default: derived from the campaign name and "
+        "snapshot sha, so the split is reproducible without remembering a "
+        "value. Change it only to re-roll the split deliberately.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Scan only the first N snapshot rows (smoke runs).",
+    )
+    parser.add_argument(
+        "--join-sides",
+        default=None,
+        help="Two comma-separated row values that must each clear the "
+        "join threshold, e.g. 'mode:expt-electrochemical,mode:dft'.",
+    )
+    parser.add_argument(
+        "--side-field",
+        default="mode",
+        help="Snapshot field the join sides are read from (default: mode).",
+    )
+    parser.add_argument(
+        "--freeze",
+        action="store_true",
+        help="Write the next list.vN.yaml. Refuses if A/B stability is below "
+        "the signed threshold, and never overwrites an existing version.",
+    )
+    return parser
+
+
+def run(args: argparse.Namespace) -> None:
+    """Execute ``precis taxonomy-bootstrap``."""
+    config = load_campaign(args.campaign)
+    out = (
+        Path(args.out).expanduser()
+        if args.out
+        else config.snapshot_path.parent / "taxonomy"
+    )
+
+    if args.stage == "census":
+        _rows, mentions, digest = pipeline.run_census(config, limit=args.limit)
+        kinds: dict[str, int] = {}
+        with_unit = 0
+        for mention in mentions:
+            kinds[mention.kind] = kinds.get(mention.kind, 0) + 1
+            if mention.raw_unit:
+                with_unit += 1
+        print(f"campaign        {config.campaign}")
+        print(
+            f"snapshot        {config.snapshot.row_count} rows, "
+            f"sha {config.snapshot.sha256[:12]}, "
+            f"pulled {config.snapshot.pulled_at}"
+        )
+        print(f"mentions        {len(mentions)}  digest {digest[:16]}")
+        for kind in sorted(kinds):
+            print(f"  {kind:<22}{kinds[kind]}")
+        print(f"  with a unit           {with_unit}")
+        return
+
+    salt = args.salt or f"{config.campaign}:{config.snapshot.sha256[:16]}"
+    join_sides: tuple[str, str] | None = None
+    if args.join_sides:
+        parts = tuple(p.strip() for p in args.join_sides.split(",") if p.strip())
+        if len(parts) != 2:
+            raise SystemExit("--join-sides needs exactly two comma-separated values")
+        join_sides = (parts[0], parts[1])
+
+    result = pipeline.run_pipeline(
+        config,
+        discovery.router_client(),
+        salt=salt,
+        limit=args.limit,
+        join_sides=join_sides,
+        side_field=args.side_field,
+    )
+    paths = pipeline.write_stage_outputs(result, out)
+    print(result.summary())
+    print(f"stage dumps     {paths[0].parent}")
+    if args.freeze:
+        written = pipeline.freeze_run(result, config, out)
+        print(f"frozen list     {written}")
+    else:
+        print("frozen list     — not written (pass --freeze)")
