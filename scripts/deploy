@@ -344,6 +344,8 @@ _DEPLOY_TREE=""
 _deploy_cleanup() {
     local rc=$?
     if [[ -n "$_DEPLOY_TREE" ]]; then
+        # Unlock first: `worktree remove` refuses a locked tree even with --force.
+        git -C "$REPO_ROOT" worktree unlock "$_DEPLOY_TREE" 2>/dev/null || true
         git -C "$REPO_ROOT" worktree remove --force "$_DEPLOY_TREE" 2>/dev/null \
             || rm -rf "$_DEPLOY_TREE" 2>/dev/null || true
     fi
@@ -410,12 +412,21 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE-1}" && "$REF" =~ ^[0-9a-f]{40}$ ]]; then
         if [[ "$_stale_pid" != "$$" ]] && kill -0 "$_stale_pid" 2>/dev/null; then
             continue
         fi
+        git -C "$REPO_ROOT" worktree unlock "$_stale" 2>/dev/null || true
         git -C "$REPO_ROOT" worktree remove --force "$_stale" 2>/dev/null || true
         rm -rf "$_stale"
     done
     git -C "$REPO_ROOT" worktree add --detach --quiet "$_wt_root" "$REF" 2>/dev/null \
         || die "could not check out ${REF:0:12} into a render worktree at ${_wt_root} — is the commit present in this repo? (fetch it, or set PRECIS_DEPLOY_FROM_TREE= to render from this checkout)"
     _DEPLOY_TREE="$_wt_root"
+    # Lock it with a live-pid reason (2026-09-29). scripts/inflight buckets a
+    # clean detached tree at a sha that is in main as `safe_remove`, and every
+    # sibling session's SessionStart runs scripts/reap-worktrees over that
+    # bucket — which deleted a render tree mid-deploy; ansible then died with a
+    # bare `[Errno 2] No such file or directory` on its next template task. A
+    # `locked … pid N` reason with N alive is exactly what inflight reads as a
+    # live session, so the tree is never a reap candidate while this runs.
+    git -C "$REPO_ROOT" worktree lock --reason "pid $$ scripts/deploy render tree" "$_wt_root" 2>/dev/null || true
     say "rendering deploy/ templates from a detached worktree at ${REF:0:12} (this checkout's HEAD is not used)"
 fi
 

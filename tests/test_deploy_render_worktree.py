@@ -18,6 +18,10 @@ properties that buys:
   (d) a ref-NAME target still renders from the checkout — the playbook
       resolves names itself via ls-remote, so resolving them twice could
       disagree, and the freshness guard still covers that path
+  (e) the worktree is locked with a live-pid reason while ansible runs, so
+      a sibling session's SessionStart `scripts/reap-worktrees` (which
+      removes every clean, merged, sessionless tree — and a detached tree at
+      a sha in main reads as merged) cannot delete it mid-deploy
 
 Same technique as tests/test_deploy_pinned_sha.py: the real script is copied
 byte-for-byte into a throwaway repo at its real relative path and driven with
@@ -28,6 +32,7 @@ actually run against, which is the thing under test.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -92,6 +97,7 @@ _FAKE_ANSIBLE_PLAYBOOK = """#!/usr/bin/env bash
 {
   printf 'PWD=%s\n' "$PWD"
   printf 'STAMP=%s\n' "$(cat ./STAMP 2>/dev/null || echo MISSING)"
+  printf 'LOCKED=%s\n' "$(git worktree list --porcelain 2>/dev/null | grep '^locked' | head -1)"
 } >> "$RENDER_RECORD"
 cat <<'RECAP'
 PLAY RECAP *********************************************************
@@ -260,6 +266,36 @@ def test_the_render_worktree_is_cleaned_up(fx: Fixture, tmp_path: Path) -> None:
     listed = _git(fx.repo, "worktree", "list").stdout
     assert "precis-deploy-tree" not in listed, (
         f"stale worktree registration would block the next deploy:\n{listed}"
+    )
+
+
+def test_the_render_worktree_is_locked_with_a_live_pid_while_ansible_runs(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """(e) The render tree is a clean detached worktree at a sha that is in
+    main — exactly what scripts/inflight buckets `safe_remove` and every
+    sibling session's SessionStart reaper deletes. Observed 2026-09-29: the
+    tree vanished mid-deploy and ansible died with a bare `[Errno 2] No such
+    file or directory` on the next template task. A `locked … pid N` reason
+    with N alive is what inflight reads as a live session, so it is skipped.
+    The lock must also come off again, or `worktree remove` refuses and a
+    stale registration lingers.
+    """
+    fakebin = _make_fake_bin(tmp_path)
+    record = tmp_path / "render.txt"
+    fx.set_marker(fx.gated)
+
+    result = _run_deploy(fx, fakebin, record, fx.gated, "--pinned")
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    rendered = record.read_text(encoding="utf-8")
+    assert re.search(
+        r"^LOCKED=locked pid \d+ scripts/deploy render tree", rendered, re.M
+    ), (
+        f"render worktree was not locked with a live-pid reason while ansible ran:\n{rendered}"
+    )
+    assert "precis-deploy-tree" not in _git(fx.repo, "worktree", "list").stdout, (
+        "locked render worktree was not unlocked+removed afterwards"
     )
 
 
