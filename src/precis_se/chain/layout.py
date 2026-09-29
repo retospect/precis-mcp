@@ -94,7 +94,7 @@ class HelixGeometry:
             backbone_exit(
                 self.units.frames[offset],
                 self.motif,
-                nucleic.STRAND_AZIMUTH_RAD[bool(forward)],
+                nucleic.strand_azimuth_rad(self.base_motif, bool(forward)),
                 self.units.origins[offset],
             ),
             dtype=float,
@@ -109,7 +109,7 @@ class HelixGeometry:
         raw = (
             self.phase0
             + offset * self.motif.twist
-            + nucleic.STRAND_AZIMUTH_RAD[bool(forward)]
+            + nucleic.strand_azimuth_rad(self.base_motif, bool(forward))
         )
         return float((raw + math.pi) % (2.0 * math.pi) - math.pi)
 
@@ -181,6 +181,54 @@ def helix_geometry(node: Any) -> HelixGeometry:
         ),
         gap_authored=gap_authored,
     )
+
+
+def register_offsets(
+    geom: HelixGeometry,
+    neighbour_index: int,
+    *,
+    forward_to_reverse: bool,
+    n_units: int | None = None,
+) -> list[int]:
+    """The offsets of ``geom`` at which a **0-nt crossover** to lattice
+    neighbour ``neighbour_index`` is register-correct — the register rule,
+    answered.
+
+    The condition (:func:`precis_se.chain.nucleic.crossover_phase_rad`) is
+    that the unit's frame normal leads the neighbour's azimuth by
+    ``+-pi/2``, within
+    :func:`precis_se.chain.nucleic.crossover_window_rad`; the ``+-pi/2`` is
+    where the two non-antipodal backbones' errors cancel.
+
+    **Assumes the neighbour shares this helix's ``phase0``**, which is what
+    a lattice design does and all this function can see (it is handed one
+    helix). A pair with different phases is the general case and the answer
+    then comes from the exits themselves — which is what
+    ``chain_loop_short`` reports on.
+
+    Raises :class:`ChainError` for a helix with no lattice — there is no
+    neighbour to face.
+    """
+    if geom.lattice is None:
+        raise ChainError(
+            f"helix {geom.name!r} declares no lattice, so it has no neighbour "
+            "azimuths and no register-correct offsets"
+        )
+    azimuths = nucleic.LATTICES[geom.lattice].kernel().neighbour_azimuths
+    target = (
+        azimuths[neighbour_index]
+        + nucleic.crossover_phase_rad(forward_to_reverse)
+        - geom.phase0
+    )
+    window = nucleic.crossover_window_rad(geom.motif)
+    count = geom.n_units if n_units is None else n_units
+    twist = geom.motif.twist
+    out: list[int] = []
+    for offset in range(count):
+        error = (offset * twist - target + math.pi) % (2.0 * math.pi) - math.pi
+        if abs(error) <= window:
+            out.append(offset)
+    return out
 
 
 def units_per_segment(geom: HelixGeometry, max_seg_len_m: float | None = None) -> int:

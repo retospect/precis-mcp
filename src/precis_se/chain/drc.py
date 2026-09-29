@@ -31,11 +31,15 @@ What each rule is, and why it is at the tier it is:
   exact broad phase). Consecutive segments of one helix and the two
   segments a crossover joins are *supposed* to touch and are skipped.
 - ``chain_loop_short`` (error) — a loop cannot reach: the gap between the
-  two backbone exits exceeds ``(n + 1) * c``, the kernel's
-  ``(n+1)``-bond contour convention. **This IS the crossover register
-  check**: a 0-nt crossover has exactly one bond of reach, so it is
-  feasible only where both helices' backbones face each other, which is
-  what the lattice's crossover period encodes.
+  two backbone exits exceeds ``(n + 1) * c + tol``, the kernel's
+  ``(n+1)``-bond contour convention plus the spec's ``tol``, which is the
+  groove-asymmetry shortfall two *different* helices cannot route around
+  (:func:`precis_se.chain.nucleic.backbone_frustration_m`; zero within one
+  helix). **This IS the crossover register check**: a 0-nt crossover has
+  one bond of reach, so it is feasible only in the narrow azimuthal window
+  where both helices' backbones face the other
+  (:func:`precis_se.chain.nucleic.crossover_window_rad`), and the finding
+  names the landing offsets that would fit.
 - ``chain_loop_slack`` (info) — the opposite end: a loop with far more
   contour than it needs. Free nucleotides, and a floppy joint where the
   design may have meant a rigid one.
@@ -62,6 +66,7 @@ What each rule is, and why it is at the tier it is:
 from __future__ import annotations
 
 import itertools
+import math
 from typing import Any
 
 import numpy as np
@@ -376,6 +381,28 @@ def _capsule_name(index: dict[str, tuple[int, int]], i: int) -> str:
     return f"{owner}.s{i - base}"
 
 
+def _loop_reach(
+    n: int, geom_a: HelixGeometry, geom_b: HelixGeometry
+) -> tuple[float, float]:
+    """``(reach, tol)`` for an ``n``-nt loop from ``geom_a`` to ``geom_b``:
+    the ``(n + 1) * c`` contour, and the spec's ``tol`` term.
+
+    ``tol`` is :func:`precis_se.chain.nucleic.backbone_frustration_m`
+    summed over the two helices, and only when they are **different**
+    helices: it is the shortfall a duplex's own groove asymmetry imposes on
+    two *neighbouring* backbones facing each other, which no routing choice
+    can remove (that function's note). A loop inside one helix — a hairpin
+    — is not facing a neighbour and gets no allowance.
+    """
+    reach = contour(n, geom_b.motif.contour_per_unit)
+    if geom_a.name == geom_b.name:
+        return reach, 0.0
+    tol = nucleic.backbone_frustration_m(
+        geom_a.base_motif
+    ) + nucleic.backbone_frustration_m(geom_b.base_motif)
+    return reach + tol, tol
+
+
 def _loops(
     tables: Any, geoms: dict[str, HelixGeometry]
 ) -> list[tuple[DomainSpec, DomainSpec, float, float]]:
@@ -403,9 +430,46 @@ def _loops(
             q = geom_b.exit(after.entry_offset, after.forward)
             gap = float(np.linalg.norm(q - p))
             n = after.loop_before_nt or 0
-            reach = contour(n, geom_b.motif.contour_per_unit)
+            reach, _tol = _loop_reach(n, geom_a, geom_b)
             out.append((before, after, gap, reach))
     return out
+
+
+def _register_hint(
+    geom_a: HelixGeometry,
+    geom_b: HelixGeometry,
+    before: DomainSpec,
+    after: DomainSpec,
+    reach: float,
+) -> str:
+    """The landing offsets that WOULD reach, for a 0-nt crossover that does
+    not — the register rule stated as an answer rather than a rule.
+
+    Holds the departing exit where it is and walks ``after``'s entry offset
+    outward from the one authored, reporting the nearest two that fit
+    inside ``reach``. On the error path only, so the scan costs nothing in
+    a clean design (the dogfood's recovery took a whole tile rebuild
+    because nothing named these).
+    """
+    entry = after.entry_offset
+    p = geom_a.exit(before.exit_offset, before.forward)
+    hits: list[int] = []
+    for step in range(1, geom_b.n_units):
+        for candidate in (entry - step, entry + step):
+            if not 0 <= candidate < geom_b.n_units:
+                continue
+            q = geom_b.exit(candidate, after.forward)
+            if float(np.linalg.norm(q - p)) <= reach:
+                hits.append(candidate)
+        if len(hits) >= 2:
+            break
+    if not hits:
+        return ""
+    offsets = ", ".join(str(o) for o in sorted(hits))
+    return (
+        f". Register-correct landing offsets on {geom_b.name} nearest this "
+        f"one: {offsets} (authored {entry})"
+    )
 
 
 def _loop_findings(
@@ -418,21 +482,28 @@ def _loop_findings(
     for before, after, gap, reach in loops:
         n = after.loop_before_nt or 0
         subject = f"{after.strand}#{before.ord}→#{after.ord}"
-        geom_b = geoms[after.helix]
+        geom_a, geom_b = geoms[before.helix], geoms[after.helix]
         c = geom_b.motif.contour_per_unit
         if gap > reach:
+            _reach, tol = _loop_reach(n, geom_a, geom_b)
+            allowance = (
+                f" plus {_len(tol)} of groove-asymmetry allowance" if tol else ""
+            )
+            hint = (
+                _register_hint(geom_a, geom_b, before, after, reach) if n == 0 else ""
+            )
+            needed = max(0, math.ceil((gap - tol) / c) - 1)
             findings.append(
                 ValidationIssue(
                     rule="chain_loop_short",
                     subject=subject,
                     detail=(
-                        f"{n} nt cannot bridge {_len(gap)}: the loop's contour "
-                        f"is (n+1)·c = {_len(reach)} at c = {_len(c)} per "
-                        f"nucleotide. Needs at least "
-                        f"{max(0, int(-(-gap // c)) - 1)} nt, or the two exits "
-                        "moved closer — for a 0-nt crossover that means a "
-                        "register-correct offset (the backbones must face each "
-                        "other within one bond)"
+                        f"{n} nt cannot bridge {_len(gap)}: the loop's reach "
+                        f"is (n+1)·c{allowance} = {_len(reach)} at c = "
+                        f"{_len(c)} per nucleotide. Needs at least {needed} "
+                        "nt, or the two exits moved closer — for a 0-nt "
+                        "crossover that means a register-correct offset (both "
+                        "backbones must face the other helix)" + hint
                     ),
                     severity="error",
                 )

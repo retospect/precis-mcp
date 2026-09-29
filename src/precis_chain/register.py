@@ -141,12 +141,21 @@ def crossover_positions(
     phase0: float = 0.0,
     tol: float | None = None,
 ) -> list[tuple[int, int]]:
-    """Units of a helix whose backbone faces a lattice neighbour.
+    """Units of a helix whose **own azimuth** faces a lattice neighbour.
 
     Returns ``(unit_index, neighbour_index)`` pairs for every unit in
     ``range(n)`` whose azimuth ``phase0 + unit * motif.twist`` lands within
     ``tol`` radians of ``lattice.neighbour_azimuths[neighbour_index]``, sorted
     by unit then neighbour.
+
+    The azimuth compared is the unit frame's own — the binding decides what
+    that reference means and where any strand sits relative to it
+    (:func:`precis_chain.fibre.backbone_exit` takes a strand's azimuth as a
+    parameter for the same reason). A caller whose strands are *not* at the
+    unit azimuth calls this once per strand with ``phase0`` shifted by that
+    strand's offset; a caller whose two strands are not antipodal gets two
+    different answers, which is a fact about its chemistry and not about this
+    function.
 
     ``tol`` defaults to :data:`CROSSOVER_WINDOW_FRACTION` times one unit's
     twist — a quarter-unit window, so at most one unit per neighbour per turn

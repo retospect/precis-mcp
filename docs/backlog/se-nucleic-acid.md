@@ -46,7 +46,8 @@ column, a `_DOMAIN_COLS` (with `meta` — `_THREADING_COLS` has none) and a
 kind-filtered load alongside threading.
 
 **Ops, pure** (`precis_se/ops.py::_OPS`; vetting `precis_se/chain/vocab.py`):
-`declare_helix`, `declare_strand`, `add_domain`, `remove_domain`
+`declare_helix`, `declare_strand`, `add_domain`, `set_domain` (edits one
+row in place), `remove_domain`
 (destructive by the `remove_` prefix rule), `clear_chain`, `layout_chain`
 (materialises child segments `<helix>.s<k>`: `cyl:r<..>nmh<..>nm` envelopes
 from `precis_chain.envelope.capsule_pose`, ports `5p`/`3p`; re-run retires
@@ -97,7 +98,8 @@ authored `min_bend_radius` promotes to error.
 `precis_se/drc.py::drc`: `chain_bend` error · `chain_twist_register` warn ·
 `chain_clash` warn (kernel capsule pass over all segments; tol = `min_gap`;
 skips consecutive same-helix segments and pairs sharing a crossover) ·
-`chain_loop_short` error (`|exit_a − exit_b| > (n+1)·c + tol`; a 0-nt
+`chain_loop_short` error (`|exit_a − exit_b| > (n+1)·c + tol`, `tol` =
+`nucleic.backbone_frustration_m` over the two helices; a 0-nt
 crossover therefore requires exits within one bond — this IS the register
 check) · `chain_loop_slack` info · `chain_floppy` info (single-stranded span
 > coded Lp default) · `chain_dangling_domain` error · `chain_occupancy` error
@@ -297,7 +299,7 @@ report `fold_unavailable` in prod.
 
 ### Slice 1 built 2026-09-28 — decisions taken during the build
 
-Storage (`0015_se_chain.sql`), the six pure ops, `derive_pairing`,
+Storage (`0015_se_chain.sql`), the six pure ops of slice 1, `derive_pairing`,
 `chain/nucleic.py`, the pure `chain_*` DRC pass, the segment↔segment
 exclusion and `view='chain'`/`view='topology'` are **built**. Slice 2
 (handler-level `relax_chain`/`fold_layout`, the `[chain]` extra, the
@@ -395,43 +397,14 @@ alone, including the nested `register`/`path`/`overrides` dicts, so the
 slice-1 skill is doing its job. Derived pairing, the `(n+1)·c` contour
 arithmetic and `chain_pairing_geometry` over a G·A mismatch all behaved.
 
-- **The antipodal azimuth is load-bearing on the register rule, which
-  strengthens the case for fixing it first.** The agent reverse-engineered
-  the model from the error text alone and got "the two backbones modelled
-  2.0 nm apart, diametrically opposite, 33.75°/bp" — i.e. it read
-  `STRAND_AZIMUTH_RAD` straight out of the reported gaps. A 0-nt crossover
-  is then only reachable at a 180° phase. So the azimuth fix does not just
-  move a groove width; it moves **which offsets are register-correct**, and
-  therefore every crossover position in every design authored before it.
-  One more reason it precedes `relax_chain` and any stored `loop_curve`.
-- **But its "stricter than caDNAno" claim is confounded — do not act on
-  that number.** The report says caDNAno's square lattice permits crossovers
-  every 8 bp where this tool permits two positions in 32, and calls the model
-  4× too strict. On the square lattice the 8-bp spacing *cycles through the
-  four neighbours*; for one given neighbour pair a crossover recurs about
-  every 32 bp, which is close to the two positions the tool reported. The
-  agent flagged it as unverified itself ("I have not verified which is
-  right"). Left open deliberately: the azimuth fix rests on the groove-width
-  contradiction with `se-nucleic-realize-export`'s 12/22 Å criterion, which
-  is decisive on its own, **not** on this comparison. Reconcile the register
-  model against caDNAno properly as part of that fix, counting per-neighbour.
 - **Slice 2 additions from the dogfood** (each cheap, each a real mistake the
   tool let through or made awkward):
-  - **No `set_domain` op.** Moving one crossover by 1 bp took `clear_chain` +
-    `declare_strand` + re-adding every domain on three strands, 11 ops for a
-    one-base-pair edit, because `remove_domain` is human-Apply gated. Add a
-    pure `set_domain(strand, ord, …)` that edits one domain in place.
   - `chain_pairing_geometry`'s message prints the coded occupancy as an **RNA
     alphabet** (`A·U, C·G, G·C, G·U, U·A, U·G`) to a DNA designer. `T·A` does
     pass — the T/U folding works — but the text reads as if it would not.
   - `view='chain'`'s `segments` column before `layout_chain` shows the default
     `max_seg_len` (a 4-unit helix read `1 × 21 units`), not the tiling it will
     get. Show the prospective tiling or say "not laid out".
-  - The **register rule is documented nowhere**: `chain_loop_short` is
-    described as the crossover register check at n=0, but nothing says which
-    offsets are register-correct for a lattice and pitch. It cost the agent a
-    full tile rebuild, and it was only recoverable because the finding reports
-    the gap in nm rather than just "off register" — keep that number.
 - **Two blockers for an orderable design, now their own items:**
   `docs/backlog/se-chain-insertions-deletions.md` (the refused
   `register.insertions`/`deletions` hook — real sheets need the twist
@@ -448,7 +421,7 @@ arithmetic and `chain_pairing_geometry` over a G·A mismatch all behaved.
 - **The slice-1 skill is written and landed** (`precis-se-chain-help.md`, plus
   a pointer section in `precis-se-help.md` and the `precis-overview.md` se
   row). Slice 2 still owes the `relax_chain`/`fold_layout` rows, but "the
-  skills" are no longer wholly slice-2 work — the six pure ops, both views and
+  skills" are no longer wholly slice-2 work — slice 1's six pure ops, both views and
   the ten findings are documented against the code as built.
 - **A missing finding, newly named:** two domains occupying one offset may
   declare *different* Leontis–Westhof families, and nothing reports it — the
@@ -459,22 +432,140 @@ arithmetic and `chain_pairing_geometry` over a G·A mismatch all behaved.
   corrected to state the silent behaviour. Slice 2 adds the rule (suggested
   `chain_pairing_disagree`, error, pure — both declarations are in the tree).
 
+### Slice 2 pass A built 2026-09-29 — the strand azimuth, and the register table
+
+`STRAND_AZIMUTH_RAD`'s antipodal `(0, π)` is **gone**. What replaced it, and
+the numbers that follow from it:
+
+- **δ = 144° for B-DNA, 220.5° for A-RNA** — the azimuthal separation of
+  the two backbones across the **minor-groove** side
+  (`nucleic.MINOR_GROOVE_SPAN_RAD`), with the two strands symmetric about the
+  frame normal (`−δ/2` forward, `+δ/2` reverse), so the normal is the base
+  pair's pseudo-dyad and bisects the minor groove. A-RNA's exceeds 180°
+  because the A form's minor groove is the **wide** one.
+- **B-DNA's 144° is stated outright by two independent primary sources**, not
+  derived: Kornyshev & Leikin, *Phys. Rev. E* 62:2576 (2000), "phi_s (≈0.4 π)
+  is the azimuthal half-width of the minor groove" (⇒ 0.8 π); and Allahyarov,
+  Löwen & Gompper, *Phys. Rev. E* 68:061903 (2003), whose two-strand
+  parametrisation sets one phosphate strand's `phi_0` to 0° and the other's to
+  **144°**. Bohr & Olsen (arXiv:1102.0761) state the 144°/216° pair directly.
+- **Cross-checked by an independent route and independent data.** The groove
+  widths (B-DNA 5.7/11.7 Å, El Hassan & Calladine's "shortest inter-strand
+  P···P less 5.8 Å" convention) give `δ = 2π·P_minor/(P_minor + P_major)` =
+  **142.8°** — 0.8 % from the cited 144°. And running it the other way:
+  place phosphates at the sourced `P_RADIUS_M` = 8.9 Å (Allahyarov 2003,
+  "centered at a radial coordinate of 8.9 Å") and the model's own two channels
+  come out **11.8 Å and 17.5 Å** against the tabulated 11.5 and 17.5 (+2.7 %,
+  +0.0 %). Both checks are tests, not prose.
+- **A-RNA's 220.5° is the inference, not a citation** — no source states an
+  A-form backbone separation. It is the width-ratio rule over A-RNA's *own*
+  widths, minor 10.8 Å / major 4.7 Å (Šulc et al., *J. Chem. Phys.*
+  140:235102, 2014, in a Curves+-analogous convention), read as **220° ± 10°**.
+  Using A-**DNA**'s 11.0/2.7 Å instead would have given 239° — a 19° error, so
+  the RNA-specific numbers mattered.
+- **The "12 Å / 22 Å" figures imply δ = 127° instead, 17° below the cited
+  value.** They cannot be P···P distances in this convention: 22 Å exceeds the
+  17.8 Å diameter of the phosphate cylinder itself. Their own convention is
+  unstated at source (traceable only to Wikipedia citing Wing et al., *Nature*
+  287:755, 1980, unverified there); 12 + 22 = 34 Å being one pitch makes an
+  axial-span reading likely but that is inference.
+  `se-nucleic-realize-export`'s criterion needs to name its convention.
+- **`phase0` is re-referenced.** It used to be the forward backbone's own
+  azimuth; it is now the minor-groove bisector's. A design carries over
+  unchanged under **`phase0 += π/2`**, which preserves every register-correct
+  offset in *both* crossover directions — that is how both test fixtures
+  migrated.
+- **A new threshold: the spec's `tol`.** `chain_loop_short` compares against
+  `(n+1)·c + tol` with `tol = Σ r(1 − sin(δ/2))` over the two helices
+  (`nucleic.backbone_frustration_m`; 49 pm each for B-DNA, 98 pm for a
+  B-DNA pair, **zero** within one helix and zero for antipodal backbones).
+  A duplex's two backbones cannot both face a neighbour at once, and the
+  shortfall is a fact about B-DNA, not about the routing — the same argument
+  as `HELIX_SPACING_MIN_M`. **The literature says so in as many words**:
+  Rothemund's origami supplement (*Nature* 440:297, 2006) — "at crossover
+  points, strand backbone positions should fall at the tangent point between
+  helices", but "because of the non-integral number of bases in a single turn,
+  and the major-minor groove angle, it is not possible to put all crossovers
+  in this optimal orientation", so designs "invariably incorporate features
+  that should cause strain". Without the allowance a register-correct
+  crossover sits 32 pm inside a 630 pm threshold, the azimuthal window
+  collapses from ±9.8° (antipodal) to ±5.2°, and the honeycomb's second
+  crossover family — the ±5 bp one, 8.57° off — stops being reachable at all.
+  With it the window is ±10.9° and both families reach.
+- **Measured reaches moved as expected**: a register-correct 0-nt crossover's
+  exit gap is **0.598 nm**, not slice 1's 0.500 nm (= 2.5 − 2 r sin(δ/2), not
+  2.5 − 2 r); a 1 bp shift gives 0.890 nm, not 0.932 nm.
+
+**The per-neighbour register table** (B-DNA, every helix at the same
+`phase0 = 0`, offsets mod the lattice repeat, computed from the exits and
+cross-checked against the closed form). This replaces the dogfood's
+confounded "4× stricter than caDNAno" claim, which counted the *aggregate*
+crossover period against a *per-neighbour* one:
+
+| lattice | neighbour | fwd→rev | gap | rev→fwd | gap |
+|---|---|---|---|---|---|
+| honeycomb (repeat 21) | +30° (`col+1`) | **14** | 0.598 nm | 9, 19 | 0.681 nm |
+| | +150° (`col−1`) | **7** | 0.598 nm | 2, 12 | 0.681 nm |
+| | −90° (`row−1`) | **0** | 0.598 nm | 5, 16 | 0.681 nm |
+| square (repeat 32) | 0° (`col+1`) | 24 | 0.598 nm | 8 | 0.598 nm |
+| | +90° (`row+1`) | 16 | 0.598 nm | 0 | 0.598 nm |
+| | 180° (`col−1`) | 8 | 0.598 nm | 24 | 0.598 nm |
+| | −90° (`row−1`) | 0 | 0.598 nm | 16 | 0.598 nm |
+
+- **Per neighbour, one offset per lattice repeat — 21 bp honeycomb, 32 bp
+  square.** Aggregated over the 3 (resp. 4) neighbours that is one crossover
+  site every 7 (resp. 8) bp, which is `LatticeSpec.crossover_period` exactly.
+  The model was never 4× stricter than caDNAno; 8 bp *is* 32 bp divided by
+  four neighbours.
+- **The fix validates itself on the honeycomb.** Corrected, one crossover
+  direction's offsets are **0, 7, 14 — caDNAno's own honeycomb crossover
+  positions, at zero azimuthal error**. Antipodal put them at 1, 8, 15, each
+  4.29° off register (gap 0.527 nm against a 0.500 nm floor). The square
+  lattice does not discriminate: both models give {0, 8, 16, 24}, only
+  permuted across the neighbours, because 90° is a whole multiple of the
+  square repeat's 11.25° azimuth grid and 30°/150° are not multiples of the
+  honeycomb's 17.14°.
+- **New, and the antipodal model hid it: the two crossover directions are no
+  longer one condition.** `phase0 + k·twist ≡ azimuth ± π/2`, `+` for
+  forward→reverse and `−` for reverse→forward
+  (`nucleic.crossover_phase_rad`), so the two families are half a turn apart.
+  On the honeycomb (an odd 2 turns per 21 bp) only one family lands on integer
+  offsets; the other gets two strained offsets per turn at 0.681 nm, **±5 bp
+  from the exact ones** — which is exactly the documented relationship: Douglas
+  et al., *NAR* 37:5001 (2009), "scaffold crossovers … five base pairs, or half
+  a turn, upstream or downstream of allowed crossover positions for the
+  associated staple helices", and Rothemund 2006's "a crossover involving
+  staple strands is in tension with an adjacent crossover involving the
+  scaffold strand". The model reproduced the 5 bp and the tension without
+  being told either.
+  **Do not read the two directions as "scaffold" and "staple"**: a strand
+  crossing `h0→h1` forward→reverse crosses `h1→h2` reverse→forward, so both
+  strand types use both families. The sign of δ swaps which family is the
+  exact one and nothing in this tier pins it; what is pinned is the 5 bp
+  separation.
+- **One unchased caveat, recorded so nobody re-derives it.** Ke et al. 2009
+  give the square lattice's neighbour walk as "north 0 bp → west 8 → south 16
+  → east 24", i.e. the crossover site advances **+90° per 8 bp**; the model
+  advances −90° (offsets 0/8/16/24 serve south/west/north/east). Magnitudes
+  all agree — 90° per 8 bp, four neighbours, 32 bp per neighbour — and a
+  reflection maps both lattices onto themselves (the honeycomb's 30°/150°/270°
+  set is symmetric about the y axis), so this is a viewing/handedness
+  convention in `site_position`, not an observable. Chase it only if an
+  exporter has to agree with caDNAno column-for-column.
+- **The kernel needed no change** beyond `register.crossover_positions`'s
+  docstring, which said "backbone" where it means the unit's own azimuth.
+  `fibre.backbone_exit` already took the azimuth as a parameter, and no
+  chemistry entered `src/precis_chain/`.
+
+Also in this pass: the pure **`set_domain`** op (`strand` + `ord` select the
+row; any `add_domain` field except `ord` changes it, absent meaning
+unchanged, explicit `null` clearing) — the dogfood's 11-ops-for-1-bp
+complaint, now one op that runs in `design_turn`'s dry run; and the register
+rule documented in `precis-se-chain-help.md`, with `chain_loop_short` now
+naming the landing offsets that would reach.
+
 ### Slice 1 rulings on the build's three open questions (2026-09-28)
 
-- **Strand azimuth must be fixed before slice 2 writes `meta.loop_curve`,
-  and it is not merely an atoms-tier number.** `nucleic.STRAND_AZIMUTH_RAD`
-  is antipodal `(0, π)`, which puts the two backbones diametrically opposite
-  and therefore makes the two grooves *identical in width*. That directly
-  contradicts a committed acceptance criterion in the child item
-  `se-nucleic-realize-export` ("minor/major groove 12/22 ± 1 Å from P
-  positions"), which no choice of atom template can satisfy from antipodal
-  exits. Slice 2 replaces it with the real B-DNA minor-groove pair, cited to
-  the Arnott fibre model, **before** `relax_chain` stores a single loop
-  curve — every crossover-reach and `chain_loop_short` number derives from
-  the exit azimuth, so fixing it after a consumer exists means re-tuning the
-  same thresholds twice. Slice 1's measured reaches (0.500 nm crossover,
-  2.52 nm for 3 nt, 13.23 nm for 20 nt) are expected to move; their tests
-  re-derive, they do not encode the old numbers as gospel. Decided.
 - **The four-helix ribbon fixture is accepted for this criterion, but the
   impossibility argument behind it is NOT established.** The build reported
   that a radiating four-arm junction "cannot" have four register-correct

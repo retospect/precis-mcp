@@ -50,11 +50,14 @@ N_UNITS = 256
 SQUARE_TWIST = 2.0 * math.pi * 3 / 32
 #: The scaffold turns at the far end of every helix, offset 255.
 TURN = N_UNITS - 1
-#: ``phase0``, chosen so that at offset :data:`TURN` a forward strand's
-#: backbone faces world ``+y`` — the ``row + 1`` neighbour on the square
-#: lattice, which is the direction the rectangle stacks in. Every helix
-#: shares it, so every crossover rule below is one piece of arithmetic.
-PHASE0 = math.pi / 2 - TURN * SQUARE_TWIST
+#: ``phase0``, chosen so that offset :data:`TURN` is register-correct for a
+#: forward→reverse crossover to world ``+y`` — the ``row + 1`` neighbour on
+#: the square lattice, which is the direction the rectangle stacks in. The
+#: rule is ``phase0 + k * twist == azimuth + pi/2``
+#: (:func:`precis_se.chain.nucleic.crossover_phase_rad`) and the ``+y``
+#: azimuth is ``pi/2``. Every helix shares it, so every crossover rule
+#: below is one piece of arithmetic.
+PHASE0 = math.pi - TURN * SQUARE_TWIST
 #: Staple crossover offsets. A staple runs antiparallel to the scaffold, so
 #: on an even helix (scaffold forward) it is reverse and leaves from its
 #: ``start``; the offsets at which a reverse backbone faces ``+y`` are

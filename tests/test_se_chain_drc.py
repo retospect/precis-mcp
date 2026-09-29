@@ -23,7 +23,7 @@ from precis_chain.loop import contour
 from precis_chain.register import commensurate
 from precis_se.chain import nucleic
 from precis_se.chain.drc import LOOP_SLACK_FRACTION, findings
-from precis_se.chain.layout import helix_geometry
+from precis_se.chain.layout import helix_geometry, register_offsets
 from precis_se.chain.pairing import (
     PAIRED,
     SINGLE,
@@ -40,6 +40,12 @@ SQUARE_TWIST = 2.0 * math.pi * 3 / 32
 #: which a helix's forward backbone can face its ``+x`` neighbour when
 #: ``phase0`` is set to put it there.
 XOVER = 7
+#: ``phase0`` for every helix in the ribbon: the value that makes offset
+#: :data:`XOVER` register-correct for a forward→reverse crossover to the
+#: ``+x`` neighbour. The rule is ``phase0 + k * twist == azimuth + pi/2``
+#: (:func:`precis_se.chain.nucleic.crossover_phase_rad`) with the ``+x``
+#: neighbour at azimuth 0.
+JUNCTION_PHASE0 = math.pi / 2 - XOVER * SQUARE_TWIST
 
 
 def _rules(tree: SeTree) -> list[str]:
@@ -64,12 +70,12 @@ def _junction(shift: int = 0) -> SeTree:
 
     The register arithmetic the fixture is built on, and the reason the
     offsets are what they are: with every helix's ``phase0`` set to
-    ``-XOVER * twist``, a forward strand's backbone faces world ``+x`` (its
-    ``col + 1`` neighbour) and a reverse strand's faces ``-x`` (its
-    ``col - 1`` neighbour) at every offset ``≡ XOVER (mod 32)`` — 32 being
-    the square lattice's 3-turn repeat, so offsets 7 and 39 both qualify and
-    nothing in between does. Each strand is one crossover: two 8-unit
-    antiparallel domains on a neighbouring pair.
+    :data:`JUNCTION_PHASE0`, the two backbones of a helix and of its
+    ``col + 1`` neighbour come as close as the duplex geometry lets them at
+    every offset ``≡ XOVER (mod 32)`` — 32 being the square lattice's
+    3-turn repeat, so offsets 7 and 39 both qualify and nothing in between
+    does. Each strand is one crossover: two 8-unit antiparallel domains on
+    a neighbouring pair.
 
     ``shift`` displaces ONE crossover's landing offset by that many base
     pairs — the acceptance criterion's "shifting one crossover by 1 bp".
@@ -87,7 +93,7 @@ def _junction(shift: int = 0) -> SeTree:
                 "lattice": "square",
                 "row": 0,
                 "col": col,
-                "phase0": f"{-XOVER * SQUARE_TWIST} rad",
+                "phase0": f"{JUNCTION_PHASE0} rad",
             }
         )
     # (strand, helix it leaves, helix it lands on, base offset of both
@@ -152,9 +158,21 @@ def test_four_way_junction_is_clean_and_its_crossovers_reach() -> None:
     )
 
     # The reason there is no chain_loop_short: each crossover's two backbone
-    # exits are within ONE bond of each other. Recomputed from the kernel.
+    # exits are within one bond PLUS the groove-asymmetry allowance of each
+    # other. Recomputed from the kernel and the motif's own delta.
+    base = nucleic.MOTIFS["B-DNA"]
     geoms = {n: helix_geometry(tree.blocks[n]) for n in ("h0", "h1")}
-    reach = contour(0, nucleic.SS_CONTOUR_PER_NT_M)
+    reach = contour(0, nucleic.SS_CONTOUR_PER_NT_M) + 2 * (
+        nucleic.backbone_frustration_m(base)
+    )
+    #: The closest two neighbouring duplexes can bring facing backbones:
+    #: centre spacing less ``2 r sin(delta/2)``. NOT ``2.5 - 2 x 1.0`` —
+    #: that is the antipodal answer, and the difference between the two is
+    #: exactly the allowance above.
+    floor = nucleic.HELIX_SPACING_M - 2 * base.radius * math.sin(
+        nucleic.minor_groove_span_rad(base) / 2
+    )
+    assert floor > nucleic.HELIX_SPACING_M - 2 * base.radius
     for offset in (XOVER, XOVER + 32):
         gap = float(
             np.linalg.norm(
@@ -162,11 +180,8 @@ def test_four_way_junction_is_clean_and_its_crossovers_reach() -> None:
             )
         )
         assert gap < reach, (offset, gap, reach)
-        # The gap IS the lattice's surface separation: 2.5 nm of centre
-        # spacing less the two 1.0 nm duplex radii.
-        assert gap == pytest.approx(
-            nucleic.HELIX_SPACING_M - 2 * nucleic.B_DNA_RADIUS_M, rel=1e-9
-        )
+        # Register-correct means the gap sits ON that floor.
+        assert gap == pytest.approx(floor, rel=1e-9)
 
 
 def test_shifting_one_crossover_by_one_bp_fires_loop_short() -> None:
@@ -178,16 +193,283 @@ def test_shifting_one_crossover_by_one_bp_fires_loop_short() -> None:
 
     # The number behind the finding: one base pair of displacement rolls the
     # landing backbone 3/32 of a turn round the duplex and a rise along it,
-    # which is past the single bond a 0-nt crossover has.
+    # which is past the single bond (plus allowance) a 0-nt crossover has.
+    base = nucleic.MOTIFS["B-DNA"]
     h0 = helix_geometry(tree.blocks["h0"])
     h1 = helix_geometry(tree.blocks["h1"])
     gap = float(np.linalg.norm(h0.exit(XOVER + 32, True) - h1.exit(XOVER + 33, False)))
-    reach = contour(0, nucleic.SS_CONTOUR_PER_NT_M)
+    reach = contour(0, nucleic.SS_CONTOUR_PER_NT_M) + 2 * (
+        nucleic.backbone_frustration_m(base)
+    )
     assert gap > reach, (gap, reach)
-    assert gap == pytest.approx(0.932e-9, rel=5e-3)
+    # Re-derived, not remembered. At a register-correct offset each exit
+    # misses pointing at the other helix by ``a = (pi - delta)/2`` — equal
+    # and opposite, so the two errors cancel in the transverse direction.
+    # Moving the LANDING offset by one bp rolls only that exit, by one
+    # unit's twist, so the cancellation breaks and the helix also rises.
+    a = (math.pi - nucleic.minor_groove_span_rad(base)) / 2
+    e_leave, e_land = a, -a + SQUARE_TWIST
+    r, s = base.radius, nucleic.HELIX_SPACING_M
+    expected = math.hypot(
+        math.hypot(
+            s - r * math.cos(e_leave) - r * math.cos(e_land),
+            r * (math.sin(e_leave) + math.sin(e_land)),
+        ),
+        h1.motif.rise,
+    )
+    assert gap == pytest.approx(expected, rel=1e-9)
+    # The finding names the landing offsets that WOULD reach, so an agent
+    # does not have to binary-search 32 of them.
+    assert "Register-correct landing offsets on h1" in short[0].detail
+    assert "(authored 40)" in short[0].detail
+
+
+# ── the grooves ─────────────────────────────────────────────────────────
+
+
+def _channels(geom: Any, *, ref: int = 24, span: int = 20) -> list[tuple[float, float]]:
+    """The duplex's two helical channels, measured from the model's own
+    backbone exits: ``[(width, relative azimuth), …]``, narrower first.
+
+    A channel is the trench between the two backbone strands, and its width
+    is the shortest distance from one strand to the other. So: hold the
+    forward strand's exit at offset ``ref`` and walk the reverse strand's
+    exits two turns either side. The distance is a **local minimum** once
+    per turn, wherever the two strands come round to the same azimuth (the
+    axial term pulls each minimum in from there), and consecutive minima
+    are the two different channels. The reverse exit's azimuth relative to
+    the forward one says which: inside the arc that holds the frame normal
+    (``0 < rel < delta``) is the **minor** groove, by the convention
+    :func:`precis_se.chain.nucleic.strand_azimuth_rad` sets. The relative
+    azimuth comes back in ``[0, 2 pi)``, not ``(-pi, pi]``, because A-RNA's
+    delta is itself over pi and a half-open-at-pi wrap would cut its minor
+    arc in two.
+    """
+    p = geom.exit(ref, True)
+    base = geom.azimuth(ref, True)
+    walk = []
+    for offset in range(ref - span, ref + span + 1):
+        if offset == ref:
+            continue
+        rel = geom.azimuth(offset, False) - base
+        walk.append(
+            (
+                float(np.linalg.norm(geom.exit(offset, False) - p)),
+                rel % (2 * math.pi),
+            )
+        )
+    minima = [
+        walk[i]
+        for i in range(1, len(walk) - 1)
+        if walk[i - 1][0] > walk[i][0] < walk[i + 1][0]
+    ]
+    minima.sort()
+    return minima[:2]
+
+
+def _free_helix(motif_name: str, n_units: int = 64) -> Any:
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "h"},
+            {
+                "op": "declare_helix",
+                "block": "h",
+                "n_units": n_units,
+                "motif": motif_name,
+                "nucleic": "RNA" if motif_name == "A-RNA" else "DNA",
+                "path": {
+                    "waypoints": [["0 nm", "0 nm", "0 nm"], ["0 nm", "0 nm", "40 nm"]]
+                },
+            },
+        ],
+    )
+    return helix_geometry(tree.blocks["h"])
+
+
+def test_the_two_grooves_are_different_widths_and_the_minor_one_is_named() -> None:
+    """The test the antipodal azimuth pair could not pass.
+
+    At ``delta = pi`` the two backbones are half a turn out of phase, so
+    ``f(m) = 2 r^2 (1 + cos(m * twist)) + (m * rise)^2`` is EVEN in ``m``
+    and the two channels are equal by construction — B-DNA with no minor
+    groove. That is what this excludes.
+    """
+    for name, minor_is_narrow in (("B-DNA", True), ("A-RNA", False)):
+        motif = nucleic.MOTIFS[name]
+        delta = nucleic.minor_groove_span_rad(motif)
+        geom = _free_helix(name)
+        (d0, rel0), (d1, rel1) = _channels(geom)
+        # Minor = the channel whose reverse exit sits inside the arc that
+        # holds the frame normal, i.e. the arc of width delta.
+        minor, major = (d0, d1) if 0 < rel0 < delta else (d1, d0)
+        assert 0 < (rel0 if 0 < rel0 < delta else rel1) < delta
+        assert minor != pytest.approx(major, rel=1e-6)
+        assert (minor < major) is minor_is_narrow, (name, minor, major)
+        # A-form's minor groove is the wide shallow one, which is the whole
+        # reason this is keyed on "minor" and not on "narrow".
+        assert (delta < math.pi) is minor_is_narrow
+
+
+def test_the_cited_span_agrees_with_the_one_the_groove_widths_imply() -> None:
+    """Two independent routes to δ, which must not drift apart.
+
+    B-DNA's 144° is cited outright (Kornyshev & Leikin 2000; Allahyarov et
+    al. 2003). The groove widths are a different measurement entirely, and
+    :func:`precis_se.chain.nucleic.minor_groove_span_from_widths` turns them
+    into 142.8°. Agreement to about a degree is what makes the coded value
+    trustworthy; edit either input and this fails.
+    """
+    implied = nucleic.minor_groove_span_from_widths(*nucleic.GROOVE_WIDTH_M["B-DNA"])
+    cited = nucleic.MINOR_GROOVE_SPAN_RAD["B-DNA"]
+    assert cited == pytest.approx(math.radians(144.0))
+    assert abs(math.degrees(cited - implied)) < 1.5
+    # A-RNA has no cited value — its entry IS the width-ratio inference, and
+    # it is past pi, which is the A form's reversed groove order.
+    assert nucleic.MINOR_GROOVE_SPAN_RAD["A-RNA"] == pytest.approx(
+        nucleic.minor_groove_span_from_widths(*nucleic.GROOVE_WIDTH_M["A-RNA"])
+    )
+    assert nucleic.MINOR_GROOVE_SPAN_RAD["A-RNA"] > math.pi
+
+
+def test_the_modelled_groove_widths_recover_the_tabulated_ones() -> None:
+    """δ is a *checked* number: put the phosphates where the fibre models
+    put them and the model's own channels reproduce the tabulated widths.
+
+    The production exits sit on the duplex surface (1.0 nm), not at the
+    phosphorus (0.89 nm), so this rebuilds the motif at
+    :data:`precis_se.chain.nucleic.P_RADIUS_M` — the one place the two
+    radii are compared. B-DNA lands +2.7 % / +0.0 %; A-RNA +2.7 % / +5.3 %
+    off a phosphorus radius that is itself an estimate, which is why its
+    delta carries the wider uncertainty.
+    """
+    from dataclasses import replace
+
+    for name, tol in (("B-DNA", 0.04), ("A-RNA", 0.08)):
+        base = nucleic.MOTIFS[name]
+        p_motif = replace(base, radius=nucleic.P_RADIUS_M[name])
+        geom = _free_helix(name)
+        object.__setattr__(geom, "motif", p_motif)
+        object.__setattr__(geom, "base_motif", p_motif)
+        delta = nucleic.minor_groove_span_rad(p_motif)
+        (d0, rel0), (d1, rel1) = _channels(geom)
+        minor, major = (d0, d1) if 0 < rel0 < delta else (d1, d0)
+        want_minor, want_major = nucleic.GROOVE_WIDTH_M[name]
+        assert minor == pytest.approx(
+            want_minor + nucleic.PHOSPHATE_VDW_DIAMETER_M, rel=tol
+        ), (name, minor)
+        assert major == pytest.approx(
+            want_major + nucleic.PHOSPHATE_VDW_DIAMETER_M, rel=tol
+        ), (name, major)
 
 
 # ── register ────────────────────────────────────────────────────────────
+
+
+def test_register_correct_offsets_recur_at_the_lattice_repeat_per_neighbour() -> None:
+    """The per-neighbour register table, recomputed from the exits.
+
+    The claim this replaces ("the model is 4× stricter than caDNAno, two
+    positions in 32 against one every 8 bp") was a counting error: the
+    lattice's documented crossover period is the **aggregate over all
+    neighbours**. Per neighbour it is one offset per lattice repeat, and
+    ``repeat / neighbours`` is exactly the documented period.
+    """
+    for kind, spec in nucleic.LATTICES.items():
+        motif = nucleic.lattice_motif(nucleic.MOTIFS["B-DNA"], kind)
+        n = 3 * spec.pitch_units
+        tree = SeTree()
+        ops: list[dict[str, Any]] = []
+        for i, (row, col) in enumerate(((0, 0), (0, 1))):
+            ops.append({"op": "add_block", "name": f"g{i}"})
+            ops.append(
+                {
+                    "op": "declare_helix",
+                    "block": f"g{i}",
+                    "n_units": n,
+                    "lattice": kind,
+                    "row": row,
+                    "col": col,
+                    "phase0": "0 rad",
+                }
+            )
+        apply_ops(tree, ops)
+        geom = helix_geometry(tree.blocks["g0"])
+        reach = contour(0, motif.contour_per_unit) + 2 * (
+            nucleic.backbone_frustration_m(nucleic.MOTIFS["B-DNA"])
+        )
+        per_neighbour = []
+        for k in range(len(spec.neighbours)):
+            offsets = register_offsets(geom, k, forward_to_reverse=True, n_units=n)
+            assert offsets, (kind, k)
+            gaps = {offsets[i + 1] - offsets[i] for i in range(len(offsets) - 1)}
+            assert gaps == {spec.pitch_units}, (kind, k, offsets)
+            per_neighbour.append(offsets[0])
+        # Aggregated over the neighbours, one crossover site every
+        # ``repeat / neighbours`` offsets — the lattice's own number.
+        sites = sorted(o % spec.pitch_units for o in per_neighbour)
+        steps = {sites[i + 1] - sites[i] for i in range(len(sites) - 1)}
+        assert steps == {spec.crossover_period}, (kind, sites)
+        assert spec.pitch_units // len(spec.neighbours) == spec.crossover_period
+
+        # And the analytic rule agrees with the exits themselves: the +x
+        # neighbour of g0 is g1, and the offsets where their two backbones
+        # come within reach are exactly the rule's.
+        other = helix_geometry(tree.blocks["g1"])
+        index = spec.neighbours.index((1.0, 0.0)) if kind == "square" else None
+        if index is not None:
+            brute = [
+                offset
+                for offset in range(n)
+                if float(
+                    np.linalg.norm(geom.exit(offset, True) - other.exit(offset, False))
+                )
+                <= reach
+            ]
+            assert brute == register_offsets(
+                geom, index, forward_to_reverse=True, n_units=n
+            )
+
+
+def test_the_two_crossover_directions_are_no_longer_one_condition() -> None:
+    """With ``delta != pi`` a forward→reverse crossover and a
+    reverse→forward one no longer admit the same offsets — they are half a
+    turn apart, and on the honeycomb (an odd number of turns per repeat)
+    only the forward→reverse family lands on integers at all, which is why
+    it is the one that coincides with caDNAno's 0/7/14."""
+    assert nucleic.crossover_phase_rad(True) - nucleic.crossover_phase_rad(
+        False
+    ) == pytest.approx(math.pi)
+    tree = SeTree()
+    apply_ops(
+        tree,
+        [
+            {"op": "add_block", "name": "h"},
+            {
+                "op": "declare_helix",
+                "block": "h",
+                "n_units": 42,
+                "lattice": "honeycomb",
+                "row": 0,
+                "col": 0,
+                "phase0": "0 rad",
+            },
+        ],
+    )
+    geom = helix_geometry(tree.blocks["h"])
+    spec = nucleic.LATTICES["honeycomb"]
+    scaffold = sorted(
+        register_offsets(geom, k, forward_to_reverse=True)[0] % spec.pitch_units
+        for k in range(len(spec.neighbours))
+    )
+    assert scaffold == [0, 7, 14]
+    for k in range(len(spec.neighbours)):
+        staple = register_offsets(geom, k, forward_to_reverse=False)
+        assert staple
+        assert set(staple).isdisjoint(
+            register_offsets(geom, k, forward_to_reverse=True)
+        )
 
 
 def _honeycomb_helix(n_units: int) -> SeTree:
@@ -287,11 +569,17 @@ def _loop_fixture(loop_nt: int) -> SeTree:
     them, so the two backbone exits face each other across exactly 3 nm
     (5 nm of axis separation less the two 1 nm radii).
 
-    ``phase0 = pi`` on both puts the relevant exits on the inward face at
-    offset 0 — the reverse domain on ``h0`` leaves at its ``start`` and the
-    forward one on ``h1`` enters at its ``start``, so both are unit 0 and
-    the loop has no axial component at all.
+    Each helix gets the ``phase0`` that points the relevant exit at the
+    other helix at offset 0 — the reverse domain on ``h0`` leaves at its
+    ``start`` and the forward one on ``h1`` enters at its ``start``, so both
+    are unit 0 and the loop has no axial component at all. The **two values
+    differ**, by ``pi + delta``: with non-antipodal backbones a
+    reverse→forward pair cannot have both exits facing at one shared phase
+    (:func:`precis_se.chain.nucleic.crossover_phase_rad`), which is exactly
+    the direction-dependence the antipodal model hid.
     """
+    half = nucleic.minor_groove_span_rad(nucleic.MOTIFS["B-DNA"]) / 2
+    phases = (-half, math.pi + half)
     tree = SeTree()
     ops: list[dict[str, Any]] = []
     for i, x in enumerate((0.0, 5.0)):
@@ -301,7 +589,7 @@ def _loop_fixture(loop_nt: int) -> SeTree:
                 "op": "declare_helix",
                 "block": f"h{i}",
                 "n_units": 8,
-                "phase0": f"{math.pi} rad",
+                "phase0": f"{phases[i]} rad",
                 "path": {
                     "waypoints": [
                         [f"{x} nm", "0 nm", "0 nm"],

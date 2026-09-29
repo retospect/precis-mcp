@@ -104,24 +104,31 @@ def _hairpin_ops() -> list[dict[str, Any]]:
 # ── the op roster ───────────────────────────────────────────────────────
 
 
-def test_the_six_ops_are_on_the_live_roster() -> None:
+def test_the_seven_pure_ops_are_on_the_live_roster() -> None:
     assert {
         "declare_helix",
         "declare_strand",
         "add_domain",
+        "set_domain",
         "remove_domain",
         "clear_chain",
         "layout_chain",
     } <= known_ops()
 
 
-def test_remove_domain_is_destructive_by_the_prefix_rule() -> None:
+def test_remove_domain_is_destructive_but_set_domain_is_not() -> None:
     from precis_web.design_turn import DESTRUCTIVE_SE_OPS
 
     assert "remove_domain" in DESTRUCTIVE_SE_OPS
     # ``clear_chain`` is not, matching ``clear_dof``/``clear_build_frame``:
     # un-declaring a facet is redoing a decision, not undoing one.
     assert "clear_chain" not in DESTRUCTIVE_SE_OPS
+    # ``set_domain`` exists precisely so a 1 bp register edit needs no human
+    # Apply, so it must be neither destructive nor handler-level.
+    from precis_se.atomic.apply import HANDLER_LEVEL_OPS
+
+    assert "set_domain" not in DESTRUCTIVE_SE_OPS
+    assert "set_domain" not in HANDLER_LEVEL_OPS
 
 
 # ── units ───────────────────────────────────────────────────────────────
@@ -440,6 +447,116 @@ def test_ordinals_are_assigned_and_close_up_after_a_removal() -> None:
 
     with pytest.raises(OpError, match="no domain #7"):
         apply_ops(tree, [{"op": "remove_domain", "strand": "s", "ord": 7}])
+
+
+def _tile(phase0: float) -> SeTree:
+    """A four-helix square-lattice ribbon with four register-correct 0-nt
+    crossovers — the dogfood's tile, rebuilt here so the ``set_domain`` test
+    hits the gap the dogfood hit (moving one crossover by 1 bp)."""
+    tree = SeTree()
+    ops: list[dict[str, Any]] = []
+    for col in range(4):
+        ops.append({"op": "add_block", "name": f"h{col}"})
+        ops.append(
+            {
+                "op": "declare_helix",
+                "block": f"h{col}",
+                "n_units": 32,
+                "lattice": "square",
+                "row": 0,
+                "col": col,
+                "phase0": f"{phase0} rad",
+            }
+        )
+    for i, (a, b) in enumerate((("h0", "h1"), ("h1", "h2"), ("h2", "h3"))):
+        strand = f"s{i}"
+        ops.append({"op": "add_block", "name": strand})
+        ops.append({"op": "declare_strand", "block": strand})
+        ops.append(
+            {
+                "op": "add_domain",
+                "strand": strand,
+                "helix": a,
+                "start": 0,
+                "end": 8,
+                "forward": True,
+            }
+        )
+        ops.append(
+            {
+                "op": "add_domain",
+                "strand": strand,
+                "helix": b,
+                "start": 0,
+                "end": 8,
+                "forward": False,
+                "loop_before_nt": 0,
+            }
+        )
+    apply_ops(tree, ops)
+    return tree
+
+
+def test_set_domain_moves_one_crossover_by_one_bp_and_back() -> None:
+    from precis_se.chain.drc import findings
+
+    # phase0 that makes offset 7 register-correct for a forward→reverse
+    # crossover to the ``+x`` neighbour (azimuth 0): the rule is
+    # ``phase0 + k * twist == azimuth + pi/2``.
+    twist = 2.0 * math.pi * 3 / 32
+    tree = _tile(math.pi / 2 - 7 * twist)
+    assert [f.rule for f in findings(tree) if f.severity == "error"] == []
+
+    # ONE op moves the landing domain a base pair along — the dogfood spent
+    # 11 ops (clear_chain + a full re-route of three strands) on this.
+    apply_ops(
+        tree, [{"op": "set_domain", "strand": "s1", "ord": 1, "start": 1, "end": 9}]
+    )
+    short = [f for f in findings(tree) if f.rule == "chain_loop_short"]
+    assert [f.subject for f in short] == ["s1#0→#1"]
+    moved = next(d for d in tree.domains if d.strand == "s1" and d.ord == 1)
+    assert (moved.start, moved.end) == (1, 9)
+    # Everything else about the row is untouched — absent means unchanged.
+    assert moved.forward is False and moved.loop_before_nt == 0
+
+    apply_ops(
+        tree, [{"op": "set_domain", "strand": "s1", "ord": 1, "start": 0, "end": 8}]
+    )
+    assert [f.rule for f in findings(tree) if f.severity == "error"] == []
+
+
+def test_set_domain_refuses_what_it_must() -> None:
+    tree = _tile(0.0)
+    with pytest.raises(OpError, match="unknown key"):
+        apply_ops(tree, [{"op": "set_domain", "strand": "s0", "ord": 0, "nonsense": 1}])
+    with pytest.raises(OpError, match="'ord' identifies the row"):
+        apply_ops(tree, [{"op": "set_domain", "strand": "s0", "ord": 0, "new_ord": 1}])
+    with pytest.raises(OpError, match="needs 'ord'"):
+        apply_ops(tree, [{"op": "set_domain", "strand": "s0", "start": 1}])
+    with pytest.raises(OpError, match="no domain #9"):
+        apply_ops(tree, [{"op": "set_domain", "strand": "s0", "ord": 9, "start": 1}])
+    # A loop cannot be smuggled onto the 5' end: build_domain refuses it for
+    # set_domain exactly as it does for add_domain.
+    with pytest.raises(OpError, match="FIRST domain"):
+        apply_ops(
+            tree, [{"op": "set_domain", "strand": "s0", "ord": 0, "loop_before_nt": 2}]
+        )
+    with pytest.raises(OpError, match="must exceed"):
+        apply_ops(tree, [{"op": "set_domain", "strand": "s0", "ord": 0, "end": 0}])
+    with pytest.raises(OpError, match="one block cannot be both"):
+        apply_ops(tree, [{"op": "set_domain", "strand": "s0", "ord": 0, "helix": "s0"}])
+
+
+def test_set_domain_clears_a_field_with_an_explicit_null() -> None:
+    tree = _tile(0.0)
+    apply_ops(
+        tree, [{"op": "set_domain", "strand": "s0", "ord": 1, "geometry": "wobble"}]
+    )
+    assert tree.domains[1].geometry == "W-W-cis"
+    apply_ops(tree, [{"op": "set_domain", "strand": "s0", "ord": 1, "geometry": None}])
+    assert tree.domains[1].geometry is None
+    # …and the loop survives both edits, because it was never named.
+    assert tree.domains[1].loop_before_nt == 0
 
 
 def test_clear_chain_cascades_both_ways() -> None:

@@ -96,7 +96,10 @@ op table gains `realize_chain`.
   segment child covering 0–21, deferred until after `save_tree` (a forced
   save failure leaves no `structure` row); theorems from coords: P–P 6.6–7.2 Å
   along a strand; rise 3.34 ± 0.02 Å; C1'–C1' 10.4–10.8 Å; minor/major
-  groove 12/22 ± 1 Å from P positions; 21 bp regains phase (frame x dot ≥
+  groove **as shortest inter-strand P···P distances, 11.5/17.5 ± 1 Å**
+  (Saenger's 5.7/11.7 Å widths plus the 5.8 Å phosphate allowance — the
+  convention the earlier "12/22" left unnamed, see the 2026-09-29 log entry);
+  21 bp regains phase (frame x dot ≥
   0.98); `validate_atomic` reports no `bond_length_sanity`; `envelope_fit`
   clean; `5p` port has a measured `rot`; a listed `sites: [n5]` yields ports
   `n5.c5m`, `n5.maj`, `n5.min` and an unlisted index yields none.
@@ -139,14 +142,27 @@ route, no new extra.
   `chain/atoms.py::build_region`. `Unsupported` on an unrelaxed loop kept.
   Advisory (caDNAno `Unsupported` fixture unnamed) → waypoint-path helix
   named in the AC. Decided.
-- 2026-09-29 PRECONDITION from `se-nucleic-acid` slice 1 (landed a7cc256f):
-  that slice set `precis_se/chain/nucleic.py::STRAND_AZIMUTH_RAD` antipodal
-  `(0, π)`. Antipodal backbones put both grooves at the same width, so this
-  item's "minor/major groove 12/22 ± 1 Å from P positions" criterion is
-  unreachable from those exits by any atom template. Slice 2 of the parent
-  replaces the constant with the real B-DNA minor-groove pair before
-  `relax_chain` writes a loop curve; do not start this item against the
-  antipodal value. Decided.
+- 2026-09-29 PRECONDITION MET, and the criterion needs restating. The
+  parent's slice 2 pass A replaced the antipodal pair with a groove-asymmetric
+  one: `precis_se/chain/nucleic.py::MINOR_GROOVE_SPAN_RAD` — **δ = 144°**
+  for B-DNA (220.5° for A-RNA), the backbones symmetric about the frame
+  normal at `∓δ/2`, cited to Kornyshev & Leikin 2000 and Allahyarov et
+  al. 2003. The
+  space plan now has two channels of different width with the minor one
+  named, so an asymmetric atom template is no longer forbidden by the exits
+  it must hang off; **the 12/22 Å numbers are this item's job**, not the
+  space plan's.
+  Restate the criterion before building against it: "12/22 ± 1 Å" does not
+  name a convention, and the two candidate conventions differ by
+  `1/cos α = 1.15`. 22 Å cannot be a shortest inter-strand P···P distance at
+  all (the phosphate cylinder is only 17.8 Å across), so 12/22 must be an
+  **axial-span** reading (12 + 22 = 34 Å is one pitch) — likely, but an
+  inference, not a convention any source states. At δ = 144° with
+  phosphates at `nucleic.P_RADIUS_M` the model gives shortest P···P distances
+  of 11.8 Å and 17.5 Å (against the tabulated 11.5/17.5), i.e. axial
+  spans of ≈13.6 Å and ≈20.6 Å. Pick the P···P convention and the pair
+  becomes 11.5/17.5 ± 1; keep the axial one and it is 13.6/20.6 ± 1. Either
+  is buildable; "12/22" in an unnamed convention is not.
 - OPEN (advisory, not a build blocker): whether `view='export'` PDB should
   concatenate every realized region into one file with distinct chain ids
   or emit one file per region. Default for the build: one file, chain id

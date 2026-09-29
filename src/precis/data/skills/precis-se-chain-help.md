@@ -1,7 +1,7 @@
 ---
 id: precis-se-chain-help
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
-summary: six pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + ten chain_* DRC findings check it
+summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + ten chain_* DRC findings check it
 answers:
   - how do I declare a DNA/RNA helix and route a strand along it in se?
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
@@ -9,8 +9,10 @@ answers:
   - what do the chain_bend/chain_clash/chain_loop_short/... findings mean and how do I fix them?
   - how do I materialise a helix's segments so the 3D viewer draws it (layout_chain)?
   - what Leontis-Westhof geometries can geometry=/overrides= take and which bases do they accept?
+  - which offsets admit a 0-nt crossover on a honeycomb/square lattice (the register rule)?
+  - how do I move one crossover by a base pair without rebuilding the strand (set_domain)?
   - why does declare_helix/add_domain reject a bare number?
-applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|remove_domain|clear_chain|layout_chain)
+applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|remove_domain|clear_chain|layout_chain)
 status: active
 tags: verbs, design
 kinds: se
@@ -84,7 +86,7 @@ Replace semantics, but existing domains are **not** dropped — a route
 survives its sequence being filled in later, the ordinary order of work.
 The route itself is `add_domain`, never part of this op.
 
-## Routing a strand — `add_domain` / `remove_domain`
+## Routing a strand — `add_domain` / `set_domain` / `remove_domain`
 
 `add_domain`: `strand=` + `helix=` (must be different blocks — a strand
 routes *along* a helix, not onto itself) + `start=`/`end=` (helix offsets,
@@ -117,9 +119,28 @@ edit(kind='se', id='design', ops=[
 
 A **crossover** is a `loop_before_nt=0` domain onto a *different* helix —
 0-nt "loop", one bond of reach, which is why it only lands at a
-register-correct offset (the two backbones must face each other within
-that one bond). `chain_loop_short` at `n=0` **is** the register check for
-a crossover, not a separate thing.
+register-correct offset (both backbones must face the other helix).
+`chain_loop_short` at `n=0` **is** the register check for a crossover, not
+a separate thing; see "The register rule" below for which offsets those are.
+
+`set_domain` — edit ONE existing domain in place. `strand=` + `ord=` select
+the row; then any of **`helix`, `forward`, `start`, `end`, `geometry`,
+`overrides`, `loop_before_nt`** changes it. Absent means unchanged; passing
+one explicitly as `null` clears it. Unknown keys are refused rather than
+ignored, and `ord` is **not** settable (it identifies the row — the route's
+order belongs to `add_domain`, which appends, and `remove_domain`, which
+closes the gap). Everything `add_domain` refuses, this refuses too, e.g. a
+`loop_before_nt` on `ord == 0`.
+
+Pure, so it runs in the design turn's dry run with no human Apply — which is
+the point: moving a crossover a base pair along is one op, not
+`clear_chain` plus a re-route of every strand involved.
+
+```python
+edit(kind='se', id='design', ops=[
+    {'op': 'set_domain', 'strand': 'st0', 'ord': 1, 'start': 8, 'end': 16},
+])
+```
 
 `remove_domain` — `strand=` + `ord=`. **Destructive** by the `remove_`
 prefix rule (a human-Apply proposal in the web turn, like `remove_block`).
@@ -128,6 +149,49 @@ becomes the new 5' end loses its own `loop_before_nt` (nothing left to
 reach from). Removing the strand or helix block itself (`remove_block`)
 takes every domain that names it along too, and closes up whatever
 survives.
+
+## The register rule — which offsets admit a 0-nt crossover
+
+A duplex's two backbones are **not** on opposite sides of the helix: they sit
+δ apart across the minor groove — **144° for B-DNA**, 220.5° for A-RNA (the
+A form's minor groove is the wide one), symmetric about the frame's normal, so
+`phase0` points the base pair's own pseudo-dyad and *not* a backbone. A 0-nt
+crossover therefore needs the departing backbone pointed at the neighbour and
+the arriving one pointed back, which happens where
+
+> `phase0 + offset × twist ≡ neighbour_azimuth ± π/2` (mod 2π), within ±10.9°
+> — **`+π/2`** for a `forward → reverse` crossover, **`−π/2`** for
+> `reverse → forward`.
+
+The two directions are **different offsets**, half a turn apart. With every
+helix on the same `phase0` (the usual authoring), `twist` the lattice's own
+(3 turns/32 bp square, 2 turns/21 bp honeycomb), the answers are:
+
+| lattice | neighbour | `forward → reverse` | `reverse → forward` |
+|---|---|---|---|
+| honeycomb (per 21 bp) | `col+1` | **14** | 9, 19 |
+| | `col−1` | **7** | 2, 12 |
+| | `row−1` | **0** | 5, 16 |
+| square (per 32 bp) | `col+1` | 24 | 8 |
+| | `row+1` | 16 | 0 |
+| | `col−1` | 8 | 24 |
+| | `row−1` | 0 | 16 |
+
+Read it this way: **one offset per neighbour per lattice repeat.** Aggregated
+over a site's 3 (honeycomb) or 4 (square) neighbours that is one crossover
+site every 7 or 8 bp — the lattice's documented crossover period. The
+honeycomb's forward→reverse column, 0/7/14, is caDNAno's own honeycomb
+crossover positions; its reverse→forward offsets have no exact solution and
+sit ±5 bp either side, reachable but strained.
+
+Shift `phase0` and the whole table shifts with it: add `Δ` to a helix's
+`phase0` and its register-correct offsets move by `−Δ/twist`. If you want
+offset `k` to work for a given neighbour, set
+`phase0 = neighbour_azimuth ± π/2 − k × twist`.
+
+When a crossover misses, `chain_loop_short` reports the gap **in nm** and
+names the landing offsets on the target helix that would reach — the answer,
+not just the complaint.
 
 ## Pairing is derived, never declared
 
@@ -223,7 +287,7 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 | `chain_bend` | warn / **error** | centre line bends tighter than `min_bend_radius` (coded default Lp/5 ≈ 10 nm for B-DNA; error when authored) | lengthen the run, relax the waypoints, or accept the authored limit |
 | `chain_twist_register` | warn | `n_units` isn't a whole number of the lattice's repeat, rolled back into register | an insertion/deletion, or change `n_units` |
 | `chain_clash` | warn | two segments' swept tubes closer than `min_gap` (coded default: low-end 2.4 nm spacing minus 2× the motif radius — 0.4 nm B-DNA) — consecutive same-helix segments and a crossover's own two segments are exempt | move a helix, or widen `min_gap` |
-| `chain_loop_short` | **error** | a loop's `(n+1)·contour_per_nt` can't bridge its two backbone exits — **this is the crossover register check at `n=0`** | more nt, or a register-correct offset |
+| `chain_loop_short` | **error** | a loop's `(n+1)·contour_per_nt + tol` can't bridge its two backbone exits — **this is the crossover register check at `n=0`** (`tol` = 0.098 nm between two B-DNA helices, the groove-asymmetry shortfall no routing can remove; 0 within one helix) | more nt, or a register-correct offset — the finding names them |
 | `chain_loop_slack` | info | the opposite — a loop with far more contour than it needs | fewer nt would pin the geometry |
 | `chain_floppy` | info | a single-stranded span (or loop) past ssDNA's coded persistence length (2 nm) | coded default only here — a `material` Lp row overrides it in the handler-side pass, not this one |
 | `chain_dangling_domain` | **error** | a domain names a gone/wrong-role block, an offset past the helix's `n_units`, or a route whose `ord`s have a hole/repeat | `declare_strand`/`declare_helix` it, extend the helix, or `remove_domain` the row |

@@ -248,7 +248,7 @@ beside the others and each one's *scope* is the block it names.
 
 **The nucleic-acid domain** (docs/backlog/se-nucleic-acid.md; vocabulary
 and numbers in :mod:`precis_se.chain`, geometry in :mod:`precis_chain`)
-adds six pure ops. Same rule as the atomic mode: one op table, and each
+adds seven pure ops. Same rule as the atomic mode: one op table, and each
 op's scope is the block it names. The two chain ops that spend compute or
 need an optional dependency (``relax_chain``, ``fold_layout``) are
 handler-level and are not in this table.
@@ -270,6 +270,10 @@ handler-level and are not in this table.
   bond of reach. Pairing is NEVER declared: it is derived from two
   strands occupying one helix offset
   (:func:`precis_se.chain.pairing.derive_pairing`).
+- ``set_domain``         — edit one existing domain in place
+  (``strand``/``ord`` select it; any ``add_domain`` field except ``ord``
+  changes it, absent meaning unchanged). Pure, so moving a crossover by a
+  base pair needs no human Apply.
 - ``clear_chain``        — un-declare a block's chain record, cascading
   to whatever it gave meaning (a helix's segments and the domains along
   it; a strand's whole route).
@@ -2742,6 +2746,104 @@ def _op_add_domain(tree: SeTree, op: dict[str, Any]) -> None:
     tree.domains.append(domain)
 
 
+#: What ``set_domain`` may change on an existing domain — exactly the
+#: fields ``add_domain`` accepts, minus the two that identify the row.
+_SET_DOMAIN_FIELDS = (
+    "helix",
+    "forward",
+    "start",
+    "end",
+    "geometry",
+    "overrides",
+    "loop_before_nt",
+)
+
+
+def _op_set_domain(tree: SeTree, op: dict[str, Any]) -> None:
+    """Edit ONE existing domain in place — ``strand=`` + ``ord=`` plus any
+    of ``helix``, ``forward``, ``start``, ``end``, ``geometry``,
+    ``overrides``, ``loop_before_nt``.
+
+    Every field is optional and **absent means unchanged**; passing one
+    explicitly as ``null`` clears it (that is how a ``geometry`` or a
+    ``loop_before_nt`` comes off again). The merged row goes back through
+    :func:`precis_se.chain.vocab.build_domain`, so an edit is vetted exactly
+    as the original ``add_domain`` was — including the refusal of a
+    ``loop_before_nt`` on ``ord == 0``, which this op therefore cannot
+    smuggle in.
+
+    Pure, and deliberately so: moving one crossover by a base pair is the
+    commonest edit in origami design, and before this op it took
+    ``clear_chain`` plus a full re-route (11 ops for a 1 bp move) because
+    ``remove_domain`` is destructive and so human-Apply gated. This one
+    runs in ``design_turn``'s dry run, so an agent can iterate on register
+    by itself.
+
+    ``ord`` selects the row and cannot be changed: ``add_domain`` assigns it
+    (always at the end of the route) and ``remove_domain`` closes the gap
+    behind a removal, so the route's *order* is owned by those two.
+    """
+    strand = _require_block(tree, op, "strand", "set_domain", what="strand")
+    if op.get("ord") is None:
+        raise OpError("set_domain needs 'ord' (the domain's index in the strand)")
+    try:
+        ord_ = int(op["ord"])
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"set_domain 'ord' must be a whole number, got {op['ord']!r}"
+        ) from exc
+    for key in ("new_ord", "to_ord", "move_to"):
+        if key in op:
+            raise OpError(
+                f"set_domain cannot change a domain's position in the route "
+                f"({key!r}): 'ord' identifies the row. The order is owned by "
+                "add_domain (appends at the end) and remove_domain (closes "
+                "the gap behind a removal)"
+            )
+    strays = sorted(set(op) - {"op", "strand", "ord"} - set(_SET_DOMAIN_FIELDS))
+    if strays:
+        raise OpError(
+            f"set_domain: unknown key(s) {', '.join(repr(s) for s in strays)}; "
+            f"settable: {', '.join(_SET_DOMAIN_FIELDS)}"
+        )
+    route = _domains_of(tree, strand)
+    match = next((d for d in route if d.ord == ord_), None)
+    if match is None:
+        live = ", ".join(f"#{d.ord} on {d.helix}" for d in route) or "(none)"
+        raise OpError(f"no domain #{ord_} on strand {strand!r}. Live domains: {live}")
+    helix = (
+        _require_block(tree, op, "helix", "set_domain", what="helix")
+        if "helix" in op
+        else match.helix
+    )
+    if strand == helix:
+        raise OpError(
+            "set_domain: 'strand' and 'helix' must be different blocks — a "
+            "strand routes ALONG a helix; one block cannot be both"
+        )
+    payload: dict[str, Any] = {
+        "forward": match.forward,
+        "start": match.start,
+        "end": match.end,
+        "geometry": match.geometry,
+        "overrides": match.overrides,
+        "loop_before_nt": match.loop_before_nt,
+    }
+    payload.update({k: op[k] for k in _SET_DOMAIN_FIELDS if k in op and k != "helix"})
+    try:
+        edited = chain_vocab.build_domain(
+            payload, strand=strand, helix=helix, ord_=ord_, what="set_domain"
+        )
+    except ChainError as exc:
+        raise OpError(str(exc)) from exc
+    # By identity, not by value: ``DomainSpec`` is a dataclass, so ``index``
+    # would match the first field-equal row rather than the one selected.
+    for i, row in enumerate(tree.domains):
+        if row is match:
+            tree.domains[i] = edited
+            break
+
+
 def _op_remove_domain(tree: SeTree, op: dict[str, Any]) -> None:
     """Drop one domain from a strand's route — ``strand=`` + ``ord=``.
 
@@ -2942,6 +3044,7 @@ _OPS = {
     "declare_helix": _op_declare_helix,
     "declare_strand": _op_declare_strand,
     "add_domain": _op_add_domain,
+    "set_domain": _op_set_domain,
     "remove_domain": _op_remove_domain,
     "clear_chain": _op_clear_chain,
     "layout_chain": _op_layout_chain,
