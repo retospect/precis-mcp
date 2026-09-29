@@ -20,10 +20,16 @@ through it.
   name — render only its subtree, recentred), ``overrides`` (round 2a —
   ``"name:level, name2:level2"``, per-subtree level override; see
   :mod:`precis_web.blocktree_svg`'s ``plan_visibility`` docstring).
+  None of the three reload the page any more: the 3D reader swaps the
+  scene in place (live-scene slice), and they persist in the URL only so
+  a link still reproduces the view.
 * ``GET  /se/{slug}/scene3d.json`` —
   the data the 3D page fetches: the viewer's own ``Shapes`` tree plus
   the connectivity/explode/mermaid side data
-  (:class:`~precis_web.blocktree_3d.Scene3D`).
+  (:class:`~precis_web.blocktree_3d.Scene3D`). Refetched in place
+  whenever ``level``/``overrides`` change; ``isolate`` is accepted and
+  IGNORED here, because the page filters the scene it already holds
+  rather than paying a rebuild (see :func:`se_scene3d`).
 * ``GET  /se/{slug}/2d`` — the 2D SVG reader
   page, still reachable via a link off the 3D page: axis/level/colour/
   isolate selectors (a plain GET form — no client JS needed) over an
@@ -1403,8 +1409,21 @@ async def se_scene3d(
     overrides: str = "",
     rev: int | None = None,
 ) -> Response:
+    """``isolate`` is ACCEPTED AND IGNORED here (live-scene slice).
+
+    Isolating is a client-side filter over the scene the page already
+    holds (``isolateSubtree`` in ``static/blocktree-3d.js``), so this
+    endpoint always returns the whole design and pruning costs no round
+    trip. Still accepted rather than rejected so an old bookmark renders
+    the design instead of 400ing — it just renders all of it, and the
+    page re-applies the isolate from the URL itself.
+
+    The 2-D SVG reader's own ``isolate`` is untouched and still prunes
+    server-side: it has no client to filter in.
+    """
+    del isolate
     return await _scene3d_response(
-        request, "se", slug, level=level, isolate=isolate, overrides=overrides, rev=rev
+        request, "se", slug, level=level, isolate=None, overrides=overrides, rev=rev
     )
 
 

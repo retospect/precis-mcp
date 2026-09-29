@@ -64,6 +64,40 @@ function findPart(root, path) {
   return found;
 }
 
+// Client-side `isolate`: a PRUNED copy of the shapes tree keeping only
+// the subtree named `name`, plus the chain of ancestor groups above it.
+//
+// The server used to prune for us via `plan_visibility` BEFORE any
+// geometry was built, which is what made isolating slow — it re-paid
+// tessellation, the SDF witness queries, a stability solve and a
+// validator pass. The whole scene is already in hand here, so this is a
+// tree walk instead of a rebuild.
+//
+// The ancestor chain is kept for a hard reason, not for looks: an `id`
+// MUST equal the "/"-join of the `name`s above it
+// (precis_web/blocktree_3d.py's module docstring), and the ids here are
+// absolute from the design root. Re-rooting the subtree — returning the
+// `fork` node as the new root — would leave every retained id reading
+// `/Structural envelopes/fork/...` while the vendored treeview rebuilt
+// its own paths as `/fork/...`, which is precisely the two-disjoint-key-
+// spaces defect that made every visibility toggle in this viewer inert.
+// Keeping the ancestors keeps every retained path byte-identical, and
+// they contribute no geometry (their own `(envelope)` leaves are
+// siblings of the subtree, so they prune away with everything else).
+//
+// Returns null when no such block is in the CURRENT scene — a real case,
+// not a bug: a name that only exists at a deeper `level` than the one
+// fetched. The caller reports it rather than blanking the viewer.
+function isolateSubtree(root, name) {
+  function prune(node) {
+    if (node.name === name) return node;
+    if (!node.parts) return null;
+    const kept = node.parts.map(prune).filter(Boolean);
+    return kept.length ? { ...node, parts: kept } : null;
+  }
+  return prune(root);
+}
+
 // A mermaid node id is `B<block_uid>` (blocktree_3d.mermaid_topology) —
 // the SAME stable uid every block node in `data.shapes` now carries as
 // its own explicit `uid` FIELD (viewer-toggles fix,
@@ -497,6 +531,14 @@ function _deviationColor(t) {
 //: "the slider/legend never appear" (the template already omits them
 //: server-side whenever ``has_atomic`` is false; this covers the rarer
 //: rev-mismatch/fetch-failure cases too), never a broken primary viewer.
+//:
+//: Returns its own ``applyT`` (or ``null`` when the overlay degraded to
+//: absence). The slider LISTENER lives with the caller, not here: the
+//: overlay's meshes are injected into ``viewer._rendered.scene``, which a
+//: scene reload (``viewer.clear()``) drops, so the overlay has to be set
+//: up again per scene — and a listener attached per setup would stack up
+//: one duplicate handler per reload, each driving a dead ``applyT`` over
+//: a scene graph that no longer holds its meshes.
 async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
   const [THREE, data] = await Promise.all([
     import("/static/three/three.module.min.js"),
@@ -505,9 +547,9 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
       return r.json();
     }),
   ]);
-  if (!data.blocks || !data.blocks.length) return;
+  if (!data.blocks || !data.blocks.length) return null;
   const scene = viewer && viewer._rendered && viewer._rendered.scene;
-  if (!scene) return;
+  if (!scene) return null;
 
   const devMax = data.deviation_max || 0;
   const atomRPhysical = _ATOM_RADIUS_A * _ATOMIC_A_TO_M * (data.scale || 1);
@@ -753,24 +795,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
   }
   if (smoothEls.legendMin) smoothEls.legendMin.textContent = "0.00";
   if (smoothEls.legendMax) smoothEls.legendMax.textContent = devMax.toFixed(2);
-  if (smoothEls.slider) {
-    // Coalesce a drag's rapid-fire `input` events to at most one `applyT`
-    // (full per-atom lerp + mesh update + `viewer.update(true)`) per
-    // animation frame — same requestAnimationFrame-gated-by-a-pending-flag
-    // idiom as _startScaleBar's tick loop above and the resize handler
-    // below. The flush reads `slider.value` fresh rather than caching the
-    // value at schedule time, so whichever event arrived last before the
-    // frame fires — including the drag's trailing edge — is the one that
-    // lands; no separate flush-on-end handler needed.
-    let sliderRAF = null;
-    smoothEls.slider.addEventListener("input", () => {
-      if (sliderRAF !== null) return;
-      sliderRAF = requestAnimationFrame(() => {
-        sliderRAF = null;
-        applyT(Number(smoothEls.slider.value) / 100);
-      });
-    });
-  }
+  return applyT;
 }
 
 // ── load-time id/name path invariant self-check ─────────────────────────
@@ -838,6 +863,14 @@ export async function blocktreeViewer3D({
   explodeButton,
   connectionsToggle,
   containerModeSelect,
+  // The three scene-shaping controls. They were a plain GET form until
+  // the live-scene slice; now the page drives them without a reload —
+  // `level`/`overrides` refetch the scene, `isolate` filters the one
+  // already in hand. All optional: absent = that control is not on the
+  // page and the scene is whatever `sceneUrl` returns.
+  levelSelect,
+  isolateSelect,
+  overridesInput,
   sceneUrl,
   atomicUrl,
   smoothEls,
@@ -1035,6 +1068,12 @@ export async function blocktreeViewer3D({
 
   function applyContainerMode(mode) {
     for (const path of data.container_paths || []) {
+      // Under a client-side isolate the rendered tree is a PRUNE of the
+      // fetched one, so a container outside the isolated subtree is
+      // legitimately absent. Absent from the rendered shapes = skip
+      // quietly; present in the shapes but missing a group = the real
+      // id/name mismatch worth shouting about.
+      if (!findPart(shownShapes, path)) continue;
       try {
         const grp = _containerGroup(path);
         if (!grp) {
@@ -1222,12 +1261,66 @@ export async function blocktreeViewer3D({
   document.head.appendChild(treeHeightCapEl);
   _applyTreeHeightCap(treeHeightCapEl, initialTreeHeight, _INFO_PANEL_HEIGHT);
 
-  try {
-    const display = new Display(viewerEl, displayOptions);
-    viewer = new Viewer(display, viewerOptions, notify);
-    viewer.render(data.shapes, renderOptions, viewerOptions);
-    _checkPathInvariant(viewer, data.shapes);
-    applyContainerMode(containerModeSelect ? containerModeSelect.value : "translucent");
+  // ── the re-render seam ───────────────────────────────────────────────
+  //
+  // `level`/`overrides` used to be a plain GET form, so changing either
+  // reloaded the whole page — camera reset, topology panel re-laid-out,
+  // and nothing on screen until a full rebuild (tessellation + SDF
+  // witness points + stability solve + validator) finished. Everything
+  // below the first `new Viewer` is now re-runnable against a freshly
+  // fetched `data`, so a level change is a scene swap instead.
+  //
+  // The Viewer INSTANCE is reused across renders (`clear()` + `render()`,
+  // the vendored pair) rather than reconstructed. That is what lets the
+  // control listeners, the scale-bar tick loop and the resize handler
+  // keep their `viewer` reference across a reload — they read the live
+  // object each time, so they need no re-wiring. Things that live in
+  // `viewer._rendered` do NOT survive, because `clear()` drops it: the
+  // atomic overlay's injected meshes are the one case, re-established by
+  // `renderScene` below.
+  let shownShapes = data.shapes;
+  let atomicApplyT = null;
+  // Declared here rather than beside the explode button's own listener:
+  // `applyUiState` resets it on every render, and the first render runs
+  // before that listener is wired.
+  let exploded = false;
+
+  function renderScene(shapes, { camera = null, refit = true } = {}) {
+    shownShapes = shapes;
+    viewer.clear();
+    viewer.render(shapes, renderOptions, viewerOptions);
+    // Every render, not just the first: a reload that reintroduced a
+    // second addressing scheme would otherwise pass the check once at
+    // load and go quiet exactly when it started lying.
+    _checkPathInvariant(viewer, shapes);
+    applyUiState();
+    if (camera) {
+      try {
+        viewer.setCameraLocationSettings(
+          camera.position, camera.quaternion, camera.target, camera.zoom
+        );
+      } catch (err) {
+        // A camera we failed to restore is a moved view, not a broken
+        // one — never let it cost the render.
+        console.error("blocktree-3d: camera restore failed", err);
+      }
+    }
+    // The overlay's meshes live in the `_rendered` scene `clear()` just
+    // dropped, so it is re-established per render. It re-reads its own
+    // atomic payload each time (browser-cached), and the slider keeps
+    // whatever position the user left it at.
+    if (atomicUrl && smoothEls && smoothEls.slider) {
+      atomicApplyT = null;
+      _setupAtomicOverlay(viewer, atomicUrl, smoothEls, shapes)
+        .then((apply) => {
+          atomicApplyT = apply;
+          if (apply) apply(Number(smoothEls.slider.value) / 100);
+        })
+        .catch((err) => {
+          console.error("blocktree-3d: atomic overlay failed", err);
+        });
+    }
+    if (!refit) return;
     const fittedHeight = _fitViewerToShell(
       viewer, viewerEl, treeWidth, initialCadWidth, initialHeight
     );
@@ -1238,6 +1331,36 @@ export async function blocktreeViewer3D({
         _INFO_PANEL_HEIGHT
       );
     }
+  }
+
+  // Re-applied after EVERY render. A re-render that silently dropped the
+  // container mode or the connections checkbox would leave the page
+  // showing one thing and its own controls claiming another — the same
+  // class of quiet wrongness as the inert toggles this viewer just had
+  // fixed, so this is part of the seam, not a nicety.
+  function applyUiState() {
+    applyContainerMode(containerModeSelect ? containerModeSelect.value : "translucent");
+    if (connectionsToggle && !connectionsToggle.checked) {
+      for (const c of data.connections || []) {
+        if (!findPart(shownShapes, c.path)) continue;
+        try {
+          viewer.setState(c.path, [3, 0]);
+        } catch (err) {
+          console.error("blocktree-3d: connections re-apply failed for", c.path, err);
+        }
+      }
+    }
+    // A fresh scene is never exploded — the animation lived on the
+    // Viewer's previous `_rendered`. Say so on the button rather than
+    // leaving it reading "un-explode" over an un-exploded scene.
+    exploded = false;
+    if (explodeButton) explodeButton.textContent = "explode";
+  }
+
+  try {
+    const display = new Display(viewerEl, displayOptions);
+    viewer = new Viewer(display, viewerOptions, notify);
+    renderScene(data.shapes);
   } catch (err) {
     showError(viewerEl, "3D viewer failed to start: " + String(err));
     console.error("blocktree-3d: viewer init failed", err);
@@ -1298,13 +1421,14 @@ export async function blocktreeViewer3D({
   // from the whole model's bbox centre) — `data.explode` is computed
   // server-side from the SAME drawn connectivity this reader shows
   // (blocktree_3d.explode_offsets's own docstring).
-  let exploded = false;
   if (explodeButton) {
     explodeButton.addEventListener("click", () => {
       if (!viewer) return;
       try {
         if (!exploded) {
           for (const [path, offset] of Object.entries(data.explode || {})) {
+            // Pruned away by a client-side isolate — see applyContainerMode.
+            if (!findPart(shownShapes, path)) continue;
             viewer.addPositionTrack(path, [0, EXPLODE_DURATION], [
               [0, 0, 0],
               offset,
@@ -1348,6 +1472,8 @@ export async function blocktreeViewer3D({
       if (!viewer) return;
       const edgeState = connectionsToggle.checked ? 1 : 0;
       for (const c of data.connections || []) {
+        // Pruned away by a client-side isolate — see applyContainerMode.
+        if (!findPart(shownShapes, c.path)) continue;
         try {
           viewer.setState(c.path, [3, edgeState]);
         } catch (err) {
@@ -1372,12 +1498,130 @@ export async function blocktreeViewer3D({
   }
 
   // ── scale bar overlay (gr340030) ─────────────────────────────────────
+  // Started once. It ticks off the LIVE `viewer` and re-reads the scene
+  // each frame, so it needs no re-wiring across a scene reload — and
+  // starting it again would append a second bar and a second rAF loop.
   _startScaleBar(viewer, viewerEl, data.scale);
 
-  // ── atomic ↔ smooth overlay (gr450675) ───────────────────────────────
+  // ── atomic ↔ smooth overlay slider (gr450675) ────────────────────────
+  // The overlay itself is (re)built inside `renderScene`; this listener
+  // owns the slider and drives whichever `applyT` is current. Coalesces a
+  // drag's rapid-fire `input` events to at most one `applyT` (full
+  // per-atom lerp + mesh update + `viewer.update(true)`) per animation
+  // frame — same requestAnimationFrame-gated-by-a-pending-flag idiom as
+  // _startScaleBar's tick loop and the resize handler. The flush reads
+  // `slider.value` fresh rather than caching it at schedule time, so the
+  // last event before the frame — including the drag's trailing edge —
+  // is the one that lands; no separate flush-on-end handler needed.
   if (atomicUrl && smoothEls && smoothEls.slider) {
-    _setupAtomicOverlay(viewer, atomicUrl, smoothEls, data.shapes).catch((err) => {
-      console.error("blocktree-3d: atomic overlay failed", err);
+    let sliderRAF = null;
+    smoothEls.slider.addEventListener("input", () => {
+      if (sliderRAF !== null) return;
+      sliderRAF = requestAnimationFrame(() => {
+        sliderRAF = null;
+        if (atomicApplyT) atomicApplyT(Number(smoothEls.slider.value) / 100);
+      });
     });
   }
+
+  // ── live level / overrides / isolate (no page reload) ────────────────
+  //
+  // `isolate` is a CLIENT-side filter over the already-fetched shapes
+  // tree: the whole scene is in hand, so pruning it costs no round trip
+  // and no rebuild. `level` and `overrides` still refetch, because the
+  // server's plan is what decides which blocks get tessellated at all —
+  // they just swap the scene in place now instead of reloading the page.
+  //
+  // The three stay in the URL (replaceState, never pushState — this is
+  // not navigation) so a link still reproduces the view. The server
+  // ignores `isolate` on the scene endpoint; the client is what honours
+  // it.
+  function currentIsolate() {
+    return isolateSelect && isolateSelect.value ? isolateSelect.value : null;
+  }
+
+  function syncUrl() {
+    try {
+      const url = new URL(window.location.href);
+      const set = (k, v) => {
+        if (v) url.searchParams.set(k, v);
+        else url.searchParams.delete(k);
+      };
+      if (levelSelect) set("level", levelSelect.value);
+      if (overridesInput) set("overrides", overridesInput.value.trim());
+      set("isolate", currentIsolate());
+      window.history.replaceState(null, "", url);
+    } catch (err) {
+      // A URL we failed to rewrite costs shareability, never the view.
+      console.error("blocktree-3d: URL sync failed", err);
+    }
+  }
+
+  function applyIsolate() {
+    const name = currentIsolate();
+    const shapes = name ? isolateSubtree(data.shapes, name) : data.shapes;
+    if (!shapes) {
+      console.error("blocktree-3d: no subtree named", name);
+      return;
+    }
+    // Refit deliberately: recentring on the subtree is the whole point
+    // of isolating, so this is the one path that MOVES the camera.
+    renderScene(shapes);
+    syncUrl();
+  }
+
+  let reloading = false;
+  async function loadScene() {
+    if (reloading) return;
+    reloading = true;
+    const camera = (() => {
+      try {
+        return viewer.getCameraLocationSettings();
+      } catch {
+        return null;
+      }
+    })();
+    try {
+      const url = new URL(sceneUrl, window.location.href);
+      if (levelSelect) url.searchParams.set("level", levelSelect.value);
+      if (overridesInput) {
+        const raw = overridesInput.value.trim();
+        if (raw) url.searchParams.set("overrides", raw);
+        else url.searchParams.delete("overrides");
+      }
+      // Server-side isolate is retired: the client filters instead, so
+      // the fetched scene is always the whole design.
+      url.searchParams.delete("isolate");
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        showError(viewerEl, body.error || `failed to load scene (${resp.status})`);
+        return;
+      }
+      data = await resp.json();
+      const name = currentIsolate();
+      const shapes = name ? isolateSubtree(data.shapes, name) || data.shapes : data.shapes;
+      renderScene(shapes, { camera, refit: false });
+      syncUrl();
+    } catch (err) {
+      showError(viewerEl, "failed to load scene: " + String(err));
+    } finally {
+      reloading = false;
+    }
+  }
+
+  if (levelSelect) levelSelect.addEventListener("change", loadScene);
+  if (isolateSelect) isolateSelect.addEventListener("change", applyIsolate);
+  if (overridesInput) {
+    overridesInput.addEventListener("change", loadScene);
+    overridesInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        loadScene();
+      }
+    });
+  }
+  // An `isolate` carried in on the URL is applied client-side at load —
+  // the server no longer did it for us.
+  if (currentIsolate()) applyIsolate();
 }

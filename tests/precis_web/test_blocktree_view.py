@@ -487,6 +487,24 @@ def test_se_view3d_page_renders(blocktree_client, runtime_with_store) -> None:
     assert "three-cad-viewer" in r.text
 
 
+def test_se_view3d_scene_controls_are_not_a_submitting_form(
+    blocktree_client, runtime_with_store
+) -> None:
+    """Live-scene slice: ``level``/``isolate``/``overrides`` changed the
+    scene by submitting a GET form, which reloaded the page and reset the
+    camera. They are now JS-driven, addressed by id. Asserts the ids the
+    page hands to ``blocktreeViewer3D`` exist and that no submit button
+    is left behind to reload the page out from under the live scene —
+    the revision scrubber's own form is a separate control and stays."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    for control_id in ("bt3d-level", "bt3d-isolate", "bt3d-overrides"):
+        assert f'id="{control_id}"' in r.text, control_id
+        assert f'document.getElementById("{control_id}")' in r.text, control_id
+    assert 'type="submit"' not in r.text
+
+
 def test_view3d_url_permanently_redirects_to_the_new_default(client) -> None:
     """gr337745 moved the 3D view off ``/se/{slug}/view3d`` onto the
     bare slug URL — the old URL must still resolve via a permanent
@@ -657,12 +675,21 @@ def test_se_scene3d_json_container_paths_empty_for_a_flat_design(
     assert r.json()["container_paths"] == []
 
 
-def test_se_scene3d_json_unknown_isolate_is_400(
+def test_se_scene3d_json_isolate_is_accepted_and_ignored(
     blocktree_client, runtime_with_store
 ) -> None:
+    """Live-scene slice: isolating is a client-side filter over the scene
+    the page already holds, so this endpoint always returns the WHOLE
+    design. An unknown name used to 400 here; it must now render, since
+    the client is what resolves the name and an old bookmark carrying a
+    stale one should still show the design."""
     _seed_se(runtime_with_store)
-    r = blocktree_client.get("/se/unicycle_web/scene3d.json?isolate=nope")
-    assert r.status_code == 400
+    whole = blocktree_client.get("/se/unicycle_web/scene3d.json")
+    assert whole.status_code == 200
+    for isolate in ("fork", "nope"):
+        r = blocktree_client.get(f"/se/unicycle_web/scene3d.json?isolate={isolate}")
+        assert r.status_code == 200, isolate
+        assert r.json()["shapes"] == whole.json()["shapes"], isolate
 
 
 def test_se_scene3d_json_bad_level_is_400(blocktree_client, runtime_with_store) -> None:

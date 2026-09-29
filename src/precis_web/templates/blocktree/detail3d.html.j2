@@ -23,19 +23,23 @@
   <a href="{{ detail_2d_url }}" class="text-xs text-blue-600 hover:underline ml-auto">2D view →</a>
 </div>
 
-<form method="get" class="flex flex-wrap items-end gap-3 mb-4 text-sm">
-  {% if rev_explicit %}<input type="hidden" name="rev" value="{{ rev }}">{% endif %}
+{# The three scene-shaping controls are NOT a form any more: changing one
+   swaps the scene in place (blocktree-3d.js's live-scene seam) instead of
+   reloading the page and resetting the camera. They keep their `name`
+   attributes only as labels — nothing submits them. #}
+<div class="flex flex-wrap items-end gap-3 mb-4 text-sm">
   <div>
-    <label class="block text-xs text-slate-500 mb-1">abstraction level</label>
-    <select name="level" class="border border-slate-300 rounded px-2 py-1">
+    <label class="block text-xs text-slate-500 mb-1" for="bt3d-level">abstraction level</label>
+    <select id="bt3d-level" class="border border-slate-300 rounded px-2 py-1">
       {% for lv in levels %}
         <option value="{{ lv }}" {{ 'selected' if lv == level else '' }}>{{ lv }}</option>
       {% endfor %}
     </select>
   </div>
   <div>
-    <label class="block text-xs text-slate-500 mb-1">isolate subtree</label>
-    <select name="isolate" class="border border-slate-300 rounded px-2 py-1">
+    <label class="block text-xs text-slate-500 mb-1" for="bt3d-isolate">isolate subtree</label>
+    <select id="bt3d-isolate" class="border border-slate-300 rounded px-2 py-1"
+            title="filters the scene already in hand — no rebuild, no reload">
       <option value="">(whole design)</option>
       {% for b in block_names %}
         <option value="{{ b }}" {{ 'selected' if b == isolate else '' }}>{{ b }}</option>
@@ -43,11 +47,10 @@
     </select>
   </div>
   <div>
-    <label class="block text-xs text-slate-500 mb-1" title="per-subtree level override: name:level, name2:level2">level overrides</label>
-    <input type="text" name="overrides" value="{{ overrides }}" placeholder="hub:realized, rest:envelope"
+    <label class="block text-xs text-slate-500 mb-1" for="bt3d-overrides" title="per-subtree level override: name:level, name2:level2">level overrides</label>
+    <input type="text" id="bt3d-overrides" value="{{ overrides }}" placeholder="hub:realized, rest:envelope"
            class="border border-slate-300 rounded px-2 py-1 w-56" />
   </div>
-  <button type="submit" class="px-3 py-1 rounded bg-slate-800 text-white">apply</button>
   <button type="button" id="bt3d-explode" class="px-3 py-1 rounded border border-slate-300 hover:bg-slate-100">
     explode
   </button>
@@ -77,7 +80,7 @@
     <span id="bt3d-smooth-legend-min">0.00</span>–<span id="bt3d-smooth-legend-max">0.00</span> Å
   </div>
   {% endif %}
-</form>
+</div>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
   <div>
@@ -224,6 +227,9 @@
     explodeButton: document.getElementById("bt3d-explode"),
     connectionsToggle: document.getElementById("bt3d-connections"),
     containerModeSelect: document.getElementById("bt3d-container-mode"),
+    levelSelect: document.getElementById("bt3d-level"),
+    isolateSelect: document.getElementById("bt3d-isolate"),
+    overridesInput: document.getElementById("bt3d-overrides"),
     sceneUrl: {{ scene_url | tojson }},
     {% if has_atomic %}
     atomicUrl: {{ atomic3d_url | tojson }},
