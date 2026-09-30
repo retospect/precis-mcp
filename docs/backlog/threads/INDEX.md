@@ -176,18 +176,24 @@ one gripe at a time. Each needs an owner decided, not work done.
   (gr228652, gr228699 — μ/Greek destroyed at extraction, open since ~08-21),
   which is the worst shape in a research corpus: nothing fails, the corpus is
   quietly wrong, and embeddings/findings/cites inherit it. Ids and the
-  owner-decision options in `backlog/gripe-clusters-with-no-owning-thread.md`.
-- **job lifecycle / unpark** — 5 gripes, no thread. Nearest to `platform`, but
-  the nursery/job substrate is in no thread's Do-next. They compound:
-  gr456240 latches leaves for infra reasons, gr454792 means nobody can unlatch
-  them, gr452203 buries the evidence. Same file.
+  owner-decision options in `backlog/gripe-clusters-with-no-owning-thread.md`,
+  which also records where 2026-09-30's review parked it: one Parked entry in
+  `local-compute.md`, a holding position rather than an owner.
+- **job lifecycle / unpark** — ranked 2026-09-30, so this one is closed as a
+  coverage gap: gr452203 in `monitors-that-go-quiet` Do next, the four
+  fix_gripe items Parked there behind Reto's inert ruling, gr454792 in
+  `roadmap-quest` Horizon. They still compound (gr456240 latches leaves for
+  infra reasons, gr454792 means nobody can unlatch them, gr452203 buries the
+  evidence) — that argument is in the same file, now under its Status section.
 - **fleet capacity is unmeasured** — gr458727. All 20 nursery detectors answer
   "is work stuck?"; none answers "is capacity used?". Idle GPUs beside an empty
   queue are invisible and indistinguishable from a healthy fleet, which is the
   one state Reto's local-compute goal is about. Not ranked in
   `monitors-that-go-quiet`: that thread owns signals that lie, and this is a
-  signal that does not exist. Wants an owner with the serving/quest tiering in
-  view.
+  signal that does not exist. It has a consumer as of 2026-09-30 —
+  `backlog/graph-maintenance-queue.md` needs the same utilisation/queue-depth
+  number as an in-scope item and an acceptance criterion — but a consumer is
+  not an owner, and that item is `status: draft`.
 - **the local gate and the ship gate run different Pythons** — gr458726. The
   ship gate is 3.13-only; `scripts/test`'s container is 3.12. A full green
   `/go` is therefore not evidence about the version main is gated on, and cost
