@@ -5,7 +5,7 @@ supervised shared MCP server that never kills an in-flight call, reports
 truthfully what it runs, and gives each session its own DB role and a fair
 share. Agent containers and the sandbox sidecar stay stdio and are NOT part
 of that end state — backlog/mcp-shared-transport-concurrency.md rules them
-out, and item 5's role bullet is why: they depend on process-level role
+out, and that item's role bullet is why: they depend on process-level role
 separation this server cannot give them. Today it is one long-lived
 streamable-http server, live since 2026-09-29 and dogfooded. The defect
 this thread shipped — every bounce killed the calls in flight — is fixed
@@ -29,16 +29,28 @@ the parent item's remaining criteria and the isolation gaps.
    current code refuses. So the acceptance criterion is not "the right sha
    appears" but that the sha names the code the process is EXECUTING and
    started_at names that process, distinguished from the image build.
-   Correcting one thing carried over from gr458061: started_at and uptime
-   cannot contradict each other — `uptime_seconds` is
-   `int((now - _STARTED_AT).total_seconds())` over the same module-level
-   value, so they agree by construction, and gr458061's pair (15:34:31
-   against 54369 s, read at ~07:14) is ~34 min apart, which an approximate
-   read time explains. Do not spend the fix chasing that; the misleading
-   field was the sha alone. No cheap
-   check substitutes: in that container stat, grep and a fresh `python -c`
-   import all reported the new code. That is why this blocks dogfooding
-   generally, not just this thread. Not started: no branch on origin and no
+   Correcting one thing carried over from gr458061, now formally withdrawn
+   by its filer: started_at and uptime cannot contradict each other —
+   `uptime_seconds` is `int((now - _STARTED_AT).total_seconds())` over the
+   same module global that renders `started_at`, so they agree by
+   construction, and the arithmetic is exact rather than approximate
+   (15:34:31 + 54369 s = 06:40:40; the 07:14 in the gripe was the corrupting
+   join's timestamp, not the status call's). Do not spend the fix chasing
+   it, and do not write an AC around mutual consistency — such an AC passes
+   trivially on current code while reading as tested. The misleading field
+   was the sha alone, and the mechanism is in the code:
+   `_collect_build_info` lets a real baked PRECIS_GIT_SHA win over
+   `_SOURCE_GIT_INFO`, so the bind-mount-over-baked-source shape prints the
+   image's sha beside a working-tree `source_path`, with no field anywhere
+   naming the mounted tree's sha at import time. A second criterion with
+   teeth, and the only one that would have caught this: the surface should
+   be able to say the mounted tree has advanced past the import. That fails
+   on current code and is a real test to write. No cheap check substitutes
+   for it: in that container stat, grep and a fresh `python -c` import all
+   reported the new code, and all three were run before concluding wrongly —
+   which is why this blocks dogfooding generally, not just this thread.
+   Measured blast radius of the one incident: one design damaged in prod (se
+   457890, deliberately left corrupt as the repro). Not started: no branch on origin and no
    live tree claims it as of 2026-09-30. gr458039 closed as its duplicate
    (git_dirty observation appended there). Do NOT close gr458061 when this
    lands: its second half — restart the server when the mounted checkout
