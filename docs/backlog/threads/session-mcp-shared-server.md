@@ -56,28 +56,40 @@ server-side-session-context Horizon pointer)
    On HTTP none of that applies: the server stops being per-session, clients
    reconnect over a socket instead of owning a pipe, and the ensure script's
    `--restart unless-stopped` plus the already-armed watchdog are the whole
-   mechanism. Work is the config migration plus letting the stdio containers
-   die with their sessions; `--rm` disposes of each one.
+   mechanism.
 
-   Ordering constraint, and it is the reason this is not purely a config
-   edit: migrating the last session makes
-   backlog/mcp-shared-server-liveness.md load-bearing rather than adjacent.
-   One shared server for every session with no wedge detection is a single
-   point of failure the migration *creates* — `--restart unless-stopped`
-   acts on exit, never on a process that is up, listening and wedged. That
-   item should land before or with the last session's move.
+   **There is no config edit outstanding — the flip happened 2026-09-29
+   around 17:00.** `~/.claude.json` already carries one top-level
+   `mcpServers.precis` of `type: http` pointing at `127.0.0.1:8765/mcp`,
+   with no project-level override, and the newest `precis-mcp-dev-*`
+   container dates from 09-29 16:54 with none since despite 15 live
+   sessions — a session reading a stdio command would have made one. The
+   remaining containers belong to sessions that connected before the flip
+   and are still holding that connection; config is read at connect time,
+   so `/mcp` → `precis` → reconnect (or ending the session) is the whole
+   fix, and `--rm` disposes of the container. The reconnect wave is not a
+   stopgap before the migration, it *is* the migration.
+
+   Wedge detection (Do-next 2) follows rather than gates, decided
+   2026-09-30 when the pillar review asked: 15 sessions are already on the
+   shared server, so holding the wave protects nobody and only keeps
+   eleven on stale code while three thread owners wait. A wedge is
+   recoverable by hand (`precis-mcp-http-ensure.sh --recreate`) and
+   `scripts/prod-precis tools ...` is the fallback for a dead MCP; what is
+   missing is detection, not recovery. Revisit only if a wedge lands
+   first — that would make it a measurement rather than a projection.
 
 2. **backlog/mcp-shared-server-liveness.md** — promoted out of Horizon by
    td458385: it was a cost to watch while sessions still had their own
-   containers, and the migration makes it a prerequisite. Nothing detects a
+   containers, and the migration makes it the next thing that matters
+   (follows the wave rather than gating it — see Do-next 1). Nothing detects a
    server that is up, listening and wedged — the exact state
    `install_watchdog`'s docstring names, where the process "doesn't fail
    fast" but "desyncs at the protocol level ... and then hangs until the
    client's 1800 s idle timeout". `--restart unless-stopped` acts on exit
    and never fires on it, and there is no `HEALTHCHECK`. Under stdio a wedge
    cost one session and the operator noticing *was* the detection; shared,
-   it costs twelve at once and none of them owns the server. Land this
-   before or with the last session's migration.
+   it costs twelve at once and none of them owns the server.
 3. **gr457326 follow-up: retry per batch, not per pass — and re-arm.**
    Dogfooding the landed fix on the shared server found the retry is at the
    wrong granularity, which matters more than the sleep length. Measured
