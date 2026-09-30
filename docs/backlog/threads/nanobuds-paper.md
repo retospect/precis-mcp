@@ -5,7 +5,8 @@ signed finding hub and its thesis (geometry, not composition, sets the
 electronic structure, and almost none of it has been measured) leading the
 paper. Today the poster is print-ready and the paper is a survey grown by
 accretion with the thesis buried in a 233-word gap analysis; a taproot
-backfill converted 13 chunks to hub cites and left two residues; both
+backfill converted 13 chunks to hub cites and left two residues, of which the
+caption-provenance one is repaired; both
 measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited. Repair the
 citation graph first, then restructure once the venue is picked.
 **Last reviewed:** 2026-09-30
@@ -13,29 +14,24 @@ citation graph first, then restructure once the venue is picked.
 
 ## Do next
 
-1. **td458067** — six figure captions cite a claim hub where a
-   reproduction-provenance pointer belongs (gr450329 code fix shipped, draft
-   never repaired); every export names a claim as an image source and the
-   six caption hubs are citable by other drafts. Chunk history is the only
-   undo, so it gets harder with every edit.
-2. **td458068** — fi449493 miscorroborated by three doping papers, fi189545 a
+1. **td458068** — fi449493 miscorroborated by three doping papers, fi189545 a
    third copy of the fi191132/fi211518 pair, fi449498 pinned to the wrong
    passage (gr450339 residue); wrong hubs propagate into any draft that
    searches them, and the bundled wording fixes are the only known
    unfaithful sentences in the paper.
-3. **td450081** — target venue (Reto). Gates the restructure: Introduction is
+2. **td450081** — target venue (Reto). Gates the restructure: Introduction is
    29% of the paper and the thesis sits near the end.
-4. **td450082** — pa1181/42560 duplicate reference merge (Reto); the
+3. **td450082** — pa1181/42560 duplicate reference merge (Reto); the
    bibliography exports one Nature 1999 paper twice until done.
-5. **td450083** — fi191281 verifier re-judge (Reto); the stale caveat argues
+4. **td450083** — fi191281 verifier re-judge (Reto); the stale caveat argues
    against wording that no longer exists.
-6. **td450087** — commit the poster README rewrite in its own gitignored
+5. **td450087** — commit the poster README rewrite in its own gitignored
    repo (Reto); until then the README's owed-list is wrong on disk.
 
 ## Horizon
 
 1. **read-back of the 13 chunks jo449492 converted** — waits on
-   td458067 + td458068 so it sees repaired hubs; delivers a citation graph
+   td458068 so it sees repaired hubs; delivers a citation graph
    where every [fi] in dr173020 is faithful to its span, the gate before any
    prose moves.
 2. **measured-analogue argument consolidated (dc2445946 + dc2445954)** —
@@ -60,8 +56,9 @@ citation graph first, then restructure once the venue is picked.
 
 ## No action needed
 
-- **gr450329**, **gr450339** — code fixed and STATUS:done; the draft residue
-  is td458067/td458068 above.
+- **gr450329**, **gr450339** — code fixed and STATUS:done; gr450329's draft
+  residue (td458067) repaired 2026-09-30, six caption-fragment hubs retired,
+  corpus audit clean; gr450339's residue is td458068 above.
 - **gr450123** — embedder contention; infra, owned elsewhere.
 - **jo449492** — the backfill succeeded (189 scanned, 13 converted, 0
-  failed); do not re-run over dr173020 before td458067 lands.
+  failed); a re-run over dr173020 is safe again now that td458067 landed.
