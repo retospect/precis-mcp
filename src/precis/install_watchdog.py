@@ -436,8 +436,7 @@ def resolved_drain_timeout_s() -> float:
         value = 0.0
     if value <= 0:
         log.warning(
-            "checkout watchdog: ignoring %s=%r — not a positive number; "
-            "using %.0fs",
+            "checkout watchdog: ignoring %s=%r — not a positive number; using %.0fs",
             _DRAIN_TIMEOUT_ENV,
             raw,
             _DEFAULT_DRAIN_TIMEOUT_S,

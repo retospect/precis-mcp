@@ -18,6 +18,8 @@ must behave EXACTLY as it did before 0171.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -36,7 +38,7 @@ _GAP_MM = 0.4
 _WIDTH_MM = 0.2
 
 
-def _two_track_model(*, layers: list[str] | None = None) -> dict[str, object]:
+def _two_track_model(*, layers: list[str] | None = None) -> dict[str, Any]:
     centre_to_centre = _GAP_MM + _WIDTH_MM
     return {
         "layers": layers or ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
@@ -82,7 +84,8 @@ def test_unannotated_board_is_unchanged_by_the_voltage_term(capability):
     to the pre-0171 call, whether the map is absent or empty."""
     model = _two_track_model()
     before = pcb_drc.check_clearance(model, capability)
-    for empty in (None, {}):
+    empties: tuple[dict[str, float] | None, ...] = (None, {})
+    for empty in empties:
         after = pcb_drc.check_clearance(model, capability, net_voltages=empty)
         assert [f.to_row() for f in after] == [f.to_row() for f in before]
     assert [f.rule for f in before] == []
@@ -160,8 +163,8 @@ def test_inner_layer_pair_reads_the_looser_internal_column(capability):
     assert internal < _GAP_MM < external
 
     inner = _two_track_model()
-    for item in inner["copper"]:  # type: ignore[index]
-        item["layer"] = "In1.Cu"  # type: ignore[index]
+    for item in inner["copper"]:
+        item["layer"] = "In1.Cu"
     voltages = {"HV": 48.0, "GND": 0.0}
     assert [
         f
@@ -183,20 +186,18 @@ def _ir_with_nets(**arrays):
     reads — it indexes them and nothing else."""
 
     class _Stub:
-        pass
+        net_impedance_ohm: Any
+        net_edge_rate_v_per_ns: Any
+        net_function_hint: Any
 
     stub = _Stub()
-    stub.net_impedance_ohm = arrays.get(  # type: ignore[attr-defined]
-        "impedance", np.array([np.nan])
-    )
-    stub.net_edge_rate_v_per_ns = arrays.get(  # type: ignore[attr-defined]
-        "edge_rate", np.array([np.nan])
-    )
+    stub.net_impedance_ohm = arrays.get("impedance", np.array([np.nan]))
+    stub.net_edge_rate_v_per_ns = arrays.get("edge_rate", np.array([np.nan]))
     hints = arrays.get("hints", [""])
     arr = np.empty(len(hints), dtype=object)
     for i, h in enumerate(hints):
         arr[i] = h
-    stub.net_function_hint = arr  # type: ignore[attr-defined]
+    stub.net_function_hint = arr
     return stub
 
 

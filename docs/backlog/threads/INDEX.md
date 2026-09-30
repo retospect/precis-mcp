@@ -34,15 +34,16 @@ Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
   chain Do-next 4 are the same surface; the viewer owns the selection
   mechanism, the chain thread owns the residue/base-pair instance.
-- precis_se atomic output — hexfold's join corruption (gr457995) renders
-  in the viewer as a wrong picture; the fix is hexfold's, the viewer only
-  needs to know a wrong picture may be upstream data.
+- precis_se atomic output — a composite corrupted by a stale process
+  (gr458061; gr457995 refuted, there is no join-side bug) renders in the
+  viewer as a wrong picture; hexfold's `composite_part_stolen` validate
+  check now reports it, so the viewer's interest is unchanged, only the cause.
 
 Waits:
 - viewer Horizon 3–4 (reaction forces, mechanical DRC phase 2) feed
   `backlog/se-feasibility-and-cost.md`, the far end all three serve.
-- nanobuds-paper's seam-topology cross-cite waits on hexfold Do-next 6
-  (measured rows trusted).
+- nanobuds-paper's seam-topology cross-cite waits on hexfold Do-next 3
+  (gr456641 + gr457997, the `EnvKey` extent fix).
 - td344088 (se + hexfold paper) waits on the walker dogfood (chain
   Do-next 1) for its figure.
 
