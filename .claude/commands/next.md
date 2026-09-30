@@ -93,7 +93,12 @@ it, then let it shape the whole handoff:
 3. **Anchor to durable artifacts.** The recovery prompt must point at things
    that survive compaction, not at "as we discussed": the worktree path +
    branch, the files touched, the relevant `docs/backlog/` item, any
-   `kind='todo'` / `gripe` ids. If a next step
+   `kind='todo'` / `gripe` ids, and — when the work belongs to a thread —
+   the thread file (`docs/backlog/threads/<slug>.md`) plus its line in
+   `docs/roadmap.md` (which pillar, active or dormant). If this session
+   landed something in the thread, the thread file must already say so
+   (delete what shipped, insert what was filed at rank) before the handoff
+   points at it; a stale thread file produces a stale handoff. If a next step
    isn't persisted anywhere durable and matters, note that gap to the user (they
    may want it in `docs/backlog/` or a todo before compacting).
 
@@ -123,7 +128,7 @@ it, then let it shape the whole handoff:
    ````
    Resuming after /compact. Reorient, then continue.
 
-   **Where:** worktree `<path>` on branch `<branch>` (<N ahead / clean / dirty>).
+   **Where:** worktree `<path>` on branch `<branch>` (<N ahead / clean / dirty>); thread `<slug>` (<active|dormant>, pillar <n> per docs/roadmap.md) — or "no thread".
    **Goal:** <one-sentence what-we're-driving-at>.
    **Done so far:** <2–4 bullets of what's landed/decided this session>.
    **In flight:** <what's half-done right now, if anything — file:line if precise>.

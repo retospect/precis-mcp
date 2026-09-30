@@ -8,6 +8,7 @@ answers:
   - how do I address a specific chunk or section of a ref?
   - what's the difference between id= and q=?
   - which skill do I need for a given kind?
+  - where does my work live — the graph, a file, or SQL?
 applies-to: all
 status: active
 tags: [orientation, verbs]
@@ -34,6 +35,25 @@ to every kind that supports them.
 
 For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
 For `search`, `kind=` is optional — omitted means cross-kind fan-out.
+
+## Where does my work live? (the graph is the memory)
+
+In the graph. Papers, extracted numbers, notes, findings, experiment
+records, skills, your own working memory (`kind='memory'`) and the
+plans you follow are all refs with chunks and typed links, navigated by
+`view='fisheye'` and `search`. A file is a staging format, not a home.
+
+If you find yourself leaving the graph to get the work done — a proposal
+written to a temp file because no node holds it, a raw SQL query because
+no verb answers "did my edit land", a copy kept in another assistant's
+memory — you have found a **missing affordance, not a workaround to keep**.
+File it: `put(kind='gripe', text='<the verb call that had no answer>')`,
+then do the work the long way once. The gripe is how the surface grows;
+the workaround, kept silently, is how the graph stops being the memory.
+
+Read before you write: `search` for an existing node (a finding hub, a
+memory, a concept) and `link` to it rather than minting a near-copy;
+`view='fisheye+1hop'` on a candidate shows what already surrounds it.
 
 ## What kinds can I address by slug or DOI?
 ## Content kinds I can read and tag

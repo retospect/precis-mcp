@@ -227,3 +227,12 @@ Re-read this page at every session restart wave and at the four thread
 moments. A pillar whose end state has not moved in a quarter is either
 mis-ranked or mis-stated; say which in its "Where it stands" line rather
 than leaving it.
+
+## Review log
+
+Newest first; one line per pass (`/pillar-review` writes it).
+
+- 2026-09-30 — all four pillars; 10 owners polled; 20 items filed, 2
+  folded into a sibling's same-day items; 67 orphan gripes relinked, 9
+  closed pointers pruned; open on Reto: the mechanical sweep, the stale
+  sweep worktree, which dormant threads open at the restart, td458722.

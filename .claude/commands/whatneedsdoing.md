@@ -52,6 +52,16 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
    left-in "DONE" item is the same append-only rot the docs triage cured. (The
    lint excludes partially-open items that merely *mention* something shipped.)
    The dark-factory workstream is active.
+   **Thread files and the active set.** `docs/roadmap.md` names the active
+   threads; `scripts/inflight` shows which have a session. Flag both
+   mismatches (active with no session, dormant with one). Then, for every
+   `gr<id>` in `docs/backlog/threads/*.md`, check live status
+   (`get(kind='gripe', id=N)`): a closed gripe still ranked is a stale
+   pointer to delete in the owner's file (keep "soft-deleted, do not
+   reopen" tombstones) — half the thread files were stale this way at the
+   2026-09-30 pillar review. Open gripes that no thread and no item names
+   are orphans; list them by pillar for `/pillar-review` rather than
+   placing them here.
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')` (the bug tracker).
    Tracked but **not auto-worked** — flag stale or high-impact ones. **Close
    the truly-fixed ones as you go:** if an open gripe's fix has already merged
