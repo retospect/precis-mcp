@@ -7,9 +7,10 @@ paper. Today the poster is print-ready and the paper is a survey grown by
 accretion with the thesis buried in a 233-word gap analysis; a taproot
 backfill converted 13 chunks to hub cites and left two residues, both repaired
 on 2026-09-30; both
-measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited, and
-the 13 converted chunks are read back and repaired. Consolidate the
-measured-analogue section next, then restructure once the venue is picked.
+measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited,
+the 13 converted chunks are read back and repaired, and the Gap Analysis
+section now opens with the thesis and carries both analogues (2026-09-30).
+Restructure once the venue is picked.
 **Last reviewed:** 2026-09-30 (pillar review same day absorbed the nanobud
 library items and the hexfold seam-figure want; pruned gr450329/gr450339,
 both STATUS:done)
@@ -17,29 +18,25 @@ both STATUS:done)
 
 ## Do next
 
-1. **td458280** — consolidate the measured-analogue argument (dc2445946 +
-   dc2445954) into one body section on the Huang (fi457242–50) and Seiler
-   (fi458136–44) hubs and re-decide the retired gap table dc2445955; author
-   prose, so a proposal goes to Reto before the chunks are replaced.
-2. **td450081** — target venue (Reto). Gates the restructure: Introduction is
+1. **td450081** — target venue (Reto). Gates the restructure: Introduction is
    29% of the paper and the thesis sits near the end.
-3. **td450082** — pa1181/42560 duplicate reference merge (Reto); the
+2. **td450082** — pa1181/42560 duplicate reference merge (Reto); the
    bibliography exports one Nature 1999 paper twice until done.
-4. **td450083** — fi191281 verifier re-judge (Reto); the stale caveat argues
+3. **td450083** — fi191281 verifier re-judge (Reto); the stale caveat argues
    against wording that no longer exists.
-5. **td450087** — commit the poster README rewrite in its own gitignored
+4. **td450087** — commit the poster README rewrite in its own gitignored
    repo (Reto); until then the README's owed-list is wrong on disk.
-6. **backlog/se-nanobud-graph.md** — `status: in-progress/high`; graph-first
+5. **backlog/se-nanobud-graph.md** — `status: in-progress/high`; graph-first
    sp2 construction (geo rung, spectral embed, nanobud generator,
    nomenclature) — the library this thread and nanobud-nomenclature-paper
    both need to exist.
-7. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
+6. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
    brings the 139 claim hubs behind the nanobud draft above board — direct
    input to this thread's own claim-hub-signing end state.
 
 ## Horizon
 
-1. **restructure** — waits on td450081 (venue) and td458280; delivers the
+1. **restructure** — waits on td450081 (venue); delivers the
    Introduction cut from 29%, the thesis moved to the front, the abstract
    scope line drawn.
 2. **nanopub approve/sign pass over dr173020's hubs** — waits on 1 (rewording
@@ -48,7 +45,7 @@ both STATUS:done)
    prod export path against the venue's template. 43020 stays frozen.
 4. **backlog/nanobud-campaign.md**
 5. **backlog/nanobud-nomenclature-paper.md** — blocked-by
-   se-nanobud-graph (Do-next 6).
+   se-nanobud-graph (Do-next 5).
 6. **backlog/nanobud-magnetomechanical-memory.md**
 7. **backlog/chern-domain-memory-in-the-sheet-generator.md**
 8. **backlog/berry-phase-and-topological-defects-in-precis-models.md**
@@ -68,6 +65,11 @@ both STATUS:done)
 
 ## No action needed
 
+- **td458280** — done 2026-09-30 (Reto: heading stays "Gap Analysis", the
+  disclination clause stays, go): dc2445954 rewritten to lead with the thesis,
+  dc4262976 (Huang grain-boundary analogue) and dc4262977 (Seiler bilayer
+  benchmark) added under it, dc2445946 trimmed of the sentences that moved;
+  the gap table dc2445955 stays retired, the prose carries every row.
 - **gr450123** — embedder contention; infra, owned elsewhere.
 - **jo449492** — the backfill succeeded (189 scanned, 13 converted, 0
   failed); read back in full by td458276 (done 2026-09-30) — a re-run over
