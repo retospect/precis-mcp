@@ -59,6 +59,21 @@ gr346534, soft-deleted)
    deliberately retired kind, env-gated kinds). Net-negative for this
    thread's own "unremarkable doctor report" goal until fixed.
 
+6. **Confirm the fix_gripe skip path on prod, once** — one read, not a build.
+   Last despite being the cheapest item here: the lane is inert, so nothing is
+   costing anything while this stays unobserved.
+   The pre-flight's decisive predicate (no credential on the worker's fix repo,
+   `git push --dry-run` → exit 128) is confirmed on the real host; the
+   end-to-end path is not. No fix_gripe job had run since the deploy at the
+   time of writing (the newest were pre-deploy), so nothing has yet produced
+   the expected `skipped` outcome with "cannot publish a branch to…" in its
+   text. `backlog_groom`'s refresh throttle should mint one within ~6h of any
+   host running the deployed sha. Until an actual run shows it, the lane's
+   *inertness* is verified by code reading only. If the first run instead comes
+   back `failed`, that is a different bug and wants its own gripe — `skipped`
+   is the contract, because an infrastructure gap must not spend a gripe's
+   retry budget.
+
 ## Horizon
 
 1. **A guard on whether an ephemeral identity may claim jobs at all** —
