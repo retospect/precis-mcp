@@ -342,6 +342,14 @@ def test_station_settle_stores_a_per_state_pose_the_reads_apply_without_relaxing
     assert p1[0] > p0[0] + 0.5e-9, (p0, p1)
     # The block's own default pose is untouched by station settles …
     assert _pose_of(handler, "walk", None) == default
+    # … the block view says whose pose it shows (gr458145) …
+    posed_body = handler.get(
+        id="walk", view="block", args={"name": "w", "state": {"w": "st1"}}
+    ).body
+    assert "(state 'st1', STORED by relax_chain(state=)" in posed_body
+    assert "(authored, parent frame" not in posed_body
+    plain_body = handler.get(id="walk", view="block", args={"name": "w"}).body
+    assert "(authored, parent frame" in plain_body
     # … and a posed read applies the stored slot with zero settles.
     import precis_se.chain.relax as relax_mod
 
@@ -536,7 +544,7 @@ def _switch(name: str, refs: tuple[str, str]) -> list[dict[str, Any]]:
 
 def test_wavelength_parsing_and_the_gaussian_crosstalk() -> None:
     parse = chain_spectral.parse_wavelength_nm
-    assert parse("405nm") == pytest.approx(405.0)
+    assert parse("405nm") == 405.0  # exactly: the m→nm noise is rounded away
     assert parse("405 nm") == pytest.approx(405.0)
     assert parse("0.405 um") == pytest.approx(405.0)
     assert parse("405") == pytest.approx(405.0)

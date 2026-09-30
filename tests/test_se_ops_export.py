@@ -528,6 +528,7 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "pending_states": "derived",
         "pending_transitions": "derived",
         "ports": "op",
+        "posed_by_state": "derived",
         # the COMPOSED world placement; local_pose/local_rot above are the
         # authored values the pose ops actually take
         "pose": "derived",

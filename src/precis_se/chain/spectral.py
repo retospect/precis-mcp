@@ -125,7 +125,9 @@ def parse_wavelength_nm(raw: Any) -> float | None:
             metres = float(text) * 1e-9
         except ValueError:
             return None
-    nm = metres * 1e9
+    # Round away the m→nm float noise (405.00000000000006) so the number
+    # a make step carries is the one the author wrote.
+    nm = round(metres * 1e9, 6)
     return nm if math.isfinite(nm) and nm > 0.0 else None
 
 

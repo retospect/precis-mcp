@@ -490,7 +490,14 @@ TREE_JSON_FORMAT = "se-tree/1"
 #: not-yet-written state-op payload (the class docstring — cleared by
 #: discarding the tree).
 _BLOCK_TRANSIENT = frozenset(
-    {"derived", "pending_states", "pending_transitions", "pending_current_state"}
+    {
+        "derived",
+        "pending_states",
+        "pending_transitions",
+        "pending_current_state",
+        "pending_state_poses",
+        "posed_by_state",
+    }
 )
 
 

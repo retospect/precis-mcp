@@ -2589,11 +2589,24 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
     # The COMPOSED world placement rides along, separately labelled, only
     # when it actually differs — never confusable with the value above,
     # and never the one to paste back into set_pose.
-    lines.append(
-        f"pose: [{_fmt3(node.local_pose)}] m  (authored, parent frame — "
-        "root's parent is world)"
-    )
-    lines.append(f"rot: [{_fmt_rot3(node.local_rot)}]")
+    if node.posed_by_state:
+        # gr458145: with args.state the value below is the state's STORED
+        # pose (relax_chain(state=)'s output), not the authored one — say so,
+        # and keep the authored value visible so neither reads as the other.
+        lines.append(
+            f"pose: [{_fmt3(node.local_pose)}] m  (state {node.posed_by_state!r}, "
+            "STORED by relax_chain(state=) — parent frame; the authored value "
+            "is the same view without args.state)"
+        )
+        lines.append(
+            f"rot: [{_fmt_rot3(node.local_rot)}]  (state {node.posed_by_state!r})"
+        )
+    else:
+        lines.append(
+            f"pose: [{_fmt3(node.local_pose)}] m  (authored, parent frame — "
+            "root's parent is world)"
+        )
+        lines.append(f"rot: [{_fmt_rot3(node.local_rot)}]")
     world_differs = list(node.pose) != list(node.local_pose) or list(node.rot) != list(
         node.local_rot
     )
@@ -4784,6 +4797,7 @@ def _apply_state_arg(
                 node.local_pose = [float(v) for v in xyz]
             if rot is not None:
                 node.local_rot = [float(v) for v in rot]
+            node.posed_by_state = state.name  # read-time marker (gr458145)
             posed = True
         if state.envelope is not None:
             node.envelope = state.envelope

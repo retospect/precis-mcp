@@ -633,6 +633,11 @@ class SeBlock(BlockNode):
     #: one pose setter (:func:`precis.design.states.set_state_pose`) once
     #: ``save_tree`` has a uid. The tree's own pose is never touched.
     pending_state_poses: dict[str, dict[str, Any]] | None = None
+    #: TRANSIENT read-time marker (never persisted): the state whose STORED
+    #: pose :func:`precis_se.handler._apply_state_arg` put on this block
+    #: for the current ``get`` — so a renderer can label the value as the
+    #: state's, not the authored one (gr458145).
+    posed_by_state: str | None = None
 
     def __post_init__(self) -> None:
         """:attr:`local_pose`/``local_rot``'s empty-list sentinel →
