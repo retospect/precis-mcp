@@ -14,16 +14,22 @@ main may drift before a qland is refused.
 
 ## Do next
 
-1. **backlog/host-dark-ages-out-with-worker-logs-retention.md** — the
+1. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — first
+   only because its evidence expires: re-measured 2026-09-30, the host's
+   `worker_logs` rows are down from 211K to 30.7K and its last row
+   (2026-09-09) is pruned around **2026-10-09**, after which nothing records
+   that it ran at all — it has no `host_heartbeat` row either. The design
+   question (attributability for a non-fleet identity writing to prod) is not
+   urgent; dumping the surviving rows somewhere durable is, and is cheap. Do
+   that part first, then rank the rest normally.
+2. **backlog/host-dark-ages-out-with-worker-logs-retention.md** — the
    host-dark lookback equals worker_logs retention, so a host dark longer
    than retention becomes permanently invisible: the alert ages out because
    the evidence was deleted. Prevents a broken host reading as
-   decommissioned. Latent, no incident, hence below an observed failure.
-2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — an
-   unnamed container host wrote 211K rows 2026-08-30 → 09-09 then went
-   silent, invisible to host-dark by two deliberate exclusions (gr306275,
-   gr331348). Below the detector defect because it is an investigation
-   (attributability), not a defect; nothing can be specced until answered.
+   decommissioned. Specced down to code 2026-09-30 (option 1, the explicit
+   retire marker; the shape and a prod re-read that confirms nothing needs
+   backfilling are in the item) — so it is ready to write, and sits here
+   rather than first only because it is latent with no incident.
 3. **backlog/main-stays-gated.md** — down to one follow-on and it is a
    question, not a task: how far behind its last shard verdict main may drift
    before `scripts/ship --quick` refuses rather than warns. Refusing too eagerly

@@ -35,6 +35,22 @@ event.
 - Did it stop on 2026-09-09 because someone tore it down, or because it
   broke?
 
+**The evidence is being deleted, and there is a date on it.** Re-measured
+2026-09-30, one day after the table above: the row count is down from 211K to
+**30.7K**, and the earliest surviving row has moved from 2026-08-30 to
+2026-08-31. `sweeper._gc_worker_logs` prunes `worker_logs` at
+`PRECIS_WORKER_LOG_RETENTION_DAYS` (default 30), so this host's last row —
+2026-09-09 — is deleted around **2026-10-09**, after which there is no record
+in `worker_logs` that it ever ran. It has no `host_heartbeat` row either
+(confirmed: the table holds four live named hosts and nothing else), so the
+prune is the only copy. Any forensic question below — was it claiming jobs, did
+it stop or break — has to be asked before that date or not at all. This is the
+same mechanism as the sibling item
+(`host-dark-ages-out-with-worker-logs-retention.md`): the retention horizon
+removes the evidence a question depends on. If the answers are wanted, dump the
+surviving rows somewhere durable first; that is cheap and can happen before any
+design decision.
+
 **Ask.** Not "alert on container hosts" — the exclusion is right. Rather:
 a container-identity worker that writes to prod `worker_logs` at this
 volume should be *attributable*. Something that records "a non-fleet

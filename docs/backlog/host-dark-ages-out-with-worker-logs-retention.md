@@ -106,10 +106,53 @@ regression here is a paging change.
   reports also claimed spark had "never reported worker_logs at all",
   which was an artifact of the 30-day prune having already removed them —
   that claim must not be carried forward.
-- Open: is an explicit retire marker worth the operator burden, given
-  ageing-out has so far only ever retired hosts correctly? A cheaper
-  variant is to keep ageing-out but emit one terminal "host aged out of
-  monitoring" event, so the transition is journalled rather than silent.
-- Open: should `dead-worker` get the same treatment? It shares
-  `DEAD_WORKER_LOOKBACK_DAYS` and the same `worker_logs` dependency, so
-  the same reasoning probably applies, but it was not examined here.
+- **Decided 2026-09-30: option 1, the explicit retire marker.** Not because
+  the cheaper variant is bad in itself, but because acceptance criteria 1 and
+  2 already require it: criterion 1 says a host dark past retention with no
+  marker must still yield a symptom, and criterion 2 requires the marker be
+  discoverable. A terminal "aged out of monitoring" event journals the
+  transition but leaves the blind spot open — it makes the silence visible
+  once, then goes quiet again, which is the same failure one notification
+  later. Option 3 (lookback strictly greater than retention) only moves the
+  horizon; the two cases stay indistinguishable to the query, which is the
+  item's actual complaint.
+- **Shape of the change** (not yet written):
+  1. `_detect_host_dark` drops the `EXISTS (worker_logs …)` bound entirely and
+     gains `AND (hh.meta->>'retired') IS NULL`. The bound was a proxy for "was
+     this host ever really a fleet member"; the marker answers that directly
+     and `host_heartbeat` is never pruned, so nothing the sweeper does can
+     empty the evidence again.
+  2. `HOST_DARK_LOOKBACK_DAYS` then has no reader. Remove it rather than leave
+     a constant that documents a coupling that no longer exists — it is in
+     `nursery.__all__`, in the module docstring, in the symptom's evidence
+     dict and imported by `tests/test_nursery.py`, so the removal is visible
+     rather than silent.
+  3. `precis heartbeat --retire <host>` / `--unretire <host>`, writing an ISO
+     timestamp to `meta.retired` through a new op in
+     `store/_heartbeat_ops.py`. No migration: `host_heartbeat.meta` is already
+     jsonb. Lives on `heartbeat` rather than a new `precis host` group — it is
+     the command that owns that table.
+  4. `tests/test_nursery.py::test_host_dark_ages_out_past_lookback` inverts:
+     the same fixture must now FIRE, and a new sibling asserts a retired host
+     stays quiet. Its current docstring ("a host with no worker_logs activity
+     in HOST_DARK_LOOKBACK_DAYS is decommissioned, not dark") is precisely the
+     assumption this item retracts, so it does not survive.
+  5. For criterion 3, the durable pin is not a number but a structural one:
+     assert `_detect_host_dark`'s SQL does not reference `worker_logs` at all.
+     A future change cannot re-introduce the coupling without failing it.
+- **Answered: `dead-worker` does not get the same treatment.** It is gated on
+  `host_alive`, so a host that is itself dark already suppresses every
+  per-daemon `dead-worker` row — that suppression is the whole point of
+  gr186752. Re-arming `dead-worker` for a host past retention would restore
+  exactly the N-fold-per-daemon noise `host-dark` exists to replace. The
+  marker only needs to exist on the one detector that pages for the host
+  itself.
+- **Answered 2026-09-30 against prod: nothing needs backfilling.**
+  `host_heartbeat` holds exactly four rows — melchior, balthazar (Darwin),
+  castor, pollux (Linux) — all with a heartbeat under a minute old. There is
+  no `spark` row and no retired row of any kind, and the detector's predicate
+  minus the `worker_logs` bound selects **zero** hosts. So dropping the bound
+  cannot page for a host that is actually retired, and `--retire` has nothing
+  to be applied to yet; it exists for the next decommission, not this one.
+  Re-read before the commit rather than trusted from the 2026-09-29 note,
+  because the change turns a silent exclusion into a critical page.
