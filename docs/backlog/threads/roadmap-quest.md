@@ -3,19 +3,27 @@
 **Status:** ends when the root roadmap quest ticks unattended, writes rungs
 that carry numbers, and drives priority down to the pathway quests with a
 reviewed ledger behind every tick. Today stages 1-4 are built, gated and
-on the fleet (2026-09-30 12:23 UTC); the first prod tick is the first real
-verification, and Reto ruled he sees the dry-run before any live tick.
+on the fleet (2026-09-30 12:23 UTC); the prod dry-run has been seen
+(2026-09-30 13:24 UTC, role demand on qu453869) and the one defect it showed
+is fixed; the first live tick is the first real verification and waits on
+Reto's word.
 **Last reviewed:** 2026-09-30
 **Worktree:** `roadmap-quest`
 
 ## Do next
 
-1. **backlog/bootstrap-roadmap-quest.md §Resume** — `precis quest tick
-   453863 --dry-run` on prod (via `scripts/prod-precis`; the agent's own
-   attempt on 2026-09-30 was refused by the session permission classifier,
-   so Reto runs it or grants it) and show Reto the role + prompt; nothing
-   here is verified until a real tick runs, and a wrong role selection would
-   write a numberless rung into prod.
+1. **qu453863 first live tick** — Reto's explicit word only. The prod
+   dry-run ran 2026-09-30 13:24 UTC (deploy session, Reto-approved, exit 0,
+   no writes): role `demand`, tier big, gap `no-demand` on
+   `placement_error_nm` for qu453869 (no se part serves it yet, so the
+   prompt tells the model to derive the number from the capability
+   statement alone). The dry-run found one prompt defect, fixed the same
+   day: the capability heading was the ledger's 60-character display stub,
+   cut mid-sentence before the clause that names the tolerance — the prompt
+   now carries the full statement (`LedgerRow.capability_statement`). The
+   fix lands with the next /go; the live tick should run on that build.
+   Fail signals on the first ticks: a rung minted without a number; deed
+   count climbing while no ledger value changed.
 2. **qu453863** — activation, Reto-approved write only after 1; serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks.

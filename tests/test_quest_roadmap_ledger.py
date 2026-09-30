@@ -54,13 +54,14 @@ def make_root(
     supply: float | None = 6.0,
     supply_evidence: list[str] | None = None,
     key: str = KEY,
+    cap_title: str = "Capability: positional accuracy",
 ) -> tuple[int, int]:
     """A roadmap root served by one capability with one axis. Returns
     ``(root_id, capability_id)``. Goes through ``QuestHandler.edit`` so the
     stored shapes are exactly what the write guards admit."""
     h = _quests(store)
     root = _qid(h.put(text="Bootstrap: a chain of assemblers"))
-    cap = _qid(h.put(text="Capability: positional accuracy"))
+    cap = _qid(h.put(text=cap_title))
     axis: dict[str, Any] = {"key": key, "sense": sense}
     if unit is not None:
         axis["unit"] = unit
@@ -174,6 +175,24 @@ class TestBestSupply:
 
 
 class TestComputeLedger:
+    def test_the_display_stub_is_cut_but_the_statement_is_whole(
+        self, store: Any
+    ) -> None:
+        """The first prod dry-run (2026-09-30) showed the demand role a
+        capability cut at 60 characters — "…where we choose," — and told it
+        to derive the number from that statement alone. The stub stays for
+        the ledger table; the prompt reads ``capability_statement``."""
+        long_title = (
+            "Capability: positional accuracy: place a building block where we "
+            "choose, in liquid at room temperature, to within the distance the "
+            "next step tolerates"
+        )
+        root, _cap = make_root(store, cap_title=long_title)
+        (r,) = _rows(store, root)
+        assert len(r.capability_title) == 60
+        assert r.capability_title == long_title[:60]
+        assert r.capability_statement == long_title
+
     def test_one_row_per_axis_with_evidence(self, store: Any) -> None:
         root, cap = make_root(store, supply=6.0, supply_evidence=["fi42", "pa7"])
         rows = _rows(store, root)
@@ -181,6 +200,7 @@ class TestComputeLedger:
         r = rows[0]
         assert r.capability == f"qu{cap}"
         assert r.capability_title.startswith("Capability: positional accuracy")
+        assert r.capability_statement == "Capability: positional accuracy"
         assert (r.key, r.sense, r.unit) == (KEY, "min", "nm")
         assert (r.demanded, r.best_supply) == (2.0, 6.0)
         assert r.best_supply_evidence == ("fi42", "pa7")

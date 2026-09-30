@@ -95,7 +95,7 @@ class LedgerRow:
     """One (capability, axis) line of the capability ledger."""
 
     capability: str  # "qu<id>"
-    capability_title: str
+    capability_title: str  # 60-char display stub (ledger table, gap one-liners)
     key: str
     sense: str  # "min" | "max" (normalised from rubric_objectives)
     unit: str | None
@@ -105,6 +105,13 @@ class LedgerRow:
     closing_rung: str | None  # "td<id>" or None
     closing_rung_status: str | None
     state: str  # unmet | partial | met | dead-end
+    #: The capability's full statement — what a role prompt shows the model.
+    #: ``capability_title`` is cut to 60 characters for the ledger table, and
+    #: the first prod dry-run (2026-09-30) showed that stub as the whole
+    #: "capability statement" the demand role was told to derive its number
+    #: from: "…place a building block where we choose," with the clause that
+    #: names the tolerance cut off. Defaulted so hand-built rows still work.
+    capability_statement: str = ""
 
 
 # ── small pure helpers ────────────────────────────────────────────────
@@ -392,6 +399,7 @@ def _row_for(
     return LedgerRow(
         capability=cap_handle,
         capability_title=_first_line(cap.title)[:60],
+        capability_statement=(cap.title or "").strip(),
         key=key,
         sense=sense,
         unit=unit,

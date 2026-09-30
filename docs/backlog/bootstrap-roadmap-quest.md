@@ -307,8 +307,11 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (four commits; blame carries them). Item 7 (ski
 State: items 1-7 and residual 1 are on main and on the fleet, gated —
 the deploy session's 2026-09-30 12:23 UTC full gate + pinned deploy of the
 integrated main covered stage 4 (skills + the `benign` allowlist). The prod
-dry-run tick is the next act and is Reto's to run or grant (see the thread
-file).
+dry-run ran 2026-09-30 13:24 UTC (role demand, gap no-demand on
+`placement_error_nm` for qu453869); it showed the capability heading cut to
+the ledger's 60-character stub, fixed the same day (`capability_statement`
+on the ledger row and the role choice). Next act = the first live tick, on
+Reto's word, on a build carrying that fix (see the thread file).
 
 Ordered:
 
@@ -323,10 +326,12 @@ Ordered:
 3. **`/go`** — full gate + deploy. The first real verification the roadmap
    code gets.
 4. **Prod, only after 3, each step a Reto-approved write.**
-   `precis quest tick 453863 --dry-run` to see which role it picks and the
-   prompt it builds; then activate `qu453863`; then watch three ticks. Fail
-   signals: a rung minted without a number; deed count climbing while no
-   ledger value changed.
+   `precis quest tick 453863 --dry-run` — DONE 2026-09-30 13:24 UTC (role
+   demand, qu453869 `placement_error_nm`); then activate `qu453863`; then
+   watch three ticks. Fail signals: a rung minted without a number; deed
+   count climbing while no ledger value changed. Side finding filed as
+   gr458351: the one-shot CLI never closes the store pool, so every
+   invocation ends with ~20 s of psycopg thread-stop warnings.
 
 Four build rulings, each cost real work — do not re-derive: root-only
 ticking (pathway quests never tick, decisions log "Does a pathway quest

@@ -143,6 +143,25 @@ class TestRoadmapRole:
         assert (choice.role, choice.capability_id, choice.key) == ("demand", cap, KEY)
         assert choice.gap.handle == f"qu{cap}"
 
+    def test_role_prompt_shows_the_whole_capability_statement(self, store: Any) -> None:
+        long_title = (
+            "Capability: positional accuracy: place a building block where we "
+            "choose, in liquid at room temperature, to within the distance the "
+            "next step tolerates"
+        )
+        root, _cap = make_root(store, demand=None, supply=None, cap_title=long_title)
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None and choice.role == "demand"
+        assert choice.capability_statement == long_title
+        assert len(choice.capability_title) == 60, "the ledger stub is untouched"
+        prompt = rt.build_role_prompt(
+            store, store.get_ref(kind="quest", id=root), choice
+        )
+        assert long_title in prompt
+        assert "where we choose,\n" not in prompt, (
+            "the 60-char stub must not be the heading"
+        )
+
     def test_demand_without_supply_picks_supply(self, store: Any) -> None:
         root, _cap = make_root(store, demand=2.0, supply=None)
         choice = rt.roadmap_role(store, root)

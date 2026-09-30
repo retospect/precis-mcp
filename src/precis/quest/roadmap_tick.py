@@ -161,6 +161,9 @@ class RoleChoice:
     best_supply: float | None
     best_supply_evidence: tuple[str, ...]
     gap: Gap
+    #: Full capability statement for the prompt (``capability_title`` is the
+    #: ledger's 60-char stub — see :class:`~precis.quest.roadmap_ledger.LedgerRow`).
+    capability_statement: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -324,6 +327,7 @@ def roadmap_role(store: Store, quest_id: int) -> RoleChoice | None:
             best_supply=row.best_supply,
             best_supply_evidence=row.best_supply_evidence,
             gap=gap,
+            capability_statement=row.capability_statement or row.capability_title,
         )
 
     # 1. bridge — unmet with a cited supply to compare against.
@@ -378,6 +382,12 @@ _SYS_COMMON = (
     "number you write must be traceable to a handle (se:<slug>, pa<id>, "
     "fi<id>, td<id>, qu<id>). No number, no rung."
 )
+
+
+def _statement(choice: RoleChoice) -> str:
+    """The capability text a role prompt shows: the full statement, never the
+    ledger's 60-character stub (a hand-built choice without one falls back)."""
+    return choice.capability_statement or choice.capability_title
 
 
 def _axis_line(choice: RoleChoice) -> str:
@@ -437,7 +447,7 @@ def _demand_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
     )
     return (
         f"## Root striving\n{root.title.strip()}\n\n"
-        f"## Capability {choice.capability}\n{choice.capability_title}\n"
+        f"## Capability {choice.capability}\n{_statement(choice)}\n"
         f"{_axis_line(choice)}\n\n"
         "## Target part measures (top-down: what the part demands)\n"
         f"{part_text}\n\n"
@@ -467,7 +477,7 @@ def _supply_search_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
     demanded = f"{choice.demanded:g}{unit}" if choice.demanded is not None else "?"
     return (
         f"## Root striving\n{root.title.strip()}\n\n"
-        f"## Capability {choice.capability}\n{choice.capability_title}\n"
+        f"## Capability {choice.capability}\n{_statement(choice)}\n"
         f"{_axis_line(choice)}\ndemanded: {demanded}\n\n"
         f"## Papers already serving this capability\n{held}\n\n"
         "## Task (bottom-up: what the literature delivers today)\n"
@@ -496,7 +506,7 @@ def _supply_findings_prompt(store: Store, choice: RoleChoice, papers: list[Ref])
     cards = "\n".join(_paper_card(store, p) for p in papers[:_SUPPLY_MAX_PAPERS])
     unit = f" {choice.unit}" if choice.unit else ""
     return (
-        f"## Capability {choice.capability}\n{choice.capability_title}\n"
+        f"## Capability {choice.capability}\n{_statement(choice)}\n"
         f"{_axis_line(choice)}\n\n"
         f"## Papers\n{cards}\n\n"
         "## Task\n"
@@ -559,7 +569,7 @@ def _bridge_prompt(
         )
     return (
         f"## Root striving\n{root.title.strip()}\n\n"
-        f"## Capability {choice.capability}\n{choice.capability_title}\n"
+        f"## Capability {choice.capability}\n{_statement(choice)}\n"
         f"{_axis_line(choice)}\ndemanded: {demanded}\nbest cited supply: {supply}\n\n"
         f"## Pathways (bets) serving the root\n{path_lines}\n\n"
         f"## Existing rungs on this capability\n"
