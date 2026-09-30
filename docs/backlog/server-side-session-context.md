@@ -20,9 +20,19 @@ of by each client re-deciding what to preload.
 Why: `context-memory-hierarchy.md` designs the *client-side* resident/
 discovered split for one session's own preamble; this is the same question
 from the other end, for a server that now serves every session in one
-process. A server-side selector could, e.g., not re-serve a skill a sibling
-session just fetched, or bias a session's search results toward its own
-`SPACE:`/thread without every client re-implementing that filter.
+process. A server-side selector could, e.g., bias a session's search results
+toward its own `SPACE:`/thread without every client re-implementing that
+filter.
+
+One example to strike before anyone builds it: "don't re-serve a skill a
+sibling session just fetched" is the one thing this seam must *not* do.
+The ledger stubs a repeat serve because that session already has the text
+in its context; a sibling session does not, so cross-session dedup would
+hand it a stub pointing at content it has never seen. Dedup stays keyed
+per session — the shared process is an implementation detail, not a shared
+context. (The parked "live cross-session serve-ledger check" on
+`threads/session-mcp-shared-server.md` exists to confirm the current
+behaviour is per-session, which is the behaviour to preserve.)
 
 Precondition: `td458385` (every session moves onto the shared HTTP server —
 decided, Reto 2026-09-30, "supervisor and watchdog, and we move to HTTP").
