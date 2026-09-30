@@ -34,3 +34,46 @@ Tools are not rendered in the viewer, so today a `no_tool_access` or insertion-p
 The motivating case: in `unicycle-c1`, blocks `flange_bolt_left` and `flange_bolt_right` sit inside the `crown` block with no physical way to install them. Today nothing catches this — `toolaccess.access()` checks only whether a driver can TURN an already-seated screw, never whether the fastener can REACH its seat. `src/precis_se/fasten.py`'s docstring already names the gap in its deferred list: "assembly-order existence — including whether a nut trap can be *reached*".
 
 Owner `src/precis_se/validate.py`, `src/precis_se/joints.py`.
+
+## Drift found while reviewing this file (2026-09-30, unicycle)
+
+Three things to settle when this is built; none changes the rulings.
+
+1. **Ruling 5's cross-link is dead.** It requires the swept tool/hand
+   volume for a failing finding to be renderable in the viewer — "a
+   required hook to design in from the start, not a retrofit" — and
+   cross-links `se-3d-viewer-ux-batch.md`. That file has no mention of
+   tools, swept volumes or DRC. The obligation lives only in this
+   paragraph, and the `se-3d-viewer` thread's entry for this item does not
+   surface it either, so a viewer obligation is invisible from the viewer
+   thread. Either add the render item to the ux-batch file with a back-link
+   here, or state that the hook ships with this item and the viewer thread
+   only consumes it.
+2. **Ruling 2's tool scope is narrower than what already ships.** It scopes
+   the combined hand+tool volume to screwdrivers and electric screwdrivers,
+   and defers wrenches and L-keys. But `src/precis_se/toolaccess.py` models
+   hex keys today and its docstring's headline case is one — "a hex key
+   turning an M3 sweeps a 66 mm circle, which is the radius that decides
+   whether a bracket can sit where the designer drew it". So the new
+   hand-inclusive model covers a smaller tool set than the shipped
+   swing-clearance check. Fine as a build order, but unstated: whoever
+   implements ruling 2 must not narrow `precis/data/driver_envelopes.json`
+   to match. The ratchet-sector question ruling 2 defers to L-keys and
+   wrenches is on no item.
+3. **Ruling 3's obligation is untracked.** The exclusion it says must be
+   rewritten is still verbatim in `toolaccess.py` ("Deliberately not
+   modelled: the hand holding the tool; …"). No drift yet, and nothing but
+   this paragraph will catch it when the hand is added.
+
+Also: open question (c) — whether the rule needs the reaction-force solver
+to know which interfaces are load-bearing — is answered by the
+`se-3d-viewer` thread's Horizon ordering (phase 2 waits on
+`se-interface-reaction-forces.md`; final-state-only phase 1 runs
+standalone). It still reads as open above.
+
+Separately, the reach-versus-turn distinction is the whole gap and is worth
+stating once in code terms: `toolaccess.access()` asks only whether a
+driver can TURN an already-seated screw. Nothing asks whether the fastener
+can REACH its seat — `src/precis_se/fasten.py`'s deferred list already
+names it ("assembly-order existence — including whether a nut trap can be
+*reached*").
