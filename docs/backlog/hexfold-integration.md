@@ -7,6 +7,10 @@ model: opus
 
 # hexfold fold-in
 
+**What to do next is ranked in
+[`threads/hexfold-toolkit.md`](./threads/hexfold-toolkit.md)** — this file
+is the thread's living state and history; that one is its running order.
+
 Living state for the hexfold ⇄ precis thread. **Durable truth is
 `src/hexfold/spec.md`** (format 0.2 draft: notation, seams, smooth layer,
 roadmap §28, open questions §29, decisions §30, sources §31). This file
@@ -388,20 +392,25 @@ Open, needing a decision rather than work:
    never had a §13 row.** Pre-existing gap, cheap to close next time §13
    is touched (step 6 slice 3 will be).
 4. ~~The prod scratch design `hexfold-join-dogfood` still holds the broken
-   state.~~ **Done 2026-09-29: design retired (ref 456184, 10 blocks),
-   nothing else referenced it.** The broken state was NOT "`chain3`
-   missing a part its build record claims", as this item first recorded
-   it — checked against the rows before deleting, and `chain3`'s own
-   record is self-consistent (parts `composite`/`tube_b_out` +
-   `tube_c`/`in`, 180 atoms = 120 + 60). The actual defect is the mirror
-   image: **`tube_c` is claimed as a part by two composites**, `chain3`
-   (port `in`) and `mixed_sigma` (port `out`, 120 atoms). A block can be
-   a part of only one composite — once `chain3` consumed it, its
-   remaining free rim was `chain3`'s own port, so the later join
-   addressing `tube_c` directly is exactly the `join.part_addressed`
-   ERROR landed above. That the landed fix's own motivating case is the
-   state left in prod is the confirmation the fix targets the right
-   defect; double-ownership is unreachable now.
+   state (`chain3` missing a part its build record claims).~~ **Design
+   retired 2026-09-29 (ref 456184, 10 blocks, nothing referenced it) —
+   but the DEFECT IS NOT FIXED: gripe 457995.**
+
+   The original wording above is correct and I briefly "corrected" it to
+   something else; recording the mistake because the wrong test is an
+   easy one to repeat. A composite missing a part it claims, and a part
+   claimed by two composites, are **one defect seen from its two ends** —
+   the second join takes the part, so the first composite loses it.
+   Checking that the named part blocks still EXIST as blocks in the
+   design does not test this at all; the test is whether each part's
+   **live parent** is still the composite that claims it.
+
+   Reproduced on landed code against prod 2026-09-30 in
+   `hexfold-catalogue-dogfood` (ref 457890, kept as the reproduction):
+   joining `tube_b.out` after `tube_b` was already a part of `composite`
+   was **accepted**, leaving `tube_b` claimed by two composites and
+   `composite` unable to replay itself. `join.part_addressed` did not
+   fire on the part's free rim. Detail and fix direction in gripe 457995.
 
 Gripes: 456201 (pre-annotation blocks un-joinable — RULED: regeneration
 is the remedy, no new write path), 456202 (`payload.word` does not
@@ -532,6 +541,21 @@ Two things are open:
    non-monotone `max_disp` profile, put the measurement extent into
    `EnvKey`. Nothing in the product sets the flag today; one test pins
    both sides of it.
+
+**Prod dogfood 2026-09-30 — the persistence is inert, and geometry is
+unaffected.** `se_hexfold_catalogue` stays at 0 rows across successful
+joins even on landed code with the wiring loaded, because the seed is
+issued from `_hexfold_join`, which runs in `prepare_join` — the
+documented *pure/in-memory* half of the prepare/finish pair. Calling
+`for_store` directly in the same container against the same prod DSN
+seeds all six rows correctly, so the store, the grants, the JSONB
+round-trip and both indexes are sound; only the call site is wrong.
+Joins remain correct meanwhile: an empty table means `resolve_edge` finds
+nothing and `compose` falls back to the pinned constants, which is what
+the seed would have supplied anyway. Gripe 457996 — move the seed into
+`finish_join` with its committing `conn`, or make seeding explicit and
+leave the join path read-only. Prod is deliberately left with the table
+empty, since that is the true state until this is fixed.
 
 **Erratum filed against `spec.md` §26** (written into the section): it
 describes a content-hash *build* cache, `hexfold_cache(key,
