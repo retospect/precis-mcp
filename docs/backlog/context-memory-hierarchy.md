@@ -143,9 +143,12 @@ contract), `deploy tree: no real hostnames` (already a CLAUDE.md one-liner).
 `soft-delete filters in ad-hoc SQL` and `green gate != green CI` look similar
 but carry operational detail — check against the docs before killing.
 
-**P2 — needs Reto's call.** Whether §Identity/prohibitions and §Response
-style consolidate into one resident block, and whether that lives in
-`CLAUDE.md` or its own `.claude/` file. Touches the most always-loaded text.
+**P2 — ruled 2026-09-30 (Reto): yes, one resident block.** §Identity/
+prohibitions and §Response style consolidate into one block. Where it
+lives (`CLAUDE.md` or its own `.claude/` file) is the builder's call: the
+one the harness always loads, measured by `scripts/memory-lint`'s
+preamble count. Touches the most always-loaded text, so it ships after
+P1's measurement, not before.
 
 ### Measurement
 

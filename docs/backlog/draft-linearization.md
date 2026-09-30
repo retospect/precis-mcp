@@ -25,7 +25,7 @@ only policy.
 This is a horizon item. It needs the generic walk (`knowledge-mesh.md`)
 and benefits from every node kind having a gist (`fisheye-everywhere.md`).
 
-## In scope (v1, render-only — pending Reto's ruling)
+## In scope (v1, render-only — Reto, 2026-09-30)
 
 1. **Outline as data.** A `plan` (or the draft's own root chunk) holds an
    ordered list of handles plus, per entry, the relation filter and depth
@@ -48,8 +48,7 @@ and benefits from every node kind having a gist (`fisheye-everywhere.md`).
 ## Explicitly NOT in scope
 
 - Two-way sync (editing the prose and pushing changes back into nodes).
-  Reto rules whether v1 is render-only; if two-way, this item is
-  re-specced.
+  Ruled out for v1 on 2026-09-30; if wanted later it is its own item.
 - Replacing the `draft` kind, `tex`, or the existing hand-authored path.
 - Prose quality beyond concatenated gists and bodies: the first render is
   a scaffold a human edits *in the graph*, not a paper.
@@ -78,8 +77,8 @@ and benefits from every node kind having a gist (`fisheye-everywhere.md`).
 
 ## Open questions / decisions log
 
-- **[waiting on Reto]** Render-only v1 or two-way (todo in Reto's queue,
-  2026-09-30).
+- **[decided 2026-09-30, Reto]** Render-only v1: hand edits on a rendered
+  draft are refused; the fork below is the escape hatch.
 - **[open]** Whether a rendered draft may be forked (`copy-of`) into a
   hand-editable draft as the escape hatch. Leaning yes: the fork drops the
   `rendered_from` provenance and becomes an ordinary draft.

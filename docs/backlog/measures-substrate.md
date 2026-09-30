@@ -259,12 +259,11 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   values in the system live in the table this item was going to leave
   outside `measures`. The decisions log below now recommends folding it
   in (option (ii)), with shipping v1 without component (option (i)) kept
-  as the fallback. **Which one ships is Reto's call and is not yet made**
-  — this bullet is not a decision, it's the current default absent that
-  call. Until the call is made, treat `component_spec_values` as a second
-  copy of the shape this item is retiring, not as evidence the
-  compat-view plan protects a live `component` call into `material_values`
-  (it never called it).
+  as the fallback. **Ruled 2026-09-30 (Reto): option (ii), fold it in.**
+  `component_spec_values` is a second copy of the shape this item retires
+  and moves into `measures` in the same migration, with a compat view of
+  its own so `handlers/component.py`'s live call site stays green for one
+  release, the same treatment as `material_values`.
 
 ## Acceptance criteria
 
@@ -473,9 +472,9 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   `handlers/component.py`'s live call site, not just an untouched view) —
   **now recommended**, for the quantitative reason below. Under either
   option, `reaction-kind-and-synthesis-cost.md` should wait for `measures`
-  to land rather than mint a third verbatim copy of the shape. **This
-  decision is still open and still Reto's call** — recommending (ii) is
-  not deciding it.
+  to land rather than mint a third verbatim copy of the shape.
+  **Decided 2026-09-30, Reto: (ii).** The In-scope bullet above now
+  states the fold-in; the prod counts below are its reason.
 
   **Measured 2026-09-28** (read-only prod query, all five tables present):
 

@@ -3,32 +3,33 @@
 **Status:** ends when the root roadmap quest ticks unattended, writes rungs
 that carry numbers, and drives priority down to the pathway quests with a
 reviewed ledger behind every tick. Today stages 1-4 are built, gated and
-on the fleet; the prod dry-run has been seen (2026-09-30 13:24 UTC, role
-demand on qu453869), the one defect it showed is fixed and deployed (14:12
-UTC); the first live tick is the first real verification and waits on
-Reto's word (td458387).
+on the fleet; the first live tick ran 2026-09-30 22:01 UTC on Reto's word
+(role demand, tier big): it wrote qu453869's first demand number,
+`placement_error_nm = 0.15` with a stated reason, minted no rung and no
+deed, and neither fail signal fired. Activation is the next prod write.
 **Last reviewed:** 2026-09-30 (pillar review same day added three orphan
 gripes to Horizon, all adjacent infra the tick path depends on)
 **Worktree:** `roadmap-quest`
 
 ## Do next
 
-1. **qu453863 first live tick** — Reto's explicit word only. The prod
-   dry-run ran 2026-09-30 13:24 UTC (deploy session, Reto-approved, exit 0,
-   no writes): role `demand`, tier big, gap `no-demand` on
-   `placement_error_nm` for qu453869 (no se part serves it yet, so the
-   prompt tells the model to derive the number from the capability
-   statement alone). The dry-run found one prompt defect, fixed the same
-   day: the capability heading was the ledger's 60-character display stub,
-   cut mid-sentence before the clause that names the tolerance — the prompt
-   now carries the full statement (`LedgerRow.capability_statement`),
-   gated and on the fleet since 2026-09-30 14:12 UTC — the build the first
-   live tick runs on. The go/no-go is td458387 in Reto's queue. Fail
-   signals on the first ticks: a rung minted without a number; deed count
-   climbing while no ledger value changed.
-2. **qu453863** — activation, Reto-approved write only after 1; serves
+1. **qu453863 activation** — Reto-approved write only. The first live
+   tick (2026-09-30 22:01 UTC, `scripts/prod-precis quest tick 453863`,
+   exit 0) took the `demand` role at tier big on the `no-demand` gap and
+   wrote `meta.demand.placement_error_nm = 0.15` on qu453869, reason "one
+   covalent bond length", source qu453869 itself (no se part serves it
+   yet). No rung, no deed, no ledger improvement — the demand role only
+   writes the number; rungs come from `bridge`. Neither fail signal fired
+   (a rung without a number; deeds climbing on a flat ledger). Watch the
+   next two ticks for the role change (supply or bridge on the same
+   capability) before activation, or activate and watch three. Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
-   qu330435, qu347422) once it ticks.
+   qu330435, qu347422) once it ticks unattended.
+2. **gr458880 — `view='tree'` on the session MCP raises Internal
+   ImportError** (get(kind='quest', id=453863, view='tree'), 2026-09-30
+   22:05 UTC); the progress read the thread names is unusable from a
+   session until the shared server carries the roadmap build. The CLI
+   path is unaffected; `view='raw'` shows the meta.
 3. **backlog/bootstrap-roadmap-quest.md §Residuals 5** — export `rungs_for`
    from the ledger so roadmap_tick stops re-deriving rung status with its
    own SQL; a drift between the two queries is invisible (no finding), so it
@@ -49,7 +50,7 @@ gripes to Horizon, all adjacent infra the tick path depends on)
 3. **backlog/bootstrap-roadmap-quest.md §Residuals 6** (capped framing chunk
    + web hub ledger panel) — waits on three clean ticks.
 4. **backlog/knowledge-mesh.md in-scope 2** (meta.supply widened to
-   measures) — waits on measures-substrate (term-taxonomy thread); supply
+   measures) — waits on measures-substrate (knowledge-mesh thread); supply
    numbers with identity instead of free floats.
 5. **backlog/quest-dossier-dialectic.md** — waits on the catpath schema;
    estimate-based dialectic ticks for the pathway quests.

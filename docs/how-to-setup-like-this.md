@@ -83,7 +83,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/code-index` | seed/refresh the semantic code-search index | reproducible from shell, no MCP session needed |
 | `scripts/docs-index` | regenerate the gitignored backlog/runbook indexes + codebase package map | SessionStart hook, per-worktree; never committed |
 | `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
-| `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal | advisory; `/whatneedsdoing` |
+| `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal; `--currency` audits each memory claim against git/fs anchors (kept repo-local by decision, 2026-09-30) | advisory; `/whatneedsdoing` |
 | `scripts/backlog-lint` | flag done-marked items still sitting in `docs/backlog/` | advisory in ship when the diff touches it; `/whatneedsdoing` |
 | `scripts/token-review` | 7-day cadence nudge for a session-tightness / token-waste review pass (reads `docs/runbooks/token-review.md` `## Log`) | advisory cadence-check only (tier-1 script); the review it triggers is a judgment session; `/whatneedsdoing` |
 | `scripts/nightly` | LOCAL full-suite build; records dated green/red so `--check` surfaces main's health without re-running (catches upstream dep drift the ship gate can't) | run mode + read-only `--check`; result in gitignored `.nightly-status.md`; on `DUE`, `/whatneedsdoing` refreshes it via a background `test-runner` agent (no daemon) |

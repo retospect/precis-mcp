@@ -45,7 +45,7 @@ below). `docs/mission.md` §"Memory is the graph" carries the one-paragraph
 statement agents read.
 
 **Where it stands.** The substrate half is threaded and moving under
-`term-taxonomy.md`: `backlog/knowledge-mesh.md` (Reto's own statement of
+`knowledge-mesh.md`: `backlog/knowledge-mesh.md` (Reto's own statement of
 this pillar), `backlog/measures-substrate.md`, `backlog/graph-gardener.md`,
 `backlog/corpus-quantitative-extraction.md`. The consumer half was entirely
 unthreaded at the review and is now `graph-memory-consumers.md`. The
@@ -59,9 +59,9 @@ whose browser focus page is that surface). The same day a sibling session
 given the same goal filed `backlog/experiment-loop.md` (hypothesis → test
 → measure → verdict through the verbs), `backlog/draft-linearization.md`
 (a draft is a render of a subgraph) and `backlog/relation-constraints.md`;
-all three are ranked in `term-taxonomy.md`.
+all three are ranked in `knowledge-mesh.md`.
 
-**Threads.** `term-taxonomy.md` (active — substrate, the memory half and
+**Threads.** `knowledge-mesh.md` (active — substrate, the memory half and
 the surfaces) · `graph-memory-consumers.md` (dormant — agent-side
 affordances). Seam: substrate vs
 consumers, recorded in `threads/INDEX.md`.
@@ -104,7 +104,7 @@ per-region property layer, the DNA wrap, and one assembly across scales
 parked 2026-09-12, unparked to the horizon only). Pockets as defined
 classes and pick-and-join as a membership query are
 `backlog/class-lattice-similarity-spaces-and-laws.md` (owned by
-term-taxonomy, consumed here) and `backlog/se-intent-to-realize-loop.md`.
+knowledge-mesh, consumed here) and `backlog/se-intent-to-realize-loop.md`.
 
 **Threads.** Active: `hexfold-toolkit.md` · `se-3d-viewer.md` ·
 `se-nucleic-chain.md` · `ewod-pcb.md` · `pcb-easyeda-round-trip.md` ·
@@ -207,7 +207,7 @@ Active (12, Reto 2026-09-30 — "the ones we have are good"):
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
 `nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (prep-only
 until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
-· `serving-programme` · `session-mcp-shared-server` · `term-taxonomy`.
+· `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh`.
 
 Dormant (5, created at the review, open at the next restart if named):
 `graph-memory-consumers` · `multiscale-design-core` · `se-machine-design`

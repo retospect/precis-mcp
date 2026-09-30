@@ -11,7 +11,7 @@ another consumes. Update it at the same four moments as a thread file.
 Four pillars sit above the programme layer, text in `docs/roadmap.md`.
 Each programme below serves one or more:
 
-- **memory-graph** — `knowledge` (term-taxonomy owns the substrate) +
+- **memory-graph** — `knowledge` (knowledge-mesh owns the substrate) +
   `graph-memory-consumers` (dormant; owns consumers of that substrate).
 - **3d-design** — `pcb` + `se` + `multiscale-design-core` (dormant) +
   `se-machine-design` (dormant) + `pcb-platform` (dormant).
@@ -26,7 +26,7 @@ Each programme below serves one or more:
 **Active** (has a session): `ewod-pcb` · `hexfold-toolkit` ·
 `monitors-that-go-quiet` · `nanobuds-paper` · `pcb-easyeda-round-trip` ·
 `plugin-split` · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain` ·
-`serving-programme` · `session-mcp-shared-server` · `term-taxonomy`.
+`serving-programme` · `session-mcp-shared-server` · `knowledge-mesh`.
 
 **Dormant** (file exists, ranked, no session — opens at the next session
 restart if Reto names it): `graph-memory-consumers` ·
@@ -110,29 +110,29 @@ Waits:
 - serving Horizon 2 (shared-server end state) waits on serving Horizon 1's
   process-count answer.
 - `backlog/curation-gate.md` waits on eval-run-spine's verdict column
-  (serving Do-next 6) and is parked on by term-taxonomy and roadmap-quest.
+  (serving Do-next 6) and is parked on by knowledge-mesh and roadmap-quest.
 
 ## knowledge — taxonomy, quests, papers
 
-Threads: `term-taxonomy.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
+Threads: `knowledge-mesh.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
 `graph-memory-consumers.md` (dormant)
 
 Seams:
-- `backlog/measures-substrate.md` — taxonomy Do-next 4; roadmap Horizon 4
+- `backlog/measures-substrate.md` — knowledge-mesh Do-next 5; roadmap Horizon 4
   (meta.supply widened to measures) consumes it.
-- `backlog/knowledge-mesh.md` — taxonomy Horizon 6; roadmap Horizon 4 is
+- `backlog/knowledge-mesh.md` — knowledge-mesh Horizon 3; roadmap Horizon 4 is
   its in-scope 2.
 - `backlog/curation-gate.md` — both park on it; owned by serving.
-- `backlog/fisheye-everywhere.md` — taxonomy Do-next 4; roadmap's
+- `backlog/fisheye-everywhere.md` — knowledge-mesh Do-next 4; roadmap's
   `view='tree'` and the se viewer thread both render through its ladder;
   the browser focus page it adds is the human graph-browse surface
   (docs/roadmap.md pillar 1).
-- `backlog/relation-constraints.md` — taxonomy Do-next 3; the quest
+- `backlog/relation-constraints.md` — knowledge-mesh Do-next 3; the quest
   `serves` cycle guard roadmap-quest lacks lands there.
-- `backlog/file-mirror.md` — taxonomy Do-next 7; the memory half of the
+- `backlog/file-mirror.md` — knowledge-mesh Do-next 7; the memory half of the
   thread (context-memory-hierarchy, session-history-into-precis) is
-  ranked in `term-taxonomy.md` from 2026-09-30.
-- substrate + memory half vs agent affordances — term-taxonomy ranks the
+  ranked in `knowledge-mesh.md` from 2026-09-30.
+- substrate + memory half vs agent affordances — knowledge-mesh ranks the
   substrate (knowledge-mesh, measures-substrate, graph-gardener), the
   memory half and the surfaces; `graph-memory-consumers.md` (dormant)
   ranks draft-authoring affordances, the focus verb, capability discovery,

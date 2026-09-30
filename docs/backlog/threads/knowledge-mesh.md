@@ -1,4 +1,4 @@
-# term taxonomy and measurand list — the knowledge-mesh thread
+# knowledge mesh — taxonomy, measures, memory and the fisheye
 
 **Status:** ends when the graph is the memory: a richly linked mesh of
 small typed nodes (findings, measures, taxa, skills, memories, plans,
@@ -18,7 +18,7 @@ first, then the measures chain, then the memory half behind the walk".
 class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
 graph-health-metrics, five parked gripes, and the seam with
 `graph-memory-consumers.md`)
-**Worktree:** `term-taxonomy`
+**Worktree:** `knowledge-mesh`
 
 ## Do next
 
@@ -28,10 +28,11 @@ graph-health-metrics, five parked gripes, and the seam with
    knowledge-mesh; nothing else in this thread can ship its output until
    the taxon kind exists.
 2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — the metered
-   re-probe of the same 100 rows (~66 paid calls, Reto's go = td458388). Yields
-   the cache-read counts that decide concurrency vs packing, the noise
-   floor, and the first `probe criterion` verdict (≥0.60 of the unit-key
-   ceiling; run 2 reads 0.55). The 1231-call full run waits on it.
+   re-probe of the same 100 rows (~66 paid calls) got Reto's go and
+   started 2026-09-30 22:00 UTC (bar confirmed at 0.60 of the unit-key
+   ceiling). Its result section in taxonomy-bootstrap.md decides
+   concurrency vs packing and reads the first `probe criterion` verdict;
+   the 1231-call full run waits on it.
 3. **backlog/relation-constraints.md** — status ready, no blocker, small.
    Domain/range kinds, functional and acyclic as columns on `relations`,
    one validator in both link doors. Above the measures chain because it
@@ -45,8 +46,9 @@ graph-health-metrics, five parked gripes, and the seam with
    for the memory" once 6 lands.
 5. **backlog/measures-substrate.md** — blocked-by term-taxonomy; identity =
    taxon + reference + convention, so it lands right after 1 and unblocks
-   knowledge-mesh and the experiment loop. Reto's fold-in ruling =
-   td458719.
+   knowledge-mesh and the experiment loop. Fold-in ruled 2026-09-30
+   (Reto: `component_spec_values` joins `measures` in the same
+   migration).
 6. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
@@ -57,8 +59,10 @@ graph-health-metrics, five parked gripes, and the seam with
 7. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
    Claude Code memory files as read-only `markdown` roots with links from
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
-   pilot". Mirror-vs-native = td458720. Below 5 only because its recall AC
-   is cheap to run at any time.
+   pilot". Mirror first, ruled 2026-09-30; native authoring is judged
+   after its recall AC. Readiness vet the same day: needs-work, four
+   blockers folded into the item, re-vet before build. Below 6 only
+   because its recall AC is cheap to run at any time.
 8. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
@@ -85,11 +89,12 @@ graph-health-metrics, five parked gripes, and the seam with
 7. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column
    (serving-programme thread); the guard that lets 5 run unattended.
 8. **backlog/draft-linearization.md** — waits on 3; the graph as the
-   truth and a draft as a rendered subgraph. Render-only vs two-way =
-   td458721.
+   truth and a draft as a rendered subgraph. Render-only v1, ruled
+   2026-09-30.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
    for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 7 gives the topic files a recall measurement, P2 = td458724.
+   Do-next 7 gives the topic files a recall measurement, P2 ruled yes
+   2026-09-30 (one resident identity + style block).
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
     Do-next 5; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
@@ -107,15 +112,11 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Waiting on Reto
 
-- td458719 fold `component_spec_values` into `measures` (Do-next 5).
-- td458720 skills/memory mirror first or native (Do-next 7).
-- td458721 draft render-only or two-way (Horizon 8).
-- td458722 rename this thread file to `knowledge-mesh.md` — note: the
-  pillar review the same day recorded Reto's ruling "we don't rename the
-  threads"; expect a no unless he says otherwise there.
-- td458723 memory-lint extraction (decision date passed 2026-08-19); on
-  answer `backlog/memory-lint-extraction-decision.md` is deleted.
-- td458724 one resident identity + style block (Horizon 9, P2).
+- nothing open. The six 2026-09-30 rulings (fold-in, mirror first,
+  render-only, this rename — asked as its own question after the pillar
+  review's general "we don't rename the threads" and answered "rename" —
+  memory-lint repo-local, one resident block) are recorded in their
+  items; the re-probe (Do-next 2) got its go the same day.
 
 ## Parked
 
@@ -146,6 +147,9 @@ graph-health-metrics, five parked gripes, and the seam with
 - per-call metering + raw-reply capture — `responses.jsonl` per discovery
   call, streamed as each call lands; nothing further until a paid run
   fills it.
+- memory-lint `--currency` stays a repo-local script (Reto 2026-09-30;
+  the extraction stub is deleted, `docs/how-to-setup-like-this.md`
+  carries the line).
 - a relation hierarchy (sub-relations as rows) — rejected in
   `backlog/term-taxonomy.md`'s reconciliation table; Horizon 2 covers the
   need.

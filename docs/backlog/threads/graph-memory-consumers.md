@@ -6,7 +6,7 @@ capability exists — and text-file memory it replaces is retired per
 `docs/roadmap.md`. North-star: `backlog/draft-authoring-graph-affordances.md`
 (the evidence) + `backlog/fisheye-level2.md` (the focus verb). The memory
 half (file-mirror, context hierarchy, session history) and the surfaces
-(fisheye-everywhere, draft-linearization) are ranked in `term-taxonomy.md`
+(fisheye-everywhere, draft-linearization) are ranked in `knowledge-mesh.md`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
 **Last reviewed:** 2026-09-30
@@ -21,7 +21,7 @@ what a live consumer is already going without.
    consumer is already going without.
 2. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
    the render side (every kind, the browser focus page) is
-   `fisheye-everywhere.md`, term-taxonomy Do-next 4.
+   `fisheye-everywhere.md`, knowledge-mesh Do-next 4.
 3. **backlog/server-side-session-context.md** — precondition td458385
    (sessions move to the shared MCP server); the SPACE-axis segregation
    `file-mirror.md` §"Pillar-review deltas" defines is what it selects on.
@@ -50,7 +50,6 @@ what a live consumer is already going without.
 
 - **backlog/dev-context-diet.md** — small enabler, parked until a
   consumer above needs it.
-- **backlog/memory-lint-extraction-decision.md** — small enabler.
 - **backlog/contextual-chunk-embeddings.md** — small enabler.
 - **backlog/context-sentence-rag-over-body.md** — small enabler.
 - **backlog/universal-short-codes.md** — small enabler.
@@ -67,7 +66,7 @@ what a live consumer is already going without.
   human-surface feature ask on draft authoring; parks behind Do-next 1.
 - **gr240051** — reference hover-preview may exceed the 200 ms
   hover-intent budget: human-surface latency on the web reader; parks
-  behind backlog/fisheye-everywhere.md (term-taxonomy Do-next 4), whose
+  behind backlog/fisheye-everywhere.md (knowledge-mesh Do-next 4), whose
   browser focus page reuses that preview.
 
 ## No action needed
@@ -76,7 +75,7 @@ what a live consumer is already going without.
 
 ## Seam
 
-`term-taxonomy` owns the substrate (knowledge-mesh, measures-substrate,
+`knowledge-mesh` owns the substrate (knowledge-mesh, measures-substrate,
 graph-gardener), the memory half (file-mirror, context-memory-hierarchy,
 session-history-into-precis) and the surfaces (fisheye-everywhere,
 draft-linearization). This thread owns the agent-side affordances listed
