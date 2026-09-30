@@ -34,6 +34,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.store import Store
 from precis_se.atomic.apply import HANDLER_LEVEL_OPS, all_op_names
+from precis_se.chain import drc as chain_drc
 from precis_se.chain import fold as chain_fold
 from precis_se.chain import nucleic
 from precis_se.chain.pairing import derive_pairing
@@ -173,16 +174,52 @@ def test_fold_layout_folds_the_sequence_a_declared_strand_already_carries() -> N
 # ── what it refuses, and why ────────────────────────────────────────────
 
 
-def test_a_bulge_is_refused_by_name_rather_than_laid_out() -> None:
+def _fixed_fold(monkeypatch: pytest.MonkeyPatch, structure: str) -> None:
+    """Make ``fold_layout`` see ``structure`` as the MFE, library or not —
+    the placement under test is a function of the dot-bracket alone."""
+    monkeypatch.setattr(chain_fold, "rna_module", lambda: object())
+    monkeypatch.setattr(chain_fold, "mfe_fold", lambda _rna, _seq: (structure, -1.0))
+
+
+def _helix_path(tree: SeTree, name: str) -> tuple[list[float], list[float]]:
+    waypoints = (tree.blocks[name].chain or {})["path"]["waypoints_m"]
+    return [float(v) for v in waypoints[0]], [float(v) for v in waypoints[-1]]
+
+
+def _route(tree: SeTree) -> list[tuple[str, bool, int | None]]:
+    return [
+        (d.helix, d.forward, d.loop_before_nt)
+        for d in sorted(tree.domains, key=lambda d: d.ord)
+    ]
+
+
+def test_a_bulge_lays_out_with_its_two_helices_end_to_end() -> None:
     """``GGGGAGGGGAAAACCCCCCCC`` folds to ``((((.((((....))))))))`` — a
     one-sided bulge, so the two stacks' reverse domains are adjacent with
-    ZERO unpaired nucleotides between them. The nominal placement has
-    nowhere to put that, and the refusal says which structure it is."""
+    ZERO unpaired nucleotides between them. The later helix is placed on
+    the earlier one's END, continuing its axis (a coaxial stack), the
+    bulged nucleotide is a 1-nt loop on the other crossing, and the 0-nt
+    crossing is a backbone step the reach check accepts."""
     rna = pytest.importorskip("RNA")
     sequence = "GGGGAGGGGAAAACCCCCCCC"
     assert chain_fold.mfe_fold(rna, sequence)[0] == "((((.((((....))))))))"
-    with pytest.raises(OpError, match="zero unpaired nucleotides"):
-        _fold({"strand": "s", "sequence": sequence})
+    tree, echo = _fold({"strand": "s", "sequence": sequence})
+    assert _route(tree) == [
+        ("s.h0", True, None),
+        ("s.h1", True, 1),
+        ("s.h1", False, 4),
+        ("s.h0", False, 0),
+    ]
+    assert "1 coaxial junction(s) placed end to end" in echo
+    (a0, b0), (a1, b1) = _helix_path(tree, "s.h0"), _helix_path(tree, "s.h1")
+    rise = nucleic.MOTIFS[nucleic.MOTIF_FOR_NUCLEIC["DNA"]].rise
+    # Collinear: same x/y, h1 continues +z past h0's last unit — one rise
+    # for the step plus one for the bulged nucleotide.
+    assert a1[:2] == a0[:2] == b1[:2]
+    assert b0[2] < a1[2] < b1[2]
+    assert abs((a1[2] - b0[2]) - 2 * rise) < 1e-15
+    rules = _rules(chain_drc.findings(tree))
+    assert "chain_loop_short" not in rules
 
 
 def test_a_nested_two_stack_fold_is_covered_and_lays_out_four_domains() -> None:
@@ -211,10 +248,118 @@ def test_a_nested_two_stack_fold_is_covered_and_lays_out_four_domains() -> None:
     assert abs((x1 - x0) - nucleic.HELIX_SPACING_M) < 1e-18
 
 
-def test_an_unpaired_tail_is_refused_because_the_model_cannot_carry_one() -> None:
-    pytest.importorskip("RNA")
-    with pytest.raises(OpError, match="unpaired at the 5' end"):
-        _fold({"strand": "s", "sequence": "AAA" + HAIRPIN})
+def test_a_five_prime_tail_is_a_single_occupancy_stub_the_route_finds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 3-nt 5' tail becomes stub helix ``s.t5`` carrying the strand's
+    first domain, single-occupied — findable from the stored records
+    alone — and the paired helix is stacked on its end."""
+    _fixed_fold(monkeypatch, "..." + HAIRPIN_MFE)
+    tree, echo = _fold({"strand": "s", "sequence": "AAA" + HAIRPIN})
+    assert _route(tree) == [
+        ("s.t5", True, None),
+        ("s.h0", True, 0),
+        ("s.h0", False, 4),
+    ]
+    assert (tree.blocks["s.t5"].chain or {})["n_units"] == 3
+    assert "5' tail of 3 nt as single-occupancy stub s.t5" in echo
+    pairing = derive_pairing(tree)
+    assert len(pairing.pairs) == 4
+    assert len(pairing.singles) == 3
+    assert {occ.helix for occ in pairing.singles} == {"s.t5"}
+    (a_t, b_t), (a_h, _b_h) = _helix_path(tree, "s.t5"), _helix_path(tree, "s.h0")
+    assert a_t[:2] == a_h[:2]
+    assert b_t[2] < a_h[2]  # h0 continues +z past the stub's last unit
+    assert "chain_loop_short" not in _rules(chain_drc.findings(tree))
+
+
+def test_a_three_prime_tail_stub_points_away_from_the_helix_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The strand leaves the hairpin at its reverse domain's exit — the
+    helix BASE, travelling ``-z`` — so the 3' stub continues ``-z``."""
+    _fixed_fold(monkeypatch, HAIRPIN_MFE + "..")
+    tree, _echo = _fold({"strand": "s", "sequence": HAIRPIN + "TT"})
+    assert _route(tree) == [
+        ("s.h0", True, None),
+        ("s.h0", False, 4),
+        ("s.t3", True, 0),
+    ]
+    (a_h, _b_h), (a_t, b_t) = _helix_path(tree, "s.h0"), _helix_path(tree, "s.t3")
+    assert a_t[:2] == a_h[:2]
+    assert b_t[2] < a_t[2] < a_h[2]
+    assert len(derive_pairing(tree).singles) == 2
+    assert "chain_loop_short" not in _rules(chain_drc.findings(tree))
+
+
+def test_a_closing_coaxial_crossing_stacks_the_last_branch_on_the_outer_helix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``((..((....))..((....))))``: the 0-nt crossing is the CLOSING one,
+    from the last branch back onto the outer helix — which was placed
+    first. The branch is stacked on the outer helix's end (the anchor is
+    whichever side is already placed), not skipped."""
+    _fixed_fold(monkeypatch, "((..((....))..((....))))")
+    tree, echo = _fold({"strand": "s", "sequence": "GGAAGGAAAACCAAGGAAAACCCC"})
+    assert _route(tree)[-1] == ("s.h0", False, 0)
+    assert "1 coaxial junction(s) placed end to end" in echo
+    assert "left as a crossover" not in echo
+    (a0, b0), (a2, b2) = _helix_path(tree, "s.h0"), _helix_path(tree, "s.h2")
+    rise = nucleic.MOTIFS[nucleic.MOTIF_FOR_NUCLEIC["DNA"]].rise
+    # h2's base sits one rise past h0's top, both along +z, same x/y.
+    assert a2[:2] == a0[:2]
+    assert abs((a2[2] - b0[2]) - rise) < 1e-15
+    assert b2[2] > a2[2]
+    short = {
+        f.subject for f in chain_drc.findings(tree) if f.rule == "chain_loop_short"
+    }
+    assert "s#4→#5" not in short
+
+
+def test_a_second_zero_nt_crossing_onto_a_taken_helix_end_is_named_not_faked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``((..((....))((....))))``: the two inner helices meet with 0 nt AND
+    the closing crossing has 0 nt. A helix end stacks on one neighbour, so
+    the second 0-nt crossing stays a crossover and the summary says so."""
+    _fixed_fold(monkeypatch, "((..((....))((....))))")
+    _tree, echo = _fold({"strand": "s", "sequence": "GGAAGGAAAACCGGAAAACCCC"})
+    assert "1 coaxial junction(s) placed end to end" in echo
+    assert "1 0-nt crossing(s) left as a crossover" in echo
+
+
+def test_a_multiloops_coaxial_branch_is_stacked_on_its_neighbour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``((..((....))((....))..))``: the strand leaves the first inner
+    helix (reverse domain, at its base, travelling ``-z``) and enters the
+    second with zero unpaired nucleotides — a coaxial stack in a
+    multiloop. The second inner helix continues ``-z`` from the first's
+    base; the outer helix, reached through 2 nt, stays a slot aside."""
+    _fixed_fold(monkeypatch, "((..((....))((....))..))")
+    tree, echo = _fold({"strand": "s", "sequence": "GGAAGGAAAACCGGAAAACCAACC"})
+    assert _route(tree) == [
+        ("s.h0", True, None),
+        ("s.h1", True, 2),
+        ("s.h1", False, 4),
+        ("s.h2", True, 0),
+        ("s.h2", False, 4),
+        ("s.h0", False, 2),
+    ]
+    assert "1 coaxial junction(s) placed end to end" in echo
+    (a0, _), (a1, _), (a2, b2) = (
+        _helix_path(tree, n) for n in ("s.h0", "s.h1", "s.h2")
+    )
+    assert abs((a1[0] - a0[0]) - nucleic.HELIX_SPACING_M) < 1e-18
+    assert a2[:2] == a1[:2]
+    assert b2[2] < a2[2] < a1[2]
+    # The 2-nt loops to the outer helix a slot aside cannot reach until
+    # relax_chain settles them (the nominal placement's known state); the
+    # coaxial crossing #2→#3 is a backbone step and must not be one of them.
+    short = {
+        f.subject for f in chain_drc.findings(tree) if f.rule == "chain_loop_short"
+    }
+    assert "s#2→#3" not in short
 
 
 def test_a_fold_with_no_pairs_at_all_is_refused() -> None:

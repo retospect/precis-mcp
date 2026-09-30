@@ -24,7 +24,8 @@ Waits:
 - easyeda Do-next 1 (gr457053 rebase) and its whole tree wait on Reto
   allowing the ship; three of its pointers are forward-looking until then.
 - ewod Horizon 8 (`backlog/ewod-synthesis-protocol.md`) consumes
-  se-nucleic-chain's make_steps (its Do-next 1, slice B).
+  se-nucleic-chain's make_steps (shipped 2026-09-30; the chain thread's
+  Horizon 2 points back at it).
 
 ## se — 3D modelling, chains, hexfold
 
@@ -32,7 +33,7 @@ Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md`
 
 Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
-  chain Do-next 3 are the same surface; the viewer owns the selection
+  chain Do-next 2 are the same surface; the viewer owns the selection
   mechanism, the chain thread owns the residue/base-pair instance.
 - precis_se atomic output — a composite corrupted by a stale process
   (gr458061; gr457995 refuted, there is no join-side bug) renders in the

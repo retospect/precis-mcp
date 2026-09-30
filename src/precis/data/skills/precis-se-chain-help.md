@@ -381,25 +381,35 @@ fold is O(n³).
 the sequence (`nucleic='DNA'|'RNA'`, `parent=` for the minted blocks) and
 writes the records that fold IS: **one helix block `<strand>.h<k>` per
 stack** of the MFE structure, two antiparallel domains of the strand on
-each, and the unpaired stretches between consecutive domains as
-`loop_before_nt`. The strand block is minted if absent, or its own
-`declare_strand` sequence is used when you pass none. `GGGGAAAACCCC` →
-`((((....))))` → one 4 bp helix, two domains, one 4-nt loop, and
-`view='chain'` reports four `W-W-cis` pairs.
+each, the unpaired stretches between consecutive domains as
+`loop_before_nt`, and **one single-occupancy stub helix `<strand>.t5` /
+`.t3` per unpaired tail**, carrying the strand's first/last domain (a tail
+is a domain on a helix nobody else occupies — `view='chain'` counts it
+single-stranded, and that is how a realizer finds it). The strand block is
+minted if absent, or its own `declare_strand` sequence is used when you
+pass none. `GGGGAAAACCCC` → `((((....))))` → one 4 bp helix, two domains,
+one 4-nt loop, and `view='chain'` reports four `W-W-cis` pairs.
 
-**The placement is NOMINAL** — each helix straight along `+z`, stacked
-`2.5 nm` apart — because a dot-bracket says what pairs, not where anything
-is. Run `layout_chain` then `relax_chain` to settle it; until you do, the
-loop geometry is arbitrary and `chain_loop_short` will say so.
+**The placement is NOMINAL** — because a dot-bracket says what pairs, not
+where anything is: each helix straight along `±z`; a helix the strand
+reaches through at least one unpaired nucleotide on every crossing sits
+`2.5 nm` aside; a helix reached through **zero** unpaired nucleotides on
+some crossing (a bulge, a one-sided internal loop, a coaxial stack in a
+multiloop, a tail stub) is placed **end to end** on the helix it stacks on,
+continuing its axis with `phase0` chosen so the two backbone exits meet —
+that crossing is a `loop_before_nt` of 0 and reads as a backbone step, not
+a crossover, so `chain_loop_short` stays quiet on it; a bulge is one extra
+rise of axial offset per bulged nucleotide. A helix end stacks on ONE
+neighbour: a further 0-nt crossing onto an end already taken stays a
+crossover, and the summary line says so. Run `layout_chain` then
+`relax_chain` to settle it; until you do, the loop geometry is arbitrary and
+`chain_loop_short` will say so for the loops that have length.
 
-**Covered shapes**: a hairpin, a multiloop, and any nesting of them — every
-pseudoknot-free fold whose consecutive domains have at least one unpaired
-nucleotide between them. **Refused by name** (a wrong layout is worse than
-none): a bulge, a one-sided internal loop or a coaxial stack (zero unpaired
-nucleotides between two domains — the nominal placement would claim a
-crossover that isn't one); an unpaired 5'/3' tail, which this model has no
-record for; a fold with no pairs; a strand that already routes domains
-(`clear_chain` first); and > 10 000 nt.
+**Covered shapes**: every pseudoknot-free fold — a hairpin, a multiloop, any
+nesting of them, bulges, internal loops, coaxial stacks, unpaired tails.
+**Refused by name** (a wrong layout is worse than none): a fold with no
+pairs; a pseudoknotted dot-bracket (ViennaRNA's MFE never makes one); a
+strand that already routes domains (`clear_chain` first); and > 10 000 nt.
 
 **ViennaRNA's parameters are RNA's**, with `T` read as `U` — a DNA fold here
 is an approximation, and every message that carries one says so.

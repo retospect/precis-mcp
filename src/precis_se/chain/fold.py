@@ -21,11 +21,19 @@ matched brackets into maximal stacks (one stack = one helix: consecutive
 ``i+1``/``j-1`` pairs), and each stack becomes ONE helix block carrying two
 antiparallel domains of the same strand — the item's own decomposition of a
 hairpin. The unpaired stretches between consecutive domains become
-``loop_before_nt``. Shapes covered and refused are
+``loop_before_nt``; an unpaired 5'/3' tail becomes a **single-occupancy
+stub helix** (``<strand>.t5``/``.t3``) carrying the strand's first/last
+domain, which is what :func:`precis_se.chain.vocab.build_domain` already
+says a 5' overhang is. Shapes covered and refused are
 :func:`op_fold_layout`'s docstring; the placement it writes is **nominal**
-(each helix straight along ``+z``, stacked along ``+x`` one
-:data:`precis_se.chain.nucleic.HELIX_SPACING_M` apart) and exists to be
-settled by ``relax_chain``, never as a claim about shape.
+and exists to be settled by ``relax_chain``, never as a claim about shape:
+each helix straight along ``±z``, a helix the strand reaches through at
+least one unpaired nucleotide on every crossing stacked along ``+x`` one
+:data:`precis_se.chain.nucleic.HELIX_SPACING_M` apart, and a helix reached
+through ZERO unpaired nucleotides on some crossing (a bulge, a one-sided
+internal loop, a coaxial stack in a multiloop, a tail stub) placed **end
+to end** on the helix it stacks on, continuing its axis with the twist
+phase chosen so the two backbone exits meet (:func:`_stacked`).
 
 **Cost.** ``RNA.fold`` is O(n³), so the *checks* are bounded to strands
 ≤ :data:`MAX_CHECK_NT`; a longer strand is reported skipped **with its
@@ -39,13 +47,19 @@ O(total length + hits), never a pairwise alignment.
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
+
+import numpy as np
 
 from precis.errors import Unsupported
 from precis.utils.units import format_quantity
+from precis_se.chain import layout as chain_layout
 from precis_se.chain import nucleic
 from precis_se.chain import vocab as chain_vocab
+from precis_se.chain.layout import HelixGeometry
 from precis_se.chain.pairing import PAIRED, derive_pairing
 from precis_se.chain.vocab import STRAND_ROLE, ChainError, DomainSpec, chain_role
 from precis_se.ops import OpError, SeTree, apply_ops
@@ -154,9 +168,8 @@ def stacks(pairs: dict[int, int]) -> list[list[tuple[int, int]]]:
     A stack continues while both strands advance by exactly one
     (``i+1``/``j-1``); a bulge or an internal loop therefore *ends* a
     stack, which is why the two helices either side of one are separate
-    blocks (and why :func:`op_fold_layout` refuses a fold that has one —
-    its nominal placement has nowhere to put two helices zero nucleotides
-    apart).
+    blocks — placed end to end by :func:`op_fold_layout` when the strand
+    crosses between them with zero unpaired nucleotides on some side.
     """
     out: list[list[tuple[int, int]]] = []
     for i in sorted(pairs):
@@ -182,12 +195,12 @@ class _Entry:
 
 
 def _entries(stack_list: list[list[tuple[int, int]]]) -> list[_Entry]:
-    """The domains of a fold, in 5'→3' order — two per stack (the strand
-    runs up one side and back down the other), sorted by where they start.
-
-    They tile the sequence exactly when the fold has no unpaired 5'/3'
-    tail, which is what makes the loop arithmetic below (and the stored
-    sequence's own length accounting) exact rather than approximate.
+    """The paired domains of a fold, in 5'→3' order — two per stack (the
+    strand runs up one side and back down the other), sorted by where they
+    start. :func:`_helices_and_entries` adds the tail stubs' domains so the
+    whole list tiles the sequence exactly, which is what makes the loop
+    arithmetic (and the stored sequence's own length accounting) exact
+    rather than approximate.
     """
     out: list[_Entry] = []
     for k, stack in enumerate(stack_list):
@@ -196,19 +209,256 @@ def _entries(stack_list: list[list[tuple[int, int]]]) -> list[_Entry]:
     return sorted(out, key=lambda e: e.start)
 
 
-def _straight_path(n_units: int, x_m: float, motif_name: str) -> dict[str, Any]:
-    """A nominal centre line for one folded helix: straight along ``+z`` at
-    ``x``, one rise per unit. Units are explicit because
-    :mod:`precis_se.chain.vocab` refuses a bare number, the same as a
-    human-authored ``declare_helix``."""
-    rise = nucleic.MOTIFS[motif_name].rise
+@dataclass(frozen=True)
+class _Helix:
+    """One helix block the fold implies: ``paired`` for a stack (a duplex
+    carrying two domains of the strand), ``False`` for an unpaired 5'/3'
+    tail — a single-occupancy stub the strand's first or last domain sits
+    on. The stub is the tail's record: the strand's route finds it as a
+    domain on a helix nobody else occupies (``view='chain'`` counts it
+    single-stranded), and a realizer finds it the same way."""
+
+    label: str  # ``h<k>`` for stack k, ``t5``/``t3`` for a tail
+    n_units: int
+    paired: bool
+
+
+def _helices_and_entries(
+    stack_list: list[list[tuple[int, int]]], n_seq: int
+) -> tuple[list[_Helix], list[_Entry]]:
+    """Every helix the fold needs and every domain on them, 5'→3' — the
+    stacks first, then a ``t5``/``t3`` stub for each unpaired tail."""
+    helices = [_Helix(f"h{k}", len(stack), True) for k, stack in enumerate(stack_list)]
+    entries = _entries(stack_list)
+    if entries[0].start > 0:
+        helices.append(_Helix("t5", entries[0].start, False))
+        entries.insert(0, _Entry(0, entries[0].start - 1, len(helices) - 1, True))
+    if entries[-1].end < n_seq - 1:
+        helices.append(_Helix("t3", n_seq - 1 - entries[-1].end, False))
+        entries.append(_Entry(entries[-1].end + 1, n_seq - 1, len(helices) - 1, True))
+    return helices, entries
+
+
+@dataclass(frozen=True)
+class _Placement:
+    """A nominal helix placement: unit 0's axis point (m), the unit
+    direction (a unit vector) and the twist phase at unit 0 (rad)."""
+
+    origin: np.ndarray
+    axis: np.ndarray
+    phase0: float
+
+
+def _path(placement: _Placement, n_units: int, rise: float) -> dict[str, Any]:
+    """A straight centre line from the placement, one rise per unit. Units
+    are explicit because :mod:`precis_se.chain.vocab` refuses a bare
+    number, the same as a human-authored ``declare_helix``."""
     length = max(n_units - 1, 1) * rise
+    a = placement.origin
+    b = placement.origin + placement.axis * length
     return {
         "waypoints": [
-            [f"{x_m} m", "0 m", "0 m"],
-            [f"{x_m} m", "0 m", f"{length} m"],
+            [f"{float(v)} m" for v in a],
+            [f"{float(v)} m" for v in b],
         ]
     }
+
+
+def _junctions(
+    entries: list[_Entry],
+) -> tuple[dict[frozenset[int], int], set[frozenset[int]]]:
+    """Per pair of helices the strand crosses between directly: the
+    unpaired nucleotides on all its crossings summed (a bulge's size), and
+    the set of pairs some crossing joins with ZERO unpaired nucleotides —
+    the coaxial ones. A hairpin loop closes one helix and joins nothing."""
+    total: dict[frozenset[int], int] = {}
+    coaxial: set[frozenset[int]] = set()
+    for before, after in itertools.pairwise(entries):
+        if before.helix == after.helix:
+            continue
+        key = frozenset((before.helix, after.helix))
+        gap = after.start - before.end - 1
+        total[key] = total.get(key, 0) + gap
+        if gap == 0:
+            coaxial.add(key)
+    return total, coaxial
+
+
+def _geometry(
+    helix: _Helix, placement: _Placement, nucleic_name: str, motif_name: str
+) -> HelixGeometry:
+    """The geometry ``declare_helix`` would realise for this placement —
+    built from the same record, so the backbone exits the placement is
+    tuned against are the ones ``chain_loop_short`` will measure."""
+    rise = nucleic.MOTIFS[motif_name].rise
+    record = chain_vocab.build_helix(
+        {
+            "n_units": helix.n_units,
+            "nucleic": nucleic_name,
+            "motif": motif_name,
+            "path": _path(placement, helix.n_units, rise),
+            "phase0": f"{placement.phase0} rad",
+        },
+        what="fold_layout",
+    )
+    return chain_layout.helix_geometry(SimpleNamespace(name=helix.label, chain=record))
+
+
+def _exit_unit(helix: _Helix, entry: _Entry) -> int:
+    """The unit the strand leaves ``helix`` at — the last on the forward
+    strand, the first on the reverse."""
+    return helix.n_units - 1 if entry.forward else 0
+
+
+def _entry_unit(helix: _Helix, entry: _Entry) -> int:
+    return 0 if entry.forward else helix.n_units - 1
+
+
+def _stacked(
+    anchor: _Placement,
+    anchor_helix: _Helix,
+    anchor_entry: _Entry,
+    helix: _Helix,
+    entry: _Entry,
+    extra_nt: int,
+    *,
+    anchor_leaves: bool,
+    nucleic_name: str,
+    motif_name: str,
+) -> _Placement:
+    """Place ``helix`` end to end on the already-placed ``anchor_helix``
+    across a 0-nt crossing between them — what a coaxial stack physically
+    is. ``anchor_leaves`` says which way the strand crosses: ``True`` when
+    it leaves the anchor (at ``anchor_entry``'s exit unit) and enters
+    ``helix`` at ``entry``'s entry unit, ``False`` when it leaves ``helix``
+    and enters the anchor — the closing crossing of a multiloop reaches
+    the outer helix, which was placed first.
+
+    The strand's travel continues straight through the crossing (the new
+    axis is that travel, flipped when the strand runs the new helix in
+    reverse); the two units it crosses between sit one rise apart plus one
+    rise per bulged nucleotide (``extra_nt`` — a bulge is a short axial
+    offset with the bulged nucleotides as an unpaired bubble, no loop
+    record needed); and the twist phase is the one that brings the two
+    backbone exits together, so the crossing reads as a backbone step and
+    not a crossover. The phase is analytic — a unit's backbone exit lies on
+    a circle about the axis, so the phase is the azimuth of the anchor's
+    backbone point on that circle — and the sense of ``phase0`` is settled
+    by building both signs and keeping the closer.
+    """
+    rise = nucleic.MOTIFS[motif_name].rise
+    travel = anchor.axis if anchor_entry.forward else -anchor.axis
+    if anchor_leaves:
+        anchor_unit = _exit_unit(anchor_helix, anchor_entry)
+        unit = _entry_unit(helix, entry)
+    else:
+        anchor_unit = _entry_unit(anchor_helix, anchor_entry)
+        unit = _exit_unit(helix, entry)
+    step = travel * (rise * (1 + extra_nt))
+    anchor_point = anchor.origin + anchor.axis * (rise * anchor_unit)
+    point = anchor_point + step if anchor_leaves else anchor_point - step
+    axis = travel if entry.forward else -travel
+    origin = point - axis * (rise * unit)
+    target = _geometry(anchor_helix, anchor, nucleic_name, motif_name).exit(
+        anchor_unit, anchor_entry.forward
+    )
+    radial = target - point
+    radial = radial - axis * float(np.dot(radial, axis))
+    trial = _Placement(origin, axis, 0.0)
+    r0 = _geometry(helix, trial, nucleic_name, motif_name).exit(unit, entry.forward)
+    r0 = r0 - point
+    phase = math.atan2(
+        float(np.dot(np.cross(r0, radial), axis)), float(np.dot(r0, radial))
+    )
+
+    def gap(candidate: float) -> float:
+        geom = _geometry(
+            helix, _Placement(origin, axis, candidate), nucleic_name, motif_name
+        )
+        return float(np.linalg.norm(geom.exit(unit, entry.forward) - target))
+
+    best = min((phase, -phase), key=gap)
+    return _Placement(origin, axis, best)
+
+
+def _place(
+    entries: list[_Entry], helices: list[_Helix], nucleic_name: str, motif_name: str
+) -> tuple[list[_Placement], int, int]:
+    """A nominal placement per helix, plus how many 0-nt crossings were
+    realised end to end and how many were left as crossovers.
+
+    The first helix sits at the origin along ``+z``. Then every 0-nt
+    crossing, in strand order: the unplaced side is stacked on the placed
+    one (:func:`_stacked`, either direction — a helix placed earlier is
+    the anchor); when neither is placed the earlier helix takes the next
+    free slot first. A crossing whose two helices are BOTH already placed
+    is left as a crossover and counted — a helix end stacks on one
+    neighbour, and the fold asked for a second, which is a strained
+    junction ``relax_chain`` and ``chain_loop_short`` will show rather than
+    a placement this pass can fake. Every other helix takes the next free
+    slot, one :data:`precis_se.chain.nucleic.HELIX_SPACING_M` along ``+x``,
+    in the order the strand reaches it.
+    """
+    total, _coaxial = _junctions(entries)
+    placed: list[_Placement | None] = [None] * len(helices)
+    slot = 0
+
+    def side_by_side() -> _Placement:
+        nonlocal slot
+        out = _Placement(
+            np.array([slot * nucleic.HELIX_SPACING_M, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0]),
+            0.0,
+        )
+        slot += 1
+        return out
+
+    placed[entries[0].helix] = side_by_side()
+    stacked = strained = 0
+    for before, after in itertools.pairwise(entries):
+        if before.helix == after.helix or after.start - before.end - 1 != 0:
+            continue
+        extra = total[frozenset((before.helix, after.helix))]
+        a, b = placed[before.helix], placed[after.helix]
+        if a is None and b is None:
+            a = placed[before.helix] = side_by_side()
+        if b is None:
+            assert a is not None
+            placed[after.helix] = _stacked(
+                a,
+                helices[before.helix],
+                before,
+                helices[after.helix],
+                after,
+                extra,
+                anchor_leaves=True,
+                nucleic_name=nucleic_name,
+                motif_name=motif_name,
+            )
+            stacked += 1
+        elif a is None:
+            placed[before.helix] = _stacked(
+                b,
+                helices[after.helix],
+                after,
+                helices[before.helix],
+                before,
+                extra,
+                anchor_leaves=False,
+                nucleic_name=nucleic_name,
+                motif_name=motif_name,
+            )
+            stacked += 1
+        else:
+            strained += 1
+    for entry in entries:
+        if placed[entry.helix] is None:
+            placed[entry.helix] = side_by_side()
+    out: list[_Placement] = []
+    for placement in placed:
+        assert placement is not None  # every helix has an entry, so every one is placed
+        out.append(placement)
+    return out, stacked, strained
 
 
 def _strand_sequence(node: Any) -> str | None:
@@ -264,22 +514,24 @@ def op_fold_layout(tree: SeTree, op: dict[str, Any]) -> str:
     under ``parent=``), ``sequence=`` its letters (or the block's own
     ``declare_strand`` sequence when it already has one) and ``nucleic=``
     ``'DNA'``/``'RNA'``. One helix block ``<strand>.h<k>`` per stack of the
-    MFE structure, two antiparallel domains on each, and the unpaired
-    stretches between consecutive domains as ``loop_before_nt``.
+    MFE structure, two antiparallel domains on each, the unpaired
+    stretches between consecutive domains as ``loop_before_nt``, and one
+    single-occupancy stub helix ``<strand>.t5``/``.t3`` per unpaired tail
+    carrying the strand's first/last domain.
 
-    **Shapes covered**: a hairpin, a multiloop/multi-branch fold and any
-    nesting of those — i.e. every pseudoknot-free structure whose
-    consecutive domains are separated by at least one unpaired nucleotide.
+    **Shapes covered**: every pseudoknot-free structure — a hairpin, a
+    multiloop/multi-branch fold and any nesting of those; a bulge, a
+    one-sided internal loop or two coaxially stacked helices (ZERO unpaired
+    nucleotides between two domains: the two helices are placed end to end,
+    :func:`_stacked`, with a ``loop_before_nt`` of 0 on that crossing — a
+    helix end stacks on one neighbour, so a further 0-nt crossing onto an
+    end already taken is left as a crossover and named in the summary);
+    and an unpaired 5'/3' tail (a stub helix, reached the same way).
 
     **Shapes refused, by name** (a wrong layout is worse than no layout):
-    a bulge, a one-sided internal loop or two coaxially stacked helices —
-    anything that leaves ZERO unpaired nucleotides between two domains,
-    because the nominal placement puts each helix a helix-spacing apart and
-    a 0-nt loop there is a crossover claim, not a stack; an unpaired 5' or
-    3' tail, which this model has no record to carry (a loop exists only
-    *between* two domains); a fold with no pairs at all; and a
-    pseudoknotted dot-bracket (:func:`pair_table`), which ViennaRNA's MFE
-    never produces.
+    a fold with no pairs at all; a pseudoknotted dot-bracket
+    (:func:`pair_table`), which ViennaRNA's MFE never produces; a strand
+    that already routes domains; and > :data:`MAX_LAYOUT_NT` nt.
 
     Raises :class:`~precis.errors.Unsupported` when the ``[chain]`` extra
     is absent, and :class:`~precis_se.ops.OpError` before any mutation on
@@ -354,32 +606,12 @@ def op_fold_layout(tree: SeTree, op: dict[str, Any]) -> str:
             f"entirely unpaired ({structure}) — there is no helix to lay out "
             f"({RNA_PARAMS_NOTE})"
         )
-    entries = _entries(stack_list)
-    if entries[0].start != 0 or entries[-1].end != len(sequence) - 1:
-        raise OpError(
-            f"fold_layout: the MFE structure {structure} leaves "
-            f"{entries[0].start} nt unpaired at the 5' end and "
-            f"{len(sequence) - 1 - entries[-1].end} nt at the 3' end, and "
-            "this model has no record for an unpaired tail (a loop exists "
-            "only BETWEEN two domains) — fold the paired stretch, or route "
-            "the tail by hand with add_domain"
-        )
-    loops: list[int] = []
-    for before, after in itertools.pairwise(entries):
-        gap = after.start - before.end - 1
-        if gap == 0:
-            raise OpError(
-                f"fold_layout: the MFE structure {structure} stacks helix "
-                f"{before.helix} directly on helix {after.helix} (a bulge, a "
-                "one-sided internal loop or a coaxial stack — zero unpaired "
-                "nucleotides between two domains). This pass lays each helix "
-                "out a helix-spacing apart, where a 0-nt loop would claim a "
-                "crossover that is not one; it refuses rather than write "
-                "that. Hairpins, multiloops and nestings of them are covered"
-            )
-        loops.append(gap)
+    helices, entries = _helices_and_entries(stack_list, len(sequence))
+    loops = [
+        after.start - before.end - 1 for before, after in itertools.pairwise(entries)
+    ]
     motif_name = nucleic.MOTIF_FOR_NUCLEIC[nucleic_name]
-    helix_names = [f"{name}.h{k}" for k in range(len(stack_list))]
+    helix_names = [f"{name}.{h.label}" for h in helices]
     clashes = sorted(h for h in helix_names if h in tree.blocks)
     if clashes:
         raise OpError(
@@ -403,51 +635,74 @@ def op_fold_layout(tree: SeTree, op: dict[str, Any]) -> str:
             "nucleic": nucleic_name,
         }
     )
-    for k, (helix, stack) in enumerate(zip(helix_names, stack_list, strict=True)):
-        mint = {"op": "add_block", "name": helix}
+    placements, n_stacked, n_strained = _place(
+        entries, helices, nucleic_name, motif_name
+    )
+    rise = nucleic.MOTIFS[motif_name].rise
+    for helix_name, helix, placement in zip(
+        helix_names, helices, placements, strict=True
+    ):
+        mint = {"op": "add_block", "name": helix_name}
         if node is None and parent is not None:
             mint["parent"] = str(parent)
         elif node is not None and node.parent:
             mint["parent"] = str(node.parent)
         ops.append(mint)
-        ops.append(
-            {
-                "op": "declare_helix",
-                "block": helix,
-                "n_units": len(stack),
-                "nucleic": nucleic_name,
-                "path": _straight_path(
-                    len(stack), k * nucleic.HELIX_SPACING_M, motif_name
-                ),
-            }
-        )
+        declare: dict[str, Any] = {
+            "op": "declare_helix",
+            "block": helix_name,
+            "n_units": helix.n_units,
+            "nucleic": nucleic_name,
+            "path": _path(placement, helix.n_units, rise),
+        }
+        if placement.phase0:
+            declare["phase0"] = f"{placement.phase0} rad"
+        ops.append(declare)
     for i, entry in enumerate(entries):
         domain: dict[str, Any] = {
             "op": "add_domain",
             "strand": name,
             "helix": helix_names[entry.helix],
             "start": 0,
-            "end": len(stack_list[entry.helix]),
+            "end": helices[entry.helix].n_units,
             "forward": entry.forward,
+        }
+        if helices[entry.helix].paired:
             # Every pair an MFE fold makes is cis Watson-Crick — the family
             # that also carries the G·U wobble — so the derived pairing can
-            # state a family instead of leaving it undeclared.
-            "geometry": "W-W-cis",
-        }
+            # state a family instead of leaving it undeclared. A tail stub
+            # pairs with nothing and states none.
+            domain["geometry"] = "W-W-cis"
         if i:
             domain["loop_before_nt"] = loops[i - 1]
         ops.append(domain)
     apply_ops(tree, ops)
     n_bp = sum(len(s) for s in stack_list)
-    helices = f"{len(stack_list)} " + ("helix" if len(stack_list) == 1 else "helices")
+    tails = [h for h in helices if not h.paired]
+    summary = f"{len(stack_list)} " + ("helix" if len(stack_list) == 1 else "helices")
+    summary += f" ({n_bp} bp)"
+    if tails:
+        summary += " + " + ", ".join(
+            f"{'5' if h.label == 't5' else '3'}' tail of {h.n_units} nt as "
+            f"single-occupancy stub {name}.{h.label}"
+            for h in tails
+        )
     return (
         f"fold_layout: folded {len(sequence)} nt of {nucleic_name} to "
         f"{structure} at {energy:.2f} kcal/mol ({RNA_PARAMS_NOTE}); wrote "
-        f"{helices} ({n_bp} bp), strand {name!r} and "
+        f"{summary}, strand {name!r} and "
         f"{len(entries)} domain(s) with {len(loops)} loop(s) "
-        f"({', '.join(f'{n} nt' for n in loops) or 'none'}) — placement is "
-        f"NOMINAL (straight helices {format_quantity(nucleic.HELIX_SPACING_M, 'length')} "
-        "apart); run layout_chain then relax_chain to settle it"
+        f"({', '.join(f'{n} nt' for n in loops) or 'none'})"
+        + (f", {n_stacked} coaxial junction(s) placed end to end" if n_stacked else "")
+        + (
+            f", {n_strained} 0-nt crossing(s) left as a crossover (its helix end "
+            "already stacks on another; relax_chain and chain_loop_short will show it)"
+            if n_strained
+            else ""
+        )
+        + " — placement is NOMINAL (straight helices "
+        f"{format_quantity(nucleic.HELIX_SPACING_M, 'length')} apart, coaxial "
+        "ones end to end); run layout_chain then relax_chain to settle it"
     )
 
 

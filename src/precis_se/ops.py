@@ -309,9 +309,11 @@ The two handler-level chain ops (:mod:`precis_se.chain.relax`,
   Handler-level because ViennaRNA is the optional ``[chain]`` extra
   (``Unsupported`` when absent) and the fold is O(n³) on scaffold-length
   input, which is allowed here and nowhere else. The placement it writes is
-  NOMINAL — straight helices a helix-spacing apart, for ``relax_chain`` to
-  settle — and a shape it does not cover (a bulge, a coaxial stack, an
-  unpaired 5'/3' tail) is refused by name rather than laid out wrongly.
+  NOMINAL — straight helices a helix-spacing apart, a helix reached
+  through zero unpaired nucleotides (a bulge, a coaxial stack) end to end
+  on the one it stacks on, an unpaired 5'/3' tail as a single-occupancy
+  stub helix — for ``relax_chain`` to settle; a pair-free or pseudoknotted
+  fold is refused by name rather than laid out wrongly.
 """
 
 from __future__ import annotations

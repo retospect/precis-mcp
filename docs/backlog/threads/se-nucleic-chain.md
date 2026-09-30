@@ -8,8 +8,9 @@ relax → realize → export) is landed and dogfooded on prod, and the walker
 item is built, deleted, deployed (5ca0cfff on the fleet 2026-09-30 12:23Z)
 and dogfooded end to end on prod (`dogfood-walker-a`: guard, channel
 budget, crosstalk, make_steps, view='stations' all as specified;
-td458169). Make the loop atoms a prod dogfood found unchained honest,
-then the layout follow-ons.
+td458169); fold_layout lays out every pseudoknot-free fold (bulges and
+coaxial stacks end to end, tails as single-occupancy stubs). Make the loop
+atoms a prod dogfood found unchained honest, then the pick hierarchy.
 **Last reviewed:** 2026-09-30
 **Worktree:** `se-nucleic-chain`
 
@@ -21,10 +22,7 @@ then the layout follow-ons.
    (geo relax over loop residues, duplex pinned; persist residue rows;
    envelope_fit skips loops); awaiting Reto's ruling on default-on vs
    opt-in — the only thing between this and a half-day build.
-2. **backlog/se-fold-layout-coaxial-and-tails.md** — ready, independent of
-   1; fold_layout cannot place coaxial stacks or single-stranded tails, so
-   every ViennaRNA-derived design with a tail lays out wrong.
-3. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
+2. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
    1); the chain-design instance (its 2026-09-30 section: residue +
    base-pair rows under a segment block, atom pick) turns "aO44" into
    "O3' of DA 8, hp.h0@3".
@@ -75,6 +73,14 @@ then the layout follow-ons.
   while the design has blocks). The rest — a restore_revision op, a
   revisions view, `ops=` on put's schema — is se persist work, not this
   thread's; it stays on the gripe.
+- **backlog/se-fold-layout-coaxial-and-tails.md** — shipped 2026-09-30 and
+  deleted, delete-on-ship: a helix reached through zero unpaired
+  nucleotides is placed end to end on the one it stacks on (phase0 tuned so
+  the backbone exits meet, one extra rise per bulged nucleotide), and an
+  unpaired tail is a single-occupancy stub helix `<strand>.t5`/`.t3` — the
+  representation `build_domain`'s own refusal of `loop_before_nt` on a
+  first domain already named. Remaining refusals: no pairs, pseudoknot,
+  > 10 000 nt, an already-routed strand.
 - **backlog/se-walker-light-protocol.md** — landed in three slices
   (6e3fb3b1 and the B+C ship of 2026-09-30) and deleted, delete-on-ship;
   its decisions log is restated in `src/precis_se/chain/__init__.py`
