@@ -6,8 +6,13 @@ things landed 2026-09-30: main-ci-status no longer announces either conclusion
 off a cached listing; a main push is gated against the delta since the last sha
 with a real shard verdict; qland runs ruff+mypy before it merges; and a host
 dark past log retention still pages, because the detector no longer bounds
-itself to a table the sweeper prunes. What remains is one signal that lies by
-omission (a worker host no detector can see) and one held decision on how far
+itself to a table the sweeper prunes. Two more landed the same day: a CLI that
+exited 0 while printing a refusal now exits 3 on stderr, and the fix_gripe lane
+stopped reporting deliveries it had not made — a fix branch counts as delivered
+only once `git ls-remote` finds it on the repo's real upstream, which the lane
+had never once reached. What remains is one signal that lies by omission (a
+worker host no detector can see), one decision on whether a lane that cannot
+deliver should keep running, and one held decision on how far
 behind its verdict main may drift before a qland is refused. The container host's forensics were
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
@@ -17,14 +22,25 @@ thread and is flagged on the Horizon for an owner.
 
 ## Do next
 
-1. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+1. **The fix_gripe lane cannot deliver, and nobody has decided whether it
+   should keep running** — the false-success half is fixed (see Status), so
+   the lane now fails honestly instead of parking gripes behind branches that
+   do not exist. But it fails *every time*: the worker's checkout is an
+   anonymous HTTPS clone with no push credential, so no fix attempt can reach
+   the upstream. Three ways out, and the choice is not mine: give the worker a
+   push credential, publish the diff to the gripe instead of a branch, or stop
+   scheduling the lane until one of those exists. Until then every run costs
+   agent budget and delivers nothing. First because a lane that burns money to
+   produce failures is a live cost, and because the 43 stranded branches lose
+   their value as main moves away from them.
+2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
-   took them), so what is left is the monitor. First by default — it is the
-   only open code work here; nothing is specced yet, though the finding it
-   rests on is now evidence rather than suspicion.
-2. **backlog/main-stays-gated.md** — one follow-on, and it is a question
+   took them), so what is left is the monitor. Second: it is the only open
+   code work here that is mine to start, but nothing is specced yet and the
+   thing it would watch is not currently costing anything.
+3. **backlog/main-stays-gated.md** — one follow-on, and it is a question
    rather than a task: how far behind its last shard verdict main may drift
    before `scripts/ship --quick` refuses rather than warns. Both directions
    are written up in the item; it wants Reto's number, then it is a few lines.

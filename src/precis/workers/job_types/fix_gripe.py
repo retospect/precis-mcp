@@ -15,8 +15,12 @@ has no network route to it either, so it CANNOT push. Once
 ``call_claude_agent`` returns, ``run()`` — trusted, host-side —
 performs the push itself: write-back is a commit inside the sandbox,
 pushed on the trusted side, never with creds inside the sandbox. On
-success the resulting ``gripe_<id>`` branch lands on origin (the
-source repo) for human review.
+success the resulting ``gripe_<id>`` branch is on the host checkout's
+own upstream — confirmed there by ``git ls-remote`` before the job says
+so — for human review. "Push succeeded" is not the success condition
+and never was a safe one: the clone's ``origin`` is the host checkout,
+so a push can succeed into a directory on the worker node and leave the
+real remote untouched (gr458326). Delivery is a question for the remote.
 
 Trust model: a **containerized** run (the default whenever
 ``PRECIS_AGENT_CONTAINER`` is on and the host can run it) is isolated
@@ -42,6 +46,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,8 +108,8 @@ REQUIRES: frozenset[str] = frozenset(
 
 DESCRIPTION: str = (
     "Clone the repo, run the fix agent through call_claude_agent "
-    "(containerized when available, isolated env otherwise), push the "
-    "resulting branch gripe_<id> to origin for human review."
+    "(containerized when available, isolated env otherwise), publish the "
+    "resulting branch gripe_<id> to the repo's upstream for human review."
 )
 
 
@@ -584,6 +589,36 @@ def run(
 
     base_sha = _git_rev_parse(clone_dir, "origin/main")
 
+    # Ask whether a fix could be delivered at all before paying for one.
+    publish_target = _publish_target(repo_dir)
+    why_not = _publish_preflight(clone_dir, branch, publish_target)
+    if why_not is not None:
+        wall = time.perf_counter() - t0
+        log.warning(
+            "fix_gripe: gripe:%d skipped — cannot publish to %s: %s",
+            gripe_id,
+            publish_target,
+            why_not,
+        )
+        return RunOutcome(
+            status="skipped",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: this "
+                f"worker cannot publish a fix branch, so running the agent "
+                f"would produce work nobody could fetch. {why_not}. "
+                f"Took {wall:.1f}s."
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] fix attempt skipped: this worker "
+                f"cannot publish a branch to {publish_target}, so a fix would "
+                "have nowhere to go. No agent was run and no budget spent. "
+                "This is a deployment gap, not a property of this gripe."
+            ),
+            branch=branch,
+            sha=None,
+            wall_seconds=wall,
+        )
+
     try:
         _spawn_claude(cfg, clone_dir, prompt)
     except ValueError as exc:
@@ -672,8 +707,8 @@ def run(
             status="failed",
             summary_text=(
                 f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
-                "no commits pushed to origin under branch "
-                f"{branch}. Took {wall:.1f}s."
+                f"claude made no commits on branch {branch}, so there was "
+                f"nothing to publish. Took {wall:.1f}s."
             ),
             gripe_comment_text=(
                 f"[worker:job:{job_id}] claude exited cleanly but made "
@@ -684,39 +719,76 @@ def run(
             wall_seconds=wall,
         )
 
+    # Stash the work on the host checkout first, unconditionally and
+    # non-fatally. It is one directory on one node rather than a delivery, but
+    # it is the only durable copy: clone_dir is rmtree'd at the top of the next
+    # attempt for this gripe, so without this a push that cannot reach the real
+    # upstream would take the agent's commit with it.
     try:
-        _push_branch_trusted(clone_dir, branch)
-    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        _push_branch_trusted(clone_dir, branch, "origin")
+    except (RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        log.warning(
+            "fix_gripe job:%s gripe:%s: could not stash branch %s on the host "
+            "checkout; the commit exists only in the scratch clone",
+            job_id,
+            gripe_id,
+            branch,
+        )
+
+    target = publish_target
+    where = f"{socket.gethostname()}:{clone_dir}"
+    # When repo_dir has no upstream, target IS repo_dir and this repeats the
+    # stash push as a no-op. Left unconditional rather than special-cased: the
+    # delivery push and the verification that follows it must read the same
+    # target, and a branch that skips one of them is how this went wrong before.
+    try:
+        _push_branch_trusted(clone_dir, branch, target)
+    except (
+        RuntimeError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         wall = time.perf_counter() - t0
         return RunOutcome(
             status="failed",
             summary_text=(
                 f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
-                f"trusted-side push of branch {branch} failed: {exc}. "
-                f"Took {wall:.1f}s."
+                f"push of branch {branch} to {target} failed: {exc}. "
+                f"The commit is at {where} and on the host checkout "
+                f"({repo_dir}). Took {wall:.1f}s."
             ),
             gripe_comment_text=(
                 f"[worker:job:{job_id}] claude committed a fix on branch "
-                f"{branch}, but the trusted-side push failed ({exc})."
+                f"{branch}, but publishing it to {target} failed ({exc}), so "
+                "there is nothing to review with `git fetch`. The commit is "
+                f"on the worker host at {repo_dir}. Leaving this gripe open: "
+                "an unreachable fix must not suppress a real one."
             ),
             branch=branch,
             sha=None,
             wall_seconds=wall,
         )
 
-    pushed_sha = _git_rev_parse(clone_dir, f"origin/{branch}")
+    # Ask the remote, not the clone's tracking ref (see _ls_remote_sha). This
+    # is the check that has to hold before this job may tell anyone a fix is
+    # waiting for them — and before the gripe is moved to in_review, which is
+    # read as "a fix exists, don't duplicate the work".
+    pushed_sha = _ls_remote_sha(target, branch, clone_dir)
     main_sha_after = _git_rev_parse(clone_dir, "origin/main")
     if pushed_sha is None or branch_sha != pushed_sha:
         return RunOutcome(
             status="failed",
             summary_text=(
                 f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
-                "no commits pushed to origin under branch "
-                f"{branch}. Took {wall:.1f}s."
+                f"branch {branch} is not on {target} at {branch_sha} after the "
+                f"push (ls-remote says {pushed_sha or 'nothing'}). The commit "
+                f"is on the host checkout ({repo_dir}). Took {wall:.1f}s."
             ),
             gripe_comment_text=(
-                f"[worker:job:{job_id}] the trusted-side push of branch "
-                f"{branch} did not land as expected. No fix to review."
+                f"[worker:job:{job_id}] branch {branch} did not reach "
+                f"{target}, so there is no fix to review with `git fetch`. "
+                f"The commit is on the worker host at {repo_dir}. Leaving "
+                "this gripe open."
             ),
             branch=branch,
             sha=None,
@@ -743,12 +815,13 @@ def run(
     return RunOutcome(
         status="succeeded",
         summary_text=(
-            f"Fix attempt pushed to origin as branch {branch} @ "
-            f"{branch_sha}. {diffstat}. Took {wall:.1f}s."
+            f"Fix attempt published to {target} as branch {branch} @ "
+            f"{branch_sha}, confirmed by ls-remote. {diffstat}. "
+            f"Took {wall:.1f}s."
         ),
         gripe_comment_text=(
-            f"[worker:job:{job_id}] branch {branch} @ {branch_sha} "
-            "pushed to origin. Review with: "
+            f"[worker:job:{job_id}] branch {branch} @ {branch_sha} is on "
+            f"{target} (confirmed present, not merely pushed). Review with: "
             f"`git fetch && git checkout {branch} && git diff main..{branch}`."
         ),
         branch=branch,
@@ -1033,6 +1106,7 @@ def _git_clone_and_branch(repo_dir: Path, dest: Path, branch: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        env=_git_env(),
     )
     subprocess.run(
         ["git", "checkout", "-b", branch],
@@ -1040,6 +1114,7 @@ def _git_clone_and_branch(repo_dir: Path, dest: Path, branch: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        env=_git_env(),
     )
 
 
@@ -1073,9 +1148,137 @@ def _install_prepush_hook(clone_dir: Path) -> None:
 #: shape ``run()`` always constructs; anything else is refused).
 _GRIPE_BRANCH_PATTERN = re.compile(r"^gripe_\d+$")
 
+#: Git must never stop for an interactive credential prompt here: the lane is
+#: unattended, and an anonymous HTTPS push to a repo that requires auth would
+#: otherwise block until the job's wall clock ran out, holding an executor slot
+#: to produce nothing. Fail fast instead, and let the outcome say why.
+_GIT_NONINTERACTIVE_ENV = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "",
+    "GIT_SSH_COMMAND": "ssh -oBatchMode=yes",
+}
 
-def _push_branch_trusted(clone_dir: Path, branch: str) -> None:
-    """Push ``branch`` to origin from the TRUSTED (host) side.
+#: Variables that redirect git away from the directory it was pointed at. If
+#: any of these are set in the worker's environment — inherited from whatever
+#: launched it — then ``cwd=clone_dir`` is silently ignored and every git call
+#: here operates on some other repository, or fails because that repository is
+#: not visible from this process. Always scrubbed; ``cwd`` is the only thing
+#: that may decide which repo these commands touch.
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+
+
+def _git_env() -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_VARS}
+    env.update(_GIT_NONINTERACTIVE_ENV)
+    return env
+
+
+#: Seconds a single remote round-trip may take. Covers a network target that
+#: accepts the connection and then stalls, which no non-interactive env var
+#: protects against.
+_REMOTE_TIMEOUT_S = 120
+
+
+def _publish_target(repo_dir: Path) -> str:
+    """Where a fix branch has to land before the lane may call it delivered.
+
+    :func:`_git_clone_and_branch` clones ``repo_dir`` from a local path, so the
+    clone's ``origin`` is that host checkout — not the checkout's own upstream.
+    Pushing "to origin" from inside the clone therefore reaches a directory on
+    the worker node and stops there. Because that directory is a real non-bare
+    repo and the pushed branch is never its checked-out one, the push *succeeds*
+    and git dutifully updates the clone's ``origin/<branch>`` tracking ref. That
+    is how the lane reported 43 deliveries that never left the machine, marked
+    each job ``succeeded``, and parked each gripe at ``in_review`` — which reads
+    as "a fix exists, don't duplicate it", so the failure actively suppressed
+    the real fixes (gr458326).
+
+    The delivery target is ``repo_dir``'s own upstream when it has one, and
+    ``repo_dir`` itself when it does not — a single-machine setup where the host
+    checkout genuinely is the end of the line.
+    """
+    res = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_git_env(),
+    )
+    url = (res.stdout or "").strip()
+    return url if res.returncode == 0 and url else str(repo_dir)
+
+
+def _publish_preflight(clone_dir: Path, branch: str, target: str) -> str | None:
+    """``None`` when ``target`` looks writable from here; else why it doesn't.
+
+    A ``--dry-run`` push, run BEFORE the agent is spawned. Without it the
+    deployment that cannot publish at all — a pull-only checkout, which is what
+    an anonymous HTTPS clone gives you — spends a full agent run per attempt
+    and then discovers at the last step that it was never going to be able to
+    deliver any of them. Cheaper to ask first, and the answer turns the run
+    into a ``skipped`` (an infrastructure gap, retried later) rather than a
+    ``failed`` (this gripe's fix was attempted and didn't work), which is also
+    the more accurate of the two.
+
+    Not a guarantee: a remote can accept the dry run and reject the real push.
+    The post-push ``ls-remote`` check is what actually decides delivery — this
+    only catches the cheap, common "no credentials at all" case early.
+    """
+    try:
+        res = subprocess.run(
+            ["git", "push", "--dry-run", target, f"{branch}:refs/heads/{branch}"],
+            cwd=str(clone_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_git_env(),
+            timeout=_REMOTE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return f"push --dry-run to {target} timed out after {_REMOTE_TIMEOUT_S}s"
+    if res.returncode == 0:
+        return None
+    tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
+    return f"push --dry-run to {target} refused: " + " / ".join(tail)
+
+
+def _ls_remote_sha(target: str, branch: str, cwd: Path) -> str | None:
+    """The sha ``target`` actually holds at ``refs/heads/<branch>``, asked of
+    the remote itself; ``None`` when it holds nothing there or can't be reached.
+
+    Deliberately not ``git rev-parse origin/<branch>`` inside the clone. That
+    reads a local tracking ref, which git updates after any successful push —
+    including one that only reached another directory on the same host. It
+    confirmed the push the lane *intended*, never the push that happened, which
+    is what let a false "pushed to origin as <sha>" claim be generated from
+    intent and then believed.
+
+    Runs with ``cwd`` inside a real repository. ``git ls-remote`` resolves
+    config before it dials the remote, so from a directory that is not a
+    working repo it exits 128 without ever asking the remote anything — an
+    answer that looks exactly like "the branch is not there".
+    """
+    try:
+        res = subprocess.run(
+            ["git", "ls-remote", "--heads", target, f"refs/heads/{branch}"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_git_env(),
+            timeout=_REMOTE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if res.returncode != 0:
+        return None
+    line = (res.stdout or "").strip()
+    return line.split("\t", 1)[0] if line else None
+
+
+def _push_branch_trusted(clone_dir: Path, branch: str, target: str) -> None:
+    """Push ``branch`` to ``target`` from the TRUSTED (host) side.
 
     §H cycle a design decision: write-back is a commit, pushed on the
     trusted side — never inside the sandbox, never with push creds handed
@@ -1097,11 +1300,13 @@ def _push_branch_trusted(clone_dir: Path, branch: str) -> None:
             "gripe_<id> (never main or anything else)"
         )
     subprocess.run(
-        ["git", "push", "origin", f"{branch}:refs/heads/{branch}"],
+        ["git", "push", target, f"{branch}:refs/heads/{branch}"],
         cwd=str(clone_dir),
         check=True,
         capture_output=True,
         text=True,
+        env=_git_env(),
+        timeout=_REMOTE_TIMEOUT_S,
     )
 
 
@@ -1112,6 +1317,7 @@ def _git_rev_parse(clone_dir: Path, refname: str) -> str | None:
         capture_output=True,
         text=True,
         check=False,
+        env=_git_env(),
     )
     if res.returncode != 0:
         return None
@@ -1127,6 +1333,7 @@ def _git_diff_stat(clone_dir: Path, base: str | None, head: str) -> str:
         capture_output=True,
         text=True,
         check=False,
+        env=_git_env(),
     )
     text = (res.stdout or "").strip()
     return text or "no detectable diff"

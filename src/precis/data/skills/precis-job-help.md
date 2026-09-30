@@ -194,8 +194,9 @@ get(kind="job", id=101)
 ```
 
 The `job_summary` chunk is the human-readable account ("Fix
-attempt pushed to origin as branch gripe_42 @ abc123. Diff
-+47/-12 across 3 files. Took 84s."). Searchable through the
+attempt published to <remote> as branch gripe_42 @ abc123,
+confirmed by ls-remote. Diff +47/-12 across 3 files. Took
+84s."). Searchable through the
 normal `search(kind='job', q=...)` surface.
 
 `job_event` chunks (lease renewals, llm_output excerpts,

@@ -110,9 +110,9 @@ once a fix attempt lands cleanly.
 ## Where does the candidate branch live?
 ## How do I fetch the fix?
 
-In `origin` of the source repo (where `main` lives). The fetch
-instructions are in the gripe comment the worker posted; in
-your normal working repo:
+On the upstream the worker's repo checkout points at — the same
+remote `main` lives on. The fetch instructions are in the gripe
+comment the worker posted; in your normal working repo:
 
 ```bash
 git fetch
@@ -121,7 +121,29 @@ git diff main..gripe_42
 ```
 
 The clone dir under `$PRECIS_FIX_WORK_DIR/clones/` is removed
-on success — the branch in origin is what survives.
+on success — the branch on the upstream is what survives.
+
+**A job reports success only once `git ls-remote` confirms the
+branch is on that upstream** (gr458326). It used to report it
+as soon as the push exited 0, which is a weaker claim than it
+looks: the per-job clone is made from the worker's local
+checkout, so the clone's `origin` is *that directory*, and a
+push into it succeeds without anything leaving the machine. 43
+jobs reported "pushed to origin as \<sha\>" and parked their
+gripes at `in_review` — which reads as "a fix exists, don't
+duplicate it" — with no branch anyone could fetch.
+
+A fix attempt that cannot reach the upstream now **fails** and
+leaves the gripe `open`. The commit is not lost: it is pushed
+to the worker's own checkout first, and the failure text says
+where it is.
+
+If the worker cannot publish at all, jobs **skip** instead — a
+`git push --dry-run` runs before the agent does, so the run
+costs one round trip rather than a full agent budget, and the
+gripe keeps its retry budget. A skip saying "cannot publish a
+branch to …" is a credential question for the deployment, not
+a bug in the run and not something re-running will fix.
 
 ## Review the candidate fix
 ## Look at the diff

@@ -16,6 +16,20 @@ Deployment requirements:
 - `PRECIS_FIX_REPO_DIR` env var pointing at the canonical
   precis-mcp repo (host path), bind-mounted into the precis
   container at the same path.
+- **That checkout must be able to PUSH to its own upstream**, as
+  whichever user the worker runs as. A fix branch is delivered to
+  `git remote get-url origin` of that checkout, and a job succeeds only
+  once `git ls-remote` finds the branch there. A pull-only checkout —
+  an anonymous HTTPS clone, which is what the ansible role provisions —
+  makes every job **skip**: a `git push --dry-run` runs before the agent
+  is spawned, so an undeliverable deployment costs one round trip rather
+  than a full agent run, and the gripe keeps its retry budget. Jobs
+  skipping with "cannot publish a branch to …" mean this, and no amount
+  of re-running will change it. That is the honest outcome, not a bug in
+  the run, and it is a deliberate change from the behaviour that
+  produced gr458326: pushing "to origin" from the per-job clone reached
+  the local checkout, exited 0, and let 43 jobs report a delivery that
+  never left the machine while parking their gripes at `in_review`.
 - `PRECIS_FIX_WORK_DIR` env var, same bind-mount pattern.
 - `~/.claude` bind-mounted (rw) so claude's session tokens can
   refresh.
