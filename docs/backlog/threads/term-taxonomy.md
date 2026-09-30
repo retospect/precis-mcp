@@ -20,7 +20,7 @@ exists.
    knowledge-mesh; nothing else in this thread can ship its output until
    the taxon kind exists.
 2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — the metered
-   re-probe of the same 100 rows (~66 paid calls, Reto's go-ahead). Yields
+   re-probe of the same 100 rows (~66 paid calls, Reto's go = td458388). Yields
    the cache-read counts that decide concurrency vs packing, the noise
    floor, and the first `probe criterion` verdict (≥0.60 of the unit-key
    ceiling; run 2 reads 0.55). The 1231-call full run waits on it.

@@ -310,8 +310,8 @@ integrated main covered stage 4 (skills + the `benign` allowlist). The prod
 dry-run ran 2026-09-30 13:24 UTC (role demand, gap no-demand on
 `placement_error_nm` for qu453869); it showed the capability heading cut to
 the ledger's 60-character stub, fixed the same day (`capability_statement`
-on the ledger row and the role choice). Next act = the first live tick, on
-Reto's word, on a build carrying that fix (see the thread file).
+on the ledger row and the role choice), gated and deployed 14:12 UTC. Next
+act = the first live tick, on Reto's word (td458387), on that build.
 
 Ordered:
 

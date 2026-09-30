@@ -472,14 +472,16 @@ session's 2026-09-30 gate covered the integrated main; fleet verified on
 castor, pollux and balthazar over the venv's `direct_url.json`; melchior's
 venv was not located by the read-only probe, so it is unverified, not
 drifted). Blocker 3a and the probe-2 record are gated and on the fleet
-(2026-09-30 12:23 UTC); blockers 4 and 3b and the per-call metering landed
-after that gate and wait for the next one. Every vocabulary and census
-blocker from the two probes is closed and the metering the full run needs
-is in place, so the next act is a paid one. Detail is in the two probe
+(2026-09-30 12:23 UTC); blockers 4 and 3b and the per-call metering are
+gated and on the fleet too (14:12 UTC). Every vocabulary and census blocker
+from the two probes is closed and the metering the full run needs is in
+place, so the next act is a paid one — td458388 in Reto's queue asks for it
+and for a confirm-or-veto on the 0.60 probe bar. Detail is in the two probe
 sections above; this section is only the order.
 
 1. **Re-probe the same 100 rows** — PAID (~66 calls), Reto's go-ahead
-   required. First run with metering, so it yields the cache-read counts
+   required (td458387's sibling td458388). First run with metering, so it
+   yields the cache-read counts
    that decide 2, the test-retest noise floor against run 2 (same prompt
    now), and the first `probe criterion` line; a FAIL there is a prompt or
    vocabulary fix, not a reason to buy the full run.
