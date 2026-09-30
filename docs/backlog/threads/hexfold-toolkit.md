@@ -1,10 +1,14 @@
 # hexfold toolkit
 
-**Status:** the join op and the environment catalogue work end to end on
-paper; a prod dogfood found the join silently corrupting composites and
-the catalogue's persistence inert. Correctness first, then make the
-thread diagnosable, then make measured rows trustworthy.
+**Status:** ends when hexfold composites join, catalogue and validate
+themselves end to end with trusted measured rows, per the hexfold spec §28
+roadmap, and the se + hexfold paper (td344088) reports it. Today the join
+op and the environment catalogue work on paper; a prod dogfood found the
+join silently corrupting composites and the catalogue's persistence inert.
+Correctness first, then make the thread diagnosable, then make measured
+rows trustworthy.
 **Last reviewed:** 2026-09-30
+**Worktree:** `hexfold-toolkit`
 
 ## Do next
 
@@ -39,6 +43,11 @@ thread diagnosable, then make measured rows trustworthy.
    every cap fuse. The oldest open hexfold defect, predates the toolkit
    and is independent of 1–6; it caps how much any seam measurement on
    the stick rung can be believed.
+
+## Horizon
+
+(none — owner to fill: spec §28.x slices, valve Q1–Q4, armchair lids, the
+seam-motif catalogue once Do-next 6 lands)
 
 ## Parked
 

@@ -47,7 +47,9 @@ red: ship prints the failing jobs + `gh run view <id> --log-failed`).
 
 Many sibling sessions run at once: scan the injected `scripts/inflight` table
 for overlap; once your task is clear, write one line to `.claude/purpose`.
-Merged+clean+sessionless worktrees auto-reap.
+Merged+clean+sessionless worktrees auto-reap. Work that belongs to a thread
+(`docs/backlog/threads/<slug>.md`) updates that file in the same commit —
+delete what shipped, insert what you filed at its rank (README there).
 
 ## Orientation
 
