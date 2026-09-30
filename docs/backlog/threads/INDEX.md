@@ -109,3 +109,31 @@ Waits:
 - plugin-split Do-next 1 is now gr457894 itself; td457903 (the castor
   restart) was withdrawn 2026-09-30 — the ImportError was a stale session
   MCP, gr458061's shape, not prod. Nothing here waits on Reto.
+
+## Not covered by any programme
+
+Recorded 2026-09-30 so the gaps are visible on the map rather than discovered
+one gripe at a time. Each needs an owner decided, not work done.
+
+- **ingest / fetch pipeline** — 6 gripes, no thread. `knowledge` owns the layer
+  that consumes this pipeline, not the pipeline. Two are silent-corruption bugs
+  (gr228652, gr228699 — μ/Greek destroyed at extraction, open since ~08-21),
+  which is the worst shape in a research corpus: nothing fails, the corpus is
+  quietly wrong, and embeddings/findings/cites inherit it. Ids and the
+  owner-decision options in `backlog/gripe-clusters-with-no-owning-thread.md`.
+- **job lifecycle / unpark** — 5 gripes, no thread. Nearest to `platform`, but
+  the nursery/job substrate is in no thread's Do-next. They compound:
+  gr456240 latches leaves for infra reasons, gr454792 means nobody can unlatch
+  them, gr452203 buries the evidence. Same file.
+- **fleet capacity is unmeasured** — gr458727. All 20 nursery detectors answer
+  "is work stuck?"; none answers "is capacity used?". Idle GPUs beside an empty
+  queue are invisible and indistinguishable from a healthy fleet, which is the
+  one state Reto's local-compute goal is about. Not ranked in
+  `monitors-that-go-quiet`: that thread owns signals that lie, and this is a
+  signal that does not exist. Wants an owner with the serving/quest tiering in
+  view.
+- **the local gate and the ship gate run different Pythons** — gr458726. The
+  ship gate is 3.13-only; `scripts/test`'s container is 3.12. A full green
+  `/go` is therefore not evidence about the version main is gated on, and cost
+  a red main on 2026-09-30. Affects every thread that ships, which is why it is
+  here rather than in one of them.
