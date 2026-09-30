@@ -96,6 +96,7 @@ from precis_se.chain.pairing import (
     PARALLEL,
     Pairing,
     derive_pairing,
+    watson_crick,
 )
 from precis_se.chain.vocab import (
     HELIX_ROLE,
@@ -732,11 +733,37 @@ def _geometry_findings(
 ) -> None:
     for key in sorted(pairing.offsets):
         occ = pairing.offsets[key]
-        if occ.geometry is None or occ.status != PAIRED:
+        if occ.status != PAIRED:
             continue
         a, b = occ.occupants[0].letter, occ.occupants[1].letter
         if not a or not b:
             continue  # unsequenced or 'N' — unverifiable, not wrong
+        if occ.geometry is None:
+            # No declared family: the duplex is Watson–Crick or it is wrong.
+            # A G·T wobble is NOT accepted here — it belongs to a declared
+            # W-W-cis; an undeclared duplex claims strict complementarity.
+            if watson_crick(occ) is False:
+                who = " vs ".join(
+                    f"{o.strand}#{o.ord} {o.letter}" for o in occ.occupants
+                )
+                geom = geoms.get(occ.helix)
+                wobble = "G·U" if geom is not None and geom.nucleic == "RNA" else "G·T"
+                findings.append(
+                    ValidationIssue(
+                        rule="chain_pairing_mismatch",
+                        subject=f"{occ.helix}[{occ.offset}]",
+                        detail=(
+                            f"{a}·{b} is not a Watson–Crick pair ({who}) — the "
+                            "two domains co-occupy this offset, so the design "
+                            "claims a base pair the letters cannot form: "
+                            "change one sequence, or declare the geometry "
+                            f"(a {wobble} wobble is a W-W-cis, not an "
+                            "undeclared duplex)"
+                        ),
+                        severity="error",
+                    )
+                )
+            continue
         if nucleic.pair_allowed(occ.geometry, a, b):
             continue
         family = nucleic.canonical_geometry(occ.geometry) or occ.geometry

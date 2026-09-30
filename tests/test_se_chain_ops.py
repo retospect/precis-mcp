@@ -734,6 +734,41 @@ def test_chain_view_reports_the_derived_occupancy(handler: SeHandler) -> None:
     # pairs and no single-stranded span.
     assert "4 paired offset(s)" in body
     assert "every occupied offset is paired" in body
+    # The letters are read, not just counted: GGGG pairs CCCC (the fixture
+    # declares WC, so this is the curated table's verdict).
+    assert "letters: 4 complementary" in body
+    assert "· 0 MISMATCHED · 0 unverifiable" in body
+
+
+def test_chain_view_counts_mismatched_and_unverifiable_letters(
+    handler: SeHandler,
+) -> None:
+    # GGGA against CCCC with NO declared geometry: the last stem offset
+    # pairs A with C — a mismatch under strict Watson–Crick — and a strand
+    # with no sequence at all is unverifiable, not wrong.
+    ops = [
+        op | {"sequence": "GGGAAAAACCCC"}
+        if op.get("op") == "declare_strand"
+        else {k: v for k, v in op.items() if k != "geometry"}
+        for op in _hairpin_ops()
+    ]
+    handler.put(id="hairpin", text=json.dumps({"ops": ops}))
+    body = handler.get(id="hairpin", view="chain").body
+    assert "letters: 3 complementary" in body
+    assert "· 1 MISMATCHED · 0 unverifiable" in body
+    drc = handler.get(id="hairpin", view="drc").body
+    assert "chain_pairing_mismatch" in drc
+    assert "A·C is not a Watson–Crick pair" in drc
+    blank = [
+        {k: v for k, v in op.items() if k != "sequence"}
+        if op.get("op") == "declare_strand"
+        else op
+        for op in _hairpin_ops()
+    ]
+    handler.put(id="blank", text=json.dumps({"ops": blank}))
+    body = handler.get(id="blank", view="chain").body
+    assert "letters: 0 complementary" in body
+    assert "· 0 MISMATCHED · 4 unverifiable" in body
     # The strand row names its route and its loop.
     assert "stem[0:4]" in body
     assert "4 nt" in body

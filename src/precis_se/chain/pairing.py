@@ -231,16 +231,23 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
     return out
 
 
-def watson_crick(occ: OffsetOccupancy, nucleic_name: str = "DNA") -> bool | None:
+def watson_crick(occ: OffsetOccupancy) -> bool | None:
     """Do a paired offset's two letters complement each other?
 
     ``None`` when either letter is missing (unsequenced, or an ``N``) —
     unverifiable, which is different from wrong and is reported as such.
+
+    Both letters go through :func:`precis_se.chain.nucleic.canonical_base`
+    (T folded onto U) before the comparison, so a DNA strand's ``T``
+    against an RNA strand's ``A`` is the complement it is: a strand's
+    alphabet is its own, and a hybrid duplex pairs across alphabets.
     """
     if occ.status != PAIRED:
         return None
     a, b = occ.occupants[0].letter, occ.occupants[1].letter
     if not a or not b:
         return None
-    table = nucleic.COMPLEMENT_RNA if nucleic_name == "RNA" else nucleic.COMPLEMENT_DNA
-    return table.get(a.upper()) == b.upper()
+    base_a, base_b = nucleic.canonical_base(a), nucleic.canonical_base(b)
+    if base_a is None or base_b is None:
+        return None  # 'N' (or any non-base) is a deliberate don't-know
+    return nucleic.COMPLEMENT_RNA.get(base_a) == base_b

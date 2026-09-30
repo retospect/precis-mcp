@@ -272,6 +272,15 @@ geometrically Watson–Crick-edge cis; only the base combination differs),
 `hoogsteen` → `W-H-cis`, `reverse-hoogsteen` → `W-H-trans`, `sugar` →
 `W-S-cis`, `mismatch` → `W-W-trans`.
 
+An **undeclared** duplex claims strict Watson–Crick complementarity:
+`chain_pairing_mismatch` (error) fires on any co-occupied offset whose two
+letters don't complement (A·G, G·T, …) — a G·T wobble is a declared
+`W-W-cis`, never an undeclared pair. `view='chain'`'s derived-pairing
+section tallies every pair's letters (`N complementary · M MISMATCHED ·
+K unverifiable` — strict Watson–Crick for an undeclared pair, the curated
+table for a declared family), so "do these base pairs in fact match" is a
+read, not a look at the render.
+
 `chain_pairing_geometry` (error) fires when a paired offset's two letters
 aren't in the declared family's **curated** occupancy table (Leontis &
 Westhof 2001 + the 2002 isostericity matrices — the frequent occupants,
@@ -284,8 +293,10 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
   retuned per lattice), unit count, turns, lattice site, segment tiling,
   occupancy tally. Every **strand**: total nt (domains + loops), sequence
   length (or `(none)`), its domain route, its loops. Then the **derived
-  pairing** summary: paired/single/conflict counts and every contiguous
-  single-stranded run with its nt count and contour.
+  pairing** summary: paired/single/conflict counts, the letters tally
+  (complementary / MISMATCHED / unverifiable — each pair judged as
+  `chain_pairing_mismatch`/`chain_pairing_geometry` would), and every
+  contiguous single-stranded run with its nt count and contour.
 - `view='topology'` gains a "## domains" table (`strand · ord · helix ·
   offsets · dir · loop_before · geometry`) for every `add_domain` row —
   pairing and geometry checks live in `view='chain'`, not here.
@@ -305,6 +316,7 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 | `chain_floppy` | info | a single-stranded span (or loop) past ssDNA's persistence length — the coded 2 nm, or the design's own `material` `persistence_length` row when it has one | one row per span either way: the handler-side pass **replaces** the coded rows rather than adding to them, and names the row's conditions |
 | `chain_dangling_domain` | **error** | a domain names a gone/wrong-role block, an offset past the helix's `n_units`, or a route whose `ord`s have a hole/repeat | `declare_strand`/`declare_helix` it, extend the helix, or `remove_domain` the row |
 | `chain_occupancy` | **error** | two parallel occupants, or 3+, at one offset | reverse a domain's `forward`, or move it |
+| `chain_pairing_mismatch` | **error** | an offset with no declared geometry is co-occupied by two letters that aren't Watson–Crick complements (A·G, G·T, …; `N`/unsequenced never flags) | change one sequence, or declare the geometry (a wobble is a `W-W-cis`) |
 | `chain_pairing_geometry` | **error** | declared family doesn't accommodate the two paired letters (per the curated table) | change the bases, or the declared geometry |
 | `chain_pairing_disagree` | **error** | two domains at one offset declare *different* families (`geometry`/`overrides`) — the first-declaring one still wins for every check, this just says the second said something else | `set_domain` an `overrides[offset]` naming the winner, or align both declarations |
 | `chain_malformed` | **error** | a stored `chain` record doesn't fit the schema at all (hand-corrupted) | defence in depth — never crashes the read path, but the record needs fixing |

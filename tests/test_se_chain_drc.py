@@ -707,6 +707,7 @@ def _one_offset_tree(
     geometry: str | None = None,
     geometries: list[str | None] | None = None,
     nucleic_name: str = "DNA",
+    strand_nucleic: str | None = None,
 ) -> SeTree:
     """``n_strands`` strands all occupying offset 0 of one helix.
 
@@ -730,7 +731,11 @@ def _one_offset_tree(
     for i in range(n_strands):
         name = f"s{i}"
         ops.append({"op": "add_block", "name": name})
-        declare: dict[str, Any] = {"op": "declare_strand", "block": name}
+        declare: dict[str, Any] = {
+            "op": "declare_strand",
+            "block": name,
+            "nucleic": strand_nucleic or nucleic_name,
+        }
         if sequences is not None:
             declare["sequence"] = sequences[i]
         ops.append(declare)
@@ -790,6 +795,60 @@ def test_declared_geometry_over_bases_that_cannot_pair_that_way() -> None:
     # An unsequenced design is unverifiable, not wrong.
     blank = _one_offset_tree(2, geometry="W-H-trans")
     assert "chain_pairing_geometry" not in _rules(blank)
+
+
+def test_undeclared_duplex_over_non_complementary_letters_is_a_mismatch() -> None:
+    # No geometry declared: the co-occupancy claims a Watson–Crick pair the
+    # letters cannot form. This is the check behind "do these base pairs in
+    # fact match" — before it, a render was the only evidence.
+    tree = _one_offset_tree(2, sequences=["A", "G"])
+    fired = _by_rule(tree, "chain_pairing_mismatch")
+    assert len(fired) == 1
+    assert fired[0].severity == "error"
+    assert fired[0].subject == "h[0]"
+    assert "A·G is not a Watson–Crick pair" in fired[0].detail
+    assert "s0#0 A vs s1#0 G" in fired[0].detail
+    # A complementary pair is clean; so is an unsequenced one (unverifiable,
+    # not wrong); so is a G·T wobble ONCE it is declared W-W-cis — the
+    # undeclared duplex is strict, the declared family is the curated table.
+    assert "chain_pairing_mismatch" not in _rules(
+        _one_offset_tree(2, sequences=["A", "T"])
+    )
+    assert "chain_pairing_mismatch" not in _rules(_one_offset_tree(2))
+    assert "chain_pairing_mismatch" not in _rules(
+        _one_offset_tree(2, sequences=["G", "N"])
+    )
+    wobble = _one_offset_tree(2, sequences=["G", "T"])
+    assert "chain_pairing_mismatch" in _rules(wobble)
+    declared = _one_offset_tree(2, sequences=["G", "T"], geometry="W-W-cis")
+    assert "chain_pairing_mismatch" not in _rules(declared)
+    assert "chain_pairing_geometry" not in _rules(declared)
+    # An RNA helix reads A·U as complementary (a T is refused at declare
+    # time, so the RNA mismatch here is A·G).
+    assert "chain_pairing_mismatch" not in _rules(
+        _one_offset_tree(2, sequences=["A", "U"], nucleic_name="RNA")
+    )
+    assert "chain_pairing_mismatch" in _rules(
+        _one_offset_tree(2, sequences=["A", "G"], nucleic_name="RNA")
+    )
+    # A hybrid duplex pairs across alphabets: DNA strands' T against an
+    # RNA helix's A is the complement it is (the letters fold T→U before
+    # the comparison), and U-bearing RNA strands on a DNA helix likewise.
+    assert "chain_pairing_mismatch" not in _rules(
+        _one_offset_tree(
+            2, sequences=["T", "A"], nucleic_name="RNA", strand_nucleic="DNA"
+        )
+    )
+    assert "chain_pairing_mismatch" not in _rules(
+        _one_offset_tree(
+            2, sequences=["U", "A"], nucleic_name="DNA", strand_nucleic="RNA"
+        )
+    )
+    rna = _by_rule(
+        _one_offset_tree(2, sequences=["A", "G"], nucleic_name="RNA"),
+        "chain_pairing_mismatch",
+    )
+    assert "G·U wobble" in rna[0].detail
 
 
 def test_pairing_geometry_message_uses_dna_lettering_on_a_dna_helix() -> None:

@@ -67,6 +67,15 @@ se-chain-wrap-around-part to Do next)
 ## No action needed
 
 - **td458169** — done 2026-09-30; results in the todo's text.
+- **base-pair complementarity is a read, not a look** — Reto on
+  dogfood-nucleic-3 (2026-09-30): "I am not sure if basepairs in fact
+  match"; the product could not answer (`pairing.watson_crick` had no
+  caller, drc judged only *declared* families, view='chain' counted paired
+  offsets without reading letters). Fixed in the commit that added this
+  line: `chain_pairing_mismatch` (error) on an undeclared pair whose
+  letters aren't Watson–Crick complements, and view='chain' tallies every
+  pair's letters (complementary / MISMATCHED / unverifiable). Verified on
+  prod's dogfood-nucleic-3 by hand first (all 21 pairs, 2.9 Å N1–N3).
 - **gr458472** — filed 2026-09-30 from that re-dogfood: a `put(kind='se',
   ops=[…])` call lost its ops (put's schema has no `ops=`) and wiped the
   design; recovered by replaying design_revisions by hand. The refusal half

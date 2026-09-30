@@ -142,6 +142,7 @@ from precis_se.chain.pairing import (
     SINGLE,
     derive_pairing,
     strand_length_nt,
+    watson_crick,
 )
 from precis_se.chain.vocab import (
     HELIX_ROLE,
@@ -3057,6 +3058,7 @@ def _render_chain(tree: SeTree) -> str:
     pairing = derive_pairing(tree)
     tables = group_domains(list(tree.domains))
     helix_rows: list[dict[str, Any]] = []
+    geoms: dict[str, Any] = {}
     for name in sorted(tree.blocks):
         node = tree.blocks[name]
         if chain_role(node) != HELIX_ROLE:
@@ -3076,6 +3078,7 @@ def _render_chain(tree: SeTree) -> str:
                 }
             )
             continue
+        geoms[name] = geom
         per = se_chain_layout.units_per_segment(geom)
         stored = sorted(
             (
@@ -3171,6 +3174,37 @@ def _render_chain(tree: SeTree) -> str:
             f"{len(pairing.pairs)} paired offset(s) · {len(pairing.singles)} "
             f"single-stranded in {len(runs)} run(s) · {len(pairing.conflicts)} "
             "conflict(s)"
+        )
+        # The letters, read: an agent (or Reto in the viewer) asking "do
+        # these base pairs in fact match" gets a number, not a render. An
+        # undeclared pair is judged strict Watson–Crick, a declared one by
+        # its family's curated table — the same two verdicts the drc's
+        # chain_pairing_mismatch / chain_pairing_geometry rows carry.
+        tally = {"complementary": 0, "mismatched": 0, "unverifiable": 0}
+        for occ in pairing.pairs:
+            a, b = occ.occupants[0].letter, occ.occupants[1].letter
+            verdict: bool | None
+            if occ.geometry is None:
+                verdict = watson_crick(occ)
+            elif (
+                not a
+                or not b
+                or se_nucleic.canonical_base(a) is None
+                or se_nucleic.canonical_base(b) is None
+            ):
+                verdict = None
+            else:
+                verdict = se_nucleic.pair_allowed(occ.geometry, a, b)
+            if verdict is None:
+                tally["unverifiable"] += 1
+            elif verdict:
+                tally["complementary"] += 1
+            else:
+                tally["mismatched"] += 1
+        lines.append(
+            f"letters: {tally['complementary']} complementary (Watson–Crick, or "
+            f"the declared family's table) · {tally['mismatched']} MISMATCHED · "
+            f"{tally['unverifiable']} unverifiable (unsequenced or N)"
         )
         lines.append("")
         lines.append(
