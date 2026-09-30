@@ -2,11 +2,13 @@
 
 **Status:** ends when a reader can click any block of an se design and
 read its pose, envelope, ports, findings and load path in one panel, and
-the same scene yields publishable figures and the feasibility/cost answer
-(backlog/se-feasibility-and-cost.md). Today the affordances work and are
-verified by canvas pixel-diff at the deployed sha; the list is about making
-that verification repeatable by someone other than the author, then the
-deferred features. No live corruption. The viewer renders precis_se atomic
+the same scene yields publishable figures. It FEEDS
+backlog/se-feasibility-and-cost.md and does not own it — INDEX.md records
+that as the far end all three se threads serve. Today the affordances work
+and are verified by canvas pixel-diff at the deployed sha, but against local
+fixtures, never prod's own designs (gr457931, td458066); the list is about
+making that verification repeatable by someone other than the author, then
+the deferred features. No live corruption. The viewer renders precis_se atomic
 output, so hexfold's gr457995 shows here as a wrong picture; that is the
 hexfold-toolkit thread's item.
 **Last reviewed:** 2026-09-30
@@ -52,8 +54,10 @@ cut from the bottom.
 1. **backlog/se-pick-hierarchy.md** — click anything, get every level it
    belongs to. Keystone: three parked and two Do-next items have nowhere to
    render until a block can be selected and addressed. Unblocked today
-   (id/name unification shipped); shared with se-nucleic-chain, whose
-   residue/base-pair instance is the same surface.
+   (id/name unification shipped). Seam with se-nucleic-chain (its Do-next
+   4): this thread owns the selection mechanism, that one owns the
+   residue/base-pair instance — build the mechanism generic or the second
+   instance forces a rewrite.
 2. **backlog/se-3d-viewer-ux-batch.md**, selection inspector + per-block
    findings + honesty banner — waits on 1; the first panel where a block's
    pose, envelope, ports, connects and findings read at once; unparks three
