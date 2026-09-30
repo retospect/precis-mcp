@@ -806,7 +806,7 @@ _CHROMOPHORE_KEYS = frozenset(
     {"label", "dipole", "quantum_yield", "lifetime_s", "emission", "absorption"}
 )
 _OPTICAL_LINK_KEYS = frozenset({"min_efficiency", "channel", "reason"})
-_OPTICS_KEYS = frozenset({"medium_index", "excitation_nm"})
+_OPTICS_KEYS = frozenset({"medium_index", "excitation_nm", "channels_available"})
 
 
 def _strays(raw: dict[str, Any], allowed: frozenset[str], what: str) -> None:
@@ -974,6 +974,9 @@ def validate_optics(raw: Any) -> dict[str, Any]:
     *space* a design sits in, not about any one pair: every R0 in the
     design divides by the same ``n⁴`` under the sixth root, and every
     spectral-crosstalk figure is quoted at the same pump wavelength.
+    ``channels_available`` (optional, a positive integer) is the spectral
+    channel budget the ``chain_channel_budget`` DRC checks a design's
+    light/reaction transitions against (:mod:`precis_se.chain.spectral`).
     Per-link overrides are a later slice; a design whose blocks genuinely
     sit in different media should say so explicitly then, rather than have
     the view guess now.
@@ -985,4 +988,14 @@ def validate_optics(raw: Any) -> dict[str, Any]:
     out: dict[str, Any] = {"medium_index": _positive(raw, "medium_index", what)}
     if raw.get("excitation_nm") is not None:
         out["excitation_nm"] = _positive(raw, "excitation_nm", what)
+    if raw.get("channels_available") is not None:
+        # The spectral channel budget (precis_se.chain.spectral): how many
+        # switches this design's light sources can address independently.
+        n = raw["channels_available"]
+        if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+            raise FretError(
+                f"{what}: 'channels_available' must be a positive integer (the "
+                f"number of independently addressable optical channels), got {n!r}"
+            )
+        out["channels_available"] = int(n)
     return out

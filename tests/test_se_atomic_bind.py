@@ -181,7 +181,10 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     ``material`` row. ``fold_layout`` (same item) is the fourth and the
     first that is intercepted for an **optional dependency** rather than
     for the store: it is store-free, and handler-level because ViennaRNA
-    ships in the ``[chain]`` extra and the fold is O(n³)."""
+    ships in the ``[chain]`` extra and the fold is O(n³). ``make_steps``
+    (se-walker-light-protocol, :mod:`precis_se.chain.protocol`) is
+    store-read (transitions) AND writes another kind (a ``make`` tree),
+    never deferred."""
     assert set(HANDLER_LEVEL_OPS) == {
         "bind_structure",
         "unbind_structure",
@@ -191,6 +194,7 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
         "relax_chain",
         "fold_layout",
         "realize_chain",
+        "make_steps",
     }
     assert set(HANDLER_LEVEL_OPS).isdisjoint(known_ops())
     assert set(HANDLER_LEVEL_OPS) <= all_op_names()

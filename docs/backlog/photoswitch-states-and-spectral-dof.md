@@ -125,8 +125,12 @@ stock-termination DRC. A design wanting eight independently-addressed
 switches at room temperature should be told it is over budget, with the
 number quoted, rather than discovering it in the lab.
 
-→ Built as `chain.channel_budget` / `chain.spectral_crosstalk` in
-`docs/backlog/se-walker-light-protocol.md`.
+→ LANDED 2026-09-30 as `chain_channel_budget` / `chain_spectral_crosstalk`
+(`src/precis_se/chain/spectral.py`; budget authored by
+`set_optics(channels_available=N)`, bands from `material` rows
+`lambda_max`/`fwhm`, else assumed at the pump with a 40 nm FWHM; skill
+`precis-se-walker-help` §spectral). The walker item that built it is
+deleted, delete-on-ship.
 
 ## Photo-charge coupling
 

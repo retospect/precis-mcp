@@ -191,3 +191,20 @@ part of the first draft survives.
 Resolved, not open: whether `geometry` should gate on mean or spread.
 `_geometry_findings` is already per-bond and `geom.summary` carries
 `bond_max` (`check.py:282`) — gate on max under `STRICT`.
+
+## Chains: the physics tier is oxDNA (added 2026-09-30)
+
+For the nucleic-acid chain domain the tiers map as: `topology`/`valence` =
+`chain/drc.py`'s pure rules (register, loop reach, dangling domains),
+`geometry` = the block-scale settle `relax_chain` plus `envelope_fit` on
+realized atoms, and **`physics` has no rung at all** — nothing checks that
+`relax_chain`'s rigid-segment + spring settle agrees with a coarse-grained
+model. `view='export'` already writes oxDNA topology/configuration
+(`chain/export.py`); running oxDNA as a *rented* relax rung (the same
+posture as `ff`/`xtb`/`ml` in `precis/structure/relax.py`: optional binary,
+`Unsupported` when absent) and comparing its settled segment poses against
+the block-scale ones would be the first honesty check the chain settle has.
+Deliverable: a `chain_physics_disagree` finding naming the segments whose
+oxDNA pose departs from the settle by more than a stated tolerance. Waits
+on the loop-chaining fix (gr457928) so the exported atoms are a continuous
+backbone, and on the oxDNA binary in the image.

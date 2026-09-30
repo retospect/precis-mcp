@@ -38,7 +38,21 @@ from precis_se.chain.vocab import (
     chain_role,
 )
 
-__all__ = ["apply_occupancy", "parse_target", "vet_occupancy"]
+__all__ = [
+    "GUARD_BOUND",
+    "GUARD_FREE",
+    "apply_occupancy",
+    "effective_target",
+    "guard_violations",
+    "parse_target",
+    "vet_guard",
+    "vet_occupancy",
+]
+
+#: The two predicate words a transition's ``params.guard`` accepts
+#: besides an explicit ``<helix>@<offset>`` target.
+GUARD_BOUND = "bound"
+GUARD_FREE = "free"
 
 
 def parse_target(raw: Any, *, what: str) -> tuple[str, int]:
@@ -121,6 +135,80 @@ def vet_occupancy(
                 f"domain at {helix}@{offset}, past the helix's {units} units"
             )
         out[key_s] = f"{helix}@{offset}"
+    return out
+
+
+def vet_guard(tree: Any, raw: Any, *, what: str) -> dict[str, str]:
+    """Vet a transition's ratchet guard — ``{'<strand>.<ord>': 'bound' |
+    'free' | '<helix>@<offset>'}``, a predicate over the FROM state's
+    occupancy (se-walker-light-protocol: a leg may only lift while the
+    other is bound). Same key vocabulary as :func:`vet_occupancy`; a
+    target names an existing helix. Returns the normalised map."""
+    if not isinstance(raw, dict) or not raw:
+        raise ChainError(
+            f"{what}: 'guard' must be a non-empty JSON object of "
+            "{'<strand>.<ord>': 'bound' | 'free' | '<helix>@<offset>'}"
+        )
+    domains = _domain_by_key(list(getattr(tree, "domains", []) or []))
+    out: dict[str, str] = {}
+    for key, want in raw.items():
+        key_s = str(key).strip()
+        if key_s not in domains:
+            raise ChainError(
+                f"{what}: guard key {key_s!r} names no domain row — keys are "
+                f"'<strand>.<ord>' over declared strands "
+                f"({', '.join(sorted(domains)) or 'none declared'})"
+            )
+        if isinstance(want, str) and want.strip().lower() in (GUARD_BOUND, GUARD_FREE):
+            out[key_s] = want.strip().lower()
+            continue
+        helix, offset = parse_target(want, what=what)
+        node = tree.blocks.get(helix)
+        if node is None or chain_role(node) != HELIX_ROLE:
+            raise ChainError(
+                f"{what}: guard for {key_s!r} names helix {helix!r}, which "
+                f"{'does not exist' if node is None else 'is not a helix'}"
+            )
+        out[key_s] = f"{helix}@{offset}"
+    return out
+
+
+def effective_target(
+    domain: DomainSpec, occupancy: dict[str, str | None] | None
+) -> str | None:
+    """Where a domain row sits in a state: the state's own entry when it
+    names the row (``None`` = free), else the authored row's
+    ``<helix>@<start>``."""
+    key = f"{domain.strand}.{domain.ord}"
+    if occupancy and key in occupancy:
+        return occupancy[key]
+    return f"{domain.helix}@{domain.start}"
+
+
+def guard_violations(
+    guard: dict[str, str],
+    occupancy: dict[str, str | None] | None,
+    domains: list[DomainSpec],
+) -> list[str]:
+    """Every guard entry the state's occupancy fails, as readable
+    clauses (``'lb.0 is f1@4, guard wants free'``); empty = the guard
+    holds."""
+    by_key = _domain_by_key(domains)
+    out: list[str] = []
+    for key, want in guard.items():
+        domain = by_key.get(key)
+        if domain is None:
+            out.append(f"{key}: no such domain row")
+            continue
+        actual = effective_target(domain, occupancy)
+        if want == GUARD_BOUND:
+            ok = actual is not None
+        elif want == GUARD_FREE:
+            ok = actual is None
+        else:
+            ok = actual == want
+        if not ok:
+            out.append(f"{key} is {actual or 'free'}, guard wants {want}")
     return out
 
 

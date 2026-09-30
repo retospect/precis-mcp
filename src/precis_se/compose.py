@@ -103,10 +103,21 @@ LENGTH_KEY = "unit_length"
 PSS_KEY = "pss_short_fraction"
 HALF_LIFE_KEY = "thermal_half_life"
 LP_KEY = "persistence_length"
+#: A switch's absorption band, for the spectral channel budget
+#: (:mod:`precis_se.chain.spectral`): peak wavelength and full width at
+#: half maximum, both lengths (nm by default).
+LAMBDA_MAX_KEY = "lambda_max"
+FWHM_KEY = "fwhm"
 
 #: Display units when the registry holds no canonical unit for a key (a
 #: freshly minted proposed-tier property declared without ``unit=``).
-_DEFAULT_UNITS = {DELTA_KEY: "Å", LENGTH_KEY: "nm", LP_KEY: "nm"}
+_DEFAULT_UNITS = {
+    DELTA_KEY: "Å",
+    LENGTH_KEY: "nm",
+    LP_KEY: "nm",
+    LAMBDA_MAX_KEY: "nm",
+    FWHM_KEY: "nm",
+}
 
 _DEFAULT_N_MAX = 6
 _DEFAULT_M_MAX = 4

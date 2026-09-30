@@ -2406,9 +2406,10 @@ def _op_set_optical_link(tree: SeTree, op: dict[str, Any]) -> None:
 
 
 def _op_set_optics(tree: SeTree, op: dict[str, Any]) -> None:
-    """Declare the design's optical context — ``medium_index`` (required)
-    and ``excitation_nm`` (optional pump wavelength). ``clear=true``
-    removes it.
+    """Declare the design's optical context — ``medium_index`` (required),
+    ``excitation_nm`` (optional pump wavelength) and ``channels_available``
+    (optional: the spectral channel budget, :mod:`precis_se.chain.spectral`).
+    ``clear=true`` removes it.
 
     Design-level, because both are facts about the space rather than about
     a block. Undeclared is a legitimate state: the ``fret`` view then
@@ -2698,7 +2699,12 @@ def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
     'to_state', 'driver_kind', 'driver_ref'?, 'params'?, 'requires'?},
     ...]`` (``[]`` clears them). Directed: a ratchet's forward and reverse
     edges are two separate entries here, never collapsed into one
-    unordered pair — declare both when both exist. ``driver_kind`` is the
+    unordered pair — declare both when both exist. ``params.guard`` =
+    ``{'<strand>.<ord>': 'bound' | 'free' | '<helix>@<offset>'}`` is the
+    ratchet guard over the FROM state's occupancy
+    (:func:`precis_se.chain.occupancy.vet_guard`; ``view='drc'`` reports
+    a from-state that violates it as ``chain_transition_guard``).
+    ``driver_kind`` is the
     closed enum (:func:`~precis.design.states.validate_driver_kind`); a
     self-edge (``from_state == to_state``) is rejected outright, the same
     as the shared table's own CHECK constraint. ``requires`` is the
@@ -2752,6 +2758,22 @@ def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
                 f"declare_transitions: transition {from_state!r} -> "
                 f"{to_state!r} 'params' must be a JSON object, got {params!r}"
             )
+        if params and params.get("guard") is not None:
+            # The ratchet guard (se-walker-light-protocol): vetted here
+            # like a state's occupancy, evaluated handler-side against
+            # the from-state as ``chain_transition_guard``.
+            try:
+                guard = chain_occupancy.vet_guard(
+                    tree,
+                    params["guard"],
+                    what=(
+                        f"declare_transitions {from_state!r} -> {to_state!r} "
+                        "params.guard"
+                    ),
+                )
+            except ChainError as exc:
+                raise OpError(str(exc)) from exc
+            params = {**params, "guard": guard}
         try:
             requires = parse_requires(
                 entry.get("requires") or {}, opname="declare_transitions"

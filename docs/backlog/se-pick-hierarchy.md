@@ -81,3 +81,21 @@ atoms and no envelope but must be citable the same way.
 - Whether the atom pick uses 3dmol picking merged into the block viewer
   or a hexfold-emitted atom mesh in three-cad-viewer — decide when the
   `hexfold` generator has landed and the first bound structure renders.
+
+## Chain-design instance (added 2026-09-30, from a prod dogfood)
+
+Reto, looking at `/structure/dogfood-fold-3-hp.h0.s0`: "I would like to see
+what basepair these are part of ... and get some hierarchy". For a chain
+design the levels under the segment block are helix → offset (the base
+pair, id `<helix>@<offset>`) → strand.domain → residue → atom, and every
+one of them is already derivable: `RegionAtoms.residues` carries
+`(chain, resseq, strand, ord, offset, letter)` per residue but
+`precis_se/atomic/generate.py` drops it from the structure's
+`meta['chain_atoms']` (only names/resnames/resseq/chain_ids survive), so
+persisting that list is the one data change; pairing is `derive_pairing`
+over the tree. The se page (`/se/<slug>`) already draws the bound
+structure's atoms inside the block tree (`routes/blocktree_view.py::
+_atomic_block_payload`) with no residue index and no atom pick — gap 1
+above. Token grammar addition for a base pair: `<se:UID@h0:3>`. The action
+a pick would offer (unpair this offset) is the op proposed in
+`se-chain-insertions-deletions.md`.

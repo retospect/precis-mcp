@@ -32,7 +32,7 @@ Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md`
 
 Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
-  chain Do-next 4 are the same surface; the viewer owns the selection
+  chain Do-next 5 are the same surface; the viewer owns the selection
   mechanism, the chain thread owns the residue/base-pair instance.
 - precis_se atomic output — a composite corrupted by a stale process
   (gr458061; gr457995 refuted, there is no join-side bug) renders in the

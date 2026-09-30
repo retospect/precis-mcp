@@ -8,6 +8,12 @@ whichever stub the station puts them on. ``declare_stations`` writes the
 hand-over-hand states; ``relax_chain(state=)`` settles the body per
 station and stores its pose; every read then poses the walker from the
 stored slot without re-running the settle.
+
+Slice B (the tail of this file): the ratchet guard on a transition
+(``params.guard`` → ``chain_transition_guard``), the spectral channel
+budget (``chain_channel_budget`` / ``chain_spectral_crosstalk``, the
+photoswitch item's DRC) and ``make_steps``, the transitions as an ordered
+``make`` tree.
 """
 
 from __future__ import annotations
@@ -24,9 +30,13 @@ import precis_se
 from precis.design import states as design_states
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.make import MakeHandler
+from precis.handlers.material import MaterialHandler
 from precis.store import Store
+from precis_se import compose as se_compose
 from precis_se import persist
 from precis_se.chain import nucleic
+from precis_se.chain import spectral as chain_spectral
 from precis_se.handler import SeHandler
 from precis_se.ops import OpError, SeTree, apply_ops
 
@@ -439,3 +449,341 @@ def test_a_short_tether_fails_only_the_far_station_as_chain_loop_short(
     sweep = handler.get(id="short", view="sweep").body
     assert "1 failing combination(s)" in sweep
     assert "w=st1" in sweep and "tether" in sweep
+
+
+# ── slice B: the ratchet guard ──────────────────────────────────────────
+
+
+def _edges(block: str, edges: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"op": "declare_transitions", "block": block, "transitions": edges}
+
+
+def _light(from_state: str, to_state: str, ref: str, **params: Any) -> dict[str, Any]:
+    return {
+        "from_state": from_state,
+        "to_state": to_state,
+        "driver_kind": "light",
+        "driver_ref": ref,
+        "params": params,
+    }
+
+
+def test_a_guard_is_vetted_like_an_occupancy() -> None:
+    tree = SeTree()
+    apply_ops(tree, _walker_ops())
+
+    def declare(guard: Any) -> list[dict[str, Any]]:
+        return [_edges("w", [_light("st0", "st1", "405nm", guard=guard)])]
+
+    with pytest.raises(OpError, match="names no domain row"):
+        apply_ops(tree, declare({"lx.0": "bound"}))
+    with pytest.raises(OpError, match="occupancy target"):
+        apply_ops(tree, declare({"lb.0": "sometimes"}))
+    with pytest.raises(OpError, match="does not exist"):
+        apply_ops(tree, declare({"lb.0": "f9@4"}))
+    with pytest.raises(OpError, match="non-empty JSON object"):
+        apply_ops(tree, declare([]))
+    apply_ops(tree, declare({"lb.0": "Bound", "la.0": "f0@4"}))
+    pending = tree.blocks["w"].pending_transitions
+    assert pending is not None
+    assert pending[0]["params"]["guard"] == {"lb.0": "bound", "la.0": "f0@4"}
+
+
+def test_a_violated_ratchet_guard_is_a_drc_error(handler: SeHandler) -> None:
+    # st0 binds la.0 → f0@4 and lb.0 → f1@4; st1 binds la.0 → f1@4, lb.0 → f2@4.
+    ops = _walker_ops() + [
+        _edges(
+            "w",
+            [
+                # violated: lb.0 is bound at st0
+                _light("st0", "st1", "405nm", guard={"lb.0": "free"}),
+                # holds: la.0 IS at f1@4 in st1
+                _light("st1", "st0", "365nm", guard={"la.0": "f1@4"}),
+            ],
+        )
+    ]
+    _put(handler, "guard", ops)
+    body = handler.get(id="guard", view="drc").body
+    assert body.count("chain_transition_guard") == 1, body
+    assert "w st0→st1" in body
+    assert "lb.0 is f1@4, guard wants free" in body
+
+    # A guard that holds everywhere leaves the drc quiet on the rule.
+    _put(
+        handler,
+        "guard-ok",
+        _walker_ops()
+        + [_edges("w", [_light("st0", "st1", "405nm", guard={"lb.0": "bound"})])],
+    )
+    assert "chain_transition_guard" not in handler.get(id="guard-ok", view="drc").body
+
+
+# ── slice B: the spectral channel budget ────────────────────────────────
+
+
+def _switch(name: str, refs: tuple[str, str]) -> list[dict[str, Any]]:
+    """A plain two-state block driven by two light channels."""
+    return [
+        {"op": "add_block", "name": name, "envelope": "box:w1e-9d1e-9h1e-9"},
+        {
+            "op": "declare_states",
+            "block": name,
+            "states": [{"name": "a"}, {"name": "b"}],
+        },
+        _edges(name, [_light("a", "b", refs[0]), _light("b", "a", refs[1])]),
+    ]
+
+
+def test_wavelength_parsing_and_the_gaussian_crosstalk() -> None:
+    parse = chain_spectral.parse_wavelength_nm
+    assert parse("405nm") == pytest.approx(405.0)
+    assert parse("405 nm") == pytest.approx(405.0)
+    assert parse("0.405 um") == pytest.approx(405.0)
+    assert parse("405") == pytest.approx(405.0)
+    assert parse("blue LED") is None
+    assert parse(None) is None
+    band = chain_spectral.Band(centre_nm=470.0, fwhm_nm=40.0, source="test")
+    assert chain_spectral.crosstalk(470.0, band) == pytest.approx(1.0)
+    assert chain_spectral.crosstalk(450.0, band) == pytest.approx(0.5, abs=1e-6)
+    assert chain_spectral.crosstalk(370.0, band) < 1e-6
+
+
+def test_the_channel_budget_is_design_wide_and_crosstalk_names_the_pair(
+    handler: SeHandler,
+) -> None:
+    # The walker spends 405nm + 365nm; two more switches spend four: six
+    # channels against a budget of four. 450 vs 470 at the coded 40 nm FWHM
+    # is 50 % direct excitation; the walker's own 365 vs 405 is 6 %.
+    ops = (
+        _walker_ops()
+        + [{"op": "set_optics", "medium_index": 1.33, "channels_available": 4}]
+        + _switch("sw1", ("450nm", "470nm"))
+        + _switch("sw2", ("500nm", "520nm"))
+    )
+    _put(handler, "budget", ops)
+    body = handler.get(id="budget", view="drc").body
+    assert "chain_channel_budget" in body
+    assert "6 independently addressed channel(s)" in body
+    assert "> 4 available" in body
+    assert "chain_spectral_crosstalk" in body
+    assert "450nm ↔ 470nm" in body
+    assert "50% of its own peak" in body
+    assert "centre ASSUMED at the pump" in body
+    assert "365nm ↔ 405nm" not in body
+
+    # No authored budget → no budget row; the crosstalk pair stands.
+    _put(handler, "nobudget", _walker_ops() + _switch("sw1", ("450nm", "470nm")))
+    quiet = handler.get(id="nobudget", view="drc").body
+    assert "chain_channel_budget" not in quiet
+    assert "450nm ↔ 470nm" in quiet
+
+    with pytest.raises(BadInput, match="channels_available"):
+        _put(
+            handler,
+            "badbudget",
+            _walker_ops()
+            + [{"op": "set_optics", "medium_index": 1.33, "channels_available": 0}],
+        )
+
+
+def test_a_material_band_replaces_the_assumed_one(
+    handler: SeHandler, store: Store, hub: Hub
+) -> None:
+    _put(handler, "band", _walker_ops() + _switch("sw1", ("450nm", "470nm")))
+    material = MaterialHandler(hub=hub)
+    material.put(id="mat-band", title="mat-band")
+    material.put(id="mat-band", property=se_compose.FWHM_KEY, value=10, unit="nm")
+    material.put(
+        id="mat-band", property=se_compose.LAMBDA_MAX_KEY, value=455, unit="nm"
+    )
+    design_ref = store.get_ref(kind="se", id="band")
+    mat_ref = store.get_ref(kind="material", id="mat-band")
+    assert design_ref is not None and mat_ref is not None
+    store.add_link(
+        src_ref_id=design_ref.id,
+        dst_ref_id=mat_ref.id,
+        relation="made-of",
+        meta={"block": "sw1"},
+    )
+    tree = persist.load_tree(store, design_ref.id)
+    tree.own_slug = "band"  # load_tree leaves it unset; the handler sets it
+    band_of = chain_spectral.band_resolver(store, tree)
+    used = {
+        c.label: c
+        for c in chain_spectral.channels(
+            {
+                "sw1": design_states.transitions_for(
+                    store, design_ref.id, tree.blocks["sw1"].uid or 0
+                )
+            }
+        )
+    }
+    band = band_of(used["450nm"])
+    assert band.fwhm_nm == pytest.approx(10.0)
+    assert band.centre_nm == pytest.approx(455.0)
+    assert "from a material row" in band.source
+    # The band is the BLOCK's (one lambda_max/fwhm per block), so both of
+    # sw1's channels read it: the finding now quotes the material figures
+    # instead of the assumption.
+    rows = chain_spectral.findings(
+        list(used.values()), channels_available=None, band_of=band_of
+    )
+    assert [r.rule for r in rows] == ["chain_spectral_crosstalk"]
+    assert "FWHM 10 nm from a material row" in rows[0].detail
+    assert "ASSUMED" not in rows[0].detail
+    # The walker's own channels have no material row and say so.
+    w_uid = tree.blocks["w"].uid or 0
+    walker = chain_spectral.channels(
+        {"w": design_states.transitions_for(store, design_ref.id, w_uid)}
+    )
+    assert "ASSUMED" in band_of(walker[0]).source
+
+
+# ── slice B: make_steps ─────────────────────────────────────────────────
+
+
+def test_make_steps_writes_an_ordered_make_tree_linked_to_the_design(
+    handler: SeHandler, store: Store, hub: Hub
+) -> None:
+    with pytest.raises(BadInput, match="SAVED design"):
+        _put(handler, "fresh", _walker_ops() + [{"op": "make_steps", "block": "w"}])
+    # A switch: a → b → c by light, c → a thermally (untaken from a: a is
+    # already visited; taken from b, where it is the way onward).
+    ops = _walker_ops() + [
+        {"op": "add_block", "name": "sw", "envelope": "box:w1e-9d1e-9h1e-9"},
+        {
+            "op": "declare_states",
+            "block": "sw",
+            "states": [
+                {"name": "a"},
+                {"name": "b", "descr": "half open"},
+                {"name": "c"},
+                {"name": "d"},  # no edge leaves it
+            ],
+        },
+        _edges(
+            "sw",
+            [
+                _light("a", "b", "450nm", duration_s=30),
+                _light("b", "c", "470nm"),
+                {"from_state": "c", "to_state": "a", "driver_kind": "thermal"},
+            ],
+        ),
+    ]
+    _put(handler, "proto", ops)
+    echo = handler.edit(id="proto", ops=[{"op": "make_steps", "block": "sw"}]).body
+    assert "make:proto-sw-protocol" in echo
+    assert "a → b → c" in echo
+    body = MakeHandler(hub=hub).get(id="proto-sw-protocol").body
+    assert "2 steps" in body
+    first = body.index("step 1: illuminate at 450nm")
+    second = body.index("step 2: illuminate at 470nm")
+    assert first < second
+    assert "half open" in body
+    assert "wavelength_nm" in body and "450.0" in body and "duration_s" in body
+    assert "station=b" in body and "station=c" in body
+    assert "makes:" in body  # the design's made-by edge
+    make_ref = store.get_ref(kind="make", id="proto-sw-protocol")
+    assert make_ref is not None
+    incoming = store.links_for(make_ref.id, direction="in", relation="made-by")
+    design_ref = store.get_ref(kind="se", id="proto")
+    assert design_ref is not None
+    assert [lk.src_ref_id for lk in incoming] == [design_ref.id]
+
+    # Re-running would duplicate the steps: refused, a fresh slug works.
+    with pytest.raises(BadInput, match="already exists"):
+        handler.edit(id="proto", ops=[{"op": "make_steps", "block": "sw"}])
+    again = handler.edit(
+        id="proto",
+        ops=[{"op": "make_steps", "block": "sw", "start": "b", "make": "p2"}],
+    ).body
+    assert "2 step(s)" in again and "b → c → a" in again
+    assert "step 2: thermal" in MakeHandler(hub=hub).get(id="p2").body
+    with pytest.raises(BadInput, match="no transition leaves"):
+        handler.edit(
+            id="proto",
+            ops=[{"op": "make_steps", "block": "sw", "start": "d", "make": "p3"}],
+        )
+    # The walker's own stations: one forward step, the reverse edge untaken.
+    walker = handler.edit(id="proto", ops=[{"op": "make_steps", "block": "w"}]).body
+    assert "1 step(s)" in walker and "st0 → st1" in walker
+
+
+# ── slice C: view='stations' ────────────────────────────────────────────
+
+
+def _distances(body: str) -> dict[str, str]:
+    """``{state: 'to target' cell}`` off the stations table — the one
+    length-with-unit cell in a row."""
+    out: dict[str, str] = {}
+    for line in body.splitlines():
+        m = re.match(r"\s*(st\d)\b", line)
+        if not m:
+            continue
+        cell = re.search(r"(\d+(?:\.\d+)? [a-zµ]*m)\b", line)
+        out[m.group(1)] = cell.group(1) if cell else "—"
+    return out
+
+
+def test_view_stations_reports_the_cursor_per_settled_station(
+    handler: SeHandler, store: Store
+) -> None:
+    ops = _walker_ops() + [
+        # A cursor on the body's top face pointing up, and a feedstock site
+        # above the far foothold pointing down at the track.
+        {
+            "op": "add_port",
+            "block": "w",
+            "name": "cursor",
+            "pose": [0.0, 0.0, 0.5e-9],
+            "direction": [0.0, 0.0, 1.0],
+        },
+        {
+            "op": "add_block",
+            "name": "site",
+            "envelope": "box:w1e-9d1e-9h1e-9",
+            "pose": [12.0e-9, 0.0, 12.0e-9],
+        },
+        {
+            "op": "add_port",
+            "block": "site",
+            "name": "s",
+            "pose": [0.0, 0.0, -0.5e-9],
+            "direction": [0.0, 0.0, -1.0],
+        },
+    ]
+    _put(handler, "stn", ops)
+    args: dict[str, Any] = {"walker": "w", "target": "site.s"}
+    before = handler.get(id="stn", view="stations", args=args).body
+    assert before.count("UNRELAXED") >= 2, before
+    assert "2 station(s) UNRELAXED" in before
+    assert _distances(before) == {"st0": "—", "st1": "—"}
+
+    for st in ("st0", "st1"):
+        handler.edit(id="stn", ops=[{"op": "relax_chain", "state": {"w": st}}])
+    after = handler.get(id="stn", view="stations", args=args).body
+    assert "\tUNRELAXED" not in after  # the header sentence still names it
+    assert "cursor w.cursor" in after and "target site.s" in after
+    dist = _distances(after)
+    assert set(dist) == {"st0", "st1"} and "—" not in dist.values()
+    assert dist["st0"] != dist["st1"]  # the cursor moved with the walker
+    # Cursor up, site port down: head-on at st0 (the authored pose); the
+    # settle at st1 rolls the body, so the approach opens — but stays a
+    # number, one per station.
+    angles = re.findall(r"\t(\d+)°", after)
+    assert len(angles) == 2 and angles[0] == "0", after
+    assert 0 <= int(angles[1]) < 90
+
+    # No cursor named and none called 'cursor' → walker geometry only.
+    _put(handler, "bare", _walker_ops())
+    bare = handler.get(id="bare", view="stations", args={"walker": "w"}).body
+    assert "walker xyz" in bare and "cursor" not in bare.splitlines()[0]
+
+    with pytest.raises(BadInput, match="requires args"):
+        handler.get(id="stn", view="stations")
+    with pytest.raises(BadInput, match="no port 'nose'"):
+        handler.get(id="stn", view="stations", args={"walker": "w", "cursor": "nose"})
+    with pytest.raises(BadInput, match="'<block>.<port>'"):
+        handler.get(id="stn", view="stations", args={"walker": "w", "target": "site"})
+    with pytest.raises(BadInput, match="no declared states"):
+        handler.get(id="stn", view="stations", args={"walker": "site"})

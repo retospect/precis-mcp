@@ -158,7 +158,7 @@ _DOMAIN_COLS = "subject_name, subject_uid, object_name, object_uid, meta"
 #: ``se_optics`` (migration 0010) is the one tree-level scalar record —
 #: everything else here is a list keyed by name/pair, so it gets its own
 #: short column tuple rather than folding into one of the above.
-_OPTICS_COLS = "medium_index, excitation_nm"
+_OPTICS_COLS = "medium_index, excitation_nm, channels_available"
 
 
 def _label(uid_to_name: dict[int, str], uid: int | None, stored: str | None) -> Any:
@@ -456,6 +456,11 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             **(
                 {"excitation_nm": optics_row["excitation_nm"]}
                 if optics_row["excitation_nm"] is not None
+                else {}
+            ),
+            **(
+                {"channels_available": int(optics_row["channels_available"])}
+                if optics_row["channels_available"] is not None
                 else {}
             ),
         }
@@ -1167,12 +1172,14 @@ def save_tree(
         # the retire pass above to ever have to find again.
         if tree.optics is not None:
             c.execute(
-                "INSERT INTO se_optics (ref_id, medium_index, excitation_nm) "
-                "VALUES (%s,%s,%s)",
+                "INSERT INTO se_optics "
+                "(ref_id, medium_index, excitation_nm, channels_available) "
+                "VALUES (%s,%s,%s,%s)",
                 (
                     ref_id,
                     tree.optics["medium_index"],
                     tree.optics.get("excitation_nm"),
+                    tree.optics.get("channels_available"),
                 ),
             )
         store.chunks.upsert_card_combined(ref_id, card_text, conn=c)

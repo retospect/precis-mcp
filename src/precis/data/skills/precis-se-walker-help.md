@@ -137,13 +137,78 @@ else the block's default) — with half a nucleotide of slack over the raw
 `(n+1)·c` reach, since a station settle's spring is one-sided and stops
 exactly at reach.
 
-## Not here yet
+## The ratchet guard — `params.guard` on a transition
 
-Later slices of the same item: a transition's `params.guard` (a ratchet
-predicate over the *from* state's occupancy), the spectral channel-budget
-DRC (`chain_spectral_crosstalk`/`chain_channel_budget`), `make_steps`
-(turning declared transitions into a `make` protocol), and
-`view='stations'` (cursor-site-vs-track geometry).
+A transition's `params.guard` is a predicate over the **from** state's
+occupancy: `{'<strand>.<ord>': 'bound' | 'free' | '<helix>@<offset>'}`
+(`'bound'` = the domain sits on some helix, `'free'` = it is lifted, a
+target = it sits exactly there). Same key vocabulary as a state's
+`occupancy`, vetted at `declare_transitions` the same way (an unknown
+domain row or helix is refused). A domain the from-state does not name
+reads as its authored row (`<helix>@<start>`). `view='drc'` reports every
+transition whose from-state violates its guard as **`chain_transition_guard`**
+(error, subject `<block> <from>→<to>`, the failing clauses quoted, e.g.
+`lb.0 is f1@4, guard wants free`): the transition cannot fire from there,
+so fix the guard or the state. `declare_stations` writes no guards; add
+them with a following `declare_transitions` on the walker (it replaces the
+block's transitions, so restate the station edges).
+
+## The spectral channel budget
+
+Light-driven state machines spend **channels**: one per distinct
+`(driver_kind, driver_ref)` among a design's `light` and `reaction`
+transitions, counted design-wide (`405nm` is one channel however many
+blocks it drives; a `rxn:` step is a channel because it is a separately
+dispensed reagent; thermal/redox/pH/mechanical edges spend nothing).
+Declare the budget on the design: `set_optics(medium_index=1.33,
+channels_available=4)` (`medium_index` is `set_optics`'s required key).
+`view='drc'` then reports:
+
+- **`chain_channel_budget`** (error) — more channels used than
+  `channels_available`, both numbers quoted. No budget authored → no row:
+  the budget is a declared constraint, never assumed.
+- **`chain_spectral_crosstalk`** (warn) — pumping one light channel excites
+  another's band above 10 % of that band's own peak (subject
+  `450nm ↔ 470nm`, the fraction and the offending pump named). A band is
+  a Gaussian: centre from the driving block's `material` row `lambda_max`,
+  width from its `fwhm` row (nm), else **assumed** centred at the pump with
+  a coded 40 nm FWHM — the detail says which. Put the rows on a material
+  the design is `made-of` (link `meta.block` scopes it to the switch's
+  block) to narrow the assumption. One band per block, not per state.
+
+## `make_steps` — the transitions as a `make` tree
+
+`{'op': 'make_steps', 'block': 'w', 'start'?: 'st0', 'make'?: '<slug>'}`
+(an `edit` on a SAVED design) walks the block's stored transitions from
+`start` (default: its current state, else `st0`, else the first declared
+edge's from-state), taking at each state the first declared edge to a
+state not yet visited — hand-over-hand stations give `st0 → st1 → st2`,
+the reverse edges untaken. One `make` step per edge, in order, with
+`meta = {illuminate: {wavelength_nm, duration_s?}, station, from_state,
+driver_kind, rxn?, design, block}` (`duration_s` only when the transition's
+`params.duration_s` authored it — never guessed), the tree linked
+`made-by` from the design. The slug defaults to `<design>-<block>-protocol`
+and an existing tree is refused (re-running would duplicate its steps):
+delete it or pass `make=`. Read it with `get(kind='make', id=...)`.
+
+## `view='stations'` — the cursor per station
+
+`get(kind='se', id=..., view='stations', args={'walker': 'w',
+'cursor'?: '<port on w>', 'target'?: '<block>.<port>'})` — one row per
+declared state of the walker, posed from the state's **stored** pose
+(the same posing `args={'state': ...}` does): the walker's world
+position, the cursor port's world position (`cursor` defaults to a port
+named `cursor`; omit both and only the walker column shows), and against
+a target port the straight-line distance plus the **approach** angle
+(0° = the cursor's direction points straight into the target port's
+direction). The intended target is a `realize_chain` `sites` port
+(`f1.n5_c5m` / `_maj` / `_min` — the feedstock site the cursor must
+reach), but any posed port works. A station declared but never settled
+is an `UNRELAXED` row with no geometry — nothing is invented from the
+default pose — and the footer names the `relax_chain(state=)` that
+settles it. Surface gaps (cursor vs a foothold's tube) are
+`view='clearance'` with `args={'a': 'w', 'b': '<foothold>', 'state':
+{'w': 'st1'}}`, not repeated here.
 
 ## See also
 

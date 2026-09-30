@@ -33,6 +33,7 @@ from precis_se.atomic.generate import (
 from precis_se.atomic.join import PendingJoin, finish_join, prepare_join
 from precis_se.atomic.vocab import check_dof_axis_ports
 from precis_se.chain.fold import op_fold_layout
+from precis_se.chain.protocol import op_make_steps
 from precis_se.chain.relax import op_relax_chain
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
@@ -80,6 +81,10 @@ HANDLER_LEVEL_OPS = (
     # store-write-deferred like ``generate`` (it mints a ``structure`` and
     # binds the segment child), and store-read for the slug preflight.
     "realize_chain",
+    # A state machine's transitions as an ordered ``make`` tree
+    # (:mod:`precis_se.chain.protocol`): store-read (transitions) and a
+    # write to another kind, never deferred.
+    "make_steps",
 )
 
 
@@ -215,6 +220,9 @@ def apply_ops_with_atomic(
                 echoes.append(op_relax_chain(store, tree, op, state=resolved))
             except OpError as exc:
                 raise BadInput(str(exc)) from exc
+            continue
+        if name == "make_steps":
+            echoes.append(op_make_steps(store, tree, op, design_slug))
             continue
         if name == "fold_layout":
             # Store-free, but handler-level: it needs the optional ``[chain]``

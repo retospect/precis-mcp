@@ -217,7 +217,7 @@ class SeHandler(Handler):
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|"
             "'ports'|'topology'|'chain'|'measures'|'datums'|'validate'|"
-            "'clearance'|'sweep'|"
+            "'clearance'|'sweep'|'stations'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
@@ -417,6 +417,7 @@ class SeHandler(Handler):
             "validate",
             "clearance",
             "sweep",
+            "stations",
             "drc",
             "bom",
             "fasten",
@@ -831,6 +832,8 @@ class SeHandler(Handler):
             return Response(body=_render_clearance(tree, args))
         if v == "sweep":
             return Response(body=_render_sweep(self.store, ref.id, tree))
+        if v == "stations":
+            return Response(body=_render_stations(self.store, ref.id, tree, args))
         if v == "drc":
             body = _render_drc(
                 tree, self.store, ref.id, _scenario_line(self.store, ref.id)
@@ -883,7 +886,9 @@ class SeHandler(Handler):
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
             "CONNECTS digest) | view='sweep' (does anything collide in ANY "
             "declared state? — the cross product of every state-carrying "
-            "block's declared states, budget-bounded) | view='drc' "
+            "block's declared states, budget-bounded) | view='stations' "
+            "(args={'walker':...,'cursor'?:...,'target'?:'<block>.<port>'}: "
+            "the walker's cursor per settled station) | view='drc' "
             "(graph tier + DOF "
             "probe) | view='kinematics' (derived axis/angle/arm/tip for "
             "every declared transition's ports — port_pose_overrides, "
@@ -4661,6 +4666,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "validate": frozenset(),
     "clearance": frozenset({"a", "b", "state"}),
     "sweep": frozenset(),
+    "stations": frozenset({"walker", "cursor", "target"}),
     "drc": frozenset({"state"}),
     "kinematics": frozenset(),
     "bom": frozenset(),
@@ -5131,6 +5137,164 @@ def _render_clearance_digest(tree: SeTree) -> str:
     if notes:
         body += "\n\n" + "\n".join(notes)
     return body
+
+
+# ── view='stations' — the walker's cursor per station ───────────────────
+# (se-walker-light-protocol slice C)
+
+
+def _render_stations(
+    store: Any, ref_id: int, tree: SeTree, args: dict[str, Any] | None
+) -> str:
+    """``view='stations'`` — ``args={'walker': <block>, 'cursor'?: <port>,
+    'target'?: '<block>.<port>'}``: one row per declared state of the
+    walker, posed from the state's STORED pose exactly as
+    ``args={'state': ...}`` would pose it (:func:`_apply_state_arg` over
+    the same snapshot/restore the sweep uses), reporting the walker's world
+    position, its cursor port's world position and, against a target
+    port, the straight-line distance and the approach angle (0° = the
+    cursor's direction points straight into the target port's; a
+    ``realize_chain`` ``sites`` port such as ``f1.n5_c5m`` is the intended
+    target — the feedstock site the cursor must reach). A station whose
+    occupancy is declared but never settled has no stored pose and gets an
+    ``UNRELAXED`` row with no geometry rather than the walker's default
+    pose dressed up as a station. Surface gaps are ``view='clearance'``'s
+    (``args={'a': <walker>, 'b': <foothold>, 'state': {...}}``), not
+    repeated here."""
+    args = args or {}
+    walker = str(args.get("walker") or "").strip()
+    if not walker:
+        raise BadInput(
+            "get(kind='se', view='stations') requires args={'walker': <block>, "
+            "'cursor'?: '<port on the walker>', 'target'?: '<block>.<port>'}"
+        )
+    node = tree.blocks.get(walker)
+    if node is None:
+        raise NotFound(_block_not_found(tree, walker))
+    if node.uid is None:
+        raise BadInput(f"view='stations': block {walker!r} is not saved yet")
+    states = design_states.states_for(store, ref_id, node.uid)
+    if not states:
+        raise BadInput(
+            f"view='stations': block {walker!r} has no declared states — "
+            "declare_stations (or declare_states with occupancy) first"
+        )
+    cursor_arg = args.get("cursor")
+    cursor = (
+        str(cursor_arg).strip()
+        if cursor_arg
+        else ("cursor" if "cursor" in node.ports else None)
+    )
+    if cursor is not None and cursor not in node.ports:
+        raise BadInput(
+            f"view='stations': {walker!r} has no port {cursor!r} — its ports: "
+            f"{', '.join(sorted(node.ports)) or 'none'}"
+        )
+    target_arg = args.get("target")
+    target: tuple[str, str] | None = None
+    if target_arg:
+        text = str(target_arg).strip()
+        if "." not in text:
+            raise BadInput(
+                f"view='stations': target {text!r} must be '<block>.<port>' (a "
+                "realize_chain sites port such as 'f1.n5_c5m', or any posed port)"
+            )
+        t_block, t_port = text.rsplit(".", 1)
+        t_node = tree.blocks.get(t_block)
+        if t_node is None:
+            raise NotFound(_block_not_found(tree, t_block))
+        if t_port not in t_node.ports:
+            raise BadInput(
+                f"view='stations': {t_block!r} has no port {t_port!r} — its ports: "
+                f"{', '.join(sorted(t_node.ports)) or 'none'}"
+            )
+        if t_node.ports[t_port].pose is None:
+            raise BadInput(
+                f"view='stations': target port {text!r} has no pose — a distance "
+                "needs a point (set_port_pose, or a realize_chain sites port)"
+            )
+        target = (t_block, t_port)
+
+    def world_point(
+        block: SeBlock, port_name: str
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        port = block.ports[port_name]
+        rot = np.asarray(cad_rotation(*(float(v) for v in block.rot)).R, dtype=float)
+        origin = np.asarray(block.pose, dtype=float).reshape(3)
+        local = np.asarray(
+            port.pose if port.pose is not None else (0.0, 0.0, 0.0), dtype=float
+        )
+        direction = (
+            rot @ np.asarray(port.direction, dtype=float).reshape(3)
+            if port.direction is not None
+            else None
+        )
+        return origin + rot @ local.reshape(3), direction
+
+    schema = ["state", "pose", "walker xyz"]
+    if cursor is not None:
+        schema.append("cursor xyz")
+    if target is not None:
+        schema += ["to target", "approach"]
+    rows: list[dict[str, str]] = []
+    originals = _snapshot_sweep_domain(tree, [walker])
+    try:
+        for state in states:
+            _restore_sweep_domain(tree, originals)
+            row: dict[str, str] = {"state": state.name}
+            if state.pose is None and state.occupancy:
+                row["pose"] = "UNRELAXED"
+                for key in schema[2:]:
+                    row[key] = "—"
+                rows.append(row)
+                continue
+            row["pose"] = "stored" if state.pose is not None else "default"
+            _apply_state_arg(tree, {walker: state})
+            posed = tree.blocks[walker]
+            row["walker xyz"] = f"[{_fmt3([float(v) for v in posed.pose])}] m"
+            point = np.asarray(posed.pose, dtype=float).reshape(3)
+            heading: np.ndarray | None = None
+            if cursor is not None:
+                point, heading = world_point(posed, cursor)
+                row["cursor xyz"] = f"[{_fmt3([float(v) for v in point])}] m"
+            if target is not None:
+                t_point, t_dir = world_point(tree.blocks[target[0]], target[1])
+                row["to target"] = format_quantity(
+                    float(np.linalg.norm(t_point - point)), "length"
+                )
+                if heading is not None and t_dir is not None:
+                    h = heading / (np.linalg.norm(heading) or 1.0)
+                    d = t_dir / (np.linalg.norm(t_dir) or 1.0)
+                    cos = float(np.clip(np.dot(h, -d), -1.0, 1.0))
+                    row["approach"] = f"{math.degrees(math.acos(cos)):.0f}°"
+                else:
+                    row["approach"] = "— (no direction on cursor or target)"
+            rows.append(row)
+    finally:
+        _restore_sweep_domain(tree, originals)
+
+    what = f"walker {walker!r}"
+    if cursor is not None:
+        what += f", cursor {walker}.{cursor}"
+    if target is not None:
+        what += f", target {target[0]}.{target[1]}"
+    lines = [
+        f"# stations — {what}",
+        "(each row is posed from the state's STORED pose, the one "
+        "relax_chain(state=) settled; UNRELAXED = occupancy declared, never "
+        "settled — no geometry is invented for it)",
+        "",
+        render_agent_table(rows, schema=schema),
+    ]
+    n_unrelaxed = sum(1 for r in rows if r["pose"] == "UNRELAXED")
+    if n_unrelaxed:
+        lines.append("")
+        lines.append(
+            f"{n_unrelaxed} station(s) UNRELAXED — edit(kind='se', id=..., "
+            f"ops=[{{'op':'relax_chain','state':{{'{walker}':'<state>'}}}}]) "
+            "settles one"
+        )
+    return "\n".join(lines)
 
 
 # ── sweep ────────────────────────────────────────────────────────────────

@@ -25,3 +25,20 @@ named twist; the same sheet with one deletion per 48 bp comes back flat
 (accumulated twist under tolerance), and the deletions change the
 register-correct crossover offsets in the direction the corrected phase
 predicts — recomputed from the returned frames, not asserted as a constant.
+
+## Per-offset unpair / nick / mismatch (added 2026-09-30, from a prod dogfood)
+
+Same family as the insertions/deletions above: an edit whose unit is ONE
+helix offset, not a domain. Today the smallest authoring unit is the domain
+row (`add_domain`, and the walker item's occupancy frees a whole domain);
+nothing can say "offset 3 of `hp.h0` is unpaired" (a mismatch in a hairpin
+stem, a nick, a frayed end), and the base-pair pick the se viewer will
+offer (`se-pick-hierarchy.md`, chain-design instance) has no op to call.
+Proposed shape, for Reto to rule on: an occupancy-grammar value on the
+strand — `declare_strand(..., unpaired=['hp.h0@3'])` — or a per-domain
+`overrides` entry (the row already carries a per-offset Leontis–Westhof
+`overrides` map, so `'3': {'pair': null}` would keep the domain count
+scadnano's). Consumers: `derive_pairing` (the offset becomes single-
+stranded), `realize_chain` (no partner template), `chain_loop_short`
+unchanged. The base-pair id is `<helix>@<offset>`, the target grammar
+`chain/occupancy.py` already parses — no new id space.

@@ -192,7 +192,8 @@ _SE_OP_SIGNATURES: dict[str, str] = {
         "declare_stations{walker,legs:[strand…],footholds:['<helix>@<offset>'…],"
         "driver_kind?,forward_driver?,reverse_driver?}"
     ),
-    "declare_transitions": "declare_transitions{block,transitions:[{from_state,to_state,driver_kind,driver_ref?,params?}]}",
+    "declare_transitions": "declare_transitions{block,transitions:[{from_state,to_state,driver_kind,driver_ref?,params?:{guard?,duration_s?}}]}",
+    "make_steps": "make_steps{block,start?,make?}",
     "set_current_state": "set_current_state{block,state}",
 }
 
@@ -599,7 +600,7 @@ def dry_run_se(
                 # The pure half only (frames → atoms on the scratch tree);
                 # the mint + bind are the proposal's Apply.
                 prepare_realize_chain(store, scratch, op, design_slug)
-            elif name in ("relax_chain", "fold_layout"):
+            elif name in ("relax_chain", "fold_layout", "make_steps"):
                 # Deliberately NOT run here: neither may run in this
                 # pure dry-run, or the work happens twice (see
                 # :mod:`precis_se.chain`) — these are the two handler-level

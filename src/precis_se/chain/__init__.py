@@ -91,8 +91,27 @@ one more rigid body in the bundle and stores the result in the state's own
 pose slot (:func:`precis.design.states.set_state_pose`) rather than the
 tree's default pose; a read applies the stored pose then the occupancy
 (:func:`precis_se.handler._apply_state_arg`). ``declare_stations`` sugars
-the hand-over-hand gait into states + transitions in one call. Full agent
-docs: the ``precis-se-chain-help`` skill's "walker" section.
+the hand-over-hand gait into states + transitions in one call. Slice B
+(same day): a transition's ``params.guard`` is a predicate over the
+from-state's occupancy (:func:`precis_se.chain.occupancy.vet_guard`,
+reported as ``chain_transition_guard``); :mod:`precis_se.chain.spectral`
+is the spectral channel budget (``chain_channel_budget`` against
+``set_optics(channels_available=)``, ``chain_spectral_crosstalk`` between
+Gaussian bands from ``material`` ``lambda_max``/``fwhm`` rows); and
+:mod:`precis_se.chain.protocol` writes the transitions out as an ordered
+``make`` tree (``make_steps``). All three are handler-side
+(:mod:`precis_se.chain.findings`) because transitions live in the store.
+Slice C: ``view='stations'`` (:func:`precis_se.handler._render_stations`)
+poses the walker per stored station and reports its cursor port against
+a target port (distance + approach angle). The item
+(``se-walker-light-protocol``) is deleted on ship; its decisions log
+lives in ``git log`` and the deviations it records are restated where
+the code is: occupancy is applied to the tree's domain rows rather than
+threaded as a kwarg, a leg anchors through ``declare_strand`` (foot =
+first domain), station 0 already binds every leg, the walker alone
+moves in a station settle, the channel budget is
+``set_optics(channels_available=)``, bands are one Gaussian per block.
+Full agent docs: the ``precis-se-walker-help`` skill.
 
 **Provenance.** This domain shipped in two slices over 2026-09-27..29 and its
 ``docs/backlog/`` item is gone, delete-on-ship. What that item carried now
