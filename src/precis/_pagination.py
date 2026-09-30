@@ -517,9 +517,9 @@ class PaginationCache:
 
         Splitting is greedy: take the largest run of sections that
         fits the limit (with footer-space reserved), keep the rest
-        for the next page. Sections shorter than the limit go to
-        one page; a single section longer than the limit falls
-        through to a paragraph split, then a hard byte split.
+        for the next page. A section too large to fill a page of its
+        own falls through to a paragraph split, then a line split,
+        then a hard byte split — see :func:`_ladder_split`.
 
         ``alt_hint``, when given, is appended to the footer as a
         one-sentence pointer to a cheaper alternative to draining
@@ -757,6 +757,14 @@ class PaginationCache:
 
 _SECTION_DELIMITER = "\n## "
 _PARAGRAPH_DELIMITER = "\n\n"
+_LINE_DELIMITER = "\n"
+
+#: Split boundaries from coarsest to finest. A body is cut at the coarsest
+#: level that isn't *starved* (see :func:`_ladder_split`); the line level
+#: exists because a record-per-line payload — ``se``'s ``view='ops'``, any
+#: table, any log — has no paragraph structure at all, so without it such a
+#: body falls all the way to a mid-token byte cut (gr458393).
+_DELIMITER_LADDER = (_SECTION_DELIMITER, _PARAGRAPH_DELIMITER, _LINE_DELIMITER)
 #: Length (hex chars = bytes, ASCII) of the opaque ``uuid.uuid4().hex``
 #: cursor the reserve constants below assume. A re-derivable recipe
 #: cursor (:class:`RecipeSeed`) is almost always longer than this
@@ -818,12 +826,11 @@ def _greedy_split(
 ) -> tuple[str, str]:
     """Return ``(head, tail)`` such that head fits inside ``cap_bytes``.
 
-    Strategy:
-    1. Try ``\\n## `` (H2 section) boundaries first — preserves the
-       rendered hierarchy.
-    2. Fall back to paragraph boundaries (``\\n\\n``) when one
-       section alone exceeds the cap.
-    3. Last resort: hard-cut on a UTF-8 char boundary.
+    Cuts at the coarsest boundary in :data:`_DELIMITER_LADDER` that isn't
+    starved — H2 section, then paragraph, then line — and hard-cuts on a
+    UTF-8 char boundary only when no delimiter works at all. See
+    :func:`_ladder_split` for what "starved" means and why the choice is
+    made that way.
 
     ``cursor_len``, when given, is the *actual* byte length of the
     cursor that will be minted for this split (known ahead of time for
@@ -852,15 +859,61 @@ def _greedy_split(
         reserve += cursor_len - _DEFAULT_CURSOR_BYTES
     budget = max(cap_bytes - reserve, 1)
 
-    head, tail = _split_on_delimiter(body, _SECTION_DELIMITER, budget)
-    if head and tail:
+    return _ladder_split(body, budget)
+
+
+def _ladder_split(body: str, budget_bytes: int, level: int = 0) -> tuple[str, str]:
+    """Cut at the coarsest boundary in :data:`_DELIMITER_LADDER` that isn't
+    starved, descending a level at a time and hard-cutting only at the end.
+
+    A level is **starved** when the piece that would begin the next page is
+    itself larger than a whole budget. That piece can never fill a page on
+    its own, so the bytes this level left unused are not the price of
+    preserving structure — they are waste repeated on every page for as long
+    as the oversized piece lasts. Only then does this descend, and only for
+    the remainder: a level that is merely *full* keeps its clean boundary,
+    so an ordinary multi-section document still pages on whole sections.
+
+    gr458393 is what this replaces. The old dispatch returned at the first
+    level that produced any non-empty pair, and :func:`_split_on_delimiter`
+    only reports failure when the *first* piece is oversized — so a body
+    whose second section was too big returned a short head and never reached
+    the finer levels its own docstring promised. Measured on ``se``'s
+    ``view='ops'``: a 1.6 KB prose header and zero ops, byte-identical at
+    every cap from 4000 to 24576, because quadrupling a budget nothing could
+    consume changed nothing.
+
+    The starvation test is what makes this threshold-free — there is no
+    "materially underfull" fraction to tune, just a question with a
+    definite answer.
+    """
+    if level >= len(_DELIMITER_LADDER):
+        return _hard_split(body, budget_bytes)
+
+    delimiter = _DELIMITER_LADDER[level]
+    head, tail = _split_on_delimiter(body, delimiter, budget_bytes)
+    if not head:
+        # No boundary at this level fits (or none exists). ``tail`` is
+        # empty here by construction, so nothing is lost by descending.
+        return _ladder_split(body, budget_bytes, level + 1)
+    if not tail:
+        # Whole body fits after all — the caller's byte check was
+        # pessimistic about multi-byte UTF-8. Pass it straight up.
         return head, tail
 
-    head, tail = _split_on_delimiter(body, _PARAGRAPH_DELIMITER, budget)
-    if head and tail:
+    next_piece = tail.split(delimiter, 1)[0]
+    if len(next_piece.encode("utf-8")) <= budget_bytes:
         return head, tail
 
-    return _hard_split(body, budget)
+    # Starved. ``_split_on_delimiter`` consumed the delimiter's leading
+    # newline(s) as the page boundary; that is what has to be paid for out
+    # of the budget and put back between the two heads.
+    joiner = delimiter[: len(delimiter) - len(delimiter.lstrip("\n"))]
+    used = len(head.encode("utf-8")) + len(joiner.encode("utf-8"))
+    extra_head, extra_tail = _ladder_split(tail, budget_bytes - used, level + 1)
+    if not (extra_head and extra_tail):
+        return head, tail
+    return head + joiner + extra_head, extra_tail
 
 
 def _split_on_delimiter(
@@ -905,18 +958,14 @@ def _split_on_delimiter(
         return body, ""
 
     head_text = "".join(accepted_parts)
-    # The tail's first piece is ``parts[cursor]`` without the
-    # leading delimiter — we want the delimiter at the START of
-    # the tail so the next call re-finds the boundary.
+    # The tail carries the delimiter's non-newline part at its START, so a
+    # page opens cleanly (``## foo``, not ``\n## foo``) and the next call
+    # re-finds the boundary. Derived from ``delimiter``, never hardcoded: a
+    # ``"## "`` literal here fabricated an H2 heading on every split below
+    # the section level, which went unseen for as long as those levels were
+    # unreachable (gr458393).
     tail_pieces = [delimiter.lstrip("\n") + parts[cursor], *parts[cursor + 1 :]]
-    tail_text = delimiter.join(tail_pieces)
-    # Reinstate the leading newline so the tail starts with
-    # ``## `` cleanly rather than mid-newline.
-    if not tail_text.startswith("##"):
-        tail_text = "## " + parts[cursor]
-        if cursor + 1 < len(parts):
-            tail_text += delimiter + delimiter.join(parts[cursor + 1 :])
-    return head_text, tail_text
+    return head_text, delimiter.join(tail_pieces)
 
 
 def _hard_split(body: str, budget_bytes: int) -> tuple[str, str]:

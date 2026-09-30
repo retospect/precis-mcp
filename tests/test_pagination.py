@@ -1,6 +1,7 @@
 """Tests for the MCP-frame pagination cache + body chunking.
 
-Covers the boundary-respecting split (section → paragraph → hard),
+Covers the boundary-respecting split (section → paragraph → line →
+hard, descending only when a level is starved),
 the TTL pruning, cursor eviction under load, and the recursive
 cursor path when a tail is itself oversized.
 
@@ -17,10 +18,12 @@ from precis._pagination import (
     _ALT_HINT_RESERVE_BYTES,
     _FOOTER_RESERVE_BYTES,
     _KIND_FALLBACK_RESERVE_BYTES,
+    _PARAGRAPH_DELIMITER,
     _SHORT_LIVED_FOOTER_RESERVE_BYTES,
     DEFAULT_MAX_BODY_BYTES,
     PaginationCache,
     RecipeSeed,
+    _split_on_delimiter,
     decode_recipe_cursor,
     encode_recipe_cursor,
     hash_body,
@@ -137,6 +140,124 @@ class TestSectionSplit:
         # The tail must start with an H2 header so it stitches
         # cleanly with the previous chunk.
         assert tail.startswith("## ")
+
+
+# ── A starved level descends instead of wasting the page (gr458393) ──
+
+
+def _strip_footer(page: str) -> str:
+    """Drop the pagination footer a page carries, if any."""
+    return page.split("\n\n---\n\u26a0\ufe0f", 1)[0]
+
+
+def _drain(cache: PaginationCache, body: str) -> list[str]:
+    """Split ``body`` and follow every cursor, returning the bare pages."""
+    head, cursor = cache.split(body)
+    pages = [_strip_footer(head)]
+    while cursor is not None:
+        page = cache.pop(cursor)
+        assert page is not None
+        pages.append(_strip_footer(page))
+        cursor = None
+        marker = "more(cursor='"
+        if marker in page:
+            cursor = page.split(marker, 1)[1].split("'", 1)[0]
+    return pages
+
+
+def _line_payload_body(lines: int = 900) -> str:
+    """Prose header plus ONE H2 section of newline-separated records.
+
+    The shape ``se``'s ``view='ops'`` emits, and the one gr458393 was
+    measured on: no second section to break at, and no blank line inside
+    the payload for a paragraph split to find either.
+    """
+    header = "# design — ops export\n\n" + (
+        "prose line about what is not carried.\n" * 40
+    )
+    section = "\n## ops\n\n" + "".join(
+        f"add_block name='b{i}' size='10 mm'\n" for i in range(lines)
+    )
+    return header + section
+
+
+class TestStarvedLevelDescent:
+    @pytest.mark.parametrize("cap", [4000, 8000, 12000, 16000])
+    def test_line_payload_reaches_the_head(
+        self, monkeypatch: pytest.MonkeyPatch, cap: int
+    ) -> None:
+        """The regression. The oversized section is the SECOND one, so the
+        old dispatch returned a valid section-level pair and never reached a
+        finer level — emitting the header and zero records at every cap."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", str(cap))
+        head, cursor = PaginationCache().split(_line_payload_body())
+        assert cursor is not None
+        assert "add_block" in head, "head carried no payload at all"
+
+    def test_head_grows_with_the_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Raising the cap must buy content. It bought nothing before: the
+        head was byte-identical from 4000 to 24576."""
+        body = _line_payload_body()
+        sizes = []
+        for cap in (4000, 8000, 12000, 16000):
+            monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", str(cap))
+            head, _cursor = PaginationCache().split(body)
+            sizes.append(len(head.encode("utf-8")))
+        assert sizes == sorted(sizes) and len(set(sizes)) == len(sizes), sizes
+
+    def test_whole_sections_are_kept_when_the_next_one_fits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Descending is for starvation only. A section that fits a page of
+        its own must still get a clean H2 boundary — otherwise the fix
+        trades one defect for the loss of the hierarchy level 1 exists to
+        preserve."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", _ONE_SECTION_CAP)
+        cache = PaginationCache()
+        body = (
+            "# heading\n"
+            "intro paragraph\n"
+            "## section one\n" + ("a" * 260) + "\n"
+            "## section two\n" + ("b" * 260) + "\n"
+            "## section three\n" + ("c" * 260) + "\n"
+        )
+        _head, cursor = cache.split(body)
+        assert cursor is not None
+        tail = cache.pop(cursor)
+        assert tail is not None
+        assert tail.startswith("## ")
+
+    def test_no_fabricated_heading_below_the_section_level(self) -> None:
+        """``_split_on_delimiter`` rebuilt the tail with a hardcoded ``"## "``,
+        so every non-H2 split invented a heading. Latent only because those
+        levels were unreachable."""
+        head, tail = _split_on_delimiter(
+            "alpha para\n\nbeta para\n\ngamma para", _PARAGRAPH_DELIMITER, 12
+        )
+        assert head == "alpha para"
+        assert tail == "beta para\n\ngamma para"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            _line_payload_body(400),
+            "# h\n\n" + "\n\n".join(f"paragraph {i} " + "w " * 80 for i in range(60)),
+            "## one\n" + ("a" * 9000) + "\n## two\n" + ("b" * 300),
+            "nodelimiteranywhere" * 2000,
+        ],
+        ids=["line-records", "paragraphs", "oversized-first-section", "no-boundary"],
+    )
+    def test_pages_preserve_every_byte_of_content(
+        self, monkeypatch: pytest.MonkeyPatch, body: str
+    ) -> None:
+        """Nothing asserted this before, and it is the property the whole
+        scheme rests on: a drained chain is the body, not an approximation.
+        Newlines are excluded because a page boundary consumes the delimiter
+        newline(s) by design."""
+        monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "4000")
+        pages = _drain(PaginationCache(), body)
+        assert len(pages) > 1, "body should have paginated"
+        assert "".join(pages).replace("\n", "") == body.replace("\n", "")
 
 
 # ── The footer is loud enough to not be mistaken for a full result ──

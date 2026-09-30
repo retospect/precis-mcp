@@ -26,7 +26,7 @@ picture — suspect a stale server upstream before suspecting the data.
 gr458061 is another thread's item.
 **Last reviewed:** 2026-09-30 (gr457931 shipped; dogfooded on prod data;
 pillar review same day added three orphan gripes and the property-layer
-seam note; gr458393 adopted from local-compute, Do-next 4)
+seam note; gr458393 adopted from local-compute and SHIPPED same day)
 **Worktree:** `se-3d-viewer`
 
 ## Do next
@@ -53,40 +53,23 @@ seam note; gr458393 adopted from local-compute, Do-next 4)
    Next step is in the gripe: re-capture the phase-d tree dump at equal
    expansion, which decides between "renders identically for this design" and
    "the swap silently failed".
-4. **gr458393** — `_pagination._greedy_split` never falls back past the H2
-   level: when section 1 fits and section 2 is oversized it returns a valid
-   pair, so the paragraph and hard-split levels its own docstring promises
-   are unreachable. Measured — head and ops stay byte-identical at caps
-   4000/8000/12000/16000, so a one-shot `precis tools` read of `view='ops'`
-   loses everything after the prose header and the short-lived footer's
-   "raise PRECIS_MAX_BODY_BYTES" advice is false for that shape. NOT a
-   viewer defect: it is core runtime (`src/precis/_pagination.py`), adopted
-   here because this thread found it while dogfooding and no thread owns
-   that file. Ranked above the setState item because it is cheap, contained
-   to one module plus its tests, and it corrupts the lane that carries prod
-   data into the harness 1 and 3 depend on. A second, latent defect must be
-   fixed in the same change: `_split_on_delimiter` reconstructs the tail
-   with a hardcoded `"## "`, so it fabricates a heading for any non-H2
-   delimiter — invisible today only because level 2 is unreachable.
-   `view='pockets'` (`backlog/se-region-property-layer.md`) is the same
-   one-big-section shape and will hit it.
-5. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+4. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
    Waits on 3, which may already be an instance of it.
-6. **td458168** — Reto decision: the level-chip `—` rule and the worked
+5. **td458168** — Reto decision: the level-chip `—` rule and the worked
    example in the same ruling disagree at a leaf, and the mockup is
    inconsistent about which rung of an identical run keeps its letter.
    Blocks the chips below it; a wrong guess means re-emitting a per-block
    field of scene3d.json.
-7. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
+6. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
    server-side: scene3d.json must carry, per block, which rungs differ.
-   Waits on 6 only for the rule; everything else is specified.
-8. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+   Waits on 5 only for the rule; everything else is specified.
+7. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-9. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+8. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–5 in the file. Independent validator pass and the largest
    piece of work, hence last.
 
