@@ -75,7 +75,7 @@ Seams:
 - `backlog/curation-gate.md` — both park on it; owned by serving.
 
 Waits:
-- nanobuds Horizon 5 (approve/sign pass) sits in Reto's nanopub queue
+- nanobuds Horizon 4 (approve/sign pass) sits in Reto's nanopub queue
   (td345830–td345836) with six other batches.
 
 ## platform — split, deploy, monitors

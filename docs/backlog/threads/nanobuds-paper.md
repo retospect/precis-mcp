@@ -5,7 +5,8 @@ signed finding hub and its thesis (geometry, not composition, sets the
 electronic structure, and almost none of it has been measured) leading the
 paper. Today the poster is print-ready and the paper is a survey grown by
 accretion with the thesis buried in a 233-word gap analysis; a taproot
-backfill converted 13 chunks to hub cites and left two residues. Repair the
+backfill converted 13 chunks to hub cites and left two residues; both
+measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited. Repair the
 citation graph first, then restructure once the venue is picked.
 **Last reviewed:** 2026-09-30
 **Worktree:** `nanobuds-paper`
@@ -33,23 +34,20 @@ citation graph first, then restructure once the venue is picked.
 
 ## Horizon
 
-1. **Seiler 2024 fold-in** (pa pending, ingest in flight) — waits on the
-   paper landing in prod; delivers the measured field-tuned band-structure
-   benchmark beside dc2445899/dc2445904, the second measured analogue after
-   Huang 2011 (fi457242–fi457250).
-2. **read-back of the 13 chunks jo449492 converted** — waits on
+1. **read-back of the 13 chunks jo449492 converted** — waits on
    td458067 + td458068 so it sees repaired hubs; delivers a citation graph
    where every [fi] in dr173020 is faithful to its span, the gate before any
    prose moves.
-3. **measured-analogue argument consolidated (dc2445946 + dc2445954)** —
-   waits on 1–2; delivers the thesis as one body section on the Huang/Seiler
-   hubs and re-decides the retired gap table dc2445955.
-4. **restructure** — waits on td450081 (venue) and 3; delivers the
+2. **measured-analogue argument consolidated (dc2445946 + dc2445954)** —
+   waits on 1; delivers the thesis as one body section on the Huang
+   (fi457242–50) and Seiler (fi458136–44) hubs and re-decides the retired
+   gap table dc2445955.
+3. **restructure** — waits on td450081 (venue) and 2; delivers the
    Introduction cut from 29%, the thesis moved to the front, the abstract
    scope line drawn.
-5. **nanopub approve/sign pass over dr173020's hubs** — waits on 4 (rewording
+4. **nanopub approve/sign pass over dr173020's hubs** — waits on 3 (rewording
    after signing re-opens hubs); the 173020 batch in td345830–td345836.
-6. **export + submission** — waits on 5 and td450082; docx/pdf via the local
+5. **export + submission** — waits on 4 and td450082; docx/pdf via the local
    prod export path against the venue's template. 43020 stays frozen.
 
 ## Parked
