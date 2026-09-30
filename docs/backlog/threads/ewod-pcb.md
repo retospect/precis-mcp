@@ -56,7 +56,15 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 
 ## Horizon
 
-1. **routing_area cost term** (uncommitted, in this thread's worktree) —
+1. **backlog/pcb-maze-guarantee-leaks-a-track-into-a-foreign-pad.md** —
+   BLOCKS 2. A GND track sits 0.040mm from a foreign RXD pad where the fab
+   needs 0.090mm, on a grid built at 0.15mm; the occupancy guarantee says
+   that is impossible, and the reference test's own constant says find the
+   leak rather than accommodate it. Seven mechanisms already eliminated in
+   the file. Reto ruled "fix routing_area" on 2026-09-30 believing the term
+   was miscalibrated; the measurement says the term only changes the
+   placement that exposes this, so the fix belongs in the router.
+2. **routing_area cost term** (uncommitted, in this thread's worktree) —
    prices the board area a strand sweeps; the only thing holding the sink
    under the array. Waits on its own gate; a placer that needs no pinned
    sink. **Measured 2026-09-30: as it stands it would red the gate.** With
@@ -66,33 +74,33 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
    optimize.py and both pass. So the open decision is not only "gate now or
    wait for the DRC cost fix" — the term needs work first, and the esp32c3
    baseline is the concrete thing it regresses.
-2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
-   waits on 1; the precondition for trusting any number below this line.
+3. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
+   waits on 2; the precondition for trusting any number below this line.
    Its cost prerequisite is gone: check_via_pad_keepout is indexed, so a
    full geometric DRC pass is 0.29 s on an 8x8 tile and 1.2 s at 16x16
    (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck.
-3. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
-   waits on 2 because each slice's acceptance is an "is the board still
+4. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
+   waits on 3 because each slice's acceptance is an "is the board still
    valid" claim.
-4. **backlog/pcb-layer-preferred-direction.md** +
+5. **backlog/pcb-layer-preferred-direction.md** +
    **backlog/pcb-congestion-driven-spread.md** — the two escape-yield
    levers that are not defects; wait on Do-next 1 or they optimise against
    an artifact.
-5. **backlog/pcb-missing-constraint-classes.md** +
+6. **backlog/pcb-missing-constraint-classes.md** +
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
-   vocabulary (creepage at 250 V) and pad-layer validation; wait on 2, where
+   vocabulary (creepage at 250 V) and pad-layer validation; wait on 3, where
    a class becomes enforceable rather than advisory.
-6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
-   on 5, a checklist over unenforceable constraints is theatre.
-7. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
+7. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
+   on 6, a checklist over unenforceable constraints is theatre.
+8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
    lane, parallel; a testable system rather than a bare PCB.
-8. **backlog/ewod-synthesis-protocol.md** +
+9. **backlog/ewod-synthesis-protocol.md** +
    **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-9. **backlog/pcb-ewod-multitile.md** — waits on 3 and 4; multitile
+10. **backlog/pcb-ewod-multitile.md** — waits on 4 and 5; multitile
    multiplies whatever the escape corridor does.
-10. **backlog/pcb-global-codesign-north-star.md** — the arc all of the above
+11. **backlog/pcb-global-codesign-north-star.md** — the arc all of the above
     serves; re-read when ranking the next round.
 
 ## Parked
