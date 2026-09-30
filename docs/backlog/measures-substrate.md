@@ -123,10 +123,13 @@ routine check.
 
 ## In scope
 
-**1. Migration (forward-only).** Rename `material_values` → `measures`,
-`material_properties` → `measurands`; keep `material_values` and
-`material_properties` as **updatable views** for one release so
-`handlers/material.py` / `component.py` are untouched by this item.
+**1. Migration (forward-only).** Rename `material_values` → `measures`.
+There is **no `measurands` table** (amendment above, 2026-09-28):
+`measures.measurand_ref_id` points at a `kind='taxon'` ref, and
+`material_properties` is retired by `term-taxonomy.md`'s seed. Keep
+`material_values` as an **updatable view** for one release so
+`handlers/material.py` / `component.py` are untouched by this item. Every
+later mention of `measurands` in this section reads as "the taxon ref".
 
 A single-table rename-projection view over `measures` is auto-updatable in
 Postgres, but that covers only the columns the legacy writer already names.

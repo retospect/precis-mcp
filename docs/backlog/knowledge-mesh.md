@@ -258,9 +258,8 @@ The 0-rows `material_values` registry is superseded by `measures` with
 2. Frontier adapter + harvest dual-write; capability supply-from-`measures`
    read, as a v2 widening once `bootstrap-roadmap-quest.md`'s `meta.supply`
    is superseded — not this item's v1.
-3. Eye ladder: `+recall` and `fisheye+2hop` rungs, `ROADMAP_RELATIONS`,
-   the gist-per-kind registry test, `extent=` on every kind's get, the
-   generalised focus page (depends on `fisheye-level2.md`'s focus verb).
+3. (moved to `fisheye-everywhere.md`, 2026-09-30 — it depends on no
+   measures work; this item's walk reuses its ladder.)
 4. Numeric-conflict rule in `conflict_search`.
 5. `quest_mesh` service with the four actions, per-quest budget.
 6. Integration seam for the extraction worker pass: `materialized
@@ -281,7 +280,7 @@ The 0-rows `material_values` registry is superseded by `measures` with
   per-capability alias list.
 - Adjudication (`contradicts`), nanopub minting/signing, demotion.
 - A graph database. Postgres + recursive CTE + pgvector is the graph.
-- Turning skills into refs. Open question below; not built here.
+- Turning skills into refs. Filed as `file-mirror.md` (2026-09-30).
 - The roadmap tick body itself (`bootstrap-roadmap-quest.md`).
 - The `focus` verb and render→act loop (`fisheye-level2.md`); this item
   extends the ladder those will drive.
@@ -305,8 +304,10 @@ The 0-rows `material_values` registry is superseded by `measures` with
 5. One `quest_mesh` tick on a fixture quest with one thin axis performs
    exactly one action, logs it as a `result` entry, and stays under the
    quest's `meta.mesh.budget_usd`.
-6. `view='tree'` on a roadmap quest renders supply from `measures`
-   without any `meta.supply` present.
+6. (v2 widening, not this item — `meta.supply` stays per
+   `bootstrap-roadmap-quest.md`'s final 2026-09-28 ruling; see the
+   2026-09-29 correction below. v2's AC: `view='tree'` renders supply from
+   `measures` when no `meta.supply` is present.)
 7. Skills: `search(kind='skill', q='walk neighbours two hops semantic')`
    returns `precis-graph-help` top.
 
@@ -336,6 +337,8 @@ The 0-rows `material_values` registry is superseded by `measures` with
   `walk` and `related-to` reach them) or leave skills out. Reto asked
   for DRY reuse across "skills, memories"; recommendation: mirror,
   as a separate small item after the walk verb exists, not here.
+  Filed 2026-09-30 as `file-mirror.md` (read-only mirror first; native
+  authoring is Reto's pending ruling).
 - **Tolerance for "conditions match".** Start with: same `operating`
   condition names present on both, numeric values within 10 % or
   identical categorical; tighten after the first real conflicts land.

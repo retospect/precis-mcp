@@ -75,6 +75,13 @@ Seams:
 - `backlog/knowledge-mesh.md` — taxonomy Horizon 6; roadmap Horizon 4 is
   its in-scope 2.
 - `backlog/curation-gate.md` — both park on it; owned by serving.
+- `backlog/fisheye-everywhere.md` — taxonomy Do-next 4; roadmap's
+  `view='tree'` and the se viewer thread both render through its ladder.
+- `backlog/relation-constraints.md` — taxonomy Do-next 3; the quest
+  `serves` cycle guard roadmap-quest lacks lands there.
+- `backlog/file-mirror.md` — taxonomy Do-next 6; the memory half of the
+  thread (context-memory-hierarchy, session-history-into-precis) is
+  ranked in `term-taxonomy.md` from 2026-09-30.
 
 Waits:
 - nanobuds Horizon 2 (approve/sign pass) sits in Reto's nanopub queue

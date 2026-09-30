@@ -318,6 +318,11 @@ already exists or was rejected here before it arrived.
   id='/measurand/faradaic-efficiency')`) walk slugs from the named start
   node, so a path is ambiguous only when two siblings share a slug — the
   refusal names both and the caller re-issues with the handle.
+- **[cross-ref 2026-09-30]** The six axis names are also
+  `taproot/sentence_lint.py::SCOPE_KEYS`; `scope-key-vocabulary-registry.md`
+  must read the taxon nodes rather than keep a second list. The generic
+  endpoint rule this item wanted for `instance-of` (range = taxon) lands
+  as a row of `relation-constraints.md`, not as a bespoke guard.
 - **[decided 2026-09-30, Reto]** The `meta.axis` vocabulary: **seed six,
   earn the rest.** The `axis` start node (in-scope 7) is seeded with
   `method`, `material`, `system`, `regime`, `quantity`, `scale` — the same

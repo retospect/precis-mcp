@@ -5,6 +5,12 @@ title: scope keys need a frequency-ordered registry, not a hardcoded 7-key list
 
 # The vocabulary was invented, not measured
 
+> Cross-reference (2026-09-30): `term-taxonomy.md` seeds six `axis`
+> children (`method`, `material`, `system`, `regime`, `quantity`, `scale`)
+> by Reto's ruling that findings and taxa share one vocabulary — these are
+> the same names as `SCOPE_KEYS` below. Whatever registry this item builds
+> must read the taxon nodes, not a second list.
+
 `refs.meta->'scope'` qualifies a claim hub's applicability and participates in
 hub identity (`pub_id = hash(sentence, scope)`;
 `nanopub-corpus-remediation.md` Phase 3/"Why dedup never fired"). The
