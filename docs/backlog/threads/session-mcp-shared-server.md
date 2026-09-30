@@ -34,8 +34,8 @@ criteria, and the isolation gaps.
    it was wrongly in No action needed, and it now owns gr458061's
    restart-on-drift half. The closure said the checkout watchdog bounces on
    a HEAD move. It does not for the per-session `precis-mcp-dev-*`
-   containers, which are still live serving every pre-flip session and which
-   Parked AC5 says must not be swept: `CheckoutWatchdog` only arms when
+   containers, which are still live serving every pre-flip session:
+   `CheckoutWatchdog` only arms when
    `PRECIS_CHECKOUT_WATCHDOG` is set and the dev-stdio launch path never
    sets it, while `InstallWatchdog._fingerprint_for` still returns `None`
    outside `site-packages` as of 54067ee3, which an editable install is.
@@ -46,18 +46,17 @@ criteria, and the isolation gaps.
    each draining 0 in-flight calls). The field earns its keep precisely
    where the watchdog is NOT armed — the eleven dev-stdio containers, up
    20-25 h each, which is the population gr458061's incident happened in.
-   Two steps, in order: give them `PRECIS_CHECKOUT_WATCHDOG` so they can
-   *report* drift, then a restart mechanism, because reporting is not
-   restarting and nothing stops a process serving stale modules once it has
-   told you it is.
-   Note the ordering trap in step one: the env var only helps a container
-   started after it, and these are running pre-gr457361 code — this thread's
-   own session talks to precis-mcp-dev-49785 (up since 2026-09-29T11:15Z),
-   whose precis-status renders no `source_drift` row at all. Giving them the
-   variable means restarting them, which is exactly what Parked AC5 says
-   must not happen while their sessions hold stdio pipes. So step one is
-   only available for containers created from now on, and the existing
-   eleven stay dark until their sessions end.
+   The two-step plan this thread carried — give them
+   `PRECIS_CHECKOUT_WATCHDOG` so they can report drift, then a restart
+   mechanism — survives only in that order, and step one is now measured
+   as harmful before step two exists: `/app` is a bind of main's *working
+   tree*, so the 5 s arm would exit each container on every qland, and
+   with `Restart=no` and no supervisor that is every session's MCP dying
+   every few minutes during a burst. There is also no "restart the
+   eleven": they are `docker run -i --rm`, so restart deletes, and stdin
+   belongs to the client that spawned them — only a client-side MCP
+   reconnect makes a fresh container. Both facts and the measurements
+   behind them are in the item; do not re-plan this from the thread file.
 2. **gr457326 follow-up: re-arm the warm pass, don't just lengthen the
    sleep.** The retry landed (batches of 64, 4 attempts, 30s doubling to
    ~3.5 min of cover) and that rides out the measured trigger — a
@@ -76,7 +75,13 @@ criteria, and the isolation gaps.
    satisfies it. AC3 (a new verb kwarg surviving a bounce) was waiting on
    gr457887, which has landed and re-verified, so it is attemptable. Delete
    the item when AC3 and AC5 close.
-4. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+4. **gr458350** — the `precis-mcp-dev-*` launcher passes prod credentials
+   to `docker run` as `-e` values read from the password directory, so
+   `docker inspect` prints the `agent_rw` DSN and four API keys in
+   cleartext; hit while inspecting a container for this thread's work.
+   Adjacent rather than owned here, but anyone debugging these containers
+   walks into it — the gripe carries the names-only inspect format.
+5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
@@ -116,15 +121,18 @@ criteria, and the isolation gaps.
 ## Parked
 
 - **backlog/session-mcp-http-server.md AC5** (one container after a day) —
-  unparks when the last pre-flip session ends; the surviving
-  precis-mcp-dev-* containers must not be swept, pre-flip sessions still
-  talk to them over stdio.
+  Reto ruled on 2026-09-30 that the stale dev containers get fixed at the
+  next natural break, which lifts the no-sweep hold. It is satisfied by a
+  reconnect wave, not a sweep: each session reconnects its own MCP, `--rm`
+  disposes of the old container, and the fresh one imports current main.
+  This item unparks once that wave has run and the fleet is verified —
+  the check this thread owns. `precis-mcp-http` is never touched.
 - **pgbouncer admin-console read access** (Reto) — unparks when granted:
   cl_waiting is the only direct evidence of pool starvation; until then
   pool-headroom statements are inference from backend counts.
 - **K-parallel exercise-mcp load harness** — specced inside
   backlog/mcp-shared-transport-concurrency.md; unparks when the role and
-  fairness gaps in Do-next 4 are closed, before that it measures an idle server.
+  fairness gaps in Do-next 5 are closed, before that it measures an idle server.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.
