@@ -21,7 +21,8 @@ both STATUS:done)
 1. **td450081** — target venue (Reto). Gates the restructure: Introduction is
    29% of the paper and the thesis sits near the end.
 2. **td450082** — pa1181/42560 duplicate reference merge (Reto); the
-   bibliography exports one Nature 1999 paper twice until done.
+   bibliography exports one Nature 1999 paper twice until done, and pa1181 is
+   the draft's one cited paper with no DOI (hygiene view, 2026-09-30).
 3. **td450083** — fi191281 verifier re-judge (Reto); the stale caveat argues
    against wording that no longer exists.
 4. **td450087** — commit the poster README rewrite in its own gitignored
@@ -70,6 +71,13 @@ both STATUS:done)
   dc4262976 (Huang grain-boundary analogue) and dc4262977 (Seiler bilayer
   benchmark) added under it, dc2445946 trimmed of the sentences that moved;
   the gap table dc2445955 stays retired, the prose carries every row.
+- **dogfood 2026-09-30 (fleet 7c915f79)** — the three cites that drifted when
+  fi449540/fi449588/fi449590 were retitled (dc3824813/15/16) re-pinned by
+  rewriting each chunk unchanged; export no longer blocked. Two legacy pc cites
+  became hubs: fi458947 (twelve-pentagon rule, dc2445873) and fi458948 (AFM
+  5-7 kinks, dc2445877). Filed gr458941 (every hub shows "no originator
+  derived yet") and gr458943 (hygiene view and windows refuse forms the skill
+  documents). The ten caption cites stay `Reproduced from [pc…]` by policy.
 - **gr450123** — embedder contention; infra, owned elsewhere.
 - **jo449492** — the backfill succeeded (189 scanned, 13 converted, 0
   failed); read back in full by td458276 (done 2026-09-30) — a re-run over
