@@ -57,17 +57,42 @@ criteria, and the isolation gaps.
    belongs to the client that spawned them — only a client-side MCP
    reconnect makes a fresh container. Both facts and the measurements
    behind them are in the item; do not re-plan this from the thread file.
-2. **gr457326 follow-up: re-arm the warm pass, don't just lengthen the
-   sleep.** The retry landed (batches of 64, 4 attempts, 30s doubling to
-   ~3.5 min of cover) and that rides out the measured trigger — a
-   cold-model stall and the embedder's `max_inflight=4` 429s. It does NOT
-   ride out the thing that actually caused the 11:49Z case: the gate ran
-   ~75 min. Surviving that needs the pass re-armed later (on first md
-   search against a cold cache, or a periodic tick), not a longer sleep,
-   because a thread asleep for an hour is indistinguishable from a wedged
-   one. Cheap now that `embed_missing(batch_size=)` makes progress
-   monotonic and `precis-status` reports `md_vector_warmup`, so a re-arm
-   can see what it is resuming.
+2. **gr457326 follow-up: retry per batch, not per pass — and re-arm.**
+   Dogfooding the landed fix on the shared server found the retry is at the
+   wrong granularity, which matters more than the sleep length. Measured
+   14:17-14:23Z over four consecutive boots: every attempt dies on its
+   *first* batch, and the exception unwinds the whole pass, so attempts 2-4
+   re-enter and die on that same first batch. Two of the failures were
+   `embedder at capacity (429 after queueing)` returned in **0.6 s** — a
+   condition that clears in seconds — and the pass then slept 60 s and
+   burned another attempt. A retryable 429 on batch 1 of 315 should back off
+   *inside* the batch loop and carry on, not tear the pass down.
+   The scale is why this is load-bearing: `/app` is 20137 blocks (6.1 MB of
+   text, p50 166 chars, max 71617), so `batch_size=64` is **315 sequential
+   round trips**, not a handful. Progress is monotonic and does survive a
+   bounce — the cache lives in the container's writable layer
+   (`/home/precis/.cache/precis/md-vectors/bge-m3-1024.npz`), which the
+   watchdog's process-exit does not clear — but it has produced ~256 of 20137
+   vectors, and that file's mtime has not moved since 12:43Z: in 1 h 36 min
+   of retrying, not one batch has landed.
+   Not a capacity problem at the endpoint. Probed directly, 64 texts embed in
+   7.8-8.9 s at 2-8 KB each, from the host and from inside the container
+   alike, well inside the 15 s interactive budget. The contention is the
+   twelve containers (this one plus eleven `precis-mcp-dev-*`) each
+   boot-warming the same 20137 blocks of the same tree against one embedder
+   with `max_inflight=4`.
+   So three things, in order of how much they buy: (a) retry retryable
+   errors per batch, honouring the 429's own retry-after, so a pass makes
+   progress instead of restarting; (b) re-arm the pass later — on the first
+   md search against a cold cache, or a periodic tick — since the watchdog
+   bounces the process every few minutes during a qland burst and the pass
+   never gets a contiguous window (it was abandoned mid-attempt-4 at
+   14:22Z); (c) stop twelve containers racing to compute identical vectors,
+   which is a shared-cache question, not a retry question.
+   The instrumentation itself verified clean: `precis-status` over 8765
+   reads `git_source watched-checkout`, `source_drift none`, and
+   `md_vector_warmup retrying after attempt 1/4 (EmbedderUnavailable)`,
+   which is how all of the above was observed rather than guessed.
 3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner
