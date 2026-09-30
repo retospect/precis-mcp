@@ -486,9 +486,12 @@ TREE_JSON_FORMAT = "se-tree/1"
 
 #: :class:`SeBlock` fields that are NOT design data and never snapshot:
 #: ``derived`` is recomputed from the catalog on every load
-#: (:func:`attach_catalog`), and the ``pending_*`` trio is one call's
+#: (:func:`attach_catalog`); the ``pending_*`` quartet is one call's
 #: not-yet-written state-op payload (the class docstring — cleared by
-#: discarding the tree).
+#: discarding the tree); and ``posed_by_state`` is a read-time label for
+#: whose pose a block is currently carrying. Grep the dataclass when
+#: adding a field here — the count in this comment has drifted before
+#: (gr458297).
 _BLOCK_TRANSIENT = frozenset(
     {
         "derived",
