@@ -58,17 +58,17 @@ criteria, and the isolation gaps.
    must not happen while their sessions hold stdio pipes. So step one is
    only available for containers created from now on, and the existing
    eleven stay dark until their sessions end.
-2. **gr457326** — the md-index vector warmup has no retry, so one slow
-   embedder batch at boot leaves the cache cold for the process lifetime,
-   which is now shared by every session. No longer hypothetical: caught in
-   `docker logs precis-mcp-http` at ~11:49Z 09-30, `EmbedderUnavailable`
-   from a `TimeoutError` (reachable but slow), during the deploy session's
-   full gate. That pairing is structural rather than unlucky — a qland burst
-   is when the gate load and the watchdog bounces both happen, and a bounce
-   during load is the whole failure condition. One cold boot silently
-   downgrades md search to lexical for every session on the machine until
-   the next bounce, and the only trace is a warmup thread's traceback in a
-   log nobody reads.
+2. **gr457326 follow-up: re-arm the warm pass, don't just lengthen the
+   sleep.** The retry landed (batches of 64, 4 attempts, 30s doubling to
+   ~3.5 min of cover) and that rides out the measured trigger — a
+   cold-model stall and the embedder's `max_inflight=4` 429s. It does NOT
+   ride out the thing that actually caused the 11:49Z case: the gate ran
+   ~75 min. Surviving that needs the pass re-armed later (on first md
+   search against a cold cache, or a periodic tick), not a longer sleep,
+   because a thread asleep for an hour is indistinguishable from a wedged
+   one. Cheap now that `embed_missing(batch_size=)` makes progress
+   monotonic and `precis-status` reports `md_vector_warmup`, so a re-arm
+   can see what it is resuming.
 3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner

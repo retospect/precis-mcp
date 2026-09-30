@@ -235,6 +235,69 @@ def test_embed_missing_embeds_only_uncached_blocks(tmp_path: Path) -> None:
     assert len(embedder.calls) == 1  # embedder untouched
 
 
+def test_embed_missing_batches_when_given_a_batch_size(tmp_path: Path) -> None:
+    """`batch_size` splits the miss set; the default keeps one call."""
+    cache = MdVectorCache(model="stub", dim=3, cache_dir=tmp_path)
+    embedder = _StubEmbedder()
+    blocks = [_entry(file=f"f{i}.md", text=f"content {i}", slug="s0") for i in range(7)]
+
+    n = cache.embed_missing(blocks, embedder, batch_size=3)
+
+    assert n == 7
+    assert [len(c) for c in embedder.calls] == [3, 3, 1]
+    assert all(b.sha256 in cache for b in blocks)
+
+
+def test_embed_missing_keeps_batches_cached_when_a_later_batch_fails(
+    tmp_path: Path,
+) -> None:
+    """gr457326: progress is monotonic, so a retry resumes.
+
+    One call for the whole miss set is all-or-nothing against a per-call
+    deadline — that is how a 741-file boot warm pass timed out and left
+    the *entire* md vector cache cold for the process's lifetime. With
+    batches, the ones that completed stay cached and the next attempt's
+    miss list is smaller.
+    """
+    cache = MdVectorCache(model="stub", dim=3, cache_dir=tmp_path)
+    blocks = [_entry(file=f"f{i}.md", text=f"content {i}", slug="s0") for i in range(6)]
+
+    class _FailsOnThirdBatch(_StubEmbedder):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            if len(self.calls) == 2:
+                raise TimeoutError("timed out")
+            return super().embed(texts)
+
+    embedder = _FailsOnThirdBatch()
+    with pytest.raises(TimeoutError):
+        cache.embed_missing(blocks, embedder, batch_size=2)
+
+    # The two batches before the failure survived; the rest did not.
+    assert sum(b.sha256 in cache for b in blocks) == 4
+
+    # A retry re-computes the miss list, so it only embeds the remainder.
+    retry = _StubEmbedder()
+    assert cache.embed_missing(blocks, retry, batch_size=2) == 2
+    assert [len(c) for c in retry.calls] == [2]
+    assert all(b.sha256 in cache for b in blocks)
+
+
+def test_warmup_state_starts_unset_and_records(tmp_path: Path) -> None:
+    """The cold-cache state `precis-status` reports (gr457326).
+
+    Lives in this module rather than `server.py` so the status collector
+    can read it without importing the module that builds the FastMCP app.
+    """
+    from precis.md_index import vectors as vectors_mod
+
+    before = vectors_mod.warmup_state()
+    try:
+        vectors_mod.record_warmup_state("COLD after 4 attempt(s): TimeoutError")
+        assert "COLD" in (vectors_mod.warmup_state() or "")
+    finally:
+        vectors_mod._WARMUP_STATE = before
+
+
 def test_embed_missing_dedupes_identical_content_across_roots(tmp_path: Path) -> None:
     """Two blocks with identical text under different roots/files share
     one embedding — content-addressing by sha256, not by (file, pos)."""

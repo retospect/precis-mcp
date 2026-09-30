@@ -2366,9 +2366,17 @@ def _collect_runtime_info() -> list[tuple[str, str]]:
 
     Pure introspection of the live process — hostname, platform,
     python version, pid, and uptime since :data:`_STARTED_AT`.
+
+    Also ``md_vector_warmup`` when the boot warm pass has run: a cold
+    md vector cache silently downgrades md search to lexical for the
+    whole process lifetime, and on the shared session server that is
+    every session on the machine (gr457326). Omitted entirely rather
+    than rendered ``unknown`` when the pass never ran — the ``md`` kind
+    is opt-in, and a row saying nothing about a feature that is off is
+    noise on every other deployment.
     """
     uptime = int((datetime.now(UTC) - _STARTED_AT).total_seconds())
-    return [
+    rows = [
         ("hostname", socket.gethostname()),
         ("platform", platform.platform()),
         ("python", sys.version.split()[0]),
@@ -2377,6 +2385,14 @@ def _collect_runtime_info() -> list[tuple[str, str]]:
         ("started_at", _STARTED_AT.isoformat(timespec="seconds")),
         ("uptime_seconds", str(uptime)),
     ]
+    try:
+        from precis.md_index.vectors import warmup_state
+
+        if (warmup := warmup_state()) is not None:
+            rows.append(("md_vector_warmup", warmup))
+    except Exception:  # pragma: no cover — a status row must not raise
+        pass
+    return rows
 
 
 def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:

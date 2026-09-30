@@ -266,6 +266,119 @@ def test_warm_md_index_background_embeds_missing_and_flushes(
     assert handler.vector_cache.manifest_path.is_file()
 
 
+def test_warm_md_index_retries_a_transient_failure_and_records_warm(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr457326: a single timed-out batch must not strand the cache.
+
+    The pass runs exactly once per process, so before this there was no
+    "next successful pass" — one blip left md search lexical-only for the
+    process's whole lifetime, which on the shared session server is every
+    session on the machine.
+    """
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_BACKOFF_S", 0.001)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    class _FailsOnce(MockEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def embed(self, texts: list[str]) -> Any:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TimeoutError("timed out")
+            return super().embed(texts)
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=_FailsOnce(), md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None and handler.vector_cache is not None
+
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+
+    assert len(handler.vector_cache) > 0
+    assert "warm" in (vectors_mod.warmup_state() or "")
+
+
+def test_warm_md_index_gives_up_and_records_a_cold_cache(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A permanently-failing embedder is bounded, and says so.
+
+    Two halves of gr457326: the retry is not unbounded (a down embedder
+    must not leave a thread looping for the process's life), and the
+    resulting cold cache is recorded for `precis-status` instead of
+    living only in a background thread's traceback.
+    """
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_BACKOFF_S", 0.001)
+    monkeypatch.setattr(server, "_MD_WARMUP_ATTEMPTS", 2)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    class _AlwaysFails(MockEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def embed(self, texts: list[str]) -> Any:
+            self.attempts += 1
+            raise TimeoutError("timed out")
+
+    embedder = _AlwaysFails()
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=embedder, md_roots=f"r:{root}")
+    )
+
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+
+    assert embedder.attempts == 2  # bounded, not looping forever
+    state = vectors_mod.warmup_state() or ""
+    assert "COLD" in state
+    assert "TimeoutError" in state
+    assert "lexical-only" in state
+
+
+def test_cold_md_warmup_is_visible_in_precis_status_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cold cache reaches the surface built to answer "why is search
+    worse" — it used to exist only as a log line nobody reads."""
+    from precis.handlers import skill as skill_mod
+    from precis.md_index import vectors as vectors_mod
+
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    assert "md_vector_warmup" not in dict(skill_mod._collect_runtime_info())
+
+    monkeypatch.setattr(
+        vectors_mod, "_WARMUP_STATE", "COLD after 4 attempt(s): TimeoutError"
+    )
+    rows = dict(skill_mod._collect_runtime_info())
+    assert "COLD" in rows["md_vector_warmup"]
+
+
 # ── md vector cache flush at shutdown ────────────────────────────────
 
 

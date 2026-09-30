@@ -57,6 +57,34 @@ log = logging.getLogger(__name__)
 #: Bumped when the on-disk pair's shape changes incompatibly.
 SCHEMA_VERSION = 1
 
+#: Last outcome of the boot warm pass (`server.py::_warm_md_index_background`),
+#: for the `precis-status` Runtime section. gr457326's second half: a cold
+#: cache silently downgrades md search to lexical for the whole process
+#: lifetime, and on the shared session server that is every session on the
+#: machine, with the only trace a traceback in a log nobody reads.
+#:
+#: It lives here rather than in `server.py` so the status collector can read
+#: it without importing that module — `server.py` builds the FastMCP app at
+#: import and is explicitly not importable from arbitrary callers. This
+#: module already owns the cache whose warmth the state describes.
+#:
+#: A plain string: all the surface needs. Module-level because the writer is
+#: the warm thread and the reader is a request thread; `None` until the pass
+#: starts, and forever when the `md` kind isn't registered.
+_WARMUP_STATE: str | None = None
+
+
+def record_warmup_state(state: str) -> None:
+    """Record the boot warm pass's outcome for `precis-status` to report."""
+    global _WARMUP_STATE
+    _WARMUP_STATE = state
+
+
+def warmup_state() -> str | None:
+    """The warm pass's last recorded outcome, or `None` if it never ran."""
+    return _WARMUP_STATE
+
+
 #: Default cache-root subdirectory name (mirrors `patent-raw`,
 #: `edgar-raw`'s convention in `precis.config`).
 _CACHE_NAME = "md-vectors"
@@ -268,13 +296,35 @@ class MdVectorCache:
                 self.flush()
 
     def embed_missing(
-        self, blocks: Iterable[MdBlockEntry], embedder: MdEmbedder
+        self,
+        blocks: Iterable[MdBlockEntry],
+        embedder: MdEmbedder,
+        *,
+        batch_size: int | None = None,
     ) -> int:
         """Embed and cache every block in `blocks` not already cached.
 
-        Batches every miss into one `embedder.embed()` call. Returns
-        the count of newly added vectors (0 touches the embedder not
-        at all — safe to call on a fully-warm cache every request).
+        Returns the count of newly added vectors (0 touches the
+        embedder not at all — safe to call on a fully-warm cache every
+        request).
+
+        `batch_size` splits the misses across several `embed()` calls
+        and writes each batch back before starting the next, so a
+        failure part-way keeps the batches that succeeded. `None` (the
+        default, and the request path's behaviour) sends every miss in
+        one call: a query-time top-up is a handful of blocks, and
+        splitting it would only add round-trips.
+
+        Pass a size for a bulk pass. One call for the whole miss set is
+        all-or-nothing against a per-call deadline, which is how a boot
+        warm pass of 741 files could time out and strand the *entire*
+        cache cold for a process lifetime (gr457326); it also has to fit
+        a 741-file request inside a budget tuned for a single query
+        embed. Batches make progress monotonic and each request small
+        enough for that budget. On failure the exception propagates
+        after the completed batches are cached — the caller decides
+        whether to retry, and a retry re-computes the miss list and so
+        naturally resumes.
 
         The lock is deliberately released for the `embedder.embed()`
         call itself: computing the miss list and writing the results
@@ -291,18 +341,24 @@ class MdVectorCache:
             if not by_sha:
                 return 0
             shas = list(by_sha)
-            texts = [by_sha[sha].text for sha in shas]
 
-        vectors = embedder.embed(texts)  # outside the lock — see docstring
-        if len(vectors) != len(shas):
-            raise ValueError(
-                f"embedder returned {len(vectors)} vectors for {len(shas)} texts"
-            )
+        step = len(shas) if batch_size is None else max(1, batch_size)
+        added = 0
+        for start in range(0, len(shas), step):
+            chunk = shas[start : start + step]
+            texts = [by_sha[sha].text for sha in chunk]
 
-        with self._lock:
-            for sha, vec in zip(shas, vectors, strict=True):
-                self.add(sha, vec)  # RLock: safe to re-enter; auto-flushes
-        return len(shas)
+            vectors = embedder.embed(texts)  # outside the lock — see docstring
+            if len(vectors) != len(chunk):
+                raise ValueError(
+                    f"embedder returned {len(vectors)} vectors for {len(chunk)} texts"
+                )
+
+            with self._lock:
+                for sha, vec in zip(chunk, vectors, strict=True):
+                    self.add(sha, vec)  # RLock: safe to re-enter; auto-flushes
+            added += len(chunk)
+        return added
 
     def flush(self) -> None:
         """Atomically persist the in-memory vectors to disk.

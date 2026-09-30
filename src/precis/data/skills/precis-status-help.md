@@ -23,7 +23,10 @@ or database they're talking to. One call returns four sections:
 **Build** (version, git sha, branch, dirty flag, last release tag,
 `git_source` + `source_path` provenance, `source_drift`, build
 time/host/user),
-**Runtime** (container hostname, python, pid, cwd, uptime),
+**Runtime** (container hostname, python, pid, cwd, uptime, and
+`md_vector_warmup` when the `md` kind is registered — `COLD` there means
+md search has silently fallen back to lexical for this process's whole
+lifetime),
 **Database** (connected DSN host/port/name/user, postgres server
 version, last applied migration + count), and the existing
 **Optional dependencies** import probe.
