@@ -11,52 +11,27 @@ streamable-http server, live since 2026-09-29 and dogfooded. The defect
 this thread shipped — every bounce killed the calls in flight — is fixed
 (gr457887: the drain latches a high-water ticket instead of waiting for an
 always-busy server to go idle, and the bound is 120 s and env-tunable), and
-re-verified live on the isolated rig. What remains is a status
-surface that cannot say which sha or process a session is talking to, then
-the parent item's remaining criteria and the isolation gaps.
+re-verified live on the isolated rig. The second defect — a status surface
+that could not say which sha a session was talking to, and reported a
+three-week-old image build arg instead — is fixed in code (gr457361: the
+watched checkout's HEAD outranks the baked env, git-identity fields come
+from one lane instead of being mixed, and a live `source_drift` field says
+whether the tree has moved past the import) and awaits verification on a
+restarted server. What remains is that verification, then the restart-on-drift
+half, the parent item's remaining criteria, and the isolation gaps.
 **Last reviewed:** 2026-09-30
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
-1. **gr457361** — precis-status reports the image build arg, not the source
-   served (measured: reported f2cbcb29, built 2026-09-08, while serving code
-   542 commits newer the same day). Worse than unanswerable: gr458061 caught
-   the surface printing started_at 2026-09-29T15:34:31 beside uptime_seconds
-   54369 (~15.1 h) when only one could be true, and the process behind it
-   served 16-hour-stale in-memory modules while its bind-mounted files were
-   current — which produced two detailed false root-cause analyses
-   (gr457995, gr457996, both refuted) and let a join through that the
-   current code refuses. So the acceptance criterion is not "the right sha
-   appears" but that the sha names the code the process is EXECUTING and
-   started_at names that process, distinguished from the image build.
-   Correcting one thing carried over from gr458061, now formally withdrawn
-   by its filer: started_at and uptime cannot contradict each other —
-   `uptime_seconds` is `int((now - _STARTED_AT).total_seconds())` over the
-   same module global that renders `started_at`, so they agree by
-   construction, and the arithmetic is exact rather than approximate
-   (15:34:31 + 54369 s = 06:40:40; the 07:14 in the gripe was the corrupting
-   join's timestamp, not the status call's). Do not spend the fix chasing
-   it, and do not write an AC around mutual consistency — such an AC passes
-   trivially on current code while reading as tested. The misleading field
-   was the sha alone, and the mechanism is in the code:
-   `_collect_build_info` lets a real baked PRECIS_GIT_SHA win over
-   `_SOURCE_GIT_INFO`, so the bind-mount-over-baked-source shape prints the
-   image's sha beside a working-tree `source_path`, with no field anywhere
-   naming the mounted tree's sha at import time. A second criterion with
-   teeth, and the only one that would have caught this: the surface should
-   be able to say the mounted tree has advanced past the import. That fails
-   on current code and is a real test to write. No cheap check substitutes
-   for it: in that container stat, grep and a fresh `python -c` import all
-   reported the new code, and all three were run before concluding wrongly —
-   which is why this blocks dogfooding generally, not just this thread.
-   Measured blast radius of the one incident: one design damaged in prod (se
-   457890, deliberately left corrupt as the repro). Not started: no branch on origin and no
-   live tree claims it as of 2026-09-30. gr458039 closed as its duplicate
-   (git_dirty observation appended there). Do NOT close gr458061 when this
-   lands: its second half — restart the server when the mounted checkout
-   advances — is a different fix in a different module, and landing only
-   this one buys a status surface that truthfully reports stale modules
-   with still no mechanism to stop serving them. That half is item 2.
+1. **Verify gr457361's fix on the live shared server** — the fix is landed
+   but unverifiable until the server restarts onto it, and the whole point
+   of the fix is that no cheap in-container check substitutes for the
+   surface. After the next deploy/bounce, one `precis-status` call must
+   show `git_source: watched-checkout`, a `git_sha` matching the mounted
+   tree's HEAD at boot rather than the 2026-09-08 image build arg, and
+   `source_drift: none`. Then move the tree ahead without bouncing and
+   confirm `source_drift: moved <old>→<new>`. Small, but it is the
+   acceptance criterion the gripe was filed against.
 2. **backlog/mcp-staleness-title-roundtrip-guards.md item 2** — re-opened;
    it was wrongly in No action needed, and it now owns gr458061's
    restart-on-drift half. The closure said the checkout watchdog bounces on
@@ -66,21 +41,27 @@ the parent item's remaining criteria and the isolation gaps.
    `PRECIS_CHECKOUT_WATCHDOG` is set and the dev-stdio launch path never
    sets it, while `InstallWatchdog._fingerprint_for` still returns `None`
    outside `site-packages` as of 54067ee3, which an editable install is.
-   Below 1 because a truthful surface makes this diagnosable, but 1 does not
-   fix it.
+   Now strictly the remaining half: gr457361's fix makes the drift
+   *reportable* on the shared server (`source_drift`), and makes it
+   reportable on those dev containers too when they are given
+   `PRECIS_CHECKOUT_WATCHDOG`, but reporting is not restarting. Nothing
+   stops a process serving stale modules once it has told you it is.
 3. **gr457326** — the md-index vector warmup has no retry, so one slow
    embedder batch at boot leaves the cache cold for the process lifetime,
    which is now shared by every session. Degrades silently to lexical.
-4. **backlog/session-mcp-http-server.md** — AC3 (a new verb kwarg surviving a
-   bounce) is the last criterion that neither passes nor is blocked — it
-   was waiting on gr457887, which has landed and re-verified, so it is
-   attemptable now. Delete the item when AC3 and AC5 close.
+4. **backlog/session-mcp-http-server.md** — AC2 now has a fix to test
+   against (it was written as "precis-status reports the new sha", which
+   gr457361 made unpassable) and AC3 (a new verb kwarg surviving a bounce)
+   was waiting on gr457887, which has landed and re-verified. Both are
+   attemptable; AC2 folds into item 1's single call. Delete the item when
+   AC3 and AC5 close.
 5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
-   image rebuild bounces every session. Below 1 because its acceptance
-   criteria are verified by probing the surface they fix. The role bullet
+   image rebuild bounces every session. Ranked last because its acceptance
+   criteria are verified by probing the surface they fix, and that probe is
+   only trustworthy once item 1 confirms the surface. The role bullet
    decides whether coding jobs can ever leave containers.
 
 ## Horizon

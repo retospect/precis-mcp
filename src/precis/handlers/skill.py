@@ -2045,6 +2045,86 @@ def _dist_git_info() -> dict[str, str]:
 _DIST_GIT_INFO: dict[str, str] = _dist_git_info()
 
 
+def _watched_checkout_git_info() -> dict[str, str]:
+    """Git identity of the checkout the *executing* code was taken from.
+
+    The lane that exists because the other three cannot answer for the
+    shared session server (gr457361). There, the entrypoint snapshot-copies
+    the bind-mounted ``/src`` into ``/app`` *without* ``.git`` and the
+    process imports from ``/app``, so :func:`_live_git_info` returns ``{}``
+    and the only remaining non-empty source is the image's baked
+    ``PRECIS_GIT_SHA`` — which describes the venv built weeks earlier, not
+    the code being served. Measured: a reported sha from 2026-09-08 beside
+    ``/app`` carrying a change landed 2026-09-30.
+
+    ``/app`` is copied from the watched tree at container start, so that
+    tree's HEAD *at import* is the identity of what runs. Frozen here for
+    the same reason :data:`_SOURCE_GIT_INFO` is frozen, and read via
+    :func:`~precis.install_watchdog.checkout_fingerprint`, which parses
+    ``.git`` directly rather than shelling out — the watched tree is
+    typically a read-only mount owned by another uid, where ``git`` refuses
+    to operate at all.
+
+    Deliberately partial: a HEAD sha and the branch its ref names are all
+    ``.git`` yields without git. ``git_dirty``, ``git_describe`` and
+    ``git_last_tag`` are left absent rather than borrowed from the baked
+    env — a ``git_dirty: false`` next to a foreign sha reads as "clean and
+    verified" and made the stale sha look corroborated, which is the half
+    of this defect that survived the first read.
+    """
+    try:
+        from precis.install_watchdog import checkout_fingerprint, watched_checkout_root
+
+        root = watched_checkout_root()
+        if root is None:
+            return {}
+        sha = checkout_fingerprint(root)
+        if sha is None:
+            return {}
+        info = {
+            "git_sha": sha,
+            "git_sha_short": sha[:12],
+            "source_path": str(root),
+        }
+        if (branch := _head_ref_branch(root)) is not None:
+            info["git_branch"] = branch
+        return info
+    except Exception:  # pragma: no cover — must never raise at import
+        return {}
+
+
+def _head_ref_branch(root: Path) -> str | None:
+    """Branch name from ``<root>/.git/HEAD``, or ``None`` if detached.
+
+    Only the symbolic-ref case is handled: a detached HEAD holds a sha and
+    has no branch to report, which is the honest answer there.
+    """
+    try:
+        git_path = root / ".git"
+        if git_path.is_file():
+            pointer = git_path.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git_dir = Path(pointer.split(":", 1)[1].strip())
+            if not git_dir.is_absolute():
+                git_dir = (root / git_dir).resolve()
+        else:
+            git_dir = git_path
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return None
+        ref = head.split(":", 1)[1].strip()
+        return ref.rpartition("/")[2] or None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+#: Git identity of the watched checkout, **frozen at process start** — the
+#: sha this process booted from, not whatever the tree says now. The drift
+#: between the two is reported separately by :func:`_source_drift`.
+_WATCHED_GIT_INFO: dict[str, str] = _watched_checkout_git_info()
+
+
 def _real_baked(env_name: str) -> str | None:
     """The value of a build-arg env var, but only if it is a *real* one.
 
@@ -2118,56 +2198,142 @@ def _render_last_exit_note() -> str | None:
     return f"previous server exited {written_at} — {what}"
 
 
+#: Labels in :data:`_BUILD_ENV_KEYS` that describe a *git identity* — which
+#: commit the code is. These come from **one** lane, never mixed: a sha from
+#: one source beside a ``git_dirty`` from another is how the wrong sha got
+#: read as corroborated (gr457361). The remaining labels
+#: (``build_time``/``build_host``/``build_user``) describe the image build
+#: and stay env-only, where they are unambiguous.
+_GIT_IDENTITY_LABELS: frozenset[str] = frozenset(
+    {
+        "git_last_tag",
+        "git_sha",
+        "git_sha_short",
+        "git_dirty",
+        "git_describe",
+        "git_branch",
+    }
+)
+
+
+def _baked_git_info() -> dict[str, str]:
+    """The baked-image lane as a dict, so every lane has the same shape."""
+    info: dict[str, str] = {}
+    for env_name, label in _BUILD_ENV_KEYS:
+        if label in _GIT_IDENTITY_LABELS and (val := _real_baked(env_name)):
+            info[label] = val
+    return info
+
+
+def _git_identity_lane() -> tuple[str, dict[str, str]]:
+    """Pick the one lane that answers "which commit is this process".
+
+    A lane qualifies only when it carries a ``git_sha``. Without one it is
+    not an identity, and letting it win would blank the sha while claiming
+    a source for it — which is how the test image (real
+    ``PRECIS_GIT_DIRTY``, ``PRECIS_GIT_SHA=unknown``) first read as
+    ``image-build`` with no sha at all.
+
+    Order, most authoritative first:
+
+    1. ``watched-checkout`` — :data:`_WATCHED_GIT_INFO`. Ranked top because
+       it is the only lane that can be right when a process imports from a
+       copy of a tree: the baked env describes the venv, not the copy.
+    2. ``image-build`` — the ``PRECIS_GIT_*`` build args. Correct and
+       authoritative for a genuine runtime/worker image, where the baked
+       sha *is* the code and there is no watched tree.
+    3. ``working-tree`` — :data:`_SOURCE_GIT_INFO`, the checkout
+       ``precis.__file__`` sits in. Local dev and editable installs.
+    4. ``vcs-install`` — :data:`_DIST_GIT_INFO`, the commit in the wheel's
+       ``direct_url.json``. The cluster's ``… @main`` venv.
+    5. ``unknown`` — no git anywhere; say so rather than guess.
+    """
+    candidates = (
+        ("watched-checkout", _WATCHED_GIT_INFO),
+        ("image-build", _baked_git_info()),
+        ("working-tree", _SOURCE_GIT_INFO),
+        ("vcs-install", _DIST_GIT_INFO),
+    )
+    for name, info in candidates:
+        if info.get("git_sha"):
+            return name, info
+    return "unknown", {}
+
+
+def _source_drift() -> str:
+    """Has the tree this process loaded from moved since it loaded?
+
+    The field that answers "is my MCP stale?" — repeatedly, from the
+    surface built to answer it, rather than once per bounce from the
+    watchdog's exit breadcrumb. It is the one check that would have caught
+    gr458061's incident: in that container ``stat``, ``grep`` and a fresh
+    ``python -c`` import all reported the *new* code, because they read the
+    files while the process served 16-hour-old modules out of memory. All
+    three agreed and all three were wrong. Comparing a sha frozen at import
+    against the tree's HEAD read now cannot agree by construction.
+
+    * ``"none"`` — the watched tree is still at the sha this process
+      imported.
+    * ``"moved <old>→<new>"`` — it has advanced; this process serves code
+      that is no longer what the tree says. Restarting is the fix.
+    * ``"unknown"`` — no watched tree, or its ``.git`` is unreadable. Not
+      "clean": nothing was checked.
+
+    Scoped to the watched tree on purpose. ``_SOURCE_GIT_INFO``'s checkout
+    could be re-read the same way, but for the deployment that needs this
+    the executing code is a *copy* and its own directory has no ``.git``.
+    """
+    booted = _WATCHED_GIT_INFO.get("git_sha")
+    if not booted:
+        return "unknown"
+    try:
+        from precis.install_watchdog import checkout_fingerprint, watched_checkout_root
+
+        root = watched_checkout_root()
+        now = checkout_fingerprint(root) if root is not None else None
+    except Exception:  # pragma: no cover — a status field must not raise
+        return "unknown"
+    if now is None:
+        return "unknown"
+    if now == booted:
+        return "none"
+    return f"moved {booted[:12]}→{now[:12]}"
+
+
 def _collect_build_info() -> list[tuple[str, str]]:
     """Return ``(field, value)`` rows for the **Build** section.
 
-    Sources, in precedence order per git field:
+    Every git-identity field comes from a single lane, chosen by
+    :func:`_git_identity_lane` and named in ``git_source``; a field that
+    lane does not carry renders ``"unknown"`` rather than borrowing from
+    the next one. Mixing was the defect: the shared server reported a
+    three-week-old baked sha beside a working-tree ``source_path`` and a
+    ``git_dirty`` that described neither (gr457361).
 
-    1. The build-time env vars in :data:`_BUILD_ENV_KEYS` (baked into a
-       Docker image by ``scripts/build-image``) — the identity of a
-       *built image*. Only *real* values count: the Dockerfile's literal
-       ``"unknown"`` default is treated as absent (see :func:`_real_baked`).
-    2. Otherwise :data:`_SOURCE_GIT_INFO` — the git state of the *live
-       checkout* the code loaded from, frozen at process start. Covers
-       local dev, editable installs, and the cluster's from-git checkouts,
-       none of which run ``scripts/build-image``.
-    3. Otherwise :data:`_DIST_GIT_INFO` — the commit recorded in the
-       installed wheel's ``direct_url.json`` (a ``pip``/``uv`` install from
-       a git URL). The only signal a ``site-packages`` wheel has: the
-       cluster's ``… @main`` venv and a git-sourced image both land here.
-    4. Otherwise the literal ``"unknown"`` — a bare source tree with no
-       git, no build-args, and no VCS metadata still produces a well-formed
-       response.
+    ``build_time`` / ``build_host`` / ``build_user`` stay env-only — they
+    describe the image build, which is a different question from which
+    commit runs, and answering both separately is the point.
 
-    Also emits ``source_path`` (the on-disk checkout the process is
-    running, when known) and ``git_source`` — ``image-build`` /
-    ``working-tree`` / ``vcs-install`` / ``unknown`` — so the reader knows
-    which lane the git facts came from and can tell a live checkout from a
-    frozen image from an installed-from-git wheel.
+    Also emits ``source_path`` (the tree the running code came from, when
+    known) and ``source_drift`` (see :func:`_source_drift`) so a reader can
+    tell "this sha is current" from "nothing was checked".
     """
     from precis import __version__
 
+    git_source, lane = _git_identity_lane()
     rows: list[tuple[str, str]] = [("version", __version__)]
     for env_name, label in _BUILD_ENV_KEYS:
-        baked = _real_baked(env_name)
-        if baked is not None:
-            rows.append((label, baked))
+        if label in _GIT_IDENTITY_LABELS:
+            rows.append((label, lane.get(label) or "unknown"))
         else:
-            value = (
-                _SOURCE_GIT_INFO.get(label) or _DIST_GIT_INFO.get(label) or "unknown"
-            )
-            rows.append((label, value))
+            rows.append((label, _real_baked(env_name) or "unknown"))
 
-    if _real_baked("PRECIS_GIT_SHA"):
-        git_source = "image-build"
-    elif _SOURCE_GIT_INFO:
-        git_source = "working-tree"
-    elif _DIST_GIT_INFO:
-        git_source = "vcs-install"
-    else:
-        git_source = "unknown"
     rows.append(("git_source", git_source))
-    rows.append(("source_path", _SOURCE_GIT_INFO.get("source_path", "unknown")))
+    # ``source_path`` is a location, not an identity claim, so an
+    # sha-less live checkout (an unborn branch) may still name itself.
+    source_path = lane.get("source_path") or _SOURCE_GIT_INFO.get("source_path")
+    rows.append(("source_path", source_path or "unknown"))
+    rows.append(("source_drift", _source_drift()))
     return rows
 
 

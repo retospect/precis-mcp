@@ -490,6 +490,25 @@ def checkout_fingerprint(root: Path) -> str | None:
     return _resolve_head_sha(root)
 
 
+def watched_checkout_root() -> Path | None:
+    """The checkout ``PRECIS_CHECKOUT_WATCHDOG`` names, or ``None``.
+
+    Public so callers outside this module can ask *which tree the running
+    code came from* without duplicating the env var's name. The status
+    surface needs it for exactly that (gr457361): in the shared-server
+    deployment the executing code is a snapshot of this tree, and nothing
+    under ``precis.__file__`` carries a ``.git`` to read a sha from.
+
+    Says nothing about whether the arm is *armed* — this returns a path
+    whenever the env var names one, including when
+    ``PRECIS_INSTALL_WATCHDOG=0`` disabled the threads. That is deliberate:
+    a reader asking "which tree?" wants the answer even with supervision
+    off, and a caller that needs armedness has the thread object.
+    """
+    raw = (os.environ.get(_CHECKOUT_ROOT_ENV) or "").strip()
+    return Path(raw) if raw else None
+
+
 class CheckoutWatchdog(threading.Thread):
     """Exit when the watched source checkout's HEAD moves.
 

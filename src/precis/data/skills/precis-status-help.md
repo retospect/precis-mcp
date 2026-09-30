@@ -21,14 +21,17 @@ The `precis-status` synthesised skill answers the questions an
 agent or operator asks when they're not sure what container, build,
 or database they're talking to. One call returns four sections:
 **Build** (version, git sha, branch, dirty flag, last release tag,
-`git_source` + `source_path` provenance, build time/host/user),
+`git_source` + `source_path` provenance, `source_drift`, build
+time/host/user),
 **Runtime** (container hostname, python, pid, cwd, uptime),
 **Database** (connected DSN host/port/name/user, postgres server
 version, last applied migration + count), and the existing
 **Optional dependencies** import probe.
 
-The git facts come from one of three lanes, shown by the `git_source`
-field: `image-build` (baked into a Docker image by
+The git facts come from one of four lanes, shown by the `git_source`
+field: `watched-checkout` (the HEAD of the tree `PRECIS_CHECKOUT_WATCHDOG`
+names — the shared session server, which imports from a `.git`-less
+snapshot of that tree), `image-build` (baked into a Docker image by
 `scripts/build-image`), `working-tree` (read from the live checkout
 the code loaded from — local dev or an editable install), or
 `vcs-install` (recovered from the installed wheel's `direct_url.json`
@@ -37,6 +40,20 @@ the cluster's `… @main` venv, or a git-sourced image). Whichever lane
 answers, the values are **frozen at process start**, so they tell you
 what *this running process* loaded, not what the checkout says right
 now.
+
+**One lane answers every git-identity field.** A field the winning lane
+cannot supply renders `unknown` rather than being filled in from the next
+lane down. This matters: a `git_dirty` from the image build sitting beside
+a sha from somewhere else reads as "clean and verified" and makes a wrong
+sha look corroborated (gr457361). `build_time`/`build_host`/`build_user`
+are the exception — they describe the image build, which is a separate
+question, and are always read from the baked env.
+
+`source_drift` is the one field read *live* rather than frozen, and it is
+what answers "is my MCP stale?": `none` (the watched tree is still at the
+sha this process imported), `moved <old>→<new>` (it advanced; this process
+is serving code the tree no longer has — restart it), or `unknown` (no
+watched tree, so **nothing was checked** — not a claim of freshness).
 
 A bare `docker build` that skips `scripts/build-image` (so no
 `--build-arg` git values are passed) does **not** count as
@@ -88,6 +105,17 @@ section reports `git_sha`, `git_sha_short`, `git_dirty`,
 `source_path` (the on-disk checkout the process is running from).
 The `git_source` field tells you the lane:
 
+- `watched-checkout` — the resolved HEAD of the tree
+  `PRECIS_CHECKOUT_WATCHDOG` names, read from its `.git` at process start.
+  Outranks everything else because it is the only lane that can be right
+  when the code executes from a *copy* of a tree: the shared session
+  server's entrypoint snapshots the bind-mounted `/src` into `/app`
+  excluding `.git`, so `import precis` resolves somewhere with no git at
+  all and the image's baked sha describes a venv built weeks earlier.
+  `git_dirty`, `git_describe` and `git_last_tag` stay `unknown` — the
+  reader parses `.git` directly (it must: the tree is usually a read-only
+  mount owned by another uid, where `git` refuses to run) and those three
+  need real git.
 - `image-build` — baked into the image by `scripts/build-image` at
   `docker build` time (`git_dirty` reads `0`/`1`). Requires *real*
   build-args: an image built without them (the Dockerfile's `unknown`
@@ -159,6 +187,15 @@ want to confirm "yes, this process is fresh".
 ## How do I check for stale builds?
 ## How do I know if I need to rebuild?
 
+Read `source_drift`. It does the comparison below for you, and on the
+shared session server it is the only check that works:
+
+- `none` — the watched tree is still at the sha this process imported.
+- `moved <old>→<new>` — the tree advanced and the process never
+  restarted. It is serving the old code. Restart it.
+- `unknown` — no watched tree, so nothing was compared. Fall back to the
+  manual check.
+
 The `git_sha` in the **Build** section is **frozen at the moment the
 process started** — it is what *this running process* loaded, not
 what the checkout on disk says now. That is exactly the signal you
@@ -174,6 +211,15 @@ redeploy) **but the process never restarted** — it is still running
 the old sha and needs a restart to pick up the new code. (A naive
 on-demand `git rev-parse` would read the fresh sha and falsely report
 "current"; freezing at startup is what makes the drift visible.)
+
+**Do not substitute a cheap check from inside the container.** A `stat`,
+a `grep` of a source file, and a fresh `python -c "import precis"` all
+read the *files*, which a bind mount keeps current while the process
+keeps serving the modules it imported hours ago. In one measured incident
+all three agreed that the code was current, two detailed root-cause
+analyses were written on that basis, and both were wrong (gr458061).
+`source_drift` compares a sha frozen at import against the tree now, so
+it cannot agree by construction.
 
 Other fields to cross-reference:
 

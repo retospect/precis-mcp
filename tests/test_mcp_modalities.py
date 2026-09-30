@@ -24,6 +24,7 @@ for:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -495,6 +496,144 @@ def test_precis_status_build_falls_back_to_dist_metadata(monkeypatch) -> None:
     assert rows["git_source"] == "vcs-install"
     # No live checkout, so ``source_path`` stays honest.
     assert rows["source_path"] == "unknown"
+
+
+def _fake_checkout(root: Path, sha: str) -> None:
+    """Write the three files ``checkout_fingerprint`` reads.
+
+    No ``git`` binary and no real repo: the reader parses ``.git`` directly
+    (it has to — the watched tree is typically a read-only mount owned by
+    another uid, where ``git`` refuses to operate), so a checkout it
+    accepts is exactly this much on disk.
+    """
+    git_dir = root / ".git"
+    (git_dir / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git_dir / "refs" / "heads" / "main").write_text(sha + "\n", encoding="utf-8")
+
+
+def test_precis_status_build_prefers_watched_checkout_over_baked_env(
+    monkeypatch, tmp_path
+) -> None:
+    """gr457361: the sha must name the code the process is EXECUTING.
+
+    The shared session server imports from a snapshot copy of the watched
+    tree, taken without ``.git``, inside an image whose baked
+    ``PRECIS_GIT_SHA`` describes a venv built weeks earlier. Measured
+    before this pin: a reported sha from 2026-09-08 while ``/app`` carried
+    a change landed 2026-09-30. The watched tree's HEAD is the only lane
+    that can be right there, so it outranks the baked one.
+    """
+    from precis.handlers import skill as skill_mod
+
+    _fake_checkout(tmp_path, "aaaa1111bbbb2222cccc3333dddd4444eeee5555")
+    monkeypatch.setenv("PRECIS_CHECKOUT_WATCHDOG", str(tmp_path))
+    monkeypatch.setenv("PRECIS_GIT_SHA", "bakedsha00000000")
+    monkeypatch.setattr(
+        skill_mod, "_WATCHED_GIT_INFO", skill_mod._watched_checkout_git_info()
+    )
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_sha"] == "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+    assert rows["git_sha_short"] == "aaaa1111bbbb"
+    assert rows["git_branch"] == "main"
+    assert rows["git_source"] == "watched-checkout"
+    assert rows["source_path"] == str(tmp_path)
+
+
+def test_precis_status_build_does_not_mix_git_identity_lanes(
+    monkeypatch, tmp_path
+) -> None:
+    """``git_dirty`` follows the sha's lane or renders ``unknown``.
+
+    The second half of gr457361: a ``git_dirty: 0`` baked into the image
+    was rendered beside the winning sha and read as "this tree is clean and
+    verified", which made a three-week-old sha look corroborated rather
+    than suspect. A field the winning lane cannot answer must say so.
+    """
+    from precis.handlers import skill as skill_mod
+
+    _fake_checkout(tmp_path, "aaaa1111bbbb2222cccc3333dddd4444eeee5555")
+    monkeypatch.setenv("PRECIS_CHECKOUT_WATCHDOG", str(tmp_path))
+    monkeypatch.setenv("PRECIS_GIT_DIRTY", "0")
+    monkeypatch.setenv("PRECIS_GIT_DESCRIBE", "v8.4.4-2288-gf2cbcb29")
+    monkeypatch.setenv("PRECIS_BUILD_TIME", "2026-09-08T13:57:07Z")
+    monkeypatch.setattr(
+        skill_mod, "_WATCHED_GIT_INFO", skill_mod._watched_checkout_git_info()
+    )
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_dirty"] == "unknown"
+    assert rows["git_describe"] == "unknown"
+    # The image's *build* provenance is a different question and stays.
+    assert rows["build_time"] == "2026-09-08T13:57:07Z"
+
+
+def test_source_drift_reports_a_checkout_that_moved_since_import(
+    monkeypatch, tmp_path
+) -> None:
+    """The check that would have caught gr458061's incident.
+
+    In that container ``stat``, ``grep`` and a fresh ``python -c`` import
+    all reported the new code while the process served 16-hour-old modules
+    out of memory — three agreeing, wrong answers. A sha frozen at import
+    compared against the tree's HEAD read now cannot agree by construction.
+    """
+    from precis.handlers import skill as skill_mod
+
+    booted = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+    moved_to = "9999888877776666555544443333222211110000"
+    _fake_checkout(tmp_path, booted)
+    monkeypatch.setenv("PRECIS_CHECKOUT_WATCHDOG", str(tmp_path))
+    monkeypatch.setattr(skill_mod, "_WATCHED_GIT_INFO", {"git_sha": booted})
+
+    assert skill_mod._source_drift() == "none"
+
+    _fake_checkout(tmp_path, moved_to)
+    assert skill_mod._source_drift() == "moved aaaa1111bbbb→999988887777"
+    assert dict(skill_mod._collect_build_info())["source_drift"] == (
+        "moved aaaa1111bbbb→999988887777"
+    )
+
+
+def test_source_drift_is_unknown_not_clean_without_a_watched_tree(
+    monkeypatch,
+) -> None:
+    """No watched tree means nothing was checked — never ``none``.
+
+    ``none`` is a positive claim that the code is current. Reporting it
+    where no comparison happened is the same class of false reassurance as
+    the baked ``git_dirty``.
+    """
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.delenv("PRECIS_CHECKOUT_WATCHDOG", raising=False)
+    monkeypatch.setattr(skill_mod, "_WATCHED_GIT_INFO", {})
+
+    assert skill_mod._source_drift() == "unknown"
+    assert dict(skill_mod._collect_build_info())["source_drift"] == "unknown"
+
+
+def test_watched_checkout_lane_absent_when_tree_is_unreadable(
+    monkeypatch, tmp_path
+) -> None:
+    """A named-but-unreadable tree falls through to the next lane.
+
+    Same rule the watchdog itself follows: a fingerprint source that can
+    fail for reasons unrelated to the checkout moving must not be treated
+    as an answer.
+    """
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setenv("PRECIS_CHECKOUT_WATCHDOG", str(tmp_path / "nope"))
+    monkeypatch.setenv("PRECIS_GIT_SHA", "bakedsha00000000")
+    monkeypatch.setattr(
+        skill_mod, "_WATCHED_GIT_INFO", skill_mod._watched_checkout_git_info()
+    )
+    rows = dict(skill_mod._collect_build_info())
+
+    assert rows["git_source"] == "image-build"
+    assert rows["git_sha"] == "bakedsha00000000"
 
 
 def test_live_git_info_reads_the_running_checkout() -> None:
