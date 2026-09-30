@@ -6,8 +6,9 @@ sourced numbers (the norr-her-meta paper is the first consumer). Today the
 taxon kind is ready to build and four items wait on it; the measurand-list
 pipeline (census → discovery → freeze) has its prompt, census and
 synonym fixes measured (stability 0.052 → 0.270 on the same 100 hubs, 0.55
-of what that sample can show), no vocabulary blocker left, and a freeze that
-cannot land until the taxon kind exists.
+of what that sample can show), no vocabulary blocker left, per-call
+metering in place, and a freeze that cannot land until the taxon kind
+exists.
 **Last reviewed:** 2026-09-30
 **Worktree:** `term-taxonomy`
 
@@ -18,10 +19,11 @@ cannot land until the taxon kind exists.
    of taxonomy-bootstrap's freeze, measures-substrate, graph-gardener and
    knowledge-mesh; nothing else in this thread can ship its output until
    the taxon kind exists.
-2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — per-call
-   metering + raw-reply capture in `discover()` + the n=100 pass criterion.
-   Before the 1231-call full run, or that run is an unmeasured spend;
-   concurrency vs packing is decided by the metering's cache-read counts.
+2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — the metered
+   re-probe of the same 100 rows (~66 paid calls, Reto's go-ahead). Yields
+   the cache-read counts that decide concurrency vs packing, the noise
+   floor, and the first `probe criterion` verdict (≥0.60 of the unit-key
+   ceiling; run 2 reads 0.55). The 1231-call full run waits on it.
 3. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Below 2 because it starts on a frozen list.
 4. **backlog/measures-substrate.md** — blocked-by term-taxonomy; identity =
@@ -31,8 +33,8 @@ cannot land until the taxon kind exists.
 ## Horizon
 
 1. **backlog/taxonomy-bootstrap.md full run** (1231 calls) — waits on the
-   re-probe clearing the n=100 criterion and the metering answer; delivers
-   list.v1.yaml, the first frozen measurand list.
+   re-probe clearing the probe criterion and the concurrency decision;
+   delivers list.v1.yaml, the first frozen measurand list.
 2. **backlog/term-taxonomy.md v1** (taxon kind, instance-of, specialises
    with meta.axis, six seeded axes) — waits on nothing; the node type every
    later milestone writes into, the freeze target for 1.
@@ -65,4 +67,8 @@ cannot land until the taxon kind exists.
   node each); nothing further. The campaign vocabularies grow from node
   notes, not from code.
 - the 0.80 stability threshold — not readable at 100 hubs (unit-key ceiling
-  0.49); it is a full-run criterion, not a probe failure.
+  0.49); it is a full-run criterion, not a probe failure. The probe reads
+  `min_probe_ratio` (0.60 of the ceiling) instead, stated 2026-09-30.
+- per-call metering + raw-reply capture — `responses.jsonl` per discovery
+  call, streamed as each call lands; nothing further until a paid run
+  fills it.

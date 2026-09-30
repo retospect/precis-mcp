@@ -16,6 +16,7 @@ from precis.taxonomy.select import (
     escape_rate,
     promote,
     select_entries,
+    unit_key_ceiling,
     vocabulary_stability,
 )
 from precis.taxonomy.types import (
@@ -412,3 +413,44 @@ def test_ac7_non_chemistry_measurands_pass_stage3_and_4():
     assert by_key["gdp-per-capita"].dimension.kind == "currency"
     assert by_key["gdp-per-capita"].dimension.currency_code == "USD"
     assert by_key["gdp-per-capita"].dimension.base_year == 2015
+
+
+# --- unit_key_ceiling -----------------------------------------------------
+
+
+def _unit_term(unit: str | None, half: Half) -> DiscoveredTerm:
+    n = next(_seq)
+    mention = Mention(
+        anchor=Anchor(source_ref_id=n, start=0, end=1),
+        kind="value",
+        literal="1",
+        raw_unit=unit,
+    )
+    return DiscoveredTerm(mention=mention, measurand=f"name-{n}", half=half)
+
+
+def test_unit_key_ceiling_ignores_the_measurand_entirely() -> None:
+    """Every measurand is distinct, so the vocabulary overlap is zero, yet
+    the halves share their units one-for-one: the ceiling is one."""
+    terms = [_unit_term("V", "A"), _unit_term("mA cm^-2", "A")] + [
+        _unit_term("V", "B"),
+        _unit_term("mA cm^-2", "B"),
+    ]
+    assert vocabulary_stability(terms) == pytest.approx(0.0)
+    assert unit_key_ceiling(terms) == pytest.approx(1.0)
+
+
+def test_unit_key_ceiling_is_mention_weighted_and_treats_no_unit_as_a_key() -> None:
+    terms = [
+        _unit_term("V", "A"),
+        _unit_term("V", "A"),
+        _unit_term(None, "A"),
+        _unit_term("V", "B"),
+        _unit_term("%", "B"),
+    ]
+    # V: min 1 / max 2; none: 0/1; %: 0/1 → 1 / 4
+    assert unit_key_ceiling(terms) == pytest.approx(1 / 4)
+
+
+def test_unit_key_ceiling_empty_is_one() -> None:
+    assert unit_key_ceiling([]) == 1.0

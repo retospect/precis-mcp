@@ -95,7 +95,8 @@ chemistry lives in campaign configuration files.
 | usage test for `systematic` | ≥3 independent papers, present in both halves, dimension-consistent | node status only — asserts *systematic usage*, never truth |
 | list inclusion | ≥30 hubs in the campaign's target cells | per measurand |
 | join requirement | ≥15 hubs on each side | for any entry plotted experimental vs computational |
-| stability | ≥0.80 vocabulary overlap A vs B, mention-weighted | below this: fix the prompt, do not proceed |
+| stability | ≥0.80 vocabulary overlap A vs B, mention-weighted | below this: fix the prompt, do not proceed — a full-run criterion |
+| probe ratio | ≥0.60 of the unit-key ceiling on the same rows | the n≈100 read of the same number (stated 2026-09-30, `min_probe_ratio`); reported by the CLI, never a freeze gate |
 | escape rate | >10% of a paper's values fit no entry | forces list regeneration for the next round, never a hand patch |
 | discovery model | Sonnet | see stage 2 |
 
@@ -410,8 +411,11 @@ deterministic census unit — the best any naming could do — gives 0.49, with
 32 and 29 hubs per half and most quantities occurring in one hub. So 0.200
 against 0.80 is not a failure; the honest read is the ratio to the unit
 ceiling, 0.11 → 0.41. `freeze_run`'s 0.80 refusal stays, but it is a
-full-run criterion. A stated n=100 pass criterion is owed before the next
-paid spend (proposal: ≥0.6 of the unit-key ceiling).
+full-run criterion. The n=100 pass criterion is stated as of 2026-09-30:
+`Thresholds.min_probe_ratio` = 0.60 of `select.unit_key_ceiling` on the
+same rows, printed by the CLI as `probe criterion PASS|FAIL` under the
+summary. Run 2 with the blocker-4 vocabulary reads 0.55 — below the bar; the
+next probe has to clear it before the full run is bought.
 
 **Blocker 4 — synonym families: fixed 2026-09-30, measured on the run-2
 dumps (free).** Of the six systematic nodes, three were one quantity
@@ -452,10 +456,14 @@ convention is named there with its mention count.
 **Two things this probe could not tell us.** Test-retest on the 174 shared
 mentions is 0.10 — meaningless across a prompt change; the noise floor needs
 a second run of the *same* prompt and has not been bought. Per-call cost,
-tokens and cache hits were not recorded: the discovery client keeps only the
-reply text and the CLI never binds the route log, although the `claude -p`
-result carries all four token counts. Capture them before the full run —
-that is what decides concurrency versus packing several hubs per call.
+tokens and cache hits were not recorded by the first two probes: the
+discovery client kept only the reply text. Since 2026-09-30 every discovery
+call writes a `responses.jsonl` row (ref id, half, prompt sha256 and length,
+raw payload, error, model, cost, the four token counts, wall-clock, parsed
+term and warning counts — `discovery.CallRecord`), streamed to disk as each
+call lands so a killed run keeps its metering, and the summary carries a
+cost/token line. The cache-read column of the next probe is what decides
+concurrency versus packing several hubs per call.
 
 ## Resume (2026-09-30)
 
@@ -464,15 +472,17 @@ session's 2026-09-30 gate covered the integrated main; fleet verified on
 castor, pollux and balthazar over the venv's `direct_url.json`; melchior's
 venv was not located by the read-only probe, so it is unverified, not
 drifted). Blocker 3a and the probe-2 record are gated and on the fleet
-(2026-09-30 12:23 UTC); blockers 4 and 3b landed after that gate and wait
-for the next one. Every vocabulary and census blocker from the two probes is
-now closed. Detail is in the two probe sections above; this section is only
-the order.
+(2026-09-30 12:23 UTC); blockers 4 and 3b and the per-call metering landed
+after that gate and wait for the next one. Every vocabulary and census
+blocker from the two probes is closed and the metering the full run needs
+is in place, so the next act is a paid one. Detail is in the two probe
+sections above; this section is only the order.
 
-1. **Metering + raw-reply capture in `discover()`** — per call: ref id,
-   prompt hash, raw payload, cost, the four token counts, duration, to a
-   `responses.jsonl` beside the other dumps. Plus the n=100 pass criterion
-   (above). Both land before any further paid call.
+1. **Re-probe the same 100 rows** — PAID (~66 calls), Reto's go-ahead
+   required. First run with metering, so it yields the cache-read counts
+   that decide 2, the test-retest noise floor against run 2 (same prompt
+   now), and the first `probe criterion` line; a FAIL there is a prompt or
+   vocabulary fix, not a reason to buy the full run.
 2. **Concurrency vs packing.** Decided by 1's cache-read counts: a cached
    prefix favours a thread pool over `claude -p`; an uncached one favours
    several hubs per call. 33 s/call sequential is 11.3 h for the full run.

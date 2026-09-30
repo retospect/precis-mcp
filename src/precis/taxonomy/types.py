@@ -334,6 +334,14 @@ class Thresholds:
     """Hubs on *each* side of an experimental-vs-computational comparison."""
     min_stability: float = 0.80
     """Mention-weighted A/B vocabulary overlap below which the run fails."""
+    min_probe_ratio: float = 0.60
+    """The n≈100 probe criterion, stated 2026-09-30: stability as a fraction
+    of :func:`~precis.taxonomy.select.unit_key_ceiling`. At probe size the
+    0.80 overlap is unreadable (most quantities occur in one hub, capping
+    the overlap near 0.5 whatever the prompt), so a probe is judged against
+    what the deterministic unit key reaches on the same rows; the full run
+    is still judged by ``min_stability``, where the ceiling approaches one.
+    Reported by the CLI, never a freeze gate."""
     max_escape_rate: float = 0.10
     """Share of a paper's values fitting no entry that forces regeneration."""
     require_both_halves: bool = True
@@ -345,6 +353,7 @@ class Thresholds:
             "min_hubs": self.min_hubs,
             "min_join_side": self.min_join_side,
             "min_stability": self.min_stability,
+            "min_probe_ratio": self.min_probe_ratio,
             "max_escape_rate": self.max_escape_rate,
             "require_both_halves": self.require_both_halves,
             "require_single_dimension": self.require_single_dimension,

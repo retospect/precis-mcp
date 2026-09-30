@@ -345,6 +345,7 @@ def _parse_thresholds(raw: dict[str, Any]) -> Thresholds:
         "min_hubs",
         "min_join_side",
         "min_stability",
+        "min_probe_ratio",
     }
     tighter_is_smaller = {"max_escape_rate"}
     kwargs: dict[str, Any] = {}

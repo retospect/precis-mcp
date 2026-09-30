@@ -41,7 +41,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
@@ -65,14 +66,93 @@ _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 _MEASURAND_MAX_WORDS: Final[int] = 6
 
 
+@dataclass(frozen=True, slots=True)
+class Reply:
+    """One transport reply: the raw text plus whatever the transport metered.
+
+    Every metering field is optional because transports differ in what they
+    report (``claude -p`` gives cost and the four token counts, a loopback
+    local model gives neither) — ``None`` means *unreported*, never zero.
+    ``duration_s`` is the transport's own reading when it has one;
+    :func:`discover` measures the wall-clock around the call itself.
+    """
+
+    text: str
+    model: str | None = None
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    duration_s: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CallRecord:
+    """One metered discovery call, failed or not — a ``responses.jsonl`` row.
+
+    ``taxonomy-bootstrap.md`` §Resume: the paid full run is ~1231 calls, and
+    the choice between a thread pool and packing several hubs per call
+    turns on whether the shared prompt prefix is served from cache — a
+    number only the transport's own token counts can give. The row keeps
+    the raw ``payload`` too, so a parse rule can change and be replayed
+    over what the model actually said without paying again.
+    ``prompt_sha256`` identifies the prompt without storing it (the prompt
+    is rebuilt deterministically from the snapshot row, AC1);
+    ``duration_s`` is :func:`discover`'s own wall-clock around the call. A
+    failed call has ``payload=None`` and ``error`` set — it still cost time
+    and possibly money, so it is still a row. ``terms``/``warnings`` count
+    what :func:`parse_response` made of the payload.
+    """
+
+    ref_id: int
+    half: Half
+    prompt_sha256: str
+    prompt_chars: int
+    duration_s: float
+    payload: str | None
+    error: str | None = None
+    model: str | None = None
+    cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    terms: int = 0
+    warnings: int = 0
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "ref_id": self.ref_id,
+            "half": self.half,
+            "prompt_sha256": self.prompt_sha256,
+            "prompt_chars": self.prompt_chars,
+            "duration_s": self.duration_s,
+            "payload": self.payload,
+            "error": self.error,
+            "model": self.model,
+            "cost_usd": self.cost_usd,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_creation_tokens": self.cache_creation_tokens,
+            "terms": self.terms,
+            "warnings": self.warnings,
+        }
+
+
 class DiscoveryClient(Protocol):
     """The one-shot completion seam stage 2 depends on.
 
     ``complete_json`` takes a fully built prompt and returns the model's raw
-    text reply. Tests inject a fake; production wires :func:`router_client`.
+    text reply — bare (an unmetered reply, what the test fakes return) or
+    as a :class:`Reply` carrying the transport's metering. Tests inject a
+    fake; production wires :func:`router_client`. A transport failure is
+    raised, never returned as empty text: :func:`discover` turns it into a
+    warning and a failed :class:`CallRecord`.
     """
 
-    def complete_json(self, prompt: str) -> str: ...
+    def complete_json(self, prompt: str) -> Reply | str: ...
 
 
 def split_halves(ref_ids: Sequence[int], *, salt: str) -> dict[int, Half]:
@@ -318,6 +398,37 @@ def parse_response(
     return tuple(terms), tuple(warnings)
 
 
+def _record(
+    ref_id: int,
+    half: Half,
+    prompt: str,
+    duration_s: float,
+    reply: Reply | None,
+    *,
+    error: str | None = None,
+    terms: int = 0,
+    warnings: int = 0,
+) -> CallRecord:
+    metered = reply if reply is not None else Reply(text="")
+    return CallRecord(
+        ref_id=ref_id,
+        half=half,
+        prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        prompt_chars=len(prompt),
+        duration_s=duration_s,
+        payload=reply.text if reply is not None else None,
+        error=error,
+        model=metered.model,
+        cost_usd=metered.cost_usd,
+        input_tokens=metered.input_tokens,
+        output_tokens=metered.output_tokens,
+        cache_read_tokens=metered.cache_read_tokens,
+        cache_creation_tokens=metered.cache_creation_tokens,
+        terms=terms,
+        warnings=warnings,
+    )
+
+
 def discover(
     rows: Sequence[Mapping[str, object]],
     mentions_by_ref: Mapping[int, Sequence[Mention]],
@@ -325,6 +436,7 @@ def discover(
     client: DiscoveryClient,
     *,
     halves: Mapping[int, Half],
+    on_call: Callable[[CallRecord], None] | None = None,
 ) -> tuple[tuple[DiscoveredTerm, ...], tuple[str, ...]]:
     """Run stage 2 over a snapshot's rows.
 
@@ -336,6 +448,10 @@ def discover(
     on one row is caught and turned into a warning so one bad row cannot
     abort a whole snapshot run (AC2's stability check needs the run to
     finish even when it is about to fail its own threshold).
+
+    ``on_call`` receives one :class:`CallRecord` per client call, failed
+    calls included, *as each call completes* — a sink that appends to disk
+    keeps the metering of a run that is killed at hour nine of eleven.
     """
     ref_field = config.snapshot.ref_field
     text_field = config.snapshot.text_field
@@ -362,14 +478,32 @@ def discover(
             warnings.append(f"ref {ref_id}: row missing {text_field!r} — skipped")
             continue
         prompt = build_prompt(str(text_raw), mentions, config)
+        started = time.monotonic()
         try:
-            payload = client.complete_json(prompt)
+            raw = client.complete_json(prompt)
         except Exception as exc:
+            elapsed = time.monotonic() - started
             warnings.append(f"ref {ref_id}: discovery call failed: {exc}")
+            if on_call is not None:
+                on_call(_record(ref_id, half, prompt, elapsed, None, error=str(exc)))
             continue
-        row_terms, row_warnings = parse_response(payload, mentions, half)
+        elapsed = time.monotonic() - started
+        reply = raw if isinstance(raw, Reply) else Reply(text=raw)
+        row_terms, row_warnings = parse_response(reply.text, mentions, half)
         terms.extend(row_terms)
         warnings.extend(f"ref {ref_id}: {warning}" for warning in row_warnings)
+        if on_call is not None:
+            on_call(
+                _record(
+                    ref_id,
+                    half,
+                    prompt,
+                    elapsed,
+                    reply,
+                    terms=len(row_terms),
+                    warnings=len(row_warnings),
+                )
+            )
     return tuple(terms), tuple(warnings)
 
 
@@ -381,9 +515,22 @@ class _RouterDiscoveryClient:
 
     dispatch: Any
 
-    def complete_json(self, prompt: str) -> str:
+    def complete_json(self, prompt: str) -> Reply:
+        # ``DispatchClient.complete`` raises ``DispatchError`` on a transport
+        # failure, so a reply that reaches here is a real one; the metering
+        # fields are the router's ``LlmResult`` fields, ``None`` where the
+        # transport did not report them.
         result = self.dispatch.complete([{"role": "user", "content": prompt}])
-        return getattr(result, "text", "") or ""
+        return Reply(
+            text=getattr(result, "text", "") or "",
+            model=getattr(result, "model", None),
+            cost_usd=getattr(result, "cost_usd", None),
+            input_tokens=getattr(result, "input_tokens", None),
+            output_tokens=getattr(result, "output_tokens", None),
+            cache_read_tokens=getattr(result, "cache_read_tokens", None),
+            cache_creation_tokens=getattr(result, "cache_creation_tokens", None),
+            duration_s=getattr(result, "duration_s", None),
+        )
 
 
 def router_client(*, source: str = "taxonomy_discovery") -> DiscoveryClient:
@@ -404,7 +551,9 @@ def router_client(*, source: str = "taxonomy_discovery") -> DiscoveryClient:
 
 
 __all__ = [
+    "CallRecord",
     "DiscoveryClient",
+    "Reply",
     "build_prompt",
     "discover",
     "parse_response",

@@ -148,6 +148,10 @@ def _thresholds_from_json(data: dict[str, Any]) -> Thresholds:
         min_hubs=int(data["min_hubs"]),
         min_join_side=int(data["min_join_side"]),
         min_stability=float(data["min_stability"]),
+        # Lists frozen before the probe criterion existed carry no such key.
+        min_probe_ratio=float(
+            data.get("min_probe_ratio", Thresholds().min_probe_ratio)
+        ),
         max_escape_rate=float(data["max_escape_rate"]),
         require_both_halves=bool(data["require_both_halves"]),
         require_single_dimension=bool(data["require_single_dimension"]),

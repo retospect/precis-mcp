@@ -81,6 +81,24 @@ def test_write_then_read_round_trips_equal(tmp_path: Path) -> None:
     assert reloaded == lst
 
 
+def test_read_list_defaults_the_probe_ratio_for_a_list_frozen_before_it(
+    tmp_path: Path,
+) -> None:
+    lst = freeze(
+        [_entry()],
+        campaign="test",
+        snapshot=_snapshot(),
+        thresholds=Thresholds(),
+        version=1,
+        stability=0.9,
+    )
+    path = write_list(lst, tmp_path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["thresholds"].pop("min_probe_ratio") == 0.60
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    assert read_list(path).thresholds == Thresholds()
+
+
 def test_write_then_read_round_trips_convention_field(tmp_path: Path) -> None:
     """``ListEntry`` gained ``convention`` alongside the ``HubCount`` move;
     ``_entry_from_json`` must read it back or a convention split silently
@@ -216,6 +234,7 @@ def test_document_contains_provenance_and_thresholds(tmp_path: Path) -> None:
         "min_hubs",
         "min_join_side",
         "min_stability",
+        "min_probe_ratio",
         "max_escape_rate",
         "require_both_halves",
         "require_single_dimension",

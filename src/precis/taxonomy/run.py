@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from precis.taxonomy import census, discovery, freeze, normalise, select
 from precis.taxonomy.config import PROCEDURE_VERSION, CampaignConfig
+from precis.taxonomy.discovery import CallRecord
 from precis.taxonomy.normalise import MergeSuggestion
 from precis.taxonomy.types import (
     DiscoveredTerm,
@@ -51,6 +52,18 @@ class RunResult:
     stability: float
     entries: tuple[ListEntry, ...]
     rejected: tuple[tuple[str, str], ...]
+    #: :func:`select.unit_key_ceiling` on the same terms — what the
+    #: stability is read against at probe size.
+    unit_ceiling: float = 1.0
+    #: One row per discovery call, failed calls included (``responses.jsonl``).
+    responses: tuple[CallRecord, ...] = ()
+
+    @property
+    def stability_ratio(self) -> float:
+        """Stability as a fraction of the unit-key ceiling (the probe number)."""
+        if self.unit_ceiling <= 0:
+            return 1.0 if self.stability <= 0 else float("inf")
+        return self.stability / self.unit_ceiling
 
     def summary(self) -> str:
         promoted = sum(1 for n in self.nodes if n.status == "systematic")
@@ -59,11 +72,51 @@ class RunResult:
             f"sha {self.snapshot.sha256[:12]}\n"
             f"mentions {len(self.mentions)} (digest {self.census_digest[:12]})\n"
             f"discovered rows {len(self.terms)}, warnings {len(self.warnings)}\n"
+            f"{metering_line(self.responses)}\n"
             f"nodes {len(self.nodes)} ({promoted} systematic), "
             f"merge suggestions {len(self.suggestions)}\n"
-            f"A/B vocabulary stability {self.stability:.3f}\n"
+            f"A/B vocabulary stability {self.stability:.3f} "
+            f"({self.stability_ratio:.2f} of the unit-key ceiling "
+            f"{self.unit_ceiling:.3f})\n"
             f"entries {len(self.entries)}, rejected {len(self.rejected)}"
         )
+
+
+def metering_line(responses: Sequence[CallRecord]) -> str:
+    """One line of what the discovery calls cost, ``?`` where unreported.
+
+    A sum is over the rows that reported the field; a field nobody reported
+    prints ``?`` rather than ``0`` — a zero here would read as "free", and
+    the whole point of the row is that the run is not.
+    """
+    failed = sum(1 for r in responses if r.error is not None)
+    wall = sum(r.duration_s for r in responses)
+
+    def total(values: Sequence[float]) -> str:
+        return "?" if not values else f"{sum(values):g}"
+
+    cost = [r.cost_usd for r in responses if r.cost_usd is not None]
+    fields = (
+        ("in", [r.input_tokens for r in responses if r.input_tokens is not None]),
+        ("out", [r.output_tokens for r in responses if r.output_tokens is not None]),
+        (
+            "cache-read",
+            [r.cache_read_tokens for r in responses if r.cache_read_tokens is not None],
+        ),
+        (
+            "cache-write",
+            [
+                r.cache_creation_tokens
+                for r in responses
+                if r.cache_creation_tokens is not None
+            ],
+        ),
+    )
+    tokens = " / ".join(f"{name} {total(values)}" for name, values in fields)
+    return (
+        f"discovery calls {len(responses)} ({failed} failed), "
+        f"cost ${total(cost)}, tokens {tokens}, wall {wall:.0f} s"
+    )
 
 
 def run_census(
@@ -227,12 +280,27 @@ def run_pipeline(
     limit: int | None = None,
     join_sides: tuple[str, str] | None = None,
     side_field: str = "mode",
+    on_call: Callable[[CallRecord], None] | None = None,
 ) -> RunResult:
-    """Stages 1-4. Freezing is a separate, explicit act (see :func:`freeze_run`)."""
+    """Stages 1-4. Freezing is a separate, explicit act (see :func:`freeze_run`).
+
+    ``on_call`` is forwarded to :func:`discovery.discover` so a caller can
+    stream the call records to disk as they arrive; the result carries the
+    full tuple regardless.
+    """
     rows, mentions, digest = run_census(config, limit=limit)
     by_ref = mentions_by_ref(mentions)
     halves = discovery.split_halves(sorted(by_ref), salt=salt)
-    terms, warnings = discovery.discover(rows, by_ref, config, client, halves=halves)
+    responses: list[CallRecord] = []
+
+    def collect(record: CallRecord) -> None:
+        responses.append(record)
+        if on_call is not None:
+            on_call(record)
+
+    terms, warnings = discovery.discover(
+        rows, by_ref, config, client, halves=halves, on_call=collect
+    )
     registry = census.build_registry(config)
     nodes, suggestions = normalise.normalise(terms, registry, config)
     # Papers before promotion: the usage test's paper count is only meaningful
@@ -240,6 +308,7 @@ def run_pipeline(
     nodes = attribute_papers(nodes, papers_by_ref(rows, config))
     nodes = select.promote(nodes, config.thresholds)
     stability = select.vocabulary_stability(terms, config)
+    unit_ceiling = select.unit_key_ceiling(terms)
     counts = hub_counts(nodes, rows, config, side_field=side_field)
     entries, rejected = select.select_entries(
         nodes, counts, config.thresholds, config, join_sides=join_sides
@@ -255,6 +324,8 @@ def run_pipeline(
         stability=stability,
         entries=entries,
         rejected=rejected,
+        unit_ceiling=unit_ceiling,
+        responses=tuple(responses),
     )
 
 
@@ -313,6 +384,7 @@ def write_stage_outputs(result: RunResult, directory: Path) -> tuple[Path, ...]:
         ),
         ("rejected.jsonl", [{"key": k, "reason": r} for k, r in result.rejected]),
         ("warnings.jsonl", [{"warning": w} for w in result.warnings]),
+        ("responses.jsonl", [r.to_json() for r in result.responses]),
     ):
         path = directory / name
         with path.open("w", encoding="utf-8") as handle:

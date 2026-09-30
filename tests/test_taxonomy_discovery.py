@@ -9,12 +9,16 @@ itself (the only thing that touches the router) is not called here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
 from precis.taxonomy.config import CampaignConfig
 from precis.taxonomy.discovery import (
     _MEASURAND_MAX_WORDS,
+    CallRecord,
+    Reply,
+    _RouterDiscoveryClient,
     build_prompt,
     discover,
     parse_response,
@@ -424,3 +428,191 @@ def test_parse_response_still_strips_and_counts_words_around_whitespace() -> Non
     )
     assert terms[0].measurand == "cell   voltage", "outer whitespace only"
     assert warnings == (), "two words, however they are spaced"
+
+
+# ── metering: one CallRecord per call, failed calls included ──
+
+
+class MeteredClient:
+    """Returns a metered :class:`Reply` for the first call and a bare string
+    for the second — both shapes the protocol admits."""
+
+    def __init__(self, payload: str) -> None:
+        self.calls: list[str] = []
+        self._payload = payload
+
+    def complete_json(self, prompt: str) -> Reply | str:
+        self.calls.append(prompt)
+        if len(self.calls) == 1:
+            return Reply(
+                text=self._payload,
+                model="claude-sonnet-5",
+                cost_usd=0.0125,
+                input_tokens=900,
+                output_tokens=40,
+                cache_read_tokens=850,
+                cache_creation_tokens=0,
+                duration_s=3.5,
+            )
+        return self._payload
+
+
+def test_discover_records_every_call_with_prompt_hash_and_metering() -> None:
+    mentions_by_ref = {1: [_mention(ref_id=1)], 2: [_mention(ref_id=2, literal="5 mA")]}
+    rows = [
+        {"ref_id": 1, "text": "sentence one"},
+        {"ref_id": 2, "text": "sentence two"},
+    ]
+    payload = json.dumps([{"index": 0, "measurand": "current"}])
+    client = MeteredClient(payload)
+    halves: dict[int, Half] = {1: "A", 2: "B"}
+    records: list[CallRecord] = []
+    terms, warnings = discover(
+        rows, mentions_by_ref, _config(), client, halves=halves, on_call=records.append
+    )
+    assert len(terms) == 2 and warnings == ()
+    assert [r.ref_id for r in records] == [1, 2]
+    assert [r.half for r in records] == ["A", "B"]
+    for record, prompt in zip(records, client.calls, strict=True):
+        assert (
+            record.prompt_sha256 == hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        )
+        assert record.prompt_chars == len(prompt)
+        assert record.payload == payload
+        assert record.error is None
+        assert record.duration_s >= 0
+        assert record.terms == 1 and record.warnings == 0
+    metered, bare = records
+    assert (metered.cost_usd, metered.input_tokens, metered.output_tokens) == (
+        0.0125,
+        900,
+        40,
+    )
+    assert (metered.cache_read_tokens, metered.cache_creation_tokens) == (850, 0)
+    assert metered.model == "claude-sonnet-5"
+    # A bare-string reply is an unmetered call: every metering field stays
+    # None (unreported), never a fabricated zero.
+    assert bare.cost_usd is None and bare.input_tokens is None
+    assert bare.cache_read_tokens is None and bare.model is None
+
+
+def test_discover_records_a_failed_call_with_its_error() -> None:
+    mentions_by_ref = {1: [_mention(ref_id=1)]}
+    rows = [{"ref_id": 1, "text": "sentence one"}]
+    client = RaisingClient()
+    records: list[CallRecord] = []
+    terms, warnings = discover(
+        rows,
+        mentions_by_ref,
+        _config(),
+        client,
+        halves={1: "A"},
+        on_call=records.append,
+    )
+    assert terms == ()
+    assert len(warnings) == 1 and "model unavailable" in warnings[0]
+    (record,) = records
+    assert record.payload is None
+    assert record.error is not None and "model unavailable" in record.error
+    assert record.terms == 0 and record.duration_s >= 0
+
+
+def test_discover_records_parse_warnings_on_the_row() -> None:
+    mentions_by_ref = {1: [_mention(ref_id=1)]}
+    rows = [{"ref_id": 1, "text": "sentence one"}]
+    client = FakeClient(payload="not json at all")
+    records: list[CallRecord] = []
+    discover(
+        rows,
+        mentions_by_ref,
+        _config(),
+        client,
+        halves={1: "A"},
+        on_call=records.append,
+    )
+    (record,) = records
+    assert record.payload == "not json at all"
+    assert record.error is None, "a reply that parses badly is not a failed call"
+    assert record.terms == 0 and record.warnings >= 1
+
+
+def test_call_record_to_json_carries_every_field() -> None:
+    record = CallRecord(
+        ref_id=7,
+        half="B",
+        prompt_sha256="ab" * 32,
+        prompt_chars=1200,
+        duration_s=2.25,
+        payload="[]",
+        model="m",
+        cost_usd=0.01,
+        input_tokens=1,
+        output_tokens=2,
+        cache_read_tokens=3,
+        cache_creation_tokens=4,
+        terms=0,
+        warnings=1,
+    )
+    data = record.to_json()
+    assert set(data) == {
+        "ref_id",
+        "half",
+        "prompt_sha256",
+        "prompt_chars",
+        "duration_s",
+        "payload",
+        "error",
+        "model",
+        "cost_usd",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+        "terms",
+        "warnings",
+    }
+    assert json.loads(json.dumps(data)) == data
+
+
+class _FakeDispatch:
+    """A ``DispatchClient`` stand-in: the router's ``LlmResult`` fields as
+    attributes, no network."""
+
+    def __init__(self, **fields: Any) -> None:
+        self.fields = fields
+        self.messages: list[list[dict[str, str]]] = []
+
+    def complete(self, messages: list[dict[str, str]]) -> Any:
+        self.messages.append(messages)
+        return type("LlmResult", (), self.fields)()
+
+
+def test_router_adapter_maps_the_llm_result_metering_onto_the_reply() -> None:
+    dispatch = _FakeDispatch(
+        text="[]",
+        model="claude-sonnet-5",
+        cost_usd=0.02,
+        input_tokens=10,
+        output_tokens=5,
+        cache_read_tokens=8,
+        cache_creation_tokens=2,
+        duration_s=1.5,
+    )
+    reply = _RouterDiscoveryClient(dispatch).complete_json("the prompt")
+    assert dispatch.messages == [[{"role": "user", "content": "the prompt"}]]
+    assert reply == Reply(
+        text="[]",
+        model="claude-sonnet-5",
+        cost_usd=0.02,
+        input_tokens=10,
+        output_tokens=5,
+        cache_read_tokens=8,
+        cache_creation_tokens=2,
+        duration_s=1.5,
+    )
+
+
+def test_router_adapter_leaves_unreported_metering_none() -> None:
+    reply = _RouterDiscoveryClient(_FakeDispatch(text="[]")).complete_json("p")
+    assert reply.text == "[]"
+    assert reply.cost_usd is None and reply.cache_read_tokens is None

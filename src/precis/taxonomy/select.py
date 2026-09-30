@@ -24,7 +24,7 @@ ever needs to *veto* (demote), never approve each row.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
 from precis.taxonomy.config import CampaignConfig
@@ -119,10 +119,32 @@ def vocabulary_stability(
     selection.
     """
     aliases = config.measurand_aliases if config is not None else None
+    return _weighted_overlap(terms, lambda term: alias_key(term.measurand, aliases))
+
+
+def unit_key_ceiling(terms: Sequence[DiscoveredTerm]) -> float:
+    """The overlap the same rows reach keyed by the census unit alone.
+
+    A unit is deterministic, so this is the best A/B overlap *any* naming
+    could reach on this sample — at n≈100 most quantities occur in one hub,
+    and that caps the overlap regardless of the prompt (``0.49`` on the
+    second probe, ``taxonomy-bootstrap.md`` §Second probe). The probe
+    criterion is :func:`vocabulary_stability` as a fraction of this number
+    (``Thresholds.min_probe_ratio``); the signed ``min_stability`` stays the
+    full-run gate, where the ceiling approaches one.
+    """
+    return _weighted_overlap(
+        terms, lambda term: alias_key(term.mention.raw_unit or "none")
+    )
+
+
+def _weighted_overlap(
+    terms: Sequence[DiscoveredTerm], key_of: Callable[[DiscoveredTerm], str]
+) -> float:
     counts_a: Counter[str] = Counter()
     counts_b: Counter[str] = Counter()
     for term in terms:
-        key = alias_key(term.measurand, aliases)
+        key = key_of(term)
         if term.half == "A":
             counts_a[key] += 1
         else:

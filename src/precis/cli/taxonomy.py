@@ -14,11 +14,12 @@ afterwards cites that version.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from precis.taxonomy import discovery
 from precis.taxonomy import run as pipeline
-from precis.taxonomy.config import load_campaign
+from precis.taxonomy.config import CampaignConfig, load_campaign
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -79,6 +80,23 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     return parser
 
 
+def probe_verdict(result: pipeline.RunResult, config: CampaignConfig) -> str:
+    """The n≈100 pass line: stability against the unit-key ceiling.
+
+    ``Thresholds.min_probe_ratio`` is the stated criterion; this prints it
+    next to the number so a probe's summary carries its own verdict rather
+    than a reader comparing against a bar they have to look up.
+    """
+    bar = config.thresholds.min_probe_ratio
+    verdict = "PASS" if result.stability_ratio >= bar else "FAIL"
+    return (
+        f"probe criterion {verdict}: stability {result.stability:.3f} is "
+        f"{result.stability_ratio:.2f} of the unit-key ceiling "
+        f"{result.unit_ceiling:.3f} (signed minimum {bar:g}); the full run "
+        f"is judged by min_stability {config.thresholds.min_stability:g}"
+    )
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taxonomy-bootstrap``."""
     config = load_campaign(args.campaign)
@@ -116,6 +134,20 @@ def run(args: argparse.Namespace) -> None:
             raise SystemExit("--join-sides needs exactly two comma-separated values")
         join_sides = (parts[0], parts[1])
 
+    # Stream every call record to disk as it lands: a run killed at hour
+    # nine of eleven keeps its metering. write_stage_outputs rewrites the
+    # same file from the result afterwards (identical content, one place).
+    out.mkdir(parents=True, exist_ok=True)
+    responses_path = out / "responses.jsonl"
+    responses_path.write_text("", encoding="utf-8")
+
+    def append_response(record: discovery.CallRecord) -> None:
+        with responses_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(record.to_json(), sort_keys=True, ensure_ascii=False)
+            )
+            handle.write("\n")
+
     result = pipeline.run_pipeline(
         config,
         discovery.router_client(),
@@ -123,9 +155,11 @@ def run(args: argparse.Namespace) -> None:
         limit=args.limit,
         join_sides=join_sides,
         side_field=args.side_field,
+        on_call=append_response,
     )
     paths = pipeline.write_stage_outputs(result, out)
     print(result.summary())
+    print(probe_verdict(result, config))
     print(f"stage dumps     {paths[0].parent}")
     if args.freeze:
         written = pipeline.freeze_run(result, config, out)

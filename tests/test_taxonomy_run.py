@@ -9,15 +9,20 @@ evidence is attributed per node identity rather than per bare measurand key.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from precis.taxonomy import run
 from precis.taxonomy.config import load_campaign
+from precis.taxonomy.discovery import CallRecord
 from precis.taxonomy.types import (
     Anchor,
     DimensionSpec,
     Mention,
     MentionKind,
+    Snapshot,
     TermNode,
 )
 
@@ -242,3 +247,95 @@ def test_hub_counts_tolerates_an_unparseable_row_id(config):
         {"ref_id": 1, "mode": "mode:dft"},
     ]
     assert run.hub_counts([node], rows, config)[node.identity()].total == 1
+
+
+# --- metering: responses.jsonl and the summary line ------------------------
+
+
+def _record(ref_id: int, **overrides: object) -> CallRecord:
+    fields: dict[str, object] = {
+        "ref_id": ref_id,
+        "half": "A",
+        "prompt_sha256": "00" * 32,
+        "prompt_chars": 100,
+        "duration_s": 2.0,
+        "payload": "[]",
+    }
+    fields.update(overrides)
+    return CallRecord(**fields)  # type: ignore[arg-type]
+
+
+def _result(**overrides: object) -> run.RunResult:
+    fields: dict[str, object] = {
+        "snapshot": Snapshot(
+            source="test",
+            row_count=2,
+            sha256="deadbeefcafe",
+            pulled_at="2026-09-30T00:00:00Z",
+            text_field="text",
+            ref_field="ref_id",
+        ),
+        "census_digest": "digest-0123456789",
+        "mentions": (),
+        "terms": (),
+        "warnings": (),
+        "nodes": (),
+        "suggestions": (),
+        "stability": 0.27,
+        "entries": (),
+        "rejected": (),
+    }
+    fields.update(overrides)
+    return run.RunResult(**fields)  # type: ignore[arg-type]
+
+
+def test_metering_line_sums_reported_fields_and_marks_unreported() -> None:
+    line = run.metering_line(
+        [
+            _record(1, cost_usd=0.01, input_tokens=100, cache_read_tokens=90),
+            _record(2, cost_usd=0.02, input_tokens=50, cache_read_tokens=40),
+            _record(3, payload=None, error="429", duration_s=0.5),
+        ]
+    )
+    assert line.startswith("discovery calls 3 (1 failed), cost $0.03")
+    assert "in 150" in line and "cache-read 130" in line
+    assert "out ?" in line and "cache-write ?" in line, "nobody reported → ?, not 0"
+    assert line.endswith("wall 4 s")
+
+
+def test_metering_line_with_no_calls_is_all_unreported() -> None:
+    assert run.metering_line([]) == (
+        "discovery calls 0 (0 failed), cost $?, tokens in ? / out ? / "
+        "cache-read ? / cache-write ?, wall 0 s"
+    )
+
+
+def test_summary_reads_stability_against_the_unit_key_ceiling() -> None:
+    result = _result(stability=0.27, unit_ceiling=0.487)
+    assert result.stability_ratio == pytest.approx(0.27 / 0.487)
+    assert "A/B vocabulary stability 0.270 (0.55 of the unit-key ceiling 0.487)" in (
+        result.summary()
+    )
+    assert "discovery calls 0" in result.summary()
+
+
+def test_stability_ratio_survives_a_zero_ceiling() -> None:
+    assert _result(stability=0.0, unit_ceiling=0.0).stability_ratio == 1.0
+
+
+def test_write_stage_outputs_dumps_the_call_records(tmp_path: Path) -> None:
+    result = _result(
+        responses=(
+            _record(1, cost_usd=0.01),
+            _record(2, payload=None, error="boom"),
+        )
+    )
+    paths = run.write_stage_outputs(result, tmp_path)
+    responses = tmp_path / "responses.jsonl"
+    assert responses in paths
+    rows = [
+        json.loads(line) for line in responses.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [r["ref_id"] for r in rows] == [1, 2]
+    assert rows[0]["cost_usd"] == 0.01 and rows[0]["error"] is None
+    assert rows[1]["payload"] is None and rows[1]["error"] == "boom"

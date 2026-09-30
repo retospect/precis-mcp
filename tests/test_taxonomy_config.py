@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from precis.taxonomy.config import load_campaign
+from precis.taxonomy.types import Thresholds
 
 _MINIMAL_SNAPSHOT = """
 snapshot:
@@ -62,6 +63,15 @@ def test_loosening_max_escape_rate_raises(tmp_path: Path) -> None:
     path = _write_campaign(tmp_path, extra="thresholds:\n  max_escape_rate: 0.5\n")
     with pytest.raises(ValueError, match="only tighten"):
         load_campaign(path)
+
+
+def test_min_probe_ratio_may_only_tighten(tmp_path: Path) -> None:
+    assert Thresholds().min_probe_ratio == 0.60
+    tighter = _write_campaign(tmp_path, extra="thresholds:\n  min_probe_ratio: 0.7\n")
+    assert load_campaign(tighter).thresholds.min_probe_ratio == 0.7
+    looser = _write_campaign(tmp_path, extra="thresholds:\n  min_probe_ratio: 0.5\n")
+    with pytest.raises(ValueError, match="only tighten min_probe_ratio"):
+        load_campaign(looser)
 
 
 def test_unknown_threshold_key_raises(tmp_path: Path) -> None:
