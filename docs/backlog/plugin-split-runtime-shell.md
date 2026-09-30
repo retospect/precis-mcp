@@ -150,9 +150,9 @@ packages, so they are fair game before 10-16.
    embed worker crash-loop — which is why tenacity/pysbd/num2words/shapely
    were promoted to core deps as insurance. **Hard prerequisite**: without
    it `pip install precis-util precis-catpath` dies importing
-   `precis.cli.taproot`. Ship it as its own item with its own
-   justification; it fixes that outage class whether or not the split
-   happens.
+   `precis.cli.taproot`. Filed as its own item with its own
+   justification — `cli-lazy-subcommand-loading.md`; it fixes that outage
+   class whether or not the split happens.
 5. **Compatibility contract, with a test.** A model asserts the util
    contract it needs at registration, and one that cannot satisfy it darks
    **legibly to the agent** via `kind_gate` — an agent handles "this kind
