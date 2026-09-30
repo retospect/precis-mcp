@@ -26,7 +26,8 @@ from precis.taxonomy.types import Snapshot, Thresholds
 #: Bumped when a stage changes what it emits for unchanged input. Recorded in
 #: every frozen list, so "same numbers, different procedure" is detectable.
 #: 2 (2026-09-30): stage 3 folds measurand synonyms and canonicalises the
-#: qualifier fields through the campaign vocabularies (blocker 4).
+#: qualifier fields through the campaign vocabularies (blocker 4); stage 1
+#: lets a unit-less number in a list borrow the next number's unit (3b).
 PROCEDURE_VERSION: Final[int] = 2
 
 _CAMPAIGN_DIR: Final[str] = "taxonomy/campaigns"

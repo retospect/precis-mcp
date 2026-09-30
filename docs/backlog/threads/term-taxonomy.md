@@ -18,11 +18,10 @@ cannot land until the taxon kind exists.
    of taxonomy-bootstrap's freeze, measures-substrate, graph-gardener and
    knowledge-mesh; nothing else in this thread can ship its output until
    the taxon kind exists.
-2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — blocker 3b
-   (stranded units, ≤3 rows), then per-call metering + raw-reply capture +
-   the n=100 pass criterion. All before the 1231-call full run, or that run
-   is an unmeasured spend; concurrency vs packing is decided by the
-   metering's cache-read counts.
+2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — per-call
+   metering + raw-reply capture in `discover()` + the n=100 pass criterion.
+   Before the 1231-call full run, or that run is an unmeasured spend;
+   concurrency vs packing is decided by the metering's cache-read counts.
 3. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Below 2 because it starts on a frozen list.
 4. **backlog/measures-substrate.md** — blocked-by term-taxonomy; identity =
@@ -61,8 +60,9 @@ cannot land until the taxon kind exists.
 
 ## No action needed
 
-- taxonomy-bootstrap blockers 2, 3a and 4 — measured fixed (over-cap
-  107 → 3, facet nodes 22 → 0, synonym families one node each); nothing
-  further. The campaign vocabularies grow from node notes, not from code.
+- taxonomy-bootstrap blockers 2, 3a, 3b and 4 — measured fixed (over-cap
+  107 → 3, facet nodes 22 → 0, stranded unit borrowed, synonym families one
+  node each); nothing further. The campaign vocabularies grow from node
+  notes, not from code.
 - the 0.80 stability threshold — not readable at 100 hubs (unit-key ceiling
   0.49); it is a full-run criterion, not a probe failure.

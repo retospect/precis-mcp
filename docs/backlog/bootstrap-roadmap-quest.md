@@ -304,11 +304,11 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (four commits; blame carries them). Item 7 (ski
 
 ## Resume (2026-09-29)
 
-State: items 1-6 are on main and on the fleet, gated — the deploy
-session's 2026-09-30 full gate of the integrated main covered them. Stage 4
-(skills + the `benign` allowlist, residual 1) is committed in worktree
-immutable-orbiting-torvalds, unshipped; the next `/go` after it lands gates
-it.
+State: items 1-7 and residual 1 are on main and on the fleet, gated —
+the deploy session's 2026-09-30 12:23 UTC full gate + pinned deploy of the
+integrated main covered stage 4 (skills + the `benign` allowlist). The prod
+dry-run tick is the next act and is Reto's to run or grant (see the thread
+file).
 
 Ordered:
 

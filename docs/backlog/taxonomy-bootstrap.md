@@ -355,13 +355,18 @@ that made stage 3 correct.
   key on) and a sociology corpus's `(2019)`. Free to fix and free to validate —
   stage 1 is deterministic — and it **reduces** the paid call count, so it
   should land before the re-probe, not after.
-- **3b — stranded units, previously unrecorded.** `the potential required to
-  reach HER current densities of 10 and 30 mA cm⁻²` gives `10` no unit, because
-  the unit sits after the second number. Same for a `−0.26` limiting potential.
-  These are real measurements that now become dimensionless nodes of their own
-  — worse than a label, because a label is obviously junk and this is not.
-  Needs a shared-unit rule in `_resolve_unit` (a number followed by `and`/`,`
-  + another number + a unit borrows that unit). Design work, not a one-liner.
+- **3b — stranded units: fixed 2026-09-30.** `the potential required to
+  reach HER current densities of 10 and 30 mA cm⁻²` gave `10` no unit, because
+  the unit sits after the second number — a real measurement filed as a
+  dimensionless node of its own, worse than a label because a label is
+  obviously junk. `census._share_units` now lets a unit-less number whose gap
+  to the next number is exactly a list connective (comma, `and`/`or`/`to`, a
+  dash) borrow that number's unit, walking a list from its end so a chain
+  propagates; the borrowed row carries `marker: shared-unit`. On the same 100
+  hubs it moves exactly that one row (unit-less values 20 → 19); the 19 left
+  are all correct — ratios (`1.23×`), pH values, counts, identifiers (`2D`,
+  `CoX (X = 4.9, …)`, `m/z 329`) and the `−0.26` limiting potential whose
+  source prints no unit at all.
 
 Also in the 41, correctly and needing no fix: `1.23×`/`16.8×` relative yield
 ratios and `pH 7.0` are genuinely dimensionless quantities. `m/z 329` is a real
@@ -458,21 +463,20 @@ State: the blocker 2 prompt rewrite is deployed and gated (the deploy
 session's 2026-09-30 gate covered the integrated main; fleet verified on
 castor, pollux and balthazar over the venv's `direct_url.json`; melchior's
 venv was not located by the read-only probe, so it is unverified, not
-drifted). Blocker 3a, the probe-2 record and blocker 4 are on main, gated by
-the next `/go`. Detail is in the two probe sections above; this section is
-only the order.
+drifted). Blocker 3a and the probe-2 record are gated and on the fleet
+(2026-09-30 12:23 UTC); blockers 4 and 3b landed after that gate and wait
+for the next one. Every vocabulary and census blocker from the two probes is
+now closed. Detail is in the two probe sections above; this section is only
+the order.
 
-1. **Blocker 3b — stranded units.** Shared-unit rule in
-   `census._resolve_unit`. Free, and small: after 3a it moves at most three
-   of the probe's rows.
-2. **Metering + raw-reply capture in `discover()`** — per call: ref id,
+1. **Metering + raw-reply capture in `discover()`** — per call: ref id,
    prompt hash, raw payload, cost, the four token counts, duration, to a
    `responses.jsonl` beside the other dumps. Plus the n=100 pass criterion
    (above). Both land before any further paid call.
-3. **Concurrency vs packing.** Decided by 2's cache-read counts: a cached
+2. **Concurrency vs packing.** Decided by 1's cache-read counts: a cached
    prefix favours a thread pool over `claude -p`; an uncached one favours
    several hubs per call. 33 s/call sequential is 11.3 h for the full run.
-4. **Full run** ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
+3. **Full run** ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
    catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
    adjudicates) ⇒ one figure.

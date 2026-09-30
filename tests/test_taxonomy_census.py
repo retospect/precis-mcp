@@ -200,6 +200,58 @@ def test_units_accepted_2_m_koh_binds_only_m_not_m_koh() -> None:
     assert values[0].raw_unit == "M"
 
 
+# ── shared units (blocker 3b) ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "current densities of 10 and 30 mA cm−2",
+            [("10", "mA cm^-2"), ("30", "mA cm^-2")],
+        ),
+        (
+            "at 10, 30 and 100 mA cm−2",
+            [("10", "mA cm^-2"), ("30", "mA cm^-2"), ("100", "mA cm^-2")],
+        ),
+        ("10 or 20 %", [("10", "%"), ("20", "%")]),
+    ],
+)
+def test_shared_unit_list_borrows_the_trailing_unit(
+    text: str, expected: list[tuple[str, str]]
+) -> None:
+    values = [m for m in _mention_texts(text, _UNIT_CONFIG) if m.kind == "value"]
+    assert [(m.literal, m.raw_unit) for m in values] == expected
+    assert [m.marker for m in values][:-1] == ["shared-unit"] * (len(expected) - 1)
+    assert values[-1].marker is None, "the unit's own number is not a borrower"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2 electrons and 3 h",  # the gap is not a bare connective
+        "150 hubs, 3 h",  # a unit-less count before a comma keeps no unit
+        "10 and 30 catalysts",  # nothing to borrow
+        "3 h and 25",  # the borrower must come first
+    ],
+)
+def test_shared_unit_does_not_fire_across_prose_or_without_a_unit(text: str) -> None:
+    values = [m for m in _mention_texts(text, _UNIT_CONFIG) if m.kind == "value"]
+    assert all(m.marker is None for m in values), values
+    first = values[0]
+    assert first.raw_unit is None or first.literal == "3"
+
+
+def test_shared_unit_keeps_a_number_with_its_own_unit() -> None:
+    values = [
+        m for m in _mention_texts("25 °C and 1 atm", _UNIT_CONFIG) if m.kind == "value"
+    ]
+    assert [(m.literal, m.raw_unit, m.marker) for m in values] == [
+        ("25", "°C", None),
+        ("1", "atm", None),
+    ]
+
+
 # ── units refused ────────────────────────────────────────────────────
 
 

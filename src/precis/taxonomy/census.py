@@ -35,6 +35,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
@@ -129,6 +130,17 @@ _UNIT_CHAR: Final[str] = "A-Za-zΩµÅ°%/·⋅*\\^\\-−0-9⁰¹²³⁴⁵⁶�
 #: ceiling from the spec.
 _UNIT_RUN_RE: Final[re.Pattern[str]] = re.compile(
     rf"[{_UNIT_CHAR}](?:[{_UNIT_CHAR}]| (?=[{_UNIT_CHAR}])){{0,23}}"
+)
+
+#: The whole of the text allowed between two numbers for the first to
+#: borrow the second's unit (``taxonomy-bootstrap.md`` blocker 3b: ``10 and
+#: 30 mA cm−2`` gives ``10`` no unit of its own because the unit sits after
+#: the second number). A list or range connective and nothing else — a
+#: comma, ``and``/``or``/``to``, a dash — so ``2 electrons and 3 h`` does
+#: not hand ``2`` an hour. Anchored on both ends by the caller (fullmatch on
+#: the gap), so the connective must be the entire gap.
+_SHARED_UNIT_GAP_RE: Final[re.Pattern[str]] = re.compile(
+    r"\s*(?:,|,?\s*(?:and|or|to)|[-–—−])\s*"
 )
 
 #: Superscript digit/minus block → plain-ASCII translation, used to turn a
@@ -356,6 +368,7 @@ def scan_text(
             )
         )
         blocked_until = max(blocked_until, consumed_end)
+    _share_units(text, mentions)
 
     claimed_spans: list[tuple[int, int]] = []
     for rule in config.reference_states:
@@ -608,6 +621,40 @@ def _resolve_unit(
             continue
         return candidate, token_ends[width - 1]
     return None, pos
+
+
+def _share_units(text: str, mentions: list[Mention]) -> None:
+    """Blocker 3b — a unit-less number in a list borrows the next number's unit.
+
+    ``current densities of 10 and 30 mA cm−2`` resolves a unit for ``30``
+    only; without this pass ``10`` is a real measurement carrying no unit,
+    which stage 3 then files as a dimensionless node of its own — worse
+    than a label, because a label is obviously junk and this is not.
+
+    The rule: a ``value`` mention with no unit, whose gap to the *next*
+    ``value`` mention is exactly a list/range connective
+    (:data:`_SHARED_UNIT_GAP_RE`), takes that next mention's unit. The pass
+    walks the list from the end so a chain (``10, 30 and 100 mA cm−2``)
+    propagates: ``30`` borrows from ``100`` first, then ``10`` from ``30``.
+    A borrowed unit is marked ``marker="shared-unit"`` so the provenance
+    stays visible in the dumps — the token was never adjacent to the number.
+
+    Mutates ``mentions`` in place (only ``value`` rows, only the ones with
+    no unit), in text order, so the census stays deterministic (AC1).
+    Currency figures and identifier-skipped numbers never reach this list
+    as unit-less values, so they cannot borrow.
+    """
+    values = [i for i, m in enumerate(mentions) if m.kind == "value"]
+    for position in range(len(values) - 2, -1, -1):
+        here, following = mentions[values[position]], mentions[values[position + 1]]
+        if here.raw_unit is not None or following.raw_unit is None:
+            continue
+        gap = text[here.anchor.end : following.anchor.start]
+        if not gap or _SHARED_UNIT_GAP_RE.fullmatch(gap) is None:
+            continue
+        mentions[values[position]] = replace(
+            here, raw_unit=following.raw_unit, marker="shared-unit"
+        )
 
 
 def _detect_currency(

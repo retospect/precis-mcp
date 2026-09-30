@@ -2,19 +2,20 @@
 
 **Status:** ends when the root roadmap quest ticks unattended, writes rungs
 that carry numbers, and drives priority down to the pathway quests with a
-reviewed ledger behind every tick. Today stages 1-4 are built and on main
-(stage 4 = skills + benign allowlist, awaiting its gate); the first prod tick is the first
-real verification, and Reto ruled he sees the dry-run before any live
-tick.
+reviewed ledger behind every tick. Today stages 1-4 are built, gated and
+on the fleet (2026-09-30 12:23 UTC); the first prod tick is the first real
+verification, and Reto ruled he sees the dry-run before any live tick.
 **Last reviewed:** 2026-09-30
 **Worktree:** `roadmap-quest`
 
 ## Do next
 
-1. **backlog/bootstrap-roadmap-quest.md §Resume** — ship (qland is fine, the
-   next /go gates), then `precis quest tick 453863 --dry-run` on prod and
-   show Reto the role + prompt; nothing here is verified until a real tick
-   runs, and a wrong role selection would write a numberless rung into prod.
+1. **backlog/bootstrap-roadmap-quest.md §Resume** — `precis quest tick
+   453863 --dry-run` on prod (via `scripts/prod-precis`; the agent's own
+   attempt on 2026-09-30 was refused by the session permission classifier,
+   so Reto runs it or grants it) and show Reto the role + prompt; nothing
+   here is verified until a real tick runs, and a wrong role selection would
+   write a numberless rung into prod.
 2. **qu453863** — activation, Reto-approved write only after 1; serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks.
@@ -51,7 +52,7 @@ tick.
 
 ## No action needed
 
-- Residual 1 (`benign` cannot be stored) — fixed and landed 2026-09-30;
-  the next /go gates it.
+- Residual 1 (`benign` cannot be stored) — fixed, gated and deployed
+  2026-09-30; nothing further.
 - Reto's four build rulings — recorded in the decisions log; nothing
   pending.
