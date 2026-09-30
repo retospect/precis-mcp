@@ -1,14 +1,17 @@
 # session MCP shared server
 
-**Status:** ends when every session on this machine, including agent
-containers, talks to one supervised shared MCP server that never kills an
-in-flight call, reports truthfully what it runs, and gives each session its
-own DB role and a fair share. Today it is one long-lived streamable-http
-server, live since 2026-09-29 and dogfooded; a defect shipped by this
-thread kills in-flight calls on every bounce and the status surface cannot
-say which sha or process a session is talking to. Fix the kill first, then
-make the server truthful, then the parent item's remaining criteria and the
-isolation gaps.
+**Status:** ends when every Claude Code session on this machine talks to one
+supervised shared MCP server that never kills an in-flight call, reports
+truthfully what it runs, and gives each session its own DB role and a fair
+share. Agent containers and the sandbox sidecar stay stdio and are NOT part
+of that end state — backlog/mcp-shared-transport-concurrency.md rules them
+out, and item 6's role bullet is why: they depend on process-level role
+separation this server cannot give them. Today it is one long-lived
+streamable-http server, live since 2026-09-29 and dogfooded; a defect
+shipped by this thread kills in-flight calls on every bounce and the status
+surface cannot say which sha or process a session is talking to. Fix the
+kill first, then make the server truthful, then the parent item's remaining
+criteria and the isolation gaps.
 **Last reviewed:** 2026-09-30
 **Worktree:** `session-mcp-shared-server`
 
@@ -21,11 +24,13 @@ isolation gaps.
    traffic flowing during a drain (the fixture in
    tests/test_mcp_session_concurrency.py is the candidate).
 2. **gr457361** — precis-status reports the image build arg, not the source
-   served (measured ~2288 commits stale while the code was same-day current).
-   Leverage: "which sha is this session talking to" is unanswerable, which
-   blocks the parent item's AC2 and makes 1 and 4 harder to diagnose. Fix
-   branch in review: review-and-land, not investigate. gr458039 closed as
-   its duplicate; its git_dirty observation is appended there.
+   served (measured: reported f2cbcb29, built 2026-09-08, while serving code
+   542 commits newer the same day). Leverage: "which sha is this session
+   talking to" is unanswerable, which blocks the parent item's AC2 and makes
+   1 and 4 harder to diagnose. Not
+   started: no branch on origin and no live tree claims it as of 2026-09-30.
+   gr458039 closed as its duplicate; its git_dirty observation is appended
+   there.
 3. **gr458038** — the same surface reports a stale uptime (20.6 h against a
    real process age of ~70 min), so it says the server did not restart when
    it did. Same root cause as 2 (_collect_build_info reports baked or
