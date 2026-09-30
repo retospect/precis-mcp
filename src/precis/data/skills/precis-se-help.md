@@ -473,12 +473,23 @@ efficiency read in isolation overstates the link.
 
 `tree · block · ports · topology · chain · measures · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
-literature · fret · links · export`. There is **no `mass` view** (mass goes via
+literature · fret · links · export · ops`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
 elicits what's missing — lead with it. `mechanics`/`literature` are
 atomic-mode-only (below); `topology` renders atomic mode's threading
 pairs + declared dof together and is empty prose for a non-atomic
 design.
+
+`view='ops'` is the only view that reads back into `put`: the design as a
+replayable ops list in a fenced `{"ops": [...]}` block, so a design can be
+reproduced in another database without a `pg_dump` or prod write access
+(the use it was built for: checking a production design locally). It is
+**final state, not history** — nothing removed ever appears, and no
+destructive op is emitted. Its header lists what the round-trip does not
+carry, and the two that bite are **block uids** (a re-`put` mints fresh
+ones, so anything pointing at a block by uid must be re-resolved by label)
+and **declared states/transitions** (they live in the shared
+`design_states` tables keyed by uid, not on the tree).
 
 `view='links'` renders the design's link graph both directions. Write
 edges with the `link` verb: `link(kind='se', id='<slug>',

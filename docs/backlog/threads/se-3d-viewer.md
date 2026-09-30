@@ -6,9 +6,14 @@ the same scene yields publishable figures. It FEEDS
 backlog/se-feasibility-and-cost.md and does not own it — INDEX.md records
 that as the far end all three se threads serve. Today the affordances work
 and are verified by canvas pixel-diff at the deployed sha, but against local
-fixtures, never prod's own designs (gr457931, td458066); the list is about
-making that verification repeatable by someone other than the author, then
-the deferred features. No live corruption. gr457995, which used to sit
+fixtures, never prod's own designs; the list is about making that
+verification repeatable by someone other than the author, then the deferred
+features. gr457931 shipped 2026-09-30 and changes the shape of that gap:
+`get(kind='se', view='ops')` emits a design as a replayable ops list, so a
+prod design can now be copied into a local DB over the read-only MCP and
+pixel-diffed there. That is a different question from td458066, which asks
+whether an agent drives a BROWSER against prod — a check against prod DATA
+no longer needs one. No live corruption. gr457995, which used to sit
 here as "hexfold join corruption renders as a wrong picture", was refuted
 2026-09-30 — there is no join corruption. The real cause was gr458061: a
 session MCP process serving stale in-memory code for hours while every
@@ -16,7 +21,7 @@ cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
 picture — suspect a stale server upstream before suspecting the data.
 gr458061 is another thread's item.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (gr457931 shipped)
 **Worktree:** `se-3d-viewer`
 
 ## Do next
@@ -27,9 +32,11 @@ gr458061 is another thread's item.
    assertable, and is the only guard against the defect that started the
    thread (a dead viewer behind a green suite).
 2. **td458066** — Reto decision: whether prod is ever browser-checked by an
-   agent and how the Basic credential is handled. Blocks 1's scope (local
-   fixture lane vs prod lane are different builds), cheaper answered before
-   1 is designed.
+   agent and how the Basic credential is handled. Still shapes 1's scope
+   (local fixture lane vs prod lane are different builds), but it is a
+   smaller question since gr457931 shipped: prod DATA reaches a local
+   harness through `view='ops'`, so what is left to decide is only whether
+   a browser is ever pointed at the prod deployment itself.
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
@@ -47,11 +54,7 @@ gr458061 is another thread's item.
 6. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-7. **gr457931** — se has no ops-export view and stores designs normalised, so
-   a prod design cannot be reproduced locally; the harness can only check
-   code, never prod data. Tooling for a thread with no corruption, so below
-   the features.
-8. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+7. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–5 in the file. Independent validator pass and the largest
    piece of work, hence last.
 

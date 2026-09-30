@@ -862,6 +862,10 @@ class SeHandler(Handler):
             return self._render_print(tree, ref, args or {})
         if v == "fab":
             return Response(body=self._render_fab(tree))
+        if v == "ops":
+            from precis_se.ops_export import render_ops
+
+            return Response(body=render_ops(tree, ref.title or str(ref.slug)))
         if v == "links":
             from precis.handlers._links_render import render_links_view
 
@@ -907,7 +911,10 @@ class SeHandler(Handler):
             "| view='print' (fdm process DRC + STL/3MF export, "
             "args={'block':...,'fmt':...,'path':...}) | view='fab' (the "
             "whole fabrication plan, one row per implementation-bearing "
-            "block) | view='links' (the design's link graph, both "
+            "block) | view='ops' (the design back out as a replayable "
+            "ops list — paste into put(kind='se') to reproduce it in "
+            "another database; states and uids are not carried) "
+            "| view='links' (the design's link graph, both "
             "directions)",
         )
 
