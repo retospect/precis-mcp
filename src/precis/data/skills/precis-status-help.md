@@ -66,8 +66,7 @@ means the process is older than the field, so it is stale by definition
 and cannot tell you by how much. Do not read a missing row as `none`.
 Together with `git_source: image-build` on a session MCP it identifies a
 pre-2026-09-30 per-session stdio container; reconnect (`/mcp` → the
-server → reconnect) to land on the shared server, and see
-`docs/backlog/threads/session-mcp-shared-server.md`.
+server → reconnect) to land on the shared server.
 
 A bare `docker build` that skips `scripts/build-image` (so no
 `--build-arg` git values are passed) does **not** count as
