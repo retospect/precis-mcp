@@ -199,7 +199,9 @@ with thousands); `view='logbook'` is the complete append-only notebook;
 
 `view='tree'` is the map: it walks who serves the quest (grouped by
 kind), recurses into sub-quests, prints the deed ledger + tote, and ends
-with a **health** line and a **gaps** list at the foot.
+with a **health** line and a **gaps** list at the foot. On a `"roadmap"`-
+body root it also renders the capability ledger table — see
+[[precis-roadmap-help]].
 
 All of the above is also visible on the web: `/refs/quest/<id>` is a
 dedicated hub dashboard (header + momentum/tote, dossier + logbook tail,
@@ -380,6 +382,10 @@ that's wedged.
   propose, e.g. a literature-synthesis or landscape-mapping quest.
 - **`rubric_objectives`** — the frontier's measured-axis override, see
   "A research tick" above.
+- **`"roadmap"`** — a fourth body: grows a pathway/capability/rung graph
+  from measured gaps instead of proposing materials or writing prose.
+  Only the root quest ticks; see [[precis-roadmap-help]] for the rung
+  meta contract and the three roles.
 
 `edit(kind='quest', id=N, text=...)` (the founding-statement rewrite) and
 `meta=` may be combined in one call, or `meta=` passed alone — no `text=`

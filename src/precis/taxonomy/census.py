@@ -304,6 +304,18 @@ def scan_text(
             # sociology corpus's "COVID19" or "Q3".
             continue
         literal = match.group(0)
+        if _is_parenthesised_identifier(text, start, end, literal):
+            # "(111)", "(0001)", "(001)": a parenthesised group whose
+            # entire content is a bare digit run of three or more — a
+            # Miller index, a cycle/entry label, a bare year — is an
+            # identifier, not a value. Nothing follows the digits inside
+            # the parentheses, so no unit could have resolved for it, and
+            # the discovery stage otherwise mints one "crystallographic
+            # facet" measurand per such surface (21 of 204 discovered rows
+            # on the first norr-her-meta probe). "(204 kJ/mol)" is left
+            # alone: the closing parenthesis is not directly after the
+            # digits.
+            continue
         context = _context(text, start, end)
         currency = _detect_currency(text, start, end, config)
         if currency is not None:
@@ -483,6 +495,22 @@ def _coerce_ref_id(raw: object) -> int:
     if isinstance(raw, str):
         return int(raw)
     raise TypeError(f"unsupported ref_id type: {type(raw)!r}")
+
+
+def _is_parenthesised_identifier(text: str, start: int, end: int, literal: str) -> bool:
+    """``(111)``-shaped: the number is the *whole* content of a
+    parenthesised group and is a plain digit run of length >= 3 (no sign,
+    no decimal separator, no exponent). Such a group names something — a
+    Miller index, a label — rather than measuring it.
+    """
+    return (
+        len(literal) >= 3
+        and literal.isdigit()
+        and start > 0
+        and text[start - 1] == "("
+        and end < len(text)
+        and text[end] == ")"
+    )
 
 
 def _context(text: str, start: int, end: int) -> str:

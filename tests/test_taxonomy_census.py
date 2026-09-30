@@ -255,6 +255,46 @@ def test_digit_glued_to_a_preceding_letter_yields_no_value_mention(
     assert [m for m in mentions if m.kind == "value"] == []
 
 
+# ── parenthesised identifiers: "(111)" is a Miller index, not a value ─
+#
+# Measured on the first norr-her-meta probe: 21 of 204 discovered rows were
+# "crystallographic facet" measurands minted from surface labels such as
+# Pd(111), Mo₂C(0001), Ni₂P(001). A parenthesised group whose entire
+# content is a bare digit run of three or more names something; it does
+# not measure it. "(204 kJ/mol)" keeps its value mention — the digits are
+# not the whole content of the group.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "NO3− adsorbs more favorably on Cu(111) than on Ag(111)",
+        "Hydrogen evolution on Mo₂C(0001) surfaces proceeds",
+        "on Ni₂P(001) surfaces",
+        "the (100) facet dominates",
+    ],
+)
+def test_parenthesised_digit_run_yields_no_value_mention(text: str) -> None:
+    mentions = _mention_texts(text, _UNIT_CONFIG)
+    assert [m for m in mentions if m.kind == "value"] == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_literal"),
+    [
+        ("the N-O bond (204 kJ/mol) is weak", "204"),
+        ("a 111 mV shift", "111"),
+        ("only (12) sites", "12"),
+        ("at (2.5) V", "2.5"),
+    ],
+)
+def test_parenthesised_rule_leaves_real_values_alone(
+    text: str, expected_literal: str
+) -> None:
+    mentions = _mention_texts(text, _UNIT_CONFIG)
+    assert [m.literal for m in mentions if m.kind == "value"] == [expected_literal]
+
+
 def test_glued_denylisted_letter_is_refused_but_spaced_form_resolves() -> None:
     cfg = _config(glued_unit_denylist=frozenset({"D"}))
     glued = {

@@ -66,6 +66,16 @@ in later, `edit(kind='quest', id=N, meta={'quest_body': '...'})`):
   landscape survey, an open standing question the tick should keep
   chewing on via lit-search and dossier revision rather than design
   proposals it has nothing to build.
+- **`"roadmap"`** — grows a **pathway** (one bet) / **capability**
+  (measurable axis spine) / **rung** (completable step, cited on
+  completion) graph from measured top-down/bottom-up gaps, instead of
+  proposing materials or writing prose. Pick this for a striving that is
+  itself a chain of steps toward a target, where each step needs to cite
+  a real number before it counts. Mint the root with this body; mint
+  capability and pathway quests the same way and link them `serves` the
+  root — they hold data (`rubric_objectives`, `demand`, `supply`) but
+  never tick themselves. Rung mechanics, the rung meta contract, and the
+  three roles: [[precis-roadmap-help]].
 
 Get this wrong in the unmarked direction and the tick still runs, just
 uselessly: a `materials`-body tick asked to search a space that doesn't
@@ -181,5 +191,6 @@ cited once actually ingested — not described from memory.
 ## See also
 
 - [[precis-quest-help]] — verbs, lifecycle, logbook, dossier mechanics
+- [[precis-roadmap-help]] — the roadmap body's rung contract and roles
 - [[precis-cite-paper-help]] — citing a paper properly in the dossier
 - [[precis-perplexity-help]] — research a technique before writing it up

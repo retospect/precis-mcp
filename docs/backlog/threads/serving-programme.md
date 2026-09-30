@@ -13,11 +13,11 @@ build the spine. The shared session MCP server has its own thread
 ## Do next
 
 1. **backlog/serving-programme-followups.md item 1** (spark /mnt/cluster NFS
-   hang) — gates eval-run-spine items 4 and 9; anything built on that share
-   hangs at statvfs for 120 s.
-2. **backlog/serving-programme-followups.md item 2** (spark host prep +
-   verify Postgres major/pgvector) — gates the frozen eval world as a
-   restore; an unverified PG 16 assumption would sink the restore plan late.
+   hang, re-confirmed 2026-09-30) — gates eval-run-spine items 4 and 9;
+   anything built on that share hangs at statvfs for 120 s.
+2. **backlog/serving-programme-followups.md item 2** (spark host prep;
+   PG 16.15 + pgvector 0.5.1 verified 2026-09-30, prod's major still to
+   match) — gates the frozen eval world as a restore.
 3. **backlog/mcp-concurrency-load-test.md §Still owed** — py-spy at N=32
    names what holds the GIL; decides whether the multi-process arm is
    topology or workaround. One hour, and everything below reads its answer.

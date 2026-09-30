@@ -4,9 +4,10 @@
 identity, navigable as a mesh, gardened without hand curation, and bound to
 sourced numbers (the norr-her-meta paper is the first consumer). Today the
 taxon kind is ready to build and four items wait on it; the measurand-list
-pipeline (census → discovery → freeze) has a prompt defect fixed but
-unverified, one paid probe outstanding, and a freeze that cannot land until
-the taxon kind exists.
+pipeline (census → discovery → freeze) has its prompt and census fixes
+measured on a second paid probe (stability 0.052 → 0.200, 0.41 of what the
+100-hub sample can show), one vocabulary blocker left, and a freeze that
+cannot land until the taxon kind exists.
 **Last reviewed:** 2026-09-30
 **Worktree:** `term-taxonomy`
 
@@ -17,11 +18,11 @@ the taxon kind exists.
    of taxonomy-bootstrap's freeze, measures-substrate, graph-gardener and
    knowledge-mesh; nothing else in this thread can ship its output until
    the taxon kind exists.
-2. **backlog/taxonomy-bootstrap.md** — the 100-hub re-probe (§Resume, paid,
-   HELD by Reto) measures whether the prompt rewrite moved A/B stability
-   off 0.046; it must precede the 1231-call full run or that run is an
-   unmeasured spend. Two free pre-probe pieces are in §Resume (an honest
-   pass criterion at n=100; per-call metering + raw-reply capture).
+2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — blocker 4
+   (synonym families: three FE nodes, four potential nodes) is the last
+   vocabulary defect and is free to iterate on the saved probe-2 dumps;
+   then 3b, then per-call metering + the n=100 pass criterion. All before
+   the 1231-call full run, or that run is an unmeasured spend.
 3. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Below 2 because it starts on a frozen list.
 4. **backlog/measures-substrate.md** — blocked-by term-taxonomy; identity =
@@ -60,7 +61,7 @@ the taxon kind exists.
 
 ## No action needed
 
-- taxonomy-bootstrap blocker 3a (Miller-index census rule) — fixed
-  2026-09-30, unshipped; delete from the item on ship.
-- taxonomy-bootstrap blocker 3b (stranded units) — deliberately after the
-  re-probe: moves at most 3 of 183 rows.
+- taxonomy-bootstrap blockers 2 and 3a — measured fixed on probe 2
+  (over-cap 107 → 3, facet nodes 22 → 0); nothing further.
+- the 0.80 stability threshold — not readable at 100 hubs (unit-key ceiling
+  0.49); it is a full-run criterion, not a probe failure.

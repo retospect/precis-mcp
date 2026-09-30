@@ -370,58 +370,107 @@ mass-to-charge value; letting the model decline it is acceptable. `2` from
 already-correct boundary rule misses for the same reason as 3a (`2D` — digit
 *before* the letter).
 
-## Resume (2026-09-29)
+## Second probe — 2026-09-30, same 100 rows / 66 paid calls
 
-State: main holds the blocker 1 fix (dimension from the observed unit) and
-the blocker 2 prompt rewrite. The blocker 1 fix has a real full-suite
-verdict — it was inside a green gate (23732 passed / 77 skipped / 6 xfailed).
-The prompt rewrite has no gate verdict: it qlanded, green locally with 178 taxonomy tests + mypy clean,
-which is not a gate result. Fleet verified 2026-09-29 20:58 UTC (venv
-`direct_url.json` on melchior + castor): prod carries the prompt rewrite —
-deployed, ungated, which is the open risk.
+Same snapshot, same default salt (row slice and A/B split identical to the
+first probe), run from the worktree carrying the blocker 2 prompt and the
+blocker 3a census rule. 249 mentions (270 before 3a), 174 discovered rows,
+12 warnings, 103 nodes, **6 systematic**, 9 merge suggestions, stability
+**0.200**, 37 min wall. Dumps under the scratch `norr-her-meta/taxonomy-run2/`;
+`norr-her-meta/compare_runs.py` diffs two dump directories (free).
 
-Detail on all of the following is in "First discovery probe — 2026-09-29"
+**Measured, like for like (183 comparable rows in run 1, 174 in run 2):**
+
+| | probe 1 | probe 2 |
+|---|---|---|
+| measurands over the 6-word cap | 107 | 3 |
+| mean words per measurand | 7.7 | 3.0 |
+| distinct measurand keys | 145 | 74 |
+| facet / Miller-index nodes | 22 | 0 |
+| A/B stability by measurand | 0.052 | 0.200 |
+| unit-key ceiling on the same rows | 0.488 | 0.487 |
+| stability as a fraction of that ceiling | 0.11 | 0.41 |
+
+Blocker 2 (shape) and blocker 3a (Miller indices) are both fixed on real
+model output. The decline instruction works: the model refused 9 mentions,
+every one correctly (`3d-metal`, the `X = 4.9, 5.3, 6.1` composition
+subscripts, `2D`, a cycle count, a feed-concentration label). Presence of the
+seven baseline measurands is unchanged: FE, yield rate, applied potential and
+stability appear in both halves; Tafel slope is absent; overpotential,
+limiting potential and ΔG_H* sit in one half each — a sample-size fact, not a
+prompt fact.
+
+**The threshold cannot be read at n=100.** Keying the same rows by the
+deterministic census unit — the best any naming could do — gives 0.49, with
+32 and 29 hubs per half and most quantities occurring in one hub. So 0.200
+against 0.80 is not a failure; the honest read is the ratio to the unit
+ceiling, 0.11 → 0.41. `freeze_run`'s 0.80 refusal stays, but it is a
+full-run criterion. A stated n=100 pass criterion is owed before the next
+paid spend (proposal: ≥0.6 of the unit-key ceiling).
+
+**Blocker 4 — synonym families, the remaining gap.** Of the six systematic
+nodes, three are one quantity (`Faradaic efficiency`, `Faradaic efficiency
+for NH3`, `NH3 Faradaic efficiency`) and the potential family splits four
+ways on `convention` (`cathodic (negative)` vs none) crossed with
+`reference_state` (RHE vs none) — the sign convention is not a convention in
+the AC5 sense. A free replay with three alias rules (species qualifier
+position `X for NH3` ≡ `NH3 X`; `for`/`toward`/`of`; `production rate` ≡
+`yield rate`) lifts 0.200 → 0.270 and merges 74 → 66 keys. This is
+normalise-stage work (`alias_key` + a convention vocabulary), iterated on the
+run-2 dumps at zero cost. Not folds: `NH3` vs `NH4+` FE is a campaign
+decision; the species stays in the name by design.
+
+**Two things this probe could not tell us.** Test-retest on the 174 shared
+mentions is 0.10 — meaningless across a prompt change; the noise floor needs
+a second run of the *same* prompt and has not been bought. Per-call cost,
+tokens and cache hits were not recorded: the discovery client keeps only the
+reply text and the CLI never binds the route log, although the `claude -p`
+result carries all four token counts. Capture them before the full run —
+that is what decides concurrency versus packing several hubs per call.
+
+## Resume (2026-09-30)
+
+State: the blocker 2 prompt rewrite is deployed and gated (the deploy
+session's 2026-09-30 gate covered the integrated main; fleet verified on
+castor, pollux and balthazar over the venv's `direct_url.json`; melchior's
+venv was not located by the read-only probe, so it is unverified, not
+drifted). Blocker 3a and the probe-2 comparison tooling are in worktree
+immutable-orbiting-torvalds, unshipped. Detail is in the two probe sections
 above; this section is only the order.
 
-1. **Blocker 3a — Miller indices.** Fix in `census.py::scan_text`
-   (domain-neutral rule: a parenthesised group whose entire content is a
-   digit run of length ≥3, no decimal separator, no resolved unit ⇒
-   identifier, not a value). Free to fix and free to validate (stage 1 is
-   deterministic), and it reduces the paid call count — lands before the
-   re-probe.
-2. **Re-probe the same 100 rows — paid, ~66 calls, ~36 min.** Needs Reto's
-   explicit go-ahead first. `precis taxonomy-bootstrap --campaign
-   norr-her-meta --stage all --limit 100` (verify flags against
-   `src/precis/cli/taxonomy.py` — `--stage` defaults to `census`, which is
-   free; `all` is the paid path). Default salt derives from campaign +
-   snapshot sha, so the row slice and A/B split are identical to the first
-   probe — like for like. The number that matters: A/B vocabulary stability,
-   0.046 before, threshold 0.80; `freeze_run` refuses to write a list below
-   it. This is the only measurement of whether blocker 2's prompt rewrite
-   moved the number.
-3. **Blocker 3b — stranded units.** Design work, not a one-liner: a
-   shared-unit rule in `census._resolve_unit`.
-4. **Concurrency in `discover()`.** Plain sequential loop, 33.2 s/call ⇒
-   11.3 h for 1231 calls. First confirm the transport — 2032 s of 2189 s was
-   user CPU, which suggests a subprocess rather than an API call. The prompt
-   shares a long identical prefix across calls; check prompt caching.
+1. **Blocker 4 — synonym families.** Alias rules in
+   `normalise.alias_key` plus a convention vocabulary that keeps sign
+   conventions out of `convention`. Free: iterate on the run-2 dumps with
+   `compare_runs.py`; target = one node each for the FE and potential
+   families.
+2. **Blocker 3b — stranded units.** Shared-unit rule in
+   `census._resolve_unit`. Free, and small: after 3a it moves at most three
+   of the probe's rows, which is why it trails 1.
+3. **Metering + raw-reply capture in `discover()`** — per call: ref id,
+   prompt hash, raw payload, cost, the four token counts, duration, to a
+   `responses.jsonl` beside the other dumps. Plus the n=100 pass criterion
+   (above). Both land before any further paid call.
+4. **Concurrency vs packing.** Decided by 3's cache-read counts: a cached
+   prefix favours a thread pool over `claude -p`; an uncached one favours
+   several hubs per call. 33 s/call sequential is 11.3 h for the full run.
 5. **Full run** ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
    catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
    adjudicates) ⇒ one figure.
 
-**Zero-cost tool:** `replay_stage3.py` (session scratch, `norr-her-meta/`
-under the Claude projects dir; being transferred from another machine)
-replays stages 3-4 over the saved `discovered.jsonl`. It is how blocker 1 was
-validated against real model output. Use it before paying for anything.
+**Zero-cost tools** (session scratch, `norr-her-meta/` under the Claude
+projects dir): `replay_stage3.py` replays stages 3-4 over a saved
+`discovered.jsonl`; `compare_runs.py` diffs two probe dump directories
+(stability, unit ceiling, over-cap count, baseline presence, test-retest).
+Use them before paying for anything.
 
 Two spec decisions owed by Reto — both already live as rows in the decisions
 log below (`domain_classes` element-symbol ids, and the `meta.axis`
 vocabulary); the first is due before the first promotion run.
 
-**Do not:** re-run the paid probe without Reto's go-ahead; trust a fixture
-over the saved probe output (the fixtures encoded the wrong belief and 159
-green tests missed blocker 1); treat green-before-landing as a gate result.
+**Do not:** run a paid probe without Reto's go-ahead; trust a fixture over
+the saved probe output (the fixtures encoded the wrong belief and 159 green
+tests missed blocker 1); read the 0.80 threshold at n=100.
 
 ## Open questions / decisions log
 
@@ -486,13 +535,17 @@ green tests missed blocker 1); treat green-before-landing as a gate result.
   `vs Ag/AgCl` potential with 20 hubs clears the >=30 threshold on the
   `vs RHE` variant's evidence — which silently undoes the split that stage 3
   just made.
-- **[open]** Campaign `domain_classes` ids that are bare element symbols
+- **[decided 2026-09-30, Reto — one node, the taxon wins]** Campaign
+  `domain_classes` ids that are bare element symbols
   (`pd`, `cu`) duplicate nodes the composition/periodic axes already generate,
   so matching a domain class by id puts a spurious `material-class` edge on
   every Pd- or Cu-containing formula. v1 works around it by matching domain
   classes on `label` and leaving the id path to the tag reader. The real fix is
   to drop element-symbol ids from the campaign config and have the tag reader
-  resolve `catalyst:pd` to the element node — decide before the first
-  promotion run, since it changes which node the mentions attach to.
-- **[open]** Axis vocabulary for `meta.axis` — unvalidated in term-taxonomy
-  v1 on purpose; this item's first discovery run decides which axes are real.
+  resolve `catalyst:pd` to the element node. That is the ruling: do it
+  before the first promotion run, since it changes which node the mentions
+  attach to.
+- **[decided 2026-09-30, Reto]** Axis vocabulary for `meta.axis`: six
+  seeded (`method`, `material`, `system`, `regime`, `quantity`, `scale`),
+  the rest earned by use — `term-taxonomy.md` decisions log. This item's
+  discovery runs feed the "earned" side, they do not mint axes.

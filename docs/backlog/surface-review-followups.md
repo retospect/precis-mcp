@@ -21,11 +21,10 @@ evidence cards + scoreboard), the `/surface-review` command + runbook +
 statement_timeout fix with `docs/reference/schema.md` regenerated 58→130
 tables. Also landed: `policy-gates-must-fail-distinguishably`.
 
-**Deployed, ungated.** Fleet verified 2026-09-29 20:58 UTC (venv
-`direct_url.json` on melchior + castor): prod carries both landings, so the schema
-regen and the two changed product skills (`precis-fisheye-help`,
-`precis-status-help`) are live. Still unvalidated: both shipped via `/qland`,
-no gate ran.
+**Deployed and gated.** Both landings were inside the deploy session's
+2026-09-30 full gate of the integrated main and are on the fleet, so the
+schema regen and the two changed product skills (`precis-fisheye-help`,
+`precis-status-help`) are live and validated.
 
 ## The order, and why it is an order
 

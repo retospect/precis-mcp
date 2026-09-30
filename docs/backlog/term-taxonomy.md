@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Term taxonomy — one `taxon` ref kind holding measurands and subject classes as a multi-rooted specialises-DAG, replacing three parallel registry tables
 prio: high
 model: opus
@@ -143,7 +143,9 @@ with the candidate named and a `dedup=False` bypass, mirroring
    curation pass, so the node count equals the legacy row count.
 6. **Runtime docs** — `precis-taxon-help`; `precis-overview` kind table.
 7. **Edge axis as a taxon (v1.5, ships after 1–6 land).** The seed mints a
-   third start node `axis`; `link(rel='specialises', meta={axis: X})` then
+   third start node `axis` with six children (`method`, `material`,
+   `system`, `regime`, `quantity`, `scale` — Reto 2026-09-30, decisions
+   log); `link(rel='specialises', meta={axis: X})` then
    requires `X` to resolve to a taxon slug under it, and link-side filters
    accept `axis=<slug>` widened by `under=`. Until this item ships, `axis`
    is the unvalidated free string of the Design section. This is the
@@ -316,13 +318,18 @@ already exists or was rejected here before it arrived.
   id='/measurand/faradaic-efficiency')`) walk slugs from the named start
   node, so a path is ambiguous only when two siblings share a slug — the
   refusal names both and the caller re-issues with the handle.
-- **[open — Reto]** Which axes are core (the `meta.axis` vocabulary).
-  `composition`/`periodic` are computable from a formula parser; the rest
-  are proposed per mention. Moot in v1 since `axis` is unvalidated; due
-  before in-scope item 7 (axis as taxon) and before `taxonomy-bootstrap`'s
-  first promotion run, which is where the campaign handoff of 2026-09-29
-  filed the same question.
-- **[open — Reto]** The `norr-her-meta` campaign's element-symbol
-  `domain_classes` ids (`pd`, `cu`, …) duplicate the composition-axis nodes
-  the seed will mint. One of them has to become an alias of the other
-  before the first promotion run (`taxonomy-bootstrap.md` §Resume).
+- **[decided 2026-09-30, Reto]** The `meta.axis` vocabulary: **seed six,
+  earn the rest.** The `axis` start node (in-scope 7) is seeded with
+  `method`, `material`, `system`, `regime`, `quantity`, `scale` — the same
+  names the finding `scope=` keys use, so findings and taxa share one
+  vocabulary. Any other axis string is accepted in v1 as a free string and
+  becomes a taxon only when the graph-gardener's promotion rule earns it
+  (N uses across M distinct agentlog runs, `graph-gardener.md` "Vocabulary
+  consolidation rules"). `composition`/`periodic` stay computed from the
+  formula parser, not seeded as axes.
+- **[decided 2026-09-30, Reto]** Element symbols: **one node, the taxon
+  wins.** The composition axis mints one taxon per element; the
+  `norr-her-meta` campaign's element-symbol `domain_classes` ids (`pd`,
+  `cu`, …) are dropped from the campaign config and the tag reader resolves
+  `catalyst:pd` to the element taxon. No `same-as` pairs, no second node.
+  Lands in `taxonomy-bootstrap.md` before its first promotion run.

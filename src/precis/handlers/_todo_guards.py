@@ -281,7 +281,9 @@ def check_llm_select_meta(meta: dict[str, Any] | None) -> None:
 #: handles — "no number, no rung". Validated at write time on both the
 #: ``put()`` and ``tag()`` paths so a rung can update its ``produces`` on
 #: completion without a re-put.
-_RUNG_ALLOWED_KEYS: frozenset[str] = frozenset({"pathway", "consumes", "produces"})
+_RUNG_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {"pathway", "consumes", "produces", "benign"}
+)
 _RUNG_ENTRY_KEYS: frozenset[str] = frozenset({"capability", "key", "value"})
 _RUNG_PRODUCES_KEYS: frozenset[str] = _RUNG_ENTRY_KEYS | {"evidence"}
 _RUNG_NEXT = (
@@ -289,6 +291,17 @@ _RUNG_NEXT = (
     "'qu<id>', 'key': 'axis', 'value': 1.0}], 'produces': [{'capability': "
     "'qu<id>', 'key': 'axis', 'value': 2.0, 'evidence': ['fi<id>']}]}}"
 )
+
+#: Allowed values for ``meta.rung.benign`` (roadmap-tick.py's terminal-rung
+#: "benign gate" — ``docs/backlog/bootstrap-roadmap-quest.md`` §"Terminal
+#: vs intermediate rungs"). ``"required"`` is the only value with meaning:
+#: :func:`~precis.quest.roadmap_tick.rung_is_terminal` honours it as an
+#: upward-only override — present it forces a rung terminal even when its
+#: ``produces`` is consumed elsewhere, but its ABSENCE never forces a rung
+#: non-terminal (that stays the derived read). There is no "not required" /
+#: "optional" value that would override downward, so the vocab is closed to
+#: this one string rather than a bool or an open enum.
+_RUNG_BENIGN_VALUES: frozenset[str] = frozenset({"required"})
 
 
 def _is_quest_handle(value: Any) -> bool:
@@ -394,6 +407,17 @@ def check_rung_meta(meta: dict[str, Any] | None) -> None:
             f"meta.rung.pathway={value.get('pathway')!r} must be a quest "
             "handle ('qu<id>') naming the pathway this rung serves",
             next=_RUNG_NEXT,
+        )
+    if "benign" in value and value["benign"] not in _RUNG_BENIGN_VALUES:
+        sorted_allowed = ", ".join(sorted(_RUNG_BENIGN_VALUES))
+        raise BadInput(
+            f"meta.rung.benign={value['benign']!r}: unknown value; allowed "
+            f"values are [{sorted_allowed}]",
+            next=(
+                f"use benign='{sorted_allowed}' (an upward-only override — "
+                "forces the rung terminal for the benign gate) or omit "
+                "meta.rung.benign to let it derive from the graph"
+            ),
         )
     for where in ("consumes", "produces"):
         entries = value.get(where, [])

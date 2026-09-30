@@ -603,6 +603,40 @@ def test_rung_promotable_via_tag(handler: TodoHandler) -> None:
         handler.tag(id=rid, meta={"rung": _rung(produces=bad)})
 
 
+def test_rung_benign_required_accepted(handler: TodoHandler) -> None:
+    """bootstrap-roadmap-quest.md Residual 1: ``benign: 'required'`` is the
+    upward-only terminal-rung override and must be storable."""
+    r = handler.put(text="rung", meta={"rung": _rung(benign="required")})
+    rid = _id_of(r.body)
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta["rung"]["benign"] == "required"
+
+
+def test_rung_benign_bool_rejected(handler: TodoHandler) -> None:
+    """Only the string ``'required'`` has meaning — a bool is not it."""
+    with pytest.raises(BadInput, match="unknown value"):
+        handler.put(text="rung", meta={"rung": _rung(benign=True)})
+
+
+def test_rung_benign_optional_rejected(handler: TodoHandler) -> None:
+    """There is no downward override — ``'optional'`` is not a real value."""
+    with pytest.raises(BadInput, match="unknown value"):
+        handler.put(text="rung", meta={"rung": _rung(benign="optional")})
+
+
+def test_rung_unknown_top_level_key_names_sorted_allowed_set(
+    handler: TodoHandler,
+) -> None:
+    """The unknown-key rejection names the sorted allowed set — and now
+    that ``benign`` joined ``_RUNG_ALLOWED_KEYS`` it appears in the list."""
+    with pytest.raises(
+        BadInput,
+        match=r"allowed keys are \[benign, consumes, pathway, produces\]",
+    ):
+        handler.put(text="rung", meta={"rung": _rung(bogus="nope")})
+
+
 # ── ancestry walk-on-read ─────────────────────────────────────────
 
 

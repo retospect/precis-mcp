@@ -304,11 +304,11 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (four commits; blame carries them). Item 7 (ski
 
 ## Resume (2026-09-29)
 
-State: the build shipped to main (ungated `/qland`). Items 1-6
-above are on main; 406 targeted tests passed pre-ship. Main itself is
-ungated. Fleet verified 2026-09-29 20:58 UTC (venv `direct_url.json` on
-melchior + castor): prod carries the build — deployed, ungated;
-step 3 below is the first gate it gets.
+State: items 1-6 are on main and on the fleet, gated — the deploy
+session's 2026-09-30 full gate of the integrated main covered them. Stage 4
+(skills + the `benign` allowlist, residual 1) is committed in worktree
+immutable-orbiting-torvalds, unshipped; the next `/go` after it lands gates
+it.
 
 Ordered:
 

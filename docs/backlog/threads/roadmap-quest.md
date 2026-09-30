@@ -2,8 +2,8 @@
 
 **Status:** ends when the root roadmap quest ticks unattended, writes rungs
 that carry numbers, and drives priority down to the pathway quests with a
-reviewed ledger behind every tick. Today stages 1-4 are built (stage 4 =
-skills + benign allowlist, unshipped); the first prod tick is the first
+reviewed ledger behind every tick. Today stages 1-4 are built and on main
+(stage 4 = skills + benign allowlist, awaiting its gate); the first prod tick is the first
 real verification, and Reto ruled he sees the dry-run before any live
 tick.
 **Last reviewed:** 2026-09-30
@@ -51,7 +51,7 @@ tick.
 
 ## No action needed
 
-- Residual 1 (`benign` cannot be stored) — fixed 2026-09-30, unshipped;
-  delete on ship.
+- Residual 1 (`benign` cannot be stored) — fixed and landed 2026-09-30;
+  the next /go gates it.
 - Reto's four build rulings — recorded in the decisions log; nothing
   pending.

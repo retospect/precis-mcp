@@ -13,9 +13,11 @@ no single item.
 
 Landed: the nine backlog items, the load-test harness + its finding, and
 the residual note; the first two passed a full 23,732-test suite inside a
-green gate on the then-current main. **Deployed but ungated** — fleet
-verified 2026-09-29 20:58 UTC (venv `direct_url.json` on melchior + castor);
-everything landed since that green gate is owed a settle-up `/go`.
+green gate on the then-current main. **Deployed and gated** — the deploy
+session's 2026-09-30 gate covered the integrated main; fleet verified
+2026-09-30 over the venv's `direct_url.json` on castor, pollux and balthazar
+(melchior's venv was not located by the read-only probe: unverified, not
+drifted).
 
 **The finding that changes design** (`mcp-concurrency-load-test.md`
 `## MEASURED 2026-09-29`): one `precis serve` process serves ~28 MCP calls/s
@@ -29,7 +31,8 @@ Re-run: `scripts/mcp-loadtest --ramp 1,8,32,64 --duration 15`.
 ## The order, and why it is an order
 
 1. **Unhang spark's `/mnt/cluster` NFS mount** — `statvfs` times out at
-   120 s. `eval-run-spine.md` items 4 (content-addressed blob store) and 9
+   120 s. Re-confirmed 2026-09-30: `mount` lists the share, `stat` and `df`
+   time out. `eval-run-spine.md` items 4 (content-addressed blob store) and 9
    (frozen eval world) both depend on that share. Fix or unmount before
    anything is built on it.
 2. **spark host prep** — stop the Xorg+gnome-shell session (idles the box at
@@ -37,9 +40,9 @@ Re-run: `scripts/mcp-loadtest --ramp 1,8,32,64 --duration 15`.
    2026-09-29: idle, no precis units, `/etc/precis` gone, 2.8 TB free, driver
    580.159.03 / CUDA 13.0. Docker Hub egress is confirmed blocked (20 s
    timeout); ghcr.io works. **A bench role is not cluster duty** — do not add
-   spark to any service group or capability list. **Unverified**: spark runs
-   Postgres 16; confirm prod's major version and that `pgvector` is present
-   there before planning the frozen world as a restore
+   spark to any service group or capability list. Verified 2026-09-30: spark runs
+   Postgres 16.15 with pgvector 0.5.1 installed; still confirm prod's major
+   version matches before planning the frozen world as a restore
    (`eval-run-spine.md`'s decisions log, "Check the Postgres major version
    before planning the restore").
 3. **`py-spy` profile of `precis serve` at N=32** — names which work holds
