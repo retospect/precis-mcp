@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: make a join's findings and its catalogue resolution visible without SQL
 prio: high
 ---
@@ -72,9 +72,17 @@ dry-run, which must be provably write-free.
 
 ## Open questions / decisions log
 
-- Split into three items, or ship as one? Slice 1 is cheap and unblocks
-  the most; slice 3 needs care to guarantee it writes nothing. Leaning
-  three items with `blocked-by` on the shared renderer, decided when
-  slice 1 is scoped.
-- Does `view='report'` belong on `se` or on `structure`? The findings are
-  the structure's, but the question is always asked about a block.
+- **DECIDED 2026-09-30: three slices, in this file, shipped in order.**
+  Not three items — the three share one renderer and one question ("what
+  did this op report?"), and splitting them would put the shared renderer
+  in whichever item happened to go first. Slice 1 (`view='report'`) ships
+  alone and is the unblocker; slice 2 (`view='catalogue'`) needs slice 1's
+  renderer; slice 3 (the dry-run) is the only one that touches a write
+  path and goes last, when there is a reading surface to prove it wrote
+  nothing with.
+- **DECIDED 2026-09-30: `view='report'` goes on `se`, addressed by
+  block.** The findings are stored on the `structure` ref, but the
+  question is always "what did this block's build report?", and a caller
+  holding a block name should not have to know the minted slug's
+  convention to ask it. `view='report'` with no `args` reports every block
+  in the design; `args={'block': ...}` narrows.

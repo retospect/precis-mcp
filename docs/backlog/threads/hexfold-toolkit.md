@@ -29,11 +29,16 @@ the `session-mcp-shared-server` thread — note at the bottom)
    land. Ranked 1 as a precondition, not as work: until then, every item
    below that is verified by dogfooding is verified provisionally, and the
    re-verification is this thread's job.
-2. **backlog/se-join-observability.md** — a join's findings live only in
-   the minted structure's meta and there is no `view='catalogue'` despite
-   §25.3 specifying one. The dogfood spent six SQL queries and a container
-   exec on "which row governed this seam?", and never asked the question
-   that mattered because asking was expensive. Now the top item that is
+2. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
+   a join's findings live only in the minted structure's meta and there is
+   no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
+   six SQL queries and a container exec on "which row governed this
+   seam?", and never asked the question that mattered because asking was
+   expensive. `status: ready` and both open questions decided 2026-09-30:
+   three slices in the one file, shipped in order, and `view='report'`
+   lives on `se` addressed by block. Slice 1 ships alone and is the
+   unblocker; slice 3 (the join dry-run) goes last, when there is a
+   reading surface to prove it wrote nothing with. The top item that is
    actually work in this tree.
 3. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
@@ -107,6 +112,10 @@ the `session-mcp-shared-server` thread — note at the bottom)
   gr458061. Kept here one review cycle because the sweep's first run
   returned a confident 0 — it joined `refs.handle` instead of
   `ref_identifiers` where `id_kind='cite_key'`, and matched nothing.
+  Re-verified against the deployed code after the 2026-09-30 gate: the
+  SQL oracle still returns that one row, and `view='validate'` on
+  `hexfold-catalogue-dogfood` reports `1 error(s)` — the
+  `composite_part_stolen` finding, naming both composites.
 
 <!-- Re-rank note, per the README: the first version of this list ranked a
 join-side corruption bug at 1 and a test fixture at 5. Both rested on
