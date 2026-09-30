@@ -14,6 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from precis.cli._common import REFUSAL_EXIT, is_refusal
 from precis.tools import TOOL_REGISTRY
 from precis.tools.cli_adapter import _is_call_tool_result
 from precis.tools.command_parser import CommandParseError, parse_command
@@ -68,9 +69,16 @@ def run(args: argparse.Namespace) -> None:
         print(f"[error:BadInput] {verb}(...): {e}", file=sys.stderr)
         sys.exit(1)
 
+    # A refusal reaches here two ways: as a structured CallToolResult, or as a
+    # rendered `[error:…]` string that fell through to the plain print
+    # below at exit 0 — the gr458317 shape. Both go to stderr at REFUSAL_EXIT,
+    # matching `precis tools` so a script can treat the two commands alike.
     if _is_call_tool_result(result):
-        print(result.content[0].text)
-        sys.exit(1)
+        print(result.content[0].text, file=sys.stderr)
+        sys.exit(REFUSAL_EXIT)
+    if is_refusal(result):
+        print(result, file=sys.stderr)
+        sys.exit(REFUSAL_EXIT)
     print(result)
 
 

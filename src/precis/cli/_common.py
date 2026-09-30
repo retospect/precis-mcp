@@ -8,6 +8,7 @@ so callers don't have to grep across the tree to find the impl.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from typing import Any
 
@@ -16,6 +17,30 @@ from typing import Any
 # that ``serialize`` would then reject at runtime. New formats land
 # in both places at the same time.
 _FORMAT_CHOICES: tuple[str, ...] = ("toon", "json", "table")
+
+#: A verb *refusal*, matched only at the very START of a rendered payload.
+#: Anchored on purpose: skills and help text quote ``[error:NotFound]`` inline
+#: while documenting it, and reading those docs is a success.
+_REFUSAL_RE = re.compile(r"^\[error:[A-Za-z]\w*\]")
+
+#: Exit code for a verb-level refusal, shared by ``precis tools`` and
+#: ``precis eval`` so the two agree. Distinct from 1 (the CLI itself crashed)
+#: so a caller can tell "the verb said no" from "the tool is broken", and from
+#: 2 (bad invocation).
+REFUSAL_EXIT = 3
+
+
+def is_refusal(payload: object) -> bool:
+    """True when a rendered verb result is an ``[error:…]`` refusal.
+
+    The seven-verb protocol returns errors as rendered strings rather than
+    raised exceptions — right for the MCP surface, where an agent reads the
+    text. A shell caller needs the opposite: a refusal is not data, so it
+    belongs on stderr at a non-zero exit. Both CLI surfaces used to print it to
+    stdout, one of them at exit 0, which made ``cmd > out && process out`` run
+    ``process`` on an error string (gr458317).
+    """
+    return bool(_REFUSAL_RE.match(str(payload).lstrip()))
 
 
 def resolve_dsn(override: str | None, *, cfg: Any = None) -> str:
@@ -92,7 +117,9 @@ def resolve_format(
 
 
 __all__ = [
+    "REFUSAL_EXIT",
     "add_format_argument",
+    "is_refusal",
     "resolve_dsn",
     "resolve_format",
 ]

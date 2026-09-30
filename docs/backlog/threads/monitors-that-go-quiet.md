@@ -7,9 +7,8 @@ off a cached listing; a main push is gated against the delta since the last sha
 with a real shard verdict; qland runs ruff+mypy before it merges; and a host
 dark past log retention still pages, because the detector no longer bounds
 itself to a table the sweeper prunes. What remains is one signal that lies by
-omission (a worker host no detector can see), one that lies outright (a CLI
-that exits 0 on an error), and one held decision on how far behind its verdict
-main may drift before a qland is refused. The container host's forensics were
+omission (a worker host no detector can see) and one held decision on how far
+behind its verdict main may drift before a qland is refused. The container host's forensics were
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
@@ -18,24 +17,14 @@ thread and is flagged on the Horizon for an owner.
 
 ## Do next
 
-1. **gr458317** — `precis tools` prints an `[error:…]` payload to stdout and
-   exits 0, so a caller gets a successful exit and an error string where data
-   should be. Filed from hexfold-toolkit and handed here because `scripts/`
-   has no thread owner and this is the thread's exact class. First: the fix is
-   specified in the gripe, it is small, and the blast radius is the worst
-   shape there is — `scripts/prod-precis` is the documented fallback for when
-   the session MCP is dead, so it lies precisely when the caller has least
-   other information. Its one open risk, whether an existing script depends on
-   the current exit 0, is audited and clear: nothing in the tree calls
-   `precis tools` or `prod-precis` programmatically (only prose and comments).
-2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+1. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
-   took them), so what is left is the monitor. Below gr458317 because nothing
-   is specced yet, though the finding it rests on is now evidence rather than
-   suspicion.
-3. **backlog/main-stays-gated.md** — one follow-on, and it is a question
+   took them), so what is left is the monitor. First by default — it is the
+   only open code work here; nothing is specced yet, though the finding it
+   rests on is now evidence rather than suspicion.
+2. **backlog/main-stays-gated.md** — one follow-on, and it is a question
    rather than a task: how far behind its last shard verdict main may drift
    before `scripts/ship --quick` refuses rather than warns. Both directions
    are written up in the item; it wants Reto's number, then it is a few lines.
@@ -65,6 +54,15 @@ thread and is flagged on the Horizon for an owner.
 
 ## No action needed
 
+- **gr458317** — fixed 2026-09-30, pending close. `precis tools` sent an
+  `[error:…]` refusal to stdout at exit 0; it now goes to stderr at exit 3,
+  kept distinct from 1 (the CLI crashed) so a caller can tell "the verb said
+  no" from "the tool is broken". The gripe's one unaudited risk is clear:
+  nothing in the tree calls `precis tools` or `prod-precis` programmatically.
+  Fixing it turned up the same defect in `precis eval` — right exit code,
+  wrong stream, and no check at all for a rendered refusal string, so that
+  case also exited 0 — so the contract now lives in
+  `precis.cli._common.is_refusal` / `REFUSAL_EXIT` and both commands share it.
 - **gr456236** — fixed 2026-09-30, pending close: the staleness guard now
   runs on the green verdict too and prints even under `--for-hook`. Landed
   from the gripe's own diagnosis, not from the auto-fix lane's branch
