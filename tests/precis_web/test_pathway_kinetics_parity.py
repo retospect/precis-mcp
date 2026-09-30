@@ -35,6 +35,16 @@ that has ``autocatpath``) with::
 and read the resulting diff: every changed sentence is a change the web
 panel is about to start showing for stored records.
 
+The corpus is mutation-verified, not merely written: seven separate
+mutations of ``precis_web/pathway_kinetics.py`` — each band threshold
+(``1e-6``/``1e-2``/``1e2``), the ``0.5`` dominant-coverage cutoff, the DRC
+``2.0`` and ``0.5`` cutoffs, the ``-0.5`` TRC brake, and ``_TOF_NOISE`` —
+were each applied in turn and each reddened this file, with the golden tier
+alone catching them (no ``autocatpath`` installed). An earlier version of
+this corpus caught only one of those: it sampled the middle of each band and
+nothing else, which is why the bracket cases below exist. Re-run that check
+if you ever thin the corpus.
+
 Scope is the VERDICT only. The payload trims are not comparable by
 construction: the engine's ``_kinetics_payload`` reads ``kinetics.json`` /
 ``kinetics.dft.json`` off an output directory, the web one trims an

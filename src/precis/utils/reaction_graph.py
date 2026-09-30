@@ -7,6 +7,13 @@ not import a plugin — see ``docs/backlog/plugin-split-runtime-shell.md``.
 Nothing here touches the store, a handler or the engine; it is stdlib-only
 graph math over the dict shape described below.
 
+It sits in ``utils`` rather than in a new top-level package because that is
+where this repo already keeps pure, dependency-free helper modules, and not
+in ``precis.sim`` — which despite the name is the CLI harness for driving
+external simulator repos, not a home for analysis math. A later extraction
+may move this into ``precis-geom``; nothing outside its import line depends
+on where it lives.
+
 Operates on the ``graph`` dict a run stores (networkx ``node_link_data`` with
 ``edges='links'``): ``nodes`` carry ``id / rel_energy / energy_std /
 low_confidence``; ``links`` carry ``source / target / barrier / barrier_std /

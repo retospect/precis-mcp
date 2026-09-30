@@ -375,9 +375,7 @@ def board_outline(pcb: EproDocument) -> tuple[list[tuple[float, float]], Frame]:
     mils = _poly_points(path)
     if not mils:
         raise EproError("the outline POLY has no vertices")
-    frame = Frame(
-        min_x_mil=min(x for x, _ in mils), max_y_mil=max(y for _, y in mils)
-    )
+    frame = Frame(min_x_mil=min(x for x, _ in mils), max_y_mil=max(y for _, y in mils))
     return [frame.xy(x, y) for x, y in mils], frame
 
 
@@ -516,9 +514,7 @@ def _chain(segments: list[_Seg]) -> list[list[tuple[int, bool]]]:
     return out
 
 
-def extract_tracks(
-    pcb: EproDocument, frame: Frame, *, quantum: int = 4
-) -> Extraction:
+def extract_tracks(pcb: EproDocument, frame: Frame, *, quantum: int = 4) -> Extraction:
     """``LINE`` records on copper layers → ``ctype='track'`` rows.
 
     Segments are grouped by ``(net, layer, width)`` and chained into

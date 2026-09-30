@@ -282,9 +282,7 @@ def test_buried_via_is_skipped_not_flattened(pcb, frame):
     layers it must not touch — a short that no view would show."""
     ext = epro.extract_vias(pcb, frame)
     assert [v["net"] for v in ext.vias] == ["SIG"]
-    assert any(
-        "not a plain through-hole" in w and "BURIED" in w for w in ext.warnings
-    )
+    assert any("not a plain through-hole" in w and "BURIED" in w for w in ext.warnings)
 
 
 def test_via_lands_at_the_end_of_its_track(pcb, frame):
@@ -358,13 +356,9 @@ def test_bottom_side_pad_frame_mirrors_in_y(project):
     assert pads["3"]["centerY"] != 0
     bottom = {**comp, "layerId": 2}
     assert _place(bottom, pads["3"]) == pytest.approx((325.0, 150.0))
-    assert _place(bottom, pads["3"], mirror_y=False) == pytest.approx(
-        (275.0, 150.0)
-    )
+    assert _place(bottom, pads["3"], mirror_y=False) == pytest.approx((275.0, 150.0))
     # ...and a negated rotation sense is a different place again.
-    assert _place(bottom, pads["3"], rot_sign=-1) != pytest.approx(
-        (325.0, 150.0)
-    )
+    assert _place(bottom, pads["3"], rot_sign=-1) != pytest.approx((325.0, 150.0))
 
 
 def test_live_pad_net_rows_carry_the_net_in_the_body(pcb):
@@ -374,9 +368,7 @@ def test_live_pad_net_rows_carry_the_net_in_the_body(pcb):
     names. A reader keying on it would produce an empty netlist and no
     error."""
     rows = [
-        r
-        for r in pcb.of_type("PAD_NET")
-        if r.body is not None and r.body.get("padNet")
+        r for r in pcb.of_type("PAD_NET") if r.body is not None and r.body.get("padNet")
     ]
     assert len(rows) == 1
     assert rows[0].body["padNet"] == "SIG"

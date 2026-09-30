@@ -96,4 +96,6 @@ Seams:
 Waits:
 - plugin-split Horizon 2–4 wait on gr457894 (each extraction is a module
   move that re-triggers the stale-worker break).
-- plugin-split Do-next 1 (td457903) is a Reto restart, not code.
+- plugin-split Do-next 1 is now gr457894 itself; td457903 (the castor
+  restart) was withdrawn 2026-09-30 — the ImportError was a stale session
+  MCP, gr458061's shape, not prod. Nothing here waits on Reto.

@@ -161,8 +161,7 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "references, per Reto's 2026-09-30 ruling. The ingest half calls it"
     ),
     "src/precis/pcb/epro.py::Extraction.rows": (
-        "the flat track+via list pcb_fixed_copper_put takes; slice 1c is "
-        "the call site"
+        "the flat track+via list pcb_fixed_copper_put takes; slice 1c is the call site"
     ),
     "src/precis/pcb/escape.py::escape_graph_to_dict": (
         "serializes an EscapeGraph for the part_footprints.escape jsonb "
