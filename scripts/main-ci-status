@@ -18,7 +18,12 @@ This script is the watcher + the ownership signal:
   claim (`red main` / `main red` / `ci red` / `fix main`, case-insensitive). A
   claim names the owner; no claim prints the exact line to write so the NEXT
   session sees it in `scripts/inflight` instead of duplicating the fix;
-* on GREEN says so (one line), or nothing under `--for-hook`.
+* on GREEN says so (one line), or nothing under `--for-hook`;
+* on EITHER conclusion, refuses to announce a verdict at all when the `gh`
+  listing looks stale — an old run on a sha main has left behind, with nothing
+  newer listed. GitHub has served a weeks-old cached page from both the CLI and
+  the REST endpoint; a stale red costs a wasted re-check, a stale green is read
+  as licence to skip the gate, so that line prints even under `--for-hook`.
 
 Modes:
   scripts/main-ci-status              print the verdict (green or red)
@@ -122,12 +127,33 @@ def main_head_sha() -> str | None:
 
 
 def is_stale_listing(verdict: dict) -> bool:
-    """True when a red verdict is old AND main has moved past it with no
-    newer run listed — a stale API page, not a standing red."""
+    """True when a verdict is old AND main has moved past it with no newer
+    run listed — a stale API page, not a standing verdict.
+
+    Conclusion-agnostic on purpose: the same cached page that once served a
+    six-day-old failure can just as easily serve a stale success, and a
+    stale success is the more expensive of the two to believe (gr456236).
+    """
     if age_minutes(verdict["createdAt"]) < STALE_AFTER_MIN:
         return False
     head = main_head_sha()
     return bool(head) and not str(head).startswith(verdict["headSha"])
+
+
+def stale_line(verdict: dict, pending: dict | None) -> str:
+    """The one message both conclusions print when the listing is stale."""
+    outcome = "success" if verdict["conclusion"] == "success" else "failure"
+    return (
+        "main-ci-status: gh listing looks stale — newest completed run is a "
+        f"{age(verdict['createdAt'])} {outcome} on {verdict['headSha'][:8]}, "
+        "not main's head"
+        + (
+            f"; a run is {pending['status']} on {pending['headSha'][:8]}"
+            if pending
+            else ""
+        )
+        + " — re-run scripts/main-ci-status before acting"
+    )
 
 
 def inflight_trees() -> list[dict]:
@@ -169,6 +195,18 @@ def main() -> int:
             )
         return 0
     sha = verdict["headSha"][:8]
+
+    # Staleness is tested on BOTH conclusions, before either is announced.
+    # A stale red costs one wasted re-check; a stale green is read as licence
+    # to skip the gate entirely, since policy is to run this script before
+    # any local gate — so the green path needed the guard most and was the
+    # only one without it (gr456236).
+    if is_stale_listing(verdict):
+        # Printed even under --for-hook: the hook stays silent on green,
+        # which is exactly where an unguarded stale green passes unremarked.
+        print(stale_line(verdict, pending))
+        return 0
+
     if verdict["conclusion"] == "success":
         if not for_hook:
             print(
@@ -176,20 +214,6 @@ def main() -> int:
             )
         return 0
 
-    if is_stale_listing(verdict):
-        # A red verdict >12h old on a sha that is no longer main's head, with
-        # nothing newer listed: the page was stale (seen once), not a red main.
-        print(
-            f"main-ci-status: gh listing looks stale — newest completed run is a "
-            f"{age(verdict['createdAt'])} failure on {sha}, not main's head"
-            + (
-                f"; a run is {pending['status']} on {pending['headSha'][:8]}"
-                if pending
-                else ""
-            )
-            + " — re-run scripts/main-ci-status before acting"
-        )
-        return 0
     jobs = ", ".join(failing_jobs(verdict["databaseId"])) or "(jobs unavailable)"
     print(
         f"🔴 main is RED on CI: {sha} run {verdict['databaseId']} ({age(verdict['createdAt'])}) — "

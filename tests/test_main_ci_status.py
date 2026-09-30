@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -40,6 +41,14 @@ PENDING_RUN = {
     "conclusion": "",
     "status": "in_progress",
 }
+
+
+def _iso_minutes_ago(mins: int) -> str:
+    """A `createdAt` the script will read as recent. Relative to now, not a
+    literal: STALE_AFTER_MIN is measured against the wall clock, so a frozen
+    timestamp would silently cross the threshold as the test ages."""
+    then = datetime.now(UTC) - timedelta(minutes=mins)
+    return then.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _load() -> ModuleType:
@@ -125,12 +134,70 @@ def test_green_is_silent_under_for_hook(
 ) -> None:
     mod = _load()
     monkeypatch.setattr(mod, "latest_main_run", lambda: (GREEN_RUN, None))
+    # GREEN_RUN's sha IS main's head, so the staleness guard passes it
+    # through. Pinned rather than left to the real `gh`: the guard now runs
+    # on the green path too, and an unpinned head would make this test
+    # depend on a network call.
+    monkeypatch.setattr(mod, "main_head_sha", lambda: GREEN_RUN["headSha"])
     monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
     assert mod.main() == 0
     assert capsys.readouterr().out == ""
     monkeypatch.setattr(sys, "argv", ["main-ci-status"])
     assert mod.main() == 0
     assert "✓ main green on CI (8b881979, run 2" in capsys.readouterr().out
+
+
+def test_old_green_on_a_sha_main_left_behind_is_a_stale_listing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr456236: the staleness guard used to run only on the red path, so a
+    cached page whose newest run was an old SUCCESS printed a confident
+    "✓ main green" for a sha main had long left behind. Policy is to read
+    this script before any local gate, so that green was licence to skip the
+    gate — the costlier of the two staleness failures, and the unguarded one.
+    """
+    mod = _load()
+    old = {**GREEN_RUN, "databaseId": 9, "createdAt": "2026-09-12T16:54:37Z"}
+    monkeypatch.setattr(mod, "latest_main_run", lambda: (old, None))
+    monkeypatch.setattr(mod, "main_head_sha", lambda: "3fdae04c0000")
+    monkeypatch.setattr(sys, "argv", ["main-ci-status"])
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "looks stale" in out
+    assert "success on 8b881979" in out, "names the outcome it is refusing to trust"
+    assert "green on CI" not in out, "must not announce a verdict it does not have"
+
+
+def test_stale_green_is_not_silent_under_for_hook(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real green is silent at SessionStart by design. A stale green must
+    not be: the hook is the one place the watcher is meant to speak up, and
+    silence there is indistinguishable from a healthy main."""
+    mod = _load()
+    old = {**GREEN_RUN, "databaseId": 9, "createdAt": "2026-09-12T16:54:37Z"}
+    monkeypatch.setattr(mod, "latest_main_run", lambda: (old, PENDING_RUN))
+    monkeypatch.setattr(mod, "main_head_sha", lambda: "3fdae04c0000")
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "looks stale" in out
+    assert "a run is in_progress on 840b178f" in out
+
+
+def test_fresh_green_on_a_sha_main_left_behind_still_reports_green(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The sha mismatch alone is not staleness. Main moves fast enough that a
+    minutes-old green on an ancestor is the normal case, not a cached page —
+    calling that stale would make the script useless during a qland burst."""
+    mod = _load()
+    fresh = {**GREEN_RUN, "createdAt": _iso_minutes_ago(30)}
+    monkeypatch.setattr(mod, "latest_main_run", lambda: (fresh, None))
+    monkeypatch.setattr(mod, "main_head_sha", lambda: "3fdae04c0000")
+    monkeypatch.setattr(sys, "argv", ["main-ci-status"])
+    assert mod.main() == 0
+    assert "green on CI" in capsys.readouterr().out
 
 
 def test_old_red_on_a_sha_main_left_behind_is_a_stale_listing(
