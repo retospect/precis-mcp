@@ -165,8 +165,10 @@ put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
 
 One call — no need to set `STATUS:ready_for_fix` first. The
 worker clones the repo, runs claude on a `gripe_42` branch,
-pushes the branch to origin, and posts a comment on the gripe
-when it's ready for review (or explains why it couldn't).
+publishes the branch to the repo's upstream — confirmed there
+with `git ls-remote` before it says so — and posts a comment on
+the gripe when it's ready for review (or explains why it
+couldn't).
 
 See `precis-fix-gripe-help` for the full review / iterate loop.
 

@@ -29,10 +29,16 @@ thread and is flagged on the Horizon for an owner.
    anonymous HTTPS clone with no push credential, so no fix attempt can reach
    the upstream. Three ways out, and the choice is not mine: give the worker a
    push credential, publish the diff to the gripe instead of a branch, or stop
-   scheduling the lane until one of those exists. Until then every run costs
-   agent budget and delivers nothing. First because a lane that burns money to
-   produce failures is a live cost, and because the 43 stranded branches lose
-   their value as main moves away from them.
+   scheduling the lane until one of those exists. Runs are now cheap while it
+   is undecided — a `push --dry-run` before the agent is spawned turns an
+   undeliverable deployment into a skip costing one round trip — but the lane
+   still produces nothing, and the 43 stranded branches lose what value they
+   have as main moves away from them. First because it is a decision, not
+   work: nobody else can make it and everything else here waits behind
+   knowing whether this lane has a future.
+   The 39 gripes it had parked at `in_review` behind branches that do not
+   exist — every `in_review` gripe in the database — are reset to `open` as of
+   2026-09-30, each carrying a comment saying why.
 2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
