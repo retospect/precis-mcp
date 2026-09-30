@@ -8,30 +8,61 @@ Today the join op and the environment catalogue are **verified working
 against prod** — the 2026-09-30 dogfood's two alarming findings were
 artefacts of a stale MCP process and are refuted, and the damage that
 process did is now detected (`composite_part_stolen`) — so the order below
-is: make the execution environment trustworthy, then diagnosable, then make
-measured rows trustworthy.
+is: stop the write path that causes that damage, make the execution
+environment trustworthy, then diagnosable, then make measured rows
+trustworthy.
 **Last reviewed:** 2026-09-30 (re-ranked after gr457995 and gr457996 were
 refuted, then again when the integrity check shipped and gr458061 moved to
 the `session-mcp-shared-server` thread; pillar review same day added the
-T-handle bearing test piece, four dogfood-correctness gripes, and the
-instrumentation-leg horizon item — note at the bottom)
+T-handle bearing test piece, four dogfood-correctness gripes and the
+instrumentation-leg horizon item; then re-ranked again when gr456213 turned
+out to be the write-side cause of the corruption the shipped check only
+detects, and gr458713 arrived from Reto reading the viewer — note at the
+bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Do next
 
 1. **gr458061** — HANDED OFF 2026-09-30 to the `session-mcp-shared-server`
-   thread; the fix is in `src/precis/`, not this surface, and two trees are
-   live there. It splits in two, and **this thread's precondition is both
-   halves**: **gr457361** (that thread's Do-next 2) makes the status
-   surface truthful about which sha a session is served, and
-   `backlog/mcp-staleness-title-roundtrip-guards.md` item 2 (its Do-next 2)
-   restarts a server whose mounted checkout has advanced. Truthful
-   reporting alone would tell me a dogfood was run against stale modules
-   without stopping it from happening, so gr458061 stays open until both
-   land. Ranked 1 as a precondition, not as work: until then, every item
-   below that is verified by dogfooding is verified provisionally, and the
-   re-verification is this thread's job.
-2. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
+   thread; the fix is in `src/precis/`, not this surface. **Re-derived
+   2026-09-30 after a drift report, and the gate is now narrower than this
+   item used to claim.** Half one, **gr457361** (truthful status about
+   which sha a session is served), is `STATUS:done` and live on the shared
+   HTTP server. Half two,
+   `backlog/mcp-staleness-title-roundtrip-guards.md` item 2, is no longer
+   a fix at all: per **td458385** it closes *by removal* — sessions move
+   to the shared HTTP endpoint and the per-session stdio containers die
+   with their sessions, so the population it would have hardened stops
+   existing. The shared server already carries `--restart unless-stopped`
+   plus `PRECIS_CHECKOUT_WATCHDOG`.
+   **So the precondition is per-session-transport, not fleet-wide:** a
+   session already on `http://127.0.0.1:8765/mcp` has a trustworthy
+   execution environment today; a session still on stdio does not. This
+   tree is still on stdio, so its dogfood results remain provisional, and
+   the concrete unblock for *this thread* is moving this session's MCP
+   config to the HTTP endpoint — not waiting for td458385's fleet-wide
+   migration, which is `STATUS:open` and `waiting-for:reto` at prio 4.
+   Ranked 1 as a precondition, not as work.
+2. **gr456213** — **the write-side cause of the corruption
+   `composite_part_stolen` detects**, which is why it moves up from 5.
+   `_hexfold_join` reassigns `node_a.parent`/`node_b.parent` to the new
+   composite unconditionally when the endpoint is already a child of
+   another composite, and never touches the old composite's stored
+   `generated.parts` or its exposed ports — so the old composite keeps
+   claiming a rim it no longer owns, which is exactly the shape the check
+   shipped today reports as an error. A prior attempt added a
+   `join.reparented` WARN and deliberately chose not to block or
+   reconcile, so a caller who does not read the WARN still corrupts the
+   design. Remedy per the diagnosis, pick one: refuse when the old parent
+   still resolves to a live composite and require an explicit
+   acknowledgement, or reconcile the old record on the way through.
+   Ranked 2 on dependency and blast radius: it corrupts real prod designs
+   on a normal call path, and I now own both ends of the pair — detector
+   shipped, cause open. **Caveat when picking this up:** its comment 2
+   claims a fix branch was pushed; comment 3 retracts that (the push never
+   left the worker host, 43 such branches accumulated — gr458326). Treat
+   it as unfixed, but a commit may still exist on that host.
+3. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
    a join's findings live only in the minted structure's meta and there is
    no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
    six SQL queries and a container exec on "which row governed this
@@ -40,37 +71,54 @@ instrumentation-leg horizon item — note at the bottom)
    three slices in the one file, shipped in order, and `view='report'`
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
-   reading surface to prove it wrote nothing with. The top item that is
-   actually work in this tree.
-3. **gr456641 + gr457997** — one root cause: `EnvKey` records no
-   measurement extent, so the seam radius and the armchair leak threshold
-   (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
-   rim-type properties. Do them together. Precondition for
-   `trust_measured`, which is the entire point of the catalogue.
-4. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
-   cap fuse. Independent of everything above, and it caps how far any
-   stick-rung number can be believed — including 3's re-measurements and
-   the valve's Q4 clearance stub, which is explicitly gated on it.
-5. **gr456213** — join silently re-parents a block already a child of
-   another composite, leaving the first composite's tree incomplete and
-   claiming the same rim twice. Live correctness bug, not the stale-process
-   artefact gr457995/gr457996 turned out to be — worth checking whether it
-   is the shape `composite_part_stolen` was built to catch.
-6. **gr454650** — a len=1 armchair tube reports 20 dangling
-   atoms per rim instead of 10 (both rims share the one period); the fuse
-   to a cap then fails on a spec that is correct. Related: gr454563,
-   gr454488.
-7. **gr454563** — the parser silently accepts unknown primitive keywords
+   reading surface to prove it wrote nothing with.
+4. **gr454650** — a `len=1` armchair tube reports 20 dangling atoms per
+   rim instead of 10 (both rims share the one period), so the fuse to a
+   cap fails on a spec that is correct. Ranked above gr458713 on blast
+   radius: a wrong dangling count feeds every fuse decision that touches a
+   one-period tube, where gr458713 lets a wrong spec pass but never makes
+   a right one fail. Related: 5 and 6, all three from the 2026-09-28
+   naive-agent dogfood.
+5. **gr458713** — a hexfold spec whose net is two or more disconnected
+   pieces reports `ok`. Found by Reto in the viewer on
+   `hx-sheet-tube-trial`, whose spec joins a tube to a cap and never joins
+   the sheet to anything: one se block, one bound structure, two loose
+   objects, every finding INFO. §13 has no component-count code, and se
+   cannot cover for it — `view='validate'` warns `unconnected_port` but
+   sees one block, so it can never distinguish a two-component structure
+   from a one-component one. Cheap: `patch.euler_components()` already
+   exists in `build.py` as a surgery invariant and is never reported, so
+   this is one new code (`net.components`), and the workflow it protects
+   is the one Reto named as the 3D goal — top-down spec, then pick and
+   join until it works. Third time this thread has paid for a clean report
+   that was not evidence, which is the same lesson as the re-rank note
+   below.
+6. **gr454563** — the parser silently accepts unknown primitive keywords
    (`length=` instead of `len=`), so a typo surfaces as an unrelated
    `fit.unsolvable`/`port.mismatch` error pointing away from the defect.
    Cheap parse-time fix; cost a naive-agent dogfood 2 of 19 calls.
-8. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+7. **gr454488** — five residuals from the 2026-09-28 dogfood: every
    `generate` block trips `mode_binding_mismatch` because generate never
    sets mode; sheet rim port direction is centroid noise; the persisted
    build record drops geometry findings the check-mode echo has; "dry-run"
    wording survives past its rename; generator-declared measures claim
    `origin=user`. Five independent one-line fixes, bundled because one
    dogfood found all five.
+8. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+   measurement extent, so the seam radius and the armchair leak threshold
+   (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
+   rim-type properties. Do them together. Precondition for
+   `trust_measured`, which is the entire point of the catalogue.
+9. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+   cap fuse. Independent of everything above, and it caps how far any
+   stick-rung number can be believed — including 8's re-measurements and
+   the valve's Q4 clearance stub, which is explicitly gated on it.
+10. **Housekeeping: gr456203 and gr456212** — moved here from "No action
+    needed" 2026-09-30, because a drift report showed both are still
+    `STATUS:open` on prod while this file claimed otherwise. They were
+    auto-diagnosed as already fixed; the work is to verify that against
+    main and close them, not to write code. Listed as work because
+    "verify and close" is work until someone does it.
 
 ## Horizon
 
@@ -80,7 +128,11 @@ instrumentation-leg horizon item — note at the bottom)
    test piece waits on it.
 2. **`spec.md` §28.3 `opening(port=)` + `junction(3)`** — solve a host hole
    from a target rim, then opening + fuse as a tee. Delivers the tilted
-   pill (`geom.join.angle`) and the first branching topology.
+   pill (`geom.join.angle`) and the first branching topology. Also what a
+   sheet-with-a-hole needs before a non-zigzag tube can protrude from it:
+   the `hex(k)` ↔ `(6,0)` route already works (`examples/pillar.hx`,
+   `{7:6}`, no collar), but an armchair or chiral end is a mixed rim and
+   cannot enter a C6 hole without this.
 3. **`spec.md` §28.3 elbow + closure → genus-1 torus, then genus-N** — the
    first real `registry.closure` test; delivers the junction/tube algebra
    the periodic cell and schwarzite nets reuse.
@@ -91,12 +143,12 @@ instrumentation-leg horizon item — note at the bottom)
 5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 3, since a
+   catalogue's third row type exists for. Waits on Do-next 8, since a
    motif measured at one extent has the same defect the radius had.
 7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 4.
+   clearance stub is gated on Do-next 9.
 8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
@@ -129,9 +181,11 @@ instrumentation-leg horizon item — note at the bottom)
   16-hour-stale server process produced both symptoms. Kept as the worked
   example behind Do-next 1.
 - **gr456201** — ruled: regeneration is the remedy, no new write path.
+  Closed on prod 2026-09-30 with that ruling as its resolution; it had
+  been left open under this heading, which is the drift Do-next 10 exists
+  to stop repeating.
 - **gr456202** — not a bug; `rim_word` takes `abs(turn)` by design.
-- **gr456203**, **gr456212** — auto-diagnosed as already fixed. Verify
-  against main and close; no code work.
+  Closed on prod 2026-09-30, same as above.
 - **backlog/se-composite-integrity.md** — SHIPPED 2026-09-30 as
   `composite_part_stolen` (error) on `view='validate'`. The prod sweep it
   called for found **1 violating row in all of prod**, the deliberately
@@ -142,10 +196,23 @@ instrumentation-leg horizon item — note at the bottom)
   Re-verified against the deployed code after the 2026-09-30 gate: the
   SQL oracle still returns that one row, and `view='validate'` on
   `hexfold-catalogue-dogfood` reports `1 error(s)` — the
-  `composite_part_stolen` finding, naming both composites.
+  `composite_part_stolen` finding, naming both composites. **The cause is
+  Do-next 2** (gr456213); shipping the detector without it means new
+  corruption is reported rather than prevented.
+- **`hx-sheet-tube-trial`** — not a defect. Reto read it in the viewer as
+  a sheet plus a blob; its four-line spec fuses tube to cap and never
+  joins the sheet to anything, so two loose components in one se block is
+  a faithful render of what was asked for. What it *did* surface is
+  gr458713 (Do-next 5).
 
 <!-- Re-rank note, per the README: the first version of this list ranked a
 join-side corruption bug at 1 and a test fixture at 5. Both rested on
 findings a 16-hour-stale MCP process had manufactured. The lesson that
 changed the order is that an unverifiable execution environment outranks
-the defects you think you found in it. -->
+the defects you think you found in it. The 2026-09-30 evening re-rank added
+the second half of that lesson: three separate items here — the stolen
+part, the two-component net, and (on a sibling thread, same day) a
+basepair check with zero callers — were all cases where the code was
+willing to report success without having asked the question. Prefer the
+item that makes a wrong answer impossible over the one that makes a wrong
+answer visible, and prefer both over re-measuring. -->
