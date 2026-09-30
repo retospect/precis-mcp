@@ -18,6 +18,7 @@ not preserve is therefore not silently masked by the fixture.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -29,8 +30,13 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
 from precis_se import persist
+from precis_se.atomic.vocab import ThreadingSpec
+from precis_se.bom import BomLine
+from precis_se.chain.vocab import DomainSpec
 from precis_se.handler import SeHandler
-from precis_se.ops import OpError, SeTree, apply_ops
+from precis_se.measures import MeasureSpec
+from precis_se.notes import NoteSpec
+from precis_se.ops import ConnectSpec, OpError, PortSpec, SeBlock, SeTree, apply_ops
 from precis_se.ops_export import NOT_CARRIED, design_ops, render_ops
 from precis_se.persist import tree_to_json
 
@@ -421,3 +427,185 @@ def test_the_view_is_reachable_and_an_unknown_view_still_lists_it(
         handler.get(id="reach1", view="nosuch")
     # the roster lives on the breaking hint, not in the cause line
     assert "view='ops'" in str(exc.value.next)
+
+
+# ── totality: no field may be added without a verdict ───────────────────
+
+
+#: Every field of every record the export walks, with what the round-trip
+#: does about it. The failure this guards is silent and delayed: someone
+#: adds a field to ``SeBlock``, persist stores it, and the export quietly
+#: stops being a faithful copy — with no test failing, because a fixture
+#: written before the field existed cannot exercise it.
+#:
+#: ``"op"``   round-trips — some emitted op carries it.
+#: ``"gap"``  deliberately not carried; named in :data:`NOT_CARRIED`.
+#: ``"derived"`` recomputed or transient, never authored design intent, so
+#:            there is nothing to carry.
+_VERDICTS: dict[str, dict[str, str]] = {
+    "SeBlock": {
+        "array": "op",
+        "bound": "op",
+        "bound_kind": "op",
+        "build_frame": "op",
+        "chain": "op",
+        "chromophore": "op",
+        "derived": "derived",
+        "descr": "op",
+        "dof": "op",
+        "envelope": "op",
+        "local_pose": "op",
+        "local_rot": "op",
+        "mode": "op",
+        "name": "op",
+        "objectives": "op",
+        "origins": "gap",
+        "parent": "op",
+        "pending_current_state": "derived",
+        "pending_state_poses": "derived",
+        "pending_states": "derived",
+        "pending_transitions": "derived",
+        "ports": "op",
+        # the COMPOSED world placement; local_pose/local_rot above are the
+        # authored values the pose ops actually take
+        "pose": "derived",
+        "process_overrides": "op",
+        "rot": "derived",
+        "template": "op",
+        "uid": "gap",
+        "use": "op",
+    },
+    "PortSpec": {
+        "annotations": "op",
+        "axis_atom": "gap",
+        "bound_atom": "gap",
+        "bound_design": "gap",
+        "direction": "op",
+        "expected_element": "op",
+        "expected_hybridization": "op",
+        "name": "op",
+        "phase_atom": "gap",
+        "pose": "op",
+        # re-stamped by add_port from whether pose/rot was given
+        "pose_source": "derived",
+        "roles": "op",
+        "rot": "op",
+        "rot_source": "derived",
+    },
+    "ConnectSpec": {
+        "a_block": "op",
+        "a_port": "op",
+        "b_block": "op",
+        "b_port": "op",
+        "joint": "op",
+        "kind": "op",
+        "objectives": "op",
+        "optical": "op",
+    },
+    "MeasureSpec": {
+        "block": "op",
+        "datum": "op",
+        "max_value": "op",
+        "min_value": "op",
+        "name": "op",
+        "origin": "op",
+        "reason": "op",
+        "relation": "op",
+        "strength": "op",
+        "unit": "op",
+        "value": "op",
+    },
+    "BomLine": {
+        "a_block": "op",
+        "a_port": "op",
+        "b_block": "op",
+        "b_port": "op",
+        "block": "op",
+        "item": "op",
+        "item_kind": "op",
+        "qty": "op",
+        "reason": "op",
+        "uom": "op",
+    },
+    "NoteSpec": {
+        "about": "op",
+        "body": "op",
+        "created_at": "gap",
+        "kind": "op",
+        "name": "op",
+        "origin": "op",
+        "re": "op",
+    },
+    "ThreadingSpec": {"a": "op", "b": "op"},
+    "DomainSpec": {
+        "end": "op",
+        # TRANSIENT, per-state only: apply_occupancy sets it on a copy and
+        # group_domains drops the row — never persisted, never authored
+        "free": "derived",
+        "forward": "op",
+        "geometry": "op",
+        "helix": "op",
+        "loop_before_nt": "op",
+        # relax_chain's settled output; add_domain refuses it by contract
+        "loop_curve": "derived",
+        "ord": "op",
+        "overrides": "op",
+        "start": "op",
+        "strand": "op",
+    },
+}
+
+_RECORDS = {
+    "SeBlock": SeBlock,
+    "PortSpec": PortSpec,
+    "ConnectSpec": ConnectSpec,
+    "MeasureSpec": MeasureSpec,
+    "BomLine": BomLine,
+    "NoteSpec": NoteSpec,
+    "ThreadingSpec": ThreadingSpec,
+    "DomainSpec": DomainSpec,
+}
+
+
+@pytest.mark.parametrize("record", sorted(_RECORDS))
+def test_every_stored_field_has_an_export_verdict(record: str) -> None:
+    """Adding a field to one of these records forces a decision here.
+
+    Without this, the export degrades silently as the schema grows: the
+    round-trip equality only covers what a fixture happens to exercise,
+    and a fixture cannot exercise a field written after it.
+    """
+    live = {f.name for f in dataclasses.fields(_RECORDS[record])}
+    recorded = set(_VERDICTS[record])
+    assert live == recorded, (
+        f"{record} fields changed. For each one decide: emit it from "
+        f"precis_se.ops_export (verdict 'op'), or declare it uncarried and "
+        f"add a line to NOT_CARRIED (verdict 'gap'), or confirm it is "
+        f"derived/transient (verdict 'derived') — then record it in "
+        f"_VERDICTS. added={sorted(live - recorded)} "
+        f"removed={sorted(recorded - live)}"
+    )
+
+
+def test_every_declared_gap_is_named_in_the_views_own_header() -> None:
+    """A ``gap`` verdict is only honest if the rendered view says so — the
+    header is where a reader of a copied design finds out what is
+    missing."""
+    blob = " ".join(NOT_CARRIED).lower()
+    for record, verdicts in _VERDICTS.items():
+        for field_name, verdict in verdicts.items():
+            if verdict != "gap":
+                continue
+            token = {
+                "uid": "uid",
+                "origins": "origin stamps",
+                "created_at": "created_at",
+                "bound_design": "structure binding",
+                "bound_atom": "structure binding",
+                "axis_atom": "structure binding",
+                "phase_atom": "structure binding",
+            }[field_name]
+            assert token.lower() in blob, (
+                f"{record}.{field_name} is declared a gap but NOT_CARRIED "
+                f"never mentions {token!r}"
+            )
