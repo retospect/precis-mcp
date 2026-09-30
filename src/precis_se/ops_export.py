@@ -381,6 +381,36 @@ def _ledger_ops(tree: SeTree) -> list[dict[str, Any]]:
     return ops
 
 
+def external_refs(tree: SeTree) -> list[str]:
+    """Refs in OTHER kinds this design resolves at load time, as
+    ``'kind:slug'`` — component/part/cad/structure bindings, and the
+    designs behind any cross-design template.
+
+    These are the export's prerequisites, and leaving them implicit is
+    the trap this function exists to close: a binding whose target is
+    absent does not error, it silently resolves to nothing. The catalog
+    supplies a bound block's derived envelope and ports
+    (:func:`precis_se.persist.attach_catalog`), so a copied design with
+    its bindings missing renders with FEWER ports than the original and
+    says nothing about it — which would quietly invalidate any
+    geometry comparison between the two.
+
+    Dogfooding this on a real design is what surfaced it: `unicycle-c1`'s
+    fastener blocks author one port each and derive three more from an
+    ISO-fastener component, so the copy rendered `[1 port]` where prod
+    renders `[4 ports]`.
+    """
+    refs: set[str] = set()
+    for node in tree.blocks.values():
+        if node.bound_kind and node.bound:
+            refs.add(f"{node.bound_kind}:{node.bound}")
+        template = node.template or ""
+        # 'slug#block' is a cross-design reference; '#41' is a local uid
+        if "#" in template and not template.startswith("#"):
+            refs.add(f"se:{template.split('#', 1)[0]}")
+    return sorted(refs)
+
+
 def design_ops(tree: SeTree) -> list[dict[str, Any]]:
     """The whole design as one replayable ops list.
 
@@ -413,10 +443,38 @@ def render_ops(tree: SeTree, title: str) -> str:
         "",
     ]
     lines += [f"- {gap}" for gap in NOT_CARRIED]
-    lines += [
-        "",
-        "```json",
-        json.dumps({"ops": ops}, indent=2, sort_keys=False),
-        "```",
-    ]
+    needed = external_refs(tree)
+    if needed:
+        lines += [
+            "",
+            f"REQUIRED IN THE TARGET DATABASE — {len(needed)} ref(s) this "
+            "design resolves at load time. A missing one does NOT error: the "
+            "binding resolves to nothing, and the block loses the envelope "
+            "and ports the catalog would have derived for it. Check these "
+            "before comparing a copy against the original.",
+            "",
+        ]
+        lines += [f"- {ref}" for ref in needed]
+    lines += ["", "```json", _ops_json(ops), "```"]
     return "\n".join(lines)
+
+
+def _ops_json(ops: list[dict[str, Any]]) -> str:
+    """``{"ops": [...]}`` with ONE op per line, each op compact.
+
+    Not a style choice — a size one. Pretty-printing at ``indent=2`` puts
+    every scalar on its own line, which for a real design is most of the
+    payload: `unicycle-c1`, only 20 blocks, rendered to just under the
+    24 KB response frame that way, so adding a few lines of header
+    truncated it. A truncated export is worse than a small one, because in
+    a one-shot process (``precis tools …``) there is no pagination cursor
+    to redeem — the tail is simply gone, and what remains still looks like
+    a valid fenced block.
+
+    One op per line keeps the thing diffable and greppable, which is half
+    of why a text form of a design is useful at all.
+    """
+    if not ops:
+        return '{"ops": []}'
+    body = ",\n  ".join(json.dumps(op, separators=(",", ":")) for op in ops)
+    return '{"ops": [\n  ' + body + "\n]}"

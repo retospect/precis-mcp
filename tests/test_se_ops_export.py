@@ -37,7 +37,12 @@ from precis_se.handler import SeHandler
 from precis_se.measures import MeasureSpec
 from precis_se.notes import NoteSpec
 from precis_se.ops import ConnectSpec, OpError, PortSpec, SeBlock, SeTree, apply_ops
-from precis_se.ops_export import NOT_CARRIED, design_ops, render_ops
+from precis_se.ops_export import (
+    NOT_CARRIED,
+    design_ops,
+    external_refs,
+    render_ops,
+)
 from precis_se.persist import tree_to_json
 
 
@@ -302,6 +307,63 @@ def test_the_rendered_body_states_every_gap_and_fences_a_put_payload() -> None:
     assert _norm(tree_to_json(_tree(payload["ops"]))) == _norm(
         tree_to_json(_tree(_CART))
     )
+
+
+def test_the_header_names_every_ref_the_copy_will_need_to_resolve() -> None:
+    """The silent-divergence guard, found by dogfooding `unicycle-c1`: a
+    bound block derives envelope and ports from its catalog ref at load
+    time, and a missing ref resolves to nothing rather than erroring — so
+    a copy renders with fewer ports and says nothing. The header has to
+    name them or the comparison is quietly invalid.
+    """
+    tree = _tree(
+        [
+            {"op": "add_block", "name": "bolt"},
+            {"op": "set_mode", "block": "bolt", "mode": "purchase"},
+            {
+                "op": "set_binding",
+                "block": "bolt",
+                "kind": "component",
+                "design": "iso-4762-m4x20",
+            },
+        ]
+    )
+    assert external_refs(tree) == ["component:iso-4762-m4x20"]
+    body = render_ops(tree, "bolted")
+    assert "REQUIRED IN THE TARGET DATABASE" in body
+    assert "component:iso-4762-m4x20" in body
+
+
+def test_a_local_uid_template_is_not_mistaken_for_a_cross_design_ref() -> None:
+    """``'#41'`` is a uid and ``'lib#wheel'`` is cross-design — the two
+    syntaxes share the ``#``, so only the second is a prerequisite."""
+    tree = SeTree()
+    tree.blocks["a"] = tree.make_block(name="a", template="#41")
+    tree.blocks["b"] = tree.make_block(name="b", template="lib#wheel")
+    assert external_refs(tree) == ["se:lib"]
+
+
+def test_a_design_with_no_bindings_prints_no_prerequisite_section() -> None:
+    assert external_refs(_tree([{"op": "add_block", "name": "solo"}])) == []
+    assert "REQUIRED IN THE TARGET DATABASE" not in render_ops(
+        _tree([{"op": "add_block", "name": "solo"}]), "solo"
+    )
+
+
+def test_the_payload_stays_one_op_per_line_and_compact() -> None:
+    """Size, not style: at ``indent=2`` a 20-block design rendered to just
+    under the 24 KB response frame, so a few lines of header truncated it —
+    and a one-shot ``precis tools`` call has no cursor to redeem the tail
+    with. One op per line keeps it diffable without the bulk.
+    """
+    body = render_ops(_tree(_CART), "cart")
+    fenced = body.split("```json")[1].split("```")[0].strip()
+    ops = json.loads(fenced)["ops"]
+    # one line for '{"ops": [', one per op, one for ']}'
+    op_lines = fenced.splitlines()[1:-1]
+    assert len(op_lines) == len(ops)
+    for line in op_lines:
+        assert '": ' not in line, f"not compact: {line[:60]}"
 
 
 def test_an_empty_design_exports_a_replayable_empty_list() -> None:
