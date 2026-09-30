@@ -21,8 +21,9 @@ thread by dependency.
    installed-file-list change, so a pure rename leaves long-lived processes
    holding deleted modules. Every remaining step in this thread is a module
    move and no gate catches this class (a fresh test process always imports
-   the new tree). Observed once, on a session MCP (gr458061's half); a
-   stale prod worker was found the same day but never implicated.
+   the new tree). Observed once, on a session MCP (gr458061's half); the
+   prod worker suspected the same day was never implicated, and pathway does
+   not even route through that host.
 2. **backlog/plugin-split-runtime-shell.md** — steps 1, 3 and 5 (step 2
    landed 2026-09-29). Step 1, the import-boundary test, now lands green
    because step 2 removed the last core→plugin import, so it goes first and
@@ -72,8 +73,10 @@ own item); they become items as each comes into reach.
 
 - **td457903** — withdrawn: the pathway ImportError was the reporting
   session's own stale dev MCP container (gr458061's shape), not prod. Do not
-  re-file it as a prod restart. Prod's pathway surface is still untested,
-  which is a dogfood to redo, not a defect to rank.
+  re-file it as a prod restart. Dogfood redone 2026-09-30 on a fresh
+  engine-capable process: `compare` and the U-lever both correct on prod
+  records, so step 2 is confirmed behaviour-neutral and nothing here is
+  broken.
 - **autocatpath<0.23 ceiling** — ruled out: the parity gate is a live check
   against the installed engine.
 - **Per-plugin Postgres schemas** — ruled out 2026-09-27: pgbouncer
