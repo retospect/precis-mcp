@@ -612,6 +612,9 @@ class SeHandler(Handler):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
         description = str(payload.get("description") or "").strip()
         scenario_id = _vet_scenario(self.store, payload.get("scenario"))
+        existing = self.store.get_ref(kind="se", id=slug)
+        if not ops and existing is not None:
+            _refuse_empty_replace(self.store, existing, slug)
         tree = SeTree()
         # own_slug is known from id= before the ref row even exists — needed
         # for a foreign design's template to recognise a hop back into THIS
@@ -621,7 +624,6 @@ class SeHandler(Handler):
         pending_jobs: list[PendingJob] = []
         echo = self._apply(tree, ops, slug=slug, pending_jobs=pending_jobs)
         ttl = (title or slug).strip() or slug
-        existing = self.store.get_ref(kind="se", id=slug)
         meta = {"description": description}
         # A replace is a whole-tree write: serialize it against every other
         # load->mutate->save of this design (persist.tree_mutation — an edit,
@@ -2147,6 +2149,31 @@ def _materialize_states(
                     )
                 except design_states.StateError as exc:
                     raise BadInput(f"relax_chain(state=): {exc}") from exc
+
+
+def _refuse_empty_replace(store: Any, existing: Any, slug: str) -> None:
+    """A ``put`` whose op list is empty must not silently turn a populated
+    design into an empty one. The shape reaches here two ways — a caller
+    passing ``text='{"ops": []}'`` and, more often, a caller whose ops
+    never arrived (an ``ops=`` kwarg the MCP ``put`` schema does not carry
+    is dropped before dispatch). Either way the design's blocks are the
+    evidence, so refuse while they exist; a design with no blocks may be
+    re-put empty (an unfilled design is a legitimate first save)."""
+    live = persist.load_tree(store, existing.id)
+    if not live.blocks:
+        return
+    raise BadInput(
+        f"put(kind='se', id={slug!r}) with no ops would replace a "
+        f"{len(live.blocks)}-block design with an empty one — put is a full "
+        "replace and the ops list arrived empty (an ops= kwarg is not part of "
+        "put's schema; the ops go in text= as JSON). To add to the design use "
+        "edit; to start over, delete it first",
+        next=(
+            f"edit(kind='se', id={slug!r}, "
+            'text=\'{"ops":[{"op":"add_block","name":"hub"}]}\')'
+            f" · delete(kind='se', id={slug!r})"
+        ),
+    )
 
 
 def _vet_put_payload(payload: dict[str, Any]) -> None:

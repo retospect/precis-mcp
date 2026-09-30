@@ -65,9 +65,16 @@ then the layout follow-ons.
 - **gr458145** — fixed in the commit that re-ranked this file (block view
   names the state whose stored pose it shows); close on ship.
 - **td458169** — done 2026-09-30; results in the todo's text.
-- **gr458316** — fixed in the commit that renumbered this file (layout_chain's
-  5p/3p ports carry the backbone-exit pose; realize lets the atom replace
-  it); close on ship.
+- **gr458316** — layout_chain's 5p/3p ports carry the backbone-exit pose and
+  realize lets the atom replace it; dogfooded on prod 2026-09-30
+  (view='stations' target='f2.s0.3p' on dogfood-walker-a), tagged done.
+- **gr458472** — filed 2026-09-30 from that re-dogfood: a `put(kind='se',
+  ops=[…])` call lost its ops (put's schema has no `ops=`) and wiped the
+  design; recovered by replaying design_revisions by hand. The refusal half
+  is fixed in the commit that added this line (put with no ops refuses
+  while the design has blocks). The rest — a restore_revision op, a
+  revisions view, `ops=` on put's schema — is se persist work, not this
+  thread's; it stays on the gripe.
 - **backlog/se-walker-light-protocol.md** — landed in three slices
   (6e3fb3b1 and the B+C ship of 2026-09-30) and deleted, delete-on-ship;
   its decisions log is restated in `src/precis_se/chain/__init__.py`

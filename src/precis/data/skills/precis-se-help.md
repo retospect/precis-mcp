@@ -58,9 +58,12 @@ export, `view='fab'`'s fabrication table — see `precis-se-print-help`.
 `put(kind='se', id=…, text=<json>)` **replaces the whole design**. The
 payload's only top-level keys are `description`, `ops` and `scenario`
 (anything else is rejected — an unrecognised shape used to silently empty
-the design). Incremental changes go through `edit(kind='se', id=…,
-ops=[…])`. Op batches are **atomic**: one bad op rolls the whole batch
-back.
+the design). A put whose op list is empty is refused while the design
+has blocks — put has no `ops=` kwarg (the ops go in `text=`; an `ops=`
+kwarg is dropped before dispatch and the design would otherwise be wiped);
+to start over, `delete` the design first. Incremental changes go through
+`edit(kind='se', id=…, ops=[…])`. Op batches are **atomic**: one bad op
+rolls the whole batch back.
 
 `scenario` names the **production context** that governs the design —
 `prototype` (one off, lifetime physics OFF) · `small_batch` (100, indoor

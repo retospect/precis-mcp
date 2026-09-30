@@ -226,3 +226,28 @@ def test_structure_load_at_version_returns_the_atom_count_of_that_save(
     rev4 = history.revision(store, ref_id, 4)
     assert rev4 is not None
     assert rev4.ops == [{"op": "vacancy", "atom": "aPd2"}]
+
+
+# ── put with no ops never empties a populated design (gripe 458472) ────────
+
+
+def test_se_put_with_no_ops_refuses_to_empty_a_populated_design(
+    se: SeHandler, store: Store
+) -> None:
+    from precis.errors import BadInput
+
+    se.put(id="caster", text=json.dumps({"ops": _CASTER_OPS}))
+    ref_id = _ref_id(store, "se", "caster")
+    # The two ways an empty op list reaches put: an explicit empty list, and
+    # a payload with no ops at all (an ops= kwarg the MCP put schema does not
+    # carry is dropped before dispatch, so this is what such a call becomes).
+    for text in ('{"ops": []}', ""):
+        with pytest.raises(BadInput, match="would replace a 2-block design"):
+            se.put(id="caster", text=text)
+    assert set(persist.load_tree(store, ref_id).blocks) == {"fork", "hub"}
+    # No revision was recorded for the refused calls.
+    assert [r.rev for r in history.list_revisions(store, ref_id)] == [1]
+    # A brand-new slug may still start empty (an unfilled design is a
+    # legitimate first save), and so may a design that has no blocks.
+    assert "no blocks yet" in se.put(id="blank", text="").body
+    assert "no blocks yet" in se.put(id="blank", text='{"ops": []}').body
