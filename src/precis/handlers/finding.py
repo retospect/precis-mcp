@@ -147,6 +147,10 @@ _TRUST_VERIFIED = "verified"
 _TRUST_DISPUTED = "disputed"
 _TRUST_ANY = "any"
 _TRUST_VALUES = (_TRUST_SIGNED, _TRUST_VERIFIED, _TRUST_DISPUTED, _TRUST_ANY)
+#: Default-cohort over-fetch: the relevance query runs over the caller's
+#: tags alone and is then filtered to established rows + claim hubs, so it
+#: fetches this many pages to keep a full page after the filter (gr458942).
+_COHORT_OVERFETCH = 4
 #: Publish states that mean "a human key attested this claim".
 _SIGNED_STATES = ("signed", "anchored", "published")
 #: ``trust=`` filters *after* retrieval (the posture lives in publish rows
@@ -973,6 +977,21 @@ class FindingHandler(NumericRefHandler):
             log.warning("finding search: posture read failed", exc_info=True)
             return {}
 
+    def _cohort_members(self, ref_ids: list[int]) -> set[int]:
+        """The ids among ``ref_ids`` that belong to the default cohort —
+        ``STATUS:established`` rows or ``TAPROOT:claim`` hubs — read in one
+        ``ref_tags_bulk`` query, so a relevance-ranked over-fetch can be
+        filtered without a second ranked query per bucket."""
+        if not ref_ids:
+            return set()
+        hub_ns, hub_val = _TAPROOT_CLAIM_TAG.split(":", 1)
+        wanted = {(_STATUS_NAMESPACE, "established"), (hub_ns, hub_val)}
+        return {
+            rid
+            for rid, pairs in self.store.ref_tags_bulk(ref_ids).items()
+            if wanted.intersection(pairs)
+        }
+
     def _trust_pool(self, page_size: int, trust: str | None) -> int:
         """Retrieval limit for a page — widened when ``trust=`` will cull."""
         if not trust or trust == _TRUST_ANY:
@@ -1254,11 +1273,20 @@ class FindingHandler(NumericRefHandler):
         The store's tag filter (``Tag.normalize_filter`` →
         ``build_tag_filter``) is AND-only over a single tag set — there's
         no any-of/OR group to express "established OR hub" in one query.
-        So this runs the two tag-filtered queries separately (each still
-        ANDs in any caller-supplied ``tags=``) and unions the results by
-        ref id, established first (its natural rank/recency order) then
-        any hub not already present — least invasive given the store API,
-        and ``page_size`` is honoured by trimming the merged list.
+
+        **No q (recency):** the two tag-filtered lists are unioned by ref
+        id, established first then any hub not already present — there is
+        no cross-bucket score to fuse, so bucket order is the honest one.
+
+        **With q (relevance):** one relevance-ranked query over the
+        caller's ``tags=`` alone (over-fetched ``_COHORT_OVERFETCH`` ×),
+        then keep the rows that carry either cohort tag, in that rank
+        order. Two separately-capped bucket queries appended established-
+        first were the gr458942 defect: the semantic leg never runs dry,
+        so the established bucket's ten least-bad neighbours filled the
+        page and a hub that matched the claim sentence near-verbatim was
+        trimmed off unseen. Only when the over-fetch leaves the page short
+        are the two bucket queries appended, after the ranked rows.
         """
         established_tags = Tag.normalize_filter(
             _tags_with(base_tags, f"{_STATUS_NAMESPACE}:established"), kind=self.kind
@@ -1280,14 +1308,25 @@ class FindingHandler(NumericRefHandler):
             )
             return self._render_finding_table(refs, query=None)
 
-        refs = self._apply_trust(
-            _merge_dedup(
-                self._hybrid_hits(q=q, tags=established_tags, limit=pool, mode=mode),
-                self._hybrid_hits(q=q, tags=hub_tags, limit=pool, mode=mode),
-            ),
-            trust=trust,
-            page_size=page_size,
+        wide = self._hybrid_hits(
+            q=q,
+            tags=Tag.normalize_filter(list(base_tags), kind=self.kind),
+            limit=pool * _COHORT_OVERFETCH,
+            mode=mode,
         )
+        members = self._cohort_members([int(r.id) for r in wide])
+        ranked = [r for r in wide if int(r.id) in members]
+        if len(ranked) < pool:
+            ranked = _merge_dedup(
+                ranked,
+                _merge_dedup(
+                    self._hybrid_hits(
+                        q=q, tags=established_tags, limit=pool, mode=mode
+                    ),
+                    self._hybrid_hits(q=q, tags=hub_tags, limit=pool, mode=mode),
+                ),
+            )
+        refs = self._apply_trust(ranked, trust=trust, page_size=page_size)
         if not refs:
             body = f"no finding matches {q!r} with status='established'"
             if trust:

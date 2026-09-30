@@ -2611,3 +2611,65 @@ class TestDeleteBackrefGuard:
 
         resp = h.delete(id=fid)
         assert f"id={fid}" in resp.body
+
+
+class TestDefaultCohortRankFusion:
+    """gr458942 regression: the default (no ``status=``) cohort must rank
+    established rows and claim hubs by relevance together. Two separately
+    capped bucket queries appended established-first let ten weak
+    established matches fill the page and trim off a hub that matched the
+    query best — on prod every ammonia Faradaic-efficiency query returned
+    uranium-adsorbent findings."""
+
+    _TOPICS = (
+        "zeolite pellets",
+        "membrane thickness",
+        "flow-cell gaskets",
+        "reference electrodes",
+        "gas diffusion layers",
+        "ionomer loading",
+        "stirring rate",
+        "electrolyte purity",
+        "cell temperature",
+        "sampling interval",
+    )
+
+    def test_hub_outranks_a_saturated_established_bucket(self, store) -> None:
+        from precis.store.types import Tag
+
+        _seed_paper(store, cite_key="decoy-src")
+        h = _make_handler(store)
+        for n, topic in enumerate(self._TOPICS):
+            resp = h.put(
+                title=f"decoy {n} on {topic} mentions ammonia Faradaic efficiency once",
+                body=(
+                    f"Decoy {n} about {topic} notes ammonia Faradaic efficiency in "
+                    "passing, then moves on to unrelated assembly details."
+                ),
+                cited_in="decoy-src",
+            )
+            rid = int(_search(r"id=(\d+)", resp.body).group(1))
+            store.add_tag(
+                rid,
+                Tag.closed("STATUS", "established"),
+                set_by="chase",
+                replace_prefix=True,
+            )
+        hub_id = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence=(
+                    "Ammonia Faradaic efficiency: the Ru-Cu alloy holds ammonia "
+                    "Faradaic efficiency above 92 percent, an ammonia Faradaic "
+                    "efficiency record for nitrate reduction."
+                ),
+                scope={"catalyst": "Ru-Cu"},
+            ),
+        )
+
+        out = h.search(q="ammonia Faradaic efficiency", page_size=10)
+
+        assert str(hub_id) in out.body
+        # The page stays full of cohort rows — the over-fetch filter must not
+        # shrink a page that had ten qualifying matches available.
+        assert out.body.count("decoy ") >= 9
