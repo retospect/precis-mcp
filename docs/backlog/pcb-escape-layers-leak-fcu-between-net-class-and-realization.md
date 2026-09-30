@@ -28,20 +28,34 @@ Two independent observations, both current:
    has derived the list since 2026-09-27; `op='route'` never re-runs the
    generator, so an older board keeps whatever class it was born with.
 
-2. **Fresh fixture, still leaks.**
+2. **Fresh fixture, leaks only under an uncommitted cost term — CORRECTED
+   2026-09-30.** As first filed, this item said
    `tests/test_pcb_ewod_dogfood.py::test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap`
-   fails today with
+   "fails today" with
 
    ```
    AssertionError: an escape routed on the electrode layer: {'F.Cu', 'In2.Cu', 'B.Cu'}
    ```
 
-   This one is NOT the stale-class story — the fixture is generated in the
-   test process. So there is a second path by which `F.Cu` reaches a
-   realized escape.
+   and that observation 2 was "the one that matters". **That was measured in
+   a worktree carrying an uncommitted `routing_area` cost term** (cost.py +
+   optimize.py). Reverting just those files and re-running the file gives
+   `8 passed`; restoring them reproduces the failure. So the failure was
+   never a property of `main`: on `main` this fixture does NOT leak.
 
-Observation 2 is the one that matters: it means the defect is reachable on
-a board born today, not only on `pb345846`.
+   What survives is narrower but still worth knowing: `routing_area` changes
+   the placement, and at the placement it chooses an escape lands on `F.Cu`.
+   That is either a latent leak reachable only from some placements, or a
+   placement-sensitive assertion in the test. Distinguishing the two is the
+   first step now, and the reproducer is "apply the `routing_area` WIP",
+   not "run the suite".
+
+This correction downgrades the item. Observation 1 (the stale stored class
+on `pb345846`) is real but is the already-tracked "`op='route'` never
+re-runs the generator" staleness, owned by
+`pcb-generator-version-is-a-manual-bump-with-no-tripwire.md`. Nothing here
+demonstrates a leak on a board born today from current `main`, which is
+what the original rank was based on.
 
 ## What is already known
 
@@ -78,7 +92,16 @@ equals the net class's `layers`.
 
 ## Acceptance
 
-- `test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap` passes.
+- `test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap` passes
+  **with the `routing_area` cost term applied** — on `main` alone it
+  already passes, so a green run without that term is the vacuous case
+  here, not evidence.
+- The first question answered explicitly, in the file: is the `F.Cu` escape
+  under `routing_area` a real leak at that placement, or a
+  placement-sensitive assertion? Assert the `allowed` set handed to the
+  maze equals the net class's `layers` — that separates "realization
+  ignored the class" from "the class was right and the test is reading
+  placement".
 - A negative control: force the net class to include `F.Cu` and confirm the
   realized escape layers then *do* include it — otherwise the test is
   vacuous for the reason the assertion is there.

@@ -1235,6 +1235,50 @@ def check_via_pad_keepout(
     all_layers = list(model.get("layers") or [])
     pads = model.get("pads") or []
     findings: list[DrcFinding] = []
+
+    # Pad polygons built ONCE, then a per-layer STRtree over them — the same
+    # shape :func:`clearance_pairs_indexed` already uses (gr458087). This
+    # rule used to rebuild every pad's polygon inside the per-via loop and
+    # test every via against every pad, measured at 1.9 s of a 1.9 s
+    # :func:`run_geometric_drc` on ONE 8x8 EWOD tile and 30 s at four tiles,
+    # which is what made "run geometric DRC at every board mutation"
+    # (docs/backlog/pcb-always-valid-board-invariant.md) unaffordable.
+    #
+    # The index is a PRUNE, not a different question: this rule's own
+    # condition ``gap < required`` with ``gap = pad_poly.distance(centre) -
+    # vr`` is exactly ``pad_poly.distance(centre) < required + vr``, so a
+    # ``dwithin`` query at that distance can only drop pads the linear scan
+    # would have cleared. Candidates are re-sorted into pad order before the
+    # per-pad body runs, so the findings list stays identical — same
+    # elements, same order — to the unindexed version.
+    pad_polys: list[BaseGeometry | None] = []
+    for pad in pads:
+        poly = _copper_item_polygon({**pad, "ctype": "pad"})
+        pad_polys.append(None if poly is None or poly.is_empty else poly)
+
+    # A drilled pad's land is copper on EVERY layer, so it stays a candidate
+    # whatever the via spans (gr341516). Indexed in its own tree rather than
+    # duplicated into each layer's, so it is still reached by a via whose
+    # layer span is empty — which the linear scan also checked, since its
+    # ``not pad.get("drill")`` guard let drilled pads through the layer test.
+    # Degenerate pads (no shapeable polygon) keep the circumscribed-circle
+    # fallback below, so they are carried as unconditional candidates.
+    by_layer: dict[str, list[int]] = {}
+    drilled: list[int] = []
+    degenerate: list[int] = []
+    for idx, pad in enumerate(pads):
+        if pad_polys[idx] is None:
+            degenerate.append(idx)
+        elif pad.get("drill"):
+            drilled.append(idx)
+        else:
+            by_layer.setdefault(str(pad.get("layer", "")), []).append(idx)
+    layer_trees = {
+        layer: (idxs, STRtree([pad_polys[i] for i in idxs]))
+        for layer, idxs in by_layer.items()
+    }
+    drilled_tree = STRtree([pad_polys[i] for i in drilled]) if drilled else None
+
     for item in model.get("copper") or []:
         if item.get("ctype") != "via":
             continue
@@ -1243,15 +1287,28 @@ def check_via_pad_keepout(
         via_net = item.get("net")
         via_fixed = bool(item.get("fixed"))
         via_layers = set(_via_layer_names(item, all_layers))
-        for pad in pads:
+        vx_y = Point(vx, vy)
+        reach = required + vr
+        cand: set[int] = set(degenerate)
+        for layer in via_layers:
+            entry = layer_trees.get(layer)
+            if entry is None:
+                continue
+            layer_idxs, layer_tree = entry
+            for c in layer_tree.query(vx_y, predicate="dwithin", distance=reach):
+                cand.add(layer_idxs[int(c)])
+        if drilled_tree is not None:
+            for c in drilled_tree.query(vx_y, predicate="dwithin", distance=reach):
+                cand.add(drilled[int(c)])
+        for pad_idx in sorted(cand):
+            pad = pads[pad_idx]
             if pad.get("layer") not in via_layers and not pad.get("drill"):
                 continue
             pad_net_raw = pad.get("net")
             if via_fixed and via_net and pad_net_raw and via_net == pad_net_raw:
                 continue
-            vx_y = Point(vx, vy)
-            pad_poly = _copper_item_polygon({**pad, "ctype": "pad"})
-            if pad_poly is not None and not pad_poly.is_empty:
+            pad_poly = pad_polys[pad_idx]
+            if pad_poly is not None:
                 # The pad's REAL outline (:func:`_copper_item_polygon` — the
                 # module docstring's ONE shape function, already the source
                 # of truth for a pad's physical reach in

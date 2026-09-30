@@ -25,43 +25,52 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
    at all. Folds in backlog/pcb-placement-must-be-valid-before-routing.md
    (same defect, narrower): implement one, not both. Under a design review
    that rewrote its content on 2026-09-30, not its rank.
-3. **gr458087** — drc.check_via_pad_keepout is O(vias × pads) and rebuilds
-   the pad polygon per pair: 1.9 s per 8x8 tile, 30 s at 4 tiles, 100% of a
-   full DRC pass. 2 wants geometric DRC at every mutation, unaffordable at
-   that cost and fine at the ~0.3 s an STRtree gives; the pattern exists in
-   the same module (clearance_pairs_indexed). Hard prerequisite for 2.
-4. **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** — authored
+3. **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** — authored
    pcb_fixed_copper (plaza vias) is invisible to the placer; this is the
    mechanism behind 2's symptom (2 makes the state unstorable, this stops
    producing it). Needs a fixture with an authored via where an instance
    would land; ewod-dogfood-1 cannot exercise it.
-5. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
+4. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
    risk() is a MAX over margin terms, so any MONEY term is a free tie-breaker
    against every non-maximal constraint (a $0.046 term overruled
-   courtyard_overlap). Decides whether 4's fix can be graded or must be a
+   courtyard_overlap). Decides whether 3's fix can be graded or must be a
    hard gate.
-6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
-   — escapes realize on F.Cu against a derived net class of ["B.Cu"]; live on
-   pb345846. Below 1–5 only because it is one rule rather than a class.
-   Reads realize/maze, which pcb-easyeda-round-trip's router item also
-   touches; this thread sequences behind theirs.
-7. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
+5. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
    criteria came off an invalid placement and are void; now a
    rewrite-against-a-new-fixture job that needs 1's real pad geometry.
-8. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
+6. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
    op='route' never re-runs the generator, which is why pb345846 still
-   permits F.Cu after the 09-27 fix. Leverage for 6: without a tripwire the
-   same staleness re-opens any generator fix.
+   permits F.Cu after the 09-27 fix. Now owns the live half of 7: the stale
+   stored class IS this staleness, and without a tripwire the same
+   staleness re-opens any generator fix.
+7. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
+   — **demoted 2026-09-30, its key evidence was contaminated.** The
+   fresh-fixture failure it was ranked on was measured in a worktree
+   carrying the uncommitted routing_area term; on main that fixture passes
+   (verified by reverting only cost.py/optimize.py). What is left is the
+   stale class on pb345846, which 6 owns, plus a narrower open question —
+   whether the F.Cu escape that appears *under* routing_area is a real leak
+   at that placement or a placement-sensitive assertion. Reads realize/maze,
+   which pcb-easyeda-round-trip's router item also touches; this thread
+   sequences behind theirs.
 
 ## Horizon
 
 1. **routing_area cost term** (uncommitted, in this thread's worktree) —
    prices the board area a strand sweeps; the only thing holding the sink
    under the array. Waits on its own gate; a placer that needs no pinned
-   sink.
+   sink. **Measured 2026-09-30: as it stands it would red the gate.** With
+   the term applied, `test_pcb_reference_end_to_end.py::
+   test_esp32c3_reference_place_and_route_never_regresses_the_baseline[4]`
+   fails and the dogfood escape-layer test fails; revert cost.py +
+   optimize.py and both pass. So the open decision is not only "gate now or
+   wait for the DRC cost fix" — the term needs work first, and the esp32c3
+   baseline is the concrete thing it regresses.
 2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
-   waits on gr458087 and on 1; the precondition for trusting any number
-   below this line.
+   waits on 1; the precondition for trusting any number below this line.
+   Its cost prerequisite is gone: check_via_pad_keepout is indexed, so a
+   full geometric DRC pass is 0.29 s on an 8x8 tile and 1.2 s at 16x16
+   (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck.
 3. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
    waits on 2 because each slice's acceptance is an "is the board still
    valid" claim.
@@ -89,8 +98,9 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 ## Parked
 
 - **pb345846 regenerate** — destructive prod write; unparks on Reto's
-  per-write go-ahead, and not before Do-next 1 and 6 land, or it is done
-  twice.
+  per-write go-ahead, and not before Do-next 1 lands and the escape-layer
+  question (Do-next 7, with its live half in 6) is settled, or it is done
+  twice. Named by item, not number: that rank has moved twice already.
 - **U_TEMP part selection** — C32254 is a dual MOSFET placeholder; unparks
   when Reto picks a real LM75-class part (detail in item 1's file).
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with

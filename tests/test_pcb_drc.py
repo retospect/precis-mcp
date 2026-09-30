@@ -831,6 +831,84 @@ def test_check_via_pad_keepout_still_fires_on_a_genuine_non_square_pad_violation
     assert findings[0].margin_mm is not None and findings[0].margin_mm < 0
 
 
+# ── gr458087: the STRtree index must not change a single verdict ─────────
+#
+# The rule was O(vias x pads) with the pad polygon rebuilt in the inner
+# loop (1.8s of a 1.8s run_geometric_drc on one 8x8 EWOD tile, 23s at
+# 16x16). It now precomputes pad polygons and prunes with a per-layer
+# STRtree. These pin the three ways that prune could silently drop a
+# finding, plus the report order the index does not get to change.
+
+
+def test_check_via_pad_keepout_finds_a_drilled_pad_off_the_vias_span():
+    """The complement of
+    :func:`test_check_via_pad_keepout_ignores_a_pad_outside_the_vias_span`:
+    a DRILLED pad's land is copper on every layer (gr341516), so the span
+    exclusion must NOT apply to it.
+
+    Note this one does NOT by itself protect the separate drilled-pad tree:
+    with a full stackup a drilled pad also sits in every layer's tree, so
+    folding it in there keeps this test green. The test that catches that
+    mutation is the empty-stackup one below (verified by making the
+    mutation). Both are kept — this pins the rule, that pins the index."""
+    pad = _pad("SIG", "B.Cu", 0.0, 0.0, w=1.0, h=1.0, drill=0.3)
+    via = {
+        "ctype": "via",
+        "net": "OTHER",
+        "x": 0.0,
+        "y": 0.0,
+        "dia_mm": 0.6,
+        "drill_mm": 0.3,
+        "layers": ["F.Cu"],  # never reaches B.Cu, but the pad is drilled
+    }
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [via], "pads": [pad]}
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].rule == "via_pad_keepout"
+
+
+def test_check_via_pad_keepout_finds_a_drilled_pad_with_an_empty_stackup():
+    """With no ``layers`` at all a via spans nothing, so every per-layer
+    tree query returns nothing — a drilled pad must still be reached. The
+    unindexed rule checked it here too (its layer guard fell through on
+    ``not pad.get("drill")``), so this pins behaviour, not a new rule."""
+    pad = _pad("SIG", "F.Cu", 0.0, 0.0, w=1.0, h=1.0, drill=0.3)
+    via = _via("OTHER", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model: dict[str, Any] = {"layers": [], "copper": [via], "pads": [pad]}
+    assert len(drc.check_via_pad_keepout(model, _CAP4)) == 1
+
+
+def test_check_via_pad_keepout_still_checks_a_pad_it_cannot_shape():
+    """A pad whose polygon is too short to be a polygon has no geometry to
+    index, so it can never come back from a spatial query. It must still be
+    checked by the circumscribed-circle fallback — the indexed rule carries
+    such pads as unconditional candidates rather than dropping them."""
+    pad = {
+        **_pad("E1", "F.Cu", 0.0, 0.0, w=1.0, h=1.0, shape="polygon"),
+        "poly": [[-0.5, -0.5], [0.5, -0.5]],  # 2 vertices: unshapeable
+    }
+    via = _via("OTHER", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+
+
+def test_check_via_pad_keepout_reports_pads_in_model_order():
+    """An STRtree returns candidates in ITS order, not the pad list's. The
+    rule sorts them back, so a via violating several pads reports them in
+    ``model["pads"]`` order — the findings list is what ``view='drc'``
+    renders and what `pcb_drc_findings` stores, so a reordering would show
+    up as spurious churn on every re-run."""
+    pads = [_pad(f"N{i}", "F.Cu", float(i) * 0.05, 0.0, w=0.4, h=0.4) for i in range(6)]
+    via = _via("OTHER", "F.Cu", 0.1, 0.0, dia_mm=0.6, drill_mm=0.3)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": pads}
+    findings = drc.check_via_pad_keepout(model, _CAP4)
+    assert len(findings) > 2, "need several violations for order to mean anything"
+    reported = [f.objects[0]["pad_net"] for f in findings]
+    assert reported == sorted(reported, key=lambda n: int(n[1:]))
+
+
 def test_check_via_pad_keepout_polygon_path_honours_pad_rotation():
     """The circumscribed-disc approximation's whole selling point was
     rotation independence -- dropping it for the pad's real outline only
