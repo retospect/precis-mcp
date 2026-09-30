@@ -57,8 +57,8 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
   its own launchd context — that host's launchd/cron daemons are all
   locked out of ``/opt/nas``.
 * **host-dark** — freshest ``host_heartbeat`` stale past
-  ``HOST_DARK_SILENCE_MIN``, bounded to hosts with recent ``worker_logs``
-  (``HOST_DARK_LOOKBACK_DAYS``, so a decommissioned host ages out). Since
+  ``HOST_DARK_SILENCE_MIN``, for every host not explicitly retired
+  (``meta.retired``; ``precis heartbeat --retire <host>``). Since
   heartbeat runs inside the per-host worker it reports on, a dead
   single-worker host's own heartbeat dies too and ``dead-worker``
   self-suppresses — a fleet-mate reports ``host-dark`` instead.
@@ -213,12 +213,6 @@ DEAD_WORKER_LOOKBACK_DAYS = 30
 #: independently so they can diverge later without coupling the two detectors.
 HOST_DARK_SILENCE_MIN = 10
 
-#: How far back ``host-dark`` will still consider a host it once saw —
-#: mirrors :data:`DEAD_WORKER_LOOKBACK_DAYS` (the same ``worker_logs``
-#: retention floor): ``host_heartbeat`` is a latest-snapshot-per-host UPSERT,
-#: so a decommissioned host's row lingers forever without this bound.
-HOST_DARK_LOOKBACK_DAYS = 30
-
 #: A ``claude_inproc`` job (plan_tick / fix_gripe / news / briefing) sitting
 #: ``STATUS:queued`` longer than this while **nothing** is running is a stalled
 #: planner: minting is cluster-wide but *execution* is agent-profile-only
@@ -252,8 +246,8 @@ KIND_ROSTER_BOOT_SLOP_MIN = 2
 
 #: How far back a stale ``kind_provider`` row still counts as "the prior
 #: boot's roster" for :func:`_detect_kind_shrinkage`. Mirrors
-#: :data:`DEAD_WORKER_LOOKBACK_DAYS` / :data:`HOST_DARK_LOOKBACK_DAYS`,
-#: but with a caveat those two don't have: ``kind_provider`` rows are
+#: :data:`DEAD_WORKER_LOOKBACK_DAYS`, but with a caveat it doesn't have:
+#: ``kind_provider`` rows are
 #: never pruned (no retention job touches the table), so a kind still
 #: missing after this many days ages out of the comparison and the
 #: alert self-resolves as if fixed — the exact gr176223 trap, just with
@@ -1570,10 +1564,20 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
     silent while its own host is up would mean the heartbeat pass alone
     died, which ``dead-worker`` already can't see either (heartbeat isn't in
     ``WORKER_CONTINUOUS_PROCESSES``) and is the exact scenario this
-    detector exists to surface. Bounded to hosts with any ``worker_logs``
-    row in the last :data:`HOST_DARK_LOOKBACK_DAYS` so a decommissioned
-    host — whose ``host_heartbeat`` UPSERT row lingers forever — ages out
-    instead of alarming critical forever.
+    detector exists to surface.
+
+    A decommissioned host — whose ``host_heartbeat`` UPSERT row lingers
+    forever, there being no DELETE — is excluded by an explicit
+    ``meta.retired`` stamp (``precis heartbeat --retire <host>``), NOT by
+    ageing out. It used to age out: the query required a ``worker_logs`` row
+    within a 30-day lookback, and ``sweeper._gc_worker_logs`` prunes that
+    table at the same 30 days, so a host that broke and stayed broke crossed
+    both thresholds together and became permanently undetectable — the alert
+    expired because its evidence was deleted, which is indistinguishable from
+    someone judging the host retired
+    (``docs/backlog/host-dark-ages-out-with-worker-logs-retention.md``).
+    Retirement is now a decision someone records rather than a side effect of
+    log retention, and this detector no longer reads ``worker_logs`` at all.
 
     Excludes rows whose ``meta.ephemeral`` is set (gr306275): a worker
     booted inside a container with no ``--hostname``/``PRECIS_HOST_NAME``
@@ -1581,8 +1585,8 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
     (``heartbeat._resolve_host_ephemeral``) — once the container is torn
     down, that "host" never comes back and never existed as a fleet
     member, so it must not page critical for up to
-    :data:`HOST_DARK_LOOKBACK_DAYS`. A named-host row is never marked
-    ephemeral and is unaffected.
+    the retire marker nobody will ever set for it. A named-host row is never
+    marked ephemeral and is unaffected.
 
     Belt on top of that stamp (gr331348): the identity *shape* is also
     excluded directly — a 12-hex host is a Docker container ID no matter
@@ -1599,18 +1603,13 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
               FROM host_heartbeat hh
              WHERE hh.ts < now() - (%(silence)s || ' minutes')::interval
                AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
+               AND (hh.meta->>'retired') IS NULL
                AND hh.host !~ '^[0-9a-f]{12}$'
-               AND EXISTS (
-                   SELECT 1 FROM worker_logs wl
-                    WHERE wl.host = hh.host
-                      AND wl.ts > now() - (%(lookback)s || ' days')::interval
-               )
              ORDER BY hh.ts ASC
              LIMIT 50
             """,
             {
                 "silence": HOST_DARK_SILENCE_MIN,
-                "lookback": HOST_DARK_LOOKBACK_DAYS,
             },
         ).fetchall()
     out: list[Symptom] = []
@@ -2105,7 +2104,6 @@ def _days_since(ts: datetime | None) -> float:
 
 __all__ = [
     "DISPATCH_STALL_MINUTES",
-    "HOST_DARK_LOOKBACK_DAYS",
     "HOST_DARK_SILENCE_MIN",
     "LONG_WAIT_DAYS",
     "QUEST_LOOP_FAIL_24H",

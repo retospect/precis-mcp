@@ -76,9 +76,11 @@ in `worker_logs` that it ever ran. It has no `host_heartbeat` row either
 (confirmed: the table holds four live named hosts and nothing else), so the
 prune is the only copy. Any forensic question below — was it claiming jobs, did
 it stop or break — has to be asked before that date or not at all. This is the
-same mechanism as the sibling item
-(`host-dark-ages-out-with-worker-logs-retention.md`): the retention horizon
-removes the evidence a question depends on. If the answers are wanted, dump the
+same mechanism that used to blind the `host-dark` detector — it bounded
+itself to hosts with a `worker_logs` row inside the same 30-day window the
+sweeper prunes, so it expired with its own evidence (fixed 2026-09-30 by an
+explicit `meta.retired` marker): the retention horizon removes the evidence a
+question depends on. If the answers are wanted, dump the
 surviving rows somewhere durable first; that is cheap and can happen before any
 design decision.
 

@@ -17,6 +17,7 @@ boundary. SQL backdate is the cheapest knob.
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -34,7 +35,6 @@ from precis.workers.nursery import (
     DEAD_WORKER_SILENCE_MIN,
     DISPATCH_STALL_MINUTES,
     EMBED_LANE_STALL_WINDOW_MIN,
-    HOST_DARK_LOOKBACK_DAYS,
     HOST_DARK_SILENCE_MIN,
     KIND_ROSTER_BOOT_SLOP_MIN,
     KIND_ROSTER_LOOKBACK_DAYS,
@@ -1428,21 +1428,78 @@ def test_host_dark_ignores_live_host(store: Store) -> None:
     assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
 
 
-def test_host_dark_ages_out_past_lookback(store: Store) -> None:
-    """A host with no worker_logs activity in HOST_DARK_LOOKBACK_DAYS is
-    decommissioned, not dark — its lingering host_heartbeat row must not
-    alarm forever."""
+def test_host_dark_still_fires_past_worker_log_retention(store: Store) -> None:
+    """A host dark longer than worker_logs retention must STILL be dark.
+
+    The inverse of what this asserted until 2026-09-30. The detector used to
+    require a worker_logs row inside a 30-day lookback, and
+    ``sweeper._gc_worker_logs`` prunes that table at the same 30 days — so a
+    host that broke and stayed broke crossed both thresholds together and went
+    permanently undetectable, the alert expiring because its evidence was
+    deleted rather than because anyone judged the host retired
+    (docs/backlog/host-dark-ages-out-with-worker-logs-retention.md). Seeded
+    with a log older than any plausible retention floor, i.e. the state the
+    pruner leaves behind.
+    """
     host = _host()
-    _seed_worker_log(
-        store,
-        host,
-        "precis-worker",
-        minutes_ago=(HOST_DARK_LOOKBACK_DAYS + 1) * 24 * 60,
-    )
+    _seed_worker_log(store, host, "precis-worker", minutes_ago=90 * 24 * 60)
     _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)
 
     findings = _detect_host_dark(store)
+    assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_host_dark_fires_with_no_worker_logs_at_all(store: Store) -> None:
+    """The pruner's end state: heartbeat row present, worker_logs empty for
+    this host. Nothing about the detector may depend on that table."""
+    host = _host()
+    _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)
+
+    findings = _detect_host_dark(store)
+    assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_host_dark_skips_a_retired_host(store: Store) -> None:
+    """Retirement is the ONLY way a lingering host_heartbeat row goes quiet —
+    host_heartbeat has no DELETE, so without this it would page forever."""
+    host = _host()
+    _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)
+    assert store.set_host_retired(host, retired=True)
+
+    findings = _detect_host_dark(store)
     assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_unretiring_a_host_puts_it_back_under_host_dark(store: Store) -> None:
+    """A decommission reversed by hand, and the same path a returning host
+    takes implicitly (its next heartbeat replaces meta, dropping the stamp)."""
+    host = _host()
+    _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)
+    store.set_host_retired(host, retired=True)
+    assert store.set_host_retired(host, retired=False)
+
+    findings = _detect_host_dark(store)
+    assert any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_host_dark_detector_does_not_read_worker_logs(store: Store) -> None:
+    """The durable pin for this class of bug: the coupling is gone
+    structurally, not just numerically. A lookback bound tuned to be wider
+    than retention would still be a number two people could change
+    independently; a detector that never reads the pruned table cannot have
+    its evidence deleted at all.
+    """
+    src = inspect.getsource(_detect_host_dark)
+    # Minus the docstring: it explains at length why this detector no longer
+    # reads worker_logs, so naming the table there is the point, not a
+    # violation. Only executable text counts.
+    doc = _detect_host_dark.__doc__ or ""
+    src = src.replace(doc, "")
+    assert "worker_logs" not in src, (
+        "host-dark must not depend on worker_logs — that table is pruned on a "
+        "retention horizon, and a detector bounded by it expires with its own "
+        "evidence. Exclude decommissioned hosts with meta.retired instead."
+    )
 
 
 def test_host_dark_ignores_ephemeral_container_identity(store: Store) -> None:

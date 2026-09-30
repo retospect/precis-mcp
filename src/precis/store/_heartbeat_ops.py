@@ -175,6 +175,43 @@ class HeartbeatMixin:
                     (str(retention_days),),
                 )
 
+    def set_host_retired(self, host: str, *, retired: bool) -> bool:
+        """Stamp or clear ``host_heartbeat.meta.retired``; True if a row changed.
+
+        A retired host is excluded from nursery's ``host-dark`` detector. That
+        exclusion used to happen by itself — the detector required a recent
+        ``worker_logs`` row and the sweeper pruned that table on the same
+        30-day horizon — which meant a host that broke and stayed broke became
+        undetectable for the same reason a host that was decommissioned did
+        (``docs/backlog/host-dark-ages-out-with-worker-logs-retention.md``).
+        Retirement is now recorded, so the two are distinguishable.
+
+        The stamp is an ISO-8601 UTC timestamp rather than ``true``: "when"
+        answers the only question anyone asks of a retired row later.
+
+        Not merge-protected in :meth:`record_heartbeat`'s UPSERT, deliberately:
+        that UPSERT replaces ``meta`` wholesale apart from ``boot_ids`` and
+        ``activity``, so a retired host that comes BACK clears its own marker
+        on its first beat and resumes being monitored. Retiring a host that is
+        still beating would therefore not stick — which is why
+        ``precis heartbeat --retire`` refuses a host whose heartbeat is fresh
+        instead of silently doing nothing.
+        """
+        if retired:
+            sql = (
+                "UPDATE host_heartbeat "
+                "SET meta = COALESCE(meta, '{}'::jsonb) "
+                "  || jsonb_build_object('retired', to_char(now() at time zone 'UTC', "
+                '                        \'YYYY-MM-DD"T"HH24:MI:SS"Z"\')) '
+                "WHERE host = %s"
+            )
+        else:
+            sql = "UPDATE host_heartbeat SET meta = meta - 'retired' WHERE host = %s"
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                cur = conn.execute(sql, (host,))
+                return bool(cur.rowcount)
+
     def heartbeat_history(self, *, hours: float = 24.0) -> list[dict[str, Any]]:
         """Hourly per-host rollup of ``host_heartbeat_log``.
 

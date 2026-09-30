@@ -131,8 +131,8 @@ def resolve_host(override: str | None = None) -> str:
 #: — gr306275: a worker booted this way with no ``PRECIS_HOST_NAME``
 #: advertises that throwaway ID as its fleet identity into
 #: ``host_heartbeat``/``worker_logs``, and once the container is torn down,
-#: nursery's host-dark detector pages critical for up to
-#: ``HOST_DARK_LOOKBACK_DAYS`` for a "host" that never existed.
+#: nursery's host-dark detector would page critical forever for a "host" that
+#: never existed — nobody is going to retire an identity they never knew about.
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 

@@ -170,3 +170,51 @@ def test_heartbeat_history_nullable_sensors(store: Store) -> None:
     assert len(rows) == 1
     assert rows[0]["load1_avg"] is None
     assert rows[0]["temp_max"] is None
+
+
+def test_set_host_retired_stamps_and_clears(store: Store) -> None:
+    """The marker that takes a decommissioned host off nursery's host-dark
+    detector. An ISO timestamp, not `true`: "when was this retired" is the
+    only question anyone asks of the row later."""
+    store.record_heartbeat("retiree-1", load1=1.0)
+    assert store.set_host_retired("retiree-1", retired=True)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'retired' FROM host_heartbeat WHERE host = 'retiree-1'"
+        ).fetchone()
+    assert row is not None and row[0] is not None
+    assert row[0].endswith("Z") and row[0][4] == "-"
+
+    assert store.set_host_retired("retiree-1", retired=False)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta ? 'retired' FROM host_heartbeat WHERE host = 'retiree-1'"
+        ).fetchone()
+    assert row is not None and row[0] is False
+
+
+def test_set_host_retired_reports_no_such_host(store: Store) -> None:
+    """False, not an exception — the CLI turns it into a message naming the
+    hosts that do exist."""
+    assert not store.set_host_retired("never-existed-host", retired=True)
+
+
+def test_a_returning_host_clears_its_own_retired_marker(store: Store) -> None:
+    """Not a bug to be fixed with a merge-protected key: a host that comes
+    back is not retired, and the UPSERT's wholesale meta replace gives that
+    for free. The converse — retiring a host that is still beating — is
+    refused by `precis heartbeat --retire` precisely because this would
+    silently undo it."""
+    store.record_heartbeat("returner", load1=1.0)
+    store.set_host_retired("returner", retired=True)
+
+    store.record_heartbeat("returner", load1=2.0)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'retired' IS NULL FROM host_heartbeat WHERE host = 'returner'"
+        ).fetchone()
+    # Asserted via `->> IS NULL` rather than `? 'retired'`, which returns NULL
+    # (not false) when the whole meta column is: a beat carrying no meta at all
+    # replaces it with NULL. Either way the marker is gone, and the detector's
+    # own predicate is this same `->> IS NULL`.
+    assert row is not None and row[0] is True
