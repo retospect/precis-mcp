@@ -40,20 +40,16 @@ measurable, so it goes first.
 
 ## Parked
 
-- **ingest pipeline — no thread owns it yet.** The OA-acquisition/ingest-
-  fidelity cluster — **gr453859**, **gr453860**, **gr453862**,
-  **gr456181**, **gr453913**, **gr228652**, **gr228699** (backlog "no OA
-  copy" terminal state missing, fetched-but-bodiless papers uncounted,
-  arxiv_html losing its own identifier, venue dropped on S2 enrich, and
-  the Greek/micro-character font-encoding corruption pair) — and the
-  embed-drain cluster — **gr456034**, **gr454865** (embed_batch backlog
-  not draining by a different mechanism than the closed gr347576;
-  chase_trigger's dead batch-size knob). gr458393 (`_greedy_split`
-  pagination) was mis-clustered here at the review; it is a read-surface
-  bug and the se-3d-viewer owner has a fix scoped — ranked there. Both clusters are ingest/pipeline
-  throughput and fidelity work with no other thread claiming the files
-  they touch; parked here rather than left fully orphaned, since this
-  thread is closest to "what runs on local/background compute".
+- **embed drain** — **gr456034**, **gr454865**: the `embed_batch` backlog is
+  not draining, by a different mechanism than the closed gr347576, and
+  `chase_trigger` carries a dead batch-size knob. Unparks when Do-next 2
+  (embedder capacity ownership) picks this up — it is the same bottleneck seen
+  from the queue end. The **ingest-fidelity** half of what was parked here as
+  one cluster left on 2026-10-01: Reto ruled it its own thread,
+  `threads/ingest-and-fetch.md`, so gr228652, gr228699, gr453859, gr453860,
+  gr453862, gr453913 and gr456181 are ranked there, not here. gr458393
+  (`_greedy_split` pagination) was mis-clustered here at the 09-30 review and
+  is ranked in se-3d-viewer.
 
 ## No action needed
 

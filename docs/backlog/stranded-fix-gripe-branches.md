@@ -17,6 +17,31 @@ They are perishable. Every one was authored between 2026-09-25 and 2026-09-30
 and now sits 36–254 commits behind `main`. They rot in place: the further main
 moves, the more of each diff is either conflict or already-redundant.
 
+## Still there, re-measured 2026-10-01
+
+Reto asked whether these are still around. They are — all 43, unchanged in
+count, on the same node. What changed is the decay, and the re-measure moved
+every number in this item:
+
+- **Behind `main`: 64 to 282 commits**, not the 36–254 recorded on 09-30. Main
+  moved ~28 commits overnight, so the freshest four (`gripe_456641`,
+  `gripe_458061`, `gripe_458084`, `gripe_458087`) are now 64 behind rather than
+  36. Nothing was rebased; the branches stood still.
+- **The oldest are older than this item said.** `gripe_450122` and
+  `gripe_450132` are 282 behind, authored 2026-09-25/26.
+- **Scratch is growing, not static: 59 clone directories, 17G** (was 55 / 16G),
+  plus 161M of `diagnose_clones/`. **15 of the 59 clones have no matching
+  branch at all.** The growth is not idle churn — the four new clones are the
+  four jobs the publish pre-flight skipped after 09-30 16:04Z, which is its own
+  bug, filed as **gr458899**: the pre-flight runs *after* the clone, so every
+  skip leaves ~300MB behind forever.
+- Nothing has written a branch since 2026-09-30 11:51Z. The lane is inert as
+  ruled; only the disk keeps moving.
+
+The decay argument in this item is therefore stronger than when it was
+written, not weaker: a further day cost the freshest branches 28 commits of
+divergence each.
+
 ## Where they are
 
 The agent-lane worker's fix-repo checkout (`PRECIS_FIX_REPO_DIR`, deploy-owned)

@@ -166,25 +166,35 @@ Waits:
   restart) was withdrawn 2026-09-30 — the ImportError was a stale session
   MCP, gr458061's shape, not prod. Nothing here waits on Reto.
 
+## ingest — acquisition and extraction fidelity
+
+Threads: `ingest-and-fetch.md`
+
+New 2026-10-01 on Reto's ruling (the cluster gets its own thread, triaged
+before it is ranked). Single-thread programme for now; it is here rather than
+folded into `knowledge` because that programme owns the layer that consumes
+this pipeline, not the pipeline.
+
+Seams:
+- `local-compute.md` Parked holds the **embed-drain** half of what used to be
+  one cluster (gr456034, gr454865). Throughput there, fidelity here; different
+  code, neither sequences the other.
+- `backlog/graph-maintenance-queue.md` (local-compute) spends local capacity on
+  this pipeline's output — a corrupt extraction makes that spend worse than
+  idle, so this thread's Do-next 2 is upstream of that item's value.
+
+Waits:
+- Nothing waits on Reto. The whole thread waits on its own triage (td458898):
+  six of seven ranks are provisional until it runs.
+
 ## Not covered by any programme
 
 Recorded 2026-09-30 so the gaps are visible on the map rather than discovered
-one gripe at a time. Each needs an owner decided, not work done.
+one gripe at a time. Four were listed; two are gone — the ingest cluster has
+its own programme above, and the job-lifecycle cluster was ranked across
+`monitors-that-go-quiet` and `roadmap-quest`. The two below have a decision
+from Reto (2026-10-01) but not yet a thread that ranks them.
 
-- **ingest / fetch pipeline** — 6 gripes, no thread. `knowledge` owns the layer
-  that consumes this pipeline, not the pipeline. Two are silent-corruption bugs
-  (gr228652, gr228699 — μ/Greek destroyed at extraction, open since ~08-21),
-  which is the worst shape in a research corpus: nothing fails, the corpus is
-  quietly wrong, and embeddings/findings/cites inherit it. Ids and the
-  owner-decision options in `backlog/gripe-clusters-with-no-owning-thread.md`,
-  which also records where 2026-09-30's review parked it: one Parked entry in
-  `local-compute.md`, a holding position rather than an owner.
-- **job lifecycle / unpark** — ranked 2026-09-30, so this one is closed as a
-  coverage gap: gr452203 in `monitors-that-go-quiet` Do next, the four
-  fix_gripe items Parked there behind Reto's inert ruling, gr454792 in
-  `roadmap-quest` Horizon. They still compound (gr456240 latches leaves for
-  infra reasons, gr454792 means nobody can unlatch them, gr452203 buries the
-  evidence) — that argument is in the same file, now under its Status section.
 - **fleet capacity is unmeasured** — gr458727. All 20 nursery detectors answer
   "is work stuck?"; none answers "is capacity used?". Idle GPUs beside an empty
   queue are invisible and indistinguishable from a healthy fleet, which is the
@@ -193,9 +203,14 @@ one gripe at a time. Each needs an owner decided, not work done.
   signal that does not exist. It has a consumer as of 2026-09-30 —
   `backlog/graph-maintenance-queue.md` needs the same utilisation/queue-depth
   number as an in-scope item and an acceptance criterion — but a consumer is
-  not an owner, and that item is `status: draft`.
+  not an owner. **Ruled 2026-10-01: the measurement is authorised and belongs to
+  whoever owns `graph-maintenance-queue.md`** — measurement only, no alerting,
+  because an idle GPU is often the correct state and a detector on it would be
+  noise. It leaves this list once that item ranks it.
 - **the local gate and the ship gate run different Pythons** — gr458726. The
   ship gate is 3.13-only; `scripts/test`'s container is 3.12. A full green
   `/go` is therefore not evidence about the version main is gated on, and cost
   a red main on 2026-09-30. Affects every thread that ships, which is why it is
-  here rather than in one of them.
+  here rather than in one of them. **Ruled 2026-10-01: move `scripts/test`'s
+  container to 3.13**, so a green local gate means what every session already
+  reads it to mean, rather than keeping two version numbers in everyone's head.
