@@ -122,6 +122,21 @@ server-side-session-context Horizon pointer)
    pass on first sight. The policy had to live in `server.py` because
    `md_index` deliberately does not import `precis.embedder`
    (`vectors.py::MdEmbedder`) — the callback is that seam.
+   Dogfooded 22:18-22:21Z on the shared server: the new shape is live and
+   correct (`batch 1/297 ... retry 1/6 in 2.0s` through `5/6 in 32.0s`,
+   then one COLD, no whole-pass unwinding). It still does not warm, and
+   the cause turned out not to be in this thread's code at all —
+   **gr458940**: the embedder service on 8181 has run since 2026-08-31,
+   so gr450123's bounded wait queue (943aba15, 2026-09-28) has never
+   executed. `/metrics` is missing the three `queued*` counters current
+   code emits, the 429s carry no `retry_after_s`, and a direct probe of
+   the same endpoint served 64 texts in 9-11s three times running with no
+   429. It sheds instantly instead of queueing. ⚠ This retires the
+   premise `backlog/embedder-capacity-ownership.md` was built on: that
+   item cites our dogfood as proof "(b) proves insufficient", which is
+   what trips gr450123's deferral of host-level admission (a). (b) never
+   ran. Re-decide after the restart, and do not tune the batch retry
+   budget against a stale daemon.
    Remaining: (b) re-arm the pass later — on the first md search
    against a cold cache, or a periodic tick — since the watchdog bounces the
    process every few minutes during a qland burst and the pass never gets a

@@ -37,6 +37,25 @@ state), a `job_inproc` executor-capacity question, not the embedder
 service itself. Filed here as adjacent evidence that "embedding capacity"
 has more than one bottleneck in the current architecture.
 
+## ⚠ Premise correction (2026-09-30, gr458940)
+
+This item's evidence chain says `gr457326`'s dogfood shows gr450123's
+option (b) — the bounded wait queue — is insufficient, which is what
+trips that gripe's deferral of option (a), host-level admission. **That
+inference does not hold: (b) has never run.** The embedder service on
+8181 has been up since 2026-08-31; `943aba15` landed (b) + (d) on
+2026-09-28. Its `/metrics` emits neither `precis_embedder_queued_total`
+nor the two `queue_wait_seconds` counters current code emits, and its
+429s carry no `retry_after_s` body field. It still sheds instantly at
+the inflight cap — the exact pre-(b) behaviour (b) removed. A direct
+probe served 64 texts in 9-11 s three times running with no 429, so the
+observed 429 storm is not capacity.
+
+Restart the agent (`com.precis.embedder`), re-measure, and only then
+decide whether (a) is warranted. The shared-cache question below is
+unaffected — twelve containers computing identical vectors is wasteful
+regardless of how the service sheds.
+
 ## Motivation / why
 
 Nobody owns *aggregate* embedder capacity across the fleet. Each fix so far
