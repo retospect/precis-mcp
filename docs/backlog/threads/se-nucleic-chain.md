@@ -9,7 +9,7 @@ item is built, deleted, deployed (5ca0cfff on the fleet 2026-09-30 12:23Z)
 and dogfooded end to end on prod (`dogfood-walker-a`: guard, channel
 budget, crosstalk, make_steps, view='stations' all as specified;
 td458169). Make the loop atoms a prod dogfood found unchained honest,
-give layout's helix-end ports a pose, then the layout follow-ons.
+then the layout follow-ons.
 **Last reviewed:** 2026-09-30
 **Worktree:** `se-nucleic-chain`
 
@@ -21,14 +21,10 @@ give layout's helix-end ports a pose, then the layout follow-ons.
    (geo relax over loop residues, duplex pinned; persist residue rows;
    envelope_fit skips loops); awaiting Reto's ruling on default-on vs
    opt-in — the only thing between this and a half-day build.
-2. **gr458316** — layout_chain's 5p/3p segment ports carry no pose, so a
-   helix end cannot be a view='stations' target (or any distance) until
-   realize_chain mints atoms; the exit geometry already exists in layout.
-   Cheap, and it is what the walker dogfood tripped on first.
-3. **backlog/se-fold-layout-coaxial-and-tails.md** — ready, independent of
-   1–2; fold_layout cannot place coaxial stacks or single-stranded tails, so
+2. **backlog/se-fold-layout-coaxial-and-tails.md** — ready, independent of
+   1; fold_layout cannot place coaxial stacks or single-stranded tails, so
    every ViennaRNA-derived design with a tail lays out wrong.
-4. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
+3. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
    1); the chain-design instance (its 2026-09-30 section: residue +
    base-pair rows under a segment block, atom pick) turns "aO44" into
    "O3' of DA 8, hp.h0@3".
@@ -69,6 +65,9 @@ give layout's helix-end ports a pose, then the layout follow-ons.
 - **gr458145** — fixed in the commit that re-ranked this file (block view
   names the state whose stored pose it shows); close on ship.
 - **td458169** — done 2026-09-30; results in the todo's text.
+- **gr458316** — fixed in the commit that renumbered this file (layout_chain's
+  5p/3p ports carry the backbone-exit pose; realize lets the atom replace
+  it); close on ship.
 - **backlog/se-walker-light-protocol.md** — landed in three slices
   (6e3fb3b1 and the B+C ship of 2026-09-30) and deleted, delete-on-ship;
   its decisions log is restated in `src/precis_se/chain/__init__.py`

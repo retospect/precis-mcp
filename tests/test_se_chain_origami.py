@@ -27,10 +27,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 import precis_se
 from precis.cad import relate as cad_relate
+from precis.cad.vec import as_vec3
+from precis.cad.vec import pose as cad_pose
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_se import persist
@@ -232,6 +235,24 @@ def test_layout_chain_is_fast_and_tiles_every_helix_exactly() -> None:
         # pose are both stamped proposed (relax_chain moves them).
         child = tree.blocks[f"{helix}.s0"]
         assert set(child.ports) == {"5p", "3p"}
+        # Both ends are posed at the forward strand's backbone exit
+        # (gr458316): the port's world point IS geom.exit at the
+        # segment's first/last unit, and it faces outward along the axis.
+        geom = helix_geometry(tree.blocks[helix])
+        seg_world = cad_pose(as_vec3(child.pose), as_vec3(child.rot))
+        for end_name, offset, sign in (
+            ("5p", mine[0]["start"], -1.0),
+            ("3p", mine[0]["end"], 1.0),
+        ):
+            port = child.ports[end_name]
+            assert port.pose is not None and port.pose_source == "declared"
+            assert port.annotations == {"pose_from": "layout_chain"}
+            world = seg_world.apply(as_vec3(port.pose))
+            assert np.allclose(world, geom.exit(offset, True), atol=1e-14), end_name
+            assert port.direction is not None
+            facing = seg_world.apply_dir(as_vec3(port.direction))
+            tangent = sign * geom.units.frames[offset][:, 0]
+            assert float(np.dot(facing, tangent)) == pytest.approx(1.0, abs=1e-9)
         assert child.origins == {"envelope": "proposed", "pose": "proposed"}
         assert child.parent == helix
         assert child.envelope is not None and child.envelope.startswith("cyl:")

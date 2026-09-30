@@ -339,6 +339,62 @@ def local_capsule(
     )
 
 
+#: ``annotations`` key/value ``layout_chain`` stamps on the ``5p``/``3p``
+#: ports it mints with a pose (gr458316). The value is a backbone exit
+#: computed from the layout, not a designer's target: ``realize_chain``
+#: drops a pose carrying this marker so ``bind_structure``'s measurement
+#: fills the slot (a ``'declared'`` pose is never overwritten by a
+#: measurement, and a pose the designer set with ``set_port_pose``
+#: carries no marker, so it keeps that protection).
+LAYOUT_PORT_MARKER: tuple[str, str] = ("pose_from", "layout_chain")
+
+
+def segment_end_anchors(
+    geom: HelixGeometry,
+    start: int,
+    end: int,
+    parent_pose: list[float],
+    parent_rot: list[float],
+    seg_pose: list[float],
+    seg_rot: list[float],
+) -> dict[str, tuple[list[float], list[float]]]:
+    """``{'5p': (pose, direction), '3p': (pose, direction)}`` for the
+    segment covering units ``[start, end]``, in the SEGMENT's own frame
+    (the frame a port pose is stored in).
+
+    The pose is the forward strand's backbone exit
+    (:meth:`HelixGeometry.exit`) at the segment's first unit for ``5p``
+    and its last for ``3p`` — the same point ``relax_chain`` and the
+    tether check pin loops to, so a helix end can be a
+    ``view='stations'`` target (or any distance) before ``realize_chain``
+    mints atoms (gr458316). ``direction`` is the port's outward facing,
+    along the helix axis away from the segment (``-tangent`` at ``5p``,
+    ``+tangent`` at ``3p``) — the convention a site port uses, so an
+    approach angle of 0° means straight down the axis onto the end; it
+    is NOT the strand's 5'→3' travel direction.
+
+    ``parent_pose``/``parent_rot`` are the helix's composed world
+    placement and ``seg_pose``/``seg_rot`` the segment's pose in the
+    helix's frame (:func:`segment_pose`), mirroring
+    :func:`local_capsule`'s two-step descent.
+    """
+    from precis.cad.vec import as_vec3, pose
+
+    to_helix = pose(as_vec3(parent_pose), as_vec3(parent_rot)).inverse()
+    to_segment = pose(as_vec3(seg_pose), as_vec3(seg_rot)).inverse()
+    out: dict[str, tuple[list[float], list[float]]] = {}
+    for name, offset, sign in (("5p", start, -1.0), ("3p", end, 1.0)):
+        world_point = geom.exit(offset, True)
+        world_dir = sign * np.asarray(geom.units.frames[offset][:, 0], dtype=float)
+        local_point = to_segment.apply(to_helix.apply(as_vec3(world_point)))
+        local_dir = to_segment.apply_dir(to_helix.apply_dir(as_vec3(world_dir)))
+        out[name] = (
+            [float(v) for v in local_point],
+            [float(v) for v in local_dir],
+        )
+    return out
+
+
 def segment_pose(capsule: Capsule) -> tuple[list[float], list[float]]:
     """``(pose, rot)`` for a segment's envelope, from the kernel's
     :func:`precis_chain.envelope.capsule_pose`.

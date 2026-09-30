@@ -5211,7 +5211,8 @@ def _render_stations(
         if "." not in text:
             raise BadInput(
                 f"view='stations': target {text!r} must be '<block>.<port>' (a "
-                "realize_chain sites port such as 'f1.n5_c5m', or any posed port)"
+                "realize_chain sites port such as 'f1.n5_c5m', a layout_chain "
+                "helix end such as 'f1.s0.3p', or any posed port)"
             )
         t_block, t_port = text.rsplit(".", 1)
         t_node = tree.blocks.get(t_block)
@@ -5225,7 +5226,8 @@ def _render_stations(
         if t_node.ports[t_port].pose is None:
             raise BadInput(
                 f"view='stations': target port {text!r} has no pose — a distance "
-                "needs a point (set_port_pose, or a realize_chain sites port)"
+                "needs a point (set_port_pose, a layout_chain segment's 5p/3p "
+                "end, or a realize_chain sites port)"
             )
         target = (t_block, t_port)
 

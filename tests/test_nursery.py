@@ -17,8 +17,10 @@ boundary. SQL backdate is the cheapest knob.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
+import textwrap
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -1492,10 +1494,15 @@ def test_host_dark_detector_does_not_read_worker_logs(store: Store) -> None:
     src = inspect.getsource(_detect_host_dark)
     # Minus the docstring: it explains at length why this detector no longer
     # reads worker_logs, so naming the table there is the point, not a
-    # violation. Only executable text counts.
-    doc = _detect_host_dark.__doc__ or ""
-    src = src.replace(doc, "")
-    assert "worker_logs" not in src, (
+    # violation. Only executable text counts — stripped via ``ast`` rather
+    # than ``str.replace(__doc__)``, because Python 3.13 dedents ``__doc__``
+    # and the raw source no longer contains it verbatim (that left the
+    # docstring in place and this test red on the 3.13 gate shard only).
+    fn = ast.parse(textwrap.dedent(src)).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
+    executable = "\n".join(ast.unparse(node) for node in body)
+    assert "worker_logs" not in executable, (
         "host-dark must not depend on worker_logs — that table is pruned on a "
         "retention horizon, and a detector bounded by it expires with its own "
         "evidence. Exclude decommissioned hosts with meta.retired instead."

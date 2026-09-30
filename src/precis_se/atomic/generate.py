@@ -44,6 +44,7 @@ from precis.structure import Scene as StructScene
 from precis.structure.cell import Cell as StructCell
 from precis_se.atomic.generators import GENERATORS, GeneratorError
 from precis_se.atomic.validate import A_to_m
+from precis_se.chain.layout import LAYOUT_PORT_MARKER
 from precis_se.ops import OpError, SeTree, apply_ops
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -794,16 +795,33 @@ def prepare_realize_chain(
                 }
             )
         else:
-            # ``layout_chain`` pre-mints ``5p``/``3p`` as bare backbone
-            # anchors. Keep that slot (its roles, and any pose a user set)
-            # but give it the same expected chemistry and annotations the
-            # freshly minted ports get, so the element gate runs for every
-            # port ``bind_structure`` measures (gripe 457930).
-            seg_node.ports[pname] = dataclasses.replace(
-                existing,
-                expected_element=pa.expected_element,
-                annotations={**existing.annotations, **annotations},
-            )
+            # ``layout_chain`` pre-mints ``5p``/``3p`` as backbone anchors.
+            # Keep that slot (its roles, and any pose the USER set) but give
+            # it the same expected chemistry and annotations the freshly
+            # minted ports get, so the element gate runs for every port
+            # ``bind_structure`` measures (gripe 457930). The pose layout
+            # itself put there (marker ``LAYOUT_PORT_MARKER``, gr458316) is
+            # a backbone exit, not a designer's target: drop it, and its
+            # direction, so the bind's measurement fills the slot instead
+            # of being refused by the declared-pose rule.
+            merged = {**existing.annotations, **annotations}
+            marker_key, marker_value = LAYOUT_PORT_MARKER
+            if merged.get(marker_key) == marker_value:
+                merged.pop(marker_key)
+                seg_node.ports[pname] = dataclasses.replace(
+                    existing,
+                    expected_element=pa.expected_element,
+                    annotations=merged,
+                    pose=None,
+                    pose_source=None,
+                    direction=None,
+                )
+            else:
+                seg_node.ports[pname] = dataclasses.replace(
+                    existing,
+                    expected_element=pa.expected_element,
+                    annotations=merged,
+                )
         ports_map[pname] = {
             "atom": labels[pa.atom],
             "axis_atom": labels[pa.axis_atom],

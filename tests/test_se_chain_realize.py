@@ -262,6 +262,10 @@ def test_realize_chain_binds_the_segment_and_the_atoms_are_b_dna(
     ports = seg.ports
     assert ports["5p"].rot is not None and ports["5p"].rot_source == "bound"
     assert ports["5p"].pose is not None and ports["5p"].pose_source == "bound"
+    # layout_chain's backbone-exit pose (gr458316) gave way to the atom:
+    # its marker and outward direction are gone with it.
+    assert "pose_from" not in ports["5p"].annotations
+    assert ports["5p"].direction is None and ports["3p"].direction is None
     assert ports["5p"].bound_design == "duplex-h.s0"
     assert {"5p", "3p", "r5p", "r3p"} <= set(ports)
     assert {"n5_c5m", "n5_maj", "n5_min"} <= set(ports)

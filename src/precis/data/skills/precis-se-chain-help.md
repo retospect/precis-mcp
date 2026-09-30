@@ -230,7 +230,10 @@ Mints child blocks `<helix>.s<k>`, one per tiled unit range: a `cyl`
 envelope from the kernel's capsule pose (a `sphere` for a single-unit
 segment — a zero-length capsule isn't a cylinder), ports `5p`/`3p`
 (anchors for a realizer/relax pass, not connect targets — skipped by
-`unconnected_port`), and its own `chain` record naming the inclusive
+`unconnected_port`; each carries the forward strand's backbone-exit
+pose at the segment's first/last unit and faces outward along the axis,
+so a helix end is a `view='stations'` target or a distance endpoint
+before any atoms exist), and its own `chain` record naming the inclusive
 `[start, end]` unit range it covers. **The ranges tile the helix exactly**
 — no gap, no overlap — which is what a downstream realizer needs to find
 the segment covering any offset. Both the envelope and the pose are
@@ -432,10 +435,12 @@ Ports minted on the segment: `5p`/`3p` for the first forward-strand chain,
 `r5p`/`r3p` for the first reverse one (`5p2`/`r5p2`, … for further
 chains), each with a **measured** pose and rot (`bind_structure`'s object
 form — `5p` = P with the O5' axle, `3p` = O3' with C3'; backbone fidelity
-swaps in C4'). `layout_chain`'s own bare `5p`/`3p` anchors are kept (their
-role, any pose you set) and given the same expected element and
-`{strand, end, offset, atoms}` annotations as the freshly minted ports,
-so the element gate runs for every bound port alike. `sites=[k, …]` adds `n<k>_c5m`/`n<k>_maj`/`n<k>_min`
+swaps in C4'). `layout_chain`'s own `5p`/`3p` anchors are kept (their
+role, any pose YOU set with `set_port_pose`) and given the same expected
+element and `{strand, end, offset, atoms}` annotations as the freshly
+minted ports, so the element gate runs for every bound port alike; the
+backbone-exit pose layout put there is dropped so the measured atom
+fills the slot (`pose_source='bound'`). `sites=[k, …]` adds `n<k>_c5m`/`n<k>_maj`/`n<k>_min`
 attachment ports on the forward occupant's base at offset `k` —
 underscore, not a dot (a port name can't contain `'.'`) — `allatom`
 fidelity and a sequenced base only, both refused rather than

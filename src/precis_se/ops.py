@@ -3147,7 +3147,12 @@ def _op_layout_chain(tree: SeTree, op: dict[str, Any]) -> None:
     Each child carries a ``cyl`` envelope from the kernel's capsule pose
     (:func:`precis_chain.envelope.capsule_pose` — origin at the capsule's
     ``a`` end, matching the cad ``cyl`` primitive's base-at-local-origin
-    convention), ports ``5p``/``3p``, and its own ``chain`` record naming
+    convention), ports ``5p``/``3p`` posed at the forward strand's
+    backbone exits and facing outward along the axis
+    (:func:`precis_se.chain.layout.segment_end_anchors`, marked
+    :data:`precis_se.chain.layout.LAYOUT_PORT_MARKER` so ``realize_chain``
+    lets the measured atom replace them — gr458316), and its own
+    ``chain`` record naming
     the inclusive ``[start, end]`` unit range it covers. **The ranges tile
     the helix exactly** — that is the seam ``se-nucleic-realize-export``
     needs to find the segment covering an offset, and it is why the split is
@@ -3203,6 +3208,10 @@ def _op_layout_chain(tree: SeTree, op: dict[str, Any]) -> None:
                 chain_layout.segment_capsule(geom, start, end), node.pose, node.rot
             )
             pose, rot = chain_layout.segment_pose(capsule)
+            anchors = chain_layout.segment_end_anchors(
+                geom, start, end, node.pose, node.rot, pose, rot
+            )
+            marker_key, marker_value = chain_layout.LAYOUT_PORT_MARKER
             name = f"{helix}.s{k}"
             tree.blocks[name] = SeBlock(
                 name=name,
@@ -3221,8 +3230,15 @@ def _op_layout_chain(tree: SeTree, op: dict[str, Any]) -> None:
                 # ``validate.envelope_overlaps``'s sibling check skips a
                 # segment's ports outright, for the same reason.
                 ports={
-                    end_name: PortSpec(name=end_name, roles=["backbone"])
-                    for end_name in ("5p", "3p")
+                    end_name: PortSpec(
+                        name=end_name,
+                        roles=["backbone"],
+                        pose=anchor_pose,
+                        pose_source="declared",
+                        direction=anchor_dir,
+                        annotations={marker_key: marker_value},
+                    )
+                    for end_name, (anchor_pose, anchor_dir) in anchors.items()
                 },
             )
     compose_world_pose(tree)

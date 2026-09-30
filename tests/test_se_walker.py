@@ -781,6 +781,17 @@ def test_view_stations_reports_the_cursor_per_settled_station(
     angles = re.findall(r"\t(\d+)°", after)
     assert len(angles) == 2 and angles[0] == "0", after
     assert 0 <= int(angles[1]) < 90
+    # A layout_chain helix end is a target before any atoms exist
+    # (gr458316): the segment's 3p port carries its backbone-exit pose and
+    # an outward direction, so every settled station gets a distance and
+    # an approach angle against it.
+    end = handler.get(
+        id="stn", view="stations", args={"walker": "w", "target": "f2.s0.3p"}
+    ).body
+    assert "target f2.s0.3p" in end
+    end_dist = _distances(end)
+    assert set(end_dist) == {"st0", "st1"} and "—" not in end_dist.values()
+    assert len(re.findall(r"\t(\d+)°", end)) == 2
 
     # No cursor named and none called 'cursor' → walker geometry only.
     _put(handler, "bare", _walker_ops())
