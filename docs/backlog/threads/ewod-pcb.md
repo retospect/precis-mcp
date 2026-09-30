@@ -46,61 +46,60 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 7. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
    fresh-fixture failure it was ranked on was measured in a worktree
-   carrying the uncommitted routing_area term; on main that fixture passes
-   (verified by reverting only cost.py/optimize.py). What is left is the
-   stale class on pb345846, which 6 owns, plus a narrower open question —
-   whether the F.Cu escape that appears *under* routing_area is a real leak
-   at that placement or a placement-sensitive assertion. Reads realize/maze,
-   which pcb-easyeda-round-trip's router item also touches; this thread
-   sequences behind theirs.
+   carrying the uncommitted routing_area term; on main that fixture passes.
+   Re-verified 2026-09-30 on top of the pad-orientation fix: with
+   routing_area reverted the dogfood file is `8 passed`, with it applied the
+   F.Cu escape assertion fails — so the F.Cu escape is attributable to the
+   term's placement, not to pad geometry. What is left is the stale class on
+   pb345846, which 6 owns, plus the narrower open question: is that escape a
+   real leak at that placement, or a placement-sensitive assertion? Reads
+   realize/maze, which pcb-easyeda-round-trip's router item also touches;
+   this thread sequences behind theirs.
 
 ## Horizon
 
-1. **backlog/pcb-maze-guarantee-leaks-a-track-into-a-foreign-pad.md** —
-   BLOCKS 2. A GND track sits 0.040mm from a foreign RXD pad where the fab
-   needs 0.090mm, on a grid built at 0.15mm; the occupancy guarantee says
-   that is impossible, and the reference test's own constant says find the
-   leak rather than accommodate it. Seven mechanisms already eliminated in
-   the file. Reto ruled "fix routing_area" on 2026-09-30 believing the term
-   was miscalibrated; the measurement says the term only changes the
-   placement that exposes this, so the fix belongs in the router.
-2. **routing_area cost term** (uncommitted, in this thread's worktree) —
+1. **routing_area cost term** (uncommitted, in this thread's worktree) —
    prices the board area a strand sweeps; the only thing holding the sink
    under the array. Waits on its own gate; a placer that needs no pinned
-   sink. **Measured 2026-09-30: as it stands it would red the gate.** With
-   the term applied, `test_pcb_reference_end_to_end.py::
-   test_esp32c3_reference_place_and_route_never_regresses_the_baseline[4]`
-   fails and the dogfood escape-layer test fails; revert cost.py +
-   optimize.py and both pass. So the open decision is not only "gate now or
-   wait for the DRC cost fix" — the term needs work first, and the esp32c3
-   baseline is the concrete thing it regresses.
-3. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
-   waits on 2; the precondition for trusting any number below this line.
-   Its cost prerequisite is gone: check_via_pad_keepout is indexed, so a
-   full geometric DRC pass is 0.29 s on an 8x8 tile and 1.2 s at 16x16
-   (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck.
-4. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
-   waits on 3 because each slice's acceptance is an "is the board still
+   sink. **The esp32c3 regression is GONE** — it was the pad-orientation
+   divergence (`realize.pad_board_wh`, landed 2026-09-30), not the term:
+   with that fixed, `test_pcb_reference_end_to_end.py` is 5 passed at every
+   seed WITH the term applied. What remains against the term is the dogfood
+   F.Cu escape assertion (item 7 above), re-measured on top of the fix. So
+   the open decision is back to "gate now or wait", plus that one
+   assertion.
+2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
+   waits on Do-next 2; the precondition for trusting any number below this
+   line. Its cost prerequisite is gone: check_via_pad_keepout is indexed,
+   so a full geometric DRC pass is 0.29 s on an 8x8 tile and 1.2 s at 16x16
+   (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck —
+   backlog/pcb-clearance-findings-name-no-pad.md carries both that figure
+   and the observability gap the 09-30 investigation paid for.
+3. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
+   waits on 2 because each slice's acceptance is an "is the board still
    valid" claim.
-5. **backlog/pcb-layer-preferred-direction.md** +
+4. **backlog/pcb-layer-preferred-direction.md** +
    **backlog/pcb-congestion-driven-spread.md** — the two escape-yield
    levers that are not defects; wait on Do-next 1 or they optimise against
    an artifact.
-6. **backlog/pcb-missing-constraint-classes.md** +
+5. **backlog/pcb-missing-constraint-classes.md** +
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
-   vocabulary (creepage at 250 V) and pad-layer validation; wait on 3, where
-   a class becomes enforceable rather than advisory.
-7. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
-   on 6, a checklist over unenforceable constraints is theatre.
-8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
+   vocabulary (creepage at 250 V) and pad-layer validation; wait on 2, where
+   a class becomes enforceable rather than advisory. Reading nearby:
+   backlog/pcb-oblique-rotated-pad-is-an-axis-aligned-rect-in-the-model.md
+   is the same "what shape is this pad" question at an oblique angle, and
+   an .epro2 import is its likely first real source.
+6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
+   on 5, a checklist over unenforceable constraints is theatre.
+7. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
    lane, parallel; a testable system rather than a bare PCB.
-9. **backlog/ewod-synthesis-protocol.md** +
+8. **backlog/ewod-synthesis-protocol.md** +
    **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-10. **backlog/pcb-ewod-multitile.md** — waits on 4 and 5; multitile
+9. **backlog/pcb-ewod-multitile.md** — waits on 3 and 4; multitile
    multiplies whatever the escape corridor does.
-11. **backlog/pcb-global-codesign-north-star.md** — the arc all of the above
+10. **backlog/pcb-global-codesign-north-star.md** — the arc all of the above
     serves; re-read when ranking the next round.
 
 ## Parked
@@ -112,7 +111,8 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 - **U_TEMP part selection** — C32254 is a dual MOSFET placeholder; unparks
   when Reto picks a real LM75-class part (detail in item 1's file).
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
-  2, where via-vs-pad becomes an enforced rule rather than a reported one.
+  Do-next 2, where via-vs-pad becomes an enforced rule rather than a
+  reported one.
 
 ## No action needed
 
@@ -120,3 +120,9 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
   it exposed is item 1. Soft-deleted, do not reopen.
 - **backlog/pcb-pre-place-route-blocks.md** — already landed; verify and
   delete.
+- **The "maze occupancy guarantee leak"** — there was no leak. The router
+  cleared its own claim by 0.1703 mm on the copper that fired the finding;
+  the model and the grid disagreed about the pad's ORIENTATION. Fixed by
+  `realize.pad_board_wh` 2026-09-30, item deleted. The guarantee's
+  argument (`BASELINE_DRC_ERRORS = 0`, "find the leak") held up: it is
+  what made the measurement worth taking instead of tuning the cost term.

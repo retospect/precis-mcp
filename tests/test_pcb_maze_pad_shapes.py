@@ -30,7 +30,13 @@ import math
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.ir import from_graph, pin_point
 from precis.pcb.maze import CONTESTED, FREE, GridSpec, OccupancyGrid, PadShape, grid_for
-from precis.pcb.realize import _pad_shape, _side_layer, _stamp_pads, pad_geometry
+from precis.pcb.realize import (
+    _pad_shape,
+    _side_layer,
+    _stamp_pads,
+    pad_geometry,
+    pads_for_ir,
+)
 from precis.pcb.session import apply_real_pin_offsets
 
 
@@ -275,3 +281,99 @@ def test_qfp_ring_at_0p8mm_pitch_keeps_every_pad_its_own_centre_cell_and_routes(
     assert path is not None, (
         "a field pad could not reach an 0.8mm-pitch ring pad's own pad"
     )
+
+
+# ── the model's pad and the grid's claim are the SAME rectangle ─────────
+#
+# A SYNTHESIZED rect pad's ``PadGeom.w_mm``/``h_mm`` are FOOTPRINT-LOCAL, so
+# a 90/270-rotated instance's pads need the same w/h swap
+# :func:`~precis.pcb.padplace.place_footprint_pads` applies to a real
+# footprint's. :func:`~precis.pcb.realize._pad_shape` did it and
+# :func:`~precis.pcb.realize.pads_for_ir` did not, so the occupancy grid
+# claimed 45 of the esp32c3 reference board's pads transposed 90 degrees
+# from the pads the DRC, the gerber fallback and the fab preview measured: a
+# GND track routed 0.1703mm clear of J2.RXD's CLAIM read as 0.040mm from the
+# model's transposed pad and fired a clearance error, which looked exactly
+# like a hole in the occupancy guarantee. Both sides now read
+# :func:`~precis.pcb.realize.pad_board_wh`.
+
+
+def _two_caps_graph(rot: float) -> dict:
+    """Two 2-pin passives with rect pads and NO footprint (so their
+    geometry is the landpattern's synthesized bound): ``C1`` un-rotated as
+    the control, ``C2`` at ``rot``."""
+    return {
+        "instances": [
+            {"refdes": "C1", "x": 5.0, "y": 5.0, "rot": 0.0},
+            {"refdes": "C2", "x": 10.0, "y": 5.0, "rot": rot},
+        ],
+        "nets": [
+            {
+                "name": "N1",
+                "members": [
+                    {"refdes": "C1", "pin": "1"},
+                    {"refdes": "C2", "pin": "1"},
+                ],
+            },
+            {
+                "name": "N2",
+                "members": [
+                    {"refdes": "C1", "pin": "2"},
+                    {"refdes": "C2", "pin": "2"},
+                ],
+            },
+        ],
+    }
+
+
+def _model_rect_wh(ir) -> dict[str, tuple[float, float]]:
+    layers = [str(entry["name"]) for entry in DEFAULT_STACKUP]
+    return {
+        f"{pad['refdes']}.{pad['pin']}": (float(pad["w"]), float(pad["h"]))
+        for pad in pads_for_ir(ir, layers, None)
+        if pad.get("shape") == "rect"
+    }
+
+
+def test_a_rotated_synthesized_rect_pad_is_the_same_box_in_the_model_and_the_claim():
+    for rot in (90.0, 270.0):
+        ir = from_graph(_two_caps_graph(rot), stackup=DEFAULT_STACKUP)
+        geoms = pad_geometry(ir, None)
+        model = _model_rect_wh(ir)
+        assert model, "the fixture produced no rect pads -- it cannot bite"
+
+        for pid in range(ir.n_pins):
+            geom = geoms[pid]
+            if geom.shape != "rect":
+                continue
+            assert geom.synthesized, "this fixture's pads are not synthesized"
+            # An oblong pad, or a transpose is unobservable.
+            assert geom.w_mm != geom.h_mm, (
+                f"square synthesized pad {geom.w_mm}x{geom.h_mm} -- vacuous"
+            )
+            inst_id = int(ir.pin_instance[pid])
+            key = f"{ir.instance_refdes[inst_id]}.{ir.pin_label[pid]}"
+            point = pin_point(ir, pid)
+            assert point is not None
+            claim = _pad_shape(geom, point, float(ir.inst_rot[inst_id]))
+            assert claim.kind == "rect"
+            assert model[key] == (claim.w_mm, claim.h_mm), (
+                f"{key} at rot={ir.inst_rot[inst_id]}: the model says "
+                f"{model[key]} and the grid claims "
+                f"({claim.w_mm}, {claim.h_mm}) -- two definitions of one pad"
+            )
+
+        # And the rotation is observable at all: C2's pads are the
+        # TRANSPOSE of un-rotated C1's, not a copy.
+        c1, c2 = model["C1.1"], model["C2.1"]
+        assert c2 == (c1[1], c1[0]), (
+            f"a {rot}-degree instance's pad was not transposed: {c1} -> {c2}"
+        )
+
+
+def test_an_unrotated_synthesized_rect_pad_is_not_transposed():
+    """Negative control — at rot=0 nothing swaps, so a fix that swapped
+    unconditionally fails here."""
+    ir = from_graph(_two_caps_graph(0.0), stackup=DEFAULT_STACKUP)
+    model = _model_rect_wh(ir)
+    assert model["C1.1"] == model["C2.1"]

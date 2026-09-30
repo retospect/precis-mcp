@@ -1172,6 +1172,49 @@ def _seg_span_mm(ir: PcbIR, seg_id: int) -> float:
     return dist(pa, pb)
 
 
+def pad_board_wh(geom: PadGeom, inst_rot: float) -> tuple[float, float]:
+    """One pad's width/height in BOARD space — the single answer to "how
+    wide is this pad, along the board's own x", for every consumer that
+    reads ``PadGeom.w_mm``/``h_mm``.
+
+    A REAL pad arrives already board-oriented: :func:`~precis.pcb.
+    padplace.place_footprint_pads` swaps w/h itself when the pad's total
+    rotation (instance + the pad's own ``rot``) is 90 degrees or 270, so
+    the flashed aperture matches the rotated land, and
+    :attr:`PadGeom.axis_aligned` records that it did. A SYNTHESIZED pad
+    has no footprint to place, so its w/h are FOOTPRINT-LOCAL
+    (:class:`PadGeom`'s own docstring) and the swap has to happen here.
+
+    **Two functions used to answer this question independently and
+    disagree** (the defect :func:`precis.pcb.drc._copper_item_polygon`'s
+    docstring names as this subsystem's most-repeated one):
+    :func:`_pad_shape` swapped, :func:`pads_for_ir` did not, so on the
+    esp32c3 reference board 45 synthesized pads on 90/270-rotated
+    instances were claimed by the occupancy grid transposed 90 degrees
+    from the pad the DRC, the gerber fallback and the fab preview
+    measured. A GND track legally routed 0.1703mm clear of J2.RXD's
+    CLAIM then read as 0.040mm from the model's transposed pad and fired
+    a clearance error against copper that, at the claim's orientation,
+    clears it — which looked exactly like a hole in the occupancy
+    guarantee, and was investigated as one before the two pad definitions
+    were measured against each other.
+
+    Only rect/obround have an orientation to get wrong: a circle's w/h
+    are its diameter, and a polygon pad carries a true rotated ring
+    instead. An oblique (non-90-degree-multiple) rotation is NOT handled
+    here — :func:`_pad_shape` falls back to a conservative enclosing
+    circle for that case while ``pads_for_ir`` keeps an axis-aligned
+    rect, a divergence that over-claims on the grid (so it cannot leak
+    copper into a pad) but can still make the DRC measure the wrong
+    outline. That one wants a rotated polygon, not a swap."""
+    if geom.shape not in ("rect", "obround"):
+        return geom.w_mm, geom.h_mm
+    rot = 0.0 if math.isnan(inst_rot) else inst_rot
+    if geom.synthesized and padplace.rect_swaps_wh(rot):
+        return geom.h_mm, geom.w_mm
+    return geom.w_mm, geom.h_mm
+
+
 def _pad_shape(geom: PadGeom, point: Point, inst_rot: float) -> maze.PadShape:
     """One pin's TRUE footprint as a :class:`~precis.pcb.maze.PadShape`
     (gripe 346962) — the router's fine-pitch fix: an enclosing circle for
@@ -1210,13 +1253,12 @@ def _pad_shape(geom: PadGeom, point: Point, inst_rot: float) -> maze.PadShape:
     if geom.shape == "circle":
         return maze.PadShape("circle", point[0], point[1], geom.w_mm, geom.h_mm)
     if geom.shape in ("rect", "obround"):
-        w, h = geom.w_mm, geom.h_mm
-        if geom.synthesized:
-            axis_aligned = padplace.pad_axis_aligned(inst_rot)
-            if axis_aligned and padplace.rect_swaps_wh(inst_rot):
-                w, h = h, w
-        else:
-            axis_aligned = geom.axis_aligned
+        w, h = pad_board_wh(geom, inst_rot)
+        axis_aligned = (
+            padplace.pad_axis_aligned(inst_rot)
+            if geom.synthesized
+            else geom.axis_aligned
+        )
         if axis_aligned:
             return maze.PadShape("rect", point[0], point[1], w, h)
     diameter = math.hypot(geom.w_mm, geom.h_mm)
@@ -5976,13 +6018,21 @@ def pads_for_ir(
         # ternary now -- see its own docstring for why a second hand
         # copy over a different `layers` element type stayed a live risk.
         pad_layer = _side_layer(ir, inst_id, layers)
+        # Board-space w/h through the SHARED :func:`pad_board_wh`, never
+        # `geom.w_mm`/`geom.h_mm` raw: a synthesized rect pad's are
+        # footprint-local, so a 90/270-rotated instance's pads were
+        # emitted here transposed from the ones the occupancy grid
+        # claimed through `_pad_shape` — see that function's docstring
+        # for the clearance error this produced on copper that is
+        # actually clear.
+        pad_w, pad_h = pad_board_wh(geom, float(ir.inst_rot[inst_id]))
         pad: dict[str, Any] = {
             "layer": pad_layer,
             "net": "" if net_id == NO_NET else str(ir.net_name[net_id]),
             "shape": geom.shape,
             "x": point[0],
             "y": point[1],
-            "w": geom.w_mm,
+            "w": pad_w,
             "synthesized": geom.synthesized,
             # X2 object identity for the gerber viewer's hover tooltip
             # (gerber.py's own module docstring / `%TO.P,<refdes>,<pin>*%`)
@@ -6010,7 +6060,7 @@ def pads_for_ir(
         if part_lcsc:
             pad["part_lcsc"] = str(part_lcsc)
         if geom.shape != "circle":
-            pad["h"] = geom.h_mm
+            pad["h"] = pad_h
         if geom.shape == "polygon" and geom.poly:
             # `point` is already the rotated+translated pin CENTER
             # (`pin_point`); the ring is stored relative to that same
