@@ -454,7 +454,11 @@ def test_export_view_takes_only_format(handler: SeHandler, store: Store) -> None
     body = handler.get(id="rect-view", view="export", args={"format": "scadnano"}).body
     assert json.loads(body)["grid"] == "none"
     pdb = handler.get(id="rect-view", view="export", args={"format": "pdb"}).body
-    assert pdb.count("TER") == 1 and "ATOM" in pdb
+    # One PDB chain per (segment, strand): the duplex region's two strands
+    # are two chains (dogfood 2026-09-30: a per-segment chain id merged
+    # them into one chain with duplicate residue numbers).
+    assert pdb.count("TER") == 2 and "ATOM" in pdb
+    assert " DG A   1 " in pdb and " B   1 " in pdb
     with pytest.raises(BadInput):
         handler.get(id="rect-view", view="export", args={"fmt": "pdb"})
     with pytest.raises(Unsupported, match="one of"):

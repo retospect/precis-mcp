@@ -414,7 +414,7 @@ LoadStructure = Callable[[str], tuple[Any, dict[str, Any]] | None]
 
 def to_pdb(tree: SeTree, *, design: str, load_structure: LoadStructure) -> str:
     """Every ``realize_chain``-bound segment, world-posed, one chain id per
-    segment. ``load_structure(slug)`` returns the bound design's
+    (segment, strand). ``load_structure(slug)`` returns the bound design's
     ``(scene, meta)`` or ``None``; the residue naming comes from
     ``meta['chain_atoms']`` (a plain bound scene without it is written as
     ``UNK`` residues, element names)."""
@@ -446,12 +446,23 @@ def to_pdb(tree: SeTree, *, design: str, load_structure: LoadStructure) -> str:
             as_vec3([float(v) for v in node.pose]),
             as_vec3([float(v) for v in node.rot]),
         )
-        cid = chr(ord("A") + n_chains) if n_chains < 26 else str(n_chains % 10)
-        n_chains += 1
         atom_names = chain_atoms.get("names") or []
         atom_res = chain_atoms.get("resnames") or []
         atom_seq = chain_atoms.get("resseq") or []
+        atom_chains = chain_atoms.get("chain_ids") or []
+        # One PDB chain per (segment, strand): a region's two strands stay
+        # two chains with their own residue numbering (dogfood 2026-09-30:
+        # a per-segment id merged them into one chain with duplicate
+        # residue numbers), and each further segment continues the letters.
+        local_to_global: dict[str, str] = {}
         for i, atom in enumerate(scene.atoms.values()):
+            local = str(atom_chains[i]) if i < len(atom_chains) else "A"
+            if local not in local_to_global:
+                local_to_global[local] = (
+                    chr(ord("A") + n_chains) if n_chains < 26 else str(n_chains % 10)
+                )
+                n_chains += 1
+            cid = local_to_global[local]
             cart_A = scene.cell.frac_to_cart(atom.frac)
             world = placed.to_world_point(
                 as_vec3([float(c) * A_to_m(1.0) for c in cart_A])
