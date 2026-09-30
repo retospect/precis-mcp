@@ -531,3 +531,105 @@ def test_the_helix_geometry_still_places_the_exits_where_the_azimuths_say() -> N
     separation = abs((reverse - forward + math.pi) % (2.0 * math.pi) - math.pi)
     assert separation != pytest.approx(math.pi, abs=1e-6)
     assert 0.0 < separation < math.pi
+
+
+# ── loop tangents at a helix end (gripe 457929) ─────────────────────────
+
+
+def _end_hairpin_tree() -> SeTree:
+    """The dogfood hairpin: a 4-unit helix whose one strand pairs with
+    itself, the 4-nt loop leaving the helix's LAST unit on both exits."""
+    ops: list[dict[str, Any]] = _straight_helix_ops("h0", 0.0, 4)
+    ops += [
+        {"op": "add_block", "name": "s"},
+        {"op": "declare_strand", "block": "s"},
+        {
+            "op": "add_domain",
+            "strand": "s",
+            "helix": "h0",
+            "start": 0,
+            "end": 4,
+            "forward": True,
+        },
+        {
+            "op": "add_domain",
+            "strand": "s",
+            "helix": "h0",
+            "start": 0,
+            "end": 4,
+            "forward": False,
+            "loop_before_nt": 4,
+        },
+        {"op": "layout_chain"},
+    ]
+    tree = SeTree()
+    apply_ops(tree, ops)
+    return tree
+
+
+def test_a_hairpin_at_the_helix_end_caps_it_rather_than_lying_flat() -> None:
+    tree = _end_hairpin_tree()
+    op_relax_chain(None, tree, {"op": "relax_chain"})
+    curve = np.asarray(next(d for d in tree.domains if d.ord == 1).loop_curve)
+    # Both exits sit in the last pair's plane (the helix runs along +z) …
+    p = _exit_world(tree, "h0", 3, True)
+    q = _exit_world(tree, "h0", 3, False)
+    assert abs(float(p[2] - q[2])) < 1e-12
+    # … and the loop leaves that plane along +z on its way round: every
+    # interior sample is beyond the last pair, by a good fraction of a
+    # backbone bond at the apex, instead of the flat in-plane bow the
+    # radial-only tangents drew.
+    reach = curve[1:-1, 2] - float(p[2])
+    assert np.all(reach > 0), reach
+    assert float(reach.max()) > 0.4 * nucleic.SS_CONTOUR_PER_NT_M, reach.max()
+
+
+def test_only_a_terminal_unit_exit_gets_an_axial_tangent() -> None:
+    from precis_se.chain.relax import _axial_sign
+
+    geom = helix_geometry(_end_hairpin_tree().blocks["h0"])
+    last = geom.n_units - 1
+    # Leaving: a forward strand off the last unit runs +t, a reverse strand
+    # off unit 0 runs -t.
+    assert _axial_sign(geom, last, True, leaving=True) == 1.0
+    assert _axial_sign(geom, 0, False, leaving=True) == -1.0
+    # Entering: the outward direction is the strand's reversed.
+    assert _axial_sign(geom, 0, True, leaving=False) == -1.0
+    assert _axial_sign(geom, last, False, leaving=False) == 1.0
+    # A mid-helix exit, or the wrong end for the strand's direction, keeps
+    # the sideways-only tangent a crossover needs.
+    assert _axial_sign(geom, 1, True, leaving=True) == 0.0
+    assert _axial_sign(geom, 0, True, leaving=True) == 0.0
+    assert _axial_sign(geom, last, True, leaving=False) == 0.0
+
+
+def test_a_mid_helix_exit_tangent_stays_sideways_and_follows_the_settled_body() -> None:
+    from precis_chain.relax import Attachment
+    from precis_se.chain.relax import _Body, _exit_tangent
+
+    # A body declared along +z, settled into a tilt: the tangent is the
+    # radial offset carried into the SETTLED frame (so it stays
+    # perpendicular to the body's new axis, where the old code handed
+    # loop_curve the nominal-frame offset), and on a mid-helix exit it
+    # has no axial component at all …
+    body = _Body(
+        name="h0.s0",
+        helix="h0",
+        start=0,
+        end=9,
+        a_nm=np.zeros(3),
+        b_nm=np.array([0.0, 0.0, 3.0]),
+        radius_nm=1.0,
+        length_nm=3.0,
+        carry=np.eye(3),
+        movable=True,
+    )
+    settled = np.array([[[0.0, 0.0, 0.0], [0.0, 1.0, 3.0]]])
+    axis = settled[0, 1] / np.linalg.norm(settled[0, 1])
+    att = Attachment(body=0, along=0.5, offset=(0.0, 1.0, 0.0))
+    side = _exit_tangent(body, settled, 0, att, 0.0)
+    assert abs(float(np.dot(side, axis))) < 1e-12
+    assert abs(float(np.linalg.norm(side)) - 1.0) < 1e-12
+    # … while a terminal-unit exit adds exactly one unit of the axis.
+    capped = _exit_tangent(body, settled, 0, att, 1.0)
+    assert np.allclose(capped - side, axis)

@@ -29,6 +29,7 @@ boundary, before ``add_block`` ever sees the string — se's agent-facing
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -780,15 +781,28 @@ def prepare_realize_chain(
     ports_map: dict[str, dict[str, str]] = {}
     port_ops: list[dict[str, Any]] = []
     for pname, pa in region.ports.items():
-        if pname not in seg_node.ports:
+        annotations = {**pa.annotations, "atoms": [labels[pa.atom]]}
+        existing = seg_node.ports.get(pname)
+        if existing is None:
             port_ops.append(
                 {
                     "op": "add_port",
                     "block": seg_name,
                     "name": pname,
                     "expected_element": pa.expected_element,
-                    "annotations": {**pa.annotations, "atoms": [labels[pa.atom]]},
+                    "annotations": annotations,
                 }
+            )
+        else:
+            # ``layout_chain`` pre-mints ``5p``/``3p`` as bare backbone
+            # anchors. Keep that slot (its roles, and any pose a user set)
+            # but give it the same expected chemistry and annotations the
+            # freshly minted ports get, so the element gate runs for every
+            # port ``bind_structure`` measures (gripe 457930).
+            seg_node.ports[pname] = dataclasses.replace(
+                existing,
+                expected_element=pa.expected_element,
+                annotations={**existing.annotations, **annotations},
             )
         ports_map[pname] = {
             "atom": labels[pa.atom],

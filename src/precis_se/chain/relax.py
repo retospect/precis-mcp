@@ -432,6 +432,26 @@ def _exit_point(
     return base + carry @ np.asarray(att.offset, dtype=float)
 
 
+def _exit_tangent(
+    body: _Body, bodies_nm: np.ndarray, index: int, att: Attachment, axial: float
+) -> np.ndarray:
+    """The direction the backbone leaves ``att``'s exit along, in the
+    **settled** frame: the outward radial (exit minus axis point, carried
+    like :func:`_exit_point` carries the exit itself) plus, on a terminal
+    unit, the helix's axis direction the strand runs on out of the helix
+    (``axial`` = :func:`_axial_sign`). An equal blend — the backbone at a
+    helix end leaves the last pair diagonally, not flat in its plane.
+    Zero when the exit has no outward direction at all (on-axis)."""
+    a, b = bodies_nm[index, 0], bodies_nm[index, 1]
+    axis = _unit(b - a)
+    carry = _carry_rotation(_unit(body.b_nm - body.a_nm), axis)
+    radial = carry @ np.asarray(att.offset, dtype=float)
+    norm = float(np.linalg.norm(radial))
+    if norm < 1e-12:
+        return np.zeros(3)
+    return radial / norm + axial * axis
+
+
 @dataclass
 class _Loop:
     """One loop the settle pulls on, and the domain row that owns its
@@ -445,6 +465,30 @@ class _Loop:
     body_b: int
     att_a: Attachment
     att_b: Attachment
+    #: The axial component each exit tangent carries: ``+1``/``-1`` = the
+    #: body's axis direction the backbone leaves along when the exit sits
+    #: on the helix's **terminal** unit (a hairpin or a tail caps the helix
+    #: end — gripe 457929), ``0`` = a mid-helix exit that leaves sideways.
+    axial_a: float = 0.0
+    axial_b: float = 0.0
+
+
+def _axial_sign(
+    geom: HelixGeometry, offset: int, forward: bool, *, leaving: bool
+) -> float:
+    """The signed axis direction a backbone exit points **out of** the helix
+    along, or ``0.0`` when the exit is not on a terminal unit.
+
+    A strand runs ``+t`` when forward and ``-t`` when reverse. Leaving the
+    helix (the loop's start) the backbone keeps going in the strand's own
+    direction; entering it (the loop's end) the outward direction is the
+    strand's direction reversed. Only the helix's own last unit counts —
+    a segment boundary mid-helix is a tiling seam, not an end.
+    """
+    strand_dir = 1.0 if forward else -1.0
+    outward = strand_dir if leaving else -strand_dir
+    at_end = offset == (geom.n_units - 1 if outward > 0 else 0)
+    return outward if at_end else 0.0
 
 
 def _loops(
@@ -498,6 +542,12 @@ def _loops(
                     body_b=j,
                     att_a=att_a,
                     att_b=att_b,
+                    axial_a=_axial_sign(
+                        geom_a, before.exit_offset, before.forward, leaving=True
+                    ),
+                    axial_b=_axial_sign(
+                        geom_b, after.entry_offset, after.forward, leaving=False
+                    ),
                 )
             )
     return out
@@ -570,16 +620,23 @@ def _write_curves(bodies: list[_Body], loops: list[_Loop], settled: np.ndarray) 
     This is the seam ``se-nucleic-realize-export`` reads to tell a placed
     loop from an unplaced one, so a row with no curve must stay
     distinguishable from one with a curve: nothing here ever writes an
-    empty list. The exit tangents are the outward radial directions (exit
-    minus the body's axis point) — the backbone leaves the duplex sideways,
-    and :func:`precis_chain.loop.loop_curve` only uses their directions.
+    empty list. The exit tangents are :func:`_exit_tangent`: the outward
+    radial direction (exit minus the body's axis point — the backbone
+    leaves the duplex sideways mid-helix) blended with the helix axis on a
+    terminal unit, so a hairpin or a tail caps the helix end instead of
+    bowing out flat in the last pair's plane (gripe 457929).
+    :func:`precis_chain.loop.loop_curve` only uses their directions.
     """
     written = 0
     for loop in loops:
         p = _exit_point(bodies[loop.body_a], settled, loop.body_a, loop.att_a)
         q = _exit_point(bodies[loop.body_b], settled, loop.body_b, loop.att_b)
-        tp = np.asarray(loop.att_a.offset, dtype=float)
-        tq = np.asarray(loop.att_b.offset, dtype=float)
+        tp = _exit_tangent(
+            bodies[loop.body_a], settled, loop.body_a, loop.att_a, loop.axial_a
+        )
+        tq = _exit_tangent(
+            bodies[loop.body_b], settled, loop.body_b, loop.att_b, loop.axial_b
+        )
         if float(np.linalg.norm(tp)) < 1e-12 or float(np.linalg.norm(tq)) < 1e-12:
             continue  # an on-axis exit has no outward direction to leave along
         curve = loop_curve(

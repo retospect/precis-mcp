@@ -335,7 +335,10 @@ What it writes, all in one revision:
 - each placed loop's sampled curve on its domain row's `meta.loop_curve`,
   points in metres, computed from the **settled** exits. A domain row with
   no `loop_curve` is one with no placed loop — that is the distinction, so
-  an empty list is never stored.
+  an empty list is never stored. The curve leaves a mid-helix exit
+  sideways (a crossover runs straight across); an exit on the helix's
+  **terminal** unit also carries the helix axis, so a hairpin or a tail
+  caps the helix end instead of bowing out flat in the last pair's plane.
 
 The summary line names the persistence length per helix and where it came
 from: the coded default (B-DNA 50 nm), or the design's own `material`
@@ -420,7 +423,10 @@ Ports minted on the segment: `5p`/`3p` for the first forward-strand chain,
 `r5p`/`r3p` for the first reverse one (`5p2`/`r5p2`, … for further
 chains), each with a **measured** pose and rot (`bind_structure`'s object
 form — `5p` = P with the O5' axle, `3p` = O3' with C3'; backbone fidelity
-swaps in C4'). `sites=[k, …]` adds `n<k>_c5m`/`n<k>_maj`/`n<k>_min`
+swaps in C4'). `layout_chain`'s own bare `5p`/`3p` anchors are kept (their
+role, any pose you set) and given the same expected element and
+`{strand, end, offset, atoms}` annotations as the freshly minted ports,
+so the element gate runs for every bound port alike. `sites=[k, …]` adds `n<k>_c5m`/`n<k>_maj`/`n<k>_min`
 attachment ports on the forward occupant's base at offset `k` —
 underscore, not a dot (a port name can't contain `'.'`) — `allatom`
 fidelity and a sequenced base only, both refused rather than

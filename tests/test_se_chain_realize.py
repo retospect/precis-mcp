@@ -347,6 +347,14 @@ def test_hairpin_stem_realizes_and_the_loop_waits_for_relax(
     # has an O3'→P step under 2 Å except across the loop, where the
     # nucleotides sit at the loop's own spacing.
     assert meta["chain_ids"].count("A") == coords.shape[0]
+    # The loop caps the helix end (gripe 457929): its phosphates rise
+    # above the last pair's plane along the segment's own +z, instead of
+    # all sitting at exactly that plane's height.
+    resseq = np.asarray(meta["resseq"])
+    is_p = np.asarray(meta["names"]) == "P"
+    stem_top = float(coords[(resseq == 4) & is_p, 2].max())
+    loop_z = coords[(resseq >= 5) & (resseq <= 8) & is_p, 2]
+    assert loop_z.shape == (4,) and float(loop_z.max()) > stem_top + 2.0, loop_z
 
     # The PDB round-trips through the kernel's own reader.
     text = StructureHandler(hub=hub).get(id="hp-late-stem.s0", view="pdb").body
@@ -497,3 +505,22 @@ def test_build_region_is_right_handed_and_bonds_the_backbone() -> None:
     ]
     assert len(inter) == 2 * (n - 1)
     assert all(1.45 <= d <= 1.65 for d in inter), inter
+
+
+def test_layouts_own_5p_3p_ports_get_the_realizers_chemistry(
+    handler: SeHandler, store: Store
+) -> None:
+    """``layout_chain`` pre-mints ``5p``/``3p`` as bare backbone anchors;
+    after ``realize_chain`` they carry the same expected element and
+    annotations as the ports the realizer mints itself (gripe 457930)."""
+    _put(handler, "duplex", [*_duplex_ops(), _realize("h", 0, 21)])
+    ports = _loaded(store, "duplex").blocks["h.s0"].ports
+    for name, element in (("5p", "P"), ("3p", "O"), ("r5p", "P"), ("r3p", "O")):
+        port = ports[name]
+        assert port.expected_element == element, name
+        assert port.annotations["strand"] == ("fwd" if name in ("5p", "3p") else "rev")
+        assert {"strand", "end", "offset", "atoms"} <= set(port.annotations), name
+        assert len(port.annotations["atoms"]) == 1
+        assert port.bound_atom == port.annotations["atoms"][0]
+    # The layout's slot survives (its role), it was not re-minted bare.
+    assert ports["5p"].roles == ["backbone"]
