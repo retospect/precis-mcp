@@ -46,10 +46,11 @@ measurable, so it goes first.
   copy" terminal state missing, fetched-but-bodiless papers uncounted,
   arxiv_html losing its own identifier, venue dropped on S2 enrich, and
   the Greek/micro-character font-encoding corruption pair) — and the
-  embed-drain cluster — **gr456034**, **gr454865**, **gr458393**
-  (embed_batch backlog not draining by a different mechanism than the
-  closed gr347576; chase_trigger's dead batch-size knob; `_greedy_split`'s
-  pagination fallback never reached). Both clusters are ingest/pipeline
+  embed-drain cluster — **gr456034**, **gr454865** (embed_batch backlog
+  not draining by a different mechanism than the closed gr347576;
+  chase_trigger's dead batch-size knob). gr458393 (`_greedy_split`
+  pagination) was mis-clustered here at the review; it is a read-surface
+  bug and the se-3d-viewer owner has a fix scoped — ranked there. Both clusters are ingest/pipeline
   throughput and fidelity work with no other thread claiming the files
   they touch; parked here rather than left fully orphaned, since this
   thread is closest to "what runs on local/background compute".

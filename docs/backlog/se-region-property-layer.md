@@ -129,6 +129,23 @@ lands; coordinate the number against the prod ledger), taxonomy seed rows
 for the measurands, `precis-se-help` + `precis-se-atomic-help`. Post-deploy
 check: existing prod se designs (`unicycle-c1`) read back unchanged.
 
+Two guards the builder hits on the first run (se-3d-viewer owner,
+2026-09-30, verified against origin/main):
+
+- `tests/test_se_ops_export.py` carries a parametrised `_VERDICTS`
+  totality map: every field of `SeBlock`/`PortSpec`/`MeasureSpec`/… must
+  be classified `op | gap | derived` or the build is red with
+  instructions. New pocket/region fields on `SeBlock` need one line each;
+  any non-design field also needs `persist._BLOCK_TRANSIENT`.
+- The ops export is final-state-only and never emits `remove_*`; a new
+  `remove_pocket` needs an entry in `ops_export.NOT_CARRIED`, the single
+  tuple the docstring and the rendered header both print. Without it the
+  gap is silent.
+- `view='pockets'` will be one big H2 section, exactly the shape gr458393
+  truncates on a one-shot `precis tools` read (pagination never falls
+  back past the section level); land that fix first or paginate the view
+  by pocket.
+
 ## Open questions / decisions log
 
 - **[decided 2026-09-30, Reto]** Three extensions of existing machinery,
