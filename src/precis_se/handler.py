@@ -939,14 +939,14 @@ class SeHandler(Handler):
         bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
             self.store, tree
         )
+        generated_records = se_atomic_render.bound_generated_records(self.store, tree)
         findings.extend(
             se_atomic_validate.validate_atomic(
                 tree,
                 bound_scenes=bound_scenes,
                 bound_full_scenes=bound_full_scenes,
-                generated_bound=se_atomic_render.bound_generated_slugs(
-                    self.store, tree
-                ),
+                generated_bound=frozenset(generated_records),
+                generated_records=generated_records,
             )
         )
         header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]

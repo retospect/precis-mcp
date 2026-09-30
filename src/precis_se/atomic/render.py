@@ -108,19 +108,26 @@ def hydrate_bound_scenes(
     return bound_scenes, bound_full_scenes
 
 
-def bound_generated_slugs(store: Store, tree: SeTree) -> frozenset[str]:
-    """The bound ``structure`` slugs whose ref carries a generator build
-    record (``meta['generated']``, written by ``finish_generate`` since
-    2026-09-27). ``validate_atomic(generated_bound=…)`` uses it to tell a
-    legacy pre-framing-fix block from a genuine envelope drift."""
-    out: set[str] = set()
+def bound_generated_records(store: Store, tree: SeTree) -> dict[str, dict[str, Any]]:
+    """Every bound ``structure`` slug that carries a generator build record
+    (``meta['generated']``, written by ``finish_generate`` since
+    2026-09-27), mapped to that record.
+
+    Two callers want different halves of it, so the store pass happens
+    once here rather than in each: ``validate_atomic(generated_bound=…)``
+    needs only the key set (a slug with no record is a pre-framing-fix
+    legacy block, not an envelope drift), while
+    ``validate_atomic(generated_records=…)`` reads the ``join`` records'
+    ``parts`` provenance to check it against the live parent chain."""
+    out: dict[str, dict[str, Any]] = {}
     for n in tree.blocks.values():
-        if n.bound_kind != "structure" or not n.bound:
+        if n.bound_kind != "structure" or not n.bound or n.bound in out:
             continue
         ref = store.get_ref(kind="structure", id=n.bound)
-        if ref is not None and isinstance((ref.meta or {}).get("generated"), dict):
-            out.add(n.bound)
-    return frozenset(out)
+        generated = (ref.meta or {}).get("generated") if ref is not None else None
+        if isinstance(generated, dict):
+            out[n.bound] = generated
+    return out
 
 
 def render_mechanics(store: Store, tree: SeTree) -> str:

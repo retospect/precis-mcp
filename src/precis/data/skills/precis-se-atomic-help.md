@@ -1,7 +1,7 @@
 ---
 id: precis-se-atomic-help
 title: precis — designing chemistry as a block tree (atomic mode)
-summary: atomic mode extends an se block tree down to real chemistry — declare_threading/declare_dof record intent, bind_structure maps ports to atoms in a structure design, generate mints canonical fragments (cnt/fullerene/cone/cyclodextrin/hexfold) with no LLM, view=mechanics gives advisory continuum ceilings, view=literature runs a deterministic paper search, and view='validate' carries the chemistry-tier findings (port_capability, dangling_binding, binding_element_mismatch, envelope_fit, connect_cycle, bond_length_sanity, bond_vector_alignment)
+summary: atomic mode extends an se block tree down to real chemistry — declare_threading/declare_dof record intent, bind_structure maps ports to atoms in a structure design, generate mints canonical fragments (cnt/fullerene/cone/cyclodextrin/hexfold) with no LLM, view=mechanics gives advisory continuum ceilings, view=literature runs a deterministic paper search, and view='validate' carries the chemistry-tier findings (port_capability, dangling_binding, binding_element_mismatch, envelope_fit, connect_cycle, bond_length_sanity, bond_vector_alignment, composite_part_stolen)
 answers:
   - how do I design a molecular machine as nested blocks before filling in real chemistry?
   - how do I record that a macrocycle is threaded onto an axle?
@@ -178,6 +178,7 @@ is filled exactly when its template is):
 | `bond_length_sanity` | warn | a `kind='bond'` connect's endpoints are wildly further apart than a plausible bond — the exact port-to-port distance when both ports carry a `pose`, else the block-pose gap approximation (see Scope below). The finding says which |
 | `port_pose_mismatch` | warn | a port's `declared` target pose sits further from its bound atom than a quarter of the block's own envelope — the target is kept, so fix whichever is wrong (`set_port_pose`, or move the atom) |
 | `bond_vector_alignment` | warn | a `kind='bond'` connect's two ports' `direction` vectors are far from anti-parallel (>60° off 180°) |
+| `composite_part_stolen` | error | a `join` composite's build record names a part whose live parent is a different composite (or no block at all) — the composite can no longer be rebuilt from its own record, and its exposed `<part>_*` ports name a rim it no longer owns. Names both ends; picking which composite keeps the part is yours. The `join` op refuses the edit that causes this, so a finding here means something bypassed it (a stale server process, a restored backup) |
 
 `bind_structure` also runs an `envelope_fit` **preflight** on bind (never
 blocking — the same check as the read-time finding above, one call

@@ -56,7 +56,9 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -1137,12 +1139,99 @@ def _port_rot_findings(
     return findings
 
 
+def _composite_parts_findings(
+    tree: SeTree,
+    generated_records: Mapping[str, dict[str, Any]],
+) -> list[ValidationIssue]:
+    """``composite_part_stolen`` (error) — a join composite whose recorded
+    ``parts`` are no longer its own children.
+
+    A join composite's ``meta['generated']['parts']`` is not a historical
+    note: :func:`precis_se.atomic.join._rebuild_block` replays it to
+    reconstruct the composite's topology every later time the composite is
+    joined or revalidated, and :func:`precis_se.atomic.join.
+    _addressed_part_redirect` reads it to decide that a part's free rim is
+    already exposed under the composite's own port name. Both readings hold
+    only while each named part is still a live child of the composite
+    claiming it, and nothing else in the tree states that constraint — a
+    part reparented onto a second composite leaves the first one unable to
+    replay itself, silently.
+
+    The join op refuses the edit that would do it, so this is not the
+    guard; it is the detector that runs whether or not a guard was reached.
+    Prod earned it: a session MCP process serving code older than the guard
+    (gr458061) wrote exactly this shape, and a green suite, a prod dogfood
+    and a follow-up audit all missed it — the audit asked whether the part
+    blocks still existed *somewhere* in the design, which is always true.
+
+    An ordinary chained join is NOT a violation and must not be flagged: a
+    composite joined onto a further block becomes a part of the outer
+    composite, but its own parts keep pointing at it, so only the outer
+    record gains an entry. The finding names both ends — the claiming
+    composite and the part's actual parent — because the remedy depends on
+    which of the two should keep the part, a decision this check
+    deliberately does not make."""
+    findings: list[ValidationIssue] = []
+    for node in tree.blocks.values():
+        if node.bound_kind != "structure" or not node.bound:
+            continue
+        record = generated_records.get(node.bound)
+        if not record or record.get("generator") != "join":
+            continue
+        for part in record.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            part_name = part.get("block")
+            if not isinstance(part_name, str) or not part_name:
+                continue
+            part_node = tree.blocks.get(part_name)
+            if part_node is None:
+                findings.append(
+                    ValidationIssue(
+                        rule="composite_part_stolen",
+                        subject=node.name,
+                        detail=(
+                            f"composite {node.name!r} records part "
+                            f"{part_name!r} (structure "
+                            f"{part.get('structure')!r}) in its join build "
+                            "record, but no block of that name is in the "
+                            "design — the composite can no longer be "
+                            "rebuilt from its own record. Either restore "
+                            "the block, or remove_block the composite and "
+                            "join again"
+                        ),
+                        severity="error",
+                    )
+                )
+                continue
+            if part_node.parent == node.name:
+                continue
+            findings.append(
+                ValidationIssue(
+                    rule="composite_part_stolen",
+                    subject=node.name,
+                    detail=(
+                        f"composite {node.name!r} claims part "
+                        f"{part_name!r} in its join build record, but that "
+                        f"block's live parent is {part_node.parent!r} — the "
+                        "composite's recorded topology cannot be replayed, "
+                        f"and its exposed {part_name}_* ports name a rim it "
+                        "no longer owns. Decide which composite keeps the "
+                        "part, then remove_block the other and join again"
+                    ),
+                    severity="error",
+                )
+            )
+    return findings
+
+
 def validate_atomic(
     tree: SeTree,
     *,
     bound_scenes: dict[str, dict[str, str] | None] | None = None,
     bound_full_scenes: dict[str, StructScene] | None = None,
     generated_bound: frozenset[str] = frozenset(),
+    generated_records: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[ValidationIssue]:
     """Every atomic-mode finding (empty = clean, as far as *chemistry*
     goes — :func:`precis_se.validate.validate` owns the rest, and the
@@ -1154,7 +1243,11 @@ def validate_atomic(
     other finding. ``generated_bound`` names the bound structure slugs
     that carry a generator build record (``meta['generated']``), so an
     ``envelope_fit`` protrusion on a generator-minted block can tell a
-    pre-framing-fix legacy block from a genuine drift.
+    pre-framing-fix legacy block from a genuine drift;
+    ``generated_records`` carries those records themselves, which
+    ``composite_part_stolen`` reads for a join's ``parts`` provenance — both
+    come from one store pass (:func:`precis_se.atomic.render.
+    bound_generated_records`).
 
     A design with no chemistry in it at all (no bond/interaction connect,
     no ``structure`` binding) produces nothing here — every check below is
@@ -1170,4 +1263,5 @@ def validate_atomic(
     findings.extend(_connect_cycle_findings(tree))
     findings.extend(_bond_length_findings(tree))
     findings.extend(_bond_vector_findings(tree))
+    findings.extend(_composite_parts_findings(tree, generated_records or {}))
     return findings
