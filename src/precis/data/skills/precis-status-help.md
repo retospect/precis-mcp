@@ -59,6 +59,16 @@ sha this process imported), `moved <old>→<new>` (it advanced; this process
 is serving code the tree no longer has — restart it), or `unknown` (no
 watched tree, so **nothing was checked** — not a claim of freshness).
 
+**A fourth case has no value because the row is missing entirely**: a
+process that started before the field existed renders no `source_drift`
+row at all. Absence is the strongest staleness signal on the page — it
+means the process is older than the field, so it is stale by definition
+and cannot tell you by how much. Do not read a missing row as `none`.
+Together with `git_source: image-build` on a session MCP it identifies a
+pre-2026-09-30 per-session stdio container; reconnect (`/mcp` → the
+server → reconnect) to land on the shared server, and see
+`docs/backlog/threads/session-mcp-shared-server.md`.
+
 A bare `docker build` that skips `scripts/build-image` (so no
 `--build-arg` git values are passed) does **not** count as
 `image-build`: the Dockerfile defaults those args to the literal
@@ -199,6 +209,9 @@ shared session server it is the only check that works:
   restarted. It is serving the old code. Restart it.
 - `unknown` — no watched tree, so nothing was compared. Fall back to the
   manual check.
+- *no `source_drift` row at all* — the process predates the field, so it
+  is stale by definition. Reconnect rather than measuring; a process that
+  cannot report drift also cannot tell you how far it has drifted.
 
 The `git_sha` in the **Build** section is **frozen at the moment the
 process started** — it is what *this running process* loaded, not
