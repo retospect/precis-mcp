@@ -466,30 +466,108 @@ call lands so a killed run keeps its metering, and the summary carries a
 cost/token line. The cache-read column of the next probe is what decides
 concurrency versus packing several hubs per call.
 
-## Resume (2026-09-30)
+## Third probe — 2026-09-30 22:00 UTC, same 100 rows, first metered run
 
-State: the blocker 2 prompt rewrite is deployed and gated (the deploy
-session's 2026-09-30 gate covered the integrated main; fleet verified on
-castor, pollux and balthazar over the venv's `direct_url.json`; melchior's
-venv was not located by the read-only probe, so it is unverified, not
-drifted). Blocker 3a and the probe-2 record are gated and on the fleet
-(2026-09-30 12:23 UTC); blockers 4 and 3b and the per-call metering are
-gated and on the fleet too (14:12 UTC). Every vocabulary and census blocker
-from the two probes is closed and the metering the full run needs is in
-place, so the next act is a paid one — td458388 in Reto's queue asks for it
-and for a confirm-or-veto on the 0.60 probe bar. Detail is in the two probe
-sections above; this section is only the order.
+Reto's go (td458388), bar confirmed at 0.60. Same snapshot, same default
+salt, the blocker-4 vocabulary, per-call metering on. 249 mentions, **61**
+discovery calls (not 66: five rows' mentions collapsed into rows already
+covered), **6 failed** — every one `claude -p timed out after 120s` on six
+consecutive hubs — 154 discovered rows, 14 warnings, 67 nodes,
+**4 systematic**, 5 merge suggestions, 85 min wall.
 
-1. **Re-probe the same 100 rows** — PAID (~66 calls), Reto's go-ahead
-   required (td458387's sibling td458388). First run with metering, so it
-   yields the cache-read counts
-   that decide 2, the test-retest noise floor against run 2 (same prompt
-   now), and the first `probe criterion` line; a FAIL there is a prompt or
-   vocabulary fix, not a reason to buy the full run.
-2. **Concurrency vs packing.** Decided by 1's cache-read counts: a cached
-   prefix favours a thread pool over `claude -p`; an uncached one favours
-   several hubs per call. 33 s/call sequential is 11.3 h for the full run.
-3. **Full run** ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
+**Verdict: `probe criterion FAIL` — stability 0.262 = 0.58 of the unit-key
+ceiling 0.453, bar 0.60.** Read it with the two numbers below before
+treating it as a failure of the prompt or the vocabulary.
+
+| | probe 2 (vocab replayed) | probe 3 |
+|---|---|---|
+| discovered rows | 174 | 154 (6 calls lost) |
+| nodes / systematic | 83 / 5 | 67 / 4 |
+| A/B stability by measurand | 0.270 | 0.262 |
+| unit-key ceiling on the same rows | 0.487 | 0.453 |
+| ratio to the ceiling | 0.55 | 0.58 |
+
+**The noise floor, measured for the first time.** Test-retest against run 2
+on the 153 mentions both runs discovered, same prompt, same rows: the
+measurand key is identical for **104 (0.68)**, the dimension text for 99
+(0.65). One mention in three gets a different key when the same model reads
+the same sentence again. That is the per-mention naming variance the A/B
+split is exposed to, and it bounds what any prompt or vocabulary change can
+buy at n=100: the bar (0.60 of 0.453 = 0.27 absolute) sits inside that
+noise, and the FAIL is by 0.008. The six lost calls removed ~20 rows, which
+is the difference between run 2's replay and this run.
+
+**What the variance is made of** (the raw-key diff before the alias fold):
+species position and spelling (`Faradaic efficiency for NH3` ↔ `NH3
+Faradaic efficiency` ↔ `Faradaic efficiency for ammonia`), link words
+(`toward NH3` ↔ `to NH3`), a redundant product noun (`for NH3 production`),
+`applied potential` ↔ `applied electrode potential`, `NH3 yield rate` ↔
+`ammonia production rate`. The species/spelling and the two phrase families
+are already in `measurand_aliases` and fold; the residual nodes are
+`faradaic-efficiency-to-nh3` (1 mention) and
+`faradaic-efficiency-for-nh3-production` (2), which the deliberate no-fold
+rules for a `to` link word and a species mid-key keep apart. The largest
+family is not a naming problem at all: `yield-rate-nh3` is 34 mentions over
+10 nodes because the dimension gate separates mass-per-area-per-hour from
+mole-per-area-per-hour — AC5 working, and the reason the family cannot
+promote.
+
+**Metering — the numbers the concurrency decision needed.** Per successful
+call: cache-read **8 518** tokens (every call; the shared instruction
+prefix), cache-write **~21 000** (min 20 648, max 25 794), fresh input 2,
+output ~313; prompt **~4 000 chars ≈ 1 000 tokens**; **$0.081 per call**,
+$4.96 for the run; **74 s median, 83 s mean**, 120 s hard tail (the 6
+failures). So the prompt this pipeline builds is about one thousand tokens
+and each call carries roughly twenty thousand tokens of `claude -p`
+harness prefix that is written to cache and never read back across
+processes. Cost and latency are the harness, not the hubs.
+
+**Decisions from the metering:**
+
+1. **Retry once on a transport failure** — shipped 2026-10-01 in
+   `discovery._RouterDiscoveryClient` (`retries=1`, default). With an
+   independent 10 % tail this turns six lost hubs into fewer than one.
+2. **Pack several hubs per call, not a thread pool.** The 8.5k cached
+   prefix is small next to the ~21k per-process overhead, so a pool of N
+   `claude -p` processes pays that overhead N times per hub; packing 4 hubs
+   per prompt (≈4k tokens of hub text against 21k of overhead) cuts cost
+   and wall per hub by ~3.5× and keeps the per-hub JSON contract (one array
+   per hub, keyed by ref id). Implementation is a `build_prompt` variant and
+   a parse that splits by ref id; filed as the next slice below, not built.
+3. **The 120 s tail is the router's stream-idle timeout**
+   (`utils/llm/router.py::_STREAM_IDLE_TIMEOUT_S`), not a discovery
+   setting; with a 74 s median a packed prompt will need it raised for this
+   source. Left to the packing slice.
+
+**What this probe settles about the bar.** At n=100 the 0.60 criterion is
+one noise-floor away from the measurement: the honest reads are the ratio
+(0.55 → 0.58 across two runs of the same vocabulary) and the test-retest
+0.68. The next paid act is therefore not another 100-row probe but the
+packed, retrying run over a larger slice (300 rows, ~75 packed calls, ~$6),
+where the ceiling rises and the ratio is readable outside the noise; the
+0.60 bar stays as stated and is read there.
+
+## Resume (2026-10-01)
+
+State: three probes on the same 100 rows; every vocabulary and census
+blocker closed; metering on and read (§Third probe). The probe criterion
+reads 0.58 of the ceiling against a 0.60 bar with a measured per-mention
+noise of 0.32, so the bar is inside the noise at this n. The retry is
+shipped; the packing slice is the one unbuilt thing between here and a
+readable verdict. Detail is in the three probe sections above; this section
+is only the order.
+
+1. **Packing slice** (unpaid, Sonnet-sized): `build_prompt` for K hubs
+   per call (K=4), the reply keyed by ref id, `parse_response` split per
+   hub, the per-hub `CallRecord` metering kept (one record per hub with the
+   call's cost divided by K), a `--pack` CLI flag, and the source's idle
+   timeout raised. Decided by §Third probe's metering: ~21k tokens of
+   per-process harness overhead against ~1k of prompt.
+2. **Packed 300-row probe** — PAID (~75 calls, ~$6, ~1.5 h), Reto's go
+   required. Reads the 0.60 criterion where the unit-key ceiling is above
+   the 0.32 per-mention noise; a FAIL there is a real prompt or vocabulary
+   finding. Full run only after it passes.
+3. **Full run** (1231 hubs, ~310 packed calls) ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
    catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
    adjudicates) ⇒ one figure.

@@ -27,12 +27,13 @@ graph-health-metrics, five parked gripes, and the seam with
    of taxonomy-bootstrap's freeze, measures-substrate, graph-gardener and
    knowledge-mesh; nothing else in this thread can ship its output until
    the taxon kind exists.
-2. **backlog/taxonomy-bootstrap.md §Resume (2026-09-30)** — the metered
-   re-probe of the same 100 rows (~66 paid calls) got Reto's go and
-   started 2026-09-30 22:00 UTC (bar confirmed at 0.60 of the unit-key
-   ceiling). Its result section in taxonomy-bootstrap.md decides
-   concurrency vs packing and reads the first `probe criterion` verdict;
-   the 1231-call full run waits on it.
+2. **backlog/taxonomy-bootstrap.md §Resume (2026-10-01)** — the metered
+   re-probe ran 2026-09-30 22:00 UTC: `probe criterion FAIL` by 0.008
+   (0.58 of the ceiling vs 0.60) with a first-measured per-mention noise of
+   0.32, six calls lost to the 120 s tail, and the metering that decides
+   the route: pack hubs per call, not a thread pool. Retry shipped; the
+   packing slice is the next build (unpaid), then a packed 300-row probe
+   (paid, Reto's go) reads the bar outside the noise.
 3. **backlog/relation-constraints.md** — status ready, no blocker, small.
    Domain/range kinds, functional and acyclic as columns on `relations`,
    one validator in both link doors. Above the measures chain because it

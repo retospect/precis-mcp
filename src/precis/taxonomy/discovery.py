@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -48,6 +49,8 @@ from typing import Any, Final, Protocol
 
 from precis.taxonomy.config import CampaignConfig
 from precis.taxonomy.types import DiscoveredTerm, Half, Mention
+
+log = logging.getLogger(__name__)
 
 #: Strips a single leading/trailing markdown code fence (`````json ... ````
 #: or plain ` ``` `), the shape a chat model reaches for even when told not
@@ -514,13 +517,34 @@ class _RouterDiscoveryClient:
     """
 
     dispatch: Any
+    #: Transport retries per call. The third probe (2026-09-30) lost 6 of 61
+    #: calls to ``claude -p timed out after 120s`` with a 74 s median — a
+    #: tail, not an outage — and every lost call is a hub whose mentions
+    #: never reach stage 3, which reads as lower stability. One retry turns
+    #: an independent 10 % tail into ~1 %; a second failure still raises.
+    retries: int = 1
 
     def complete_json(self, prompt: str) -> Reply:
         # ``DispatchClient.complete`` raises ``DispatchError`` on a transport
         # failure, so a reply that reaches here is a real one; the metering
         # fields are the router's ``LlmResult`` fields, ``None`` where the
         # transport did not report them.
-        result = self.dispatch.complete([{"role": "user", "content": prompt}])
+        messages = [{"role": "user", "content": prompt}]
+        attempt = 0
+        while True:
+            try:
+                result = self.dispatch.complete(messages)
+                break
+            except Exception as exc:
+                attempt += 1
+                if attempt > self.retries:
+                    raise
+                log.warning(
+                    "taxonomy discovery call failed (%s); retry %d/%d",
+                    exc,
+                    attempt,
+                    self.retries,
+                )
         return Reply(
             text=getattr(result, "text", "") or "",
             model=getattr(result, "model", None),

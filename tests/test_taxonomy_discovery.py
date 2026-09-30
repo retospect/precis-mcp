@@ -13,6 +13,8 @@ import hashlib
 import json
 from typing import Any
 
+import pytest
+
 from precis.taxonomy.config import CampaignConfig
 from precis.taxonomy.discovery import (
     _MEASURAND_MAX_WORDS,
@@ -616,3 +618,37 @@ def test_router_adapter_leaves_unreported_metering_none() -> None:
     reply = _RouterDiscoveryClient(_FakeDispatch(text="[]")).complete_json("p")
     assert reply.text == "[]"
     assert reply.cost_usd is None and reply.cache_read_tokens is None
+
+
+class _FlakyDispatch:
+    """Raises on the first ``failures`` calls, then answers — the third
+    probe's ``claude -p timed out after 120s`` tail (6 of 61 calls)."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.calls = 0
+
+    def complete(self, messages: list[dict[str, str]]) -> Any:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("claude -p timed out after 120s")
+        return type("LlmResult", (), {"text": "[]"})()
+
+
+def test_router_adapter_retries_a_transport_failure_once() -> None:
+    dispatch = _FlakyDispatch(failures=1)
+    reply = _RouterDiscoveryClient(dispatch).complete_json("p")
+    assert reply.text == "[]"
+    assert dispatch.calls == 2
+
+
+def test_router_adapter_raises_after_the_retry_budget() -> None:
+    dispatch = _FlakyDispatch(failures=2)
+    with pytest.raises(RuntimeError, match="timed out"):
+        _RouterDiscoveryClient(dispatch).complete_json("p")
+    assert dispatch.calls == 2
+
+    strict = _FlakyDispatch(failures=1)
+    with pytest.raises(RuntimeError, match="timed out"):
+        _RouterDiscoveryClient(strict, retries=0).complete_json("p")
+    assert strict.calls == 1
