@@ -5,20 +5,20 @@ signed finding hub and its thesis (geometry, not composition, sets the
 electronic structure, and almost none of it has been measured) leading the
 paper. Today the poster is print-ready and the paper is a survey grown by
 accretion with the thesis buried in a 233-word gap analysis; a taproot
-backfill converted 13 chunks to hub cites and left two residues, of which the
-caption-provenance one is repaired; both
-measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited. Repair the
-citation graph first, then restructure once the venue is picked.
+backfill converted 13 chunks to hub cites and left two residues, both repaired
+on 2026-09-30; both
+measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited, and
+the 13 converted chunks are read back and repaired. Consolidate the
+measured-analogue section next, then restructure once the venue is picked.
 **Last reviewed:** 2026-09-30
 **Worktree:** `nanobuds-paper`
 
 ## Do next
 
-1. **td458068** — fi449493 miscorroborated by three doping papers, fi189545 a
-   third copy of the fi191132/fi211518 pair, fi449498 pinned to the wrong
-   passage (gr450339 residue); wrong hubs propagate into any draft that
-   searches them, and the bundled wording fixes are the only known
-   unfaithful sentences in the paper.
+1. **td458280** — consolidate the measured-analogue argument (dc2445946 +
+   dc2445954) into one body section on the Huang (fi457242–50) and Seiler
+   (fi458136–44) hubs and re-decide the retired gap table dc2445955; author
+   prose, so a proposal goes to Reto before the chunks are replaced.
 2. **td450081** — target venue (Reto). Gates the restructure: Introduction is
    29% of the paper and the thesis sits near the end.
 3. **td450082** — pa1181/42560 duplicate reference merge (Reto); the
@@ -30,20 +30,12 @@ citation graph first, then restructure once the venue is picked.
 
 ## Horizon
 
-1. **read-back of the 13 chunks jo449492 converted** — waits on
-   td458068 so it sees repaired hubs; delivers a citation graph
-   where every [fi] in dr173020 is faithful to its span, the gate before any
-   prose moves.
-2. **measured-analogue argument consolidated (dc2445946 + dc2445954)** —
-   waits on 1; delivers the thesis as one body section on the Huang
-   (fi457242–50) and Seiler (fi458136–44) hubs and re-decides the retired
-   gap table dc2445955.
-3. **restructure** — waits on td450081 (venue) and 2; delivers the
+1. **restructure** — waits on td450081 (venue) and td458280; delivers the
    Introduction cut from 29%, the thesis moved to the front, the abstract
    scope line drawn.
-4. **nanopub approve/sign pass over dr173020's hubs** — waits on 3 (rewording
+2. **nanopub approve/sign pass over dr173020's hubs** — waits on 1 (rewording
    after signing re-opens hubs); the 173020 batch in td345830–td345836.
-5. **export + submission** — waits on 4 and td450082; docx/pdf via the local
+3. **export + submission** — waits on 2 and td450082; docx/pdf via the local
    prod export path against the venue's template. 43020 stays frozen.
 
 ## Parked
@@ -56,9 +48,12 @@ citation graph first, then restructure once the venue is picked.
 
 ## No action needed
 
-- **gr450329**, **gr450339** — code fixed and STATUS:done; gr450329's draft
-  residue (td458067) repaired 2026-09-30, six caption-fragment hubs retired,
-  corpus audit clean; gr450339's residue is td458068 above.
+- **gr450329**, **gr450339** — code fixed and STATUS:done; both draft residues
+  (td458067, td458068) repaired 2026-09-30: captions carry pc provenance again,
+  ten fragment/miscorroborated hubs retired, four retitled to their sources,
+  fi458254 and fi458272 minted; the Dunlap triple fi189545/fi191132/fi211518
+  judged distinct, not merged (rationale in gr450339's last comment).
 - **gr450123** — embedder contention; infra, owned elsewhere.
 - **jo449492** — the backfill succeeded (189 scanned, 13 converted, 0
-  failed); a re-run over dr173020 is safe again now that td458067 landed.
+  failed); read back in full by td458276 (done 2026-09-30) — a re-run over
+  dr173020 is safe.
