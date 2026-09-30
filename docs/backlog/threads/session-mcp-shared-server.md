@@ -5,44 +5,49 @@ supervised shared MCP server that never kills an in-flight call, reports
 truthfully what it runs, and gives each session its own DB role and a fair
 share. Agent containers and the sandbox sidecar stay stdio and are NOT part
 of that end state — backlog/mcp-shared-transport-concurrency.md rules them
-out, and item 5's role bullet is why: they depend on process-level role
+out, and item 4's role bullet is why: they depend on process-level role
 separation this server cannot give them. Today it is one long-lived
-streamable-http server, live since 2026-09-29 and dogfooded; a defect
-shipped by this thread kills in-flight calls on every bounce and the status
-surface cannot say which sha or process a session is talking to. Fix the
-kill first, then make the server truthful, then the parent item's remaining
-criteria and the isolation gaps.
+streamable-http server, live since 2026-09-29 and dogfooded. The defect
+this thread shipped — every bounce killed the calls in flight — is fixed
+(gr457887: the drain latches a high-water ticket instead of waiting for an
+always-busy server to go idle, and the bound is 120 s and env-tunable), and
+re-verified live on the isolated rig. What remains is a status
+surface that cannot say which sha or process a session is talking to, then
+the parent item's remaining criteria and the isolation gaps.
 **Last reviewed:** 2026-09-30
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
 
-1. **gr457887** — a bounce during a slow call kills it: the 20s drain bound
-   is under real search latency and the drain waits for in-flight to reach
-   zero, which with a dozen sessions may never happen. Live on prod, so every
-   ship risks killing someone's query. Not verified until a test keeps
-   traffic flowing during a drain (the fixture in
-   tests/test_mcp_session_concurrency.py is the candidate).
-2. **gr457361** — precis-status reports the image build arg, not the source
+1. **gr457361** — precis-status reports the image build arg, not the source
    served (measured: reported f2cbcb29, built 2026-09-08, while serving code
-   542 commits newer the same day). Leverage: "which sha is this session
-   talking to" is unanswerable, which blocks the parent item's AC2 and makes
-   1 and 3 harder to diagnose. Not
-   started: no branch on origin and no live tree claims it as of 2026-09-30.
-   gr458039 closed as its duplicate; its git_dirty observation is appended
-   there.
-3. **gr457326** — the md-index vector warmup has no retry, so one slow
+   542 commits newer the same day). Worse than unanswerable: gr458061 caught
+   the surface printing started_at 2026-09-29T15:34:31 beside uptime_seconds
+   54369 (~15.1 h) when only one could be true, and the process behind it
+   served 16-hour-stale in-memory modules while its bind-mounted files were
+   current — which produced two detailed false root-cause analyses
+   (gr457995, gr457996, both refuted) and let a join through that the
+   current code refuses. So the acceptance criterion is not "the right sha
+   appears" but that sha, started_at and uptime are mutually consistent, and
+   that the served source is distinguished from the image build. No cheap
+   check substitutes: in that container stat, grep and a fresh `python -c`
+   import all reported the new code. That is why this blocks dogfooding
+   generally, not just this thread. Not started: no branch on origin and no
+   live tree claims it as of 2026-09-30. gr458039 closed as its duplicate
+   (git_dirty observation appended there); close gr458061 as one too when
+   this lands — it is the evidence record, hexa is not touching src/precis/.
+2. **gr457326** — the md-index vector warmup has no retry, so one slow
    embedder batch at boot leaves the cache cold for the process lifetime,
    which is now shared by every session. Degrades silently to lexical.
-4. **backlog/session-mcp-http-server.md** — AC3 (a new verb kwarg surviving a
-   bounce) is the last criterion that neither passes nor is blocked; it
-   cannot be attempted until 1 stops bounces from killing calls. Delete the
-   item when it and AC5 close.
-5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+3. **backlog/session-mcp-http-server.md** — AC3 (a new verb kwarg surviving a
+   bounce) is the last criterion that neither passes nor is blocked — it
+   was waiting on gr457887, which has landed and re-verified, so it is
+   attemptable now. Delete the item when AC3 and AC5 close.
+4. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
-   image rebuild bounces every session. Below 2 because its acceptance
+   image rebuild bounces every session. Below 1 because its acceptance
    criteria are verified by probing the surface they fix. The role bullet
    decides whether coding jobs can ever leave containers.
 

@@ -298,14 +298,26 @@ just in the wrapper: tool concurrency 12, pool 4/16.
   HEAD; the server bounced in 10 s (`drained 0 in-flight call(s)`), rearmed
   on the new sha, and served again. The next client got the per-session
   breadcrumb naming both shas.
-- **AC7 FAILS — gr457887.** A bounce during a slow cross-kind search killed
-  it (`drain timed out after 20s`, transfer closed, no result after 24.7 s);
-  a fast search in the same setup was delivered in full. Two defects:
-  `_DEFAULT_DRAIN_TIMEOUT_S = 20.0` is under real search latency, and
-  `wait_for_drain` waits for the counter to reach **zero**, which on a busy
-  shared server may never happen — so every bounce burns the timeout and
-  then kills whatever is running. The unit tests structurally cannot catch
-  the second one: nothing else is calling during them.
+- **AC7 failed on the first dogfood; fixed and re-verified.** A bounce during a slow cross-kind search killed it (`drain timed
+  out after 20s`, transfer closed, no result after 24.7 s) while a fast
+  search in the same setup was delivered in full — two defects, both fixed
+  under gr457887. The bound (`_DEFAULT_DRAIN_TIMEOUT_S`) was under real
+  search latency: now 120 s and overridable with
+  `PRECIS_MCP_DRAIN_TIMEOUT_S`. And `wait_for_drain` waited for the counter
+  to reach **zero**, which on a shared server may never happen, so every
+  bounce burned the bound and then killed whatever was running: it now
+  latches a high-water ticket at bounce and drains only the calls issued at
+  or before it, so mid-drain arrivals belong to the next process. The unit
+  tests could not catch the second defect because nothing else called during
+  them; the two regressions added with the fix keep background traffic
+  flowing throughout, and both were confirmed red against the old design.
+  **AC7 now PASSES live.** Re-run of the isolated rig against the fixed
+  drain (second container on 8766, a throwaway watched checkout,
+  `--restart no` — never the live server): HEAD moved 6.4 s into a
+  cross-kind `search(kind='*', k=40)`; the search returned HTTP 200 with a
+  full 2595-char result after 62.4 s, and the watchdog then logged `drained
+  1 in-flight call(s)` and exited 0. The old 20 s bound would have killed
+  it three times over.
 - **AC2's sha half is BLOCKED — gr457361.** `precis-status` reports the
   *image* build arg (`f2cbcb295ab2`, baked 2026-09-08), not the source being
   served. Pre-existing — an old stdio container reports the same — but it
@@ -314,9 +326,7 @@ just in the wrapper: tool concurrency 12, pool 4/16.
   embedder batch at boot leaves the cache cold for the whole process
   lifetime — now shared by every session.
 
-Next session's work: gr457887 (ticket-based drain keyed on a bounce-time
-high-water mark, plus a raised env-tunable bound, with a test that keeps
-traffic flowing during the drain), then gr457361 and gr457326.
+Next: gr457361, then gr457326. AC3 is unblocked.
 
 **Still outstanding — these need a ship and a day of use, not a test:** AC1
 in the session (as opposed to headless) client, AC3 (a new verb kwarg surviving a

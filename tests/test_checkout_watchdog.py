@@ -244,13 +244,13 @@ def test_bounce_waits_for_in_flight_calls_to_drain(
     )
     codes, fired = _run_until_exit(thread, monkeypatch)
 
-    inflight.enter()  # a slow search, mid-dispatch
+    slow = inflight.enter()  # a slow search, mid-dispatch
     (root / ".git" / "refs" / "heads" / "main").write_text(
         SHA_B + "\n", encoding="utf-8"
     )
     assert not fired.wait(0.6), "exited while a tool call was still in flight"
 
-    inflight.leave()  # the search returns its result
+    inflight.leave(slow)  # the search returns its result
     assert fired.wait(10.0), "never exited after dispatch drained"
     assert codes == [0]
 
@@ -426,3 +426,69 @@ def test_no_breadcrumb_stays_none_for_every_session(tmp_path: Path) -> None:
         assert consume_last_exit_breadcrumb() is None
     with serve_ledger.session_scope(_Session()):
         assert consume_last_exit_breadcrumb() is None
+
+
+def test_bounce_drains_a_slow_call_while_other_sessions_keep_calling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr457887, the end-to-end half: the shared server is never idle, so a
+    drain that waits for the process to go quiet exits through the very call
+    it was protecting.
+
+    The background traffic is the test. Against the count==0 version the
+    drain runs its full bound and the exit lands while ``slow`` is still
+    registered; here the bounce must wait for ``slow`` specifically and then
+    go, without waiting for the churn to stop.
+    """
+    root = _checkout(tmp_path)
+    thread = CheckoutWatchdog(
+        root=root, baseline=SHA_A, interval_s=0.02, drain_timeout_s=8.0
+    )
+    codes, fired = _run_until_exit(thread, monkeypatch)
+
+    slow = inflight.enter()
+    stop = threading.Event()
+
+    def _other_sessions() -> None:
+        while not stop.is_set():
+            ticket = inflight.enter()
+            time.sleep(0.005)
+            inflight.leave(ticket)
+
+    churn = threading.Thread(target=_other_sessions, daemon=True)
+    churn.start()
+    try:
+        (root / ".git" / "refs" / "heads" / "main").write_text(
+            SHA_B + "\n", encoding="utf-8"
+        )
+        assert not fired.wait(0.6), "exited while the slow call was in flight"
+        inflight.leave(slow)
+        # Well under drain_timeout_s: a drain that waits for the churn to
+        # stop can only end by timing out, which this deadline excludes.
+        assert fired.wait(2.0), (
+            "never exited promptly — the drain waited on calls from other "
+            "sessions and can only have ended on its timeout"
+        )
+    finally:
+        stop.set()
+        churn.join(5.0)
+    assert codes == [0]
+
+
+def test_drain_timeout_is_env_tunable_and_defaults_above_real_latency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """20 s was under a measured cross-kind search (gr457887). The default
+    has to clear real dispatch latency, and a deployment that serves
+    something slower has to be able to say so without a code change."""
+    monkeypatch.delenv("PRECIS_MCP_DRAIN_TIMEOUT_S", raising=False)
+    assert install_watchdog.resolved_drain_timeout_s() >= 60.0
+
+    monkeypatch.setenv("PRECIS_MCP_DRAIN_TIMEOUT_S", "45")
+    assert install_watchdog.resolved_drain_timeout_s() == 45.0
+
+    for bad in ("nonsense", "0", "-5"):
+        monkeypatch.setenv("PRECIS_MCP_DRAIN_TIMEOUT_S", bad)
+        assert install_watchdog.resolved_drain_timeout_s() >= 60.0, (
+            f"{bad!r} should fall back to the default, not disable the drain"
+        )

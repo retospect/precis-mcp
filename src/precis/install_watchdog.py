@@ -405,10 +405,45 @@ _CHECKOUT_ROOT_ENV = "PRECIS_CHECKOUT_WATCHDOG"
 #: sessions talk to a half-applied tree has to be short.
 _DEFAULT_CHECKOUT_INTERVAL_S = 5.0
 
-#: How long a bounce waits for in-flight tool calls before exiting anyway.
-#: Bounded on purpose: one wedged call must not hold a bounce open, which
-#: would leave every session on stale code indefinitely.
-_DEFAULT_DRAIN_TIMEOUT_S = 20.0
+#: How long a bounce waits for the calls already in flight before exiting
+#: anyway. Bounded on purpose: one wedged call must not hold a bounce open,
+#: which would leave every session on stale code indefinitely. The floor is
+#: real dispatch latency, not a round number — a cross-kind ``search(kind='*',
+#: k=40)`` measured over 24 s on prod, and the first shipped bound of 20 s
+#: duly killed one mid-flight (gr457887). 120 s clears that with room and is
+#: still far under the client's 1800 s idle timeout.
+_DEFAULT_DRAIN_TIMEOUT_S = 120.0
+
+#: Overrides :data:`_DEFAULT_DRAIN_TIMEOUT_S`. Tunable because the right bound
+#: is a property of the slowest tool call a deployment actually serves, which
+#: this module cannot know.
+_DRAIN_TIMEOUT_ENV = "PRECIS_MCP_DRAIN_TIMEOUT_S"
+
+
+def resolved_drain_timeout_s() -> float:
+    """Drain bound from :data:`_DRAIN_TIMEOUT_ENV`, else the default.
+
+    An unparseable or non-positive value falls back with a warning rather
+    than raising: a typo in the ensure script must not stop the server from
+    booting, and the default is the safe direction to fail in.
+    """
+    raw = (os.environ.get(_DRAIN_TIMEOUT_ENV) or "").strip()
+    if not raw:
+        return _DEFAULT_DRAIN_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if value <= 0:
+        log.warning(
+            "checkout watchdog: ignoring %s=%r — not a positive number; "
+            "using %.0fs",
+            _DRAIN_TIMEOUT_ENV,
+            raw,
+            _DEFAULT_DRAIN_TIMEOUT_S,
+        )
+        return _DEFAULT_DRAIN_TIMEOUT_S
+    return value
 
 
 def _resolve_head_sha(root: Path) -> str | None:
@@ -506,14 +541,23 @@ class CheckoutWatchdog(threading.Thread):
         """Quiesce, record why, and exit. Never returns."""
         from precis import inflight
 
-        pending = inflight.count()
-        drained = inflight.wait_for_drain(self._drain_timeout_s)
+        # Latch the high-water ticket first and drain against *that* set. On
+        # a server shared by a dozen sessions, waiting for the process to go
+        # idle can never settle — a new call arrives before the last one
+        # returns — so the bound would expire and the exit would kill
+        # whatever happened to be running (gr457887). Calls that arrive after
+        # this mark belong to the next process: their clients re-initialize
+        # against it and retry.
+        mark = inflight.high_water()
+        pending = inflight.pending_at(mark)
+        drained = inflight.wait_for_drain(self._drain_timeout_s, mark=mark)
+        stuck = inflight.pending_at(mark)
         _write_exit_breadcrumb(
             "checkout-changed",
             detail=(
                 f"{self._root} HEAD {self._baseline[:12]}→"
                 f"{(current or 'unknown')[:12]}"
-                + ("" if drained else f"; {inflight.count()} call(s) still in flight")
+                + ("" if drained else f"; {stuck} call(s) still in flight")
             ),
         )
         log.warning(
@@ -524,7 +568,10 @@ class CheckoutWatchdog(threading.Thread):
             (current or "unknown")[:12],
             f"drained {pending} in-flight call(s)"
             if drained
-            else f"drain timed out after {self._drain_timeout_s:.0f}s",
+            else (
+                f"drain timed out after {self._drain_timeout_s:.0f}s with "
+                f"{stuck} of {pending} call(s) still running"
+            ),
         )
         sys.stderr.flush()
         os._exit(0)
@@ -542,7 +589,7 @@ class CheckoutWatchdog(threading.Thread):
 def start_checkout_watchdog(
     *,
     interval_s: float = _DEFAULT_CHECKOUT_INTERVAL_S,
-    drain_timeout_s: float = _DEFAULT_DRAIN_TIMEOUT_S,
+    drain_timeout_s: float | None = None,
 ) -> CheckoutWatchdog | None:
     """Arm the checkout arm from ``PRECIS_CHECKOUT_WATCHDOG``.
 
@@ -570,7 +617,9 @@ def start_checkout_watchdog(
         root=root,
         baseline=baseline,
         interval_s=interval_s,
-        drain_timeout_s=drain_timeout_s,
+        drain_timeout_s=(
+            resolved_drain_timeout_s() if drain_timeout_s is None else drain_timeout_s
+        ),
     )
     thread.start()
     log.info(

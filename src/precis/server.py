@@ -213,7 +213,7 @@ def _offload_sync(
             # a shared long-lived server) drains dispatch instead of failing
             # every session mid-call — precis.inflight, and see its docstring
             # for why this is a threading counter and not this semaphore.
-            inflight.enter()
+            ticket = inflight.enter()
             try:
                 # abandon_on_cancel=True: a cancelled/dropped MCP request must
                 # not pin its awaiting task (and the whole session's recovery)
@@ -233,7 +233,7 @@ def _offload_sync(
                 # the awaiting task (not the thread) is deliberate and matches
                 # the semaphore above: a dropped request is nobody's result to
                 # protect, so it must not hold a bounce open.
-                inflight.leave()
+                inflight.leave(ticket)
 
     wrapper.__signature__ = sig  # type: ignore[attr-defined]
     return wrapper
