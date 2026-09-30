@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: cad print-in-place joints — built-in grooves/pins when both sides share a print
 prio: medium
 model: opus

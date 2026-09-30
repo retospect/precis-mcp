@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: memory-graph
+---
+
 # nanopub supersede door for our own anchored hubs
 
 `precis-nanopub-help` and `nanopub/demote.py` (`ACTION_SUPERSEDE_REQUIRED`)

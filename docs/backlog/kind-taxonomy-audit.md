@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: platform
 title: kind-taxonomy audit — per-kind evidence table for the Drive front-door work
 prio: normal
 ---

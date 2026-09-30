@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: class lattice, per-axis similarity spaces, participant roles, curves/fits/laws — term-taxonomy v2, from Reto's sourced-knowledge-graph design notes
 prio: high
 model: opus
@@ -7,8 +8,6 @@ blocked-by: term-taxonomy
 ---
 
 # Class lattice, similarity spaces, roles, curves and laws (term-taxonomy v2)
-
-Pillar: memory-graph
 
 ## Motivation / why
 

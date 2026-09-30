@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: Physically-realistic catalyst screening — defect ensembles and poisoning-awareness
 model: opus
 ---

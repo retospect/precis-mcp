@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: memory-graph
+---
+
 # Paper search: unique_per='paper' default mode (design resolved, unbuilt)
 
 Make one-row-per-paper (best handle + a `more` count of additional hits +

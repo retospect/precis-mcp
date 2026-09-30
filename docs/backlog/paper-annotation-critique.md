@@ -1,6 +1,7 @@
 ---
 status: draft
 prio: normal
+pillar: memory-graph
 ---
 
 # Paper annotation critique

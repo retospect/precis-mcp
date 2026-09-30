@@ -2,6 +2,7 @@
 status: draft
 title: magnetomechanical memory in carbon nanobuds — intrinsic magnetic order coupled to structural state
 model: opus
+pillar: 3d-design
 ---
 
 # Nanobud magnetomechanical memory

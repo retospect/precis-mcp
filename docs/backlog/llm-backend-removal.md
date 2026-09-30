@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # Backend (PRECIS_LLM_BACKEND) — remove the parallel axis
 
 The fleet-wide anthropic/openai binary switch must be hand-synced with each

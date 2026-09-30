@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: local-compute
 title: Cluster consolidation — one worker, one scheduler, one substrate; containerized, monitorable, elastic
 model: opus
 ---

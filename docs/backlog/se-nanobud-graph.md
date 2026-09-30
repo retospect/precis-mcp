@@ -1,6 +1,7 @@
 ---
 status: in-progress
 title: graph-first sp2 construction — geo rung, spectral embed, nanobud generator, nomenclature
+pillar: 3d-design
 prio: high
 model: opus
 ---

@@ -1,6 +1,7 @@
 ---
 status: idea
 title: two advisory-severity detector gaps in taproot/notation.py
+pillar: memory-graph
 ---
 
 # Notation detector gaps

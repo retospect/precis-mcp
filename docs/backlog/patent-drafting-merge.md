@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: quests
+---
+
 # Patent drafting — a genre over the draft model
 
 > Status: **proposal** (rewritten 2026-06-22). Patent drafting is an

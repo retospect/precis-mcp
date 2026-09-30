@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 prio: high
 ---
 

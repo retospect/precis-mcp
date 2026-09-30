@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: memory-graph
 title: Findings need a stable identity so "still broken" is distinguishable from "broken again"
 prio: high
 model: opus

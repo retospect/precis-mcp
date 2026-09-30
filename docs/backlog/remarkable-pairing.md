@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: personal
+---
+
 # reMarkable send — device pairing (ops, Reto)
 
 The feature is shipped dark; the button stays hidden until pairing: rmapi

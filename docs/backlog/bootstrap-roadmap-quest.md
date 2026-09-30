@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: quests
 title: Bootstrap roadmap quest — a `roadmap` tick body that grows a capability/pathway/rung DAG from measured gaps
 prio: high
 model: fable

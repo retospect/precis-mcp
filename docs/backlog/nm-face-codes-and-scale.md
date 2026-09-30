@@ -3,6 +3,7 @@ status: draft
 title: nm slice 5 — face codes, fit/reject, and getting off O(N²)
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # Face codes, fit/reject, and scale

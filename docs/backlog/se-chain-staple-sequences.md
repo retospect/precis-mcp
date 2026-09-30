@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # se chain staple sequences — scaffold sequence in, orderable strands out
 
 IDEA. Pairing is derived from co-occupancy, so

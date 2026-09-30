@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Dreaming — agentic memory consolidation + synthesis
 
 Shipped portion: see the `precis.workers` package docstring and

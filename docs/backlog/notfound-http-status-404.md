@@ -3,6 +3,7 @@ status: draft
 title: NotFound should render HTTP 404, not 400, in the web app
 prio: low
 model: sonnet
+pillar: platform
 ---
 
 # NotFound should render HTTP 404, not 400, in the web app

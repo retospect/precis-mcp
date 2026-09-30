@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: platform
+---
+
 # Retire claude-context (Milvus + embed shim + node stack)
 
 With kind `python` (507975cd's predecessor) and kind `md` (507975cd)

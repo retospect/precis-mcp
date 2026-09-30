@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # Method transfer — separating entangled signals, from stellar RV work
 
 Source: Alexander Shapiro's talk at the OePG-CMD Joint Meeting 2026, Graz

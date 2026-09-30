@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Finding chase — trace cited claims back to their primary source
 
 Shipped portion: see the `precis.workers` package docstring and

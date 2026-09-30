@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: quests
+---
+
 # NO→NH3 dossier: pareto front + energy diagrams + slab renders (Reto want)
 
 The converter document should show the pareto front, the specific energy

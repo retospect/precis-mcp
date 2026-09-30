@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # classify: --ref-ids ignores scope; 400-storm watch
 
 gr173317: `precis classify topics --ref-ids <ids>` runs a full-corpus sweep

@@ -1,13 +1,12 @@
 ---
 status: draft
 title: Intent-to-realize loop — declarative region/property statement → picked, joined, checked design
+pillar: 3d-design
 prio: high
 blocked-by: se-region-property-layer
 ---
 
 # Intent-to-realize loop — declarative region statement to realized design
-
-Pillar: 3d-design
 
 Reto's stated loop (product-plan review, 2026-09-30): "here be pocket, this
 side hydrophobic, then negative, then positive, 1 nm × 0.2 nm with shape X,

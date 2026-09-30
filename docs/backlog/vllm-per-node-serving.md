@@ -1,6 +1,7 @@
 ---
 status: draft
 title: vLLM per-node serving on castor — one model per box, replication as the throughput lever
+pillar: local-compute
 prio: normal
 ---
 

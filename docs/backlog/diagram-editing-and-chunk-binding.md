@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Rich diagram editing with element→chunk binding — residuals
 
 Shipped portion: see the `precis.diagram` and `precis.mermaid` package

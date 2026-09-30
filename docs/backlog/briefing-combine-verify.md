@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: personal
+---
+
 # Morning combine runaway fixed (gr192606) — verify + optional hardening
 
 The dispatch brake shipped (a succeeded child job blocks re-dispatch of a

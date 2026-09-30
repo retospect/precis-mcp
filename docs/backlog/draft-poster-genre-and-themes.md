@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: Poster/deck genre for drafts + a named theme system (palette, block chrome, typographic rules) carried as data, not as a hand-kept .tex
 prio: normal
 ---

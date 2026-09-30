@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Draft section styles — catalogue & remaining drafts
 
 > Companion to ADR 0037 (git-only). Defines the **section styles**

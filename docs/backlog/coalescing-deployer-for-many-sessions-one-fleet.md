@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: platform
 title: N sessions land in an hour and each gets its own deploy — consider coalescing, but only if it still hurts
 ---
 

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # Patent kind — deferred follow-ons
 
 From the shipped patent-kind spec (git-only); truth in the

@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: memory-graph
 title: Fisheye-rail context-efficiency study — eval + paper (gr56588)
 ---
 

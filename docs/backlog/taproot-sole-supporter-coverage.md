@@ -1,6 +1,7 @@
 ---
 status: draft
 title: taproot sole/derivative-supporter coverage signal
+pillar: memory-graph
 prio: normal
 ---
 

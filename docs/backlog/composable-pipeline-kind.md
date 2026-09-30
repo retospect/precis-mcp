@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: Composable pipeline kind for chained chem/text point-operations
 model: opus
 ---

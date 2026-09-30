@@ -1,6 +1,7 @@
 ---
 status: ready
 title: make a join's findings and its catalogue resolution visible without SQL
+pillar: 3d-design
 prio: high
 ---
 

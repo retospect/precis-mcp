@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # The authoritative formatter is version-unpinned across worktrees
 
 `pyproject.toml` declares `ruff>=0.11` — a floor, not a version. Each worktree

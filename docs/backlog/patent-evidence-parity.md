@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: memory-graph
+---
+
 # Patent-evidence parity — residual watch items
 
 All five build phases shipped; behavior lives in the owning docstrings

@@ -2,6 +2,7 @@
 status: draft
 title: the [pa] arm's locate confirms a passage but captures no verbatim quotes
 prio: normal
+pillar: memory-graph
 ---
 
 # the `[pa]` arm's locate confirms a passage but captures no verbatim quotes

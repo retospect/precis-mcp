@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # Factory console + capability-reserved decentralized scheduling
 
 > **Status: design-of-record, substantially shipped.** The scheduling

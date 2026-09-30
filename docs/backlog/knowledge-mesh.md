@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: Knowledge mesh — a persisted measure record on hubs, a generic graph walk, numeric-conflict disputes, and a per-quest mesher pass
 prio: high
 model: opus

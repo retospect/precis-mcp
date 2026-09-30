@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # Flexboard support in the pcb kind (idea)
 
 Reto, 2026-09-14 (glowing-zooming-glade design session, alongside

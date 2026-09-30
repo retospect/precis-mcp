@@ -1,6 +1,7 @@
 ---
 status: draft
 title: "expose taproot merge on the MCP surface — with a guard the CLI does not need"
+pillar: memory-graph
 ---
 
 # Merge from the web

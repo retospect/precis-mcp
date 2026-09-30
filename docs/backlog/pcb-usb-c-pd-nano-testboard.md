@@ -3,6 +3,7 @@ status: draft
 title: Test board — USB-C PD Arduino Nano (5V) with switched high-side power outputs
 prio: normal
 model: opus
+pillar: 3d-design
 ---
 
 # Test board — USB-C PD Arduino Nano (5V) with switched power outputs

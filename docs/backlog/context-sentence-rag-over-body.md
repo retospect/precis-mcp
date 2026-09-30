@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: memory-graph
 title: context_sentence reads the paper body (in-paper retrieval), not "the abstract or the first chunk"
 prio: normal
 ---

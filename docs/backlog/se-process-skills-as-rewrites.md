@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: 3d-design
+---
+
 # se: process skills as geometry rewrites — a `suggested_fix` that carries the ops
 
 Follow-on filed at the ship of `se-print-implementer` (2026-09-17).

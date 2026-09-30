@@ -1,6 +1,7 @@
 ---
 status: idea
 title: se 3D viewer: UX batch — honesty banner, selection inspector, non-reloading controls, clip plane
+pillar: 3d-design
 ---
 
 # se 3D viewer: UX batch

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Decide keep-vs-delete for the dark Layer-2 tex LLM fixer
 
 `src/precis/utils/tex_llm_fix.py` (~220 lines) is the chktex LLM-fixer on the

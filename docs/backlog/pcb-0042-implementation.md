@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: 3d-design
+---
+
 # PCB (ADR 0042) — open slices
 
 > **Routing story superseded:** `pcb-guided-place-route.md` (in-house

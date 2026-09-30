@@ -1,5 +1,6 @@
 ---
 status: in-progress
+pillar: 3d-design
 title: hexfold fold-in — the sp² notation library as src/hexfold, se's `hexfold` generator, and the 0.2 discrete work
 prio: high
 model: opus

@@ -3,6 +3,7 @@ status: draft
 title: run the chemistry checks — no generator route calls check(), and naming the classes topology / valence / geometry / physics
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # The chemistry checks nobody runs

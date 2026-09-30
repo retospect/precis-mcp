@@ -1,11 +1,10 @@
 ---
 status: idea
+pillar: 3d-design
 title: A typed instrumentation leg on an unequal 3-sheet seam
 ---
 
 # A typed instrumentation leg on an unequal 3-sheet seam
-
-Pillar: 3d-design
 
 What: Reto's torus (product-plan review, 2026-09-30) — a 3-sheet sp²
 join where two sheets carry structure and the third leg carries

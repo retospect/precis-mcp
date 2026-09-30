@@ -1,6 +1,7 @@
 ---
 status: idea
 title: Source-code ingest — repos as searchable corpus
+pillar: memory-graph
 ---
 
 # Source-code ingest — repos as searchable corpus

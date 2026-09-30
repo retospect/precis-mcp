@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: hexfold seam-type catalogue — a closed set of supportable seam geometries, keyed by (k, dihedral pattern, rim edge-word, hybridisation)
 prio: normal
 model: opus

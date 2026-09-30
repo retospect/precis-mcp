@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: memory-graph
 title: fetch-missing-DOIs button — phase 2 of the draft DOI-completeness check
 ---
 

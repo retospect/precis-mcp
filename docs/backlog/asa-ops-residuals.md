@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: personal
+---
+
 # asa ops residuals — OAuth cutover, Slack smoke, outbound durability
 
 Three asa post-deploy residuals, merged from asa-oauth-cutover /

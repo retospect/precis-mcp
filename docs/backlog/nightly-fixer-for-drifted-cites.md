@@ -3,6 +3,7 @@ status: draft
 title: Nightly fixer for drifted cites — re-sync the prose, don't just flag it
 prio: normal
 model: opus
+pillar: memory-graph
 ---
 
 # Nightly fixer for drifted cites

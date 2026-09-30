@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: memory-graph
 title: contextual retrieval — prepend document context to chunk text before embedding
 ---
 

@@ -2,6 +2,7 @@
 status: ready
 title: pose/rot vector unit ingest — strict, three accepted forms, canonical hint
 prio: high
+pillar: 3d-design
 ---
 
 # pose/rot vector unit ingest

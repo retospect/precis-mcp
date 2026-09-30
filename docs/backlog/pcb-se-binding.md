@@ -2,6 +2,7 @@
 status: draft
 title: pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
 prio: high
+pillar: 3d-design
 ---
 
 # pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing

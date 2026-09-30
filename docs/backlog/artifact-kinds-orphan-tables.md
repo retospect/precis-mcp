@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # artifact_kinds + ref_artifacts — schema-only orphan tables
 
 Both exist in the baseline schema (and `artifact_kinds` is in

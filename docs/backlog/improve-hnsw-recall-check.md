@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # HNSW recall check at current scale
 
 `chunk_embeddings` >1M rows on default build params and default

@@ -1,12 +1,11 @@
 ---
 status: draft
+pillar: local-compute
 title: Own aggregate embedder capacity across the sibling-container fleet
 prio: high
 ---
 
 # Own aggregate embedder capacity
-
-Pillar: local-compute
 
 Evidence: peer sessions rustling-questing-wadler + nanobuds, 2026-09-30, and
 three gripes verified against current code/state this session.

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: se — per-interface reaction forces from a declared load case
+pillar: 3d-design
 ---
 
 # se — per-interface reaction forces from a declared load case

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: quests
+---
+
 # The catalyst-discovery quest — remaining slices
 
 A perpetual striving ("a Pd catalyst with the lowest achievable

@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: platform
 title: the agent image build wedged on an apt/nodesource fetch and the watchdog kill ABORTED the deploy instead of retrying (2026-09-27); hour-plus cold-deps runs are a separate, benign cause
 ---
 

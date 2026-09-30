@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: memory-graph
+---
+
 # Smartdraft review-parity remainder (UI-only)
 
 The retired classic reader had a read-only per-block F/C/S/A checker-flag

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Elsevier preview-PDF remediation (~2,796 prod papers)
 
 Signature: `refs.pdf_pages` single-page range against a >100 KB payload —

@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: platform
 title: cap the gripe comment timeline on a bare get() — the links section already is
 prio: high
 ---

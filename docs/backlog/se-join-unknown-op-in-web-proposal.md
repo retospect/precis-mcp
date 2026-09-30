@@ -1,6 +1,7 @@
 ---
 status: ready
 title: se `join` is reported as an unknown op in every web-workbench proposal
+pillar: 3d-design
 prio: normal
 model: sonnet
 ---

@@ -4,6 +4,7 @@ title: back-port the handle-accumulation argue box from pcb to se
 prio: low
 model: sonnet
 blocked-by: pcb-argue-with-design.md
+pillar: 3d-design
 ---
 
 # Back-port the argue box to se

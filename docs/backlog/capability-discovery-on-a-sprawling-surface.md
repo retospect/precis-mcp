@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # Capability discovery on a sprawling surface
 
 status: draft

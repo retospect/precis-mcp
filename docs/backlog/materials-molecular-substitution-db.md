@@ -1,11 +1,10 @@
 ---
 status: idea
 title: Per-axis similarity + substitution-estimate database for materials and molecules
+pillar: 3d-design
 ---
 
 # Per-axis similarity + substitution-estimate database for materials and molecules
-
-Pillar: 3d-design
 
 Reto's design notes, 2026-09-30 (transferred from another assistant; this
 file is now the source of truth, not that transcript).

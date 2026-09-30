@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: local-compute
+---
+
 # slullama HPC model — placement-chain rung + cluster access
 
 - **Status**: leg 1 (static card) SHIPPED (dark); leg 2 (chain rung) OPEN —

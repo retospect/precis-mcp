@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: "deploy drain: re-read historical job deaths that happened around a deploy (drain itself fixed + verified)"
 ---
 

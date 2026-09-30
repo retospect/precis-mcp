@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Ansible pipelining hangs intermittently against the DGX twins
 
 **Status:** open · found 2026-08-29 during the GPU-compute rehome

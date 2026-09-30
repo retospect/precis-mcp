@@ -2,6 +2,7 @@
 status: draft
 title: atomic models as printable solids — Å→mm scale contract, fused ball-and-stick mesh, per-element colour in 3MF
 prio: normal
+pillar: 3d-design
 ---
 
 # atomic models as printable solids — Å→mm scale contract, fused ball-and-stick mesh, per-element colour in 3MF

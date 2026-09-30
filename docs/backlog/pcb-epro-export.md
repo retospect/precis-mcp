@@ -3,6 +3,7 @@ status: draft
 title: "pcb: write an EasyEDA Pro .epro2 a colleague can open and keep working in"
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # `pcb` → EasyEDA Pro `.epro2`

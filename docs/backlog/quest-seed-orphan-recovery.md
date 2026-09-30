@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: quests
+---
+
 # Quest sim-seed orphan recovery + audit-less bulk delete hardening
 
 Two linked gaps from the gr204309 diagnosis (2026-08-12):

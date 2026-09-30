@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # Corpus garbled-math repair lane (Reto, 2026-09-14)
 
 Remaining slice of the authoring-side TeX/math lint effort. Origin: the

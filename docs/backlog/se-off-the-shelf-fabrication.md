@@ -1,6 +1,7 @@
 ---
 status: draft
 title: se off-the-shelf fabrication — bought parts, stock-constrained modes, mechanism→geometry propagation
+pillar: 3d-design
 prio: high
 model: opus
 ---

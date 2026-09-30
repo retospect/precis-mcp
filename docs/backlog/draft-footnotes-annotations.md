@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Draft footnotes + annotations (deferred design)
 
 Footnotes: a first-class `footnote` chunk_kind anchored to its block via

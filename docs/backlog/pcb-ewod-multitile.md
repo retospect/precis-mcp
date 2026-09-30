@@ -2,6 +2,7 @@
 status: draft
 title: EWOD multitile boards in the pcb kind — generator footprints + electrode-aware DRC/fab
 prio: normal
+pillar: 3d-design
 ---
 
 # EWOD multitile boards in the pcb kind — generator footprints + electrode-aware DRC/fab

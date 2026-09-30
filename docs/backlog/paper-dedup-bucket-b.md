@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: memory-graph
+---
+
 # Paper metadata resolution — run Bucket B + the titleless cohort on prod
 
 Ops-gated resolve-metadata runs plus the standing-worker follow-up.

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: taproot numeral cross-check advisory (report-only)
+pillar: memory-graph
 prio: normal
 ---
 

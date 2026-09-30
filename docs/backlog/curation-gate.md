@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: local-compute
 title: Curation gate — a read-only reviewer over one run's write set, pass/fail-with-notes, bounded retry, park for Reto; recurring failures become gripes
 prio: normal
 model: opus

@@ -1,6 +1,7 @@
 ---
 status: idea
 title: a subagent that exits without reaping its scripts/test child leaves a fleet-wide gate slot held until a human notices — cost ~2h of gate throughput on 2026-09-28
+pillar: platform
 ---
 
 # Orphaned `scripts/test` runs hold gate slots that nothing will ever release

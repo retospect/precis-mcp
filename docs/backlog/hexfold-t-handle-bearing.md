@@ -1,13 +1,12 @@
 ---
 status: draft
+pillar: 3d-design
 title: T-handle bearing — the third hexfold test piece (nanotube race, rotating inner handle)
 prio: high
 blocked-by: hexfold-integration
 ---
 
 # T-handle bearing — third hexfold test piece
-
-Pillar: 3d-design
 
 Reto, product-plan review 2026-09-30: the third hexfold test piece after the
 box (`src/hexfold/spec.md` §28 roadmap step 3) and the rotary ratchet valve

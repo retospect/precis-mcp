@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: cad dims + constraints — named dimensions, one-sided bounds, refuse-the-impossible
 prio: high
 model: opus

@@ -2,6 +2,7 @@
 status: draft
 title: The placer leaves a 0.093mm gap where 55 nets need 16.5mm, and the failure reports as a routing problem
 prio: normal
+pillar: 3d-design
 ---
 
 # The placer starves the escape corridor

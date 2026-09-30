@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Universal short codes (deferred design)
 
 ADR 0032's base-62 chunk_id encoding is manuscript-only; the verdict was

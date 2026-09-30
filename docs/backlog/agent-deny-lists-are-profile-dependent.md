@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: "agent tool deny-lists go inert under the command MCP profile — a config flip silently grants edit/delete/link"
 ---
 

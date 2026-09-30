@@ -1,6 +1,7 @@
 ---
 status: draft
 title: The shared HTTP session server is live — close the three gaps it opens
+pillar: platform
 ---
 
 # Shared MCP transport: what still has to be proven now that agents DO share a process

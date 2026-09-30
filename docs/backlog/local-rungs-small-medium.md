@@ -1,13 +1,12 @@
 ---
 status: draft
+pillar: local-compute
 title: Write local rungs under the SMALL/MEDIUM tiers, once Slice 0 picks a model
 prio: normal
 blocked-by: vllm-per-node-serving
 ---
 
 # Local rungs under SMALL/MEDIUM
-
-Pillar: local-compute
 
 Mining pass, 2026-09-30. The compiled tier ladder has **zero local rungs**
 by default — `src/precis/utils/llm/live_config.py`: "a tier left with no

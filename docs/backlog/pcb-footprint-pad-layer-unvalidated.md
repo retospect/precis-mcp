@@ -2,6 +2,7 @@
 status: draft
 title: A footprint pad may name any layer string, and an unrecognised one goes invisible to DRC rather than rejected
 prio: normal
+pillar: 3d-design
 ---
 
 # A footprint pad may name any layer string

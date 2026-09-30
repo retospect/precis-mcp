@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: memory-graph
+---
+
 # Align coined vocabulary to literature standard
 
 **Why now.** The LLM-physical-model paper series (`td449706`, draft

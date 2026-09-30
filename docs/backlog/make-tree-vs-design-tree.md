@@ -3,6 +3,7 @@ status: draft
 title: make-tree vs design-tree — assembly/synthesis order as a separate graph over shared leaves
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # Make-tree vs design-tree

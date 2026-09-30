@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: lazify CLI subcommand loading via a precis.cli entry-point group — one missing optional dep must not take down `precis serve`
 prio: high
 model: opus

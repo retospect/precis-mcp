@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # Infra-failure classification gaps — two paths skip the `infra:child-killed` tag
 
 Two failure paths record a job `STATUS:failed` **without** an

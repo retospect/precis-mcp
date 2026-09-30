@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: platform
 title: the gating CI legs are 3.13-only, but prod runs 3.12 — and the nightly that covers 3.12 is red
 ---
 

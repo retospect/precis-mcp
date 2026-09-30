@@ -2,6 +2,7 @@
 status: in-progress
 title: bring the 139 claim hubs behind the nanobud draft above board
 prio: high
+pillar: quests
 ---
 
 # Nanobud claim remediation (dr173020)

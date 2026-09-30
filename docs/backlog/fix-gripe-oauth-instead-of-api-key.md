@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: fix_gripe burns metered API dollars because --bare forces ANTHROPIC_API_KEY; the OAuth subscription path already exists
 prio: high
 ---

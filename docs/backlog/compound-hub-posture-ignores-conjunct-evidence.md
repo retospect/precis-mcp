@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: A compound claim hub's posture ignores its conjuncts' evidence
 prio: medium
 ---

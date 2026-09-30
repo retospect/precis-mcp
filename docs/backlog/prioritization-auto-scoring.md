@@ -2,6 +2,7 @@
 status: idea
 prio: low
 title: Auto-score priority (severity × frequency) + human triage loop
+pillar: platform
 ---
 
 # Auto-score priority + human triage loop

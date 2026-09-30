@@ -1,6 +1,7 @@
 ---
 status: draft
 title: se viewer — cross-scale pick → hierarchical reference → prompt token
+pillar: 3d-design
 prio: medium
 model: opus
 blocked-by: hexfold-integration

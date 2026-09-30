@@ -1,6 +1,7 @@
 ---
 status: idea
 title: guard-piped-exit-code — decide whether it earns its false-positive rate
+pillar: platform
 ---
 
 # `guard-piped-exit-code` — decide whether it earns its false-positive rate

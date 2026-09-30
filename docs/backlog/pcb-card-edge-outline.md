@@ -2,6 +2,7 @@
 status: draft
 title: "Footprint-driven outline modification: card-edge interfaces + edge cutouts (mid-mount connectors)"
 prio: medium
+pillar: 3d-design
 ---
 
 # Card-edge interfaces & footprint cutouts integrated into the board shape

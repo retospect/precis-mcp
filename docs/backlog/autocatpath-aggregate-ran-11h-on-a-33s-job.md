@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: 3d-design
 title: autocatpath_aggregate job 449981 held castor for 11h doing work that takes 33s — cause not yet demonstrated, and run_kinetics has no ceiling
 ---
 

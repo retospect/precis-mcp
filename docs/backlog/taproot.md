@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Taproot — unify claim/fact nodes, resolve citations to a many-paper evidence graph with graded integrity
+pillar: memory-graph
 model: opus
 ---
 

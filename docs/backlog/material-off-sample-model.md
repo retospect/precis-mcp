@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # material: off-sample estimate / fitting layer
 
 Deferred from ADR 0070. Trust-ordered off-sample read: evaluate a published

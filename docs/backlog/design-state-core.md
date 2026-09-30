@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: 3d-design
 title: design core — shared scenarios, provenance, design history, and discrete-states machinery for se + nm
 prio: high
 model: opus

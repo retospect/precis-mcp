@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 ---
 
 # Pathway explorer

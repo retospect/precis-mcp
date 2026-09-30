@@ -1,5 +1,7 @@
 ---
+status: idea
 snooze-until: 2026-09-23
+pillar: platform
 ---
 
 # Dependabot pillow #56–67 blocked on marker-pdf's Pillow<11 cap

@@ -3,6 +3,7 @@ status: draft
 title: light-driven deformation — bistable switches as discrete block states, and the spectral channel budget
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # Photoswitches in the block model

@@ -1,6 +1,7 @@
 ---
 status: idea
 title: skills ship scripts, not just prose — stop agents re-deriving deterministic procedures
+pillar: memory-graph
 ---
 
 # Skill-bundled scripts

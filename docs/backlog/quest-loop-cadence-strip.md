@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Quest dashboard — a cadence strip (last tick, next due, rest reason, WIP)
+pillar: quests
 prio: normal
 ---
 

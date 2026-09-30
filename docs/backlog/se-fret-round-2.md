@@ -1,6 +1,7 @@
 ---
 status: draft
 title: se optical domain round 2 — placement solver, DRC fold-in, the regimes round 1 declines to model
+pillar: 3d-design
 prio: normal
 model: opus
 ---

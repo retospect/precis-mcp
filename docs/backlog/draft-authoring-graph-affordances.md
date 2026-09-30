@@ -1,12 +1,11 @@
 ---
 status: draft
+pillar: memory-graph
 title: Four small graph affordances a draft/finding author is missing
 prio: high
 ---
 
 # Four small graph affordances a draft/finding author is missing
-
-Pillar: memory-graph
 
 Evidence from peer session nanobuds (dr173020 work, 2026-09-30). Four
 separate authoring moments each had to route around a missing affordance:

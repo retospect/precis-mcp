@@ -3,6 +3,7 @@ status: draft
 title: nm stick placement — interaction-aware module pose solve (graded π-stack, form-finder seeded)
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # nm stick placement: boxes → modules with live interaction ranges

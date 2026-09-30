@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: EWOD synthesis protocol layer — functional zones, se-bound mechanics, route→droplet-schedule compiler
 prio: normal
 blocked-by: pcb-ewod-multitile

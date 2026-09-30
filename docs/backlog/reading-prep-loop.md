@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: personal
+---
+
 # Reading-prep loop — an adaptive, activity-driven study system
 
 > Design-of-record for the adaptive learning layer on top of the `anki`

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # `edgar` — read-only SEC EDGAR filings kind
 
 > Modelled on the `patent` kind (EPO OPS); read the

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # mcps venv deploy gaps (surfaced by the python.org migration, 2026-08-24)
 
 Two latent deploy gaps found when the mcps venv was rebuilt from scratch for

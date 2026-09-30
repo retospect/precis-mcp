@@ -1,13 +1,12 @@
 ---
 status: draft
+pillar: 3d-design
 title: Co-design a PCB, a microfluidic cartridge stack and a motor as ONE se assembly
 prio: high
 blocked-by: pcb-se-binding
 ---
 
 # Co-design a PCB, a cartridge stack and a motor as one se assembly
-
-Pillar: 3d-design
 
 Reto: co-design macro "laminar objects" (PCB, microfluidic cartridge) with
 motors/mechanics as ONE assembly with the nanoscale designs — not three

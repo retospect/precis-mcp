@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Draft inline editor — click-to-edit prose, no LLM in the loop
 
 Status: **design agreed, incremental build in progress.** This is the

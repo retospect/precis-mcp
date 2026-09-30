@@ -1,5 +1,6 @@
 ---
 status: in-progress
+pillar: memory-graph
 title: a claim hub cannot cite a computed pathway as evidence
 prio: normal
 ---

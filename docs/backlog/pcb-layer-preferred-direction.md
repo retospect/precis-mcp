@@ -2,6 +2,7 @@
 status: draft
 title: Layers have no preferred routing direction, and the angle could be annealed rather than declared
 prio: normal
+pillar: 3d-design
 ---
 
 # Preferred direction per layer, annealed at ratsnest time

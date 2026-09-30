@@ -1,6 +1,7 @@
 ---
 status: in-progress
 title: Session precis MCP becomes one long-lived local streamable-http server, sized for 12 concurrent sessions
+pillar: platform
 prio: high
 model: opus
 ---

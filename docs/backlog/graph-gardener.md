@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: Graph gardener — scheduled passes that merge, split, relink and prune the knowledge graph, always as reversible proposals
 prio: normal
 model: sonnet

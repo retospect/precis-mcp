@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: local-compute
+---
+
 # precis-dispatch — a swappable compute-runner layer
 
 Status: design intent, Phase-1 shipped. Consumers: precis-dft (first),

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Lint / exception debt
 
 Tighten broad `except Exception` (317 across 141 files; many hide spin

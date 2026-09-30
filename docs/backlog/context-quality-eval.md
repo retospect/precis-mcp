@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: local-compute
+---
+
 # Context-quality eval — catalog + rubric
 
 Most server work is spent assembling a **context** for an LLM: a rendered

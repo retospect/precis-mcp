@@ -1,6 +1,7 @@
 ---
 status: idea
 title: per-skill eval harness — test that a skill makes an agent succeed, pre-ship
+pillar: memory-graph
 ---
 
 # Per-skill eval harness

@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: platform
 prio: low
 ---
 

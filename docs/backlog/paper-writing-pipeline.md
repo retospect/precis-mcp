@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: quests
+---
+
 # The paper-writing pipeline
 
 How precis writes and maintains a long document (a `draft`) by absorbing the

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # Advisory code-smell pass (DRY / class design) — periodic, not the gate
 
 The gate now enforces the deterministic design checks (import-linter

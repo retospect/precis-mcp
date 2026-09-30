@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # se 3D viewer: no browser-level check exists for it at all
 
 IDEA (2026-09-29), filed from the live verification of the id/name path

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Chunk-claim candidate query — stop rescanning the done set
 
 The `chunk_claims`-ledger claim query (classify/axis/llm_summarize shape:

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # Content sensitivity → placement constraint
 
 - **Status**: proposed — **stub / requirements capture, not yet a design**

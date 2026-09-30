@@ -2,6 +2,7 @@
 status: draft
 title: every board mutation leaves a geometrically valid board, or is refused with the violated rule
 prio: high
+pillar: 3d-design
 ---
 
 # every board mutation leaves a geometrically valid board, or is refused

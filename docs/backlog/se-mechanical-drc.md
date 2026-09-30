@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: 3d-design
+---
+
 # se: mechanical DRC — a validator pass for missing fasteners and unconstrained joints
 
 `unicycle-c1` in the `/se` 3D viewer shows a design with blocks that touch (`connects` edges between them) but no fasteners, welds, or glue declared at load-bearing interfaces. `se`'s `validate()` produces findings (envelope overlaps, no_tool_access, stability) but nothing that flags "this interface carries load and has no fastening declaration". PCB's DRC concept (clearance/short checks) has an architectural twin here: a new validator rule family that walks `connects`/joint edges and alerts when an interface with no fastening mechanism exists.

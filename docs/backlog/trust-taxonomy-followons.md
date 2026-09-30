@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # Trust taxonomy follow-ons (5-state Ⓐ/✍ shipped)
 
 Deferred pieces of the taproot trust ladder.

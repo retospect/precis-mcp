@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Tier-2 DB role-enforce held — pgbouncer transaction pool breaks SET ROLE
 
 PRECIS_MCP_DB_ROLE_ENFORCE (session-level SET ROLE) is only correct on a

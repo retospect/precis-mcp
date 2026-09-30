@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: personal
+---
+
 # Web basic auth + a real users table
 
 - **Status**: **shipped + deployed + live** (2026-08-22). Kept open only

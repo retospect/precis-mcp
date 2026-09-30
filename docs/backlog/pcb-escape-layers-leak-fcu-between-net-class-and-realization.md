@@ -2,6 +2,7 @@
 status: draft
 title: escapes route on F.Cu even though the generator refuses to author it
 prio: high
+pillar: 3d-design
 ---
 
 # escapes route on F.Cu even though the generator refuses to author it

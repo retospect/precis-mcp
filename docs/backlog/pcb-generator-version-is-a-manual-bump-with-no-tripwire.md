@@ -2,6 +2,7 @@
 status: draft
 title: A generator code change is invisible to already-authored boards unless someone remembers to bump version
 prio: normal
+pillar: 3d-design
 ---
 
 # Generator output can change without any board noticing

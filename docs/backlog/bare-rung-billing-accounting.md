@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: local-compute
+---
+
 # Bare chain rungs spend dollars the meter never counts
 
 **Found:** 2026-08-21, reviewing the `Rung.bare` ship (opus, this session).

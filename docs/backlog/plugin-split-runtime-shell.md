@@ -4,6 +4,7 @@ title: plugin split, top-down — precis-util runtime shell + precis-geom build 
 prio: normal
 model: opus
 snooze-until: 2026-10-16
+pillar: platform
 ---
 
 # Plugin split, top-down: `precis-util` + `precis-geom` + `precis-xxx` models

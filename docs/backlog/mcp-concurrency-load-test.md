@@ -1,7 +1,8 @@
 ---
-status: measured
+status: in-progress
 title: MCP concurrency load test — find the wall before the first overnight run
 prio: high
+pillar: platform
 ---
 
 # MCP concurrency load test

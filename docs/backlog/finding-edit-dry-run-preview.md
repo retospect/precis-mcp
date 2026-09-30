@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # finding.edit dry_run preview — redo against the three-op surface
 
 The paper/cfp/datasheet dry_run-preview arms shipped; the finding arm was

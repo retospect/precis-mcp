@@ -1,4 +1,6 @@
 ---
+status: idea
+pillar: platform
 snooze-until: 2027-02-01
 ---
 

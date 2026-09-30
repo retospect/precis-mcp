@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Taproot compound→atomic migration — corpus-wide apply, blocked on regrounding
+pillar: memory-graph
 model: opus
 ---
 

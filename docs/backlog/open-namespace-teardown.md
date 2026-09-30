@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # OPEN-namespace teardown
 
 > **Status:** design / prerequisite for ADR 0047 rollout.

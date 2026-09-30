@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: memory-graph
 title: dr448178 DFT-hbond draft — 27 paywalled sources to fetch by hand
 prio: normal
 ---

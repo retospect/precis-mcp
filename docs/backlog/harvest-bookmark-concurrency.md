@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # autocatpath harvest bookmark — multi-job concurrency edge
 
 3e746728 fixed the single-in-flight case, but the loop still advances

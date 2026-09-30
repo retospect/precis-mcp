@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: experiment loop — hypothesis → plan → measured result → verdict, walked end to end through the verbs, with the skill that teaches it
 prio: normal
 model: sonnet

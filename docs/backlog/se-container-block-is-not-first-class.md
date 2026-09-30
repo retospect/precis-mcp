@@ -1,6 +1,7 @@
 ---
 status: draft
 title: "se: a block that has both its own envelope and children has no first-class 'container' marker, so three subsystems each guess differently"
+pillar: 3d-design
 prio: high
 ---
 

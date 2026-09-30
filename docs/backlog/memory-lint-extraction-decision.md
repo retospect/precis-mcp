@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # memory-lint currency auditor — extract as a pip? (decide ~2026-08-19)
 
 `scripts/memory-lint --currency` verifies memories against repo ground truth

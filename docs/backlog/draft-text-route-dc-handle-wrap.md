@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: /drafts/{ident}/text wraps dc-handles into an unresolvable ¶dc<id> address
 model: sonnet
 ---

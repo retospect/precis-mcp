@@ -1,11 +1,10 @@
 ---
 status: idea
 title: A per-session context selector living on the shared MCP server
+pillar: memory-graph
 ---
 
 # A per-session context selector living on the shared MCP server
-
-Pillar: memory-graph
 
 What: the shared session MCP server keys per-session state on
 `Mcp-Session-Id`, and the serve ledger (`serve_ledger.py`,

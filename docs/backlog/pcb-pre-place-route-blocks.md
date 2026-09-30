@@ -1,8 +1,9 @@
 ---
-status: building
+status: in-progress
 title: "pcb: pre-place-route blocks — generators emit real fixed copper (vias + traces), solved once per unit cell and tiled"
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # pcb: pre-place-route blocks

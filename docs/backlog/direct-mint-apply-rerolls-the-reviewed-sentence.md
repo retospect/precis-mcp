@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: "taproot direct-mint --apply re-runs the qualify LLM, so the sentence a human reviewed in the dry-run is not the sentence that gets written"
 ---
 

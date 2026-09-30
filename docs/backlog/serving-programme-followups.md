@@ -1,6 +1,7 @@
 ---
 status: ready
 title: Serving programme follow-ups — ordered resume pointer for the agentic-reasoning instrumentation / serving work
+pillar: local-compute
 prio: high
 ---
 

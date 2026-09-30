@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Rationalize the cluster daemon-user model
 
 hermes (OAuth/~/.claude state) vs deploy (owns /opt/homebrew + the colima

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # component kind follow-ons (v1 + assembly tree shipped)
 
 Feature extensions to the shipped component kind (ADR 0071/0072).

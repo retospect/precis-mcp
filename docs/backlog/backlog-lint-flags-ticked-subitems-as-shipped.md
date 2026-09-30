@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # backlog-lint tells every session to delete open specs
 
 `scripts/backlog-lint` prints "N item(s) marked done but still in

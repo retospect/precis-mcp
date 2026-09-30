@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: diamondoid pattern language — the sp³ volume lattice as a third atomic mode beside hexfold (sp² surfaces) and precis_surface (freeform sp²)
 prio: normal
 model: opus

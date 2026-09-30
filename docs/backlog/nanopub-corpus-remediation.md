@@ -1,6 +1,7 @@
 ---
 status: draft
 title: bring the 1,527-hub claim corpus up to a publishable standard before anything leaves the house
+pillar: memory-graph
 ---
 
 # Claim-corpus remediation

@@ -1,6 +1,7 @@
 ---
-status: open
+status: ready
 prio: medium
+pillar: 3d-design
 ---
 
 # A pad on an obliquely-rotated instance is an axis-aligned rect everywhere but the router

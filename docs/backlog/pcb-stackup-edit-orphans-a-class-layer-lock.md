@@ -2,6 +2,7 @@
 status: draft
 title: A stackup edit can orphan a net-class layer lock, and says nothing until route time
 prio: low
+pillar: 3d-design
 ---
 
 # A stackup edit can orphan a net-class layer lock

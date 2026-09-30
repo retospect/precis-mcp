@@ -3,6 +3,7 @@ status: draft
 title: "pcb: import an EasyEDA Pro .epro2 project into the pcb kind"
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # EasyEDA Pro `.epro2` → `pcb`

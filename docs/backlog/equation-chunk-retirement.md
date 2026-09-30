@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Retire the equation chunk kind — papers remain
 
 Decided north star: no dedicated equation kind; math is $…$/$$…$$ in prose,

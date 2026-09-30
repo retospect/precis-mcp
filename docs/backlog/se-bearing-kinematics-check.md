@@ -1,11 +1,10 @@
 ---
 status: idea
 title: A check family for revolute/prismatic joints — sweep interference, friction/drag vs. torque, ratchet directionality
+pillar: 3d-design
 ---
 
 # A check family for revolute/prismatic joints
-
-Pillar: 3d-design
 
 What: motion checking stops at joint *enumeration* today —
 `src/precis/handlers/cad.py::_joint_kind_map` names a joint's kind, and

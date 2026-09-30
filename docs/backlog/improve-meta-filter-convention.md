@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # `meta` JSON-path filter convention
 
 19+ call sites filter on `meta->…` with no GIN/expression index — safe

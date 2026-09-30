@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: quests
+---
+
 # Web quest editor
 
 Create/reprioritize the hierarchical quest tree from precis_web (with

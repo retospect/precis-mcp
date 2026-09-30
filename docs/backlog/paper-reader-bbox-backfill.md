@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # Paper reader — per-chunk bbox backfill (pixel-perfect highlight) + optional re-embed
 
 **Status:** deferred / backlog (not scheduled). Tracked as precis todo

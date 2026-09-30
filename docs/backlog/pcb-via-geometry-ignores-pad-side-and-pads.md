@@ -2,6 +2,7 @@
 status: draft
 title: Synthesized vias use a hardcoded PAD_LAYER for their span and are never tested against pads
 prio: normal
+pillar: 3d-design
 ---
 
 # Via geometry ignores which side the pads are on, and never checks pads at all

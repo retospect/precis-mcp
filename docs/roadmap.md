@@ -186,6 +186,15 @@ gripes; `precis_web` has no usage instrumentation and none is planned for
 one user. Surface work is ranked inside the pillar thread that owns the
 object; there is no UX thread.
 
+## Where an item says which pillar it serves
+
+Every `docs/backlog/*.md` carries `pillar:` in its front matter and the
+generated `docs/backlog/INDEX.md` groups by it. Two values are buckets
+rather than pillars: `quests` (A — the quest content, campaigns and the
+quest-loop machinery) and `platform` (B — deploy, gate, CI, MCP server
+infrastructure, monitors, refactor debt: what every pillar stands on).
+`scripts/backlog-lint` enforces the set.
+
 ## Active and dormant threads
 
 A thread file exists for any thread with three or more live items

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # An unnamed container host wrote 211K worker_logs rows for ten days, invisible to every host check
 
 Observed 2026-09-29 while auditing the fleet. `worker_logs` has **five**

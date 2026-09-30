@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # Tool-friction reflection — enable Part A + agentlog stitching
 
 Part A (end-of-run friction footer, `src/precis/utils/friction_reflect.py`)

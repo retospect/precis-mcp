@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # llm_summarize backlog throughput tuning
 
 Sustained slot contention between the two melchior workers is benign (the

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: se feasibility and cost — one check registry, hard floor plus graded objective
+pillar: 3d-design
 prio: high
 model: opus
 ---

@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: hexfold sp³ isolation band — a hydrogenated (or fluorinated) belt inside a graphene sheet, for electronic isolation and QM-region cuts
 prio: normal
 model: opus

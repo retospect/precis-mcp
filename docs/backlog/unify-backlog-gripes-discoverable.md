@@ -1,6 +1,7 @@
 ---
 status: draft
 title: unify backlog + gripes + coding rules into one searchable, discoverable surface
+pillar: memory-graph
 ---
 
 # Unify backlog/gripes/rules — searchable + discoverable

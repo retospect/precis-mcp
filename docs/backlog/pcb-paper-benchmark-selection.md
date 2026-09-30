@@ -3,6 +3,7 @@ status: draft
 title: Benchmark selection for the topological place+route paper's evaluation section
 prio: normal
 model: opus
+pillar: 3d-design
 ---
 
 # Benchmark selection for the place+route paper

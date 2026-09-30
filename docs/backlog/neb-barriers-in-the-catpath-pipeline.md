@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # NEB transition-state barriers as a catpath pipeline step
 
 Prompted by Laerte Patera's talk at the OePG-CMD Joint Meeting 2026, Graz

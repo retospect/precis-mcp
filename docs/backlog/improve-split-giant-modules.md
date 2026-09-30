@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Split the giant modules
 
 `handlers/draft.py` (2,877 lines): extract the ~9 hint methods →

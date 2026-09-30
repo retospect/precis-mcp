@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: put(kind='draft') p95 is 182s — sync_draft_links rescans the whole draft on every write
 prio: high
 ---

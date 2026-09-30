@@ -1,6 +1,7 @@
 ---
 status: idea
 title: Worker rotations starve rescue passes for hours
+pillar: local-compute
 prio: high
 model: opus
 ---

@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: platform
+---
+
 # Reaper removed a live session's worktree after its lock was silently released
 
 **Severity: data-loss near-miss** (fully recovered — everything reachable

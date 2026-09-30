@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: what the boxel exercise taught about the cad/structure surface
 prio: normal
 ---

@@ -1,11 +1,10 @@
 ---
 status: idea
+pillar: memory-graph
 title: Measure graph navigability, not just gardener proposals
 ---
 
 # Measure graph navigability, not just gardener proposals
-
-Pillar: memory-graph
 
 What: `graph-gardener.md` proposes merge/split/prune passes over the graph,
 but nothing measures whether the graph is navigable in the first place:

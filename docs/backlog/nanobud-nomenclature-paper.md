@@ -2,6 +2,7 @@
 status: draft
 title: nanobud nomenclature paper — systematic classification + generator + open library
 blocked-by: se-nanobud-graph
+pillar: 3d-design
 ---
 
 # nanobud nomenclature paper

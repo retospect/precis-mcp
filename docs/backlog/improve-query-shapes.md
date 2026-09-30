@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Query-shape cleanups
 
 N+1 enrichment in `workers/classify.py::_enrich` +

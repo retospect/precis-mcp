@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: personal
 title: asa voice — distinctive lexical register (avionics/Victorian/ja/cn/de) (gr51194)
 ---
 

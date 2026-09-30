@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Goal Kind Plan — human-written project goals, linkable from anywhere
 
 Status: **queued** — plan captured for a future implementation slice.

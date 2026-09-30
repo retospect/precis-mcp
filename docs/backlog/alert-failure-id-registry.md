@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: platform
 title: stable, registered failure ids for alerts — enumerable rule catalogue + addressable get + agent-facing health panel
 prio: normal
 model: sonnet

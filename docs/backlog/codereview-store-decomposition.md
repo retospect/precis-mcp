@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: platform
+---
+
 # codereview: Store decomposition — mixin facade → composed sub-stores
 
 `store/store.py::Store` still composes 25 direct domain mixins in one flat

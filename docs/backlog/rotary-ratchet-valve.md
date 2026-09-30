@@ -1,6 +1,7 @@
 ---
 status: draft
 title: rotary ratchet valve — a chemically selective metering wheel as the second hexfold/precis_surface test piece, plus the four design tools it needs
+pillar: 3d-design
 prio: high
 model: opus
 blocked-by: hexfold-integration

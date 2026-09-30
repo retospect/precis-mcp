@@ -4,6 +4,7 @@ title: Measures substrate — generalise material_values into `measures` (any su
 prio: high
 model: opus
 blocked-by: term-taxonomy
+pillar: memory-graph
 ---
 
 # Measures substrate — generalise `material_values` into `measures`

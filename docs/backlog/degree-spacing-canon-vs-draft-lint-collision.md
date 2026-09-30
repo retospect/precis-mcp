@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: "°C spacing unified on SI — sweep existing drafts to the spaced form"
 model: sonnet
 ---

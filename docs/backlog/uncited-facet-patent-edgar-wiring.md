@@ -1,6 +1,7 @@
 ---
 status: draft
 title: uncited= skips patent/edgar — the sweep is not corpus-wide
+pillar: memory-graph
 prio: medium
 ---
 

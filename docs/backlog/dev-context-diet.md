@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: platform
 title: dev-session context diet — user-only settings edits
 ---
 

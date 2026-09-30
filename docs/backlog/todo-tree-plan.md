@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # Todo-Tree Plan — remaining fold candidates
 
 Shipped portion: see the `precis.handlers.todo` and `precis.workers`

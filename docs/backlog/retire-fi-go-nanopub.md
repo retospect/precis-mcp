@@ -1,6 +1,7 @@
 ---
 status: draft
 title: retire fi as the claim surface — nanopublications all the way
+pillar: memory-graph
 ---
 
 # retire fi as the claim surface — nanopublications all the way

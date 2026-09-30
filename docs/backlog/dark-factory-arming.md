@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: Arm the dark-factory gripe loop (dials + follow-ons) — Reto's call
 ---
 

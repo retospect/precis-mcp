@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: local-compute
 title: "LLM judges as instruments — measure reliability before trusting verdicts at scale"
 ---
 

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # se protein chain import — PDB/mmCIF → Cα trace → chain path + tube
 
 IDEA (the nucleic-acid chain domain it builds on has shipped —

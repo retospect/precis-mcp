@@ -1,5 +1,6 @@
 ---
 status: in-progress
+pillar: local-compute
 title: LLM tier ladder — SMALL to cloud, MEDIUM/BIG/FRONTIER onto sonnet/opus/fable
 ---
 

@@ -2,6 +2,7 @@
 status: draft
 title: What has to leave process memory before the shared MCP can run more than one worker
 prio: low
+pillar: platform
 ---
 
 # What has to leave process memory before the shared MCP can run more than one worker

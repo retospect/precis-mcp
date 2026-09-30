@@ -1,12 +1,11 @@
 ---
 status: draft
+pillar: local-compute
 title: Standing report — local vs. cloud share of LLM calls, routed vs. landed
 prio: high
 ---
 
 # Standing report — local vs. cloud share, routed vs. landed
-
-Pillar: local-compute
 
 Mining pass, 2026-09-30. `llm_call_log` already carries both `placement`
 (what the router chose) and `placement_effective` (what actually ran) —

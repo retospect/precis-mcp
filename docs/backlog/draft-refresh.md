@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: draft_refresh residuals — external lit-search leg + refinements
 ---
 

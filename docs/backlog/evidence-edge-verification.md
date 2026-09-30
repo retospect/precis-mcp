@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 ---
 
 # Evidence edge verification

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # docx / EndNote export — validation pending
 
 Round-trip correctness needs real Word + EndNote + "Update Citations and

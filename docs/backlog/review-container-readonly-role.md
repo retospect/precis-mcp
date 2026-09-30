@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # Review container: flip to agent_ro + close the gripe tool-layer gap
 
 The DB half shipped (migration 0079 SECURITY DEFINER `file_gripe_readonly`;

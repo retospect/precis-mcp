@@ -2,6 +2,7 @@
 status: idea
 title: "North star: global generative co-design (the dragon board) — invariants, not a feature"
 prio: low
+pillar: 3d-design
 ---
 
 # North star: global generative co-design (the dragon board)

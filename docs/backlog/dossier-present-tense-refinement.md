@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: quests
+---
+
 # Dossier: present-tense document, incremental refinement
 
 > **Status:** design, agreed with Reto 2026-08-13. Slices 0–3 (pinned-chunk

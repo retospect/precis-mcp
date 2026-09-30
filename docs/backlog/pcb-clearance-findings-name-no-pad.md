@@ -1,6 +1,7 @@
 ---
-status: open
+status: ready
 prio: medium
+pillar: 3d-design
 ---
 
 # A `clearance` finding says which nets are too close, but not which pad or where

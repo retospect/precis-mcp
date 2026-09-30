@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: 3d-design
 title: complementarity solver — active-set unilateral analysis, sign-aware completeness, bistability probe
 prio: high
 ---

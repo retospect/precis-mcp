@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Should precis have read access to its own source at runtime?
+pillar: platform
 model: opus
 ---
 

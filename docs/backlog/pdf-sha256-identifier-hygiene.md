@@ -2,6 +2,7 @@
 status: draft
 title: pdf_sha256 identifier hygiene — enforce one row per ref, backfill missing
 model: sonnet
+pillar: memory-graph
 ---
 
 # pdf_sha256 identifier hygiene

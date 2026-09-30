@@ -3,6 +3,7 @@ status: ready
 title: pcb — argue with the design by clicking devices into a text box
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # pcb: argue with the design

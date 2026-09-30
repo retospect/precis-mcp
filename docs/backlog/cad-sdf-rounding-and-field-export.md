@@ -1,5 +1,6 @@
 ---
 status: in-progress
+pillar: 3d-design
 title: cad — rounding at the SDF leaf, a sampled-field leaf, and a field → marching-cubes export backend (no work on the mesh, ever)
 prio: high
 model: opus

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: local-compute
+---
+
 # Budget guardrails — a lightweight cost/token backstop
 
 > Design-of-record: loose guide rails + a global circuit breaker, not

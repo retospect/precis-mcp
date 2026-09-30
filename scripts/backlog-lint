@@ -55,4 +55,54 @@ fi
 if [[ "$q" -ne 0 ]]; then
     echo "  ($q done-marked sub-part(s) inside still-open specs — normal, not gunk)"
 fi
+
+# --- front-matter hygiene -------------------------------------------------
+# Every item carries `status:` and `pillar:` in closed sets. Absent front
+# matter is not neutral: scripts/docs-index renders such a file as `idea`, so
+# an untyped item silently claims a readiness nobody chose. Rules taken from
+# the abandoned 2026-09-23 compaction tree at the 2026-09-30 product-plan
+# review; the sweep that applied them ran the same day.
+ALLOWED='idea|draft|ready|in-progress'
+PILLARS='memory-graph|3d-design|local-compute|quests|personal|platform'
+bare=''
+badstatus=''
+badpillar=''
+for f in "$D"/*.md; do
+    b="$(basename "$f")"
+    [[ "$b" == INDEX.md || "$b" == README.md || "$b" == TEMPLATE.md ]] && continue
+    s="$(sed -n 's/^status: *//p' "$f" | head -1)"
+    if [[ -z "$s" ]]; then
+        bare+="  $f  (no status:)"$'\n'
+    elif ! [[ "$s" =~ ^(${ALLOWED})$ ]]; then
+        badstatus+="  $f  status: $s"$'\n'
+    fi
+    p="$(sed -n 's/^pillar: *//p' "$f" | head -1)"
+    if [[ -z "$p" ]]; then
+        badpillar+="  $f  (no pillar:)"$'\n'
+    elif ! [[ "$p" =~ ^(${PILLARS})$ ]]; then
+        badpillar+="  $f  pillar: $p"$'\n'
+    fi
+done
+if [[ -n "$bare" ]]; then
+    echo "backlog-lint: $(printf '%s' "$bare" | grep -c .) item(s) with no front-matter status: (docs-index will call them 'idea'):"
+    printf '%s' "$bare"
+fi
+if [[ -n "$badstatus" ]]; then
+    echo "backlog-lint: status must be one of ${ALLOWED//|/ / }:"
+    printf '%s' "$badstatus"
+fi
+if [[ -n "$badpillar" ]]; then
+    echo "backlog-lint: $(printf '%s' "$badpillar" | grep -c .) item(s) with no or unknown pillar: (one of ${PILLARS//|/ / }; docs/roadmap.md):"
+    printf '%s' "$badpillar"
+fi
+
+# --- prefix crowding ------------------------------------------------------
+# A family of >8 files sharing a leading token is the merge signal: it means
+# one subject got filed N times instead of once with N sections.
+crowd="$(ls "$D"/*.md 2>/dev/null | sed -E 's|.*/||; s/-.*//' | sort | uniq -c \
+         | awk '$1 > 8 {printf "  %s-*  %d files\n", $2, $1}')"
+if [[ -n "$crowd" ]]; then
+    echo "backlog-lint: crowded prefixes — candidates for one umbrella item:"
+    printf '%s\n' "$crowd"
+fi
 exit 0

@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: Design workbench — realize-in-the-loop (slice 4 of the design-workbench build)
 prio: normal
 model: opus

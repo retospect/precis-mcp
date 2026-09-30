@@ -3,6 +3,7 @@ status: draft
 title: view='pinout' + explicit signal↔pad capture for user-requested connectors
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # `view='pinout'` and connector intake

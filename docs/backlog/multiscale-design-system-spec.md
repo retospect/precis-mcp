@@ -3,6 +3,7 @@ status: draft
 title: multiscale design system — the detailed build spec (data model, constraint catalogue, optimiser, MCP surface, molecular tier)
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # Ownership routing (added on intake, 2026-09-11)

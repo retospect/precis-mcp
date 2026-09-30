@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: draft linearization — the graph is the truth, a draft is a render of a subgraph in reading order
 prio: normal
 model: opus

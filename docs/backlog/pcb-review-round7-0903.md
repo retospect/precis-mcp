@@ -1,7 +1,8 @@
 ---
-status: open
+status: in-progress
 title: "User visual review round 7 (2026-09-03): via keep-out under bodies, crystal rules honesty, web browse tab + schematic view, legend gutter"
 prio: high
+pillar: 3d-design
 ---
 
 # User visual review round 7 (2026-09-03)

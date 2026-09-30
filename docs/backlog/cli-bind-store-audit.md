@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # CLI entrypoints without bind_store silently miss live routing
 
 `precis cast run` never bound the process store, so every `live_config`

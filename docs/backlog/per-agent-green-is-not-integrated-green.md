@@ -1,6 +1,7 @@
 ---
 status: idea
 title: six subagents each verified their own slice green and the integrated run was still red — per-slice verification does not compose, and nothing in the workflow says so
+pillar: platform
 ---
 
 # Per-agent green is not integrated green

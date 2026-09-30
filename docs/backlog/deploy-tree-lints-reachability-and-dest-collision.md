@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: lint the deploy tree — unreachable role edits and colliding render targets
 prio: normal
 ---

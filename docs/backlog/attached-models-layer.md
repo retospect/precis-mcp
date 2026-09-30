@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: attached-models layer — multi-fidelity analysis results with validity scope and loud staleness
 prio: high
 model: opus

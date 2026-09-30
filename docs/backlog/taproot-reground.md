@@ -1,6 +1,7 @@
 ---
 status: idea
 title: taproot reground residuals — slice_refine_eval gate, retire prose-edit modes, external legs
+pillar: memory-graph
 ---
 
 # Taproot reground — residuals

@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 ---
 
 # Dr42995 boxel draft

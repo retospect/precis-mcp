@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: Claim publication — signed nanopubs + OpenTimestamps anchoring, minted locally, pushed at publication time
 model: opus
 blocked-by: taproot-compound-migration

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # `precis add --arxiv` ingests the wrong paper (S2 text search, unverified hit)
 
 Live mis-ingest (2026-08-25, ~09:35): `precis add --arxiv 2405.20258`

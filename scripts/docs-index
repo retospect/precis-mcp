@@ -11,7 +11,9 @@ the files are gitignored, so they never churn or conflict):
 
 The summary for a markdown file is its first non-heading, non-front-matter
 prose line; `status:` is read from front-matter (backlog only, defaults to
-`idea`). The package map walks src/*/**/__init__.py and takes each module
+`idea`). The backlog index is grouped by `pillar:` (docs/roadmap.md), one
+H2 per pillar in the roadmap's order, unpillared items last so the lint
+line and the index agree on what is missing. The package map walks src/*/**/__init__.py and takes each module
 docstring's first line (PEP 257) — a package without a docstring is listed
 as such, which is the nudge to write one.
 
@@ -61,12 +63,25 @@ def summary_line(body: str) -> str:
 # Backlog priority buckets → sort rank (high first). Unset/unknown = normal.
 _PRIO_RANK = {"high": 0, "normal": 1, "low": 2}
 
+# Pillar order for the backlog index — docs/roadmap.md's order, then the two
+# non-pillar buckets, then whatever has no pillar yet.
+_PILLAR_ORDER = [
+    "memory-graph",
+    "3d-design",
+    "local-compute",
+    "personal",
+    "quests",
+    "platform",
+]
+_NO_PILLAR = "(no pillar — add `pillar:` per docs/roadmap.md)"
+
 
 def md_index(directory: Path, with_status: bool) -> list[str]:
-    # (rank, filename, row): sort high-priority first, then filename for a
-    # stable order within a bucket. Runbooks (with_status=False) all get
-    # rank 0, so they stay in pure filename order as before.
-    entries: list[tuple[int, str, str]] = []
+    # (pillar, rank, filename, row): the backlog groups by pillar, then sorts
+    # high-priority first, then filename for a stable order within a bucket.
+    # Runbooks (with_status=False) have no pillar and all get rank 0, so they
+    # stay in pure filename order as before.
+    entries: list[tuple[str, int, str, str]] = []
     for f in sorted(directory.glob("*.md")):
         if f.name in ("README.md", "INDEX.md", "TEMPLATE.md"):
             continue
@@ -77,11 +92,26 @@ def md_index(directory: Path, with_status: bool) -> list[str]:
             prio = (fm.get("prio") or "normal").lower()
             marker = f" ·{prio}·" if prio in ("high", "low") else ""
             row = f"- [`{f.stem}`](./{f.name}) **{status}**{marker} — {summary}"
-            entries.append((_PRIO_RANK.get(prio, 1), f.name, row))
+            pillar = fm.get("pillar") or _NO_PILLAR
+            entries.append((pillar, _PRIO_RANK.get(prio, 1), f.name, row))
         else:
-            entries.append((0, f.name, f"- [`{f.stem}`](./{f.name}) — {summary}"))
-    entries.sort(key=lambda e: (e[0], e[1]))
-    return [row for _, _, row in entries]
+            entries.append(("", 0, f.name, f"- [`{f.stem}`](./{f.name}) — {summary}"))
+    if not with_status:
+        entries.sort(key=lambda e: (e[1], e[2]))
+        return [row for _, _, _, row in entries]
+    known = {p: i for i, p in enumerate(_PILLAR_ORDER)}
+    def pillar_rank(p: str) -> tuple[int, str]:
+        return (known.get(p, len(known) + (1 if p == _NO_PILLAR else 0)), p)
+    entries.sort(key=lambda e: (pillar_rank(e[0]), e[1], e[2]))
+    rows: list[str] = []
+    current = None
+    for pillar, _, _, row in entries:
+        if pillar != current:
+            n = sum(1 for e in entries if e[0] == pillar)
+            rows.extend(["", f"## {pillar} ({n})", ""])
+            current = pillar
+        rows.append(row)
+    return rows[1:] if rows and rows[0] == "" else rows
 
 
 def docstring_first_line(init: Path) -> str | None:

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: structural solution space — the axial member, prestress + tensegrity checking, in-tree solvers, SIMP generative fill
+pillar: 3d-design
 prio: high
 model: opus
 blocked-by: cad-sdf-rounding-and-field-export

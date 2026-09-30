@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Export glyph allowlist + lint (Reto, 2026-09-14)
 
 Invert the exporter's unicode handling from blacklist-the-failures to

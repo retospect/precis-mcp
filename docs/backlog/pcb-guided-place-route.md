@@ -3,6 +3,7 @@ status: ready
 title: LLM-guided topological place+route for the pcb kind (sketch-as-canonical)
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # LLM-guided topological place+route for the pcb kind (sketch-as-canonical)

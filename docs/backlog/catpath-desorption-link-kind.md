@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # catpath desorption links carry a zero-energy supply convention
 
 Desorption edges are bookkept like H-reservoir supply edges (ΔE = 0), but a

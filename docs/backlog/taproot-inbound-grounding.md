@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: memory-graph
+---
+
 # Ground incoming papers against the claim set (inbound completeness)
 
 Intent (Reto): every new paper is checked support/deny against existing

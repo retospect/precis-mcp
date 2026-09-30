@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Docs currency audit
 
 136 product skills (`src/precis/data/skills/`) unaudited for currency;

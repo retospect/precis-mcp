@@ -2,6 +2,7 @@
 status: draft
 title: "pcb: structured source provenance — pin facts and design decisions cite datasheet/app-note chunks"
 prio: high
+pillar: 3d-design
 ---
 
 # pcb design-source provenance

@@ -1,6 +1,7 @@
 ---
 status: ready
 title: Term taxonomy — one `taxon` ref kind holding measurands and subject classes as a multi-rooted specialises-DAG, replacing three parallel registry tables
+pillar: memory-graph
 prio: high
 model: opus
 ---

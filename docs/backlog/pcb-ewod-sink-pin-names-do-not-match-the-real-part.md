@@ -2,6 +2,7 @@
 status: draft
 title: the EWOD sink's declared pin names match no pad on the real C639448, so 56 of 59 pads are synthesized bounds
 prio: high
+pillar: 3d-design
 ---
 
 # the EWOD sink's declared pin names match no pad on the real C639448

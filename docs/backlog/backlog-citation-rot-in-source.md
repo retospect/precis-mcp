@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: "source docstrings cite deleted docs/backlog/ files — ~60 dangling, no lint catches it"
 ---
 

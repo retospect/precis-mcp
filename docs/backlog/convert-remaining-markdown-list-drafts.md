@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: memory-graph
 title: Convert the remaining 20 drafts' markdown bullet paragraphs to structured lists
 prio: normal
 ---

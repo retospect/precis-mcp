@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: personal
+---
+
 # email — IMAP read + injection-scan quarantine (design-of-record)
 
 > Design-of-record for the `email` kind: a live IMAP adapter for browsing a

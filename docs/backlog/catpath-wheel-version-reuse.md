@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: a hand-passed autocatpath wheel cannot be identified — catpath reuses one version across many commits
 ---
 

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Taproot hub has no write door for `scope` — only `title` can be corrected after mint
+pillar: memory-graph
 model: opus
 ---
 

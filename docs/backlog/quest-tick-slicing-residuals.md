@@ -1,6 +1,7 @@
 ---
 status: idea
 title: quest-tick slicing residuals — requeue-from-checkpoint, stale-stage agentlog finalize
+pillar: quests
 ---
 
 # Quest-tick slicing residuals

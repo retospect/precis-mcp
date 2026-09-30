@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: hexfold sp³ seam lines and seam vertices — joining three or four sheets at an atom
 prio: medium
 model: opus

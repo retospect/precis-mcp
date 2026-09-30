@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Adjudicate — nothing decides whether a reopened claim's contradiction actually holds
+pillar: memory-graph
 prio: high
 ---
 

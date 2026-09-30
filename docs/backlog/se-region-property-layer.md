@@ -1,14 +1,13 @@
 ---
 status: draft
 title: se region property layer — per-region non-geometric properties (hydrophobic, charge, field, optical) as taxonomy-measurand measures on selector-addressed regions; a pocket is a named set of regions and its spec is a defined class
+pillar: 3d-design
 prio: high
 model: opus
 blocked-by: term-taxonomy
 ---
 
 # se region property layer
-
-Pillar: 3d-design
 
 ## Motivation / why
 

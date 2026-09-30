@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: local-compute
 prio: high
 title: Agent workspace containers — persistent workspaces, disposable containers, git in/out
 model: opus

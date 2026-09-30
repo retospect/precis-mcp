@@ -1,6 +1,7 @@
 ---
 status: draft
 title: se (structural envelope) kind — scale-agnostic space planner, suggestive assembly language, manufacturing-mode realization
+pillar: 3d-design
 prio: high
 model: opus
 ---

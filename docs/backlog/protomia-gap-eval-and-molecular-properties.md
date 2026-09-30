@@ -2,6 +2,7 @@
 status: draft
 title: Eval Protomia hands-on, then close the molecular-property gap it exposes
 prio: normal
+pillar: 3d-design
 ---
 
 # Eval Protomia hands-on, then close the molecular-property gap it exposes

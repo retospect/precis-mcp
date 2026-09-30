@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: memory-graph
 title: claim conflict search — every claim hunts its own opposition, at mint and retroactively, with coverage tracked
 model: opus
 ---

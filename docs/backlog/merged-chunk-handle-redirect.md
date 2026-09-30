@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Chunk handle of a merged paper doesn't redirect
 
 `resolve_handle` follows superseded_by for record handles only; a merged

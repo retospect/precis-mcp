@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Skill index caches a partial build forever, so a shed embed can drop slugs out of semantic search until restart
+pillar: memory-graph
 prio: normal
 ---
 

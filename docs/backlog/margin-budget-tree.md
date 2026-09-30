@@ -3,6 +3,7 @@ status: draft
 title: margin budget tree — system-level engineering margin allocated unevenly down the contains tree
 prio: medium
 model: opus
+pillar: 3d-design
 ---
 
 # Margin budget tree (rides the estimate kind)

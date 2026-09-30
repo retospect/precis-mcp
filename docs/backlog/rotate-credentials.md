@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: platform
+---
+
 # Rotate agent_rw, OPENROUTER_API_KEY, Claude OAuth token, anki password
 
 All have leaked (transcripts, shell history, five on-disk copies since July,

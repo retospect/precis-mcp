@@ -3,6 +3,7 @@ status: draft
 title: PCB engine plan — one cost function, seeded simultaneous search, snapshot state
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # The engine plan (2026-08-28)

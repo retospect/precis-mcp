@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: platform
+---
+
 # Windows CI residuals after the skipif pass
 
 (1) Watch `tests/test_render_sandbox.py::test_no_output_is_reported` — a real

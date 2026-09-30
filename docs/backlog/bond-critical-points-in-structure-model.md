@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: 3d-design
+---
+
 # Bond critical points (QTAIM) as a derived property of a DFT calculation
 
 Prompted by Laerte Patera's talk at the OePG-CMD Joint Meeting 2026, Graz

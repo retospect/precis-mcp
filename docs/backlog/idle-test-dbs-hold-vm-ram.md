@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Idle-but-live worktree test DBs hold VM RAM indefinitely
 
 **Status:** open (deferred deliberately — Tier 2 of the 2026-08-21 sweep work)

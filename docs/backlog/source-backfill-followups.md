@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # Source-backfill — unbuilt follow-ups
 
 The backfill core shipped (see the `precis.backfill` package docstring —

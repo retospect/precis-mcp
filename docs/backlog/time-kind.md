@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: platform
+---
+
 # Stateless time/date kind
 
 No time/date/clock kind exists (`src/precis/handlers/calc.py` is the only

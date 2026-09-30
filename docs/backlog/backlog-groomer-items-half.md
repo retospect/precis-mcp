@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Backlog groomer — the work-items half
 
 The gripe → fix_gripe-todo groomer shipped (`src/precis/workers/

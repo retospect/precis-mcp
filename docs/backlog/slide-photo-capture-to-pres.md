@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: personal
+---
+
 # Photo capture of projected slides → `kind='pres'`
 
 IDEA. Live conference note-taking currently loses everything that is only on

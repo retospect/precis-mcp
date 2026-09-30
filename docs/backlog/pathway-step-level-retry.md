@@ -2,6 +2,7 @@
 status: ready
 title: automated step-level re-dispatch for trust-blocked pathway quantities
 prio: medium
+pillar: 3d-design
 ---
 
 # Step-level retry: make per-step trust self-healing

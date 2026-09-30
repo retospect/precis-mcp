@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: quests
+---
+
 # redispatch_candidates always redispatches at the neb tier
 
 A deployed-engine re-score ignores a candidate's own tier-ladder rung: a

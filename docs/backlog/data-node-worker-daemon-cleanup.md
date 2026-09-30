@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Deploy removes the data node's worker venv but leaves its launchd daemon
 
 **Found** 2026-08-14, investigating caspar's stale `host_heartbeat`.

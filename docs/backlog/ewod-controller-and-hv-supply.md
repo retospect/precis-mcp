@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: 3d-design
 title: EWOD dogfood board — Arduino Pro Mini controller, USB-C PD 20 V power + programming, on-board 250 V Cockcroft-Walton supply (rulings 12–14) + two prod-review defects
 prio: high
 ---

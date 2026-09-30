@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: Close the CAD Ask loop — diagnose to apply
 model: sonnet
 ---

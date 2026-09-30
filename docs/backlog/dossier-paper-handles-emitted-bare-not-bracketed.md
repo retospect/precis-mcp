@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: quests
+---
+
 # Dossier prose emits paper handles bare, so they render as dead text
 
 > Found 2026-08-15 verifying the dossier prose rewrite on quest 202469's

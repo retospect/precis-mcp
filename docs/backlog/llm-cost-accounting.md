@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # Llm cost accounting
 
 Grouped 2026-09-26 from 4 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: <one-line intent>
+pillar: <memory-graph | 3d-design | local-compute | quests | personal | platform — docs/roadmap.md>
 prio: <optional — high | normal | low; unset ⇒ normal. Sorts the INDEX and
   the fixer's pick order high-first.>
 model: <optional — sonnet | opus | haiku; unset ⇒ fixer default (claude-sonnet-5)>

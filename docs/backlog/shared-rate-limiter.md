@@ -1,6 +1,7 @@
 ---
 status: in-progress
 title: Shared cross-host rate limiter for outbound external APIs (keyed, two-lane)
+pillar: platform
 ---
 
 # Shared rate limiter — coordinate outbound API access cluster-wide

@@ -3,6 +3,7 @@ status: ready
 title: pcb — lazy netlist (supply/client roles, matching solver), one check surface (DRC+ERC), and four fabric defects folded in as slices
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # pcb — lazy netlist, one check surface, four fabric defects

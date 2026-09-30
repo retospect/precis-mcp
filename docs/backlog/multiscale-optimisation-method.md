@@ -3,6 +3,7 @@ status: draft
 title: multiscale optimisation method — annealed discrete outer, shape-functional inner, preferred-number term
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # Intake routing (added 2026-09-15)

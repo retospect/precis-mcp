@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Finish eradicating the ack-scrape idiom
 
 The structured path exists (`Response.ref_id`/`reused`, `Hub.sibling`);

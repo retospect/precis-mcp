@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # OPENROUTER_API_KEY revealed ~22k/day — the 60 s secrets cache isn't holding
 
 vault.events shows ~15 reveals/minute against a `_CACHE_TTL_SECONDS = 60`

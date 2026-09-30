@@ -2,6 +2,7 @@
 status: draft
 title: The anneal steers by a courtyard it no longer enforces
 prio: medium
+pillar: 3d-design
 ---
 
 # The anneal steers by a courtyard it no longer enforces

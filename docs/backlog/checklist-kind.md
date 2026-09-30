@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: 3d-design
 title: checklist kind — argued, invalidating check ledgers; first instance pcb pre-tapeout
 prio: high
 model: opus

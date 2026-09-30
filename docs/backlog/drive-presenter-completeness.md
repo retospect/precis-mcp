@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Drive presenter completeness + kind-taxonomy audit
 
 Drive shipped; the presenter contract totality + kind cleanup remain.

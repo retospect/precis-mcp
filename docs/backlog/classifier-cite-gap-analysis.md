@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Classifier review + draft cite-gap analysis (Reto want)
 
 Review the classifier system (should it be hierarchical?). Then the

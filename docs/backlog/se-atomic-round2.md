@@ -1,6 +1,7 @@
 ---
 status: draft
 title: se atomic mode round 2 — apply + objective verdicts (nm-kind.md follow-on)
+pillar: 3d-design
 prio: medium
 model: opus
 ---

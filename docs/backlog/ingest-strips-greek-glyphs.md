@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: "ingest silently strips Greek glyphs from some PDFs — μm becomes mm, and the claim looks wrong instead of the source"
 ---
 

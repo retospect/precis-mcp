@@ -1,6 +1,7 @@
 ---
 status: draft
 title: quest dossier as dialectic — hypothesis findings, refuted lifecycle, crosslinked log
+pillar: quests
 prio: normal
 ---
 

@@ -1,6 +1,7 @@
 ---
 status: idea
 title: hardening residuals from the hub-title-200-truncation incident
+pillar: platform
 ---
 
 # Title round-trip assert + MCP staleness banner

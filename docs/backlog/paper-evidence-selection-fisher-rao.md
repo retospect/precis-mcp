@@ -1,6 +1,7 @@
 ---
 status: idea
 title: Investigate task-relevant information-gain evidence selection
+pillar: memory-graph
 ---
 
 # Investigate task-relevant information-gain evidence selection

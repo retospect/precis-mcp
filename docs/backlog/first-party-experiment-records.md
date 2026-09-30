@@ -1,11 +1,10 @@
 ---
 status: idea
+pillar: memory-graph
 title: Widen `experiment` to first-party runs, not only paper-reported ones
 ---
 
 # Widen `experiment` to first-party runs, not only paper-reported ones
-
-Pillar: memory-graph
 
 What: `measures-substrate.md` §3 (blocked-by) specs a new `experiment` ref
 kind that "belongs to exactly one paper (the one that ran it)". Our own

@@ -2,6 +2,7 @@
 status: draft
 title: Nothing detects a shared session MCP that is up but wedged — the recovery design only covers crash and clean exit
 prio: normal
+pillar: platform
 ---
 
 # Nothing detects a shared session MCP that is up but wedged

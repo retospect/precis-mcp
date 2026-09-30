@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # token-review: bash-reflex-nudge misses real traffic; compact-thrash re-reads
 
 Transcript sample (6 largest sessions) shows the nudges don't move behavior:

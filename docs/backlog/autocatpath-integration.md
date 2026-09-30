@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: 3d-design
+---
+
 # Native autocatpath integration — remaining slices
 
 Design-of-record for reaction pathways as first-class structures. Most of

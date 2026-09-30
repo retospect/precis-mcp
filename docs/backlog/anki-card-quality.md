@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: personal
+---
+
 # Anki card quality rules (from Reto's review of live cards)
 
 Dedup definitional clozes across cards — one combined cloze per concept (the

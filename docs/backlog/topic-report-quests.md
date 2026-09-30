@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Topic-report quests — living survey dossiers with weekly taproot-grounded refresh + podcast/Mastodon publish tail
+pillar: quests
 model: opus
 ---
 

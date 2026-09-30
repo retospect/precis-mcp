@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: platform
 title: scripts/inflight classifies the running deploy's render worktree as safe_remove and prints a removal command for it — the likely cause of the 2026-09-27 mid-deploy FileNotFoundError
 ---
 

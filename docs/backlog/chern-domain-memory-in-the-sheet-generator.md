@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # Arbitrary memory storage written into a gate-defined Chern domain pattern
 
 IDEA. The hexfold sheet generator builds graphene/hBN-family layer stacks as

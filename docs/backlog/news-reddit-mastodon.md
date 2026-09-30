@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: personal
+---
+
 # News: Reddit / Mastodon sources
 
 The framework exists (news_sources registry + news_poll worker,

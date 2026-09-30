@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # serverInfo.title not set (blocked upstream)
 
 MCP spec 2025-06-18 §A1 recommends a serverInfo.title; FastMCP(...) takes no

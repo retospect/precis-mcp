@@ -2,6 +2,7 @@
 status: ready
 title: a policy gate that crashes mid-scan must not look like a policy violation
 prio: high
+pillar: platform
 ---
 
 # Policy gates must distinguish "scan aborted" from "scan found something"

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: quests
+---
+
 # Quest layer: link real quests + activate the loop
 
 All slices shipped; the loop is dormant (quests paused 2026-07-16). Do:

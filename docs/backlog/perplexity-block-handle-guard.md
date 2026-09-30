@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: platform
+---
+
 # Guard `get(kind='perplexity-*', id=…)` against a search block handle
 
 **Found 2026-09-13, cost a real ~$0.50 report.** `search(kind='perplexity-research', q=…)`

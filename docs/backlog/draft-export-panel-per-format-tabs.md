@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: Draft export UI — Check/Export split + per-format tabs
 ---
 

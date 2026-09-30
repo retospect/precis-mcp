@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: platform
 title: fix lane after 08f79a3a — agent-lane container env (gr346813 fix, needs deploy); brief/doctor quality findings; gr225018 residue; worker_logs ts index
 prio: low
 model: sonnet

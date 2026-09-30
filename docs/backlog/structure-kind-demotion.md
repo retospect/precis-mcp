@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: 3d-design
+---
+
 # structure kind → internal import filter (staged demotion)
 
 Reto, 2026-09-14: se is now the origin of atoms; structure is "arguably

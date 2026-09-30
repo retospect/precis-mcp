@@ -4,6 +4,7 @@ title: precis_surface — lattice-agnostic smooth-surface kernel alongside se, w
 prio: high
 model: opus
 blocked-by: hexfold-integration
+pillar: 3d-design
 ---
 
 # precis_surface

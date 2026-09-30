@@ -2,6 +2,7 @@
 status: draft
 title: risk() is a MAX over margins, so any money term is a free tie-breaker against every non-maximal constraint
 prio: normal
+pillar: 3d-design
 ---
 
 # risk() is a MAX over margins, so any money term is a free tie-breaker

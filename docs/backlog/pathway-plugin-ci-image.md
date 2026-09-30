@@ -1,3 +1,8 @@
+---
+status: ready
+pillar: platform
+---
+
 # pathway plugin has no CI coverage until the dev image carries autocatpath
 
 `tests/test_pathway_plugin.py` opens with importorskip("autocatpath"); the

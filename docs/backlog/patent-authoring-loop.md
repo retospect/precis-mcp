@@ -1,3 +1,8 @@
+---
+status: in-progress
+pillar: quests
+---
+
 # Patent authoring — the freedom-to-operate writing loop
 
 > The **dynamic authoring loop** on top of the static patent genre in

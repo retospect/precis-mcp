@@ -1,6 +1,7 @@
 ---
 status: ready
 title: numeric-ref verbs take one id — 58% of tool calls sit in singleton loops, and the batch form agents try crashes
+pillar: platform
 prio: high
 ---
 

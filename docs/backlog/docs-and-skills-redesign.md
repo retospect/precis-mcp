@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Skills redesign — remaining: quality gates, schema includes, authoring triplet
 
 The substrate SHIPPED (present-state: `src/precis/handlers/skill.py` +

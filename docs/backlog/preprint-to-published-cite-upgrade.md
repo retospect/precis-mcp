@@ -2,6 +2,7 @@
 status: idea
 title: Upgrade a cited preprint to its published version in the taproot, soft-retiring the preprint
 prio: normal
+pillar: memory-graph
 ---
 
 # Upgrade a cited preprint to its published version in the taproot, soft-retiring the preprint

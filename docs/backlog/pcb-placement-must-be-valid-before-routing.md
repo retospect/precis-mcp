@@ -2,6 +2,7 @@
 status: draft
 title: Placement validity must be a gate before routing starts, and it must refuse rather than warn
 prio: high
+pillar: 3d-design
 ---
 
 # An invalid placement must not reach the router

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: "71 handler kwargs silently dropped by tools/core.py's put/edit — triage for the parity ratchet"
+pillar: platform
 ---
 
 # The parity ratchet found 71, not 4

@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Auto-reap deleted a LIVE session's worktree twice — unlock-before-check + non-pid locks read as removable
+pillar: platform
 model: opus
 ---
 

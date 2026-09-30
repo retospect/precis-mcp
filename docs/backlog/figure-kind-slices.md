@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # figure kind — deferred slices (slice 1 shipped)
 
 Ordered by value: PNG/animated-raster export (a figure_render derived-lane

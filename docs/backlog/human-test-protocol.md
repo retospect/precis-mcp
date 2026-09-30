@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: platform
 title: Human test protocol for the web UI — task scripts beside the manual, mechanical + naive-agent tiers
 prio: normal
 model: sonnet

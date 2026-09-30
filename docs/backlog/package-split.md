@@ -4,6 +4,7 @@ title: package split — carve stable kernels out of the precis-mcp wheel (uv wo
 prio: normal
 model: opus
 snooze-until: 2026-10-16
+pillar: platform
 ---
 
 # package split — carve stable kernels out of the precis-mcp wheel

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: personal
+---
+
 # briefing_audio.py uses flat-hourly retry backoff — same latency class as cast_audio bug just fixed
 
 ## What and why

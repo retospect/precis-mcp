@@ -1,6 +1,7 @@
 ---
 status: draft
 title: an se test fixture that runs ops through prepare AND finish, so phase bugs fail a test
+pillar: 3d-design
 prio: normal
 ---
 

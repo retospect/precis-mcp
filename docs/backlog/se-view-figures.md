@@ -1,6 +1,7 @@
 ---
 status: in-progress
 title: viz3d engine + view figures — cached stick/envelope renders of design objects in drafts
+pillar: 3d-design
 prio: high
 model: opus
 ---

@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: quests
 prio: high
 ---
 

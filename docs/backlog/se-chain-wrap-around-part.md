@@ -1,13 +1,12 @@
 ---
 status: draft
 title: wrap_chain — derive a helix path from a carbon part's envelope instead of an arbitrary waypoint path
+pillar: 3d-design
 prio: high
 blocked-by: hexfold-integration
 ---
 
 # wrap_chain — a helix path derived from a part, not authored freehand
-
-Pillar: 3d-design
 
 Evidence: peer session DNA-SE, 2026-09-30. A helix today can be authored on
 any waypoint path an agent supplies, but nothing *derives* that path from a

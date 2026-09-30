@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: personal
+---
+
 # `voice` — local speech ↔ text kind
 
 > Status: **draft spec**. Not yet scheduled. Sized as a single phase, optional

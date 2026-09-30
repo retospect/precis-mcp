@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: 3d-design
 title: cad — from part modeler to machine spec (instancing, ports, joints, motion)
 model: opus
 ---

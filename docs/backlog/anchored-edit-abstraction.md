@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Anchored-edit region resolution — a design call, not an extraction
 
 Corrected premise (2026-07-23): only plaintext.py and python.py implement

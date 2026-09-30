@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: nanopub approve-form prefill picks tangential quotes over the load-bearing sentence
 model: sonnet
 ---

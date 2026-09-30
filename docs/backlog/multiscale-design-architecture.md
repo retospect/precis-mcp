@@ -3,6 +3,7 @@ status: draft
 title: multiscale design architecture — one geometry currency, layered cost terms; the map of the design-space programme
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # Multiscale design architecture — the map

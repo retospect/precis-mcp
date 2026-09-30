@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # Ground the `ewod-oil` constraint lexicon in primary sources
 
 `precis_chem.constraints.EWOD_OIL` (shipped ff2a4c79) carries a requirement

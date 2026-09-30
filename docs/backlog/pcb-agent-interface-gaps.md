@@ -3,6 +3,7 @@ status: draft
 title: The pcb MCP surface — what the agent sees, what it ought to see
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # The agent-facing pcb surface

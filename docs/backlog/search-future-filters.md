@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Future search-filter affordances
 
 > Status: **deferred** — captured here so the simple `q=` / `tags=` /

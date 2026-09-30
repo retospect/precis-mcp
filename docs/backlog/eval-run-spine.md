@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: local-compute
 title: Eval-run spine — make agent runs joinable, replayable and non-perishable
 prio: high
 ---

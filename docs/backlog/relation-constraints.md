@@ -1,6 +1,7 @@
 ---
 status: ready
 title: relation constraints as data — domain/range kinds, functional, transitive, acyclic on the relations table, checked once at the link door
+pillar: memory-graph
 prio: normal
 model: sonnet
 ---

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # Taproot self-plagiarism — cross-draft hub reuse detection
 
 A claim hub's canonical wording reused verbatim across two of our own

@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Dark features — activation steps not recorded elsewhere
 
 Shipped-dark features whose flip steps live in no other backlog item or

@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: memory-graph
 title: fisheye everywhere — the eye ladder on every kind, rings for taxon/skill/memory, and a focus page for any handle
 prio: high
 model: opus

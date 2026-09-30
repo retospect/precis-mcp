@@ -1,6 +1,7 @@
 ---
 status: idea
 title: cross-worktree reads — the harness refuses them and the brief told agents to do it anyway
+pillar: platform
 ---
 
 # Cross-worktree reads — refused by the harness, advertised by the brief

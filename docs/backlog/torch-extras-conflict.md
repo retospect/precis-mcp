@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # catalyst-gpu vs dormant dft-ml torch pins — latent venv conflict
 
 Both extras target spark; uv universal resolution resolves all extras

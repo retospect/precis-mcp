@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Turn-as-job routing (delegate-on-confidence) + context curation — WIP design conversation; decisions recorded in ADR 0051
+pillar: local-compute
 ---
 
 # Turn-as-job routing + context curation

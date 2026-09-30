@@ -1,6 +1,7 @@
 ---
 status: draft
 title: Render-sandbox Phase 2 — network + filesystem jail
+pillar: platform
 model: opus
 ---
 

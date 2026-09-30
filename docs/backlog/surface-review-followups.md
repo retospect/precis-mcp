@@ -1,6 +1,7 @@
 ---
 status: ready
 title: surface-review follow-ups — resume pointer for pass #1's findings
+pillar: platform
 prio: high
 ---
 

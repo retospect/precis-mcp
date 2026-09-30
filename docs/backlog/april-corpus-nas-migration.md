@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # April-era paper corpus never migrated to the NAS canonical corpus
 
 5,335 PDFs + extracts from `caspar:/opt/nfs/shared/data/papers` (citekey

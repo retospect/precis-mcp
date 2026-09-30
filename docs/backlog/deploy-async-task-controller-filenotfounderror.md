@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Deploy: the agent-image build task died on the controller with `[Errno 2]` mid-poll, before the host watchdog fired — retries ladder and diagnostics never ran
 
 `scripts/deploy 6008588c4851fd6063d62815e580eabb79222269 --pinned`, 2026-09-27

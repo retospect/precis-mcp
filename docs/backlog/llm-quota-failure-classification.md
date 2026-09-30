@@ -1,5 +1,6 @@
 ---
 status: ready
+pillar: local-compute
 title: Router-owned LLM failure classification, reactive quota snapshot, deferred retry for sync surfaces
 prio: normal
 model: sonnet

@@ -2,6 +2,7 @@
 status: draft
 title: The placer's only geometric obstacle is a mounting hole — authored copper is invisible to it (the side-blind courtyard half landed 2026-09-29)
 prio: high
+pillar: 3d-design
 ---
 
 # The placer cannot see most of what it must avoid

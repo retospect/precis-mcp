@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # Which deploys ran without 14 vault secrets, 18–22 Aug?
 
 - **Status**: open, filed 2026-08-22. Needs investigation before it can

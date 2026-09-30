@@ -3,6 +3,7 @@ status: draft
 title: "pcb: congestion-driven spread — place↔route iteration with a spatial congestion map"
 prio: high
 model: opus
+pillar: 3d-design
 ---
 
 # pcb congestion-driven spread

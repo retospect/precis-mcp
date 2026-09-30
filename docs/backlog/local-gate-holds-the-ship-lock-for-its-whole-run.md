@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: platform
+---
+
 # The local gate holds the ship lock for its whole run, and serialises the fleet
 
 `scripts/ship`'s LOCAL gate path takes the ship lock before the gate and holds

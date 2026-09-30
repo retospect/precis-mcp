@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: memory-graph
+---
+
 # `good_search` — agentic broad-retrieval as a coordinator campaign
 
 > The agentic tier of the broad-retrieval ladder. Tier 1

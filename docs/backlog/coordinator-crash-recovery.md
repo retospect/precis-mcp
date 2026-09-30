@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # coordinator executor still depends on the wall-clock sweep
 
 Tier-B lease authority shipped (622dd03c) for

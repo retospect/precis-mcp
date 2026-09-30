@@ -1,12 +1,11 @@
 ---
 status: draft
+pillar: local-compute
 title: A standing graph-maintenance queue that soaks up idle local capacity
 prio: high
 ---
 
 # A standing graph-maintenance queue for idle local capacity
-
-Pillar: local-compute
 
 Reto, product-plan review 2026-09-30: "we use the box continuously to
 improve the graph — adding summaries, inserting, meshing, linking,

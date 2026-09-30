@@ -3,6 +3,7 @@ status: draft
 title: plan_tick context cut — pre-fetch to shrink turns, exponential re-tick cooldown
 model: opus
 due: 2026-08-24
+pillar: quests
 ---
 
 # plan_tick context cut (P2 of the 2026-08-15 zombie-loop plan)

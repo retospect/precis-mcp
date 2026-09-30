@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # Backlinks panel — text-scan coverage + deep page
 
 The Meta-tab "Referenced by" panel shipped over the materialized

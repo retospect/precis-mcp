@@ -2,11 +2,10 @@
 status: draft
 title: pcb — an authored or imported keepout region constrains nothing, silently
 prio: high
+pillar: 3d-design
 ---
 
 # pcb: `ftype='keepout'` is accepted and does nothing
-
-Pillar: 3d-design
 
 Evidence: peer session easyeda-pcb-round-trip, 2026-09-30. `ftype='keepout'`
 is an accepted `pcb_features` value — `src/precis/migrations/0047_pcb_kind.sql`

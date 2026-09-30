@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: memory-graph
+---
+
 # OA acquisition + structured ingest + external search (roadmap)
 
 Root cause of "OA but we don't have it": publisher-side TLS/IP-reputation

@@ -1,3 +1,8 @@
+---
+status: draft
+pillar: platform
+---
+
 # `_pending_*` request state on singleton handlers — cross-request leak/race exposure
 
 Handlers are process-lifetime singletons (one `Hub` per server,

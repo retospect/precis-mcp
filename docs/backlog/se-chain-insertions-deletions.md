@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: 3d-design
+---
+
 # se chain insertions/deletions — the global twist correction real origami needs
 
 IDEA. the shipped nucleic-acid domain (`precis_se.chain`) stores a

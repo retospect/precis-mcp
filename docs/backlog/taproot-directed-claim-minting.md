@@ -1,6 +1,7 @@
 ---
 status: idea
 title: Taproot directed claim minting — follow-ons (MCP verb, qualify eval)
+pillar: memory-graph
 model: opus
 ---
 

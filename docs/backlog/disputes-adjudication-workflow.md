@@ -1,5 +1,6 @@
 ---
 status: draft
+pillar: memory-graph
 title: "disputes adjudication — a claim about two claims, five verdicts, and the derived `contradicts`"
 model: opus
 ---

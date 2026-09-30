@@ -1,5 +1,6 @@
 ---
 status: idea
+pillar: platform
 title: DB-resident settings — deferred key migrations (move when touched)
 ---
 

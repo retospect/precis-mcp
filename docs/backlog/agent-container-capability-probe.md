@@ -1,3 +1,8 @@
+---
+status: idea
+pillar: local-compute
+---
+
 # Deploy the container capability probe before trusting the container flip
 
 `container_capability_ok()` (auth + bin-info + image-inspect, ~60 s cache,
