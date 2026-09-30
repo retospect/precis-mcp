@@ -594,6 +594,7 @@ no ERROR. No `__bool__`.
 | `euler.closed_unreachable` | ERROR | declared closed, count cannot reach 6χ |
 | `euler.residual` | WARN when ≠0, INFO when 0 | per sheet (0.2): `Σ(6−n) + Σ B_expected − 6χ` (`data.residual`, `data.sheet`) |
 | `euler.chi` | INFO | χ and genus per sheet |
+| `net.components` `[impl 0.2]` | INFO at 1, WARN above | physical pieces of the net — union-find over **all** bonds including `bond`-verb attachments, so a `[2+2]` bud is one piece though it is two sheets (`data.n`, `data.sizes`) |
 | `internal.euler` | ERROR | `V−E+F ≠ χ` per sheet, or combinatorial `B` inconsistent (library bug) |
 | `valence.over` / `valence.under` | ERROR / WARN | atom with >3 (or 4 after `bond`) / <3 bonds not on a rim |
 | `cut.overlap` | ERROR | two surgeries' disks intersect and are not a glyph; also an opening/collar disk that spans the tube circumference or clips an existing rim |

@@ -96,6 +96,55 @@ def _findings_from_net(net: Net) -> list[Finding]:
                 ),
             )
         )
+    # physical connectivity.  `net.sheet_atoms` below is NOT this number:
+    # a sheet deliberately breaks at every bond-verb attachment, so a
+    # [2+2] bud is two sheets in one object and `len(sheets)` can never
+    # answer "is this net one piece?".  `net.bonds` does carry the attach
+    # edges (build.py appends them to both `bonds` and `attach_bonds`),
+    # so union-find over it is the physical question.  Reported because a
+    # spec that simply never joins its primitives used to pass clean --
+    # every per-component finding was emitted separately and nothing said
+    # the net was in pieces.
+    if net.atoms:
+        # net.atoms is a tuple indexed by ordinal, and bond endpoints are
+        # those same ordinals.
+        parent: dict[int, int] = {o: o for o in range(len(net.atoms))}
+
+        def _root(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for bi, bj, _o in net.bonds:
+            ri, rj = _root(bi), _root(bj)
+            if ri != rj:
+                parent[ri] = rj
+        comp_sizes: dict[int, int] = {}
+        for atom_ord in range(len(net.atoms)):
+            root_ord = _root(atom_ord)
+            comp_sizes[root_ord] = comp_sizes.get(root_ord, 0) + 1
+        n_comp = len(comp_sizes)
+        sizes_desc = sorted(comp_sizes.values(), reverse=True)
+        out.append(
+            Finding(
+                "net.components",
+                Severity.INFO if n_comp == 1 else Severity.WARN,
+                "net is one connected piece"
+                if n_comp == 1
+                else (
+                    f"net is {n_comp} disconnected pieces "
+                    f"({', '.join(str(s) for s in sizes_desc)} atoms) -- "
+                    "nothing joins them, so this is a set of parts rather "
+                    "than an assembly; add the fuse/bond/seam that was "
+                    "meant to connect them"
+                ),
+                data=(
+                    ("n", n_comp),
+                    ("sizes", ",".join(str(s) for s in sizes_desc)),
+                ),
+            )
+        )
     # ring census + counting law
     pn: dict[int, int] = {}
     # k>=3 seam faces belong to no sheet and to no census (SPEC 6.3); their

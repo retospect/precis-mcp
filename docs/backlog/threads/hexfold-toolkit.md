@@ -18,7 +18,8 @@ T-handle bearing test piece, four dogfood-correctness gripes and the
 instrumentation-leg horizon item; then re-ranked again when gr456213 turned
 out to be the write-side cause of the corruption the shipped check only
 detects, and gr458713 arrived from Reto reading the viewer — note at the
-bottom)
+bottom; 22:30Z dogfood round then shipped gr458713, confirmed gr454650
+harder, and closed gr454563)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Do next
@@ -72,53 +73,39 @@ bottom)
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
    reading surface to prove it wrote nothing with.
-4. **gr454650** — a `len=1` armchair tube reports 20 dangling atoms per
-   rim instead of 10 (both rims share the one period), so the fuse to a
-   cap fails on a spec that is correct. Ranked above gr458713 on blast
-   radius: a wrong dangling count feeds every fuse decision that touches a
-   one-period tube, where gr458713 lets a wrong spec pass but never makes
-   a right one fail. Related: 5 and 6, all three from the 2026-09-28
-   naive-agent dogfood.
-5. **gr458713** — a hexfold spec whose net is two or more disconnected
-   pieces reports `ok`. Found by Reto in the viewer on
-   `hx-sheet-tube-trial`, whose spec joins a tube to a cap and never joins
-   the sheet to anything: one se block, one bound structure, two loose
-   objects, every finding INFO. §13 has no component-count code, and se
-   cannot cover for it — `view='validate'` warns `unconnected_port` but
-   sees one block, so it can never distinguish a two-component structure
-   from a one-component one. Cheap: `patch.euler_components()` already
-   exists in `build.py` as a surgery invariant and is never reported, so
-   this is one new code (`net.components`), and the workflow it protects
-   is the one Reto named as the 3D goal — top-down spec, then pick and
-   join until it works. Third time this thread has paid for a clean report
-   that was not evidence, which is the same lesson as the re-rank note
-   below.
-6. **gr454563** — the parser silently accepts unknown primitive keywords
-   (`length=` instead of `len=`), so a typo surfaces as an unrelated
-   `fit.unsolvable`/`port.mismatch` error pointing away from the defect.
-   Cheap parse-time fix; cost a naive-agent dogfood 2 of 19 calls.
-7. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+4. **gr454650** — **confirmed by prod dogfood 2026-09-30, and the symptom
+   is worse than the gripe says.** A `len=1` armchair tube fused to
+   `cap(5,5)` does not fail: it succeeds and mints five **four-membered
+   rings** along the seam (`seam.rings {4: 5, 6: 5}`), with
+   `euler.residual 10` and `t.in` misreported as a mixed rim when SPEC 7
+   says `tube(n,n)` ends are armchair `("a", 2n)`. Positive control in the
+   same session: `len=3` through the same cap gives `{6: 10}` and no
+   residual, so it is specifically a `len=1` defect. Ranked 4 because a
+   correct spec silently producing cyclobutanes is a wrong answer a caller
+   cannot see without reading the ring census — strictly worse than
+   gr458713's class, which only let a wrong spec pass.
+5. **gr454488** — five residuals from the 2026-09-28 dogfood: every
    `generate` block trips `mode_binding_mismatch` because generate never
    sets mode; sheet rim port direction is centroid noise; the persisted
    build record drops geometry findings the check-mode echo has; "dry-run"
    wording survives past its rename; generator-declared measures claim
    `origin=user`. Five independent one-line fixes, bundled because one
    dogfood found all five.
-8. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+6. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
    `trust_measured`, which is the entire point of the catalogue.
-9. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+7. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
-   stick-rung number can be believed — including 8's re-measurements and
+   stick-rung number can be believed — including 6’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
-10. **Housekeeping: gr456203 and gr456212** — moved here from "No action
-    needed" 2026-09-30, because a drift report showed both are still
-    `STATUS:open` on prod while this file claimed otherwise. They were
-    auto-diagnosed as already fixed; the work is to verify that against
-    main and close them, not to write code. Listed as work because
-    "verify and close" is work until someone does it.
+8. **Housekeeping: gr456203 and gr456212** — moved here from "No action
+   needed" 2026-09-30, because a drift report showed both are still
+   `STATUS:open` on prod while this file claimed otherwise. They were
+   auto-diagnosed as already fixed; the work is to verify that against
+   main and close them, not to write code. Listed as work because
+   "verify and close" is work until someone does it.
 
 ## Horizon
 
@@ -143,12 +130,12 @@ bottom)
 5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 8, since a
+   catalogue's third row type exists for. Waits on Do-next 6, since a
    motif measured at one extent has the same defect the radius had.
 7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 9.
+   clearance stub is gated on Do-next 7.
 8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
@@ -199,6 +186,20 @@ bottom)
   `composite_part_stolen` finding, naming both composites. **The cause is
   Do-next 2** (gr456213); shipping the detector without it means new
   corruption is reported rather than prevented.
+- **gr458713** — SHIPPED 2026-09-30 in the 22:30Z dogfood round as
+  `net.components` (INFO at one piece, WARN above) on the hexfold check
+  report, documented in `spec.md` §13. The obvious implementation is
+  wrong and the test file says why: a "sheet" breaks at every bond-verb
+  attachment per §6.3, so `len(net.sheet_atoms)` calls the library's own
+  `sheet_bud_22` nanobud disconnected. Connectivity follows `net.bonds`,
+  which carries the attach edges. That bonded-bud case is the
+  load-bearing test, not the disconnected one. Verified on prod against
+  the exact spec behind Reto's report: `net is 2 disconnected pieces
+  (240, 110 atoms)`, and 240 + 110 = 350, the design's atom count.
+- **gr454563** — REFUTED 2026-09-30 by the same round: the parser now
+  raises `5:13: unknown parameter 'length' for tube — known: hand, len,
+  m, n`, which is the remedy the gripe asked for. Closed. Whoever fixed
+  it never linked it, which is why it sat ranked for two days.
 - **`hx-sheet-tube-trial`** — not a defect. Reto read it in the viewer as
   a sheet plus a blob; its four-line spec fuses tube to cap and never
   joins the sheet to anything, so two loose components in one se block is
