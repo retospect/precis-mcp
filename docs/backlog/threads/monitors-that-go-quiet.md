@@ -8,28 +8,30 @@ since the last sha with a real shard verdict, and qland runs ruff+mypy before
 it merges. What remains is the two fleet signals that lie by omission — a
 host-liveness detector whose evidence window empties itself, and a worker host
 no detector can see — plus one held decision on how far behind its verdict
-main may drift before a qland is refused.
+main may drift before a qland is refused. The container host's forensics are
+answered as of 2026-09-30, before the 30-day prune removed them; what it
+turned up (an unattributable identity claiming and failing prod jobs) is
+bigger than this thread and is flagged on the Horizon for an owner.
 **Last reviewed:** 2026-09-30
 **Worktree:** `monitors-that-go-quiet`
 
 ## Do next
 
-1. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — first
-   only because its evidence expires: re-measured 2026-09-30, the host's
-   `worker_logs` rows are down from 211K to 30.7K and its last row
-   (2026-09-09) is pruned around **2026-10-09**, after which nothing records
-   that it ran at all — it has no `host_heartbeat` row either. The design
-   question (attributability for a non-fleet identity writing to prod) is not
-   urgent; dumping the surviving rows somewhere durable is, and is cheap. Do
-   that part first, then rank the rest normally.
-2. **backlog/host-dark-ages-out-with-worker-logs-retention.md** — the
+1. **backlog/host-dark-ages-out-with-worker-logs-retention.md** — the
    host-dark lookback equals worker_logs retention, so a host dark longer
    than retention becomes permanently invisible: the alert ages out because
    the evidence was deleted. Prevents a broken host reading as
-   decommissioned. Specced down to code 2026-09-30 (option 1, the explicit
-   retire marker; the shape and a prod re-read that confirms nothing needs
-   backfilling are in the item) — so it is ready to write, and sits here
-   rather than first only because it is latent with no incident.
+   decommissioned. First because it is the only item here specced down to
+   code: option 1 (explicit retire marker) is chosen, the edit list is in the
+   item, and a prod re-read confirms nothing needs backfilling — zero hosts
+   would page when the bound is dropped.
+2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+   the attributability journal: one event when a non-fleet identity starts
+   writing to prod, carrying whatever provenance exists. The investigation
+   half is CLOSED as of 2026-09-30 (answers in the item, read before the
+   prune took them), so what is left is the monitor. Second because the
+   finding it rests on is now evidence rather than suspicion, but nothing is
+   specced yet.
 3. **backlog/main-stays-gated.md** — down to one follow-on and it is a
    question, not a task: how far behind its last shard verdict main may drift
    before `scripts/ship --quick` refuses rather than warns. Refusing too eagerly
@@ -39,6 +41,14 @@ main may drift before a qland is refused.
 
 ## Horizon
 
+0. **A guard on whether an ephemeral identity may claim jobs at all** — ask 2
+   of the container item, and unfiled as its own thing because it may not
+   belong here: it is prod-work integrity, not a monitor. Evidence from the
+   2026-09-30 forensics: the container claimed 53 nursery jobs and failed all
+   53, plus 16 axis jobs likewise, under an identity nobody can contact,
+   alert on, or trace once `worker_logs` prunes. Needs an owner thread before
+   it can be ranked — flagged here so it is not lost with the item whose
+   investigation half just closed.
 1. **backlog/alert-failure-id-registry.md** — status ready; stable failure
    ids make "did host-dark fire, for which host" addressable instead of SQL
    archaeology. Leverage over Do-next 1–2 and shippable now.

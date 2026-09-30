@@ -24,16 +24,47 @@ consequence is that this worker ran for ten days, wrote a fifth of
 melchior's log volume, and then stopped, with no surface reporting either
 event.
 
-**What is not known, and matters:**
+## Answered 2026-09-30, from the surviving rows
 
-- Whose container was it? A local compose stack (the gr331348 writer was
-  exactly that — "a stale local compose stack"), a CI container, or
-  something on a fleet host.
-- Was it claiming and executing *jobs*? Log volume alone does not say. A
-  container silently claiming prod work for ten days is a different
-  problem from one that only logged.
-- Did it stop on 2026-09-09 because someone tore it down, or because it
-  broke?
+Read before the prune (see the deadline below). All three open questions are
+now answered except the identity of the operator.
+
+**It was claiming and executing prod jobs — not merely logging.** 23.8K of its
+rows are `runner` pass rows, and the claim lines are explicit: batches like
+`summarize:rake-lemma claimed=32 ok=32 failed=0` alongside
+`axis:open-question claimed=16 ok=0 failed=16` and
+`nursery claimed=53 ok=0 failed=0`. So an unattributable container did not just
+take prod work for nine days, it took work it then failed wholesale — 53
+nursery jobs claimed and none completed. This is the part that makes the guard
+question below concrete rather than hypothetical: the cost of letting an
+ephemeral identity claim is not noise, it is claimed-and-dropped work with
+nobody to ask about it. (Per-job attribution could not be cross-checked: there
+is no `jobs` table — a job is a ref — so job-level ownership lives in ref meta
+and was not examined.)
+
+**It ran a full worker, not a test harness or CI step.** 24 distinct passes,
+including `scheduler`, `sweeper`, `nursery`, `corpus_reconcile`,
+`health_digest` and `heartbeat` — the system-worker set, the same shape a fleet
+node runs. 28.9K INFO, 1.3K WARNING, 423 ERROR.
+
+**It stopped cleanly, it did not break.** Final rows, 2026-09-09 07:31 UTC:
+`signal 15 received; draining (batch ends, streams abort)` → `stop signal
+received; exiting loop`. SIGTERM, graceful drain. Something or someone shut it
+down deliberately. Uptime 2026-08-31 17:28 → 2026-09-09 07:31, 9.4 days.
+
+**Provenance, such as it is.** Two WARNINGs in its last hour say the `claude`
+binary was not found on an LLM failover attempt — a fleet host has it, so this
+was very likely not one. Its first rows are `db_log_handler` warnings about its
+own logging setup rather than any startup banner, so nothing records who
+launched it. `payload` carries only pass bookkeeping (`claimed`, `ok`,
+`failed`, `handler`, `error_class`, `error_msg`, `traceback`) — no image tag,
+no compose project, no operator. Earlier in its last hour it logged two bursts
+of pgbouncer connection failures and recovered, which places it outside the
+cluster's own network path but is not an identification.
+
+**Still unknown:** whose container it was. Nothing in `worker_logs` names the
+launcher, and that is the gap the ask below is about — the answer was never
+recorded anywhere, which is the point.
 
 **The evidence is being deleted, and there is a date on it.** Re-measured
 2026-09-30, one day after the table above: the row count is down from 211K to
@@ -51,13 +82,20 @@ removes the evidence a question depends on. If the answers are wanted, dump the
 surviving rows somewhere durable first; that is cheap and can happen before any
 design decision.
 
-**Ask.** Not "alert on container hosts" — the exclusion is right. Rather:
-a container-identity worker that writes to prod `worker_logs` at this
-volume should be *attributable*. Something that records "a non-fleet
-identity is writing" once, with whatever provenance is available
-(`meta`, boot ids, the first log line), so the question above is
-answerable later without forensics. Possibly also a guard on whether an
-ephemeral identity may claim jobs at all.
+**Ask.** Not "alert on container hosts" — the exclusion is right. Two
+things, and after the findings above the second is the more important:
+
+1. A container-identity worker that writes to prod `worker_logs` should be
+   *attributable*: one journalled event when a non-fleet identity starts
+   writing, carrying whatever provenance exists (image, compose project,
+   boot id, the launching command) so "whose container was it" is answerable
+   without forensics and without racing the pruner.
+2. **A guard on whether an ephemeral identity may claim jobs at all.** This
+   one now has evidence: the container claimed 53 nursery jobs and failed all
+   53, plus 16 axis jobs likewise. Work claimed by an identity that cannot be
+   contacted, cannot be alerted on, and vanishes from the logs 30 days later
+   is worse than work left unclaimed. A refusal is cheap; the current
+   behaviour is not.
 
 **Owner anchors:** `src/precis/workers/nursery.py::_detect_host_dark`
 (the `!~ '^[0-9a-f]{12}$'` belt and the `meta.ephemeral` stamp),
