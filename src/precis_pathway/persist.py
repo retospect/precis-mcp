@@ -127,6 +127,14 @@ def persist_result(
 
     def _do(c: Any) -> None:
         store.stamp_ref_meta(ref_id, meta, conn=c)
+        # The dispatched-job path seeds the ref as ``pathway <slug>
+        # (computing)`` because no artifact exists yet, and until 2026-09-30
+        # nothing ever rewrote it: 697 of prod's 701 pathway refs carried a
+        # "(computing)" title, including all 528 that were ``status: ready``.
+        # An agent listing pathways reads the title, so every finished run
+        # advertised itself as still running. The in-process path already
+        # inserts this exact title, so re-setting it there is a no-op.
+        store.update_ref(ref_id, title=pathway_title(artifact), conn=c)
         store.chunks.replace_body_chunk(
             ref_id, artifact["methods_md"], chunk_kind=BODY_KIND, conn=c
         )

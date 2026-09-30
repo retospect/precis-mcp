@@ -96,7 +96,16 @@ own item); they become items as each comes into reach.
 
 ## Parked
 
-- (none beyond Horizon's stated waits)
+- **gr458944** — pathway titles. Dogfooding this thread's surface on prod
+  2026-09-30 found 697 of 701 pathway refs titled "(computing)", including
+  all 528 that were `status: ready`: the dispatched-job path seeds that
+  placeholder and completion never replaced it, so every finished run
+  advertised itself as still running. The write-path half is fixed and
+  mutation-verified; parked here because neither remaining half is mine —
+  the 697-row backfill is a prod title write that wants Reto's word, and
+  the failed-path retitle lives in `quest/loop.py`, which sibling sessions
+  are editing today. Core cannot reuse `pathway_title` (plugin-owned), but
+  it does not need to: the failed case is a suffix swap.
 
 ## No action needed
 

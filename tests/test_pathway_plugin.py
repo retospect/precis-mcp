@@ -1118,6 +1118,46 @@ def _store_synthetic_pathway(store: Store, slug: str, *, element: str) -> int:
     return int(ref.id)
 
 
+def test_persist_result_replaces_the_computing_placeholder_title(
+    pathway_store: Store,
+) -> None:
+    """A dispatched run seeds `pathway <slug> (computing)` because no artifact
+    exists yet; completion must replace it. It did not until 2026-09-30, so 697
+    of prod's 701 pathway refs advertised themselves as still computing — 528
+    of them `status: ready`. The fixture above cannot catch this: it seeds the
+    *final* title, which is the in-process path's shape, not the job path's."""
+    slug = "title-retitle-on-persist"
+    artifact: PathwayArtifact = {
+        "content_key": f"synthetic-{slug}",
+        "autocatpath_version": "test",
+        "config": {"slab": {"element": "Pd"}},
+        "config_snapshot_yaml": "",
+        "results_json": dict(_LEVER_RESULTS),
+        "graph_json": copy.deepcopy(_LEVER_GRAPH),
+        "methods_md": "synthetic fixture — no pipeline run",
+        "structures_extxyz": {},
+        "warnings": [],
+    }
+    with pathway_store.tx() as conn:
+        ref = pathway_store.insert_ref(
+            kind="pathway",
+            slug=slug,
+            title=f"pathway {slug} (computing)",
+            meta={"status": "computing"},
+            conn=conn,
+        )
+
+    persist_result(pathway_store, ref.id, artifact, pathway_slug=slug, ingest=False)
+
+    # By id, not `get_ref(kind='pathway', …)`: the kind is gated on the
+    # `catalyst` extra, which the dev image does not install, so the
+    # kind-resolving getter raises `unknown kind` here.
+    after = pathway_store.fetch_refs_by_ids([ref.id])[ref.id]
+    assert after.meta["status"] == "ready"
+    assert "(computing)" not in after.title
+    assert after.title == pathway_title(artifact)
+
+
 def test_analysis_at_potential_shifts_states_not_barriers() -> None:
     from precis.utils import reaction_graph as analysis
 
