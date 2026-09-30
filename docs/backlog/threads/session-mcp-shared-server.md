@@ -50,6 +50,14 @@ criteria, and the isolation gaps.
    *report* drift, then a restart mechanism, because reporting is not
    restarting and nothing stops a process serving stale modules once it has
    told you it is.
+   Note the ordering trap in step one: the env var only helps a container
+   started after it, and these are running pre-gr457361 code — this thread's
+   own session talks to precis-mcp-dev-49785 (up since 2026-09-29T11:15Z),
+   whose precis-status renders no `source_drift` row at all. Giving them the
+   variable means restarting them, which is exactly what Parked AC5 says
+   must not happen while their sessions hold stdio pipes. So step one is
+   only available for containers created from now on, and the existing
+   eleven stay dark until their sessions end.
 2. **gr457326** — the md-index vector warmup has no retry, so one slow
    embedder batch at boot leaves the cache cold for the process lifetime,
    which is now shared by every session. No longer hypothetical: caught in

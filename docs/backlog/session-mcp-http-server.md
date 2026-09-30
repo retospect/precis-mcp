@@ -318,20 +318,27 @@ just in the wrapper: tool concurrency 12, pool 4/16.
   full 2595-char result after 62.4 s, and the watchdog then logged `drained
   1 in-flight call(s)` and exited 0. The old 20 s bound would have killed
   it three times over.
-- **AC2's sha half is BLOCKED — gr457361.** `precis-status` reports the
-  *image* build arg (`f2cbcb295ab2`, baked 2026-09-08), not the source being
-  served. Pre-existing — an old stdio container reports the same — but it
-  makes AC2 unverifiable as written.
+- **AC2 PASSES in full.** The sha half was blocked on gr457361, now fixed
+  and verified against the live shared server at 2026-09-30T12:25Z:
+  `git_source: watched-checkout`, `source_path: /src`, `git_sha
+  6aae11216e09` (the mounted tree at import, not the 2026-09-08 image build
+  arg, which no longer appears — `build_time` now renders `unknown`),
+  `source_drift: none`, and `started_at 12:25:10` against `uptime_seconds
+  37`. The same call carried the exit breadcrumb from the process it
+  replaced: `previous server exited 2026-09-30T12:24:58Z — source checkout
+  moved (/src HEAD 5ca0cfff826e→98d40fdac791)`. The `moved` drift case is
+  covered by unit test rather than live, deliberately: on a server with the
+  watchdog armed the drift window is the poll interval, because reporting
+  drift and bouncing on it are the same event.
 - Also found: **gr457326**, md-index vector warmup has no retry, so one slow
   embedder batch at boot leaves the cache cold for the whole process
   lifetime — now shared by every session.
 
-Next: gr457361, then gr457326. AC3 is unblocked.
+Next: gr457326. AC3 is unblocked.
 
 **Still outstanding — these need a ship and a day of use, not a test:** AC1
 in the session (as opposed to headless) client, AC3 (a new verb kwarg surviving a
-bounce) and AC5 (one container after a day). AC2's client half is done; its
-sha half waits on gr457361. AC4 is done.
+bounce) and AC5 (one container after a day). AC2 and AC4 are done.
 
 **Do NOT sweep the old `precis-mcp-dev-*` containers yet.** Twelve are still
 up, and the sessions that started before the config flip are still talking
