@@ -120,8 +120,67 @@ class FrameMismatch:
     envelope_diag_A: float
 
 
+def chain_loop_labels(record: Mapping[str, Any], scene: StructScene) -> frozenset[str]:
+    """The labels of ``scene``'s loop-nucleotide atoms, read off a
+    ``realize_chain`` structure's ``chain_atoms`` record: the atoms are
+    stored in the region's order, so the i-th scene atom is the i-th
+    ``chain_ids``/``resseq`` entry, and a residue whose ``residues`` row
+    carries no helix offset is a loop nucleotide (gr457928 — a loop bows
+    out of the duplex tube by construction, so the segment's envelope is
+    not asked to hold it). Empty for a structure realized before residue
+    rows were persisted, which then keeps the old whole-scene check."""
+    rows = record.get("residues") or []
+    loop_keys = {(str(r[0]), int(r[1])) for r in rows if r[4] is None}
+    if not loop_keys:
+        return frozenset()
+    chain_ids = record.get("chain_ids") or []
+    resseq = record.get("resseq") or []
+    labels = list(scene.atoms)
+    if len(labels) != len(chain_ids) or len(labels) != len(resseq):
+        return frozenset()
+    return frozenset(
+        label
+        for label, c, r in zip(labels, chain_ids, resseq, strict=True)
+        if (str(c), int(r)) in loop_keys
+    )
+
+
+def chain_atom_name(
+    record: Mapping[str, Any], scene: StructScene, label: str
+) -> str | None:
+    """``"O3' of DA 8 (stem@3)"`` for a ``realize_chain`` atom — the design
+    object a finding names instead of a bare label (thread
+    se-nucleic-chain, Horizon 1). ``None`` when the record cannot place
+    the label."""
+    labels = list(scene.atoms)
+    if label not in labels:
+        return None
+    i = labels.index(label)
+    columns = [
+        record.get(k) or [] for k in ("names", "resnames", "resseq", "chain_ids")
+    ]
+    if any(i >= len(col) for col in columns):
+        return None
+    names, resnames, resseq, chain_ids = columns
+    where = None
+    for row in record.get("residues") or []:
+        if str(row[0]) == str(chain_ids[i]) and int(row[1]) == int(resseq[i]):
+            where = (
+                f"{record.get('helix')}@{row[4]}"
+                if row[4] is not None
+                else f"loop of strand {row[2]}"
+            )
+            break
+    text = f"{names[i]} of {resnames[i]} {resseq[i]}"
+    return f"{text} ({where})" if where else text
+
+
 def envelope_fit(
-    envelope: str, scene: StructScene, *, margin_A: float = VDW_MARGIN_A
+    envelope: str,
+    scene: StructScene,
+    *,
+    margin_A: float = VDW_MARGIN_A,
+    skip: frozenset[str] = frozenset(),
 ) -> tuple[str, float] | FrameMismatch | None:
     """The L1↔L5 agreement check itself (module docstring): does every atom
     of ``scene`` sit inside ``envelope`` (a ``cad`` mini-DSL config string —
@@ -156,7 +215,10 @@ def envelope_fit(
     block-vs-block clearance) — applying them here would compare the bound
     scene's own local-frame atoms against an envelope translated/rotated
     into a different frame entirely, comparing two things that were never
-    meant to line up."""
+    meant to line up.
+
+    ``skip`` names atoms the envelope is not asked to hold — a chain
+    segment's loop nucleotides (:func:`chain_loop_labels`)."""
     try:
         prim = cad_dsl.build_config(envelope)  # design-space canonical: metres
     except cad_dsl.DslError:
@@ -171,6 +233,8 @@ def envelope_fit(
     nearest_label: str | None = None
     nearest_sdf_m = math.inf
     for label, atom in scene.atoms.items():
+        if label in skip:
+            continue
         cart_A = scene.cell.frac_to_cart(atom.frac)  # atomistic enclave: Å
         cart_m = cad_as_vec3([c * _A_TO_M for c in cart_A])
         sdf = component_sdf(design, expr, cart_m)
@@ -911,6 +975,7 @@ def _envelope_fit_findings(
     tree: SeTree,
     bound_full_scenes: dict[str, StructScene],
     generated_bound: frozenset[str] = frozenset(),
+    chain_records: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[ValidationIssue]:
     """``envelope_fit`` (warn) — the L1↔L5 agreement check (module
     docstring): a bound block's realized atoms should sit inside its
@@ -919,7 +984,9 @@ def _envelope_fit_findings(
     envelope has nothing to check against (``block_without_envelope``
     covers that gap), and a slug the caller didn't hydrate is skipped
     rather than guessed at (a dangling design is already reported once, by
-    :func:`_binding_findings`)."""
+    :func:`_binding_findings`). ``chain_records`` (slug → the structure's
+    ``chain_atoms`` record) lets a ``realize_chain`` segment skip its loop
+    nucleotides and name a protruding atom as a design object."""
     findings: list[ValidationIssue] = []
     for node in tree.blocks.values():
         if node.template is not None or node.bound_kind != "structure":
@@ -930,7 +997,9 @@ def _envelope_fit_findings(
         scene = bound_full_scenes.get(node.bound)
         if scene is None:
             continue
-        worst = envelope_fit(env, scene)
+        record = (chain_records or {}).get(node.bound)
+        skip = chain_loop_labels(record, scene) if record else frozenset()
+        worst = envelope_fit(env, scene, skip=skip)
         if worst is None:
             continue
         if isinstance(worst, FrameMismatch):
@@ -955,6 +1024,7 @@ def _envelope_fit_findings(
             )
             continue
         atom_label, protrusion = worst
+        named = chain_atom_name(record, scene, atom_label) if record else None
         # A block whose desc says a generator minted it, bound to a
         # structure carrying no ``generated`` build record, predates the
         # 2026-09-27 framing fix (224e665c): its atoms were stored in the
@@ -979,8 +1049,8 @@ def _envelope_fit_findings(
                 rule="envelope_fit",
                 subject=node.name,
                 detail=(
-                    f"atom {atom_label!r} (in bound structure "
-                    f"{node.bound!r}) protrudes {protrusion:.3g} Å "
+                    f"atom {atom_label!r}{f' ({named})' if named else ''} (in "
+                    f"bound structure {node.bound!r}) protrudes {protrusion:.3g} Å "
                     f"beyond block {node.name!r}'s declared envelope "
                     f"{env!r} (+{VDW_MARGIN_A:g} Å vdW margin) — {remedy}"
                 ),
@@ -1232,6 +1302,7 @@ def validate_atomic(
     bound_full_scenes: dict[str, StructScene] | None = None,
     generated_bound: frozenset[str] = frozenset(),
     generated_records: Mapping[str, dict[str, Any]] | None = None,
+    chain_records: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[ValidationIssue]:
     """Every atomic-mode finding (empty = clean, as far as *chemistry*
     goes — :func:`precis_se.validate.validate` owns the rest, and the
@@ -1247,7 +1318,9 @@ def validate_atomic(
     ``generated_records`` carries those records themselves, which
     ``composite_part_stolen`` reads for a join's ``parts`` provenance — both
     come from one store pass (:func:`precis_se.atomic.render.
-    bound_generated_records`).
+    bound_generated_records`). ``chain_records`` (slug → ``chain_atoms``,
+    :func:`precis_se.atomic.render.bound_chain_records`) is what lets
+    ``envelope_fit`` skip a realized loop's nucleotides.
 
     A design with no chemistry in it at all (no bond/interaction connect,
     no ``structure`` binding) produces nothing here — every check below is
@@ -1256,7 +1329,9 @@ def validate_atomic(
     findings.extend(_port_capability_findings(tree))
     findings.extend(_binding_findings(tree, bound_scenes or {}))
     findings.extend(
-        _envelope_fit_findings(tree, bound_full_scenes or {}, generated_bound)
+        _envelope_fit_findings(
+            tree, bound_full_scenes or {}, generated_bound, chain_records
+        )
     )
     findings.extend(_port_pose_findings(tree, bound_full_scenes or {}))
     findings.extend(_port_rot_findings(tree, bound_full_scenes or {}))

@@ -421,8 +421,9 @@ The third handler-level op, also a **proposal**: it mints and binds a
 
 `{'op': 'realize_chain', 'block': <helix>, 'start': <offset>, 'end':
 <offset, exclusive>, 'fidelity'?: 'allatom'|'backbone', 'sites'?:
-[<offset>, …], 'loops'?: bool}` — `fidelity` defaults `allatom`, `loops`
-defaults `false`. One region per segment child (`layout_chain` first — a
+[<offset>, …], 'loops'?: bool, 'relax_loops'?: bool}` — `fidelity`
+defaults `allatom`, `loops` and `relax_loops` default `false`. One region
+per segment child (`layout_chain` first — a
 range straddling two segments is refused naming both). Binds to the
 **segment child** `<helix>.s<k>` covering the region, structure slug
 `<design>-<segment>`; a bound segment is refused
@@ -439,7 +440,14 @@ nucleotide. `loops=true` also realizes every loop of the region's strands
 whose two ends both sit inside the region — a loop with no placed curve
 is `Unsupported` naming it (`relax_chain` places curves; nothing here
 guesses one); a 0-nt crossover inside the region is just a bond, no
-special case.
+special case. Loop nucleotides are placed as rigid templates at the
+curve's own spacing, so their O3'–P steps are 5–10 Å (connectivity right,
+geometry not) and the echo reports the worst step; `relax_loops=true` chains them — a
+geometric relax over the loop nucleotides with every duplex atom pinned
+(bond springs, repulsion, VSEPR angles: geometry, not thermodynamics, no
+pairing or stacking energy), the echo reporting the worst O3'–P step
+before and after and the structure's `chain_atoms.loop_relax` keeping the
+numbers. The duplex never moves.
 
 Ports minted on the segment: `5p`/`3p` for the first forward-strand chain,
 `r5p`/`r3p` for the first reverse one (`5p2`/`r5p2`, … for further
@@ -459,7 +467,11 @@ approximated.
 Bonds are connectivity only, every one order 1 — a fibre model carries no
 bond orders to assign. The echo names atom/bond/nucleotide/chain/port
 counts; `view='validate'` then runs `envelope_fit` against the segment's
-own capsule.
+own capsule — over the duplex atoms only: a loop leaves the tube by
+construction, so its nucleotides are skipped (the structure's
+`chain_atoms.residues` rows, one per residue with the helix offset or
+`null` for a loop nucleotide, say which), and a protruding atom is named
+as a design object — `aO44 (O3' of DA 8 (stem@3))`.
 
 ```python
 edit(kind='se', id='design', ops=[

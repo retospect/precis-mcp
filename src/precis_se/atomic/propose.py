@@ -534,10 +534,14 @@ def design_findings(store: Any, tree: SeTree) -> list[Any]:
     (:func:`precis_se.atomic.render.hydrate_bound_scenes`) rather than
     duplicating it."""
     bound_scenes, bound_full_scenes = atomic_render.hydrate_bound_scenes(store, tree)
+    chain_records = atomic_render.bound_chain_records(store, tree)
     return [
         *se_validate.validate(tree),
         *atomic_validate.validate_atomic(
-            tree, bound_scenes=bound_scenes, bound_full_scenes=bound_full_scenes
+            tree,
+            bound_scenes=bound_scenes,
+            bound_full_scenes=bound_full_scenes,
+            chain_records=chain_records,
         ),
     ]
 

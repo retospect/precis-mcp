@@ -130,6 +130,22 @@ def bound_generated_records(store: Store, tree: SeTree) -> dict[str, dict[str, A
     return out
 
 
+def bound_chain_records(store: Store, tree: SeTree) -> dict[str, dict[str, Any]]:
+    """Every bound ``structure`` slug that ``realize_chain`` minted
+    (``meta['chain_atoms']``), mapped to that record — what
+    ``validate_atomic(chain_records=…)`` reads to skip a loop's nucleotides
+    in ``envelope_fit`` and to name a protruding atom by residue."""
+    out: dict[str, dict[str, Any]] = {}
+    for n in tree.blocks.values():
+        if n.bound_kind != "structure" or not n.bound or n.bound in out:
+            continue
+        ref = store.get_ref(kind="structure", id=n.bound)
+        record = (ref.meta or {}).get("chain_atoms") if ref is not None else None
+        if isinstance(record, dict):
+            out[n.bound] = record
+    return out
+
+
 def render_mechanics(store: Store, tree: SeTree) -> str:
     """``view='mechanics'`` — advisory (never-gating) L4 ceilings
     (:mod:`precis_se.atomic.mechanics`'s module docstring): per-block Euler

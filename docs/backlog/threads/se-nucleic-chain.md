@@ -9,19 +9,22 @@ item is built, deleted, deployed (5ca0cfff on the fleet 2026-09-30 12:23Z)
 and dogfooded end to end on prod (`dogfood-walker-a`: guard, channel
 budget, crosstalk, make_steps, view='stations' all as specified;
 td458169); fold_layout lays out every pseudoknot-free fold (bulges and
-coaxial stacks end to end, tails as single-occupancy stubs). Make the loop
-atoms a prod dogfood found unchained honest, then the pick hierarchy.
+coaxial stacks end to end, tails as single-occupancy stubs); loop atoms
+chain behind `relax_loops`, envelope_fit skips them, residue rows persist.
+Flip the loop-relax default on Reto's word, then the pick hierarchy.
 **Last reviewed:** 2026-09-30
 **Worktree:** `se-nucleic-chain`
 
 ## Do next
 
-1. **gr457928** — realize_chain's loop nucleotides are rigid template copies,
-   so every loop O3'–P bond is 5–10 Å and envelope_fit warns on every loop
-   forever (a standing false positive that hides real drift). Fix designed
-   (geo relax over loop residues, duplex pinned; persist residue rows;
-   envelope_fit skips loops); awaiting Reto's ruling on default-on vs
-   opt-in — the only thing between this and a half-day build.
+1. **gr457928, the default flip** — the slice is in: `realize_chain
+   relax_loops=true` chains the loop backbone (geometric relax, duplex
+   pinned, worst O3'–P step reported before/after), `envelope_fit` skips
+   loop nucleotides and names a protruding atom as `O3' of DA 8 (stem@3)`,
+   and `chain_atoms.residues` persists one row per residue. Left: Reto's
+   ruling on default-on — flipping `RELAX_LOOPS_DEFAULT` in
+   `atomic/generate.py` plus the skill's "default false" sentence is the
+   whole change; then tag the gripe done.
 2. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
    1); the chain-design instance (its 2026-09-30 section: residue +
    base-pair rows under a segment block, atom pick) turns "aO44" into
@@ -29,10 +32,11 @@ atoms a prod dogfood found unchained honest, then the pick hierarchy.
 
 ## Horizon
 
-1. **atom findings name design objects** (unfiled; lands with gr457928) —
-   once residue rows persist, structure-level findings on a bound segment
-   read as helix@offset + residue, so one view='validate' covers both
-   scales; the LLM gets a findings loop it can act on.
+1. **atom findings name design objects** — `envelope_fit` now names its
+   atom by residue and helix offset (gr457928's slice); the other
+   structure-level findings on a bound segment (bond geometry, clashes)
+   still say `aO44` — extend them the same way through
+   `atomic/validate.py::chain_atom_name` when one bites in a dogfood.
 2. **backlog/ewod-synthesis-protocol.md** (ewod-pcb thread's) — the zone
    compiler that consumes make_steps' make tree (live on prod since
    5ca0cfff); the first end-to-end design → dispense protocol.

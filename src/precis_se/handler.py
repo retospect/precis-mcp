@@ -954,6 +954,7 @@ class SeHandler(Handler):
             self.store, tree
         )
         generated_records = se_atomic_render.bound_generated_records(self.store, tree)
+        chain_records = se_atomic_render.bound_chain_records(self.store, tree)
         findings.extend(
             se_atomic_validate.validate_atomic(
                 tree,
@@ -961,6 +962,7 @@ class SeHandler(Handler):
                 bound_full_scenes=bound_full_scenes,
                 generated_bound=frozenset(generated_records),
                 generated_records=generated_records,
+                chain_records=chain_records,
             )
         )
         header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]

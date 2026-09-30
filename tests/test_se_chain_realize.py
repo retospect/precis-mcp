@@ -368,6 +368,65 @@ def test_hairpin_stem_realizes_and_the_loop_waits_for_relax(
     assert "DG" in text and "DA" in text and "DC" in text
 
 
+def test_loop_residue_rows_persist_and_envelope_fit_skips_the_loop(
+    handler: SeHandler, store: Store
+) -> None:
+    """gr457928: the loop bows out of the duplex tube by construction, so
+    ``envelope_fit`` used to warn on every realized loop forever. The
+    structure now carries one row per residue (offset ``None`` marks a
+    loop nucleotide) and the check skips those atoms."""
+    _put(
+        handler,
+        "hp-rows",
+        [*_hairpin_ops(), {"op": "relax_chain"}, _realize("stem", 0, 4, loops=True)],
+    )
+    _coords, meta = _atoms(store, "hp-rows-stem.s0")
+    rows = meta["residues"]
+    assert len(rows) == 12
+    assert [r[4] for r in rows] == [0, 1, 2, 3, None, None, None, None, 3, 2, 1, 0]
+    assert "".join(r[5] for r in rows) == "GGGGAAAACCCC"
+    assert {r[2] for r in rows} == {"hp"}
+    body = handler.get(id="hp-rows", view="validate").body
+    assert "envelope_fit" not in body, body
+
+
+def test_relax_loops_chains_the_loop_backbone_with_the_duplex_pinned(
+    handler: SeHandler, store: Store
+) -> None:
+    """``relax_loops=true``: a geometric relax over the loop nucleotides
+    only. Every O3'→P step along the chain ends up a bond length, the
+    duplex atoms do not move, and the echo reports the before/after."""
+    ops = [*_hairpin_ops(), {"op": "relax_chain"}]
+    _put(handler, "hp-flat", [*ops, _realize("stem", 0, 4, loops=True)])
+    flat, _meta = _atoms(store, "hp-flat-stem.s0")
+    echo = _put(
+        handler,
+        "hp-chained",
+        [*ops, _realize("stem", 0, 4, loops=True, relax_loops=True)],
+    )
+    assert "loop backbone chained by a geometric relax" in echo, echo
+    coords, meta = _atoms(store, "hp-chained-stem.s0")
+    resseq = np.asarray(meta["resseq"])
+    names = np.asarray(meta["names"])
+
+    def atom(r: int, n: str) -> np.ndarray:
+        rows = np.flatnonzero((resseq == r) & (names == n))
+        assert rows.shape == (1,)
+        return coords[rows[0]]
+
+    steps = [
+        float(np.linalg.norm(atom(r + 1, "P") - atom(r, "O3'"))) for r in range(1, 12)
+    ]
+    report = meta["loop_relax"]
+    assert report["max_step_before_A"] > 4.0
+    assert max(steps) < 2.5, (steps, report)
+    assert report["max_step_after_A"] < 2.5, report
+    assert set(report) >= {"converged", "n_steps", "n_loop_atoms", "n_pinned_atoms"}
+    duplex = (resseq <= 4) | (resseq >= 9)
+    assert np.allclose(coords[duplex], flat[duplex], atol=1e-9)
+    assert "envelope_fit" not in handler.get(id="hp-chained", view="validate").body
+
+
 # ── the rectangle exports ───────────────────────────────────────────────
 
 

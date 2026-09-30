@@ -47,6 +47,43 @@ from precis_se.atomic.validate import A_to_m
 from precis_se.chain.layout import LAYOUT_PORT_MARKER
 from precis_se.ops import OpError, SeTree, apply_ops
 
+#: ``realize_chain``'s ``relax_loops`` default. ``False`` until Reto rules
+#: on gr457928's default-on question (thread se-nucleic-chain, Do-next 1);
+#: flipping this one constant (and the skill's sentence) is the whole
+#: decision — every other part of the loop-chaining slice is in.
+RELAX_LOOPS_DEFAULT = False
+
+#: Base-ring and exocyclic atoms of the Arnott templates — planar, so
+#: ``sp2`` for the geometric relax's angle term; everything else (the
+#: backbone, the sugar, thymine's methyl C7) is ``sp3``.
+_SP2_ATOM_NAMES = frozenset(
+    {
+        "N1",
+        "C2",
+        "N3",
+        "C4",
+        "C5",
+        "C6",
+        "N7",
+        "C8",
+        "N9",
+        "O2",
+        "O4",
+        "O6",
+        "N2",
+        "N4",
+        "N6",
+    }
+)
+#: A duplex atom this close (Å) to any loop atom joins the relax as a
+#: pinned repulsion partner, so a chained loop cannot pass through the
+#: helix end it caps.
+_LOOP_RELAX_REACH_A = 4.5
+_LOOP_RELAX_ITERS = 400
+#: Largest per-step displacement (Å) at which the relax counts as settled —
+#: a nominal geometry, not an energy minimum, so a hundredth of an ångström.
+_LOOP_RELAX_TOL_A = 1e-2
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
 
@@ -476,6 +513,107 @@ class PendingRealizeChain:
     chain_atoms: dict[str, Any]
 
 
+def _loop_atoms(region: Any) -> list[int]:
+    """Indices of the atoms of every loop nucleotide (a residue row with no
+    helix offset), in atom order."""
+    loop_keys = {
+        (c, r) for c, r, _s, _o, offset, _l in region.residues if offset is None
+    }
+    if not loop_keys:
+        return []
+    return [
+        i
+        for i, key in enumerate(zip(region.chain_ids, region.resseq, strict=True))
+        if key in loop_keys
+    ]
+
+
+def _worst_loop_step(region: Any, coords_A: np.ndarray, loop_set: set[int]) -> float:
+    """The longest inter-residue O3'–P bond touching a loop nucleotide (Å) —
+    the number that says whether a loop's backbone is chained (a bond
+    length) or merely connected (the curve's own spacing)."""
+    worst = 0.0
+    for i, j in region.bonds:
+        if (i in loop_set or j in loop_set) and region.resseq[i] != region.resseq[j]:
+            if {region.names[i], region.names[j]} == {"O3'", "P"}:
+                worst = max(worst, float(np.linalg.norm(coords_A[j] - coords_A[i])))
+    return worst
+
+
+def _chain_loops(
+    region: Any, coords_A: np.ndarray
+) -> tuple[np.ndarray, dict[str, Any] | None]:
+    """Chain the loop nucleotides (gr457928): a geometric relax
+    (:func:`precis.structure.georelax.relax_graph`) over the loop
+    residues' atoms with every duplex atom pinned — the bond springs pull
+    each loop residue's P onto its predecessor's O3' (the templates were
+    placed rigid at the curve's own spacing, so those steps start at
+    5–10 Å), non-bond repulsion keeps a residue off its neighbours and off
+    the duplex atoms within :data:`_LOOP_RELAX_REACH_A`, and the VSEPR
+    angle term keeps rings planar and sugars tetrahedral. **Geometry, not
+    thermodynamics**: no pairing, no stacking energy, no sampling, and the
+    duplex never moves. Only the loop atoms and their nearby duplex atoms
+    enter the relax (the engine is O(n²) per step), so a scaffold-length
+    region pays for its loops, not its duplex.
+
+    Returns the coordinates (a copy, Å) and a report — the worst
+    inter-residue O3'–P step touching a loop residue before and after,
+    the loop atom count, and the engine's convergence — or the input and
+    ``None`` when the region has no loop residue to chain.
+    """
+    from precis.structure.georelax import relax_graph
+
+    loop_atoms = _loop_atoms(region)
+    if not loop_atoms:
+        return coords_A, None
+    loop_set = set(loop_atoms)
+
+    def max_step(xyz: np.ndarray) -> float:
+        return _worst_loop_step(region, xyz, loop_set)
+
+    before = max_step(coords_A)
+    gaps = np.linalg.norm(
+        coords_A[:, None, :] - coords_A[loop_atoms][None, :, :], axis=2
+    ).min(axis=1)
+    # The duplex atoms the loop is bonded to (its two anchors) always join,
+    # whatever their distance — they are what the springs pull the loop
+    # ends onto; the rest join by proximity as repulsion partners.
+    anchors = {
+        j if i in loop_set else i
+        for i, j in region.bonds
+        if (i in loop_set) != (j in loop_set)
+    }
+    near = [
+        i
+        for i in range(int(coords_A.shape[0]))
+        if i not in loop_set and (i in anchors or gaps[i] <= _LOOP_RELAX_REACH_A)
+    ]
+    members = loop_atoms + near
+    index = {atom: k for k, atom in enumerate(members)}
+    sub = coords_A[members].copy()
+    trace = relax_graph(
+        [region.elements[i] for i in members],
+        sub,
+        [(index[i], index[j]) for i, j in region.bonds if i in index and j in index],
+        frozenset(index[i] for i in near),
+        hybridizations=[
+            "sp2" if region.names[i] in _SP2_ATOM_NAMES else "sp3" for i in members
+        ],
+        iters=_LOOP_RELAX_ITERS,
+        tol=_LOOP_RELAX_TOL_A,
+    )
+    out = coords_A.copy()
+    out[members] = sub
+    return out, {
+        "max_step_before_A": before,
+        "max_step_after_A": max_step(out),
+        "n_loop_atoms": len(loop_atoms),
+        "n_pinned_atoms": len(near),
+        "converged": bool(trace.converged),
+        "n_steps": int(trace.n_steps),
+    }
+
+
 def _region_int(op: dict[str, Any], key: str) -> int:
     raw = op.get(key)
     if isinstance(raw, bool) or not isinstance(raw, int):
@@ -507,7 +645,8 @@ def prepare_realize_chain(
 ) -> tuple[str, PendingRealizeChain]:
     """``{"op": "realize_chain", "block": <helix>, "start": <offset>, "end":
     <offset, exclusive>, "fidelity"?: "allatom"|"backbone", "sites"?:
-    [<offset>, …], "loops"?: bool}`` — the pure/in-memory half.
+    [<offset>, …], "loops"?: bool, "relax_loops"?: bool}`` — the pure/
+    in-memory half.
 
     Every tree read happens here: the helix's per-unit frames
     (:func:`precis_se.chain.layout.helix_geometry`), the occupancy at each
@@ -530,7 +669,10 @@ def prepare_realize_chain(
     ``Unsupported`` naming it — nothing here guesses a loop's geometry;
     ``relax_chain`` places it. The default ``loops=False`` realizes the
     duplex alone, which is how a hairpin's stem realizes before its loop is
-    settled.
+    settled. ``relax_loops`` (default
+    :data:`RELAX_LOOPS_DEFAULT`) then chains the placed loop nucleotides'
+    backbone (:func:`_chain_loops`); without it they sit at the curve's own
+    spacing, connectivity right and geometry not.
 
     Store use is read-only (the slug-collision preflight); the mint and
     the bind are :func:`finish_realize_chain`'s.
@@ -601,6 +743,7 @@ def prepare_realize_chain(
                 f"realize_chain: site {s} is outside the region [{start}, {end})"
             )
     want_loops = bool(op.get("loops", False))
+    want_relax = bool(op.get("relax_loops", RELAX_LOOPS_DEFAULT))
 
     # The segment child the region lives in.
     segments = sorted(
@@ -764,6 +907,10 @@ def prepare_realize_chain(
         * m_to_A
     )
 
+    relax_report: dict[str, Any] | None = None
+    if want_relax:
+        local, relax_report = _chain_loops(region, np.asarray(local, dtype=float))
+
     scene = StructScene(cell=generated_cell(local))
     labels: list[str] = []
     for element, cart in zip(region.elements, local, strict=True):
@@ -863,7 +1010,25 @@ def prepare_realize_chain(
         "rise_m": float(motif.rise),
         "twist_rad": float(motif.twist),
         "units": [u.offset for u in units],
+        # Per residue in atom order: ``[chain id, resseq, strand, ord,
+        # offset or None for a loop nucleotide, letter]`` — the rows
+        # ``envelope_fit`` reads to skip loop atoms and a pick reads to
+        # name "O3' of DA 8 (stem@3)" (gr457928; se-pick-hierarchy's chain
+        # instance).
+        "residues": [list(row) for row in region.residues],
     }
+    if relax_report is not None:
+        chain_atoms["loop_relax"] = dict(relax_report)
+        provenance += (
+            " Loop nucleotides chained by a geometric relax with the duplex "
+            "pinned (precis.structure.georelax; bond springs, repulsion, VSEPR "
+            f"angles — geometry, no energy): worst O3'–P step "
+            f"{relax_report['max_step_before_A']:.2f} → "
+            f"{relax_report['max_step_after_A']:.2f} Å over "
+            f"{relax_report['n_loop_atoms']} loop atom(s), "
+            f"{'converged' if relax_report['converged'] else 'NOT converged'} in "
+            f"{relax_report['n_steps']} step(s)."
+        )
     pending = PendingRealizeChain(
         block_name=seg_name,
         struct_slug=struct_slug,
@@ -884,6 +1049,23 @@ def prepare_realize_chain(
     )
     for note in region.notes:
         echo += f"\n· {note}"
+    if relax_report is not None:
+        echo += (
+            "; loop backbone chained by a geometric relax (duplex pinned): worst "
+            f"O3'–P step {relax_report['max_step_before_A']:.2f} → "
+            f"{relax_report['max_step_after_A']:.2f} Å, "
+            f"{'converged' if relax_report['converged'] else 'NOT converged'} in "
+            f"{relax_report['n_steps']} step(s)"
+        )
+    elif loop_atoms := _loop_atoms(region):
+        worst = _worst_loop_step(
+            region, np.asarray(local, dtype=float), set(loop_atoms)
+        )
+        echo += (
+            "; loop nucleotides sit at the curve's own spacing (worst O3'–P step "
+            f"{worst:.2f} Å — connectivity right, geometry not chained): pass "
+            "relax_loops=true to chain them"
+        )
     return echo, pending
 
 
