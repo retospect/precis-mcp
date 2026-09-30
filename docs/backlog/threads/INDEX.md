@@ -86,8 +86,10 @@ Seams:
 - `scripts/deploy` — plugin-split's gr457894 (restart on installed-file
   change) and the deploy session's render-tree lock are the same script;
   no thread owns deploy, so gr457894 is ranked in plugin-split.
-- `scripts/main-ci-status` / check.yml — monitors Do-next 1 and Horizon 1
-  gate every other thread's "is main green" answer.
+- `scripts/main-ci-status` / check.yml — monitors Do-next 1
+  (`backlog/main-stays-gated.md`) gates every other thread's "is main green"
+  answer. The stale-verdict half (gr456236) landed 2026-09-30; what remains
+  is a run being cancelled before it produces a verdict at all.
 
 Waits:
 - plugin-split Horizon 2–4 wait on gr457894 (each extraction is a module
