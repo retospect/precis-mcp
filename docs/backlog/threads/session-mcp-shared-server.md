@@ -12,27 +12,25 @@ this thread shipped — every bounce killed the calls in flight — is fixed
 (gr457887: the drain latches a high-water ticket instead of waiting for an
 always-busy server to go idle, and the bound is 120 s and env-tunable), and
 re-verified live on the isolated rig. The second defect — a status surface
-that could not say which sha a session was talking to, and reported a
-three-week-old image build arg instead — is fixed in code (gr457361: the
-watched checkout's HEAD outranks the baked env, git-identity fields come
-from one lane instead of being mixed, and a live `source_drift` field says
-whether the tree has moved past the import) and awaits verification on a
-restarted server. What remains is that verification, then the restart-on-drift
-half, the parent item's remaining criteria, and the isolation gaps.
+that could not say which sha a session was talking to — is fixed and
+verified (gr457361: the watched checkout's HEAD outranks the baked env,
+git-identity fields come from one lane instead of being mixed, and a live
+`source_drift` field says whether the tree has moved past the import;
+the 11:10Z boot banner reports `[watched-checkout]` against the mounted
+tree's HEAD, and `watched-checkout` is a string the fix introduced, so the
+process naming the lane is the process running it). Note for anyone
+re-measuring: the defect had two faces, and this thread quoted only one of
+them. On the dev-stdio containers it printed a confidently wrong sha
+(`f2cbcb29`, an image build arg from 2026-09-08); on `precis-mcp-http`,
+whose image was later rebuilt from a worktree with no `.git` in the build
+context, it printed `unknown (unknown) [unknown] unknown` — no sha at all.
+What remains is the restart-on-drift half, the parent item's remaining
+criteria, and the isolation gaps.
 **Last reviewed:** 2026-09-30
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
-1. **Verify gr457361's fix on the live shared server** — the fix is landed
-   but unverifiable until the server restarts onto it, and the whole point
-   of the fix is that no cheap in-container check substitutes for the
-   surface. After the next deploy/bounce, one `precis-status` call must
-   show `git_source: watched-checkout`, a `git_sha` matching the mounted
-   tree's HEAD at boot rather than the 2026-09-08 image build arg, and
-   `source_drift: none`. Then move the tree ahead without bouncing and
-   confirm `source_drift: moved <old>→<new>`. Small, but it is the
-   acceptance criterion the gripe was filed against.
-2. **backlog/mcp-staleness-title-roundtrip-guards.md item 2** — re-opened;
+1. **backlog/mcp-staleness-title-roundtrip-guards.md item 2** — re-opened;
    it was wrongly in No action needed, and it now owns gr458061's
    restart-on-drift half. The closure said the checkout watchdog bounces on
    a HEAD move. It does not for the per-session `precis-mcp-dev-*`
@@ -41,28 +39,43 @@ half, the parent item's remaining criteria, and the isolation gaps.
    `PRECIS_CHECKOUT_WATCHDOG` is set and the dev-stdio launch path never
    sets it, while `InstallWatchdog._fingerprint_for` still returns `None`
    outside `site-packages` as of 54067ee3, which an editable install is.
-   Now strictly the remaining half: gr457361's fix makes the drift
-   *reportable* on the shared server (`source_drift`), and makes it
-   reportable on those dev containers too when they are given
-   `PRECIS_CHECKOUT_WATCHDOG`, but reporting is not restarting. Nothing
-   stops a process serving stale modules once it has told you it is.
-3. **gr457326** — the md-index vector warmup has no retry, so one slow
+   Verifying gr457361's fix produced the argument for ranking this first:
+   `source_drift` is *unobservable* on the shared server, because the
+   watchdog polls every 5 s and exits on the first HEAD move, so the drifted
+   state lasts seconds (measured: four bounces in the 45 min around 11:49Z,
+   each draining 0 in-flight calls). The field earns its keep precisely
+   where the watchdog is NOT armed — the eleven dev-stdio containers, up
+   20-25 h each, which is the population gr458061's incident happened in.
+   Two steps, in order: give them `PRECIS_CHECKOUT_WATCHDOG` so they can
+   *report* drift, then a restart mechanism, because reporting is not
+   restarting and nothing stops a process serving stale modules once it has
+   told you it is.
+2. **gr457326** — the md-index vector warmup has no retry, so one slow
    embedder batch at boot leaves the cache cold for the process lifetime,
-   which is now shared by every session. Degrades silently to lexical.
-4. **backlog/session-mcp-http-server.md** — AC2 now has a fix to test
-   against (it was written as "precis-status reports the new sha", which
-   gr457361 made unpassable) and AC3 (a new verb kwarg surviving a bounce)
-   was waiting on gr457887, which has landed and re-verified. Both are
-   attemptable; AC2 folds into item 1's single call. Delete the item when
-   AC3 and AC5 close.
-5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+   which is now shared by every session. No longer hypothetical: caught in
+   `docker logs precis-mcp-http` at ~11:49Z 09-30, `EmbedderUnavailable`
+   from a `TimeoutError` (reachable but slow), during the deploy session's
+   full gate. That pairing is structural rather than unlucky — a qland burst
+   is when the gate load and the watchdog bounces both happen, and a bounce
+   during load is the whole failure condition. One cold boot silently
+   downgrades md search to lexical for every session on the machine until
+   the next bounce, and the only trace is a warmup thread's traceback in a
+   log nobody reads.
+3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
+   as "precis-status reports the new sha", which gr457361 made unpassable,
+   and the 11:10Z banner
+   (`precis-mcp 8.35.1 @ 05ce7657ceef (main) [watched-checkout] /src`)
+   satisfies it. AC3 (a new verb kwarg surviving a bounce) was waiting on
+   gr457887, which has landed and re-verified, so it is attemptable. Delete
+   the item when AC3 and AC5 close.
+4. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
    image rebuild bounces every session. Ranked last because its acceptance
-   criteria are verified by probing the surface they fix, and that probe is
-   only trustworthy once item 1 confirms the surface. The role bullet
-   decides whether coding jobs can ever leave containers.
+   criteria are verified by probing the surface they fix — that surface is
+   now trustworthy, so this is unblocked rather than waiting. The role
+   bullet decides whether coding jobs can ever leave containers.
 
 ## Horizon
 
@@ -103,7 +116,7 @@ half, the parent item's remaining criteria, and the isolation gaps.
   pool-headroom statements are inference from backend counts.
 - **K-parallel exercise-mcp load harness** — specced inside
   backlog/mcp-shared-transport-concurrency.md; unparks when the role and
-  fairness gaps in Do-next 5 are closed, before that it measures an idle server.
+  fairness gaps in Do-next 4 are closed, before that it measures an idle server.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.
