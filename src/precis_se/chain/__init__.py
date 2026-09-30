@@ -39,6 +39,10 @@ antiparallel domains on one helix and a loop between them.
   ``layout_chain`` materialises, the capsules the clash check runs on.
 - :mod:`precis_se.chain.pairing` — ``derive_pairing``, O(total domain
   length).
+- :mod:`precis_se.chain.occupancy` — a walker state's foothold-occupancy
+  map (``{"<strand>.<ord>": "<helix>@<offset>" | None}``): parsing/vetting
+  at write time, and the transient domain-row rewrite every state-aware
+  read and the station settle apply it through.
 - :mod:`precis_se.chain.drc` — the pure ``chain_*`` findings, called once
   from :func:`precis_se.drc.drc`.
 - :mod:`precis_se.chain.relax` — the ``relax_chain`` op: the mechanical
@@ -77,6 +81,18 @@ binds the minted ``structure`` to that **segment child**, so
 caDNAno (lattice-only), oxDNA and PDB; ``structure`` ``view='pdb'`` writes
 one realized region. Not built: A-RNA templates (an RNA helix is refused,
 not approximated), import of any of those formats, H-bonds as bonds.
+
+**Walker states** (``se-walker-light-protocol`` slice A, 2026-09-30): a
+walker is a plain block with tethered legs (``declare_strand``'s
+``anchor=``/``tether_nt=``); a **station** is a declared state whose
+``occupancy`` (:mod:`precis_se.chain.occupancy`) says which foothold each
+leg's foot domain sits on. ``relax_chain(state=...)`` settles the walker as
+one more rigid body in the bundle and stores the result in the state's own
+pose slot (:func:`precis.design.states.set_state_pose`) rather than the
+tree's default pose; a read applies the stored pose then the occupancy
+(:func:`precis_se.handler._apply_state_arg`). ``declare_stations`` sugars
+the hand-over-hand gait into states + transitions in one call. Full agent
+docs: the ``precis-se-chain-help`` skill's "walker" section.
 
 **Provenance.** This domain shipped in two slices over 2026-09-27..29 and its
 ``docs/backlog/`` item is gone, delete-on-ship. What that item carried now

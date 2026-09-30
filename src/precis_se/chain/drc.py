@@ -76,6 +76,7 @@ from typing import Any
 
 import numpy as np
 
+from precis.cad.vec import rotation
 from precis.utils.units import format_quantity
 from precis_chain.clash import capsule_distance, clashes
 from precis_chain.curvature import min_bend_radius_violations
@@ -477,6 +478,86 @@ def _register_hint(
     )
 
 
+def _tether_findings(
+    tree: Any,
+    tables: Any,
+    geoms: dict[str, HelixGeometry],
+    findings: list[ValidationIssue],
+) -> None:
+    """A walker leg's tether — ``declare_strand(anchor='<body>.<port>',
+    tether_nt=n)`` — checked like any other loop: ``chain_loop_short``
+    when the ``(n + 1)·c`` contour cannot span the anchor port (at the
+    body's CURRENT pose — the state's stored pose once ``args.state`` has
+    applied it, else the block's default) to the foot domain's entry
+    exit; ``chain_dangling_domain`` when the anchor names a block or port
+    the design no longer has. A free leg (its foot lifted off every helix
+    in this state, so the route is empty) has no tether to check. No
+    groove-asymmetry allowance: the body is not a neighbouring duplex."""
+    for strand in sorted(tables.by_strand):
+        node = tree.blocks.get(strand)
+        anchor = ((node.chain if node is not None else None) or {}).get("anchor")
+        if not anchor:
+            continue
+        body = tree.blocks.get(str(anchor.get("block")))
+        port = body.ports.get(str(anchor.get("port"))) if body is not None else None
+        if body is None or port is None:
+            findings.append(
+                ValidationIssue(
+                    rule="chain_dangling_domain",
+                    subject=f"{strand} tether",
+                    detail=(
+                        f"strand is anchored at {anchor.get('block')}."
+                        f"{anchor.get('port')}, which "
+                        f"{'no longer exists' if body is None else 'has no such port'}"
+                        " — re-declare the strand's anchor, or add the port"
+                    ),
+                    severity="error",
+                )
+            )
+            continue
+        if port.pose is None:
+            continue  # nothing to measure from; the settle refuses it by name
+        route = tables.by_strand[strand]
+        if not route:
+            continue
+        foot = route[0]
+        geom = geoms.get(foot.helix)
+        if geom is None or foot.entry_offset >= geom.n_units:
+            continue  # already a chain_dangling_domain finding
+        rot = np.asarray(rotation(*(float(v) for v in body.rot)).R, dtype=float)
+        anchor_m = np.asarray(body.pose, dtype=float).reshape(3) + rot @ np.asarray(
+            port.pose, dtype=float
+        ).reshape(3)
+        gap = float(
+            np.linalg.norm(geom.exit(foot.entry_offset, foot.forward) - anchor_m)
+        )
+        n = int(anchor.get("nt") or 0)
+        c = geom.motif.contour_per_unit
+        reach = contour(n, c)
+        # Half a nucleotide of slack: the tether's length is quantised in
+        # whole nucleotides, so a gap within c/2 of the reach is inside the
+        # model's own resolution — and a station settle stops exactly at
+        # reach (its springs are one-sided), so without this the solver's
+        # residual would flag every taut, settled leg.
+        if gap > reach + c / 2.0:
+            needed = max(0, math.ceil(gap / c) - 1)
+            findings.append(
+                ValidationIssue(
+                    rule="chain_loop_short",
+                    subject=f"{strand} tether",
+                    detail=(
+                        f"{n} nt of tether cannot bridge {_len(gap)} from "
+                        f"{anchor.get('block')}.{anchor.get('port')} to the foot "
+                        f"domain #{foot.ord} on {foot.helix}@{foot.entry_offset}: "
+                        f"reach (n+1)·c = {_len(reach)} at c = {_len(c)} per "
+                        f"nucleotide. Needs at least {needed} nt, or the body "
+                        "settled closer (relax_chain state={...})"
+                    ),
+                    severity="error",
+                )
+            )
+
+
 def _loop_findings(
     tables: Any,
     geoms: dict[str, HelixGeometry],
@@ -733,6 +814,7 @@ def findings(tree: Any) -> list[ValidationIssue]:
     _route_findings(tree, tables, geoms, out)
     loops = _loops(tables, geoms)
     _loop_findings(tables, geoms, loops, out)
+    _tether_findings(tree, tables, geoms, out)
     if geoms:
         _clash_findings(geoms, loops, out)
     pairing = derive_pairing(tree)

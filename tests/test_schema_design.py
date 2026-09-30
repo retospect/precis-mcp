@@ -134,6 +134,13 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "design_checkpoints.payload",
         "design_branches.headline",
         "design_states.port_pose_overrides",
+        #   * occupancy / pose — a state's binding map keyed by the plugin's
+        #     own `<strand>.<ord>` domain names (values `<helix>@<offset>` or
+        #     null) and the walker's settled local pose in the plugin's own
+        #     pose shape; core stores and diffs them, never reads a key
+        #     (se-walker-light-protocol, migration 0172).
+        "design_states.occupancy",
+        "design_states.pose",
         "design_transitions.params",
         # Decision 3 requirement box: delta/span ranges + open wants keys,
         # read only by compose= (port-pose-and-composition-search.md).

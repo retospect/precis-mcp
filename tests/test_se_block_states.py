@@ -919,8 +919,8 @@ def test_state_arg_rejected_on_a_view_that_does_not_support_it(
     handler: SeHandler,
 ) -> None:
     handler.put(id="poseview1", text=json.dumps({"ops": _SWITCH_OPS}))
-    with pytest.raises(BadInput, match="state is not supported on view='drc'"):
-        handler.get(id="poseview1", view="drc", args={"state": {"switch": "trans"}})
+    with pytest.raises(BadInput, match="state is not supported on view='ports'"):
+        handler.get(id="poseview1", view="ports", args={"state": {"switch": "trans"}})
 
 
 def test_stateless_blocks_posed_render_matches_unposed(handler: SeHandler) -> None:

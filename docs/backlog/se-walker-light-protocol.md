@@ -265,3 +265,25 @@ recorded in that spec.
   reads the `sites` ports only `realize_chain` mints. Decided.
 - 2026-09-30 blocker cleared: se-nucleic-realize-export shipped
   (realize_chain, sites ports n<k>_c5m/_maj/_min, view='export'). Decided.
+- 2026-09-30 (slice A built) three deviations from the text above, taken
+  because they made the item smaller without losing an acceptance criterion:
+  (1) occupancy is not threaded as a ``state=`` kwarg through
+  ``chain/drc.py::findings`` / ``precis_se/drc.py``; the handler applies the
+  states' merged occupancy to the tree's domain rows for the read
+  (``_apply_state_arg`` → ``precis_se/chain/occupancy.py::apply_occupancy``,
+  a free leg is a row ``group_domains`` drops), so every chain consumer is
+  per-station for free. ``derive_pairing(tree, state=)`` takes the flat
+  occupancy map for pure callers; ``relax_chain(state=)`` takes the resolved
+  ``{block: BlockState}`` from the shared ``precis_se/state_arg.py`` resolver.
+  (2) a leg is tethered by ``declare_strand(anchor='<body>.<port>',
+  tether_nt=n)`` and its FIRST domain is the foot — no body-side domain, so
+  a non-chain body needs no helix of its own; the settle's spring is
+  anchor port → foot entry exit at ``(n+1)·c``, one-sided. (3) station 0
+  already binds every leg (hand-over-hand as ruled 2026-09-28); an
+  "all-free" state is authored with ``declare_states`` + ``null`` when
+  wanted, so the "3 footholds single-occupied in state 0" criterion reads as
+  "in the declared rows / a null state". Also: with no ``move=`` a station
+  settle moves the walker ALONE (a revisable track segment would otherwise
+  come to the leg); the tether ``chain_loop_short`` carries half a
+  nucleotide of slack because a settled one-sided spring stops exactly at
+  reach. Migration is ``0172`` (0171 is a sibling's). Decided.

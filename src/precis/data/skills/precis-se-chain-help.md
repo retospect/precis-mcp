@@ -1,7 +1,7 @@
 ---
 id: precis-se-chain-help
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
-summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + fifteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB
+summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + fifteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
 answers:
   - how do I declare a DNA/RNA helix and route a strand along it in se?
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
@@ -339,6 +339,9 @@ What it writes, all in one revision:
   sideways (a crossover runs straight across); an exit on the helix's
   **terminal** unit also carries the helix axis, so a hairpin or a tail
   caps the helix end instead of bowing out flat in the last pair's plane.
+- with `state=`, a **station settle** instead: no `loop_curve` write, and
+  the settled pose goes to the named state's own pose slot, not the
+  tree — [[precis-se-walker-help]].
 
 The summary line names the persistence length per helix and where it came
 from: the coded default (B-DNA 50 nm), or the design's own `material`
@@ -358,6 +361,12 @@ Refuses, before writing anything: a helix with no `layout_chain` children
 (it never lays one out silently, and never skips one silently either), a
 design with no helices, and a design where every segment is user contract
 and no `move=` was given.
+
+A **walker** — a rigid body tethered to legs that step along the track
+through declared foothold-occupancy states — has its own skill:
+`declare_strand(anchor=, tether_nt=)`, `declare_states(occupancy=)`, the
+`declare_stations` sugar op, `relax_chain(state=...)`'s station settle and
+the state-aware reads are all in [[precis-se-walker-help]], not here.
 
 ## `fold_layout` — a ViennaRNA fold as records
 
@@ -485,3 +494,5 @@ column-for-column agreement.
 
 - [[precis-se-help]] — blocks, ports, connects, measures, BOM: the rest of
   the `se` call surface a chain design's blocks still use.
+- [[precis-se-walker-help]] — DNA walkers: foothold-occupancy states,
+  station settles, per-state poses.

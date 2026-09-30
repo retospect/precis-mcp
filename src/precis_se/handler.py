@@ -130,9 +130,11 @@ from precis_se import validate as se_validate
 from precis_se.atomic import render as se_atomic_render
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.atomic.apply import PendingJob, apply_ops_with_atomic
+from precis_se.chain import drc as se_chain_drc
 from precis_se.chain import findings as se_chain_findings
 from precis_se.chain import layout as se_chain_layout
 from precis_se.chain import nucleic as se_nucleic
+from precis_se.chain import occupancy as se_chain_occupancy
 from precis_se.chain.pairing import (
     CROWDED,
     PAIRED,
@@ -155,12 +157,14 @@ from precis_se.ops import (
     PortSpec,
     SeBlock,
     SeTree,
+    compose_world_pose,
     effective_chromophore,
     effective_dof,
     effective_envelope,
     effective_ports,
     resolve_template,
 )
+from precis_se.state_arg import merged_occupancy, resolve_state_arg
 
 log = logging.getLogger(__name__)
 
@@ -2032,6 +2036,7 @@ def _materialize_states(
             node.pending_states is None
             and node.pending_transitions is None
             and node.pending_current_state is None
+            and node.pending_state_poses is None
         ):
             continue
         assert node.uid is not None, (
@@ -2046,6 +2051,7 @@ def _materialize_states(
                     envelope=s["envelope"],
                     port_pose_overrides=s["port_pose_overrides"],
                     descr=s["descr"],
+                    occupancy=s.get("occupancy"),
                 )
                 for s in node.pending_states
             ]
@@ -2117,6 +2123,18 @@ def _materialize_states(
                 set_by=set_by,
                 conn=conn,
             )
+        if node.pending_state_poses is not None:
+            # A station settle's output (relax_chain state={...}) — the one
+            # writer of the derived pose slot. After the states, so a call
+            # that declares stations and settles one in one shot stores the
+            # pose on the row it just made.
+            for state_name, pose in node.pending_state_poses.items():
+                try:
+                    design_states.set_state_pose(
+                        store, ref_id, uid, state_name, pose, conn=conn
+                    )
+                except design_states.StateError as exc:
+                    raise BadInput(f"relax_chain(state=): {exc}") from exc
 
 
 def _vet_put_payload(payload: dict[str, Any]) -> None:
@@ -2659,11 +2677,24 @@ def _render_block(tree: SeTree, node: SeBlock, store: Any, ref_id: int) -> str:
                             if s.port_pose_overrides
                             else "—"
                         ),
+                        "occupancy": (json.dumps(s.occupancy) if s.occupancy else "—"),
+                        "pose": (
+                            "stored (relaxed)"
+                            if s.pose is not None
+                            else ("UNRELAXED" if s.occupancy else "—")
+                        ),
                         "descr": s.descr or "—",
                     }
                     for s in states
                 ],
-                schema=["name", "envelope", "port_pose_overrides", "descr"],
+                schema=[
+                    "name",
+                    "envelope",
+                    "port_pose_overrides",
+                    "occupancy",
+                    "pose",
+                    "descr",
+                ],
             )
         )
         transitions = design_states.transitions_for(store, ref_id, states_uid)
@@ -4602,7 +4633,7 @@ def _fill_fraction_line(tree: SeTree) -> str:
 #: clash into its own findings is a later round (docs/backlog/
 #: blocktree-library-build-plan.md §Slice 2, "leave drc.py alone" this
 #: round) — nor any other view; se has no ``view='sweep'`` at all yet.
-_STATE_VIEWS = frozenset({"", "tree", "block", "clearance"})
+_STATE_VIEWS = frozenset({"", "tree", "block", "clearance", "chain", "drc"})
 
 #: Every ``get(kind='se')`` view's accepted ``args=`` keys — the single
 #: source :func:`_vet_view_args` checks a caller's ``args`` dict against
@@ -4616,14 +4647,14 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "block": frozenset({"name", "state"}),
     "ports": frozenset(),
     "topology": frozenset(),
-    "chain": frozenset(),
+    "chain": frozenset({"state"}),
     "export": frozenset({"format"}),
     "measures": frozenset(),
     "datums": frozenset(),
     "validate": frozenset(),
     "clearance": frozenset({"a", "b", "state"}),
     "sweep": frozenset(),
-    "drc": frozenset(),
+    "drc": frozenset({"state"}),
     "kinematics": frozenset(),
     "bom": frozenset(),
     "fasten": frozenset(),
@@ -4680,58 +4711,15 @@ def _state_arg_map(
 ) -> dict[str, design_states.BlockState]:
     """``args.state`` → ``{block label: BlockState}`` — se's discrete-domain
     analogue of cad's ``CadHandler._state_arg`` (blocktree slice 2's
-    get-time posing rung, "copy cad's posing surface, do not invent one").
-    Resolved and vetted fully up front, before any view renders: an
-    unknown block name or an undeclared state name is rejected loudly,
-    naming what IS available — se's existing rejection-message style —
-    never silently ignored or partially applied. Only called once
-    :func:`_vet_view_args` has already confirmed ``view`` accepts
-    ``state`` at all (:data:`_STATE_VIEWS`).
-
-    Ordinary blocks only — the same rule ``declare_states`` itself
-    follows: a block's declared states live on it directly, and an
-    instance has no states of its own to be posed into (instance-side
-    state resolution is a later round, same as the states/transitions
-    render section already notes)."""
+    get-time posing rung). The resolution itself is
+    :func:`precis_se.state_arg.resolve_state_arg`, shared with the
+    ``relax_chain`` op's ``state=`` key so both reject an unknown block or
+    an undeclared state the same way, naming what IS available. Only
+    called once :func:`_vet_view_args` has confirmed ``view`` accepts
+    ``state`` at all (:data:`_STATE_VIEWS`)."""
     if not args or args.get("state") is None:
         return {}
-    raw = args["state"]
-    if not isinstance(raw, dict):
-        raise BadInput(
-            "args.state must be a JSON object of {block: state_name}",
-            next="get(kind='se', id='<slug>', view='block', "
-            "args={'name': '<block>', 'state': {'<block>': '<state name>'}})",
-        )
-    resolved: dict[str, design_states.BlockState] = {}
-    for block_token, state_name in raw.items():
-        try:
-            node = resolve_block(tree, block_token)
-        except AmbiguousLabel as exc:
-            raise BadInput(str(exc)) from exc
-        if node is None:
-            raise NotFound(_block_not_found(tree, str(block_token)))
-        if node.template is not None:
-            raise BadInput(
-                f"args.state: block {node.name!r} is an instance (of "
-                f"{node.template!r}) — declared states live on the "
-                "template, and instance-side posing isn't supported yet; "
-                f"pose {node.template!r} instead"
-            )
-        assert node.uid is not None, "a loaded block always carries its uid"
-        by_name = {s.name: s for s in design_states.states_for(store, ref_id, node.uid)}
-        if not by_name:
-            raise BadInput(
-                f"args.state: block {node.name!r} has no declared states "
-                "(declare_states first)"
-            )
-        want = str(state_name).strip()
-        if want not in by_name:
-            raise BadInput(
-                f"args.state: block {node.name!r} has no state "
-                f"{state_name!r} — declared: {', '.join(sorted(by_name))}"
-            )
-        resolved[node.name] = by_name[want]
-    return resolved
+    return resolve_state_arg(store, ref_id, tree, args["state"])
 
 
 def _apply_state_arg(
@@ -4764,9 +4752,26 @@ def _apply_state_arg(
     An override naming a port the block doesn't currently have is skipped
     rather than raised — the same read-time honesty a dangling reference
     gets elsewhere in se; wiring a checker for it is drc.py's job, out of
-    scope this round."""
+    scope this round.
+
+    Walker states (``se-walker-light-protocol``) add two facets, applied
+    in this order: the state's stored **pose** first (the block's own
+    parent-relative ``{xyz, rot}``, written by ``relax_chain(state=)``;
+    world poses are recomposed so children follow), then the states'
+    merged **occupancy**, which rewrites the tree's domain rows for this
+    read (:func:`precis_se.chain.occupancy.apply_occupancy`) so pairing,
+    the chain findings and ``view='chain'`` all report the station."""
+    posed = False
     for name, state in resolved.items():
         node = tree.blocks[name]
+        if state.pose is not None:
+            xyz = state.pose.get("xyz")
+            rot = state.pose.get("rot")
+            if xyz is not None:
+                node.local_pose = [float(v) for v in xyz]
+            if rot is not None:
+                node.local_rot = [float(v) for v in rot]
+            posed = True
         if state.envelope is not None:
             node.envelope = state.envelope
         for port_name, override in (state.port_pose_overrides or {}).items():
@@ -4777,6 +4782,11 @@ def _apply_state_arg(
             if direction is not None:
                 port.direction = list(direction)
             _apply_port_delta(port, override)
+    if posed:
+        compose_world_pose(tree)
+    occupancy = merged_occupancy(resolved)
+    if occupancy:
+        tree.domains = se_chain_occupancy.apply_occupancy(tree.domains, occupancy)
 
 
 def _apply_port_delta(port: PortSpec, override: dict[str, Any]) -> None:
@@ -5187,7 +5197,23 @@ def _combo_label(
 _PortBaseline = dict[
     str, tuple[list[float] | None, list[float] | None, list[float] | None]
 ]
-_SweepBaseline = dict[str, tuple[str | None, _PortBaseline]]
+_BlockBaseline = tuple[str | None, _PortBaseline, list[float], list[float]]
+
+
+@dataclass
+class _SweepBaseline:
+    """The un-posed sweep baseline: per state-carrying block its envelope,
+    ports and parent-relative pose (a walker state's stored pose replaces
+    it), plus the design's domain rows as declared (a walker state's
+    occupancy rewrites them)."""
+
+    blocks: dict[str, _BlockBaseline]
+    domains: list[Any]
+
+
+#: The chain rules the sweep reports per combination — the two a station
+#: changes: a leg that cannot reach its foothold, and tubes that touch.
+_SWEEP_CHAIN_RULES = frozenset({"chain_loop_short", "chain_clash"})
 
 
 def _snapshot_sweep_domain(tree: SeTree, domain_names: list[str]) -> _SweepBaseline:
@@ -5199,26 +5225,33 @@ def _snapshot_sweep_domain(tree: SeTree, domain_names: list[str]) -> _SweepBasel
     ``get`` regardless, but a mid-call reader — e.g. a future finding that
     runs after this one in the same call — must not see a stale posed
     state)."""
-    return {
-        name: (
-            tree.blocks[name].envelope,
-            {
-                p: (
-                    list(port.direction) if port.direction is not None else None,
-                    list(port.pose) if port.pose is not None else None,
-                    list(port.rot) if port.rot is not None else None,
-                )
-                for p, port in tree.blocks[name].ports.items()
-            },
-        )
-        for name in domain_names
-    }
+    return _SweepBaseline(
+        blocks={
+            name: (
+                tree.blocks[name].envelope,
+                {
+                    p: (
+                        list(port.direction) if port.direction is not None else None,
+                        list(port.pose) if port.pose is not None else None,
+                        list(port.rot) if port.rot is not None else None,
+                    )
+                    for p, port in tree.blocks[name].ports.items()
+                },
+                list(tree.blocks[name].local_pose),
+                list(tree.blocks[name].local_rot),
+            )
+            for name in domain_names
+        },
+        domains=list(tree.domains),
+    )
 
 
 def _restore_sweep_domain(tree: SeTree, originals: _SweepBaseline) -> None:
-    for name, (env0, ports0) in originals.items():
+    for name, (env0, ports0, local_pose, local_rot) in originals.blocks.items():
         node = tree.blocks[name]
         node.envelope = env0
+        node.local_pose = list(local_pose)
+        node.local_rot = list(local_rot)
         for port_name, (direction, pose, rot) in ports0.items():
             port = node.ports.get(port_name)
             if port is None:
@@ -5226,6 +5259,8 @@ def _restore_sweep_domain(tree: SeTree, originals: _SweepBaseline) -> None:
             port.direction = None if direction is None else list(direction)
             port.pose = None if pose is None else list(pose)
             port.rot = None if rot is None else list(rot)
+    tree.domains = list(originals.domains)
+    compose_world_pose(tree)
 
 
 def _pose_sweep_combo(
@@ -5291,6 +5326,8 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
 
     originals = _snapshot_sweep_domain(tree, domain_names)
     hit_rows: list[dict[str, str]] = []
+    chain_rows: list[dict[str, str]] = []
+    unrelaxed_combos = 0
     cross_scale_seen: set[tuple[str, str]] = set()
     unchecked_geometry: set[tuple[str, str]] = set()
     checked = 0
@@ -5307,12 +5344,45 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
             if remaining <= 0.0:
                 time_budget_exceeded = True
                 break
+            label = _combo_label(domain_names, combo)
+            unrelaxed = [
+                (name, st.name)
+                for name, st in zip(domain_names, combo, strict=True)
+                if st.occupancy and st.pose is None
+            ]
+            if unrelaxed:
+                # A station with no settled pose: the walker would sit at
+                # its default pose, which is a guess — report, don't check.
+                unrelaxed_combos += 1
+                for name, st in unrelaxed:
+                    chain_rows.append(
+                        {
+                            "states": label,
+                            "rule": "chain_state_unrelaxed",
+                            "subject": f"{name}={st}",
+                            "detail": (
+                                "occupancy declared but no stored pose — "
+                                "relax_chain state={...} settles and stores it; "
+                                "this combination's geometry is unchecked"
+                            ),
+                        }
+                    )
+                continue
             _pose_sweep_combo(tree, originals, domain_names, combo)
             overlaps, cross_scale, unchecked_budget = se_validate.envelope_overlaps(
                 tree, budget_s=remaining
             )
             checked += 1
-            label = _combo_label(domain_names, combo)
+            for issue in se_chain_drc.findings(tree):
+                if issue.rule in _SWEEP_CHAIN_RULES:
+                    chain_rows.append(
+                        {
+                            "states": label,
+                            "rule": issue.rule,
+                            "subject": issue.subject,
+                            "detail": issue.detail,
+                        }
+                    )
             for a_name, b_name, gap in overlaps:
                 hit_rows.append(
                     {
@@ -5329,12 +5399,16 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
         # (never written back; use set_current_state to persist one).
         _restore_sweep_domain(tree, originals)
 
-    n_colliding_combos = len({r["states"] for r in hit_rows})
+    failing = {r["states"] for r in hit_rows} | {
+        r["states"] for r in chain_rows if r["rule"] != "chain_state_unrelaxed"
+    }
     verdict = (
         "no interference in any checked state ✓"
-        if not hit_rows
-        else f"⚠ {n_colliding_combos} colliding combination(s)"
+        if not failing
+        else f"⚠ {len(failing)} failing combination(s)"
     )
+    if unrelaxed_combos:
+        verdict += f"; {unrelaxed_combos} UNRELAXED (chain_state_unrelaxed)"
     lines = [
         f"# sweep — {len(domain)} state-carrying block(s), "
         f"{checked}/{total_combos} combination(s) checked: {verdict}",
@@ -5362,6 +5436,10 @@ def _render_sweep(store: Any, ref_id: int, tree: SeTree) -> str:
     body = "\n".join(lines) + "\n"
     if hit_rows:
         body += "\n" + render_agent_table(hit_rows, schema=["states", "pair", "gap"])
+    if chain_rows:
+        body += "\n" + render_agent_table(
+            chain_rows, schema=["states", "rule", "subject", "detail"]
+        )
     if cross_scale_seen:
         pairs_sorted = sorted(cross_scale_seen)
         shown = ", ".join(f"{a}—{b}" for a, b in pairs_sorted[:5])

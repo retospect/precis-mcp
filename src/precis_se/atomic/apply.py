@@ -38,6 +38,7 @@ from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
 from precis_se.simp_bridge import SimpRequest, prepare_simp
+from precis_se.state_arg import resolve_state_arg
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
@@ -193,8 +194,25 @@ def apply_ops_with_atomic(
             # mutates the in-memory tree (poses + the domain rows' loop
             # curves), so the caller's own ``save_tree`` is the one commit it
             # is part of — one revision per call, like the pure ops.
+            # ``state={block: state name}`` makes it a station settle
+            # (se-walker-light-protocol): resolved here against the SAVED
+            # design's declared states — the one place this dispatch has
+            # the store and the slug — through the same resolver the
+            # handler's ``args.state`` uses, so both refuse alike.
+            resolved = None
+            if op.get("state") is not None:
+                ref = store.get_ref(kind="se", id=design_slug)
+                if ref is None:
+                    raise BadInput(
+                        "relax_chain: state={...} needs a SAVED design with "
+                        "declared states — put the design (and declare_states/"
+                        "declare_stations) first, then edit it with the settle"
+                    )
+                resolved = resolve_state_arg(
+                    store, ref.id, tree, op["state"], what="relax_chain state"
+                )
             try:
-                echoes.append(op_relax_chain(store, tree, op))
+                echoes.append(op_relax_chain(store, tree, op, state=resolved))
             except OpError as exc:
                 raise BadInput(str(exc)) from exc
             continue

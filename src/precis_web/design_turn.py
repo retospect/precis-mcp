@@ -184,7 +184,14 @@ _SE_OP_SIGNATURES: dict[str, str] = {
     "remove_threading": "remove_threading{a,b}",
     "declare_dof": "declare_dof{block,kind:rotational|translational,axis_ports:[p,q]}",
     "clear_dof": "clear_dof{block}",
-    "declare_states": "declare_states{block,states:[{name,ports?:{…}}]}",
+    "declare_states": (
+        "declare_states{block,states:[{name,envelope?,port_pose_overrides?,"
+        "occupancy?:{'<strand>.<ord>':'<helix>@<offset>'|null},descr?}]}"
+    ),
+    "declare_stations": (
+        "declare_stations{walker,legs:[strand…],footholds:['<helix>@<offset>'…],"
+        "driver_kind?,forward_driver?,reverse_driver?}"
+    ),
     "declare_transitions": "declare_transitions{block,transitions:[{from_state,to_state,driver_kind,driver_ref?,params?}]}",
     "set_current_state": "set_current_state{block,state}",
 }
@@ -199,7 +206,10 @@ _SE_STORE_AWARE_SIGNATURES: dict[str, str] = {
     # (:mod:`precis_se.chain`). Both spend compute, so both arrive as
     # proposals; ``fold_layout`` also needs
     # the optional ``[chain]`` extra (ViennaRNA).
-    "relax_chain": "relax_chain{move?:'all'|[helix/segment names],iters?}",
+    "relax_chain": (
+        "relax_chain{move?:'all'|[helix/segment names],iters?,"
+        "state?:{walker block:state name}}"
+    ),
     "fold_layout": "fold_layout{strand,sequence?,nucleic?:DNA|RNA,parent?}",
     # Atoms for one segment's worth of a helix (:mod:`precis_se.chain.atoms`)
     # — a proposal because it mints a structure design and binds it.

@@ -28,10 +28,12 @@ ignored: an unhonoured facet that returns unfiltered results is the
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from precis_se.chain import nucleic
+from precis_se.chain.occupancy import apply_occupancy
 from precis_se.chain.vocab import STRAND_ROLE, DomainSpec, chain_role, group_domains
 
 #: An offset's occupancy verdict.
@@ -149,20 +151,23 @@ def strand_length_nt(route: list[DomainSpec]) -> int:
     return sum(d.n_units + (d.loop_before_nt or 0) for d in route)
 
 
-def derive_pairing(tree: Any, state: Any = None) -> Pairing:
+def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> Pairing:
     """Derive the whole design's occupancy from its domain rows.
 
-    ``state`` is reserved for ``se-walker-light-protocol`` (module
-    docstring) and must be ``None`` here.
+    ``state`` is a walker state's **occupancy map** — ``{"<strand>.<ord>":
+    "<helix>@<offset>" | None}`` (:mod:`precis_se.chain.occupancy`) —
+    applied to a copy of the rows before grouping, so the pairing is the
+    one that holds in that state: a moved leg domain pairs where its
+    foothold is, a ``None`` (free) leg pairs nowhere. ``None``/empty reads
+    the rows as declared. The handler's ``args={'state': ...}`` path
+    applies the same map to the tree itself instead
+    (:func:`precis_se.handler._apply_state_arg`), which is why every
+    other chain consumer needs no ``state`` of its own.
     """
-    if state is not None:
-        raise NotImplementedError(
-            "derive_pairing(state=) is a reserved hook for "
-            "se-walker-light-protocol's occupancy states — no consumer fills "
-            "it yet, and honouring it silently would report unfiltered "
-            "occupancy as if it were state-filtered"
-        )
-    tables = group_domains(list(getattr(tree, "domains", []) or []))
+    domains = list(getattr(tree, "domains", []) or [])
+    if state:
+        domains = apply_occupancy(domains, dict(state))
+    tables = group_domains(domains)
     letters: dict[str, dict[tuple[int, int], str]] = {}
     for strand, route in tables.by_strand.items():
         node = tree.blocks.get(strand)

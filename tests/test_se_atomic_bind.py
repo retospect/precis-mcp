@@ -232,8 +232,8 @@ def test_view_args_state_key_rejected_on_unsupported_view(handler: SeHandler) ->
     own pointed rejection, naming which views DO support it, rather than
     the generic "unknown args key" message."""
     handler.put(id="rotax1", text=_TREE)
-    with pytest.raises(BadInput, match="state is not supported on view='drc'"):
-        handler.get(id="rotax1", view="drc", args={"state": {"hub": "open"}})
+    with pytest.raises(BadInput, match="state is not supported on view='ports'"):
+        handler.get(id="rotax1", view="ports", args={"state": {"hub": "open"}})
 
 
 def test_view_args_state_must_be_a_dict(handler: SeHandler) -> None:

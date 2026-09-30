@@ -419,11 +419,13 @@ def test_unknown_keys_and_a_bad_iters_are_refused() -> None:
     )
 
 
-def test_the_reserved_state_kwarg_refuses_rather_than_ignoring() -> None:
+def test_a_raw_state_key_must_be_resolved_before_the_settle() -> None:
+    """``state=`` reaches the op RESOLVED (:mod:`precis_se.state_arg`,
+    from the handler-level dispatch); a bare ``state`` key with nothing
+    resolved is refused rather than settled as if stateless."""
     tree = _pair_tree()
-    with pytest.raises(NotImplementedError) as exc:
-        op_relax_chain(None, tree, {"op": "relax_chain"}, state={"x": 1})
-    assert "se-walker-light-protocol" in str(exc.value)
+    with pytest.raises(OpError, match="must be resolved"):
+        op_relax_chain(None, tree, {"op": "relax_chain", "state": {"w": "st0"}})
 
 
 # ── the handler-side chain_floppy re-emission ───────────────────────────

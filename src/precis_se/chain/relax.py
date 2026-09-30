@@ -60,7 +60,9 @@ from typing import Any
 
 import numpy as np
 
-from precis.cad.vec import as_vec3, rotation
+from precis.cad import dsl as cad_dsl
+from precis.cad.vec import as_vec3, euler_rad_from_matrix, rotation
+from precis.design import states as design_states
 from precis.errors import BadInput
 from precis.utils.units import format_quantity, parse_quantity
 from precis_chain.envelope import Capsule, capsule_pose
@@ -84,22 +86,30 @@ from precis_se.chain.layout import (
     segment_capsule,
     segment_pose,
 )
+from precis_se.chain.occupancy import apply_occupancy
 from precis_se.chain.vocab import (
     HELIX_ROLE,
     SEGMENT_ROLE,
+    STRAND_ROLE,
     ChainError,
     DomainSpec,
     chain_role,
     group_domains,
 )
 from precis_se.ops import OpError, SeTree, compose_world_pose
+from precis_se.state_arg import merged_occupancy
 
 #: Nanometres per metre — the one scale factor in this module (module
 #: docstring: the bundle is built in nanometres and written back in metres).
 _NM_PER_M = 1.0e9
 
 #: Keys the op accepts.
-_ALLOWED_KEYS = frozenset({"op", "move", "iters"})
+_ALLOWED_KEYS = frozenset({"op", "move", "iters", "state"})
+
+#: A walker body whose envelope is flat (or a sphere) still needs an axis
+#: the kernel can carry a rotation on: the shorter of its extents is
+#: floored here (metres) rather than left degenerate.
+_WALKER_MIN_EXTENT_M = 1e-9
 
 #: Default FIRE steps. 500 is the kernel's own default and settles a
 #: two-helix crossover to its contour in ~100; the 192-segment rectangle
@@ -152,6 +162,10 @@ class _Body:
     length_nm: float
     carry: np.ndarray
     movable: bool
+    #: A state-owning non-chain block settled as one more rigid body
+    #: (:func:`_walker_body`) — never hinged, never written back as a
+    #: segment; its settled placement goes to the state's own pose slot.
+    walker: bool = False
 
 
 @dataclass(frozen=True)
@@ -553,6 +567,209 @@ def _loops(
     return out
 
 
+@dataclass
+class _Walker:
+    """One state-owning block in this settle: its body index, the state
+    whose pose slot receives the settled placement, and the frame facts
+    the write-back needs (the block's world rotation and where bead 0
+    sits in its local frame)."""
+
+    name: str
+    state: str
+    body: int
+    rot: np.ndarray
+    lo_z_m: float
+
+
+def _walker_body(
+    tree: SeTree, node: Any, state: design_states.BlockState
+) -> tuple[_Body, _Walker]:
+    """The rigid body for a state-owning block — ``se-walker-light-protocol``'s
+    "the walker body is one more rigid body in ``relax_bundle``": its axis
+    is the block's local ``z`` through its origin, spanning its envelope's
+    ``z`` extent (the state's own envelope when it overrides the block's),
+    its radius half the wider of the other two extents. Refuses, by name,
+    a chain block (a helix's segments are already bodies — declare states
+    on the walker BODY), a child block (this round settles top-level
+    walkers; their parts move with them as children) and a block with no
+    parsable envelope (a body needs an extent)."""
+    if chain_role(node) is not None:
+        raise OpError(
+            f"relax_chain(state=): block {node.name!r} is a chain "
+            f"{chain_role(node)} — declare the walker's states on its BODY "
+            "block (the rigid part the legs hang off), not on a helix, strand "
+            "or segment"
+        )
+    if node.parent is not None:
+        raise OpError(
+            f"relax_chain(state=): block {node.name!r} is a child of "
+            f"{node.parent!r} — a state-settled walker must be top-level "
+            "(its own parts move with it as ITS children)"
+        )
+    envelope = state.envelope or node.envelope
+    if not envelope:
+        raise OpError(
+            f"relax_chain(state=): block {node.name!r} has no envelope — the "
+            "settle needs the walker body's extent (set_envelope)"
+        )
+    try:
+        lo, hi = cad_dsl.build(cad_dsl.parse(envelope)).aabb_local()
+    except (cad_dsl.DslError, ValueError) as exc:
+        raise OpError(
+            f"relax_chain(state=): block {node.name!r}'s envelope does not build: {exc}"
+        ) from exc
+    lo_v = np.asarray(lo, dtype=float).reshape(3)
+    hi_v = np.asarray(hi, dtype=float).reshape(3)
+    length_m = max(float(hi_v[2] - lo_v[2]), _WALKER_MIN_EXTENT_M)
+    radius_m = (
+        max(float(hi_v[0] - lo_v[0]), float(hi_v[1] - lo_v[1]), _WALKER_MIN_EXTENT_M)
+        / 2.0
+    )
+    rot = _rot(node.rot)
+    origin = np.asarray(node.pose, dtype=float).reshape(3)
+    a_m = origin + rot @ np.array([0.0, 0.0, float(lo_v[2])])
+    axis = rot @ np.array([0.0, 0.0, 1.0])
+    body = _Body(
+        name=str(node.name),
+        helix="",
+        start=0,
+        end=0,
+        a_nm=a_m * _NM_PER_M,
+        b_nm=(a_m + length_m * axis) * _NM_PER_M,
+        radius_nm=radius_m * _NM_PER_M,
+        length_nm=length_m * _NM_PER_M,
+        carry=np.eye(3),
+        movable=True,
+        walker=True,
+    )
+    return body, _Walker(
+        name=str(node.name), state=state.name, body=-1, rot=rot, lo_z_m=float(lo_v[2])
+    )
+
+
+@dataclass
+class _Leg:
+    """A tethered strand's spring: the walker's anchor port to the leg's
+    first (foot) domain's entry exit, resting at the tether's contour."""
+
+    strand: str
+    walker: int
+    foot: int
+    spring: LoopSpring
+
+
+def _unit_index(bodies: list[_Body]) -> dict[tuple[str, int], int]:
+    index: dict[tuple[str, int], int] = {}
+    for i, body in enumerate(bodies):
+        if body.walker:
+            continue
+        for offset in range(body.start, body.end + 1):
+            index[(body.helix, offset)] = i
+    return index
+
+
+def _legs(
+    tree: SeTree,
+    geoms: dict[str, HelixGeometry],
+    bodies: list[_Body],
+    walkers: dict[str, _Walker],
+) -> list[_Leg]:
+    """One loop spring per anchored strand whose anchor block is a walker
+    in THIS settle and whose foot (first) domain sits on a laid-out helix —
+    the item's "body-side end tied to a named attachment site by a loop
+    spring at the leg's free-nucleotide contour". A free leg (its foot
+    lifted by the state's occupancy, so :func:`group_domains` shows no
+    route) has nothing to spring to and gets no spring; a strand anchored
+    to a block that is not in this settle is left alone (the base
+    ``relax_chain`` settles the track, not the walker)."""
+    index = _unit_index(bodies)
+    tables = group_domains(list(getattr(tree, "domains", []) or []))
+    out: list[_Leg] = []
+    for strand in sorted(tree.blocks):
+        node = tree.blocks[strand]
+        if chain_role(node) != STRAND_ROLE:
+            continue
+        anchor = (node.chain or {}).get("anchor")
+        if not anchor:
+            continue
+        walker = walkers.get(str(anchor.get("block")))
+        if walker is None:
+            continue
+        wnode = tree.blocks[walker.name]
+        port = wnode.ports.get(str(anchor.get("port")))
+        if port is None:
+            raise OpError(
+                f"relax_chain(state=): strand {strand!r} is anchored at "
+                f"{walker.name}.{anchor.get('port')}, and {walker.name!r} has no "
+                f"such port — add_port it, or realize_chain sites=[...] on the "
+                "body's helix"
+            )
+        if port.pose is None:
+            raise OpError(
+                f"relax_chain(state=): anchor port {walker.name}.{port.name} has "
+                "no pose — set_port_pose it (the tether needs a point to pull from)"
+            )
+        route = tables.by_strand.get(strand) or []
+        if not route:
+            continue
+        foot = route[0]
+        geom = geoms.get(foot.helix)
+        j = index.get((foot.helix, foot.entry_offset))
+        if geom is None or j is None:
+            continue  # chain_dangling_domain's report, not this op's
+        att_foot = _attachment(bodies[j], j, geom, foot.entry_offset, foot.forward)
+        wb = bodies[walker.body]
+        p_nm = (
+            np.asarray(wnode.pose, dtype=float).reshape(3)
+            + walker.rot @ np.asarray(port.pose, dtype=float).reshape(3)
+        ) * _NM_PER_M
+        axis = _unit(wb.b_nm - wb.a_nm)
+        along = float(np.dot(p_nm - wb.a_nm, axis)) / wb.length_nm
+        offset = p_nm - (wb.a_nm + along * (wb.b_nm - wb.a_nm))
+        att_body = Attachment(body=walker.body, along=along, offset=_triple(offset))
+        rest = contour(
+            int(anchor.get("nt") or 0), geom.motif.contour_per_unit * _NM_PER_M
+        )
+        out.append(
+            _Leg(
+                strand=strand,
+                walker=walker.body,
+                foot=j,
+                spring=LoopSpring(a=att_body, b=att_foot, rest_length=rest),
+            )
+        )
+    return out
+
+
+def _write_state_poses(
+    tree: SeTree, bodies: list[_Body], settled: np.ndarray, walkers: dict[str, _Walker]
+) -> int:
+    """Each walker's settled placement → ``node.pending_state_poses[state]``
+    as the block's own ``{xyz, rot}`` (world = parent-relative for a
+    top-level block), for :func:`precis_se.handler._materialize_states`
+    to store through :func:`precis.design.states.set_state_pose`. The
+    tree's own pose is NOT touched: a state's pose is an overlay the
+    ``args={'state': ...}`` read applies, never the block's default."""
+    written = 0
+    for walker in walkers.values():
+        i = walker.body
+        body = bodies[i]
+        a = settled[i, 0] / _NM_PER_M
+        axis_now = _unit(settled[i, 1] - settled[i, 0])
+        carry = _carry_rotation(_unit(body.b_nm - body.a_nm), axis_now)
+        rot = carry @ walker.rot
+        origin = a - rot @ np.array([0.0, 0.0, walker.lo_z_m])
+        node = tree.blocks[walker.name]
+        pending = dict(node.pending_state_poses or {})
+        pending[walker.state] = {
+            "xyz": [float(v) for v in origin],
+            "rot": [float(v) for v in euler_rad_from_matrix(rot)],
+        }
+        node.pending_state_poses = pending
+        written += 1
+    return written
+
+
 def _hinges(
     bodies: list[_Body], geoms: dict[str, HelixGeometry], lp: dict[str, _Lp]
 ) -> list[Hinge]:
@@ -564,7 +781,7 @@ def _hinges(
     out: list[Hinge] = []
     for i in range(len(bodies) - 1):
         a, b = bodies[i], bodies[i + 1]
-        if a.helix != b.helix or a.end + 1 != b.start:
+        if a.walker or b.walker or a.helix != b.helix or a.end + 1 != b.start:
             continue
         motif = dataclasses.replace(
             geoms[a.helix].motif, persistence_length=lp[a.helix].value_m
@@ -595,7 +812,7 @@ def _write_back(
     """
     written = 0
     for i, body in enumerate(bodies):
-        if not body.movable:
+        if not body.movable or body.walker:
             continue
         node = tree.blocks[body.name]
         a = settled[i, 0] / _NM_PER_M
@@ -679,6 +896,10 @@ def _summary(
     gap_owner: str,
     written: int,
     curves: int,
+    *,
+    walkers: dict[str, _Walker] | None = None,
+    legs: list[_Leg] | None = None,
+    stations: int = 0,
 ) -> str:
     sourced = sorted(name for name, entry in lp.items() if entry.from_store)
     if sourced:
@@ -690,54 +911,108 @@ def _summary(
     else:
         lp_line = "Lp " + ", ".join(sorted({entry.source for entry in lp.values()}))
     return (
-        f"relax_chain: settled {len(bodies)} segment bodies over {len(lp)} "
+        f"relax_chain: settled {sum(1 for b in bodies if not b.walker)} segment "
+        f"bodies over {len(lp)} "
         f"helices with {len(loops)} loop spring(s) — {result.n_steps} step(s), "
         f"max force {result.max_force:.3g}, "
         f"{'converged' if result.converged else 'NOT converged'}; "
         f"{lp_line}; excluded volume at min_gap "
         f"{format_quantity(gap_m, 'length')} (helix {gap_owner!r}); wrote "
         f"{written} proposed pose(s) and {curves} loop curve(s)"
+        + (
+            "; station settle: "
+            + ", ".join(f"{w.name}@{w.state}" for w in (walkers or {}).values())
+            + f" as rigid bodies with {len(legs or [])} leg tether(s), "
+            f"{stations} per-state pose(s) stored"
+            if walkers
+            else ""
+        )
     )
 
 
 def op_relax_chain(
-    store: Any, tree: SeTree, op: dict[str, Any], state: Any = None
+    store: Any,
+    tree: SeTree,
+    op: dict[str, Any],
+    state: dict[str, design_states.BlockState] | None = None,
 ) -> str:
     """Apply the ``relax_chain`` op (module docstring) and return its
     summary line.
 
-    ``state`` is reserved for ``se-walker-light-protocol``'s occupancy
-    states — the same no-op-from-day-one kwarg
-    :func:`precis_se.chain.pairing.derive_pairing` carries, so that item
-    never has to change this signature. Anything but ``None`` raises
-    rather than being silently ignored.
+    ``state`` (``{block name: BlockState}``, resolved by
+    :func:`precis_se.state_arg.resolve_state_arg` from the op's
+    ``state={block: state name}`` key) turns this into a **station
+    settle** (``se-walker-light-protocol``): the states' occupancy is
+    applied to a transient copy of the domain rows
+    (:func:`~precis_se.chain.occupancy.apply_occupancy`), every
+    state-owning block joins the bundle as one more rigid body
+    (:func:`_walker_body`), its tethered strands pull it to their
+    footholds (:func:`_legs`), and its settled placement is queued for the
+    state's own pose slot (:func:`_write_state_poses`) rather than written
+    to the tree — the tree's rows and the block's default pose come out of
+    a station settle untouched, and no loop curve is written (a curve is
+    a fact about the declared route, not about one station). With no
+    ``move=`` a station settle moves the walker ALONE (the track is the
+    fixed frame the legs pull against); segments named by ``move=`` still
+    settle and write back as usual.
 
     Raises :class:`~precis_se.ops.OpError` before any mutation on every
     refusal path.
     """
-    if state is not None:
-        raise NotImplementedError(
-            "relax_chain(state=) is a reserved hook for "
-            "se-walker-light-protocol's occupancy states — no consumer fills "
-            "it yet, and honouring it silently would settle an unfiltered "
-            "design as if it were state-filtered"
-        )
     strays = sorted(set(op) - _ALLOWED_KEYS)
     if strays:
         raise OpError(
             f"relax_chain: unknown key(s) {', '.join(strays)} — takes move "
-            "('all' or helix/segment block names) and iters (FIRE steps, "
-            f"default {DEFAULT_ITERS})"
+            "('all' or helix/segment block names), iters (FIRE steps, "
+            f"default {DEFAULT_ITERS}) and state ({{block: state name}})"
         )
+    resolved = dict(state or {})
+    if op.get("state") is not None and not resolved:
+        raise OpError(
+            "relax_chain: 'state' must be resolved against the saved design's "
+            "declared states before this op runs (put the design first, then "
+            "edit it with the relax)"
+        )
+    saved_domains = tree.domains
+    occupancy = merged_occupancy(resolved) if resolved else {}
+    if occupancy:
+        tree.domains = apply_occupancy(saved_domains, occupancy)
+    try:
+        return _settle(store, tree, op, resolved)
+    finally:
+        tree.domains = saved_domains
+
+
+def _settle(
+    store: Any,
+    tree: SeTree,
+    op: dict[str, Any],
+    resolved: dict[str, design_states.BlockState],
+) -> str:
     iters = _iters(op)
     geoms = _helices(tree)
     bodies = _bodies(tree, geoms)
-    movable = _movable_names(tree, op, bodies)
+    walkers: dict[str, _Walker] = {}
+    for name in sorted(resolved):
+        body, walker = _walker_body(tree, tree.blocks[name], resolved[name])
+        walker.body = len(bodies)
+        bodies.append(body)
+        walkers[name] = walker
+    if walkers and op.get("move") is None:
+        # A station settle moves the walker alone: the track is the fixed
+        # frame its legs pull against, so the layout's revisable segments
+        # are NOT the default movers here (they are in a plain settle) —
+        # else a foothold would come to the leg instead of the body going
+        # to the foothold. move= still names segments explicitly.
+        movable: set[str] = set()
+    else:
+        movable = _movable_names(tree, op, bodies)
     for body in bodies:
-        body.movable = body.name in movable
+        body.movable = body.walker or body.name in movable
     lp = _lp_of(store, tree, geoms)
     hinges = _hinges(bodies, geoms, lp)
     loops = _loops(tree, geoms, bodies)
+    legs = _legs(tree, geoms, bodies, walkers)
     # The excluded-volume clearance is the same number ``chain_clash``
     # measures against — the tightest ``min_gap`` any helix declares — so a
     # settle and the check that grades it cannot disagree.
@@ -745,7 +1020,10 @@ def op_relax_chain(
     # Sanctioned contacts, matching ``chain_clash``'s own exemptions: the
     # two segments a loop joins are *supposed* to touch. Hinge-welded pairs
     # are already exempt inside the kernel.
-    skip = sorted({tuple(sorted((loop.body_a, loop.body_b))) for loop in loops})
+    skip = sorted(
+        {tuple(sorted((loop.body_a, loop.body_b))) for loop in loops}
+        | {tuple(sorted((leg.walker, leg.foot))) for leg in legs}
+    )
     pins = [
         Pin(body=i, end=end, target=_triple((body.a_nm, body.b_nm)[end]))
         for i, body in enumerate(bodies)
@@ -757,7 +1035,7 @@ def op_relax_chain(
         result = relax_bundle(
             start,
             hinges,
-            [loop.spring for loop in loops],
+            [loop.spring for loop in loops] + [leg.spring for leg in legs],
             pins,
             np.array([b.radius_nm for b in bodies], dtype=float),
             iters,
@@ -768,7 +1046,8 @@ def op_relax_chain(
     except ValueError as exc:  # pragma: no cover — the vetting above precedes it
         raise OpError(f"relax_chain: the settle refused this bundle: {exc}") from exc
     written = _write_back(tree, bodies, result.bodies, geoms)
-    curves = _write_curves(bodies, loops, result.bodies)
+    curves = 0 if walkers else _write_curves(bodies, loops, result.bodies)
+    stations = _write_state_poses(tree, bodies, result.bodies, walkers)
     return _summary(
         result,
         bodies,
@@ -778,4 +1057,7 @@ def op_relax_chain(
         gap_owner.name,
         written,
         curves,
+        walkers=walkers,
+        legs=legs,
+        stations=stations,
     )

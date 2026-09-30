@@ -54,7 +54,7 @@ _HELIX_KEYS = frozenset(
     }
 )
 #: Keys a stored strand record may carry.
-_STRAND_KEYS = frozenset({"role", "sequence", "nucleic"})
+_STRAND_KEYS = frozenset({"role", "sequence", "nucleic", "anchor"})
 #: Keys a stored segment record may carry.
 _SEGMENT_KEYS = frozenset({"role", "helix", "ord", "start", "end"})
 #: Keys a domain row's ``meta`` may carry.
@@ -136,6 +136,14 @@ class DomainSpec:
     #: ``se-nucleic-realize-export`` reads, so an empty list is never
     #: stored.
     loop_curve: list[list[float]] | None = None
+    #: TRANSIENT — set only on the per-state copy
+    #: :func:`precis_se.chain.occupancy.apply_occupancy` makes for a
+    #: walker state whose occupancy lifts this leg domain off every helix
+    #: (``None`` target). Never persisted (:meth:`meta` omits it) and never
+    #: authored: :func:`group_domains` drops a free row from every table,
+    #: which is what "exempt from pairing and chain_dangling_domain in
+    #: that state" means operationally.
+    free: bool = field(default=False, compare=False)
 
     @property
     def n_units(self) -> int:
@@ -495,7 +503,35 @@ def build_strand(op: dict[str, Any], *, what: str = "declare_strand") -> dict[st
     sequence = vet_sequence(op.get("sequence"), nucleic_name, what)
     if sequence is not None:
         record["sequence"] = sequence
+    anchor = vet_anchor(op.get("anchor"), op.get("tether_nt"), what)
+    if anchor is not None:
+        record["anchor"] = anchor
     return record
+
+
+def vet_anchor(raw: Any, tether_raw: Any, what: str) -> dict[str, Any] | None:
+    """A walker leg's tether — ``anchor='<block>.<port>'`` plus
+    ``tether_nt=<n>``: the strand's 5' end hangs off that port of a rigid
+    body (the walker), and its FIRST domain is reached through ``n``
+    unpaired nucleotides. ``se-walker-light-protocol``'s "body-side end
+    tied to a named attachment site by a loop spring at the leg's
+    free-nucleotide contour"; the settle turns it into exactly that
+    spring. Stored as ``{'block', 'port', 'nt'}``. The block/port's
+    existence is the op's check (it needs the tree); this vets shape."""
+    if raw is None:
+        if tether_raw is not None:
+            raise ChainError(f"{what}: 'tether_nt' needs an 'anchor' to hang off")
+        return None
+    if not isinstance(raw, str) or "." not in raw.strip():
+        raise ChainError(
+            f"{what}: 'anchor' is '<block>.<port>' — the walker body's port "
+            f"this strand's 5' end is tethered to, got {raw!r}"
+        )
+    block, _, port = raw.strip().rpartition(".")
+    if not block or not port:
+        raise ChainError(f"{what}: bad anchor {raw!r} — '<block>.<port>'")
+    nt = 0 if tether_raw is None else _int(tether_raw, "tether_nt", what, minimum=0)
+    return {"block": block, "port": port, "nt": nt}
 
 
 def segment_record(helix: str, ord_: int, start: int, end: int) -> dict[str, Any]:
@@ -613,6 +649,15 @@ def validate_chain(raw: Any, *, what: str = "chain") -> dict[str, Any]:
         vet_sequence(
             raw.get("sequence"), resolve_nucleic(raw.get("nucleic"), what), what
         )
+        anchor = raw.get("anchor")
+        if anchor is not None:
+            if not isinstance(anchor, dict) or not {"block", "port", "nt"} <= set(
+                anchor
+            ):
+                raise ChainError(
+                    f"{what}: 'anchor' must be {{'block', 'port', 'nt'}}, got {anchor!r}"
+                )
+            _int(anchor.get("nt"), "anchor.nt", what, minimum=0)
         return raw
     if role == SEGMENT_ROLE:
         _strays(raw, _SEGMENT_KEYS, f"{what} (segment)")
@@ -656,9 +701,13 @@ class ChainTables:
 
 
 def group_domains(domains: list[DomainSpec]) -> ChainTables:
-    """Group ``domains`` by strand (``ord``-sorted) and by helix."""
+    """Group ``domains`` by strand (``ord``-sorted) and by helix. A row
+    marked :attr:`DomainSpec.free` (a walker leg lifted off its foothold
+    in the state being read) is left out of both tables."""
     tables = ChainTables()
     for d in domains:
+        if d.free:
+            continue
         tables.by_strand.setdefault(d.strand, []).append(d)
         tables.by_helix.setdefault(d.helix, []).append(d)
     for route in tables.by_strand.values():

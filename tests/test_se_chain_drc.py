@@ -914,11 +914,18 @@ def test_no_chain_declaration_means_no_findings_and_no_work() -> None:
     assert findings(tree) == []
 
 
-def test_derive_pairing_refuses_an_unhonoured_state_kwarg() -> None:
+def test_derive_pairing_honours_an_occupancy_state() -> None:
     tree = _one_offset_tree(1)
-    assert derive_pairing(tree, state=None).offsets  # the no-op default
-    with pytest.raises(NotImplementedError, match="reserved hook"):
-        derive_pairing(tree, state={"walker": "s1"})
+    assert derive_pairing(tree, state=None).offsets  # the rows as declared
+    domain = tree.domains[0]
+    key = f"{domain.strand}.{domain.ord}"
+    # A freed leg (null) pairs nowhere in that state …
+    assert not derive_pairing(tree, state={key: None}).offsets
+    # … and the rows themselves are untouched by the read.
+    assert tree.domains[0] is domain and not domain.free
+    # A leg placed where it already is reads exactly as declared.
+    same = derive_pairing(tree, state={key: f"{domain.helix}@{domain.start}"})
+    assert same.offsets == derive_pairing(tree).offsets
 
 
 def test_layout_chain_needs_a_helix() -> None:

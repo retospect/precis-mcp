@@ -340,6 +340,7 @@ from precis_se.atomic.vocab import (
 )
 from precis_se.bom import BomError, BomLine, vet_bom_fields
 from precis_se.chain import layout as chain_layout
+from precis_se.chain import occupancy as chain_occupancy
 from precis_se.chain import vocab as chain_vocab
 from precis_se.chain.vocab import ChainError, DomainSpec
 from precis_se.fret import (
@@ -625,6 +626,13 @@ class SeBlock(BlockNode):
     #: minted a uid, after validating the name against the block's
     #: (possibly just-declared) states.
     pending_current_state: str | None = None
+    #: This call's station settle results — ``{state name: {'xyz', 'rot'}}``,
+    #: the block's own pose in each state ``relax_chain(state=)`` settled
+    #: (:func:`precis_se.chain.relax.op_relax_chain`), written by
+    #: :func:`precis_se.handler._materialize_states` through the core's
+    #: one pose setter (:func:`precis.design.states.set_state_pose`) once
+    #: ``save_tree`` has a uid. The tree's own pose is never touched.
+    pending_state_poses: dict[str, dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         """:attr:`local_pose`/``local_rot``'s empty-list sentinel →
@@ -2490,11 +2498,19 @@ def _vet_port_pose_overrides(raw: Any, *, state_name: str) -> dict[str, Any] | N
 
 def _op_declare_states(tree: SeTree, op: dict[str, Any]) -> None:
     """Replace a block's declared states — ``states=[{'name',
-    'envelope'?, 'port_pose_overrides'?, 'descr'?}, ...]`` (``[]`` clears
-    them). Ordinary blocks only (:func:`_template_owned`) — an instance
-    resolves its facets from its template, the same rule as envelope/mode/
-    dof, and a state declared on the template genuinely applies to every
-    instance of it once a later round adds instance-side resolution."""
+    'envelope'?, 'port_pose_overrides'?, 'occupancy'?, 'descr'?}, ...]``
+    (``[]`` clears them). Ordinary blocks only (:func:`_template_owned`) —
+    an instance resolves its facets from its template, the same rule as
+    envelope/mode/dof, and a state declared on the template genuinely
+    applies to every instance of it once a later round adds instance-side
+    resolution.
+
+    ``occupancy`` is the walker's foothold map for that state,
+    ``{'<strand>.<ord>': '<helix>@<offset>' | null}``
+    (:mod:`precis_se.chain.occupancy` — vetted here against the tree's
+    strands, domains and helices). A ``pose`` key is refused: a state's
+    pose is derived by ``relax_chain(state=)`` and stored by the core's
+    own setter, never authored."""
     node = _template_owned(
         tree,
         _require_name(op, "block", "declare_states"),
@@ -2526,15 +2542,155 @@ def _op_declare_states(tree: SeTree, op: dict[str, Any]) -> None:
         overrides = _vet_port_pose_overrides(
             entry.get("port_pose_overrides"), state_name=state_name
         )
+        if "pose" in entry:
+            raise OpError(
+                f"declare_states: state {state_name!r} carries a 'pose' — a "
+                "state's pose is DERIVED (relax_chain state={...} settles and "
+                "stores it), never authored; drop the key"
+            )
+        occupancy = None
+        if entry.get("occupancy") is not None:
+            try:
+                occupancy = chain_occupancy.vet_occupancy(
+                    tree,
+                    entry["occupancy"],
+                    what=f"declare_states state {state_name!r}",
+                    n_units=_helix_units(tree),
+                )
+            except ChainError as exc:
+                raise OpError(str(exc)) from exc
         parsed.append(
             {
                 "name": state_name,
                 "envelope": envelope,
                 "port_pose_overrides": overrides,
                 "descr": _opt_str(entry.get("descr")),
+                "occupancy": occupancy,
             }
         )
     node.pending_states = parsed
+
+
+def _helix_units(tree: SeTree) -> dict[str, int]:
+    """Each helix block's declared unit count, for occupancy bounds."""
+    out: dict[str, int] = {}
+    for name, node in tree.blocks.items():
+        if chain_vocab.chain_role(node) != chain_vocab.HELIX_ROLE:
+            continue
+        try:
+            out[name] = int((node.chain or {})["n_units"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _op_declare_stations(tree: SeTree, op: dict[str, Any]) -> None:
+    """Sugar over ``declare_states`` + ``declare_transitions`` for a
+    hand-over-hand walker (``se-walker-light-protocol``, 2026-09-28
+    ruling): ``walker=`` (the body block that owns the states), ``legs=``
+    (its tethered strands, rear → front) and ``footholds=`` (``'<helix>@
+    <offset>'`` along the track, in walking order). Station *i* has leg
+    *j* on foothold *i + j*; there are ``len(footholds) - len(legs) + 1``
+    stations, named ``st0``, ``st1``, …, each an occupancy over every
+    leg's FOOT domain (its first domain — the one its tether reaches).
+    Transitions are the forward chain ``st<i> → st<i+1>`` and each
+    reverse edge, ``driver_kind`` (default ``light``) with
+    ``forward_driver``/``reverse_driver`` as the two driver_refs
+    (a wavelength, an ``rxn`` slug; both optional — fill them in with
+    ``declare_transitions`` later). The forward edge lifts the REAR leg
+    and rebinds it one foothold past the front leg, its reverse edge is
+    the inverse; other gaits are authored with ``declare_states``
+    directly. Replaces the walker's states and transitions like the two
+    ops it stands for; stored per-state poses survive (the core's upsert
+    keeps them)."""
+    walker = _require_block(tree, op, "walker", "declare_stations", what="walker")
+    legs_raw = op.get("legs")
+    footholds_raw = op.get("footholds")
+    if not isinstance(legs_raw, list) or not legs_raw:
+        raise OpError(
+            "declare_stations needs 'legs' — a non-empty list of strand blocks"
+        )
+    if not isinstance(footholds_raw, list) or not footholds_raw:
+        raise OpError(
+            "declare_stations needs 'footholds' — a non-empty list of "
+            "'<helix>@<offset>' along the track"
+        )
+    legs: list[str] = []
+    for raw in legs_raw:
+        leg = _require_block(tree, {"leg": raw}, "leg", "declare_stations", what="leg")
+        if chain_vocab.chain_role(tree.blocks[leg]) != chain_vocab.STRAND_ROLE:
+            raise OpError(f"declare_stations: leg {leg!r} is not a strand block")
+        if leg in legs:
+            raise OpError(f"declare_stations: leg {leg!r} listed twice")
+        legs.append(leg)
+    footholds = [
+        "{}@{}".format(*chain_occupancy.parse_target(f, what="declare_stations"))
+        for f in footholds_raw
+    ]
+    n_stations = len(footholds) - len(legs) + 1
+    if n_stations < 1:
+        raise OpError(
+            f"declare_stations: {len(legs)} legs need at least {len(legs)} "
+            f"footholds, got {len(footholds)}"
+        )
+    feet: dict[str, str] = {}
+    for leg in legs:
+        route = _domains_of(tree, leg)
+        if not route:
+            raise OpError(
+                f"declare_stations: leg {leg!r} has no domains — add_domain its "
+                "foot (the domain the tether reaches) first"
+            )
+        feet[leg] = f"{leg}.{route[0].ord}"
+    kind = str(op.get("driver_kind") or "light")
+    try:
+        validate_driver_kind(kind)
+    except StateError as exc:
+        raise OpError(f"declare_stations: {exc}") from exc
+    forward_ref = _opt_str(op.get("forward_driver"))
+    reverse_ref = _opt_str(op.get("reverse_driver"))
+    states: list[dict[str, Any]] = []
+    for i in range(n_stations):
+        occupancy = {feet[leg]: footholds[i + j] for j, leg in enumerate(legs)}
+        states.append(
+            {
+                "name": f"st{i}",
+                "occupancy": occupancy,
+                "descr": "station "
+                + str(i)
+                + ": "
+                + ", ".join(
+                    f"{leg} on {footholds[i + j]}" for j, leg in enumerate(legs)
+                ),
+            }
+        )
+    transitions: list[dict[str, Any]] = []
+    for i in range(n_stations - 1):
+        transitions.append(
+            {
+                "from_state": f"st{i}",
+                "to_state": f"st{i + 1}",
+                "driver_kind": kind,
+                "driver_ref": forward_ref,
+                "params": {},
+            }
+        )
+        transitions.append(
+            {
+                "from_state": f"st{i + 1}",
+                "to_state": f"st{i}",
+                "driver_kind": kind,
+                "driver_ref": reverse_ref,
+                "params": {},
+            }
+        )
+    _op_declare_states(
+        tree, {"op": "declare_states", "block": walker, "states": states}
+    )
+    _op_declare_transitions(
+        tree,
+        {"op": "declare_transitions", "block": walker, "transitions": transitions},
+    )
 
 
 def _op_declare_transitions(tree: SeTree, op: dict[str, Any]) -> None:
@@ -2734,9 +2890,24 @@ def _op_declare_strand(tree: SeTree, op: dict[str, Any]) -> None:
     node = _chain_owner(tree, op, opname="declare_strand")
     payload = {k: v for k, v in op.items() if k not in ("op", "block")}
     try:
-        node.chain = chain_vocab.build_strand(payload)
+        record = chain_vocab.build_strand(payload)
     except ChainError as exc:
         raise OpError(str(exc)) from exc
+    anchor = record.get("anchor")
+    if anchor is not None:
+        body = tree.blocks.get(anchor["block"])
+        if body is None:
+            raise OpError(
+                f"declare_strand: anchor names block {anchor['block']!r}, which "
+                "does not exist — add_block the walker body first"
+            )
+        if body.name == node.name or chain_vocab.chain_role(body) is not None:
+            raise OpError(
+                f"declare_strand: anchor block {anchor['block']!r} must be a "
+                "plain rigid body (the walker), not a helix/strand/segment or "
+                "the strand itself"
+            )
+    node.chain = record
 
 
 def _op_add_domain(tree: SeTree, op: dict[str, Any]) -> None:
@@ -3067,6 +3238,7 @@ _OPS = {
     "set_optical_link": _op_set_optical_link,
     "set_optics": _op_set_optics,
     "declare_states": _op_declare_states,
+    "declare_stations": _op_declare_stations,
     "declare_transitions": _op_declare_transitions,
     "set_current_state": _op_set_current_state,
     "declare_helix": _op_declare_helix,

@@ -62,7 +62,7 @@ DRIVER_KINDS: tuple[str, ...] = (
     "mechanical",
 )
 
-_STATE_COLS = "block_uid, name, envelope, port_pose_overrides, descr"
+_STATE_COLS = "block_uid, name, envelope, port_pose_overrides, descr, occupancy, pose"
 _TRANSITION_COLS = (
     "block_uid, from_state, to_state, driver_kind, driver_ref, params, requires"
 )
@@ -81,13 +81,26 @@ class BlockState:
     rigid delta on that port (``se``: ``{'direction'?, 'pose'?, 'rot'?}``,
     :func:`precis_se.ops._vet_port_pose_overrides`). This core stores and
     returns it verbatim; what a port even has to move is the domain's
-    vocabulary, not this table's."""
+    vocabulary, not this table's.
+
+    ``occupancy`` (migration ``0172``) is the se walker's per-state foothold
+    map — ``{"<strand>.<ord>": "<helix>@<offset>" | None}`` — authored
+    through ``declare_states``/``declare_stations`` and, like the port
+    overrides, vetted by the owning domain and stored verbatim here.
+    ``pose`` is the owning block's own parent-relative pose in this state,
+    ``{"xyz": [...], "rot": [...]}`` — **derived, never authored**: only
+    :func:`set_state_pose` writes it (the se ``relax_chain(state=)`` op is
+    its one caller), :func:`set_states` never touches it, and a
+    ``declare_states`` payload carrying a ``pose`` is rejected by the
+    domain before it gets here."""
 
     block_uid: int
     name: str
     envelope: str | None = None
     port_pose_overrides: dict[str, Any] | None = None
     descr: str | None = None
+    occupancy: dict[str, str | None] | None = None
+    pose: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -185,14 +198,21 @@ def set_states(
             (ref_id, block_uid, keep),
         )
         for state in rows:
+            # ``pose`` is deliberately absent from the column list: it is a
+            # derived slot (:func:`set_state_pose`), and the upsert keeps
+            # whatever a settle already stored — re-declaring a walker's
+            # stations never wipes its relaxed poses.
             c.execute(
                 "INSERT INTO design_states "
-                "(ref_id, block_uid, name, envelope, port_pose_overrides, descr) "
-                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "(ref_id, block_uid, name, envelope, port_pose_overrides, descr, "
+                "occupancy) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (ref_id, block_uid, name) DO UPDATE SET "
                 "envelope = EXCLUDED.envelope, "
                 "port_pose_overrides = EXCLUDED.port_pose_overrides, "
-                "descr = EXCLUDED.descr",
+                "descr = EXCLUDED.descr, "
+                "occupancy = EXCLUDED.occupancy, "
+                "pose = COALESCE(EXCLUDED.pose, design_states.pose)",
                 (
                     ref_id,
                     block_uid,
@@ -204,8 +224,43 @@ def set_states(
                         else None
                     ),
                     state.descr,
+                    Jsonb(state.occupancy) if state.occupancy is not None else None,
                 ),
             )
+
+
+def set_state_pose(
+    store: Any,
+    ref_id: int,
+    block_uid: int,
+    state_name: str,
+    pose: Mapping[str, Any] | None,
+    *,
+    conn: Connection | None = None,
+) -> None:
+    """Store (or clear, with ``None``) one declared state's derived pose —
+    the owning block's own parent-relative ``{"xyz": [m, m, m], "rot":
+    [rad, rad, rad]}`` in that state. The one writer of the slot: a settle
+    calls it, an author never can. Raises :class:`StateError` when the
+    state does not exist — a pose for an undeclared state has nothing to
+    hang off, and inserting a bare row here would let a settle declare
+    states by accident."""
+    with write_conn(store, conn) as c:
+        updated = c.execute(
+            "UPDATE design_states SET pose = %s "
+            "WHERE ref_id = %s AND block_uid = %s AND name = %s",
+            (
+                Jsonb(dict(pose)) if pose is not None else None,
+                ref_id,
+                block_uid,
+                state_name.strip(),
+            ),
+        ).rowcount
+    if not updated:
+        raise StateError(
+            f"block {block_uid} has no declared state {state_name!r} to store a "
+            "pose on — declare_states first"
+        )
 
 
 def states_for(
@@ -267,6 +322,8 @@ def _state_from_row(row: dict[str, Any]) -> BlockState:
             else None
         ),
         descr=row["descr"],
+        occupancy=(dict(row["occupancy"]) if row["occupancy"] is not None else None),
+        pose=dict(row["pose"]) if row["pose"] is not None else None,
     )
 
 
