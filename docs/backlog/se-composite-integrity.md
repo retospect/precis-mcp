@@ -15,11 +15,18 @@ meaningful if those blocks are still the composite's children.
 
 Nothing checks that. `precis_se/atomic/validate.py` contains no reference
 to `parts` at all, and no finding of any severity is emitted when the
-relation breaks. It breaks in practice: gr457995 shows a later join taking
-a block that an earlier composite still claims, leaving the earlier
-composite unable to replay itself. Both prod dogfood designs reached that
-state, and the damage was found by reading rows by hand, twice, months
-apart — the second time only because someone went looking.
+relation breaks. It breaks in practice. Both prod dogfood designs reached that state — a
+later join took a block an earlier composite still claims — and both times
+the damage was found by reading rows by hand, only because someone went
+looking.
+
+The join-side guard that should prevent it (`join.part_addressed`) is in
+fact correct; gr457995 is refuted. What actually got through was a join
+executed by an MCP process running code older than that guard (gr458061).
+That makes this detector *more* valuable, not less: a guard only protects
+the calls that reach it, and nothing at all notices when a stale process,
+a restored backup, or a future regression writes a composite that cannot
+replay itself.
 
 The invariant is one query. The absence of it is why a silent corruption
 survived a green test suite, a prod dogfood, and a deliberate follow-up
@@ -35,27 +42,28 @@ that each part's live parent is still the composite claiming it).
   ends named — the claiming composite and the block's actual parent.
 - The same check reachable as a sweep over a whole design, so existing
   prod designs can be audited rather than only new edits.
-- A test that constructs the gr457995 shape (join a part's free rim after
-  it is already claimed) and asserts the check fires.
+- A test that constructs the corrupted shape (a composite claiming a part
+  whose live parent is a different composite) and asserts the check fires.
 
 ## Explicitly NOT in scope
 
-- Fixing gr457995 itself — that is the join-side guard, and this item is
-  the detector. They land together but are separately shippable, and this
-  one is what tells us whether prod is already dirty.
+- The join-side guard. It already exists and is correct; this item is the
+  detector that runs regardless of whether a guard was reached.
 - Healing a corrupted composite. Detection first; a repair path needs a
   decision about which composite keeps the part.
 - Any change to what `parts` records or how a composite is minted.
 
 ## Acceptance criteria
 
-- A design in the gr457995 shape fails `view='validate'` with a finding
-  naming the composite, the missing part, and the block's current parent.
+- A design where a composite claims a part whose live parent is a
+  different composite fails `view='validate'`, with a finding naming the
+  claiming composite, the part, and the part's current parent.
 - A well-formed chained join (composite joined onto a further block, the
   ordinary case) produces no finding — chained joins are legitimate and
   must not be flagged.
 - A sweep over every live `se` design in prod runs and reports a count;
-  the result is recorded on gr457995 so we know the real blast radius.
+  the result is recorded on gr458061 so we know the real blast radius of
+  the stale-process window.
 - The check costs one query per composite, not a rebuild.
 
 ## Target + blast radius

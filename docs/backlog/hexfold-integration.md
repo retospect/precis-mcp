@@ -542,20 +542,23 @@ Two things are open:
    `EnvKey`. Nothing in the product sets the flag today; one test pins
    both sides of it.
 
-**Prod dogfood 2026-09-30 — the persistence is inert, and geometry is
-unaffected.** `se_hexfold_catalogue` stays at 0 rows across successful
-joins even on landed code with the wiring loaded, because the seed is
-issued from `_hexfold_join`, which runs in `prepare_join` — the
-documented *pure/in-memory* half of the prepare/finish pair. Calling
-`for_store` directly in the same container against the same prod DSN
-seeds all six rows correctly, so the store, the grants, the JSONB
-round-trip and both indexes are sound; only the call site is wrong.
-Joins remain correct meanwhile: an empty table means `resolve_edge` finds
-nothing and `compose` falls back to the pinned constants, which is what
-the seed would have supplied anyway. Gripe 457996 — move the seed into
-`finish_join` with its committing `conn`, or make seeding explicit and
-leave the join path read-only. Prod is deliberately left with the table
-empty, since that is the true state until this is fixed.
+**Prod dogfood 2026-09-30 — slice 2 is verified working end to end.**
+Against prod, in a current interpreter: `prepare_join` alone seeds all six
+pinned wildcards (0 rows before, 6 after, with no `finish_join` and no
+`save_tree`), so the store, grants, JSONB round-trip, both indexes, the
+seed and the join call site are all correct. `for_store` opens its own
+transaction on its own pooled connection, so the prepare/finish phase
+split does not affect it.
+
+The dogfood first reported the opposite — an empty table across two
+successful joins — and that reading was wrong. The session MCP process had
+been running since before `precis_se.atomic.catalogue` existed, so the
+joins issued through it executed a `join` module with no catalogue wiring
+at all. Same cause refuted the other dogfood finding of that day. Gripe
+458061 covers the stale-process defect; 457996 and 457995 are closed as
+refuted. The lesson worth keeping: a file's mtime, a `grep` in the
+container, and a fresh `python -c` in that same container all report the
+new code while the serving process runs the old one.
 
 **Erratum filed against `spec.md` §26** (written into the section): it
 describes a content-hash *build* cache, `hexfold_cache(key,
