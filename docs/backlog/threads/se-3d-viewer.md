@@ -8,9 +8,14 @@ that as the far end all three se threads serve. Today the affordances work
 and are verified by canvas pixel-diff at the deployed sha, but against local
 fixtures, never prod's own designs (gr457931, td458066); the list is about
 making that verification repeatable by someone other than the author, then
-the deferred features. No live corruption. The viewer renders precis_se atomic
-output, so hexfold's gr457995 shows here as a wrong picture; that is the
-hexfold-toolkit thread's item.
+the deferred features. No live corruption. gr457995, which used to sit
+here as "hexfold join corruption renders as a wrong picture", was refuted
+2026-09-30 — there is no join corruption. The real cause was gr458061: a
+session MCP process serving stale in-memory code for hours while every
+cheap check (mtime, grep, a fresh import in the same container) reads
+current. For this viewer that inverts the first question about a wrong
+picture — suspect a stale server upstream before suspecting the data.
+gr458061 is another thread's item.
 **Last reviewed:** 2026-09-30
 **Worktree:** `se-3d-viewer`
 
@@ -18,7 +23,7 @@ hexfold-toolkit thread's item.
 
 1. **backlog/se-viewer-browser-level-check.md** — no browser-level check
    exists, so every correctness claim rests on a hand-built harness in a
-   worktree that will be reaped. Leverage: makes 3–5 verifiable instead of
+   worktree that will be reaped. Leverage: makes 3 and 5–6 verifiable instead of
    assertable, and is the only guard against the defect that started the
    thread (a dead viewer behind a green suite).
 2. **td458066** — Reto decision: whether prod is ever browser-checked by an
@@ -31,18 +36,22 @@ hexfold-toolkit thread's item.
    setState(). Same class as the original inert toggle, fails silently.
    Below 1 because the adjacent case held on 2026-09-30 (n=0 pixel-diff), so
    the real trigger is narrower and needs the harness to pin down.
-4. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — semantics
-   ruled by Reto 2026-09-29 (`—` when a rung renders the block identically
-   to its neighbour). New work is server-side: scene3d.json must carry, per
-   block, which rungs differ. Above 5 because it is specified.
-5. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+4. **td458168** — Reto decision: the level-chip `—` rule and the worked
+   example in the same ruling disagree at a leaf, and the mockup is
+   inconsistent about which rung of an identical run keeps its letter.
+   Blocks the chips below it; a wrong guess means re-emitting a per-block
+   field of scene3d.json.
+5. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
+   server-side: scene3d.json must carry, per block, which rungs differ.
+   Waits on 4 only for the rule; everything else is specified.
+6. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-6. **gr457931** — se has no ops-export view and stores designs normalised, so
+7. **gr457931** — se has no ops-export view and stores designs normalised, so
    a prod design cannot be reproduced locally; the harness can only check
    code, never prod data. Tooling for a thread with no corruption, so below
    the features.
-7. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+8. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–5 in the file. Independent validator pass and the largest
    piece of work, hence last.
 

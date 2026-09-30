@@ -45,6 +45,15 @@ NOT "the block is invisible at that level". So a childless leaf carrying
 no realization record shows `[E·I·R·—]`: R and z are the same picture for
 it. This is the per-block datum `scene3d.json` has to start carrying.
 
+NOT YET BUILDABLE — td458168. The ruling and its own worked example
+disagree at a leaf: a childless leaf renders identically at `envelope` and
+at `interfaces` (`plan_visibility` gives any childless node "shape"
+whatever the cutoff), so the literal rule dashes one of them, while the
+example `[E·I·R·—]` dashes neither. And when a run of rungs is one
+picture, the mockup is inconsistent about which member keeps its letter
+(`flange_bolt_left` keeps the deepest, `crown` the shallowest). Both are
+cheap to build and produce different chips, so the ruling comes first.
+
 Note this is largely a FRONT END for an existing capability: the `overrides` query param already applies per-block level overrides server-side (see `plan_visibility` in `src/precis_web/blocktree_svg.py`, called from `_build_scene3d`). The genuinely new data needed is, per block, WHICH levels actually exist — that must be added to the `scene3d.json` payload. The raw `overrides` text box is replaced by this chip.
 
 - [ ] **A colour-channel selector.** Colour blocks by material, by process, by finding severity, or by change-vs-previous-revision, rather than one fixed scheme.
