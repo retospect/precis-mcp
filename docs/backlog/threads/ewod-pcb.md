@@ -82,11 +82,19 @@ soft-deleted)
    (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck —
    backlog/pcb-clearance-findings-name-no-pad.md carries both that figure
    and the observability gap the 09-30 investigation paid for.
-   ⚠ **gr458087**, filed the same day, measures `check_via_pad_keepout` as
-   still O(vias x pads) with no index (1.9 s on an 8x8 tile, 28 s at 4
-   tiles) — the opposite of "indexed" above. Both are dated 2026-09-30;
-   reconcile which measurement is current before trusting either, then
-   land the STRtree fix gr458087 proposes if the number really regressed.
+   **gr458087 is stale, not a regression — reconciled 2026-09-30 by
+   re-running the measurement.** Its 1.9 s/8x8 and 30 s/4-tile figures are
+   the PRE-fix state; the STRtree fix it proposed is already in
+   `check_via_pad_keepout`, whose own comment cites gr458087 and quotes
+   those numbers as history. Re-measured on `main` today over the same
+   `tests/test_pcb_ewod_generator_drc.py::_ewod_model` fixture:
+   `via_pad_keepout` 20 ms of a 224 ms pass at 8x8 (55 pads / 55 vias),
+   97 ms of 1279 ms at 16x16 (231 pads / 200 vias). So the rule is no
+   longer the bottleneck at any size measured, `check_clearance` is, and
+   the affordability prerequisite this item named is genuinely discharged.
+   gr458087 wants closing: it was bounced back to `STATUS:open` by the
+   false-push incident (gr458326), so nobody noticed the real fix had
+   landed by another route. Closing it is a prod write and waits on Reto.
 3. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
    waits on 2 because each slice's acceptance is an "is the board still
    valid" claim.
