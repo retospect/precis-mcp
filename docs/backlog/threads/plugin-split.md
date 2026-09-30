@@ -2,11 +2,15 @@
 
 **Status:** ends when `pip install precis-util <one-model>` boots a serve
 exposing that model's kinds and skills with no precis-mcp installed, and
-catpath is the reference model in its own repo. Today the split is
-prep-only until 2026-10-16; step 2 has landed and its prod dogfood exposed
-a deploy-mechanics defect every remaining step will re-trigger. Unbreak
-prod, make module moves deploy-safe, then continue the behaviour-neutral
-prep. Pathway presentation work is the same thread by dependency.
+catpath is the reference model in its own repo — specced in
+`backlog/plugin-split-runtime-shell.md`; it is the packaging half of
+`docs/mission.md`'s "machine-usable tools" for agents, since an installed
+model adds kinds to a constant 7-verb surface rather than tools to an
+agent's budget. Today the split is prep-only until 2026-10-16; step 2 has
+landed and its prod dogfood exposed a deploy-mechanics defect every
+remaining step will re-trigger. Unbreak prod, make module moves
+deploy-safe, then continue the behaviour-neutral prep. Pathway
+presentation work is the same thread by dependency.
 **Last reviewed:** 2026-09-30
 **Worktree:** `plugin-split`
 
@@ -33,8 +37,8 @@ prep. Pathway presentation work is the same thread by dependency.
 ## Horizon
 
 Milestones 2–4 and 6 are specced inside plugin-split-runtime-shell.md's
-post-10-16 ordering and share its pointer; they become items as each comes
-into reach.
+post-10-16 ordering and share its pointer (6 pairs it with the fold-in's
+own item); they become items as each comes into reach.
 
 1. **backlog/plugin-split-runtime-shell.md + backlog/package-split.md** —
    the 2026-10-16 gate: the four open calls answered (se placement,
@@ -55,9 +59,10 @@ into reach.
    <one-model>` boots a serve exposing that model's kinds and skills with no
    precis-mcp installed. Waits on 4; the acceptance criterion the whole
    split is judged against.
-6. **backlog/pathway-presentation-shared-module.md** — catpath as the
-   reference model, private until paper; waits on 5, which answers where
-   shared presentation logic lives. Needs a catpath version bump + wheel
+6. **backlog/pathway-presentation-shared-module.md +
+   backlog/plugin-split-runtime-shell.md** — catpath as the reference
+   model, private until paper; waits on 5, which answers where shared
+   presentation logic lives. Needs a catpath version bump + wheel
    redeploy.
 
 ## Parked
