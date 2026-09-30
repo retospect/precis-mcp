@@ -22,23 +22,19 @@ thread and is flagged on the Horizon for an owner.
 
 ## Do next
 
-1. **The fix_gripe lane cannot deliver, and nobody has decided whether it
-   should keep running** — the false-success half is fixed (see Status), so
-   the lane now fails honestly instead of parking gripes behind branches that
-   do not exist. But it fails *every time*: the worker's checkout is an
-   anonymous HTTPS clone with no push credential, so no fix attempt can reach
-   the upstream. Three ways out, and the choice is not mine: give the worker a
-   push credential, publish the diff to the gripe instead of a branch, or stop
-   scheduling the lane until one of those exists. Runs are now cheap while it
-   is undecided — a `push --dry-run` before the agent is spawned turns an
-   undeliverable deployment into a skip costing one round trip — but the lane
-   still produces nothing, and the 43 stranded branches lose what value they
-   have as main moves away from them. First because it is a decision, not
-   work: nobody else can make it and everything else here waits behind
-   knowing whether this lane has a future.
-   The 39 gripes it had parked at `in_review` behind branches that do not
-   exist — every `in_review` gripe in the database — are reset to `open` as of
-   2026-09-30, each carrying a comment saying why.
+1. **Decide what happens to the 43 stranded fix_gripe branches** — merge the
+   good ones, or delete them. Reto 2026-09-30, on the lane itself: **leave it
+   not doing anything.** That is settled, and the code already behaves that
+   way — a `push --dry-run` before the agent is spawned turns an undeliverable
+   worker into a skip costing one round trip, so the lane is inert without
+   being disabled. What is left is the branches, and they are the perishable
+   part: all 43 are from 2026-09-25 to 09-30 and sit 36 to 254 commits behind
+   main, so they decay every day nobody looks. Triage, and the two things that
+   triage did *not* establish, are in
+   **backlog/stranded-fix-gripe-branches.md**.
+   The 39 gripes the lane had parked at `in_review` behind branches that do
+   not exist — every `in_review` gripe in the database — are reset to `open`
+   as of 2026-09-30, each carrying a comment saying why.
 2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
@@ -46,21 +42,22 @@ thread and is flagged on the Horizon for an owner.
    took them), so what is left is the monitor. Second: it is the only open
    code work here that is mine to start, but nothing is specced yet and the
    thing it would watch is not currently costing anything.
-3. **backlog/main-stays-gated.md** — one follow-on, and it is a question
-   rather than a task: how far behind its last shard verdict main may drift
-   before `scripts/ship --quick` refuses rather than warns. Both directions
-   are written up in the item; it wants Reto's number, then it is a few lines.
+3. **backlog/main-stays-gated.md** — how far behind its last shard verdict main
+   may drift before `scripts/ship --quick` refuses rather than warns. Reto
+   2026-09-30: **a day or two**, pending confirmation against the number the
+   deploy session holds. Both directions are written up in the item; with the
+   number settled this is a few lines plus a test.
 
 ## Horizon
 
-1. **A guard on whether an ephemeral identity may claim jobs at all** — ask 2
-   of the container item, and unfiled as its own thing because it may not
-   belong here: it is prod-work integrity, not a monitor. Evidence from the
-   2026-09-30 forensics: the container claimed 53 nursery jobs and failed all
-   53, plus 16 axis jobs likewise, under an identity nobody can contact,
-   alert on, or trace once `worker_logs` prunes. Needs an owner thread before
-   it can be ranked — flagged here so it is not lost with the item whose
-   investigation half just closed.
+1. **A guard on whether an ephemeral identity may claim jobs at all** —
+   **filed 2026-09-30 as gr458458** at Reto's direction, so it now has an
+   owner and leaves this thread. It is prod-work integrity, not monitoring:
+   the container claimed 53 nursery jobs and failed all 53, plus 16 axis jobs
+   likewise, under an identity nobody can contact, alert on, or trace once
+   `worker_logs` prunes (around 2026-10-09, after which the evidence is gone).
+   Left on the Horizon only as a pointer — Do-next 2 is the narrow read-only
+   slice of it and is still this thread's.
 2. **backlog/alert-failure-id-registry.md** — status ready; stable failure
    ids make "did host-dark fire, for which host" addressable instead of SQL
    archaeology. Leverage over Do-next 2 and shippable now.
