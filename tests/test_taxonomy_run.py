@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -253,7 +254,7 @@ def test_hub_counts_tolerates_an_unparseable_row_id(config):
 
 
 def _record(ref_id: int, **overrides: object) -> CallRecord:
-    fields: dict[str, object] = {
+    fields: dict[str, Any] = {
         "ref_id": ref_id,
         "half": "A",
         "prompt_sha256": "00" * 32,
@@ -262,11 +263,11 @@ def _record(ref_id: int, **overrides: object) -> CallRecord:
         "payload": "[]",
     }
     fields.update(overrides)
-    return CallRecord(**fields)  # type: ignore[arg-type]
+    return CallRecord(**fields)
 
 
 def _result(**overrides: object) -> run.RunResult:
-    fields: dict[str, object] = {
+    fields: dict[str, Any] = {
         "snapshot": Snapshot(
             source="test",
             row_count=2,
@@ -286,7 +287,7 @@ def _result(**overrides: object) -> run.RunResult:
         "rejected": (),
     }
     fields.update(overrides)
-    return run.RunResult(**fields)  # type: ignore[arg-type]
+    return run.RunResult(**fields)
 
 
 def test_metering_line_sums_reported_fields_and_marks_unreported() -> None:

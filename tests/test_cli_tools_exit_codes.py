@@ -29,13 +29,9 @@ from precis.cli import tools as tools_cli
 from precis.cli._common import REFUSAL_EXIT
 
 
-class _Args:
-    tool = "get"
-
-
 def _run(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
     monkeypatch.setattr(tools_cli, "run_tool_from_cli", lambda _t, _a: payload)
-    tools_cli.run(_Args())  # type: ignore[arg-type]
+    tools_cli.run(argparse.Namespace(tool="get"))
 
 
 def test_refusal_goes_to_stderr_and_exits_nonzero(
@@ -61,7 +57,7 @@ def test_refusal_exit_is_distinct_from_the_crash_exit(
 
     monkeypatch.setattr(tools_cli, "run_tool_from_cli", boom)
     with pytest.raises(SystemExit) as exc:
-        tools_cli.run(_Args())  # type: ignore[arg-type]
+        tools_cli.run(argparse.Namespace(tool="get"))
     assert exc.value.code == 1
     assert exc.value.code != tools_cli.REFUSAL_EXIT
     assert "kaboom" in capsys.readouterr().err
