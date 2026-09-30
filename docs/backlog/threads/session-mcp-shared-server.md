@@ -102,14 +102,25 @@ server-side-session-context Horizon pointer)
    twelve containers (this one plus eleven `precis-mcp-dev-*`) each
    boot-warming the same 20137 blocks of the same tree against one embedder
    with `max_inflight=4`.
-   So three things, in order of how much they buy: (a) retry retryable
-   errors per batch, honouring the 429's own retry-after, so a pass makes
-   progress instead of restarting; (b) re-arm the pass later — on the first
-   md search against a cold cache, or a periodic tick — since the watchdog
-   bounces the process every few minutes during a qland burst and the pass
-   never gets a contiguous window (it was abandoned mid-attempt-4 at
-   14:22Z); (c) stop twelve containers racing to compute identical vectors,
-   which is a shared-cache question, not a retry question.
+   This item is now only the per-call half. (a) retry retryable errors per
+   batch, honouring the 429's own `retry_after_s`, so a pass makes progress
+   instead of restarting; (b) re-arm the pass later — on the first md search
+   against a cold cache, or a periodic tick — since the watchdog bounces the
+   process every few minutes during a qland burst and the pass never gets a
+   contiguous window (it was abandoned mid-attempt-4 at 14:22Z). Both stay
+   here.
+   The third thing — twelve containers racing to compute identical vectors —
+   went up a layer to `backlog/embedder-capacity-ownership.md` (pillar
+   local-compute, ranked in the dormant `threads/local-compute.md`), which
+   holds both of the Reto calls: the shared-cache yes/no plus its
+   multi-writer mechanism on the `.npz`, and whether a host-level admission
+   token should now be built. Do not re-plan either from this thread — that
+   item names our dogfood as the evidence that settles a prior deferral:
+   gr450123 deferred host-level admission (its option (a)) "until (b) proves
+   insufficient", and (b) is the bounded wait queue, which targets the
+   interactive request path — not a boot-warm storm. It also lists
+   `md_index/vectors.py` in its blast radius, so coordinate before touching
+   the cache file format.
    The instrumentation itself verified clean: `precis-status` over 8765
    reads `git_source watched-checkout`, `source_drift none`, and
    `md_vector_warmup retrying after attempt 1/4 (EmbedderUnavailable)`,
