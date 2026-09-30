@@ -55,9 +55,10 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 
 ## Horizon
 
-1. **routing_area cost term** (uncommitted, worktree-EWOD) — prices the
-   board area a strand sweeps; the only thing holding the sink under the
-   array. Waits on its own gate; a placer that needs no pinned sink.
+1. **routing_area cost term** (uncommitted, in this thread's worktree) —
+   prices the board area a strand sweeps; the only thing holding the sink
+   under the array. Waits on its own gate; a placer that needs no pinned
+   sink.
 2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
    waits on gr458087 and on 1; the precondition for trusting any number
    below this line.
@@ -88,7 +89,8 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 ## Parked
 
 - **pb345846 regenerate** — destructive prod write; unparks on Reto's
-  per-write go-ahead, and not before 1 and 5 land or it is done twice.
+  per-write go-ahead, and not before Do-next 1 and 6 land, or it is done
+  twice.
 - **U_TEMP part selection** — C32254 is a dual MOSFET placeholder; unparks
   when Reto picks a real LM75-class part (detail in item 1's file).
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
