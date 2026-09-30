@@ -18,12 +18,17 @@ the `session-mcp-shared-server` thread — note at the bottom)
 ## Do next
 
 1. **gr458061** — HANDED OFF 2026-09-30 to the `session-mcp-shared-server`
-   thread, where its fix is Do-next 2 (**gr457361**) plus that thread's
-   CheckoutWatchdog gap; two trees already live there, and the fix is in
-   `src/precis/`, not this surface. Stays ranked 1 as a *precondition*, not
-   as work: until it lands, no dogfood result in this thread can be
-   trusted, so anything below that is verified by dogfooding is verified
-   provisionally. Nothing to do here but re-verify afterwards.
+   thread; the fix is in `src/precis/`, not this surface, and two trees are
+   live there. It splits in two, and **this thread's precondition is both
+   halves**: **gr457361** (that thread's Do-next 2) makes the status
+   surface truthful about which sha a session is served, and
+   `backlog/mcp-staleness-title-roundtrip-guards.md` item 2 (its Do-next 2)
+   restarts a server whose mounted checkout has advanced. Truthful
+   reporting alone would tell me a dogfood was run against stale modules
+   without stopping it from happening, so gr458061 stays open until both
+   land. Ranked 1 as a precondition, not as work: until then, every item
+   below that is verified by dogfooding is verified provisionally, and the
+   re-verification is this thread's job.
 2. **backlog/se-join-observability.md** — a join's findings live only in
    the minted structure's meta and there is no `view='catalogue'` despite
    §25.3 specifying one. The dogfood spent six SQL queries and a container
