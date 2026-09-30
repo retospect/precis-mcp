@@ -34,7 +34,7 @@ itself, and a worker host no detector can see. Restore the verdict first
 1. **backlog/main-stays-gated.md** — successor to Do-next 1: gr456236
    restores trust in reading main's verdict, this restores there being
    one (qland gate-bypass pre-check; a cancelled main run leaves src changes
-   with no verdict, the failure hit 2026-09-30 when three consecutive check
+   with no verdict, the failure hit 2026-09-29 when three consecutive main
    runs were cancelled by the next sibling push). The post-merge watcher
    belongs here.
 2. **backlog/alert-failure-id-registry.md** — status ready; stable failure
