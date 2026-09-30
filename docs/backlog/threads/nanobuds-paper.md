@@ -73,9 +73,9 @@ both STATUS:done)
   the gap table dc2445955 stays retired, the prose carries every row.
 - **dogfood 2026-09-30 (fleet 7c915f79)** — the three cites that drifted when
   fi449540/fi449588/fi449590 were retitled (dc3824813/15/16) re-pinned by
-  rewriting each chunk unchanged; export no longer blocked. Two legacy pc cites
-  became hubs: fi458947 (twelve-pentagon rule, dc2445873) and fi458948 (AFM
-  5-7 kinks, dc2445877). Filed gr458941 (every hub shows "no originator
+  rewriting each chunk unchanged; export no longer blocked. Three legacy pc cites
+  became hubs: fi458947 (twelve-pentagon rule, dc2445873), fi458948 (AFM
+  5-7 kinks, dc2445877) and fi458952 (schwarzon shielding, dc2445916). Filed gr458941 (every hub shows "no originator
   derived yet") and gr458943 (hygiene view and windows refuse forms the skill
   documents). The ten caption cites stay `Reproduced from [pc…]` by policy.
 - **gr450123** — embedder contention; infra, owned elsewhere.
