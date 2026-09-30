@@ -1,26 +1,33 @@
 ---
 status: draft
-title: Decide stdio-per-agent vs one shared HTTP process, on measurements rather than intuition
+title: The shared HTTP session server is live — close the three gaps it opens
 ---
 
-# Shared MCP transport: what has to be re-proven before agents share a process
+# Shared MCP transport: what still has to be proven now that agents DO share a process
 
 ## Motivation / why
-Pipelines are being set up to run many agents concurrently. Today
-`precis serve` is stdio and Claude Code spawns one process per session,
-so every concurrency bound in the server is a *per-agent* bound. A
-shared network transport (`server._NETWORK_TRANSPORTS`) would remove
-several real per-process costs, but it converts three per-agent
-properties into fleet-wide ones — and nothing measured any of them,
-because until `tests/_mcp_session.py` no test had ever created an MCP
-session at all.
+Pipelines are being set up to run many agents concurrently, and the
+session MCP already answers that with one long-lived
+`precis serve --transport streamable-http` container shared by every
+Claude Code session. This item was first filed as "should we?"; that is
+settled — it shipped, sized for the fan-out
+(`PRECIS_MCP_TOOL_CONCURRENCY` and `PRECIS_DB_POOL_{MIN,MAX}_SIZE`).
+What remains is the part sizing does not cover.
 
-What a shared process genuinely removes: `min_size=2` held per process
-(`store/pool.py`), pgbouncer's `max_client_conn = 200` ceiling, the
-stale-serve leak that `scripts/reap-stale-serves` exists to sweep, and
-per-agent boot cost. What it does **not** touch: pgbouncer's
-`default_pool_size = 25` and the embedder's `max_inflight = 4`, which
-are the actual throughput ceilings and sit downstream of the transport.
+Correcting the record, because the earlier draft of this item got it
+wrong and the stale `server.py` module docstring is why: that docstring
+still claimed stdio was "every existing caller's transport" and that
+"nothing else uses" the network transport, months after the shared
+server landed. It has been rewritten to describe both deployments. A
+reader orienting from the owning docstring — the repo's prescribed
+reading order — was being told the opposite of the deployment.
+
+What the shared process genuinely removed: `min_size` held per process,
+pgbouncer's `max_client_conn = 200` ceiling, the stale-serve leak
+`scripts/reap-stale-serves` sweeps, per-session boot cost. What it does
+**not** touch: pgbouncer's `default_pool_size = 25` and the embedder's
+`max_inflight = 4`, the actual throughput ceilings, which sit downstream
+of the transport and are shared either way.
 
 ## In scope
 Three tests now pin the per-session layer
@@ -35,10 +42,10 @@ The open work is the tier that needs a real database:
   (`tests/conftest.py`): no `PoolTimeout`, bounded wait, no deadlock,
   clean teardown. Watch for the suite's lock-holding-connection leak
   hard-fail, which a connection storm is the most likely test to trip.
-- **Role isolation under one process.** `_apply_db_role` reads
-  process-level `PRECIS_MCP_DB_ROLE` in the pool's per-connection
-  configure hook, so two sessions in one process cannot hold different
-  roles. `agent_container.py` depends on exactly that separation to make
+- **Role isolation under one process.** Live, not hypothetical: the
+  shared server holds one role for every attached session, because
+  `_apply_db_role` reads process-level `PRECIS_MCP_DB_ROLE` in the
+  pool's per-connection configure hook. `agent_container.py` depends on exactly that separation to make
   a read-only agent's writes fail in Postgres rather than merely lack a
   tool. `store/pool.py` also rules out the obvious fix: under pgbouncer
   transaction pooling a session `SET ROLE` neither persists nor stays
@@ -50,10 +57,11 @@ The open work is the tier that needs a real database:
   no fairness property to assert today; a shared transport needs one.
 
 ## Explicitly NOT in scope
-Building the shared transport. This item decides whether to, and names
-what would have to be true first. Also not in scope: changing
-`_DEFAULT_TOOL_CONCURRENCY` or the pool defaults — those are outputs of
-the measurement, not inputs.
+Unwinding the shared transport, or moving spawned callers (agent
+containers, the sandbox sidecar, `asa_bot`) onto it — they stay stdio,
+and the role bullet below is why. Also not in scope: changing
+`_DEFAULT_TOOL_CONCURRENCY` or the pool *defaults*, which govern the
+stdio callers; the shared server sets its own via env.
 
 ## Acceptance criteria
 - A decision, recorded here, on whether coding jobs can ever leave
@@ -61,15 +69,54 @@ the measurement, not inputs.
 - The pool-storm and role-isolation tests exist and are honest about
   what they show (the role one is expected to document a gap, not a
   passing property).
-- If the answer is "build it": `PRECIS_MCP_TOOL_CONCURRENCY` sizing, a
-  pool-size env knob (`Store.connect` takes `min_size`/`max_size` but
-  nothing reads an env var), a fairness policy, and supervision — one
-  shared process means one crash takes every agent down.
+- A fairness policy between sessions, and supervision: one shared
+  process means one crash, or one image rebuild, takes every session
+  down at once. Sizing and the pool env knob
+  (`pool.resolved_pool_max_size`) already shipped.
 
 ## Target + blast radius
 `src/precis/server.py`, `src/precis/store/pool.py`,
 `src/precis/workers/executors/agent_container.py`,
 `deploy/roles/pgbouncer/`.
+
+## Measured 2026-09-30T06:44Z — downstream is idle, so headroom is the question
+
+A read-only pass while the fleet ran gated code and several sessions were
+open. Scope matters: this covered the four cluster nodes, NOT the dev
+machine that hosts the shared session server, so it says nothing about
+the shared process itself.
+
+- **Cluster `precis serve`: all stdio session children.** One node had
+  two, each parented by its own session pid; the other three had none.
+  No ppid-1 daemons, no `--transport` flags, and no same-ppid pair, so
+  the stale-serve leak was not present. The shared HTTP server is a
+  dev-machine deployment only — cluster-side execution is still
+  process-per-caller.
+- **Postgres: 17 of 100 connections.** `agent_rw` 1 active / 11 idle;
+  0 idle-in-transaction; `rolconnlimit` unlimited on both agent roles.
+  The 11 idle on one role is consistent with the shared server's pool
+  sitting between its min and max — i.e. the pool is doing its job and
+  holding, not leaking.
+- **pgbouncer `SHOW POOLS`: NOT READ.** The admin console requires
+  auth. `cl_waiting` is the one number that would actually prove or
+  disprove pool starvation, and it remains unmeasured — inferring it
+  from backend counts is not the same thing. Getting read-only admin
+  access is a prerequisite for any honest claim here.
+- **Embedders: zero backpressure.** The two nodes that run the daemon
+  both ready, `queue_wait_seconds` total and max both 0.000, 0 shed.
+  Idle at `max_inflight = 4`.
+
+So none of the shared ceilings are being approached at current load.
+That makes this a headroom question for the planned fan-out rather than
+a live fire, and it means a "looks fine" result from poking the shared
+server today would carry almost no information.
+
+Observed the same day, unprompted: a sibling session rebuilt the shared
+container's image because its venv was missing deps, bouncing it once
+for every attached session. That is the supervision bullet above
+happening in practice — the shared server is a single point of failure
+for every session's tool surface, and routine maintenance on it is a
+fleet-wide interruption.
 
 ## Open questions / decisions log
 - Confirmation tier, after the above: `scripts/exercise-mcp/run.sh`

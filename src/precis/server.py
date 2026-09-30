@@ -1,13 +1,32 @@
 """MCP server. Thin FastMCP wrapper around `PrecisRuntime`.
 
-stdio is the default and every existing caller's transport
-(`precis serve`, Claude Code's MCP config, `precis repl` — see
-`main()`). An optional network transport (`sse` / `streamable-http`,
-bearer-token gated) exists for the `sandbox_run` `precis_access:read`
-callback — a
-per-run child process bound to `127.0.0.1` that only a sandboxed
-container reaches over its bounded network mode. Nothing else uses it;
-stdio stays the default and is byte-identical to before it existed.
+Two deployments, and the difference is load-bearing.
+
+**stdio** is still the default and the transport for every *spawned*
+caller: bare `precis serve`, `precis repl`, the per-job children in
+`workers/executors/` (agent containers, the `sandbox_run`
+`precis_access:read` sidecar bound to `127.0.0.1`), and `asa_bot`. One
+process per caller, so this module's process-level state — the
+`_tool_semaphore` below, the store's connection pool — is a *per-caller*
+budget.
+
+**streamable-http** is no longer only the sandbox sidecar's transport:
+the session MCP on the dev machine is now ONE long-lived
+`precis serve --transport streamable-http` container that every Claude
+Code session's `precis` tools share. FastMCP serves many sessions from
+one process, so the same process-level state becomes a budget shared by
+every attached session — `PRECIS_MCP_TOOL_CONCURRENCY` and
+`PRECIS_DB_POOL_{MIN,MAX}_SIZE` (`store/pool.py`) are sized for that
+fan-out rather than left at their per-caller defaults.
+
+What that shared process does NOT give you is per-session isolation of
+anything keyed off the process: `PRECIS_MCP_DB_ROLE` is read per
+*connection* from process env (`store/pool.py`'s `_apply_db_role`), so
+sessions attached to one server all hold one DB role — which is why
+write-isolated agents get their own container rather than a session on
+the shared server. State that must not leak between sessions is keyed
+on the FastMCP session object instead (:mod:`precis.serve_ledger`);
+`tests/test_mcp_session_concurrency.py` pins both halves of that.
 
 Seven tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`
 — plus `more` are registered as plain sync functions in
@@ -36,9 +55,14 @@ The runtime — including the postgres connection pool — is built before
 this file (and everything `dispatch()` calls into) is sync, just no
 longer inline on the loop thread.
 
-Tests should not import this module; they construct `PrecisRuntime`
-directly via fixtures and call `.dispatch(verb, args)` to bypass the
-MCP transport.
+Tests should not import this module to exercise a *handler*; they
+construct `PrecisRuntime` directly via fixtures and call
+`.dispatch(verb, args)` to bypass the MCP transport. The exception is a
+test about the transport or the session layer itself — schema
+preservation, the offload wrapper, cross-session behaviour on the
+shared server — which has no other way in;
+`tests/_mcp_session.py` stands up real client sessions against one
+FastMCP over in-memory streams for exactly that.
 """
 
 from __future__ import annotations
@@ -84,10 +108,18 @@ _TOOL_KW: dict[str, Any] = {"structured_output": False}
 #: may run concurrently. A separate, tighter cap than anyio's own
 #: to-thread limiter (default ~40): without one, a burst of concurrent
 #: calls could open more DB connections than the store's pool allows
-#: (``precis.store.pool.DEFAULT_POOL_MAX_SIZE`` = 10) and start blocking
+#: (``precis.store.pool.resolved_pool_max_size()`` — ``DEFAULT_POOL_MAX_SIZE``
+#: = 10 unless ``PRECIS_DB_POOL_MAX_SIZE`` raises it) and start blocking
 #: on ``pool.connection()`` instead of just queuing here. Kept well under
 #: that ceiling so the pool — not this semaphore — stays the binding
 #: constraint only under genuinely pathological fan-out.
+#:
+#: **Scoped to the PROCESS, not the session.** Under stdio that makes it
+#: a per-caller budget; on the shared streamable-http server it is one
+#: budget for every attached session, first-come-first-served with no
+#: fairness between them — so the shared deployment raises it in step
+#: with the pool rather than running the default.
+#: ``tests/test_mcp_session_concurrency.py`` pins the scope.
 _TOOL_CONCURRENCY_ENV = "PRECIS_MCP_TOOL_CONCURRENCY"
 _DEFAULT_TOOL_CONCURRENCY = 4
 

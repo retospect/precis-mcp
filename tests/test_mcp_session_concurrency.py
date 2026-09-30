@@ -5,12 +5,15 @@
 layer out, through ``tests/_mcp_session.py``'s in-memory harness, and ask
 what happens when **two agents share one server process**.
 
-That is not today's deployment: ``precis serve`` is stdio and Claude Code
-spawns one process per session, so every bound below is currently a
-*per-agent* bound. It is, however, exactly the deployment the network
-transport (``server._NETWORK_TRANSPORTS``) implies, and the difference
-between "per-agent" and "fleet-wide" is invisible until something creates
-two sessions. These tests make it visible and hold it still.
+That IS today's deployment for the session MCP: it is one long-lived
+``precis serve --transport streamable-http`` container that every Claude
+Code session's ``precis`` tools share (see ``precis.server``'s module
+docstring for the two-deployment split). Spawned callers — agent
+containers, the sandbox sidecar, ``asa_bot`` — remain stdio and keep a
+process per caller, so each bound below is a per-caller budget there and
+a shared one on the session server. The difference is invisible until
+something creates two sessions against one server; these tests create
+them and hold the difference still.
 """
 
 from __future__ import annotations
@@ -104,21 +107,20 @@ def test_tool_concurrency_cap_is_process_wide_not_per_session(
     concurrent calls each — four in flight against a cap of two — must
     still peak at two.
 
-    This is the load-bearing asymmetry in the stdio-vs-shared-HTTP
-    choice, and it cuts against shared HTTP:
+    This is the load-bearing asymmetry between the two deployments:
 
-    * **stdio (today)** one process per agent, so the default of 4
-      (``server._DEFAULT_TOOL_CONCURRENCY``) is 4 *per agent* and the
-      fleet's ceiling is N×4.
-    * **one shared process** the same 4 becomes 4 for the entire
-      fleet — a hard regression, and one that gets worse the more
-      agents are attached.
+    * **stdio** one process per spawned caller, so the default of 4
+      (``server._DEFAULT_TOOL_CONCURRENCY``) is 4 *per caller* and the
+      aggregate ceiling is N×4.
+    * **the shared session server** the same number would be 4 for
+      every attached session combined, which is why that deployment
+      raises ``PRECIS_MCP_TOOL_CONCURRENCY`` in step with the pool
+      instead of running the default.
 
-    Moving to a shared transport therefore means raising this limit and
-    deciding a fairness policy between sessions; the current singleton
-    is first-come-first-served, so one session bursting N calls can
-    hold every permit while another session's cheap read queues behind
-    them. Nothing here asserts a fairness property — there isn't one to
+    Sizing is therefore necessary but not sufficient: the singleton is
+    first-come-first-served, so one session bursting N calls can hold
+    every permit while another session's cheap read queues behind them.
+    Nothing here asserts a fairness property — there isn't one to
     assert yet. This test pins the scope so that change is deliberate.
     """
     monkeypatch.setenv(server._TOOL_CONCURRENCY_ENV, "2")
