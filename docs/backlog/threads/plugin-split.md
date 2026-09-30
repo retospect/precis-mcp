@@ -57,7 +57,17 @@ own item); they become items as each comes into reach.
    the 2026-10-16 gate: the four open calls answered (se placement,
    "private until paper" meaning, package-split's fate, orphan-table
    ownership) and package-split ruled superseded or merged. Waits on Reto;
-   nothing below starts until it closes.
+   nothing below starts until it closes. Two are queued in his todo list
+   with the cost of each answer spelled out — td458390 (package-split
+   superseded or merged) and td458391 ("private until paper": invisible,
+   which is the catpath precedent and free, vs quarantined, which needs a
+   separate database and gives up cross-model search). The other two stay
+   in the backlog item: se placement is low-stakes (it moves with geom
+   either way) and orphan-table ownership needs an owner rather than a
+   decision. If package-split is superseded, lift its four prep decisions
+   first — the member-wheel deploy channel, the store-free/store-backed
+   test split, and the fact that PyPI publishing lapsed at v8.4.4 against a
+   pyproject now at 8.35.x — none of which the top-down item covers.
 2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — waits on
    1, Do-next 4 (the import-boundary gate) and Do-next 1 (gr457894); proves
    the entry-point mechanics at zero API risk.
