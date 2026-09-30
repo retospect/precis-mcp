@@ -1857,30 +1857,36 @@ class PcbHandler(Handler):
                 )
         return out
 
-    def _render_gerber(self, ref_id: int, args: dict[str, Any]) -> Response:
-        """Assemble + write the manufacturable fab bundle — gerbers +
-        Excellon, zipped (:mod:`precis.pcb.gerber`) — closing
-        ``docs/backlog/pcb-fab-output-unwired.md``'s "the export tail is
-        unwired" gap. Unlike every other ``_EXPORT_VIEWS`` entry this does
-        NOT read ``_export_model`` (that IR has no realized copper or pad
-        geometry): the model here is ``{layers, outline, copper, pads,
-        drills, silkscreen}`` — copper straight off ``pcb_copper`` (the
+    def _fab_model(
+        self, ref_id: int, *, slug: str
+    ) -> tuple[dict[str, Any], list[str]] | None:
+        """The geometry-complete board model + its assembly warnings — the
+        ONE assembly of ``{layers, outline, copper, pads, drills,
+        silkscreen, soldermask_expansion_mm, mask_open_regions,
+        instances}``. ``None`` when the design has no board row yet.
+
+        Unlike every other ``_EXPORT_VIEWS`` entry this does NOT read
+        ``_export_model`` (that IR has no realized copper or pad
+        geometry): copper comes straight off ``pcb_copper`` (the
         realizer's own output shape, see :mod:`precis.pcb.realize`), pads
-        newly placed by :mod:`precis.pcb.padplace` off each instance's
-        pose + its cached footprint, and a GENERATED silkscreen
+        are newly placed by :mod:`precis.pcb.padplace` off each instance's
+        pose + its cached footprint, and the silkscreen is GENERATED
         (:mod:`precis.pcb.silk` — refdes labels, courtyard outlines, pin-1
         ticks, built off the same IR and checked against these same pads
         AND this same realized copper's vias, so nothing prints where a
-        fab would scrape it off)."""
-        ref = self.store.get_ref(kind="pcb", id=ref_id)
-        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        fab would scrape it off).
+
+        **Extracted so every geometry consumer reads one assembly.**
+        ``view='gerber'`` was the only caller when this lived inline; a
+        second consumer that re-derived pads, synthesized-pad fill-in,
+        mounting-hole drills and the outline fallback would be the same
+        "one rule, N call sites, drifted" defect
+        :func:`precis.pcb.realize.pads_for_ir` and
+        :func:`precis.pcb.padplace.pad_label` each already record."""
         design = self.store.pcb_load(ref_id)
         board = design["board"]
         if board is None:
-            return Response(
-                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
-                "args={'components':[...],'nets':[...]}) to create the design."
-            )
+            return None
         board_id = int(board["board_id"])
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
         copper = self.store.pcb_copper_list(board_id)
@@ -2039,7 +2045,30 @@ class PcbHandler(Handler):
             # numbers for one physical edge (`soldermask_gerber`).
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
             "mask_open_regions": self._mask_open_regions(ref_id),
+            # Placed instance rows — the pose/refdes/footprint half a
+            # component-oriented writer needs to group these flat pads back
+            # into parts. :mod:`precis.pcb.gerber` ignores keys it does not
+            # know (its model docstring is the contract), so this is
+            # additive for the fab path.
+            "instances": design["instances"],
         }
+        return model, warnings
+
+    def _render_gerber(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """Write the manufacturable fab bundle — gerbers + Excellon, zipped
+        (:mod:`precis.pcb.gerber`) — off :meth:`_fab_model`, closing
+        ``docs/backlog/pcb-fab-output-unwired.md``'s "the export tail is
+        unwired" gap."""
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        built = self._fab_model(ref_id, slug=slug)
+        if built is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        model, warnings = built
+        pads, drills, copper = model["pads"], model["drills"], model["copper"]
         try:
             files = pcb_gerber.export_fab(model, name=slug)
         except pcb_gerber.SynthesizedPadError as exc:
@@ -2506,6 +2535,15 @@ class PcbHandler(Handler):
             )
             for n in design["nets"]
         }
+        # §E-1's PAIRWISE voltage term. Only annotated nets are in the map —
+        # a net missing here is "not annotated", never 0 V, and
+        # `check_clearance` reports the difference rather than inventing a
+        # potential (`pcb-missing-constraint-classes.md` §E-1).
+        net_voltages = {
+            str(n["name"]): float(n["working_voltage_v"])
+            for n in design["nets"]
+            if n.get("working_voltage_v") is not None
+        }
         findings = pcb_drc.run_geometric_drc(
             model,
             capability=capability,
@@ -2513,6 +2551,7 @@ class PcbHandler(Handler):
             courtyards=courtyards,
             courtyard_bottom=courtyard_bottom,
             net_rules=net_rules,
+            net_voltages=net_voltages,
             unrouted=[
                 {"net": r["name"], "note": r.get("note")}
                 for r in self.store.pcb_route_status(ref_id)

@@ -649,9 +649,45 @@ def _gap_capacity(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue
 
 
 def _annotation(net_id: int, ir: PcbIR, config: CostConfig) -> obj.NetAnnotation:
+    """This net's :class:`~precis.pcb.objectives.NetAnnotation`, in the
+    resolution order :func:`precis.pcb.objectives.annotation_for` names:
+    an explicit per-run ``config.net_annotations`` override, else the
+    design's own stored annotation (``pcb_nets.impedance_ohm`` /
+    ``edge_rate_v_per_ns``, migration 0171, carried on the IR), else the
+    ``function_hint``-keyed fallback library, else the conservative unknown
+    default.
+
+    This used to be ``annotation_for(None)`` unconditionally, with
+    ``config.net_annotations`` populated only by a test — so every net on
+    every real board was the unknown default and the coupling term could
+    not tell a crystal node from a switcher SW node. The store columns
+    exist now; this is where they arrive."""
     if net_id in config.net_annotations:
         return config.net_annotations[net_id]
-    return obj.annotation_for(None)
+    # Size-checked, not assumed: a hand-built PcbIR (tests, fixtures) may
+    # predate these arrays, which default to empty rather than n_nets-long.
+    if net_id >= ir.net_impedance_ohm.size:
+        return obj.annotation_for(None)
+    impedance = float(ir.net_impedance_ohm[net_id])
+    edge_rate = float(ir.net_edge_rate_v_per_ns[net_id])
+    hint = (
+        str(ir.net_function_hint[net_id]) if net_id < ir.net_function_hint.size else ""
+    )
+    if math.isnan(impedance) and math.isnan(edge_rate):
+        # Nothing authored on this net — the hint (or the unknown default)
+        # is the whole answer.
+        return obj.annotation_for(hint or None)
+    # A partial annotation still beats the fallback, but must not invent
+    # the half it does not have: fall back to whatever the hint (or the
+    # unknown default) says for the missing field, never to zero.
+    base = obj.annotation_for(hint or None)
+    return obj.NetAnnotation(
+        impedance_ohm=base.impedance_ohm if math.isnan(impedance) else impedance,
+        edge_rate_v_per_ns=(
+            base.edge_rate_v_per_ns if math.isnan(edge_rate) else edge_rate
+        ),
+        signal_level=base.signal_level,
+    )
 
 
 def loop_inductance_term(

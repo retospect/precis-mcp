@@ -108,7 +108,7 @@ from shapely.geometry import LineString, Point, Polygon  # type: ignore[import-u
 from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
 from shapely.strtree import STRtree  # type: ignore[import-untyped]
 
-from precis.pcb.capabilities import CapabilityRow
+from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
 from precis.pcb.geom import _orient, dist_point_to_segment
 from precis.pcb.geom import dist as _dist
 from precis.pcb.rules import NetRules
@@ -559,6 +559,7 @@ def check_clearance(
     capability: CapabilityRow,
     *,
     net_rules: dict[str, NetRules] | None = None,
+    net_voltages: dict[str, float] | None = None,
 ) -> list[DrcFinding]:
     """Copper-to-copper clearance, different nets — the class-rule check
     (module docstring: "class" = fab process, per JLC's own naming, read
@@ -581,7 +582,29 @@ def check_clearance(
     wants more room never gets less just because its neighbour wants
     less. A net absent from ``net_rules`` (or ``net_rules=None``
     entirely) falls back to the generic ``house_default`` tier, today's
-    behaviour unchanged."""
+    behaviour unchanged.
+
+    ``net_voltages`` (net NAME -> peak working voltage, ``pcb_nets.
+    working_voltage_v``) adds the PAIRWISE term
+    ``docs/backlog/pcb-missing-constraint-classes.md`` §E-1 specifies:
+    required spacing is a function of ``|V_a - V_b|`` (IPC-2221B Table 6-1,
+    via :func:`precis.pcb.capabilities.conductor_spacing_mm`), a property
+    of the *pair*, not of either net — a 20 V net beside another 20 V net
+    needs nothing special, the same net beside ground needs the full
+    spacing. It is folded into the same ``max`` as the per-net floors,
+    never replacing them.
+
+    **Both nets of a pair must be annotated for the term to apply.** A
+    missing annotation is not 0 V — inferring one would invent the very
+    number the rule turns on — so a half-annotated pair is checked on the
+    per-net floors alone, and the run emits one ``voltage_spacing_unknown``
+    warning naming the unannotated nets involved. Silence there would be
+    the dangerous direction.
+
+    Coating: ``coated=False`` (the B2 column, the larger requirement).
+    Nothing in the schema records whether a board is conformal-coated, so
+    the uncoated figure is the honest default rather than a guess that
+    relaxes a safety rule."""
     field = "trace_spacing_mm"
     jlc_min = capability.jlc_min[field]
     house = capability.house_default.get(field)
@@ -596,8 +619,37 @@ def check_clearance(
         )
     else:
         query_radius = house if house is not None else jlc_min
-    pairs = clearance_pairs_indexed(model, required_mm=query_radius)
+    outer_layers = _outer_layers(model)
     items = _clearance_items(model)
+    # The two coverage reports are computed off the NET SET, before the
+    # STRtree prune — never inside the pair loop. A pair that the prune
+    # already dropped is exactly the pair whose annotation gap matters most
+    # (it was dropped because no rule demanded that much room, which is the
+    # thing a missing voltage would have changed), so a report keyed on
+    # surviving pairs would go quiet precisely when it should speak.
+    unannotated: set[str] = set()
+    over_range: set[str] = set()
+    if net_voltages:
+        copper_nets = {
+            str(item.get("net")) for item in items if item.get("net") not in (None, "")
+        }
+        unannotated = copper_nets - set(net_voltages)
+        values = [float(v) for v in net_voltages.values() if v is not None]
+        if (
+            len(values) >= 2
+            and _voltage_spacing_mm(max(values) - min(values), outer=True) is None
+        ):
+            over_range = {
+                name
+                for name, v in net_voltages.items()
+                if v is not None and float(v) in (max(values), min(values))
+            }
+        # The STRtree prunes by this radius, so a pair that only the voltage
+        # term would have failed has to survive the prune first — widen to
+        # the worst spacing any annotated pair could demand, or the term
+        # silently never fires on the pairs it exists for.
+        query_radius = max(query_radius, _max_voltage_spacing_mm(net_voltages))
+    pairs = clearance_pairs_indexed(model, required_mm=query_radius)
     findings: list[DrcFinding] = []
     for i, j, gap, layer in pairs:
         a, b = items[i], items[j]
@@ -613,6 +665,17 @@ def check_clearance(
             ]
             if candidates:
                 required = max(candidates)
+        if net_voltages:
+            v_a = net_voltages.get(str(a.get("net")))
+            v_b = net_voltages.get(str(b.get("net")))
+            # Both or neither: a missing annotation is not 0 V (the
+            # coverage report above already named it), and a difference
+            # past the table's top band yields None rather than an
+            # extrapolation.
+            if v_a is not None and v_b is not None:
+                spacing = _voltage_spacing_mm(v_a - v_b, outer=layer in outer_layers)
+                if spacing is not None:
+                    required = spacing if required is None else max(required, spacing)
         result = _two_tier(gap, jlc_min, required)
         if result is None:
             continue
@@ -649,7 +712,89 @@ def check_clearance(
                 margin_mm=margin,
             )
         )
+    if unannotated:
+        named = sorted(unannotated)
+        findings.append(
+            DrcFinding(
+                rule="voltage_spacing_unknown",
+                severity="warn",
+                where=f"{len(named)} net(s) with no working_voltage_v",
+                detail=(
+                    "pairwise IPC-2221B voltage spacing was NOT applied to "
+                    "pairs involving these nets — a missing annotation is "
+                    "not 0 V, so the pair was checked on the per-net "
+                    "clearance floors alone: "
+                    + ", ".join(named[:8])
+                    + ("…" if len(named) > 8 else "")
+                    + ". Set working_voltage_v on them (0 is a valid "
+                    "annotation for a net tied to chassis/ground)."
+                ),
+                objects=tuple({"net": n} for n in named[:8]),
+            )
+        )
+    if over_range:
+        named = sorted(over_range)
+        findings.append(
+            DrcFinding(
+                rule="voltage_spacing_out_of_table",
+                severity="warn",
+                where=f"{len(named)} net(s) past IPC-2221B Table 6-1",
+                detail=(
+                    "the widest potential difference on this board is past "
+                    "IPC-2221B Table 6-1's 500 V top band — per-volt "
+                    "extrapolation above a table this coarse is out of "
+                    "scope, so any PAIR whose own difference exceeds it gets "
+                    "no voltage spacing (pairs within the band are still "
+                    "checked normally). The extremes are: "
+                    + ", ".join(named[:8])
+                    + ("…" if len(named) > 8 else "")
+                    + ". Supply an explicit clearance_mm on their net class "
+                    "instead."
+                ),
+                objects=tuple({"net": n} for n in named[:8]),
+            )
+        )
     return findings
+
+
+def _outer_layers(model: dict[str, Any]) -> frozenset[str]:
+    """The stackup's two outermost copper layer NAMES — the IPC-2221B
+    external/internal split. An unknown or degenerate stackup yields the
+    empty set, which reads every layer as internal: the SMALLER B1
+    requirement, so this must never be the silent path on a real board.
+    Every caller that threads ``net_voltages`` also supplies ``layers``."""
+    layers = [str(name) for name in (model.get("layers") or [])]
+    if len(layers) < 2:
+        return frozenset(layers)
+    return frozenset({layers[0], layers[-1]})
+
+
+def _voltage_spacing_mm(delta_v: float, *, outer: bool) -> float | None:
+    """IPC-2221B Table 6-1 spacing for a potential difference, or ``None``
+    when the table cannot answer.
+
+    :func:`precis.pcb.capabilities.conductor_spacing_mm` RAISES above its
+    500 V top band rather than extrapolating (its own documented rule).
+    That is right for a generator computing one electrode gap and wrong
+    here: a single mis-typed annotation would take the whole ``view='drc'``
+    down with a ValueError instead of reporting a board. So the refusal is
+    caught and surfaced as a finding by the caller."""
+    try:
+        return conductor_spacing_mm(
+            abs(delta_v), layer="external" if outer else "internal", coated=False
+        )
+    except ValueError:
+        return None
+
+
+def _max_voltage_spacing_mm(net_voltages: dict[str, float]) -> float:
+    """The largest spacing any annotated pair on this board could demand —
+    the widest |V_a - V_b| read at the *external* (larger) column. Used
+    only to widen the STRtree query radius, never as a threshold."""
+    values = [float(v) for v in net_voltages.values() if v is not None]
+    if len(values) < 2:
+        return 0.0
+    return _voltage_spacing_mm(max(values) - min(values), outer=True) or 0.0
 
 
 # ── the O(n^2) reference oracle — no shapely, no spatial index ────────────
@@ -2122,6 +2267,7 @@ def run_geometric_drc(
     courtyard_bottom: dict[str, bool] | None = None,
     panel_type: str | None = None,
     net_rules: dict[str, NetRules] | None = None,
+    net_voltages: dict[str, float] | None = None,
     unrouted: list[dict[str, Any]] | None = None,
     census: tuple[SilkPlacement, ...] | None = None,
 ) -> list[DrcFinding]:
@@ -2131,6 +2277,10 @@ def run_geometric_drc(
     threads the per-net clearance override into :func:`check_clearance`
     only — the other rules stay capability-only (module docstring: they
     check the fab's own hard limits, not an authored class preference).
+    ``net_voltages`` (net name -> ``pcb_nets.working_voltage_v``) rides the
+    same single seam, for the same reason: §E-1's spacing rule is pairwise,
+    and :func:`check_clearance` is the only rule that already reasons about
+    a pair of nets.
 
     ``unrouted`` is the realizer's list of connections it could not route.
     It is an argument rather than something derived from ``model`` because
@@ -2158,7 +2308,9 @@ def run_geometric_drc(
     """
     findings: list[DrcFinding] = []
     findings += check_synthesized_footprint(model)
-    findings += check_clearance(model, capability, net_rules=net_rules)
+    findings += check_clearance(
+        model, capability, net_rules=net_rules, net_voltages=net_voltages
+    )
     findings += check_trace_width(model, capability)
     findings += check_annular_ring(model, capability)
     findings += check_npth_clearance(model, capability)

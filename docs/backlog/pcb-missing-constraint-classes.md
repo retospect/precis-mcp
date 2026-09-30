@@ -248,6 +248,55 @@ pattern to recur.
 *mechanism* is what matters — it is the same one an HV board would need,
 and retrofitting pairwise rules later is far more invasive.
 
+**Demand + wiring survey (2026-09-29, EasyEDA round-trip design session).**
+Reto's `.epro` workflow needs exactly this: "the model will read the datasheet,
+and update wire/pin specs (freq and volt and current per wire)". Current works;
+the other two have nowhere to land. The survey found **both consumers already
+built and wired to nothing**:
+
+- `capabilities.conductor_spacing_mm(voltage_v, layer=, coated=)` implements
+  IPC-2221B Table 6-1 exactly as this section asks — and its only call site is
+  `generators.py`'s EWOD `hv_separation`. `drc.check_clearance` already resolves
+  a pair's threshold as the stricter of two nets' clearances, so the pairwise
+  hook is the `max()` that is already there, plus widening its STRtree
+  `query_radius` so the pair is considered at all.
+- `objectives.NetAnnotation` (`impedance_ohm`, `edge_rate_v_per_ns`,
+  `signal_level`) is documented as "LLM-derived at part ingestion from datasheet
+  timing tables", with `annotation_for(function_hint, override)` ready for it —
+  but `cost.py::_annotation` always calls `annotation_for(None)`, and
+  `CostConfig.net_annotations` is populated **only by a test**. `function_hint`
+  has no producer anywhere in `src/`.
+
+So the slice is storage + two connections, not new physics.
+
+**Shipped 2026-09-29** (migration `0171_pcb_net_electrical_spec.sql`):
+`working_voltage_v`, `edge_rate_v_per_ns`, `impedance_ohm` and `function_hint`
+on `pcb_nets`, authored on `put(args={'nets':[…]})` (aliases `voltage` /
+`edge_rate` / `impedance` / `function`) and carried through
+`pcb_graph`/`pcb_load`/`PcbIR`. These four are also the only net fields a
+re-`put` PATCHES onto an existing net (`_pcb_patch_net_spec`, presence-based —
+`working_voltage_v: 0` is a real annotation, not a missing one), because the
+workflow is "author or import the board, *then* read the datasheet"; the
+remaining fields' silent no-op is gr457053. `drc.check_clearance` folds
+`conductor_spacing_mm(|V_a−V_b|, …)` into the same `max` as the per-net floors,
+splitting the internal/external column by stackup position; a half-annotated
+pair is checked on the floors alone and reported as `voltage_spacing_unknown`
+(a missing annotation is never read as 0 V), and a difference past the table's
+500 V top band is reported as `voltage_spacing_out_of_table` rather than raising
+out of `view='drc'`. `cost._annotation` resolves the stored annotation instead
+of always returning `annotation_for(None)`, field by field, with
+`CostConfig.net_annotations` still winning as a per-run override. A board that
+annotates nothing behaves exactly as before — asserted.
+
+**Still open: the ROUTER half.** `realize`/`maze` draw copper to
+`resolve_net_rules`' per-net clearance, which cannot express a pairwise term,
+so today the router can lay copper that `view='drc'` then flags on voltage. That
+is the invasive part this section predicted; it needs a pairwise clearance path
+through the realizer, not another column.
+
+Length matching and differential pairs stay out — neither exists in the engine,
+and "diffpair" is only a routing-objective preset name.
+
 ## E0. HV slots and creepage — a second distance metric
 
 HV cutout gaps (milled slots between high-voltage nets) are **akin to but

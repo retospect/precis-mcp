@@ -1,0 +1,39 @@
+{"type":"DOCHEAD","ticket":1}||{"docType":"PCB","uuid":"tiny0000000000pcb","editVersion":"3.2.149"}|
+{"type":"LAYER","ticket":2,"id":"[\"LAYER\",1]"}||{"layerId":1,"layerType":"TOP","layerName":"Top Layer","use":true,"show":true}|
+{"type":"LAYER","ticket":3,"id":"[\"LAYER\",2]"}||{"layerId":2,"layerType":"BOTTOM","layerName":"Bottom Layer","use":true,"show":true}|
+{"type":"LAYER","ticket":4,"id":"[\"LAYER\",11]"}||{"layerId":11,"layerType":"OUTLINE","layerName":"Board Outline Layer","use":true,"show":true}|
+{"type":"LAYER","ticket":5,"id":"[\"LAYER\",15]"}||{"layerId":15,"layerType":"SIGNAL","layerName":"Inner1","use":true,"show":true}|
+{"type":"LAYER","ticket":6,"id":"[\"LAYER\",16]"}||{"layerId":16,"layerType":"SIGNAL","layerName":"Inner2","use":true,"show":true}|
+{"type":"LAYER","ticket":7,"id":"[\"LAYER\",13]"}||{"layerId":13,"layerType":"DOCUMENT","layerName":"Document Layer","use":false,"show":false}|
+{"type":"NET","ticket":10,"id":"[\"NET\",\"SIG\"]"}||{"netType":null,"retLine":true}|
+{"type":"NET","ticket":11,"id":"[\"NET\",\"GND\"]"}||""|
+{"type":"POLY","ticket":20,"id":"outline1"}||{"netName":"","layerId":11,"width":10,"path":[0,0,"L",1000,0,1000,500,0,500,0,0],"polyType":"NORMAL"}|
+{"type":"LINE","ticket":30,"id":"t1"}||{"netName":"SIG","layerId":1,"startX":100,"startY":100,"endX":200,"endY":100,"width":10,"locked":false}|
+{"type":"LINE","ticket":31,"id":"t2"}||{"netName":"SIG","layerId":1,"startX":200,"startY":100,"endX":200,"endY":200,"width":10,"locked":false}|
+{"type":"LINE","ticket":32,"id":"t3"}||{"netName":"GND","layerId":2,"startX":300,"startY":400,"endX":700,"endY":400,"width":39.3701,"locked":false}|
+{"type":"LINE","ticket":33,"id":"t4"}||{"netName":"TEE","layerId":15,"startX":400,"startY":250,"endX":500,"endY":250,"width":10,"locked":false}|
+{"type":"LINE","ticket":34,"id":"t5"}||{"netName":"TEE","layerId":15,"startX":500,"startY":250,"endX":600,"endY":250,"width":10,"locked":false}|
+{"type":"LINE","ticket":35,"id":"t6"}||{"netName":"TEE","layerId":15,"startX":500,"startY":250,"endX":500,"endY":350,"width":10,"locked":false}|
+{"type":"LINE","ticket":36,"id":"t7"}||{"netName":"","layerId":16,"startX":800,"startY":100,"endX":900,"endY":100,"width":10,"locked":false}|
+{"type":"LINE","ticket":37,"id":"t8"}||{"netName":"SIG","layerId":1,"startX":900,"startY":300,"endX":900,"endY":300,"width":10,"locked":false}|
+{"type":"LINE","ticket":38,"id":"t9"}||{"netName":"SIG","layerId":13,"startX":10,"startY":10,"endX":20,"endY":20,"width":10,"locked":false}|
+{"type":"VIA","ticket":40,"id":"v1"}||{"netName":"SIG","centerX":200,"centerY":200,"holeDiameter":12.0078,"viaDiameter":24.0158,"viaType":"NORMAL","unusedInnerLayers":[]}|
+{"type":"VIA","ticket":41,"id":"v2"}||{"netName":"GND","centerX":700,"centerY":400,"holeDiameter":12.0078,"viaDiameter":24.0158,"viaType":"BURIED","unusedInnerLayers":[16]}|
+{"type":"POUR","ticket":50,"id":"p1"}||{"netName":"GND","layerId":2,"width":0.2,"name":"POUR1","order":0,"path":[["R",0,500,1000,500,0,0]],"pourType":{"pourType":"SOLID","fineness":8},"keepIsland":false}|
+{"type":"COMPONENT","ticket":60,"id":"c1"}||{"layerId":1,"x":300,"y":150,"angle":90,"attrs":{"Unique ID":"gge1"},"locked":false}|
+{"type":"ATTR","ticket":61,"id":"c1e0"}||{"parentId":"c1","layerId":3,"x":300,"y":120,"key":"Designator","value":"R1","valueVisible":true}|
+{"type":"ATTR","ticket":62,"id":"c1e1"}||{"parentId":"c1","layerId":3,"x":null,"y":null,"key":"Footprint","value":"tiny000000000fp1","valueVisible":false}|
+{"type":"PAD_NET","ticket":63,"id":"[\"PAD_NET\",\"c1\",\"1\",\"e7\"]"}||{"padNet":"SIG","padLen":null,"attrsMap":{}}|
+{"type":"PAD_NET","ticket":64,"id":"[\"PAD_NET\",\"stale9\",\"1\",\"e7\"]"}||""|
+{"type":"NET","ticket":12,"id":"[\"NET\",\"CURVE\"]"}||{"netType":null}|
+{"type":"NET","ticket":13,"id":"[\"NET\",\"ORPHAN\"]"}||{"netType":null}|
+{"type":"NET","ticket":14,"id":"[\"NET\",\"\"]"}||{"netType":null}|
+{"type":"LINE","ticket":80,"id":"a0"}||{"netName":"CURVE","layerId":1,"startX":500,"startY":100,"endX":600,"endY":100,"width":10,"locked":false}|
+{"type":"ARC","ticket":81,"id":"a1"}||{"netName":"CURVE","layerId":1,"startX":600,"startY":100,"endX":600,"endY":300,"angle":180,"width":10,"locked":false,"arcType":"DOT"}|
+{"type":"ARC","ticket":82,"id":"a2"}||{"netName":"CURVE","layerId":1,"startX":600,"startY":300,"endX":500,"endY":300,"angle":0,"width":10,"locked":false,"arcType":"DOT"}|
+{"type":"PAD_NET","ticket":65,"id":"[\"PAD_NET\",\"c1\",\"2\",\"e8\"]"}||{"padNet":"","padLen":null,"attrsMap":{}}|
+{"type":"DOCHEAD","ticket":70}||{"docType":"FOOTPRINT","uuid":"tiny000000000fp1","editVersion":"3.2.149"}|
+{"type":"CANVAS","ticket":71,"id":"CANVAS"}||{"originX":0,"originY":0,"unit":"mm"}|
+{"type":"PAD","ticket":72,"id":"e7"}||{"netName":"","layerId":1,"num":"1","centerX":-30,"centerY":0,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
+{"type":"PAD","ticket":73,"id":"e8"}||{"netName":"","layerId":1,"num":"2","centerX":30,"centerY":0,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
+{"type":"PAD","ticket":74,"id":"e9"}||{"netName":"","layerId":1,"num":"3","centerX":0,"centerY":25,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|

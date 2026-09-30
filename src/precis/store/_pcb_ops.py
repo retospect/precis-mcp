@@ -38,6 +38,24 @@ def _jsonb_or_none(value: Any) -> Jsonb | None:
     return Jsonb(value) if value is not None else None
 
 
+def _first_present(d: dict[str, Any], *keys: str) -> Any:
+    """The first of ``keys`` actually present (and not None) in ``d``, else
+    ``None`` — the alias resolver for authoring fields whose ZERO is
+    meaningful.
+
+    The older ``d.get(a) or d.get(b)`` idiom elsewhere in this module is
+    safe only where 0 and NULL mean the same thing (a 0 A current estimate
+    and no estimate both fall through to the fab floor). It is wrong for a
+    net deliberately annotated ``working_voltage_v: 0`` — a shield tied to
+    chassis — which must stay 0 so the pairwise ``|V_a - V_b|`` term sees a
+    real potential difference, not an unannotated net."""
+    for key in keys:
+        value = d.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 #: pcb-ewod-multitile Slice 1's per-pad authoring vocabulary — the SAME
 #: three questions ``docs/backlog/pcb-component-model.md`` §Features
 #: drafted (role/mask/paste), kept as a flat allowlist here rather than a
@@ -254,7 +272,13 @@ class PcbMixin:
         ``roles``, ``note``, ``pins`` (``[{name, pad?, tags?,
         description?, note?}]``). A *net* dict: ``name`` (req),
         ``net_class``/``class``, ``est_current_a``/``current``,
-        ``width_mm``/``width``, ``note``. A *connection* dict: ``net``
+        ``width_mm``/``width``, ``note``, and the 0171 spec annotations
+        ``working_voltage_v``/``voltage``, ``edge_rate_v_per_ns``/
+        ``edge_rate``, ``impedance_ohm``/``impedance``,
+        ``function_hint``/``function`` — those four are the only net fields
+        a re-``put`` PATCHES onto an existing net (presence-based, see
+        :meth:`_pcb_patch_net_spec`); the rest are insert-only, as they
+        have always been. A *connection* dict: ``net``
         (req), ``refdes`` (req), ``pin`` (req), ``note``. A *footprint*
         dict (pcb-ewod-multitile Slice 1 — authored copper with no LCSC
         part): ``name`` (req, the join key a component's own
@@ -473,6 +497,19 @@ class PcbMixin:
             if not name:
                 raise ValueError("pcb net needs a name (meaningful)")
             if name in net_by_name:
+                # An existing net is reused, not duplicated (this method's
+                # own re-runnable contract) — but the §E-1 spec columns
+                # (0171) ARE patched here, because the workflow that needs
+                # them annotates nets that already exist: a board is
+                # authored (or imported) first, and only then does someone
+                # read the datasheet and say "this rail runs at 48 V".
+                # Presence-based, so a caller that passes none of them
+                # (every caller before 0171, and every generator re-apply)
+                # is a no-op exactly as before. `net_class`/`current`/
+                # `width`/`note` deliberately keep their existing
+                # silently-ignored behaviour rather than change semantics
+                # under callers in the same commit — gr457053.
+                self._pcb_patch_net_spec(conn, net_by_name[name], n)
                 continue
             net_by_name[name] = self._pcb_insert_net(conn, ref.id, n)
             counts["nets"] += 1
@@ -710,12 +747,52 @@ class PcbMixin:
         assert row is not None
         return int(row[0])
 
+    #: ``nets[]`` authoring key (and its alias) -> ``pcb_nets`` column, for
+    #: the four §E-1/annotation columns 0171 added. One table, so the
+    #: insert and the patch below cannot drift apart on an alias.
+    _NET_SPEC_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("working_voltage_v", ("working_voltage_v", "voltage")),
+        ("edge_rate_v_per_ns", ("edge_rate_v_per_ns", "edge_rate")),
+        ("impedance_ohm", ("impedance_ohm", "impedance")),
+        ("function_hint", ("function_hint", "function")),
+    )
+
+    def _pcb_patch_net_spec(
+        self, conn: Connection, net_id: int, n: dict[str, Any]
+    ) -> None:
+        """Set whichever of the 0171 spec columns ``n`` actually carries on
+        an EXISTING net; no-op when it carries none. Presence-based, never
+        truthiness-based (``working_voltage_v: 0`` is a real annotation) and
+        never a blanket overwrite (a caller patching only the voltage must
+        not blank an edge rate someone else set)."""
+        sets: list[str] = []
+        values: list[Any] = []
+        for column, keys in self._NET_SPEC_FIELDS:
+            value = _first_present(n, *keys)
+            if value is None:
+                continue
+            sets.append(f"{column} = %s")
+            values.append(value)
+        if not sets:
+            return
+        values.append(net_id)
+        conn.execute(
+            f"UPDATE pcb_nets SET {', '.join(sets)} WHERE net_id = %s",
+            tuple(values),
+        )
+
     def _pcb_insert_net(self, conn: Connection, ref_id: int, n: dict[str, Any]) -> int:
+        # Spec columns and their placeholders come off _NET_SPEC_FIELDS, not
+        # a hand-typed list: a column order that disagreed with the value
+        # tuple below would write the edge rate into the voltage column and
+        # nothing would fail loudly.
+        spec = [column for column, _keys in self._NET_SPEC_FIELDS]
         row = conn.execute(
-            """
+            f"""
             INSERT INTO pcb_nets
-                (ref_id, name, net_class, est_current_a, width_mm, note, domain)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (ref_id, name, net_class, est_current_a, width_mm, note, domain,
+                 {", ".join(spec)})
+            VALUES (%s, %s, %s, %s, %s, %s, %s, {", ".join(["%s"] * len(spec))})
             RETURNING net_id
             """,
             (
@@ -726,6 +803,10 @@ class PcbMixin:
                 n.get("width_mm") or n.get("width"),
                 n.get("note"),
                 str(n.get("domain") or "electrical").strip(),
+                # The §E-1 spec columns (0171), resolved by PRESENCE — a net
+                # deliberately annotated 0 V (a shield tied to chassis) must
+                # stay 0, not fall through the alias to NULL.
+                *(_first_present(n, *keys) for _column, keys in self._NET_SPEC_FIELDS),
             ),
         ).fetchone()
         assert row is not None
@@ -1004,10 +1085,16 @@ class PcbMixin:
                     "width_mm": r[4],
                     "note": r[5],
                     "fanout": int(r[6]),
+                    "working_voltage_v": r[7],
+                    "edge_rate_v_per_ns": r[8],
+                    "impedance_ohm": r[9],
+                    "function_hint": r[10],
                 }
                 for r in conn.execute(
                     "SELECT n.net_id, n.name, n.net_class, n.est_current_a, "
-                    "       n.width_mm, n.note, count(k.netconn_id) "
+                    "       n.width_mm, n.note, count(k.netconn_id), "
+                    "       n.working_voltage_v, n.edge_rate_v_per_ns, "
+                    "       n.impedance_ohm, n.function_hint "
                     "FROM pcb_nets n LEFT JOIN pcb_netconns k ON k.net_id = n.net_id "
                     "WHERE n.ref_id = %s AND n.retired_at IS NULL "
                     "GROUP BY n.net_id ORDER BY count(k.netconn_id) DESC, n.name",
@@ -1066,7 +1153,9 @@ class PcbMixin:
         """A net's members: every (refdes, pin) on it."""
         with self.pool.connection() as conn:
             net = conn.execute(
-                "SELECT net_id, net_class, est_current_a, width_mm FROM pcb_nets "
+                "SELECT net_id, net_class, est_current_a, width_mm, "
+                "       working_voltage_v, edge_rate_v_per_ns, impedance_ohm, "
+                "       function_hint FROM pcb_nets "
                 "WHERE ref_id = %s AND name = %s AND retired_at IS NULL",
                 (ref_id, name),
             ).fetchone()
@@ -1088,6 +1177,10 @@ class PcbMixin:
             "net_class": net[1],
             "est_current_a": net[2],
             "width_mm": net[3],
+            "working_voltage_v": net[4],
+            "edge_rate_v_per_ns": net[5],
+            "impedance_ohm": net[6],
+            "function_hint": net[7],
             "members": members,
         }
 
@@ -1095,8 +1188,13 @@ class PcbMixin:
         """The whole design as the *eyes* consume it: the board (stackup +
         fold_lines), placed instances, nets with their (refdes, pin) members
         + domain + ``est_current_a`` (the current annotation
-        :mod:`precis.pcb.rules`'s resolver derives an IPC-2221 width from),
-        the design's net_classes, a route-status summary (counts by
+        :mod:`precis.pcb.rules`'s resolver derives an IPC-2221 width from)
+        + the 0171 spec annotations ``working_voltage_v`` (pairwise
+        IPC-2221B clearance, :mod:`precis.pcb.drc`) and
+        ``edge_rate_v_per_ns``/``impedance_ohm``/``function_hint`` (the
+        :class:`precis.pcb.objectives.NetAnnotation` the coupling and
+        loop-inductance cost terms read), the design's net_classes, a
+        route-status summary (counts by
         :class:`pcb_routes.status`; empty = all-unrouted), and the
         unconnected pins. Pure data — the analysis lives in
         :mod:`precis.pcb`."""
@@ -1211,7 +1309,9 @@ class PcbMixin:
                 ).fetchall()
             ]
             net_rows = conn.execute(
-                "SELECT net_id, name, net_class, domain, est_current_a FROM pcb_nets "
+                "SELECT net_id, name, net_class, domain, est_current_a, "
+                "       working_voltage_v, edge_rate_v_per_ns, impedance_ohm, "
+                "       function_hint FROM pcb_nets "
                 "WHERE ref_id = %s AND retired_at IS NULL ORDER BY name",
                 (ref_id,),
             ).fetchall()
@@ -1221,6 +1321,10 @@ class PcbMixin:
                     "net_class": r[2],
                     "domain": r[3],
                     "est_current_a": r[4],
+                    "working_voltage_v": r[5],
+                    "edge_rate_v_per_ns": r[6],
+                    "impedance_ohm": r[7],
+                    "function_hint": r[8],
                     "members": [],
                 }
                 for r in net_rows

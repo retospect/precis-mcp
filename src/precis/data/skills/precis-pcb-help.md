@@ -129,6 +129,17 @@ Field notes:
   (`I2C_SCL`, not `N$7`). `class` drives width / plane / measure defaults
   ([[precis-net-class-help]]); `current` (amps) sizes the trace; `width` (mm)
   overrides.
+- **net electrical spec** — where datasheet numbers go: `current` (amps →
+  IPC-2221 width), `voltage` (peak working volts), `edge_rate` (V/ns),
+  `impedance` (ohms), `function` (`crystal`|`switcher_sw`|`adc_input`|
+  `digital_logic`|`power_rail` — a fallback when you know what the net
+  *does*, not its numbers). **`voltage` is pairwise**: spacing follows
+  `|V_a − V_b|` (IPC-2221B), so 48 V beside ground needs room, 48 V beside
+  48 V needs none. Both nets must be annotated — a ground net wants an
+  explicit `voltage: 0`, since missing is never read as 0 V (`view='drc'`
+  names the nets it skipped). These are the only net fields a re-`put`
+  patches onto an **existing** net: you import the board, *then* read the
+  datasheet.
 - **connection**: the `(net, refdes, pin)` triple. One physical pin is on **at
   most one net** (re-connecting moves it). A pin named in a connection but not
   declared on the component is **created on the fly**.

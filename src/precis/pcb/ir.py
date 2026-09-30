@@ -243,7 +243,8 @@ class PcbIR:
     #: derive an IPC-2221 track width, distinct from the LLM-authored
     #: datasheet :class:`precis.pcb.objectives.NetAnnotation` side-channel
     #: (impedance/edge-rate), which stays a `CostConfig` dict since it has
-    #: no store column yet.
+    #: no store column yet -- see ``net_impedance_ohm`` at the tail of this
+    #: class, which migration 0171 gave real columns to.
     net_current_a: np.ndarray
 
     # ---- L1: integer layer per segment; vias as transitions -----------
@@ -375,6 +376,32 @@ class PcbIR:
     #: routing — the handler-only feature list left the router blind to
     #: them (``npth_clearance`` findings, round-3 review item 4).
     mounting_holes: tuple[MountingHole, ...] = ()
+
+    #: The datasheet :class:`precis.pcb.objectives.NetAnnotation`, per net —
+    #: ``float64[n_nets]`` with ``nan`` for "not annotated" (``pcb_nets.
+    #: impedance_ohm`` / ``edge_rate_v_per_ns``) plus an ``object[n_nets]``
+    #: of ``pcb_nets.function_hint`` (``''`` = none). Migration 0171 gave
+    #: that annotation real store columns, so it stops being the
+    #: ``CostConfig``-only side-channel ``net_current_a``'s comment above
+    #: describes and rides the IR like every other per-net fact;
+    #: ``CostConfig.net_annotations`` stays an explicit per-run OVERRIDE on
+    #: top (:func:`precis.pcb.cost._annotation`).
+    #:
+    #: ``nan`` is UNKNOWN, never zero — an unannotated victim is high-Z
+    #: (worst case), an unannotated aggressor is quiescent, which is
+    #: exactly :func:`precis.pcb.objectives.annotation_for`'s own
+    #: unknown-default rule. Defaulted to empty arrays so every existing
+    #: hand-built :class:`PcbIR` (tests, fixtures) keeps constructing; a
+    #: reader indexes them only after a size check.
+    net_impedance_ohm: np.ndarray = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float64)
+    )
+    net_edge_rate_v_per_ns: np.ndarray = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float64)
+    )
+    net_function_hint: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=object)
+    )
 
     # -- sizes --------------------------------------------------------
     @property
@@ -898,6 +925,9 @@ def from_graph(
     net_domain: list[str] = []
     net_class: list[str] = []
     net_current_a: list[float] = []
+    net_impedance_ohm: list[float] = []
+    net_edge_rate_v_per_ns: list[float] = []
+    net_function_hint: list[str] = []
     seg_net: list[int] = []
     seg_pin_a: list[int] = []
     seg_pin_b: list[int] = []
@@ -909,6 +939,13 @@ def from_graph(
         net_class.append(net.get("net_class") or "")
         current = net.get("est_current_a")
         net_current_a.append(math.nan if current is None else float(current))
+        impedance = net.get("impedance_ohm")
+        net_impedance_ohm.append(math.nan if impedance is None else float(impedance))
+        edge_rate = net.get("edge_rate_v_per_ns")
+        net_edge_rate_v_per_ns.append(
+            math.nan if edge_rate is None else float(edge_rate)
+        )
+        net_function_hint.append(str(net.get("function_hint") or ""))
         members = net.get("members") or []
         member_pins: list[int] = []
         seen_pins: set[int] = set()
@@ -1032,6 +1069,9 @@ def from_graph(
         net_domain=_obj_array(net_domain),
         net_class=_obj_array(net_class),
         net_current_a=np.array(net_current_a, dtype=np.float64),
+        net_impedance_ohm=np.array(net_impedance_ohm, dtype=np.float64),
+        net_edge_rate_v_per_ns=np.array(net_edge_rate_v_per_ns, dtype=np.float64),
+        net_function_hint=_obj_array(net_function_hint),
         seg_net=np.array(seg_net, dtype=np.int32),
         seg_pin_a=np.array(seg_pin_a, dtype=np.int32),
         seg_pin_b=np.array(seg_pin_b, dtype=np.int32),
