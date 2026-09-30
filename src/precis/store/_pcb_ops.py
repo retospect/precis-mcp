@@ -275,10 +275,9 @@ class PcbMixin:
         ``width_mm``/``width``, ``note``, and the 0171 spec annotations
         ``working_voltage_v``/``voltage``, ``edge_rate_v_per_ns``/
         ``edge_rate``, ``impedance_ohm``/``impedance``,
-        ``function_hint``/``function`` — those four are the only net fields
-        a re-``put`` PATCHES onto an existing net (presence-based, see
-        :meth:`_pcb_patch_net_spec`); the rest are insert-only, as they
-        have always been. A *connection* dict: ``net``
+        ``function_hint``/``function`` — all of which a re-``put`` PATCHES
+        onto an existing net (presence-based, see :meth:`_pcb_patch_net`).
+        ``domain`` alone is insert-only. A *connection* dict: ``net``
         (req), ``refdes`` (req), ``pin`` (req), ``note``. A *footprint*
         dict (pcb-ewod-multitile Slice 1 — authored copper with no LCSC
         part): ``name`` (req, the join key a component's own
@@ -359,6 +358,7 @@ class PcbMixin:
             "pins": 0,
             "instances": 0,
             "nets": 0,
+            "nets_patched": 0,
             "conns": 0,
             "measures": 0,
             "features": 0,
@@ -498,18 +498,18 @@ class PcbMixin:
                 raise ValueError("pcb net needs a name (meaningful)")
             if name in net_by_name:
                 # An existing net is reused, not duplicated (this method's
-                # own re-runnable contract) — but the §E-1 spec columns
-                # (0171) ARE patched here, because the workflow that needs
-                # them annotates nets that already exist: a board is
-                # authored (or imported) first, and only then does someone
-                # read the datasheet and say "this rail runs at 48 V".
+                # own re-runnable contract) — but every patchable column IS
+                # updated here, because the workflow that needs them
+                # annotates nets that already exist: a board is authored (or
+                # imported) first, and only then does someone read the
+                # datasheet and say "this rail runs at 48 V, at 2 A".
                 # Presence-based, so a caller that passes none of them
-                # (every caller before 0171, and every generator re-apply)
-                # is a no-op exactly as before. `net_class`/`current`/
-                # `width`/`note` deliberately keep their existing
-                # silently-ignored behaviour rather than change semantics
-                # under callers in the same commit — gr457053.
-                self._pcb_patch_net_spec(conn, net_by_name[name], n)
+                # (every caller before 0171) is a no-op exactly as before.
+                # 0171 scoped this to its own four columns so one commit
+                # could not both add them and change what the older four
+                # did; gr457053 is that second step.
+                if self._pcb_patch_net(conn, net_by_name[name], n):
+                    counts["nets_patched"] += 1
                 continue
             net_by_name[name] = self._pcb_insert_net(conn, ref.id, n)
             counts["nets"] += 1
@@ -757,29 +757,56 @@ class PcbMixin:
         ("function_hint", ("function_hint", "function")),
     )
 
-    def _pcb_patch_net_spec(
-        self, conn: Connection, net_id: int, n: dict[str, Any]
-    ) -> None:
-        """Set whichever of the 0171 spec columns ``n`` actually carries on
-        an EXISTING net; no-op when it carries none. Presence-based, never
-        truthiness-based (``working_voltage_v: 0`` is a real annotation) and
-        never a blanket overwrite (a caller patching only the voltage must
-        not blank an edge rate someone else set)."""
+    #: Everything a re-put may patch onto an EXISTING net: the 0171 columns
+    #: above plus the four the net has carried since the beginning
+    #: (gr457053). Kept as its own table rather than widening
+    #: ``_NET_SPEC_FIELDS``, because that one also drives
+    #: :meth:`_pcb_insert_net`'s column list, where these four are already
+    #: named explicitly — folding them in would insert each twice.
+    #: ``domain`` is deliberately NOT here: it is NOT NULL with a default,
+    #: so a patch has no way to express "leave it alone" that differs from
+    #: "set it to electrical" — and the handler refuses a non-electrical
+    #: one at the door anyway (``_reject_non_electrical``), so there is no
+    #: value to patch it TO that it does not already hold.
+    _NET_PATCH_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        *_NET_SPEC_FIELDS,
+        ("net_class", ("net_class", "class")),
+        ("est_current_a", ("est_current_a", "current")),
+        ("width_mm", ("width_mm", "width")),
+        ("note", ("note",)),
+    )
+
+    def _pcb_patch_net(self, conn: Connection, net_id: int, n: dict[str, Any]) -> bool:
+        """Set whichever patchable columns ``n`` actually carries on an
+        EXISTING net; no-op returning ``False`` when it carries none.
+        Presence-based, never truthiness-based (``working_voltage_v: 0`` is
+        a real annotation, ``note: ''`` a real erasure) and never a blanket
+        overwrite (a caller patching only the voltage must not blank an edge
+        rate someone else set).
+
+        A generator re-expansion reaches here only for a net it declares
+        that a foreign live instance also joined, which
+        :meth:`_pcb_generator_retire_expansion` refuses to retire
+        (gr451046). Patching it means the generator re-asserts its own
+        ``net_class`` there — the same value a retire+re-insert would have
+        written for a net it owned outright, so the shared case now agrees
+        with the unshared one instead of quietly diverging from it."""
         sets: list[str] = []
         values: list[Any] = []
-        for column, keys in self._NET_SPEC_FIELDS:
+        for column, keys in self._NET_PATCH_FIELDS:
             value = _first_present(n, *keys)
             if value is None:
                 continue
             sets.append(f"{column} = %s")
             values.append(value)
         if not sets:
-            return
+            return False
         values.append(net_id)
         conn.execute(
             f"UPDATE pcb_nets SET {', '.join(sets)} WHERE net_id = %s",
             tuple(values),
         )
+        return True
 
     def _pcb_insert_net(self, conn: Connection, ref_id: int, n: dict[str, Any]) -> int:
         # Spec columns and their placeholders come off _NET_SPEC_FIELDS, not

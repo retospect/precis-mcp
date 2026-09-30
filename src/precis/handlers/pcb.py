@@ -375,6 +375,12 @@ class PcbHandler(Handler):
             extra += f", +{counts['footprints']} footprint(s)"
         if counts.get("generators"):
             extra += f", {counts['generators']} generator(s) applied"
+        # An annotation pass re-puts nets that already exist, so +0 net(s)
+        # is the NORMAL result and says nothing about whether the edit
+        # landed. Report the patch separately or it reads as a no-op
+        # (gr457053).
+        if counts.get("nets_patched"):
+            extra += f", {counts['nets_patched']} net(s) patched"
         if n_classes:
             extra += f", +{n_classes} net_class(es)"
         head = (

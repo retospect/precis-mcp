@@ -36,15 +36,19 @@ def _fake_expansion(
     *,
     version: int = 1,
     shared_net: str | None = None,
+    net_class: str | None = None,
 ) -> GeneratorExpansion:
     """A minimal expansion: one component ``name`` with two pins -- pin
     ``1`` on a net this generator SOLELY owns (``f"{name}_OWN"``), pin ``2``
-    on ``shared_net`` when given (a net a foreign instance may also join)."""
+    on ``shared_net`` when given (a net a foreign instance may also join).
+    ``net_class`` declares that class on both, the way
+    ``_expand_ewod_pad_array`` declares one per pin class."""
     own_net = f"{name}_OWN"
-    nets = [{"name": own_net}]
+    extra = {"net_class": net_class} if net_class else {}
+    nets = [{"name": own_net, **extra}]
     connections = [{"net": own_net, "refdes": name, "pin": "1"}]
     if shared_net:
-        nets.append({"name": shared_net})
+        nets.append({"name": shared_net, **extra})
         connections.append({"net": shared_net, "refdes": name, "pin": "2"})
     return GeneratorExpansion(
         refdes=name,
@@ -215,3 +219,48 @@ def test_generator_own_instance_not_duplicated_by_reapply(
     # One live + one retired -- the changed-params re-apply retired the old
     # instance and inserted exactly one fresh one, never left both live.
     assert total_rows[0] == 2
+
+
+# ── 4. A shared net's declared class is re-asserted, not left stale ─────
+def test_reapply_reasserts_net_class_on_a_surviving_shared_net(
+    store: Store, fake_gen: dict[str, Any]
+) -> None:
+    """gr457053 widened the re-put patch to ``net_class``, which a
+    generator DOES declare (``_expand_ewod_pad_array`` gives each net its
+    pin class). A solely-owned net gets a newly declared class for free,
+    since it is retired and re-inserted; a shared net survives retirement
+    (gr451046) and so reaches the patch path instead. Both must end up
+    with the class the generator just declared — otherwise a re-expansion
+    leaves the shared net carrying the PREVIOUS class, and which class a
+    net has would depend on whether something foreign happened to join
+    it."""
+    fake_gen["expansion"] = _fake_expansion(
+        "GEN1", {"a": 1}, shared_net="GEN1_SHARED", net_class="signal"
+    )
+    ref_id = _apply(
+        store,
+        "reapply-4",
+        gen_params={"a": 1},
+        components=[{"refdes": "R1", "pins": [{"name": "1"}]}],
+        connections=[{"net": "GEN1_SHARED", "refdes": "R1", "pin": "1"}],
+    )
+    before = store.pcb_net_members(ref_id, "GEN1_SHARED")
+    assert before is not None
+    assert before["net_class"] == "signal"
+
+    fake_gen["expansion"] = _fake_expansion(
+        "GEN1", {"a": 2}, shared_net="GEN1_SHARED", net_class="power"
+    )
+    _apply(
+        store,
+        "reapply-4",
+        gen_params={"a": 2},
+        components=[{"refdes": "R1", "pins": [{"name": "1"}]}],
+        connections=[{"net": "GEN1_SHARED", "refdes": "R1", "pin": "1"}],
+    )
+
+    shared = store.pcb_net_members(ref_id, "GEN1_SHARED")
+    own = store.pcb_net_members(ref_id, "GEN1_OWN")
+    assert shared is not None and own is not None
+    assert shared["net_class"] == "power"
+    assert own["net_class"] == "power"

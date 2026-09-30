@@ -290,8 +290,49 @@ def test_reput_patches_spec_onto_an_existing_net(pcb):
     assert hv["function_hint"] == "switcher_sw"
 
 
-def test_reput_without_spec_fields_changes_nothing(pcb):
+def test_reput_naming_only_the_net_changes_nothing(pcb):
+    """A bare `{"name": …}` — what every pre-0171 caller and every
+    generator re-apply passes — must stay a no-op."""
     pcb.put(id="spec-3", args=_DESIGN)
     before = _nets_by_name(pcb, "spec-3")["HV"]
-    pcb.put(id="spec-3", args={"nets": [{"name": "HV", "note": "ignored"}]})
+    pcb.put(id="spec-3", args={"nets": [{"name": "HV"}]})
     assert _nets_by_name(pcb, "spec-3")["HV"] == before
+
+
+def test_reput_patches_the_pre_0171_columns_too(pcb):
+    """gr457053: correcting a net's current was silently discarded while
+    correcting its voltage worked. Both now land."""
+    pcb.put(
+        id="spec-4",
+        args={
+            **_DESIGN,
+            "nets": [{"name": "HV", "voltage": 48.0, "current": 0.5, "class": "power"}],
+        },
+    )
+    pcb.put(
+        id="spec-4",
+        args={
+            "nets": [{"name": "HV", "current": 2.0, "width": 0.8, "note": "measured"}]
+        },
+    )
+    # Read through pcb_load, which is what the engine sees — pcb_graph
+    # carries neither width_mm nor note.
+    ref = pcb.store.get_ref(kind="pcb", id="spec-4")
+    hv = {n["name"]: n for n in pcb.store.pcb_load(ref.id)["nets"]}["HV"]
+    assert hv["est_current_a"] == 2.0
+    assert hv["width_mm"] == 0.8
+    assert hv["note"] == "measured"
+    # Presence-based across the whole set, not just the 0171 four: the
+    # class and the voltage this patch never named survive.
+    assert hv["net_class"] == "power"
+    assert _nets_by_name(pcb, "spec-4")["HV"]["working_voltage_v"] == 48.0
+
+
+def test_patching_an_existing_net_is_reported_not_silent(pcb):
+    """`+0 net(s)` is the normal result of an annotation pass, so it
+    cannot be the only signal that the edit landed."""
+    pcb.put(id="spec-5", args=_DESIGN)
+    body = pcb.put(id="spec-5", args={"nets": [{"name": "HV", "current": 2.0}]}).body
+    assert "1 net(s) patched" in body
+    # A re-put that patches nothing does not claim it patched something.
+    assert "patched" not in pcb.put(id="spec-5", args={"nets": [{"name": "HV"}]}).body

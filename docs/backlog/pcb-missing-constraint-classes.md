@@ -273,11 +273,11 @@ So the slice is storage + two connections, not new physics.
 `working_voltage_v`, `edge_rate_v_per_ns`, `impedance_ohm` and `function_hint`
 on `pcb_nets`, authored on `put(args={'nets':[…]})` (aliases `voltage` /
 `edge_rate` / `impedance` / `function`) and carried through
-`pcb_graph`/`pcb_load`/`PcbIR`. These four are also the only net fields a
-re-`put` PATCHES onto an existing net (`_pcb_patch_net_spec`, presence-based —
-`working_voltage_v: 0` is a real annotation, not a missing one), because the
-workflow is "author or import the board, *then* read the datasheet"; the
-remaining fields' silent no-op is gr457053. `drc.check_clearance` folds
+`pcb_graph`/`pcb_load`/`PcbIR`. A re-`put` PATCHES these onto an existing net
+(`_pcb_patch_net`, presence-based — `working_voltage_v: 0` is a real
+annotation, not a missing one), because the workflow is "author or import the
+board, *then* read the datasheet"; gr457053 widened that to `net_class` /
+`est_current_a` / `width_mm` / `note`, leaving `domain` insert-only. `drc.check_clearance` folds
 `conductor_spacing_mm(|V_a−V_b|, …)` into the same `max` as the per-net floors,
 splitting the internal/external column by stackup position; a half-annotated
 pair is checked on the floors alone and reported as `voltage_spacing_unknown`
