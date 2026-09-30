@@ -13,7 +13,16 @@ bind-mount predating the `[:200]`-cap removal; repaired, see `git log`).
    (`src/precis/taproot/hub.py`) that the persisted `refs.title` round-trips
    equal to the claim sentence, so a stale caller fails loudly instead of
    silently truncating. This bug was invisible for three weeks.
-2. **Re-opened.** `precis-mcp-dev-stdio.sh` had a `--check` preflight for
+2. **Superseded by td458385 (Reto, 2026-09-30) — closes by removal.** The
+   decision is that the per-session stdio containers are retired rather
+   than hardened and every session moves to the shared HTTP server, so the
+   population this item hardens stops existing. Do not implement the
+   staleness banner or arm the watchdog on them. The measurements below
+   are why the decision went that way, and are kept because the next
+   person to propose supervising a stdio container needs them; delete this
+   sub-item once the migration is done.
+
+   **Re-opened (superseded, see above).** `precis-mcp-dev-stdio.sh` had a `--check` preflight for
    *dependency* drift but nothing warned that `/app` was N commits behind
    `origin/main`. That launcher is gone, and for the shared server the
    checkout watchdog (`install_watchdog.CheckoutWatchdog`) does close the
