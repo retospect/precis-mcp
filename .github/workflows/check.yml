@@ -97,6 +97,8 @@ jobs:
           FULL_INPUT: ${{ inputs.full }}
           BEFORE: ${{ github.event.before }}
           BASE_REF: ${{ github.base_ref }}
+          # `scripts/last-gated-main-sha` reads check-runs per sha.
+          GH_TOKEN: ${{ github.token }}
         run: |
           full=false
           docs_only=false
@@ -109,12 +111,28 @@ jobs:
             case "$EVENT" in
               pull_request) range="origin/${BASE_REF}...HEAD" ;;
               push)
-                # main: the squash-merge's own delta (`before` is the
-                # previous main; all-zeros = ref creation, keep the gate).
+                # main: the delta since the last sha that actually got a
+                # shard verdict — NOT `before`. The concurrency group cancels
+                # superseded main runs, so a qland burst can leave several
+                # pushes with no verdict at all; scoping to `before` then lets
+                # a docs-only push take the docs lane while main carries
+                # ungated src (backlog/main-stays-gated.md). Falling back to
+                # `before` would re-open that hole, so an unanswerable lookup
+                # gates fully instead (empty range = no docs lane).
+                # all-zeros `before` = ref creation, likewise keep the gate.
                 # ci/<branch>: the branch is already merged with origin/main
                 # by ship, so the three-dot diff is the branch's own change.
                 if [[ "$GITHUB_REF" == refs/heads/main ]]; then
-                  [[ "$BEFORE" =~ ^0+$ ]] || range="${BEFORE}..HEAD"
+                  if [[ ! "$BEFORE" =~ ^0+$ ]]; then
+                    gated="$(scripts/last-gated-main-sha --start "$BEFORE")"
+                    echo "last gated main sha: ${gated:-none (full gate)}"
+                    # Spelled as an `if`, not `[[ … ]] && range=…`: the step
+                    # runs under `bash -e`, where a false test as the whole
+                    # statement is a step failure.
+                    if [[ -n "$gated" ]]; then
+                      range="${gated}..HEAD"
+                    fi
+                  fi
                 else
                   range="origin/main...HEAD"
                 fi ;;

@@ -88,8 +88,10 @@ Seams:
   no thread owns deploy, so gr457894 is ranked in plugin-split.
 - `scripts/main-ci-status` / check.yml — monitors Do-next 1
   (`backlog/main-stays-gated.md`) gates every other thread's "is main green"
-  answer. The stale-verdict half (gr456236) landed 2026-09-30; what remains
-  is a run being cancelled before it produces a verdict at all.
+  answer. Two halves landed 2026-09-30: the stale-verdict read (gr456236) and
+  the main-push lane range, which now starts at the last sha with a real
+  shard verdict. What remains is qland shipping unlinted, unchecked code in
+  the first place — every thread that qlands is upstream of it.
 
 Waits:
 - plugin-split Horizon 2–4 wait on gr457894 (each extraction is a module
