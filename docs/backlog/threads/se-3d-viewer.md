@@ -33,18 +33,17 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
 
 1. **backlog/se-viewer-browser-level-check.md** — no browser-level check
    exists, so every correctness claim rests on a hand-built harness in a
-   worktree that will be reaped. Leverage: makes 3–4 and 6–7 verifiable
+   worktree that will be reaped. Leverage: makes 2–3 and 5–6 verifiable
    instead of assertable, and is the only guard against the defect that
-   started the thread (a dead viewer behind a green suite). 3 is the case
+   started the thread (a dead viewer behind a green suite). 2 is the case
    for it: that harness is what found gr458329, and it took a real design
-   to do it.
-2. **td458066** — Reto decision: whether prod is ever browser-checked by an
-   agent and how the Basic credential is handled. Still shapes 1's scope
-   (local fixture lane vs prod lane are different builds), but it is a
-   smaller question since gr457931 shipped: prod DATA reaches a local
-   harness through `view='ops'`, so what is left to decide is only whether
-   a browser is ever pointed at the prod deployment itself.
-3. **gr458329** — a live level change on a REAL design (prod's `unicycle-c1`,
+   to do it. SCOPE SETTLED (Reto, 2026-09-30, td458066): **local-fixture
+   lane only — no agent ever drives a browser against the prod
+   deployment.** Prod DATA still reaches the harness through `view='ops'`,
+   which is what the gr458329 dogfood used; the prod deployment itself is
+   checked by Reto by hand at a release boundary if at all. Nothing here
+   handles the Basic credential.
+2. **gr458329** — a live level change on a REAL design (prod's `unicycle-c1`,
    copied down via `view='ops'`) fetches the new scene, then does nothing
    visible (n=0 against a measured n=0 floor) and never writes `level` back
    into the URL; the local fixture does both (n=222, URL updated). No console
@@ -53,25 +52,31 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
    Next step is in the gripe: re-capture the phase-d tree dump at equal
    expansion, which decides between "renders identically for this design" and
    "the swap silently failed".
-4. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
-   Waits on 3, which may already be an instance of it.
-5. **td458168** — Reto decision: the level-chip `—` rule and the worked
-   example in the same ruling disagree at a leaf, and the mockup is
-   inconsistent about which rung of an identical run keeps its letter.
-   Blocks the chips below it; a wrong guess means re-emitting a per-block
-   field of scene3d.json.
-6. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
+   Waits on 2, which may already be an instance of it.
+4. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
    server-side: scene3d.json must carry, per block, which rungs differ.
-   Waits on 5 only for the rule; everything else is specified.
-7. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+   Rule settled (td458168): the literal rule wins over its worked example,
+   and the shallowest member of an identical run keeps its letter.
+5. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-8. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
-   only, rulings 1–5 in the file. Independent validator pass and the largest
-   piece of work, hence last.
+6. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+   only, rulings 1–7 in the file. Asks whether a fastener can REACH its
+   seat; `toolaccess.access()` only ever asked whether a seated screw can
+   be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
+   that item too, not here — this thread only consumes it — so the item is
+   self-contained. Independent validator pass and the largest piece of
+   work, hence last.
+7. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+   modelled by a volume nobody believes: an L-key or wrench that only needs
+   a ratchet SECTOR is refused by the full-circle disc. Split out of the
+   DRC file, which deferred it in two rulings without giving it a home.
+   Blocked by the item above (ruling 2 intends the same per-tool-class
+   volume model to carry it), hence after it.
 
 ## Horizon
 
@@ -137,6 +142,14 @@ cut from the bottom.
   in blocktree-3d.js; no gripe.
 
 ## Seam
+
+`src/precis/_pagination.py` is adopted here, not owned here. gr458393 was
+fixed under this thread because no thread owned core response chunking and
+this thread's dogfooding found it. Reto's call (2026-09-30): re-home it to
+a runtime/platform thread deliberately when one exists — a file every MCP
+response passes through should not be inherited by a 3D-viewer thread by
+accident.
+
 
 The non-geometric property layer (hydrophobic, charge, field, optical) is
 `se-machine-design`'s model to build; this thread renders whatever the

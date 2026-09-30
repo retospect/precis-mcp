@@ -46,14 +46,24 @@ NOT "the block is invisible at that level". So a childless leaf carrying
 no realization record shows `[E·I·R·—]`: R and z are the same picture for
 it. This is the per-block datum `scene3d.json` has to start carrying.
 
-NOT YET BUILDABLE — td458168. The ruling and its own worked example
-disagree at a leaf: a childless leaf renders identically at `envelope` and
-at `interfaces` (`plan_visibility` gives any childless node "shape"
-whatever the cutoff), so the literal rule dashes one of them, while the
-example `[E·I·R·—]` dashes neither. And when a run of rungs is one
-picture, the mockup is inconsistent about which member keeps its letter
-(`flange_bolt_left` keeps the deepest, `crown` the shallowest). Both are
-cheap to build and produce different chips, so the ruling comes first.
+RESOLVED (Reto, 2026-09-30, td458168) — the contradiction above is
+settled, both halves, and the item is buildable.
+
+The rule wins; the worked example is wrong. A childless leaf renders
+identically at `envelope` and at `interfaces` (`plan_visibility` gives any
+childless node "shape" whatever the cutoff), so it dashes one of them —
+`[E·I·R·—]` in the mockup above is NOT what such a leaf should show.
+
+When a run of rungs is one picture, the **shallowest** member keeps its
+letter and the rest dash: it is the cheapest rung that produces that
+picture, so the letter marks what you would actually click. The mockup's
+`flange_bolt_left [—·—·R·z]` (deepest kept) is the inconsistent one;
+`crown [E·I·—·—]` is right.
+
+Consequence for the payload: the per-block datum `scene3d.json` carries is
+which rungs DIFFER from the next-shallower one — not which rungs "exist".
+The chip renders a letter at the shallowest member of each identical run
+and a dash everywhere else, which falls straight out of that datum.
 
 Note this is largely a FRONT END for an existing capability: the `overrides` query param already applies per-block level overrides server-side (see `plan_visibility` in `src/precis_web/blocktree_svg.py`, called from `_build_scene3d`). The genuinely new data needed is, per block, WHICH levels actually exist — that must be added to the `scene3d.json` payload. The raw `overrides` text box is replaced by this chip.
 

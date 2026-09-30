@@ -33,6 +33,22 @@ Note the consequence explicitly: because a screwdriver is spun in place, its swe
 **Ruling 4 — insertion motion is a straight axial sweep.**
 The bolt's insertion path is swept along the screw axis only. Tilt-and-align or multi-step insertion is motion planning and is explicitly out of scope.
 
+**Ruling 6 — the swept-volume render ships with THIS item (Reto,
+2026-09-30).** Ruling 5's hook is owned here, not by the viewer thread.
+`se-3d-viewer` only consumes it. The cross-link in ruling 5 pointed at
+`se-3d-viewer-ux-batch.md`, which has no such item and never did — which
+would have left a validator item blocked on a viewer item that does not
+exist. Build the render alongside the finding that needs it.
+
+**Ruling 7 — ruling 2's tool scope is ADDITIVE (Reto, 2026-09-30).**
+Adding the hand for screwdrivers does not narrow the existing tool set.
+`src/precis_se/toolaccess.py` models hex keys today — its headline case is
+one ("a hex key turning an M3 sweeps a 66 mm circle") — and
+`precis/data/driver_envelopes.json` keeps every tool it has, unchanged, on
+the current no-hand treatment. The hand is added for screwdrivers and
+electric screwdrivers first; other tools gain it later. Do NOT trim the
+envelope data to match ruling 2's scope line.
+
 **Ruling 5 — findings must be visually explainable.**
 Tools are not rendered in the viewer, so today a `no_tool_access` or insertion-path finding is unexplainable — the user is told "no" with no way to see what blocked it. The swept tool/hand volume for a failing finding must be renderable on demand in the 3D viewer. This is a required hook to design in from the start, not a retrofit. Cross-link `docs/backlog/se-3d-viewer-ux-batch.md`.
 
@@ -44,7 +60,7 @@ Owner `src/precis_se/validate.py`, `src/precis_se/joints.py`.
 
 Three things to settle when this is built; none changes the rulings.
 
-1. **Ruling 5's cross-link is dead.** It requires the swept tool/hand
+1. **[RESOLVED by ruling 6]** ~~Ruling 5's cross-link is dead.~~ It requires the swept tool/hand
    volume for a failing finding to be renderable in the viewer — "a
    required hook to design in from the start, not a retrofit" — and
    cross-links `se-3d-viewer-ux-batch.md`. That file has no mention of
@@ -54,7 +70,9 @@ Three things to settle when this is built; none changes the rulings.
    thread. Either add the render item to the ux-batch file with a back-link
    here, or state that the hook ships with this item and the viewer thread
    only consumes it.
-2. **Ruling 2's tool scope is narrower than what already ships.** It scopes
+2. **[RESOLVED by ruling 7; the L-key/wrench sector question is filed as
+   `se-tool-sector-and-lkey-access.md`]** ~~Ruling 2's tool scope is
+   narrower than what already ships.~~ It scopes
    the combined hand+tool volume to screwdrivers and electric screwdrivers,
    and defers wrenches and L-keys. But `src/precis_se/toolaccess.py` models
    hex keys today and its docstring's headline case is one — "a hex key
@@ -69,6 +87,8 @@ Three things to settle when this is built; none changes the rulings.
    rewritten is still verbatim in `toolaccess.py` ("Deliberately not
    modelled: the hand holding the tool; …"). No drift yet, and nothing but
    this paragraph will catch it when the hand is added.
+
+Open question (c) is answered — see below — and (a)/(b) remain open.
 
 Also: open question (c) — whether the rule needs the reaction-force solver
 to know which interfaces are load-bearing — is answered by the
