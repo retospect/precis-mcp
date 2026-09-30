@@ -21,22 +21,45 @@ soft-deleted)
    thread was measured against those bounds (ewod-dogfood-4: names only,
    21→38 realized on identical code). Nothing below can be trusted until it
    lands, so it outranks the corruption item.
-2. **backlog/pcb-always-valid-board-invariant.md** — a board reached stored,
-   routed, `succeeded` state with 64 DRC errors and zero pcb_drc_findings
-   rows until asked out of band. Prevents persisting unmanufacturable copper
-   at all. Folds in backlog/pcb-placement-must-be-valid-before-routing.md
-   (same defect, narrower): implement one, not both. Under a design review
-   that rewrote its content on 2026-09-30, not its rank.
-3. **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** — authored
-   pcb_fixed_copper (plaza vias) is invisible to the placer; this is the
-   mechanism behind 2's symptom (2 makes the state unstorable, this stops
-   producing it). Needs a fixture with an authored via where an instance
-   would land; ewod-dogfood-1 cannot exercise it.
+2. **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** —
+   **promoted 2026-09-30 on Reto's word.** Authored `pcb_fixed_copper`
+   (plaza vias) is invisible to the placer, so nothing stops an instance
+   landing on top of authored copper. `ewod-dogfood-6` is the fixture this
+   item always lacked: its sink is correctly UNPINNED and the placer left it
+   at the array centroid anyway, because it cannot see the plaza vias it is
+   sitting on. It now outranks the invariant below it — 3 makes the bad
+   state unstorable, this stops producing it, and producing it is what we
+   just watched happen on a board built entirely from current code.
+   **Root cause CONFIRMED 2026-09-30** (root-cause pass, verified against
+   prod): `optimize.py` and `cost.py` carry ZERO references to
+   `pcb_fixed_copper` at HEAD, so the annealer moved the unpinned sink to
+   (10, 10) rot 270 and put the driver IC's real solder lands on the
+   array's plaza vias. Unpinning the sink — the correct fix for the
+   PREVIOUS failure — removed the accidental protection a pinned position
+   gave. The item's file now carries the dogfood-6 evidence and, more
+   importantly, the false-green test that hid it:
+   `test_dogfood_drc_view_findings_are_all_the_documented_side_gap` asserts
+   zero array-vs-sink clearance errors while building its model with
+   `"copper": []`, never running `op='place'`, and never applying
+   `pcb_pin_swaps`. Do not cite it as coverage.
+3. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
+   canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
+   design consequence: *"If placement is always valid and routing is valid
+   (but may be incomplete), we should never get a failure."* So legality is
+   a hard gate on both stages and incompleteness is the only permitted
+   failure mode. The file also records the answer to his follow-up — a
+   netlist is still buildable before placement, because the IR's levels are
+   progressive and an unplaced design has no geometry to violate. Folds in
+   backlog/pcb-placement-must-be-valid-before-routing.md (same defect,
+   narrower): implement one, not both.
 4. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
-   risk() is a MAX over margin terms, so any MONEY term is a free tie-breaker
-   against every non-maximal constraint (a $0.046 term overruled
-   courtyard_overlap). Decides whether 3's fix can be graded or must be a
-   hard gate.
+   **de-escalated by 3's ruling.** risk() is a MAX over margin terms, so any
+   MONEY term is a free tie-breaker against every non-maximal constraint (a
+   $0.046 term overruled courtyard_overlap). With legality moved out of the
+   objective entirely this no longer gates anything manufacturability-facing;
+   what survives is tuning clarity for the next person adding a term — and
+   backlog/pcb-tightest-connected-part.md is the next item that will trip
+   over it.
 5. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
    criteria came off an invalid placement and are void; now a
    rewrite-against-a-new-fixture job that needs 1's real pad geometry.
@@ -81,7 +104,14 @@ soft-deleted)
    so a full geometric DRC pass is 0.29 s on an 8x8 tile and 1.2 s at 16x16
    (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck —
    backlog/pcb-clearance-findings-name-no-pad.md carries both that figure
-   and the observability gap the 09-30 investigation paid for.
+   and the observability gap the 09-30 investigation paid for — **now
+   `prio: high` after a second incident the same day**: `check_clearance`
+   labels a pad by NET only, so `pad[ARR1_R7C0]` on dogfood-6 read as "the
+   R7C0 electrode" when it was `ARR1_SINK_0.HVOUT24`, the driver's own land
+   carrying that electrode's escape net through `pcb_pin_swaps`. That
+   mislabel produced TWO wrong diagnoses of item 2's defect before the
+   pad was identified. `check_via_pad_keepout` got exactly this fix from
+   gr451052; its sibling never did.
    **gr458087 is stale, not a regression — reconciled 2026-09-30 by
    re-running the measurement.** Its 1.9 s/8x8 and 30 s/4-tile figures are
    the PRE-fix state; the STRtree fix it proposed is already in
@@ -108,7 +138,15 @@ soft-deleted)
    a class becomes enforceable rather than advisory. Reading nearby:
    backlog/pcb-oblique-rotated-pad-is-an-axis-aligned-rect-in-the-model.md
    is the same "what shape is this pad" question at an oblique angle, and
-   an .epro2 import is its likely first real source.
+   an .epro2 import is its likely first real source. **gr458878** (filed on
+   Reto's word 2026-09-30) is the pin-level datasheet-provenance gap: a
+   datasheet links to a PART, but no pin selector exists so no pin fact can
+   cite the page it came from — and the payoff is validation, since the
+   footprint and the datasheet pin table are two independent statements of
+   pad->function that we compare nowhere. Owned by pcb-platform, sequenced
+   behind pcb-component-model. That gripe also records the blocker found
+   while checking it: the prod `parts` catalog is EMPTY (0 rows), so no
+   part can be SEARCHED for, only confirmed by C-number.
 6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
    on 5, a checklist over unenforceable constraints is theatre.
 7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
@@ -148,11 +186,27 @@ soft-deleted)
   per-write go-ahead, and not before Do-next 1 lands and the escape-layer
   question (Do-next 7, with its live half in 6) is settled, or it is done
   twice. Named by item, not number: that rank has moved twice already.
-- **U_TEMP part selection** — C32254 is a dual MOSFET placeholder; unparks
-  when Reto picks a real LM75-class part (detail in item 1's file).
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
   Do-next 2, where via-vs-pad becomes an enforced rule rather than a
   reported one.
+
+## Boards on prod
+
+- **`ewod-dogfood-6` is the only live design.** Built 2026-09-30 through
+  `scripts/prod-precis` (this worktree's code against the prod DB) because
+  the session MCP was serving a **2026-09-08 image build** that still
+  emitted `fixed='both'` on sinks — a board authored through it reproduced
+  the pinned-sink-under-the-array configuration all by itself. Routed by
+  job 458869 on melchior build `73e22674`, which contains the pad-orientation
+  fix. **Its DRC is 116 errors** and the overlap Reto confirmed visually is
+  authored-geometry vias against pads, with `0 via(s) placed` by the router —
+  under root-cause investigation, ranked as item 2 above.
+- **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all
+  the junk dogfood"). Every one of them is measured against something now
+  known wrong: 1/2 had pinned sinks, 1/2/3 predate the real sink pin names,
+  4 predates the pad-orientation fix, 5 came off the stale MCP build. **Do
+  not cite a number off any of them** — that includes dogfood-4's 38
+  realized / 25 failed, which is the figure most likely to be quoted back.
 
 ## No action needed
 

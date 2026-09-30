@@ -7,6 +7,53 @@ pillar: 3d-design
 
 # The placer cannot see most of what it must avoid
 
+## CONFIRMED on `ewod-dogfood-6`, 2026-09-30 — the predicted outcome landed
+
+This item predicted that once positions under the array became legal, the
+placer would need to see the authored plaza vias "or it will pick one of
+them". It picked one of them.
+
+`ewod-dogfood-6` was authored AND routed entirely on current code (created
+through `scripts/prod-precis`; routed by job 458869 on melchior build
+`73e22674`, which contains the `realize.pad_board_wh` fix). Its sink is
+correctly UNPINNED — `fixed` is NULL, per the 2026-09-29 ruling — and the
+annealer moved it to (10, 10) rot 270 on the bottom side. Result: **116 DRC
+errors**, the driver IC's real solder lands sitting on the array's authored
+plaza vias, with `0 via(s) placed` by the router. Every via involved is
+authored copper, which is why Reto's framing is exactly right: *"This should
+not be possible when routing starts."*
+
+Root-cause pass, 2026-09-30, verified against prod: `optimize.py` and
+`cost.py` contain **zero references to `pcb_fixed_copper`** at HEAD. So
+nothing in legality or cost knows the plaza vias exist. Unpinning the sink
+(the right fix for the PREVIOUS failure) removed the accidental protection
+that a pinned-but-lucky position gave, and exposed this.
+
+Do NOT "fix" it by hand-moving the sink on this one board: the next anneal
+of this or any sink-bearing EWOD board re-places it onto the vias, because
+the legality term still does not exist.
+
+### A currently-green test cannot catch this, by construction
+
+`tests/test_pcb_ewod_dogfood.py::test_dogfood_drc_view_findings_are_all_the_documented_side_gap`
+asserts ZERO array-vs-sink clearance errors and its module docstring claims
+the pair "produces ZERO cross-layer findings". It is green because it omits
+all three mechanisms that produce the defect, not because the defect is
+absent:
+
+1. It builds its model with **`"copper": []`** (two places), so a
+   via-vs-pad collision is structurally invisible to `check_clearance`.
+2. Its `_seed()` fixture never runs `op='place'`, so the sink sits at the
+   generator's seed centroid and the fixed-copper-blind annealer never gets
+   to move it somewhere worse.
+3. It never applies `pcb_pin_swaps`, so no sink pad ever carries a foreign
+   electrode's net — the exact configuration that collides on prod.
+
+Treat that test as a false green: it must not be cited as "we already test
+this", and whatever fixes this item needs an assertion that includes
+authored copper in the model AND runs a placement pass. A pure-function
+fixture over `ARR1` alone cannot express this defect at all.
+
 ## Motivation / why
 
 Found 2026-09-29 while acting on Reto's ruling that placement belongs to

@@ -59,6 +59,35 @@ money, not the max itself.
    and require that any new money term be justified as one. This is the de
    facto status quo; `routing_area` shipped under it.
 
+## Reto's ruling, 2026-09-30 — legality leaves the objective entirely
+
+Asked whether this decides "can item 3's fix be graded, or must it be a hard
+gate", Reto made `pcb-always-valid-board-invariant.md` canonical and said:
+**"If placement is always valid and routing is valid (but may be
+incomplete), we should never get a failure."**
+
+That does not pick one of the three options below — it removes the reason
+the choice was urgent. The MAX-vs-sum question was load-bearing because
+*legality* was riding on a graded margin term, where any `Family.MONEY`
+term could zero it out (measured: a $0.046 term overruled
+`courtyard_overlap`). Under the ruling, legality is a **hard gate** — an
+illegal placement is unstorable, not expensive — so no legality decision
+depends on this aggregation any more.
+
+What is left is the narrower, real question the title names: the objective
+still grades *preferences* with a MAX over margins and a SUM over money, so
+a non-maximal preference contributes nothing while every money term always
+counts. That is still surprising to anyone adding a term (and
+`pcb-tightest-connected-part.md` is the next item that will trip over it),
+but it is now a **tuning-clarity** problem rather than a
+manufacturability one. Re-prioritise accordingly: this no longer gates the
+always-valid work.
+
+Option (3) — accept and document — is therefore the cheap correct answer
+unless someone shows a *preference* being wrongly masked. The
+`courtyard_overlap` evidence no longer supports options 1 or 2, because
+courtyard overlap is exactly the kind of thing that becomes a gate.
+
 ## In scope
 
 Pick one. If (3), say so explicitly in the `cost` module docstring so the

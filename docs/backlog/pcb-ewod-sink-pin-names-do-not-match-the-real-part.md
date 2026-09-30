@@ -105,12 +105,56 @@ availability, price) and not something to guess at. Until then `U_TEMP`
 will keep reading `4/4 pins` synthesized, and the `synthesized_footprint`
 DRC error on it is correct rather than noise.
 
+### RESOLVED 2026-09-30 — the part is `C28927` (TI TMP112AIDRLR)
+
+Reto delegated the selection ("you find it. tmp112 or something?"), so this
+is no longer blocked on him. `C28927` = Texas Instruments **TMP112AIDRLR**,
+SOT-563, I2C digital temperature sensor, -40..+125 C, 1.4-3.6 V, ±0.5 C,
+13-bit, JLCPCB-assemblable.
+
+**Verified against the real footprint before being written down**, which is
+the whole point of this item — a guessed C-number is exactly how `C32254`
+got here. Fetched through the production path
+(`precis.pcb.easyeda.fetch_component` -> `parse_component`) and it returns a
+real 6-pad footprint, `source easyeda:packageDetail:12ec04a02cb54b98af05fc74f16c8bc5`,
+courtyard bbox `[-0.9, -0.8, 0.9, 0.8]`, pad 5 at `w=0.3 h=0.6 rot=90`.
+
+**Declare these pin names, taken from the footprint's own `pin_map`, not
+from a datasheet reading:**
+
+| pad | name |
+| --- | --- |
+| 1 | `SCL` |
+| 2 | `GND` |
+| 3 | `ALERT` |
+| 4 | `ADD0` |
+| 5 | `V+` |
+| 6 | `SDA` |
+
+Two traps in that table. The supply pin is **`V+`**, not `VDD` — the old
+declaration's `VDD` would silently synthesize. And there is no `VDD`/`NC`
+pair to drop: SOT-563 is 6 pins, so the `SOIC-8` footprint string in the
+current design is wrong too and must go. `ALERT` and `ADD0` are real pins
+that the design does not currently wire; leave them unconnected
+deliberately (or tie `ADD0` for the I2C address) rather than omitting them
+from the declaration.
+
+**Blocker found while doing this, filed separately (gr458878):** the prod
+`parts` catalog is **empty — 0 rows**. `precis pcb refresh-parts` has never
+populated it, so `search(kind='part', ...)` finds nothing and no C-number
+can be validated against price, stock or assemblability in-system. This
+selection was verified through the EasyEDA footprint path and a public
+parts lookup instead. Anything that wants to *choose* a part rather than
+confirm a named one is blocked until the catalog is refreshed.
+
 ## In scope
 
 - Correct the `sink_grid` pin names in the EWOD design to the real part's
   (`HVOUT1…HVOUT64`, `DIOA`, `DIOB`), keeping `VPP`/`VDD`/`GND`.
-- Replace `U_TEMP`'s placeholder C-number with a real LM75-class I²C
-  sensor. Reto's call, not the fixer's.
+- Replace `U_TEMP`'s placeholder C-number with `C28927` (TMP112AIDRLR),
+  declaring the six pin names in the table above — `V+`, not `VDD` — and
+  dropping the wrong `SOIC-8` footprint string. Selection made 2026-09-30;
+  no longer a Reto decision.
 - Make the mismatch loud at generate time, not only at fab-export time: if
   a named pin has no pad on a *cached* footprint, that is a name error, not
   a missing footprint, and it should say so with both names in hand.

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: canonical
 title: every board mutation leaves a geometrically valid board, or is refused with the violated rule
 prio: high
 pillar: 3d-design
@@ -245,6 +245,71 @@ Fix this one rule first; scoping can wait.
   guarantees.)
 - True incremental DRC.
 - Changing any rule's threshold or text.
+
+## Reto's rulings, 2026-09-30 — this invariant is CANONICAL
+
+Asked whether to make this the canonical model, Reto: **"ok make it
+canonical"**, plus the design consequence in his own words: **"If placement
+is always valid and routing is valid (but may be incomplete), we should
+never get a failure."**
+
+That sentence settles three things this file and its neighbours were still
+arguing about:
+
+1. **Legality is a HARD GATE on both stages, never a graded cost.** An
+   illegal placement and illegal copper are both unstorable. This is the
+   answer to `pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md`'s
+   open question — `risk()` being a criticality-weighted MAX means a graded
+   legality term can be zeroed out by any `Family.MONEY` tie-breaker, so
+   legality cannot live in the objective at all. Grade *preferences*; gate
+   *legality*.
+2. **Incompleteness is the only permitted failure mode.** UNROUTED nets are
+   a legitimate stored outcome; DRC errors are not. That is the
+   geometric-validity / routedness split this file already argues for, now
+   with a ruling behind it.
+3. **Therefore "no failures" is a reachable end state, not an aspiration** —
+   every remaining error class is either a legality gate that does not exist
+   yet or a bug.
+
+### "Can we still build the netlist before placement?" — yes, unchanged
+
+Reto asked this directly, and it is the right thing to check: an invariant
+phrased as "a stored board is always valid" must not accidentally require a
+board to be PLACED to be storable. It does not, and the IR is what
+guarantees it: `precis.pcb.ir`'s levels are progressive, L0 (pins + nets as
+a hypergraph) sits below L3 (component x/y/rotation), and dropping
+everything above level k must still leave a valid level-k object. A netlist
+with no placement is a complete, valid L0/L1/L2 object.
+
+So this invariant constrains only the levels that EXIST on a given board:
+an unplaced design cannot violate a geometric rule because it has no
+geometry to violate, and the whole point of `view='ratsnest'`/`crossings`/
+`feasibility` is to score a netlist while fixing it is still free. What the
+invariant forbids is *storing geometry that is already illegal*, not
+*storing a design that has no geometry yet*. Any implementation that gates
+netlist edits on placement validity has misread it.
+
+### New input Reto wants the placer to have: tightest-connected-part
+
+Also his, same session: **"it occurs to me that placer may want to know
+tightest connected part (ie bypass cap, next thing on the bus etc)"**.
+
+This is a placement INPUT, not a legality rule, so it belongs in the graded
+half per ruling 1 — but it is worth recording here because it is the first
+thing asked for that the current cost function genuinely cannot express.
+Today `cost.py` prices ratsnest length over a net's members symmetrically:
+a bypass cap that must sit within a millimetre of VDD and a connector on
+the same net are the same kind of edge. The distinction Reto is naming is
+real and not derivable from net membership alone — "this pin's decoupling
+cap", "the next device along this bus" are asymmetric, ordered, per-pin
+relationships.
+
+Filed as its own item rather than folded in here:
+`backlog/pcb-tightest-connected-part.md`. It interacts with
+`pcb-component-model.md`'s "inter-instance equivalence" (two 100 nF caps on
+one rail are interchangeable *with each other*) — that item computes
+equivalence from the netlist with no LLM; this one needs an authored or
+extracted *affinity*, which is a different fact.
 
 ## Open decisions for Reto
 

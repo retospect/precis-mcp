@@ -43,8 +43,23 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 ## Horizon
 
-- (none beyond Do-next's own sequencing — this file's Do-next is the
-  platform's whole known surface as of 2026-09-30)
+- **gr458878 — pin-level datasheet provenance + the two-source pin-name
+  cross-check.** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
+  `link(rel='datasheet-of')` already bind a datasheet to a PART; what is
+  missing is a pin-level link target (links are
+  `kind:identifier[~selector]` and pcb has no pin selector), an extraction
+  pass, and the cross-check between the footprint's pad->function and the
+  datasheet's. Sequenced behind Do-next 2 (`pcb-component-model.md`), which
+  owns pin roles/capabilities and already rules that the pass only unlocks
+  "with provenance"; this is WHERE that provenance lives. Extend
+  `pcb-argue-with-design.md`'s existing anchor grammar, do not mint a second
+  scheme.
+- **The prod `parts` catalog is EMPTY (0 rows)** — `precis pcb
+  refresh-parts` has never populated it, so `search(kind='part', ...)`
+  returns nothing and a C-number can only be CONFIRMED (via the EasyEDA
+  footprint path), never chosen on price/stock/assemblability. Blocks
+  anything in Do-next 2/3 that assumes part selection is a search. Recorded
+  in gr458878.
 
 ## Parked
 
