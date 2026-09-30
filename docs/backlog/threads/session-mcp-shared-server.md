@@ -114,9 +114,15 @@ server-side-session-context Horizon pointer)
    twelve containers (this one plus eleven `precis-mcp-dev-*`) each
    boot-warming the same 20137 blocks of the same tree against one embedder
    with `max_inflight=4`.
-   This item is now only the per-call half. (a) retry retryable errors per
-   batch, honouring the 429's own `retry_after_s`, so a pass makes progress
-   instead of restarting; (b) re-arm the pass later — on the first md search
+   This item is now only the per-call half, and (a) has LANDED — Reto's
+   go 2026-09-30. `embed_missing` grew an `on_batch_error(exc, i, n)`
+   callback and `server._warm` owns the policy: only `EmbedderUnavailable`
+   retries, in place, honouring the service's `retry_after_s`, 6 attempts
+   per batch on a 2s ladder capped at 60s; a `ValueError` still fails the
+   pass on first sight. The policy had to live in `server.py` because
+   `md_index` deliberately does not import `precis.embedder`
+   (`vectors.py::MdEmbedder`) — the callback is that seam.
+   Remaining: (b) re-arm the pass later — on the first md search
    against a cold cache, or a periodic tick — since the watchdog bounces the
    process every few minutes during a qland burst and the pass never gets a
    contiguous window (it was abandoned mid-attempt-4 at 14:22Z). Both stay

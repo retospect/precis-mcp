@@ -26,7 +26,8 @@ time/host/user),
 **Runtime** (container hostname, python, pid, cwd, uptime, and
 `md_vector_warmup` when the `md` kind is registered — `COLD` there means
 md search has silently fallen back to lexical for this process's whole
-lifetime),
+lifetime, and `warming: batch i/N, retry k/6` means the pass is alive and
+working through the batches, not stuck),
 **Database** (connected DSN host/port/name/user, postgres server
 version, last applied migration + count), and the existing
 **Optional dependencies** import probe.

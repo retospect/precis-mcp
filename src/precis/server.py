@@ -943,21 +943,23 @@ def _warm_embedder_background(runtime: PrecisRuntime) -> None:
 #: ~740 blocks is single-digit round-trips.
 _MD_WARMUP_BATCH_SIZE = 64
 
-#: Total warm-pass attempts before giving up and leaving search lexical.
-#: The pass is unattended, off the request path, and its failure costs
-#: every session on the machine, so a few patient attempts are close to
-#: free — but it is not unbounded: a genuinely-down embedder must not
-#: leave a thread retrying for the process's life.
-_MD_WARMUP_ATTEMPTS = 4
+#: Per-batch retry budget. The retry lives at the BATCH level, not the
+#: pass level: at bulk sizes a pass is hundreds of round-trips, so an
+#: error on the first batch that unwinds the pass just re-enters and
+#: fails on the first batch again. Measured on the shared session server
+#: 2026-09-30 (gr457326): four consecutive boots, every attempt died on
+#: its first batch, zero batches landed in 1h36m.
+_MD_WARMUP_BATCH_ATTEMPTS = 6
 
-#: First retry delay; doubles per attempt (30s, 60s, 120s → ~3.5 min of
-#: cover). Chosen against the observed trigger: the gate that starved
-#: the embedder at 11:49Z ran for ~75 min, so this does NOT ride out a
-#: whole gate by design. It rides out the cold-start stall and the
-#: admission-gate 429s, which is what was actually measured; surviving a
-#: full gate would need re-arming the pass, not a longer sleep, and that
-#: is the follow-up rather than this fix.
-_MD_WARMUP_BACKOFF_S = 30.0
+#: First per-batch retry delay; doubles per attempt, capped at
+#: `_MD_WARMUP_BACKOFF_CAP_S` (2/4/8/16/32/60s ≈ 2 min per batch).
+#: Deliberately short at the start: the measured failure was
+#: `429 after queueing` returned in 0.6s — admission control clearing in
+#: under a second — where the previous 30s floor burned a whole attempt
+#: on a condition that had already passed. An `EmbedderUnavailable`
+#: carrying its own `retry_after_s` overrides this entirely.
+_MD_WARMUP_BACKOFF_S = 2.0
+_MD_WARMUP_BACKOFF_CAP_S = 60.0
 
 
 def _warm_md_index_background(runtime: PrecisRuntime) -> None:
@@ -977,10 +979,11 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     batches of `_MD_WARMUP_BATCH_SIZE`, then flushes so a
     killed-mid-warmup process still persists whatever it finished.
 
-    Retries with backoff (gr457326). This pass runs exactly once per
-    process, so the "until the next successful pass" this docstring
-    used to promise was false — there is no next pass, and one
-    timed-out batch left the cache cold for the process lifetime.
+    Retries with backoff, **per batch** (gr457326). This pass runs
+    exactly once per process, so the "until the next successful pass"
+    this docstring used to promise was false — there is no next pass,
+    and one timed-out batch left the cache cold for the process
+    lifetime.
     Survivable when the process was one session's own container; the
     shared session server makes it every session on the machine,
     silently lexical, with the only trace a traceback in a log nobody
@@ -1000,6 +1003,25 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     factory's wiring for one caller, and with batches the budget is no
     longer the binding constraint.
 
+    The retry sits at the batch, not the pass. Dogfooding the first cut
+    of this fix on the shared server (2026-09-30, four consecutive
+    boots) found a pass-level retry is close to useless at bulk sizes:
+    20137 blocks at 64 per batch is ~315 round-trips, so an error on
+    batch 0 unwound the pass and every later attempt re-entered and died
+    on batch 0 — zero batches landed in 1h36m. Two of those failures
+    were `429 after queueing` returned in 0.6s, after which the old
+    30s-floor ladder slept 60s and burned an attempt on a condition that
+    had already cleared. Now only `EmbedderUnavailable` is retried, in
+    place, honouring the `retry_after_s` the service's admission queue
+    puts in its 429 body; a `ValueError` (dim mismatch, short vector
+    list) still fails the pass immediately, because retrying a
+    deterministic error would loop forever.
+
+    What this still does not fix: twelve containers boot-warming the
+    same tree against one embedder with no shared cache. That went up a
+    layer to `docs/backlog/embedder-capacity-ownership.md` — do not
+    re-plan it here.
+
     Failures still never block startup. The difference is that the
     outcome is recorded for `precis-status`
     (`md_index.vectors.record_warmup_state`), so a cold cache is
@@ -1015,59 +1037,80 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     if vector_cache is None or embedder is None:
         return
 
+    from precis.embedder import EmbedderUnavailable
     from precis.md_index.vectors import record_warmup_state
 
     def _warm() -> None:
+        attempts: dict[int, int] = {}
+
+        def _on_batch_error(exc: Exception, index: int, count: int) -> bool:
+            """Retry one batch in place; policy lives here, not in md_index.
+
+            Only `EmbedderUnavailable` is retryable — its contract is
+            "transiently unreachable" (429 / 5xx / connection), as
+            opposed to a dim mismatch or a bad text, which stay
+            `ValueError` / `RuntimeError` and must fail the pass.
+            """
+            if not isinstance(exc, EmbedderUnavailable):
+                return False
+            n = attempts[index] = attempts.get(index, 0) + 1
+            if n >= _MD_WARMUP_BATCH_ATTEMPTS:
+                return False
+            # The service's own admission queue puts a `retry_after_s`
+            # hint in its 429 body; prefer it over guessing.
+            hint = getattr(exc, "retry_after_s", None)
+            delay = (
+                float(hint)
+                if hint
+                else min(
+                    _MD_WARMUP_BACKOFF_S * (2 ** (n - 1)), _MD_WARMUP_BACKOFF_CAP_S
+                )
+            )
+            log.warning(
+                "md index warmup batch %d/%d failed (%s); retry %d/%d in %.1fs",
+                index + 1,
+                count,
+                exc,
+                n,
+                _MD_WARMUP_BATCH_ATTEMPTS,
+                delay,
+            )
+            record_warmup_state(
+                f"warming: batch {index + 1}/{count}, "
+                f"retry {n}/{_MD_WARMUP_BATCH_ATTEMPTS} ({type(exc).__name__})"
+            )
+            time.sleep(delay)
+            return True
+
         total_new = 0
-        for attempt in range(1, _MD_WARMUP_ATTEMPTS + 1):
-            try:
-                log.info(
-                    "warming md index vector cache for %d root(s) (attempt %d/%d)",
-                    len(handler.roots),
-                    attempt,
-                    _MD_WARMUP_ATTEMPTS,
+        try:
+            log.info("warming md index vector cache for %d root(s)", len(handler.roots))
+            for alias, root in handler.roots.items():
+                idx = handler.cache.get(root)
+                blocks = [b for _, b in idx.all_blocks()]
+                total_new += vector_cache.embed_missing(
+                    blocks,
+                    embedder,
+                    batch_size=_MD_WARMUP_BATCH_SIZE,
+                    on_batch_error=_on_batch_error,
                 )
-                for alias, root in handler.roots.items():
-                    idx = handler.cache.get(root)
-                    blocks = [b for _, b in idx.all_blocks()]
-                    total_new += vector_cache.embed_missing(
-                        blocks, embedder, batch_size=_MD_WARMUP_BATCH_SIZE
-                    )
-                    log.debug("md index root %r warmed (%d blocks)", alias, len(blocks))
-                vector_cache.flush()
-                log.info("md index vector cache warm: %d new embedding(s)", total_new)
-                record_warmup_state(f"warm ({total_new} new embedding(s))")
-                return
-            except Exception as exc:
-                # Persist whatever the batches before the failure cached, so
-                # a retry resumes rather than restarting (embed_missing
-                # re-computes the miss list from the cache).
-                vector_cache.flush()
-                if attempt == _MD_WARMUP_ATTEMPTS:
-                    log.exception(
-                        "background md index warmup failed after %d attempt(s); "
-                        "md search stays lexical-only until this process restarts",
-                        attempt,
-                    )
-                    record_warmup_state(
-                        f"COLD after {attempt} attempt(s): {type(exc).__name__} "
-                        f"— md search is lexical-only ({total_new} cached before "
-                        f"the failure)"
-                    )
-                    return
-                delay = _MD_WARMUP_BACKOFF_S * (2 ** (attempt - 1))
-                log.warning(
-                    "md index warmup attempt %d/%d failed (%s); retrying in %.0fs",
-                    attempt,
-                    _MD_WARMUP_ATTEMPTS,
-                    exc,
-                    delay,
-                )
-                record_warmup_state(
-                    f"retrying after attempt {attempt}/{_MD_WARMUP_ATTEMPTS} "
-                    f"({type(exc).__name__})"
-                )
-                time.sleep(delay)
+                log.debug("md index root %r warmed (%d blocks)", alias, len(blocks))
+            vector_cache.flush()
+            log.info("md index vector cache warm: %d new embedding(s)", total_new)
+            record_warmup_state(f"warm ({total_new} new embedding(s))")
+        except Exception as exc:
+            # Persist whatever the batches before the failure cached, so a
+            # later re-arm resumes rather than restarting (embed_missing
+            # re-computes the miss list from the cache).
+            vector_cache.flush()
+            log.exception(
+                "background md index warmup failed; md search is lexical-only "
+                "for the blocks it did not reach"
+            )
+            record_warmup_state(
+                f"COLD: {type(exc).__name__} — md search is lexical-only "
+                f"({total_new} cached before the failure)"
+            )
 
     import threading
 

@@ -43,7 +43,7 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -301,6 +301,7 @@ class MdVectorCache:
         embedder: MdEmbedder,
         *,
         batch_size: int | None = None,
+        on_batch_error: Callable[[Exception, int, int], bool] | None = None,
     ) -> int:
         """Embed and cache every block in `blocks` not already cached.
 
@@ -326,6 +327,23 @@ class MdVectorCache:
         whether to retry, and a retry re-computes the miss list and so
         naturally resumes.
 
+        `on_batch_error` moves that decision *inside* the loop, which is
+        where a bulk pass needs it: called as
+        `on_batch_error(exc, batch_index, batch_count)`, it returns True
+        to re-run the same batch or False to let the exception
+        propagate. Retrying the whole pass instead is a trap at bulk
+        sizes — 20k blocks at `batch_size=64` is ~315 round trips, so a
+        failure on batch 0 that unwinds the pass just re-enters and
+        fails on batch 0 again, and a transient 429 that clears in under
+        a second can strand the cache cold indefinitely (gr457326,
+        measured on the shared session server 2026-09-30).
+
+        The *policy* deliberately stays with the caller: which
+        exceptions are retryable and how long to wait are embedder
+        concerns, and this module does not import `precis.embedder` (see
+        `MdEmbedder`). The callback also owns its own attempt budget —
+        returning True forever loops forever, by construction.
+
         The lock is deliberately released for the `embedder.embed()`
         call itself: computing the miss list and writing the results
         back both happen under `self._lock`, but embedding can take
@@ -344,11 +362,22 @@ class MdVectorCache:
 
         step = len(shas) if batch_size is None else max(1, batch_size)
         added = 0
-        for start in range(0, len(shas), step):
+        starts = list(range(0, len(shas), step))
+        for index, start in enumerate(starts):
             chunk = shas[start : start + step]
             texts = [by_sha[sha].text for sha in chunk]
 
-            vectors = embedder.embed(texts)  # outside the lock — see docstring
+            while True:
+                try:
+                    vectors = embedder.embed(texts)  # outside the lock — see docstring
+                except Exception as exc:
+                    if on_batch_error is None or not on_batch_error(
+                        exc, index, len(starts)
+                    ):
+                        raise
+                    continue
+                break
+
             if len(vectors) != len(chunk):
                 raise ValueError(
                     f"embedder returned {len(vectors)} vectors for {len(chunk)} texts"
