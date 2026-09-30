@@ -19,6 +19,33 @@ Three post-deploy assertions, one owner (`deploy/redeploy-precis.yml`):
   Open decision alongside: what should the fleet summarize with — the served
   local model or rake-lemma? (the `--summarizer-model` CLI arg overrides the
   env host_var, which made a host_var fix inert).
+- **`serving` is provisioned but never asserted** (found 2026-09-29). The
+  "Verify every managed precis venv is on the deployed commit" play targets
+  `gateway, scheduler, data, inference` — not `serving`. But
+  `playbooks/20c-precis-heartbeat-serving.yml` runs
+  `precis_worker/provision` there, so `/opt/precis/venv` DOES exist on the
+  Spark pair, carrying a real `precis_mcp` dist. So that venv can sit
+  arbitrarily far behind `precis_target_sha` while the deploy reports green:
+  it is pinged for reachability, provisioned, and then excluded from the one
+  check that would notice.
+  **The symptom that prompted this was WRONG; the gap is real anyway.** A
+  session-carried note said spark ran a month-stale `precis_mcp 8.32.0`
+  (2026-08-29). Reading both serving hosts directly on 2026-09-29 refuted
+  it: both are on `8.35.1`, built from what was `origin/main`'s head at the
+  time of the read — current, not stale. So this item is not
+  "spark is behind"; it is "nothing in the deploy would tell us if it
+  were", which is the condition under which a wrong belief about a host's
+  version survives a month unchallenged.
+  Fix: add `serving` to that play's `hosts:` with a `_precis_venv_refs` map
+  of `/opt/precis/venv` ONLY — 19a-precis-embedder.yml deliberately excludes
+  `serving`, so asserting `embedder-venv` there would false-fail. Note the
+  existing `data`-node precedent in that play: it already gates its map per
+  host, so this is the same shape, not a new mechanism.
+  **A negative control is required before believing the fix**: the omission
+  means the deploy has never once failed on a stale serving host, so a green
+  run after the change proves nothing on its own — point the assert at a
+  deliberately stale venv (or a wrong `precis_target_sha`) and confirm it
+  goes red.
 
 ## Drive the §L service_config seed from the registry, not a hardcoded list
 
