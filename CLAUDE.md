@@ -31,7 +31,10 @@ covered by check.yml's unfiltered 6 shards on every push, `--slow` /
 bare re-resolves `main` and can ship an ungated sibling qland), plus a
 budgeted advisory mutation pass
 (`scripts/mutate-diff`). **`/qland`** = pytest-ungated burst-land
-(`scripts/ship --quick`: commit WIP → sync → **pre-qland lint** (ruff · mypy ·
+(`scripts/ship --quick`: commit WIP → sync → **drift guard** (warns when main's
+last all-green shard matrix is 24h old, refuses at 48h — a burst that outran
+its verdicts wants a `/go`, not another qland; never refuses on an age it
+could not look up) → **pre-qland lint** (ruff · mypy ·
 import contracts — no pytest, no gate slot, ~3 min; `PRECIS_QLAND_LINT=0` to
 skip) → squash-merge) for when
 many trees are in flight — qland them one by one, then one

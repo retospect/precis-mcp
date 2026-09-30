@@ -1,11 +1,11 @@
 ---
-status: draft
+status: done
 ---
 
 # Main stays gated
 
-Grouped 2026-09-26 from 2 items; both shipped 2026-09-30, leaving one
-follow-on below that needs a number decided before it can be written.
+Grouped 2026-09-26 from 2 items; all three shipped 2026-09-30. Kept only until
+the numbers in the third have survived a week of real bursts — delete then.
 
 - **A cancelled main run leaves its src changes with no verdict** — closed.
   check.yml's main-push lane now scopes to the delta since the last sha whose
@@ -22,26 +22,44 @@ follow-on below that needs a number decided before it can be written.
   run the tests you added — the one failure of that day a lint cannot catch
   was a characterization test whose author demonstrably never ran it.
 
-## Follow-on: refuse to qland onto a main that has no current verdict
+- **qland onto a main that has no current verdict** — closed. The pre-qland
+  lint blocks on *your* change; it cannot see that main itself has outrun its
+  verdicts. `scripts/ship --quick` now asks
+  `scripts/last-gated-main-sha --age-hours` how long ago main's last all-green
+  shard matrix finished, and **warns at 24h, refuses at 48h**
+  (`PRECIS_QLAND_DRIFT_WARN_HOURS` / `PRECIS_QLAND_DRIFT_REFUSE_HOURS`;
+  `PRECIS_QLAND_DRIFT_OVERRIDE=1` to land anyway).
 
-The pre-qland lint blocks on *your* change. It does not stop you stacking onto
-someone else's red, or onto a main whose last gate-shape run is not green.
-`scripts/last-gated-main-sha` now answers exactly that question, so the check
-is cheap to add: if the last sha with an all-green shard matrix is many
-commits behind head, the burst has outrun its verdicts and what is needed next
-is a `/go`, not another qland.
+## The numbers, and why these ones
 
-Held rather than done, because the response is a judgement call and guessing
-it wrong is expensive in both directions:
+**Reto 2026-09-30: "a day or two."** Written here as 24h/48h so the next
+reader can veto a figure rather than a phrase — if either is wrong it is one
+constant, not a redesign.
+
+Measured in **time, not commits behind**. Twenty docs commits in five minutes
+is not the risk three src commits over two days is, and the thing that makes
+an ungated main expensive is how far the bisect has to reach back, which
+tracks wall-clock far better than commit count.
+
+Both failure directions were live when this was held, and the split answers
+each:
 
 - **Refusing** strands trees behind a red nobody has claimed — the failure
-  mode `scripts/main-ci-status`'s ownership signal exists to prevent — and
-  would let a stale verdict (the gr456236 class) block shipping outright
-  rather than merely misinform.
+  mode `scripts/main-ci-status`'s ownership signal exists to prevent. At 48h
+  that is a state somebody has to fix regardless; the override exists for the
+  case where they have.
 - **Warning only** is roughly what the existing `📦 N commit(s) not yet
   deployed` line already does, and a warning nobody acts on is how main
-  reached 20-odd ungated commits on 2026-09-30.
+  reached 20-odd ungated commits on 2026-09-30. Hence a refusal at all.
 
-So it wants a number: how far behind its last verdict main may drift before a
-qland is refused rather than warned. Decide that, then it is a few lines in
-`scripts/ship`.
+**An unknown age never refuses.** `--age-hours` prints nothing when it cannot
+tell — no `gh`, no auth, nothing gated inside the walk window — and the guard
+treats empty as "do not gate on this". Refusing on a lookup that could not be
+answered would let a GitHub outage stop every tree in the fleet from landing,
+which is a worse failure than the ungated main this guards against. The
+gr456236 class of stale-API answer therefore degrades to silence, not to a
+block.
+
+The age is the **newest** `completed_at` across the matrix, not the commit
+date: a verdict lands after the commit it judges, so commit date overstates
+drift, and this number gates a hard refusal.

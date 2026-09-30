@@ -11,9 +11,10 @@ exited 0 while printing a refusal now exits 3 on stderr, and the fix_gripe lane
 stopped reporting deliveries it had not made — a fix branch counts as delivered
 only once `git ls-remote` finds it on the repo's real upstream, which the lane
 had never once reached. What remains is one signal that lies by omission (a
-worker host no detector can see), one decision on whether a lane that cannot
-deliver should keep running, and one held decision on how far
-behind its verdict main may drift before a qland is refused. The container host's forensics were
+worker host no detector can see) and one disposal question (43 fix branches
+stranded on a node). The last held decision closed 2026-09-30: `ship --quick`
+warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
+"a day or two", and never refuses on an age it could not look up. The container host's forensics were
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
@@ -42,11 +43,6 @@ thread and is flagged on the Horizon for an owner.
    took them), so what is left is the monitor. Second: it is the only open
    code work here that is mine to start, but nothing is specced yet and the
    thing it would watch is not currently costing anything.
-3. **backlog/main-stays-gated.md** — how far behind its last shard verdict main
-   may drift before `scripts/ship --quick` refuses rather than warns. Reto
-   2026-09-30: **a day or two**, pending confirmation against the number the
-   deploy session holds. Both directions are written up in the item; with the
-   number settled this is a few lines plus a test.
 
 ## Horizon
 

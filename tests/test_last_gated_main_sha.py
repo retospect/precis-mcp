@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -51,8 +52,21 @@ def _load() -> ModuleType:
     return mod
 
 
-def _shards(conclusion: str, n: int = 6) -> str:
-    return json.dumps([conclusion] * n)
+def _shards(conclusion: str, n: int = 6, *, hours_ago: float = 1.0) -> str:
+    """A check-runs payload: `[conclusion, completed_at]` per shard.
+
+    Shards finish at slightly different times, as a real matrix does — spread
+    backwards from `hours_ago` so the newest is exactly `hours_ago` old. The
+    age of a matrix is the age of its SLOWEST member; staggering them is what
+    makes that assertion mean something.
+    """
+    newest = datetime.now(UTC) - timedelta(hours=hours_ago)
+    return json.dumps(
+        [
+            [conclusion, (newest - timedelta(minutes=2 * i)).isoformat()]
+            for i in range(n)
+        ]
+    )
 
 
 def _stub(
@@ -86,7 +100,8 @@ def test_partially_cancelled_matrix_is_not_a_verdict(
     produces. Counting it would hand check.yml a range start that skips
     everything the cancelled shards never ran."""
     mod = _load()
-    mixed = json.dumps(["success"] + ["cancelled"] * 5)
+    stamp = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    mixed = json.dumps([["success", stamp]] + [["cancelled", stamp]] * 5)
     _stub(mod, monkeypatch, {BURST: mixed, GATED: _shards("success")})
     assert mod.main([]) == 0
     assert capsys.readouterr().out.strip() == GATED
@@ -143,3 +158,100 @@ def test_missing_gh_is_silent_and_exits_zero(tmp_path: Path) -> None:
     )
     assert cp.returncode == 0
     assert cp.stdout == ""
+
+
+# ── --age-hours: the number scripts/ship --quick refuses past ───────────────
+#
+# Reto 2026-09-30, "a day or two" → warn at 24h, refuse at 48h. These pin the
+# arithmetic and, more importantly, the direction of every unknown: a drift
+# guard that refuses on a lookup it could not answer would let a GitHub outage
+# stop the whole fleet from landing, which is worse than the ungated main it
+# is guarding against.
+
+
+def test_age_hours_reports_the_newest_verdict_age(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+    _stub(mod, monkeypatch, {GATED: _shards("success", hours_ago=30.0)})
+    assert mod.main(["--age-hours"]) == 0
+    assert abs(float(capsys.readouterr().out.strip()) - 30.0) < 0.2
+
+
+def test_age_is_the_slowest_shard_not_the_fastest(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The matrix is not done until its last shard reports. Taking the oldest
+    stamp would age the verdict by however long the slowest shard took and
+    could tip a healthy main over the refusal line."""
+    mod = _load()
+    now = datetime.now(UTC)
+    payload = json.dumps(
+        [
+            ["success", (now - timedelta(hours=50)).isoformat()],
+            ["success", (now - timedelta(hours=2)).isoformat()],
+        ]
+    )
+    _stub(mod, monkeypatch, {GATED: payload})
+    assert mod.main(["--age-hours"]) == 0
+    assert abs(float(capsys.readouterr().out.strip()) - 2.0) < 0.2
+
+
+def test_age_hours_prints_nothing_when_nothing_is_gated(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No answer, not a large one. scripts/ship reads empty as "do not refuse
+    on this" — the guard only ever blocks on a number it actually has."""
+    mod = _load()
+    _stub(mod, monkeypatch, {BURST: _shards("cancelled")})
+    assert mod.main(["--age-hours"]) == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_age_hours_prints_nothing_when_gh_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+
+    def fake_run(*args: str) -> str | None:
+        return None if args[0] == "gh" else GATED
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+    assert mod.main(["--age-hours"]) == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_an_unreadable_timestamp_is_unknown_not_older(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A green sha whose stamps will not parse ends the walk empty-handed
+    rather than falling through to an older gated sha. Reporting the older
+    one's age would overstate the drift and could refuse a ship that should
+    have gone through."""
+    mod = _load()
+    unreadable = json.dumps([["success", "not-a-timestamp"]] * 6)
+    _stub(
+        mod,
+        monkeypatch,
+        {BURST: unreadable, GATED: _shards("success", hours_ago=99.0)},
+    )
+    assert mod.main(["--age-hours"]) == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_age_mode_does_not_change_which_sha_counts_as_gated(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both modes walk with the same predicate; only the thing printed differs.
+    A partially-cancelled matrix is no more a verdict for the drift guard than
+    it is for the lane picker."""
+    mod = _load()
+    stamp = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    mixed = json.dumps([["success", stamp]] + [["cancelled", stamp]] * 5)
+    _stub(
+        mod,
+        monkeypatch,
+        {BURST: mixed, GATED: _shards("success", hours_ago=12.0)},
+    )
+    assert mod.main(["--age-hours"]) == 0
+    assert abs(float(capsys.readouterr().out.strip()) - 12.0) < 0.2

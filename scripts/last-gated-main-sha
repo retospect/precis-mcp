@@ -22,10 +22,18 @@ run-list page and the `/actions/runs` endpoint both serve a cache that has
 been weeks stale, which is the whole substance of gr456236. The sha-keyed
 endpoint has not shown that behaviour.
 
-  scripts/last-gated-main-sha [--start <ref>] [--limit N]
+  scripts/last-gated-main-sha [--start <ref>] [--limit N] [--age-hours]
+
+`--age-hours` prints how many hours ago that verdict *completed*, instead of
+the sha — the drift `scripts/ship --quick` refuses past. Deliberately the
+check-run's `completed_at` and not the commit date: a verdict always lands
+after the commit it judges, so commit date overstates the drift, and this
+number gates a hard refusal.
 
 Advisory: always exits 0, prints nothing when it cannot tell (no `gh`, no
-auth, nothing gated inside the window). An empty answer means "gate fully".
+auth, nothing gated inside the window). An empty answer means "gate fully" —
+and, for `--age-hours`, "do not refuse on this": an unanswerable lookup must
+never be the thing that blocks a ship, or a GitHub outage stops the fleet.
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,6 +72,30 @@ def first_parent_shas(start: str, limit: int) -> list[str]:
     return out.split() if out else []
 
 
+def shard_verdict(sha: str) -> list[list[str | None]] | None:
+    """`[[conclusion, completed_at], ...]` for `sha`'s `test-linux` check-runs.
+
+    `None` when the lookup itself could not be answered — no `gh`, no auth, a
+    timeout. Distinct from `[]` (the sha ran no shards at all), because one
+    means "we don't know" and the other means "we know, and it wasn't gated".
+    """
+    out = _run(
+        "gh",
+        "api",
+        f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
+        "--jq",
+        "[.check_runs[] | select(.name | startswith(\"test-linux\")) "
+        "| [.conclusion, .completed_at]]",
+    )
+    if out is None:
+        return None
+    try:
+        parsed = json.loads(out)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
 def has_shard_verdict(sha: str) -> bool:
     """True when every `test-linux` check-run at `sha` concluded success.
 
@@ -71,34 +104,61 @@ def has_shard_verdict(sha: str) -> bool:
     to count. `filter=latest` (the endpoint default) collapses re-runs, so a
     re-run to green supersedes the cancelled attempt.
     """
-    out = _run(
-        "gh",
-        "api",
-        f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
-        "--jq",
-        '[.check_runs[] | select(.name | startswith("test-linux")) | .conclusion]',
-    )
-    if not out:
+    runs = shard_verdict(sha)
+    if not runs:
         return False
-    try:
-        conclusions = json.loads(out)
-    except ValueError:
-        return False
-    return bool(conclusions) and all(c == "success" for c in conclusions)
+    return all(r[0] == "success" for r in runs)
+
+
+def verdict_age_hours(sha: str) -> float | None:
+    """Hours since `sha`'s shard verdict finished, or `None` if unknowable.
+
+    The *newest* `completed_at` across the matrix: the verdict is not in until
+    the last shard reports, so the matrix is as old as its slowest member, not
+    its fastest.
+    """
+    runs = shard_verdict(sha)
+    if not runs or not all(r[0] == "success" for r in runs):
+        return None
+    stamps = []
+    for _conclusion, completed in runs:
+        if not completed:
+            continue
+        try:
+            stamps.append(datetime.fromisoformat(str(completed)))
+        except ValueError:
+            continue
+    if not stamps:
+        return None
+    newest = max(stamps)
+    if newest.tzinfo is None:
+        newest = newest.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - newest).total_seconds() / 3600.0
 
 
 def main(argv: list[str]) -> int:
     start = "HEAD"
     limit = DEFAULT_LIMIT
+    age_mode = "--age-hours" in argv
     for i, arg in enumerate(argv):
         if arg == "--start" and i + 1 < len(argv):
             start = argv[i + 1]
         elif arg == "--limit" and i + 1 < len(argv):
             limit = int(argv[i + 1])
     for sha in first_parent_shas(start, limit):
-        if has_shard_verdict(sha):
+        if not has_shard_verdict(sha):
+            continue
+        if not age_mode:
             print(sha)
             return 0
+        age = verdict_age_hours(sha)
+        # A gated sha whose timestamps are unreadable stops the walk rather
+        # than falling through to an older one: the answer is "the newest
+        # verdict's age is unknown", not "the newest KNOWABLE verdict is
+        # older than it is", which would overstate the drift.
+        if age is not None:
+            print(f"{age:.1f}")
+        return 0
     return 0
 
 

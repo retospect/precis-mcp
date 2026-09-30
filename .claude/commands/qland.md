@@ -61,6 +61,14 @@ Optional ship message from the user: `$ARGUMENTS`
      failure printed above the `✖` and re-run `scripts/ship --quick`. Do not
      reach for `PRECIS_QLAND_LINT=0` to get past it; that override is for a
      broken toolchain, not a red check.
+   - **Main's last shard verdict is too old** — the burst has outrun its
+     verdicts: main's last all-green matrix is 48h+ behind (it warns from
+     24h). This is not your tree's problem to fix and re-running will not
+     clear it — what it wants is a `/go` over the integrated main, by you or
+     by whoever owns the burst. Say so and stop. `PRECIS_QLAND_DRIFT_OVERRIDE=1`
+     exists for the case where a `/go` is already running or the staleness is
+     known-benign; reaching for it because the refusal is inconvenient is how
+     main got 20-odd ungated commits in the first place.
    - **Merge conflict during sync** — resolve, `git add -A && git commit`,
      re-run `scripts/ship --quick`.
    - **CAS push rejected** — a sibling shipped first; just re-run.

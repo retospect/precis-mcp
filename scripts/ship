@@ -845,6 +845,33 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     fi
 
     if [[ "$QUICK" == 1 ]]; then
+        # Drift guard: the pre-qland lint below blocks on YOUR change, but it
+        # cannot see that main itself has outrun its verdicts. Reto 2026-09-30,
+        # "a day or two": warn at 24h since the last all-green shard matrix,
+        # refuse at 48h. Time rather than commits-behind on purpose — twenty
+        # docs commits in five minutes is not the risk three src commits over
+        # two days is.
+        #
+        # An unknown age NEVER refuses. `last-gated-main-sha --age-hours`
+        # prints nothing when it cannot tell (no gh, no auth, nothing gated
+        # in the window), and treating that as "too old" would let a GitHub
+        # outage stop every tree in the fleet from landing — strictly worse
+        # than the ungated main this is guarding against.
+        drift_warn="${PRECIS_QLAND_DRIFT_WARN_HOURS:-24}"
+        drift_refuse="${PRECIS_QLAND_DRIFT_REFUSE_HOURS:-48}"
+        drift_age="$(scripts/last-gated-main-sha --age-hours --start origin/main 2>/dev/null || true)"
+        if [[ -z "$drift_age" ]]; then
+            say "main's last shard verdict: age unknown — not gating on it (drift guard only ever refuses on a number it actually has)"
+        elif awk "BEGIN{exit !($drift_age >= $drift_refuse)}"; then
+            if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
+                say "main's last shard verdict is ${drift_age}h old (>= ${drift_refuse}h) — REFUSAL OVERRIDDEN by PRECIS_QLAND_DRIFT_OVERRIDE=1"
+            else
+                die "main's last all-green shard matrix is ${drift_age}h old (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a /go (full gate + deploy) over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1."
+            fi
+        elif awk "BEGIN{exit !($drift_age >= $drift_warn)}"; then
+            say "⚠ main's last shard verdict is ${drift_age}h old (warn at ${drift_warn}h, refuse at ${drift_refuse}h) — a /go is due"
+        fi
+
         # Pre-qland lint: ruff + mypy + import contracts, NO pytest. /qland
         # exists so a burst of trees doesn't each pay the pytest suite, and
         # that trade stands — but the failures that actually cost hours are
