@@ -1,3 +1,9 @@
+---
+status: idea
+pillar: 3d-design
+title: se tool access — model a ratchet sector / L-key swept volume instead of a full turn
+---
+
 # se: ratchet-sector and L-key tool access — the swept volume a handle does not need
 
 `src/precis_se/toolaccess.py` models one tool as the swept volume of a
