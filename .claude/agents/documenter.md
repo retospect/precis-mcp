@@ -1,7 +1,7 @@
 ---
 name: documenter
 description: "Sonnet doc-sync writer — syncs docs/skills to a code change; not mission prose or architecture calls."
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__precis
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---
 

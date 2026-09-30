@@ -1,7 +1,7 @@
 ---
 name: dep-bumper
 description: "Sonnet dep-bump operator — applies via uv, runs impacted tests; won't fix breaking API changes."
-tools: Bash, Read, Grep, Edit, mcp__precis__precis
+tools: Bash, Read, Grep, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---
 

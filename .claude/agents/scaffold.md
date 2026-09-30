@@ -1,7 +1,7 @@
 ---
 name: scaffold
 description: "Cheap agent — mints a new migration/skill file, or a SPECCED backlog item from TEMPLATE.md, from convention; never invents content. Not for filing findings — use gripe-filer."
-tools: Read, Glob, Bash, Write, Edit, mcp__precis__precis
+tools: Read, Glob, Bash, Write, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: haiku
 ---
 

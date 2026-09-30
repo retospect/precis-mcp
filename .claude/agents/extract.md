@@ -1,7 +1,7 @@
 ---
 name: extract
 description: "Cheap read-only agent — pulls facts/lists from files without judgment; never edits or analyzes. Verbatim gathering only — if the answer needs explaining, use navigator."
-tools: Read, Grep, Glob, Bash, mcp__precis__precis
+tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: haiku
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: test-runner
 description: "Cheap agent — runs scripts/test with given args, reports pass/fail + failing ids."
-tools: Bash, Read, mcp__precis__precis
+tools: Bash, Read, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: haiku
 ---
 

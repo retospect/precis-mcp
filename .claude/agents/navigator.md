@@ -1,7 +1,7 @@
 ---
 name: navigator
 description: "Read-only orientation specialist for this repo's code (not the product) — answers where/how, cites file:line."
-tools: Read, Grep, Glob, Bash, mcp__claude-context__search_code, mcp__precis__precis
+tools: Read, Grep, Glob, Bash, mcp__claude-context__search_code, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: haiku
 ---
 

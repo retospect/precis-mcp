@@ -1,7 +1,7 @@
 ---
 name: issue-closer
 description: "Sonnet post-ship closer — closes only items a shipped commit visibly fixes; leaves uncertain open."
-tools: Bash, Read, Grep, Edit, mcp__precis__precis
+tools: Bash, Read, Grep, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__more, mcp__precis__put, mcp__precis__tag
 model: sonnet
 ---
 

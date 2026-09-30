@@ -1,7 +1,7 @@
 ---
 name: test-author
 description: "Sonnet test writer — writes tests from a caller spec (contract or repro), confirms they run."
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__precis
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---
 
