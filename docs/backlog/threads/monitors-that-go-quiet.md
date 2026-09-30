@@ -59,21 +59,6 @@ gr346534, soft-deleted)
    deliberately retired kind, env-gated kinds). Net-negative for this
    thread's own "unremarkable doctor report" goal until fixed.
 
-6. **Confirm the fix_gripe skip path on prod, once** — one read, not a build.
-   Last despite being the cheapest item here: the lane is inert, so nothing is
-   costing anything while this stays unobserved.
-   The pre-flight's decisive predicate (no credential on the worker's fix repo,
-   `git push --dry-run` → exit 128) is confirmed on the real host; the
-   end-to-end path is not. No fix_gripe job had run since the deploy at the
-   time of writing (the newest were pre-deploy), so nothing has yet produced
-   the expected `skipped` outcome with "cannot publish a branch to…" in its
-   text. `backlog_groom`'s refresh throttle should mint one within ~6h of any
-   host running the deployed sha. Until an actual run shows it, the lane's
-   *inertness* is verified by code reading only. If the first run instead comes
-   back `failed`, that is a different bug and wants its own gripe — `skipped`
-   is the contract, because an infrastructure gap must not spend a gripe's
-   retry budget.
-
 ## Horizon
 
 1. **A guard on whether an ephemeral identity may claim jobs at all** —
@@ -116,6 +101,16 @@ gr346534, soft-deleted)
 
 ## No action needed
 
+- **the fix_gripe skip path** — observed on prod 2026-09-30, so the lane's
+  inertness is no longer a code-reading claim. Four real runs
+  (job:458512, 458575, 458576, 458577) each ended in 0.9s on melchior running
+  `8.35.1@824a2734` with the exact refusal the preflight is for
+  (`could not read Username for 'https://github.com': terminal prompts
+  disabled`), no agent spawned. The budget half holds too, and by construction
+  rather than luck: the outcome lands as job status `cancelled`, and
+  `sweeper.py` excludes the cancelled case from `bubble_job_failure`, so no
+  failure bubble reaches the parent — td458571 is still `STATUS:open`, not
+  parked. Nothing here to do.
 - **gr458317** — fixed 2026-09-30, pending close. `precis tools` sent an
   `[error:…]` refusal to stdout at exit 0; it now goes to stderr at exit 3,
   kept distinct from 1 (the CLI crashed) so a caller can tell "the verb said
