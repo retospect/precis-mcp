@@ -50,6 +50,18 @@ Two independent observations, both current:
    first step now, and the reproducer is "apply the `routing_area` WIP",
    not "run the suite".
 
+   **Re-verified 2026-09-30 on top of `realize.pad_board_wh`**, after the
+   occupancy grid and the gerber/DRC model were made to agree about a
+   synthesized rect pad's board-space orientation. With `routing_area`
+   reverted the dogfood file is `8 passed`; with it applied the `F.Cu`
+   escape assertion still fails. That eliminates pad geometry as the
+   cause — the divergence transposed 45 pads on the esp32c3 board and was
+   the obvious suspect for anything measuring escape layers — and leaves
+   the failure attributable to the term's placement, which is the question
+   Acceptance asks. The same fix removed the other thing held against the
+   term: `tests/test_pcb_reference_end_to_end.py` is now 5 passed at every
+   seed WITH `routing_area` applied.
+
 This correction downgrades the item. Observation 1 (the stale stored class
 on `pb345846`) is real but is the already-tracked "`op='route'` never
 re-runs the generator" staleness, owned by

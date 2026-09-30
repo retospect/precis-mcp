@@ -58,7 +58,12 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 
 ## Horizon
 
-1. **routing_area cost term** (uncommitted, in this thread's worktree) —
+1. **routing_area cost term** (held on the local branch
+   `wip/routing-area`, not on `main` — it was set aside and restored four
+   times across 2026-09-30's ships, and a `/tmp` patch as its only copy is
+   how that work gets lost; restore it with `git checkout wip/routing-area
+   -- src/precis/pcb/cost.py src/precis/pcb/optimize.py
+   tests/test_pcb_optimize.py`) —
    prices the board area a strand sweeps; the only thing holding the sink
    under the array. Waits on its own gate; a placer that needs no pinned
    sink. **The esp32c3 regression is GONE** — it was the pad-orientation
