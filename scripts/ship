@@ -28,7 +28,7 @@
 #                             pointer gate instead). Red gate aborts (never red).
 #                             --impacted (/land) narrows pytest to testmon's
 #                             affected-tests set; full suite otherwise (/go);
-#                             --quick (/qland) skips the gate entirely.
+#                             --quick (/qland) skips pytest (ruff+mypy still run).
 #                    · ship   squash `commit-tree` onto origin/main + a
 #                             `--force-with-lease` CAS push. If main advanced
 #                             during the gate (ancestor check) or the lease is
@@ -59,10 +59,10 @@
 #                                        # deploy pin is always written (also via
 #                                        # PRECIS_SHIP_FULL=1). Local gate only —
 #                                        # GitHub picks its own lane.
-#         scripts/ship --quick "…"      # /qland: NO gate at all — commit → sync →
-#                                        # squash-merge only (also via
+#         scripts/ship --quick "…"      # /qland: NO pytest — commit → sync →
+#                                        # ruff+mypy → squash-merge (also via
 #                                        # PRECIS_SHIP_QUICK=1). For burst-landing
-#                                        # many worktrees; main is unvalidated until
+#                                        # many worktrees; the suite is deferred to
 #                                        # the next full gate (/go or bare ship).
 #         scripts/ship --remote "…"     # /land: the gate runs on GITHUB, not here —
 #                                        # push the synced branch to ci/<branch>,
@@ -111,12 +111,17 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # sqlite, so a follow-up scripts/mutate-diff can run each mutant against just
 # its covering tests. /go opts in; meaningless with --impacted (no coverage
 # runs there).
-# --quick (/qland): skip the gate ENTIRELY — no ruff/mypy/pytest, no gate
-# container, no gate slot. Everything else (ship lock, sync/merge, squash CAS
+# --quick (/qland): skip PYTEST and the diff-coverage gate. ruff + mypy +
+# import contracts still run — the pre-qland lint, ~3 min in the warm gate
+# container, no test DB and no fleet gate slot, so it does not queue behind a
+# sibling's suite. They run because their failures are not this ship's problem
+# but the NEXT tree's: a burst that qlands ruff-format drift or a mypy error
+# reddens every gate downstream of it, which is what actually cost hours on
+# 2026-09-25 (backlog/main-stays-gated.md). PRECIS_QLAND_LINT=0 is the
+# deliberate escape. Everything else (ship lock, sync/merge, squash CAS
 # push, branch reset, local-main ff) runs unchanged, so the merge machinery
-# stays race-safe; only validation is deferred. Use for burst-landing many
-# in-flight worktrees, then run ONE full-gate integration (/go) over the
-# merged main.
+# stays race-safe. Use for burst-landing many in-flight worktrees, then run
+# ONE full-gate integration (/go) over the merged main.
 # Flags accepted in any order.
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
 QUICK="${PRECIS_SHIP_QUICK:-0}"
@@ -412,12 +417,16 @@ compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE"
 # Falls back to whatever PRECIS_TEST_PG_URL the container already carries (the
 # host DB) if the service can't start, so a broken test-db never blocks a ship.
 TEST_DB_ENV=()
-say "starting co-located tmpfs test DB (precis-test-db)"
-if compose up -d --wait precis-test-db >/dev/null 2>&1; then
-    TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
-    echo "gate DB → precis-test-db (RAM, co-located)"
-else
-    echo "WARNING: precis-test-db didn't start — gate falls back to the host DB"
+# The test DB exists for pytest. --quick runs ruff+mypy only (the pre-qland
+# lint below), so starting a RAM-backed pgvector for it is pure waste.
+if [[ "$QUICK" != 1 ]]; then
+    say "starting co-located tmpfs test DB (precis-test-db)"
+    if compose up -d --wait precis-test-db >/dev/null 2>&1; then
+        TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
+        echo "gate DB → precis-test-db (RAM, co-located)"
+    else
+        echo "WARNING: precis-test-db didn't start — gate falls back to the host DB"
+    fi
 fi
 
 # Warm, native-FS gate. Prefer a long-lived precis-gate container (see the
@@ -440,7 +449,7 @@ fi
 }  # end setup_gate_infra
 
 if [[ "$QUICK" == 1 ]]; then
-    say "quick ship (--quick) — gate SKIPPED: no ruff/mypy/pytest, no gate containers"
+    say "quick ship (--quick) — no pytest, no gate slot; ruff+mypy still run (pre-qland lint, below)"
 elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
     # Pure remote gate: no local containers on the quiet path — GitHub's
     # matrix is the gate. The hybrid race fallback calls setup_gate_infra
@@ -544,7 +553,11 @@ coverage_from_container() {
 run_gate() {
     # Hold a fleet-wide gate slot for exactly the heavyweight part (gr202193);
     # released on every path below so a red gate's `die` doesn't keep it.
-    gate_slot_acquire
+    # NOT taken for --quick: that path runs ruff+mypy without pytest, which is
+    # neither the RAM pressure the 2-slot semaphore guards nor worth queueing
+    # behind someone's 2h suite — queueing is the exact congestion /qland
+    # exists to avoid. gate_slot_release is a no-op when no slot is held.
+    [[ "$QUICK" == 1 ]] || gate_slot_acquire
     local rc=0
     if [[ "$GATE_MODE" == warm ]]; then
         if ! sync_to_container; then
@@ -828,7 +841,35 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     fi
 
     if [[ "$QUICK" == 1 ]]; then
-        say "quick ship — gate skipped (validation deferred to the next full gate: /go or bare scripts/ship)"
+        # Pre-qland lint: ruff + mypy + import contracts, NO pytest. /qland
+        # exists so a burst of trees doesn't each pay the pytest suite, and
+        # that trade stands — but the failures that actually cost hours are
+        # not test failures. On 2026-09-25 a burst left main red four
+        # independent ways at once (ruff-format drift in 3 files, two mypy
+        # error clusters, one stale characterization test); every one but the
+        # last is caught here, in ~3 min against the warm container, with no
+        # pytest and no fleet gate slot. The cost of missing them is not this
+        # ship: it is that the NEXT tree's gate is red for a reason its author
+        # did not write (backlog/main-stays-gated.md).
+        #
+        # Still deliberately deferred to the settle-up /go: anything only
+        # pytest sees. That is what /qland is for.
+        if [[ "$DOCS_ONLY" == 1 ]]; then
+            say "quick ship — docs/config-only diff, nothing for ruff/mypy to read"
+        elif [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
+            say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
+        else
+            setup_gate_infra
+            say "pre-qland lint (ruff autofix · mypy · import contracts) — ${GATE_MODE} gate, no pytest, no gate slot"
+            run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run lint-imports" \
+                || die "pre-qland lint is RED — not shipping. This is the class of failure that reddens the NEXT tree's gate, so it does not get deferred (deliberate override: PRECIS_QLAND_LINT=0). Fix it and re-run scripts/ship --quick."
+            if [[ -n "$(git status --porcelain)" ]]; then
+                git add -A
+                git commit -q --amend --no-edit
+                say "amended ruff auto-fixes into the branch"
+            fi
+        fi
+        say "quick ship — pytest deferred to the next full gate (/go or bare scripts/ship)"
     elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 && "$REMOTE_FALLBACK" != 1 ]]; then
         say "remote ship — no local gate; the GitHub matrix below is the gate"
     else

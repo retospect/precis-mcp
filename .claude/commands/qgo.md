@@ -51,14 +51,15 @@ Optional ship message from the user: `$ARGUMENTS`
 2. **Decide the message.** Use `$ARGUMENTS` if non-empty; otherwise write a
    concise conventional-commit one-liner for what this branch changes.
 
-3. **Merge, ungated.**
+3. **Merge, untested.**
    ```
    scripts/ship --quick "<message>"
    ```
-   Commit WIP → ship-lock → sync → squash-merge → CAS push. No ruff, no mypy,
-   no pytest. Failures here are merge machinery only: conflict → resolve,
-   `git add -A && git commit`, re-run; CAS rejected → a sibling shipped first,
-   just re-run.
+   Commit WIP → ship-lock → sync → pre-qland lint (ruff autofix · mypy ·
+   import contracts; no test DB, no gate slot) → squash-merge → CAS push. No
+   pytest. Failures: the pre-qland lint is blocking — fix what it prints and
+   re-run. The rest is merge machinery only: conflict → resolve, add + commit,
+   re-run; CAS rejected → a sibling shipped first, just re-run.
 
 4. **Deploy that exact sha.** Read it back rather than assuming:
    ```
@@ -95,7 +96,7 @@ Optional ship message from the user: `$ARGUMENTS`
    `git rev-parse origin/main`, don't assume):
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
-   Gated:           ✗ NOT gated — /qgo deployed ungated code; <repair gate started | repair gate skipped, slots busy>
+   Gated:           ✗ NOT tested — ruff+mypy passed, /qgo deployed untested code; <repair gate started | repair gate skipped, slots busy>
    Deployed:        ✓ cluster running <sha>   (or ✗ — deploy failed above)
    ```
    The middle line is the point of the command: never render it as a ✓.

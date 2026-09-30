@@ -30,8 +30,10 @@ covered by check.yml's unfiltered 6 shards on every push, `--slow` /
 **gated sha** (`--pinned`, never bare —
 bare re-resolves `main` and can ship an ungated sibling qland), plus a
 budgeted advisory mutation pass
-(`scripts/mutate-diff`). **`/qland`** = ungated burst-land
-(`scripts/ship --quick`: commit WIP → sync → squash-merge, NO gate) for when
+(`scripts/mutate-diff`). **`/qland`** = pytest-ungated burst-land
+(`scripts/ship --quick`: commit WIP → sync → **pre-qland lint** (ruff · mypy ·
+import contracts — no pytest, no gate slot, ~3 min; `PRECIS_QLAND_LINT=0` to
+skip) → squash-merge) for when
 many trees are in flight — qland them one by one, then one
 `/go` gates the integrated `main` + deploys (ship skips the push when the
 tree already equals main). **`/qgo`** = the fast dev cycle: qland + deploy

@@ -1,44 +1,43 @@
 # monitors that go quiet
 
 **Status:** ends when main always has a verdict and every fleet alert is
-addressable by failure id and host identity, so silence means healthy. Two
-halves landed 2026-09-30: main-ci-status no longer announces either verdict
-off a cached listing, and a main push is now gated against the delta since
-the last sha with a real shard verdict, so a cancelled run in a qland burst
-no longer leaves src the docs lane waves through. Today qland itself is still
-the unguarded path, and two fleet signals lie by omission: a host-liveness
-detector whose evidence window empties itself, and a worker host no detector
-can see.
+addressable by failure id and host identity, so silence means healthy. The
+main-verdict half is done as of 2026-09-30: main-ci-status no longer announces
+either conclusion off a cached listing, a main push is gated against the delta
+since the last sha with a real shard verdict, and qland runs ruff+mypy before
+it merges. What remains is the two fleet signals that lie by omission — a
+host-liveness detector whose evidence window empties itself, and a worker host
+no detector can see — plus one held decision on how far behind its verdict
+main may drift before a qland is refused.
 **Last reviewed:** 2026-09-30
 **Worktree:** `monitors-that-go-quiet`
 
 ## Do next
 
-1. **backlog/main-stays-gated.md** — down to one section: `scripts/ship
-   --quick` should run ruff + mypy (~3 min, no pytest, no gate slot) before
-   the squash-merge. Every one of the four failures that held main red for
-   ~6h on 2026-09-25 was in that class, and two sessions diagnosed them
-   independently. First because it is the only item here with observed,
-   repeating cost, and because it is what makes the lane fix that landed
-   today unnecessary rather than load-bearing.
-2. **backlog/host-dark-ages-out-with-worker-logs-retention.md** — the
+1. **backlog/host-dark-ages-out-with-worker-logs-retention.md** — the
    host-dark lookback equals worker_logs retention, so a host dark longer
    than retention becomes permanently invisible: the alert ages out because
    the evidence was deleted. Prevents a broken host reading as
    decommissioned. Latent, no incident, hence below an observed failure.
-3. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — an
+2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — an
    unnamed container host wrote 211K rows 2026-08-30 → 09-09 then went
    silent, invisible to host-dark by two deliberate exclusions (gr306275,
-   gr331348). Last because it is an investigation (attributability), not a
-   defect; nothing can be specced until answered.
+   gr331348). Below the detector defect because it is an investigation
+   (attributability), not a defect; nothing can be specced until answered.
+3. **backlog/main-stays-gated.md** — down to one follow-on and it is a
+   question, not a task: how far behind its last shard verdict main may drift
+   before `scripts/ship --quick` refuses rather than warns. Refusing too eagerly
+   strands trees behind an unclaimed red; warning is what main already does and
+   what let it reach 20-odd ungated commits. Last because the code is a few
+   lines and the decision is Reto's — see the item for both directions.
 
 ## Horizon
 
 1. **backlog/alert-failure-id-registry.md** — status ready; stable failure
    ids make "did host-dark fire, for which host" addressable instead of SQL
-   archaeology. Leverage over Do-next 2–3 and shippable now.
+   archaeology. Leverage over Do-next 1–2 and shippable now.
 2. **backlog/self-healing-spine.md** — Layer 1 owns worker identity, Layer 2
-   the condition registry; Do-next 2 and 3 exist because a host has no
+   the condition registry; Do-next 1 and 2 exist because a host has no
    durable identity separating "ephemeral by design" from "vanished", so
    attributability-by-container is a slice here. Last: largest, no
    independently shippable piece touching this thread.
@@ -59,3 +58,8 @@ can see.
   `scripts/last-gated-main-sha` + check.yml's main-push range. The range can
   only widen, so the failure direction is over-gating; a lookup that cannot
   answer gates fully.
+- **qland as the gate bypass** — closed 2026-09-30: `scripts/ship --quick`
+  runs ruff + mypy + import contracts before the squash-merge (no pytest, no
+  test DB, no fleet gate slot), and the qland skill now says to run the tests
+  you added. CLAUDE.md, the qland skill and the qgo skill were all telling
+  agents qland ran nothing, so they changed in the same commit.
