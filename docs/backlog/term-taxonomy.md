@@ -277,6 +277,30 @@ Net new work from the handoff, all recorded above: in-scope 1 gains
 rows joined the decisions log. Everything else in the handoff either
 already exists or was rejected here before it arrived.
 
+## Design-notes handoff (2026-09-30) — reconciliation
+
+Reto's "sourced knowledge graphs for materials, molecules and papers"
+design notes (developed with another assistant) were transferred at the
+2026-09-30 product-plan review. Read against this item,
+`measures-substrate.md` and `knowledge-mesh.md`, they are this graph plus
+four additions, which now live in `class-lattice-similarity-spaces-and-laws.md`
+(blocked-by this item). The notes' copy in that assistant's memory is
+retired; this table and that item are the record.
+
+| design note | exists | ruling |
+|---|---|---|
+| `hierarchy_edge` strict is-a, one hierarchy per slot type (species, materials, process types, roles, measurand types, reaction types) | `specialises` with `meta.axis`; in-scope 7 (axis as taxon) | same; the hierarchy name *is* the axis. Widening never crosses an axis. |
+| `closure` table, rebuilt by recursive CTE, versioned | rejected above (recursive CTE at 10²–10³ nodes) | stays rejected; the revisit trigger stands. |
+| `node_ic` information content for Resnik similarity | nothing | new — `class-lattice-…` §2. |
+| `class` = defined / primitive / facet value with canonical `constraint_set` + `constraint_hash`; `membership` yes/no/unknown; `pooled_estimate` | primitive nodes only | **new, decided 2026-09-30 (Reto): v2 of this item**, shared by scenario classes and se pocket specs — `class-lattice-…` §1. |
+| `relation(subj, predicate, obj, source, confidence, qualifiers)` for paper-extracted classification claims, separate from the curated backbone | `links` + `finding` rows + `instance-of` (in-scope 1) | no separate table; an extracted classification is an `instance-of` link whose evidence is a finding hub, same as any claim. |
+| `predicate` registry with symmetric/transitive/inverse_of/domain/range | `relations` registry (`store/types.py`), inverse pairs seeded | same; domain/range = the taxon-endpoint rule (AC 3). |
+| `scenario` + `participation` roles; electrolyte composition-first | `experiment` kind + input measures (`measures-substrate.md` §3); no participant roles | roles are new — `class-lattice-…` §3. |
+| `measurement` five-axis tuple (dimension, measurand, subject, qualifiers, method), `origin` reported/refit/derived/imputed, `measurement_arg` | `measures` (`measures-substrate.md`), `tier`, `conditions` | same record; `origin` maps onto `tier` (decisions log there); `measurement_arg` = the `subject_selector` column `se-region-property-layer.md` adds. |
+| `curve` / `fit` / `law`, refit over copy, rankings in comparability buckets | nothing | new — `class-lattice-…` §4. |
+| per-axis similarity, one vector per (entity, named space), overlap count always returned | one embedding per chunk | new — `class-lattice-…` §2. |
+| materials/molecules: prototype + occupancy, scaffold + substituents, MMP transforms, substitution tiers, reaction rules, routes | `structure`, `rxn`, `route` kinds; retrosynthesis shipped dark (`chem-tools-integration.md`) | `materials-molecular-substitution-db.md` (idea); its join to the paper graph is parked there. |
+
 ## Open questions / decisions log
 
 - **[decided 2026-09-28, Reto]** Ships before `measures-substrate.md`,

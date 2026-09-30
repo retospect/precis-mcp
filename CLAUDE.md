@@ -61,7 +61,8 @@ delete what shipped, insert what you filed at its rank (README there).
 `docs/codebase.md` (shape, lifecycle, seams) → the owning package's
 `__init__.py` docstring. Runtime kinds/affordances: skills `precis-overview`,
 `precis-toolpath-help`. Coined terms: `docs/glossary.md`. Planned work:
-`docs/backlog/` (open items only, delete-on-ship). Dated history: `git log`
+`docs/backlog/` (open items only, delete-on-ship); pillars + the active
+thread set: `docs/roadmap.md`. Dated history: `git log`
 (no CHANGELOG). Schema: `docs/reference/schema.md` (generated). Mission:
 `docs/mission.md`. Replicate this setup: `docs/how-to-setup-like-this.md`.
 Install/run the product: `docs/setup-single-machine.md` · cluster:

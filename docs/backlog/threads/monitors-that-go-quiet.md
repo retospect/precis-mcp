@@ -18,7 +18,9 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (pillar review same day added four orphan
+gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
+gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
 
 ## Do next
@@ -43,6 +45,19 @@ thread and is flagged on the Horizon for an owner.
    took them), so what is left is the monitor. Second: it is the only open
    code work here that is mine to start, but nothing is specced yet and the
    thing it would watch is not currently costing anything.
+3. **gr458459** — backlog-lint has told every session in the fleet to
+   delete open specs for at least two days and the count is growing 2→5;
+   4 of 5 current hits are false and the tool's own footer says so without
+   gating the advice. An advisory with this a false-positive rate trains
+   the fleet to ignore the channel the one genuine hit arrives on.
+4. **gr452203** — doctor asks never dedup: 161 open `waiting-for:reto`
+   todos, 161 unique keys, `seen_count=1` on every one, because the dedup
+   key hashes the model's re-authored prose instead of the referenced
+   gripe/alert handle. Rebuilds at ~20 rows/day without a fix.
+5. **gr452084** — the nursery kind-shrinkage detector fired 12 critical
+   alerts on its first pass and 0 were real (stale-boot comparisons, a
+   deliberately retired kind, env-gated kinds). Net-negative for this
+   thread's own "unremarkable doctor report" goal until fixed.
 
 ## Horizon
 
@@ -62,10 +77,22 @@ thread and is flagged on the Horizon for an owner.
    durable identity separating "ephemeral by design" from "vanished", so
    attributability-by-container is a slice here. Last: largest, no
    independently shippable piece touching this thread.
+4. **gr415963** — discuss: unify `/alerts`, `/gripes` and `/needs-you`
+   into one triage surface (view-only merge, or leave as three). A design
+   question, not a defect; no urgency driving it.
 
 ## Parked
 
-- (none)
+- **the fix_gripe self-repair lane** (**gr454480**, **gr458326**,
+  **gr452384**, **gr456240**) — failing at every stage: a clean exit with
+  no commits counted as a failure, "pushed to origin" claimed and never
+  verified (43 branches stranded on the worker node, never reaching
+  origin), a hard `max_turns=20` ceiling with no escalation on complex
+  fixes, and infra-class failures (API rate limits, container
+  unavailability) consuming the same unpark-attempt budget as a real
+  failed fix. Reto ruled 2026-09-30 (Do-next 1 above): **leave it not
+  doing anything.** Unparks only on a future decision to re-enable the
+  lane.
 
 ## No action needed
 
@@ -82,8 +109,6 @@ thread and is flagged on the Horizon for an owner.
   runs on the green verdict too and prints even under `--for-hook`. Landed
   from the gripe's own diagnosis, not from the auto-fix lane's branch
   (`gripe_456236` was gone from origin by the time it was reviewed).
-- **gr346534** — the post-merge-run gripe gr456236 cites; soft-deleted, do
-  not chase.
 - **the cancelled-run verdict hole** — closed 2026-09-30 by
   `scripts/last-gated-main-sha` + check.yml's main-push range. The range can
   only widen, so the failure direction is over-gating; a lookup that cannot

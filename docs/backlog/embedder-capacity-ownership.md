@@ -1,0 +1,111 @@
+---
+status: draft
+title: Own aggregate embedder capacity across the sibling-container fleet
+prio: high
+---
+
+# Own aggregate embedder capacity
+
+Pillar: local-compute
+
+Evidence: peer sessions rustling-questing-wadler + nanobuds, 2026-09-30, and
+three gripes verified against current code/state this session.
+
+`gr457326` (open, most recent comment 2026-09-30 ~14:23Z): the shared
+session MCP's md-index vector warmup (`_warm_md_index_background`,
+`src/precis/server.py`) batches into `embed_missing(batch_size=)`
+(landed, qland `3ce020ed`) with bounded retry — a real fix for the
+all-or-nothing-batch failure mode. But the dogfood after landing found the
+deeper cause unaddressed: **twelve `precis-mcp-*` containers (one
+`precis-mcp-http` plus eleven `precis-mcp-dev-*`) boot-warm the *same*
+20,137-block tree against *one* embedder** (`host.docker.internal:8181`,
+`max_inflight=4`). In the observed window, not one batch landed in 1h36m of
+retrying — 429s clearing in 0.6s repeatedly, contention, not an outage.
+
+`gr450123` (open; Reto's ruling 2026-09-28 implemented (b) bounded wait
+queue + (d) `retry_after_s` propagation, landed `943aba15`) diagnosed the
+same root shape from the request-path side: `embedder_interactive_max_concurrency`
+bounds one process's in-flight embeds, `max_inflight` is a single *global*
+gate, and nothing coordinates N sibling containers against it. Host-level
+admission (option (a) in that gripe) was **explicitly deferred** — "until
+(b) proves insufficient." `gr457326`'s dogfood is evidence (b) alone does
+not cover the boot-warm-storm case, since that traffic isn't the
+interactive request path (b) targets.
+
+`gr456034` (open): a separate, related capacity symptom — `embed_batch`
+jobs mint correctly but go unclaimed for hours (`live_jobs=0` the dominant
+state), a `job_inproc` executor-capacity question, not the embedder
+service itself. Filed here as adjacent evidence that "embedding capacity"
+has more than one bottleneck in the current architecture.
+
+## Motivation / why
+
+Nobody owns *aggregate* embedder capacity across the fleet. Each fix so far
+(batching, wait queue, retry-after) improved one caller's behavior against
+a shared, uncoordinated resource — the fleet-wide picture (N containers,
+one embedder, no shared cache) is still nobody's job. Local LLM rungs
+(`local-rungs-small-medium.md`) landing on the same box would add a second
+contender for the same host capacity with the same absent ownership.
+
+## In scope
+
+- **Name an owner** — a component/role responsible for the embedder's
+  aggregate capacity across all sibling containers, not per-process
+  bulkheads that don't know about each other.
+- **A capacity number** — what the embedder can actually sustain
+  fleet-wide (`max_inflight` today is one process's view; the real ceiling
+  under N containers is unmeasured).
+- **A budget/bulkhead decision** — whether a host-level admission token
+  (gr450123's deferred option (a)) is now warranted, given (b) alone
+  didn't survive the twelve-container boot-warm case.
+- **The shared-cache decision** (Reto's call, per the brief) — whether the
+  twelve containers should share one vector cache instead of each
+  independently computing the same 20,137 blocks' embeddings, and if so,
+  the multi-writer correctness question on the `.npz` cache file
+  (`/home/precis/.cache/precis/md-vectors/bge-m3-1024.npz` per `gr457326`'s
+  comment 5) that sharing would raise.
+
+## Explicitly NOT in scope
+
+- Re-fixing what `gr450123`/`gr457326` already landed (batching, wait
+  queue, retry-after) — this item is the fleet-wide layer above those
+  per-call fixes.
+- `gr456034`'s `job_inproc` claim-starvation problem — cited as adjacent
+  evidence, not this item's scope; it needs its own fix on its own timeline.
+
+## Acceptance criteria
+
+- A documented owner for aggregate embedder capacity exists (component,
+  not "the embedder team" — there is no team).
+- A measured fleet-wide capacity number exists, sourced from an actual
+  N-container load test, not the single-process `max_inflight` default.
+- The shared-cache question is decided (share or don't, with the
+  multi-writer correctness answer if shared) and, if "share," implemented;
+  if "don't," the boot-warm-storm cost is accepted explicitly rather than
+  left as a standing unmeasured tax.
+- `gr457326`'s dogfood scenario (twelve containers, cold boot, same tree)
+  re-run and shown to warm within a stated time bound.
+
+## Target + blast radius
+
+`src/precis/embedder_service.py`, `src/precis/embedder.py`,
+`src/precis/md_index/vectors.py` (the warmup/cache machinery); the
+deploy-time container topology (how many sibling containers exist and
+whether that count itself should shrink is in scope for the owner to
+weigh in on, per `td458385`'s move-to-shared-HTTP-server direction, which
+already reduces N from twelve toward one for session MCPs specifically).
+
+## Open questions / decisions log
+
+- **Open, Reto's call**: shared vector cache across containers — yes/no,
+  and if yes, the multi-writer mechanism.
+- **Open, Reto's call**: whether a batch-timeout-with-bulkhead embedder
+  budget (host-level admission token, gr450123 option (a)) should now be
+  built, given (b) alone proved insufficient for the boot-warm case.
+- Note: `td458385` (session MCPs moving to the shared HTTP server) shrinks
+  the container count this item worries about, but does not eliminate the
+  underlying fleet-vs-one-embedder shape — dev containers and the shared
+  server both still boot-warm against the same embedder.
+
+Closest existing items: `embed-freshness.md`, `session-mcp-http-server.md`,
+`mcp-shared-server-multiprocess.md`, `gr457326`, `gr450123`, `gr456034`.

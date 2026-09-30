@@ -29,7 +29,8 @@ per-session stdio containers are retired rather than hardened and every
 session moves to this server (td458385), which makes wedge detection a
 prerequisite rather than a follow-up. Then the parent item's remaining
 criteria and the isolation gaps.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (pillar review same day added gr345270 and a
+server-side-session-context Horizon pointer)
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
@@ -162,6 +163,10 @@ criteria and the isolation gaps.
    2026-09-30, not yet wired; prerequisite for every future claim about
    pool headroom, because without it entry 5 cannot tell "pool starved"
    from "something else slow".
+7. **backlog/server-side-session-context.md** — owned by
+   graph-memory-consumers, not this thread; pointer only. Precondition
+   td458385 (sessions moving to this server) is this thread's own
+   Do-next 1.
 
 ## Parked
 
@@ -186,6 +191,10 @@ criteria and the isolation gaps.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.
+- **gr345270** — the dev-stdio launcher preflight runs `precis --help`
+  then `precis serve`, duplicating the import chain over the bind mount
+  (~2 s + 6 s unloaded). Moot once td458385 retires the per-session stdio
+  containers; close rather than fix if that lands first.
 
 ## No action needed
 

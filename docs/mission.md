@@ -78,6 +78,20 @@ bought; literature grounding runs inside the loop so the next probe is
 informed by what the field already measured. Bulk substrates (OC25,
 BEAST DB, Catalysis-Hub) are consumed, not imitated.
 
+## Memory is the graph (design principle)
+
+Précis keeps one memory: the graph. Papers, extracted numbers, notes,
+findings, experiment records, skills, the agents' own working memory and
+the repository's guidance to its coding agents all live in the same
+property graph, segregated by a tag axis, never by a second store. Text
+files are a staging format, not a home: when the graph serves a class of
+memory, the file version is retired, not kept in parallel. An agent that
+has to leave the graph — for a temp file, a raw SQL query, a copy in
+another assistant — has found a missing affordance, and that is a defect
+to file, not a workaround to keep. Navigation is one fisheye view, the
+same for an agent over MCP and for a person in the browser. The plan that
+carries this is `docs/roadmap.md`, pillar 1.
+
 ## Pull-quotes (slide-sized)
 
 - "An untiring research collaborator: it never sleeps and works from

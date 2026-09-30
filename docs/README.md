@@ -17,6 +17,7 @@ glossary terms, and prefer deleting to archiving — git is the history,
 | Cross-cutting invariants | `docs/conventions/` |
 | Controlled vocabulary | `docs/glossary.md` (hand-written) |
 | Work items (idea → ready) | `docs/backlog/` — one file per item |
+| Pillars, active threads, retirement rules | `docs/roadmap.md` — the layer above `docs/backlog/threads/` (pointers and intent only) |
 | Operational procedures | `docs/runbooks/` |
 | Generated reference (schema, config catalog) | `docs/reference/` |
 | **User**-facing how-to (not dev docs) | `src/precis_web/manual/*.md`, served at `/manual` — in the package because the wheel ships only `src/`, and a chapter must change in the same diff as the button it describes |

@@ -6,9 +6,38 @@ it in one place. Pointers only: a seam is a file or item two threads both
 touch, plus the sequencing rule; a wait is an item one thread ranks and
 another consumes. Update it at the same four moments as a thread file.
 
+## Pillars
+
+Four pillars sit above the programme layer, text in `docs/roadmap.md`.
+Each programme below serves one or more:
+
+- **memory-graph** — `knowledge` (term-taxonomy owns the substrate) +
+  `graph-memory-consumers` (dormant; owns consumers of that substrate).
+- **3d-design** — `pcb` + `se` + `multiscale-design-core` (dormant) +
+  `se-machine-design` (dormant) + `pcb-platform` (dormant).
+- **local-compute** — `serving` (owns the MCP ceiling and the fleet) +
+  `local-compute` (dormant; owns what the served capacity does).
+- **personal-integration** — HELD; no programme yet.
+- **platform** — `platform` (split, deploy, monitors); serves all four
+  indirectly (nothing ships without it).
+
+## Active / dormant
+
+**Active** (has a session): `ewod-pcb` · `hexfold-toolkit` ·
+`monitors-that-go-quiet` · `nanobuds-paper` · `pcb-easyeda-round-trip` ·
+`plugin-split` · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain` ·
+`serving-programme` · `session-mcp-shared-server` · `term-taxonomy`.
+
+**Dormant** (file exists, ranked, no session — opens at the next session
+restart if Reto names it): `graph-memory-consumers` ·
+`multiscale-design-core` · `se-machine-design` · `local-compute` ·
+`pcb-platform`.
+
 ## pcb — design, route, fabricate, order
 
-Threads: `ewod-pcb.md` · `pcb-easyeda-round-trip.md`
+Threads: `ewod-pcb.md` · `pcb-easyeda-round-trip.md` · `pcb-platform.md`
+(dormant, sequenced behind the other two on the generator/DRC files — see
+seam below)
 
 Seams (same files, different work — sequence, never merge):
 - `src/precis/pcb/generators.py`, `drc.py`, `realize.py`/`maze.py` —
@@ -21,15 +50,17 @@ Seams (same files, different work — sequence, never merge):
   half now, ewod owns the HV vocabulary on its Horizon.
 
 Waits:
-- easyeda Do-next 1 (gr457053 rebase) and its whole tree wait on Reto
-  allowing the ship; three of its pointers are forward-looking until then.
 - ewod Horizon 8 (`backlog/ewod-synthesis-protocol.md`) consumes
   se-nucleic-chain's make_steps (shipped 2026-09-30; the chain thread's
   Horizon 2 points back at it).
+- pcb-platform (dormant) is behind both active pcb threads on the shared
+  generator/DRC/realizer files by the same seam rule above; it does not
+  reorder either.
 
-## se — 3D modelling, chains, hexfold
+## se — 3D modelling, chains, hexfold, machine design
 
-Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md`
+Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md` ·
+`se-machine-design.md` (dormant) · `multiscale-design-core.md` (dormant)
 
 Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
@@ -39,6 +70,16 @@ Seams:
   (gr458061; gr457995 refuted, there is no join-side bug) renders in the
   viewer as a wrong picture; hexfold's `composite_part_stolen` validate
   check now reports it, so the viewer's interest is unchanged, only the cause.
+- se-machine-design (dormant) owns the design model, including the
+  non-geometric property layer (hydrophobic, charge, field, optical);
+  se-3d-viewer owns rendering whatever that model carries. Model vs
+  render, not a rank duplication.
+- se-machine-design also owns `backlog/pcb-se-binding.md` and
+  `backlog/pcb-argue-with-design.md` — the mm→m crossing between se and
+  pcb — not ewod-pcb or pcb-platform.
+- multiscale-design-core (dormant) is the substrate se-machine-design's
+  model stands on (design-state-core, pattern groups, complementarity);
+  se-machine-design consumes it rather than re-deriving it.
 
 Waits:
 - viewer Horizon 3–4 (reaction forces, mechanical DRC phase 2) feed
@@ -50,7 +91,8 @@ Waits:
 
 ## serving — the MCP and the fleet's model serving
 
-Threads: `session-mcp-shared-server.md` · `serving-programme.md`
+Threads: `session-mcp-shared-server.md` · `serving-programme.md` ·
+`local-compute.md` (dormant)
 
 Seams:
 - `backlog/session-mcp-http-server.md` — ranked only in the shared-server
@@ -58,6 +100,11 @@ Seams:
 - `backlog/mcp-concurrency-load-test.md` and the K-parallel harness — the
   serving thread's py-spy answer (its Do-next 3) decides whether the
   shared-server's multiprocess item is topology or workaround.
+- served vs used — serving-programme owns the MCP ceiling, vLLM Slice 0
+  go/no-go and the eval-run-spine; local-compute owns what the served
+  capacity does once it exists (summarise, insert, mesh, link, categorise).
+  `backlog/embedder-capacity-ownership.md` (local-compute's) is fed by
+  serving-programme's py-spy/topology answers.
 
 Waits:
 - serving Horizon 2 (shared-server end state) waits on serving Horizon 1's
@@ -67,7 +114,8 @@ Waits:
 
 ## knowledge — taxonomy, quests, papers
 
-Threads: `term-taxonomy.md` · `roadmap-quest.md` · `nanobuds-paper.md`
+Threads: `term-taxonomy.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
+`graph-memory-consumers.md` (dormant)
 
 Seams:
 - `backlog/measures-substrate.md` — taxonomy Do-next 4; roadmap Horizon 4
@@ -76,12 +124,20 @@ Seams:
   its in-scope 2.
 - `backlog/curation-gate.md` — both park on it; owned by serving.
 - `backlog/fisheye-everywhere.md` — taxonomy Do-next 4; roadmap's
-  `view='tree'` and the se viewer thread both render through its ladder.
+  `view='tree'` and the se viewer thread both render through its ladder;
+  the browser focus page it adds is the human graph-browse surface
+  (docs/roadmap.md pillar 1).
 - `backlog/relation-constraints.md` — taxonomy Do-next 3; the quest
   `serves` cycle guard roadmap-quest lacks lands there.
-- `backlog/file-mirror.md` — taxonomy Do-next 6; the memory half of the
+- `backlog/file-mirror.md` — taxonomy Do-next 7; the memory half of the
   thread (context-memory-hierarchy, session-history-into-precis) is
   ranked in `term-taxonomy.md` from 2026-09-30.
+- substrate + memory half vs agent affordances — term-taxonomy ranks the
+  substrate (knowledge-mesh, measures-substrate, graph-gardener), the
+  memory half and the surfaces; `graph-memory-consumers.md` (dormant)
+  ranks draft-authoring affordances, the focus verb, capability discovery,
+  skill quality and source-code ingest. Do not duplicate ranking across
+  the two files.
 
 Waits:
 - nanobuds Horizon 2 (approve/sign pass) sits in Reto's nanopub queue
@@ -95,8 +151,8 @@ Seams:
 - `scripts/deploy` — plugin-split's gr457894 (restart on installed-file
   change) and the deploy session's render-tree lock are the same script;
   no thread owns deploy, so gr457894 is ranked in plugin-split.
-- `scripts/main-ci-status` / check.yml — monitors Do-next 1
-  (`backlog/main-stays-gated.md`) gates every other thread's "is main green"
+- `scripts/main-ci-status` / check.yml — `backlog/main-stays-gated.md`
+  (monitors thread) gates every other thread's "is main green"
   answer — and as of 2026-09-30 it answers: the stale-verdict read (gr456236),
   the main-push lane range (now starting at the last sha with a real shard
   verdict), and a ruff+mypy pre-qland lint all landed. Every thread that qlands

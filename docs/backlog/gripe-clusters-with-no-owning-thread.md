@@ -75,3 +75,20 @@ than a default:
 
 Recommend (3) then (1): find out how many are still real before deciding they
 need a structure.
+
+## Status 2026-09-30 (product-plan review, same day)
+
+Both clusters were ranked while this item was in flight, which answers
+"nowhere" but not "whose":
+
+- **Cluster 1** sits as one Parked entry in `threads/local-compute.md`
+  ("ingest pipeline — no thread owns it yet"), because pillar 3
+  (`docs/roadmap.md`) consumes this pipeline. That is a holding position,
+  not an owner. The choice above is still open; the review's lean is your
+  (3) then (1), with `local-compute` rather than `knowledge` as the fold
+  target since the ingest cost lands on local capacity.
+- **Cluster 2** is ranked: gr452203 in `threads/monitors-that-go-quiet.md`
+  Do next; the fix_gripe four (gr452384, gr454480, gr456240 + gr458326) as
+  one Parked entry there with Reto's inert ruling as the unpark condition;
+  gr454792 in `threads/roadmap-quest.md` Horizon. Nothing further for
+  cluster 2 here.

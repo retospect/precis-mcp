@@ -7,7 +7,9 @@ top. Today one `precis serve` is GIL-bound at ~28 calls/s regardless of
 concurrency. Unblock the spark share first, then decide topology, then
 build the spine. The shared session MCP server has its own thread
 (session-mcp-shared-server); this one owns the fleet side.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (pillar review same day added a seam with
+local-compute, embedder-capacity-ownership as a wait, and five orphan
+gripes)
 **Worktree:** `serving-programme`
 
 ## Do next
@@ -42,7 +44,8 @@ correct it.
    serve tier sized for ~24 sessions instead of the 28 calls/s ceiling.
 2. **session-mcp-shared-server end state** (that thread's
    backlog/session-mcp-http-server.md) — waits on 1's topology answer; the
-   end of the per-session container and the gr341515 class.
+   end of the per-session container and the install-watchdog-exit-visibility
+   class of defect that motivated it.
 3. **backlog/vllm-per-node-serving.md beyond Slice 0** — waits on the Slice
    0 plateau (Do next 4); big-model serving on spark.
 4. **backlog/eval-run-spine.md items 4, 8, 9** (blob store, contamination
@@ -56,7 +59,22 @@ correct it.
 
 ## Parked
 
-- (none beyond Horizon's stated waits)
+- **backlog/embedder-capacity-ownership.md** (local-compute thread) — a
+  wait, not this thread's work: local-compute owns the item, but this
+  thread's py-spy/topology answers (Do next 3) feed its capacity picture.
+- **gr450103** — job_ssh_node worker leaks memory (~117 GB RSS over 2
+  days on castor); infra, adjacent to this thread's fleet-serving scope
+  but not owned by it. Unparks if it recurs on a serve host rather than a
+  worker host.
+- **gr451423**, **gr322060** — quest relax-sim infra-failing repeatedly
+  (struct_relax executor); cluster GPAW/executor reliability, not a
+  serving-programme item. Left here for lack of a better home.
+- **gr453339** — caspar has no `/opt/precis/venv` and `/mnt/cluster` is
+  still NFS-wedged post-reboot; deploy precondition, not this thread's to
+  fix. Unparks when a deploy targets caspar specifically.
+- **gr260050** — `claude -p` under an interactive ssh user on melchior
+  cannot dispatch (OAuth state); blocks CLI-driven repair passes on that
+  host. Adjacent to serving infra, not owned here.
 
 ## No action needed
 
@@ -64,3 +82,9 @@ correct it.
   session-mcp-shared-server thread; not ranked here.
 - mcp-concurrency-load-test MEASURED section — the finding stands; no
   re-measurement until the multi-process arm exists.
+
+## Seam
+
+`local-compute` owns what the served capacity *does* (summarise, insert,
+mesh, link, categorise); this thread owns the MCP ceiling, vLLM Slice 0
+go/no-go and the eval-run-spine that measures what got served.

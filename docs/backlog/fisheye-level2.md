@@ -29,3 +29,12 @@ in read loops, and a one-line mention in the server-instructions string
 
 test: per-kind assertion that a plain single-chunk get carries the affordance
 line (parallel to tests/test_draft_handler.py's).
+
+## Product-plan review 2026-09-30
+
+Ranked in `threads/graph-memory-consumers.md` (pillar 1, consumers).
+`precis-fisheye-help` documents that `view='fisheye'` on `paper`, `patent`,
+`web`, `datasheet`, `cfp` and `memory` raises `Unsupported`; that is
+now owned by `fisheye-everywhere.md` (every kind, plus the browser focus
+page), which supersedes the "generalize the affordance" section above — the doctrine (`docs/roadmap.md` pillar 1) is one fisheye over the
+whole graph, and `memory` in particular cannot stay outside it.

@@ -7,7 +7,8 @@ on the fleet; the prod dry-run has been seen (2026-09-30 13:24 UTC, role
 demand on qu453869), the one defect it showed is fixed and deployed (14:12
 UTC); the first live tick is the first real verification and waits on
 Reto's word (td458387).
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (pillar review same day added three orphan
+gripes to Horizon, all adjacent infra the tick path depends on)
 **Worktree:** `roadmap-quest`
 
 ## Do next
@@ -54,6 +55,18 @@ Reto's word (td458387).
    estimate-based dialectic ticks for the pathway quests.
 6. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column;
    review of what each tick wrote before it feeds the next.
+7. **gr345366** — `quest_tick` fails ~4x/48h on qu164903 with "unparseable
+   model output"; not yet root-caused (candidates: truncated reply, a
+   non-dict router `.data`, a stray leading brace). The same tick path
+   qu453863 will run through once it activates.
+8. **gr453861** — an executor-bearing todo (the shape qu453863's own tick
+   dispatch uses) sits STATUS:open with no child job for up to ~18 minutes
+   with no signal distinguishing normal minter cadence from a stalled
+   dispatch; worth an observable before the first live tick's silence is
+   mistaken for a wedge.
+9. **gr454792** — neither documented path actually unparks a
+   child-failed-final leaf; if a `roadmap_tick` job ever lands there, the
+   two-tag manual recipe in the gripe is the only one that works.
 
 ## Parked
 

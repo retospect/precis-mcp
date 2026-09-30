@@ -12,7 +12,8 @@ td458169); fold_layout lays out every pseudoknot-free fold (bulges and
 coaxial stacks end to end, tails as single-occupancy stubs); loop atoms
 chain behind `relax_loops`, envelope_fit skips them, residue rows persist.
 Flip the loop-relax default on Reto's word, then the pick hierarchy.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (pillar review same day added
+se-chain-wrap-around-part to Do next)
 **Worktree:** `se-nucleic-chain`
 
 ## Do next
@@ -29,6 +30,8 @@ Flip the loop-relax default on Reto's word, then the pick hierarchy.
    1); the chain-design instance (its 2026-09-30 section: residue +
    base-pair rows under a segment block, atom pick) turns "aO44" into
    "O3' of DA 8, hp.h0@3".
+3. **backlog/se-chain-wrap-around-part.md** — blocked-by
+   hexfold-integration; DNA-SE session evidence for the want.
 
 ## Horizon
 
@@ -63,13 +66,7 @@ Flip the loop-relax default on Reto's word, then the pick hierarchy.
 
 ## No action needed
 
-- **gr457929**, **gr457930** — fixed b3afcff9, tagged done.
-- **gr458145** — fixed in the commit that re-ranked this file (block view
-  names the state whose stored pose it shows); close on ship.
 - **td458169** — done 2026-09-30; results in the todo's text.
-- **gr458316** — layout_chain's 5p/3p ports carry the backbone-exit pose and
-  realize lets the atom replace it; dogfooded on prod 2026-09-30
-  (view='stations' target='f2.s0.3p' on dogfood-walker-a), tagged done.
 - **gr458472** — filed 2026-09-30 from that re-dogfood: a `put(kind='se',
   ops=[…])` call lost its ops (put's schema has no `ops=`) and wiped the
   design; recovered by replaying design_revisions by hand. The refusal half

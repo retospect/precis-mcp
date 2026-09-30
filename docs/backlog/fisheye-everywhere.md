@@ -102,3 +102,18 @@ focus page here renders, it does not act.
   surface. `knowledge-mesh.md` points here.
 - **[open, non-blocking]** The `+recall` cap (start k=8) and whether recall
   crosses kinds by default (start: same kind + finding).
+
+## Pillar-review deltas (2026-09-30)
+
+Folded in from the product-plan review's `web-graph-browse` (filed the
+same day in a sibling tree, deleted as a duplicate of in-scope 4). The
+browser focus page is the human graph-browse surface of `docs/roadmap.md`
+pillar 1, so it carries three more requirements:
+
+1. A search box on `/eye/` that resolves a handle or a query to a focus.
+2. Ring filters by kind and by the `SPACE:` tag axis (`file-mirror.md`
+   §"Pillar-review deltas"), so repo-dev and research neighbourhoods can
+   be shown apart or together.
+3. Human acceptance, in addition to AC 1–6: from a finding hub Reto
+   reaches its evidence papers, its `measures` rows and the quest that
+   cites it in three clicks and no SQL.

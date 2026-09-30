@@ -5,6 +5,9 @@ One file per open work item; delete-on-ship (`docs/README.md`). Front-matter
 (`high` | `normal` | `low`, default `normal`) sorts the index and the
 autonomous fixer's pick order high-first.
 
+**Pillars:** [`docs/roadmap.md`](../roadmap.md) — what each pillar is for,
+which threads are active, and the retirement rules.
+
 **Threads:** [`threads/`](./threads/README.md) — the ordering layer. The
 INDEX enumerates work; a thread file *sequences* one thread of it, as a
 short ranked list of pointers with a one-line rank rationale. Pointers

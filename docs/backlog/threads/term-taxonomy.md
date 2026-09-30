@@ -14,7 +14,10 @@ exists. Reviewed 2026-09-30 against the goal: the memory half (skills,
 memory files, session history, context hierarchy) had no ordering owner
 and is ranked here from now; the ordering rule is "unblocked and visible
 first, then the measures chain, then the memory half behind the walk".
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (the pillar review the same day inserted
+class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
+graph-health-metrics, five parked gripes, and the seam with
+`graph-memory-consumers.md`)
 **Worktree:** `term-taxonomy`
 
 ## Do next
@@ -44,12 +47,19 @@ first, then the measures chain, then the memory half behind the walk".
    taxon + reference + convention, so it lands right after 1 and unblocks
    knowledge-mesh and the experiment loop. Reto's fold-in ruling =
    td458719.
-6. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
+6. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
+   term-taxonomy's v2 (defined classes as canonical constraint sets with
+   membership yes/no/unknown, per-axis similarity spaces, participant
+   roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
+   the pillar review). Right after 5 because it builds on the same taxon
+   identity; consumed by `se-machine-design.md` (pocket specs) and
+   `materials-molecular-substitution-db.md`.
+7. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
    Claude Code memory files as read-only `markdown` roots with links from
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
    pilot". Mirror-vs-native = td458720. Below 5 only because its recall AC
    is cheap to run at any time.
-7. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
+8. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
 ## Horizon
@@ -79,23 +89,50 @@ first, then the measures chain, then the memory half behind the walk".
    td458721.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
    for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 6 gives the topic files a recall measurement, P2 = td458724.
+   Do-next 7 gives the topic files a recall measurement, P2 = td458724.
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
     Do-next 5; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
     figure, draft) — waits on Horizon 1; the paper's spine.
 12. **backlog/dreaming.md** — the consolidation pass over memory nodes;
     revisit once 5 and 7 exist, since both replace hand consolidation.
+13. **backlog/first-party-experiment-records.md** — waits on Do-next 5;
+    our own runs (a job, a quest tick, an se design) need the same measure
+    identity as a paper's before they can be stored honestly. Note the
+    open contradiction it records: `measures-substrate.md` §3 owns an
+    `experiment` kind, `experiment-loop.md` says no new kind.
+14. **backlog/graph-health-metrics.md** — waits on Horizon 3; a populated
+    mesh is the precondition for measuring its own reachability, orphan
+    rate and edge precision, which is what gardener (5) fixes against.
 
 ## Waiting on Reto
 
 - td458719 fold `component_spec_values` into `measures` (Do-next 5).
-- td458720 skills/memory mirror first or native (Do-next 6).
+- td458720 skills/memory mirror first or native (Do-next 7).
 - td458721 draft render-only or two-way (Horizon 8).
-- td458722 rename this thread file to `knowledge-mesh.md`.
+- td458722 rename this thread file to `knowledge-mesh.md` — note: the
+  pillar review the same day recorded Reto's ruling "we don't rename the
+  threads"; expect a no unless he says otherwise there.
 - td458723 memory-lint extraction (decision date passed 2026-08-19); on
   answer `backlog/memory-lint-extraction-decision.md` is deleted.
 - td458724 one resident identity + style block (Horizon 9, P2).
+
+## Parked
+
+- **gr445532** — experiment tracking needs multi-class context for
+  qualitative terms ("low temperature" means opposite things in different
+  communities); unparks with Do-next 6, whose per-axis similarity spaces
+  are the natural home for a comparison class.
+- **gr449840** — precis-finding-help's admission criteria exclude the
+  definitional/methodological claim classes a taxonomy or architecture
+  paper needs to cite; unparks with Do-next 6, which names a definitional
+  claim class explicitly (membership yes/no/unknown).
+- **gr182230**, **gr180306** — taproot chase-trigger recall gap and a
+  claim-hub near-miss dedup (60 days old, both pre-enablement). Unparks
+  when chase_trigger is enabled by default; inert until then.
+- **gr445531** — whether spectral graph theory buys anything on precis's
+  graph structures; unparks when Horizon 3 gives it a populated graph
+  worth measuring the spectrum of.
 
 ## No action needed
 
@@ -114,3 +151,12 @@ first, then the measures chain, then the memory half behind the walk".
   need.
 - a graph database or a closure table — rejected in knowledge-mesh and
   term-taxonomy with a stated revisit trigger.
+
+## Seam
+
+`graph-memory-consumers.md` (dormant) owns the agent-side affordances this
+thread does not rank: draft authoring in the graph, the `focus` verb,
+capability discovery, skill quality gates, source-code ingest. The memory
+half (file-mirror, context-memory-hierarchy, session-history-into-precis)
+and every surface item (fisheye-everywhere, draft-linearization) are
+ranked HERE. Do not duplicate ranking across the two files.

@@ -541,3 +541,16 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   since a `material` *is* a ref, every relation in the registry already
   reaches it, and `measures.subject_ref_id` already accepts it. Prefer (c)
   over minting an enum column: it is how `concept` already works.
+- **[decided 2026-09-30, product-plan review]** Reto's design notes'
+  `origin` axis maps onto `tier`, no new values: `reported` → `measured`,
+  `refit` → `computed` with `derived_from` = the curve row
+  (`class-lattice-similarity-spaces-and-laws.md` §4), `derived` → `derived`,
+  `imputed` → `derived` with the generator in the structured writer
+  provenance (gap 2 above). Their `measurement_arg` (position, entity) is
+  the `subject_selector text` column that `se-region-property-layer.md`
+  adds so a design's *region* can be a subject; decide the grammar when
+  this item ships (open question there). Participant roles are a separate
+  axis from `direction` and the condition `role`
+  (`class-lattice-…` §3). The one-paper ownership rule for `experiment`
+  is widened for first-party runs by `first-party-experiment-records.md`
+  (a run owned by a job / quest tick / se design), not here.

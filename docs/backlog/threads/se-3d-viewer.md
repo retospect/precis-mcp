@@ -24,7 +24,9 @@ cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
 picture — suspect a stale server upstream before suspecting the data.
 gr458061 is another thread's item.
-**Last reviewed:** 2026-09-30 (gr457931 shipped; dogfooded on prod data)
+**Last reviewed:** 2026-09-30 (gr457931 shipped; dogfooded on prod data;
+pillar review same day added three orphan gripes and the property-layer
+seam note)
 **Worktree:** `se-3d-viewer`
 
 ## Do next
@@ -104,6 +106,17 @@ cut from the bottom.
    captures; publishable figures out of the same scene.
 8. **backlog/se-feasibility-and-cost.md** — the far end the arc serves;
    waits on 3 and 4.
+9. **gr450675** — atomic↔smooth view slider with scaffold-deviation
+   coloring; a feature request, not blocking anything above.
+10. **gr341482** — retire the mermaid `graph LR` topology-panel fallback
+    once the force-directed node cloud (already shipped) proves out in
+    prod; cleanup, waits on production mileage rather than code.
+11. **gr451278** — pcb web viewer: a pad is unidentifiable on the
+    rendered board (no mouseover naming refdes/pin/net). Filed against
+    the pcb viewer, not this one, but ranked here for the shared
+    "identify what you're pointing at" affordance with
+    `backlog/se-pick-hierarchy.md` (Horizon 1) — worth checking whether
+    one mechanism serves both before building two.
 
 ## Parked
 
@@ -122,3 +135,9 @@ cut from the bottom.
   see Do-next 3 (gr458329).
 - The "Multiple instances of Three.js" console warning — expected, documented
   in blocktree-3d.js; no gripe.
+
+## Seam
+
+The non-geometric property layer (hydrophobic, charge, field, optical) is
+`se-machine-design`'s model to build; this thread renders whatever the
+model carries. Do not design the property layer here.

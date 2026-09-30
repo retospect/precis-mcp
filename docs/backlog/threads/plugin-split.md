@@ -12,7 +12,8 @@ MCP (gr458061) — but the deploy-mechanics defect it surfaced is real and
 every remaining step re-triggers it. Make module moves deploy-safe, then
 continue the behaviour-neutral prep. Pathway presentation work is the same
 thread by dependency.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (pillar review same day added gr458360 and
+gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 **Worktree:** `plugin-split`
 
 ## Do next
@@ -24,14 +25,26 @@ thread by dependency.
    the new tree). Observed once, on a session MCP (gr458061's half); the
    prod worker suspected the same day was never implicated, and pathway does
    not even route through that host.
-2. **backlog/plugin-split-runtime-shell.md** — steps 1, 3 and 5 (step 2
+2. **gr458360** — the pytest template DB carries core migrations only, so
+   every plugin-table test (se, and every future extracted plugin) is
+   order-dependent: `Migrator.discover_sources` is never called, only the
+   bare-Path legacy form. Already caused one red gate 2026-09-30 by
+   ordering luck. Every module this thread extracts adds another plugin
+   whose tests inherit this gap — fix before, not after, milestone 2
+   below.
+3. **gr454796** — `test_ml_calculator_cache_is_keyed_on_model_and_dispersion`
+   hard-fails instead of skipping when the optional `dft-ml` extra is
+   absent; the same gap a plugin-boundary test needs to not have, since
+   the whole point of the split is code that runs without an extra
+   installed.
+4. **backlog/plugin-split-runtime-shell.md** — steps 1, 3 and 5 (step 2
    landed 2026-09-29). Step 1, the import-boundary test, now lands green
    because step 2 removed the last core→plugin import, so it goes first and
    becomes the gate the 10-16 moves are verified against.
-3. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
+5. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed
-   every node's embedder. Below 2 only because 2 is behaviour-neutral and
+   every node's embedder. Below 4 only because 4 is behaviour-neutral and
    this touches 58 modules.
 
 ## Horizon
@@ -46,7 +59,7 @@ own item); they become items as each comes into reach.
    ownership) and package-split ruled superseded or merged. Waits on Reto;
    nothing below starts until it closes.
 2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — waits on
-   1, Do-next 2 (the import-boundary gate) and Do-next 1 (gr457894); proves
+   1, Do-next 4 (the import-boundary gate) and Do-next 1 (gr457894); proves
    the entry-point mechanics at zero API risk.
 3. **backlog/plugin-split-runtime-shell.md**, precis_surface out — waits on
    2; folds the marching-cubes tables into geom so the boundary is
@@ -64,6 +77,12 @@ own item); they become items as each comes into reach.
    model, private until paper; waits on 5, which answers where shared
    presentation logic lives. Needs a catpath version bump + wheel
    redeploy.
+7. **The 11-gripe god-module cluster** (**gr343710**, **gr343711**,
+   **gr343712**, **gr343713**, **gr343714**, **gr343715**, **gr343716**,
+   **gr343717**, **gr343719**, **gr343720**, **gr343752**) — the
+   decomposition debt the split retires; not individually actionable, and
+   not worth ranking piece by piece when the split's module-by-module
+   extraction addresses the whole cluster by construction.
 
 ## Parked
 

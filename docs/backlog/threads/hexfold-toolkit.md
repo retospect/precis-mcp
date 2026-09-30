@@ -2,17 +2,19 @@
 
 **Status:** ends when hexfold composites join, catalogue and validate
 themselves end to end with trusted measured rows, the `spec.md` §28 roadmap
-reaches its two named test pieces (the box and the rotary ratchet valve),
-and the se + hexfold paper (td344088) reports it. Today the join op and the
-environment catalogue are **verified working against prod** — the
-2026-09-30 dogfood's two alarming findings were artefacts of a stale MCP
-process and are refuted, and the damage that process did is now detected
-(`composite_part_stolen`) — so the order below is: make the execution
-environment trustworthy, then diagnosable, then make measured rows
-trustworthy.
+reaches its three named test pieces (the box, the rotary ratchet valve and
+the T-handle bearing), and the se + hexfold paper (td344088) reports it.
+Today the join op and the environment catalogue are **verified working
+against prod** — the 2026-09-30 dogfood's two alarming findings were
+artefacts of a stale MCP process and are refuted, and the damage that
+process did is now detected (`composite_part_stolen`) — so the order below
+is: make the execution environment trustworthy, then diagnosable, then make
+measured rows trustworthy.
 **Last reviewed:** 2026-09-30 (re-ranked after gr457995 and gr457996 were
 refuted, then again when the integrity check shipped and gr458061 moved to
-the `session-mcp-shared-server` thread — note at the bottom)
+the `session-mcp-shared-server` thread; pillar review same day added the
+T-handle bearing test piece, four dogfood-correctness gripes, and the
+instrumentation-leg horizon item — note at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Do next
@@ -49,6 +51,26 @@ the `session-mcp-shared-server` thread — note at the bottom)
    cap fuse. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 3's re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
+5. **gr456213** — join silently re-parents a block already a child of
+   another composite, leaving the first composite's tree incomplete and
+   claiming the same rim twice. Live correctness bug, not the stale-process
+   artefact gr457995/gr457996 turned out to be — worth checking whether it
+   is the shape `composite_part_stolen` was built to catch.
+6. **gr454650** — a len=1 armchair tube reports 20 dangling
+   atoms per rim instead of 10 (both rims share the one period); the fuse
+   to a cap then fails on a spec that is correct. Related: gr454563,
+   gr454488.
+7. **gr454563** — the parser silently accepts unknown primitive keywords
+   (`length=` instead of `len=`), so a typo surfaces as an unrelated
+   `fit.unsolvable`/`port.mismatch` error pointing away from the defect.
+   Cheap parse-time fix; cost a naive-agent dogfood 2 of 19 calls.
+8. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+   `generate` block trips `mode_binding_mismatch` because generate never
+   sets mode; sheet rim port direction is centroid noise; the persisted
+   build record drops geometry findings the check-mode echo has; "dry-run"
+   wording survives past its rename; generator-declared measures claim
+   `origin=user`. Five independent one-line fixes, bundled because one
+   dogfood found all five.
 
 ## Horizon
 
@@ -66,24 +88,29 @@ the `session-mcp-shared-server` thread — note at the bottom)
    radius-changing shell with a two-lid rotor, each as separate blocks with
    a revolute joint. The acceptance artefacts for the whole discrete half;
    waits on 1.
-5. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
+5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
+   2026-09-30), alongside the box and the valve.
+6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
    catalogue's third row type exists for. Waits on Do-next 3, since a
    motif measured at one extent has the same defect the radius had.
-6. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
+7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
    clearance stub is gated on Do-next 4.
-7. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
-   decided by instrumenting the first lining, so it waits on 6.
-8. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
+8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
+   decided by instrumenting the first lining, so it waits on 7.
+9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
    (§28.7) — three- and four-sheet joins at an atom, and the valve's sp³
    isolation loops. Sequenced here by choice, not blocked: §28 lists it as
    unblocked since step 2 landed. `JOINERS` is already keyed on a lattice
    *pair* for it.
-9. **`spec.md` §28.5–28.6 smooth solve + direction field** — discrete-mesh
-   smooth solve, curvature bound, bent collar; delivers the tapered
-   (collar-driven) shell the discrete washer step stands in for.
-10. **td344088** — the se + hexfold paper. The thread's end state; it
+10. **backlog/hexfold-instrumentation-leg.md** — the instrumented first
+    lining rotary-ratchet-valve.md Q2 (item 8) needs to decide scrubber
+    cadence; sequenced right after the seam it instruments.
+11. **`spec.md` §28.5–28.6 smooth solve + direction field** — discrete-mesh
+    smooth solve, curvature bound, bent collar; delivers the tapered
+    (collar-driven) shell the discrete washer step stands in for.
+12. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
 
 ## Parked

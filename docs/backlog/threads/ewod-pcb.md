@@ -8,7 +8,9 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-09-30 (pillar review same day added five orphan
+gripes and a cross-scale-single-assembly seam pointer; pruned gr346009,
+soft-deleted)
 **Worktree:** `ewod-pcb`
 
 ## Do next
@@ -80,6 +82,11 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
    (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck —
    backlog/pcb-clearance-findings-name-no-pad.md carries both that figure
    and the observability gap the 09-30 investigation paid for.
+   ⚠ **gr458087**, filed the same day, measures `check_via_pad_keepout` as
+   still O(vias x pads) with no index (1.9 s on an 8x8 tile, 28 s at 4
+   tiles) — the opposite of "indexed" above. Both are dated 2026-09-30;
+   reconcile which measurement is current before trusting either, then
+   land the STRtree fix gr458087 proposes if the number really regressed.
 3. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
    waits on 2 because each slice's acceptance is an "is the board still
    valid" claim.
@@ -96,16 +103,36 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
    an .epro2 import is its likely first real source.
 6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
    on 5, a checklist over unenforceable constraints is theatre.
-7. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
+7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
+   (a bottom-layer retrace that buys nothing, one plaza escape that
+   crosses the whole field and comes back, a pin swap that lengthens
+   instead of shortens); none violates DRC, so nothing has ever measured
+   it but a human looking at the render. Same root gap as Do-next 5's
+   escape corridor — no signal scores total copper length against the
+   achievable minimum.
+8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
    lane, parallel; a testable system rather than a bare PCB.
-8. **backlog/ewod-synthesis-protocol.md** +
+9. **backlog/ewod-synthesis-protocol.md** +
    **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-9. **backlog/pcb-ewod-multitile.md** — waits on 3 and 4; multitile
-   multiplies whatever the escape corridor does.
-10. **backlog/pcb-global-codesign-north-star.md** — the arc all of the above
-    serves; re-read when ranking the next round.
+10. **gr451662** — EWOD stack assembly needs non-fab mechanical 2D layers
+    (ITO top sheet, spacer adhesive, alignment holes, via-plaza covers),
+    generalising the pcb 2D layer system the way solder paste already
+    does; the hard part is stencil bridges that keep the adhesive sheet
+    one connected component. Reto-architected 2026-09-26; waits on nothing
+    but is large. Interacts with gr414481.
+11. **gr414481** — EWOD boards need a second max-extent check for parylene
+    coating, separate from the fab/manufacturing size cap; feeds gr451662's
+    adhesive-layer extent.
+12. **gr338660** — the ewod-oil route-platform-constraint screen has no
+    reagent-economy axis (distinct-reagent count vs reservoir budget,
+    reaction-type diversity, longest unpurified run); waits on 9
+    (ewod-oil-constraint-grounding), the file this screen lives beside.
+13. **backlog/pcb-ewod-multitile.md** — waits on 3 and 4; multitile
+    multiplies whatever the escape corridor does.
+14. **backlog/pcb-global-codesign-north-star.md** — the arc all of the
+    above serves; re-read when ranking the next round.
 
 ## Parked
 
@@ -121,8 +148,6 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 
 ## No action needed
 
-- **gr346009** — closed by the footprints-view per-pin count fix; the count
-  it exposed is item 1. Soft-deleted, do not reopen.
 - **backlog/pcb-pre-place-route-blocks.md** — already landed; verify and
   delete.
 - **The "maze occupancy guarantee leak"** — there was no leak. The router
@@ -131,3 +156,10 @@ and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
   `realize.pad_board_wh` 2026-09-30, item deleted. The guarantee's
   argument (`BASELINE_DRC_ERRORS = 0`, "find the leak") held up: it is
   what made the measurement worth taking instead of tuning the cost term.
+
+## Seam
+
+`backlog/cross-scale-single-assembly.md` (owned by se-machine-design) is
+where the EWOD cartridge stack — gr451662's ITO/adhesive/alignment
+layers, the physical assembly above the PCB — becomes part of one
+cross-scale design rather than a bare PCB; not ranked here.

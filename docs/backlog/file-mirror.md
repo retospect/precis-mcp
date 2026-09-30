@@ -105,3 +105,29 @@ root that refuses symlink escapes (`config.py`).
 - **[open]** Whether the memory root is mounted at all on a cluster node
   (no: the harness memory is per machine; each developer's session
   container mounts their own).
+
+## Pillar-review deltas (2026-09-30)
+
+Folded in from the product-plan review's `harness-memory-into-graph`
+(filed the same day in a sibling tree, deleted as a duplicate of this
+item). Three additions this item now carries:
+
+1. **A closed `SPACE:` tag axis** on every mirrored ref and every native
+   memory node: `research | repo-dev | personal`. `repo-dev` is what the
+   two roots above land as; `personal` is reserved for the held pillar 4
+   (`docs/roadmap.md`) and the axis is designed with a per-user value in
+   mind from the start so pillar 4 does not redo it. Segregation is by
+   tag, never by a second store.
+2. **More roots than two.** `CLAUDE.md`, `AGENTS.md`, `.claude/agents/*.md`
+   and `docs/conventions/` are repo guidance in the same sense as the
+   memory dir; they mount as a third `ro` root (`repo`) so a walk from a
+   gripe reaches the convention it violates.
+3. **A retirement condition per file class**, which `docs/roadmap.md`
+   §Retirement points at: the harness memory index retires when session
+   start can load the same bullets from
+   `search(kind='markdown', folder='memory', tags=['SPACE:repo-dev'])`
+   and the recall fixture (in-scope 5) passes; the skill listing retires
+   when `precis-overview` is served from the mirrored tree; a convention
+   file retires when its rule is a `finding` with a `tests` edge. None of
+   these fires while the mirror is read-only — they are the acceptance
+   for the native stage td458720 decides.

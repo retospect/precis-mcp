@@ -6,6 +6,15 @@ model: opus
 
 # Cluster consolidation (unified master plan)
 
+> **AMENDMENT 2026-09-30 (product-plan review, Reto):** the "model servers
+> are worker-spun on demand and torn down when the backlog drains" rule is
+> **superseded** for the local LLM and embedder capacity by
+> `graph-maintenance-queue.md`: the local box works the graph continuously
+> (summarise, insert, mesh, link, categorise), so idle local capacity is
+> filled from that queue rather than released. The prio-gate resolver and
+> `resource_slots` here stay the hooks; only the drain-then-teardown
+> policy changes. Heavy dispatched units (§H) are unaffected.
+
 > **The one plan to review.** Subsumes the scheduling framing previously
 > scattered across `factory-console-and-scheduling.md` §15, `gpu-priority.md`,
 > `gpu-cluster-modes.md`, `self-healing-spine.md`, and the related residual
