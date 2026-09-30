@@ -289,12 +289,39 @@ checkout arm is armed for real: `checkout watchdog armed on /src at
 2a34fce6c026 (every 5s)`. Sizing confirmed inside the running process, not
 just in the wrapper: tool concurrency 12, pool 4/16.
 
+**Dogfooded against prod 2026-09-30 06:40-08:50Z.** Results:
+
+- **AC4 PASSES.** Twelve concurrent sessions, one `search` each, against the
+  live shared server: all twelve OK, 4.78 s wall. Single-search baseline is
+  2.06 s, so a serialised run would be ~25 s. Nothing queued on the pool.
+- **AC1/AC2 bounce half PASSES in production.** A real ship moved main's
+  HEAD; the server bounced in 10 s (`drained 0 in-flight call(s)`), rearmed
+  on the new sha, and served again. The next client got the per-session
+  breadcrumb naming both shas.
+- **AC7 FAILS — gr457887.** A bounce during a slow cross-kind search killed
+  it (`drain timed out after 20s`, transfer closed, no result after 24.7 s);
+  a fast search in the same setup was delivered in full. Two defects:
+  `_DEFAULT_DRAIN_TIMEOUT_S = 20.0` is under real search latency, and
+  `wait_for_drain` waits for the counter to reach **zero**, which on a busy
+  shared server may never happen — so every bounce burns the timeout and
+  then kills whatever is running. The unit tests structurally cannot catch
+  the second one: nothing else is calling during them.
+- **AC2's sha half is BLOCKED — gr457361.** `precis-status` reports the
+  *image* build arg (`f2cbcb295ab2`, baked 2026-09-08), not the source being
+  served. Pre-existing — an old stdio container reports the same — but it
+  makes AC2 unverifiable as written.
+- Also found: **gr457326**, md-index vector warmup has no retry, so one slow
+  embedder batch at boot leaves the cache cold for the whole process
+  lifetime — now shared by every session.
+
+Next session's work: gr457887 (ticket-based drain keyed on a bounce-time
+high-water mark, plus a raised env-tunable bound, with a test that keeps
+traffic flowing during the drain), then gr457361 and gr457326.
+
 **Still outstanding — these need a ship and a day of use, not a test:** AC1
-in the session (as opposed to headless) client, AC2 (a ship with two or more
-sessions open, both reporting the new sha — the watchdog is now armed, so
-the next sibling ship exercises it), AC3 (a new verb kwarg surviving a
-bounce), AC4 (twelve concurrent searches measured with `pool.get_stats()`),
-AC5 (one container after a day).
+in the session (as opposed to headless) client, AC3 (a new verb kwarg surviving a
+bounce) and AC5 (one container after a day). AC2's client half is done; its
+sha half waits on gr457361. AC4 is done.
 
 **Do NOT sweep the old `precis-mcp-dev-*` containers yet.** Twelve are still
 up, and the sessions that started before the config flip are still talking
