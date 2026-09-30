@@ -46,6 +46,12 @@ The residual risk qland still accepts, deliberately: a test-level failure
 that only pytest sees. That is the trade qland is for.
 
 ### Also worth doing
+- Carried over from the section that shipped: `scripts/ship --quick` could
+  also refuse to qland onto a main whose last gate-shape run is not
+  green/current. Weaker than the ruff+mypy pre-check (it blocks on someone
+  else's red rather than on your own change) and it needs the same
+  last-gated-sha lookup `scripts/last-gated-main-sha` now does, so it is a
+  follow-on, not an alternative.
 - `3c8db49a`'s test was written against a tree that already contained
   `aa861102`'s fix, so the author cannot have run it. A pre-qland check
   catches the lint/mypy class but not this one — only running the new test
