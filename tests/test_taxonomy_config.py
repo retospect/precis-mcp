@@ -130,3 +130,78 @@ def test_norr_her_meta_required_conditions_start_with_temperature() -> None:
     cfg = load_campaign("norr-her-meta")
     conditions = cfg.required_conditions("faradaic-efficiency")
     assert conditions[0] == "temperature"
+
+
+def test_norr_her_meta_convention_vocabulary_is_the_two_named_sign_conventions() -> (
+    None
+):
+    """Blocker 4: `convention` is a closed list of named conventions, so the
+    model's sign/direction prose drops out of the node identity."""
+    cfg = load_campaign("norr-her-meta")
+    assert set(cfg.qualifier_vocabulary.convention) == {"iupac", "us-electrochem"}
+    assert "ammonia" in cfg.measurand_aliases.species["nh3"]
+    assert "nh4" in cfg.measurand_aliases.species
+
+
+# ── synonym maps ────────────────────────────────────────────────────
+
+
+def test_measurand_aliases_and_qualifier_vocabulary_parse(tmp_path: Path) -> None:
+    extra = """
+measurand_aliases:
+  species:
+    nh3: [ammonia]
+    n2:
+  phrases:
+    yield-rate: [production-rate]
+qualifier_vocabulary:
+  reference_state:
+    rhe: [reversible-hydrogen-electrode]
+  convention:
+    iupac: []
+"""
+    cfg = load_campaign(_write_campaign(tmp_path, extra=extra))
+    assert cfg.measurand_aliases.species == {"nh3": ("ammonia",), "n2": ()}
+    assert cfg.measurand_aliases.phrases == {"yield-rate": ("production-rate",)}
+    assert cfg.qualifier_vocabulary.reference_state == {
+        "rhe": ("reversible-hydrogen-electrode",)
+    }
+    assert cfg.qualifier_vocabulary.convention == {"iupac": ()}
+    assert cfg.qualifier_vocabulary.normalisation_basis == {}
+
+
+def test_synonym_map_absent_sections_default_empty(tmp_path: Path) -> None:
+    cfg = load_campaign(_write_campaign(tmp_path))
+    assert cfg.measurand_aliases.species == {}
+    assert cfg.qualifier_vocabulary.convention == {}
+
+
+def test_synonym_variant_under_two_canonicals_raises(tmp_path: Path) -> None:
+    extra = """
+measurand_aliases:
+  species:
+    nh3: [ammonia]
+    nh4: [ammonia]
+"""
+    with pytest.raises(ValueError, match="listed under both"):
+        load_campaign(_write_campaign(tmp_path, extra=extra))
+
+
+def test_synonym_variant_that_is_also_a_canonical_raises(tmp_path: Path) -> None:
+    extra = """
+qualifier_vocabulary:
+  reference_state:
+    rhe: [she]
+    she: []
+"""
+    with pytest.raises(ValueError, match="both a canonical and a variant"):
+        load_campaign(_write_campaign(tmp_path, extra=extra))
+
+
+def test_synonym_section_not_a_mapping_raises(tmp_path: Path) -> None:
+    extra = """
+measurand_aliases:
+  species: [nh3]
+"""
+    with pytest.raises(ValueError, match="mapping of canonical"):
+        load_campaign(_write_campaign(tmp_path, extra=extra))

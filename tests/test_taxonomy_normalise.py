@@ -13,10 +13,12 @@ import itertools
 import pint
 import pytest
 
-from precis.taxonomy.config import load_campaign
+from precis.taxonomy.config import MeasurandAliases, QualifierVocabulary, load_campaign
 from precis.taxonomy.normalise import (
     MergeSuggestion,
     alias_key,
+    canonical_qualifier,
+    fold_aliases,
     normalise,
     resolve_dimension,
     si_vector,
@@ -421,3 +423,205 @@ def test_units_of_one_measurand_in_different_dimensions_still_split(registry, co
     dims = {n.dimension for n in nodes}
     assert None not in dims, "both units parse"
     assert len(dims) == 2
+
+
+# --- blocker 4: synonym families + qualifier vocabulary ---------------------
+
+_ALIASES = MeasurandAliases(
+    species={"nh3": ("ammonia",), "nh4": ("ammonium",), "no3rr": ()},
+    phrases={
+        "yield-rate": ("production-rate",),
+        "applied-potential": ("applied-electrode-potential", "electrode-potential"),
+    },
+)
+
+
+def test_fold_aliases_species_spelling_position_and_link_word_share_one_key():
+    """The three spellings of blocker 4's FE family land on one key."""
+    keys = {
+        alias_key("NH3 Faradaic efficiency", _ALIASES),
+        alias_key("Faradaic efficiency for NH3", _ALIASES),
+        alias_key("Faradaic efficiency toward ammonia", _ALIASES),
+        alias_key("faradaic efficiency of NH₃", _ALIASES),
+    }
+    assert keys == {"faradaic-efficiency-nh3"}
+
+
+def test_fold_aliases_two_species_never_fold_onto_each_other():
+    assert alias_key("NH3 Faradaic efficiency", _ALIASES) != alias_key(
+        "ammonium Faradaic efficiency", _ALIASES
+    )
+    assert alias_key("NH4+ Faradaic efficiency", _ALIASES) == "faradaic-efficiency-nh4"
+
+
+def test_fold_aliases_only_a_leading_species_moves():
+    """``change in NH3 selectivity`` names a different quantity from
+    ``NH3 selectivity`` and must not collide with its tail form."""
+    assert alias_key("NH3 selectivity", _ALIASES) == "selectivity-nh3"
+    assert (
+        alias_key("change in NH3 selectivity", _ALIASES) == "change-in-nh3-selectivity"
+    )
+
+
+def test_fold_aliases_link_word_is_tail_only():
+    """``ratio of NH3 yield rate`` is a ratio; the ``of`` is not a qualifier."""
+    assert alias_key("ratio of NH3 yield rate", _ALIASES) == "ratio-of-nh3-yield-rate"
+    assert alias_key(
+        "faradaic efficiency for nitrate-to-ammonia reduction", _ALIASES
+    ) == ("faradaic-efficiency-for-nitrate-to-nh3-reduction")
+
+
+def test_fold_aliases_species_token_never_matches_inside_a_longer_token():
+    aliases = MeasurandAliases(species={"no": ("nitric-oxide",)})
+    assert fold_aliases("kno3-concentration", aliases) == "kno3-concentration"
+    assert fold_aliases("no-partial-pressure", aliases) == "partial-pressure-no"
+
+
+def test_fold_aliases_phrase_longest_variant_first():
+    """``applied-electrode-potential`` must be rewritten as a whole before
+    ``electrode-potential`` could match inside it."""
+    assert alias_key("applied electrode potential", _ALIASES) == "applied-potential"
+    assert alias_key("electrode potential", _ALIASES) == "applied-potential"
+    assert alias_key("ammonia production rate", _ALIASES) == "yield-rate-nh3"
+    assert alias_key("formate production rate", _ALIASES) == "formate-yield-rate"
+
+
+def test_alias_key_without_aliases_is_purely_lexical():
+    assert alias_key("Faradaic efficiency for NH3") == "faradaic-efficiency-for-nh3"
+
+
+_VOCAB = QualifierVocabulary(
+    reference_state={
+        "rhe": ("reversible-hydrogen-electrode", "reversible-hydrogen-electrode-rhe")
+    },
+    convention={"iupac": ("iupac-sign-convention",)},
+    normalisation_basis={
+        "per-geometric-area": ("electrode-area", "electrode-geometric-area")
+    },
+)
+
+
+def test_canonical_qualifier_maps_listed_spellings_to_the_canonical_id():
+    for raw in ("RHE", "rhe", "reversible hydrogen electrode (RHE)"):
+        assert canonical_qualifier("reference_state", raw, _VOCAB) == ("rhe", None)
+    assert canonical_qualifier(
+        "normalisation_basis", "Electrode geometric area", _VOCAB
+    ) == (
+        "per-geometric-area",
+        None,
+    )
+    assert canonical_qualifier("convention", "IUPAC", _VOCAB) == ("iupac", None)
+
+
+def test_canonical_qualifier_open_fields_keep_an_unlisted_value_with_a_note():
+    value, note = canonical_qualifier("reference_state", "Ag/AgCl", _VOCAB)
+    assert value == "ag-agcl"
+    assert note is not None and "Ag/AgCl" in note and "kept" in note
+
+
+def test_canonical_qualifier_convention_is_closed_and_drops_sign_prose():
+    value, note = canonical_qualifier("convention", "cathodic (negative)", _VOCAB)
+    assert value is None
+    assert note is not None and "dropped" in note
+
+
+def test_canonical_qualifier_none_passes_through_silently():
+    assert canonical_qualifier("convention", None, _VOCAB) == (None, None)
+
+
+def test_normalise_pools_the_fe_family_into_one_node(registry, config):
+    """Shipped campaign: the probe-2 FE family (three spellings, 21 mentions)
+    becomes one node; NH4+ FE stays its own node."""
+    terms = [
+        make_term(1, "NH3 Faradaic efficiency", raw_unit="%", half="A"),
+        make_term(2, "Faradaic efficiency for NH3", raw_unit="%", half="B"),
+        make_term(3, "Faradaic efficiency toward ammonia", raw_unit="%", half="A"),
+        make_term(4, "NH4+ Faradaic efficiency", raw_unit="%", half="B"),
+    ]
+    nodes, _ = normalise(terms, registry, config)
+    by_key = {n.key: n for n in nodes}
+    assert set(by_key) == {"faradaic-efficiency-nh3", "faradaic-efficiency-nh4"}
+    fe = by_key["faradaic-efficiency-nh3"]
+    assert fe.mention_count == 3
+    assert fe.halves == {"A", "B"}
+    assert fe.notes == ()
+
+
+def test_normalise_pools_the_potential_family_and_notes_dropped_conventions(
+    registry, config
+):
+    """Shipped campaign: RHE spellings and sign prose in ``convention`` no
+    longer split ``applied potential``; the node says what it dropped."""
+    terms = [
+        make_term(1, "applied potential", raw_unit="V", reference_state="RHE"),
+        make_term(
+            2,
+            "applied potential",
+            raw_unit="V",
+            reference_state="RHE",
+            convention="cathodic (negative)",
+        ),
+        make_term(
+            3,
+            "electrode potential",
+            raw_unit="V",
+            reference_state="reversible hydrogen electrode (RHE)",
+        ),
+        make_term(
+            4,
+            "applied electrode potential",
+            raw_unit="V",
+            reference_state="RHE",
+            convention="negative (cathodic)",
+        ),
+    ]
+    nodes, _ = normalise(terms, registry, config)
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert node.key == "applied-potential"
+    assert node.reference_state == "rhe"
+    assert node.convention is None
+    assert node.mention_count == 4
+    assert len(node.notes) == 2
+    assert all("dropped" in n and "1 mention)" in n for n in node.notes)
+
+
+def test_normalise_named_conventions_still_split(registry, config):
+    """A convention the campaign lists is the AC5 sense of the word and
+    keeps splitting the group — the closed list drops prose, not conventions."""
+    terms = [
+        make_term(1, "onset potential", raw_unit="V", convention="IUPAC"),
+        make_term(2, "onset potential", raw_unit="V", convention="us-electrochem"),
+    ]
+    nodes, _ = normalise(terms, registry, config)
+    assert {n.convention for n in nodes} == {"iupac", "us-electrochem"}
+
+
+def test_normalise_unlisted_basis_keeps_the_split_and_notes_it(registry, config):
+    terms = [
+        make_term(
+            1,
+            "NH3 yield rate",
+            raw_unit="ug h^-1 cm^-2",
+            normalisation_basis="electrode area",
+        ),
+        make_term(
+            2,
+            "NH3 yield rate",
+            raw_unit="ug h^-1 cm^-2",
+            normalisation_basis="geometric electrode area",
+        ),
+        make_term(
+            3,
+            "NH3 yield rate",
+            raw_unit="ug h^-1 cm^-2",
+            normalisation_basis="per m^3 treated",
+        ),
+    ]
+    nodes, _ = normalise(terms, registry, config)
+    assert len(nodes) == 2
+    by_basis = {n.normalisation_basis: n for n in nodes}
+    assert by_basis["per-geometric-area"].mention_count == 2
+    odd = by_basis["per-m-3-treated"]
+    assert odd.mention_count == 1
+    assert any("per m^3 treated" in note and "kept" in note for note in odd.notes)

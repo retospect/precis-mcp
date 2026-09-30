@@ -408,17 +408,41 @@ ceiling, 0.11 → 0.41. `freeze_run`'s 0.80 refusal stays, but it is a
 full-run criterion. A stated n=100 pass criterion is owed before the next
 paid spend (proposal: ≥0.6 of the unit-key ceiling).
 
-**Blocker 4 — synonym families, the remaining gap.** Of the six systematic
-nodes, three are one quantity (`Faradaic efficiency`, `Faradaic efficiency
-for NH3`, `NH3 Faradaic efficiency`) and the potential family splits four
-ways on `convention` (`cathodic (negative)` vs none) crossed with
-`reference_state` (RHE vs none) — the sign convention is not a convention in
-the AC5 sense. A free replay with three alias rules (species qualifier
-position `X for NH3` ≡ `NH3 X`; `for`/`toward`/`of`; `production rate` ≡
-`yield rate`) lifts 0.200 → 0.270 and merges 74 → 66 keys. This is
-normalise-stage work (`alias_key` + a convention vocabulary), iterated on the
-run-2 dumps at zero cost. Not folds: `NH3` vs `NH4+` FE is a campaign
-decision; the species stays in the name by design.
+**Blocker 4 — synonym families: fixed 2026-09-30, measured on the run-2
+dumps (free).** Of the six systematic nodes, three were one quantity
+(`Faradaic efficiency`, `Faradaic efficiency for NH3`, `NH3 Faradaic
+efficiency`) and the potential family split four ways on `convention`
+(`cathodic (negative)` vs none) crossed with `reference_state` (RHE vs none)
+— the sign convention is not a convention in the AC5 sense. The fix is two
+campaign vocabularies (`measurand_aliases`, `qualifier_vocabulary` in the
+campaign YAML; `normalise.fold_aliases`, `normalise.canonical_qualifier`;
+procedure version 2): species spelling and position (`NH3 X` ≡ `X for NH3` ≡
+`ammonia X`, the species moves to the key's tail), whole-phrase synonyms
+(`production rate` ≡ `yield rate`, `electrode potential` ≡ `applied
+potential`), reference-state and normalisation-basis spellings mapped to
+their ids (open lists: an unlisted value is kept and the node carries a
+note), and `convention` as a closed list of named sign conventions (an
+unlisted value is dropped with a note). Replayed on the same 174 rows:
+
+| | before | after |
+|---|---|---|
+| A/B stability by measurand | 0.200 (0.41 of the unit ceiling) | 0.270 (0.55) |
+| distinct measurand keys | 74 | 65 |
+| nodes | 103 | 83 |
+| FE-for-NH3 family | 3 nodes | 1 node + 1 (`charge passed` basis, unlisted) |
+| applied-potential family | 4 nodes | 1 node (22 mentions, 19 papers) + 1 (no reference state, 2 mentions) |
+| systematic nodes | 6 = 3 quantities | 5 = 5 quantities (`current density` newly promoted once its basis spellings merged) |
+
+Not folds, by design: `NH3` vs `NH4+` FE (the species is part of which
+quantity it is); a species in the middle of a key (`change in NH3
+selectivity` is a different quantity); a `to` link word (`nitrate-to-ammonia`
+names a step). Two residuals the vocabulary cannot fix, both stage-2
+behaviour: three `NH3 yield rate` rows carry `reference_state: RHE` — the
+applied potential's reference, put on the rate — and the yield-rate family
+still spans six pint dimensions (mass vs mole, per area vs per mass vs per
+hour), which is AC5 working, not a defect. The vocabulary grows from the
+node notes (`nodes.jsonl` → `notes`): every unlisted basis or dropped
+convention is named there with its mention count.
 
 **Two things this probe could not tell us.** Test-retest on the 174 shared
 mentions is 0.10 — meaningless across a prompt change; the noise floor needs
@@ -434,26 +458,21 @@ State: the blocker 2 prompt rewrite is deployed and gated (the deploy
 session's 2026-09-30 gate covered the integrated main; fleet verified on
 castor, pollux and balthazar over the venv's `direct_url.json`; melchior's
 venv was not located by the read-only probe, so it is unverified, not
-drifted). Blocker 3a and the probe-2 comparison tooling are in worktree
-immutable-orbiting-torvalds, unshipped. Detail is in the two probe sections
-above; this section is only the order.
+drifted). Blocker 3a, the probe-2 record and blocker 4 are on main, gated by
+the next `/go`. Detail is in the two probe sections above; this section is
+only the order.
 
-1. **Blocker 4 — synonym families.** Alias rules in
-   `normalise.alias_key` plus a convention vocabulary that keeps sign
-   conventions out of `convention`. Free: iterate on the run-2 dumps with
-   `compare_runs.py`; target = one node each for the FE and potential
-   families.
-2. **Blocker 3b — stranded units.** Shared-unit rule in
+1. **Blocker 3b — stranded units.** Shared-unit rule in
    `census._resolve_unit`. Free, and small: after 3a it moves at most three
-   of the probe's rows, which is why it trails 1.
-3. **Metering + raw-reply capture in `discover()`** — per call: ref id,
+   of the probe's rows.
+2. **Metering + raw-reply capture in `discover()`** — per call: ref id,
    prompt hash, raw payload, cost, the four token counts, duration, to a
    `responses.jsonl` beside the other dumps. Plus the n=100 pass criterion
    (above). Both land before any further paid call.
-4. **Concurrency vs packing.** Decided by 3's cache-read counts: a cached
+3. **Concurrency vs packing.** Decided by 2's cache-read counts: a cached
    prefix favours a thread pool over `claude -p`; an uncached one favours
    several hubs per call. 33 s/call sequential is 11.3 h for the full run.
-5. **Full run** ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
+4. **Full run** ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
    catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
    adjudicates) ⇒ one figure.
@@ -462,7 +481,8 @@ above; this section is only the order.
 projects dir): `replay_stage3.py` replays stages 3-4 over a saved
 `discovered.jsonl`; `compare_runs.py` diffs two probe dump directories
 (stability, unit ceiling, over-cap count, baseline presence, test-retest).
-Use them before paying for anything.
+Use them before paying for anything. Growing the vocabularies is the same
+loop: edit the campaign YAML, replay, read the node notes.
 
 Two spec decisions owed by Reto — both already live as rows in the decisions
 log below (`domain_classes` element-symbol ids, and the `meta.axis`

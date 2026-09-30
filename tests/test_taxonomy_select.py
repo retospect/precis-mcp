@@ -211,6 +211,20 @@ def test_vocabulary_stability_empty_is_one():
     assert vocabulary_stability([]) == 1.0
 
 
+def test_vocabulary_stability_with_config_reads_the_folded_vocabulary():
+    """Blocker 4: the two halves name one family in two spellings. Lexically
+    that is zero overlap; through the campaign's synonym map it is total."""
+    config = load_campaign("norr-her-meta")
+    terms = [
+        make_term("NH3 yield rate", "A"),
+        make_term("Faradaic efficiency for NH3", "A"),
+        make_term("ammonia production rate", "B"),
+        make_term("NH3 Faradaic efficiency", "B"),
+    ]
+    assert vocabulary_stability(terms) == pytest.approx(0.0)
+    assert vocabulary_stability(terms, config) == pytest.approx(1.0)
+
+
 # --- select_entries -------------------------------------------------------
 
 

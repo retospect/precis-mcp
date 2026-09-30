@@ -239,7 +239,7 @@ def run_pipeline(
     # once the nodes carry real paper refs rather than hub refs.
     nodes = attribute_papers(nodes, papers_by_ref(rows, config))
     nodes = select.promote(nodes, config.thresholds)
-    stability = select.vocabulary_stability(terms)
+    stability = select.vocabulary_stability(terms, config)
     counts = hub_counts(nodes, rows, config, side_field=side_field)
     entries, rejected = select.select_entries(
         nodes, counts, config.thresholds, config, join_sides=join_sides

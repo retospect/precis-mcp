@@ -5,10 +5,19 @@ stage-2 output (:class:`~precis.taxonomy.types.DiscoveredTerm`):
 
 * :func:`alias_key` / :func:`normalise` group rows into
   :class:`~precis.taxonomy.types.TermNode` candidates by a lexical key —
-  Unicode fold, casefold, Greek-letter and US/UK spelling normalisation.
-  This key is for **resolution only**: ``term-taxonomy.md`` makes the node's
-  ref_id the identity, so two nodes colliding on ``alias_key`` is a merge
-  candidate, never an identity collision.
+  Unicode fold, casefold, Greek-letter and US/UK spelling normalisation,
+  then the campaign's synonym families (:func:`fold_aliases`: species
+  qualifier position and spelling, whole-phrase synonyms — blocker 4 of
+  ``taxonomy-bootstrap.md``). This key is for **resolution only**:
+  ``term-taxonomy.md`` makes the node's ref_id the identity, so two nodes
+  colliding on ``alias_key`` is a merge candidate, never an identity
+  collision.
+* :func:`canonical_qualifier` maps stage 2's prose answers for
+  ``reference_state`` / ``convention`` / ``normalisation_basis`` onto the
+  campaign's :class:`~precis.taxonomy.config.QualifierVocabulary` before
+  grouping, so ``"RHE"`` and ``"reversible hydrogen electrode (RHE)"`` are
+  one reference state and sign prose in ``convention`` does not split a
+  node.
 * :func:`resolve_dimension` turns a raw unit string into a
   :class:`~precis.taxonomy.types.DimensionSpec` via ``pint`` plus the
   campaign's extra unit definitions. **No embeddings anywhere in this
@@ -36,7 +45,11 @@ from typing import Any, Final
 
 import pint
 
-from precis.taxonomy.config import CampaignConfig
+from precis.taxonomy.config import (
+    CampaignConfig,
+    MeasurandAliases,
+    QualifierVocabulary,
+)
 from precis.taxonomy.types import (
     SI_BASE_ORDER,
     DimensionSpec,
@@ -100,6 +113,14 @@ _BRITISH_TO_AMERICAN: Final[tuple[tuple[str, str], ...]] = (
 #: the NFKD-folded minus sign U+2212, the padding spaces the Greek map adds)
 #: into a single hyphen.
 _NON_ALNUM: Final[re.Pattern[str]] = re.compile(r"[^a-z0-9]+")
+
+#: The English link words a measurand puts between the quantity and its
+#: species qualifier: ``faradaic efficiency for NH3`` / ``toward NH3`` /
+#: ``of NH3``. Not chemistry, so they live here rather than in the campaign
+#: YAML (AC8); the species tokens they attach to come from the campaign.
+#: ``to`` is deliberately absent — ``nitrate-to-ammonia`` and ``NO to NHO``
+#: name a step, and eating the ``to`` would fold a reaction into a species.
+_QUALIFIER_LINK_WORDS: Final[tuple[str, ...]] = ("for", "toward", "towards", "of")
 
 #: Below this composite score, two differently-keyed nodes are not offered
 #: as a merge suggestion. See :func:`_lexical_similarity` for why 0.82 sits
@@ -182,17 +203,7 @@ def resolve_dimension(
     return DimensionSpec(kind="si", si_vector=si_vector(dimensionality))
 
 
-def alias_key(text: str) -> str:
-    """A lexical resolution key for merge grouping — **not an identity**.
-
-    NFKD-fold (``⁻¹``/``₂`` → ASCII), casefold, fold Greek letters to their
-    spelled-out name, fold the handful of British spellings this corpus
-    uses to American, then collapse every run of punctuation/whitespace to
-    a single hyphen and strip the ends. Two raw strings sharing an
-    ``alias_key`` are candidates for the same :class:`TermNode`;
-    ``term-taxonomy.md`` makes the node's ref_id the identity, so a
-    collision here is a resolution decision, never an identity one.
-    """
+def _lexical_key(text: str) -> str:
     folded = unicodedata.normalize("NFKD", text).casefold()
     for british, american in _BRITISH_TO_AMERICAN:
         folded = folded.replace(british, american)
@@ -200,6 +211,120 @@ def alias_key(text: str) -> str:
         f" {_GREEK_TO_NAME[ch]} " if ch in _GREEK_TO_NAME else ch for ch in folded
     )
     return _NON_ALNUM.sub("-", folded).strip("-")
+
+
+def _replace_tokens(key: str, variant: str, canonical: str) -> str:
+    """Replace ``variant`` with ``canonical`` where it sits on token bounds.
+
+    Both are hyphen-joined token runs; a match must start and end at a
+    hyphen or the key's edge, so ``no`` never matches inside ``no3``.
+    """
+    pattern = rf"(?<![a-z0-9]){re.escape(variant)}(?![a-z0-9])"
+    return re.sub(pattern, canonical, key)
+
+
+def fold_aliases(key: str, aliases: MeasurandAliases) -> str:
+    """Collapse the campaign's synonym families onto one key each.
+
+    Input is an already-lexical key (:func:`_lexical_key`); output is the
+    same shape. Four deterministic rewrites, in this order:
+
+    1. every species variant → its canonical token
+       (``ammonia`` → ``nh3``, ``nh4`` from ``NH4+`` stays ``nh4``);
+    2. a trailing ``<link word>-<species>`` → ``-<species>`` for the link
+       words in :data:`_QUALIFIER_LINK_WORDS` (``faradaic-efficiency-for-nh3``
+       → ``faradaic-efficiency-nh3``). Tail only: ``ratio-of-nh3-yield-rate``
+       is a ratio, not an NH3-qualified ratio, and keeps its ``of``;
+    3. a species that *leads* the key moves to its tail
+       (``nh3-yield-rate`` → ``yield-rate-nh3``), so qualifier position no
+       longer splits a family. Only the leading token moves; a species in
+       the middle (``change-in-nh3-selectivity``) is left where it is
+       because that key names a different quantity and the tail form would
+       collide with it;
+    4. every phrase variant → its canonical phrase, longest variant first
+       so ``applied-electrode-potential`` is rewritten before
+       ``electrode-potential`` could match inside it.
+
+    Nothing here folds one species onto another: two keys that differ only
+    in ``nh3`` vs ``nh4`` stay two keys — ``taxonomy-bootstrap.md`` blocker
+    4 makes that a campaign decision, not a normalisation.
+    """
+    for canonical, variants in aliases.species.items():
+        for variant in variants:
+            key = _replace_tokens(key, variant, canonical)
+    species = tuple(aliases.species)
+    if species:
+        alternation = "|".join(
+            re.escape(s) for s in sorted(species, key=len, reverse=True)
+        )
+        links = "|".join(_QUALIFIER_LINK_WORDS)
+        key = re.sub(rf"-(?:{links})-({alternation})$", r"-\1", key)
+        key = re.sub(rf"^({alternation})-(.+)$", r"\2-\1", key)
+    phrase_rules = sorted(
+        (
+            (variant, canonical)
+            for canonical, vs in aliases.phrases.items()
+            for variant in vs
+        ),
+        key=lambda pair: (-len(pair[0]), pair[0]),
+    )
+    for variant, canonical in phrase_rules:
+        key = _replace_tokens(key, variant, canonical)
+    return key
+
+
+def alias_key(text: str, aliases: MeasurandAliases | None = None) -> str:
+    """A lexical resolution key for merge grouping — **not an identity**.
+
+    NFKD-fold (``⁻¹``/``₂`` → ASCII), casefold, fold Greek letters to their
+    spelled-out name, fold the handful of British spellings this corpus
+    uses to American, then collapse every run of punctuation/whitespace to
+    a single hyphen and strip the ends. With ``aliases`` (the campaign's
+    :class:`~precis.taxonomy.config.MeasurandAliases`) the key then goes
+    through :func:`fold_aliases`, so the synonym families the campaign
+    names collapse onto one key; without it the key is purely lexical.
+    Two raw strings sharing an ``alias_key`` are candidates for the same
+    :class:`TermNode`; ``term-taxonomy.md`` makes the node's ref_id the
+    identity, so a collision here is a resolution decision, never an
+    identity one.
+    """
+    key = _lexical_key(text)
+    if aliases is None:
+        return key
+    return fold_aliases(key, aliases)
+
+
+def canonical_qualifier(
+    field: str, value: str | None, vocabulary: QualifierVocabulary
+) -> tuple[str | None, str | None]:
+    """Map one qualifier value onto the campaign vocabulary.
+
+    Returns ``(canonical_or_kept_value, note)``. Matching is by
+    :func:`alias_key` on both sides, so ``"RHE"``, ``"vs. RHE"`` and
+    ``"reversible hydrogen electrode (RHE)"`` all land on ``rhe`` when the
+    vocabulary lists them; the canonical id matches itself. A listed field
+    with an unlisted value follows the field's policy (see
+    :class:`~precis.taxonomy.config.QualifierVocabulary`): ``convention``
+    drops to ``None``; the other two keep the value's lexical key. Either
+    way the note names the raw value so it can be added to the vocabulary
+    or refused deliberately — the vocabulary grows from these notes, which
+    is why an unlisted value is never silent.
+    """
+    if value is None:
+        return None, None
+    entries: dict[str, tuple[str, ...]] = getattr(vocabulary, field)
+    key = _lexical_key(value)
+    for canonical, variants in entries.items():
+        if key == _lexical_key(canonical) or any(
+            key == _lexical_key(v) for v in variants
+        ):
+            return canonical, None
+    if field == "convention":
+        return None, (
+            f"convention {value!r} is not in the campaign vocabulary — dropped "
+            "(sign/direction prose does not make two values non-comparable)"
+        )
+    return key, f"{field} {value!r} is not in the campaign vocabulary — kept as {key!r}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +404,7 @@ def _build_node(
     convention: str | None,
     normalisation_basis: str | None,
     rows: Sequence[DiscoveredTerm],
+    notes: tuple[str, ...] = (),
 ) -> TermNode:
     label_counts: Counter[str] = Counter(row.measurand for row in rows)
     top = max(label_counts.values())
@@ -308,6 +434,7 @@ def _build_node(
         mention_count=len(rows),
         status="proposed",
         anchors=anchors,
+        notes=notes,
     )
 
 
@@ -406,7 +533,11 @@ def normalise(
     Grouping key is the full compare identity: ``(alias_key(measurand),
     dimension, reference_state, convention, normalisation_basis)`` —
     ``TermNode.identity()`` minus the alphabetical-vs-canonical distinction
-    between ``key`` and ``alias_key``. The dimension mismatch gate (AC5)
+    between ``key`` and ``alias_key``. The measurand key goes through the
+    campaign's synonym families (:func:`fold_aliases`) and the three
+    qualifiers through its vocabulary (:func:`canonical_qualifier`) first,
+    so a spelling is never a split; what the vocabulary could not place is
+    recorded on the node's ``notes``. The dimension mismatch gate (AC5)
     keeps differently-dimensioned rows apart even when they share an
     ``alias_key``; rows disagreeing on ``reference_state``, ``convention``
     or ``normalisation_basis`` are split rather than pooled for the same
@@ -422,42 +553,43 @@ def normalise(
     """
     GroupKey = tuple[str, DimensionSpec | None, str | None, str | None, str | None]
     groups: dict[GroupKey, list[DiscoveredTerm]] = defaultdict(list)
+    group_notes: dict[GroupKey, Counter[str]] = defaultdict(Counter)
+    vocabulary = config.qualifier_vocabulary
     for term in terms:
         # The OBSERVED unit, never the model's prose. See the docstring: the
         # first real run resolved 5 dimensions out of 182 nodes because this
         # passed `dimension_text`, which `resolve_dimension` then tried to
         # parse with pint.
         dimension = resolve_dimension(term.mention.raw_unit, registry, config)
-        key = alias_key(term.measurand)
-        groups[
-            (
-                key,
-                dimension,
-                term.reference_state,
-                term.convention,
-                term.normalisation_basis,
-            )
-        ].append(term)
-
-    records = [
-        (
-            key,
-            dimension,
-            reference_state,
-            convention,
-            normalisation_basis,
-            _build_node(
-                key, dimension, reference_state, convention, normalisation_basis, rows
-            ),
+        key = alias_key(term.measurand, config.measurand_aliases)
+        reference_state, ref_note = canonical_qualifier(
+            "reference_state", term.reference_state, vocabulary
         )
-        for (
+        convention, conv_note = canonical_qualifier(
+            "convention", term.convention, vocabulary
+        )
+        normalisation_basis, basis_note = canonical_qualifier(
+            "normalisation_basis", term.normalisation_basis, vocabulary
+        )
+        group_key: GroupKey = (
             key,
             dimension,
             reference_state,
             convention,
             normalisation_basis,
-        ), rows in groups.items()
-    ]
+        )
+        groups[group_key].append(term)
+        for note in (ref_note, conv_note, basis_note):
+            if note is not None:
+                group_notes[group_key][note] += 1
+
+    records = []
+    for group_key, rows in groups.items():
+        notes = tuple(
+            f"{note} ({count} mention{'s' if count != 1 else ''})"
+            for note, count in sorted(group_notes[group_key].items())
+        )
+        records.append((*group_key, _build_node(*group_key, rows, notes=notes)))
     records.sort(
         key=lambda r: (
             r[0],

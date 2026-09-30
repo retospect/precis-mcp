@@ -99,23 +99,30 @@ def promote(nodes: Sequence[TermNode], thresholds: Thresholds) -> tuple[TermNode
     return tuple(out)
 
 
-def vocabulary_stability(terms: Sequence[DiscoveredTerm]) -> float:
+def vocabulary_stability(
+    terms: Sequence[DiscoveredTerm], config: CampaignConfig | None = None
+) -> float:
     """Mention-weighted A/B vocabulary overlap (AC2's fixture check).
 
     Weighted Jaccard over ``alias_key`` mention counts per half: for each
     key, the shared weight is ``min(count_A, count_B)`` and the combined
     weight is ``max(count_A, count_B)``; the ratio of the sums is the
     overlap. Returns ``1.0`` for empty input rather than dividing by zero.
+    With ``config`` the key is the campaign-folded one (synonym families
+    collapsed, the same key stage 3 groups on), so the number reads the
+    vocabulary the run actually produces; without it the key is purely
+    lexical.
 
     A run below ``thresholds.min_stability`` means **fix the discovery
     prompt**, never lower the bar — the threshold exists precisely to catch
     a prompt drifting into inconsistent vocabulary before it reaches
     selection.
     """
+    aliases = config.measurand_aliases if config is not None else None
     counts_a: Counter[str] = Counter()
     counts_b: Counter[str] = Counter()
     for term in terms:
-        key = alias_key(term.measurand)
+        key = alias_key(term.measurand, aliases)
         if term.half == "A":
             counts_a[key] += 1
         else:

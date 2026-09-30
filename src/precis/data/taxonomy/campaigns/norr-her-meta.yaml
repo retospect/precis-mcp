@@ -160,6 +160,69 @@ domain_classes:
 # Site classes for the termination axis's non-facet half.
 site_classes: [terrace, edge, step, kink, corner, vacancy, dual-atom, interface, defect]
 
+# Stage-3 synonym families (taxonomy-bootstrap.md blocker 4, measured on the
+# 2026-09-30 probe). Both maps go canonical -> variants in alias_key form
+# (lowercase, hyphen-joined). `species` are the qualifiers a measurand carries
+# in its name; normalise.fold_aliases rewrites every variant to the canonical
+# token and moves a LEADING species to the tail, so "NH3 yield rate",
+# "yield rate for NH3" and "ammonia yield rate" are one key. Two species never
+# fold onto each other: NH3 vs NH4+ Faradaic efficiency is a campaign call and
+# the species stays in the name by design. `no` (nitric oxide) is deliberately
+# not listed: as a bare token it is also the English word.
+measurand_aliases:
+  species:
+    nh3: [ammonia]
+    nh4: [ammonium]
+    n2: []
+    no3: [nitrate]
+    no2: [nitrite]
+    no3rr: [nitrate-reduction]
+    her: [hydrogen-evolution]
+  phrases:
+    yield-rate: [production-rate, formation-rate]
+    applied-potential: [applied-electrode-potential, electrode-potential]
+
+# Canonical values for stage 2's free-text qualifier fields, compared in
+# alias_key form. reference_state and normalisation_basis are OPEN: an
+# unlisted value is kept as its key and the node carries a note naming it —
+# grow the list from those notes. convention is CLOSED: the model fills it
+# with sign/direction prose ("cathodic (negative)", "closer to zero is more
+# favorable") which describes the number rather than making two values
+# non-comparable, so an unlisted convention is dropped with a note. The two
+# listed conventions are the AC5 sense of the word: named sign conventions
+# under which the same potential reads with opposite sign.
+qualifier_vocabulary:
+  reference_state:
+    rhe: [reversible-hydrogen-electrode, reversible-hydrogen-electrode-rhe, vs-rhe]
+    she: [standard-hydrogen-electrode, vs-she]
+    nhe: [normal-hydrogen-electrode, vs-nhe]
+    ag-agcl: [ag-agcl-electrode, silver-silver-chloride-electrode, vs-ag-agcl]
+    hg-hgo: [mercury-mercury-oxide-electrode, vs-hg-hgo]
+    sce: [saturated-calomel-electrode, vs-sce]
+    li-li: [lithium-metal-reference, vs-li-li]
+  convention:
+    iupac: [iupac-sign-convention]
+    us-electrochem: [us-electrochemical-convention, american-sign-convention]
+  normalisation_basis:
+    per-geometric-area:
+      - electrode-area
+      - per-electrode-area
+      - per-unit-electrode-area
+      - electrode-geometric-area
+      - per-electrode-geometric-area
+      - geometric-electrode-area
+      - geometric-area
+      - per-geometric-electrode-area
+    per-catalyst-mass:
+      - catalyst-mass
+      - mass-of-catalyst
+      - per-gram-catalyst
+      - per-catalyst-mass
+      - per-mass-of-catalyst
+    per-ecsa: [ecsa, electrochemically-active-surface-area]
+    per-active-site: [per-site, active-site]
+    per-metal-loading: [mass-of-metal, metal-mass, per-gram-metal, metal-loading]
+
 # Thresholds. Defaults live in the library (taxonomy-bootstrap.md
 # section Thresholds); a campaign may only tighten them, and any override is
 # recorded in list.vN.yaml.

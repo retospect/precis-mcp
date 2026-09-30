@@ -25,7 +25,9 @@ from precis.taxonomy.types import Snapshot, Thresholds
 
 #: Bumped when a stage changes what it emits for unchanged input. Recorded in
 #: every frozen list, so "same numbers, different procedure" is detectable.
-PROCEDURE_VERSION: Final[int] = 1
+#: 2 (2026-09-30): stage 3 folds measurand synonyms and canonicalises the
+#: qualifier fields through the campaign vocabularies (blocker 4).
+PROCEDURE_VERSION: Final[int] = 2
 
 _CAMPAIGN_DIR: Final[str] = "taxonomy/campaigns"
 
@@ -51,6 +53,57 @@ class DomainClass:
     id: str
     label: str
     parents: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurandAliases:
+    """Stage-3 synonym families for the measurand string (blocker 4).
+
+    Both maps go canonical → variants, every string already in
+    :func:`~precis.taxonomy.normalise.alias_key` form (lowercase, hyphen
+    joined) so a rule reads the way the key it matches reads.
+
+    ``species`` names the chemical species a measurand may carry as a
+    qualifier (``NH3 yield rate`` / ``yield rate for NH3`` / ``ammonia yield
+    rate``). :func:`~precis.taxonomy.normalise.fold_aliases` rewrites every
+    variant to its canonical token and moves the species to the tail of
+    the key, so the three spellings share one key. Two *different* species
+    never fold — ``nh3`` and ``nh4`` stay two keys by design
+    (``taxonomy-bootstrap.md`` blocker 4: the species is part of which
+    quantity it is).
+
+    ``phrases`` names whole-phrase synonyms (``production-rate`` ≡
+    ``yield-rate``), matched on token boundaries inside the key.
+    """
+
+    species: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    phrases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class QualifierVocabulary:
+    """Canonical values for the model's free-text qualifier fields.
+
+    Stage 2 answers ``reference_state`` / ``convention`` /
+    ``normalisation_basis`` in prose (``"RHE"``, ``"reversible hydrogen
+    electrode (RHE)"``, ``"electrode geometric area"``); stage 3 groups on
+    those strings, so every spelling is a node split. Each map goes
+    canonical id → variants, compared in ``alias_key`` form.
+
+    ``reference_state`` and ``normalisation_basis`` are **open**: a value
+    outside the list is kept (as its ``alias_key``) and the node carries a
+    note, because dropping an unlisted reference electrode would merge two
+    non-comparable potentials. ``convention`` is **closed**: a value outside
+    the list is dropped to ``None`` with a note, because what the model
+    puts there unprompted is sign and direction prose (``"cathodic
+    (negative)"``, ``"closer to zero is more favorable"``) — a description
+    of the number, not a convention in the AC5 sense that would make two
+    values non-comparable.
+    """
+
+    reference_state: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    convention: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    normalisation_basis: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +143,10 @@ class CampaignConfig:
     domain_tag_prefix: str = ""
     domain_tag_separator: str = "-"
     site_classes: tuple[str, ...] = ()
+    measurand_aliases: MeasurandAliases = field(default_factory=MeasurandAliases)
+    qualifier_vocabulary: QualifierVocabulary = field(
+        default_factory=QualifierVocabulary
+    )
 
     def required_conditions(self, measurand_key: str) -> tuple[str, ...]:
         """Conditions a value of this measurand must carry.
@@ -189,6 +246,68 @@ def _parse(data: dict[str, Any]) -> CampaignConfig:
         domain_tag_prefix=str(domain.get("tag_prefix", "")),
         domain_tag_separator=str(domain.get("tag_separator", "-")),
         site_classes=tuple(str(s) for s in data.get("site_classes") or ()),
+        measurand_aliases=_parse_measurand_aliases(data.get("measurand_aliases") or {}),
+        qualifier_vocabulary=_parse_qualifier_vocabulary(
+            data.get("qualifier_vocabulary") or {}
+        ),
+    )
+
+
+def _parse_synonym_map(section: str, raw: Any) -> dict[str, tuple[str, ...]]:
+    """``canonical: [variants...]`` → dict, refusing a variant that is also a
+    canonical or that appears under two canonicals — either would make the
+    fold order-dependent, and the whole point of the map is determinism."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{section} must be a mapping of canonical -> variants")
+    out: dict[str, tuple[str, ...]] = {}
+    seen: dict[str, str] = {}
+    for canonical, variants in raw.items():
+        canonical = str(canonical)
+        values = tuple(str(v) for v in (variants or ()))
+        for variant in values:
+            owner = seen.get(variant)
+            if owner is not None and owner != canonical:
+                raise ValueError(
+                    f"{section}: variant {variant!r} listed under both "
+                    f"{owner!r} and {canonical!r}"
+                )
+            if variant in raw and variant != canonical:
+                raise ValueError(
+                    f"{section}: {variant!r} is both a canonical and a variant of "
+                    f"{canonical!r}"
+                )
+            seen[variant] = canonical
+        out[canonical] = values
+    return out
+
+
+def _parse_measurand_aliases(raw: Any) -> MeasurandAliases:
+    if not isinstance(raw, dict):
+        raise ValueError("measurand_aliases must be a mapping")
+    return MeasurandAliases(
+        species=_parse_synonym_map(
+            "measurand_aliases.species", raw.get("species") or {}
+        ),
+        phrases=_parse_synonym_map(
+            "measurand_aliases.phrases", raw.get("phrases") or {}
+        ),
+    )
+
+
+def _parse_qualifier_vocabulary(raw: Any) -> QualifierVocabulary:
+    if not isinstance(raw, dict):
+        raise ValueError("qualifier_vocabulary must be a mapping")
+    return QualifierVocabulary(
+        reference_state=_parse_synonym_map(
+            "qualifier_vocabulary.reference_state", raw.get("reference_state") or {}
+        ),
+        convention=_parse_synonym_map(
+            "qualifier_vocabulary.convention", raw.get("convention") or {}
+        ),
+        normalisation_basis=_parse_synonym_map(
+            "qualifier_vocabulary.normalisation_basis",
+            raw.get("normalisation_basis") or {},
+        ),
     )
 
 
