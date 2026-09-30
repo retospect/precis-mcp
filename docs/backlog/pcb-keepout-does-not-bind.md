@@ -93,5 +93,9 @@ Closest existing items: `pcb-missing-constraint-classes.md` (the survey
 that assumed this mechanism existed), `pcb-se-binding.md` (the mm-enclave
 crossing this item's fluidic/thermal door feeds), `pcb-argue-with-design.md`
 (the anchor grammar that already names `feature:outline`'s `ftype` set).
+Same defect class as `pcb-placer-obstacle-set-is-mounting-holes-only.md`
+(ewod-pcb Do-next 3): authored geometry the engine silently ignores — there
+via an incomplete obstacle set, here via an unimplemented `ftype`. Whoever
+implements either should read both.
 Thread: `docs/backlog/threads/pcb-easyeda-round-trip.md` (sequenced behind
 `docs/backlog/threads/ewod-pcb.md` on the generator/DRC files it touches).

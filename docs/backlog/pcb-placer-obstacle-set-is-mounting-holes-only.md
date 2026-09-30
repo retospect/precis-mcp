@@ -43,6 +43,11 @@ is read by `ratsnest.py`, `silk.py`, `realize.py`, `rules.py`, `ir.py`,
 instance as bodily overlapping when their courtyards intersect in XY,
 regardless of the board being between them.
 
+Same defect class as `pcb-keepout-does-not-bind.md` (pcb-easyeda thread):
+authored geometry the engine silently ignores — here via an incomplete
+obstacle set, there via an unimplemented `ftype='keepout'`. Whoever
+implements either should read both.
+
 Two consequences, opposite in sign:
 
 - A legitimate bottom-side part underneath a top-side part is currently

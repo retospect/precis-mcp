@@ -92,7 +92,12 @@ gr346534, soft-deleted)
   unavailability) consuming the same unpark-attempt budget as a real
   failed fix. Reto ruled 2026-09-30 (Do-next 1 above): **leave it not
   doing anything.** Unparks only on a future decision to re-enable the
-  lane.
+  lane. Side effect to watch: the reset of the 39 parked gripes to
+  `open` re-surfaced at least one already-fixed gripe as current
+  (gr458087 — the STRtree fix it proposed is in `check_via_pad_keepout`
+  and cites it; ewod-pcb re-measured 2026-09-30 and queued the close for
+  Reto). Any gripe from that reset needs "is the fix already in main?"
+  asked before it is ranked.
 
 ## No action needed
 

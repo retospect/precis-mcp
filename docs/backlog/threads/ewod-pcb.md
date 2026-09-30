@@ -150,6 +150,9 @@ soft-deleted)
 
 - **backlog/pcb-pre-place-route-blocks.md** — already landed; verify and
   delete.
+- **gr346009** — soft-deleted, do not reopen; the count it exposed is
+  Do-next 1's. (Tombstone restored 2026-09-30 after the review's relink
+  pass pruned it as "closed".)
 - **The "maze occupancy guarantee leak"** — there was no leak. The router
   cleared its own claim by 0.1703 mm on the copper that fired the finding;
   the model and the grid disagreed about the pad's ORIENTATION. Fixed by
