@@ -5,7 +5,7 @@ supervised shared MCP server that never kills an in-flight call, reports
 truthfully what it runs, and gives each session its own DB role and a fair
 share. Agent containers and the sandbox sidecar stay stdio and are NOT part
 of that end state — backlog/mcp-shared-transport-concurrency.md rules them
-out, and item 6's role bullet is why: they depend on process-level role
+out, and item 5's role bullet is why: they depend on process-level role
 separation this server cannot give them. Today it is one long-lived
 streamable-http server, live since 2026-09-29 and dogfooded; a defect
 shipped by this thread kills in-flight calls on every bounce and the status
@@ -27,27 +27,22 @@ criteria and the isolation gaps.
    served (measured: reported f2cbcb29, built 2026-09-08, while serving code
    542 commits newer the same day). Leverage: "which sha is this session
    talking to" is unanswerable, which blocks the parent item's AC2 and makes
-   1 and 4 harder to diagnose. Not
+   1 and 3 harder to diagnose. Not
    started: no branch on origin and no live tree claims it as of 2026-09-30.
    gr458039 closed as its duplicate; its git_dirty observation is appended
    there.
-3. **gr458038** — the same surface reports a stale uptime (20.6 h against a
-   real process age of ~70 min), so it says the server did not restart when
-   it did. Same root cause as 2 (_collect_build_info reports baked or
-   boot-time identity, not what is live); whoever picks one reads the other,
-   a fix that ignores the other leaves the surface lying.
-4. **gr457326** — the md-index vector warmup has no retry, so one slow
+3. **gr457326** — the md-index vector warmup has no retry, so one slow
    embedder batch at boot leaves the cache cold for the process lifetime,
    which is now shared by every session. Degrades silently to lexical.
-5. **backlog/session-mcp-http-server.md** — AC3 (a new verb kwarg surviving a
+4. **backlog/session-mcp-http-server.md** — AC3 (a new verb kwarg surviving a
    bounce) is the last criterion that neither passes nor is blocked; it
    cannot be attempted until 1 stops bounces from killing calls. Delete the
    item when it and AC5 close.
-6. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
-   image rebuild bounces every session. Below 2–3 because its acceptance
+   image rebuild bounces every session. Below 2 because its acceptance
    criteria are verified by probing the surface they fix. The role bullet
    decides whether coding jobs can ever leave containers.
 
@@ -90,7 +85,7 @@ criteria and the isolation gaps.
   pool-headroom statements are inference from backend counts.
 - **K-parallel exercise-mcp load harness** — specced inside
   backlog/mcp-shared-transport-concurrency.md; unparks when the role and
-  fairness gaps in 6 are closed, before that it measures an idle server.
+  fairness gaps in Do-next 5 are closed, before that it measures an idle server.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.
@@ -100,6 +95,12 @@ criteria and the isolation gaps.
 - **backlog/mcp-staleness-title-roundtrip-guards.md item 2** — closed: the
   stdio launcher is deleted and the checkout watchdog bounces on a HEAD move.
   Item 1 of that file is unrelated and stays open.
+- **gr458038** — refuted: my own filing, retracted as a measurement error.
+  The precis-status uptime I called stale came from a pre-flip stdio
+  container (`precis-mcp-dev-59558`) while the "real" age I compared it to
+  was `precis-mcp-http`; `_STARTED_AT` is captured at module import and
+  cannot survive a restart. It was ranked here as sharing gr457361's root
+  cause — it does not, and landing that fix has no bearing on it.
 - **stale-serve leak / scripts/reap-stale-serves** — measured absent across
   the cluster and moot on the shared server.
 - **pgbouncer and embedder saturation** — measured 2026-09-30T06:44Z: 17/100
