@@ -5,7 +5,7 @@ supervised shared MCP server that never kills an in-flight call, reports
 truthfully what it runs, and gives each session its own DB role and a fair
 share. Agent containers and the sandbox sidecar stay stdio and are NOT part
 of that end state — backlog/mcp-shared-transport-concurrency.md rules them
-out, and item 4's role bullet is why: they depend on process-level role
+out, and item 5's role bullet is why: they depend on process-level role
 separation this server cannot give them. Today it is one long-lived
 streamable-http server, live since 2026-09-29 and dogfooded. The defect
 this thread shipped — every bounce killed the calls in flight — is fixed
@@ -18,7 +18,6 @@ the parent item's remaining criteria and the isolation gaps.
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
-
 1. **gr457361** — precis-status reports the image build arg, not the source
    served (measured: reported f2cbcb29, built 2026-09-08, while serving code
    542 commits newer the same day). Worse than unanswerable: gr458061 caught
@@ -28,22 +27,43 @@ the parent item's remaining criteria and the isolation gaps.
    current — which produced two detailed false root-cause analyses
    (gr457995, gr457996, both refuted) and let a join through that the
    current code refuses. So the acceptance criterion is not "the right sha
-   appears" but that sha, started_at and uptime are mutually consistent, and
-   that the served source is distinguished from the image build. No cheap
+   appears" but that the sha names the code the process is EXECUTING and
+   started_at names that process, distinguished from the image build.
+   Correcting one thing carried over from gr458061: started_at and uptime
+   cannot contradict each other — `uptime_seconds` is
+   `int((now - _STARTED_AT).total_seconds())` over the same module-level
+   value, so they agree by construction, and gr458061's pair (15:34:31
+   against 54369 s, read at ~07:14) is ~34 min apart, which an approximate
+   read time explains. Do not spend the fix chasing that; the misleading
+   field was the sha alone. No cheap
    check substitutes: in that container stat, grep and a fresh `python -c`
    import all reported the new code. That is why this blocks dogfooding
    generally, not just this thread. Not started: no branch on origin and no
    live tree claims it as of 2026-09-30. gr458039 closed as its duplicate
-   (git_dirty observation appended there); close gr458061 as one too when
-   this lands — it is the evidence record, hexa is not touching src/precis/.
-2. **gr457326** — the md-index vector warmup has no retry, so one slow
+   (git_dirty observation appended there). Do NOT close gr458061 when this
+   lands: its second half — restart the server when the mounted checkout
+   advances — is a different fix in a different module, and landing only
+   this one buys a status surface that truthfully reports stale modules
+   with still no mechanism to stop serving them. That half is item 2.
+2. **backlog/mcp-staleness-title-roundtrip-guards.md item 2** — re-opened;
+   it was wrongly in No action needed, and it now owns gr458061's
+   restart-on-drift half. The closure said the checkout watchdog bounces on
+   a HEAD move. It does not for the per-session `precis-mcp-dev-*`
+   containers, which are still live serving every pre-flip session and which
+   Parked AC5 says must not be swept: `CheckoutWatchdog` only arms when
+   `PRECIS_CHECKOUT_WATCHDOG` is set and the dev-stdio launch path never
+   sets it, while `InstallWatchdog._fingerprint_for` still returns `None`
+   outside `site-packages` as of 54067ee3, which an editable install is.
+   Below 1 because a truthful surface makes this diagnosable, but 1 does not
+   fix it.
+3. **gr457326** — the md-index vector warmup has no retry, so one slow
    embedder batch at boot leaves the cache cold for the process lifetime,
    which is now shared by every session. Degrades silently to lexical.
-3. **backlog/session-mcp-http-server.md** — AC3 (a new verb kwarg surviving a
+4. **backlog/session-mcp-http-server.md** — AC3 (a new verb kwarg surviving a
    bounce) is the last criterion that neither passes nor is blocked — it
    was waiting on gr457887, which has landed and re-verified, so it is
    attemptable now. Delete the item when AC3 and AC5 close.
-4. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
@@ -97,9 +117,6 @@ the parent item's remaining criteria and the isolation gaps.
 
 ## No action needed
 
-- **backlog/mcp-staleness-title-roundtrip-guards.md item 2** — closed: the
-  stdio launcher is deleted and the checkout watchdog bounces on a HEAD move.
-  Item 1 of that file is unrelated and stays open.
 - **gr458038** — refuted: my own filing, retracted as a measurement error.
   The precis-status uptime I called stale came from a pre-flip stdio
   container (`precis-mcp-dev-59558`) while the "real" age I compared it to
