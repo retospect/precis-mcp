@@ -62,6 +62,11 @@ both STATUS:done)
   smooth transition + tilt-boundary contrast is not producible today;
   parked on hexfold's smooth-collar horizon (hexfold-toolkit thread,
   `spec.md` §28.5–28.6). Peer session nanobuds, 2026-09-30.
+- **restructure cite candidates** — the gap-finder (view='backfill' on
+  dc2445953, 2026-10-01) surfaced pa4365 (first-principles nanobud states
+  0.3–0.8 eV above the Fermi level, matching the STS features dc3015724
+  reports) as uncited; fold it into the electronic-structure argument during
+  the restructure, not before. The rest of the candidate list was weak.
 - **abstract scope contradiction (dc2445850 vs dc2445883, covalent vs
   non-covalent buds)** — authors' scope decision; unparks with td450081,
   where the scope line gets drawn.
@@ -78,7 +83,7 @@ both STATUS:done)
 - **dogfood 2026-09-30 (fleet 7c915f79)** — the three cites that drifted when
   fi449540/fi449588/fi449590 were retitled (dc3824813/15/16) re-pinned by
   rewriting each chunk unchanged; export no longer blocked. Three legacy pc cites
-  became hubs: fi458947 (twelve-pentagon rule, dc2445873), fi458948 (AFM
+  became hubs: fi458947 (twelve-pentagon rule, dc2445873; grounded on pc2580141 plus the two primary sources review note fi188551 named, pc244266 and pc281158, attached 2026-10-01), fi458948 (AFM
   5-7 kinks, dc2445877) and fi458952 (schwarzon shielding, dc2445916). Filed gr458941 (every hub shows "no originator
   derived yet") and gr458943 (hygiene view and windows refuse forms the skill
   documents). The ten caption cites stay `Reproduced from [pc…]` by policy.
