@@ -40,12 +40,14 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
    harness paid for — a phase waits on an observable condition rather than
    a fixed timeout, the noise floor is measured in the same run, and canvas
    AND tree are both witnessed — the first of which is what a 2.7 s settle
-   on a 3.5 s swap cost (see below). SCOPE SETTLED (Reto, 2026-09-30,
-   td458066): **local-fixture lane only — no agent ever drives a browser
-   against the prod deployment.** Prod DATA still reaches the harness
-   through `view='ops'`; the prod deployment itself is checked by Reto by
-   hand at a release boundary if at all, and nothing here handles the Basic
-   credential.
+   on a 3.5 s swap cost (see below). SCOPE SETTLED (Reto, 2026-10-01):
+   **a nightly GitHub-hosted workflow against a local fixture, the
+   `unicycle-c1` design.** td458066 means agents touch prod data through
+   the MCP, not that testing is barred from prod — prod is ruled out here
+   for two other reasons: CI would have to hold the Basic credential, and
+   a prod run tests the deployed tree after the fact instead of `main`
+   before it ships. Prod DATA still reaches the fixture through
+   `view='ops'`.
 2. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later

@@ -30,6 +30,20 @@ it is a nightly lane rather than a per-push one, and what the seeded design
 is. `scripts/guide-capture` already solves the "drive a real browser from
 this repo" half — the missing half is a design fixture plus canvas diffing.
 
+Decided (Reto, 2026-10-01): its own nightly workflow on GitHub-hosted
+runners (free for a public repo), separate from `check.yml` and scheduled
+away from its 05:23 UTC nightly, which already takes 18 of the account's
+20 job slots; plus `workflow_dispatch` for an on-demand run. Fixture = the
+`unicycle-c1` design's ops. Not against prod: CI would have to hold the
+Basic credential, and a prod run tests the deployed tree after the fact.
+Runs entirely on the runner, the way `check.yml`'s shards already do:
+a `pgvector/pgvector:pg17` service, `uv sync --all-extras`, migrate,
+seed the committed fixture, serve precis-web on localhost, and install
+Chromium with `playwright install --with-deps chromium` (~150 MB) rather
+than pulling the ~2 GB Playwright image. Expected cost: one
+4-vCPU/16 GB runner, ~3–5 min a night, CPU-bound (SwiftShader software
+WebGL).
+
 ## The case, in one affordance (2026-10-01)
 
 `explode` was dead from the feature commit that introduced it until
