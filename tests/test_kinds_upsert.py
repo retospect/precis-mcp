@@ -95,6 +95,42 @@ def test_upsert_kind_providers_dedups_by_pk(store: Store) -> None:
     assert store.find_kind_providers("testkind-d") == ["alpha"]
 
 
+def test_upsert_kind_providers_skips_unknown_process(store: Store) -> None:
+    """gr452084 defect 4: a ``process="unknown"`` boot (PRECIS_PROCESS unset —
+    throwaway container / local dev) writes no rows, so it can't accrue as
+    ballast or fold into a bogus kind-shrinkage pair."""
+    spec = _FakeSpec(kind="testkind-u", is_numeric=False, title="U", description="u")
+    store.upsert_kinds([spec])
+    n = store.upsert_kind_providers([spec], host="070b9620ec08", process="unknown")
+    assert n == 0
+    assert store.find_kind_providers("testkind-u", max_age_seconds=24 * 3600) == []
+
+
+def test_prune_kind_providers_drops_aged_rows(store: Store) -> None:
+    """gr452084 defect 4: rows for a (host, process) that stopped booting age
+    past the retention window and get pruned; a fresh row stays."""
+    fresh = _FakeSpec(kind="testkind-f", is_numeric=False, title="F", description="f")
+    gone = _FakeSpec(kind="testkind-g", is_numeric=False, title="G", description="g")
+    store.upsert_kinds([fresh, gone])
+    store.upsert_kind_providers([fresh], host="live", process="precis-test")
+    store.upsert_kind_providers([gone], host="dead", process="precis-test")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE kind_provider SET last_seen = now() - interval '40 days' "
+            "WHERE slug = %s",
+            ("testkind-g",),
+        )
+        conn.commit()
+    # Global count (the shared precis_test DB may hold other aged rows), so
+    # assert on the specific slugs rather than the exact delete total.
+    deleted = store.prune_kind_providers(retention_days=30)
+    assert deleted >= 1
+    assert store.find_kind_providers("testkind-g", max_age_seconds=10**9) == []
+    assert store.find_kind_providers("testkind-f", max_age_seconds=10**9) == ["live"]
+    # A disabled window is a no-op.
+    assert store.prune_kind_providers(retention_days=0) == 0
+
+
 def test_find_kind_providers_filters_stale(store: Store) -> None:
     spec = _FakeSpec(kind="testkind-e", is_numeric=False, title="E", description="e")
     store.upsert_kinds([spec])

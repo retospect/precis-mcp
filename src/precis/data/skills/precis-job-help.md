@@ -56,6 +56,10 @@ Not cron. Not celery. Not a subprocess you wait on.
   only *that* tag means the substrate has given up and a human (or
   the parent's owner) must decide. The nursery surfaces
   still-recoverable parks per-leaf and finals as one aggregate.
+  A terminally parked leaf carries BOTH `child-failed-final` AND its
+  last open `child-failed:<job_id>` tag; clearing them takes the
+  retry verb or a single two-tag `tag(remove=…)` (see below) —
+  removing `child-failed-final` on its own does not stick.
 
 ## What is a job in precis
 ## How do jobs differ from regular tool calls?
@@ -235,7 +239,11 @@ don't keep getting re-picked. The sweeper auto-unparks bounded
 ```python
 # Option A (preferred): the retry verb. One call clears the bubble
 # so the dispatch worker re-mints a fresh attempt on its next sweep
-# (~1 min). The failed job stays for forensics.
+# (~1 min). The failed job stays for forensics. If the parent has
+# also been terminally parked (child-failed-final latched by the
+# sweeper), retry strips that latch too and resets the unpark budget
+# in the same call — so this is the one recipe that unparks a
+# child-failed-final leaf without knowing the tag names.
 put(kind='job', id=<failed_job_id>, mode='retry')
 
 # Change the model at the same time (opus | sonnet | haiku). This
@@ -255,6 +263,16 @@ put(kind='job', id=<failed_job_id>, mode='retry', model='sonnet')
 # child is terminal, so it does NOT block re-mint — deleting it is
 # optional cleanup, not required.
 tag(kind='todo', id=<parent_id>, remove=[f'child-failed:{failed_job_id}'])
+# If the leaf is terminally parked (has child-failed-final too), you
+# MUST remove BOTH tags in ONE call — removing child-failed-final
+# alone does not stick: the sweeper re-latches it on its next cycle
+# while the child-failed:<job_id> tag is still open and
+# unpark_attempts is at the cap. Prefer Option A, which also resets
+# the unpark budget; the manual two-tag removal leaves unpark_attempts
+# at the cap, so one more failure re-latches child-failed-final
+# immediately.
+tag(kind='todo', id=<parent_id>,
+    remove=['child-failed-final', f'child-failed:{failed_job_id}'])
 # (optionally) delete(kind='job', id=<failed_job_id>)
 # Dispatch worker mints a fresh job on the next tick.
 

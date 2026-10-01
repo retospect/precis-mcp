@@ -638,6 +638,42 @@ class TestCleanTextDehyphenation:
         assert "ending-" in result or "ending second" not in result.replace("\n", " ")
 
 
+class TestCleanTextRecordsControlChars:
+    """gr228652 — the C0-control strip must not silently destroy evidence.
+
+    For Advent-3B2 ``Adv*`` fonts with no ``/ToUnicode`` (mode "b"), a
+    dropped μ/Greek glyph surfaces as U+0002 &c.; deleting it silently turns
+    a detectable corruption marker into an undetectable one. The strip still
+    happens (the chars are not renderable) but the count is now recorded.
+    """
+
+    def test_control_chars_still_stripped(self) -> None:
+        # pa47024's stored-before-strip shape: "6 \x02m" -> "6 m".
+        assert _clean_text("6 \x02m") == "6 m"
+
+    def test_count_recorded_in_stats(self) -> None:
+        stats: dict[str, int] = {}
+        _clean_text("7.3 \x02m/s and 6 \x02m", control_stats=stats)
+        assert stats["c0_controls_stripped"] == 2
+
+    def test_stats_accumulate_across_calls(self) -> None:
+        stats: dict[str, int] = {}
+        _clean_text("a\x02b", control_stats=stats)
+        _clean_text("c\x03d\x04e", control_stats=stats)
+        assert stats["c0_controls_stripped"] == 3
+
+    def test_clean_text_leaves_stats_absent_when_nothing_stripped(self) -> None:
+        stats: dict[str, int] = {}
+        _clean_text("perfectly clean ascii", control_stats=stats)
+        assert "c0_controls_stripped" not in stats
+
+    def test_tab_and_newline_not_counted(self) -> None:
+        stats: dict[str, int] = {}
+        result = _clean_text("a\tb\nc", control_stats=stats)
+        assert "c0_controls_stripped" not in stats
+        assert "\t" in result
+
+
 class TestAssignPages:
     """``_assign_pages`` is the ingest-time TOC-anchor carry-forward guess
     behind ``chunks.page_first`` — untested since introduction until the

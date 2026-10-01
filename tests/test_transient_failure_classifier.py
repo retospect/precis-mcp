@@ -166,6 +166,59 @@ def test_classify_transient_backoff_hours_plain_429_unaffected() -> None:
     )
 
 
+# ── account-level API usage-limit classification (gr456240) ───────────
+#
+# Anthropic's HTTP-layer "You have reached your specified API usage limits.
+# You will regain access on <YYYY-MM-DD> at <HH:MM> UTC." names an ABSOLUTE
+# reset instant that can be days out (a spend/usage cap). It must classify
+# and back off to that instant — not the generic 2.0h "usage limit"
+# horizon, which would have the sweeper burn its bounded unpark retries and
+# latch the fix_gripe leaf child-failed-final long before access returns.
+
+
+def test_classify_transient_backoff_hours_api_usage_limit_absolute_reset() -> None:
+    now = datetime.now(UTC)
+    target = now + timedelta(days=2, hours=3)
+    date_s = target.strftime("%Y-%m-%d")
+    time_s = target.strftime("%H:%M")
+    reason = (
+        "ClaudeAgentError: API Error: 400 You have reached your specified "
+        f"API usage limits. You will regain access on {date_s} at {time_s} UTC."
+    )
+
+    hours = classify_transient_backoff_hours(reason)
+
+    assert hours is not None
+    # Far past the generic 2.0h "usage limit" horizon — it parsed the date.
+    assert hours > 24
+    computed_reset = datetime.now(UTC) + timedelta(hours=hours)
+    # target has second/microsecond components the "%H:%M" reset drops.
+    assert abs((computed_reset - target).total_seconds()) < 120
+
+
+def test_classify_transient_backoff_hours_api_usage_limit_past_reset_clamps() -> None:
+    """A named reset already in the past clamps to 0.0 (retry now) rather
+    than a negative backoff."""
+    reason = (
+        "You have reached your specified API usage limits. You will regain "
+        "access on 2000-01-01 at 00:00 UTC."
+    )
+    assert classify_transient_backoff_hours(reason) == 0.0
+
+
+def test_classify_transient_backoff_hours_api_usage_limit_malformed_falls_back() -> (
+    None
+):
+    """A usage-limit message whose 'regain access on …' clause doesn't parse
+    as a date still classifies (via the generic 2.0h 'usage limit' bucket),
+    it just can't aim at the absolute instant."""
+    reason = (
+        "You have reached your specified API usage limits. You will regain "
+        "access on 2026-13-40 at 99:99 UTC."
+    )
+    assert classify_transient_backoff_hours(reason) == 2.0
+
+
 def _fresh_job(store: Store) -> int:
     job = store.insert_ref(kind="job", slug=None, title="doomed job", meta={})
     return job.id

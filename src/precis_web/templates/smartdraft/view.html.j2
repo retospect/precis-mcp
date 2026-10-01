@@ -1025,10 +1025,15 @@
                  this.retractionChecking = false;
                }
              },
-             docxQuery() {
+             // Shared query for every GET export download (docx + PDF): the
+             // export gates are draft-level, not per-format, so all three
+             // overrides ride on all of them — sources appendix, retraction
+             // override, and the image-less-figure placeholder waiver.
+             exportQuery() {
                const p = new URLSearchParams();
                if (this.withSources) p.set('sources', '1');
                if (this.overrideRetraction) p.set('ignore_retractions', '1');
+               if (this.placeholderFigures) p.set('placeholder_figures', '1');
                const q = p.toString();
                return q ? '?' + q : '';
              }
@@ -1037,6 +1042,14 @@
         <label class="flex items-center gap-1 text-slate-500"
                title="include the referenced papers & datasheets in the export">
           <input type="checkbox" x-model="withSources" class="h-3 w-3"><span>+ sources</span>
+        </label>
+        {# Figure-clearance waiver — draft-level, so it applies to every export
+           path (download PDF/.docx, →project, → reMarkable), not just the
+           tablet. Only image-less figures ride through as visible
+           placeholders; a licensing block on a real image still stops it. #}
+        <label class="flex items-center gap-1 text-slate-500"
+               title="export even when figures have no image yet — they appear as visible placeholders; a licensing block (uncleared third-party image) still stops the export">
+          <input type="checkbox" x-model="placeholderFigures" class="h-3 w-3"><span>allow placeholder figures</span>
         </label>
 
         {# Retraction watch: passive warning (read-only, no network) + the
@@ -1108,14 +1121,15 @@
         </div>
 
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <a :href="'/drafts/{{ ident }}/export.docx' + docxQuery()"
+          <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery()"
              class="text-slate-500 underline hover:text-slate-800"
              x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
-          <a :href="'/drafts/{{ ident }}/pdf' + (withSources ? '?sources=1' : '')"
+          <a :href="'/drafts/{{ ident }}/pdf' + exportQuery()"
              class="text-slate-500 underline hover:text-slate-800">download PDF</a>
           <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
             <input type="hidden" name="sources" :value="withSources ? '1' : ''">
             <input type="hidden" name="ignore_retractions" :value="overrideRetraction ? '1' : ''">
+            <input type="hidden" name="placeholder_figures" :value="placeholderFigures ? '1' : ''">
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="start a background job that persists the PDF into the project workspace">export →project</button>
           </form>
@@ -1135,10 +1149,6 @@
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="export in reMarkable mode (footnoted references) and send to the tablet">→ reMarkable</button>
           </form>
-          <label class="inline-flex items-center gap-1 text-[10px] text-slate-400"
-                 title="send even when figures have no image yet — they appear as visible placeholders; a licensing block (uncleared third-party image) still stops the send">
-            <input type="checkbox" x-model="placeholderFigures" class="h-3 w-3"> allow placeholder figures
-          </label>
           <form method="post" action="/drafts/{{ ident }}/remarkable-papers" class="inline">
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"
                     title="send every cited source PDF on this host to the tablet, into a per-draft folder">papers → reMarkable</button>

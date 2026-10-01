@@ -1277,7 +1277,7 @@ drive the order: the box (step 3) and the rotary ratchet valve
    D-node, k = 6 octahedral P-node — Mackay–Terrones C216 [S27] is one such
    node per cell); **periodic cell** (translation-tagged fuses, χ on the
    quotient; P = pcu, D = dia, G = srs nets, schwarzites as tubes along a
-   periodic skeletal net + junctions [S27, S28, S29]); **box test piece**
+   periodic skeletal net + junctions [S27, S28, S29, S30]); **box test piece**
    (~4 nm pillbox: (18,0) liner, (5,5) axle, capped crossbars, ~5k atoms;
    axle ⇄ liner as separate blocks with a revolute joint); **valve test
    piece** (the radius-changing shell above plus a pillbox rotor of two
@@ -1499,7 +1499,9 @@ DOI is in the store (imported the same day; books carry ISBNs only).
 - **[S26]** C. Yu, H. Schumacher, K. Crane, "Repulsive curves," *ACM Trans. Graph.* 40 (2021) 10. doi:10.1145/3439429. **`pa343408`**
 - **[S27]** A. L. Mackay, H. Terrones, "Diamond from graphite," *Nature* 352 (1991) 762. doi:10.1038/352762a0. **`pa343409`** (cited in `pa181896`).
 - **[S28]** T. Lenosky, X. Gonze, M. Teter, V. Elser, "Energetics of negatively curved graphitic carbon," *Nature* 355 (1992) 333–335. doi:10.1038/355333a0. **`pa343410`**
-- **[S29]** V. R. Coluci, D. S. Galvão, A. Jorio, "Geometric and electronic structure of carbon nanotube networks: 'super'-carbon nanotubes," *Nanotechnology* 17 (2006) 617–621. doi:10.1088/0957-4484/17/3/001. **`pa343411`**. Related: H. Terrones, M. Terrones, "Curved nanostructured materials," *New J. Phys.* 5 (2003) 126. doi:10.1088/1367-2630/5/1/126; D. C. Miller, M. Terrones, H. Terrones, "Mechanical properties of hypothetical graphene foams: giant schwarzites," *Carbon* 96 (2016) 1191–1199. doi:10.1016/j.carbon.2015.10.040 (both cited in `pa181896`).
+- **[S29]** V. R. Coluci, D. S. Galvão, A. Jorio, "Geometric and electronic structure of carbon nanotube networks: 'super'-carbon nanotubes," *Nanotechnology* 17 (2006) 617–621. doi:10.1088/0957-4484/17/3/001. **`pa343411`** (cited in `pa181896`).
+- **[S30]** H. Terrones, M. Terrones, "Curved nanostructured materials," *New J. Phys.* 5 (2003) 126. doi:10.1088/1367-2630/5/1/126. **`pa449642`** (cited in `pa181896`). Periodic cells, P/D/G nets, schwarzites (spec §28.3).
+- **[S31]** D. C. Miller, M. Terrones, H. Terrones, "Mechanical properties of hypothetical graphene foams: giant schwarzites," *Carbon* 96 (2016) 1191–1199. doi:10.1016/j.carbon.2015.10.040 (cited in `pa181896`). **TODO: not yet in the paper store (no `pa` id); import or drop before any spec claim cites it.**
 
 Source needed: the term **"bond surplus"** (charge e − 6 per ring) as a
 named formulation. The counting itself is cited to Euler and [S4, S5];

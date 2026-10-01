@@ -199,8 +199,10 @@ two results bear directly on the build:
   quartic.
 - Terrones & Terrones NJP 5 (2003) 126 is now **`pa449642`**. `[S27]`
   `pa343409` is confirmed chunk-less — cite-able but unreadable.
-  Unrelated doc bug: `spec.md:1318` lists the NJP paper as "Related"
-  under [S29] rather than as its own entry.
+  Doc bug fixed: the NJP paper is now its own entry **[S30]** (`pa449642`)
+  in `spec.md` rather than a "Related" note under [S29]. The Miller/
+  Terrones/Terrones *Carbon* 96 (2016) giant-schwarzites paper is split
+  out as **[S31]** but still has no `pa` id — import or drop it.
 
 ### C216 asymmetric unit — still unverified
 

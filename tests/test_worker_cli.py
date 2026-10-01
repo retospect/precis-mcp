@@ -104,6 +104,25 @@ class TestParser:
         assert args.only == ["job_claude_docker"]
         assert args.once is True
 
+    def test_only_accepts_chase_trigger(self, monkeypatch):
+        """``chase_trigger`` must be a valid ``--only`` choice. It has a
+        registration block in worker.py but is a dark taproot service NOT in
+        any default profile rotation, so — like classify's ``--only classify``
+        dedicated-backfill lane — the only way to run it as a dedicated
+        tight-loop worker (draining its 3.15M-chunk backlog off the shared
+        multi-handler rotation, one full batch per fast cycle instead of one
+        per ~46-min round-robin) is ``precis worker --only chase_trigger``.
+        With ``--only`` set the per-cycle service_config gate is disabled
+        (``_pass_gate=None``), so the dark service still runs. Argparse
+        omitting the value exits 2 on every start — the same silent
+        crash-loop drift the job_ssh_node / job_inproc / job_claude_docker
+        tests above pin. Part of gr454865's throughput fix."""
+        monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--only", "chase_trigger", "--once"])
+        assert args.only == ["chase_trigger"]
+        assert args.once is True
+
     def test_worker_embedder_reads_env(self, monkeypatch):
         monkeypatch.setenv("PRECIS_EMBEDDER", "remote")
         parser = _build_parser()

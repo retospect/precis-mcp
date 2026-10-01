@@ -353,6 +353,43 @@ class TestClaimStubs:
             conn.commit()
         assert [s.ref_id for s in stubs] == []
 
+    def test_backoff_counts_passes_not_leg_events(self, store: Store) -> None:
+        # gripe: one cascade writes a dozen fetcher:% events within a single
+        # pass. Counting rows (count(*)) jumped `attempts` to double digits
+        # on the first pass, pinning base*2^(attempts-1) at the 720h cap —
+        # so a lone transient timeout cost a 30-day wait. Counting passes
+        # (hour-buckets) keeps a single 25h-old pass on the 24h base window,
+        # so it re-qualifies the next day.
+        ref_id = _seed_paper_stub(store, doi="10.1234/onepass")
+        legs = (
+            "publisher",
+            "elsevier",
+            "wiley",
+            "unpaywall",
+            "crossref",
+            "openalex",
+            "europepmc",
+            "core",
+            "arxiv",
+            "s2",
+            "openalex_content",
+            "unpaywall",
+        )
+        with store.pool.connection() as conn:
+            for leg in legs:  # all in ONE pass: identical ts, same hour-bucket
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                    "VALUES (%s, %s, 'no_oa_version', '{}'::jsonb, "
+                    "now() - make_interval(hours => 25))",
+                    (ref_id, f"fetcher:{leg}"),
+                )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        # 12 events but 1 pass → 24h window → 25h-old attempt re-qualifies.
+        assert [s.ref_id for s in stubs] == [ref_id]
+
     def test_backoff_is_capped(self, store: Store) -> None:
         # The doubling is capped (default 720h / 30d) so a chronically
         # un-fetchable stub still gets one more try per ~month — never a
@@ -713,6 +750,105 @@ class TestTryS2:
         assert out is not None
         assert out.event == "fetch_ok"
         assert out.payload["host_type"] == "s2_openaccess"
+
+
+# ---------------------------------------------------------------------------
+# _download_pdf — in-pass retry on a transport-class (transient) failure
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadRetry:
+    def test_transient_predicate_classification(self) -> None:
+        # Transport-class (retryable): timeouts / connect / read errors —
+        # httpx surfaces an SSL handshake timeout as ConnectTimeout, a
+        # TransportError subclass.
+        req = httpx.Request("GET", "https://arxiv.org/pdf/1504.03028.pdf")
+        assert fetch_oa._is_transient_download_error(httpx.ConnectTimeout("x"))
+        assert fetch_oa._is_transient_download_error(httpx.ReadTimeout("x"))
+        assert fetch_oa._is_transient_download_error(httpx.ConnectError("x"))
+        for code in (429, 500, 502, 503):
+            err = httpx.HTTPStatusError(
+                "e", request=req, response=httpx.Response(code, request=req)
+            )
+            assert fetch_oa._is_transient_download_error(err), code
+        # Deterministic (NOT retried): 4xx, non-PDF body, SSRF refusal.
+        for code in (403, 404, 410):
+            err = httpx.HTTPStatusError(
+                "e", request=req, response=httpx.Response(code, request=req)
+            )
+            assert not fetch_oa._is_transient_download_error(err), code
+        assert not fetch_oa._is_transient_download_error(ValueError("not a PDF"))
+        assert not fetch_oa._is_transient_download_error(SsrfBlocked("refused"))
+
+    def test_download_retries_transient_then_succeeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A single handshake blip on a deterministic route must not end the
+        # leg as a spurious fetch_failed — the download retries in-pass and
+        # lands the PDF on a later attempt (the reported arXiv incident).
+        import contextlib
+
+        monkeypatch.setattr("time.sleep", lambda *a, **k: None)  # no real backoff wait
+        calls = {"n": 0}
+
+        @contextlib.contextmanager
+        def _fake_client(*a: object, **k: object):
+            yield object()
+
+        class _FakeResp:
+            headers: dict[str, str] = {}
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def iter_bytes(self, chunk_size: int = 0):
+                yield b"%PDF-1.7\n" + b"x" * 64
+
+        @contextlib.contextmanager
+        def _fake_stream(client: object, method: str, url: str, **k: object):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise httpx.ConnectTimeout("handshake operation timed out")
+            yield _FakeResp()
+
+        monkeypatch.setattr("precis.utils.http.http_client", _fake_client)
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_stream", _fake_stream)
+
+        target = tmp_path / "x.pdf"
+        size = fetch_oa._download_pdf("https://arxiv.org/pdf/1504.03028.pdf", target)
+        assert calls["n"] == 3  # failed twice, succeeded on the third attempt
+        assert size > 0
+        assert target.read_bytes().startswith(b"%PDF-")
+
+    def test_download_does_not_retry_deterministic_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A 404 (the copy isn't there for us) is terminal — one attempt,
+        # then reraise so the cascade falls through to the next leg promptly.
+        import contextlib
+
+        monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+        calls = {"n": 0}
+        req = httpx.Request("GET", "https://arxiv.org/pdf/x.pdf")
+
+        @contextlib.contextmanager
+        def _fake_client(*a: object, **k: object):
+            yield object()
+
+        @contextlib.contextmanager
+        def _fake_stream(client: object, method: str, url: str, **k: object):
+            calls["n"] += 1
+            raise httpx.HTTPStatusError(
+                "not found", request=req, response=httpx.Response(404, request=req)
+            )
+            yield  # pragma: no cover
+
+        monkeypatch.setattr("precis.utils.http.http_client", _fake_client)
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_stream", _fake_stream)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            fetch_oa._download_pdf("https://arxiv.org/pdf/x.pdf", tmp_path / "x.pdf")
+        assert calls["n"] == 1  # not retried
 
 
 # ---------------------------------------------------------------------------

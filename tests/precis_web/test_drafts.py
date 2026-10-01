@@ -1193,6 +1193,213 @@ def test_export_pdf_no_override_omits_ignore_retractions_param(
     assert "ignore_retractions" not in args["params"]
 
 
+# ─────────────────── shared export preflight (both gates) ──────────────────
+# The retraction gate + the figure-clearance gate are now one draft-level
+# preflight (``precis.export.preflight.draft_export_preflight``) run by every
+# export path, so the "download PDF" link, the ``.docx`` download and the
+# PDF-job POST all block (or sail through) identically. The clearance walk is
+# stubbed at its module attribute (routes reach it via the preflight, which
+# imports the name locally per call) — the same technique the retraction fakes
+# above use.
+
+import precis.utils.figure_clearance as clearance_mod
+from precis.utils.figure_clearance import ClearanceSummary, FigureClear
+
+
+def _clean_report(store, ref, **kw):
+    """A retraction report that blocks nothing (isolates the figure gate)."""
+    return DraftRetractionReport(papers=[])
+
+
+def _uncleared_fig(dc: str, *, assetless: bool) -> FigureClear:
+    return FigureClear(
+        dc=dc,
+        caption="Fig",
+        origin=None if assetless else "third_party",
+        cleared=False,
+        reason="no image yet" if assetless else "permission not granted",
+        assetless=assetless,
+    )
+
+
+def test_pdf_download_blocked_when_cite_retracted(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The "download PDF" GET — previously ungated — now hard-blocks a
+    retracted cite exactly like its ``.docx`` / PDF-job siblings (409, no
+    live check)."""
+
+    def fake_report(store, ref, **kw):
+        assert kw.get("check", False) is False
+        return DraftRetractionReport(
+            papers=[_cited("smith2024", "retracted", checked_at="2026-01-01")],
+        )
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.get("/drafts/nt/pdf")
+    assert r.status_code == 409
+    assert "smith2024" in r.text
+
+
+def test_pdf_download_blocked_when_figure_uncleared(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The "download PDF" GET now also applies figure clearance — an
+    uncleared figure hard-blocks it, the same gate the worker jobs enforce."""
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(
+            total=2, uncleared=[_uncleared_fig("dc99", assetless=False)]
+        ),
+    )
+    r = draft_client.get("/drafts/nt/pdf")
+    assert r.status_code == 409
+    assert "dc99" in r.text
+    assert "placeholder_figures" in r.text  # tells the user the waiver name
+
+
+def test_pdf_download_placeholder_waives_assetless_figure(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """``?placeholder_figures=1`` waives an image-less block on the PDF
+    download too (not just reMarkable): the gate is cleared and the route
+    proceeds to compile (503 here — no latexmk — but past the 409)."""
+    import precis.export.compile as compile_mod
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(
+            total=1, uncleared=[_uncleared_fig("dc7", assetless=True)]
+        ),
+    )
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: False)
+    r = draft_client.get("/drafts/nt/pdf?placeholder_figures=1")
+    assert r.status_code == 503  # past the clearance gate, stopped only by tooling
+    assert "dc7" not in r.text
+
+
+def test_export_docx_blocked_when_figure_uncleared(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The ``.docx`` download gained figure clearance too (it only checked
+    retraction before)."""
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(
+            total=1, uncleared=[_uncleared_fig("dc8", assetless=False)]
+        ),
+    )
+    r = draft_client.get("/drafts/nt/export.docx")
+    assert r.status_code == 409
+    assert "dc8" in r.text
+
+
+def test_export_docx_placeholder_waives_assetless_figure(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """``?placeholder_figures=1`` waives an image-less block on the ``.docx``
+    download — the export proceeds."""
+    import precis.export.docx as docx_mod
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", doc_type=None):
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=[])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(
+            total=1, uncleared=[_uncleared_fig("dc9", assetless=True)]
+        ),
+    )
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+    r = draft_client.get("/drafts/nt/export.docx?placeholder_figures=1")
+    assert r.status_code == 200
+    assert r.content.startswith(b"PK")
+
+
+def test_export_docx_placeholder_never_waives_licensing_block(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The waiver only covers image-less figures — a licensing block on a
+    real image (``assetless=False``) still hard-stops even with the flag."""
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(
+            total=1, uncleared=[_uncleared_fig("dc10", assetless=False)]
+        ),
+    )
+    r = draft_client.get("/drafts/nt/export.docx?placeholder_figures=1")
+    assert r.status_code == 409
+    assert "dc10" in r.text
+
+
+def test_export_pdf_blocked_when_figure_uncleared(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """The PDF-job POST gates figures at the route now — blocked before any
+    job is enqueued (previously only the worker caught it, after dispatch)."""
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(
+            total=1, uncleared=[_uncleared_fig("dc11", assetless=False)]
+        ),
+    )
+    r = draft_client.post("/drafts/nt/export.pdf", follow_redirects=False)
+    assert r.status_code == 409
+    assert "dc11" in r.text
+    assert draft_runtime.calls == []  # never reached dispatch
+
+
+def test_export_pdf_threads_placeholder_figures_param(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """The waiver rides into the ``draft_export`` job params so the worker's
+    identical clearance gate lets the same image-less figures through."""
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(total=1, uncleared=[]),
+    )
+    r = draft_client.post(
+        "/drafts/nt/export.pdf",
+        data={"placeholder_figures": "1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put" and args["job_type"] == "draft_export"
+    assert args["params"]["placeholder_figures"] is True
+
+
+def test_export_pdf_no_placeholder_omits_the_param(
+    draft_client: TestClient, draft_runtime: FakeRuntime, monkeypatch
+) -> None:
+    """No waiver ⇒ no param — the job default (block image-less figures) stands."""
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", _clean_report)
+    monkeypatch.setattr(
+        clearance_mod,
+        "draft_figure_clearance",
+        lambda store, ref_id: ClearanceSummary(total=1, uncleared=[]),
+    )
+    r = draft_client.post("/drafts/nt/export.pdf", follow_redirects=False)
+    assert r.status_code == 303
+    verb, args = draft_runtime.calls[-1]
+    assert "placeholder_figures" not in args["params"]
+
+
 def test_retraction_status_route_reads_only_no_network(
     draft_client: TestClient, monkeypatch
 ) -> None:

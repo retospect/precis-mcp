@@ -802,8 +802,11 @@ class RefsMixin:
         A *stub* is a ``paper`` ref with an external identifier
         (DOI/arXiv/S2 by default) but ``pdf_sha256 IS NULL`` — chase and
         the dream ``acquire`` tool mint these for ``fetch_oa`` to
-        auto-grab. Joins the latest ``fetcher:%`` attempt per ref, one
-        dict per stub with a one-line ``state`` summary.
+        auto-grab. Joins the **most actionable** ``fetcher:%`` outcome of
+        the latest pass per ref (not the strictly-latest event: a later
+        aggregator ``no_oa_version`` must not mask an earlier
+        ``fetch_failed`` from the same cascade — see ``latest_event``),
+        one dict per stub with a one-line ``state`` summary.
 
         Provenance per row: ``created_at`` (first requested),
         ``requested_by`` (``meta.set_by`` — ``dream``/``chase``/
@@ -872,10 +875,35 @@ class RefsMixin:
                  WHERE {stub_predicate_sql("r", id_kinds)}
             ),
             latest_event AS (
+                -- Not the strictly-latest event: the most *actionable*
+                -- outcome of the latest pass. A cascade fires many legs in
+                -- one pass, so a later aggregator ``no_oa_version`` (e.g. a
+                -- paid-cache miss run last) would otherwise clobber an
+                -- earlier ``fetch_failed`` on a deterministic identifier
+                -- route (arxiv/publisher) — which means "a known green copy
+                -- exists, the download just blipped", not "no OA anywhere".
+                -- Surfacing the false ``no_oa_version`` nearly sent an
+                -- operator to pay a publisher for a free paper. So restrict
+                -- to the latest pass (the max-ts hour-bucket) and rank
+                -- fetch_ok > "a URL was found but the download failed" >
+                -- other > no_oa_version; ts DESC only breaks ties.
                 SELECT DISTINCT ON (ref_id) ref_id, ts, source, event, payload
-                  FROM ref_events
+                  FROM ref_events e
                  WHERE source LIKE 'fetcher:%%'
-                 ORDER BY ref_id, ts DESC
+                   AND date_trunc('hour', ts) = (
+                         SELECT date_trunc('hour', max(e2.ts))
+                           FROM ref_events e2
+                          WHERE e2.ref_id = e.ref_id
+                            AND e2.source LIKE 'fetcher:%%'
+                   )
+                 ORDER BY ref_id,
+                          CASE event
+                            WHEN 'fetch_ok' THEN 0
+                            WHEN 'fetch_failed' THEN 1
+                            WHEN 'no_oa_version' THEN 3
+                            ELSE 2
+                          END,
+                          ts DESC
             ),
             fetch_stats AS (
                 -- One fetch pass emits one event per cascade leg, so

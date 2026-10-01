@@ -12,12 +12,21 @@ up the prod DSN from ``~/.secrets/pw`` by accident.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from precis import mcp_supervisor
 from precis.config import PrecisConfig
 from precis.secrets import mounted_secret
+
+
+def _config_without_env_file() -> PrecisConfig:
+    """A config read from the environment only (no ``.env`` file). The
+    ``_env_file`` init kwarg is pydantic-settings' runtime-only override,
+    invisible to mypy's view of the ``__init__`` signature."""
+    kwargs: dict[str, Any] = {"_env_file": None}
+    return PrecisConfig(**kwargs)
 
 
 @pytest.fixture
@@ -42,11 +51,11 @@ def test_no_mounted_dir_reads_nothing(
 ) -> None:
     monkeypatch.delenv("PRECIS_SECRETS_FILE_DIR")
     assert mounted_secret("PRECIS_MCP_TOKEN") is None
-    assert PrecisConfig(_env_file=None).database_url is None  # type: ignore[call-arg]
+    assert _config_without_env_file().database_url is None
 
 
 def test_config_takes_the_dsn_from_the_mounted_dir(secrets_dir: Path) -> None:
-    cfg = PrecisConfig(_env_file=None)  # type: ignore[call-arg]
+    cfg = _config_without_env_file()
     assert cfg.database_url == "postgresql://u:pw@db/precis"
 
 
@@ -54,7 +63,7 @@ def test_env_dsn_still_wins_over_the_file(
     secrets_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://env/precis")
-    cfg = PrecisConfig(_env_file=None)  # type: ignore[call-arg]
+    cfg = _config_without_env_file()
     assert cfg.database_url == "postgresql://env/precis"
 
 

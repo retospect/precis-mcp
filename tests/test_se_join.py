@@ -17,6 +17,7 @@ import pytest
 from hexfold.join import SEAM_RADIUS
 from precis.errors import BadInput
 from precis.store import Store
+from precis_se.atomic.apply import apply_ops_with_atomic
 from precis_se.atomic.generate import finish_generate, prepare_generate
 from precis_se.atomic.join import finish_join, prepare_join
 from precis_se.handler import _render_block
@@ -540,6 +541,46 @@ def test_join_addressing_a_part_of_an_existing_composite_errors_and_redirects(
     }
     assert chain3_children_after == chain3_children_before
     assert tree.blocks["tube_c"].parent == "chain3"
+
+
+def test_join_part_addressed_refused_when_two_joins_share_an_endpoint_in_one_batch(
+    store: Store,
+) -> None:
+    """gr456213 (2026-09-29 follow-up): two joins in ONE ops batch that
+    share an endpoint block. :func:`~precis_se.atomic.apply.
+    apply_ops_with_atomic` prepares every op before finishing any, so the
+    first join's composite (``C1``) is prepared -- ``tube_a`` already
+    reparented into it -- but its join record is NOT yet committed to the
+    store (``finish_join`` is deferred) while the second join prepares.
+    The ``join.part_addressed`` gate must still see ``tube_a`` as ``C1``'s
+    part -- via the caller's in-flight ``pending_joins`` -- and refuse,
+    rather than silently reparenting ``tube_a`` out of ``C1`` and leaving
+    two composites claiming the same rim (the exact gripe, one call
+    instead of two)."""
+    tree = SeTree()
+    design_slug = "hx-join-one-batch"
+    _generate(store, tree, "tube_a", _TUBE_Z8, design_slug)
+    _generate(store, tree, "tube_b", _TUBE_Z8, design_slug)
+    _generate(store, tree, "tube_c", _TUBE_Z8, design_slug)
+
+    with pytest.raises(BadInput, match="join.part_addressed") as excinfo:
+        apply_ops_with_atomic(
+            store,
+            tree,
+            [
+                {"op": "join", "name": "C1", "a": "tube_a.out", "b": "tube_b.in"},
+                {"op": "join", "name": "C2", "a": "tube_a.in", "b": "tube_c.in"},
+            ],
+            design_slug=design_slug,
+        )
+    message = str(excinfo.value)
+    assert "tube_a" in message
+    assert "C1" in message
+    assert "C1.tube_a_in" in message
+    # C1's tree is intact: tube_a is still its part, and the second
+    # composite was never minted (the gate fired before it was even added).
+    assert tree.blocks["tube_a"].parent == "C1"
+    assert "C2" not in tree.blocks
 
 
 def test_join_addressing_a_nested_part_redirects_with_full_accumulated_prefix(

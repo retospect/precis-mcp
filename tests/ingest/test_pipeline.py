@@ -595,7 +595,7 @@ class TestExtractPaperMarkerFallbackMeta:
         pdf.write_bytes(b"%PDF-1.4\n")
 
         def _fake_extract_blocks_marker(
-            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None, glyph_health=None
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -632,7 +632,7 @@ class TestExtractPaperMarkerFallbackMeta:
         pdf.write_bytes(b"%PDF-1.4\n")
 
         def _fake_extract_blocks_marker(
-            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None, glyph_health=None
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -666,7 +666,7 @@ class TestExtractPaperMarkerFallbackMeta:
         pdf.write_bytes(b"%PDF-1.4\n")
 
         def _fake_extract_blocks_marker(
-            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None, glyph_health=None
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -694,7 +694,7 @@ class TestExtractPaperMarkerFallbackMeta:
         pdf.write_bytes(b"%PDF-1.4\n")
 
         def _fake_extract_blocks_marker(
-            pdf_path, paper_id, *, timeout_s=None, fallback_info=None
+            pdf_path, paper_id, *, timeout_s=None, fallback_info=None, glyph_health=None
         ):
             return [{"type": "paragraph", "text": "Body text.", "page": 0}]
 

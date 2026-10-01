@@ -148,6 +148,26 @@ flagged. A control-char-only patch fails it.
 
 ## Fix order
 
+> **Shipped 2026-09-28 (gr228652) — steps 1 & 2, together.**
+> `src/precis/ingest/glyph_health.py` computes the per-document
+> `glyph_health` record: font-level detection of mode (a) (self-referential
+> `/ToUnicode` on an `Adv*` family font — gated on the family name, *not* on
+> "subset font", so honest subset text fonts whose `m`→`m` echo is
+> meaningless are never flagged) and mode (b) (no `/ToUnicode` + no
+> `/Encoding`/positional names), plus the supporting counts (pre-strip C0,
+> orphan-single-char-span, Greek-codepoint, and the "micron"-prose-with-no-μ
+> tell). `marker._clean_text` now **counts** C0 controls before stripping
+> instead of discarding them silently (step 2), and `extract_blocks_marker`
+> populates the record from the PDF directly — robust to whichever extractor
+> path (including the subprocess one) ran. `extract_paper` stores it on
+> `PaperToWrite.meta['glyph_health']` only when `suspected` fires. The
+> anti-masking guarantee is pinned by
+> `tests/ingest/test_glyph_health.py::TestSummarize::test_mode_a_suspected_with_zero_residue`:
+> a pa494-shaped doc with zero C0 residue is still flagged, so the step-2
+> patch cannot ship alone. **Step 3 (recovery) is unchanged: still open, and
+> still not OCR** — the decision the bug report asked for stands as ruled
+> below.
+
 1. **Detect at write time, from the FONTS.** A per-document `glyph_health`
    record on the paper's `meta`, written during extraction. The two exact
    signatures, both deterministic `fitz` tests with no base-rate problem:

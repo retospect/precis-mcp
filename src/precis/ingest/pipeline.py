@@ -377,6 +377,13 @@ def extract_paper(
     # run producing zero blocks (see extract_blocks_marker's docstring).
     fallback_info: dict[str, Any] = {}
 
+    # gr228652 — populated in place by extract_blocks_marker with the
+    # per-document glyph-corruption forensics (Advent-3B2 "Adv*" fonts that
+    # silently destroy μ/Greek at extraction). Stored on PaperToWrite.meta
+    # below so flagged documents can be routed to recovery and a grounding
+    # audit can distinguish an ingest scar from a wrong claim.
+    glyph_health_info: dict[str, Any] = {}
+
     if printable_only:
         blocks: list[dict[str, Any]] = []
         body_chunks: list[Any] = []
@@ -389,6 +396,7 @@ def extract_paper(
             paper_id,
             timeout_s=marker_timeout_s,
             fallback_info=fallback_info,
+            glyph_health=glyph_health_info,
         )
         blocks = _repair_mojibake(blocks)
         body_chunks = _blocks_to_chunks(blocks)
@@ -420,6 +428,10 @@ def extract_paper(
         extra["keywords"] = metadata.keywords
     if metadata.verify_warnings:
         extra["verify_warnings"] = metadata.verify_warnings
+    if glyph_health_info.get("suspected"):
+        # gr228652 — only persist the record when something fired; a clean
+        # document carries no glyph_health key, keeping meta small.
+        extra["glyph_health"] = glyph_health_info
     if fallback_info.get("used_fallback"):
         # gr236139 — surfaced to precis.ingest.add._ingest_pdf (which has
         # a Store) via PaperToWrite.meta, then onto IngestResult so the

@@ -2119,6 +2119,26 @@ def test_kind_shrinkage_detector_flags_dropped_kind(
     assert "se" in hits[0].title
 
 
+def test_kind_shrinkage_detector_skips_unknown_process(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr452084 defect 4: a ``(host, "unknown")`` pair folds several untagged
+    processes into one identity, so a roster stitched across them would diff
+    as a spurious shrinkage. The detector never considers ``process='unknown'``
+    even when the raw rows show a "lost" registered kind."""
+    _patch_plugin_kinds(monkeypatch, ["se"])
+    host = _host()
+    _seed_kind_provider(
+        store, host, "unknown", ["paper", "se", "todo"], minutes_ago=120
+    )
+    _seed_kind_provider(store, host, "unknown", ["paper", "todo"], minutes_ago=1)
+
+    findings = _detect_kind_shrinkage(store)
+    assert not any(
+        f.fingerprint_key == f"kind-shrinkage:{host}:unknown" for f in findings
+    )
+
+
 def test_kind_shrinkage_detector_ignores_stable_roster(store: Store) -> None:
     """Same roster across two boots — no regression."""
     host = _host()

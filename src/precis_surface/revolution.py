@@ -323,10 +323,10 @@ def revolve(
     for a_ids, b_ids in itertools.pairwise(ring_ids):
         for j in range(n_theta):
             jn = (j + 1) % n_theta
-            if isinstance(a_ids, int) and isinstance(b_ids, int):
-                continue
             if isinstance(b_ids, int):
-                tris.append((int(a_ids[j]), b_ids, int(a_ids[jn])))  # type: ignore[index]
+                if isinstance(a_ids, int):
+                    continue
+                tris.append((int(a_ids[j]), b_ids, int(a_ids[jn])))
             elif isinstance(a_ids, int):
                 tris.append((a_ids, int(b_ids[j]), int(b_ids[jn])))
             else:

@@ -103,7 +103,13 @@ def _fix_spaced_out(match: re.Match) -> str:
     return match.group(1).replace(" ", "")
 
 
-def _clean_text(text: str) -> str:
+#: C0 control chars stripped by :func:`_clean_text` (all below 0x20 except
+#: TAB and LF). Kept as a named pattern so :mod:`precis.ingest.glyph_health`
+#: counts exactly what this strip removes.
+_C0_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean_text(text: str, *, control_stats: dict[str, int] | None = None) -> str:
     """Normalize PDF-extracted text.
 
     - **ftfy mojibake repair** with a chemistry-safe config (see
@@ -159,8 +165,24 @@ def _clean_text(text: str) -> str:
     text = text.replace("\u200c", "")  # zero-width non-joiner
     text = text.replace("\u200d", "")  # zero-width joiner
 
-    # Strip control chars < 0x20 except \n (0x0a) and \t (0x09)
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    # Strip control chars < 0x20 except \n (0x0a) and \t (0x09).
+    #
+    # gr228652: these C0 controls are not noise — for Advent-3B2 "Adv*"
+    # subset fonts with no /ToUnicode (mode "b"), a dropped μ/Greek glyph
+    # surfaces here as U+0002 &c., and blindly deleting it turns a
+    # *detectable* corruption marker into an undetectable one ("6 \x02m" →
+    # "6 m"). Count before deleting so the loss is recorded, never silent;
+    # the count feeds the per-document glyph_health record. The characters
+    # are still stripped (they are not renderable), but the evidence that
+    # they were here survives.
+    n_controls = len(_C0_CONTROL_RE.findall(text))
+    if n_controls:
+        if control_stats is not None:
+            control_stats["c0_controls_stripped"] = (
+                control_stats.get("c0_controls_stripped", 0) + n_controls
+            )
+        log.debug("_clean_text: stripped %d C0 control char(s)", n_controls)
+    text = _C0_CONTROL_RE.sub("", text)
 
     # Collapse 3+ newlines → 2
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -409,6 +431,7 @@ def extract_blocks_marker(
     *,
     timeout_s: float | None = None,
     fallback_info: dict[str, Any] | None = None,
+    glyph_health: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
@@ -434,6 +457,17 @@ def extract_blocks_marker(
     through ``PaperToWrite.meta`` to the watcher, which does have one —
     see :func:`precis.cli.watch._check_marker_fallback`. ``None`` (the
     default) preserves the original signature/behavior exactly.
+
+    ``glyph_health`` (gr228652), when given, is populated in place with the
+    per-document glyph-corruption forensics record
+    (:func:`precis.ingest.glyph_health.analyze_pdf`) — font-level detection
+    of the Advent-3B2 ``Adv*`` encoding lies that silently destroy μ/Greek,
+    plus supporting C0-residue / Greek / "micron"-prose counts. Computed
+    from the PDF directly (one extra PyMuPDF pass, robust to whichever
+    extractor path ran, including the subprocess one) and never raises. The
+    caller stores it on ``PaperToWrite.meta`` so flagged documents can be
+    routed to recovery and a grounding audit can tell an ingest scar apart
+    from a wrong claim. ``None`` (the default) skips the analysis entirely.
     """
     try:
         if timeout_s and timeout_s > 0:
@@ -458,6 +492,20 @@ def extract_blocks_marker(
             fallback_info["used_fallback"] = True
             fallback_info["reason"] = str(exc)
     merged = _merge_small_blocks(blocks, paper_id=paper_id)
+    if glyph_health is not None:
+        # gr228652 — deterministic font-level scan for the Advent-3B2 "Adv*"
+        # encoding lies (μ/Greek silently destroyed at extraction). Runs off
+        # the PDF itself, so it is unaffected by which extractor path ran
+        # above; best-effort and never raises.
+        from precis.ingest.glyph_health import analyze_pdf
+
+        try:
+            full_text = "\n\n".join(
+                str(b.get("text", "")) for b in merged if b.get("text")
+            )
+            glyph_health.update(analyze_pdf(pdf_path, full_text))
+        except Exception as exc:  # analysis must never break an ingest
+            log.warning("glyph_health analysis failed on %s: %s", pdf_path.name, exc)
     # Best-effort cleanup after every ingest. The long-running watcher
     # accumulates tensor refs across consecutive PDFs (Surya layout
     # buffers, transformers cache) and eventually OOMs. Subprocess

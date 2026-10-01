@@ -181,6 +181,61 @@ def test_dispatch_fails_on_uncleared_figure(hub: Hub) -> None:
     assert any("not cleared" in f for f in ctx.failures), ctx.failures
 
 
+def test_placeholder_figures_waives_imageless_gate(hub: Hub, monkeypatch: Any) -> None:
+    """An image-less (caption-only) figure blocks the export by default, but
+    the ``placeholder_figures`` opt-in waives it — the same waiver
+    ``remarkable_send`` offers, previously missing from ``draft_export``.
+    Proven by dispatch reaching the later latexmk step and logging a
+    placeholder warning event."""
+    from precis.export import compile as compile_mod
+
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: False)
+    _pid, slug = _make_project_and_draft(hub)
+    DraftHandler(hub=hub).put(
+        id=slug, chunk_kind="figure", text="Fig 1: planned TEM observation."
+    )
+    spec = get_job_type("draft_export")
+    assert spec is not None and spec.dispatch is not None
+
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    spec.dispatch(ctx, spec)
+    assert any("not cleared" in f for f in ctx.failures), ctx.failures
+
+    ctx2 = _FakeCtx(
+        store=hub.store,
+        meta={"params": {"draft": slug, "placeholder_figures": True}},
+    )
+    spec.dispatch(ctx2, spec)
+    assert not any("not cleared" in f for f in ctx2.failures), ctx2.failures
+    assert any("placeholder" in t for _k, t in ctx2.events), ctx2.events
+
+
+def test_placeholder_figures_never_waives_a_licensing_block(hub: Hub) -> None:
+    """The waiver only covers image-less figures — a third-party figure WITH a
+    real image and no granted permission stays a hard block under
+    ``placeholder_figures`` (it would ship the actual uncleared image)."""
+    import base64
+
+    _pid, slug = _make_project_and_draft(hub)
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()
+    DraftHandler(hub=hub).put(
+        id=slug,
+        chunk_kind="figure",
+        text="Fig 1 (borrowed).",
+        image=png,
+        origin="third_party",
+        permission={"publisher": "X", "permission_id": "Y", "status": "requested"},
+    )
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(
+        store=hub.store,
+        meta={"params": {"draft": slug, "placeholder_figures": True}},
+    )
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+    assert any("not cleared" in f for f in ctx.failures), ctx.failures
+
+
 # ── cite-drift gate (docs/backlog/cite-pins-hub-version.md, task 3) ─────
 
 

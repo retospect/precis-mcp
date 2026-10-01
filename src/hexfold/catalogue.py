@@ -65,6 +65,28 @@ _MEASURE_FLOOR: dict[str, tuple[float, float]] = {
     "geo": (0.002, 0.15),
 }
 
+#: gr456641: the `coverage="unstable"` test.  A free relax that has not
+#: converged at the far, unfused rim leaves that end drifting more than the
+#: settled interior, so the per-shell displacement bottoms out in the
+#: interior and then climbs back toward the far rim instead of decaying
+#: monotonically -- and the measured `seam_radius` tracks the tube length
+#: rather than a physical decay length (`seam_radius` grew 4/14/22/30/34 as
+#: the tube grew 6/8/10/12/13 periods, all silently reported "full").  The
+#: stick rung has no convergence check at all (its own docstring); the geo
+#: rung's `trace.converged` is not threaded back to this function; this
+#: reads the symptom directly off `max_disp` over the core shells (the
+#: free-rim guard band is already excluded) and is therefore rung-
+#: independent.  A profile is flagged when the largest post-minimum core
+#: displacement is BOTH this factor over the interior minimum (a real
+#: rise, not a flat monotone decay whose minimum sits at its last core
+#: shell) AND above the floor -- the floor keeps a short, genuinely-settled
+#: tube whose far rim barely moves from being flagged: the lower-bound
+#: tubes `tests/test_hexfold_seam_decay.py` pins settle to ~0.002 A at the
+#: far rim (a converged geo len=3 (8,0) rises to 0.0018 A there), an order
+#: of magnitude below the >=0.027 A the stick runaway reaches by len=8.
+_STABILITY_RISE_FACTOR = 2.0
+_STABILITY_RISE_FLOOR = 0.01  # A
+
 _PINNED_DATE = "2026-09-27"
 
 
@@ -242,7 +264,7 @@ class EdgeMotif:
     leak_thresh: tuple[float, float]
     shells: int
     measured_on: str
-    coverage: str  # "full" | "lower-bound"
+    coverage: str  # "full" | "lower-bound" | "unstable"
     source: str
     hexfold_version: str
 
@@ -533,7 +555,13 @@ def measure_environment(
     (below that, a short tube's own far free rim would otherwise be
     mistaken for a settled interior); short of that depth, or when no
     shell satisfies the threshold, the report is half the tube's own
-    measured depth, flagged ``coverage="lower-bound"``.  One more
+    measured depth, flagged ``coverage="lower-bound"``.  Whatever the
+    depth verdict, if the per-shell ``max_disp`` does not settle past the
+    seam but climbs back toward the far, unfused rim -- the signature of a
+    free relax that did not converge there, on either rung (gr456641) --
+    the report is downgraded to ``coverage="unstable"`` rather than quoting
+    a ``seam_radius`` that is really tracking the tube length
+    (:data:`_STABILITY_RISE_FACTOR`).  One more
     `join.compose` at that radius (fusing the same free-relaxed block onto
     itself) reads the guard-band's own leak maxima, doubled and floored,
     for :attr:`EdgeMotif.leak_thresh` -- the same derivation
@@ -698,6 +726,25 @@ def measure_environment(
         coverage = "lower-bound"
     else:
         coverage = "full"
+
+    # gr456641: neither rung's convergence signal reaches this function (the
+    # stick relaxer runs a fixed iteration count and drops its own max_force;
+    # the geo relaxer's `trace.converged` is asserted only by the injecting
+    # caller), so an unconverged free relax whose far, unfused rim is still
+    # drifting was silently reported as a confident "full"/"lower-bound"
+    # decay.  Read the symptom directly off `max_disp`: `core_shells` already
+    # excludes the free-rim guard band, so a genuine monotone decay bottoms
+    # out at its last core shell (its tail equals its minimum), whereas an
+    # unsettled tube bottoms out in the interior and climbs back toward the
+    # far end (see _STABILITY_RISE_FACTOR / _STABILITY_RISE_FLOOR).
+    core_disps = [profile[s][0] for s in core_shells if s > 0]
+    if len(core_disps) >= 2:
+        min_disp = min(core_disps)
+        tail_max = max(core_disps[core_disps.index(min_disp) :])
+        if tail_max >= _STABILITY_RISE_FACTOR * min_disp and (
+            tail_max >= _STABILITY_RISE_FLOOR
+        ):
+            coverage = "unstable"
 
     free_block = join.block_from_net(free, cf)
     tiny = (1e-12, 1e-12)

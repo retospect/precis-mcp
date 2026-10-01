@@ -15,13 +15,16 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from precis.store import Store
+from precis.store.types import Tag
 from precis.utils.claude_agent import ContainerRequiredError
+from precis.workers.executors import claude_inproc
 from precis.workers.job_types import fix_gripe
 from precis.workers.job_types.fix_gripe import (
     FixGripeConfig,
@@ -1797,3 +1800,127 @@ class TestDeliveryIsDecidedByTheRemote:
         repo = self._make_repo(tmp_path)
         target = str(tmp_path / "nope.git")
         assert fix_gripe._ls_remote_sha(target, "gripe_42", repo) is None
+
+
+# ── executor failure classification (gr456240) ─────────────────────────
+#
+# The fix_gripe dispatch (claude_inproc._run_fix_gripe) used to hand-roll
+# its outcome.status == "failed" finalization, bypassing the transient
+# classification every other executor gets via _common.record_failure. An
+# infra-class failure (API/usage limit, auth, network — the agent never
+# ran) therefore latched a plain child-failed bubble on the 12h·2ᴺ
+# cool-down and counted down to a terminal child-failed-final at
+# sweeper.UNPARK_CAP, permanently latching the leaf for a reason unrelated
+# to the fix. The failure path now stamps meta.retry_after so the sweeper
+# backs off to the precondition-clear instant without burning attempts.
+
+
+class _FakeFixGripeSpec:
+    """Stands in for the fix_gripe job_type: its run() just returns a
+    pre-baked RunOutcome so the executor's transition logic is exercised
+    without a clone/claude/push."""
+
+    def __init__(self, outcome: RunOutcome) -> None:
+        self._outcome = outcome
+
+    def run(
+        self, *, store: Store, job_id: int, gripe_id: int, params: dict
+    ) -> RunOutcome:
+        return self._outcome
+
+
+def _mk_parked_fix_gripe_job(store: Store) -> tuple[int, int, int]:
+    """A parent todo (leaf) + a gripe + a running fix_gripe job linked to
+    the gripe (rel='fixes') and parented on the todo. Returns
+    ``(todo_id, gripe_id, job_id)``."""
+    todo = store.insert_ref(kind="todo", slug=None, title="parent leaf", meta={})
+    gripe = store.insert_ref(kind="gripe", slug=None, title="the bug", meta={})
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="fix_gripe",
+        meta={"job_type": "fix_gripe", "executor": "claude_inproc", "params": {}},
+        parent_id=todo.id,
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "running"), set_by="system", replace_prefix=True
+    )
+    with store.pool.connection() as conn:
+        store.add_link(
+            src_ref_id=job.id,
+            dst_ref_id=gripe.id,
+            relation="fixes",
+            set_by="system",
+            conn=conn,
+        )
+        conn.commit()
+    return todo.id, gripe.id, job.id
+
+
+def _job_meta(store: Store, job_id: int) -> dict:
+    got = store.get_ref(kind="job", id=job_id)
+    assert got is not None
+    return got.meta
+
+
+def _open_tag_values(store: Store, ref_id: int) -> set[str]:
+    return {str(t) for t in store.tags_for(ref_id)}
+
+
+def test_run_fix_gripe_api_limit_failure_stamps_retry_after(store: Store) -> None:
+    todo_id, gripe_id, job_id = _mk_parked_fix_gripe_job(store)
+    now = datetime.now(UTC)
+    target = now + timedelta(days=2)
+    reason = (
+        f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: claude failed "
+        f"(API Error: 400 You have reached your specified API usage limits. "
+        f"You will regain access on {target:%Y-%m-%d} at {target:%H:%M} UTC.). "
+        "Took 3.9s. stderr tail:\n"
+    )
+    outcome = RunOutcome(
+        status="failed",
+        summary_text=reason,
+        gripe_comment_text="[worker:job] fix attempt failed: claude failed",
+        branch=None,
+        sha=None,
+        wall_seconds=3.9,
+    )
+
+    claude_inproc._run_fix_gripe(store, job_id, _FakeFixGripeSpec(outcome))
+
+    meta = _job_meta(store, job_id)
+    assert meta["failure_class"] == "transient"
+    retry_after = datetime.fromisoformat(meta["retry_after"])
+    # Backed off to the named absolute reset, not the generic 2h horizon —
+    # so the sweeper won't burn its unpark attempts before access returns.
+    assert retry_after > now + timedelta(hours=24)
+    # The bubble still tags the parent leaf (uniform child-failed shape).
+    assert any("child-failed:" in v for v in _open_tag_values(store, todo_id))
+
+
+def test_run_fix_gripe_content_failure_leaves_retry_after_unstamped(
+    store: Store,
+) -> None:
+    """A genuine on-the-merits failure (the agent ran and reported it) must
+    NOT be classified transient — it should count toward the unpark cap as
+    before."""
+    todo_id, gripe_id, job_id = _mk_parked_fix_gripe_job(store)
+    outcome = RunOutcome(
+        status="failed",
+        summary_text=(
+            f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: no commits "
+            "pushed to origin under branch gripe_1. Took 210.4s."
+        ),
+        gripe_comment_text="[worker:job] claude exited cleanly but made no commit",
+        branch="gripe_1",
+        sha=None,
+        wall_seconds=210.4,
+    )
+
+    claude_inproc._run_fix_gripe(store, job_id, _FakeFixGripeSpec(outcome))
+
+    meta = _job_meta(store, job_id)
+    assert "retry_after" not in meta
+    assert meta.get("failure_class") != "transient"
+    # The failure still bubbles — it's a real attempt against the cap.
+    assert any("child-failed:" in v for v in _open_tag_values(store, todo_id))

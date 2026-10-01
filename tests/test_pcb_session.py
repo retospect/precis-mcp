@@ -381,3 +381,150 @@ def test_build_ir_ignores_malformed_group_and_pattern_entries():
     # "group"/"group_offset" were ignored for F -- a pattern member's
     # offset arrays stay NaN, never F's authored (1, 2, 3).
     assert math.isnan(float(ir.inst_group_offset_dx[5]))
+
+
+# --- pre-route DRC gate (docs/backlog/pcb-guided-place-route.md; gr451052) ---
+# The bug these close: drc.run_geometric_drc had exactly ONE caller (the
+# view='drc' path), so neither pcb_place nor pcb_route ran any geometric
+# check and an already-illegal placement (authored escape vias inside a
+# driver IC's own solder lands) was routed silently. session.placement_drc_*
+# is the single shared builder both jobs now call BEFORE routing, so the two
+# call sites cannot drift on HOW the pre-route check is framed.
+
+
+def _two_pin_two_net_graph():
+    # U1/1 on net NA, U2/1 on net NB, ten mm apart — pads present, nothing
+    # routed. build_ir gives U1 a pad at the origin, which the fixed via
+    # below is deliberately drilled straight into.
+    return {
+        "board": {"board_id": 1, "stackup": DEFAULT_STACKUP},
+        "instances": [
+            {"refdes": "U1", "x": 0.0, "y": 0.0, "rot": 0.0},
+            {"refdes": "U2", "x": 10.0, "y": 0.0, "rot": 0.0},
+        ],
+        "nets": [
+            {"name": "NA", "members": [{"refdes": "U1", "pin": "1"}]},
+            {"name": "NB", "members": [{"refdes": "U2", "pin": "1"}]},
+        ],
+    }
+
+
+def test_placement_drc_flags_fixed_via_drilled_into_foreign_pad():
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.session import placement_drc_findings, placement_drc_report
+
+    ir = build_ir(_two_pin_two_net_graph())
+    # An authored escape via on NB sitting exactly on U1/1 (net NA) — the
+    # gr451052 shape: a via inside a foreign net's solder land, geometry that
+    # exists BEFORE a single trace is routed.
+    via = {
+        "ctype": "via",
+        "net": "NB",
+        "x": 0.0,
+        "y": 0.0,
+        "dia_mm": 0.6,
+        "drill_mm": 0.3,
+        "layers": ["F.Cu"],
+        "fixed": True,
+    }
+    findings = placement_drc_findings(
+        ir, capability=capability_for("4layer"), fixed_copper=[via]
+    )
+    rules = {f.rule for f in findings if f.severity == "error"}
+    assert "via_pad_keepout" in rules  # the named gr451052 rule
+
+    n_errors, block = placement_drc_report(findings)
+    assert n_errors >= 1
+    assert block is not None
+    # A NAMED account (rule + where + margin), not just a bit flipped.
+    assert "via_pad_keepout" in block
+    assert "unmanufacturable as placed" in block
+    assert "before a single trace is routed" in block
+
+
+def test_placement_drc_exempts_same_net_authored_via():
+    # check_via_pad_keepout's same-net authored-via exemption: an escape via
+    # on the SAME net as the pad it lands on is legal (that is what an escape
+    # via IS) — the gate must not cry wolf over a board's own via stitching.
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.session import placement_drc_findings
+
+    ir = build_ir(_two_pin_two_net_graph())
+    via_same_net = {
+        "ctype": "via",
+        "net": "NA",
+        "x": 0.0,
+        "y": 0.0,
+        "dia_mm": 0.6,
+        "drill_mm": 0.3,
+        "layers": ["F.Cu"],
+        "fixed": True,
+    }
+    findings = placement_drc_findings(
+        ir, capability=capability_for("4layer"), fixed_copper=[via_same_net]
+    )
+    keepout = [f for f in findings if f.rule == "via_pad_keepout"]
+    assert keepout == []
+
+
+def test_placement_drc_report_is_silent_when_clean():
+    # A clean placement subset returns (0, None) — deliberately NO reassuring
+    # "clean" line, because this is a SUBSET check that never looked at trace
+    # width / connectivity, so "clean" would overclaim (handlers/pcb.py's
+    # pads-only DRC note guards the same way).
+    from precis.pcb.session import placement_drc_report
+
+    n_errors, block = placement_drc_report([])
+    assert n_errors == 0
+    assert block is None
+
+
+def test_run_placement_drc_is_a_subset_of_run_geometric_drc():
+    # The subset contract: run_placement_drc fires only rules that exist
+    # before routing. On an unrouted 2-pin net, run_geometric_drc raises
+    # 'connectivity' (a router-output rule) while run_placement_drc — which
+    # never looks at connectivity/unrouted/trace_width/annular_ring — stays
+    # silent, so acting on the early gate can only ever AGREE with the later
+    # full run, never fire something it would not.
+    from precis.pcb import drc, realize
+    from precis.pcb.capabilities import capability_for
+
+    graph = {
+        "board": {"board_id": 1, "stackup": DEFAULT_STACKUP},
+        "instances": [
+            {"refdes": "U1", "x": 0.0, "y": 0.0, "rot": 0.0},
+            {"refdes": "U2", "x": 10.0, "y": 0.0, "rot": 0.0},
+        ],
+        "nets": [
+            {
+                "name": "NET1",
+                "members": [
+                    {"refdes": "U1", "pin": "1"},
+                    {"refdes": "U2", "pin": "1"},
+                ],
+            },
+        ],
+    }
+    ir = build_ir(graph)
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    model = {
+        "layers": layers,
+        "pads": realize.pads_for_ir(ir, layers, None),
+        "copper": [],
+    }
+    cap = capability_for("4layer")
+    geometric_rules = {f.rule for f in drc.run_geometric_drc(model, capability=cap)}
+    placement_rules = {f.rule for f in drc.run_placement_drc(model, capability=cap)}
+    # placement is a strict subset here — the router-only rule is dropped.
+    assert placement_rules <= geometric_rules
+    assert "connectivity" in geometric_rules
+    assert "connectivity" not in placement_rules
+    # None of the router-output rules may ever ride the placement subset.
+    router_only = {
+        "connectivity",
+        "unrouted",
+        "trace_width",
+        "annular_ring",
+        "silk",
+    }
+    assert not (placement_rules & router_only)

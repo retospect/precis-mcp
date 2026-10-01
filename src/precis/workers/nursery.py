@@ -887,7 +887,14 @@ def _detect_child_failed_final(store: Store) -> list[Symptom]:
             detail=(
                 f"{count} todo(s) exhausted the sweeper's unpark phase "
                 f"(bounded autonomous retry) and are terminally parked — "
-                f"only a human `tag(remove=…)` unparks these now; see "
+                f"only a human unparks these now. Removing `child-failed-final` "
+                f"alone does NOT work: the sweeper re-latches it while the "
+                f"live `child-failed:<job_id>` tag is still there and "
+                f"unpark_attempts is at the cap. Use `put(kind='job', "
+                f"id=<failed_job_id>, mode='retry')` (clears both tags and "
+                f"resets the unpark budget), or by hand in ONE call: "
+                f"tag(kind='todo', id=<parent_id>, "
+                f"remove=['child-failed-final', 'child-failed:<job_id>']). See "
                 f"search(kind='todo', tags=['child-failed-final']) for the list"
             ),
             fingerprint_key="child-failed-final:aggregate",
@@ -1974,8 +1981,16 @@ def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
     non-empty (and registry-confirmed, see below) result into a
     finding.
 
-    Two gr452084 guards on top of the plain roster diff:
+    Three gr452084 guards on top of the plain roster diff:
 
+    - **Skip ``process='unknown'``.** ``latest`` ignores the untagged
+      identity (``PRECIS_PROCESS`` unset — throwaway containers and
+      local dev; gr452084 defect 4). The write side already stops
+      minting these rows (:meth:`Store.upsert_kind_providers`), but any
+      still in the table before retention drains them would otherwise
+      fold several unrelated processes on one real host into a single
+      ``(host, "unknown")`` pair and diff their stitched-together
+      rosters as a spurious shrinkage.
     - **Recency anchor.** ``latest`` only considers a ``(host,
       process)`` whose current boot is within
       :data:`DEAD_WORKER_LOOKBACK_DAYS` of ``now()``. A process that
@@ -2013,6 +2028,7 @@ def _detect_kind_shrinkage(store: Store) -> list[Symptom]:
             WITH latest AS (
                 SELECT host, process, max(last_seen) AS boot_ts
                   FROM kind_provider
+                 WHERE process <> 'unknown'
                  GROUP BY host, process
                 HAVING max(last_seen) > now()
                         - (%(dead_worker_lookback)s || ' days')::interval

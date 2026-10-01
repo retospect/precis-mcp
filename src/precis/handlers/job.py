@@ -769,6 +769,15 @@ class JobHandler(NumericRefHandler):
         sweep. The failed job itself is left in place for forensics — a
         ``STATUS:failed`` child is terminal, so it doesn't block re-mint.
 
+        If the parent has also been terminally parked by the sweeper's
+        ``unpark`` phase (an open ``child-failed-final`` tag once
+        ``meta.unpark_attempts`` hit :data:`~precis.workers.sweeper.
+        UNPARK_CAP`), retry strips that latch too and resets the unpark
+        budget in the same transaction — otherwise removing the per-job
+        bubble alone reports "retry queued" but the sweeper re-latches the
+        leaf on its next cycle and it never dispatches
+        (parked-leaf-recovery, docs/backlog/parked-leaf-recovery.md).
+
         ``model`` (optional) swaps the parent's ``meta.llm_tier`` before
         clearing the bubble, so the re-minted tick runs on a different
         tier. Closed-vocab (``opus``/``sonnet``/``haiku``) — validated by
@@ -843,6 +852,7 @@ class JobHandler(NumericRefHandler):
                 new_llm_select = select
 
         bubble = Tag.open(f"child-failed:{job_id}")
+        final = Tag.open("child-failed-final")
         with self.store.tx() as conn:
             meta_updates: dict[str, Any] = {}
             if new_llm_tier is not None:
@@ -852,17 +862,50 @@ class JobHandler(NumericRefHandler):
             if meta_updates:
                 self.store.stamp_ref_meta(parent_id, meta_updates, conn=conn)
             self.store.remove_tag(parent_id, bubble, conn=conn)
+            # A leaf that exhausted the sweeper's ``unpark`` phase carries a
+            # terminal ``child-failed-final`` latch ALONGSIDE its live
+            # ``child-failed:<job_id>`` bubble (parked-leaf-recovery,
+            # docs/backlog/parked-leaf-recovery.md). Clearing the bubble
+            # alone would leave that latch — and even if a human then
+            # stripped it too, the sweeper re-latches it on its next cycle
+            # because ``meta.unpark_attempts`` is still at ``UNPARK_CAP``
+            # (``sweeper._transition_unpark``). An explicit human retry is a
+            # fresh decision, so strip the terminal tag AND reset the
+            # autonomous-retry budget (drop ``unpark_attempts`` /
+            # ``last_parked_at``) so the leaf gets a clean set of attempts
+            # rather than being re-latched immediately.
+            cleared_final = self.store.remove_tag(parent_id, final, conn=conn)
+            if cleared_final:
+                conn.execute(
+                    "UPDATE refs "
+                    "   SET meta = meta - 'unpark_attempts' - 'last_parked_at' "
+                    " WHERE ref_id = %s",
+                    (parent_id,),
+                )
+                self.store.append_event(
+                    parent_id,
+                    source="job-retry",
+                    event="unpark-final-cleared",
+                    payload={"job_id": job_id},
+                    conn=conn,
+                )
 
         model_note = (
             f", swapped model→{str(model).strip()}" if model is not None else ""
         )
         model_note += ", updated selection" if new_llm_select is not None else ""
+        final_note = (
+            " (also cleared the terminal child-failed-final latch and reset the "
+            "unpark budget so the sweeper won't re-latch it)"
+            if cleared_final
+            else ""
+        )
         return Response(
             body=(
                 f"retry queued: cleared child-failed:{job_id} on todo "
-                f"#{parent_id}{model_note}. The dispatch worker re-mints a "
-                f"fresh job on its next sweep (~1 min); the failed job "
-                f"#{job_id} stays for forensics. poll: get(kind='todo', "
+                f"#{parent_id}{model_note}{final_note}. The dispatch worker "
+                f"re-mints a fresh job on its next sweep (~1 min); the failed "
+                f"job #{job_id} stays for forensics. poll: get(kind='todo', "
                 f"id={parent_id})."
             )
         )

@@ -241,7 +241,10 @@ are bulk CLI passes via `build_runtime(interactive=False)`.
 / mermaid / cad limits (`PRECIS_FIGURE_MAX_TURNS` 20, `PRECIS_*_MAX_USD`,
 `PRECIS_*_TIMEOUT_S`), sweeper retention
 (`PRECIS_TRANSCRIPT_RETENTION_DAYS`, `PRECIS_AGENTLOG_RETENTION_DAYS`,
-`PRECIS_LLM_LOG_RETENTION_DAYS`), reconcile refresh windows
+`PRECIS_LLM_LOG_RETENTION_DAYS`, `PRECIS_KIND_PROVIDER_RETENTION_DAYS`
+30 — prunes `kind_provider` boot-roster rows a still-live process keeps
+refreshing, so only genuinely-gone identities age out), reconcile refresh
+windows
 (`PRECIS_PAPER_RECONCILE_REFRESH_HOURS`,
 `PRECIS_CORPUS_RECONCILE_REFRESH_HOURS`), the log-handler batching
 (`PRECIS_LOG_MAX_BUFFER` 50, `PRECIS_LOG_MAX_INTERVAL_SECONDS` 5), and

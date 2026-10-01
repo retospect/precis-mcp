@@ -61,8 +61,22 @@ class KindsMixin:
         Stale entries (rows whose owning process crashed and didn't
         re-upsert) are tolerated by the read side via a freshness
         cutoff (see :meth:`find_kind_providers`).
+
+        A ``process="unknown"`` boot (``PRECIS_PROCESS`` unset — a local
+        dev run or, in the fleet, a throwaway container that took its
+        hex container ID as its hostname) is skipped entirely (gr452084
+        defect 4). Such a boot only ever writes a single roster under an
+        identity that never boots again: it can never form a two-boot
+        comparison, so it is pure ballast for ``kind_provider`` (2108
+        distinct hex hosts, ~107k rows for a six-machine fleet) and, when
+        several untagged processes on one real host all fold into the
+        same ``(host, "unknown")`` pair, it feeds the kind-shrinkage
+        detector a roster stitched from unrelated processes. Every
+        fleet process that serves kinds sets ``PRECIS_PROCESS`` via its
+        plist, so nothing routable is lost by not recording an
+        unknown-process roster.
         """
-        if not specs:
+        if not specs or process == "unknown":
             return 0
         sql = (
             "INSERT INTO kind_provider (slug, host, process, last_seen) "
@@ -104,6 +118,45 @@ class KindsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (slug, f"{max_age_seconds} seconds")).fetchall()
         return [str(r[0]) for r in rows]
+
+    def prune_kind_providers(
+        self, *, retention_days: int, conn: Connection | None = None
+    ) -> int:
+        """Drop ``kind_provider`` rows whose ``last_seen`` aged past
+        ``retention_days``; return the number deleted (gr452084 defect 4).
+
+        ``kind_provider`` is an UPSERT keyed on ``(slug, host, process)``
+        — a live process bumps ``last_seen`` on every boot, so its rows
+        never age out. Only rows for a ``(host, process)`` that has
+        stopped booting entirely (a retired daemon, or a throwaway
+        container that booted once under its hex hostname and died) fall
+        past the window, and those are exactly the ballast: the table had
+        grown to ~107k rows / 2108 distinct hosts for a six-machine
+        fleet with nothing ever pruning it. The window mirrors
+        ``worker_logs`` retention (30d, the fleet's evidence-of-a-boot
+        floor) — past it there is no boot to route to and nothing for the
+        kind-shrinkage detector to compare against.
+
+        ``retention_days <= 0`` disables the prune. A caller may pass its
+        own ``conn`` (the sweeper holds a fleet advisory lock on it so the
+        DELETE single-flights); otherwise one is drawn from the pool.
+        """
+        if retention_days <= 0:
+            return 0
+        sql = (
+            "DELETE FROM kind_provider "
+            "WHERE last_seen < now() - (%s || ' days')::interval"
+        )
+
+        def _do(c: Connection) -> int:
+            cur = c.execute(sql, (str(retention_days),))
+            return cur.rowcount or 0
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            with c.transaction():
+                return _do(c)
 
     def upsert_kinds(
         self,

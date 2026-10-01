@@ -276,13 +276,32 @@ def _resolve_join_endpoint(
     return key, port_name, port
 
 
-def _join_generated_record(store: Store, node: Any) -> dict[str, Any] | None:
+def _join_generated_record(
+    store: Store,
+    node: Any,
+    pending_records: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """``node``'s bound structure's ``meta['generated']`` record, iff
     ``node`` is itself a join composite (``generator == 'join'``) — else
     ``None``. The change-2 discriminator lives here: "is a part of a
     composite" tests THIS, never merely "has a parent" — an ordinary
     assembly block used as a layout parent has no such record, and a
-    hexfold block sitting under one stays joinable (module docstring)."""
+    hexfold block sitting under one stays joinable (module docstring).
+
+    ``pending_records`` (gr456213 follow-up) carries the join records of
+    composites minted EARLIER in the same ops batch but not yet committed
+    to the store — :func:`finish_join` runs only after every op in the
+    list has prepared (:func:`~precis_se.atomic.apply.apply_ops_with_atomic`),
+    so a composite's ``node.bound`` is still ``None`` and its record is not
+    yet a store ref while a LATER join in the same batch prepares. Without
+    this, that later join could not see that the first composite already
+    claimed a shared endpoint as a part, and would silently reparent it
+    (the very defect ``join.part_addressed`` exists to refuse). Checked
+    first, keyed by block name; falls back to the committed store record."""
+    if pending_records:
+        rec = pending_records.get(node.name)
+        if rec is not None:
+            return rec if rec.get("generator") == "join" else None
     if node.bound_kind != "structure" or not node.bound:
         return None
     ref = store.get_ref(kind="structure", id=node.bound)
@@ -293,7 +312,11 @@ def _join_generated_record(store: Store, node: Any) -> dict[str, Any] | None:
 
 
 def _addressed_part_redirect(
-    store: Store, tree: SeTree, block_key: str, port_name: str
+    store: Store,
+    tree: SeTree,
+    block_key: str,
+    port_name: str,
+    pending_records: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, str] | None:
     """gr456213 (2026-09-29 prod dogfood): the fix for the case
     :func:`_hexfold_join`'s old, differently-scoped ``join.reparented``
@@ -324,7 +347,7 @@ def _addressed_part_redirect(
         parent_node = tree.blocks.get(parent_key)
         if parent_node is None:
             break
-        generated = _join_generated_record(store, parent_node)
+        generated = _join_generated_record(store, parent_node, pending_records)
         if generated is None:
             break
         parts = generated.get("parts") or []
@@ -928,7 +951,11 @@ JOINERS: dict[
 
 
 def prepare_join(
-    store: Store, tree: SeTree, op: dict[str, Any], design_slug: str
+    store: Store,
+    tree: SeTree,
+    op: dict[str, Any],
+    design_slug: str,
+    pending_joins: list[PendingJoin] | None = None,
 ) -> tuple[str, PendingJoin | None]:
     """``{"op": "join", ...}`` (module docstring) — the pure/in-memory half
     of the prepare/finish pair (:mod:`precis_se.atomic.generate`'s module
@@ -944,14 +971,28 @@ def prepare_join(
     annotation, pointing at regenerating the block, vs. no joiner
     registered for the pair, which also covers a genuine mismatch between
     two present ones), and dispatches to the matching :data:`JOINERS`
-    entry."""
+    entry.
+
+    ``pending_joins`` (gr456213 follow-up) is the caller's running list of
+    composites already prepared in this same ops batch but not yet finished
+    (:func:`~precis_se.atomic.apply.apply_ops_with_atomic` defers every
+    :func:`finish_join` to after the whole list validates). The
+    ``join.part_addressed`` gate consults their still-uncommitted records
+    too (:func:`_addressed_part_redirect`), so a second join that shares an
+    endpoint with a first join in the SAME call is refused just as one
+    across two calls already is — otherwise the first composite's part
+    would be silently reparented out from under it before its record ever
+    reached the store."""
+    pending_records = {pj.block_name: pj.generated for pj in (pending_joins or [])}
     a_raw, b_raw = op.get("a"), op.get("b")
     if not a_raw or not b_raw:
         raise BadInput("join needs 'a' and 'b' (each 'block.port')")
     a_block, a_port_name, a_spec = _resolve_join_endpoint(tree, a_raw, side="'a'")
     b_block, b_port_name, b_spec = _resolve_join_endpoint(tree, b_raw, side="'b'")
     for blk, port_name in ((a_block, a_port_name), (b_block, b_port_name)):
-        redirect = _addressed_part_redirect(store, tree, blk, port_name)
+        redirect = _addressed_part_redirect(
+            store, tree, blk, port_name, pending_records
+        )
         if redirect is not None:
             owner, corrected = redirect
             raise BadInput(

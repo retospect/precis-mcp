@@ -89,6 +89,22 @@ screw. **Pose matters**: the screw drives along its own `+z`, head at the
 pose, thread going in. If `view='fasten'` says the axis "passes through
 nothing", the `rot` is backwards.
 
+> **Parenting a fastener changes its BOM leaf membership.** The example
+> parents `seat_bolt` under the enclosing assembly (`parent: "frame"`),
+> not under the member it clamps, and where you parent it is load-bearing
+> for the order rollup. `view='order'`/`view='bom'` treat a block that has
+> children as a container — its children carry the to-make weight, not it.
+> The one exception is a block that declares its own manufacturing `mode`
+> (a printed part): it stays in the to-make table even after it gains a
+> child fastener block. So parenting a screw under an UNMODED part turns
+> that part into a container and drops it off the to-make table. Two safe
+> patterns: parent the fastener under an enclosing assembly (as here), or
+> parent it under the clamped member **after** that member carries its
+> `mode` — then run `view='order'` and confirm every part you mean to make
+> is still listed. (`pose` is parent-relative — see precis-se-help,
+> "Units" — so a fastener parented under the clamped member is placed
+> relative to that member, which is usually what you want.)
+
 ## 3 — say what the far end threads into
 
 This is the decision the pass will not make for you on a printed member,

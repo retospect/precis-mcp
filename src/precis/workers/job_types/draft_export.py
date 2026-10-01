@@ -40,6 +40,11 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # ?ignore_retractions=1 — the sources appendix records which cited
         # papers were overridden (see precis.export.retraction).
         "ignore_retractions": {"type": "boolean"},
+        # Opt-in: export even when IMAGE-LESS figures are uncleared — they
+        # ship as the exporter's visible placeholders. Same waiver
+        # remarkable_send offers; a licensing block (an uncleared figure with
+        # a real image) still fails the export.
+        "placeholder_figures": {"type": "boolean"},
         # Append the doi hyperlink run after each in-text \cite{...} mark
         # (precis.export.latex.render_body's doi_links). Default on.
         # Independent of library_links.
@@ -141,13 +146,30 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     # Figure clearance gate: an uncleared figure must not
     # ship, so it fails the export — the way a bare ``\cite`` fails review.
-    from precis.utils.figure_clearance import draft_figure_clearance
+    # ``placeholder_figures`` waives only ASSET-LESS blocks (the export
+    # renders a visible placeholder — nothing uncleared actually ships), the
+    # same waiver remarkable_send offers; a licensing block on a real image
+    # is never waivable.
+    from precis.utils.figure_clearance import (
+        draft_figure_clearance,
+        partition_uncleared,
+    )
 
     clearance = draft_figure_clearance(ctx.store, ref.id)
-    if clearance.uncleared:
-        lines = "; ".join(f"{f.dc} ({f.reason})" for f in clearance.uncleared)
+    uncleared, waived = partition_uncleared(
+        clearance.uncleared,
+        placeholder_figures=bool(params.get("placeholder_figures")),
+    )
+    if waived:
+        ctx.append_chunk(
+            "job_event",
+            f"warn: {len(waived)} image-less figure(s) ship as visible "
+            f"placeholders — {'; '.join(f.dc for f in waived)}",
+        )
+    if uncleared:
+        lines = "; ".join(f"{f.dc} ({f.reason})" for f in uncleared)
         ctx.record_failure(
-            f"draft_export: {len(clearance.uncleared)} of {clearance.total} "
+            f"draft_export: {len(uncleared)} of {clearance.total} "
             f"figure(s) not cleared to ship — {lines}. Clear each (grant/renew "
             "the permission, or fix the origin) and re-export."
         )

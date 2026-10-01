@@ -1377,6 +1377,22 @@ def _fake_mace(monkeypatch: pytest.MonkeyPatch, builds: list[dict]) -> None:
     monkeypatch.setitem(sys.modules, "mace.calculators", calcs)
 
 
+def _fake_torch_dftd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Satisfy the ``import torch_dftd`` availability probe in
+    :func:`_ml_calculator` without the optional ``[dft-ml]`` extra.
+
+    ``torch-dftd`` is optional (pyproject ``dft-ml``); the probe at
+    relax.py:579 runs on the uncached side, before ``_dftd3_wrap``, so a test
+    that only patches ``_dftd3_wrap`` still trips the real import. What is
+    under test here is the cache KEY, not that torch-dftd works, so a bare
+    stand-in module keeps the test hermetic and runnable everywhere.
+    """
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "torch_dftd", types.ModuleType("torch_dftd"))
+
+
 @pytest.fixture
 def _clean_ml_calc_cache():
     """The MLIP calculator cache is process-wide — clear it around any test
@@ -1416,6 +1432,7 @@ def test_ml_calculator_cache_is_keyed_on_model_and_dispersion(
     relax_mod = _clean_ml_calc_cache
     builds: list[dict] = []
     _fake_mace(monkeypatch, builds)
+    _fake_torch_dftd(monkeypatch)
     monkeypatch.setattr(relax_mod, "_dftd3_wrap", lambda calc, **_kw: ("d3", calc))
     # _ml_calculator probes `import torch_dftd` before it reaches the wrapper,
     # so patching the wrapper alone still needs the optional dft-ml extra

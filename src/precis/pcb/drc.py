@@ -2460,6 +2460,66 @@ def run_geometric_drc(
     return findings
 
 
+def run_placement_drc(
+    model: dict[str, Any],
+    *,
+    capability: CapabilityRow,
+    outline: list[list[float]] | None = None,
+    courtyards: list[Courtyard] | None = None,
+    courtyard_bottom: dict[str, bool] | None = None,
+    net_rules: dict[str, NetRules] | None = None,
+) -> list[DrcFinding]:
+    """The PLACEMENT-only subset of :func:`run_geometric_drc` — every rule
+    that can fire before a single trace is routed, over a model carrying
+    only placed pads and AUTHORED fixed copper (no router-derived copper,
+    which does not exist yet at end-of-place / start-of-route).
+
+    **Why a separate entry point rather than a flag on
+    :func:`run_geometric_drc`.** These are different callers with a
+    different contract. ``run_geometric_drc`` is the FINAL check over
+    realized copper (``view='drc'``, and the ``netlist_drc_clean`` gate).
+    This is the EARLY check the place and route jobs run so an
+    already-unmanufacturable placement is flagged UP FRONT rather than
+    silently routed and only noticed when a human later asks for the DRC
+    view — the exact seam ``handlers/pcb.py``'s own "a check you did not
+    RUN is not a check that passed" comment names. The motivating case
+    (gr451052): nine ``via_pad_keepout`` errors where authored escape vias
+    sit 0.008–0.225mm from the HV507 driver IC's own solder lands against a
+    0.090mm floor — pad-and-via geometry, present before routing, that
+    nothing ran a check against because
+    :func:`run_geometric_drc`'s one caller was the DRC view.
+
+    Deliberately the placement-geometry rules the report names — pad/pad +
+    copper/copper clearance (:func:`check_clearance`), pad/via keep-out
+    (:func:`check_via_pad_keepout`), via/via keep-out
+    (:func:`check_via_via_keepout`), courtyard overlap
+    (:func:`check_courtyard_overlap`) and outline containment
+    (:func:`check_outline_containment`) — and NONE of the rules that need
+    router output (trace width, annular ring, connectivity, unrouted, silk)
+    or a drill census this seam does not carry. Every finding it returns is
+    therefore a SUBSET of what :func:`run_geometric_drc` would report over
+    the same board once routed, never one that view would not also fire —
+    so acting on it early can only agree with the later full run.
+
+    ``net_rules`` is threaded into :func:`check_clearance` exactly as
+    :func:`run_geometric_drc` threads it (``None`` → capability-floor only).
+    A caller gating on ERROR severity needs it for nothing: the ERROR tier
+    is ``jlc_min``, which no per-net override ever lowers — an override only
+    ever RAISES the required clearance, so the floor errors this returns are
+    identical with or without it.
+    """
+    findings: list[DrcFinding] = []
+    findings += check_clearance(model, capability, net_rules=net_rules)
+    findings += check_via_pad_keepout(model, capability)
+    findings += check_via_via_keepout(model, capability)
+    findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
+    if courtyards:
+        findings += check_courtyard_overlap(
+            courtyards, bottom_by_refdes=courtyard_bottom
+        )
+    return findings
+
+
 __all__ = [
     "DEFAULT_COURTYARD_RADIUS_MM",
     "SILK_LEGIBILITY_HEIGHT_MM",
@@ -2484,4 +2544,5 @@ __all__ = [
     "clearance_violations_naive",
     "process_for_stackup",
     "run_geometric_drc",
+    "run_placement_drc",
 ]

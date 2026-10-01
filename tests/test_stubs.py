@@ -136,6 +136,36 @@ def test_stub_backlog_state_reflects_latest_event(store: Store) -> None:
     assert rows[0]["state"] == "no OA version available"
 
 
+def test_stub_backlog_actionable_event_beats_later_no_oa_in_same_pass(
+    store: Store,
+) -> None:
+    # gripe: within ONE cascade pass, an identifier-route fetch_failed (a
+    # known green copy exists, the download just blipped) must not be masked
+    # by a later aggregator no_oa_version (e.g. a paid-cache miss run last).
+    # Reporting "no OA version available" there was false and nearly sent an
+    # operator to pay a publisher for a free arXiv paper.
+    rid = _stub(store, cite_key="green2015", arxiv="1504.03028")
+    _fetch_event(
+        store,
+        rid,
+        "fetch_failed",
+        hours_ago=1,
+        source="fetcher:arxiv",
+        payload=(
+            '{"url": "https://arxiv.org/pdf/1504.03028.pdf", '
+            '"error": "_ssl.c:993: The handshake operation timed out"}'
+        ),
+    )
+    # Runs later in the SAME pass (same hour), overwrites the latest-row view.
+    _fetch_event(
+        store, rid, "no_oa_version", hours_ago=1, source="fetcher:openalex_content"
+    )
+    rows = store.stub_backlog()
+    assert rows[0]["last_event"] == "fetch_failed"
+    assert rows[0]["last_source"] == "fetcher:arxiv"
+    assert rows[0]["state"] != "no OA version available"
+
+
 def test_stub_backlog_state_surfaces_failure_reason(store: Store) -> None:
     # A fetch_failed whose payload carries the attempted URL + httpx error
     # should render the concrete why (host + HTTP status), not a bare

@@ -13,6 +13,7 @@ while the lease is live (``_doable_exclusion_clause``), expiry via the
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -62,6 +63,19 @@ def _age_claim(store: Store, ref_id: int, sql_expiry: str) -> None:
             (ref_id,),
         )
         conn.commit()
+
+
+@pytest.mark.parametrize("bad_id", [[1, 2, 3], (1, 2), {"id": 1}])
+def test_coerce_id_rejects_non_scalar_with_clean_badinput(bad_id: Any) -> None:
+    """A caller reaching for bulk tagging (``id=[1, 2, 3]``) once tripped a
+    raw ``AttributeError`` (``'list' object has no attribute 'strip'``) that
+    dispatch flattened into an opaque ``[error:Internal]``. ``_coerce_id`` must
+    instead raise a clean ``BadInput`` naming the one-ref-per-call constraint —
+    no DB needed, since the guard fires before any store access."""
+    with pytest.raises(BadInput) as excinfo:
+        TodoHandler._coerce_id(bad_id)
+    assert "one integer or handle" in str(excinfo.value)
+    assert "pass one call per ref" in str(excinfo.value.next or "")
 
 
 def test_claim_gets_a_lease_and_excludes_from_doable(

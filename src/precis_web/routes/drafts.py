@@ -43,10 +43,18 @@ from here:
   ``/validate-refs``, ``/ref-search``, ``/figure…``, ``/authors``,
   ``/workspace``, ``/authoring``, ``/fork``, exports) — shared by
   smartdraft's editor UI.
-* ``GET .../export.docx`` / ``POST .../export.pdf`` — gate on
-  ``precis.export.retraction``: a ``retracted`` cite hard-blocks
-  (override ``?ignore_retractions=1``), reading stored state only, never
-  a live Crossref check (``_retraction_blocked_response``).
+* ``GET .../pdf`` / ``GET .../export.docx`` / ``POST .../export.pdf`` — every
+  export path runs one shared draft-level preflight
+  (``precis.export.preflight.draft_export_preflight``), so the same draft in
+  the same state blocks (or ships) identically whichever button is pressed.
+  Two gates: a ``retracted`` cite hard-blocks (override
+  ``?ignore_retractions=1``, reading stored state only — never a live
+  Crossref check — ``_retraction_blocked_response``), and an uncleared figure
+  hard-blocks (``precis.utils.figure_clearance``); an image-less figure can be
+  waived to ship as a visible placeholder via ``?placeholder_figures=1``
+  (``_figure_clearance_blocked_response``), but a licensing block on a real
+  image never waives. The overrides are query params on the GET downloads and
+  form fields on the PDF-job POST.
   ``GET .../retraction-status`` (no-network read) and
   ``POST .../retraction-check`` (live re-check, TTL-gated,
   ``force=1`` bypasses) back the export pane; same shared walk. That walk
@@ -94,6 +102,7 @@ from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput, NotFound
 from precis.export._data_package import collect_entry
+from precis.export.preflight import draft_export_preflight
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT
 from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS, mint_review_fanout
 from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow, content_sha
@@ -1168,6 +1177,45 @@ def _retraction_blocked_response(request: Request, report: Any) -> Response:
     )
 
 
+def _figure_clearance_blocked_response(
+    request: Request, blocked: list[Any], total: int
+) -> Response:
+    """The shared "export blocked — uncleared figure" page for every export
+    path (the ``/pdf`` GET, the ``.docx`` GET, the PDF-job POST), the figure
+    twin of ``_retraction_blocked_response``: one wording so no surface can
+    drift on what it tells the user or how to get past it.
+
+    Like the retraction block this is a hard stop by default — an uncleared
+    figure (no image yet, or a third-party image whose permission isn't
+    granted / has expired) must not ship in a finished artifact. The only
+    way past is per-check and explicit: an *image-less* figure can ship as a
+    visible placeholder via ``placeholder_figures=1`` (query on the GET
+    downloads, form field on the PDF job), but a licensing block on a real
+    image is never waivable — the permission has to be granted or renewed."""
+    slugs = ", ".join(f.dc for f in blocked)
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {
+            "title": "Export blocked — uncleared figure",
+            "status": 409,
+            "detail": (
+                f"This draft has {len(blocked)} of {total} figure(s) not "
+                f"cleared to ship: {slugs}. An uncleared figure (no image "
+                "yet, or a third-party image whose permission isn't granted "
+                "or has expired) must not ship in a finished document, so it "
+                "hard-stops by default.\n\n"
+                "An image-less figure can ship as a visible placeholder: tick "
+                "'allow placeholder figures' in the export panel, or add "
+                "placeholder_figures=1 to this request (downloads: query "
+                "param; PDF job: form field). A licensing block on a real "
+                "image is never waivable — grant or renew the permission."
+            ),
+        },
+        status_code=409,
+    )
+
+
 def _safe_retraction_report(store: Store, ref: Any, **kw: Any) -> Any | None:
     """``draft_retraction_report`` wrapped defensively — a failure inside
     the walk must never take down the export it's gating or the reader
@@ -1231,22 +1279,34 @@ async def export_docx_route(request: Request, ident: str) -> Response:
         "true",
         "yes",
     )
-    report = _safe_retraction_report(store, ref)
-    retraction_override: list[Any] = []
-    if report is not None and report.blocks_export:
-        if not ignore_retractions:
-            return _retraction_blocked_response(request, report)
-        # The override is deliberate and meant to be rare — leave a trace.
-        # A server log line alone isn't enough (gone by the time anyone
-        # reads the export), so it's also recorded in the sources appendix
-        # below (``?sources=1`` only — see build_sources_zip's
-        # retraction_override).
-        retraction_override = report.retracted
+    placeholder_figures = request.query_params.get("placeholder_figures") in (
+        "1",
+        "true",
+        "yes",
+    )
+    pf = draft_export_preflight(
+        store,
+        ref,
+        ignore_retractions=ignore_retractions,
+        placeholder_figures=placeholder_figures,
+    )
+    if pf.retraction_blocked:
+        return _retraction_blocked_response(request, pf.retraction_report)
+    if pf.figures_blocked:
+        return _figure_clearance_blocked_response(
+            request, pf.figures_blocked, pf.clearance_total
+        )
+    # The override is deliberate and meant to be rare — leave a trace. A
+    # server log line alone isn't enough (gone by the time anyone reads the
+    # export), so it's also recorded in the sources appendix below
+    # (``?sources=1`` only — see build_sources_zip's retraction_override).
+    retraction_override = pf.retraction_override
+    if retraction_override:
         log.warning(
             "drafts: export override — draft=%s (%s) retracted cites=%s",
             ref.id,
             ref.slug,
-            [p.slug for p in report.retracted],
+            [p.slug for p in retraction_override],
         )
 
     citations = (
@@ -1332,18 +1392,32 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
         "yes",
         "on",
     )
+    placeholder_figures = str(form.get("placeholder_figures") or "") in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
-    report = _safe_retraction_report(store, ref)
-    retraction_override_used = False
-    if report is not None and report.blocks_export:
-        if not ignore_retractions:
-            return _retraction_blocked_response(request, report)
-        retraction_override_used = True
+    pf = draft_export_preflight(
+        store,
+        ref,
+        ignore_retractions=ignore_retractions,
+        placeholder_figures=placeholder_figures,
+    )
+    if pf.retraction_blocked:
+        return _retraction_blocked_response(request, pf.retraction_report)
+    if pf.figures_blocked:
+        return _figure_clearance_blocked_response(
+            request, pf.figures_blocked, pf.clearance_total
+        )
+    retraction_override_used = bool(pf.retraction_override)
+    if retraction_override_used:
         log.warning(
             "drafts: export override — draft=%s (%s) retracted cites=%s",
             ref.id,
             ref.slug,
-            [p.slug for p in report.retracted],
+            [p.slug for p in pf.retraction_override],
         )
 
     slug = str(ref.slug or ref.id)
@@ -1354,6 +1428,11 @@ async def export_pdf_route(request: Request, ident: str) -> Response:
         idem = f"draft_export:{slug}:sources"
     if retraction_override_used:
         params["ignore_retractions"] = True
+    # Thread the figure waiver through to the job so its identical clearance
+    # gate lets the same image-less figures ship as placeholders (the route
+    # only preflighted; the job is the enforcing surface).
+    if placeholder_figures:
+        params["placeholder_figures"] = True
     return await redirect_or_error(
         request,
         "put",
@@ -1802,6 +1881,43 @@ async def pdf(request: Request, ident: str) -> Response:
             },
             status_code=404,
         )
+
+    # Draft-level export gate — the same shared preflight the ``.docx`` and
+    # PDF-job routes run, applied here too so the most-pressed export control
+    # (the "download PDF" link) can't ship what the others block. Gate before
+    # the version cache so a stored PDF compiled while clean can't serve after
+    # a cite is retracted / a figure's permission lapses. Overrides are query
+    # params on this GET: ``ignore_retractions=1`` / ``placeholder_figures=1``.
+    ignore_retractions = request.query_params.get("ignore_retractions") in (
+        "1",
+        "true",
+        "yes",
+    )
+    placeholder_figures = request.query_params.get("placeholder_figures") in (
+        "1",
+        "true",
+        "yes",
+    )
+    pf = draft_export_preflight(
+        store,
+        ref,
+        ignore_retractions=ignore_retractions,
+        placeholder_figures=placeholder_figures,
+    )
+    if pf.retraction_blocked:
+        return _retraction_blocked_response(request, pf.retraction_report)
+    if pf.figures_blocked:
+        return _figure_clearance_blocked_response(
+            request, pf.figures_blocked, pf.clearance_total
+        )
+    if pf.retraction_override:
+        log.warning(
+            "drafts: export override — draft=%s (%s) retracted cites=%s",
+            ref.id,
+            ref.slug,
+            [p.slug for p in pf.retraction_override],
+        )
+
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
     cache_token = _pdf_cache_token(store, ref)
     cache_dir = _pdf_cache_dir(ref.id, cache_token, sources=with_sources)

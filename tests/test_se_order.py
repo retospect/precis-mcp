@@ -334,6 +334,57 @@ def test_unbound_non_leaf_assembly_is_absent_its_leaf_children_are_not(
     assert "frame" not in body
 
 
+# ── a moded part with a CHILD fastener block stays in the to-make table ─
+
+
+def test_moded_part_with_child_fastener_stays_in_to_make(
+    handler: SeHandler, hub: Hub, store: Store
+) -> None:
+    """se dogfood 2026-09-25 (gripe): parenting a fastener under the part
+    it clamps — the natural place to hang a screw — used to silently drop
+    that part from the to-make/BOM table, because ``view='order'`` treated
+    ANY block with children as a non-leaf container. A block that declares
+    its own manufacturing ``mode`` is a real part and must stay makeable
+    regardless of its children."""
+    _components(hub).put(id="m4-cap-screw", title="M4 cap screw", category="fastener")
+    handler.put(
+        id="fastener-child-order1",
+        text=json.dumps(
+            {
+                "ops": [
+                    # A printed crank — a genuine FDM part that must print.
+                    {
+                        "op": "add_block",
+                        "name": "crank",
+                        "envelope": "box:w0.02d0.12h0.01",
+                    },
+                    {"op": "set_mode", "block": "crank", "mode": "fdm/asa"},
+                    # A screw parented UNDER the crank it fastens.
+                    {"op": "add_block", "name": "crank_bolt", "parent": "crank"},
+                    {
+                        "op": "set_binding",
+                        "block": "crank_bolt",
+                        "kind": "component",
+                        "design": "m4-cap-screw",
+                    },
+                ]
+            }
+        ),
+    )
+    tree, ref_id = _load(store, "fastener-child-order1")
+    report = se_order.rollup(store, tree, ref_id)
+    # The crank did NOT vanish just because it has a child fastener.
+    to_make = {r.block: r for r in report.to_make}
+    assert "crank" in to_make
+    assert to_make["crank"].mode == "fdm/asa"
+    assert to_make["crank"].qty == pytest.approx(1.0)
+    # The screw is still ordered, on its own purchasable line.
+    (line,) = report.purchasable
+    assert line.item == "m4-cap-screw"
+    body = handler.get(id="fastener-child-order1", view="order").body
+    assert "crank" in body
+
+
 # ── cross-design: a foreign template's bound component counts locally ───
 
 

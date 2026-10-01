@@ -497,6 +497,31 @@ are pinning the default tube length, not a physical quantity. They are
 still worth pinning — they make a change to this code visible — but no
 document should quote them as decay lengths.
 
+**Fixed (2026-09-30, gr456641), the `coverage="unstable"` half of fix 3.**
+`measure_environment` now reads the runaway's own symptom directly off
+`max_disp` and downgrades the report from `"full"`/`"lower-bound"` to
+`coverage="unstable"` when the free relax has not settled at the far,
+unfused rim: over the core shells (the free-rim guard band is already
+excluded) the displacement bottoms out in the interior and then climbs
+back toward that rim by both a factor over the interior minimum
+(`_STABILITY_RISE_FACTOR = 2`) *and* an absolute floor
+(`_STABILITY_RISE_FLOOR = 0.01 Å`). The floor is what makes this a
+convergence test rather than a shape test: a *converged* short tube shows
+the same bottom-then-rise shape (a converged geo `(8,0)` `len=3` rises to
+0.0018 Å at its far rim; converged `(5,5)` `len=6` to ~0.008 Å), because
+each rim relaxes on its own — but its far rim barely moves, an order of
+magnitude below the ≥0.027 Å the stick runaway reaches by `len=8`. So the
+four pinned change-detectors are untouched (their tubes are short and
+settled), while `(5,0)` at `len` 8/10/12/13 — the 14/22/30/34 runaway —
+is now `"unstable"`, not a confident `"full"`. A longer `MEASURE_LEN`
+default can therefore no longer manufacture a confident larger radius.
+The check is rung-independent (it reads the profile, not any relaxer's own
+convergence flag), so it also covers the geo runaway `trace.converged`
+would have caught. The fix's other two halves — asserting the geo
+relaxer's `trace.converged` back through the `Relaxer` seam, and putting
+the measurement extent into `EnvKey` — remain the precondition for
+`trust_measured=True` (slice 2, above) and are still open.
+
 ## Step 5 join open item 1: ruled (2026-09-29)
 
 `join.reparented` is back as an **INFO**, narrowed to the ordinary-parent

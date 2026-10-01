@@ -44,12 +44,18 @@ has it as ``parent``. A non-leaf template that is itself bound to a
 component/part is purchasable, and its subtree is NOT walked — its
 descendants are covered by the purchase, not separately ordered or made.
 
-**To-make is leaf-only.** An UNBOUND non-leaf template — an assembly not
-bought whole — gets no row of its own; it's a container, not a thing to
-buy or make, and its children (walked normally, since they were never
-added to the hidden set above) carry the to-make weight instead. Only a
-BOUND non-leaf hides its children (the opposite direction); an unbound
-one never hides anything, it simply isn't listed itself.
+**To-make is leaf-only — unless the block is itself moded.** An UNBOUND,
+MODELESS non-leaf template — an assembly not bought whole — gets no row of
+its own; it's a container, not a thing to buy or make, and its children
+(walked normally, since they were never added to the hidden set above)
+carry the to-make weight instead. Only a BOUND non-leaf hides its children
+(the opposite direction); an unbound one never hides anything, it simply
+isn't listed itself. The exception is a non-leaf that declares its own
+manufacturing ``mode``: that is a real part which happens to have
+descendants (typically a child fastener block parented under the member it
+clamps), and it stays in the to-make table regardless of its children —
+otherwise fastener parenting would silently drop a genuine printed part
+from the BOM with no finding.
 """
 
 from __future__ import annotations
@@ -231,11 +237,23 @@ def rollup(store: Any, tree: SeTree, ref_id: int) -> OrderReport:
                 )
             )
             _add_qty(line, qty)
-        elif name not in children:  # a leaf — the ordinary to-make case
+        elif name not in children or node.mode is not None:
+            # A leaf is the ordinary to-make case. A block WITH children is
+            # normally a container (its children carry the to-make weight,
+            # below) — UNLESS it declares its own manufacturing `mode`, in
+            # which case it is a real part that must itself be made and
+            # merely happens to have descendants: a printed crank fastened
+            # by a *child* screw block is still a printed crank. Counting a
+            # moded block as makeable regardless of children stops fastener
+            # parenting — the natural place to hang a screw is under the
+            # member it clamps — from silently dropping a genuine printed
+            # part from the to-make table with no warning (se dogfood
+            # 2026-09-25: crown/crank_left/crank_right vanished the moment
+            # each got a child fastener block).
             to_make.append(ToMakeRow(block=name, mode=node.mode, qty=qty))
-        # else: an unbound non-leaf template is an assembly of the things
-        # below it, not a thing in its own right to make/buy — no row of
-        # its own; its children, walked separately below, carry the
+        # else: an unbound, MODELESS non-leaf template is an assembly of the
+        # things below it, not a thing in its own right to make/buy — no row
+        # of its own; its children, walked separately below, carry the
         # to-make weight instead (a BOUND non-leaf is the "bought whole"
         # exception above, hiding its children rather than the reverse).
 

@@ -57,9 +57,14 @@ else (the DFT node may be heartbeat-only, gr310809).
 parent re-enters the dispatch candidate set exactly as a manual unpark
 would. At the cap, one ``child-failed-final`` tag latches and the leaf
 is never touched again by this phase (human-only from there; see
-``nursery._detect_child_failed_parked``'s aggregate finding). A manual
-tag removal does not reset ``unpark_attempts`` — only this phase
-advances it. **Transient short-circuit** (retryable child-failed,
+``nursery._detect_child_failed_parked``'s aggregate finding). A bare
+``tag(remove=['child-failed-final'])`` does NOT reset
+``unpark_attempts`` — this phase advances it, and while the leaf still
+carries an open ``child-failed:*`` tag it re-matches and re-latches
+terminal on the next cycle; unparking a terminal leaf means removing
+BOTH tags in one call, or using ``put(kind='job', mode='retry')``
+(``handlers.job.JobHandler._retry_job``), which strips the latch AND
+resets ``unpark_attempts`` so the leaf gets a fresh set of attempts. **Transient short-circuit** (retryable child-failed,
 docs/backlog/todo-parked-transient-failures.md): when EVERY job named by
 the leaf's live ``child-failed:<job_id>`` tags carries
 ``meta.retry_after`` (stamped by ``executors/_common.record_failure``'s
@@ -461,6 +466,46 @@ def _gc_worker_logs(store: Store) -> int:
         return cur.rowcount or 0
 
 
+#: Fleet-wide single-flight key for the kind_provider pruner (ascii ``"kpgc"``).
+_KIND_PROVIDER_GC_LOCK = 0x6B706763
+
+
+def _kind_provider_retention_days() -> int:
+    """Days to keep ``kind_provider`` rows before GC (gr452084 defect 4).
+
+    The table is a boot-time UPSERT that nothing ever pruned; ephemeral
+    containers each wrote a full ~54-row roster under a throwaway hex
+    hostname, so it grew to ~107k rows for a six-machine fleet. A live
+    process bumps ``last_seen`` every boot, so only genuinely-gone
+    identities age out. Default 30 mirrors ``worker_logs`` retention (the
+    fleet's evidence-of-a-boot floor). ``PRECIS_KIND_PROVIDER_RETENTION_DAYS``.
+    """
+    raw = os.environ.get("PRECIS_KIND_PROVIDER_RETENTION_DAYS")
+    if not raw:
+        return 30
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 30
+
+
+def _gc_kind_providers(store: Store) -> int:
+    """Prune ``kind_provider`` rows past the retention window. Returns rows
+    deleted. Single-flighted on a fleet advisory lock — the sweeper runs on
+    every host, so an unguarded DELETE would pile up (the ``route_log.gc`` /
+    ``_gc_worker_logs`` shape)."""
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            got = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (_KIND_PROVIDER_GC_LOCK,)
+            ).fetchone()
+            if not got or not got[0]:
+                return 0  # another host is already pruning — don't pile on
+            return store.prune_kind_providers(
+                retention_days=_kind_provider_retention_days(), conn=conn
+            )
+
+
 #: Fleet-wide single-flight key for the vault.events pruner (ascii ``"vegc"``).
 _VAULT_EVENTS_GC_LOCK = 0x76656763
 
@@ -684,6 +729,9 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     pruned_vault_events = _gc_vault_events(store)
     if pruned_vault_events:
         log.info("sweeper: GC'd %d stale vault.events row(s)", pruned_vault_events)
+    pruned_kind_providers = _gc_kind_providers(store)
+    if pruned_kind_providers:
+        log.info("sweeper: GC'd %d stale kind_provider row(s)", pruned_kind_providers)
     reopen_limit = _reopen_limit()
     reopened = _reopen_transient_failed_embeds(store, limit=reopen_limit)
     if reopened:

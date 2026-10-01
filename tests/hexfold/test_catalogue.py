@@ -231,6 +231,25 @@ def test_measure_environment_a5_stick() -> None:
     assert edge.coverage == "lower-bound"
 
 
+def test_measure_environment_flags_far_rim_runaway_unstable() -> None:
+    # gr456641: the stick rung is fixed-iteration gradient descent with no
+    # convergence check, so a longer measurement tube's free relax does not
+    # settle at its far, unfused rim: max_disp bottoms out in the interior
+    # and climbs back toward that rim, and the un-decayed residual is read
+    # as seam signal, so seam_radius tracks the tube LENGTH (4 at len=6,
+    # 22 at len=10 for this tube) rather than a physical decay length.
+    # measure_environment must no longer report that as a confident "full"
+    # decay -- it now flags coverage="unstable" off that max_disp shape
+    # (rung-independent: it reads the symptom, not any relaxer's own
+    # convergence flag).  The short, settled tube is left untouched, so a
+    # longer default could no longer manufacture a confident larger radius.
+    short, _ = measure_environment((5, 0), rung="stick", length=6)
+    assert short.coverage == "full"
+    long_, _ = measure_environment((5, 0), rung="stick", length=10)
+    assert long_.seam_radius > short.seam_radius  # the runaway is real
+    assert long_.coverage == "unstable"  # and no longer silently "full"
+
+
 def test_measure_environment_cap_raises() -> None:
     with pytest.raises(CatalogueError):
         measure_environment((12, 0), rung="stick")

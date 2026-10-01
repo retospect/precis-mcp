@@ -30,6 +30,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import session as pcb_session
+from precis.pcb.capabilities import capability_for
 from precis.pcb.optimize import MoveKind as _MK
 from precis.pcb.optimize import (
     OptimizeConfig,
@@ -67,6 +68,24 @@ DESCRIPTION = (
 )
 
 _DEFAULT_ITERS = 2000
+
+
+def _process_for_stackup(stackup: list[dict[str, Any]]) -> str:
+    """The capability-table process row for a board's layer COUNT —
+    duplicated from :func:`precis.pcb.drc.process_for_stackup` for the same
+    reason :mod:`precis.workers.job_types.pcb_route` duplicates it: a 4-line
+    lookup should not force this worker to import shapely at module load.
+    v1 checks 2- or 4-layer boards only, same limit as the DRC engine."""
+    n = len(stackup)
+    if n == 2:
+        return "2layer"
+    if n == 4:
+        return "4layer"
+    raise ValueError(
+        f"no fab capability row for a {n}-layer stackup — v1 checks 2- or "
+        "4-layer boards only"
+    )
+
 
 #: Single-stage, placement-only schedule — the whole run stays in
 #: TRANSLATE/ROTATE/SWAP territory (mirrors DEFAULT_SCHEDULE's first
@@ -203,10 +222,62 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             }
         },
     )
+
+    # Pre-route DRC gate at the END of place (the bug this closes): nothing
+    # ran a geometric check between placement and routing, so an already-
+    # illegal placement (gr451052: authored escape vias 0.008–0.225mm from
+    # the HV507 driver's own lands, against a 0.090mm floor) was carried
+    # silently into the route job and only surfaced when a human opened
+    # `view='drc'`. Run the placement-only subset here, off the settled
+    # positions plus only the authored fixed copper, and name any error in
+    # the job summary — the same NAMED, up-front flag the route job now
+    # raises (`pcb_session.placement_drc_findings`/`placement_drc_report`,
+    # one definition, so the two jobs cannot drift). Best-effort: a stackup
+    # with no fab capability row (not 2/4-layer) or a board not yet minted
+    # is not a placement error, so the gate is skipped, never failed, there.
+    placement_report: str | None = None
+    n_placement_errors = 0
+    board = graph.get("board") or {}
+    board_id = board.get("board_id")
+    # Belt-and-suspenders: a crash in this NEW geometry pass must never take
+    # down a placement that otherwise settled — degrade to "no gate result",
+    # logged, never a failed place job.
+    try:
+        capability = None
+        if board_id is not None:
+            try:
+                capability = capability_for(_process_for_stackup(ir.stackup))
+            except ValueError:
+                capability = None
+        if board_id is not None and capability is not None:
+            footprints = pcb_session.footprints_by_refdes(
+                ir,
+                ctx.store.pcb_footprints_for(pcb_ref_id),
+                local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+                local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(
+                    graph
+                ),
+            )
+            placement_findings = pcb_session.placement_drc_findings(
+                ir,
+                capability=capability,
+                footprints=footprints,
+                fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
+                outline=pcb_session.outline_from_features(features),
+            )
+            n_placement_errors, placement_report = pcb_session.placement_drc_report(
+                placement_findings
+            )
+    except Exception:
+        log.exception("pcb_place: pre-route DRC gate raised; placement kept")
+
+    placement_summary = f"{placement_report}\n\n" if placement_report else ""
     ctx.append_chunk(
         "job_summary",
+        f"{placement_summary}"
         f"placed {moved} instance(s), {result.iters} iters — "
-        f"cost {result.cost_before:.4f} -> {result.cost_after:.4f}\n\n"
+        f"cost {result.cost_before:.4f} -> {result.cost_after:.4f}, "
+        f"{n_placement_errors} pre-route DRC error(s)\n\n"
         + _legalized_note(result.legalized)
         + _on_fixed_vias_note(result.on_fixed_vias)
         + digest_toon(result),

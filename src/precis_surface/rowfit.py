@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -209,7 +210,12 @@ def fit_rows(
     r_start, r_end = float(tr.p[0, 0]), float(tr.p[-1, 0])
 
     def solve(
-        s0: float, n0: int, direction: int, s_lim: float, ok: object, stop: bool
+        s0: float,
+        n0: int,
+        direction: int,
+        s_lim: float,
+        ok: Callable[[list[tuple[float, int]]], bool],
+        stop: bool,
     ) -> list[tuple[float, int]]:
         for e in _extras(q):
             rows = _walk(
@@ -223,7 +229,7 @@ def fit_rows(
                 stop_on_cylinder=stop,
                 extra=e,
             )
-            if ok(rows):  # type: ignore[operator]
+            if ok(rows):
                 return rows
         raise ValueError(f"no row closure from s={s0:.2f} towards s={s_lim:.2f}")
 

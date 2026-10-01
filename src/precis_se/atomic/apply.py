@@ -189,7 +189,9 @@ def apply_ops_with_atomic(
                 pending_generates.append(pending)
             continue
         if name == "join":
-            echo, join_pending = prepare_join(store, tree, op, design_slug)
+            echo, join_pending = prepare_join(
+                store, tree, op, design_slug, pending_joins=pending_joins
+            )
             echoes.append(echo)
             if join_pending is not None:
                 pending_joins.append(join_pending)

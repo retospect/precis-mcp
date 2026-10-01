@@ -111,19 +111,22 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # not ship. ``placeholder_figures`` waives only ASSET-LESS blocks (the
     # export renders a visible placeholder — nothing uncleared actually
     # ships); a licensing block on a real image is never waivable.
-    from precis.utils.figure_clearance import draft_figure_clearance
+    from precis.utils.figure_clearance import (
+        draft_figure_clearance,
+        partition_uncleared,
+    )
 
     clearance = draft_figure_clearance(ctx.store, ref.id)
-    uncleared = clearance.uncleared
-    if uncleared and params.get("placeholder_figures"):
-        waived = [f for f in uncleared if f.assetless]
-        if waived:
-            ctx.append_chunk(
-                "job_event",
-                f"warn: {len(waived)} image-less figure(s) ship as visible "
-                f"placeholders — {'; '.join(f.dc for f in waived)}",
-            )
-        uncleared = [f for f in uncleared if not f.assetless]
+    uncleared, waived = partition_uncleared(
+        clearance.uncleared,
+        placeholder_figures=bool(params.get("placeholder_figures")),
+    )
+    if waived:
+        ctx.append_chunk(
+            "job_event",
+            f"warn: {len(waived)} image-less figure(s) ship as visible "
+            f"placeholders — {'; '.join(f.dc for f in waived)}",
+        )
     if uncleared:
         lines = "; ".join(f"{f.dc} ({f.reason})" for f in uncleared)
         ctx.record_failure(

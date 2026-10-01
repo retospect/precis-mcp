@@ -1274,17 +1274,68 @@ def _quota_limit_backoff_hours(reason: str, now: datetime) -> float | None:
     return max((reset_at - now).total_seconds() / 3600.0, 0.0)
 
 
+#: Anthropic's ACCOUNT-level API usage-limit rejection (gr456240) — the
+#: HTTP-layer "API Error: 400 You have reached your specified API usage
+#: limits. You will regain access on 2026-10-01 at 00:00 UTC." This is
+#: distinct from the CLI weekly/session quota family in
+#: :mod:`precis.utils.llm.quota` (:data:`_QUOTA_LIMIT_PATTERN`): it names
+#: an explicit ABSOLUTE ``YYYY-MM-DD at HH:MM UTC`` reset (a spend/usage
+#: cap that can be days out — here, until the start of the next month),
+#: not a wall-clock "resets <clock> (<tz>)" within the next 24h. Like the
+#: quota shape its backoff must run to that named instant: the generic
+#: 2.0h "usage limit" horizon below would have the sweeper burn through
+#: ``sweeper.UNPARK_CAP`` unpark retries (and latch the leaf
+#: ``child-failed-final``, human-only) long before access actually
+#: returns — exactly the fix_gripe latching this exists to prevent.
+_API_USAGE_LIMIT_PATTERN = re.compile(
+    r"regain access on\s+"
+    r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+"
+    r"at\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?:UTC)?",
+    re.IGNORECASE,
+)
+
+
+def _api_usage_limit_backoff_hours(reason: str, now: datetime) -> float | None:
+    """Hours from ``now`` until the absolute reset instant named by an
+    account-level API usage-limit rejection (:data:`_API_USAGE_LIMIT_PATTERN`
+    — "You will regain access on <YYYY-MM-DD> at <HH:MM> UTC"), or ``None``
+    when ``reason`` carries no such clause. The named instant is UTC (the
+    wording the API uses); a malformed date returns ``None`` so the caller
+    falls through to the generic ``usage limit`` horizon rather than crashing.
+    A reset already in the past clamps to ``0.0`` (retry now)."""
+    m = _API_USAGE_LIMIT_PATTERN.search(reason)
+    if m is None:
+        return None
+    try:
+        reset_at = datetime(
+            int(m.group("year")),
+            int(m.group("month")),
+            int(m.group("day")),
+            int(m.group("hour")),
+            int(m.group("minute")),
+            tzinfo=UTC,
+        )
+    except ValueError:
+        return None
+    return max((reset_at - now).total_seconds() / 3600.0, 0.0)
+
+
 def classify_transient_backoff_hours(reason: str) -> float | None:
     """Backoff (hours) when ``reason`` reads as a transient failure, else
     ``None``. The Claude weekly/session quota-limit shape
     (:data:`_QUOTA_LIMIT_PATTERN`) is checked first (its backoff runs to
-    the actual reset instant, not a fixed horizon); otherwise the first
-    matching pattern in :data:`_TRANSIENT_FAILURE_PATTERNS` wins
-    (rate-limit before spend — a message naming both is retryable at the
-    shorter horizon)."""
-    quota_hours = _quota_limit_backoff_hours(reason, datetime.now(UTC))
+    the actual reset instant, not a fixed horizon), then the account-level
+    API usage-limit shape (:data:`_API_USAGE_LIMIT_PATTERN`, also to its
+    named absolute instant); otherwise the first matching pattern in
+    :data:`_TRANSIENT_FAILURE_PATTERNS` wins (rate-limit before spend — a
+    message naming both is retryable at the shorter horizon)."""
+    now = datetime.now(UTC)
+    quota_hours = _quota_limit_backoff_hours(reason, now)
     if quota_hours is not None:
         return quota_hours
+    api_limit_hours = _api_usage_limit_backoff_hours(reason, now)
+    if api_limit_hours is not None:
+        return api_limit_hours
     for pattern, hours in _TRANSIENT_FAILURE_PATTERNS:
         if pattern.search(reason):
             return hours

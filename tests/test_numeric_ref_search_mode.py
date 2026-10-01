@@ -10,6 +10,7 @@ that the body-chunk branch produces a genuinely restricted result set under
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 from precis.dispatch import Hub
@@ -118,4 +119,5 @@ def test_list_id_is_badinput_not_attributeerror(hub: Hub) -> None:
     from precis.errors import BadInput
 
     with pytest.raises(BadInput, match="takes one integer"):
-        JobHandler._coerce_id([1, 2, 3])  # type: ignore[arg-type]
+        bad_id: Any = [1, 2, 3]
+        JobHandler._coerce_id(bad_id)

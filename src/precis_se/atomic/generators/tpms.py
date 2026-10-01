@@ -112,6 +112,36 @@ _FAMILIES: dict[str, tuple[Any, Any]] = {
     "G": (gyroid, gyroid_grad),
 }
 
+#: Accepted ``family`` spellings (lower-cased, whitespace-stripped) ->
+#: canonical ``_FAMILIES`` key. The bare canonical letters are here in
+#: lower-case too, so the single lookup path also case-folds ``'p'``/``'P'``.
+#: An author's most-likely first guesses -- the chemistry names ('gyroid',
+#: 'diamond'), the 'Schwarz-*' spellings, and mere lower-case -- resolve
+#: instead of being described and then rejected in the same sentence.
+_FAMILY_ALIASES: dict[str, str] = {
+    "p": "P",
+    "schwarzp": "P",
+    "schwarz-p": "P",
+    "schwarz p": "P",
+    "d": "D",
+    "schwarzd": "D",
+    "schwarz-d": "D",
+    "schwarz d": "D",
+    "diamond": "D",
+    "g": "G",
+    "schwarzg": "G",
+    "gyroid": "G",
+}
+
+
+def _resolve_family(family_raw: Any) -> str | None:
+    """Case-fold ``family_raw`` and resolve it through :data:`_FAMILY_ALIASES`
+    to a canonical :data:`_FAMILIES` key, or ``None`` if unrecognized."""
+    if isinstance(family_raw, str):
+        return _FAMILY_ALIASES.get(family_raw.strip().lower())
+    return None
+
+
 #: Default marching-cubes grid (per axis) -- odd, per
 #: docs/backlog/precis-surface-kernel.md's measured sliver-fraction table
 #: (odd n: 0-5.6% near-degenerate triangles; even n: 18-49%).
@@ -151,27 +181,51 @@ _MEAN_BOND_MAX_A = 1.7
 def _validate_params(
     raw: dict[str, Any],
 ) -> tuple[str, float, int, tuple[int, int, int], bool]:
-    family = raw.get("family")
-    if family not in _FAMILIES:
-        raise GeneratorError(
+    # The two REQUIRED params (family, cell_A) are validated together and any
+    # problems reported in one GeneratorError -- an author learns the whole
+    # required set from a single call instead of the serial round trips the
+    # old first-failure early-raise forced (family, then cell_A, then ...).
+    required_errors: list[str] = []
+
+    family_raw = raw.get("family")
+    family = _resolve_family(family_raw)
+    if family is None:
+        required_errors.append(
             f"tpms 'family' must be one of {sorted(_FAMILIES)} (P=Schwarz P, "
-            f"D=Schwarz D, G=gyroid), got {family!r}"
+            "D=Schwarz D, G=gyroid) -- case-insensitive, and the aliases "
+            "'schwarz-p'/'p'->P, 'schwarz-d'/'diamond'/'d'->D, "
+            f"'gyroid'/'g'->G are accepted too, got {family_raw!r}"
         )
 
+    cell_A = 0.0
     cell_raw = raw.get("cell_A")
     if cell_raw is None:
-        raise GeneratorError(
+        required_errors.append(
             "tpms needs 'cell_A' (float > 0, the cubic cell edge in Å)"
         )
-    try:
-        cell_A = float(cell_raw)
-    except (TypeError, ValueError) as exc:
-        raise GeneratorError(
-            f"tpms 'cell_A' must be a number, got {cell_raw!r}"
-        ) from exc
-    if not (cell_A > 0.0):
-        raise GeneratorError(f"tpms 'cell_A' must be > 0, got {cell_A!r}")
+    else:
+        try:
+            cell_A = float(cell_raw)
+        except (TypeError, ValueError):
+            required_errors.append(f"tpms 'cell_A' must be a number, got {cell_raw!r}")
+        else:
+            if not (cell_A > 0.0):
+                required_errors.append(f"tpms 'cell_A' must be > 0, got {cell_A!r}")
 
+    if required_errors:
+        if len(required_errors) == 1:
+            raise GeneratorError(required_errors[0])
+        raise GeneratorError(
+            f"tpms has {len(required_errors)} required-parameter problems; "
+            "fix all of these:\n  - " + "\n  - ".join(required_errors)
+        )
+    assert family is not None  # unreachable-if-None: guarded above
+
+    # 'n' defaults to 17, but that default is load-bearing, not a "don't
+    # care": 17 is the SMALLEST odd n whose ring census is clean (n=11/13/15
+    # are not) and, with 'cell_A', it sets the mean bond length (gr451269).
+    # Its optional-ness is about having a sane default, not about mattering
+    # less than the required 'cell_A'.
     n_raw = raw.get("n", _DEFAULT_N)
     try:
         n = int(n_raw)
@@ -280,7 +334,15 @@ def build_tpms(
     "P"|"D"|"G", "cell_A": float, "n"?: odd int (default 17), "reps"?: 3
     ints >= 1 (default (1,1,1)), "remesh"?: bool (default True)}`` (module
     docstring's pipeline, ring-purity ruling and ``remesh=False`` escape
-    hatch)."""
+    hatch).
+
+    ``family`` is case-insensitive and also accepts the chemistry/Schwarz
+    spellings ('gyroid'->G, 'diamond'/'schwarz-d'->D, 'schwarz-p'->P; see
+    :data:`_FAMILY_ALIASES`). ``family`` and ``cell_A`` are the two required
+    params and are reported together if either is missing/invalid. ``n``
+    defaults to 17 but is not a "don't care": 17 is the smallest odd n with a
+    clean ring census and, with ``cell_A``, it fixes the mean bond length
+    (gr451269)."""
     family, cell_A, n, reps, remesh_enabled = _validate_params(raw)
     field, grad = _FAMILIES[family]
 

@@ -747,9 +747,58 @@ def test_tpms_bad_family_rejected() -> None:
         build_tpms({"family": "X", "cell_A": 8.0})
 
 
+@pytest.mark.parametrize(
+    ("given", "canonical"),
+    [
+        ("p", "P"),
+        ("P", "P"),
+        ("schwarz-p", "P"),
+        ("schwarzp", "P"),
+        ("SCHWARZ P", "P"),
+        ("d", "D"),
+        ("diamond", "D"),
+        ("schwarz-d", "D"),
+        ("g", "G"),
+        ("gyroid", "G"),
+        ("  Gyroid  ", "G"),
+    ],
+)
+def test_tpms_family_accepts_case_and_aliases(given: str, canonical: str) -> None:
+    """gr451270 item 1: the error text spelled out 'G=gyroid' and then
+    rejected 'gyroid'. Case-folding plus an alias table resolves the first
+    guesses an author actually types to the canonical letter. Validated
+    through _validate_params so the alias resolution is asserted without
+    paying the full mesh build for each of a dozen spellings."""
+    from precis_se.atomic.generators.tpms import _validate_params
+
+    family, *_ = _validate_params({"family": given, "cell_A": 8.0})
+    assert family == canonical
+
+
 def test_tpms_missing_cell_A_rejected() -> None:
     with pytest.raises(GeneratorError, match="cell_A"):
         build_tpms({"family": "P"})
+
+
+def test_tpms_missing_family_and_cell_A_reported_together() -> None:
+    """gr451270 item 2: required-param discovery used to be serial -- {}
+    complained about family, then {'family':'P'} complained about cell_A, two
+    round trips to learn the required set. Both must now surface at once."""
+    with pytest.raises(GeneratorError) as exc:
+        build_tpms({})
+    msg = str(exc.value)
+    assert "family" in msg
+    assert "cell_A" in msg
+
+
+def test_tpms_bad_family_and_cell_A_reported_together() -> None:
+    """An unrecognized family AND a missing cell_A both surface in one error,
+    not just the first."""
+    with pytest.raises(GeneratorError) as exc:
+        build_tpms({"family": "nonsense"})
+    msg = str(exc.value)
+    assert "family" in msg
+    assert "cell_A" in msg
 
 
 def test_tpms_gyroid_family_builds_and_reports_chi() -> None:

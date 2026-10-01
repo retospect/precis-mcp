@@ -28,9 +28,11 @@ from precis.handlers.todo import TodoHandler
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.sweeper import (
+    _KIND_PROVIDER_GC_LOCK,
     _REOPEN_MAX_ATTEMPTS,
     _WORKER_LOG_GC_LOCK,
     UNPARK_CAP,
+    _gc_kind_providers,
     _gc_transcripts,
     _gc_worker_logs,
     _reopen_transient_failed_embeds,
@@ -177,6 +179,47 @@ def test_gc_worker_logs_prunes_aged_and_is_single_flight(store: Store) -> None:
     # Lock free: aged rows pruned, the 2 fresh rows survive.
     _gc_worker_logs(store)
     assert _count() == 2
+
+
+def test_gc_kind_providers_prunes_aged_and_is_single_flight(store: Store) -> None:
+    # gr452084 defect 4: kind_provider is a boot-time UPSERT nothing pruned; a
+    # (host, process) that stopped booting ages past the 30d window. Tag by a
+    # uuid host so the shared precis_test DB doesn't perturb the assertion.
+    from uuid import uuid4
+
+    host = f"kp-{uuid4().hex[:8]}"
+
+    def _count() -> int:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM kind_provider WHERE host = %s", (host,)
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO kind_provider (slug, host, process, last_seen) "
+            "VALUES ('paper', %s, 'precis-test', now() - interval '100 days'), "
+            "       ('todo',  %s, 'precis-test', now() - interval '100 days'), "
+            "       ('se',    %s, 'precis-test', now())",
+            (host, host, host),
+        )
+        conn.commit()
+    assert _count() == 3
+
+    # A held lock makes the pruner fast-fail (0) — the fleet-wide single-flight.
+    with store.pool.connection() as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", (_KIND_PROVIDER_GC_LOCK,))
+        holder.commit()
+        assert _gc_kind_providers(store) == 0
+        assert _count() == 3
+        holder.execute("SELECT pg_advisory_unlock(%s)", (_KIND_PROVIDER_GC_LOCK,))
+        holder.commit()
+
+    # Lock free: the two aged rows go, the fresh one survives.
+    _gc_kind_providers(store)
+    assert _count() == 1
 
 
 def _mint_running_job(

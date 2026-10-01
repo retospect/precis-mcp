@@ -16,7 +16,7 @@ Two layers, mirroring ``tests/test_taproot_directed.py``'s split:
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -34,6 +34,9 @@ from precis.taproot.canon import (
     nearest_hubs,
 )
 from precis.taproot.hub import mint_hub
+
+if TYPE_CHECKING:
+    from precis.store.store import Store
 
 
 def _search(pattern: str, text: str) -> re.Match[str]:
@@ -130,6 +133,91 @@ class TestPutHubDedupWiring:
         )
         assert "pub_id=" not in resp.body
         assert "pub_id" not in resp.body
+
+
+# ── dedup-gate contention: capacity is not absence (gripe #450123) ───────
+
+
+class TestPutHubDedupContention:
+    """A busy embedder must fail the mint CLOSED with a capacity-not-absence
+    message that steers off ``dedup=False``, not a raw read-path error that
+    reads as "the claim doesn't exist" (how duplicate hubs are born).
+
+    DB-free by construction: the injected ``block_fn`` raises the embedder
+    failure before ``put_hub`` touches the store at all, so these exercise
+    the reclassification without a live postgres. ``store`` is a sentinel
+    that must never be dereferenced — dereferencing it would ``AttributeError``
+    and fail the test, which is exactly the "gate fails closed before any
+    write" invariant we want.
+    """
+
+    def _put(self, block_fn):
+        return _finding_hub_mint.put_hub(
+            cast("Store", object()),  # sentinel — never touched before block_fn raises
+            sentence="a fresh claim under embedder contention",
+            scope={},
+            supporters=[{"paper": "miller23a"}],
+            embedder=object(),
+            block_fn=block_fn,
+        )
+
+    def test_embedder_unavailable_becomes_capacity_upstream_with_retry(
+        self,
+    ) -> None:
+        from precis.embedder import EmbedderUnavailable
+        from precis.errors import Upstream
+
+        def _busy(_claim, _store, _embedder):
+            raise EmbedderUnavailable(
+                "embedder at capacity (429 after queueing)",
+                retry_after_s=2,
+                last_status=429,
+            )
+
+        with pytest.raises(Upstream) as ei:
+            self._put(_busy)
+        msg = f"{ei.value} {ei.value.next}"
+        assert "capacity" in msg
+        assert "~2 s" in msg
+        # Must steer OFF the dedup=False escape hatch and NOT read as absence.
+        assert "dedup=False" in msg
+        assert "duplicate" in msg
+
+    def test_embedder_unavailable_without_retry_hint_still_capacity_not_absence(
+        self,
+    ) -> None:
+        from precis.embedder import EmbedderUnavailable
+        from precis.errors import Upstream
+
+        def _down(_claim, _store, _embedder):
+            raise EmbedderUnavailable("all embedder endpoints failed")
+
+        with pytest.raises(Upstream) as ei:
+            self._put(_down)
+        msg = f"{ei.value} {ei.value.next}"
+        assert "dedup=False" in msg
+        assert "duplicate" in msg
+
+    def test_bulkhead_shed_upstream_is_reworded_for_the_write_path(
+        self,
+    ) -> None:
+        from precis.errors import Upstream
+
+        def _shed(_claim, _store, _embedder):
+            # What BoundedConcurrencyEmbedder raises on a local shed — its
+            # "degraded to lexical-only" wording is untrue for a mint.
+            raise Upstream(
+                "embedder busy — 4 embeds already in flight in this process, "
+                "so this one was shed rather than queued; semantic search "
+                "degraded to lexical-only for this call",
+                next="retry shortly",
+            )
+
+        with pytest.raises(Upstream) as ei:
+            self._put(_shed)
+        msg = f"{ei.value} {ei.value.next}"
+        assert "lexical-only" not in msg
+        assert "dedup=False" in msg
 
 
 # ── cascade branches, block_fn/judge_fn injected ─────────────────────────

@@ -215,3 +215,75 @@ def test_retry_rejects_bad_model(
     assert ref is not None and ref.meta.get("llm_tier") == "opus"
     tags = _parent_tags(store, rid)
     assert f"child-failed:{job_id}" in tags
+
+
+def _unpark_attempts(store: Store, rid: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE((meta->>'unpark_attempts')::int, 0) "
+            "FROM refs WHERE ref_id = %s",
+            (rid,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def test_retry_clears_child_failed_final_and_resets_unpark_budget(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """A leaf that exhausted the sweeper's unpark phase carries BOTH
+    ``child-failed-final`` and its live ``child-failed:<job_id>`` tag with
+    ``meta.unpark_attempts`` at the cap. Retry must strip the terminal
+    latch too and reset the unpark budget — otherwise the sweeper re-latches
+    it on its next cycle and it never dispatches (the reported bug)."""
+    from precis.workers.sweeper import UNPARK_CAP, run_sweeper_pass
+
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
+    job_id = _fail_first_job(store, jobs, rid)
+    # Simulate the sweeper's terminal latch: child-failed-final + attempts==cap.
+    store.add_tag(rid, Tag.open("child-failed-final"), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || "
+            "jsonb_build_object('unpark_attempts', %s::int) WHERE ref_id = %s",
+            (UNPARK_CAP, rid),
+        )
+        conn.commit()
+
+    resp = jobs.put(id=job_id, mode="retry")
+
+    tags = _parent_tags(store, rid)
+    assert "child-failed-final" not in tags
+    assert f"child-failed:{job_id}" not in tags
+    assert _unpark_attempts(store, rid) == 0
+    assert "child-failed-final" in resp.body or "unpark budget" in resp.body
+
+    # A sweeper pass must NOT re-latch — attempts are reset and no
+    # child-failed:* tag remains to make the leaf a candidate.
+    run_sweeper_pass(store, limit=10)
+    assert "child-failed-final" not in _parent_tags(store, rid)
+
+    # Dispatch re-mints a fresh tick — the terminal leaf is doable again.
+    run_dispatch_pass(store)
+    assert len(_child_jobs(store, rid)) == 2
+
+
+def test_retry_without_final_leaves_unpark_budget_untouched(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """A plain (non-terminal) retry doesn't touch meta.unpark_attempts —
+    the autonomous-retry budget is only reset when a child-failed-final
+    latch is actually cleared."""
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
+    job_id = _fail_first_job(store, jobs, rid)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || "
+            "jsonb_build_object('unpark_attempts', 2) WHERE ref_id = %s",
+            (rid,),
+        )
+        conn.commit()
+
+    jobs.put(id=job_id, mode="retry")
+
+    assert f"child-failed:{job_id}" not in _parent_tags(store, rid)
+    assert _unpark_attempts(store, rid) == 2

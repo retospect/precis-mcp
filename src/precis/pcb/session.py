@@ -33,13 +33,18 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
+
+if TYPE_CHECKING:
+    from precis.pcb.capabilities import CapabilityRow
+    from precis.pcb.drc import DrcFinding
+    from precis.pcb.rules import NetRules
 
 log = logging.getLogger(__name__)
 
@@ -686,6 +691,128 @@ def positions(ir: pcb_ir.PcbIR) -> dict[str, tuple[float, float, float]]:
         if x == x and y == y:  # NaN != NaN
             out[str(ir.instance_refdes[i])] = (x, y, rot)
     return out
+
+
+def placement_drc_findings(
+    ir: pcb_ir.PcbIR,
+    *,
+    capability: CapabilityRow,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
+    outline: list[list[float]] | None = None,
+    net_rules: dict[str, NetRules] | None = None,
+) -> list[DrcFinding]:
+    """The pre-route DRC pass — :func:`precis.pcb.drc.run_placement_drc`
+    over a PLACED IR plus only its AUTHORED fixed copper, framed from the
+    IR here so the place job and the route job cannot drift on HOW they
+    build the pre-route check (this package's recurring defect is one rule,
+    two call sites — ``pcb_route.py``'s own outline/footprint comments
+    record three prior instances of exactly that). It assembles the same
+    three inputs ``handlers/pcb.py::_render_drc`` builds for the full
+    ``view='drc'`` run, restricted to the geometry that exists before a
+    router draws anything:
+
+    - ``model['pads']`` is :func:`precis.pcb.realize.pads_for_ir` — the
+      single pad-geometry definition every other consumer already uses.
+    - ``model['copper']`` is the ``fixed_copper`` rows with each row's
+      ``net`` normalised to ``''`` when absent, exactly as
+      :func:`precis.pcb.realize._fixed_copper_connectivity_model` frames the
+      same placement-time input (``fixed: True`` already rides every row —
+      what ``check_via_pad_keepout``'s same-net authored-via exemption
+      reads). No derived/routed copper: it does not exist yet at this seam.
+    - courtyards are :func:`precis.pcb.ir.instance_courtyard_polygon`s
+      placed through :func:`precis.pcb.landpattern.place_points` — the SAME
+      objects the placer reserves and silk draws, with bottom-side
+      membership tracked separately so a part directly under another on the
+      OTHER side of the board is not a false overlap (the identical split
+      ``_render_drc`` uses via ``courtyard_bottom``).
+
+    Unplaced (NaN-pose) instances contribute no courtyard, the same way
+    :func:`positions` omits them.
+    """
+    # Local imports: realize/cost/drc/landpattern all carry shapely (and
+    # cost pulls the whole optimizer objective stack), which this module
+    # deliberately keeps out of its import-time surface (module docstring:
+    # no realizer/cost logic lives here). Pulled in only when a caller
+    # actually asks for the pre-route geometry check.
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM
+    from precis.pcb.ir import COURTYARD_CLEARANCE_MM, instance_courtyard_polygons
+    from precis.pcb.landpattern import place_points
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    model = {
+        "layers": layers,
+        "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
+        "copper": [
+            {**row, "net": row.get("net") or ""} for row in (fixed_copper or [])
+        ],
+    }
+    # Same clearance + pinless-fallback the PLACER reserved with
+    # (`optimize.py`/`_render_drc` both pass exactly these), so this checks
+    # the shape placement actually held space for, not a second one.
+    local = instance_courtyard_polygons(
+        ir,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )
+    courtyards: list[tuple[str, list[tuple[float, float]]]] = []
+    courtyard_bottom: dict[str, bool] = {}
+    for i in range(ir.n_instances):
+        x, y = float(ir.inst_x[i]), float(ir.inst_y[i])
+        if x != x or y != y:  # NaN != NaN — never seeded, no place to check
+            continue
+        poly = local[i]
+        if not poly:
+            continue
+        refdes = str(ir.instance_refdes[i])
+        courtyards.append(
+            (refdes, place_points(poly, cx=x, cy=y, rot_deg=float(ir.inst_rot[i])))
+        )
+        courtyard_bottom[refdes] = bool(ir.inst_bottom[i])
+
+    return pcb_drc.run_placement_drc(
+        model,
+        capability=capability,
+        outline=outline,
+        courtyards=courtyards,
+        courtyard_bottom=courtyard_bottom,
+        net_rules=net_rules,
+    )
+
+
+def placement_drc_report(findings: list[DrcFinding]) -> tuple[int, str | None]:
+    """``(error_count, block)`` — the loud, NAMED account of a pre-route DRC
+    pass a job appends to its ``job_summary`` chunk.
+
+    ``block`` is ``None`` when there is nothing to say (no errors): a clean
+    placement subset is deliberately SILENT here rather than a reassuring
+    "clean" line, because this is a SUBSET check — it has not looked at
+    trace width, connectivity or anything a router draws, so "clean" would
+    overclaim exactly the way ``handlers/pcb.py``'s pads-only DRC note
+    guards against. When it DOES fire, it names every erroring rule, its
+    location and the measured margin — the "writing a named finding, not
+    just a bit flipped" contract the report asks for — so the first time a
+    placement is illegal is at PLACE/ROUTE time, in the job's own account,
+    not the next time a human happens to open ``view='drc'``. Warnings
+    (house-margin tier) are intentionally not surfaced here: the floor
+    ERRORS are the manufacturability facts this early gate exists to raise;
+    the full ``view='drc'`` run, which resolves per-net class rules, is
+    where the margin tier belongs."""
+    errors = [f for f in findings if f.severity == "error"]
+    if not errors:
+        return 0, None
+    lines = [
+        f"pre-route DRC: {len(errors)} placement error(s) — unmanufacturable "
+        "as placed, before a single trace is routed (run view='drc' for the "
+        "full check, and note a board with every part fixed='both' cannot be "
+        "auto-shifted to fix these):"
+    ]
+    for f in errors:
+        margin = "" if f.margin_mm is None else f" ({f.margin_mm:+.3f}mm)"
+        lines.append(f"  ✗ {f.rule}: {f.where}{margin} — {f.detail}")
+    return len(errors), "\n".join(lines)
 
 
 def content_hash(

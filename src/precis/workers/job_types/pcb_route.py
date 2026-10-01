@@ -512,6 +512,45 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
     # block's own comment for why.
+
+    # Pre-route DRC gate (the bug this closes): `drc.run_geometric_drc` had
+    # exactly ONE caller — `view='drc'` — so a board could be placed, routed
+    # and reported on without any geometric check ever running, and the
+    # first time anyone learned the placement was illegal was when a human
+    # asked for the DRC view (gr451052: nine `via_pad_keepout` errors
+    # between authored escape vias and the HV507 driver's own lands — pad/
+    # via geometry present here, BEFORE the maze router below draws a thing).
+    # Run the placement-only subset now, off the SETTLED post-anneal
+    # positions plus only the authored fixed copper, and surface any error
+    # LOUDLY and by name in the job summary — "a check you did not RUN is
+    # not a check that passed" (handlers/pcb.py doctrine), enforced at this
+    # seam. This is scope (a) of the report: the early NAMED flag. It does
+    # not by itself refuse the route or shift a part — (b)/(c), a placement-
+    # illegality cost term and an escape hatch for a `fixed='both'` violator,
+    # are the larger design question the report parks; on ewod-dogfood-2
+    # every part is `fixed='both'`, so even a perfect gate has zero degrees
+    # of freedom to act on without a human unpinning something.
+    # Belt-and-suspenders: the gate is a NEW geometry pass, so a crash in it
+    # must never take down a route that would otherwise succeed — an added
+    # check that fails closed on the whole job would be worse than the silent
+    # gap it replaces. On error it degrades to "no gate result", logged, and
+    # routing proceeds exactly as before.
+    n_placement_errors = 0
+    placement_report: str | None = None
+    try:
+        placement_findings = pcb_session.placement_drc_findings(
+            ir,
+            capability=fab_caps,
+            footprints=footprints,
+            fixed_copper=fixed_copper,
+            outline=pcb_session.outline_from_features(features),
+        )
+        n_placement_errors, placement_report = pcb_session.placement_drc_report(
+            placement_findings
+        )
+    except Exception:
+        log.exception("pcb_route: pre-route DRC gate raised; routing anyway")
+
     # Authored fixed copper (`fixed_copper`, read before the anneal for the
     # collision gate; pcb-pre-place-route-blocks Slice 1, "Realize seam"):
     # claimed on the occupancy grid as real obstacles for every OTHER net,
@@ -822,13 +861,19 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         },
     )
     pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
+    # The pre-route DRC gate's own account, ahead of the routing digest — an
+    # illegal placement is the FIRST thing this summary should say, since
+    # (gr451052) it is the thing that made the routing below meaningless.
+    placement_summary = f"{placement_report}\n\n" if placement_report else ""
     ctx.append_chunk(
         "job_summary",
+        f"{placement_summary}"
         f"routed {len(rows)} net(s): {n_realized} realized, "
         f"{n_failed} failed, {n_dangling} dangling (<2-member, nothing to "
         f"route), {len(rres.vias)} via(s) placed, "
         f"{len(rres.warnings)} congestion warning(s), "
-        f"{len(pin_swap_overrides)} pin swap(s) settled"
+        f"{len(pin_swap_overrides)} pin swap(s) settled, "
+        f"{n_placement_errors} pre-route DRC error(s)"
         f"{pin_swap_summary}\n\n" + digest_toon(result),
     )
     # Reto's ruling (2026-10-01): "it's no good if the wires are not there.

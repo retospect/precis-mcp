@@ -79,6 +79,28 @@ class ClearanceSummary:
         return self.total > 0 and not self.uncleared
 
 
+def partition_uncleared(
+    uncleared: list[FigureClear], *, placeholder_figures: bool
+) -> tuple[list[FigureClear], list[FigureClear]]:
+    """Split an ``uncleared`` list into ``(blocked, waived)`` under the
+    ``placeholder_figures`` opt-in.
+
+    One source of truth for the waiver rule, shared by every export gate
+    (the web preflight, the ``draft_export`` job, the ``remarkable_send``
+    job) so the reMarkable send and the browser download can't disagree on
+    what "allow placeholder figures" lets through. The waiver covers only
+    **asset-less** blocks — a caption-only / empty-canvas figure that
+    exports as a visible placeholder, so nothing uncleared actually ships.
+    A licensing block on a real image (uncleared third-party art) is never
+    waivable and always stays in ``blocked``. Without the opt-in every
+    uncleared figure blocks."""
+    if not placeholder_figures:
+        return list(uncleared), []
+    blocked = [f for f in uncleared if not f.assetless]
+    waived = [f for f in uncleared if f.assetless]
+    return blocked, waived
+
+
 def draft_figure_clearance(store: Store, ref_id: int) -> ClearanceSummary:
     """Walk a draft's figure chunks and roll up their clearance.
 

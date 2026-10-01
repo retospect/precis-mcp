@@ -4,6 +4,7 @@ drum"): catenoid bends, table-picked fillets, defect rows, revolve."""
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -15,7 +16,7 @@ from precis_surface.curvature import gaussian_curvature, mean_curvature
 
 
 def _drum(**kw: float) -> rv.Meridian:
-    args: dict[str, object] = {
+    args: dict[str, Any] = {
         "neck": tube_radius(24, 0),
         "wall_radius": tube_radius(90, 0),
         "stalk_length": 15.0,
@@ -25,7 +26,7 @@ def _drum(**kw: float) -> rv.Meridian:
         "curvature_sum_max": radii.curvature_sum_bound(),
     }
     args.update(kw)
-    return rv.drum_meridian(**args)  # type: ignore[arg-type]
+    return rv.drum_meridian(**args)
 
 
 def test_c60_calibrates_the_tables() -> None:
@@ -73,7 +74,9 @@ def test_drum_segments_join_and_pick_the_largest_fillet() -> None:
 
 
 def test_min_flat_shrinks_the_fillet() -> None:
-    assert _drum(min_flat=5.0).fillet_radius < _drum().fillet_radius  # type: ignore[operator]
+    narrowed, default = _drum(min_flat=5.0).fillet_radius, _drum().fillet_radius
+    assert narrowed is not None and default is not None
+    assert narrowed < default
 
 
 def test_too_narrow_a_drum_refuses() -> None:

@@ -24,6 +24,7 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -56,6 +57,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     claim_executor_jobs,
+)
+from precis.workers.executors._common import (
+    classify_transient_backoff_hours as _classify_transient_backoff_hours,
 )
 from precis.workers.executors._common import (
     current_status as _current_status,
@@ -1397,6 +1401,30 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
             # Roll gripe back to open per failure-rollback policy — unless
             # it's already terminal (gr451170).
             _reopen_gripe_unless_terminal(store, gripe_id, conn)
+            # Transient/infra classification (gr456240). This outcome-based
+            # failure path hand-rolls its finalization instead of routing
+            # through ``_common.record_failure``, so it used to bypass the
+            # ``classify_transient_backoff_hours`` / ``meta.retry_after``
+            # machinery every other executor gets — an API/usage-limit,
+            # auth, or network failure (the agent never ran) latched a plain
+            # ``child-failed:`` bubble on the 12h·2ᴺ cool-down, counting down
+            # to a terminal ``child-failed-final`` at ``sweeper.UNPARK_CAP``
+            # for a reason unrelated to the fix. Stamp ``meta.retry_after``
+            # here so the sweeper's unpark phase backs off to the
+            # precondition-clear instant (a rate limit's reset) WITHOUT
+            # burning an unpark attempt while it's still ahead, exactly as
+            # ``record_failure`` does. Content-class failures (the agent ran
+            # and failed on the merits) don't match and are unaffected.
+            backoff_hours = _classify_transient_backoff_hours(outcome.summary_text)
+            if backoff_hours is not None:
+                _set_meta(
+                    conn,
+                    ref_id,
+                    failure_class="transient",
+                    retry_after=(
+                        datetime.now(UTC) + timedelta(hours=backoff_hours)
+                    ).isoformat(),
+                )
             # Slice-5 failure bubble: tag the parent todo if any.
             # Inside the same tx so the status + bubble commit
             # together; orphan jobs (legacy, no parent_id) just no-op.

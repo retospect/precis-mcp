@@ -130,14 +130,8 @@ def put_hub(
 
     try:
         candidates = block_fn(claim, store, embedder)
-    except EmbedderUnavailable as exc:
-        # Gripe #459918: an unguarded embedder hiccup escaped as [error:Internal].
-        raise Upstream(
-            "hub-mint dedup could not embed the claim — the embedder is "
-            "unavailable or at capacity; nothing was minted",
-            next="retry shortly, or pass dedup=False to mint without the "
-            "semantic-dedup cascade",
-        ) from exc
+    except (EmbedderUnavailable, Upstream) as exc:
+        raise _dedup_unavailable_upstream(exc) from exc
     judged = [(cand, judge_fn(sentence, cand.claim)) for cand in candidates]
     placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
 
@@ -150,6 +144,60 @@ def put_hub(
             store, claim, placement, supporters, set_by=set_by
         )
     return _mint_new(store, claim, placement, supporters, set_by=set_by)
+
+
+# ── dedup-gate contention: capacity is not absence ──────────────────────
+
+
+def _dedup_unavailable_upstream(exc: Exception) -> Upstream:
+    """The ``Upstream`` raised when the mint-door dedup search's embed fails
+    under embedder contention (gripe #450123).
+
+    The near-duplicate check is a HARD GATE before minting ("never mint
+    without searching first", ``precis-taproot-mint-help``): unlike a
+    read-path search it has no lexical leg to degrade to, so a busy embedder
+    means the gate could not run at all. Left raw, the failure surfaces as
+    the read-path message (``BoundedConcurrencyEmbedder`` even says
+    "semantic search degraded to lexical-only" — untrue for a write) or a
+    bare "unavailable", and an agent that reads either as "the corpus is
+    broken / this claim doesn't exist" mints a duplicate hub — the exact
+    inference ``precis-taproot-mint-help`` warns about, and the second-order
+    cost this gripe flagged.
+
+    So the message names capacity (not absence), threads through the
+    service's ``retry_after_s`` hint when present (gripe #450123 option d,
+    same channel :func:`precis.utils.embed_query.semantic_unavailable_upstream`
+    uses for the read path), and explicitly steers OFF the ``dedup=False``
+    escape hatch — forcing the mint past a check that merely couldn't run is
+    how the duplicate gets born.
+    """
+    from precis.utils.embed_query import _embedder_unavailable_cause
+
+    cause = _embedder_unavailable_cause(exc)
+    retry_after = getattr(cause, "retry_after_s", None)
+    if retry_after is not None:
+        when = f"~{retry_after:g} s"
+        msg = (
+            "the near-duplicate check could not run — the query embedder is "
+            f"at capacity (the service asked for a retry in {when}); the mint "
+            "is refused rather than risk a duplicate hub"
+        )
+    else:
+        when = "shortly"
+        msg = (
+            "the near-duplicate check could not run — the query embedder is "
+            "busy/unavailable; the mint is refused rather than risk a "
+            "duplicate hub"
+        )
+    return Upstream(
+        msg,
+        next=(
+            f"wait {when} and retry the SAME put() — this is contention, not "
+            "absence, so do NOT conclude the claim is un-minted and do NOT "
+            "re-run with dedup=False to force it (that skips the duplicate "
+            "check and is exactly how duplicate hubs are born)"
+        ),
+    )
 
 
 # ── attach — converge onto an existing hub, no mint ─────────────────────

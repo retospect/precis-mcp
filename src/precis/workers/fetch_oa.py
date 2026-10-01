@@ -71,6 +71,7 @@ import httpx
 from psycopg import Connection
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -159,6 +160,17 @@ _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 # Retry policy on rate-limit + transient API errors. Exponential
 # backoff matches the pattern in ``precis.ingest.citations``.
 _RETRY_MAX_ATTEMPTS = 4
+
+# In-pass PDF-download retries on a *transport-class* failure only
+# (handshake/connect/read timeout, connection reset, 5xx/429). A single
+# deterministic-route timeout used to end the pass as a bare
+# ``fetch_failed`` and then eat the cross-pass backoff window; a couple of
+# immediate retries clear a transient blip on the fetch host (the incident
+# that motivated this: 19 SSL-handshake timeouts in a two-hour window on a
+# green arXiv route) before it becomes a next-day wait. Kept small so a
+# genuinely-down host still falls through to the next leg promptly. A real
+# 4xx / non-PDF body is deterministic and is NOT retried.
+_DOWNLOAD_RETRY_ATTEMPTS = 3
 
 # Don't re-poke Unpaywall for the same stub within this window. The
 # fetcher's claim query honours it via a LEFT JOIN on ref_events.
@@ -303,13 +315,22 @@ def claim_stubs_to_fetch(
 
     **Backoff.** A flat window still re-polls a no-OA-anywhere stub
     once per ``retry_after_hours`` *forever*. Instead the effective
-    window doubles per prior attempt —
+    window doubles per prior **pass** —
     ``base * 2^(attempts-1)``, capped at ``backoff_max_hours`` — so a
     closed-access paper settles to one retry per ~30 days rather than
     daily. It never gives up entirely (a paper can become OA later),
     it just slows down. Content-duplicate stubs are resolved out of
     the backlog separately, at ingest dedup time (see
     ``precis.ingest.add``), so they don't even reach the cap.
+
+    ``attempts`` counts distinct fetch *passes*, not raw ``fetcher:%``
+    leg-events: one cascade writes one event per leg, so a naive
+    ``count(*)`` jumped the exponent to double digits on the very first
+    pass and pinned the window at the cap immediately — a single
+    transient timeout then cost a 30-day wait. Events are collapsed to
+    hour-buckets (same convention as :meth:`Store.stub_backlog`'s
+    ``attempts`` column) to recover the pass count, so the first retry
+    lands the next day.
 
     One escape hatch: a ``meta.oa_requeued.at`` stamp *newer than the
     last fetch attempt* (an operator re-queue or an explicit-acquire
@@ -375,7 +396,17 @@ def claim_stubs_to_fetch(
     from_where = f"""
           FROM refs r
           LEFT JOIN LATERAL (
-                SELECT count(*) AS attempts, max(e.ts) AS last_ts
+                -- ``attempts`` = distinct fetch *passes*, not raw leg-events.
+                -- One ``_run_cascade`` run appends 10-14 ``fetcher:%%`` events
+                -- (one per leg) within seconds-to-minutes; counting rows made
+                -- ``attempts`` jump to double digits on the very first pass, so
+                -- ``base * 2^(attempts-1)`` saturated at the 720h cap after a
+                -- single pass -- a lone transient timeout cost a 30-day wait.
+                -- Collapsing to hour-buckets (passes are >=24h apart under the
+                -- backoff, a pass's own legs land within the same hour) recovers
+                -- the pass count so the first retry is next-day, not next-month.
+                SELECT count(DISTINCT date_trunc('hour', e.ts)) AS attempts,
+                       max(e.ts) AS last_ts
                   FROM ref_events e
                  WHERE e.ref_id = r.ref_id
                    AND e.source LIKE 'fetcher:%%'
@@ -2671,10 +2702,42 @@ def _with_api_key(url: str, api_key: str) -> str:
     return urlunparse(parts._replace(query=urlencode(query)))
 
 
+def _is_transient_download_error(exc: BaseException) -> bool:
+    """True for a transport-class failure worth an immediate in-pass retry.
+
+    Covers handshake/connect/read timeouts and connection resets — httpx
+    surfaces an SSL handshake timeout as ``ConnectTimeout`` / ``ConnectError``,
+    both subclasses of ``httpx.TransportError`` — plus ``5xx`` / ``429``
+    responses (from ``raise_for_status``). A genuine ``4xx`` (403/404 = the
+    copy isn't there for us) or a non-PDF body (``ValueError`` from the
+    ``%PDF-`` guard, or the disk-fill cap) is *deterministic*: not retried,
+    so the cascade falls through to the next leg without burning the retry
+    budget. ``SsrfBlocked`` (a refused host/redirect) is likewise terminal.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or 500 <= code < 600
+    return isinstance(exc, httpx.TransportError)
+
+
+@retry(
+    wait=wait_exponential(min=1, max=8),
+    stop=stop_after_attempt(_DOWNLOAD_RETRY_ATTEMPTS),
+    retry=retry_if_exception(_is_transient_download_error),
+    reraise=True,
+)
 def _download_pdf(
     url: str, target: Path, *, extra_headers: dict[str, str] | None = None
 ) -> int:
     """Stream a PDF to ``target`` and return the byte count.
+
+    Retries in-pass on a transport-class failure (see
+    :func:`_is_transient_download_error`) so a single handshake/connect
+    timeout on a deterministic identifier route (arXiv, publisher) doesn't
+    end the leg as a spurious ``fetch_failed`` — the reported incident was a
+    free arXiv PDF declared ``no_oa_version`` after one SSL-handshake blip.
+    A deterministic error (4xx, non-PDF body, SSRF refusal) is not retried
+    and falls through to the next leg immediately.
 
     Streams so a 50 MB PDF doesn't sit in memory. Atomic-ish:
     writes to ``<target>.part`` and renames on success so a crashed
