@@ -30,7 +30,23 @@ waited on happened 09-29 — note at the bottom)
 
 ## Do next
 
-1. **gr459567 + gr459595** — non-bonded clashes the check cannot see.
+1. **gr459928** — graded bends. Reto, 2026-10-01: the drum should have
+   "no 1-ring-90-degree turns". Each bend should step through
+   progressively steeper rings: sheet, slight slope, steeper, tube, then
+   flare out a little, more, a lot.
+   - The constraint: a fuse puts the full rim-turning mismatch (6 defects)
+     into one seam ring. A bend is graded only by defects inside a patch.
+     Today those work as one defect on a sheet and nothing else; the gripe
+     has the probes.
+   - Smallest unblock: Volterra surgery on tube walls, with the ray leaving
+     axially through an end rim. A bend is then a tube instance carrying
+     C3 orbits (0→60→90°) or single defects (34/48/60/70/80/90°), and
+     the seam mints only the remainder.
+   - The general answer is §21/§22, the smooth layer plus budget and
+     distribution, which is Horizon 11.
+   - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
+     ports.py).
+2. **gr459567 + gr459595** — non-bonded clashes the check cannot see.
    Every bud menu seeds the fullerene overlapping its host (the help
    skill's own `tube(10,10)` + C60 `[9-6]` example: 0.56 Å bud/host), and
    an unholed `cap(36,0)` lid crumples into itself (0.63 Å). `geom.*`
@@ -46,7 +62,7 @@ waited on happened 09-29 — note at the bottom)
    with `hex(r≥2)` holes had the same defect (14–28 Å) and are fixed:
    `_winding_normal` now signs each flat rim from its winding. `geom.clash`
    would have caught all of them.
-2. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
+3. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
    built. The stats need the tier of the coordinates they were measured
    on: `structure-geometry-tier-visible` (Reto, 2026-10-01) makes that tier
    visible in the viewer. Reto asked for mean/extreme C–C bond lengths per build
@@ -55,7 +71,7 @@ waited on happened 09-29 — note at the bottom)
    check echo is two-thirds per-bond INFO (gr459571). gr459602/gr459568
    live in the `structure` kind, outside this thread's files; they rank
    here because hexfold builds are where they bite.
-3. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
+4. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
    a join's findings live only in the minted structure's meta and there is
    no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
    six SQL queries and a container exec on "which row governed this
@@ -65,11 +81,11 @@ waited on happened 09-29 — note at the bottom)
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
    reading surface to prove it wrote nothing with.
-4. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
+5. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
    (SPEC §25.3) then the join dry-run, after slice 1. Slice 3
    goes last by the file's own decision: a dry-run needs a reading
    surface to prove it wrote nothing with.
-5. **gr459058, remaining half** — Reto ruled 2026-10-01 (recorded on the
+6. **gr459058, remaining half** — Reto ruled 2026-10-01 (recorded on the
    gripe): a design retire **cascades** to the structures its blocks
    minted, except structures promoted to building-block status, and
    (no ruling needed) except any structure another live design still
@@ -77,19 +93,19 @@ waited on happened 09-29 — note at the bottom)
    (structure has no `tag()` today), folder placement, or a component
    row. Fix site: `persist.retire_design` + the se `delete` message.
    **td458221** closes with it.
-6. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+7. **gr454488** — five residuals from the 2026-09-28 dogfood: every
    `generate` block trips `mode_binding_mismatch` because generate never
    sets mode; sheet rim port direction is centroid noise; the persisted
    build record drops geometry findings the check-mode echo has; "dry-run"
    wording survives past its rename; generator-declared measures claim
    `origin=user`. Five independent one-line fixes, bundled because one
    dogfood found all five.
-7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+8. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
    `trust_measured`, which is the entire point of the catalogue.
-8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+9. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 7’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
