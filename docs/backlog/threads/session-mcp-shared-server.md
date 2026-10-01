@@ -145,7 +145,17 @@ server-side-session-context Horizon pointer)
    what trips gr450123's deferral of host-level admission (a). (b) never
    ran. Re-decide after the restart, and do not tune the batch retry
    budget against a stale daemon.
-   Remaining: (b) re-arm the pass later — on the first md search
+   (b) has LANDED too (Reto's go, 2026-10-01). `MdHandler.search` calls
+   `self.rearm_warmup()` when `indexed_blocks < total_blocks`; the hook
+   is installed by `server._warm_md_index_background`, which owns a
+   non-blocking single-flight guard plus a 60s cooldown. Trigger is a
+   cold-cache search, not a timer — it costs nothing when nobody
+   searches, fires exactly when someone is about to get degraded
+   results, and a timer asleep for an hour is indistinguishable from the
+   wedged thread this whole item is about. Motivated directly by the
+   00:19Z measurement: the pass gave up while the embedder was busy and
+   `inflight` was 0 three minutes later with nothing able to return.
+   Superseded, kept for the record: (b) re-arm the pass later — on the first md search
    against a cold cache, or a periodic tick — since the watchdog bounces the
    process every few minutes during a qland burst and the pass never gets a
    contiguous window (it was abandoned mid-attempt-4 at 14:22Z). Both stay

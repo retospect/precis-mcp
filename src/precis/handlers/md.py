@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -192,6 +193,15 @@ class MdHandler(Handler):
             resolved[alias] = p
         self.roots = resolved
         self.cache = cache or MdRepoCache()
+
+        # Installed by ``server._warm_md_index_background`` when it owns
+        # this handler's warm pass; stays ``None`` under the CLI and in
+        # tests that never boot a server. ``search`` calls it when the
+        # vector cache is incomplete, which is the only place that both
+        # knows the cache is cold and has a user waiting on the
+        # consequence (gr457326 Do-next 2b). The server side holds the
+        # non-blocking guard and the cooldown — this is just the trigger.
+        self.rearm_warmup: Callable[[], bool] | None = None
 
         # ``hub`` may be a store-less/stub hub (this kind opens zero DB
         # connections); only its ``embedder`` attribute is read, matching
@@ -380,6 +390,8 @@ class MdHandler(Handler):
             total_blocks=total_blocks,
             indexed_blocks=indexed_blocks,
         )
+        if indexed_blocks < total_blocks:
+            self._rearm_warmup_if_cold()
 
         lines = [headline]
         for score, alias, f, b in hits:
@@ -410,6 +422,23 @@ class MdHandler(Handler):
         if alias not in self.roots:
             return {}
         return {alias: self.roots[alias]}
+
+    def _rearm_warmup_if_cold(self) -> None:
+        """Nudge the background warm pass; never affect this response.
+
+        Best-effort and non-blocking: the server-side hook returns
+        immediately (it starts a thread or declines), and any failure
+        here must not turn a working lexical search into an error — the
+        whole point of the warm pass is that search degrades instead of
+        failing.
+        """
+        hook = self.rearm_warmup
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception:  # pragma: no cover — a nudge must not break search
+            log.debug("md warmup re-arm hook failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

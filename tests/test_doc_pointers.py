@@ -66,15 +66,29 @@ LIVE_DOCS = _live_docs()
 # [text](target) — capture the target.
 _LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
+# Fenced blocks and inline code spans. A link inside either is being
+# *shown*, not followed: docs that document the link syntax itself (e.g.
+# `docs/backlog/file-mirror.md`'s `[Title](slug.md)`) would otherwise
+# fail this test for having correctly-written examples.
+_FENCE = re.compile(r"^```.*?^```", re.DOTALL | re.MULTILINE)
+_CODE_SPAN = re.compile(r"`+[^`\n]*`+")
+
+
+def _strip_code(text: str) -> str:
+    """Blank out code spans and fenced blocks, preserving line count."""
+    text = _FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    return _CODE_SPAN.sub("", text)
+
 
 def _local_targets(text: str) -> list[str]:
     """Relative link targets worth resolving on disk.
 
-    Drops external URLs and in-page anchors; strips a trailing #anchor and
-    surrounding backticks/whitespace.
+    Drops external URLs, in-page anchors and anything inside code
+    (see `_strip_code`); strips a trailing #anchor and surrounding
+    backticks/whitespace.
     """
     out: list[str] = []
-    for raw in _LINK.findall(text):
+    for raw in _LINK.findall(_strip_code(text)):
         target = raw.strip().strip("`").strip()
         if not target or target.startswith("#"):
             continue

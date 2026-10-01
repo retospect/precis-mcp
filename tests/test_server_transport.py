@@ -515,6 +515,151 @@ def test_warm_md_index_does_not_retry_a_deterministic_error(
     assert "ValueError" in state
 
 
+def test_cold_md_search_rearms_the_warm_pass(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A search against an incomplete cache starts another warm pass.
+
+    gr457326 Do-next 2b. The boot pass is one shot against whatever the
+    embedder is doing at boot, and on the shared session server the
+    checkout watchdog restarts the process every few minutes during a
+    qland burst — so the pass can spend its whole budget in the worst
+    window and then stay dead. Measured 2026-10-01T00:19Z: the pass gave
+    up while the embedder was busy and `inflight` was 0 three minutes
+    later, with nothing able to go back for it.
+    """
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import EmbedderUnavailable, MockEmbedder
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_BACKOFF_S", 0.001)
+    monkeypatch.setattr(server, "_MD_WARMUP_BATCH_ATTEMPTS", 1)
+    monkeypatch.setattr(server, "_MD_WARMUP_REARM_COOLDOWN_S", 0.0)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    class _DownThenUp(MockEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.down = True
+
+        def embed(self, texts: list[str]) -> Any:
+            if self.down:
+                raise EmbedderUnavailable("at capacity", last_status=429)
+            return super().embed(texts)
+
+    embedder = _DownThenUp()
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=embedder, md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None and handler.vector_cache is not None
+
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+    assert len(handler.vector_cache) == 0
+    assert "COLD" in (vectors_mod.warmup_state() or "")
+
+    # The embedder recovers. A search is what notices.
+    embedder.down = False
+    handler.search(q="body")
+    _join_warmup_threads()
+
+    assert len(handler.vector_cache) > 0
+    assert "warm" in (vectors_mod.warmup_state() or "")
+
+
+def test_md_search_does_not_rearm_a_warm_cache(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fully-warm cache must not start a pass per search."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_REARM_COOLDOWN_S", 0.0)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=MockEmbedder(), md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None
+
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+    assert len(handler.vector_cache) > 0
+
+    starts: list[int] = []
+    assert handler.rearm_warmup is not None
+
+    def _count() -> bool:
+        starts.append(1)
+        return True
+
+    handler.rearm_warmup = _count
+    handler.search(q="body")
+    assert starts == []  # nothing cold, nothing nudged
+
+
+def test_rearm_is_non_blocking_and_single_flight(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook declines while a pass runs, and never waits on one.
+
+    A search thread that blocked on an embed would hand the request path
+    exactly the stall the background pass exists to avoid.
+    """
+    import threading
+
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_REARM_COOLDOWN_S", 0.0)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    release = threading.Event()
+
+    class _Blocks(MockEmbedder):
+        def embed(self, texts: list[str]) -> Any:
+            release.wait(timeout=10)
+            return super().embed(texts)
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=_Blocks(), md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None
+
+    server._warm_md_index_background(rt)
+    assert handler.rearm_warmup is not None
+
+    # The boot pass is parked inside embed(); a second arm must decline
+    # rather than queue behind it or spawn a duplicate.
+    assert handler.rearm_warmup() is False
+    release.set()
+    _join_warmup_threads()
+    assert len(handler.vector_cache) > 0
+
+
 def test_cold_md_warmup_is_visible_in_precis_status_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

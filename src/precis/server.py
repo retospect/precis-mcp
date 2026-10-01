@@ -961,6 +961,13 @@ _MD_WARMUP_BATCH_ATTEMPTS = 6
 _MD_WARMUP_BACKOFF_S = 2.0
 _MD_WARMUP_BACKOFF_CAP_S = 60.0
 
+#: Minimum gap between a finished warm pass and the next re-armed one.
+#: The re-arm fires from the md search path, so without a floor a cold
+#: cache plus a busy caller would start a pass per search. Long enough
+#: that a dead embedder costs one pass a minute, short enough that a
+#: transient outage is picked up on the next search a user makes.
+_MD_WARMUP_REARM_COOLDOWN_S = 60.0
+
 
 def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     """Best-effort: fill the `md` kind's vector cache in a background thread.
@@ -1114,8 +1121,52 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
 
     import threading
 
-    thread = threading.Thread(target=_warm, name="precis-md-index-warmup", daemon=True)
-    thread.start()
+    # Re-arm (gr457326 Do-next 2b). The boot pass is a single shot
+    # against whatever the embedder happens to be doing at boot, and on
+    # the shared session server the checkout watchdog restarts this
+    # process every few minutes during a qland burst — so the pass
+    # repeatedly spends its budget in the worst window and then stays
+    # dead for the rest of a process life that may be shorter than the
+    # next quiet period. Measured 2026-10-01T00:19Z: the pass gave up
+    # while the embedder was busy, and `inflight` was 0 three minutes
+    # later with no way to go back.
+    #
+    # The trigger is a cold-cache md search rather than a timer: it costs
+    # nothing when nobody searches, it fires exactly when someone is
+    # about to get degraded results, and a timer asleep for an hour is
+    # indistinguishable from a wedged thread (which is the shape of the
+    # bug this is fixing, so repeating it would be a poor trade).
+    running = threading.Lock()
+    last_finished = [0.0]
+
+    def _run_guarded() -> None:
+        try:
+            _warm()
+        finally:
+            last_finished[0] = time.monotonic()
+            running.release()
+
+    def _start() -> bool:
+        """Start a warm pass unless one is running or just finished.
+
+        Returns whether a thread was started — the md handler ignores
+        it, tests assert on it. Non-blocking by construction: a caller
+        on the request path must never wait for an embed.
+        """
+        if not running.acquire(blocking=False):
+            return False
+        if last_finished[0] and (
+            time.monotonic() - last_finished[0] < _MD_WARMUP_REARM_COOLDOWN_S
+        ):
+            running.release()
+            return False
+        threading.Thread(
+            target=_run_guarded, name="precis-md-index-warmup", daemon=True
+        ).start()
+        return True
+
+    handler.rearm_warmup = _start
+    _start()
 
 
 def _log_version_banner() -> None:
