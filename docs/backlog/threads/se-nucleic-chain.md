@@ -16,8 +16,8 @@ residue rows persist, and an undeclared pair's letters are checked
 residue, base pair, domain, strand and blocks with a citable token per
 level (the resolver half of the pick hierarchy), dogfooded on prod.
 The `unpair` op marks one offset not a base pair (one stays at its duplex
-position; a run warns as a folding question — Reto, 2026-10-01). Next:
-dogfood `unpair` on prod; Do-next is blocked.
+position; a run warns as a folding question — Reto, 2026-10-01),
+dogfooded on prod. Do-next is blocked.
 **Last reviewed:** 2026-10-01 (unpair op shipped)
 **Worktree:** `se-nucleic-chain`
 
@@ -68,7 +68,11 @@ dogfood `unpair` on prod; Do-next is blocked.
   `overrides[offset]='unpaired'` on both occupants; findings
   `chain_unpaired` (info), `chain_unpaired_run` (warn, folding question),
   `chain_unpaired_stray` (warn). A `set_domain` narrowing a domain past
-  its own mark stays refused (clear the mark first).
+  its own mark stays refused (clear the mark first). Dogfooded on prod
+  2026-10-01 (`dogfood-hairpin-4`, stem@1 then stem@1–2, both cleared
+  after): findings and refusals as specified; view='chain' still footed
+  "every occupied offset is paired" and the pick label wrote `G·C` for an
+  unpaired offset — both fixed in the commit that added this sentence.
 
 - **`view='pick'` prod dogfood** — 2026-10-01 on `dogfood-hairpin-4`
   (stem atom by ordinal and by label, loop atom, every token read back:

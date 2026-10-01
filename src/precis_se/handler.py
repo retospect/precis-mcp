@@ -3258,7 +3258,12 @@ def _render_chain(tree: SeTree) -> str:
                 schema=["span", "nt", "contour"],
             )
             if runs
-            else "(every occupied offset is paired)"
+            else (
+                "(no single-stranded runs — every occupied offset is paired "
+                "or marked unpaired)"
+                if pairing.unpaired
+                else "(every occupied offset is paired)"
+            )
         )
     else:
         lines.append("(no domains — a helix with no strand on it is unoccupied)")

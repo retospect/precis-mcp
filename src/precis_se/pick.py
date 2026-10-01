@@ -151,15 +151,18 @@ def _resname(record: Mapping[str, Any], chain: str, resseq: int) -> str | None:
 
 def _offset_levels(tree: Any, helix: Any, offset: int) -> list[PickLevel]:
     """The row for one helix offset: ``pair`` when two antiparallel strands
-    occupy it (marked unpaired or not — the label says which), ``offset`` otherwise (single, parallel, crowded or empty),
-    with each occupant's letter in occupant order."""
+    occupy it (marked unpaired or not — the label says which), ``offset``
+    otherwise (single, parallel, crowded or empty), with each occupant's
+    letter in occupant order — joined ``·`` only for a pair, ``/`` for
+    anything else, since ``G·C`` reads as a base pair."""
     occupancy = derive_pairing(tree).at(helix.name, offset)
     label = f"{helix.name}@{offset}"
     level = "offset"
     if occupancy is None:
         label += " (unoccupied)"
     else:
-        letters = "·".join(o.letter or "?" for o in occupancy.occupants)
+        joint = "·" if occupancy.status == PAIRED else " / "
+        letters = joint.join(o.letter or "?" for o in occupancy.occupants)
         strands = " / ".join(f"{o.strand}.{o.ord}" for o in occupancy.occupants)
         label += f" ({letters}, {occupancy.status}: {strands})"
         if occupancy.status in (PAIRED, UNPAIRED):

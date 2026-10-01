@@ -193,6 +193,9 @@ def test_chain_and_drc_views_count_the_unpaired(handler: SeHandler) -> None:
     body = handler.get(id="up", view="chain").body
     assert "3 paired offset(s) · 1 unpaired" in body
     assert "3 paired · 0 single · 0 free · 1 unpaired" in body
+    # The footer must not claim every offset is paired (prod dogfood).
+    assert "(every occupied offset is paired)" not in body
+    assert "paired or marked unpaired" in body
     assert "letters: 3 complementary" in body
     drc = handler.get(id="up", view="drc").body
     assert "chain_unpaired" in drc and "stem[1]" in drc
@@ -210,7 +213,8 @@ def test_pick_labels_an_unpaired_offset_as_a_pair_row(
     row = next(line for line in body.splitlines() if "stem@1" in line)
     cells = [c.strip() for c in row.strip().strip("|").split("|")]
     assert cells[0] == "pair"
-    assert cells[1] == "stem@1 (G·C, unpaired: hp.0 / hp.1)"
+    # No '·' between the letters: G·C reads as a pair.
+    assert cells[1] == "stem@1 (G / C, unpaired: hp.0 / hp.1)"
     assert cells[2] == f"`<se:{uid['stem']}@1>`"
 
 
