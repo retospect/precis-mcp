@@ -30,7 +30,24 @@ waited on happened 09-29 — note at the bottom)
 
 ## Do next
 
-1. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
+1. **gr459567 + gr459595** — non-bonded clashes the check cannot see.
+   Every bud menu seeds the fullerene overlapping its host (the help
+   skill's own `tube(10,10)` + C60 `[9-6]` example: 0.56 Å bud/host), and
+   an unholed `cap(36,0)` lid crumples into itself (0.63 Å). `geom.*`
+   covers bonded terms only, so both pass `fidelity='check'`, and
+   `test_nanobud_menu_seed_has_no_stick_clash` pins `> 1.0 Å` — overlap —
+   as passing. One fix family: a `geom.clash` finding, a real clearance
+   bar in the test, then the bud placement offset and the large-lid seed.
+   First because the shipped example is wrong and Reto's showcase builds
+   (se `hexa-nanobud-pillar`, `hexa-nanobud-drum`) route around it.
+2. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
+   built. Reto asked for mean/extreme C–C bond lengths per build
+   (gr459602); a structure's default `get` is an 80 KB atom table with no
+   summary and its probe views disagree on argument names (gr459568); the
+   check echo is two-thirds per-bond INFO (gr459571). gr459602/gr459568
+   live in the `structure` kind, outside this thread's files; they rank
+   here because hexfold builds are where they bite.
+3. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
    a join's findings live only in the minted structure's meta and there is
    no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
    six SQL queries and a container exec on "which row governed this
@@ -40,35 +57,33 @@ waited on happened 09-29 — note at the bottom)
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
    reading surface to prove it wrote nothing with.
-2. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
-   (SPEC §25.3) then the join dry-run, after slice 1 at rank 2. Slice 3
+4. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
+   (SPEC §25.3) then the join dry-run, after slice 1. Slice 3
    goes last by the file's own decision: a dry-run needs a reading
    surface to prove it wrote nothing with.
-3. **gr459058, remaining half** — the reporting fix shipped 2026-10-01
-   (see "No action needed"), so a retire now announces the structures it
-   leaves live. What is still open is the product call it exposed:
-   should a design retire **cascade** to those structures, or **refuse**
-   while they are live? Both change a write path, the announcement takes
-   the pressure off, and deletes here are soft — so this waits on a
-   ruling rather than on work. **td458221** is where that answer belongs;
-   it is linked to the gripe, and that row is also re-scoped by this from
-   a one-time tidy of two orphans to the residue of an ordinary-path
-   leak.
-4. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+5. **gr459058, remaining half** — Reto ruled 2026-10-01 (recorded on the
+   gripe): a design retire **cascades** to the structures its blocks
+   minted, except structures promoted to building-block status, and
+   (no ruling needed) except any structure another live design still
+   binds. Blocked on one more call: the promotion mechanism — a tag
+   (structure has no `tag()` today), folder placement, or a component
+   row. Fix site: `persist.retire_design` + the se `delete` message.
+   **td458221** closes with it.
+6. **gr454488** — five residuals from the 2026-09-28 dogfood: every
    `generate` block trips `mode_binding_mismatch` because generate never
    sets mode; sheet rim port direction is centroid noise; the persisted
    build record drops geometry findings the check-mode echo has; "dry-run"
    wording survives past its rename; generator-declared measures claim
    `origin=user`. Five independent one-line fixes, bundled because one
    dogfood found all five.
-5. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
    `trust_measured`, which is the entire point of the catalogue.
-6. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
-   stick-rung number can be believed — including 5’s re-measurements and
+   stick-rung number can be believed — including 7’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
 
 ## Horizon
@@ -83,7 +98,11 @@ waited on happened 09-29 — note at the bottom)
    sheet-with-a-hole needs before a non-zigzag tube can protrude from it:
    the `hex(k)` ↔ `(6,0)` route already works (`examples/pillar.hx`,
    `{7:6}`, no collar), but an armchair or chiral end is a mixed rim and
-   cannot enter a C6 hole without this.
+   cannot enter a C6 hole without this. Reto 2026-10-01 asked for a ~3 nm
+   fullerene ball with a hole fused onto a 1 nm tube: that is `junction(1)`
+   or a Goldberg `fullerene(N)` minus a patch, and neither exists
+   (`fullerene` is C60-only). se `hexa-nanobud-drum` is the stand-in — a
+   2.9 nm washer-capped drum, flat-ended.
 3. **`spec.md` §28.3 elbow + closure → genus-1 torus, then genus-N** — the
    first real `registry.closure` test; delivers the junction/tube algebra
    the periodic cell and schwarzite nets reuse.
@@ -94,12 +113,12 @@ waited on happened 09-29 — note at the bottom)
 5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 5, since a
+   catalogue's third row type exists for. Waits on Do-next 7, since a
    motif measured at one extent has the same defect the radius had.
 7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 6.
+   clearance stub is gated on Do-next 8.
 8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
@@ -214,7 +233,7 @@ waited on happened 09-29 — note at the bottom)
   the structures it left live and the `delete(kind='structure', …)` call
   for each. One test pins the leak itself, so a later cascade fix has to
   update the message in the same change rather than quietly making it a
-  lie. The cascade-vs-refuse ruling is Do-next 3.
+  lie. Reto ruled cascade on 2026-10-01; building it is Do-next 5.
 - **gr456213** — CLOSED 2026-10-01, and the closure is a correction of
   this file. It was fixed on 2026-09-29 by Reto's own ruling that a part
   may not belong to two composites: `prepare_join` refuses via
