@@ -55,6 +55,10 @@ fast-forward only, never committed to (`deploy/README.md`).
 
 Many sibling sessions run at once: scan the injected `scripts/inflight` table
 for overlap; once your task is clear, write one line to `.claude/purpose`.
+When a coordinator has a peer round open (`scripts/round status`), end your
+land by marking it from your own tree — `scripts/round in <sha>`,
+`scripts/round none`, or `scripts/round eta <text>` — instead of messaging;
+leave deploys to the coordinator (`/round`).
 Merged+clean+sessionless worktrees auto-reap. Work that belongs to a thread
 (`docs/backlog/threads/<slug>.md`) updates that file in the same commit —
 delete what shipped, insert what you filed at its rank (README there).

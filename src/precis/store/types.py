@@ -942,7 +942,7 @@ class Tag:
 # hosts several workflows (todo, gripe, finding, ...); a kind listed here
 # only accepts its own values (``refuted`` is a finding status, not a
 # gripe one). Kinds not listed accept the full union. Gripe is also
-# enforced at commit by the 0175 deferred triggers — keep in sync.
+# enforced at commit by the 0176 deferred triggers — keep in sync.
 _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
     "gripe": frozenset(
         {"open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"}

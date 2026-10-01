@@ -89,6 +89,11 @@ NOT_VOCAB: dict[str, str] = {
         "DB (comment: 'backfill: one main board per existing pcb-kind "
         "design ref')."
     ),
+    "ref_tags": (
+        "0176_gripe_status_required.sql: gives every existing gripe with "
+        "no STATUS tag STATUS:open — SELECTs FROM refs, empty on a fresh "
+        "DB."
+    ),
     "refs": (
         "0174_taxon_seed.sql: mints one kind='taxon' node per live row of "
         "the four legacy registries (INSERT … SELECT) plus the two start "

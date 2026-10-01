@@ -1,6 +1,6 @@
 """Shared fixture helper: insert a gripe ref that satisfies the STATUS invariant.
 
-Migration 0175 makes "every gripe has exactly one valid STATUS tag" a
+Migration 0176 makes "every gripe has exactly one valid STATUS tag" a
 commit-time constraint, so a raw ``store.insert_ref(kind='gripe')`` with
 no tag in the same transaction fails. Tests that need a bare gripe row go
 through here instead of weakening the trigger.

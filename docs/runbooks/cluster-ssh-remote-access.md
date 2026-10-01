@@ -17,6 +17,58 @@ Real coordinates live in the gitignored overlay `deploy/inventory/hosts.yml`.
 * One Mac is on the cluster LAN and can be used as a **jump host** to give a
   LAN last hop.
 
+## Bare `ssh <host>` works — no `-o IdentityAgent=none`
+
+`ssh melchior` / `balthazar` / `caspar` / `castor` / `pollux` / `spark` just
+works as user `deploy`. `~/.ssh/config` sets `IdentityAgent none` on the
+cluster `Host` block, which forces ssh to read the passphraseless on-disk key
+`~/.ssh/cluster` (ed25519) instead of the flaky macOS/1Password agent. The
+reflexive `-o IdentityAgent=none` on every call is redundant; it stays valid
+only as a manual override where the config block isn't loaded.
+
+**ssh is first-value-wins per keyword.** A catch-all `Host *` (IdentityAgent →
+1Password socket) placed *above* the cluster block matches first and its
+IdentityAgent wins — the cluster block's `IdentityAgent none` becomes dead
+code. Everything then routes through the 1Password agent, which is
+unavailable at boot, so launchd autossh tunnels fail in a loop (`signing
+failed for … "~/.ssh/cluster" from agent: communication with agent failed` →
+`Permission denied`) until a human logs in and unlocks 1Password. Rule:
+specific host blocks first, `Host *` last. Diagnose with
+`ssh -G <host> | grep identityagent` — it must print `none`, not the 1Password
+socket. Verify an override with `SSH_AUTH_SOCK= ssh -o IdentityAgent=none <host>`.
+
+Boot-safe by construction: the controller's launchd autossh tunnels (one to
+melchior, one forwarding caspar's pgbouncer and Postgres ports locally) use
+the on-disk key, so they come up with no 1Password and no human. `balthazar`
+has ssh but no tunnel plist.
+
+**hermes.** `hermes` is a live macOS user on melchior: it runs the agent-lane
+daemons and asa-bot, and isolates the Claude OAuth / `~/.claude` login from
+the deploy fleet identity. Keep it. There is no `ssh hermes@melchior` block —
+nothing automated ssh's in as hermes, and `deploy` has passwordless sudo.
+Reach it with:
+
+    ssh melchior 'sudo -u hermes -H bash -lc "<cmd>"'
+
+**Ansible has its own `ssh_args`** (`ansible.cfg`) that bypass
+`~/.ssh/config`, so it can still fail every host `UNREACHABLE` with
+`sign_and_send_pubkey: signing failed ... agent refused operation`.
+Two things do **not** work: `-e 'ansible_ssh_common_args=-o IdentityAgent=none'`
+(crashes ansible 14 on py3.14 — its tty arg-parser chokes on `-o`), and merely
+unsetting `SSH_AUTH_SOCK` (macOS ssh still honours `IdentityAgent` from the
+config). What works is overriding `ANSIBLE_SSH_ARGS` wholesale, keeping the
+config defaults and appending the flags (verified on a full redeploy,
+`failed=0`):
+
+    ANSIBLE_SSH_ARGS="-o ControlMaster=auto -o ControlPersist=60s \
+      -o ServerAliveInterval=30 -o IdentityAgent=none -o IdentitiesOnly=yes" \
+      ansible-playbook redeploy-precis.yml
+
+Prod DB reads: `scripts/prod-psql "SELECT …"` wraps the hop
+([`prod-db-access`](./prod-db-access.md)). Dumping a container's env
+(`docker exec … printenv`) is blocked by the secret-filter classifier — infer
+config from data instead.
+
 ## Never pin `HostName` to a LAN address
 
 A `Host <node>` block that pins `HostName <lan-ip>` makes that node
@@ -40,6 +92,10 @@ that keeps the LAN address and jumps through the on-LAN Mac:
         IdentityAgent none
         IdentitiesOnly yes
         IdentityFile ~/.ssh/cluster
+
+(Earlier configs pinned `HostName` to a LAN address on `castor` and `pollux`;
+removed 2026-09-08Z. They now resolve by name via MagicDNS exactly like `spark`,
+which never had a pin.)
 
 Use these only for bulk transfer. Latency is dominated by physical distance, so
 they will not make a shell feel faster — what they buy is replacing a
@@ -77,7 +133,8 @@ LAN-only services (e.g. the llama.cpp endpoint) that the tailnet cannot see.
 
 ## Which commit is a host actually running
 
-Read the venv's `direct_url.json`, never a checkout's `HEAD`:
+(Venv layout, convergence assert, version-vs-commit trap:
+[`cluster-deploy`](./cluster-deploy.md).) Read the venv's `direct_url.json`, never a checkout's `HEAD`:
 
     ssh <node> "sh -c 'ls -d /opt/precis*/venv/lib/python*/site-packages/\
     precis_mcp-*.dist-info/direct_url.json | head -1'"

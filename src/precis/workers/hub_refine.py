@@ -41,6 +41,15 @@ Claimed off a **due-set**, never a blind periodic rescan
    grounding chunks → ``chunk_citations`` → ``taproot.resolve_citation`` →
    the held cited paper → a paper-scoped semantic search for its top
    passage, so "X is true [34]" gets checked against what [34] says.
+   (c) **coverage ledger** (:func:`_coverage_chunk_ids`,
+   ``chase_coverage`` migration 0175) — the EXACT chunks
+   ``workers/chase_trigger.py`` recorded when it marked this hub due,
+   verified with NO distance floor (a ``chunk_ids``-scoped search) so a
+   chunk the top-k ANN above ranked out on a densely-covered claim (the
+   trimmed-A recall gap) is checked rather than silently dropped. Each row
+   is drained only once judged (:func:`_drain_coverage`), so an unconsumed
+   row keeps the hub due (:func:`_is_hub_due`) — the durable retry signal
+   the popped ``TAPROOT_DUE`` tag alone could lose.
 3. **Filter** — drop a candidate already carrying a ``corroborates`` edge
    on this hub, or already in the rejection memo (``meta['taproot_rejected']``
    — a judged-once ``supports=no`` verdict, never re-verified), *before*
@@ -106,10 +115,12 @@ on every completed run (success or clean no-op).
 
 Never a periodic full re-scan: idempotent attach + precheck + rejection
 memo + due-set claim together bound per-run spend to (at most)
-``HUBS_PER_PASS x (TOPK + grounded-cite count + REVERIFY_PER_PASS)`` LLM
-calls; the patent leg doesn't grow this (merged-then-truncated to
-``topk``), and shared per-source dedup means a source reached by both
-discover sources is verified once.
+``HUBS_PER_PASS x (TOPK + grounded-cite count + coverage-row count +
+REVERIFY_PER_PASS)`` LLM calls; the patent leg doesn't grow this
+(merged-then-truncated to ``topk``), the coverage leg is bounded by the
+chunks the trigger actually recorded for the hub (drained as they're
+judged), and shared per-source dedup means a source reached by more than
+one discover source is verified once.
 
 **Ship dark**: a service, gated by a ``service_config`` prio row
 (``precis service prio <host> hub_refine 1``, live, no redeploy — no env
@@ -366,6 +377,17 @@ _META_UNRESOLVED = "unresolved_citations"
 _DUE_NS = "TAPROOT_DUE"
 _DUE_VALUE = "1"
 
+#: The trigger pass's **coverage ledger** (``chase_coverage``, migration
+#: 0175): one row per (claim hub, triggering chunk) recorded by
+#: ``chase_trigger`` at due-mark time. Unlike the ``TAPROOT_DUE`` tag (popped
+#: at claim time, before discovery), a coverage row is drained only once
+#: :func:`_refine_one_hub` has actually judged the recorded chunk — so it is
+#: the durable retry watermark that closes the trimmed-A recall gap: a
+#: triggering chunk that hub_refine's own lossy top-k ANN would have ranked
+#: out is verified from this ledger instead of silently dropped (plan
+#: transient-napping-parrot Phase 1b).
+_COVERAGE_TABLE = "chase_coverage"
+
 #: Claim-time attempt lease (OPEN-ITEMS "Unbraked LLM-pass cluster"): a
 #: ``TAPROOT_DUE``/``never-refined``/sha-reopen/backstop due-hub whose
 #: discover+verify loop raises never reaches ``_refine_one_hub``'s own
@@ -449,6 +471,7 @@ def _min_sim_default() -> float | None:
 def _is_hub_due(
     *,
     is_due_tagged: bool,
+    has_coverage: bool,
     last_refined_at: str | None,
     last_refined_sha: str | None,
     last_refined_version: str | None,
@@ -459,7 +482,10 @@ def _is_hub_due(
     """The due predicate — any of:
 
     1. carries a ``TAPROOT_DUE`` tag (the trigger pass marked a new near
-       paper), or
+       paper), or has an unconsumed ``chase_coverage`` row (a recorded
+       triggering chunk not yet verified — the durable watermark that
+       re-fires even if the tag pop was lost, so a corroborator is never
+       silently dropped; migration 0175), or
     2. never refined (``last_refined_at`` absent), or
     3. edited since last refine (stored ``last_refined_sha`` absent or no
        longer matches the live title's :func:`taproot.canon.claim_sha` —
@@ -477,7 +503,7 @@ def _is_hub_due(
     edit, or the backstop, because demotion-on-``contradicts`` is the only
     route by which later evidence reaches a published claim.
     """
-    if is_due_tagged:
+    if is_due_tagged or has_coverage:
         return True
     if last_refined_at is None:
         return True
@@ -511,7 +537,12 @@ def _claim_hubs_due_for_refine(
     Pops each claimed hub's ``TAPROOT_DUE`` tag in this same call (a
     re-mark mid-processing simply re-triggers next pass), and writes each
     locked hub's :data:`_ATTEMPT_NS` claim-time lease in the same commit
-    (see that constant's docstring).
+    (see that constant's docstring). A hub's ``chase_coverage`` rows are
+    NOT drained here (migration 0175): they are consumed only by
+    :func:`_refine_one_hub` once it has actually judged the recorded
+    chunk, so an unconsumed row is a durable due signal (see
+    :func:`_is_hub_due`) that outlives the popped tag if discovery never
+    reaches it.
 
     Excludes **compound** claim hubs (module docstring step 1) via a
     ``NOT EXISTS`` over an inbound live ``conjunct-of`` edge — the same
@@ -528,6 +559,10 @@ def _claim_hubs_due_for_refine(
                     AND t.namespace = %(due_ns)s
                     AND t.value = %(due_value)s
                ) AS is_due_tagged,
+               EXISTS (
+                 SELECT 1 FROM chase_coverage cc
+                  WHERE cc.hub_ref_id = r.ref_id
+               ) AS has_coverage,
                EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
@@ -563,7 +598,15 @@ def _claim_hubs_due_for_refine(
     ).fetchall()
 
     candidates: list[tuple[int, str | None]] = []
-    for ref_id, title, meta, is_due_tagged, has_attempt_lease, is_signed in rows:
+    for (
+        ref_id,
+        title,
+        meta,
+        is_due_tagged,
+        has_coverage,
+        has_attempt_lease,
+        is_signed,
+    ) in rows:
         if has_attempt_lease:
             # A prior attempt raised mid-loop and left its lease standing —
             # brake this hub from re-claim until it cools down, regardless
@@ -574,6 +617,7 @@ def _claim_hubs_due_for_refine(
         last_refined_sha = meta.get(_META_LAST_REFINED_SHA)
         if _is_hub_due(
             is_due_tagged=bool(is_due_tagged),
+            has_coverage=bool(has_coverage),
             last_refined_at=last_refined_at,
             last_refined_sha=last_refined_sha,
             last_refined_version=meta.get(_META_LAST_REFINED_VERSION),
@@ -710,6 +754,56 @@ def _rejected_source_ids(rejected: dict[str, Any]) -> set[int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _coverage_chunk_ids(conn: Connection, hub_ref_id: int) -> list[int]:
+    """Chunk ids the trigger recorded for this hub (``chase_coverage``,
+    migration 0175).
+
+    These are the EXACT chunks ``chase_trigger`` matched against the hub's
+    claim embedding when it marked the hub due. :func:`_refine_one_hub`
+    verifies precisely these rather than trusting its own lossy
+    top-``PRECIS_TAPROOT_REFINE_TOPK`` ANN to re-surface them — the
+    trimmed-A recall gap this closes (plan transient-napping-parrot Phase
+    1b). Sorted for a deterministic candidate order.
+    """
+    rows = conn.execute(
+        f"SELECT chunk_id FROM {_COVERAGE_TABLE} "
+        "WHERE hub_ref_id = %s ORDER BY chunk_id",
+        (hub_ref_id,),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _drain_coverage(conn: Connection, hub_ref_id: int, chunk_ids: list[int]) -> None:
+    """Delete the coverage rows this pass RESOLVED (``chase_coverage``,
+    migration 0175).
+
+    Resolved = valid verdict (yes/partial/no), memo/cache hit, source
+    already cited/attached (slot dedup), policy-dropped, or chunk/ref gone.
+    NOT resolved (row kept, retried next pass): verifier returned None, an
+    out-of-enum verdict, or the chunk lacks an 'ok' embedding under the
+    current embedder. Hubs that cannot be verified at all (empty claim, no
+    query vector) have their rows drained by the caller so they leave the
+    due-set. Retry cadence of kept rows relies on the existing attempt
+    lease/cooldown; no attempt counter is stored.
+
+    Called at stamp time in the same transaction as the ``last_refined_at``
+    stamp: a row drains only once its chunk has actually been looked at
+    (verified, memoed, or policy-dropped), so a raise anywhere in
+    discover/verify rolls the delete back with the rest of the per-hub
+    transaction and the hub re-fires (an unconsumed coverage row is itself a
+    due condition — see :func:`_is_hub_due`). Deletes only the ``chunk_ids``
+    loaded at the top of this pass, so a coverage row a concurrent
+    ``chase_trigger`` inserts for a *different* chunk mid-pass survives to
+    re-fire the hub next pass rather than being silently dropped.
+    """
+    if not chunk_ids:
+        return
+    conn.execute(
+        f"DELETE FROM {_COVERAGE_TABLE} WHERE hub_ref_id = %s AND chunk_id = ANY(%s)",
+        (hub_ref_id, chunk_ids),
+    )
 
 
 @dataclass(frozen=True)
@@ -2984,13 +3078,70 @@ def _refine_one_hub(
             for block, ref, _score in sem_hits
         ]
 
+        # Discover source 3 (coverage ledger, migration 0175): the EXACT
+        # chunks chase_trigger recorded as triggering this hub's due-mark.
+        # Verify precisely these — a chunk this pass's own top-k ANN ranked
+        # out (a densely-covered claim: the trimmed-A recall gap) would
+        # otherwise be dropped with its corroborator never checked. A
+        # ``chunk_ids``-scoped semantic search with NO ``max_distance``
+        # floor, so neither rank nor the corpus-wide similarity floor can
+        # exclude a recorded chunk; patent legal-claim blocks are still
+        # dropped (legal scope is not empirical support). Offered ahead of
+        # the corpus-wide semantic leg so the precise trigger wins the
+        # shared per-source dedup slot. The rows are drained below only
+        # after this loop has judged them (see :func:`_drain_coverage`).
+        coverage_ids = _coverage_chunk_ids(conn, hub_ref_id)
+        cov_set = set(coverage_ids)
+        # Chunk ids genuinely resolved this pass (see :func:`_drain_coverage`
+        # for the resolved/unresolved contract); only these rows drain.
+        resolved_cov: set[int] = set()
+        cov_cands: list[_Candidate] = []
+        if coverage_ids:
+            raw_cov_hits = store.chunks.search_chunks(
+                q=claim_sentence,
+                query_vec=query_vec,
+                mode="semantic",
+                chunk_ids=coverage_ids,
+                limit=len(coverage_ids),
+                max_distance=None,
+            )
+            cov_hits = _drop_patent_claim_blocks(raw_cov_hits)
+            # Policy-dropped (patent legal-claim) chunks are settled.
+            kept_ids = {int(b.id) for b, _r, _s in cov_hits}
+            returned_ids = {int(b.id) for b, _r, _s in raw_cov_hits}
+            resolved_cov |= returned_ids - kept_ids
+            # Recorded chunks the search did not return: gone/retired ones
+            # can never be judged (resolved); live ones lack an 'ok'
+            # embedding under the CURRENT embedder (not embedded yet, failed,
+            # or recorded under a different embedder) and stay for a later
+            # pass. The row's stored ``embedder`` is deliberately not
+            # consulted: the claim vector is the current embedder's, so
+            # "judgeable" means "embedded under the current embedder".
+            missing = cov_set - returned_ids
+            if missing:
+                alive = {
+                    int(r[0])
+                    for r in conn.execute(
+                        "SELECT c.chunk_id FROM chunks c "
+                        "JOIN refs r ON r.ref_id = c.ref_id "
+                        "WHERE c.chunk_id = ANY(%s) AND c.retired_at IS NULL "
+                        "AND r.retired_at IS NULL",
+                        (sorted(missing),),
+                    ).fetchall()
+                }
+                resolved_cov |= missing - alive
+            cov_cands = [
+                _Candidate(block=block, ref=ref, via="semantic")
+                for block, ref, _score in cov_hits
+            ]
+
         # Stage 5 (external last resort) feeds the SAME candidate tail —
         # it is a discover source, not a second pipeline. "Last resort"
         # means the corpus legs offered nothing *new*: a leg that came
         # back full of passages this hub already grounds on (or already
         # judged at this sha) has substantiated nothing, so the count of
         # UNSETTLED candidates is the trigger, not the raw hit count.
-        corpus_cands = [*same_paper_cands, *cite_cands, *sem_cands]
+        corpus_cands = [*same_paper_cands, *cite_cands, *cov_cands, *sem_cands]
         ext_cands: list[_Candidate] = []
         corpus_offered_something_new = any(
             not _candidate_settled(
@@ -3036,11 +3187,17 @@ def _refine_one_hub(
         # bound that source-level dedup used to provide.
         seen_slots: set[str] = set()
         attached_this_pass: set[int] = set()
+        # Slots whose visit ended WITHOUT a verdict (verifier None / bad
+        # enum): a later duplicate of that slot is not "settled", so it
+        # must not drain its coverage row.
+        unjudged_slots: set[str] = set()
         for cand in [*corpus_cands, *ext_cands]:
             source_ref_id = cand.source_ref_id
-            if source_ref_id == hub_ref_id:
-                continue
             block, ref = cand.block, cand.ref
+            cov_id = int(block.id)
+            if source_ref_id == hub_ref_id:
+                resolved_cov.add(cov_id)  # the hub itself: can never be judged
+                continue
             chunk_id = int(block.id) if reground is not None else None
             slot = (
                 str(source_ref_id)
@@ -3048,9 +3205,12 @@ def _refine_one_hub(
                 else _seen_key(source_ref_id, chunk_id)
             )
             if slot in seen_slots:
+                if slot not in unjudged_slots:
+                    resolved_cov.add(cov_id)  # source already settled this pass
                 continue
             seen_slots.add(slot)
             if source_ref_id in attached_this_pass:
+                resolved_cov.add(cov_id)
                 # One attach per source per pass: the deeper-passage leg
                 # must not turn one paper into a fan of near-duplicate
                 # edges, and the bounded-spend guarantee is per hub.
@@ -3070,6 +3230,7 @@ def _refine_one_hub(
                 seen=reground_seen,
                 sha=new_sha,
             ):
+                resolved_cov.add(cov_id)  # source cited/attached/memoed
                 continue
             if reground is not None and plan is not None:
                 _reground_verify_candidate(
@@ -3089,6 +3250,8 @@ def _refine_one_hub(
                     pending_checks=pending_checks,
                     pending_demotions=pending_demotions,
                 )
+                if _seen_key(source_ref_id, chunk_id) in reground_seen:
+                    resolved_cov.add(cov_id)  # judge returned a verdict
                 continue
             verification = _verify_support_with_caveats(
                 claim=claim_sentence,
@@ -3102,9 +3265,12 @@ def _refine_one_hub(
                 # Transient LLM/dispatch failure — no verdict recorded,
                 # so this candidate is simply retried next pass (neither
                 # attached nor memoed as rejected).
+                unjudged_slots.add(slot)
                 continue
             supports = verification.get("supports")
             contradicts = bool(verification.get("contradicts"))
+            if supports in ("yes", "partial", "no"):
+                resolved_cov.add(cov_id)
             # Attach only genuine corroboration (shared gate
             # ``_chase_llm.is_corroborating``: a "yes", or a "partial" whose
             # caveats scope the support rather than negate it). A "partial"
@@ -3192,6 +3358,7 @@ def _refine_one_hub(
                     )
                 rejected[str(source_ref_id)] = entry
             else:
+                unjudged_slots.add(slot)
                 # Verdict outside the {yes,partial,no} enum (missing key or
                 # an LLM-schema regression) — neither attach nor memo, so it
                 # retries next cadence; log so the regression isn't invisible.
@@ -3202,6 +3369,28 @@ def _refine_one_hub(
                     source_ref_id,
                     supports,
                 )
+
+        # Drain the coverage ledger only now — every recorded chunk has
+        # been judged (verified, memoed, or policy-dropped) this pass. A
+        # raise anywhere above rolls this back with the whole per-hub
+        # transaction, so the rows survive and the hub re-fires. Runs inside
+        # the ``query_vec is not None`` block: with no vector nothing was
+        # verified, so the ledger is left intact to retry next pass.
+        _drain_coverage(conn, hub_ref_id, sorted(resolved_cov & cov_set))
+    else:
+        # No claim text or no embedding for it: this hub can never be
+        # verified, so its ledger rows would keep it due forever. Drain
+        # them (logged) so the hub drops out of the due-set; a later title
+        # edit re-triggers via the sha-reopen path.
+        stuck = _coverage_chunk_ids(conn, hub_ref_id)
+        if stuck:
+            log.warning(
+                "hub_refine: hub #%d cannot be verified (empty claim or no "
+                "embedding) -- draining %d coverage row(s)",
+                hub_ref_id,
+                len(stuck),
+            )
+            _drain_coverage(conn, hub_ref_id, stuck)
 
     meta_patch: dict[str, Any] = {
         _META_LAST_REFINED_AT: datetime.now(UTC).isoformat(),

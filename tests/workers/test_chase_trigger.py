@@ -82,6 +82,16 @@ def _chunk_swept(store: Any, ref_id: int, ord_: int) -> bool:
     )
 
 
+def _coverage_rows(store: Any, hub_ref_id: int) -> list[int]:
+    """The ``chunk_id``s recorded in the coverage ledger for a hub."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id FROM chase_coverage WHERE hub_ref_id = %s ORDER BY chunk_id",
+            (hub_ref_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 # ── embedder-unavailable degrade ───────────────────────────────────────
 
 
@@ -180,6 +190,67 @@ def test_near_chunk_marks_the_claim_due_far_chunk_does_not_both_swept(
     assert _chunk_swept(store, far_ref, 0) is True
 
 
+def test_near_chunk_is_recorded_in_the_coverage_ledger(store: Any) -> None:
+    """A near ``(hub, chunk)`` pair records the EXACT triggering chunk in
+    ``chase_coverage`` (migration 0175) so hub_refine verifies precisely it,
+    not a lossy re-ANN. The far chunk, marked swept but not near, records
+    nothing (plan transient-napping-parrot Phase 1b)."""
+    embedder = make_mock_bge_m3()
+    claim_sentence = "The membrane rejects 99% of divalent ions."
+    hub = _seed_hub(store, sentence=claim_sentence)
+    _near_ref, near_chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="cov-near", text=claim_sentence
+    )
+    _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="cov-far",
+        text="Unrelated notes on medieval crop rotation.",
+    )
+
+    result = run_chase_trigger_pass(
+        store,
+        embedder=embedder,
+        batch_size=10,
+        min_sim=_MIN_SIM,
+        claim_refresh_limit=10,
+    )
+    assert result["due_marked"] == 1
+    # Exactly the near chunk is recorded -- the far chunk is not.
+    assert _coverage_rows(store, hub) == [near_chunk_id]
+
+
+def test_coverage_ledger_recording_is_idempotent_across_a_resweep(
+    store: Any,
+) -> None:
+    """A re-sweep (a CHASETRIG_VERSION bump) that re-matches the same chunk
+    must not duplicate the ledger row -- the insert is ON CONFLICT DO
+    NOTHING on ``(hub_ref_id, chunk_id)``."""
+    embedder = make_mock_bge_m3()
+    claim_sentence = "The alloy resists creep above 800 C."
+    hub = _seed_hub(store, sentence=claim_sentence)
+    _ref, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="cov-idem", text=claim_sentence
+    )
+
+    run_chase_trigger_pass(
+        store,
+        embedder=embedder,
+        batch_size=10,
+        min_sim=_MIN_SIM,
+        claim_refresh_limit=10,
+    )
+    assert _coverage_rows(store, hub) == [chunk_id]
+
+    # Re-record the same pair directly (as a resweep would): still one row.
+    with store.pool.connection() as conn:
+        from precis.workers.chase_trigger import _record_coverage
+
+        _record_coverage(conn, [(hub, chunk_id)], embedder_model=embedder.model)
+        conn.commit()
+    assert _coverage_rows(store, hub) == [chunk_id]
+
+
 def test_convergence_second_pass_resweeps_nothing(store: Any) -> None:
     """A chunk already carrying the current-version CHASETRIG marker is
     never re-claimed -- the queue drains."""
@@ -275,7 +346,7 @@ def test_near_claims_excludes_a_claim_matching_its_own_source_chunk(store: Any) 
             floor=_MIN_SIM,
             chunk_ref_map={self_chunk_id: hub},
         )
-    assert near == set()
+    assert near == []
 
 
 # ── compound-hub exclusion (docs/backlog/taproot-atomic-claims.md) ──────
@@ -378,4 +449,4 @@ def test_near_claims_excludes_a_compound_claim(store: Any) -> None:
             floor=_MIN_SIM,
             chunk_ref_map={near_chunk_id: near_ref},
         )
-    assert near == set()
+    assert near == []

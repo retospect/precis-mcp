@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""scripts/round — the shared tally for a coordinated peer round.
+
+A round is one pass of: peers dogfood on prod, fix what they find, qland;
+the coordinator gates the integrated main, deploys, and opens the next round.
+The expensive part used to be the bookkeeping: every "have you landed?" and
+every "qlanded <sha>" was a cross-session message, and a message wakes a
+whole session on both ends. This file-backed tally replaces those messages.
+A peer marks itself from its own tree; the coordinator reads the table.
+
+State lives under the repo's COMMON git dir (`<git-common-dir>/precis-round/`),
+next to the ship lock, so every worktree of this checkout sees the same round
+and nothing is tracked or pushed.
+
+  scripts/round open [--base <sha>]   coordinator: start the next round
+  scripts/round in <sha> [note]       peer: I landed <sha> this round (repeatable)
+  scripts/round none [note]           peer: nothing to land this round
+  scripts/round eta <text>            peer: still working, here is when/what
+  scripts/round status [--json]       the table: every worktree and its mark
+  scripts/round pending               worktrees with no final mark, one per line
+  scripts/round close                 coordinator: end the round
+
+A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
+Marks carry the round number, so a mark left from an earlier round reads as
+"no mark" — `open` never has to clean up after anyone. `in` and `none` are
+final for the round; `eta` is not, so an `eta` peer stays in `pending`.
+
+Exit codes: 0 ok; 1 refused (no round open, unknown sha, bad usage). `pending`
+exits 0 with no output when everyone is in.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+FINAL = ("in", "none")
+_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _git(*args: str) -> str | None:
+    try:
+        cp = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    except OSError:
+        return None
+    return cp.stdout.strip() if cp.returncode == 0 else None
+
+
+def _state_dir() -> Path:
+    common = _git("rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        sys.exit("scripts/round: not inside a git checkout")
+    return Path(common) / "precis-round"
+
+
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _read(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _peer() -> str:
+    override = os.environ.get("PRECIS_ROUND_PEER", "").strip()
+    if override:
+        return override
+    top = _git("rev-parse", "--show-toplevel")
+    if not top:
+        sys.exit("scripts/round: not inside a git checkout")
+    return Path(top).name
+
+
+def _worktrees() -> list[str]:
+    """Names of every linked worktree — the primary checkout is not a peer."""
+    out = _git("worktree", "list", "--porcelain") or ""
+    paths = [
+        ln.split(" ", 1)[1] for ln in out.splitlines() if ln.startswith("worktree ")
+    ]
+    return sorted(Path(p).name for p in paths[1:])
+
+
+def _open_round(state: Path) -> dict[str, Any] | None:
+    cur = _read(state / "round.json")
+    return cur if cur and cur.get("open") else None
+
+
+def _marks(state: Path, n: int) -> dict[str, dict[str, Any]]:
+    marks: dict[str, dict[str, Any]] = {}
+    for path in sorted((state / "marks").glob("*.json")):
+        mark = _read(path)
+        if mark and mark.get("round") == n:
+            marks[path.stem] = mark
+    return marks
+
+
+def _require_round(state: Path) -> dict[str, Any]:
+    cur = _open_round(state)
+    if cur is None:
+        sys.exit(
+            "scripts/round: no round is open — nothing to mark (the coordinator runs `scripts/round open`)"
+        )
+    return cur
+
+
+def cmd_open(state: Path, args: argparse.Namespace) -> int:
+    prev = _read(state / "round.json") or {}
+    if prev.get("open"):
+        print(
+            f"scripts/round: round {prev['n']} is still open — close it first",
+            file=sys.stderr,
+        )
+        return 1
+    base = args.base or _git("rev-parse", "origin/prod") or ""
+    cur = {
+        "n": int(prev.get("n", 0)) + 1,
+        "open": True,
+        "opened": _now(),
+        "by": _peer(),
+        "base": base,
+    }
+    _write(state / "round.json", cur)
+    print(f"round {cur['n']} open (base {base[:8] or 'unknown'})")
+    return 0
+
+
+def cmd_close(state: Path, _args: argparse.Namespace) -> int:
+    cur = _require_round(state)
+    cur.update({"open": False, "closed": _now()})
+    _write(state / "round.json", cur)
+    print(f"round {cur['n']} closed")
+    return 0
+
+
+def cmd_mark(state: Path, args: argparse.Namespace) -> int:
+    cur = _require_round(state)
+    peer = _peer()
+    path = state / "marks" / f"{peer}.json"
+    mark = _read(path) or {}
+    if mark.get("round") != cur["n"]:
+        mark = {"round": cur["n"], "shas": []}
+    if args.cmd == "in":
+        if not _SHA.match(args.sha):
+            print(f"scripts/round: {args.sha!r} is not a commit sha", file=sys.stderr)
+            return 1
+        full = _git("rev-parse", "--verify", "--quiet", f"{args.sha}^{{commit}}")
+        if not full:
+            print(
+                f"scripts/round: {args.sha} is not a commit in this checkout — fetch, or check the sha",
+                file=sys.stderr,
+            )
+            return 1
+        if full not in mark["shas"]:
+            mark["shas"].append(full)
+    note = " ".join(args.note).strip()
+    if args.cmd == "eta" and not note:
+        print("scripts/round: eta needs text — what remains, and when", file=sys.stderr)
+        return 1
+    mark.update({"status": args.cmd, "note": note, "at": _now()})
+    _write(path, mark)
+    shas = " ".join(s[:8] for s in mark["shas"])
+    print(
+        f"round {cur['n']}: {peer} → {args.cmd}{' ' + shas if shas else ''}{' — ' + note if note else ''}"
+    )
+    return 0
+
+
+def _rows(state: Path, cur: dict[str, Any]) -> list[dict[str, Any]]:
+    marks = _marks(state, cur["n"])
+    rows = []
+    for name in sorted(set(_worktrees()) | set(marks)):
+        mark = marks.get(name, {})
+        rows.append(
+            {
+                "peer": name,
+                "status": mark.get("status", ""),
+                "shas": mark.get("shas", []),
+                "note": mark.get("note", ""),
+                "at": mark.get("at", ""),
+            }
+        )
+    return rows
+
+
+def cmd_status(state: Path, args: argparse.Namespace) -> int:
+    cur = _open_round(state)
+    if cur is None:
+        last = _read(state / "round.json")
+        if args.json:
+            print(json.dumps({"round": last, "peers": []}))
+        else:
+            print(f"no round open (last: {last['n']})" if last else "no round open")
+        return 0
+    rows = _rows(state, cur)
+    if args.json:
+        print(json.dumps({"round": cur, "peers": rows}))
+        return 0
+    print(
+        f"round {cur['n']} — opened {cur['opened']} by {cur['by']}, base {cur.get('base', '')[:8] or 'unknown'}"
+    )
+    width = max([len(r["peer"]) for r in rows] + [4])
+    for r in rows:
+        shas = " ".join(s[:8] for s in r["shas"])
+        tail = " — ".join(x for x in (shas, r["note"]) if x)
+        print(
+            f"  {r['peer']:<{width}}  {r['status'] or '—':<4}  {r['at'][11:16] + 'Z' if r['at'] else '     '}  {tail}".rstrip()
+        )
+    return 0
+
+
+def cmd_pending(state: Path, _args: argparse.Namespace) -> int:
+    cur = _require_round(state)
+    for r in _rows(state, cur):
+        if r["status"] not in FINAL:
+            print(r["peer"])
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="scripts/round", description="Shared tally for a coordinated peer round."
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    p_open = sub.add_parser("open")
+    p_open.add_argument("--base", default="")
+    sub.add_parser("close")
+    p_in = sub.add_parser("in")
+    p_in.add_argument("sha")
+    p_in.add_argument("note", nargs="*")
+    for name in ("none", "eta"):
+        sub.add_parser(name).add_argument("note", nargs="*")
+    sub.add_parser("status").add_argument("--json", action="store_true")
+    sub.add_parser("pending")
+    args = parser.parse_args(argv)
+    state = _state_dir()
+    handlers = {
+        "open": cmd_open,
+        "close": cmd_close,
+        "in": cmd_mark,
+        "none": cmd_mark,
+        "eta": cmd_mark,
+        "status": cmd_status,
+        "pending": cmd_pending,
+    }
+    return handlers[args.cmd](state, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

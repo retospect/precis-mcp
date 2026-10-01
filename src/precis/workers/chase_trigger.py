@@ -36,7 +36,13 @@ without having been matched):
     :func:`_min_sim_default`'s cosine-distance floor. Every distinct near
     claim (excluding a claim hub matching its own source chunk) gets a
     closed ``TAPROOT_DUE`` ref tag — idempotent, popped by ``hub_refine``
-    when it claims the hub.
+    when it claims the hub. Each near ``(hub, chunk)`` pair is ALSO recorded
+    in the ``chase_coverage`` ledger (migration 0175): ``hub_refine``
+    verifies precisely those recorded chunks rather than re-running its own
+    lossy top-``PRECIS_TAPROOT_REFINE_TOPK`` ANN, which could rank the
+    triggering chunk out on a densely-covered claim and silently drop the
+    corroborator (the trimmed-A recall gap; plan transient-napping-parrot
+    Phase 1b).
 
 **Compound exclusion** (docs/backlog/taproot-atomic-claims.md): both (a)'s
 hub query and (c)'s probe query exclude compound claim hubs (a live inbound
@@ -287,10 +293,19 @@ def _near_claims(
     embedder_model: str,
     floor: float,
     chunk_ref_map: dict[int, int],
-) -> set[int]:
-    """Distinct claim-hub ``ref_id``s within ``floor`` cosine distance of any
-    chunk in ``chunk_ids``, excluding a claim matching its own source chunk
-    (a claim hub's own card surfacing in its own sweep).
+) -> list[tuple[int, int]]:
+    """``(hub_ref_id, chunk_id)`` pairs within ``floor`` cosine distance --
+    every distinct claim hub near any chunk in ``chunk_ids``, paired with
+    the *specific* chunk that put it near, excluding a claim matching its
+    own source chunk (a claim hub's own card surfacing in its own sweep).
+
+    Returns the exact ``(hub, chunk)`` pairs so the caller can both mark
+    each distinct hub ``TAPROOT_DUE`` **and** record the triggering chunk
+    in the ``chase_coverage`` ledger (migration 0175): ``hub_refine`` then
+    verifies precisely these chunks rather than re-running a lossy top-k ANN
+    that could rank the triggering chunk out (the trimmed-A recall gap this
+    Phase-1b pass closes). One chunk can put several hubs near, and one hub
+    can be near several chunks -- both are kept.
 
     Excludes **compound** claim hubs the same way :func:`_refresh_claim_
     embeddings` does upstream (docs/backlog/taproot-atomic-claims.md) --
@@ -322,14 +337,37 @@ def _near_claims(
         """,
         {"floor": floor, "chunk_ids": chunk_ids, "embedder": embedder_model},
     ).fetchall()
-    near: set[int] = set()
+    pairs: list[tuple[int, int]] = []
     for chunk_id, hub_ref_id in rows:
         chunk_id = int(chunk_id)
         hub_ref_id = int(hub_ref_id)
         if chunk_ref_map.get(chunk_id) == hub_ref_id:
             continue
-        near.add(hub_ref_id)
-    return near
+        pairs.append((hub_ref_id, chunk_id))
+    return pairs
+
+
+def _record_coverage(
+    conn: Connection, pairs: list[tuple[int, int]], *, embedder_model: str
+) -> None:
+    """Record each ``(hub_ref_id, chunk_id)`` in the coverage ledger
+    (migration 0175) so ``hub_refine`` verifies the EXACT triggering chunk.
+
+    Idempotent (``ON CONFLICT DO NOTHING``): a chunk that re-triggers a hub
+    already carrying the row is a no-op, so a re-sweep (a
+    :data:`CHASETRIG_VERSION` bump) never duplicates ledger rows. Written in
+    the same transaction as the ``TAPROOT_DUE`` tag and the ``CHASETRIG``
+    sweep marker -- all-or-nothing with the rest of steps (b)+(c)+(d).
+    """
+    for hub_ref_id, chunk_id in pairs:
+        conn.execute(
+            """
+            INSERT INTO chase_coverage (hub_ref_id, chunk_id, embedder)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (hub_ref_id, chunk_id) DO NOTHING
+            """,
+            (hub_ref_id, chunk_id, embedder_model),
+        )
 
 
 # ── runner ─────────────────────────────────────────────────────────────
@@ -404,14 +442,19 @@ def run_chase_trigger_pass(
             )
             if claimed:
                 chunk_ref_map = {cid: rid for cid, rid, _ord in claimed}
-                near = _near_claims(
+                pairs = _near_claims(
                     conn,
                     list(chunk_ref_map),
                     embedder_model=embedder_model,
                     floor=resolved_min_sim,
                     chunk_ref_map=chunk_ref_map,
                 )
-                for hub_ref_id in near:
+                # Record the EXACT triggering chunks (coverage ledger,
+                # migration 0175) so hub_refine verifies precisely these
+                # rather than re-running a lossy top-k ANN -- the trimmed-A
+                # recall gap this Phase-1b pass closes.
+                _record_coverage(conn, pairs, embedder_model=embedder_model)
+                for hub_ref_id in {hub for hub, _chunk in pairs}:
                     store.add_tag(
                         hub_ref_id,
                         Tag.closed(_DUE_NS, _DUE_VALUE),

@@ -33,6 +33,7 @@ from precis.workers.job_types.fix_gripe import (
     _restricted_env,
     load_config_from_env,
 )
+from tests._gripe import insert_gripe
 
 # ── _restricted_env: claude must not see the DB ────────────────────
 
@@ -1834,7 +1835,7 @@ def _mk_parked_fix_gripe_job(store: Store) -> tuple[int, int, int]:
     the gripe (rel='fixes') and parented on the todo. Returns
     ``(todo_id, gripe_id, job_id)``."""
     todo = store.insert_ref(kind="todo", slug=None, title="parent leaf", meta={})
-    gripe = store.insert_ref(kind="gripe", slug=None, title="the bug", meta={})
+    gripe = insert_gripe(store, "the bug")
     job = store.insert_ref(
         kind="job",
         slug=None,

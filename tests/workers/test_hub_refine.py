@@ -171,6 +171,26 @@ def _edge_src_chunk_id(store: Any, src: int) -> int | None:
     return None if row[0] is None else int(row[0])
 
 
+def _insert_coverage(store: Any, hub_ref_id: int, chunk_id: int, model: str) -> None:
+    """Record a coverage row the way ``chase_trigger`` would (migration 0175)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chase_coverage (hub_ref_id, chunk_id, embedder) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (hub_ref_id, chunk_id, model),
+        )
+        conn.commit()
+
+
+def _coverage_rows(store: Any, hub_ref_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id FROM chase_coverage WHERE hub_ref_id = %s ORDER BY chunk_id",
+            (hub_ref_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 # ── embedder-unavailable degrade ─────────────────────────────────────
 
 
@@ -374,6 +394,203 @@ def test_due_tag_reclaims_a_refined_hub_and_is_popped_at_claim_time(store: Any) 
         second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert second["claimed"] == 1
     assert store.has_tag(hub, "TAPROOT_DUE", "1") is False  # popped at claim time
+
+
+def test_coverage_chunk_is_verified_even_when_ranked_out_of_topk(store: Any) -> None:
+    """The trimmed-A recall gap (plan transient-napping-parrot Phase 1b): a
+    chunk ``chase_trigger`` recorded but hub_refine's own top-k ANN ranks out
+    is verified from the ``chase_coverage`` ledger (migration 0175), not
+    silently dropped.
+
+    A decoy chunk whose text IS the claim sits at cosine distance 0 and, with
+    ``topk=1``, is the sole semantic hit -- it crowds the triggering chunk
+    (materially different text, so far in MockEmbedder space) out of the
+    top-1. Before Phase 1b that dropped the corroborator; now the ledger
+    leg verifies it regardless of rank."""
+    embedder = make_mock_bge_m3()
+    sentence = "The catalyst retains 90% activity after 1000 cycles."
+    hub = _seed_hub(store, sentence=sentence)
+    # Decoy: identical text -> distance 0 -> fills the single top-1 slot.
+    _decoy, _decoy_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="cov-decoy", text=sentence
+    )
+    # The real triggering corroborator -- far in embedding space, so it never
+    # ranks into a top-1 ANN. chase_trigger matched it (recorded below).
+    trigger_paper, trigger_chunk = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key="cov-trigger",
+        text="An oblique but genuinely on-point corroborating passage.",
+    )
+    _insert_coverage(store, hub, trigger_chunk, embedder.model)
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=1)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    # Both the top-1 decoy AND the ranked-out coverage chunk were verified.
+    assert mock_verify.call_count == 2
+    # The corroborator that the lossy re-ANN would have dropped is attached.
+    assert any(dst == hub for dst, _rel, _meta in _edges_from(store, trigger_paper))
+    # And its coverage row is drained -- judged this pass.
+    assert _coverage_rows(store, hub) == []
+
+
+def test_coverage_row_makes_an_already_refined_hub_due(store: Any) -> None:
+    """An unconsumed coverage row is itself a due condition (migration 0175):
+    an already-refined hub with a current sha/version and NO ``TAPROOT_DUE``
+    tag is still re-claimed off the ledger, so a lost tag pop never strands a
+    recorded corroborator -- the durable retry watermark Phase 1b adds."""
+    embedder = make_mock_bge_m3()
+    sentence = "Graphene interlayers suppress dendrite growth."
+    hub = _seed_hub(store, sentence=sentence)
+
+    # First pass: empty corpus -> hub just stamps last_refined_* and clears.
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first["claimed"] == 1
+    assert store.has_tag(hub, "TAPROOT_DUE", "1") is False
+
+    # A corroborator lands later; the trigger records it (no tag needed).
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="cov-late", text=sentence
+    )
+    _insert_coverage(store, hub, chunk_id, embedder.model)
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    # Re-claimed purely because of the coverage row (sha + version unchanged,
+    # within the backstop, no due tag) -- the has_coverage arm of _is_hub_due.
+    assert second["claimed"] == 1
+    assert any(dst == hub for dst, _rel, _meta in _edges_from(store, paper))
+    assert _coverage_rows(store, hub) == []
+
+
+def _seed_unembedded_chunk(store: Any, *, cite_key: str, text: str) -> tuple[int, int]:
+    """A paper chunk with NO ``chunk_embeddings`` row (not yet embedded)."""
+    ref = store.insert_ref(
+        kind="paper", slug=cite_key, title=f"Test paper {cite_key}", meta={}
+    )
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text=text, meta={})])
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref.id,)
+        ).fetchone()
+    assert row is not None
+    return ref.id, int(row[0])
+
+
+def test_coverage_row_kept_when_verifier_returns_none(store: Any) -> None:
+    """A transient LLM failure (``None``) is not a judgement: row survives."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Claim about transient failures.")
+    _paper, chunk = _seed_paper_chunk(
+        store, embedder, cite_key="cov-none", text="A passage on the topic."
+    )
+    _insert_coverage(store, hub, chunk, embedder.model)
+
+    with patch(_VERIFY_PATH, return_value=None):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert _coverage_rows(store, hub) == [chunk]
+
+
+def test_coverage_row_kept_on_out_of_enum_verdict(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Claim about schema regressions.")
+    _paper, chunk = _seed_paper_chunk(
+        store, embedder, cite_key="cov-bad", text="A passage on the topic."
+    )
+    _insert_coverage(store, hub, chunk, embedder.model)
+
+    bad = {**_VERIFY_YES, "supports": "maybe"}
+    with patch(_VERIFY_PATH, return_value=bad):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert _coverage_rows(store, hub) == [chunk]
+
+
+def test_coverage_row_drains_on_a_valid_no_verdict(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Claim about judged chunks.")
+    _paper, chunk = _seed_paper_chunk(
+        store, embedder, cite_key="cov-no", text="An unrelated passage."
+    )
+    _insert_coverage(store, hub, chunk, embedder.model)
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert _coverage_rows(store, hub) == []
+
+
+def test_coverage_row_drains_when_source_slot_already_taken(store: Any) -> None:
+    """Two recorded chunks of ONE paper: the second hits the per-source
+    slot dedup (a deliberate settled outcome) and drains without a verify."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Claim about slot dedup.")
+    paper, chunk_a = _seed_paper_chunk(
+        store, embedder, cite_key="cov-dedup", text="First passage of the paper."
+    )
+    second_text = "Second passage of the paper."
+    store.chunks.insert_chunks(paper, [ChunkInsert(ord=1, text=second_text, meta={})])
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 1", (paper,)
+        ).fetchone()
+        assert row is not None
+        chunk_b = int(row[0])
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (chunk_b, embedder.model, embedder.embed_one(second_text)),
+        )
+        conn.commit()
+    _insert_coverage(store, hub, chunk_a, embedder.model)
+    _insert_coverage(store, hub, chunk_b, embedder.model)
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert mock_verify.call_count == 1
+    assert _coverage_rows(store, hub) == []
+
+
+def test_coverage_row_kept_for_unembedded_chunk(store: Any) -> None:
+    """A recorded chunk with no embedding yet cannot be judged this pass; its
+    row stays so it is verified once the embedding lands."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Claim about late embeddings.")
+    _paper, chunk = _seed_unembedded_chunk(
+        store, cite_key="cov-unemb", text="Not embedded yet."
+    )
+    _insert_coverage(store, hub, chunk, embedder.model)
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert mock_verify.call_count == 0
+    assert _coverage_rows(store, hub) == [chunk]
+
+
+def test_empty_claim_hub_drains_its_coverage_rows(store: Any) -> None:
+    """A hub that can never be verified (empty claim text) must not stay due
+    forever on its ledger rows: they are drained and it leaves the due-set."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Soon to be emptied claim.")
+    _paper, chunk = _seed_paper_chunk(
+        store, embedder, cite_key="cov-empty", text="Some passage."
+    )
+    _insert_coverage(store, hub, chunk, embedder.model)
+    store.update_ref(hub, title="")
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        with store.pool.connection() as conn:
+            _refine_one_hub(conn, store, hub, embedder=embedder, topk=8, min_sim=None)
+            conn.commit()
+
+    assert mock_verify.call_count == 0
+    assert _coverage_rows(store, hub) == []
 
 
 def test_sha_reopen_reclaims_and_clears_the_rejection_memo_before_discovery(

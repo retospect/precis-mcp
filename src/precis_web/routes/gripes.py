@@ -185,7 +185,7 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     ``PRIO:`` tag (a plain join would duplicate rows for a
     multi-PRIO-tagged gripe).
     """
-    # A gripe with no STATUS tag counts as ``open`` (the migration-0175
+    # A gripe with no STATUS tag counts as ``open`` (the migration-0176
     # trigger makes that unreachable, but the list must never hide one).
     clauses = ["r.kind = 'gripe'", "r.retired_at IS NULL"]
     terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
