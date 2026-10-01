@@ -336,7 +336,7 @@ def _claim_block(
         if summary:
             lines.append(f"  {', '.join(summary)}")
     elif evidence.corroborators:
-        lines.append("  (no originator derived yet — best-available below)")
+        lines.append("  (no originator determined — best-available below)")
         shown = evidence.corroborators[:cap]
         lines += [
             f"  {_evidence_line(e, marked=False, pinned=e.paper_ref_id in pinned_set)}"

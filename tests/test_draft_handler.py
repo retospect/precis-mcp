@@ -2748,3 +2748,29 @@ def test_container_read_renders_the_items(draft: DraftHandler, hub: Hub) -> None
     container = next(c for c in _order(hub, "nt") if c.chunk_kind == "ulist")
     body = draft.get(id=container.dc).body
     assert "alpha" in body and "nested" in body and "beta" in body
+
+
+def test_hygiene_view_on_heading_scopes_to_subtree_and_window_view_is_clear(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr458943: view='hygiene' on a dc heading is honoured (scoped to its
+    subtree); a window + ladder view is a clear BadInput, not 'unresolvable'."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt", chunk_kind="heading", text="Introduction", at={"after": "¶" + th}
+    )
+    intro = _handle_of(hub, "Introduction")
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="The GFET switches slowly.",
+        at={"into": "¶" + intro, "last": True},
+    )
+    intro_dc = next(c.dc for c in _order(hub, "nt") if c.text == "Introduction")
+    out = draft.get(id=intro_dc, view="hygiene").body
+    assert "hygiene report" in out
+    assert "GFET" in out
+
+    with pytest.raises(BadInput, match="window"):
+        draft.get(id=f"{intro_dc}-1..2", view="kwd")

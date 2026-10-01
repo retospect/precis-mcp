@@ -317,7 +317,7 @@ def test_ring_claims_group_falls_back_to_corroborators_when_undetermined(
     ring = render_reference_ring(store, sec_chunk, chunks)
 
     assert "Claims:" in ring
-    assert "no originator derived yet" in ring
+    assert "no originator determined" in ring
     assert "Supporter A" in ring and "Supporter B" in ring
     assert "★" not in ring
 

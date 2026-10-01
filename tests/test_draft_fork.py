@@ -629,3 +629,15 @@ def test_handler_edit_authoring_toggles_ref_meta(
 
     with pytest.raises(BadInput, match="not understood"):
         draft.edit(id=src_ref.slug, authoring="maybe")
+
+
+def test_fork_does_not_carry_source_draft_of_binding(store: Store) -> None:
+    """gr459050: the copy binds only to its own project, not the source's."""
+    src_ref_id, src_proj = _make_source_draft(store)
+    dst_proj = _project(store, "Dest project 8")
+    new_ref = store.drafts.fork_draft(src_ref_id, dst_proj, new_slug="dst8")
+
+    bound = store.links_for(new_ref.id, direction="out", relation="draft-of")
+    assert [link.dst_ref_id for link in bound] == [dst_proj]
+    on_src_proj = store.links_for(src_proj, direction="in", relation="draft-of")
+    assert [link.src_ref_id for link in on_src_proj] == [src_ref_id]

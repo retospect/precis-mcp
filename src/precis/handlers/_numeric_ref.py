@@ -1688,6 +1688,12 @@ class NumericRefHandler(Handler):
             )
         if isinstance(id, int):
             return id
+        if not isinstance(id, str):
+            raise BadInput(
+                f"{cls._sense()} id= takes one integer or handle, "
+                f"got {type(id).__name__}",
+                next="pass one call per ref (id= is not a list)",
+            )
         # Accept the canonical link-target form (`<kind>:<int>`) too —
         # an LLM that copy-pastes a link-target string into id= should
         # not have to strip the kind prefix by hand. Mirrors paper's

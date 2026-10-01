@@ -472,6 +472,12 @@ class DraftHandler(Handler):
             if view in extent_ladder:
                 from precis.utils.eye_render import render_eye
 
+                if ".." in s:
+                    raise BadInput(
+                        f"view={view!r} targets one chunk, not a window ({s!r})",
+                        next="drop the -B..A suffix, or omit view= to read the window",
+                    )
+
                 try:
                     return Response(body=render_eye(self.store, s, view))
                 except ValueError as e:
@@ -491,6 +497,8 @@ class DraftHandler(Handler):
                 return self._render_toc(root_handle=s)
             if view == "wordcount":  # word counts for this heading's subtree
                 return self._render_wordcount(root_handle=s)
+            if view == "hygiene":  # hygiene report scoped to this subtree
+                return self._render_hygiene(s, root_handle=s)
             if view == "review-diff":
                 # Paper-writing pipeline rung 3 — the human checker's
                 # approved→current diff for this one chunk.
@@ -3024,14 +3032,51 @@ class DraftHandler(Handler):
             return []
         return ["", "## Hygiene", *out]
 
-    def _render_hygiene(self, slug: str, ref: Any) -> Response:
+    def _render_hygiene(
+        self, slug: str, ref: Any = None, *, root_handle: str | None = None
+    ) -> Response:
         """``get(kind='draft', view='hygiene')`` — gr192827 item 9: the
         complete, un-elided hygiene report (undefined abbreviations +
         whole-paper citations), and nothing else — no outline body, no
-        WIP block, no pagination of unrelated content."""
-        chunks = self.store.drafts.reading_order(ref.id)
-        lines = self._hygiene_lines(ref.id, chunks, elide=False)
-        header = f"# {ref.title}  ({slug}) — hygiene report"
+        WIP block, no pagination of unrelated content. On a ``dc<heading>``
+        handle the report is scoped to that heading's subtree (gr458943)."""
+        title = None
+        if root_handle is not None:
+            root = self.store.drafts.get_draft_chunk(root_handle)
+            if root is None:
+                raise NotFound(f"draft heading {root_handle} not found")
+            if root.chunk_kind != "heading":
+                raise BadInput(
+                    f"hygiene scope must be a heading; {root.dc} is a "
+                    f"{root.chunk_kind}",
+                    next="get(kind='draft', id='<slug>', view='hygiene')",
+                )
+            chunks = self.store.drafts.reading_order(root.ref_id)
+            scoped: list[Any] = []
+            collecting = False
+            root_depth = 0
+            for c in chunks:
+                if c.chunk_id == root.chunk_id:
+                    collecting = True
+                    root_depth = c.depth
+                    scoped.append(c)
+                    continue
+                if collecting:
+                    if c.depth <= root_depth:
+                        break
+                    scoped.append(c)
+            chunks = scoped
+            ref_id = root.ref_id
+            title = f"under {root.dc}: {root.text}"
+        else:
+            chunks = self.store.drafts.reading_order(ref.id)
+            ref_id = ref.id
+        lines = self._hygiene_lines(ref_id, chunks, elide=False)
+        header = (
+            f"# {title} — hygiene report"
+            if title
+            else f"# {ref.title}  ({slug}) — hygiene report"
+        )
         if not lines:
             return Response(
                 body=f"{header}\n\nclean — no undefined abbreviations or "

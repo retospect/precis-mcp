@@ -2270,6 +2270,11 @@ class DraftStore(_AbbrevMixin):
                 set_by,
                 meta,
             ) in link_rows:
+                if relation in ("draft-of", "plan-of") and l_src_ref == src_ref_id:
+                    # the source's own 1:1 project binding — step 6 mints
+                    # the copy's; carrying it over gives the source's
+                    # project a second draft (gr459050).
+                    continue
                 new_src_ref = new_ref.id if l_src_ref == src_ref_id else l_src_ref
                 new_dst_ref = new_ref.id if l_dst_ref == src_ref_id else l_dst_ref
                 new_src_chunk = (

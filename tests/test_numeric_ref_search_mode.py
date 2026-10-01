@@ -109,3 +109,13 @@ def test_body_chunk_lexical_mode_skips_embedding(store: Store) -> None:
 
     hits = memory.search_hits(q=marker, mode="lexical", page_size=10)
     assert {h.ref_id for h in hits} == {ref.id}
+
+
+def test_list_id_is_badinput_not_attributeerror(hub: Hub) -> None:
+    """gr452204: id=[...] must be a clean BadInput, not .strip() AttributeError."""
+    import pytest
+
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="takes one integer"):
+        JobHandler._coerce_id([1, 2, 3])  # type: ignore[arg-type]

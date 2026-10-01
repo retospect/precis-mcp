@@ -35,7 +35,9 @@ paragraph cites it) and the target.
 globally unique, no draft name needed; the draft *record* is its slug or
 `dr<id>`. Never guess/compute a handle — `put`/search/get return it.
 Windows: `dc41-2..3` (2 before, 3 after), `dc41+1`, `dc41^` (parent). No
-positional `~N` ordinals (they rot on insert).
+positional `~N` ordinals (they rot on insert). A window is a read
+address only: `view=` (kwd…fisheye+1hop) targets one chunk, so pair it
+with a bare `dc<id>`, never a `-B..A` window.
 
 **`get` — views**
 
