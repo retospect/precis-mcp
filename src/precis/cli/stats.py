@@ -54,6 +54,7 @@ from precis.store import Store
 # one place so TOON / JSON / table all stay in sync.
 _FINDINGS_SCHEMA: list[str] = ["status", "count"]
 _STUBS_SCHEMA: list[str] = ["state", "count"]
+_BODILESS_SCHEMA: list[str] = ["state", "count"]
 _ARGUMENT_STALE_SCHEMA: list[str] = ["id", "title"]
 _ARGUMENT_CAVEATS_SCHEMA: list[str] = ["id", "title"]
 _ARGUMENT_CONTRADICTIONS_SCHEMA: list[str] = ["a_id", "a_title", "b_id", "b_title"]
@@ -95,7 +96,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--stubs",
         action="store_true",
-        help="Show count of stub paper refs (pdf_sha256 IS NULL).",
+        help="Show count of stub paper refs (pdf_sha256 IS NULL) and of "
+        "PDF-held papers with no body text.",
     )
     p.add_argument(
         "--argument",
@@ -142,6 +144,9 @@ def run(args: argparse.Namespace) -> None:
             sections.append(("findings", _FINDINGS_SCHEMA, _query_findings(store)))
         if show_stubs:
             sections.append(("stubs", _STUBS_SCHEMA, _query_stubs(store)))
+            sections.append(
+                ("bodiless-pdf", _BODILESS_SCHEMA, _query_bodiless_pdf(store))
+            )
         if show_argument:
             sections.append(
                 (
@@ -267,6 +272,40 @@ def _query_stubs(store: Store) -> list[dict[str, Any]]:
         "  AND r.retired_at IS NULL "
         "GROUP BY state "
         "ORDER BY state ASC"
+    )
+    with store.pool.connection() as conn:
+        cur = conn.execute(sql)
+        return [{"state": r[0], "count": int(r[1])} for r in cur.fetchall()]
+
+
+def _query_bodiless_pdf(store: Store) -> list[dict[str, Any]]:
+    """Papers that hold a PDF but have no body text (gr453860).
+
+    ``pdf_sha256 IS NOT NULL`` makes a ref fall out of the stub backlog, yet
+    a promotion that wrote no ``ord >= 0`` chunk is unsearchable and in no
+    queue. Split by the ref's last ``ref_events`` row so a permanent tail is
+    not read as "merely behind":
+
+    * ``after-fetch`` — last event is a ``fetcher:*`` row: nothing has touched
+      the ref since the fetch (the shape of the 2026-09 incident).
+    * ``other`` — any later event, or none.
+
+    Only ``ord >= 0`` counts as body; the ``ord < 0`` card variant does not.
+    """
+    sql = (
+        "SELECT CASE WHEN last_event.source LIKE 'fetcher:%' "
+        "            THEN 'after-fetch' ELSE 'other' END AS state, "
+        "       count(*)::int AS count "
+        "FROM refs r "
+        "LEFT JOIN LATERAL ( "
+        "  SELECT source FROM ref_events "
+        "  WHERE ref_id = r.ref_id ORDER BY ts DESC LIMIT 1 "
+        ") last_event ON TRUE "
+        "WHERE r.kind = 'paper' AND r.pdf_sha256 IS NOT NULL "
+        "  AND r.retired_at IS NULL "
+        "  AND NOT EXISTS (SELECT 1 FROM chunks c "
+        "                  WHERE c.ref_id = r.ref_id AND c.ord >= 0) "
+        "GROUP BY state ORDER BY state ASC"
     )
     with store.pool.connection() as conn:
         cur = conn.execute(sql)

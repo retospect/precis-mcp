@@ -15,7 +15,7 @@
     <div class="text-xs uppercase tracking-wide text-slate-400">Papers</div>
     <div class="mt-1 text-2xl font-semibold">{{ papers.get('total', 0) }}</div>
     <div class="text-sm text-slate-500">
-      {{ papers.get('held', 0) }} held · {{ papers.get('stub', 0) }} stubs
+      {{ papers.get('held', 0) }} held · {{ papers.get('stub', 0) }} stubs{% if papers.get('bodiless') %} · <span class="text-amber-700" title="PDF held but no body text (pdf_sha256 set, zero ord>=0 chunks): in no fetch queue (gr453860)">{{ papers.get('bodiless') }} PDF-no-body</span>{% endif %}
     </div>
   </div>
   <div class="rounded-lg border border-slate-200 bg-white p-4 md:col-span-2">

@@ -136,11 +136,18 @@ def _paper_summary(store: Store) -> dict[str, int]:
     with _connect(store) as conn:
         row = conn.execute(
             "SELECT count(*)::int AS total, "
-            "count(*) FILTER (WHERE pdf_sha256 IS NOT NULL)::int AS held "
+            "count(*) FILTER (WHERE pdf_sha256 IS NOT NULL)::int AS held, "
+            # "held" is a PDF, not text: a promoted ref with no ord >= 0 chunk
+            # is searchable by nobody and sits in no fetch queue (gr453860).
+            "count(*) FILTER (WHERE pdf_sha256 IS NOT NULL AND NOT EXISTS ("
+            "  SELECT 1 FROM chunks c WHERE c.ref_id = refs.ref_id AND c.ord >= 0"
+            "))::int AS bodiless "
             "FROM refs WHERE kind = 'paper' AND retired_at IS NULL"
         ).fetchone()
-    total, held = (int(row[0]), int(row[1])) if row else (0, 0)
-    return {"total": total, "held": held, "stub": total - held}
+    total, held, bodiless = (
+        (int(row[0]), int(row[1]), int(row[2])) if row else (0, 0, 0)
+    )
+    return {"total": total, "held": held, "stub": total - held, "bodiless": bodiless}
 
 
 def _todo_status(store: Store) -> list[dict[str, Any]]:

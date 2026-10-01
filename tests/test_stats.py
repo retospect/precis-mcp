@@ -178,6 +178,40 @@ class TestQueryStubs:
         assert rows == [{"state": "awaiting", "count": 1}]
 
 
+class TestQueryBodilessPdf:
+    """gr453860: PDF held, zero ord >= 0 chunks."""
+
+    def _strip_body(self, store, rid: int) -> None:
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM chunks WHERE ref_id = %s AND ord >= 0", (rid,))
+            # A card variant (ord < 0) must NOT count as body.
+            conn.execute(
+                "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, meta) "
+                "VALUES (%s, 'agent', -1, 'card_combined', 'card', '{}'::jsonb)",
+                (rid,),
+            )
+
+    def test_counts_pdf_without_body_split_by_last_event(self, store) -> None:
+        from precis.cli.stats import _query_bodiless_pdf
+
+        full = _seed_paper(store, cite_key="full", pdf_sha256="a" * 64)
+        fetched = _seed_paper(store, cite_key="bl-fetch", pdf_sha256="b" * 64)
+        other = _seed_paper(store, cite_key="bl-other", pdf_sha256="c" * 64)
+        stub = _seed_paper(store, cite_key="stub", pdf_sha256=None)
+        for rid in (fetched, other, stub):
+            self._strip_body(store, rid)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, 'fetcher:unpaywall', 'fetch_ok', '{}'::jsonb)",
+                (fetched,),
+            )
+        assert full  # has body, must be excluded
+        rows = {r["state"]: r["count"] for r in _query_bodiless_pdf(store)}
+        # ``stub`` has no PDF so it is not this state.
+        assert rows == {"after-fetch": 1, "other": 1}
+
+
 # ── argument-graph corpus report (build order step 5) ────
 
 

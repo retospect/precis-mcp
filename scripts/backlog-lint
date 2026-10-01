@@ -34,7 +34,11 @@ while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     file="${line%%:*}"
     text="${line#*:*:}"
-    if grep -qE '^## Acceptance criteria' "$file" 2>/dev/null \
+    # Open by construction: an Acceptance-criteria spec, or any item whose own
+    # front-matter status: says it is not finished (idea/draft/ready/in-progress).
+    st="$(awk 'NR==1 && $0!="---"{exit} NR>1 && $0=="---"{exit} /^status: */{sub(/^status: */,""); print; exit}' "$file" 2>/dev/null)"
+    if { grep -qE '^## Acceptance criteria' "$file" 2>/dev/null \
+         || [[ "$st" =~ ^(idea|draft|ready|in-progress)$ ]]; } \
        && [[ "$text" != '# '* ]]; then
         quiet+="$line"$'\n'
     else
@@ -49,7 +53,7 @@ q="$(printf '%s' "$quiet" | grep -c . || true)"
 if [[ "$n" -eq 0 ]]; then
     echo "backlog-lint: ✓ no done-marked gunk in $D"
 else
-    echo "backlog-lint: $n item(s) marked done but still in $D — verify shipped, then DELETE (git log keeps it):"
+    echo "backlog-lint: $n item(s) marked done but still in $D — verify shipped, then DELETE (git log keeps it). Listed because the file has no open-spec signal (## Acceptance criteria, or front-matter status: idea/draft/ready/in-progress) or the marker is on an H1:"
     fmt "$loud"
 fi
 if [[ "$q" -ne 0 ]]; then
