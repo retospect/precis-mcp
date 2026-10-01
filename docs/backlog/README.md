@@ -2,7 +2,9 @@
 
 One file per open work item; delete-on-ship (`docs/README.md`). Front-matter
 `status:` tracks readiness (`idea` → `draft` → `ready`, plus `in-progress`
-once someone is actually building it); optional `prio:` (`high` | `normal` |
+once someone is actually building it, and `canonical` for a decided design
+rule that stays here as the spec of record while its implementation slices
+are filed separately — Reto's call, per item); optional `prio:` (`high` | `normal` |
 `low`, default `normal`) sorts the index and the autonomous fixer's pick
 order high-first.
 

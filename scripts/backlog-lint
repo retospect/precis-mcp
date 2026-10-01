@@ -62,7 +62,7 @@ fi
 # an untyped item silently claims a readiness nobody chose. Rules taken from
 # the abandoned 2026-09-23 compaction tree at the 2026-09-30 product-plan
 # review; the sweep that applied them ran the same day.
-ALLOWED='idea|draft|ready|in-progress'
+ALLOWED='idea|draft|ready|in-progress|canonical'
 PILLARS='memory-graph|3d-design|local-compute|quests|personal|platform'
 bare=''
 badstatus=''
