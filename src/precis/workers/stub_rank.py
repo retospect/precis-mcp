@@ -254,6 +254,12 @@ def _merge_enrich_meta(
     has_existing = isinstance(existing_abstract, str) and existing_abstract.strip()
     if has_existing:
         patch.pop("abstract", None)
+    # Never-clobber the venue too: any of the exporters' three keys counts.
+    if any(
+        isinstance(existing_meta.get(k), str) and existing_meta[k].strip()
+        for k in ("venue", "journal", "container_title")
+    ):
+        patch.pop("journal", None)
     return patch
 
 

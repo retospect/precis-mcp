@@ -244,6 +244,12 @@ def s2_stub_meta(resolved: dict[str, Any], *, now: datetime) -> dict[str, Any]:
     abstract = resolved.get("abstract")
     if isinstance(abstract, str) and abstract.strip():
         patch["abstract"] = abstract
+    # The venue S2 returned (``_normalize``'s ``journal``): exporters read
+    # meta.venue / meta.journal / meta.container_title, so dropping it here
+    # exports as "In: (YYYY)" (gr456181).
+    journal = resolved.get("journal")
+    if isinstance(journal, str) and journal.strip():
+        patch["journal"] = journal.strip()
     return patch
 
 

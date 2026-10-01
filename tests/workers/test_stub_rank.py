@@ -394,6 +394,21 @@ class TestMergeEnrichMeta:
         assert patch["s2_citation_count"] == 3
         assert patch["s2_enriched_at"] == self._NOW.isoformat()
 
+    def test_persists_s2_venue_as_journal(self) -> None:
+        patch = _merge_enrich_meta({}, {"journal": " Nature "}, now=self._NOW)
+        assert patch["journal"] == "Nature"
+
+    def test_empty_s2_venue_not_written(self) -> None:
+        patch = _merge_enrich_meta({}, {"journal": ""}, now=self._NOW)
+        assert "journal" not in patch
+
+    @pytest.mark.parametrize("key", ["venue", "journal", "container_title"])
+    def test_does_not_clobber_an_existing_venue(self, key: str) -> None:
+        patch = _merge_enrich_meta(
+            {key: "Science"}, {"journal": "arXiv"}, now=self._NOW
+        )
+        assert "journal" not in patch
+
     def test_does_not_clobber_an_existing_abstract(self) -> None:
         existing_meta = {"abstract": "The original, richer abstract."}
         resolved = {
