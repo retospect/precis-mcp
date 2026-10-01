@@ -175,3 +175,9 @@ into the loop result, and thread the split into `LlmResult`.
 
 - Retroactive token estimation for past null rows.
 - Changes to the claude_p transport signature.
+
+## Status-page rollups still char/USD-shaped
+
+Folded 2026-10-01 from the closed tier-ladder cutover. The CLI and tote
+rollups are token-first; `src/precis_web/routes/status.py` rollups are still
+char/USD-shaped. Port them to the same token-first sums.

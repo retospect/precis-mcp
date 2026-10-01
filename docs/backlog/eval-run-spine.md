@@ -185,8 +185,8 @@ the agent-facing MCP surface is untouched.
   same hardware. It hosts the eval database and slice 0's benchmarking
   together. This is a bench role, not cluster duty — no service group, no
   capability list, inventory guard untouched. Network RTT is not the
-  constraint (`llm-tier-ladder-cloud-cutover.md` Finding 3 measured 1.5 ms
-  and eliminated it).
+  constraint (a 2026-08 measurement put the melchior-to-caspar RTT at 1.5 ms and
+  eliminated it).
 
 * **Outcome is two columns, decided 2026-09-29 (Reto).** `outcome` is
   mechanical and knowable without judgment: `completed`, `completed_empty`,

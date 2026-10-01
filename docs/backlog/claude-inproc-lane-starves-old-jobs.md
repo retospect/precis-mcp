@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: local-compute
+pillar: platform
 title: claude_inproc lane serves new jobs while hours-old ones sit unclaimed
 prio: normal
 ---

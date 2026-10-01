@@ -106,6 +106,10 @@ graph-health-metrics, five parked gripes, and the seam with
 14. **backlog/graph-health-metrics.md** — waits on Horizon 3; a populated
     mesh is the precondition for measuring its own reachability, orphan
     rate and edge precision, which is what gardener (5) fixes against.
+15. **backlog/capability-landscape-steals.md** — five externally sourced
+    ideas (a ChemBench eval slice, categorizer rule distillation, and
+    three more) from the capability-landscape comparison; sequenced behind
+    the substrate (Do-next 1-5) by choice, not blocked.
 
 ## Waiting on Reto
 

@@ -270,8 +270,7 @@ assert set(_TIER_GEN_DEFAULTS) == set(Tier), (
 #: ``_DEFAULT_MAX_USD = 0.10`` (Haiku-sized, per its own comment) because it
 #: has no notion of tier — the router does, so tier-awareness lives here, not
 #: there. Without this table every BIG/FRONTIER ``claude_p`` rung (the
-#: deliberate tool-less-first probe ahead of ``claude_agent`` — see
-#: ``docs/backlog/llm-tier-ladder-cloud-cutover.md``) was capped at Haiku
+#: deliberate tool-less-first probe ahead of ``claude_agent``) was capped at Haiku
 #: money and blew its budget on essentially every real Sonnet/Opus call,
 #: guaranteeing a failover to the ``claude_agent`` rung on every single
 #: dispatch: pure cost + latency waste (gr255847). Values are engineering

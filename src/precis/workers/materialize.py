@@ -68,8 +68,8 @@ _FAILED_COOLDOWN_MINUTES = 15
 
 _MINT_PRIO = 8  # background under 0014 ASC (lower = more urgent)
 
-#: Promoted prio for a STUCK band's queued rows (Finding 5,
-#: docs/backlog/llm-tier-ladder-cloud-cutover.md): below the background mint
+#: Promoted prio for a STUCK band's queued rows (classify-band
+#: starvation): below the background mint
 #: prio (8), still above real work (prio <= 5) — see
 #: :func:`_rebalance_stuck_band`.
 _STARVED_PRIO = _MINT_PRIO - 2
@@ -446,8 +446,8 @@ def _mint_jobs(store: Store, src: _BacklogSource, n: int) -> int:
 
 
 def _rebalance_stuck_band(store: Store, src: _BacklogSource, *, stuck: bool) -> None:
-    """Dynamic prio nudge for Finding 5
-    (``docs/backlog/llm-tier-ladder-cloud-cutover.md``): ``claim_executor_jobs``
+    """Dynamic prio nudge for classify-band starvation:
+    ``claim_executor_jobs``
     (``workers/executors/_common.py``) orders ``COALESCE(prio,5) ASC, ref_id
     ASC``, and both SMALL derived-drain bands mint at the SAME ``_MINT_PRIO``
     — so a source that keeps re-minting (summarize) always beats a source

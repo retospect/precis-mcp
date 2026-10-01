@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: local-compute
+pillar: platform
 ---
 
 # artifact_kinds + ref_artifacts — schema-only orphan tables

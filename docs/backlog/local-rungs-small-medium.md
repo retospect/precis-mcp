@@ -11,12 +11,12 @@ blocked-by: vllm-per-node-serving
 Mining pass, 2026-09-30. The compiled tier ladder has **zero local rungs**
 by default — `src/precis/utils/llm/live_config.py`: "a tier left with no
 [local] rung ... pauses (skip-not-fail) until cloud is re-enabled" (comment
-at lines 57-59). `llm-tier-ladder-cloud-cutover.md` applied
-`SMALL = z-ai/glm-4.7-flash`, cloud-only, on 2026-08-15. The DGX-pair
+at lines 57-59). The 2026-08-15 cutover applied
+`SMALL = z-ai/glm-4.7-flash`, cloud-only. The DGX-pair
 `llama-server` has been stopped and disabled since 2026-08-23
-(`vllm-per-node-serving.md:17`). The only lane demonstrably local today is
-chunk summarise on melchior (`llm-summarize-throughput.md`) — everything
-else in the compiled ladder either runs cloud or pauses.
+(`vllm-per-node-serving.md:17`). No lane is local today (last local LLM call 2026-09-10, the melchior
+summariser model; `local-summarizer.md` is the dedicated slice that brings it
+back) — everything in the compiled ladder either runs cloud or pauses.
 
 ## Motivation / why
 
@@ -77,8 +77,8 @@ BIG/FRONTIER.
 - None yet — blocked entirely on `local-serving-eval.md`/`vllm-per-node-serving.md`
   Slice 0's model choice.
 
-Closest existing items: `llm-tier-ladder-cloud-cutover.md` (the ladder this
-item adds rungs to), `router-cost-coverage.md` (the pre-filter-tier ask
+Closest existing items: `local-summarizer.md` (the dedicated summariser
+slice; this item is the general SMALL/MEDIUM rung), `router-cost-coverage.md` (the pre-filter-tier ask
 this item is one instance of), `vllm-per-node-serving.md` (Slice 0, the
 hard blocker), `content-sensitivity-placement.md` (precondition for
 proprietary content on these rungs).

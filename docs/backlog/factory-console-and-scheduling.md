@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: local-compute
+pillar: platform
 ---
 
 # Factory console + capability-reserved decentralized scheduling

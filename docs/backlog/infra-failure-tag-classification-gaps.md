@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: local-compute
+pillar: platform
 ---
 
 # Infra-failure classification gaps — two paths skip the `infra:child-killed` tag

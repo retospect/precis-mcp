@@ -93,6 +93,10 @@ desorption) above everything that presents or packages its results.
   (its Do-next 6: where shared pathway presentation lives, plus the
   catpath version bump and wheel redeploy). Horizon 9 here must not start
   a second copy of that logic.
+- **precis-dispatch** (`backlog/precis-dispatch.md`, ranked in local-compute
+  Horizon) is the runner this thread's compute jobs (DFT relax) depend on;
+  this thread is its first consumer, and its seams extract when a second
+  workload lands.
 - **roadmap-quest** owns the quest loop that consumes pathways (its
   ticks dispatch the jobs this thread makes healthy); the engine's output
   contract is this thread's, the dispatch and priority flow are theirs.

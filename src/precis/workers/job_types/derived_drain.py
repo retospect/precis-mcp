@@ -12,8 +12,7 @@ machinery), this job **wraps** the existing ``run_llm_summarize_pass`` /
 ``run_classify_pass`` and drives it in a bounded, lease-renewing loop
 (``params.limit`` chunks, or until the derived queue is empty).
 
-Placement + cap (post the 2026-08-15 SMALL-tier cloud cutover — see
-``docs/backlog/llm-tier-ladder-cloud-cutover.md``; ``llm.chain.small`` is
+Placement + cap (post the 2026-08-15 SMALL-tier cloud cutover; ``llm.chain.small`` is
 now cloud-only, openai_compat, no local slot):
 
 * ``params.target_node`` optionally pins the job to a specific host — via

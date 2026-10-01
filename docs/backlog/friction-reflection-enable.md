@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: local-compute
+pillar: platform
 ---
 
 # Tool-friction reflection — enable Part A + agentlog stitching

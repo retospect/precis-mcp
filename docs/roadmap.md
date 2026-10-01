@@ -151,24 +151,26 @@ rungs, with frontier review as the gate, and hands curated fisheye
 contexts to frontier models when a frontier call is worth it. The
 local-versus-cloud share is a number.
 
-**Where it stands.** At the review no lane routed to a local model by
-default: the tier ladder was moved to cloud at every rung on 2026-08-15
-(`backlog/llm-tier-ladder-cloud-cutover.md`), the DGX-pair server has been
-stopped since 2026-08-23, the only local lane is chunk summarisation on
-melchior, no monitor answers "is capacity idle", and
-`backlog/cluster-scheduling.md` tears servers down when the backlog
-drains — the inverse of this pillar, now superseded by
-`backlog/graph-maintenance-queue.md`. The embedder is the current
-bottleneck and had no owner (`backlog/embedder-capacity-ownership.md`).
-The evaluation of the model that fits one spark
-(`backlog/local-serving-eval.md`, `backlog/vllm-per-node-serving.md`
-Slice 0) is running under `serving-programme.md` and is this pillar's
-first pointer.
+**Where it stands.** 0% of LLM traffic is local: 406,527 calls in the 7
+days to 2026-10-01 all went cloud (~$298). The tier ladder moved to cloud at
+every rung on 2026-08-15; the castor/pollux/spark LLM servers have been
+stopped since 2026-08-23, GPUs idle, DeepSeek-V4-Flash and Qwen3 weights
+staged on castor; the last local call was 2026-09-10 (the melchior
+summariser model). The share itself is unmeasured: `llm_call_log` records
+the routed `placement` but not where a call landed
+(`backlog/local-cloud-share-report.md` Slice 1 adds the column). No monitor
+answers "is capacity idle", and `backlog/cluster-scheduling.md` tears
+servers down when the backlog drains — the inverse of this pillar, now
+superseded by `backlog/graph-maintenance-queue.md`. The embedder is the
+current bottleneck (`backlog/embedder-capacity-ownership.md`). Reto
+2026-10-01: bring local compute back — summariser first
+(`backlog/local-summarizer.md`), then the model that fits one spark
+(`backlog/vllm-per-node-serving.md` Slice 0).
 
-**Threads.** Active: `serving-programme.md` (what is served: the MCP
-ceiling, the vLLM go/no-go, eval-run-spine) · `session-mcp-shared-server.md`
-(the platform blocker every thread owner named). Dormant:
-`local-compute.md` (what the served capacity does).
+**Threads.** Active: `local-compute.md` (owns local serving: the summariser
+and the single-spark model, and what they do) · `serving-programme.md` (the
+MCP ceiling and the eval spine) · `session-mcp-shared-server.md` (the
+platform blocker every thread owner named).
 
 **Surfaces.** One console row answers busy or idle per tier
 (`backlog/local-cloud-share-report.md`, `backlog/graph-maintenance-queue.md`).
@@ -231,17 +233,18 @@ and the owner is expected to move it. **Dormant** means ranked and filed
 against, nobody works it. Opening a session on a dormant thread names
 which active one it replaces, or Reto widens the set.
 
-Active (15; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
-plus three on 2026-10-01):
+Active (16; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
+plus four on 2026-10-01):
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
 `nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (prep-only
 until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
 · `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
 `claims-and-evidence` · `se-machine-design` · `chemistry` (added
-2026-10-01, Reto's rulings).
+2026-10-01, Reto's rulings) · `local-compute` (added 2026-10-01).
 
 Dormant (6, open at the next restart if named): `graph-memory-consumers`
-· `multiscale-design-core` · `local-compute` · `pcb-platform` (created at
+· `multiscale-design-core` · `factory` (2026-10-01, the agent-lane
+items moved from pillar 3) · `pcb-platform` (created at
 the 09-30 review) · `ingest-and-fetch` (2026-10-01, Reto's ruling, triage
 first) · `draft-authoring` (2026-10-01).
 

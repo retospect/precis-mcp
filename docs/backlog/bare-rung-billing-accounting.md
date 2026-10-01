@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: local-compute
+pillar: platform
 ---
 
 # Bare chain rungs spend dollars the meter never counts

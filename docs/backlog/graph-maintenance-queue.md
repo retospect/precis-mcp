@@ -77,7 +77,7 @@ item — flagged for whoever holds that file).
 
 `src/precis/workers/` (queue + consumer wiring); `cluster-scheduling.md`
 (amendment, owned elsewhere); `knowledge-mesh.md`, `graph-gardener.md`,
-`dreaming.md`, `llm-summarize-throughput.md` (existing passes this item
+`dreaming.md`, the chunk summarise pass (existing passes this item
 feeds capacity to, unmodified in their own logic).
 
 ## Open questions / decisions log
@@ -89,4 +89,4 @@ feeds capacity to, unmodified in their own logic).
 
 Closest existing items: `cluster-scheduling.md` (the policy this item
 narrows — supersession noted above), `knowledge-mesh.md`, `graph-gardener.md`,
-`dreaming.md`, `curation-gate.md`, `llm-summarize-throughput.md`.
+`dreaming.md`, `curation-gate.md`, `local-summarizer.md`.

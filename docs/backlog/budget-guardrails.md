@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: local-compute
+pillar: platform
 ---
 
 # Budget guardrails — a lightweight cost/token backstop
@@ -34,6 +34,16 @@ quota snapshot gate (`budget.quota.evaluate`, pause only on
   retrosynth on castor — and container jobs) never
   touches dispatch — build a `service_calls (pass, host, day)` rollup
   only if the data says local compute capacity is the constraint.
+
+## Open scope (folded 2026-10-01 from the closed tier-ladder cutover)
+
+- **The breaker never gates SMALL** — `bands._TIER_BANDS[SMALL]=FREE`, so
+  `breaker.gate_tier` lets SMALL through even when a cap has tripped. SMALL
+  is the highest-volume tier and has been all-cloud since 2026-08-15, so a
+  tripped cap pauses MEDIUM/BIG/FRONTIER while SMALL keeps spending.
+- **The hourly runaway check** — an alert-board / scheduled inspection over
+  the token-first rollups (`spend_rollup`, `llm_tote`, `precis llm cost`).
+  The rollups exist; nothing schedules the check.
 
 ## Open decisions
 

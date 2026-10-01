@@ -40,7 +40,7 @@ per-tier default (``precis.utils.llm.router._CLAUDE_P_TIER_MAX_USD``) and
 always passes a concrete float down, so ``PRECIS_CLAUDE_MAX_USD`` still wins
 over the *router's* tier default when set, but this module's own ``0.10``
 constant is only reachable from a direct, non-router caller. See
-gr255847 / ``docs/backlog/llm-tier-ladder-cloud-cutover.md``.
+gr255847.
 
 Concurrency: each call is a separate subprocess; no shared state.
 Thread-safe by construction.

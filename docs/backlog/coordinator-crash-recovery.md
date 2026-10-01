@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: local-compute
+pillar: platform
 ---
 
 # coordinator executor still depends on the wall-clock sweep

@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: local-compute
+pillar: platform
 ---
 
 # Backend (PRECIS_LLM_BACKEND) — remove the parallel axis

@@ -1,7 +1,7 @@
 ---
 status: draft
 title: per-job-type tool lists in tick executors + NotFound→search retry line
-pillar: local-compute
+pillar: platform
 ---
 
 # Per-job tool lists + discovery reflex in tick prompts

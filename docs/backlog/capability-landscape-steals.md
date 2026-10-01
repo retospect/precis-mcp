@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: local-compute
+pillar: memory-graph
 ---
 
 # Capability landscape steals

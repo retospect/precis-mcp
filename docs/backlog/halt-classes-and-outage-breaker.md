@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: local-compute
+pillar: platform
 title: Halt classes + outage circuit-breaker — agent-declared halts stop being terminal-silent
 ---
 

@@ -17,10 +17,12 @@ Each programme below serves one or more:
   `draft-authoring` (dormant; drafts, export, tex layer).
 - **3d-design** — `pcb` + `se` + `chemistry` + `multiscale-design-core`
   (dormant) + `se-machine-design` + `pcb-platform` (dormant).
-- **local-compute** — `serving` (owns the MCP ceiling and the fleet) +
-  `local-compute` (dormant; owns what the served capacity does).
+- **local-compute** — `local-compute` (active 2026-10-01; owns local model
+  serving: the summariser and the single-spark model, and what they do) +
+  `serving` (owns the MCP ceiling and the eval spine).
 - **personal-integration** — HELD; no programme yet.
-- **platform** — `platform` (split, deploy, monitors); serves all four
+- **platform** — `platform` (split, deploy, monitors) + `factory`
+  (dormant; agent execution lanes, budget, crash recovery); serves all four
   indirectly (nothing ships without it).
 
 ## Active / dormant
@@ -29,11 +31,12 @@ Each programme below serves one or more:
 `monitors-that-go-quiet` · `nanobuds-paper` · `pcb-easyeda-round-trip` ·
 `plugin-split` · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain` ·
 `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
-`claims-and-evidence` · `chemistry` · `se-machine-design`.
+`claims-and-evidence` · `chemistry` · `se-machine-design` ·
+`local-compute`.
 
 **Dormant** (file exists, ranked, no session — opens at the next session
 restart if Reto names it): `graph-memory-consumers` · `draft-authoring` ·
-`multiscale-design-core` · `local-compute` ·
+`multiscale-design-core` · `factory` ·
 `pcb-platform`.
 
 ## pcb — design, route, fabricate, order
@@ -103,6 +106,9 @@ Seams:
 - `backlog/pathway-presentation-shared-module.md` — plugin-split owns it
   (its Do-next 6); chemistry's UI items (Horizon 9) consume it and start
   no second copy.
+- `backlog/precis-dispatch.md` — ranked in local-compute (Horizon); chemistry's
+  DFT relax is its first consumer, and its seams extract when a second
+  workload lands.
 - roadmap-quest owns the quest loop that dispatches and consumes
   pathways; chemistry owns the engine's health and output contract.
 - hexfold-toolkit owns `backlog/global-structure-search-slices.md` and
@@ -112,17 +118,20 @@ Seams:
 ## serving — the MCP and the fleet's model serving
 
 Threads: `session-mcp-shared-server.md` · `serving-programme.md` ·
-`local-compute.md` (dormant)
+`local-compute.md`
 
 Seams:
 - `backlog/session-mcp-http-server.md` — ranked only in the shared-server
   thread; serving-programme cross-references it.
 - `backlog/mcp-concurrency-load-test.md` and the K-parallel harness — the
-  serving thread's py-spy answer (its Do-next 3) decides whether the
+  serving thread's py-spy answer (its Do-next 1) decides whether the
   shared-server's multiprocess item is topology or workaround.
-- served vs used — serving-programme owns the MCP ceiling, vLLM Slice 0
-  go/no-go and the eval-run-spine; local-compute owns what the served
-  capacity does once it exists (summarise, insert, mesh, link, categorise).
+- served vs used — serving-programme owns the MCP ceiling, the load-test
+  harness and the eval-run-spine; local-compute owns local model serving
+  (vLLM Slice 0 and its spark prerequisites, local-serving-eval, the
+  summariser) and what the served capacity does (summarise, insert, mesh,
+  link, categorise). The eval-run-spine's items 4 and 9 wait on the spark
+  prerequisites ranked in local-compute's Do-next 3.
   `backlog/embedder-capacity-ownership.md` (local-compute's) is fed by
   serving-programme's py-spy/topology answers.
 
@@ -130,7 +139,7 @@ Waits:
 - serving Horizon 2 (shared-server end state) waits on serving Horizon 1's
   process-count answer.
 - `backlog/curation-gate.md` waits on eval-run-spine's verdict column
-  (serving Do-next 6) and is parked on by knowledge-mesh and roadmap-quest.
+  (serving Do-next 3) and is parked on by knowledge-mesh and roadmap-quest.
 
 ## knowledge — taxonomy, quests, papers
 
@@ -178,7 +187,9 @@ Waits:
 
 ## platform — split, deploy, monitors
 
-Threads: `plugin-split.md` · `monitors-that-go-quiet.md`
+Threads: `plugin-split.md` · `monitors-that-go-quiet.md` · `factory.md`
+(dormant; agent execution lanes, budget, crash recovery — pillar platform,
+created 2026-10-01)
 
 Seams:
 - `scripts/deploy` — plugin-split's gr457894 (restart on installed-file
