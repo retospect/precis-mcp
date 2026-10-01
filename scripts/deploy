@@ -258,6 +258,27 @@ _write_deploy_state_marker() {
     printf '%s %s %s\n' "$sha" "$(date +%s)" "success" > "$(deploy_state_path "$REPO_ROOT")"
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
     _consume_ship_pin "$sha"
+    _move_prod_pointer "$sha"
+}
+
+# Publish "what the cluster runs" as origin's `prod` ref, from both success
+# writers (the graft above and step 3). The marker file says it to this
+# machine only; the ref says it to every session and to GitHub. Fast-forward
+# only — it goes backward solely on a deliberate --force-rollback — and
+# best-effort: a refused push is a warning, never a failed deploy. See
+# scripts/lib/env-pointers.sh.
+_move_prod_pointer() {
+    local sha="$1" mode=""
+    # Both writers run on an all-green deploy; move (and announce) once.
+    [[ "${_PROD_POINTER_AT:-}" != "$sha" ]] || return 0
+    _PROD_POINTER_AT="$sha"
+    [[ -f "${REPO_ROOT}/scripts/lib/env-pointers.sh" ]] || return 0
+    . "${REPO_ROOT}/scripts/lib/env-pointers.sh"
+    [[ "$FORCE_ROLLBACK" == 1 ]] && mode="force"
+    if env_pointer_move "$REPO_ROOT" prod "$sha" "$mode"; then
+        say "origin/prod → ${sha:0:8}"
+    fi
+    return 0
 }
 
 _rollout_converged() {
@@ -888,4 +909,5 @@ fi
     rm -f "$(deploy_attempt_path "$REPO_ROOT")" 2>/dev/null
     # The pin has done its job: this sha is what the fleet runs now.
     _consume_ship_pin "$DEPLOYED_SHA"
+    _move_prod_pointer "$DEPLOYED_SHA"
 } || true

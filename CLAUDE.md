@@ -49,6 +49,9 @@ All abort+report on failure and are idempotent —
 fix and re-run. Merge target is `main` (no `master`). Red gate: the failure
 is printed above the `✖` — read *that*, never `scripts/ship` (remote-gate
 red: ship prints the failing jobs + `gh run view <id> --log-failed`).
+Where a commit has got to is three refs: `main` (landed), `origin/gated`
+(last full-gate green), `origin/prod` (what the cluster runs) — script-moved,
+fast-forward only, never committed to (`deploy/README.md`).
 
 Many sibling sessions run at once: scan the injected `scripts/inflight` table
 for overlap; once your task is clear, write one line to `.claude/purpose`.

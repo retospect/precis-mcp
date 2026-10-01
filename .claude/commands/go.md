@@ -106,6 +106,14 @@ Optional ship message from the user: `$ARGUMENTS`
    closes that window. If `.ship-sha` is missing, the gate was not a full one
    (`--quick`/bare `--impacted`): do not deploy, re-run the gate.
 
+   The same fact is published: a green full gate fast-forwards origin's
+   `gated` ref to that sha, and a successful deploy fast-forwards `prod`
+   (`scripts/lib/env-pointers.sh`). From any other worktree, the gated sha is
+   `git rev-parse origin/gated` after a fetch and the cluster's is
+   `origin/prod` — deploy `gated` from there as
+   `scripts/deploy "$(git rev-parse origin/gated)" --pinned`, never as the
+   branch name. Nobody commits to either ref.
+
    You do not have to get this right from memory: while `.ship-sha` is
    unconsumed, `scripts/deploy` **refuses** any other target and prints this
    exact command. A successful deploy of the pin removes the file. If you

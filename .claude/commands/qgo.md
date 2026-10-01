@@ -69,6 +69,9 @@ Optional ship message from the user: `$ARGUMENTS`
    There is no `.ship-sha` pin here — only a full gate writes one — so pass the
    sha explicitly. Never pass the branch name `main`: it re-resolves at deploy
    time and a sibling landing in between would send a different tree.
+   A successful deploy fast-forwards origin's `prod` ref to it; `gated` does
+   not move, so `prod` sits ahead of `gated` until a full gate passes — that
+   gap is the published form of "the cluster runs untested code".
 
    Run it **in the background** and arm a Monitor on the log it announces on
    its first `▶` line, covering milestones AND every failure signature:

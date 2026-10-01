@@ -1102,6 +1102,15 @@ done
 if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" ]]; then
     printf '%s\n' "$GATED_SHA" > "$SHIP_SHA_FILE"
     say "gated sha pinned → ${SHIP_SHA_FILE##*/} (${GATED_SHA:0:8}); deploy it with: scripts/deploy \"\$(cat .ship-sha)\" --pinned"
+    # Publish the same fact as origin's `gated` ref, so the gated sha is not
+    # knowledge only this worktree has. Fast-forward only, best-effort — see
+    # scripts/lib/env-pointers.sh.
+    if [[ -f "${WORKTREE}/scripts/lib/env-pointers.sh" ]]; then
+        . "${WORKTREE}/scripts/lib/env-pointers.sh"
+        if env_pointer_move "$WORKTREE" gated "$GATED_SHA"; then
+            say "origin/gated → ${GATED_SHA:0:8}"
+        fi
+    fi
 elif [[ "$QUICK" != 1 && "$DOCS_ONLY" == 1 && -n "$GATED_SHA" ]]; then
     say "docs-only lane — no deploy pin written (the suite did not run on ${GATED_SHA:0:8}); to certify it for deploy run scripts/ship --full (/go) on the landed tree"
 fi

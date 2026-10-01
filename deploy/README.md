@@ -38,6 +38,21 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    target is refused (bypass with `--ignore-pin`, or `--force-rollback`), and
    a successful deploy of that sha removes the file. So a bare `scripts/deploy`
    keeps working everywhere except the one window where it would be wrong.
+
+   Two refs on origin publish where a commit has got to; nobody commits to
+   either, the scripts move them (`scripts/lib/env-pointers.sh`):
+
+   | Ref | Means | Moved by |
+   |-----|-------|----------|
+   | `main` | landed, possibly untested | a land |
+   | `gated` | last sha the full gate passed | `scripts/ship`, on green |
+   | `prod` | what the cluster runs | `scripts/deploy`, on success |
+
+   Both are fast-forward only; `prod` goes backward only under
+   `--force-rollback`. `prod` ahead of `gated` means the cluster runs code no
+   gate has passed (a `/qgo`). Moving a ref is best-effort — a refused push is
+   a warning, and the local `.ship-sha` / deploy-state marker stay the guards'
+   inputs.
 6. App secrets: once the web role is up, load API keys via the `/secrets`
    page or `precis secret set` — **not** the ansible vault (scope boundary:
    `inventory.example/group_vars/all/vault.yml.example`).
