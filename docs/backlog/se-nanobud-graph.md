@@ -14,11 +14,25 @@ dr173020). Absorbs the nanobud-fusion scope-check comment in
 `precis_se/atomic/generators/sp2.py` (its three blockers are dissolved
 by the graph-first approach below, not solved head-on).
 
-**2026-10-01 — demoted in-progress → draft.** The generator half is
-overtaken by hexfold's nanobud menus (`threads/hexfold-toolkit.md`; the
-sp² notation library now builds nanobuds directly). What still stands:
-the nomenclature, the `geo` rung / spectral embed, and the library
-this item's companions need. Re-scope against hexfold before building.
+**2026-10-02 re-scope against the tree — most of this item is built.**
+
+| § | status | where |
+|---|---|---|
+| 1 `geo` rung, embed-from-graph, registration | shipped | `precis/structure/georelax.py` (`relax_graph`, `embed_from_graph`, `register`); `relax.py` puts `geo` beside `clean` |
+| 2 nanobud generator | overtaken | hexfold nanobud menus (`src/hexfold/menus.py`, spec §12), consumed by `precis_se/atomic/generators/hexfold_spec.py`; junction entries carry literature sources (spec junction table, e.g. `9-6`, `8-7`) |
+| 3 sublattice parity | overtaken | hexfold `annot.sublattice` (`same`/`cross` per attachment bond) |
+| 3 chirality | overtaken | hexfold spec "Mirrors are excluded" |
+| 3 rigidity screen | **open** | no Maxwell/pebble-game count anywhere |
+| 4 nomenclature | overtaken | the hexfold `.hx` notation is the pasteable, deterministic name; the paper is `nanobud-nomenclature-paper.md`, to re-point at hexfold |
+| 5 assembler mode | shipped | `precis_se/modes.py` ("atomic assembler") |
+| 6 figure redraws | owned by `se-view-figures.md` | — |
+
+**What is left here:** (a) the rigidity screen as a DRC-tier annotation
+on a built nanobud; (b) check that hexfold's `annot.sublattice` reproduces
+the published Cases A–D magnetic/non-magnetic split (§3's acceptance
+line) — a test, not new code. Both touch hexfold's build path, which the
+hexa session owns; coordinate there before building. Status stays
+`draft` until someone wants (a).
 
 Prior-art survey: `perplexity-research:339983` (2026-09-14). Key facts,
 **verify primary sources before citing in the draft**: no systematic

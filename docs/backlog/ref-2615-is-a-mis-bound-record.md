@@ -50,6 +50,16 @@ state would emit a false citation, so this blocks fi269509's route to
 
 Check whether other hubs cite ref 2615 before repairing.
 
+## State 2026-10-02
+
+The title has since been corrected to "A novel hybrid carbon material —
+Supplementary Information", so the chunks' paper is now named; year
+(2022), `cite_key` wang22c and the mining DOI are still the mining
+paper's. The main article is held as **pa2069** (Nasibulin et al. 2007,
+doi 10.1038/nnano.2007.37). Repair = drop the mining DOI and cite_key from
+2615, set year 2007 and a fresh cite_key, and record it as pa2069's
+supplement; the mining paper, if wanted, is a fresh import.
+
 ## Open questions
 
 1. Which ingest path folds a second PDF into an existing ref, and does it

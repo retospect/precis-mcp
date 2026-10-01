@@ -29,25 +29,22 @@ both STATUS:done)
    figures, checking the findings and reading the export himself
    (2026-10-01); the session's part of the restructure is done.
 3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
-   2026-10-01; the auto-mode classifier blocks the session from the prod
-   DSN, so Reto runs it: script staged at
+   2026-10-01; the auto-mode classifier still blocks the session's direct
+   prod-DB script (re-tried 2026-10-01 after Reto's "prod is authorized"),
+   so Reto runs it: script staged at
    `/tmp/nanobuds-merge-1181-claude.py` on melchior (rehearsal rolls back,
    `--apply` commits; runs `merge_duplicate`, adds a correct cite_key
    alias beside humphreys99a, sets journal Nature).
-4. **td450083** — fi191281 re-judge, approved 2026-10-01, same blocker:
-   `precis taproot verify-edges --hub fi191281` once with
-   `--unverified-stamped` (link 992065, the stale 330-cycle caveat) and once
-   without (link 2483302, never verified); reword the claim only if the
-   verdict is not corroborating.
-5. **backlog/se-nanobud-graph.md** — `status: draft/high` (demoted from
-   in-progress 2026-10-01: its generator is overtaken by hexfold's nanobud
-   menus; nomenclature and embed stand); graph-first
-   sp2 construction (geo rung, spectral embed, nanobud generator,
-   nomenclature) — the library this thread and nanobud-nomenclature-paper
-   both need to exist.
-6. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
+4. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
+   2026-10-02: geo rung, embed, registration and assembler mode shipped;
+   generator, sublattice parity, chirality and nomenclature overtaken by
+   hexfold. Left: a rigidity screen and a Cases A–D test of hexfold's
+   `annot.sublattice`, both via the hexa session.
+5. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
    brings the 139 claim hubs behind the nanobud draft above board — direct
-   input to this thread's own claim-hub-signing end state.
+   input to this thread's own claim-hub-signing end state. 2026-10-02 pass
+   done (fi189536 grounded, dc2445930 cut); open = the non-empirical
+   artifact type (`/go`), ref 2615, Phase 5 after Reto's findings check.
 
 ## Horizon
 
@@ -82,6 +79,11 @@ both STATUS:done)
   hexfold catalogue's measured rows are trusted (hexfold-toolkit item 6).
 
 ## No action needed
+
+- **td450083** — done 2026-10-01 via `scripts/prod-precis`: fi191281's
+  links 992065 (`--unverified-stamped`) and 2483302 both verified
+  `supports: yes` and stamped against pc391145 (1600 mAh/g at 8 A/g over
+  300 cycles, 99.01% CE); no reword.
 
 - **restructure** — done 2026-10-01 in two passes. Pass 1: Scope
   (dc2445882) ahead of the topology section, Gap Analysis (dc2445953)

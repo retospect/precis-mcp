@@ -16,6 +16,48 @@ resume pointer — the measured state and the decisions already made.
 paper-level) despite a later `updated_at`; the taproot work is all on
 173020.
 
+## RESUME HERE (2026-10-02 pass, prod 81154bc0)
+
+What stands open, in order:
+
+1. **The four non-empirical hubs** — fi189535, fi191169, fi191260,
+   fi192855. Still the artifact-type change (§"The artifact-exemption
+   route"), its own `/go` with the corpus measurement first.
+2. **ref 2615** — still mis-bound (`ref-2615-is-a-mis-bound-record.md`):
+   its title now reads "A novel hybrid carbon material — Supplementary
+   Information" but year 2022 and the mining DOI remain. The main paper is
+   held as **pa2069** (doi 10.1038/nnano.2007.37, 2007). fi269509 also has
+   a correctly-cited 2007 supporter ("Investigations of NanoBud
+   formation"), so the hub is not evidence-starved — only the 2615 edge
+   would emit a false citation.
+3. **Phase 5 adversarial pass** — never run. Its only trigger is the draft
+   page's review block in precis-web (`mint_review_fanout`), which mints
+   opus review todos per heading; hold it until Reto's own findings check
+   is done so the two do not edit the same prose.
+4. **fi269443 split** — optional; dc2445854 cites it only for the 1990
+   fullerene synthesis.
+
+Done this pass:
+
+- **fi189536** — attached pc2412091 (the results passage: "no charge
+  overlap between the C60 and the graphene, suggesting physical adsorption
+  and no C-C covalent bonds"); `verify-edges --apply` stamped it `yes`.
+  The aims-only pc2412082 edge stays `no`. No longer unsupported.
+- **dc2445930** — cut "and into low-reflectivity touch sensors suited to
+  high-contrast displays" from the fi192836 cite: the only source passage
+  (pc172375) reports a sensor *under development* with a 1% reflection
+  *target*, not a result, and fi192836 no longer states it.
+- Mint jobs closed without minting: fi269543's dropped clause is exactly
+  fi191318's claim; fi190987 is not cited by dr173020; dc2445946 already
+  hedges fi191318's "tunable" step in prose.
+
+**Method-passage attach is the wrong fix for mode grounding.**
+`verify-edges` judges each edge against the *whole* claim, so a methods
+passage that names the technique but not the result verifies `no`
+(tried 2026-10-02 on fi190987 ← pc404386 and fi192836 ← pc172364; both
+`no`, both removed again). The §"Grounding checks" table's "these four
+are mint jobs" plan does not hold; mode grounding stays advisory.
+
 ## Measured state (2026-08-29, prod)
 
 139 claim hubs cited; **108 (78%) clean on both axes**, 31 are not:
