@@ -1711,8 +1711,30 @@ class SeHandler(Handler):
         ref = self.store.get_ref(kind="se", id=str(id).strip())
         if ref is None:
             raise NotFound(f"se design {id!r} not found")
+        # gr459058: retiring a design does NOT retire the `structure` refs
+        # its generate/join ops minted, so each retire leaves one live
+        # structure per bound block.  Reporting the block count alone read
+        # as "all of it is gone" and quietly grew the orphan set (the two
+        # rows td458221 tracks are this, not probe litter).  Deleting them
+        # here would be a write the caller did not ask for, so name them
+        # instead and let the caller decide — the cheap, honest half.
+        orphans = sorted(
+            {
+                node.bound
+                for node in persist.load_tree(self.store, ref.id).blocks.values()
+                if node.bound_kind == "structure" and node.bound
+            }
+        )
         n = persist.retire_design(self.store, ref.id)
-        return Response(body=f"retired se design '{ref.slug}' ({n} block(s))")
+        body = f"retired se design '{ref.slug}' ({n} block(s))"
+        if orphans:
+            body += (
+                f"\n\n{len(orphans)} structure(s) stay live — a design retire "
+                "does not retire what its blocks were bound to. Delete the "
+                "ones you are done with:\n"
+                + "\n".join(f"  delete(kind='structure', id={s!r})" for s in orphans)
+            )
+        return Response(body=body)
 
     # ── link ─────────────────────────────────────────────────────────
     def link(  # type: ignore[override]

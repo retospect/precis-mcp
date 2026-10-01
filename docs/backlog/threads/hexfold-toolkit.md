@@ -17,7 +17,8 @@ bearing, four gripes and the instrumentation leg; 22:30Z dogfood round
 shipped gr458713, confirmed gr454650 harder, closed gr454563. 10-01
 round: gr456213 **closed** — it was fixed on 09-29 and I had ranked it 2
 off a stale auto-diagnosis, see "No action needed"; gr459058 and gr459057
-filed from the same round at 4 and 5 — note at the bottom)
+filed from that round, then both fixed in the 01:18Z round, leaving only
+gr459058's cascade-vs-refuse ruling at 4 — note at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Do next
@@ -63,41 +64,33 @@ filed from the same round at 4 and 5 — note at the bottom)
    correct spec silently producing cyclobutanes is a wrong answer a caller
    cannot see without reading the ring census — strictly worse than
    gr458713's class, which only let a wrong spec pass.
-4. **gr459058** — `delete(kind='se')` retires a design and reports its
-   block count but leaves every structure those blocks were bound to
-   live, so each retire leaks one structure per block while reporting
-   success. Verified on prod 2026-10-01: four structures survived a
-   retire that named four blocks, and I deleted them by hand. **This
-   re-scopes td458221**, which is written as a one-time tidy of two
-   orphans and is actually the visible residue of a leak on the ordinary
-   path — linked there. Cheapest honest remedy is to say what was left
-   live; cascading is what callers expect, and deletes here are soft, so
-   that is less sharp a call than it sounds.
-5. **gr459057** — `generate` then `join` in one ops list always fails,
-   because the structure mint is deferred to after the list validates,
-   and the error (`block 'tube_a' is not bound to a structure design`)
-   names neither the cause nor the remedy. Build-and-join in one call is
-   the first thing anyone tries, so this is a guaranteed first-contact
-   failure that sends the reader to inspect the `generate`. The condition
-   is cheap to detect: the block is present with a pending generate in
-   the same batch.
-6. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+4. **gr459058, remaining half** — the reporting fix shipped 2026-10-01
+   (see "No action needed"), so a retire now announces the structures it
+   leaves live. What is still open is the product call it exposed:
+   should a design retire **cascade** to those structures, or **refuse**
+   while they are live? Both change a write path, the announcement takes
+   the pressure off, and deletes here are soft — so this waits on a
+   ruling rather than on work. **td458221** is where that answer belongs;
+   it is linked to the gripe, and that row is also re-scoped by this from
+   a one-time tidy of two orphans to the residue of an ordinary-path
+   leak.
+5. **gr454488** — five residuals from the 2026-09-28 dogfood: every
    `generate` block trips `mode_binding_mismatch` because generate never
    sets mode; sheet rim port direction is centroid noise; the persisted
    build record drops geometry findings the check-mode echo has; "dry-run"
    wording survives past its rename; generator-declared measures claim
    `origin=user`. Five independent one-line fixes, bundled because one
    dogfood found all five.
-7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+6. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
    `trust_measured`, which is the entire point of the catalogue.
-8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+7. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
-   stick-rung number can be believed — including 7’s re-measurements and
+   stick-rung number can be believed — including 6’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
-9. **Housekeeping: gr456203 and gr456212** — moved here from "No action
+8. **Housekeeping: gr456203 and gr456212** — moved here from "No action
    needed" 2026-09-30, because a drift report showed both are still
    `STATUS:open` on prod while this file claimed otherwise. They were
    auto-diagnosed as already fixed; the work is to verify that against
@@ -127,12 +120,12 @@ filed from the same round at 4 and 5 — note at the bottom)
 5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 7, since a
+   catalogue's third row type exists for. Waits on Do-next 6, since a
    motif measured at one extent has the same defect the radius had.
 7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 8.
+   clearance stub is gated on Do-next 7.
 8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
@@ -183,6 +176,20 @@ filed from the same round at 4 and 5 — note at the bottom)
   `composite_part_stolen` finding, naming both composites. **The cause is
   Do-next 2** (gr456213); shipping the detector without it means new
   corruption is reported rather than prevented.
+- **gr459057** — FIXED 2026-10-01. `generate` then `join` in one ops list
+  can never work (the mint is deferred until the list validates) and the
+  error now says so and names the remedy. Note for a later pass: the
+  same-batch case is **not** detected precisely, because
+  `finish_generate` sets `bound_kind` and `bound` together, so a block
+  generated in the same list is indistinguishable from a bare one at join
+  time; the message names the deferral as the likely cause and keeps a
+  correct fallback clause. Threading the pending-generate set through
+  would allow a precise, separate error.
+- **gr459058, reporting half** — FIXED 2026-10-01: a retire now prints
+  the structures it left live and the `delete(kind='structure', …)` call
+  for each. One test pins the leak itself, so a later cascade fix has to
+  update the message in the same change rather than quietly making it a
+  lie. The cascade-vs-refuse ruling is Do-next 4.
 - **gr456213** — CLOSED 2026-10-01, and the closure is a correction of
   this file. It was fixed on 2026-09-29 by Reto's own ruling that a part
   may not belong to two composites: `prepare_join` refuses via

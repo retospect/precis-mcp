@@ -502,10 +502,33 @@ def _hexfold_join(
         )
 
     node_a, node_b = tree.blocks[a_block], tree.blocks[b_block]
+
+    def _unbound(blk: str) -> BadInput:
+        """gr459057: the overwhelmingly common way to reach this is a
+        single ops list holding both the ``generate`` and the ``join`` —
+        :func:`~precis_se.atomic.generate.finish_generate` mints the
+        structure only after the whole list validates (so a partial
+        failure cannot orphan one), so no join in that same list can ever
+        see its endpoints bound. The bare state sentence sent readers to
+        inspect the generate, which is correct and succeeded. Detecting
+        the case exactly would mean threading the pending-generate set in
+        here; naming it as the likely cause costs nothing and is what the
+        reader needs either way."""
+        return BadInput(
+            f"join: block {blk!r} is not bound to a structure design. "
+            "If you generated it in this same ops list, that is why: the "
+            "structure is not minted until the whole list validates, so "
+            "put the generate and the join in separate calls. Otherwise "
+            "the block was never generated or bound — a join needs both "
+            "endpoints bound to real chemistry."
+        )
+
+    # Two explicit checks rather than a loop: each one narrows its own
+    # `node.bound` to `str` for the rebuild below.
     if node_a.bound_kind != "structure" or not node_a.bound:
-        raise BadInput(f"join: block {a_block!r} is not bound to a structure design")
+        raise _unbound(a_block)
     if node_b.bound_kind != "structure" or not node_b.bound:
-        raise BadInput(f"join: block {b_block!r} is not bound to a structure design")
+        raise _unbound(b_block)
 
     # Design call 2 (composite takes over a's pre-join placement, net
     # effect: a's world placement is bit-for-bit unchanged by a join):
