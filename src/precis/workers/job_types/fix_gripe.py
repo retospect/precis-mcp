@@ -578,21 +578,19 @@ def run(
         ref_title=ref.title, blocks=blocks, diagnosis_comment=diagnosis_comment
     )
 
-    clone_dir = cfg.work_dir / "clones" / f"gripe_{gripe_id}"
     branch = f"gripe_{gripe_id}"
-    if clone_dir.exists():
-        shutil.rmtree(clone_dir)
-    clone_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    _git_clone_and_branch(repo_dir, clone_dir, branch)
-    _install_prepush_hook(clone_dir)
-
-    base_sha = _git_rev_parse(clone_dir, "origin/main")
-
-    # Ask whether a fix could be delivered at all before paying for one.
+    # Ask whether a fix could be delivered at all before paying for one —
+    # and before cloning, asked from the host checkout: a skip that runs after
+    # the clone leaves ~300MB behind per gripe, and since each skip is for a
+    # different gripe nothing ever comes back to rmtree it (gr458899).
     publish_target = _publish_target(repo_dir)
-    why_not = _publish_preflight(clone_dir, branch, publish_target)
+    why_not = _publish_preflight(repo_dir, branch, publish_target)
+    clone_dir = cfg.work_dir / "clones" / f"gripe_{gripe_id}"
     if why_not is not None:
+        # A clone left by an earlier attempt is scratch either way (the next
+        # attempt rmtrees it before re-cloning) — reclaim it now rather than
+        # keep it until an attempt that, on this deployment, never comes.
+        shutil.rmtree(clone_dir, ignore_errors=True)
         wall = time.perf_counter() - t0
         log.warning(
             "fix_gripe: gripe:%d skipped — cannot publish to %s: %s",
@@ -618,6 +616,15 @@ def run(
             sha=None,
             wall_seconds=wall,
         )
+
+    if clone_dir.exists():
+        shutil.rmtree(clone_dir)
+    clone_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    _git_clone_and_branch(repo_dir, clone_dir, branch)
+    _install_prepush_hook(clone_dir)
+
+    base_sha = _git_rev_parse(clone_dir, "origin/main")
 
     try:
         _spawn_claude(cfg, clone_dir, prompt)
@@ -1209,7 +1216,7 @@ def _publish_target(repo_dir: Path) -> str:
     return url if res.returncode == 0 and url else str(repo_dir)
 
 
-def _publish_preflight(clone_dir: Path, branch: str, target: str) -> str | None:
+def _publish_preflight(cwd: Path, branch: str, target: str) -> str | None:
     """``None`` when ``target`` looks writable from here; else why it doesn't.
 
     A ``--dry-run`` push, run BEFORE the agent is spawned. Without it the
@@ -1224,11 +1231,16 @@ def _publish_preflight(clone_dir: Path, branch: str, target: str) -> str | None:
     Not a guarantee: a remote can accept the dry run and reject the real push.
     The post-push ``ls-remote`` check is what actually decides delivery — this
     only catches the cheap, common "no credentials at all" case early.
+
+    Runs in the host checkout before the per-gripe clone exists, so it pushes
+    ``HEAD`` under the branch's name: any checkout has a ``HEAD``, while the
+    ``gripe_<id>`` branch only exists once the clone does. What is being asked
+    is "may I write to ``target`` at all", which does not depend on the ref.
     """
     try:
         res = subprocess.run(
-            ["git", "push", "--dry-run", target, f"{branch}:refs/heads/{branch}"],
-            cwd=str(clone_dir),
+            ["git", "push", "--dry-run", target, f"HEAD:refs/heads/{branch}"],
+            cwd=str(cwd),
             capture_output=True,
             text=True,
             check=False,

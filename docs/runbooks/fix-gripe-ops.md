@@ -21,9 +21,12 @@ Deployment requirements:
   `git remote get-url origin` of that checkout, and a job succeeds only
   once `git ls-remote` finds the branch there. A pull-only checkout —
   an anonymous HTTPS clone, which is what the ansible role provisions —
-  makes every job **skip**: a `git push --dry-run` runs before the agent
-  is spawned, so an undeliverable deployment costs one round trip rather
-  than a full agent run, and the gripe keeps its retry budget. Jobs
+  makes every job **skip**: a `git push --dry-run` runs from that checkout
+  before the per-gripe clone is made or the agent spawned, so an
+  undeliverable deployment costs one round trip — no agent run, no clone on
+  disk, and the gripe keeps its retry budget. A skip also removes any clone
+  an earlier attempt left for that gripe; clones left by gripes that are
+  never retried need a manual sweep of `PRECIS_FIX_WORK_DIR/clones/`. Jobs
   skipping with "cannot publish a branch to …" mean this, and no amount
   of re-running will change it. That is the honest outcome, not a bug in
   the run, and it is a deliberate change from the behaviour that

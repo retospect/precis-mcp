@@ -1552,14 +1552,42 @@ class TestDeliveryIsDecidedByTheRemote:
         assert "no budget spent" in (outcome.gripe_comment_text or "")
 
     def test_preflight_passes_for_a_writable_target(self, tmp_path: Path) -> None:
+        """Asked from the host checkout, which has no ``gripe_42`` branch: the
+        pre-flight runs before the per-gripe clone exists (gr458899), so it
+        must not depend on the branch being there."""
         repo = self._make_repo(tmp_path)
         upstream = tmp_path / "upstream.git"
         self._run_git(tmp_path, "init", "-q", "--bare", str(upstream))
-        clone = tmp_path / "clone"
-        self._run_git(tmp_path, "clone", "-q", "--local", str(repo), str(clone))
-        self._run_git(clone, "checkout", "-q", "-b", "gripe_42")
 
-        assert fix_gripe._publish_preflight(clone, "gripe_42", str(upstream)) is None
+        assert fix_gripe._publish_preflight(repo, "gripe_42", str(upstream)) is None
+
+    def test_a_skip_leaves_no_clone_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr458899: the inert lane was still growing disk, ~300MB per skipped
+        gripe, because the clone happened before the pre-flight and only the
+        next attempt for the *same* gripe ever removed it. A skip now costs no
+        clone, and reclaims one an earlier attempt left."""
+        from precis.utils.llm.router import Backend
+
+        repo = self._make_repo(tmp_path)
+        self._run_git(repo, "remote", "add", "origin", str(tmp_path / "nope.git"))
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+        cloned: list[object] = []
+        monkeypatch.setattr(
+            fix_gripe, "_git_clone_and_branch", lambda *a, **k: cloned.append(a)
+        )
+        cfg = self._cfg(repo, tmp_path)
+        stale = cfg.work_dir / "clones" / "gripe_42"
+        stale.mkdir(parents=True)
+        (stale / "leftover").write_text("x", encoding="utf-8")
+
+        outcome = fix_gripe.run(store=self._store(), job_id=1, gripe_id=42, config=cfg)
+
+        assert outcome.status == "skipped", outcome.summary_text
+        assert cloned == [], "a skip must be decided before anything is cloned"
+        assert not stale.exists(), "a clone left by an earlier attempt is reclaimed"
 
     def test_ls_remote_asks_the_remote_not_the_clones_tracking_ref(
         self, tmp_path: Path
