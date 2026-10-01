@@ -1016,7 +1016,12 @@ class FusedBlockSearch:
             )
             single_page_has_more = len(probe) > page_size
             hits = probe[:page_size]
+        _pre_dedup_n = len(hits)
         hits = _dedup_card_hits(hits)
+        # gr460340: ``total`` counts raw chunk rows (card + body), so every
+        # card the dedup just dropped inflates it by one relative to the
+        # distinct rows the page can show.
+        card_dedup_dropped = _pre_dedup_n - len(hits)
         # Retraction downrank — must run before title injection below,
         # which stamps a float('inf') sentinel score that a
         # multiplicative penalty can't touch (see
@@ -1183,7 +1188,9 @@ class FusedBlockSearch:
             extra_queries=extra_queries,
             hyde_answers=hyde_answers,
             per_paper_cap=per_paper_cap,
-            total=total,
+            total=(
+                None if total is None else max(len(hits), total - card_dedup_dropped)
+            ),
             title_matches=title_matches,
             # ``doi_resolved_id`` survives even when the fast-path guard
             # above declined to short-circuit (e.g. an explicit

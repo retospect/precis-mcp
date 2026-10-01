@@ -15,35 +15,39 @@ BUCKET="{{ vault_b2_bucket_name }}"
 SHARED="{{ shared_mount }}"
 LOG_TAG="b2-sync"
 
+# Any failed sync aborts the script (set -e); leave an unmistakable marker in
+# both syslog and the cron log so a nightly failure is greppable, not silent.
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then msg="B2 offsite sync FAILED (exit $rc)"; logger -t "$LOG_TAG" "$msg"; echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $msg" >&2; fi' EXIT
+
 logger -t "$LOG_TAG" "Starting B2 offsite sync"
 
-# Sync Postgres dumps (keep last 7 days remotely via --keepDays 7)
+# Sync Postgres dumps (keep last 7 days remotely via --keep-days 7)
 logger -t "$LOG_TAG" "Syncing postgres backups"
-b2 sync --keepDays 7 --replaceNewer \
+b2 sync --keep-days 7 --replace-newer \
   "$SHARED/backups/postgres/" \
   "b2://$BUCKET/backups/postgres/"
 
 # Sync config backups
 logger -t "$LOG_TAG" "Syncing config backups"
-b2 sync --replaceNewer \
+b2 sync --replace-newer \
   "$SHARED/backups/configs/" \
   "b2://$BUCKET/backups/configs/"
 
 # Sync git repos (bare repos — small, critical)
 logger -t "$LOG_TAG" "Syncing git repos"
-b2 sync --replaceNewer \
+b2 sync --replace-newer \
   "$SHARED/git/" \
   "b2://$BUCKET/git/"
 
 # Sync souls (prompts, exports — the important agent data)
 logger -t "$LOG_TAG" "Syncing souls"
-b2 sync --replaceNewer \
+b2 sync --replace-newer \
   "$SHARED/souls/" \
   "b2://$BUCKET/souls/"
 
 # Sync research data
 logger -t "$LOG_TAG" "Syncing research data"
-b2 sync --replaceNewer \
+b2 sync --replace-newer \
   "$SHARED/data/" \
   "b2://$BUCKET/data/"
 

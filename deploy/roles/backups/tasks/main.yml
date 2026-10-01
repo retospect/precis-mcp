@@ -119,7 +119,7 @@
 
 - name: Install Backblaze B2 CLI with uv
   ansible.builtin.shell: |
-    {{ uv_bin }} pip install --python /opt/b2/bin/python 'b2[full]'
+    {{ uv_bin }} pip install --python /opt/b2/bin/python 'b2[full]>=4,<5'
   become: true
   register: b2_install
   changed_when: "'Installed' in b2_install.stdout"

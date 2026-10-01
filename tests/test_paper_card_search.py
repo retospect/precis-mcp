@@ -164,3 +164,17 @@ def test_handler_body_hit_dedups_card(store: Store) -> None:
     assert body_handle is not None and card_handle is not None
     assert body_handle in out.body  # the quotable body block wins
     assert card_handle not in out.body  # the card is deduped away
+
+
+def test_handler_dedup_total_matches_rows_shown(store: Store) -> None:
+    """gr460340: the card+body pair counts once — the headline must not
+    read "1 of 2" and no "more" trailer may promise the dropped card."""
+    _seed(
+        store,
+        slug="attn",
+        body=["attention mechanism details and analysis"],
+        card_text="attention mechanism overview card",
+    )
+    out = _handler(store).search(q="attention mechanism", page_size=3)
+    assert "1 of 2" not in out.body
+    assert "see more of the" not in out.body
