@@ -28,9 +28,10 @@ letter so the split stays visible:
 A preprint is the unit because review time is outside our control. The
 cadence lives in precis, not here: quest `qu459585` holds one todo per
 month, each blocked by the decision it waits on, and a missed month is a
-`dead-end` logbook entry with its reason. Papers are not a pillar and have
-no thread; the repo-side blockers a paper exposes are gripes for the thread
-that owns them. `/pillar-review` reads the quest's tree each pass.
+`dead-end` logbook entry with its reason. Papers are not a pillar. A paper
+gets a thread only while it holds the month's slot (nanobuds-paper today);
+otherwise the repo-side blockers it exposes are gripes for the thread that
+owns them. `/pillar-review` reads the quest's tree each pass.
 
 The plugin split (`docs/backlog/threads/plugin-split.md`) cuts the package
 boundary by dependency direction, not by A/B, and the two mostly coincide:

@@ -308,23 +308,11 @@ linked CFP dictates its sections). Add **`book`** (multi-chapter) and
 
 ## Build order
 
-Each rung standalone-useful:
+Rungs 1–6 are built (dark; code in `src/precis/quest/` — `weave_tick.py`,
+`claims.py`, `review_fanout.py`, `placement.py` — and the draft/store
+integration + review ledgers; `topic-report-quests.md` verifies the same).
+The sections above remain the design record the code cites by heading. Open:
 
-1. **classify_topics: enable + ingest-trigger + gist fallback + backfill** — live
-   relevance lists on the corpus.
-2. **`integrated-into` rels + `view='integration'` + minus-query** —
-   "unintegrated" visible before any writing.
-3. **`chunk_review` ledger + human checker + diff renderer** — the memoization
-   spine; formalizes "does this chunk need review," standalone-useful for any
-   existing draft.
-4. **MCP-expose scaffold (+`book`/`summary`) + `draft(project=…)`.**
-5. **Claims v0 (inline at weave)** → measure → **v1 background extractor.**
-   v0 is inline *at weave*, so it lands **with** rung 6, not before it; the v1
-   background table waits on the v0 measurement.
-6. **Section-batch weave over `dc` edits + phase machine + per-weave reviewers
-   (flow + cites, ledger-gated)** — the core; weave without its guards produces
-   the garbage. (Cost-attribution is **not** a blocker — the per-quest breaker
-   already meters on chars; see failure-mode 7.)
 7. **Weekly + deep review wiring + auto-aggregation; weekly-window batching.**
 8. **Freshness view + appendix + digest; contradiction + re-org.** Follow-ons:
    coverage matrix, figure-binary persistence, `near_duplicates`.

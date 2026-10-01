@@ -26,7 +26,9 @@ All `backlog/<slug>.md`; unranked inside each group until Do-next 1 runs.
 - **Authoring correctness** — `draft-hygiene-lints` · `authoring-tex-lint` ·
   `degree-spacing-canon-vs-draft-lint-collision` ·
   `draft-text-route-dc-handle-wrap` · `draft-doi-completeness-check` ·
-  `draft-cite-groundwork-prepass` · `tex-layer2-fixer-fate`.
+  `draft-cite-groundwork-prepass` · `tex-layer2-fixer-fate` · `dossier-paper-handles-emitted-bare-not-bracketed`
+  (small live bug: the tick prompt's `[pa…]` handles come out bare; not moot
+  under the graph-as-dossier ruling while the tick writes prose).
 - **Export** — `draft-export-panel-per-format-tabs` · `endnote-export-validation`
   · `export-glyph-allowlist` · `draft-poster-genre-and-themes` ·
   `draft-section-styles`.
@@ -40,6 +42,9 @@ All `backlog/<slug>.md`; unranked inside each group until Do-next 1 runs.
   is next needed as a real draft.
 - **dr42995-boxel-draft** · **dft-hbond-draft-27-paywalled-dois** — one-draft
   content chores, not tooling; unpark with Reto's word on that draft.
+- **Patents** — `patent-drafting-merge` · `patent-authoring-loop` (status
+  draft) · `fto-defensive-publication`: dormant on Reto's word (2026-10-01);
+  unparks when he names patent work.
 - **Source-backfill follow-ups** — a HyDE query lens, a Tier-1 relevance cull for
   candidate lists, and an `integrate` planner coroutine that walks accepted
   candidates into the draft; owner `src/precis/backfill/candidates.py`, each

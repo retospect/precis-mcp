@@ -58,9 +58,10 @@ correct it.
   days on castor); infra, adjacent to this thread's fleet-serving scope
   but not owned by it. Unparks if it recurs on a serve host rather than a
   worker host.
-- **gr451423**, **gr322060** — quest relax-sim infra-failing repeatedly
+- **gr451423** — quest relax-sim infra-failing repeatedly
   (struct_relax executor); cluster GPAW/executor reliability, not a
-  serving-programme item. Left here for lack of a better home.
+  serving-programme item. Left here for lack of a better home. (gr322060, the
+  qu164903 relax-sim tracker, moved to the chemistry thread.)
 - **gr453339** — caspar has no `/opt/precis/venv` and `/mnt/cluster` is
   still NFS-wedged post-reboot; deploy precondition, not this thread's to
   fix. Unparks when a deploy targets caspar specifically.

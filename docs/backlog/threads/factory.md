@@ -3,7 +3,7 @@
 **Status:** ends when the agent execution lanes never silently starve or
 halt, spend is bounded, and a crashed run is recoverable — the platform
 under every pillar's agent work (`docs/roadmap.md` platform bucket). Today
-twelve filed items cover the starvation, halt, budget and crash gaps with no
+fourteen filed items cover the starvation, halt, budget and crash gaps with no
 owner; the order is silent loss first (starved lanes and rescue passes,
 terminal-silent halts), then bounded spend, then the quality-of-life and
 container items.
@@ -46,6 +46,11 @@ container items.
    in tick prompts; prompt economy, not a failure mode.
 7. **backlog/friction-reflection-enable.md** — flip the default-off friction
    footer once a grouping lane exists to absorb its gripes.
+8. **backlog/plan-tick-health.md** — plan_tick (the todo planner) spins and
+   exhausts silently; zero-output turn-exhausted ticks log as success.
+9. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
+   exponential re-tick cooldown; overdue since 2026-08-24, needs one healthy
+   baseline first (8).
 
 ## Parked
 

@@ -56,19 +56,23 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 - **backlog/skill-index-build-once-vs-shed.md** · **backlog/vocab-compaction.md**
   — triage first; order inside the group is provisional.
 
-1. **backlog/source-code-ingest.md** → **backlog/retire-claude-context.md**
+1. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: a quest's
+   graph "is" the dossier and a writer agent linearises it; settles the
+   membership relation and the render trigger before any quest-document
+   work. Same principle as Do-next 1 (graph is truth, text is a render).
+2. **backlog/source-code-ingest.md** → **backlog/retire-claude-context.md**
    — sequenced: the second removes the index the first replaces.
-2. **backlog/capability-discovery-on-a-sprawling-surface.md**
-3. **backlog/docs-and-skills-redesign.md**
-4. **backlog/skill-eval-harness.md**
-5. **backlog/skill-bundled-scripts.md**
-6. **backlog/turn-routing-and-context-dsl.md**
-7. **backlog/context-quality-eval.md** +
+3. **backlog/capability-discovery-on-a-sprawling-surface.md**
+4. **backlog/docs-and-skills-redesign.md**
+5. **backlog/skill-eval-harness.md**
+6. **backlog/skill-bundled-scripts.md**
+7. **backlog/turn-routing-and-context-dsl.md**
+8. **backlog/context-quality-eval.md** +
    **backlog/fisheye-context-eval-study.md** — the measurement tail.
-8. **gr440078** — how LLM-driven paper access during live note-taking
+9. **gr440078** — how LLM-driven paper access during live note-taking
    interacts with dreaming, request load and stats (front-pinning burst
    budget, per-session stub stats, the interactive-lane question).
-9. **gr372794** — whether paper review notes should participate in dream
+10. **gr372794** — whether paper review notes should participate in dream
     consolidation; deferred by Reto 2026-09-20 pending a decision on
     anchor loss and the autoreviewer-volume question.
 

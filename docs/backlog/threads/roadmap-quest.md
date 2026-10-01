@@ -7,8 +7,8 @@ on the fleet; the first live tick ran 2026-09-30 22:01 UTC on Reto's word
 (role demand, tier big): it wrote qu453869's first demand number,
 `placement_error_nm = 0.15` with a stated reason, minted no rung and no
 deed, and neither fail signal fired. Activation is the next prod write.
-**Last reviewed:** 2026-09-30 (pillar review same day added three orphan
-gripes to Horizon, all adjacent infra the tick path depends on)
+**Last reviewed:** 2026-10-01 (quest-loop items ranked; gr458880 closed, a stale
+server; gr345366 moved to chemistry)
 **Worktree:** `roadmap-quest`
 
 ## Do next
@@ -32,16 +32,11 @@ gripes to Horizon, all adjacent infra the tick path depends on)
    number), then activation (no ask, `docs/conventions/thresholds.md`). Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
-2. **gr458880 — `view='tree'` on the session MCP raises Internal
-   ImportError** (get(kind='quest', id=453863, view='tree'), 2026-09-30
-   22:05 UTC); the progress read the thread names is unusable from a
-   session until the shared server carries the roadmap build. The CLI
-   path is unaffected; `view='raw'` shows the meta.
-3. **backlog/bootstrap-roadmap-quest.md §Residuals 5** — export `rungs_for`
+2. **backlog/bootstrap-roadmap-quest.md §Residuals 5** — export `rungs_for`
    from the ledger so roadmap_tick stops re-deriving rung status with its
    own SQL; a drift between the two queries is invisible (no finding), so it
    outranks the cosmetic residuals.
-4. **backlog/bootstrap-roadmap-quest.md §Residuals 2, 3, 4** — "lowest unmet
+3. **backlog/bootstrap-roadmap-quest.md §Residuals 2, 3, 4** — "lowest unmet
    capability" is the builder's reading not a ruling; supply-absent rows
    route to supply not bridge; first-tick deed baseline seeds silently. All
    three become decidable only after 1 shows real ticks.
@@ -63,22 +58,40 @@ gripes to Horizon, all adjacent infra the tick path depends on)
 4. **backlog/knowledge-mesh.md in-scope 2** (meta.supply widened to
    measures) — waits on measures-substrate (knowledge-mesh thread); supply
    numbers with identity instead of free floats.
-5. **backlog/quest-dossier-dialectic.md** — waits on the catpath schema;
-   estimate-based dialectic ticks for the pathway quests.
+5. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: the quest's
+   graph is the dossier, a writer agent linearises; supersedes
+   quest-dossier-dialectic. Ranked in graph-memory-consumers Horizon 1; the
+   quest loop's dossier consumers retarget once its relation and
+   linearisation questions are decided.
 6. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column;
    review of what each tick wrote before it feeds the next.
-7. **gr345366** — `quest_tick` fails ~4x/48h on qu164903 with "unparseable
-   model output"; not yet root-caused (candidates: truncated reply, a
-   non-dict router `.data`, a stray leading brace). The same tick path
-   qu453863 will run through once it activates.
-8. **gr453861** — an executor-bearing todo (the shape qu453863's own tick
+7. **gr453861** — an executor-bearing todo (the shape qu453863's own tick
    dispatch uses) sits STATUS:open with no child job for up to ~18 minutes
    with no signal distinguishing normal minter cadence from a stalled
    dispatch; worth an observable before the first live tick's silence is
    mistaken for a wedge.
-9. **gr454792** — neither documented path actually unparks a
+8. **gr454792** — neither documented path actually unparks a
    child-failed-final leaf; if a `roadmap_tick` job ever lands there, the
    two-tag manual recipe in the gripe is the only one that works.
+
+Quest-loop machinery, ranked here 2026-10-01 (engine and qu164903 items are
+the chemistry thread's):
+
+9. **backlog/quest-tick-slicing-residuals.md** — requeue-from-checkpoint and
+   stale-stage agentlog finalize; the stage machine shipped, these are the
+   residual failure paths.
+10. **backlog/quest-loop-safety.md** — the "rubric key never produced"
+    warning (the anti-spin breaker shipped, gr170252); a silent empty
+    frontier is the failure it names.
+11. **gr459054** — `quest/roadmap_tick.py` imports `precis_se.handler`, the
+    one grandfathered breach of the plugin import boundary (plugin-split
+    owns the boundary; the fix is in quest code).
+12. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
+    cadence or why-not-ticking.
+13. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
+    checklist.
+14. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
+    the web; last, a human surface over a loop that must tick first.
 
 ## Parked
 

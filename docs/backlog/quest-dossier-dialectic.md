@@ -1,9 +1,11 @@
 ---
-status: draft
+status: idea
 title: quest dossier as dialectic — hypothesis findings, refuted lifecycle, crosslinked log
 pillar: quests
 prio: normal
 ---
+
+> Superseded by `backlog/quest-graph-as-dossier.md` (Reto 2026-10-01); kept as design input.
 
 # Quest dossier as dialectic
 

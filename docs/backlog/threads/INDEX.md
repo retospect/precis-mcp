@@ -110,7 +110,9 @@ Seams:
   DFT relax is its first consumer, and its seams extract when a second
   workload lands.
 - roadmap-quest owns the quest loop that dispatches and consumes
-  pathways; chemistry owns the engine's health and output contract.
+  pathways; chemistry owns the engine's health and output contract and, since
+  2026-10-01, the catalysis quests' content (qu164903 ticking, the qu202467
+  restart report, gr345366, gr322060).
 - hexfold-toolkit owns `backlog/global-structure-search-slices.md` and
   `backlog/structure-kind-demotion.md` (structure kind, se as origin of
   atoms), not chemistry.
@@ -177,6 +179,10 @@ Seams:
 - draft-authoring vs knowledge-mesh — knowledge-mesh ranks draft-linearization
   (the draft as a graph view); `draft-authoring.md` ranks authoring and export
   of the draft itself.
+- `backlog/quest-graph-as-dossier.md` — graph-memory-consumers Horizon 1;
+  supersedes the dossier-as-draft designs (quest-dossier-dialectic and
+  kin). roadmap-quest Horizon 5 points at it; draft-authoring keeps
+  paper-writing-pipeline rungs 7–8; knowledge-mesh owns the mesh it lives in.
 - `graph-memory-consumers.md` Do-next 1 is `backlog/memory-native-authoring.md`
   (Reto 2026-10-01, top priority, depends on `backlog/file-mirror.md`); its
   search cluster is retrieval as the consumer side of navigation.
@@ -188,6 +194,8 @@ Waits:
 ## platform — split, deploy, monitors
 
 Threads: `plugin-split.md` · `monitors-that-go-quiet.md` · `factory.md`
+(also ranks plan_tick health, the todo planner: plan-tick-health,
+plan-tick-context-cut)
 (dormant; agent execution lanes, budget, crash recovery — pillar platform,
 created 2026-10-01)
 
@@ -238,9 +246,10 @@ one gripe at a time. Four were listed; three are gone — the ingest cluster has
 its own programme above, the job-lifecycle cluster was ranked across
 `monitors-that-go-quiet` and `roadmap-quest`, and `scripts/test`'s container
 moved to Python 3.13 (gr458726) to match the ship gate. The one below has a
-decision from Reto (2026-10-01) but not yet a thread that ranks it.
+decision from Reto (2026-10-01) and, as of the same day, a rank in local-compute.
 
-- **fleet capacity is unmeasured** — gr458727. All 20 nursery detectors answer
+- **fleet capacity is unmeasured** — gr458727 (ranked in `local-compute.md`
+  Horizon 12, 2026-10-01). All 20 nursery detectors answer
   "is work stuck?"; none answers "is capacity used?". Idle GPUs beside an empty
   queue are invisible and indistinguishable from a healthy fleet, which is the
   one state Reto's local-compute goal is about. Not ranked in

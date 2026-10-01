@@ -1,9 +1,11 @@
 ---
-status: draft
+status: idea
 title: Topic-report quests — living survey dossiers with weekly taproot-grounded refresh + podcast/Mastodon publish tail
 pillar: quests
 model: opus
 ---
+
+> Superseded by `backlog/quest-graph-as-dossier.md` (Reto 2026-10-01); kept as design input.
 
 # Topic-report quests — living surveys, weekly refresh, publish tail
 

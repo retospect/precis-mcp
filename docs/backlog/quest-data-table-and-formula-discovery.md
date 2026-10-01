@@ -11,12 +11,14 @@ pillar: quests
 Quests accumulate (candidate → measured objectives) evidence, but there
 is no materialized, normalized data table: `quest/frontier.py` assembles
 `(params, measures)` per candidate at read time — a deliberate seam (the
-"§7.8 optimizer advisor") — yet a prod audit (2026-08-17) found the seam
-unfed: **0** structures carry `meta.params` (no writer exists), all 23
-harvested barriers sit `barrier_trusted=false` behind the `wrong_site`
-gate (qu164903), and `material_values` holds 0 rows against a
-19-property registry. Any regression or formula-discovery layer built
-today would spin on an empty table. LLM-Feynman (arXiv:2503.06512,
+"§7.8 optimizer advisor"). The `meta.params` writer and `view='series'`
+(the controlled comparisons among candidates) have shipped
+(`src/precis/quest/compute.py`, `src/precis/handlers/quest.py`), so the seam
+is fed; what remains open is the tidy export, the `wrong_site` barrier-trust
+blocker (all harvested barriers sat `barrier_trusted=false` at the 2026-08-17
+audit, qu164903) and `material_values` at 0 rows against a 19-property
+registry. Any regression or formula-discovery layer built over too few
+trusted rows would spin on a near-empty table. LLM-Feynman (arXiv:2503.06512,
 paper id=210166) motivates the end state — its eval domains (perovskite
 synthesizability, ionic conductivity, 2D-material classification) are
 precis quest domains — but its many-LLM-call loop is the *last* stage
@@ -28,8 +30,7 @@ features, and the canonical catalysis relation (BEP: barrier ≈
 ## In scope (staged — each stage independently shippable, in order)
 
 1. **Substrate.**
-   - Stamp `meta.params` on quest candidates at mint time (the quest
-     mint path; `frontier._candidate_from_structure` already reads it).
+   - (Shipped: `meta.params` stamped on quest candidates at mint time.)
    - Resolve the `wrong_site` barrier-trust blocker (all current
      barriers untrusted; independently valuable — it is also why the
      Pareto frontier is empty).

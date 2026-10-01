@@ -3,25 +3,16 @@ status: draft
 pillar: quests
 ---
 
-# Quest sim-seed orphan recovery + audit-less bulk delete hardening
+# Audit-less bulk soft-delete of job refs
 
-Two linked gaps from the gr204309 diagnosis (2026-08-12):
+From the gr204309 diagnosis (2026-08-12). The orphaned-seed half shipped:
+`src/precis/quest/compute.py` re-mints a fresh seed job under the same todo
+through the automatic infra-repair path (windowed budget,
+`_SEED_INFRA_RETRY_WINDOW_HOURS`).
 
-1. **Orphaned seed todos don't recover.** q164903's 9 OPEN:ephemeral
-   autocatpath seed todos each lost their only `autocatpath_seed` job
-   child to a bulk soft-delete (2026-08-11 14:00:58Z); `_pending_sim_ids`
-   filters `retired_at IS NULL`, so backpressure went blind and nothing
-   re-mints a child for a seed todo stuck mid-compute-lifecycle. Design a
-   re-mint path (quest tick notices a live seed todo with zero live sim
-   children → re-mints once) that CANNOT reintroduce the 238-seed runaway
-   (see the backpressure comment in `src/precis/quest/tick.py` ~L82) —
-   cap per tick, respect `_SIM_JOB_TYPES` backpressure, idem-key per todo
-   generation. Also the one-time prod remediation for the 9 todos
-   (td201904 202042 202121 202163 202241 202486 202708 202746 202837).
-
-2. **Audit-less bulk soft-delete.** Those 9 job refs were soft-deleted in
-   one transaction with ZERO ref_events — something bypassed
-   `Store.retire_ref`/`append_event` (raw SQL or untracked tooling,
-   actor unknown). Find the writer (grep tooling/crons for bulk
-   `UPDATE refs SET retired_at`), and consider a DB trigger or store-layer
-   invariant so kind='job' soft-deletes always leave an event trail.
+Nine job refs of qu164903's autocatpath seed todos were soft-deleted in one
+transaction (2026-08-11 14:00:58Z) with ZERO ref_events — something bypassed
+`Store.retire_ref`/`append_event` (raw SQL or untracked tooling, actor
+unknown). Find the writer (grep tooling/crons for bulk
+`UPDATE refs SET retired_at`), and consider a DB trigger or store-layer
+invariant so kind='job' soft-deletes always leave an event trail.

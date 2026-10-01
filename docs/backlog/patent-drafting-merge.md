@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: draft
 pillar: quests
 ---
 

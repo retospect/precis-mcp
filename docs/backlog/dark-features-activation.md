@@ -7,7 +7,7 @@ pillar: platform
 
 Shipped-dark features whose flip steps live in no other backlog item or
 `docs/conventions/dark-switches.md` (the rest are covered:
-quest loop → `quest-loop-activation.md`, classify →
+quest loop (ticking daily; no activation item), classify →
 `classifier-corpus-enablement.md`, markup-first → `markup-first-ingest.md`,
 chem engines → `chem-tools-integration.md`, patent FTO →
 `patent-authoring-loop.md`, card_forge autonomy → `reading-prep-loop.md`,

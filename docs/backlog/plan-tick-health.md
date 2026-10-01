@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: quests
+pillar: platform
 ---
 
 # Plan tick health

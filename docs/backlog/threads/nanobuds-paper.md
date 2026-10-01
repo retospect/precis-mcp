@@ -60,13 +60,17 @@ both STATUS:done)
    either every figure gets an image + clearance or the job grows the waiver
    the skill already documents. docx/pdf via the local prod export path
    against the RSC template. 43020 stays frozen.
-3. **backlog/nanobud-campaign.md**
-4. **backlog/nanobud-nomenclature-paper.md** — blocked-by
+3. **preprint slot blockers** — the repo-side blockers for the monthly
+   preprint (export gate gr454753, the ten image-less figures, gr459050) are
+   this thread's; the posting step itself (arXiv/Zenodo submission) is
+   Reto's: td459586, qu459585's October todo.
+4. **backlog/nanobud-campaign.md**
+5. **backlog/nanobud-nomenclature-paper.md** — blocked-by
    se-nanobud-graph (Do-next 5).
-5. **backlog/nanobud-magnetomechanical-memory.md**
-6. **backlog/chern-domain-memory-in-the-sheet-generator.md**
-7. **backlog/berry-phase-and-topological-defects-in-precis-models.md**
-8. **backlog/bond-critical-points-in-structure-model.md**
+6. **backlog/nanobud-magnetomechanical-memory.md**
+7. **backlog/chern-domain-memory-in-the-sheet-generator.md**
+8. **backlog/berry-phase-and-topological-defects-in-precis-models.md**
+9. **backlog/bond-critical-points-in-structure-model.md**
 
 ## Parked
 

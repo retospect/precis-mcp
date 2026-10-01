@@ -3,6 +3,8 @@ status: idea
 pillar: quests
 ---
 
+> Superseded by `backlog/quest-graph-as-dossier.md` (Reto 2026-10-01); kept as design input.
+
 # Dossier: present-tense document, incremental refinement
 
 > **Status:** design, agreed with Reto 2026-08-13. Slices 0–3 (pinned-chunk

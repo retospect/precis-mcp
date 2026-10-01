@@ -8,6 +8,12 @@ prio: high
 
 Grouped 2026-09-26 from 5 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
+## Residual: un-rule-out st164913
+
+Ops follow-up (from the retired `quest-loop-activation`): drop
+`ruled-out:relax-failed` from st164913 and correct the dossier's "Pd(111)
+unstable" text — the relax failure was infra, not chemistry.
+
 ## qu164903 reset runbook (operator: this session + Reto)
 
 _Grouped 2026-09-26; was `quest-164903-reset-runbook`, status in-progress, prio high._
