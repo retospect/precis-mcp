@@ -301,6 +301,25 @@ server-side-session-context Horizon pointer)
    visible rather than silently never embedded. Blocks run to 22756 chars,
    so a character cap would suit better than a block count.
 
+   **Acceptance of ae7bdb6a (tri-state `BatchErrorAction` + 25 000-char
+   cap), 02:55Z: the md index is warm for the first time.** Cache
+   1179916 → 45252876 bytes in 19 min (~11 000 vectors, 38×), and a live
+   `search(kind='md')` reports **60% of blocks indexed** against 1% all
+   night. Skip-and-continue was the whole difference: the pass stops
+   dying on whichever batch collects the long blocks.
+
+   One observability gap found while accepting it, minor and not a
+   blocker: `md_vector_warmup` renders only once `record_warmup_state`
+   has been called, which first happens on a batch error or at the
+   pass's terminal state. A process warming cleanly shows **no row at
+   all** for the whole pass, so precis-status cannot distinguish "warming
+   normally" from "never started" — confirmed at 63 s into a healthy
+   pass. Recording a `warming: batch 1/N` state at pass start would close
+   it. Note also the deliberate contract change in ae7bdb6a: a gapped
+   pass counts as a failure for the cooldown ladder, so `COLD` now means
+   a *non-retryable* error and a fully-down embedder reports gaps rather
+   than COLD — anything asserting on COLD needs to know that.
+
 4. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner
