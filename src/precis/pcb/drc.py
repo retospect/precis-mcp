@@ -106,6 +106,7 @@ from typing import Any
 # sets the same precedent).
 from shapely.geometry import LineString, Point, Polygon  # type: ignore[import-untyped]
 from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
+from shapely.ops import nearest_points  # type: ignore[import-untyped]
 from shapely.strtree import STRtree  # type: ignore[import-untyped]
 
 from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
@@ -554,6 +555,46 @@ def _clearance_detail(
     )
 
 
+def _clearance_label(item: dict[str, Any]) -> str:
+    """A pad named by its PART and pin, never by its net alone — the
+    :func:`check_via_pad_keepout` fix (gr451052) applied to its sibling.
+    On ``ewod-dogfood-6`` ``pad[ARR1_R7C0]`` read as "the R7C0 electrode"
+    when it was ``ARR1_SINK_0.HVOUT24``, the driver's land carrying that
+    electrode's escape net through a pin swap; it produced two wrong
+    diagnoses of a fabrication-fatal defect (2026-09-30)."""
+    ctype, net = item.get("ctype"), item.get("net")
+    refdes, pin = item.get("refdes"), item.get("pin")
+    if ctype == "pad" and refdes and pin:
+        return f"pad[{refdes}/{pin} " + (f"net {net}]" if net else "no net]")
+    return f"{ctype}[{net}]"
+
+
+def _nearest_xy(
+    a: dict[str, Any], b: dict[str, Any]
+) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+    """The point on each shape nearest the other — where to look."""
+    pa, pb = _copper_item_polygon(a), _copper_item_polygon(b)
+    if pa is None or pb is None:
+        return None, None
+    na, nb = nearest_points(pa, pb)
+    return (float(na.x), float(na.y)), (float(nb.x), float(nb.y))
+
+
+def _clearance_object(
+    item: dict[str, Any], near: tuple[float, float] | None
+) -> dict[str, Any]:
+    obj: dict[str, Any] = {
+        "ctype": item.get("ctype"),
+        "net": item.get("net"),
+        "layer": item.get("layer"),
+    }
+    if item.get("ctype") == "pad" and item.get("refdes"):
+        obj["refdes"], obj["pin"] = item.get("refdes"), item.get("pin")
+    if near is not None:
+        obj["x"], obj["y"] = round(near[0], 4), round(near[1], 4)
+    return obj
+
+
 def check_clearance(
     model: dict[str, Any],
     capability: CapabilityRow,
@@ -685,10 +726,10 @@ def check_clearance(
         # is F.Cu regardless, so a via against a bottom-side pad used to
         # read "on F.Cu" while via_pad_keepout said B.Cu for the same
         # pair (gr345858).
-        where = (
-            f"{a.get('ctype')}[{a.get('net')}] <-> {b.get('ctype')}[{b.get('net')}] "
-            f"on {layer}"
-        )
+        where = f"{_clearance_label(a)} <-> {_clearance_label(b)} on {layer}"
+        # Only flagged pairs reach this line, so the nearest-point pass costs
+        # nothing on the pairs the STRtree pass clears.
+        near_a, near_b = _nearest_xy(a, b)
         findings.append(
             DrcFinding(
                 rule="clearance",
@@ -696,18 +737,16 @@ def check_clearance(
                 where=where,
                 detail=_clearance_detail(
                     gap, jlc_min, required, capability.process, severity, margin
+                )
+                + (
+                    f" — nearest points ({near_a[0]:.3f}, {near_a[1]:.3f}) / "
+                    f"({near_b[0]:.3f}, {near_b[1]:.3f})"
+                    if near_a and near_b
+                    else ""
                 ),
                 objects=(
-                    {
-                        "ctype": a.get("ctype"),
-                        "net": a.get("net"),
-                        "layer": a.get("layer"),
-                    },
-                    {
-                        "ctype": b.get("ctype"),
-                        "net": b.get("net"),
-                        "layer": b.get("layer"),
-                    },
+                    _clearance_object(a, near_a),
+                    _clearance_object(b, near_b),
                 ),
                 margin_mm=margin,
             )

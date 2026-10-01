@@ -434,12 +434,15 @@ def test_handler_bom_and_cpl_views(pcb, tmp_path):
     pcb.put(id="sensor", args=_BOARD)
     bom = pcb.get(id="sensor", view="bom", args={"dir": str(tmp_path)})
     assert "exported sensor → BOM" in bom.body
-    assert (tmp_path / "sensor.csv").exists()
+    assert (tmp_path / "sensor-bom.csv").exists()
     cpl = pcb.get(id="sensor", view="cpl", args={"dir": str(tmp_path)})
-    assert "Top,270" in (tmp_path / "sensor.csv").read_text(
+    assert "Top,270" in (tmp_path / "sensor-cpl.csv").read_text(
         encoding="utf-8"
     )  # U1 rot 90 → 270
     assert "exported sensor → CPL" in cpl.body
+    # Both CSVs in one directory: the CPL export must not overwrite the BOM
+    # (on prod both landed in `ewod-dogfood-6.csv`, 2026-10-01).
+    assert "LCSC Part #" in (tmp_path / "sensor-bom.csv").read_text(encoding="utf-8")
 
 
 def test_handler_dsn_and_netlist_views(pcb, tmp_path):

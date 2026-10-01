@@ -1903,7 +1903,10 @@ class PcbHandler(Handler):
         ext, build = builders[view]
         content = build()
 
-        path = out_dir / f"{slug}.{ext}"
+        # BOM and CPL are both .csv: a shared `{slug}.csv` let one export
+        # silently overwrite the other in the same directory.
+        stem = f"{slug}-{view}" if view in ("bom", "cpl") else slug
+        path = out_dir / f"{stem}.{ext}"
         path.write_text(content, encoding="utf-8")
         warns = self._export_warnings(model, view)
         head = f"# exported {slug} → {view.upper()}\n{path}  ({len(content):,} bytes)"
@@ -2165,7 +2168,9 @@ class PcbHandler(Handler):
             f"{banner}\n\n"
             f"# exported {slug} → GERBER (fab bundle)\n{path}  "
             f"({len(blob):,} bytes zipped, {len(files)} file(s))\n"
-            f"pads: {len(pads)}  drills: {len(drills)}  copper item(s): {len(copper)}"
+            f"pads: {len(pads)}  drills: {len(drills)}  via holes: "
+            f"{sum(1 for c in copper if c.get('ctype') == 'via')}  "
+            f"copper item(s): {len(copper)}"
         )
         if warnings:
             head += "\n" + "\n".join(f"⚠️  {w}" for w in warnings)

@@ -1184,7 +1184,8 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
             model,
             capability_for(pcb_drc.process_for_stackup(design["board"]["stackup"])),
         )
-        if f.severity == "error" and "pad[]" in f.where
+        if f.severity == "error"
+        and any(o.get("ctype") == "pad" and not o.get("net") for o in f.objects)
     ]
     assert not shorts, (
         f"{len(shorts)} routed track(s) cross an unclaimed (net-less) "
@@ -1386,6 +1387,9 @@ def test_dogfood_gerber_export_leads_with_a_drc_banner_on_a_red_board(
     assert "via_pad_keepout" in red
     assert "view='drc'" in red
     assert (tmp_path / f"{slug}-fab.zip").exists()  # it still exports
+    # "drills: 0" read as a bundle with no holes; the plaza vias are drilled
+    # from the copper list, so the summary counts them separately.
+    assert re.search(r"via holes: [1-9]", red)
     # The seeded board is not DRC-clean on its own, so its export is not a
     # clean control; what matters is that SOME verdict leads either way.
     # Silence about DRC is the defect.

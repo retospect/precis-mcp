@@ -87,16 +87,10 @@ landed; Do-next renumbered)
    2026-10-01. Still the precondition for trusting any number below this
    line. Its cost prerequisite is gone: check_via_pad_keepout is indexed,
    so a full geometric DRC pass is 0.29 s on an 8x8 tile and 1.2 s at 16x16
-   (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck —
-   backlog/pcb-clearance-findings-name-no-pad.md carries both that figure
-   and the observability gap the 09-30 investigation paid for — **now
-   `prio: high` after a second incident the same day**: `check_clearance`
-   labels a pad by NET only, so `pad[ARR1_R7C0]` on dogfood-6 read as "the
-   R7C0 electrode" when it was `ARR1_SINK_0.HVOUT24`, the driver's own land
-   carrying that electrode's escape net through `pcb_pin_swaps`. That
-   mislabel produced TWO wrong diagnoses of the placer-on-vias defect
-   before the pad was identified. `check_via_pad_keepout` got exactly this fix from
-   gr451052; its sibling never did.
+   (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck
+   (195 ms of 287 ms at 8x8). Its findings name a pad by part/pin and give
+   the nearest points since 2026-10-01, so `pad[ARR1_R7C0]` no longer reads
+   as an electrode when it is the driver's land.
    **gr458087 was stale, not a regression — reconciled 2026-09-30 by
    re-running the measurement.** Its 1.9 s/8x8 and 30 s/4-tile figures are
    the PRE-fix state; the STRtree fix it proposed is already in

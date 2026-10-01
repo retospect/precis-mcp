@@ -2027,6 +2027,33 @@ def test_clearance_finding_names_the_layer_the_pair_met_on():
     assert "on F.Cu" not in findings[0].where
 
 
+def test_clearance_finding_names_a_pad_by_part_and_pin_with_a_location():
+    """On ewod-dogfood-6 (2026-09-30) ``pad[ARR1_R7C0]`` was the DRIVER's land HVOUT24, carrying
+    that electrode's net through a pin swap, and was read as the electrode.
+    The finding must name the part/pin and say where the copper meets."""
+    via = _via("ARR1_R3C3", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    via["layers"] = ["F.Cu", "B.Cu"]
+    land = _pad("ARR1_R7C0", "B.Cu", 0.45, 0.0, w=0.2, h=0.2)  # 0.05 mm off the ring
+    land.update(refdes="ARR1_SINK_0", pin="HVOUT24")
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [via], "pads": [land]}
+    (f,) = [f for f in drc.check_clearance(model, _CAP4) if f.rule == "clearance"]
+    assert "pad[ARR1_SINK_0/HVOUT24 net ARR1_R7C0]" in f.where
+    assert f.where.endswith("on B.Cu")
+    assert "nearest points (0.300, 0.000) / (0.350, 0.000)" in f.detail
+    pad_obj = next(o for o in f.objects if o["ctype"] == "pad")
+    assert (pad_obj["refdes"], pad_obj["pin"]) == ("ARR1_SINK_0", "HVOUT24")
+    assert pad_obj["x"] == pytest.approx(0.35)
+
+
+def test_clearance_finding_falls_back_to_the_net_for_an_anonymous_pad():
+    """Negative control: a pad with no refdes/pin keeps the net-only label."""
+    via = _via("A", "F.Cu", 0.0, 0.0, dia_mm=0.6, drill_mm=0.3)
+    pad = _pad("B", "F.Cu", 0.35, 0.0, w=0.2, h=0.2)
+    model = {"layers": ["F.Cu"], "copper": [via], "pads": [pad]}
+    (f,) = [f for f in drc.check_clearance(model, _CAP4) if f.rule == "clearance"]
+    assert "pad[B]" in f.where
+
+
 def test_resolve_net_rules_ignores_the_layers_key():
     """Rulings 2026-09-19 item 7's ``"layers"`` net-class key is consumed
     entirely by :mod:`precis.pcb.realize` (:func:`_net_class_layers`) —
