@@ -85,7 +85,13 @@ cut from the bottom.
    (id/name unification shipped). Seam with se-nucleic-chain (its Do-next
    4): this thread owns the selection mechanism, that one owns the
    residue/base-pair instance — build the mechanism generic or the second
-   instance forces a rewrite.
+   instance forces a rewrite. The resolver half has SHIPPED from that
+   thread (`precis_se.pick.atom_levels`, also `get(kind='se', view='pick')`;
+   contract in the item file), so what is left here is render only: a thin
+   click-time route over three precis_se calls, the atom pick on what
+   `_atomic_block_payload` already draws, the popup, token insertion — plus
+   the two tint gaps recorded below (container partners, the selected
+   block itself).
 2. **backlog/se-3d-viewer-ux-batch.md**, selection inspector + per-block
    findings + honesty banner — waits on 1; the first panel where a block's
    pose, envelope, ports, connects and findings read at once; unparks three
