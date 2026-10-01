@@ -303,7 +303,10 @@ def resolve_token(
     block."""
     node = block_by_uid(tree, ref.uid)
     if node is None:
-        raise PickError(f"no block with uid {ref.uid} in this design")
+        raise PickError(
+            f"no block with uid {ref.uid} in this design — a block's uid is on "
+            "view='block' (args={'name': <label>})"
+        )
     if ref.atom is not None:
         if labels is None:
             raise PickError(

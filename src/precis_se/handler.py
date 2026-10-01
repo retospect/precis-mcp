@@ -5291,10 +5291,18 @@ def _render_pick(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
         else:
             assert node is not None
             if labels is None:
+                # Name the block's own token: its uid is shown nowhere else
+                # on this path, and a bare '<se:UID>' leaves the agent to
+                # find it.
+                levels_hint = (
+                    f", or pass args={{'token': "
+                    f"{se_pick.format_token(int(node.uid))!r}}} for its block levels"
+                    if node.uid is not None
+                    else ""
+                )
                 raise BadInput(
                     f"view='pick': block {node.name!r} has no bound structure, so "
-                    "it has no atoms to pick — realize it first, or pass "
-                    "args={'token': '<se:UID>'} for its block levels"
+                    f"it has no atoms to pick — realize it first{levels_hint}"
                 )
             ordinal = _pick_ordinal(atom, labels, node.name)
             levels = se_pick.atom_levels(

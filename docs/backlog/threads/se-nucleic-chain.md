@@ -67,7 +67,9 @@ Next: findings print pick tokens (Horizon 1); Do-next is blocked.
   as specified) and `dogfood-nucleic-3`, realized before residue rows were
   stored: the pick dropped residue/pair/domain silently; fixed in the
   commit that added this line (the residue row names the residue and says
-  to re-realize).
+  to re-realize). Confirmed on prod after deploy; the same round found
+  the unknown-uid and unbound-block refusals left the agent to find a uid
+  — they now name `view='block'` and the block's own token.
 - **td458169** — done 2026-09-30; results in the todo's text.
 - **gr457928** — loop nucleotides chain by default: `realize_chain`
   relaxes the loop backbone unless `relax_loops=false` (Reto ruled
