@@ -38,9 +38,15 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
    the whole point of the split is code that runs without an extra
    installed.
 4. **backlog/plugin-split-runtime-shell.md** — steps 1, 3 and 5 (step 2
-   landed 2026-09-29). Step 1, the import-boundary test, now lands green
-   because step 2 removed the last core→plugin import, so it goes first and
-   becomes the gate the 10-16 moves are verified against.
+   landed 2026-09-29). Step 1, the import-boundary test, goes first and
+   becomes the gate the 10-16 moves are verified against. It no longer
+   lands green: **gr459054**, found dogfooding 2026-10-01, is a fresh
+   core→plugin import at `quest/roadmap_tick.py:406` — the same violation
+   step 2 removed, reintroduced four days later in a different file, which
+   is the argument for the test rather than against it. Write the test
+   against that line as its acceptance fixture; the fix is the quest
+   thread's (their file, under active edit) and is not a prerequisite,
+   since the test can land red-listed and tighten when they land it.
 5. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed
@@ -105,7 +111,10 @@ own item); they become items as each comes into reach.
   the 697-row backfill is a prod title write that wants Reto's word, and
   the failed-path retitle lives in `quest/loop.py`, which sibling sessions
   are editing today. Core cannot reuse `pathway_title` (plugin-owned), but
-  it does not need to: the failed case is a suffix swap.
+  it does not need to: the failed case is a suffix swap. ⚠ The write-path
+  fix is deployed (a9138fef) but **not yet exercised on prod** — no pathway
+  has completed since, so the newest `ready` row still predates it. Check
+  the next completion before calling it verified.
 
 ## No action needed
 
