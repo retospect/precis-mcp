@@ -10,27 +10,20 @@ and dogfooded end to end on prod (`dogfood-walker-a`: guard, channel
 budget, crosstalk, make_steps, view='stations' all as specified;
 td458169); fold_layout lays out every pseudoknot-free fold (bulges and
 coaxial stacks end to end, tails as single-occupancy stubs); loop atoms
-chain behind `relax_loops`, envelope_fit skips them, residue rows persist.
-Flip the loop-relax default on Reto's word, then the pick hierarchy.
+chain by default (`relax_loops`, Reto's ruling), envelope_fit skips them,
+residue rows persist, and an undeclared pair's letters are checked
+(strict Watson–Crick, Reto's ruling). Next: the pick hierarchy.
 **Last reviewed:** 2026-09-30 (pillar review same day added
 se-chain-wrap-around-part to Do next)
 **Worktree:** `se-nucleic-chain`
 
 ## Do next
 
-1. **gr457928, the default flip** — the slice is in: `realize_chain
-   relax_loops=true` chains the loop backbone (geometric relax, duplex
-   pinned, worst O3'–P step reported before/after), `envelope_fit` skips
-   loop nucleotides and names a protruding atom as `O3' of DA 8 (stem@3)`,
-   and `chain_atoms.residues` persists one row per residue. Left: Reto's
-   ruling on default-on — flipping `RELAX_LOOPS_DEFAULT` in
-   `atomic/generate.py` plus the skill's "default false" sentence is the
-   whole change; then tag the gripe done.
-2. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
+1. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
    1); the chain-design instance (its 2026-09-30 section: residue +
    base-pair rows under a segment block, atom pick) turns "aO44" into
    "O3' of DA 8, hp.h0@3".
-3. **backlog/se-chain-wrap-around-part.md** — blocked-by
+2. **backlog/se-chain-wrap-around-part.md** — blocked-by
    hexfold-integration; DNA-SE session evidence for the want.
 
 ## Horizon
@@ -67,6 +60,10 @@ se-chain-wrap-around-part to Do next)
 ## No action needed
 
 - **td458169** — done 2026-09-30; results in the todo's text.
+- **gr457928** — loop nucleotides chain by default: `realize_chain`
+  relaxes the loop backbone unless `relax_loops=false` (Reto ruled
+  default-on 2026-09-30 night); envelope_fit skips loop atoms and names
+  a protruding atom by residue; residue rows persist. Tagged done.
 - **base-pair complementarity is a read, not a look** — Reto on
   dogfood-nucleic-3 (2026-09-30): "I am not sure if basepairs in fact
   match"; the product could not answer (`pairing.watson_crick` had no
@@ -76,6 +73,8 @@ se-chain-wrap-around-part to Do next)
   letters aren't Watson–Crick complements, and view='chain' tallies every
   pair's letters (complementary / MISMATCHED / unverifiable). Verified on
   prod's dogfood-nucleic-3 by hand first (all 21 pairs, 2.9 Å N1–N3).
+  Reto ruled strict: an undeclared G·T is an error, a wobble is a declared
+  `W-W-cis`.
 - **gr458472** — filed 2026-09-30 from that re-dogfood: a `put(kind='se',
   ops=[…])` call lost its ops (put's schema has no `ops=`) and wiped the
   design; recovered by replaying design_revisions by hand. The refusal half

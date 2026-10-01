@@ -397,13 +397,16 @@ def test_relax_loops_chains_the_loop_backbone_with_the_duplex_pinned(
     only. Every O3'→P step along the chain ends up a bond length, the
     duplex atoms do not move, and the echo reports the before/after."""
     ops = [*_hairpin_ops(), {"op": "relax_chain"}]
-    _put(handler, "hp-flat", [*ops, _realize("stem", 0, 4, loops=True)])
-    flat, _meta = _atoms(store, "hp-flat-stem.s0")
-    echo = _put(
+    flat_echo = _put(
         handler,
-        "hp-chained",
-        [*ops, _realize("stem", 0, 4, loops=True, relax_loops=True)],
+        "hp-flat",
+        [*ops, _realize("stem", 0, 4, loops=True, relax_loops=False)],
     )
+    assert "pass relax_loops=true to chain them" in flat_echo, flat_echo
+    flat, _meta = _atoms(store, "hp-flat-stem.s0")
+    # The default IS the relax (Reto's ruling on gr457928): an unqualified
+    # loops=True realize chains the loop.
+    echo = _put(handler, "hp-chained", [*ops, _realize("stem", 0, 4, loops=True)])
     assert "loop backbone chained by a geometric relax" in echo, echo
     coords, meta = _atoms(store, "hp-chained-stem.s0")
     resseq = np.asarray(meta["resseq"])

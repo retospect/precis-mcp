@@ -206,6 +206,6 @@ posture as `ff`/`xtb`/`ml` in `precis/structure/relax.py`: optional binary,
 `Unsupported` when absent) and comparing its settled segment poses against
 the block-scale ones would be the first honesty check the chain settle has.
 Deliverable: a `chain_physics_disagree` finding naming the segments whose
-oxDNA pose departs from the settle by more than a stated tolerance. Waits
-on the loop-chaining fix (gr457928) so the exported atoms are a continuous
-backbone, and on the oxDNA binary in the image.
+oxDNA pose departs from the settle by more than a stated tolerance. The
+exported atoms are a continuous backbone since `realize_chain` chains
+loops by default; this waits only on the oxDNA binary in the image.

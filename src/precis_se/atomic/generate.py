@@ -47,11 +47,13 @@ from precis_se.atomic.validate import A_to_m
 from precis_se.chain.layout import LAYOUT_PORT_MARKER
 from precis_se.ops import OpError, SeTree, apply_ops
 
-#: ``realize_chain``'s ``relax_loops`` default. ``False`` until Reto rules
-#: on gr457928's default-on question (thread se-nucleic-chain, Do-next 1);
-#: flipping this one constant (and the skill's sentence) is the whole
-#: decision — every other part of the loop-chaining slice is in.
-RELAX_LOOPS_DEFAULT = False
+#: ``realize_chain``'s ``relax_loops`` default — on: a realized loop is a
+#: chained backbone unless the caller says ``relax_loops=false`` (the
+#: rigid-template placement at the curve's own spacing, kept for
+#: inspection). Default-on is Reto's ruling on gr457928: an unchained
+#: loop is a 5–10 Å "bond" every downstream check has to explain away,
+#: and the relax costs seconds on the loop subgraph alone.
+RELAX_LOOPS_DEFAULT = True
 
 #: Base-ring and exocyclic atoms of the Arnott templates — planar, so
 #: ``sp2`` for the geometric relax's angle term; everything else (the

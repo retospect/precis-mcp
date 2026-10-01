@@ -434,7 +434,8 @@ The third handler-level op, also a **proposal**: it mints and binds a
 `{'op': 'realize_chain', 'block': <helix>, 'start': <offset>, 'end':
 <offset, exclusive>, 'fidelity'?: 'allatom'|'backbone', 'sites'?:
 [<offset>, …], 'loops'?: bool, 'relax_loops'?: bool}` — `fidelity`
-defaults `allatom`, `loops` and `relax_loops` default `false`. One region
+defaults `allatom`, `loops` defaults `false`, `relax_loops` defaults
+`true` (pass `false` to keep the loop's rigid-template placement). One region
 per segment child (`layout_chain` first — a
 range straddling two segments is refused naming both). Binds to the
 **segment child** `<helix>.s<k>` covering the region, structure slug
@@ -453,8 +454,8 @@ whose two ends both sit inside the region — a loop with no placed curve
 is `Unsupported` naming it (`relax_chain` places curves; nothing here
 guesses one); a 0-nt crossover inside the region is just a bond, no
 special case. Loop nucleotides are placed as rigid templates at the
-curve's own spacing, so their O3'–P steps are 5–10 Å (connectivity right,
-geometry not) and the echo reports the worst step; `relax_loops=true` chains them — a
+curve's own spacing, so their O3'–P steps start at 5–10 Å (connectivity
+right, geometry not); `relax_loops` (default) then chains them — a
 geometric relax over the loop nucleotides with every duplex atom pinned
 (bond springs, repulsion, VSEPR angles: geometry, not thermodynamics, no
 pairing or stacking energy), the echo reporting the worst O3'–P step
