@@ -1215,6 +1215,10 @@ def _doable_counters(store: Store) -> dict[str, int]:
                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
                      AND t.value LIKE 'waiting-for:%%'
+                ) AND NOT EXISTS (
+                  SELECT 1 FROM ref_tags st JOIN tags s ON s.tag_id = st.tag_id
+                   WHERE st.ref_id = r.ref_id AND s.namespace = 'STATUS'
+                     AND s.value IN ('done', 'won''t-do', 'auto-timeout')
                 )
               ) AS waiting,
               count(*) FILTER (
@@ -1319,7 +1323,9 @@ def render_status_flat(
 
 
 def render_waiting(store: Store) -> Response:
-    """Leaves carrying any ``waiting-for:*`` tag."""
+    """Leaves carrying any ``waiting-for:*`` tag that are still live — a
+    done/won't-do/auto-timeout row keeps its tag as history, but listing it
+    buried the 40 live asks in Reto's queue under 211 closed ones."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -1331,6 +1337,11 @@ def render_waiting(store: Store) -> Response:
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN'
                AND t.value LIKE 'waiting-for:%%'
+               AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags st JOIN tags s ON s.tag_id = st.tag_id
+                  WHERE st.ref_id = r.ref_id AND s.namespace = 'STATUS'
+                    AND s.value IN ('done', 'won''t-do', 'auto-timeout')
+               )
              GROUP BY r.ref_id, r.title
              ORDER BY r.ref_id DESC
              LIMIT 50

@@ -216,6 +216,19 @@ def test_waiting_shows_tagged_leaves(handler: TodoHandler) -> None:
     assert "waiting-for:reviewer-tanaka" in out.body
 
 
+def test_waiting_drops_closed_leaves(handler: TodoHandler) -> None:
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    handler.put(text="Still waiting.", parent_id=root_id, tags=["waiting-for:reto"])
+    done = handler.put(text="Answered.", parent_id=root_id, tags=["waiting-for:reto"])
+    handler.tag(id=_id_of(done.body), add=["STATUS:done"])
+
+    out = handler.search(view="waiting")
+
+    assert "Still waiting." in out.body
+    assert "Answered." not in out.body
+
+
 # ── view='blocked' ────────────────────────────────────────────────
 
 

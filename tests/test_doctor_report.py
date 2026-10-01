@@ -193,6 +193,10 @@ def test_convert_needs_a_human_mints_one_todo_per_bullet(store: Store) -> None:
 
     todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
     assert len(todos) == 3
+    live = store.list_refs(
+        kind="todo", tags=["waiting-for:reto", "STATUS:open"], limit=20
+    )
+    assert len(live) == 3
     root_id = doctor_report._ensure_asks_root(store)
     for todo in todos:
         assert int(todo.parent_id or -1) == root_id
@@ -203,6 +207,31 @@ def test_convert_needs_a_human_mints_one_todo_per_bullet(store: Store) -> None:
     for todo_id in ids:
         assert f"- td{todo_id}:" in new_body
     assert "## Needs a human" in new_body
+
+
+def test_convert_needs_a_human_skips_null_asks(store: Store) -> None:
+    body = _body_with_asks(
+        "No other gaps this tick — no `kind='todo'` write attempted.",
+        "**No action needed on al453382** — its retry is due imminently.",
+        "No new asks for the claude_inproc flapping family (gr262888).",
+        "None.",
+        "**No queryable surface for git-commit ancestry** — add one.",
+    )
+
+    new_body = doctor_report.convert_needs_a_human(store, body)
+
+    todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+    assert [t.title for t in todos] == [
+        "**No queryable surface for git-commit ancestry** — add one."
+    ]
+    assert "No other gaps" not in new_body
+
+
+def test_convert_needs_a_human_all_null_mints_nothing(store: Store) -> None:
+    body = _body_with_asks("Nothing new this tick.")
+
+    assert doctor_report.convert_needs_a_human(store, body) == body
+    assert store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20) == []
 
 
 def test_convert_needs_a_human_nested_sub_bullet_joins_the_parent(store: Store) -> None:

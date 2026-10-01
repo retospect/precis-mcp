@@ -66,12 +66,14 @@ put(
 ## List what a person needs to do
 
 ```python
-search(kind="todo", tags=["waiting-for:<user>"])
-search(kind="todo", tags=["waiting-for:<user>"], q="credentials")  # narrow
-search(kind="todo", view="waiting")  # every external wait, all people
+search(kind="todo", tags=["waiting-for:<user>"], status="open")
+search(kind="todo", tags=["waiting-for:<user>"], status="open", q="credentials")  # narrow
+search(kind="todo", view="waiting")  # every live external wait, all people
 ```
 
-The tagged set is the whole queue; `q=` filters inside it. A session
+The queue is the open tagged set. Pass `status="open"`: a closed item
+keeps its `waiting-for:` tag as history, so the bare tag search returns
+answered items too. `q=` filters inside the queue. A session
 that starts a triage pass lists this first, before mining memory or
 chat for "things the owner still has to do".
 

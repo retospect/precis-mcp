@@ -146,6 +146,16 @@ _ASK_WS_RE = re.compile(r"\s+")
 #: todo's title.
 _ASK_TITLE_MAX = 160
 
+#: A bullet that reports the absence of an ask ("No other gaps this
+#: tick", "No action needed on al…", "No new asks for …", "None") — the
+#: model padding the section. Minting one put "nothing to do" rows into
+#: Reto's queue. Narrow on purpose: "No queryable surface for …" is a
+#: real ask and must not match.
+_NULL_ASK_RE = re.compile(
+    r"^\W*(?:none\b|nothing\b|no (?:action|other|new|further|asks?)\b)",
+    re.IGNORECASE,
+)
+
 
 def _normalize_ask_text(text: str) -> str:
     """Lowercase, id/number-stripped form of an ask's text — the input to
@@ -291,6 +301,8 @@ def _mint_ask_todo(
             conn=conn,
         )
         store.add_tag(ref.id, Tag.open("waiting-for:reto"), set_by="system", conn=conn)
+        # Explicit STATUS:open so the queue query `status='open'` finds it.
+        store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system", conn=conn)
         if detail:
             store.chunks.insert_chunks(
                 ref.id,
@@ -326,6 +338,7 @@ def convert_needs_a_human(
         if parsed is None:
             return body
         items, section_start, section_end = parsed
+        items = [i for i in items if not _NULL_ASK_RE.match(i)]
         if not items:
             return body
 
