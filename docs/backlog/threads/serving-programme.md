@@ -12,6 +12,8 @@ serve tier and the eval spine.
 pillar review 2026-09-30 added the seam, embedder-capacity-ownership as a
 wait, and five orphan gripes)
 **Worktree:** `serving-programme`
+**Active:** no — dormant on Reto's word 2026-10-01; reopens when the
+session count nears the ~28 calls/s serve ceiling.
 
 ## Do next
 

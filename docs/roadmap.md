@@ -169,9 +169,10 @@ current bottleneck (`backlog/embedder-capacity-ownership.md`). Reto
 (`backlog/vllm-per-node-serving.md` Slice 0).
 
 **Threads.** Active: `local-compute.md` (owns local serving: the summariser
-and the single-spark model, and what they do) · `serving-programme.md` (the
-MCP ceiling and the eval spine) · `session-mcp-shared-server.md` (the
-platform blocker every thread owner named).
+and the single-spark model, and what they do) · `session-mcp-shared-server.md`
+(the platform blocker every thread owner named). Dormant:
+`serving-programme.md` (the MCP ceiling and the eval spine; Reto 2026-10-01 —
+nothing hits the ~28 calls/s ceiling at ~15 sessions).
 
 **Surfaces.** One console row answers busy or idle per tier
 (`backlog/local-cloud-share-report.md`, `backlog/graph-maintenance-queue.md`).
@@ -240,21 +241,22 @@ and the owner is expected to move it. **Dormant** means ranked and filed
 against, nobody works it. Opening a session on a dormant thread names
 which active one it replaces, or Reto widens the set.
 
-Active (19; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
-plus seven on 2026-10-01):
+Active (18; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
+plus seven on 2026-10-01, minus serving-programme):
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
 `nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (prep-only
 until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
-· `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
+· `session-mcp-shared-server` · `knowledge-mesh` ·
 `claims-and-evidence` · `se-machine-design` · `chemistry` (added
 2026-10-01, Reto's rulings) · `local-compute` (added 2026-10-01) ·
 `ingest-and-fetch` · `draft-authoring` · `graph-memory-consumers` (all
 three 2026-10-01: "ingest must work. draft authoring must work. graph
 memory we want soon").
 
-Dormant (3, open at the next restart if named): `multiscale-design-core`
+Dormant (4, open at the next restart if named): `multiscale-design-core`
 · `factory` (2026-10-01, the agent-lane items moved from pillar 3) ·
-`pcb-platform` (created at the 09-30 review).
+`pcb-platform` (created at the 09-30 review) · `serving-programme`
+(2026-10-01, Reto: until the session count nears the serve ceiling).
 
 ## Retirement
 
@@ -288,7 +290,7 @@ Newest first; one line per pass (`/pillar-review` writes it).
   throughout code (td459590 done); December paper becomes a
   molecular-machines paper, boxel dr42995 unscheduled; catpath moves
   to November (not started), reality-grounding to January; ingest-and-fetch, draft-authoring and graph-memory-consumers
-  active. Still open: serving-programme has no session.
+  active; serving-programme dormant.
 
 - 2026-10-01 — not a full pass: the paper cadence added (quest qu459585,
   October to January scheduled), and ingest-and-fetch listed as dormant.
