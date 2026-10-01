@@ -80,7 +80,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _build_search_embedder(store: Any) -> Any | None:
+def build_search_embedder(store: Any) -> Any | None:
     """Best-effort real embedder for a tick's HyDE corpus leg
     (:mod:`precis.quest.search`, dossier-hygiene design) — reuses
     :mod:`precis.workers.job_types.taproot_backfill`'s ``_build_embedder``
@@ -910,7 +910,7 @@ def _phase_roadmap_tick(
         tier=tier_from_str(tier), source="quest_roadmap", tools_needed=True
     )
 
-    search_embedder = _build_search_embedder(ctx.store)
+    search_embedder = build_search_embedder(ctx.store)
     try:
         result = roadmap_tick(
             ctx.store,
@@ -1086,7 +1086,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
                     wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
                 )
 
-    search_embedder = _build_search_embedder(ctx.store)
+    search_embedder = build_search_embedder(ctx.store)
     search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store), search_embedder)
     # quest-bodies-inquiry: the third arm. Unlike weave (a wholly separate
     # ``weave_tick`` function above), ``inquiry`` reuses this SAME
@@ -1275,7 +1275,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
                     search_fn=make_acquiring_search(
                         quest_id,
                         Hub(store=ctx.store),
-                        _build_search_embedder(ctx.store),
+                        build_search_embedder(ctx.store),
                     ),
                 )
                 ctx.append_chunk(

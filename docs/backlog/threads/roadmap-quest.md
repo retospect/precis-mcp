@@ -28,9 +28,13 @@ server; gr345366 moved to chemistry)
    claim, so `meta.supply` stayed unwritten; dry, gaps [2, 2]. It took
    ~25 min because quest S2 search ran keyless and double-retried
    (gr459597, 61×429); fixed 2026-10-01 together with local-first search
-   (S2 only when the graph has fewer than 3 relevant hits). Tick 3 waits
-   for that deploy; its logbook should read `local N, acquired M`. One
-   more watched tick (expect `bridge` or a supply with a number), then activation (no ask, `docs/conventions/thresholds.md`). Serves
+   (S2 only when the graph has fewer than 3 relevant hits). Tick 3
+   (2026-10-01 23:15Z, 3.5 min, no 429) took supply @big again and wrote
+   qu453869 `meta.supply.placement_error_nm = 1.2` [fi460566], 3 papers
+   linked, 1 ledger improvement — but every query logged `local 0`: the
+   CLI tick built its search with no embedder, so the local leg was
+   lexical-only (fixed 2026-10-02; the worker path was unaffected). Tick
+   4 should show local hits on queries the graph answers. Then activation (no ask, `docs/conventions/thresholds.md`). Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
 2. **backlog/bootstrap-roadmap-quest.md §Residuals 5** — export `rungs_for`

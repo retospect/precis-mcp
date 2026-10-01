@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import inspect
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -586,3 +586,127 @@ class TestRunSearchStepLocalFirst:
 
         assert step.papers_linked == 1
         assert "outside search failed" in self.entries[0]["text"]
+
+
+# ── embedder-less local leg is flagged (lexical-only) ────────────────────
+
+
+class _SentinelEmbedder:
+    def embed_one(self, text: str) -> list[float]:
+        return [0.0]
+
+
+class TestLexicalOnlyFlag:
+    @pytest.fixture(autouse=True)
+    def _no_s2(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(s2mod, "search_s2_papers", _S2Stub())
+        _stub_acquire(monkeypatch)
+
+    def test_no_embedder_flags_report_and_logbook_clause(self) -> None:
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[(50, "finding")])
+        fn(store, "q one", [])
+        rep = fn.report_for("q one")
+        assert rep is not None
+        assert rep.lexical_only is True
+        assert "lexical-only" in qsearch._sources_clause(rep)
+
+    def test_embedder_present_no_flag_no_marker(self) -> None:
+        fn = qsearch.make_acquiring_search(1, _fake_hub(), _SentinelEmbedder())
+        store: Any = FakeStore(held_ids=[(50, "finding")])
+        fn(store, "q one", [])
+        rep = fn.report_for("q one")
+        assert rep is not None
+        assert rep.lexical_only is False
+        assert "lexical-only" not in qsearch._sources_clause(rep)
+
+    def test_hub_embedder_counts(self) -> None:
+        hub = SimpleNamespace(store=object(), embedder=_SentinelEmbedder())
+        fn = qsearch.make_acquiring_search(1, hub)
+        store: Any = FakeStore(held_ids=[])
+        fn(store, "q", [])
+        rep = fn.report_for("q")
+        assert rep is not None and rep.lexical_only is False
+
+    def test_warning_fires_once_per_instance(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[])
+        with caplog.at_level("WARNING", logger=qsearch.log.name):
+            fn(store, "first query", [])
+            fn(store, "second query", [])
+        hits = [r for r in caplog.records if "lexical-only" in r.getMessage()]
+        assert len(hits) == 1
+        assert hits[0].levelname == "WARNING"
+
+    def test_no_warning_with_embedder(self, caplog: pytest.LogCaptureFixture) -> None:
+        fn = qsearch.make_acquiring_search(1, _fake_hub(), _SentinelEmbedder())
+        store: Any = FakeStore(held_ids=[])
+        with caplog.at_level("WARNING", logger=qsearch.log.name):
+            fn(store, "q", [])
+        assert not [r for r in caplog.records if "lexical-only" in r.getMessage()]
+
+
+class TestLocalGraphSearchSemantic:
+    """Real store: a semantic-only match is found with an embedder, missed
+    without one (websearch_to_tsquery ANDs every word)."""
+
+    def test_semantic_match_needs_embedder(self, store: Any) -> None:
+        from precis.embedder import MockEmbedder
+        from precis.store import ChunkInsert
+
+        emb = MockEmbedder(dim=store.embedding_dim())
+        query = "how do alpha beta gamma delta epsilon zeta eta theta"
+        quest = store.insert_ref(kind="quest", slug=None, title="q")
+        finding = store.insert_ref(kind="finding", slug=None, title="f")
+        # Chunk text shares no all-words match with the query, but its vector
+        # is the query's vector (deterministic semantic hit).
+        store.chunks.insert_chunks(
+            finding.id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text="unrelated wording about quokkas",
+                    embedding=emb.embed_one(query),
+                )
+            ],
+        )
+        with_emb = qsearch._local_graph_search(store, quest.id, query, emb)
+        assert finding.id in [rid for rid, _k, _s in with_emb]
+        assert qsearch._local_graph_search(store, quest.id, query, None) == []
+
+
+# ── CLI: roadmap tick wires the embedder ────────────────────────────────
+
+
+class TestRoadmapTickCliEmbedder:
+    def test_live_path_passes_embedder_everywhere(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import argparse
+
+        import precis.quest.roadmap_tick as rt
+        import precis.utils.llm.router as router
+        import precis.workers.job_types.quest_tick as qt
+        from precis.cli import quest as cli_quest
+
+        sentinel = _SentinelEmbedder()
+        seen: dict[str, Any] = {}
+
+        def _fake_tick(store: Any, client: Any, qid: int, **kw: Any) -> dict[str, Any]:
+            seen.update(kw)
+            return {"ok": False, "error": "stub"}
+
+        monkeypatch.setattr(qt, "build_search_embedder", lambda store: sentinel)
+        monkeypatch.setattr(rt, "roadmap_role", lambda store, qid: None)
+        monkeypatch.setattr(rt, "role_tier", lambda role: "big")
+        monkeypatch.setattr(rt, "roadmap_tick", _fake_tick)
+        monkeypatch.setattr(router, "DispatchClient", lambda **kw: object())
+
+        args = argparse.Namespace(id=7, dry_run=False, tier=None)
+        cli_quest._cmd_roadmap_tick(cast(Any, SimpleNamespace()), args)
+
+        assert seen["embedder"] is sentinel
+        assert seen["search_fn"].embedder is sentinel
+        assert seen["search_fn"].hub.embedder is sentinel

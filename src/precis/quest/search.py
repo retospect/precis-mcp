@@ -154,6 +154,7 @@ class QueryReport:
     acquired: int = 0
     external_ran: bool = False
     external_error: str | None = None
+    lexical_only: bool = False
     kinds: dict[int, str] = field(default_factory=dict)
 
 
@@ -170,6 +171,7 @@ class AcquiringSearch:
             embedder if embedder is not None else getattr(hub, "embedder", None)
         )
         self._reports: dict[str, QueryReport] = {}
+        self._warned = False
 
     def report_for(self, query: str) -> QueryReport | None:
         return self._reports.get(query)
@@ -177,8 +179,15 @@ class AcquiringSearch:
     def __call__(
         self, store: Store, query: str, exclude_ref_ids: list[int]
     ) -> list[tuple[int, float | None]]:
-        report = QueryReport()
+        report = QueryReport(lexical_only=self.embedder is None)
         self._reports[query] = report
+        if self.embedder is None and not self._warned:
+            self._warned = True
+            log.warning(
+                "quest %s: no embedder — local graph leg is lexical-only "
+                "(all query words must match), so S2 runs more than it should",
+                self.quest_id,
+            )
         ex = set(exclude_ref_ids)
 
         local = _local_graph_search(store, self.quest_id, query, self.embedder)
@@ -277,7 +286,11 @@ def _local_graph_search(
             try:
                 query_vec = embedder.embed_one(query)
             except Exception:
-                log.debug("quest %s: local-leg embed failed", quest_id, exc_info=True)
+                log.warning(
+                    "quest %s: local-leg embed failed; lexical-only",
+                    quest_id,
+                    exc_info=True,
+                )
         rows = store.chunks.search_chunks_across_kinds(
             kinds=list(LOCAL_KINDS),
             q=query,
@@ -450,6 +463,8 @@ def _sources_clause(report: QueryReport | None) -> str:
         tail = f"outside search failed: {report.external_error}"
     else:
         tail = "graph thin, outside searched"
+    if report.lexical_only:
+        tail += "; local leg lexical-only, no embedder"
     return f" [local {report.local}, acquired {report.acquired}; {tail}]"
 
 

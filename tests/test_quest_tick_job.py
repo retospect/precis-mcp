@@ -132,7 +132,7 @@ def _stub_queued(monkeypatch: pytest.MonkeyPatch, n: int) -> None:
 
 
 class TestBuildSearchEmbedder:
-    """``_build_search_embedder`` — the HyDE corpus leg's best-effort real
+    """``build_search_embedder`` — the HyDE corpus leg's best-effort real
     embedder (dossier-hygiene design). Unlike
     ``taproot_backfill._build_embedder`` (a real failure for its ANN-
     convergence use), any failure here degrades to ``None`` rather than
@@ -141,7 +141,7 @@ class TestBuildSearchEmbedder:
     def test_degrades_to_none_on_any_failure(self) -> None:
         # A bare SimpleNamespace has no `embedding_dim` — the underlying
         # builder raises AttributeError; this must swallow it.
-        assert qt._build_search_embedder(SimpleNamespace()) is None
+        assert qt.build_search_embedder(SimpleNamespace()) is None
 
     def test_reuses_taproot_backfills_builder_on_success(
         self, monkeypatch: pytest.MonkeyPatch
@@ -156,7 +156,7 @@ class TestBuildSearchEmbedder:
             "precis.workers.job_types.taproot_backfill._build_embedder", _fake_build
         )
         store = object()
-        assert qt._build_search_embedder(store) == "an-embedder"
+        assert qt.build_search_embedder(store) == "an-embedder"
         assert calls == [store]
 
 
@@ -213,7 +213,7 @@ class TestPhaseTick:
         assert calls[0]["tier"] == "big"
         # HyDE's embedder is threaded through (dossier-hygiene design);
         # FakeCtx's store has no `embedding_dim`, so it degrades to None
-        # rather than raising (:func:`_build_search_embedder`).
+        # rather than raising (:func:`build_search_embedder`).
         assert calls[0]["embedder"] is None
 
     def test_empty_punt_backs_off_and_retries(
@@ -1375,7 +1375,7 @@ class TestRoadmapArm:
             "precis.quest.search.make_acquiring_search",
             lambda qid, hub, embedder=None: None,
         )
-        monkeypatch.setattr(qt, "_build_search_embedder", lambda store: None)
+        monkeypatch.setattr(qt, "build_search_embedder", lambda store: None)
 
         def _reset(store: Any, qid: int) -> None:
             seen["resets"] += 1
