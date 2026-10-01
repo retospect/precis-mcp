@@ -210,7 +210,10 @@ waited on happened 09-29 — note at the bottom)
     stands in for. This is the "solving" capability of Do-next 1's split:
     a smooth profile in (sheet → catenoid foot → tube → flare → drum →
     rounded lid), and distributed defects out. It emits authored-defect
-    lists (gr459928).
+    lists (gr459928). The smooth-drum slice there (Reto 2026-10-01) has
+    its meridian (`precis_surface.revolution`, table radii from
+    `hexfold.radii`) and row fit (`precis_surface.rowfit`) landed; open
+    are the viewer overlay and a carbon wrapper that mints the fit.
 12. **backlog/global-structure-search-slices.md** — variable-composition
     (`add` ranges) and surrogate warm-start from a prior AGOX database;
     structure-kind search work homed here by Reto's pillar-2 ruling

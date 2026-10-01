@@ -43,6 +43,9 @@ Modules:
   tiling a finite supercell.
 - :mod:`precis_surface.remesh` -- degree-controlled isotropic remeshing
   loop, see its docstring.
+- :mod:`precis_surface.revolution` -- smooth targets as surfaces of
+  revolution: catenoid bends, table-picked fillets, defect-row radii,
+  ``revolve`` to a mesh (the smooth-drum slice).
 """
 
 from __future__ import annotations

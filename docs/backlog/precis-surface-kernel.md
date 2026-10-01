@@ -848,3 +848,119 @@ length-driven splitting needs a split+flip compound or gating only the final
 mesh. The seam is not the wall for angles — 16% of raw vertices frozen and 20% of
 triangles seam-touching with lower q (0.872 against 0.929), yet dual angle
 deviation at seam atoms is 17.1° against 17.9° interior.
+
+## Slice — smooth drum, surface of revolution (Reto, 2026-10-01)
+
+Reto's ask is "I want to see smooth". He wants the radii calculated from
+strain, not authored, and he does not want to draw anything; the agent
+draws the drum. He also argued that the discrete step should "just solve
+to fit" rather than reuse hexfold's cut-lid rings. Ruling: do all of it.
+The rings (gr459928, `tests/hexfold/test_graded_bend.py`) stay as the
+hand-authoring path and as the oracle the fit is compared against.
+
+1. **Smooth target from strain.**
+   - Concave bends (foot, flare) are catenoids, r = a cosh(z/a), with a
+     equal to the neck radius. The surface has zero mean curvature, so
+     zero bending energy, and the neck radius fixes the shape with no
+     free fillet. The total curvature from neck to infinity is -2π, which
+     is 6 heptagons.
+   - Heptagon row k sits at slope cos α = 1 - k/6, i.e. at r = a / sin α.
+     For k = 6..1 that is r/a = 1.00, 1.01, 1.06, 1.15, 1.34, 1.81.
+   - On a thin neck (tube(12,0), a = 4.7 Å) rows 3-6 fall within 0.7 Å,
+     so the physics wants a near-single-row turn; the relaxed probes
+     agree (/tmp/hexa-bud/graded-feet.png). On a wide neck (a = 14 Å) the
+     rows spread over about 11 Å. So the drum needs a wide stalk for the
+     grading to show.
+   - Convex corners (drum rim, lid edge) need K > 0, so H = 0 is
+     impossible and bending energy falls as the fillet radius ρ grows.
+     Use the largest ρ the kept flats allow, bounded by
+     θp ≤ θp_max (default C60's 11.6°).
+   - Output: a meridian polyline plus the surface of revolution, in
+     metres (spec §21/§24 units).
+   - **Built (2026-10-01, unlanded):** `precis_surface.revolution`
+     (`drum_meridian`, `revolve`, `catenoid_row_radii`) and the carbon
+     tables in `hexfold.radii`; tests in
+     `tests/test_precis_surface_revolution.py`. Still open in this step:
+     metres at the handler, and a carbon wrapper choosing defaults.
+   - **Radii come from tables, not a solve** (Reto: "could also be a table
+     lookup, starting at C60"):
+     - necks are `tube_radius(n, m)`;
+     - fillets are icosahedral fullerene radii `C_{20(h²+hk+k²)}` from C60
+       up, at graphene area per atom (C60 = 3.54 Å);
+     - strain only picks among entries: the largest fillet the flats
+       allow, refused if `k1 + k2` exceeds C60's (θp ≈ asin(σ(k1+k2)/4),
+       11.6° at C60).
+     
+     Because every radius is a table value, the 2026-09-27 snap-cell band
+     (spec §25) has nothing to snap at the necks or the fillets.
+   - **Correction to the row radii above.** A defect row sits *between*
+     facets j−1 and j, so it goes at cos α = 1 − (j − ½)/6, not at
+     1 − j/6. That puts the catenoid rows at r/a = 2.50, 1.51, 1.23, 1.10,
+     1.03, 1.00, which is wider than the 1.81 outer row first quoted. The
+     outermost row is the junction to the flat, kinking by half a step
+     (23.6°).
+   - **Tolerance for the fit** is row quantisation: about half a lattice
+     row (~1 Å) between a fitted defect row and its smooth radius.
+     Marching cubes (the source of the 24% out-of-tolerance angles on
+     Schwarz P) is not used here; rows are laid directly on the meridian.
+   - A thin drum refuses. drum33's (12,0) stalk with a (36,0) wall cannot
+     hold the smooth flare plus a C60 fillet, because the flare cuts at
+     2.5a = 11.7 Å. Smooth drums start around a (24,0) stalk and a
+     (90,0) wall.
+2. **Viewer overlay.** A translucent smooth mesh in the se viewer with a
+   toggle, reusing the mesh payload `shape_json` in
+   `src/precis_web/blocktree_3d.py`. Store the surface with the design.
+   Verify by canvas pixel-diff, not a green suite (se-3d-viewer thread
+   rule).
+3. **Fit.** The remesh to the dual (`remesh.py` and `dual.py` here)
+   applied to the surface of revolution. Constraints:
+   - heptagon spacing (no 7-7 adjacency; see "Heptagon placement is
+     CONSTRAINED");
+   - deterministic output.
+   Then relax with Tersoff and compare against the smooth target and
+   against the 3+3 ring drum (/tmp/hexa-bud/drum33.hx; the hexfold
+   thread's Do-next 1 gives the prod name once minted).
+   Acceptance:
+   - the defect rows fall near the catenoid radii;
+   - no stick clashes;
+   - θp max ≤ θp_max.
+
+   **Built and tested (2026-10-01):** `precis_surface.rowfit`
+   (`fit_rows`, `loft`, `realise`), tests in
+   `tests/test_precis_surface_rowfit.py`. It needs neither remesh nor
+   marching cubes: rows are laid on the meridian, and the loft propagates
+   corners so that degree ≠ 6 occurs only where the per-row count change
+   steps. The prototype in /tmp/hexa-bud (`fit.py`, `loft.py`,
+   `fit_drive.py`), on a (24,0) stalk with a (90,0) wall:
+   - exactly {5:12, 7:12}, no adjacent defects, no 5-7 pairs;
+   - defect rows within 1.6 Å of the smooth radii;
+   - 6554 atoms, unrelaxed bond sd 0.22 Å.
+   
+   Findings:
+   - **A closed flat lid forces regular hexagonal rings.** The loft must
+     start at the pole, or the fillet's uneven pentagon spacing collides
+     corners near the centre. This is the hexagonal-faceting tolerance
+     Reto asked about. It now lives only in the open annuli.
+   - Integer closures (pole ring = 6; arriving on a cylinder at its tube
+     count) are met by holding or skipping one facet row, at most two
+     moves per piece.
+   - On a (24,0) neck the last three heptagon rows land in one lattice
+     row (the catenoid rows 4-6 fall within 0.45a).
+   
+   Relaxed (2026-10-01, `/tmp/hexa-bud/spring_fit.py`: harmonic bonds
+   1.42 Å, 1-3 springs 2.46 Å, plus an atom-to-neighbour-centroid bending
+   term, L-BFGS converged): bonds 1.35-1.52 Å (sd 0.012), θp max 8.66°
+   (none over 11.6°), no non-bonded pair under 2 Å. Without the bending
+   term the pentagons cone out (θp to 18°) and the foot saddle buckles, so
+   a spring relax needs it. This is a force-field proxy, not Tersoff: ASE's
+   pure-Python Tersoff made no FIRE step on 6.5k atoms in 30 min.
+
+   Next:
+   - Tersoff energy per atom against drum33, via the prod geo relax once
+     a carbon wrapper can mint the fit (the 3+3 drum mint itself waits on
+     Reto);
+   - the overlay. Navigator mapped it: `/se/{slug}/atomic3d.json` →
+     `_atomic_block_payload` (src/precis_web/routes/blocktree_view.py);
+     `GeneratedBlock` has no mesh field (precis_se/atomic/generators/_types.py);
+     toggle pattern `setEnvelopesCaged` in static/blocktree-3d.js;
+     pixel-diff in scripts/viewer_check.py `probe()`.
