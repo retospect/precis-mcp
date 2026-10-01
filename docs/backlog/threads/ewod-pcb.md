@@ -148,7 +148,15 @@ soft-deleted)
    while checking it: the prod `parts` catalog is EMPTY (0 rows), so no
    part can be SEARCHED for, only confirmed by C-number.
 6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
-   on 5, a checklist over unenforceable constraints is theatre.
+   on 5, a checklist over unenforceable constraints is theatre. **But its
+   `drc-clean` item now has measured evidence and may deserve to jump the
+   queue:** dogfooded 2026-10-01, `view='gerber'` on `ewod-dogfood-6` (116
+   DRC errors) returns exit 0 and a complete 12-file 217 KB JLCPCB bundle
+   with **no mention of DRC at all**. The export boundary gates nothing, so
+   a board the system knows is unmanufacturable can be sent to a fab. The
+   item carries the measurement and the one open design call (refuse vs
+   loud banner) — Reto's, since refusing breaks exporting a mid-progress
+   board to look at it.
 7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
