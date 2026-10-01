@@ -318,12 +318,18 @@ def test_warm_md_index_retries_a_transient_failure_and_records_warm(
 def test_warm_md_index_gives_up_and_records_a_cold_cache(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A permanently-failing embedder is bounded, and says so.
+    """A permanently-unavailable embedder is bounded, and says so.
 
     Two halves of gr457326: the retry is not unbounded (a down embedder
     must not leave a thread looping for the process's life), and the
-    resulting cold cache is recorded for `precis-status` instead of
-    living only in a background thread's traceback.
+    outcome is recorded for `precis-status` instead of living only in a
+    background thread's traceback.
+
+    The outcome is "warm with gaps", not COLD: since gr459088 a
+    retryable error that outlasts the per-batch budget skips that batch
+    rather than aborting the pass, so even a fully-down embedder reports
+    what it skipped. COLD is now reserved for a non-retryable error —
+    see `test_warm_md_index_does_not_retry_a_deterministic_error`.
     """
     from precis.config import PrecisConfig
     from precis.dispatch import boot
@@ -358,9 +364,9 @@ def test_warm_md_index_gives_up_and_records_a_cold_cache(
 
     assert embedder.attempts == 2  # bounded, not looping forever
     state = vectors_mod.warmup_state() or ""
-    assert "COLD" in state
-    assert "EmbedderUnavailable" in state
-    assert "lexical-only" in state
+    assert "gaps" in state
+    assert "skipped" in state
+    assert "0 new" in state
 
 
 def test_warm_md_index_retries_the_failing_batch_not_the_whole_pass(
@@ -563,7 +569,7 @@ def test_cold_md_search_rearms_the_warm_pass(
     server._warm_md_index_background(rt)
     _join_warmup_threads()
     assert len(handler.vector_cache) == 0
-    assert "COLD" in (vectors_mod.warmup_state() or "")
+    assert "gaps" in (vectors_mod.warmup_state() or "")
 
     # The embedder recovers. A search is what notices.
     embedder.down = False
@@ -748,6 +754,107 @@ def test_rearm_cooldown_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
         server._MD_WARMUP_REARM_COOLDOWN_S * 2
     )
     assert server._MD_WARMUP_REARM_COOLDOWN_CAP_S <= 3600.0
+
+
+def test_one_unembeddable_batch_does_not_discard_the_rest(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch that cannot succeed costs one batch, not the whole pass.
+
+    gr459088: batch 3 failed, burned its retries, and the pass aborted —
+    discarding 1193 batches it had never attempted, so a pass netted 32
+    vectors of 76k. At ~600 passes and a 900s cooldown ceiling that is
+    days of wall time for work the embedder was perfectly able to do.
+    """
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import EmbedderUnavailable, MockEmbedder
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_BACKOFF_S", 0.001)
+    monkeypatch.setattr(server, "_MD_WARMUP_BATCH_ATTEMPTS", 2)
+    monkeypatch.setattr(server, "_MD_WARMUP_BATCH_SIZE", 1)
+    monkeypatch.setattr(server, "_MD_WARMUP_BATCH_CHARS", None)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text(
+        "# One\n\nAlpha.\n\n# Two\n\nBeta.\n\n# Three\n\nPOISON here.\n\n"
+        "# Four\n\nDelta.\n\n# Five\n\nEpsilon.\n",
+        encoding="utf-8",
+    )
+
+    class _OneBadBatch(MockEmbedder):
+        def embed(self, texts: list[str]) -> Any:
+            if any("POISON" in text for text in texts):
+                raise EmbedderUnavailable("too big", last_status=429)
+            return super().embed(texts)
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=_OneBadBatch(), md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None and handler.vector_cache is not None
+
+    total_blocks = sum(
+        len([b for _, b in handler.cache.get(r).all_blocks()])
+        for r in handler.roots.values()
+    )
+    server._warm_md_index_background(rt)
+    _join_warmup_threads()
+
+    # Everything except the poisoned batch landed.
+    assert len(handler.vector_cache) == total_blocks - 1
+    state = vectors_mod.warmup_state() or ""
+    assert "gaps" in state and "1 batch(es) skipped" in state
+
+
+def test_batch_chars_caps_a_batch_by_length_not_count(tmp_path: Any) -> None:
+    """Characters are the axis that predicts the deadline.
+
+    Blocks in this repo run 3..22756 chars, so a count cap of 64 is
+    anywhere between a trivial request and one that cannot finish in
+    15s — which is why the count-capped first fix kept failing on
+    whichever batch collected the long blocks.
+    """
+    from precis.md_index.vectors import _plan_batches
+
+    class _B:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    by_sha = {
+        "a": _B("x" * 100),
+        "b": _B("x" * 100),
+        "c": _B("x" * 900),
+        "d": _B("x" * 10),
+    }
+    shas = ["a", "b", "c", "d"]
+
+    # 250-char cap: a+b fit, c alone exceeds it, d opens a new batch.
+    assert _plan_batches(shas, by_sha, batch_size=None, batch_chars=250) == [
+        ["a", "b"],
+        ["c"],
+        ["d"],
+    ]
+    # A single oversized block still goes out alone rather than being
+    # dropped here — skipping it is the caller's decision.
+    assert _plan_batches(["c"], by_sha, batch_size=None, batch_chars=10) == [["c"]]
+    # Count cap still works, and the two caps compose (whichever first).
+    assert _plan_batches(shas, by_sha, batch_size=3, batch_chars=None) == [
+        ["a", "b", "c"],
+        ["d"],
+    ]
+    assert _plan_batches(shas, by_sha, batch_size=3, batch_chars=250) == [
+        ["a", "b"],
+        ["c"],
+        ["d"],
+    ]
+    # No caps: one batch, the request path's behaviour.
+    assert _plan_batches(shas, by_sha, batch_size=None, batch_chars=None) == [shas]
+    assert _plan_batches([], by_sha, batch_size=None, batch_chars=None) == []
 
 
 def test_cold_md_warmup_is_visible_in_precis_status_runtime(

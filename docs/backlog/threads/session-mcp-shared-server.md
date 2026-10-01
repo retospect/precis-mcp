@@ -265,6 +265,24 @@ server-side-session-context Horizon pointer)
    64 was sized against. ~12 s idle, over budget under any load. 64 was
    never viable for this corpus; it was measured against the wrong
    blocks. Landed `_MD_WARMUP_BATCH_SIZE` 64 → 16 (~22 KB, ~3 s idle).
+   Then the abort contract, which httpmcp's acceptance found next
+   (gr459088 comment 6): batch 3 failed, burned its retries, and the
+   pass ABORTED — discarding 1193 batches it never attempted, so a pass
+   netted ~32 vectors of 76k, which at ~600 passes and the 900 s
+   cooldown ceiling is days. `on_batch_error` now returns a tri-state
+   (`BatchErrorAction`: retry / skip / abort) instead of a bool: a
+   retryable error that outlasts the per-batch budget skips that batch
+   and the pass carries on, abort is reserved for non-retryable errors,
+   and the skipped indices are reported — `warm with gaps (N new, M
+   batch(es) skipped)` in `precis-status`, logged with the first one, so
+   a batch that fails every pass is visible rather than silently never
+   embedded. A gapped pass deliberately counts as a failure for the
+   re-arm backoff, so the gaps get another chance without hammering.
+   And sizing moved to the axis that predicts the deadline:
+   `batch_chars=25_000` alongside the count cap, because a count of 64
+   is anywhere between trivial and impossible when blocks run 3..22756
+   chars — the count-only cap kept failing on whichever batch collected
+   the long ones.
 
    **Acceptance of 5146528d (64→16 batches), measured 02:28-02:32Z: it
    works, and it exposes the next defect.** The npz grew 1048844 →

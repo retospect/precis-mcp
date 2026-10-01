@@ -954,6 +954,13 @@ def _warm_embedder_background(runtime: PrecisRuntime) -> None:
 #: to succeed, it stops the pass manufacturing its own congestion.
 _MD_WARMUP_BATCH_SIZE = 16
 
+#: Total characters per batch — the cap that actually predicts whether a
+#: request fits the 15s budget, since blocks run 3..22756 chars here. A
+#: block-count cap alone kept failing on whichever batch collected the
+#: long ones. ~25 KB measured at ~3s idle against this embedder, leaving
+#: margin for the contention a twelve-container boot produces.
+_MD_WARMUP_BATCH_CHARS = 25_000
+
 #: Per-batch retry budget. The retry lives at the BATCH level, not the
 #: pass level: at bulk sizes a pass is hundreds of round-trips, so an
 #: error on the first batch that unwinds the pass just re-enters and
@@ -1062,7 +1069,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
         return
 
     from precis.embedder import EmbedderUnavailable
-    from precis.md_index.vectors import record_warmup_state
+    from precis.md_index.vectors import BatchErrorAction, record_warmup_state
 
     def _warm() -> bool:
         """Run one pass; True if it completed, False if it gave up.
@@ -1072,20 +1079,34 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
         re-arm at the same rate against a dead embedder as a live one.
         """
         attempts: dict[int, int] = {}
+        skipped: list[int] = []
 
-        def _on_batch_error(exc: Exception, index: int, count: int) -> bool:
-            """Retry one batch in place; policy lives here, not in md_index.
+        def _on_batch_error(exc: Exception, index: int, count: int) -> BatchErrorAction:
+            """Retry, skip or abort one batch; policy lives here.
 
             Only `EmbedderUnavailable` is retryable — its contract is
             "transiently unreachable" (429 / 5xx / connection), as
             opposed to a dim mismatch or a bad text, which stay
-            `ValueError` / `RuntimeError` and must fail the pass.
+            `ValueError` / `RuntimeError` and must abort the pass.
+
+            A retryable error that outlasts the per-batch budget SKIPS
+            rather than aborts (gr459088): the batches after it are
+            probably fine, and abandoning ~1200 of them to protect one
+            is how a pass netted 32 vectors of 76k.
             """
             if not isinstance(exc, EmbedderUnavailable):
-                return False
+                return "abort"
             n = attempts[index] = attempts.get(index, 0) + 1
             if n >= _MD_WARMUP_BATCH_ATTEMPTS:
-                return False
+                skipped.append(index)
+                log.warning(
+                    "md index warmup skipping batch %d/%d after %d attempt(s): %s",
+                    index + 1,
+                    count,
+                    n,
+                    exc,
+                )
+                return "skip"
             # The service's own admission queue puts a `retry_after_s`
             # hint in its 429 body; prefer it over guessing.
             hint = getattr(exc, "retry_after_s", None)
@@ -1110,7 +1131,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
                 f"retry {n}/{_MD_WARMUP_BATCH_ATTEMPTS} ({type(exc).__name__})"
             )
             time.sleep(delay)
-            return True
+            return "retry"
 
         total_new = 0
         try:
@@ -1122,10 +1143,27 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
                     blocks,
                     embedder,
                     batch_size=_MD_WARMUP_BATCH_SIZE,
+                    batch_chars=_MD_WARMUP_BATCH_CHARS,
                     on_batch_error=_on_batch_error,
                 )
                 log.debug("md index root %r warmed (%d blocks)", alias, len(blocks))
             vector_cache.flush()
+            if skipped:
+                log.warning(
+                    "md index vector cache warmed with gaps: %d new embedding(s), "
+                    "%d batch(es) skipped (first: %d)",
+                    total_new,
+                    len(skipped),
+                    skipped[0] + 1,
+                )
+                record_warmup_state(
+                    f"warm with gaps ({total_new} new, {len(skipped)} "
+                    f"batch(es) skipped)"
+                )
+                # A pass that skipped is not a clean success: the
+                # re-arm's backoff should keep stepping so the skipped
+                # batches get another chance without hammering.
+                return False
             log.info("md index vector cache warm: %d new embedding(s)", total_new)
             record_warmup_state(f"warm ({total_new} new embedding(s))")
             return True

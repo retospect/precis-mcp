@@ -43,9 +43,9 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 
@@ -97,6 +97,77 @@ _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 def _safe_name(s: str) -> str:
     return _SAFE_NAME_RE.sub("-", s).strip("-") or "unknown"
+
+
+#: What a caller wants done about one failed batch.
+#:
+#: ``"retry"`` re-sends the same texts, ``"skip"`` abandons that batch
+#: and moves to the next, ``"abort"`` re-raises. ``"skip"`` exists
+#: because a batch that fails for a *structural* reason — too large for
+#: the embedder's deadline — fails identically every time, and both
+#: aborting and retrying are wrong: aborting discards the thousand
+#: batches after it (gr459088: a pass netted 32 vectors of 76k, which at
+#: ~600 passes and a 900s cooldown ceiling is days of wall time), while
+#: retrying spends six guaranteed failures and orphans a server-side
+#: computation on each. The caller is expected to report what it skipped
+#: so a permanently-failing batch is visible rather than silently never
+#: embedded.
+BatchErrorAction = Literal["retry", "skip", "abort"]
+
+#: ``(exc, batch_index, batch_count) -> action``.
+BatchErrorHandler = Callable[[Exception, int, int], BatchErrorAction]
+
+
+class _HasText(Protocol):
+    """All `_plan_batches` needs — it groups by text length, nothing else."""
+
+    @property
+    def text(self) -> str: ...
+
+
+def _plan_batches(
+    shas: list[str],
+    by_sha: Mapping[str, _HasText],
+    *,
+    batch_size: int | None,
+    batch_chars: int | None,
+) -> list[list[str]]:
+    """Group `shas` into batches by block count and/or total characters.
+
+    Characters are the axis that actually predicts whether a batch fits
+    the embedder's deadline: md blocks run from 3 to 22756 characters in
+    this repo, so a fixed count of 64 is anywhere between a trivial
+    request and one that cannot finish in 15s. A count cap alone was the
+    original gr457326 fix and it kept failing on whichever batch
+    happened to collect the long blocks.
+
+    A single block over `batch_chars` still gets its own batch — it has
+    to go out alone or not at all, and "not at all" is the caller's
+    `"skip"` decision to make, not this function's.
+    """
+    if batch_size is None and batch_chars is None:
+        return [shas] if shas else []
+    count_cap = max(1, batch_size) if batch_size is not None else None
+    char_cap = max(1, batch_chars) if batch_chars is not None else None
+
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_chars = 0
+    for sha in shas:
+        size = len(by_sha[sha].text)
+        full_by_count = count_cap is not None and len(current) >= count_cap
+        full_by_chars = (
+            char_cap is not None and current and current_chars + size > char_cap
+        )
+        if full_by_count or full_by_chars:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(sha)
+        current_chars += size
+    if current:
+        batches.append(current)
+    return batches
 
 
 class MdEmbedder(Protocol):
@@ -301,7 +372,8 @@ class MdVectorCache:
         embedder: MdEmbedder,
         *,
         batch_size: int | None = None,
-        on_batch_error: Callable[[Exception, int, int], bool] | None = None,
+        batch_chars: int | None = None,
+        on_batch_error: BatchErrorHandler | None = None,
     ) -> int:
         """Embed and cache every block in `blocks` not already cached.
 
@@ -327,11 +399,17 @@ class MdVectorCache:
         whether to retry, and a retry re-computes the miss list and so
         naturally resumes.
 
+        `batch_chars` caps a batch's total text length, which is the
+        axis that predicts whether a request fits the embedder's
+        deadline (see `_plan_batches`); combine it with `batch_size` for
+        both caps.
+
         `on_batch_error` moves that decision *inside* the loop, which is
         where a bulk pass needs it: called as
-        `on_batch_error(exc, batch_index, batch_count)`, it returns True
-        to re-run the same batch or False to let the exception
-        propagate. Retrying the whole pass instead is a trap at bulk
+        `on_batch_error(exc, batch_index, batch_count)`, it returns
+        `"retry"`, `"skip"` or `"abort"` (`BatchErrorAction`). `"skip"`
+        is what lets one unembeddable batch cost one batch instead of
+        the whole remaining pass. Retrying the whole pass instead is a trap at bulk
         sizes — 20k blocks at `batch_size=64` is ~315 round trips, so a
         failure on batch 0 that unwinds the pass just re-enters and
         fails on batch 0 again, and a transient 429 that clears in under
@@ -360,23 +438,30 @@ class MdVectorCache:
                 return 0
             shas = list(by_sha)
 
-        step = len(shas) if batch_size is None else max(1, batch_size)
+        chunks = _plan_batches(
+            shas, by_sha, batch_size=batch_size, batch_chars=batch_chars
+        )
         added = 0
-        starts = list(range(0, len(shas), step))
-        for index, start in enumerate(starts):
-            chunk = shas[start : start + step]
+        for index, chunk in enumerate(chunks):
             texts = [by_sha[sha].text for sha in chunk]
 
-            while True:
+            vectors: Sequence[Sequence[float]] | None = None
+            while vectors is None:
                 try:
                     vectors = embedder.embed(texts)  # outside the lock — see docstring
                 except Exception as exc:
-                    if on_batch_error is None or not on_batch_error(
-                        exc, index, len(starts)
-                    ):
+                    action = (
+                        on_batch_error(exc, index, len(chunks))
+                        if on_batch_error is not None
+                        else "abort"
+                    )
+                    if action == "abort":
                         raise
-                    continue
-                break
+                    if action == "skip":
+                        break
+                    # "retry" — same batch, same texts, round again.
+            if vectors is None:
+                continue
 
             if len(vectors) != len(chunk):
                 raise ValueError(
