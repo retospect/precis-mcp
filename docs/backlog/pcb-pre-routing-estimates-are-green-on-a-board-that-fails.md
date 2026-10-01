@@ -119,6 +119,16 @@ caller), `src/precis/handlers/pcb.py` around the `feasibility` and
 Changes a reported number on every board, so any test pinning the current
 estimate moves — re-measure rather than assuming direction.
 
+**Sequencing warning — `place.py` is slated for deletion.**
+`pcb-engine-plan.md`'s settled decision 1 is "Freerouting is out", and its
+slice S1 deletes `place.py` while explicitly RELOCATING `route_feasibility`
+because "its one other consumer is `view='feasibility'`". So this function
+survives the engine plan but moves house. Implement this item either before
+S1 or as part of the relocation — not as a fresh edit to `place.py` after
+S1 has landed, which would be a patch to a deleted file. Check
+`pcb-engine-plan.md` §S1's status first; that file is owned by
+pcb-easyeda-round-trip's Horizon 7 and this thread sequences behind it.
+
 ## Open questions / decisions log
 
 - Should `feasibility` refuse to render a tick at all, or is the fix purely
