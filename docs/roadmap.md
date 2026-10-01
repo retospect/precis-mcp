@@ -188,12 +188,18 @@ per-user management come first.
 must carry a per-user value from the start, or this pillar redoes it.
 
 **Parked under it** (files stay; no thread, no ranking):
-`backlog/anki-card-quality.md`, `backlog/reading-prep-loop.md`,
-`backlog/remarkable-pairing.md`, `backlog/email-kind.md`,
+`backlog/anki-card-quality.md`, `backlog/reading-prep-loop.md` (back under
+the hold, Reto 2026-10-01), `backlog/email-kind.md`,
 `backlog/voice-kind-spec.md`, `backlog/briefing-audio-flat-hourly-backoff.md`,
 `backlog/slide-photo-capture-to-pres.md`, `backlog/asa-ops-residuals.md`,
 `backlog/session-history-into-precis.md` (also a pillar-1 consumer),
-`backlog/web-basic-auth-users.md`.
+`backlog/asa-voice-register.md`, `backlog/cast-followups.md`,
+`backlog/briefing-combine-verify.md`, `backlog/news-reddit-mastodon.md`
+(a personal feed, Reto 2026-10-01), `backlog/document-timeline-index.md`
+(its own non-graph index; placed when the pillar opens).
+Moved out 2026-10-01: web-basic-auth-users → platform, chem-name-lookup-verb
+→ chemistry, ms-teams-paper-feed → ingest-and-fetch; remarkable-pairing
+closed (shipped dark; pairing is Reto's).
 
 ## Surfaces — the perpendicular axis
 

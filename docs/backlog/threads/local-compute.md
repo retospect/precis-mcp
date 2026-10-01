@@ -59,10 +59,9 @@ then the big model on one spark, then the rungs that consume it.
 9. **backlog/curation-gate.md** — owned by serving-programme; consumed
    here (seam below).
 10. **backlog/dreaming.md**
-11. **backlog/reading-prep-loop.md**
-12. **backlog/quest-loop-activation.md**
-13. **backlog/llm-cost-accounting.md**
-14. **backlog/plan-tick-context-cut.md** — overdue 2026-08-24.
+11. **backlog/quest-loop-activation.md**
+12. **backlog/llm-cost-accounting.md**
+13. **backlog/plan-tick-context-cut.md** — overdue 2026-08-24.
 
 ## Parked
 

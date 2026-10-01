@@ -1,6 +1,6 @@
 ---
 status: in-progress
-pillar: personal
+pillar: platform
 ---
 
 # Web basic auth + a real users table

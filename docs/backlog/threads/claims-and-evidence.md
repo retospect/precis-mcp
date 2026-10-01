@@ -74,7 +74,7 @@ All `backlog/<slug>.md`; each unparks when the triage promotes it.
 - **`claim_trust_bulk` batch meta fetch** — one `fetch_refs_by_ids` per
   unverified lifecycle finding today; only if it shows up in a profile.
 - Paper/figure items filed with this cluster: **figure-permission-request-flow**
-  · **figure-kind-slices** · **per-user-library-link** ·
+  · **figure-kind-slices** ·
   **paper-annotation-critique** — unpark when a draft needs them.
 
 ## No action needed

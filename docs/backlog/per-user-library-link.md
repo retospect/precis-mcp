@@ -1,7 +1,7 @@
 ---
 status: draft
 title: Per-user library discovery link for citations and export
-pillar: memory-graph
+pillar: personal
 ---
 
 # Per-user library discovery link for citations and export

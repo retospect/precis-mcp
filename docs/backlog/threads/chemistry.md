@@ -78,6 +78,9 @@ desorption) above everything that presents or packages its results.
    — the UI. Last by the rank rule: it presents what the engine has to
    get right first. Shared presentation logic belongs to plugin-split
    (Seam).
+10. **backlog/chem-name-lookup-verb.md** — PubChem-backed
+   formula/ID → common name; small, and a dependency of
+   reaction-kind-and-synthesis-cost (5). From pillar 4, 2026-10-01.
 
 ## Parked
 

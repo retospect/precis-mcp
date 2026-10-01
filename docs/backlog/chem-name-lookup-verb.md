@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: personal
+pillar: 3d-design
 title: Chemistry name lookup — PubChem-backed formula/ID → common name
 ---
 

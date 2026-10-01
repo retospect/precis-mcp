@@ -60,6 +60,8 @@ ranking below.
    Already designed: `backlog/ingest-strips-greek-glyphs.md` (per-document
    `glyph_health` written during extraction; root cause for gr228652,
    gr228699, gr228594). Rank above Parked once triage confirms the pair.
+2. **backlog/ms-teams-paper-feed.md** — papers posted in Teams channels as an
+   ingest source; from pillar 4, 2026-10-01.
 
 ## Parked
 

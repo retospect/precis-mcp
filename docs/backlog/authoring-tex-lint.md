@@ -50,7 +50,7 @@ arm (memory `claim-graduation-campaign`):
   hygiene only. Prod-mutation rules apply: prep the SQL, hand to Reto.
 - `docs/backlog/export-glyph-allowlist.md` — export-side glyph
   allowlist + per-glyph warnings (complementary, not superseded).
-- `docs/backlog/remarkable-pairing.md` — token-exchange pacing;
+- reMarkable token-exchange pacing (the pairing item closed 2026-10-01; feature shipped dark);
   melchior image still predates cdf23337's `--content-only` retry (one
   `ansible-playbook deploy/playbooks/47-remarkable.yml` re-run, needs
   Reto or a permission rule).

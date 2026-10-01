@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: personal
+pillar: memory-graph
 ---
 
 # MS Teams posting for new-paper one-liners (Reto want)
