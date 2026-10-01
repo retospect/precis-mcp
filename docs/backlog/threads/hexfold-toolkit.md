@@ -50,8 +50,34 @@ waited on happened 09-29 — note at the bottom)
      §22's budget and distribution places the defects. (b) emits (a)'s
      defect lists, so (a) is also (b)'s output format and test oracle.
      Do (a) first.
+   - Reto, 2026-10-01: concretely, "2 heptagons in this ring, 2 more in
+     the next, and 2 more in the next" instead of 6 in one.
+   - Built 2026-10-01 for the sheet-to-tube foot
+     (tests/hexfold/test_graded_bend.py). Each row is a flat lid with a
+     centred p-wedge cut and a centred hole, i.e. a cone frustum with rims
+     6-p and -(6-p), so each seam mints only the step between neighbours.
+     3+3 (`+ 3@`) is clean. 2+2+2 (`+ square@`, then `+ 2@`) has clean
+     inner seams. Its flat-to-p=2 seam carries two extra 5-7 pairs,
+     because a regular hex hole has 6 corners and the frustum has 4, and
+     only 2 line up. Fix: an irregular hole with sides 3,3,6,3,3,6, which
+     the grammar does not have yet. Relaxed with Tersoff, the bend spreads
+     from r=5-7 Å (one row) to r=5-9 Å (3+3) and r=5-10 Å (2+2+2). Total
+     strain energy is not lower (25 / 32 / 51 eV interior), partly because
+     there is more curved area.
+   - Engine fixes that unblocked it:
+     - `Patch._frame_coords` merged A/B wedge copies for odd dirs, so any
+       heptagon corrupted the sheet.
+     - `hex(r)` holes now centre on a disclination core.
+     - Flat lids accept authored defects.
+     - Sheet and lid `b_expected` count the authored wedges.
+   - Still open:
+     - The flares and convex corners: the same frusta flipped, with
+       pentagon seams.
+     - The irregular hole.
+     - Tube-wall surgery, which is still unbuilt.
+     - Then the full graded drum on prod.
    - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
-     ports.py).
+     ports.py, seams.py, meridian.py, f3.hx, f33.hx).
 2. **gr459567 + gr459595** — non-bonded clashes the check cannot see.
    Every bud menu seeds the fullerene overlapping its host (the help
    skill's own `tube(10,10)` + C60 `[9-6]` example: 0.56 Å bud/host), and

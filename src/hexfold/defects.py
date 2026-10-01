@@ -83,6 +83,10 @@ class Patch:
         # expects B_expected +6 like a sheet outer rim, not a cap's 0
         # (SPEC 6.1); the C60 hemisphere cap keeps flat_lid False.
         self.flat_lid: bool = False
+        # sum of (6 - r) over authored ring defects (SPEC 4): a flat disc's
+        # outer rim bounds 6 minus this, whether or not a hole later removes
+        # the defect core (the hole rim then carries the core's share).
+        self.authored_sint: int = 0
         self.seam: float = 0.0
         self.edges: set[frozenset[Vid]] = set()
         self.dirs: dict[tuple[Vid, Vid], np.ndarray] = {}
@@ -306,13 +310,15 @@ class Patch:
         a1 = np.array([a, 0.0])
         a2 = np.array([a / 2.0, SQRT3 * a / 2.0])
         delta = (a1 + a2) / 3.0
-        for s in (0, 1):
-            uv = np.linalg.solve(np.column_stack([a1, a2]), rel - s * delta)
+        # A 60-deg turn about an atom maps the other sublattice onto the
+        # -delta family (only 120 deg keeps +delta), so odd dirs and B-site
+        # defects need both offsets; one frame only ever holds one of them.
+        for s, off in ((0, 0.0), (1, 1.0), (1, -1.0)):
+            uv = np.linalg.solve(np.column_stack([a1, a2]), rel - off * delta)
             ui, vi = round(float(uv[0])), round(float(uv[1]))
             if np.allclose(uv, [ui, vi], atol=0.25):
                 return (ui, vi, s)
-        ui, vi = round(float(uv[0])), round(float(uv[1]))
-        return (ui, vi, 0)
+        raise ValueError(f"{x!r} is off the lattice in the wedge frame of {d}")
 
     # -- faces, rims, words -------------------------------------------------
 

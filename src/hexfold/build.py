@@ -489,6 +489,7 @@ def _apply_defects(
                         span=inst.span,
                     )
                 )
+    patch.authored_sint += sum(6 - d.ring for d in authored)
     idx = 0
     for d in authored:
         if d.ring < 6:
@@ -761,12 +762,10 @@ def _assemble(
             hbe = patch.hole_bexp.get(frozenset(rim))
             if hbe is not None:
                 b_exp = hbe
-            elif kind == "sheet":
-                b_exp = 6
+            elif kind == "sheet" or patch.flat_lid:
+                b_exp = 6 - patch.authored_sint
             elif kind == "cone":
-                b_exp = 6 - (patch.cone_p or 0)
-            elif patch.flat_lid:
-                b_exp = 6
+                b_exp = 6 - (patch.cone_p or 0) - patch.authored_sint
             else:
                 b_exp = 0
             ords_list = tuple(ords[(key, v)] for v in rim)
@@ -1504,7 +1503,9 @@ def build(
                     )
                 )
                 continue
-            if inst.kind not in ("fullerene", "cap"):
+            # a flat lid is a flat disc, so authored surgery applies to it
+            # as to a sheet (a centred wedge cut makes it a cone frustum)
+            if inst.kind not in ("fullerene", "cap") or patch.flat_lid:
                 _apply_defects(patch, inst, lat, findings)
             hole_requests.setdefault(key, []).extend(
                 (h.ring, h.site, h.dir) for h in inst.holes
@@ -1732,6 +1733,25 @@ def _apply_hole(
         # radius r of the ring containing ``site`` (r=0 is one hexagon).
         # Dangling count follows 3|S| - 2e_S for the removed vertex set S.
         rr = -10 - ring_size
+        # Centred on a disclination core (an authored |6-r|-wedge cut at
+        # this site's apex), the cluster grows from the core so the hole
+        # is symmetric about the cone tip; a 4-wedge core collapses to a
+        # digon, leaving the site on only its two flanking hexagons.
+        # (the digon's darts overlap, so its second flank walks as a rim)
+        at_site = [f for f, _t in patch.faces() if site in f and len(f) <= 6]
+        core = [r6 for r6 in at_site if len(r6) < 6]
+        seeds: list[list[Vid]] = []
+        collapsed_sint = 0
+        if core:
+            seeds = core[:1]
+        elif len(at_site) == 2 and rr >= 1:
+            seeds = at_site
+            rr -= 1
+            collapsed_sint = 4  # the digon core is not a ring of its own
+        for f in seeds:
+            if not any(r6 is f or r6 == f for r6 in rings):
+                rings.append(f)
+        seeds = [next(r6 for r6 in rings if r6 == f) for f in seeds]
         cands = [r6 for r6 in rings if len(r6) == 6 and site in r6]
         if hdir is not None and len(cands) > 1:
             p0c = patch.flatpos[site]
@@ -1745,7 +1765,7 @@ def _apply_hole(
             if by_dir:
                 cands = by_dir
         cands.sort(key=_ring_canon)
-        target = cands[0] if cands else None
+        target = seeds[0] if seeds else (cands[0] if cands else None)
         if target is not None:
             edge_rings: dict[frozenset[Vid], list[int]] = {}
             for ri6, r6 in enumerate(rings):
@@ -1753,9 +1773,12 @@ def _apply_hole(
                     edge_rings.setdefault(
                         frozenset((r6[ei], r6[(ei + 1) % len(r6)])), []
                     ).append(ri6)
-            centre_ring = next(i for i, r6 in enumerate(rings) if r6 is target)
-            cluster = {centre_ring}
-            frontier = {centre_ring}
+            cluster = {
+                i
+                for i, r6 in enumerate(rings)
+                if any(r6 is t for t in (seeds or [target]))
+            }
+            frontier = set(cluster)
             for _ in range(rr):
                 nxt: set[int] = set()
                 for ri6 in frontier:
@@ -1770,7 +1793,7 @@ def _apply_hole(
                 frontier = nxt
             dead = {v for ri6 in cluster for v in rings[ri6]}
             f_rem = len(cluster)
-            sint_rem = sum(6 - len(rings[i]) for i in cluster)
+            sint_rem = sum(6 - len(rings[i]) for i in cluster) + collapsed_sint
     else:
         if ring_size == -1:
             # notch: hexagon minus one vertex (5 dangling rim atoms)
