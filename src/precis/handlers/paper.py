@@ -21,6 +21,7 @@ v2:
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
 import logging
 import re
@@ -970,8 +971,9 @@ class PaperHandler(Handler):
         # a paper the single-kind search ranks first. Same gate as the
         # single-kind path (no tag filter); an inclusion restriction skips
         # it, and excluded refs are dropped so exclude= paging holds.
+        promoted: set[int] = set()
         if not normalized_tags and include_ref_ids is None:
-            triples, _callouts = FusedBlockSearch(
+            triples, _callouts, promoted = FusedBlockSearch(
                 store=self.store, embedder=self.embedder, kind=self.spec.kind
             )._inject_title_matches(
                 triples, q=q, kind=self.spec.kind, page_size=page_size
@@ -989,7 +991,15 @@ class PaperHandler(Handler):
             triples = [(b, r, top if s == float("inf") else s) for b, r, s in triples]
         # Salience bump (block-level); no-op for dream-actor reads.
         self.store.chunks.bump_salience([block.id for block, _ref, _score in triples])
-        return block_hits_to_search_hits(triples, kind=self.spec.kind)
+        hits = block_hits_to_search_hits(triples, kind=self.spec.kind)
+        if promoted:
+            # Pin the named paper so the cross-kind RRF merge keeps it on
+            # top (see ``SearchHit.pinned``).
+            hits = [
+                dataclasses.replace(h, pinned=True) if h.ref_id in promoted else h
+                for h in hits
+            ]
+        return hits
 
     # -- seven-verb surface --------------------------------------------------
 

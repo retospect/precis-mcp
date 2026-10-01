@@ -133,6 +133,31 @@ def test_rrf_fuses_streams_by_rank() -> None:
     assert "1. x" in body  # rank 1 line in the rendered output
 
 
+def test_rrf_pinned_hit_outranks_fused_totals() -> None:
+    """A pinned (identity-match) hit leads the merge even when other
+    documents out-score it on RRF totals — every stream's rank 1 ties
+    on RRF, so without the pin a named paper drops behind other kinds'
+    top hits (cross-kind ``search(q=<exact paper title>)``)."""
+    s1 = [
+        _hit(slug="x", dedupe_key="memory:x", score=0.9),
+    ]
+    s2 = [
+        _hit(slug="x", dedupe_key="memory:x", score=0.9),
+    ]
+    paper = SearchHit(
+        score=0.1,
+        kind="paper",
+        title="T",
+        preview="P",
+        slug="named",
+        dedupe_key="paper:named",
+        pinned=True,
+    )
+    s3 = [paper]
+    out = merge_and_render([s1, s2, s3], page_size=10, mode="rrf")
+    assert "1. named" in out.body
+
+
 def test_rrf_no_dedupe_key_keeps_all_singletons() -> None:
     s1 = [_hit(slug="a", pos=1)]
     s2 = [_hit(slug="a", pos=1)]

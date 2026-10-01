@@ -575,7 +575,7 @@ class FusedBlockSearch:
         q: str,
         kind: str,
         page_size: int,
-    ) -> tuple[list[Any], list[tuple[str, str]]]:
+    ) -> tuple[list[Any], list[tuple[str, str]], set[int]]:
         """Promote near-exact title matches to the front of ``hits``.
 
         See the call site: FTS stop-word stripping buries an exact-title
@@ -587,7 +587,10 @@ class FusedBlockSearch:
         than duplicated. Best-effort: any lookup hiccup returns
         ``hits`` unchanged.
 
-        Returns ``(hits, callout_lines)``. The caller stamps every
+        Returns ``(hits, callout_lines, promoted_ref_ids)`` —
+        ``promoted_ref_ids`` names the papers now at the front (newly
+        injected or reordered), which ``PaperHandler.search_hits`` pins
+        ahead of the cross-kind RRF order. The caller stamps every
         newly-promoted triple's score as ``float('inf')`` — the sentinel
         the renderer (:class:`PaperSearchResultRenderer`) uses to render
         the row as the paper *record* (``pa`` handle + one-line
@@ -609,7 +612,7 @@ class FusedBlockSearch:
         try:
             matches = self.store.find_refs_by_title_similarity(kind=kind, q=q, limit=3)
             if not matches:
-                return hits, []
+                return hits, [], set()
             match_ids = [rid for rid, _sim in matches]
             existing = {h[1].id: h for h in hits}
             refs_map = self.store.fetch_refs_by_ids(match_ids)
@@ -632,15 +635,15 @@ class FusedBlockSearch:
                 # Nothing promotable (no readable block on any match),
                 # but the record match itself is still the answer — keep
                 # the callout so the caller learns the paper is held.
-                return hits, callouts
+                return hits, callouts, set()
             front_ids = {h[1].id for h in front}
             rest = [h for h in hits if h[1].id not in front_ids]
-            return (front + rest)[:page_size], callouts
+            return (front + rest)[:page_size], callouts, front_ids
         except Exception:  # pragma: no cover — relevance aid, never fatal
             log.warning(
                 "paper search: title introducer failed for %r", q, exc_info=True
             )
-            return hits, []
+            return hits, [], set()
 
     def run(
         self,
@@ -1035,7 +1038,7 @@ class FusedBlockSearch:
             and year_to is None
             and not normalized_tags
         ):
-            hits, title_matches = self._inject_title_matches(
+            hits, title_matches, _promoted = self._inject_title_matches(
                 hits, q=q, kind=kind, page_size=page_size
             )
 
@@ -1488,11 +1491,17 @@ class PaperSearchResultRenderer:
                     else "open the title-matched paper — TOC reading entry point",
                 )
             )
-        if hits:
-            # point at the top hit by its computed chunk handle.
+        # Point at the first row the table shows by its chunk handle. A
+        # promoted record row (``float('inf')`` sentinel) renders its
+        # ``pa`` handle, so its representative card's ``pc`` handle never
+        # appears above — suggesting it read as "paste a handle above"
+        # but named one that isn't there (gr460035).
+        chunk_rows = [h for h in hits if h[2] != float("inf")]
+        if chunk_rows:
+            block0, ref0, _score0 = chunk_rows[0]
             first_handle = (
-                handle_registry.try_format(hits[0][1].kind, hits[0][0].id, chunk=True)
-                or f"{hits[0][1].slug or '???'}~{hits[0][0].ord}"
+                handle_registry.try_format(ref0.kind, block0.id, chunk=True)
+                or f"{ref0.slug or '???'}~{block0.ord}"
             )
             nav.append(
                 (

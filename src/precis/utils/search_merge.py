@@ -254,6 +254,12 @@ class SearchHit:
     # preview prefix), both keyed off this exact string — see those
     # constants' docstring for why a second field wasn't added instead.
     posture: str | None = None
+    # Identity match — the query *names* this hit (an exact paper title,
+    # set by ``PaperHandler.search_hits``' title introducer). ``rrf``
+    # mode ranks pinned documents ahead of every fused total: RRF weighs
+    # each stream's rank 1 the same, so a named paper otherwise ties
+    # with ~30 other kinds' top hits and falls off the page.
+    pinned: bool = False
 
     @property
     def handle(self) -> str:
@@ -455,10 +461,16 @@ def _merge_rrf(streams: list[list[SearchHit]]) -> list[SearchHit]:
         elif _POSTURE_VERIFIED_MARKER in posture:
             totals[key] *= _POSTURE_VERIFIED_FACTOR
 
-    # Sort by RRF total desc, break ties by raw score desc, then
-    # by insertion order for determinism.
-    def _sort_key(k: str) -> tuple[float, float, int]:
-        return (-totals[k], -raw_max[k], insertion_order.index(k))
+    # Pinned (identity-match) documents first, then RRF total desc,
+    # ties by raw score desc, then insertion order for determinism.
+    pinned: set[str] = set()
+    for stream_idx, stream in enumerate(streams):
+        for rank, hit in enumerate(stream, 1):
+            if hit.pinned:
+                pinned.add(hit.dedupe_key or f"_:{stream_idx}:{rank}")
+
+    def _sort_key(k: str) -> tuple[bool, float, float, int]:
+        return (k not in pinned, -totals[k], -raw_max[k], insertion_order.index(k))
 
     return [representatives[k] for k in sorted(totals, key=_sort_key)]
 

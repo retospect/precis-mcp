@@ -33,6 +33,8 @@ unreadable. Two follow-on fixes, both pinned here:
 
 from __future__ import annotations
 
+import re
+
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.handlers._paper_search import _representative_block_for_ref
@@ -97,6 +99,13 @@ def test_title_query_names_the_paper_record(store: Store) -> None:
 
     resp = _handler(store, e).search(q="attention is all you need", page_size=5)
     assert "Title match" in resp.body
+    # gr460035: the "paste any handle above" Next: example must name a
+    # handle the table actually shows — not the promoted record row's
+    # hidden representative-card chunk.
+    m = re.search(r"get\(id='([^']+)'\)", resp.body)
+    if m:
+        table = resp.body.split("Next:", 1)[0]
+        assert m.group(1) in table
     assert _TITLE in resp.body
     assert "Vaswani" in resp.body
     assert handle_registry.format_handle("paper", rid) in resp.body
@@ -268,6 +277,9 @@ def test_search_hits_promotes_the_title_match_first(store: Store) -> None:
 
     hits = _handler(store, e).search_hits(q="attention is all you need", page_size=5)
     assert hits and hits[0].ref_id == rid
+    # Pinned, so the cross-kind RRF merge keeps it on top too.
+    assert hits[0].pinned
+    assert not any(h.pinned for h in hits if h.ref_id != rid)
     assert all(h.score != float("inf") for h in hits)
 
     excluded = _handler(store, e).search_hits(
