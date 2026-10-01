@@ -25,7 +25,7 @@ they exist:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -479,7 +479,7 @@ def test_pcb_route_job_marks_a_fixed_bridged_net_realized_with_no_derived_track(
     )
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
     assert not ctx.failures
 
     status_rows = {r["name"]: r for r in store.pcb_route_status(ref_id)}
@@ -548,7 +548,7 @@ def test_realize_twice_leaves_fixed_copper_untouched_and_never_leaks_into_derive
 
     for seed in (1, 2):
         ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": seed})
-        pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+        pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
         assert not ctx.failures
 
         after = store.pcb_fixed_copper_list(board_id)
@@ -639,7 +639,7 @@ def test_pcb_route_refuses_to_start_when_fixed_copper_pierces_a_foreign_pad(
     components_before = store.pcb_load(ref_id)["instances"]
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
 
     assert len(ctx.failures) == 1
     reason, failure_class = ctx.failures[0]

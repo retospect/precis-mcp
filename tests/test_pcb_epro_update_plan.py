@@ -8,6 +8,7 @@ level pose difference, a changed outline.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -44,7 +45,7 @@ def _graph(
 
 def _design(
     components: list[dict[str, Any]],
-    connections: list[tuple[str, str, str]] = (),  # type: ignore[assignment]
+    connections: Sequence[tuple[str, str, str]] = (),
     features: list[dict[str, Any]] | None = None,
 ) -> epro.Design:
     return epro.Design(

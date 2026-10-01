@@ -20,6 +20,7 @@ import io
 import os
 import pathlib
 import zipfile
+from typing import Any, cast
 
 import pytest
 
@@ -644,9 +645,9 @@ def test_a_real_board_routes_at_all(
 
         real_grid_for = maze.grid_for
 
-        def _fine_grid_for(*a: object, **k: object) -> maze.GridSpec:
+        def _fine_grid_for(*a: Any, **k: Any) -> maze.GridSpec:
             k.setdefault("target_cells_per_axis", cells_per_axis)
-            return real_grid_for(*a, **k)  # type: ignore[arg-type]
+            return real_grid_for(*a, **k)
 
         monkeypatch.setattr(maze, "grid_for", _fine_grid_for)
 
@@ -654,7 +655,7 @@ def test_a_real_board_routes_at_all(
     started = time.monotonic()
     ctx = _FakeRouteCtx(store, {"pcb_ref_id": result.ref_id, "iters": iters, "seed": 1})
     profiler.enable()
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    pcb_route._dispatch(cast(Any, ctx), pcb_route.SPEC)
     profiler.disable()
     elapsed = time.monotonic() - started
 

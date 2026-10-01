@@ -54,7 +54,7 @@ def _fanout(connections: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _drain_one_job(store: Store, parent_id: int) -> None:
+def _drain_one_job(store: Store, parent_id: int, *, unrouted_ok: bool = False) -> None:
     """Drain the queued job most recently enqueued under ``parent_id``.
 
     Not just "whatever's next in the queue" (gr295496): the shared
@@ -64,6 +64,12 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
     job — gets claimed first and its failure misreads as OUR drain
     failing. Loop passes, tolerating whatever unrelated row lands along
     the way, until THIS design's own job reaches a terminal status.
+
+    ``unrouted_ok``: a route job that leaves any net unrealized ends
+    ``failed`` with ``failure_class='non-convergence'`` (Reto, 2026-10-01:
+    "it's no good if the wires are not there"), after writing its partial
+    copper. This test MEASURES that partial result, so it accepts exactly
+    that failure and no other.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -78,6 +84,17 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
         with store.pool.connection() as conn:
             status = current_status(conn, job_ref_id)
         if status in TERMINAL:
+            if unrouted_ok and status == "failed":
+                with store.pool.connection() as conn:
+                    meta_row = conn.execute(
+                        "SELECT meta->>'failure_class' FROM refs WHERE ref_id = %s",
+                        (job_ref_id,),
+                    ).fetchone()
+                assert meta_row is not None
+                assert meta_row[0] == "non-convergence", (
+                    f"job {job_ref_id} failed for another reason: {meta_row[0]!r}"
+                )
+                return
             assert status == "succeeded", (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}"
             )
@@ -111,7 +128,7 @@ def test_motor_power_board_place_and_route_seeds_1_through_5(store: Store) -> No
 
         route_resp = pcb.put(id=slug, args={"op": "route", "seed": seed})
         assert "enqueued" in route_resp.body
-        _drain_one_job(store, ref.id)
+        _drain_one_job(store, ref.id, unrouted_ok=True)
         runtime_s = time.perf_counter() - t0
 
         status_rows = store.pcb_route_status(ref.id)
