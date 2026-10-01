@@ -116,26 +116,20 @@ own item); they become items as each comes into reach.
 
 ## Parked
 
-- **gr458944** — pathway titles. **Backfilled 2026-10-01 on Reto's
-  word:** 529 `ready` rows retitled from their stored results, 170
-  failed/superseded rows had `(computing)` swapped for their status; one
-  genuinely computing row remains. Only the failed-path retitle in
-  `quest/loop.py` is left, and it is the quest thread's. Dogfooding this thread's surface on prod
+- **gr458944** — pathway titles. Dogfooding this thread's surface on prod
   2026-09-30 found 697 of 701 pathway refs titled "(computing)", including
-  all 528 that were `status: ready`: the dispatched-job path seeds that
-  placeholder and completion never replaced it, so every finished run
-  advertised itself as still running. The write-path half is fixed and
-  mutation-verified; parked here because neither remaining half is mine —
-  the 697-row backfill is a prod title write that wants Reto's word, and
-  the failed-path retitle lives in `quest/loop.py`, which sibling sessions
-  are editing today. Core cannot reuse `pathway_title` (plugin-owned), but
-  it does not need to: the failed case is a suffix swap. The write-path fix
-  is **verified on prod** as of 2026-10-01: ref 459170 completed at 04:12Z
-  through the dispatched-job path and is titled `NO → NH3 on Pd` — the only
-  one of 530 `ready` rows with a correct title, since the rest predate the
-  fix. It took three dogfood rounds to get there: deployed 00:30Z, first
-  exercised 04:12Z, with nothing but an arriving input able to close the
-  gap. Deployed is not verified.
+  every `status: ready` one: the dispatched-job path seeds that placeholder
+  and completion never replaced it. The write-path fix is **verified on
+  prod** (ref 459170, completed 04:12Z 2026-10-01, titled `NO → NH3 on Pd`).
+  The backfill ran 2026-10-01: 529 `ready` rows retitled from their stored
+  results, 170 failed/superseded rows had `(computing)` swapped for their
+  status, and one genuinely computing row was left alone. It is additive
+  and reversible, since the old title is `pathway <slug> (computing)` and
+  the slug is still on each ref. Only the failed-path retitle in
+  `quest/loop.py` is left, and it is the quest thread's: core cannot reuse
+  `pathway_title` (plugin-owned) but does not need to, since the failed case
+  is a suffix swap. Deployed is not verified: closing the gap took three
+  dogfood rounds, because only an arriving input could exercise the path.
 
 ## No action needed
 
