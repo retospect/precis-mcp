@@ -18,19 +18,7 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 
 ## Do next
 
-1. **gr458360** — the pytest template DB carries core migrations only, so
-   every plugin-table test (se, and every future extracted plugin) is
-   order-dependent: `Migrator.discover_sources` is never called, only the
-   bare-Path legacy form. Already caused one red gate 2026-09-30 by
-   ordering luck. Every module this thread extracts adds another plugin
-   whose tests inherit this gap — fix before, not after, milestone 2
-   below.
-2. **gr454796** — `test_ml_calculator_cache_is_keyed_on_model_and_dispersion`
-   hard-fails instead of skipping when the optional `dft-ml` extra is
-   absent; the same gap a plugin-boundary test needs to not have, since
-   the whole point of the split is code that runs without an extra
-   installed.
-3. **backlog/plugin-split-runtime-shell.md** — steps 3 and 5 (step 2 landed
+1. **backlog/plugin-split-runtime-shell.md** — steps 3 and 5 (step 2 landed
    2026-09-29, step 1 landed 2026-10-01 as
    `tests/test_plugin_import_boundary.py`). The boundary is now a gate
    rather than a convention, which is what the 10-16 moves get verified
@@ -49,11 +37,23 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
    rebuild round — not gr457894, per the correction below. It is the
    dev-side form of the same class: an installed dist serving metadata its
    pyproject no longer matches.
-4. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
+2. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed
    every node's embedder. Last only because 3 is behaviour-neutral and this
    touches 58 modules.
+3. **Delete the now-redundant per-module plugin-schema seeders.** gr458360
+   (fixed 2026-10-01) made the pytest template apply every
+   `precis.migrations` plugin via `Migrator.discover_sources`, and removed
+   the seeders in `test_se_join.py` and `test_se_atomic_catalogue.py`.
+   About a dozen more re-execute plugin SQL by hand and are probably dead
+   weight: `_seed_se_migrations` in the `test_se_chain_*` files,
+   `test_se_walker`, `test_se_atomic_bind`, `test_se_delete_reports_orphans`
+   and `test_se_pick`, plus `.sql` globs in `test_se_units_migration`,
+   `test_estimate_plugin`, `test_pathway_plugin` and `test_protein_plugin`.
+   Each needs a read first, since a fixture that deliberately drops and
+   re-applies schema is not a workaround. Harmless meanwhile, because
+   every plugin migration is `IF NOT EXISTS`.
 
 **gr457894 left Do next on 2026-10-01, and this is the correction that
 matters most in this file.** It sat at Do-next 1 for five rounds on the claim

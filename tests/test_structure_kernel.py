@@ -1417,6 +1417,13 @@ def test_ml_calculator_cache_is_keyed_on_model_and_dispersion(
     builds: list[dict] = []
     _fake_mace(monkeypatch, builds)
     monkeypatch.setattr(relax_mod, "_dftd3_wrap", lambda calc, **_kw: ("d3", calc))
+    # _ml_calculator probes `import torch_dftd` before it reaches the wrapper,
+    # so patching the wrapper alone still needs the optional dft-ml extra
+    # (gr454796). This test is about the cache key, not the backend.
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "torch_dftd", types.ModuleType("torch_dftd"))
 
     plain = relax_mod._ml_calculator("mace_mp")
     corrected = relax_mod._ml_calculator("mace_mp", dispersion=True)

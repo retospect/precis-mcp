@@ -10,7 +10,6 @@ prepare/finish pair for ``join``.
 
 from __future__ import annotations
 
-import pathlib
 from typing import Any
 
 import pytest
@@ -22,26 +21,6 @@ from precis_se.atomic.generate import finish_generate, prepare_generate
 from precis_se.atomic.join import finish_join, prepare_join
 from precis_se.handler import _render_block
 from precis_se.ops import SeTree, apply_ops
-
-_SE_MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parents[1] / (
-    "src/precis_se/migrations"
-)
-
-
-@pytest.fixture(autouse=True)
-def _se_schema(store: Store) -> None:
-    """The shared test template carries core migrations only (conftest hands
-    ``Migrator`` a bare path, which skips plugin discovery), so the se tables
-    exist in a worker only if an earlier test there created them. Seed them
-    here, as ``test_se_atomic_catalogue`` does, so this module does not depend
-    on test order — under ``pytest-randomly`` the whole join path went red
-    with ``UndefinedTable: se_hexfold_catalogue`` (2026-09-30)."""
-    with store.pool.connection() as c:
-        for sql in sorted(_SE_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
 
 #: zigzag N=8 tube -- the same shape `tests/hexfold/test_join.py`'s
 #: `test_two_tube_fuse_matches_whole_spec_build` pins at the stick rung.

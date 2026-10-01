@@ -629,7 +629,7 @@ def _initialise_test_db() -> Iterator[None]:
         # Do it once per run (first worker claims it), not once per worker —
         # see _claim_template_maintenance.
         if _claim_template_maintenance(admin_dsn):
-            Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
+            Migrator(PG_TEST_DSN, Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
             _truncate_data_tables(PG_TEST_DSN)
             _ensure_vocab_seeds(PG_TEST_DSN)
         try:
@@ -793,7 +793,9 @@ def fresh_db() -> Iterator[str]:
     # behind — which the baseline path does by construction (the snapshot is
     # schema-only and carries the ledger). Reseed explicitly, or every later
     # test in this worker sees an empty vocab table (gr408184).
-    Migrator(_active_dsn(), MIGRATIONS_DIR).apply_all()
+    # discover_sources: a bare Path is a core-only source, which left the
+    # precis.migrations plugin tables (se, pathway, ...) unapplied (gr458360).
+    Migrator(_active_dsn(), Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
     _ensure_vocab_seeds(_active_dsn())
 
 

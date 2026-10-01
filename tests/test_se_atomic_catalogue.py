@@ -12,7 +12,6 @@ rather than its `EnvKey`, and this table is shared by every design.
 from __future__ import annotations
 
 import dataclasses
-import pathlib
 
 import pytest
 
@@ -20,22 +19,9 @@ from hexfold import catalogue as hx
 from precis.store import Store
 from precis_se.atomic.catalogue import DbCatalogueStore, for_store
 
-_MIGRATIONS_DIR = pathlib.Path(__file__).resolve().parents[1] / (
-    "src/precis_se/migrations"
-)
-
-
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
 
 @pytest.fixture
 def cat(store: Store) -> DbCatalogueStore:
-    _seed_se_migrations(store)
     return DbCatalogueStore(store)
 
 
@@ -174,7 +160,6 @@ def test_trust_measured_lets_a_measured_row_win(store: Store) -> None:
     `trust_measured=True` resolves to the measurement. This is what
     gripe 456641's three fixes would unlock; nothing in the product sets
     it today."""
-    _seed_se_migrations(store)
     cat = DbCatalogueStore(store, trust_measured=True)
     cat.seed()
     cat.put(_measured_z(N=10, seam_radius=22))
@@ -186,7 +171,6 @@ def test_trust_measured_lets_a_measured_row_win(store: Store) -> None:
 
 
 def test_for_store_returns_a_seeded_untrusting_store(store: Store) -> None:
-    _seed_se_migrations(store)
     cat = for_store(store)
     assert cat.trust_measured is False
     assert len(cat.rows("edge")) == len(hx.seed_rows())
