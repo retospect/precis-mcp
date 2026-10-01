@@ -237,6 +237,35 @@ def test_apply_real_pin_offsets_carries_the_real_pad_size_and_outline():
     assert court.contains(box(8.5, -4.0, 11.5, -1.0))
 
 
+def test_a_pin_with_several_same_numbered_pads_is_covered_whole():
+    """gr460567 residual: SMD-1_BD8.7-D6.2 numbers its four split tabs all
+    ``1``. Only the first sets the pin's position/size, but the courtyard
+    and the land rects must cover every tab, or the courtyard cuts through
+    the part's own copper."""
+    from shapely.geometry import Polygon, box
+
+    from precis.pcb.ir import instance_courtyard_polygon, instance_land_rects
+    from precis.pcb.session import apply_real_pin_offsets
+
+    tabs = [(-4.0, -4.0), (4.0, -4.0), (4.0, 4.0), (-4.0, 4.0)]
+    fp = {
+        "pads": [{"number": "1", "x": x, "y": y, "w": 1.5, "h": 1.0} for x, y in tabs]
+        + [{"number": "2", "x": 0.0, "y": 0.0, "w": 1.0}],
+        "pin_map": {"1": {"name": "A"}, "2": {"name": "B"}},
+    }
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    apply_real_pin_offsets(ir, {"U1": fp})
+
+    pin_a = next(p for p in range(ir.n_pins) if str(ir.pin_label[p]) == "A")
+    assert (ir.pin_dx[pin_a], ir.pin_dy[pin_a]) == (-4.0, -4.0)
+    assert ir.pin_extra_lands[pin_a] == [(x, y, 1.5, 1.0) for x, y in tabs[1:]]
+
+    court = Polygon(instance_courtyard_polygon(ir, 0, clearance_mm=0.1))
+    for x, y in tabs:
+        assert court.contains(box(x - 0.75, y - 0.5, x + 0.75, y + 0.5))
+    assert len(instance_land_rects(ir)[0]) == 5
+
+
 def test_build_ir_wires_real_pin_offsets_from_both_footprint_sources():
     """``build_ir`` is where the rule lives (one call site) — a caller
     passing either cache gets real positions on the IR every consumer

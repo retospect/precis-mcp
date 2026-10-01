@@ -398,6 +398,17 @@ class PcbIR:
     #: routing — the handler-only feature list left the router blind to
     #: them (``npth_clearance`` findings, round-3 review item 4).
     mounting_holes: tuple[MountingHole, ...] = ()
+    #: pin id -> the pin's OTHER real pads, ``(cx, cy, w, h)`` each in
+    #: footprint-local mm (centre absolute in the footprint frame, not
+    #: relative to the pin). A footprint can number several pads alike —
+    #: a split-tab connector's four mounting tabs are all pad ``1`` —
+    #: and only the first sets ``pin_dx``/``pin_w``. The rest are still
+    #: copper the part owns, so :func:`instance_courtyard_polygon` hulls
+    #: them and :func:`instance_land_rects` keeps vias off them (gr460567).
+    #: Written by :meth:`set_pin_pad`; empty when no real footprint applied.
+    pin_extra_lands: dict[int, list[tuple[float, float, float, float]]] = field(
+        default_factory=dict
+    )
 
     #: The datasheet :class:`precis.pcb.objectives.NetAnnotation`, per net —
     #: ``float64[n_nets]`` with ``nan`` for "not annotated" (``pcb_nets.
@@ -694,6 +705,7 @@ class PcbIR:
         w: float,
         h: float,
         poly: list[tuple[float, float]] | None = None,
+        extra_lands: list[tuple[float, float, float, float]] | None = None,
     ) -> None:
         """L3 mutator: replace one pin's SYNTHESIZED pad size with the real
         footprint pad's extent (footprint-local mm, unrotated by the
@@ -703,12 +715,18 @@ class PcbIR:
         :meth:`set_pin_offset`: gr460567 — real positions with synthesized
         sizes made :func:`instance_courtyard_polygon` hull tiny pads at real
         coordinates, so courtyards cut through real pads and the placer
-        reserved too little. Same dirty cascade as :meth:`set_pin_offset`."""
+        reserved too little. ``extra_lands`` are the pin's other same-numbered
+        pads (:attr:`pin_extra_lands`). Same dirty cascade as
+        :meth:`set_pin_offset`."""
         self.pin_w[pin_id] = w
         self.pin_h[pin_id] = h
         if poly:
             self.pin_poly[pin_id] = list(poly)
             self.pin_shape[pin_id] = "polygon"
+        if extra_lands:
+            self.pin_extra_lands[pin_id] = list(extra_lands)
+        else:
+            self.pin_extra_lands.pop(pin_id, None)
         self.pin_pad_synthesized[pin_id] = False
         self._dirty_pin_geometry(pin_id)
 
@@ -1901,6 +1919,14 @@ def instance_courtyard_polygon(
             (dx + hw, dy + hh),
             (dx - hw, dy + hh),
         ]
+    for pid in pins:
+        for cx, cy, w, h in ir.pin_extra_lands.get(int(pid), ()):
+            corners += [
+                (cx - w / 2.0, cy - h / 2.0),
+                (cx + w / 2.0, cy - h / 2.0),
+                (cx + w / 2.0, cy + h / 2.0),
+                (cx - w / 2.0, cy + h / 2.0),
+            ]
     if not corners:
         h = fallback_half_extent_mm
         if h <= 0.0:
@@ -1975,6 +2001,10 @@ def instance_land_rects(ir: PcbIR) -> list[np.ndarray]:
         rows[int(ir.pin_instance[pid])].append(
             (dx, dy, float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0)
         )
+    for pid, extras in ir.pin_extra_lands.items():
+        rows[int(ir.pin_instance[pid])] += [
+            (cx, cy, w / 2.0, h / 2.0) for cx, cy, w, h in extras
+        ]
     return [np.array(r, dtype=np.float64).reshape(-1, 4) for r in rows]
 
 
