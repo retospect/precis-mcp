@@ -41,7 +41,11 @@ _IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 # additions) faster than their ignores were retired. Note the asymmetry worth
 # watching — tests/ now carries 247 ignores against src/'s 158, so the suite is
 # the heavier offender and is where a cleanup pass would pay best.
-CEILINGS = {"src": 156, "tests": 244}
+# 2026-10-01 src 156 -> 157: TaxonHandler.link adds meta= over the
+# keyword-only NumericRefHandler.link, the same Handler.link(**kw) override
+# every handler link carries. 157 -> 158: pcb/drc nearest_points shapely
+# import (fd910235, qlanded without the bump; shapely ships no stubs).
+CEILINGS = {"src": 158, "tests": 244}
 
 
 def _count(tree: str) -> Counter[str]:

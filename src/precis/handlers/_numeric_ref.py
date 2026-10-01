@@ -37,6 +37,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._link_tag_ops import (
     guard_and_route_contradicts_disputes,
+    guard_taxon_hierarchy,
     require_link_target,
     require_tag_ops,
     validate_link_mode,
@@ -204,6 +205,26 @@ class NumericRefHandler(Handler):
         the body verbatim. ``anki`` strips ``{{cN::…}}`` cloze markup here."""
         return text
 
+    #: Opt-in: forward the verb-level ``put(meta=...)`` dict into create. Off
+    #: for every kind but ``taxon``, where ``meta=`` was (and stays) ignored.
+    accepts_put_meta: ClassVar[bool] = False
+
+    def _merge_put_meta(
+        self, text: str, meta: dict[str, Any], put_meta: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fold the caller's ``put(meta=)`` into ``_initial_meta``'s result
+        (validating it). Only called when ``accepts_put_meta`` and non-empty."""
+        return meta
+
+    def _card_text_for(self, text: str, meta: dict[str, Any]) -> str:
+        """``card_combined`` text given the final create-time meta. Default
+        ignores meta (``_card_combined_text``); ``taxon`` folds aliases in."""
+        return self._card_combined_text(text)
+
+    def _ref_title(self, text: str) -> str:
+        """``refs.title`` at create. Default: the body verbatim."""
+        return text
+
     #: When True, put-create (and the subclass's ``edit``) resolves every
     #: ``kind:ref`` handle in the body and materialises ``related-to``
     #: links to those refs — so the note becomes a graph node reachable
@@ -225,6 +246,12 @@ class NumericRefHandler(Handler):
     #: content keep the default title-only search. The shared machinery
     #: lives in :meth:`_search_body_chunks` / :meth:`_body_search_hits`.
     search_body_chunks: ClassVar[bool] = False
+
+    #: Synthetic card kinds (``ord < 0``) the title+block hybrid search also
+    #: scans. Default ``None`` = body chunks only. A kind whose searchable
+    #: text lives only in its card (``taxon``: ``('card_combined',)``) opts in
+    #: so its definition is lexically findable with the embedder down.
+    search_card_kinds: ClassVar[tuple[str, ...] | None] = None
 
     #: When body-chunk search surfaces hits, heat their salience-bearing
     #: chunks (dreaming recall reinforcement). Memory opts in; gripe stays
@@ -509,6 +536,7 @@ class NumericRefHandler(Handler):
             mode=mode,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            card_kinds=self.search_card_kinds,
         )
         if not hit_refs:
             tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
@@ -878,6 +906,7 @@ class NumericRefHandler(Handler):
             mode=mode,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            card_kinds=self.search_card_kinds,
         )
         # Salience bump (card chunks); no-op for cardless kinds / dreamer.
         self.store.chunks.bump_salience(
@@ -1224,12 +1253,16 @@ class NumericRefHandler(Handler):
                     f"get(kind='skill', id='precis-{self.kind}-help')"
                 ),
             )
+        create_kw: dict[str, Any] = {}
+        if self.accepts_put_meta and _kw.get("meta"):
+            create_kw["put_meta"] = _kw["meta"]
         return self._create(
             text=text,
             tags=tags,
             link=link,
             rel=rel,
             auto_refresh_days=auto_refresh_days,
+            **create_kw,
         )
 
     # ── seven-verb surface (delegates to the same private helpers) ─
@@ -1356,6 +1389,21 @@ class NumericRefHandler(Handler):
         (target, relation) pair; without ``rel=``, removes every
         link to the target at that selector.
         """
+        return self._link(id=id, target=target, mode=mode, rel=rel)
+
+    def _link(
+        self,
+        *,
+        id: str | int,
+        target: str | None,
+        mode: str,
+        rel: str | None,
+        meta: dict[str, Any] | None = None,
+    ) -> Response:
+        """Body of :meth:`link`. ``meta`` (edge metadata, add-only) is
+        reachable only from a subclass whose ``link`` declares ``meta=``
+        and passes it here — the base ``link`` never does, so every other
+        kind refuses a stray ``meta=`` at the dispatch strictness gate."""
         target = require_link_target(self.kind, target)
         validate_link_mode(mode)
         ref_id = self._coerce_id(id)
@@ -1405,6 +1453,7 @@ class NumericRefHandler(Handler):
             # never drift (docs/backlog/disputes-edge-nonblocking-
             # disagreement.md). ``routed`` is non-None only for the
             # claim-pair ``disputes`` delegation, which already wrote.
+            guard_taxon_hierarchy(self.store, ref_id, link_target, relation)
             routed = guard_and_route_contradicts_disputes(
                 self.store, ref_id, link_target, relation
             )
@@ -1414,6 +1463,8 @@ class NumericRefHandler(Handler):
                     dst_ref_id=link_target.ref_id,
                     dst_pos=link_target.pos,
                     relation=relation,
+                    meta=meta,
+                    merge_meta=meta is not None,
                 )
             return Response(body=f"linked {self._sense()} id={ref_id} → {target}")
         # mode == "remove"
@@ -1440,6 +1491,7 @@ class NumericRefHandler(Handler):
         link: str | None,
         rel: str | None = None,
         auto_refresh_days: int | None = None,
+        put_meta: dict[str, Any] | None = None,
     ) -> Response:
         if text is None or not text.strip():
             raise BadInput(
@@ -1471,12 +1523,27 @@ class NumericRefHandler(Handler):
         # the tx (after the ref insert) because the yield redirect below
         # needs the ref id to write its overflow chunk; a rejected tag
         # still writes nothing since the raise rolls the whole tx back.
+        initial_meta = self._initial_meta(text, all_tag_strs)
+        if put_meta:
+            initial_meta = self._merge_put_meta(text, initial_meta, put_meta)
+        if target is not None:
+            # Taxon hierarchy rules (endpoint kinds, cycle, contract) run
+            # before the insert: the new node has no ref row yet, so a
+            # refusal writes nothing.
+            guard_taxon_hierarchy(
+                self.store,
+                None,
+                target,
+                relation,
+                src_kind=self.kind,
+                src_meta=initial_meta,
+            )
         with self.store.tx() as conn:
             ref = self.store.insert_ref(
                 kind=self.kind,
                 slug=None,
-                title=text,
-                meta=self._initial_meta(text, all_tag_strs),
+                title=self._ref_title(text),
+                meta=initial_meta,
                 auto_refresh_days=auto_refresh_days,
                 conn=conn,
             )
@@ -1508,7 +1575,7 @@ class NumericRefHandler(Handler):
                 # Emit the embeddable card in the same tx as the ref
                 # insert so the embed worker can vectorize it lazily.
                 self.store.chunks.upsert_card_combined(
-                    ref.id, self._card_combined_text(text), conn=conn
+                    ref.id, self._card_text_for(text, initial_meta), conn=conn
                 )
             if self.autolink_mentions:
                 self._sync_mention_links(ref.id, text, conn=conn)

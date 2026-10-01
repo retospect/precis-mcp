@@ -99,11 +99,12 @@ _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
 #: that exact kwarg slip back in unnoticed).
 _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
     {
-        # -- put: cache-decay refresh knob, five numeric-ref-ish kinds ----
+        # -- put: cache-decay refresh knob, six numeric-ref-ish kinds ----
         ("anki", "put", "auto_refresh_days"),
         ("concept", "put", "auto_refresh_days"),
         ("folder", "put", "auto_refresh_days"),
         ("memory", "put", "auto_refresh_days"),
+        ("taxon", "put", "auto_refresh_days"),
         ("todo", "put", "auto_refresh_days"),
         # -- put: draft chunk creation (figure/table/narration fields) ---
         ("draft", "put", "copy_of"),

@@ -196,11 +196,15 @@ def test_tools_list_under_byte_budget() -> None:
     reachability reason (~500 B). Verb descriptions unchanged (detail
     rides in ``precis-toc-help``/param comments) — schema-side growth
     only, same shape as the prior bumps.
+    2026-10-01: cap raised from 28 KB → 29 KB for the taxon kind
+    (``docs/backlog/term-taxonomy.md``): ``under=``/``axis=``/``depth=``
+    on ``search`` and ``meta=`` on ``link`` (~550 B of schema). Verb
+    descriptions unchanged (detail rides in ``precis-taxon-help``).
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 28 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 28 KB). "
+    assert size < 29 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 29 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

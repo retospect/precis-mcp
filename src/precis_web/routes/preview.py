@@ -65,6 +65,7 @@ _NUMERIC_KINDS_FALLBACK: frozenset[str] = frozenset(
         "folder",
         "quest",
         "concept",
+        "taxon",
         "llm",
     }
 )

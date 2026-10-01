@@ -34,7 +34,10 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.errors import BadInput
-from precis.handlers._link_tag_ops import validate_relation
+from precis.handlers._link_tag_ops import (
+    guard_taxon_hierarchy,
+    validate_relation,
+)
 from precis.handlers._link_target import parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
@@ -222,6 +225,12 @@ class MessageHandler(NumericRefHandler):
                 ),
             )
         relation = validate_relation(rel, store=self.store)
+        if link_target is not None:
+            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # create path writes its own link, so it calls the shared guard.
+            guard_taxon_hierarchy(
+                self.store, None, link_target, relation, src_kind=self.kind
+            )
 
         text_str = str(text)
         with self.store.tx() as conn:

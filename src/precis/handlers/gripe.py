@@ -290,7 +290,10 @@ class GripeHandler(NumericRefHandler):
         # rare read-only one. Any caller-supplied ``tags=``/``link=``
         # beyond the default are still applied in the same transaction,
         # same as before.
-        from precis.handlers._link_tag_ops import validate_relation
+        from precis.handlers._link_tag_ops import (
+            guard_taxon_hierarchy,
+            validate_relation,
+        )
         from precis.handlers._link_target import parse_link_target
 
         if text is None or not text.strip():
@@ -300,6 +303,12 @@ class GripeHandler(NumericRefHandler):
             )
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
+        if target is not None:
+            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # create path writes its own link, so it calls the shared guard.
+            guard_taxon_hierarchy(
+                self.store, None, target, relation, src_kind=self.kind
+            )
         # A create-time ``PRIO:`` alias syncs to the canonical prio column
         # (which the backlog groomer inherits onto the fix todo), not a
         # decorative tag row. Strip it before strict tag parsing. An

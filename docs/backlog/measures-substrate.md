@@ -3,7 +3,6 @@ status: draft
 title: Measures substrate — generalise material_values into `measures` (any subject ref, literal kept, reference state, anchored evidence edges) so quantbind, quests and the mesh share one number record
 prio: high
 model: opus
-blocked-by: term-taxonomy
 pillar: memory-graph
 ---
 

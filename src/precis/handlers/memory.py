@@ -264,12 +264,16 @@ class MemoryHandler(NumericRefHandler):
         link: str | None,
         rel: str | None = None,
         auto_refresh_days: int | None = None,
+        put_meta: dict[str, Any] | None = None,
     ) -> Response:
         # Mirror NumericRefHandler._create, but the body prose goes into a
         # `memory_body` chunk (not `refs.title`) and the header gets a short
         # title. The body chunk picks up embeddings + keywords from the
         # standard workers automatically — no `card_combined` card.
-        from precis.handlers._link_tag_ops import validate_relation
+        from precis.handlers._link_tag_ops import (
+            guard_taxon_hierarchy,
+            validate_relation,
+        )
         from precis.handlers._link_target import parse_link_target
 
         if text is None or not text.strip():
@@ -283,6 +287,12 @@ class MemoryHandler(NumericRefHandler):
         title = self._pending_title or _derive_title(body)
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
+        if target is not None:
+            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # create path writes its own link, so it calls the shared guard.
+            guard_taxon_hierarchy(
+                self.store, None, target, relation, src_kind=self.kind
+            )
 
         # meta.rule / meta.warrant — stamped at create time
         # when the D3-shortcut kwargs were passed; omitted keys entirely

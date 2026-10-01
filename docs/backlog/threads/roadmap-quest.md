@@ -22,9 +22,14 @@ gripes to Horizon, all adjacent infra the tick path depends on)
    covalent bond length", source qu453869 itself (no se part serves it
    yet). No rung, no deed, no ledger improvement — the demand role only
    writes the number; rungs come from `bridge`. Neither fail signal fired
-   (a rung without a number; deeds climbing on a flat ledger). Watch the
-   next two ticks for the role change (supply or bridge on the same
-   capability) before activation, or activate and watch three. Serves
+   (a rung without a number; deeds climbing on a flat ledger). Tick 2
+   (2026-10-01 ~12:20 UTC, exit 0) changed role to `supply` @big: 3 S2
+   searches, 4 papers linked `serves` the quest, 0 hubs, no quantified
+   claim, so `meta.supply` stayed unwritten; dry, gaps [2, 2]. It took
+   ~25 min because quest S2 search runs keyless and double-retried
+   (gr459597, 61×429) — fix that before activation or every supply tick
+   stalls. One more watched tick (expect `bridge` or a supply with a
+   number), then activation on Reto's word. Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
 2. **gr458880 — `view='tree'` on the session MCP raises Internal

@@ -4,7 +4,6 @@ title: se region property layer — per-region non-geometric properties (hydroph
 pillar: 3d-design
 prio: high
 model: opus
-blocked-by: term-taxonomy
 ---
 
 # se region property layer

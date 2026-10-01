@@ -885,6 +885,7 @@ def boot(
         from precis.handlers.skill import SkillHandler
         from precis.handlers.structure import StructureHandler
         from precis.handlers.tag import TagHandler
+        from precis.handlers.taxon import TaxonHandler
         from precis.handlers.todo import TodoHandler
 
         # Numeric- and slug-addressed refs. Cheap; always available
@@ -899,6 +900,7 @@ def boot(
         _gated(JobHandler)
         _gated(AnkiHandler)
         _gated(ConceptHandler)
+        _gated(TaxonHandler)
         _gated(QuestHandler)
         _gated(LlmHandler)
         _gated(CitationHandler)

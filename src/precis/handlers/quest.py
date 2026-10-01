@@ -429,6 +429,7 @@ class QuestHandler(NumericRefHandler):
         link: str | None,
         rel: str | None = None,
         auto_refresh_days: int | None = None,
+        put_meta: dict[str, Any] | None = None,
     ) -> Response:
         tags, prio_from_tag = _split_prio(tags)
         if self._pending_prio is not None:

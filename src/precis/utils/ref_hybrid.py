@@ -89,6 +89,7 @@ def _block_leg(
     chunk_kinds: list[str] | None,
     exclude_ref_ids: list[int] | None = None,
     include_ref_ids: list[int] | None = None,
+    card_kinds: tuple[str, ...] | None = None,
 ) -> list[Ref]:
     """Block-level hits collapsed to one ref each, best rank first.
 
@@ -114,6 +115,7 @@ def _block_leg(
         else None,
         exclude_ref_ids=exclude_ref_ids,
         include_ref_ids=include_ref_ids,
+        card_kinds=card_kinds,
     )
     best: dict[int, tuple[Ref, float]] = {}
     for _block, ref, rank in raw:
@@ -135,6 +137,7 @@ def fused_ref_hits(
     chunk_kinds: list[str] | None = None,
     exclude_ref_ids: list[int] | None = None,
     include_ref_ids: list[int] | None = None,
+    card_kinds: tuple[str, ...] | None = None,
 ) -> list[Ref]:
     """Hybrid ref-level search: title lexical + block hybrid + notation leg.
 
@@ -144,6 +147,10 @@ def fused_ref_hits(
 
     ``chunk_kinds`` scopes the block leg (``['finding_body']`` for claim hubs,
     so the leg matches the claim sentence rather than a chase-chain card).
+
+    ``card_kinds`` opts synthetic cards (``ord < 0``, e.g. ``card_combined``)
+    back into the block leg, which otherwise sees body chunks only — for a
+    kind whose whole text IS its card (``taxon``: name + definition).
 
     ``exclude_ref_ids``/``include_ref_ids`` (``uncited=``/``cited=``/
     ``hubbed=`` — read-for-question loop, slice 4): the block leg threads
@@ -204,6 +211,7 @@ def fused_ref_hits(
             chunk_kinds=chunk_kinds,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            card_kinds=card_kinds,
         )
     )
 
@@ -236,6 +244,7 @@ def fused_ref_hits(
                     chunk_kinds=chunk_kinds,
                     exclude_ref_ids=exclude_ref_ids,
                     include_ref_ids=include_ref_ids,
+                    card_kinds=card_kinds,
                 )
             )
 

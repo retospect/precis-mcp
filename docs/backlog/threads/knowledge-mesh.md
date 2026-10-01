@@ -6,7 +6,8 @@ arguments, logbook entries) that an LLM navigates by walk and fisheye,
 with typed links whose rules are data, and drafts rendered from it
 (Reto's goal, stated 2026-09-30). Today the substrate (refs, chunks,
 links, tags, an 81-relation registry) already is that mesh; the taxon kind
-is ready to build and four items wait on it; the measurand-list pipeline
+shipped 2026-10-01 (kind, seed of 79 nodes, guarded hierarchy, facets,
+dedup); the measurand-list pipeline
 has its prompt, census and synonym fixes measured (stability 0.052 →
 0.270 on the same 100 hubs, 0.55 of what that sample can show), per-call
 metering in place, and a freeze that cannot land until the taxon kind
@@ -22,49 +23,44 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-1. **backlog/term-taxonomy.md** — status ready, Reto's two rulings recorded
-   2026-09-30 (six seed axes, element symbols one node). Direct dependency
-   of taxonomy-bootstrap's freeze, measures-substrate, graph-gardener and
-   knowledge-mesh; nothing else in this thread can ship its output until
-   the taxon kind exists.
-2. **backlog/taxonomy-bootstrap.md §Resume (2026-10-01)** — the metered
+1. **backlog/taxonomy-bootstrap.md §Resume (2026-10-01)** — the metered
    re-probe ran 2026-09-30 22:00 UTC: `probe criterion FAIL` by 0.008
    (0.58 of the ceiling vs 0.60) with a first-measured per-mention noise of
    0.32, six calls lost to the 120 s tail, and the metering that decides
    the route: pack hubs per call, not a thread pool. Retry shipped; the
    packing slice is the next build (unpaid), then a packed 300-row probe
    (paid, Reto's go) reads the bar outside the noise.
-3. **backlog/relation-constraints.md** — status ready, no blocker, small.
+2. **backlog/relation-constraints.md** — status ready, no blocker, small.
    Domain/range kinds, functional and acyclic as columns on `relations`,
    one validator in both link doors. Above the measures chain because it
    closes live holes now (quest `serves` has no cycle guard; the 1:1 draft
    family is bypassable through `link()`) and gives term-taxonomy's
    `instance-of` rule a row instead of a bespoke guard.
-4. **backlog/fisheye-everywhere.md** — status ready, no blocker. The eye
+3. **backlog/fisheye-everywhere.md** — status ready, no blocker. The eye
    ladder on every kind, rings per relation group, a focus page for any
    handle. Split from knowledge-mesh because it depends on no measures work
    and is the goal's most visible surface; also the answer to "a viewer
    for the memory" once 6 lands.
-5. **backlog/measures-substrate.md** — blocked-by term-taxonomy; identity =
-   taxon + reference + convention, so it lands right after 1 and unblocks
+4. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
+   taxon + reference + convention, and it unblocks
    knowledge-mesh and the experiment loop. Fold-in ruled 2026-09-30
    (Reto: `component_spec_values` joins `measures` in the same
    migration).
-6. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
+5. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
    roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
-   the pillar review). Right after 5 because it builds on the same taxon
+   the pillar review). Right after 4 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
    `materials-molecular-substitution-db.md`.
-7. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
+6. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
    Claude Code memory files as read-only `markdown` roots with links from
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
    pilot". Mirror first, ruled 2026-09-30; native authoring is judged
    after its recall AC. Readiness vet the same day: needs-work, four
-   blockers folded into the item, re-vet before build. Below 6 only
+   blockers folded into the item, re-vet before build. Below 5 only
    because its recall AC is cheap to run at any time.
-8. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
+7. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
 ## Horizon
@@ -73,15 +69,15 @@ graph-health-metrics, five parked gripes, and the seam with
    re-probe clearing the probe criterion and the concurrency decision;
    delivers list.v1.yaml, the first frozen measurand list.
 2. **backlog/term-taxonomy.md v1.5** (axis start node, meta.axis validated)
-   — waits on v1 and gardener-promoted axes; link filters by axis. This is
+   — waits on gardener-promoted axes; link filters by axis. This is
    the thread's answer to "hierarchies over links": axis hierarchy, not
    relation specialisation.
 3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
-   universal row) — waits on Do-next 5; its ladder item moved to Do-next 4.
-4. **backlog/experiment-loop.md** — waits on Do-next 5; hypothesis → todo
+   universal row) — waits on Do-next 4; its ladder item moved to Do-next 3.
+4. **backlog/experiment-loop.md** — waits on Do-next 4; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
-5. **backlog/graph-gardener.md** — waits on Do-next 1 plus a populated mesh
+5. **backlog/graph-gardener.md** — waits on a populated mesh
    from Horizon 1; earned axes and merges without hand curation.
 6. **backlog/session-history-into-precis.md** — the linear logbook: human
    sessions as `conv`, machine runs as `agentlog` (Reto's 2026-09-29
@@ -94,15 +90,15 @@ graph-health-metrics, five parked gripes, and the seam with
    2026-09-30.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
    for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 7 gives the topic files a recall measurement, P2 ruled yes
+   Do-next 6 gives the topic files a recall measurement, P2 ruled yes
    2026-09-30 (one resident identity + style block).
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
-    Do-next 5; sourced numeric triples bound to list entries.
+    Do-next 4; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
     figure, draft) — waits on Horizon 1; the paper's spine.
 12. **backlog/dreaming.md** — the consolidation pass over memory nodes;
     revisit once 5 and 7 exist, since both replace hand consolidation.
-13. **backlog/first-party-experiment-records.md** — waits on Do-next 5;
+13. **backlog/first-party-experiment-records.md** — waits on Do-next 4;
     our own runs (a job, a quest tick, an se design) need the same measure
     identity as a paper's before they can be stored honestly. Note the
     open contradiction it records: `measures-substrate.md` §3 owns an

@@ -304,6 +304,10 @@ Relation = Literal[
     # marks the managed rows). Keep in sync with 0156_realizes_relation.sql.
     "realized-by",
     "realizes",
+    # Taxon membership — migration 0173. `instance-of` (a ref → the taxon it
+    # is a member of) ↔ `has-instance`. Keep in sync with 0173_taxon_kind.sql.
+    "instance-of",
+    "has-instance",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and
@@ -413,6 +417,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     # Realization (0156).
     "realized-by": "realizes",
     "realizes": "realized-by",
+    "instance-of": "has-instance",
+    "has-instance": "instance-of",
 }
 
 

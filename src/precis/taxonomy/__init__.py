@@ -48,9 +48,15 @@ singleton shared with cad/structsolve; campaign unit definitions must not
 leak into it, so :mod:`~precis.taxonomy.normalise` builds a private registry
 and loads the campaign's definitions onto that.
 
+**The node itself.** :mod:`~precis.taxonomy.nodes` holds the pure helpers
+for the `taxon` ref kind (`handlers/taxon.py`): the fixed node meta key set
+and its validation, the card text, the resolution slug. The handler uses it,
+and the 0174 seed is tested byte-identical against it, so every node is
+built the same way.
+
 **No writes.** Stages emit files under the campaign scratch directory. The
 `taxon` node and `measures` row writers arrive as a thin adapter once
-`term-taxonomy.md` and `measures-substrate.md` ship; until then nothing is
+`measures-substrate.md` ships; until then nothing is
 promoted in the corpus, only computed.
 """
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast, get_args
 
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.store import Store, Tag
 from precis.store.types import Relation
@@ -150,6 +150,131 @@ def _both_live_claim_hubs(store: Store, a_ref_id: int, b_ref_id: int) -> bool:
         return _is_claim_hub(a_ref_id, conn=conn) and _is_claim_hub(b_ref_id, conn=conn)
 
 
+_TAXON_HIERARCHY_RELATIONS: frozenset[str] = frozenset({"specialises", "generalises"})
+
+
+def _taxon_endpoint(
+    store: Store, ref_id: int | None, kind: str | None, meta: dict[str, Any] | None
+) -> tuple[str, str, str, dict[str, Any]]:
+    """``(handle, name, kind, meta)`` of one hierarchy endpoint. A stored
+    ref is read from ``refs``; ``ref_id=None`` is the not-yet-inserted node of
+    a create-time ``put(link=)``, described by its would-be ``kind``/``meta``."""
+    from precis.utils import handle_registry
+
+    if ref_id is None:
+        m = dict(meta or {})
+        return "(new node)", str(m.get("name") or "?"), str(kind), m
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT kind, title, meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    if row is None:
+        raise NotFound(f"ref id={ref_id} not found")
+    k, title, m = str(row[0]), str(row[1] or ""), dict(row[2] or {})
+    handle = handle_registry.try_format(k, ref_id) or f"{k}:{ref_id}"
+    return handle, str(m.get("name") or title or "?"), k, m
+
+
+def guard_taxon_hierarchy(
+    store: Store,
+    src_ref_id: int | None,
+    target: LinkTarget,
+    relation: str,
+    *,
+    src_kind: str | None = None,
+    src_meta: dict[str, Any] | None = None,
+) -> None:
+    """Enforce the taxon hierarchy rules on an add-mode ``specialises`` /
+    ``generalises`` link (docs/backlog/term-taxonomy.md AC 3-4). Shared by
+    every add-mode link door, beside
+    :func:`guard_and_route_contradicts_disputes`.
+
+    Fires only when ``relation`` is ``specialises``/``generalises`` AND at
+    least one endpoint is a ``taxon``; two non-taxon refs keep using the pair
+    exactly as before. Raises :class:`BadInput` unless:
+
+    * both endpoints are ``taxon`` (the message names the offender's handle
+      and kind), and the target is ref-level (no ``dst_pos``);
+    * the edge is not a self-link and closes no cycle;
+    * every start node reachable from the PARENT (the parent itself when it
+      is one) has its ``meta.contract.required_keys`` present and non-null in
+      the CHILD's meta.
+
+    ``specialises`` is src=child -> dst=parent; ``generalises`` is the
+    inverse, src=parent -> dst=child. ``src_ref_id=None`` is a create-time
+    link whose source node does not exist yet: pass its would-be
+    ``src_kind``/``src_meta`` and the check runs before any insert, so a
+    refused put writes nothing.
+    """
+    if relation not in _TAXON_HIERARCHY_RELATIONS:
+        return
+    s_handle, s_name, s_kind, s_meta = _taxon_endpoint(
+        store, src_ref_id, src_kind, src_meta
+    )
+    d_handle, d_name, d_kind, d_meta = _taxon_endpoint(store, target.ref_id, None, None)
+    if s_kind != "taxon" and d_kind != "taxon":
+        return
+    for handle, name, kind in ((s_handle, s_name, s_kind), (d_handle, d_name, d_kind)):
+        if kind != "taxon":
+            raise BadInput(
+                f"{relation!r} on a taxon needs a taxon at both ends: "
+                f"{handle} {name!r} is kind={kind!r}",
+                next=(
+                    "link taxon to taxon; to attach a non-taxon ref to a "
+                    "taxon use rel='instance-of'"
+                ),
+            )
+    if target.pos is not None:
+        raise BadInput(
+            f"a taxon hierarchy edge links whole nodes, not a chunk "
+            f"(target {target.raw!r})",
+            next="drop the ~position from target=",
+        )
+    child_id: int | None
+    parent_id: int | None
+    if relation == "specialises":
+        child_id, parent_id = src_ref_id, target.ref_id
+        child, parent = (s_handle, s_name, s_meta), (d_handle, d_name, d_meta)
+    else:
+        child_id, parent_id = target.ref_id, src_ref_id
+        child, parent = (d_handle, d_name, d_meta), (s_handle, s_name, s_meta)
+    if parent_id is None:
+        # create-time ``generalises``: the new node would be the parent of an
+        # existing child; it has no ancestors, so no cycle, and the only
+        # start node it reaches is itself — its own contract binds the child.
+        p_meta = parent[2]
+        if p_meta.get("start"):
+            for key in (p_meta.get("contract") or {}).get("required_keys") or []:
+                if child[2].get(key) is None:
+                    raise BadInput(
+                        f"{child[0]} {child[1]!r} needs {key!r}: the new start "
+                        f"node {parent[1]!r} requires it of everything beneath it",
+                        next=f"set meta {key!r} on {child[0]} first, or drop the contract",
+                    )
+        return
+    if child_id is not None and store.taxon_would_cycle(child_id, parent_id):
+        raise BadInput(
+            f"that link would make a cycle: {child[0]} {child[1]!r} specialises "
+            f"{parent[0]} {parent[1]!r}, but {parent[0]} is already "
+            f"{child[0]} itself or below it",
+            next="a taxon hierarchy is acyclic; pick a parent that is not a descendant",
+        )
+    child_meta = child[2]
+    for start_id in store.taxon_start_nodes_reached(parent_id):
+        s_h, s_n, _k, start_meta = _taxon_endpoint(store, start_id, None, None)
+        required = (start_meta.get("contract") or {}).get("required_keys") or []
+        for key in required:
+            if child_meta.get(key) is None:
+                raise BadInput(
+                    f"{child[0]} {child[1]!r} needs {key!r}: start node "
+                    f"{s_h} {s_n!r} requires it of everything beneath it",
+                    next=(
+                        f"put the node with meta={{{key!r}: ...}} "
+                        "(or set it before linking)"
+                    ),
+                )
+
+
 def guard_and_route_contradicts_disputes(
     store: Store,
     src_ref_id: int,
@@ -259,6 +384,7 @@ def apply_link_ops(
 
     if link is not None:
         target = parse_link_target(link, store=store)
+        guard_taxon_hierarchy(store, src_ref_id, target, relation)
         routed = guard_and_route_contradicts_disputes(
             store, src_ref_id, target, relation
         )
@@ -433,6 +559,7 @@ __all__ = [
     "apply_tag_ops",
     "format_link_tag_ack",
     "guard_and_route_contradicts_disputes",
+    "guard_taxon_hierarchy",
     "require_link_target",
     "require_tag_ops",
     "validate_link_mode",

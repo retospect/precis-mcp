@@ -78,6 +78,9 @@ KIND_CODES: dict[str, str] = {
     "citation": "ci",
     "anki": "ak",
     "concept": "cn",
+    # term-taxonomy node (migration 0173) — concept-pattern card kind. ``tx``
+    # is tex's, so ``tn``.
+    "taxon": "tn",
     # the striving above the work (quest layer, migration 0065) — perpetual,
     # never exported. Record ``qu`` / logbook chunk ``ql`` below.
     "quest": "qu",

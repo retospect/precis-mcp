@@ -19,7 +19,10 @@ from urllib.parse import parse_qsl
 
 from precis.errors import BadInput
 from precis.handlers import _todo_guards as todo_guards
-from precis.handlers._link_tag_ops import validate_relation
+from precis.handlers._link_tag_ops import (
+    guard_taxon_hierarchy,
+    validate_relation,
+)
 from precis.handlers._link_target import parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
@@ -553,6 +556,13 @@ class JobHandler(NumericRefHandler):
                         "link='gripe:42', rel='fixes')"
                     ),
                 )
+
+        if target is not None:
+            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # create path writes its own link, so it calls the shared guard.
+            guard_taxon_hierarchy(
+                self.store, None, target, relation, src_kind=self.kind
+            )
 
         resolved_idem = idem_key or (link if link is not None else None)
 

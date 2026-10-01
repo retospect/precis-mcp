@@ -653,6 +653,15 @@ def search(
     # takes the string form '<design>#<block>' (Decision 3), which reads
     # the box off a block's declared transition requires= instead.
     compose: dict[str, Any] | str | None = None,
+    # taxon facets (see precis-taxon-help): search(kind='taxon',
+    # under='taxon:42' | 'measurand/temperature', axis='method', depth=2)
+    # returns the descendants of ``under`` (never ``under`` itself), edges
+    # restricted to meta.axis == axis, at most ``depth`` hops. With q= the
+    # ranked hits are intersected with that set. Declared at the verb level
+    # so strict-schema clients don't strip them; other kinds refuse them.
+    under: str | int | None = None,
+    axis: str | None = None,
+    depth: int | None = None,
     # See ``get`` — FastMCP injects the live per-request ``Context``
     # here (excluded from the wire schema); used only to key the skill
     # serve ledger off the real MCP session for this call.
@@ -934,6 +943,13 @@ def search(
         payload["wants"] = wants
     if compose is not None:
         payload["compose"] = compose
+    # taxon facets — forwarded only when set, same discipline.
+    if under is not None:
+        payload["under"] = under
+    if axis is not None:
+        payload["axis"] = axis
+    if depth is not None:
+        payload["depth"] = depth
 
     # See ``get`` for the ``str | CallToolResult`` return contract, and
     # for why the serve-ledger session binds only around the dispatch
@@ -1714,6 +1730,7 @@ def link(
     # the chunk handle). Declared at the verb level so strict-schema MCP
     # clients don't strip it.
     element: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> str:
     """Add or remove a typed link between two refs.
 
@@ -1737,6 +1754,7 @@ def link(
             "mode": mode,
             "rel": rel,
             "element": element,
+            "meta": meta,
         },
     )
 

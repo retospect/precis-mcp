@@ -647,12 +647,16 @@ class TodoHandler(NumericRefHandler):
         link: str | None,
         rel: str | None = None,
         auto_refresh_days: int | None = None,
+        put_meta: dict[str, Any] | None = None,
     ) -> Response:
         # Mirror of NumericRefHandler._create, with parent_id wired
         # through. We can't just call super() because the base class
         # doesn't accept ``parent_id``; rewriting the body keeps the
         # tx boundary intact.
-        from precis.handlers._link_tag_ops import validate_relation
+        from precis.handlers._link_tag_ops import (
+            guard_taxon_hierarchy,
+            validate_relation,
+        )
         from precis.handlers._link_target import parse_link_target
 
         if text is None or not text.strip():
@@ -662,6 +666,12 @@ class TodoHandler(NumericRefHandler):
             )
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel, store=self.store)
+        if target is not None:
+            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # create path writes its own link, so it calls the shared guard.
+            guard_taxon_hierarchy(
+                self.store, None, target, relation, src_kind=self.kind
+            )
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:

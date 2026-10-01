@@ -89,6 +89,17 @@ NOT_VOCAB: dict[str, str] = {
         "DB (comment: 'backfill: one main board per existing pcb-kind "
         "design ref')."
     ),
+    "refs": (
+        "0174_taxon_seed.sql: mints one kind='taxon' node per live row of "
+        "the four legacy registries (INSERT … SELECT) plus the two start "
+        "nodes — corpus data derived from registry rows, not reference "
+        "vocabulary; ordinary refs are created at write time."
+    ),
+    "links": (
+        "0174_taxon_seed.sql: the 'specialises' edge from each seeded "
+        "taxon to its start node — a data link between seeded refs, not "
+        "reference vocabulary; links are created at write time."
+    ),
     "tags": (
         "0028/0102/0146: legacy-tag-value merge-then-delete migrations, "
         "each guarded by 'WHERE EXISTS (SELECT 1 FROM tags WHERE "
