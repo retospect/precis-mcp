@@ -223,10 +223,11 @@ class PcbIR:
     #: implied by its position). :func:`from_graph` fills this from
     #: :mod:`precis.pcb.landpattern`'s package-family synthesis
     #: (:func:`~precis.pcb.landpattern.sizes_for`) by default;
-    #: :func:`precis.pcb.realize.pad_geometry` overrides per pin when real
-    #: cached ``part_footprints`` geometry exists — the ONE size store, so
-    #: router/DRC/gerber-preview never read conflicting numbers for one
-    #: pad.
+    #: :func:`precis.pcb.session.apply_real_pin_offsets` overwrites it per
+    #: pin (:meth:`PcbIR.set_pin_pad`) with the same real pad that gave the
+    #: position, so courtyards and the placer's land rects measure real
+    #: pads (gr460567); :func:`precis.pcb.realize.pad_geometry` reads the
+    #: same cached geometry for router/DRC/gerber-preview.
     pin_w: np.ndarray
     pin_h: np.ndarray
     #: object[n_pins] -> str ('circle'|'rect') — real SMD pads are not
@@ -685,6 +686,33 @@ class PcbIR:
         self.pin_dx[pin_id] = dx
         self.pin_dy[pin_id] = dy
         self.pin_offsets_synthesized[pin_id] = False
+        self._dirty_pin_geometry(pin_id)
+
+    def set_pin_pad(
+        self,
+        pin_id: int,
+        w: float,
+        h: float,
+        poly: list[tuple[float, float]] | None = None,
+    ) -> None:
+        """L3 mutator: replace one pin's SYNTHESIZED pad size with the real
+        footprint pad's extent (footprint-local mm, unrotated by the
+        instance pose — :attr:`pin_w`'s own frame), and its outline ring
+        when the pad is a polygon (relative to the pin centre, as
+        :attr:`pin_poly` stores it). The size half of
+        :meth:`set_pin_offset`: gr460567 — real positions with synthesized
+        sizes made :func:`instance_courtyard_polygon` hull tiny pads at real
+        coordinates, so courtyards cut through real pads and the placer
+        reserved too little. Same dirty cascade as :meth:`set_pin_offset`."""
+        self.pin_w[pin_id] = w
+        self.pin_h[pin_id] = h
+        if poly:
+            self.pin_poly[pin_id] = list(poly)
+            self.pin_shape[pin_id] = "polygon"
+        self.pin_pad_synthesized[pin_id] = False
+        self._dirty_pin_geometry(pin_id)
+
+    def _dirty_pin_geometry(self, pin_id: int) -> None:
         inst_id = int(self.pin_instance[pin_id])
         self.dirty_l3[inst_id] = True
         for seg_id in self._segs_of_instance.get(inst_id, []):

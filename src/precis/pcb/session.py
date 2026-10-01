@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -390,6 +391,49 @@ def _real_pin_offsets(fp: dict[str, Any]) -> dict[str, tuple[float, float]]:
     return out
 
 
+def _real_pin_pads(
+    fp: dict[str, Any],
+) -> dict[str, tuple[float, float, list[tuple[float, float]] | None]]:
+    """One footprint's REAL per-pin pad extent, keyed by netlist pin name:
+    ``(w, h, poly)`` in footprint-local mm, unrotated by the instance pose
+    (:attr:`~precis.pcb.ir.PcbIR.pin_w`'s frame). ``poly`` is a polygon
+    pad's ring relative to its own centre, else ``None``. A pad's own
+    ``rot`` is folded into ``w``/``h`` as the rotated rectangle's bounding
+    box — exact at 90° multiples, over-covering otherwise, which is the
+    safe direction for a courtyard. First pad per pin wins, the same pad
+    :func:`_real_pin_offsets` takes the centre from."""
+    pin_map = fp.get("pin_map") or {}
+    out: dict[str, tuple[float, float, list[tuple[float, float]] | None]] = {}
+    for pad in fp.get("pads") or []:
+        entry = pin_map.get(str(pad.get("number")))
+        name = (
+            str(entry.get("name"))
+            if isinstance(entry, dict) and entry.get("name") is not None
+            else str(pad.get("number") or "")
+        )
+        if not name or name in out:
+            continue
+        try:
+            cx, cy = float(pad["x"]), float(pad["y"])
+            if pad.get("poly"):
+                ring = [(float(vx) - cx, float(vy) - cy) for vx, vy in pad["poly"]]
+                xs, ys = [p[0] for p in ring], [p[1] for p in ring]
+                out[name] = (max(xs) - min(xs), max(ys) - min(ys), ring)
+                continue
+            w = float(pad["w"])
+            h = float(pad.get("h", pad["w"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        rot = float(pad.get("rot") or 0.0) % 180.0
+        if rot in (0.0, 90.0):
+            out[name] = (h, w, None) if rot == 90.0 else (w, h, None)
+            continue
+        theta = math.radians(rot)
+        c, s = abs(math.cos(theta)), abs(math.sin(theta))
+        out[name] = (w * c + h * s, w * s + h * c, None)
+    return out
+
+
 def pin_name_mismatches(
     ir: pcb_ir.PcbIR, footprints: dict[str, dict[str, Any]]
 ) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
@@ -484,11 +528,15 @@ def apply_real_pin_offsets(
     before — this only makes the fallback audible; it does not change it.
     """
     real_by_inst: dict[int, dict[str, tuple[float, float]]] = {}
+    pads_by_inst: dict[
+        int, dict[str, tuple[float, float, list[tuple[float, float]] | None]]
+    ] = {}
     for inst_id in range(ir.n_instances):
         refdes = str(ir.instance_refdes[inst_id])
         fp = footprints.get(refdes) if footprints else None
         if fp and fp.get("pads"):
             real_by_inst[inst_id] = _real_pin_offsets(fp)
+            pads_by_inst[inst_id] = _real_pin_pads(fp)
             continue
         lcsc = ir.instance_part_lcsc[inst_id]
         if lcsc:
@@ -508,6 +556,11 @@ def apply_real_pin_offsets(
         if offset is None:
             continue
         ir.set_pin_offset(pid, offset[0], offset[1])
+        # Size travels with position (gr460567): a real centre with a
+        # synthesized size hulls the wrong pad.
+        pad = pads_by_inst[int(ir.pin_instance[pid])].get(str(ir.pin_label[pid]))
+        if pad is not None:
+            ir.set_pin_pad(pid, pad[0], pad[1], pad[2])
         changed += 1
     return changed
 

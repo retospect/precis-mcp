@@ -198,6 +198,45 @@ def test_apply_real_pin_offsets_takes_the_first_pad_of_a_multi_pad_pin():
     assert (ir.pin_dx[pin_a], ir.pin_dy[pin_a]) == (-10.0, 2.5)
 
 
+def test_apply_real_pin_offsets_carries_the_real_pad_size_and_outline():
+    """gr460567: position was real while size stayed synthesized, so the
+    courtyard hull wrapped tiny pads at real centres and cut through the
+    real pads. Size, a pad's own rotation and a polygon ring now come from
+    the same first pad as the centre, and the courtyard covers the pads."""
+    from shapely.geometry import Polygon, box
+
+    from precis.pcb.ir import instance_courtyard_polygon
+    from precis.pcb.session import apply_real_pin_offsets
+
+    fp = {
+        "pads": [
+            {"number": "1", "x": -10.0, "y": 2.5, "w": 4.0, "h": 1.0, "rot": 90},
+            {
+                "number": "2",
+                "x": 10.0,
+                "y": -2.5,
+                "w": 3.0,
+                "shape": "POLYGON",
+                "poly": [[8.5, -4.0], [11.5, -4.0], [11.5, -1.0], [8.5, -1.0]],
+            },
+        ],
+        "pin_map": {"1": {"name": "A"}, "2": {"name": "B"}},
+    }
+    ir = from_graph(_two_pin_graph(), stackup=DEFAULT_STACKUP)
+    apply_real_pin_offsets(ir, {"U1": fp})
+
+    by_label = {str(ir.pin_label[p]): p for p in range(ir.n_pins)}
+    a, b = by_label["A"], by_label["B"]
+    assert (ir.pin_w[a], ir.pin_h[a]) == (1.0, 4.0)  # rot 90 swaps w/h
+    assert ir.pin_poly[b] == [(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5)]
+    assert (ir.pin_w[b], ir.pin_h[b]) == (3.0, 3.0)
+    assert not bool(ir.pin_pad_synthesized[a]) and not bool(ir.pin_pad_synthesized[b])
+
+    court = Polygon(instance_courtyard_polygon(ir, 0, clearance_mm=0.1))
+    assert court.contains(box(-10.5, 0.5, -9.5, 4.5))
+    assert court.contains(box(8.5, -4.0, 11.5, -1.0))
+
+
 def test_build_ir_wires_real_pin_offsets_from_both_footprint_sources():
     """``build_ir`` is where the rule lives (one call site) — a caller
     passing either cache gets real positions on the IR every consumer
