@@ -1587,6 +1587,13 @@ def _hole_keepout_radius_mm(hole: MountingHole) -> float:
     return widest / 2.0 + COURTYARD_CLEARANCE_MM
 
 
+def mounting_hole_keepout_polygon(hole: MountingHole) -> list[tuple[float, float]]:
+    """The keep-out polygon :meth:`OptimizeEngine._placement_is_legal`
+    rejects a courtyard against — public so
+    :func:`precis.pcb.drc.check_courtyard_hole` judges the same shape."""
+    return _hole_polygon(hole.x, hole.y, _hole_keepout_radius_mm(hole))
+
+
 #: How far inside the board outline a component's OUTERMOST PAD must sit
 #: — the component centre must therefore stay this far in PLUS its own
 #: :attr:`OptimizeEngine._keepout_r`. A single centre-inset was tried and
@@ -1742,8 +1749,7 @@ class OptimizeEngine:
         #: seed happened to park it there — see :func:`seed_placement`'s
         #: docstring for why the seed itself doesn't avoid holes.
         self._hole_polys: list[list[tuple[float, float]]] = [
-            _hole_polygon(h.x, h.y, _hole_keepout_radius_mm(h))
-            for h in ir.mounting_holes
+            mounting_hole_keepout_polygon(h) for h in ir.mounting_holes
         ]
         self._hole_radius: list[float] = [
             _hole_keepout_radius_mm(h) for h in ir.mounting_holes
@@ -2781,6 +2787,43 @@ class OptimizeEngine:
                 if convex_polygons_overlap(proposed_poly[inst], proposed_poly[other]):
                     return False
         return True
+
+    def pose_conflicts(
+        self, inst: int, x: float, y: float, rot: float | None = None
+    ) -> list[tuple[str, str]]:
+        """``(rule, other)`` for every categorical obstacle ``inst`` would
+        hit at ``(x, y, rot)`` — the checks :meth:`_placement_is_legal`
+        makes, named instead of short-circuited, so a hand edit
+        (``op='move'``) can be refused with the rule and the pair. The
+        placement-bounds test is left out: those bounds are the anneal's
+        search domain, not a board rule, and a hand move is not bound by
+        them (outline containment is DRC's)."""
+        ir = self.ir
+        keepout = self._keepout_r
+        poly = self._world_courtyard(inst, x, y, rot)
+        conflicts: list[tuple[str, str]] = []
+        dx, dy = ir.inst_x - x, ir.inst_y - y
+        d2 = dx * dx + dy * dy
+        d2[inst] = math.inf
+        sep = keepout + keepout[inst]
+        for other in np.nonzero(d2 < sep * sep)[0]:
+            if ir.inst_bottom[inst] != ir.inst_bottom[int(other)]:
+                continue
+            if convex_polygons_overlap(poly, self._world_courtyard(int(other))):
+                conflicts.append(
+                    ("courtyard_overlap", str(ir.instance_refdes[int(other)]))
+                )
+        for hole_idx, hole_poly in enumerate(self._hole_polys):
+            hole = ir.mounting_holes[hole_idx]
+            sep_h = keepout[inst] + self._hole_radius[hole_idx]
+            if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep_h * sep_h:
+                continue
+            if convex_polygons_overlap(poly, hole_poly):
+                conflicts.append(("courtyard_hole", f"hole @ ({hole.x:g}, {hole.y:g})"))
+        gap = self._fixed_via_gap(inst, x, y, rot)
+        if gap < _FIXED_VIA_CLEARANCE_MM:
+            conflicts.append(("via_pad_keepout", f"authored via, gap {gap:.3f}mm"))
+        return conflicts
 
     def legalize_start(self) -> tuple[str, ...]:
         """Move every movable rigid body whose CURRENT pose is illegal to
@@ -3865,6 +3908,7 @@ __all__ = [
     "ScheduleStage",
     "TermSummary",
     "digest_toon",
+    "mounting_hole_keepout_polygon",
     "optimize",
     "recentre_in_outline",
     "seed_placement",

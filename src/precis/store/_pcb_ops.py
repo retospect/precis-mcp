@@ -455,8 +455,13 @@ class PcbMixin:
                 raise ValueError(f"pcb generator {gname!r} needs a 'generator' type")
             expansion = pcb_generators.expand(gtype, gname, dict(g.get("params") or {}))
             existing_gen = self._pcb_generator_row(conn, ref.id, gname)
+            # `regenerate` re-expands at current code even when generator,
+            # version and params all match -- the escape for output that
+            # changed without a version bump. Explicit only: it retires the
+            # whole expansion, placement and routing with it.
             if (
-                existing_gen is not None
+                not g.get("regenerate")
+                and existing_gen is not None
                 and existing_gen["generator"] == expansion.generator
                 and existing_gen["version"] == expansion.version
                 and existing_gen["params"] == expansion.canonical_params

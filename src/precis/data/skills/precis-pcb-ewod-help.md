@@ -39,6 +39,12 @@ put(
   (`{"net": "CH0", "refdes": "ARR1", "pin": "R0C0"}`).
 - Re-`put`ting the same `params` is a no-op; changed params replace the
   whole expansion (old instances retired, new ones inserted).
+- A board authored by an older generator version keeps that version's
+  copper until its generators entry is put again; `op='place'`/`'route'`
+  never re-expand it. Put and place/route responses name such a board
+  ("generator output is stale"). Putting the entry again re-expands it,
+  and `"regenerate": true` on the entry forces a re-expansion even when
+  nothing changed. Either way, the board's placement and routing are redone.
 
 ## Sizing is derived, not chosen
 

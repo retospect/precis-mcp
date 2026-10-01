@@ -1754,6 +1754,49 @@ def check_courtyard_overlap(
     return findings
 
 
+def check_courtyard_hole(
+    courtyards: list[Courtyard], holes: Sequence[tuple[str, list[tuple[float, float]]]]
+) -> list[DrcFinding]:
+    """A part's courtyard overlapping a mounting hole's keep-out is a hard
+    error, on either side of the board — the hole and its hardware go
+    through it. ``holes`` are ``(label, polygon)`` pairs built by
+    :func:`precis.pcb.optimize.mounting_hole_keepout_polygon`, the shape the
+    placer's ``_placement_is_legal`` already rejects against, so the placer
+    and DRC hold the same rule. Without this a part whose courtyard covers a
+    plated solder-nut hole while its pads miss it was DRC-clean:
+    :func:`check_npth_clearance` tests copper, and only against unplated
+    holes."""
+    hole_geoms = [(label, Polygon(poly)) for label, poly in holes if len(poly) >= 3]
+    if not hole_geoms or not courtyards:
+        return []
+    tree = STRtree([g for _, g in hole_geoms])
+    findings: list[DrcFinding] = []
+    for refdes, poly in courtyards:
+        if len(poly) < 3:
+            continue
+        gc = Polygon(poly)
+        for c in tree.query(gc, predicate="intersects"):
+            label, gh = hole_geoms[int(c)]
+            overlap = gc.intersection(gh)
+            if overlap.is_empty or overlap.area <= _EPS:
+                continue
+            depth = _overlap_depth_mm(overlap)
+            findings.append(
+                DrcFinding(
+                    rule="courtyard_hole",
+                    severity="error",
+                    where=f"{refdes} <-> {label}",
+                    detail=(
+                        f"{refdes} courtyard overlaps the {label} keep-out "
+                        f"over {overlap.area:.4f}mm^2, {depth:.3f}mm deep"
+                    ),
+                    objects=({"a": refdes, "b": label},),
+                    margin_mm=-depth,
+                )
+            )
+    return findings
+
+
 def _overlap_depth_mm(overlap: BaseGeometry) -> float:
     """How far two courtyards have to move apart to separate, along the
     easier axis — the SHORTER side of the overlap region's bounding box.
@@ -2397,6 +2440,7 @@ def run_geometric_drc(
     net_voltages: dict[str, float] | None = None,
     unrouted: list[dict[str, Any]] | None = None,
     census: tuple[SilkPlacement, ...] | None = None,
+    holes: Sequence[tuple[str, list[tuple[float, float]]]] = (),
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
@@ -2432,6 +2476,9 @@ def run_geometric_drc(
     :func:`check_courtyard_overlap`'s own ``bottom_by_refdes`` — see that
     function's docstring; ``None`` (the default) keeps every existing
     caller's courtyard-overlap behaviour unchanged.
+
+    ``holes`` (mounting-hole keep-out polygons) feeds
+    :func:`check_courtyard_hole`; empty by default.
     """
     findings: list[DrcFinding] = []
     findings += check_synthesized_footprint(model)
@@ -2455,6 +2502,7 @@ def run_geometric_drc(
         findings += check_courtyard_overlap(
             courtyards, bottom_by_refdes=courtyard_bottom
         )
+        findings += check_courtyard_hole(courtyards, holes)
     findings += check_silk_missing(census or (), model)
     findings += check_silk_printability(census or (), capability)
     return findings
@@ -2528,6 +2576,7 @@ __all__ = [
     "check_board_edge_clearance",
     "check_clearance",
     "check_connectivity",
+    "check_courtyard_hole",
     "check_courtyard_overlap",
     "check_npth_clearance",
     "check_octilinear",

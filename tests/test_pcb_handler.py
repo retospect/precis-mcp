@@ -1079,7 +1079,7 @@ def test_op_move_sets_position_and_lock(pcb, store):
     pcb.put(id="op-move", args=_CROSSED)
     resp = pcb.put(
         id="op-move",
-        args={"op": "move", "refdes": "A", "x": 1.0, "y": 2.0, "fixed": "xy"},
+        args={"op": "move", "refdes": "A", "x": 10.0, "y": 12.0, "fixed": "xy"},
     )
     assert "moved" in resp.body
     ref = store.get_ref(kind="pcb", id="op-move")
@@ -1089,7 +1089,56 @@ def test_op_move_sets_position_and_lock(pcb, store):
             "SELECT x, y, fixed FROM pcb_instances WHERE ref_id = %s AND refdes = 'A'",
             (ref.id,),
         ).fetchone()
-    assert row == (1.0, 2.0, "xy")
+    assert row == (10.0, 12.0, "xy")
+
+
+def test_op_move_onto_another_part_is_refused_naming_the_rule_and_part(pcb, store):
+    """docs/backlog/pcb-always-valid-board-invariant.md acceptance: a move
+    that would overlap another part's courtyard is refused, and the board
+    keeps the old pose."""
+    pcb.put(id="op-move-bad", args=_CROSSED)
+    with pytest.raises(BadInput, match="courtyard_overlap with B"):
+        pcb.put(
+            id="op-move-bad", args={"op": "move", "refdes": "A", "x": 2.0, "y": 2.0}
+        )
+    ref = store.get_ref(kind="pcb", id="op-move-bad")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT x, y FROM pcb_instances WHERE ref_id = %s AND refdes = 'A'",
+            (ref.id,),
+        ).fetchone()
+    assert row == (0.0, 0.0)
+
+
+def test_op_move_to_a_clear_spot_is_not_refused(pcb):
+    """The negative control: without it the refusal could be vacuous."""
+    pcb.put(id="op-move-ok", args=_CROSSED)
+    resp = pcb.put(
+        id="op-move-ok", args={"op": "move", "refdes": "A", "x": 20.0, "y": 20.0}
+    )
+    assert "moved" in resp.body
+
+
+def test_op_move_onto_a_mounting_hole_is_refused(pcb):
+    pcb.put(id="op-move-hole", args=_CROSSED)
+    pcb.put(
+        id="op-move-hole",
+        args={
+            "features": [
+                {
+                    "ftype": "mounting_hole",
+                    "x": 30.0,
+                    "y": 30.0,
+                    "geom": {"diameter": 3.2},
+                }
+            ]
+        },
+    )
+    with pytest.raises(BadInput, match="courtyard_hole with hole @ \\(30, 30\\)"):
+        pcb.put(
+            id="op-move-hole", args={"op": "move", "refdes": "A", "x": 30.5, "y": 30.0}
+        )
 
 
 def test_op_move_unknown_instance_not_found(pcb):

@@ -72,8 +72,6 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   defect, narrower — implement one, not both).
 - **backlog/pcb-placement-must-be-valid-before-routing.md** — folded into
   the above.
-- **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
-  ewod-pcb Do-next 6.
 - **backlog/pcb-layer-preferred-direction.md** — ewod-pcb Horizon 3.
 - **backlog/pcb-footprint-pad-layer-unvalidated.md** — ewod-pcb Horizon 4.
 - **backlog/pcb-tapeout-checklist-seed-items.md** — ewod-pcb Horizon 6.

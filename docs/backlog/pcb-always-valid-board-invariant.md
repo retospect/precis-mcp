@@ -199,24 +199,21 @@ and fixed copper only: `synthesized_footprint`, `clearance` (pad-pad,
 pad-fixed-copper), `annular_ring`, `npth_clearance`, `via_pad_keepout` and
 `via_via_keepout` (fixed vias), `board_edge_clearance`,
 `silk_edge_clearance`, `outline_containment`, `courtyard_overlap`,
-`silk_missing`, `silk_printability`.
+`courtyard_hole`, `silk_missing`, `silk_printability`.
 
 Also: **"phase tags" do not exist.** `run_geometric_drc` is a flat call
 list, and `_render_drc` already runs the whole registry in a "pads-only"
 mode. That mode, not a new tagging scheme, is the thing to build on.
 
-### A gap this exposes: no courtyard-vs-hole rule
+### Closed gap: courtyard-vs-hole rule (2026-10-01)
 
-DRC has none. `check_npth_clearance` tests copper primitives against holes
-and **only non-plated ones**. The dogfood solder nuts are `plated: True`,
-so they are skipped outright. A part whose courtyard covers a mounting hole
-but whose pads do not is DRC-clean.
-
-So the placer's hole rule (in `_placement_is_legal`) and DRC **disagree**,
-and the first draft's acceptance criterion — "a part seeded onto a mounting
-hole is reported as invalid" — is not satisfiable against the current
-registry. Either a courtyard-vs-hole rule gets added, or that criterion is
-dropped. Adding it is the honest option: the placer already believes it.
+`check_npth_clearance` tests copper against unplated holes only, so a part
+whose courtyard covered a plated solder-nut hole while its pads missed it
+was DRC-clean, though the placer refused it. `drc.check_courtyard_hole`
+now reports that as an error, judged against
+`optimize.mounting_hole_keepout_polygon` — the shape
+`_placement_is_legal` rejects against, so placer and DRC agree. The
+mounting-hole acceptance fixture below is now satisfiable.
 
 ## Prerequisite: `check_via_pad_keepout` is too slow to run per op
 
@@ -327,12 +324,17 @@ extracted *affinity*, which is a different fact.
 ## Acceptance
 
 - A mutation that would produce a `via_pad_keepout` or `courtyard_overlap`
-  violation is refused, naming the rule and the pair.
+  violation is refused, naming the rule and the pair. **Done for
+  single-part `op='move'` (2026-10-01)** via
+  `OptimizeEngine.pose_conflicts`, which applies the placer's own rule set and
+  checks the moved part only. The other mutation paths listed above
+  (`pcb_apply`, `view='route'`, `op='footprint'`, `op='class_rules'`, the
+  job writes) are still open, as are open decisions 1–2.
 - Negative control: a legal mutation is NOT refused. Without it the refusal
-  path can be vacuously "always refuse".
+  path can be vacuously "always refuse". (Has a test for `op='move'`.)
 - An incumbent-invalid board is reported as invalid rather than silently
-  accepted — the delta-vs-state clause. **Requires the courtyard-vs-hole
-  rule to exist first** if the mounting-hole case is the fixture.
+  accepted — the delta-vs-state clause. The courtyard-vs-hole rule it
+  needed for the mounting-hole fixture exists (`courtyard_hole`).
 - `route` on a board it cannot fully realize does not leave stored copper
   with unreported DRC errors.
 - `check_unrouted` does NOT cause a refusal — the geometric/routedness

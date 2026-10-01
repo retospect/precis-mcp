@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import tempfile
 import uuid
@@ -83,10 +84,12 @@ from precis.pcb import cost as pcb_cost
 from precis.pcb import drc as pcb_drc
 from precis.pcb import export as pcb_export
 from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
+from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import ir as pcb_ir
 from precis.pcb import layer_lock as pcb_layer_lock
+from precis.pcb import optimize as pcb_optimize
 from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
 from precis.pcb import route as pcb_route
@@ -393,9 +396,19 @@ class PcbHandler(Handler):
             f"+{counts['nets']} net(s), +{counts['conns']} conn(s){extra}  "
             f"(now {len(design['instances'])} part(s), {len(design['nets'])} net(s))"
         )
-        note = self._pin_name_note(ref.id)
+        notes = [
+            n for n in (self._pin_name_note(ref.id), self._stale_note(ref.id)) if n
+        ]
         return Response(
-            body=head + "\n" + (note + "\n" if note else "") + self._toc(design)
+            body=head + "\n" + "".join(n + "\n" for n in notes) + self._toc(design)
+        )
+
+    def _stale_note(self, ref_id: int) -> str:
+        """Warn when a stored generator expansion is older than the code's
+        (:func:`precis.pcb.generators.stale_generators`) — a same-params
+        re-put and a route both leave that copper in place."""
+        return pcb_generators.stale_generator_note(
+            pcb_generators.stale_generators(self.store.pcb_generators_for(ref_id))
         )
 
     def _pin_name_note(self, ref_id: int) -> str:
@@ -582,13 +595,17 @@ class PcbHandler(Handler):
         status_view = "route-status" if op == "route" else "crossings"
         from precis.handlers.skill import code_stamp
 
+        stale = self._stale_note(ref.id)
         return (
             f"# {op} {ref.slug} — enqueued\n{job_resp.body}\n\n"
-            f"Runs on the cluster worker's code, not necessarily this "
-            f"session's ({code_stamp()}) — the job's `ran_on:` line records "
-            "which build actually ran.\n"
-            f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
-            "to check progress once the job lands."
+            + (stale + "\n\n" if stale else "")
+            + (
+                f"Runs on the cluster worker's code, not necessarily this "
+                f"session's ({code_stamp()}) — the job's `ran_on:` line records "
+                "which build actually ran.\n"
+                f"Next: get(kind='pcb', id='{ref.slug}', view='{status_view}') "
+                "to check progress once the job lands."
+            )
         )
 
     def _op_move(self, ref: Any, args: dict[str, Any]) -> Response:
@@ -613,10 +630,44 @@ class PcbHandler(Handler):
                 "op='move' needs at least one of x / y / rot / fixed",
                 next="args={'op':'move','refdes':'U1','fixed':'xy'}",
             )
+        if {"x", "y", "rot"} & kwargs.keys():
+            self._refuse_illegal_pose(ref, refdes, kwargs)
         ok = self.store.pcb_move_instance(ref.id, refdes, **kwargs)
         if not ok:
             raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
         return Response(body=f"# {refdes} moved — {kwargs}")
+
+    def _refuse_illegal_pose(self, ref: Any, refdes: str, pose: dict[str, Any]) -> None:
+        """docs/backlog/pcb-always-valid-board-invariant.md: a move that
+        would put ``refdes``'s courtyard on another part or a mounting hole,
+        or a solder land on an authored via, is refused with the rule and
+        the pair — the placer's own rule
+        (:meth:`precis.pcb.optimize.OptimizeEngine.pose_conflicts`), so a
+        hand edit cannot store what the anneal may not. Only the moved
+        part is judged: a conflict elsewhere on the board is not this
+        move's to refuse."""
+        graph = self.store.pcb_graph(ref.id)
+        ir = self._build_ir(ref.id, graph, with_fixed_copper=True)
+        idx = {str(r): i for i, r in enumerate(ir.instance_refdes)}.get(refdes)
+        if idx is None:
+            return  # pcb_move_instance reports the missing refdes
+        x = float(pose.get("x", ir.inst_x[idx]))
+        y = float(pose.get("y", ir.inst_y[idx]))
+        if math.isnan(x) or math.isnan(y):
+            return  # unplaced: a rotation alone has no geometry to judge
+        rot = float(pose.get("rot", ir.inst_rot[idx]))
+        engine = pcb_optimize.OptimizeEngine(ir, pcb_optimize.OptimizeConfig())
+        conflicts = engine.pose_conflicts(idx, x, y, None if math.isnan(rot) else rot)
+        if conflicts:
+            raise BadInput(
+                f"pcb: moving {refdes} to ({x:g}, {y:g}) would leave an invalid "
+                "board: "
+                + "; ".join(f"{rule} with {other}" for rule, other in conflicts),
+                next=(
+                    "pick a pose clear of these, or run put(args={'op':'place'}) "
+                    "to let the placer find one"
+                ),
+            )
 
     def _op_rip(self, ref: Any, args: dict[str, Any]) -> Response:
         net = str(args.get("net") or "").strip()
@@ -1223,7 +1274,9 @@ class PcbHandler(Handler):
                 return path
         return None
 
-    def _build_ir(self, ref_id: int, graph: dict[str, Any]) -> pcb_ir.PcbIR:
+    def _build_ir(
+        self, ref_id: int, graph: dict[str, Any], *, with_fixed_copper: bool = False
+    ) -> pcb_ir.PcbIR:
         """:func:`precis.pcb.session.build_ir` with the board-config
         features the store knows attached — one wrapper so no view can
         build an IR that forgot the mounting holes. A hole missing from
@@ -1246,7 +1299,11 @@ class PcbHandler(Handler):
         pcb-ewod-multitile.md ruling 6, 2026-09-19) no swap ever
         persisted, so a view that skipped them measured the same board;
         the first real swaps made DRC/gerber/ratsnest disagree with the
-        routed copper about which sink pin carries which electrode."""
+        routed copper about which sink pin carries which electrode.
+
+        ``with_fixed_copper`` adds the authored vias the placer keeps solder
+        lands off (``pcb_place``'s own hydration) — for a pose check."""
+        board_id = (graph.get("board") or {}).get("board_id")
         ir = pcb_session.build_ir(
             graph,
             mounting_holes=pcb_session.mounting_holes_from_features(
@@ -1254,6 +1311,11 @@ class PcbHandler(Handler):
             ),
             footprints_by_lcsc=self.store.pcb_footprints_for(ref_id),
             local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
+            fixed_copper=(
+                self.store.pcb_fixed_copper_list(int(board_id))
+                if with_fixed_copper and board_id is not None
+                else None
+            ),
         )
         pcb_session.apply_pin_swap_overrides(ir, self.store.pcb_pin_swaps_list(ref_id))
         return ir
@@ -2726,6 +2788,13 @@ class PcbHandler(Handler):
                 if r["status"] != "realized"
             ],
             census=silk_census,
+            holes=[
+                (
+                    f"hole @ ({h.x:g}, {h.y:g})",
+                    pcb_optimize.mounting_hole_keepout_polygon(h),
+                )
+                for h in ir.mounting_holes
+            ],
         )
         run_id = uuid.uuid4().hex
         self.store.pcb_write_drc_findings(

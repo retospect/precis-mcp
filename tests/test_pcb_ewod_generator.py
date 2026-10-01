@@ -161,6 +161,41 @@ def test_reapplying_the_same_params_is_a_no_op(pcb):
     assert n_instances[0] == 1
 
 
+def test_a_stale_board_is_named_and_regenerate_re_expands_it(pcb):
+    """A board stored at an older generator version says so on
+    op='place' and on a put that does not name the generator; putting the
+    generator entry again re-expands it and clears the warning."""
+    pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
+    ref = pcb.store.get_ref(kind="pcb", id="ewod-gen-1")
+    assert ref is not None
+    with pcb.store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE pcb_generators SET version = version - 1 WHERE ref_id=%s",
+            (ref.id,),
+        )
+        conn.commit()
+
+    assert (
+        "generator output is stale"
+        in pcb.put(id="ewod-gen-1", args={"op": "place", "iters": 10}).body
+    )
+    resp = pcb.put(id="ewod-gen-1", args={"meta": {"note": "x"}})
+    assert "ARR1 (ewod_pad_array): stored version" in resp.body
+
+    resp = pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
+    assert "1 generator(s) applied" in resp.body
+    assert "generator output is stale" not in resp.body
+
+
+def test_regenerate_re_expands_even_when_nothing_changed(pcb):
+    """The escape for output that changed without a version
+    bump — same generator, version and params, re-expanded on request."""
+    pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
+    args = _array_args(grid=[3, 3])
+    args["generators"][0]["regenerate"] = True
+    assert "1 generator(s) applied" in pcb.put(id="ewod-gen-1", args=args).body
+
+
 def test_changed_params_retires_and_reinserts_the_expansion(pcb):
     pcb.put(id="ewod-gen-1", args=_array_args(grid=[3, 3]))
     ref = pcb.store.get_ref(kind="pcb", id="ewod-gen-1")

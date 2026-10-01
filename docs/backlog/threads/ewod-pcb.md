@@ -52,18 +52,15 @@ Do-next renumbered)
    only registered generator is `ewod_pad_array`). Sits beside 3: both are
    the escape corridor, this one is where the primitive lives. Reto
    2026-09-26/27: board = data, engine = general.
-5. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
-   op='route' never re-runs the generator, which is why pb345846 still
-   permits F.Cu after the 09-27 fix. Now owns the live half of 6: the stale
-   stored class IS this staleness, and without a tripwire the same
-   staleness re-opens any generator fix.
-6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
+5. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
    fresh-fixture failure it was ranked on came from the then-unlanded
    routing_area term. That term landed 2026-10-01 (Reto's call) and on that
    main the dogfood file passes with it, so the F.Cu escape no longer
-   reproduces. What is left is the stale class on pb345846, which 5 owns,
-   plus the item's negative-control acceptance. Reads
+   reproduces. What is left is the stale class on pb345846 (fixed by
+   re-putting its generators entry; responses now name a stale board, and
+   tests/test_pcb_generator_version_tripwire.py pins each generator's output
+   to its version), plus the item's negative-control acceptance. Reads
    realize/maze, which pcb-easyeda-round-trip's router item also touches;
    this thread sequences behind theirs.
 
@@ -179,8 +176,10 @@ Do-next renumbered)
 ## Parked
 
 - **pb345846 regenerate** — destructive prod write; unparks on Reto's
-  per-write go-ahead, and not before the escape-layer question (Do-next 6,
-  with its live half in 5) is settled, or it is done twice. Named by item, not number: that rank has moved twice already.
+  per-write go-ahead, and not before the escape-layer question
+  (backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md)
+  is settled, or it is done twice. The regenerate itself is now a plain
+  re-put of its generators entry.
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
   Do-next 1, where via-vs-pad becomes an enforced rule rather than a
   reported one.

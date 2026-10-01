@@ -1198,6 +1198,44 @@ def test_check_courtyard_overlap_fires_and_stays_quiet():
     assert drc.check_courtyard_overlap(clear) == []
 
 
+def test_check_courtyard_hole_flags_a_courtyard_over_a_plated_hole():
+    """docs/backlog/pcb-always-valid-board-invariant.md "no courtyard-vs-hole
+    rule": a part whose courtyard covers a plated solder-nut hole while its
+    pads miss it was DRC-clean, though the placer refuses that pose."""
+    from precis.pcb.ir import MountingHole
+    from precis.pcb.optimize import mounting_hole_keepout_polygon
+
+    nut = MountingHole(x=0.0, y=0.0, drill_mm=3.2, ring_dia_mm=6.0, plated=True)
+    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut))]
+    on_it = [("U1", _square(2.0, 0.0))]
+    findings = drc.check_courtyard_hole(on_it, holes)
+    assert [f.rule for f in findings] == ["courtyard_hole"]
+    assert findings[0].severity == "error"
+    assert findings[0].where == "U1 <-> hole @ (0, 0)"
+    assert findings[0].margin_mm is not None and findings[0].margin_mm < 0
+
+    clear = [("U1", _square(10.0, 0.0))]
+    assert drc.check_courtyard_hole(clear, holes) == []
+    assert drc.check_courtyard_hole(on_it, []) == []
+
+
+def test_run_geometric_drc_threads_holes_into_the_courtyard_hole_rule():
+    from precis.pcb.ir import MountingHole
+    from precis.pcb.optimize import mounting_hole_keepout_polygon
+
+    hole = MountingHole(x=0.0, y=0.0, drill_mm=3.2)
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [], "pads": [], "drills": []}
+    findings = drc.run_geometric_drc(
+        model,
+        capability=_CAP4,
+        courtyards=[("U1", _square(1.0, 0.0)), ("U2", _square(20.0, 0.0))],
+        holes=[("hole @ (0, 0)", mounting_hole_keepout_polygon(hole))],
+    )
+    assert [f.where for f in findings if f.rule == "courtyard_hole"] == [
+        "U1 <-> hole @ (0, 0)"
+    ]
+
+
 def test_courtyards_that_merely_touch_are_not_an_overlap():
     """**Pinned deliberately, and constructed rather than sampled.** Two
     courtyards sharing exactly one edge have zero-area intersection —

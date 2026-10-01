@@ -197,6 +197,13 @@ instance, enforced in SQL), this IS the authorized edit path. Any of
 `x`/`y`/`rot`/`fixed` may be given; omit `fixed` to leave the lock alone,
 pass `fixed=None` to explicitly clear it.
 
+A move is refused when the part's new pose would break a rule the placer
+also enforces. The error names the rule and what it hit:
+`courtyard_overlap with B`, `courtyard_hole with hole @ (30, 30)`, or
+`via_pad_keepout with authored via`. Only the moved part is checked, so
+existing conflicts elsewhere on the board don't block the move. A move
+that only changes `fixed` is never checked.
+
 `op='class_rules'` upserts one net class's rules (`{name, rules}` — same
 shape as `put(args={'net_classes': {...}})` at design-authoring time, just
 scoped to one class). **Honest limit:** the stored rules are not yet READ

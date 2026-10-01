@@ -1133,9 +1133,8 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # `inst_bottom`) also landed in between and its share is unseparated. Per
     # the campaign's standing verdict the placement on this fixture is
     # invalid anyway (plaza vias inside `ARR1_SINK_0`'s footprint), so no
-    # count here earns a bisect until that is fixed — see
-    # docs/backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md,
-    # which is where the missing gate-time tripwire for exactly this is filed.
+    # count here earns a bisect until that is fixed. The gate-time tripwire
+    # for exactly this is tests/test_pcb_generator_version_tripwire.py.
     assert len(realized_escapes) >= 16, (
         "electrode escapes no longer route through the plaza fabric — the "
         f"gripe-346962 wall (enclosing pad discs) is back? {diag}"

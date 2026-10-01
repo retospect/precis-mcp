@@ -71,8 +71,9 @@ Two independent observations, both current:
 
 This correction downgrades the item. Observation 1 (the stale stored class
 on `pb345846`) is real but is the already-tracked "`op='route'` never
-re-runs the generator" staleness, owned by
-`pcb-generator-version-is-a-manual-bump-with-no-tripwire.md`. Nothing here
+re-runs the generator" staleness. Since 2026-10-01 put and place/route
+responses name a stale board, and re-putting its generators entry
+re-expands it, so pb345846's fix is that re-put. Nothing here
 demonstrates a leak on a board born today from current `main`, which is
 what the original rank was based on.
 

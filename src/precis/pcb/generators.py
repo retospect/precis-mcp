@@ -344,6 +344,16 @@ _DEFAULT_STUB_WIDTH_MM = 0.20
 #: negligible against any real `gap` (1% of the 0.10mm default).
 _GEOMETRY_ROUNDING_SLACK_MM = 0.001
 
+#: Each registered generator's current output version — what
+#: :attr:`GeneratorExpansion.version` carries and what a stored
+#: ``pcb_generators.version`` is compared against (:func:`stale_generators`).
+#: ``tests/test_pcb_generator_version_tripwire.py`` pins a digest of each
+#: generator's expansion to its version here, so changing the output without
+#: bumping this fails the gate instead of serving stale copper on prod.
+VERSIONS: dict[str, int] = {
+    "ewod_pad_array": 3,
+}
+
 
 @dataclass
 class GeneratorExpansion:
@@ -2688,7 +2698,7 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
     return GeneratorExpansion(
         refdes=name,
         generator="ewod_pad_array",
-        version=3,
+        version=VERSIONS["ewod_pad_array"],
         canonical_params=canonical_params,
         components=[component, *sink_components],
         nets=nets,
@@ -2713,8 +2723,52 @@ _REGISTRY: dict[str, Callable[[str, dict[str, Any]], GeneratorExpansion]] = {
 }
 
 
+def stale_generators(
+    rows: dict[str, dict[str, Any]],
+) -> list[tuple[str, str, int, int]]:
+    """``(name, generator, stored version, code version)`` for every stored
+    generator row (:meth:`precis.store._pcb_ops.PcbMixin.pcb_generators_for`'s
+    shape) whose version is behind :data:`VERSIONS`. Such a board serves the
+    copper an older build emitted until its generators entry is put again:
+    ``op='place'``/``op='route'`` never re-expand, and a put that does not
+    name the generator leaves it alone. A generator the code no longer
+    registers is not listed — there is no current version to compare
+    against."""
+    stale = []
+    for name, row in sorted(rows.items()):
+        current = VERSIONS.get(str(row.get("generator")))
+        stored = int(row.get("version") or 0)
+        if current is not None and stored < current:
+            stale.append((name, str(row["generator"]), stored, current))
+    return stale
+
+
+def stale_generator_note(stale: list[tuple[str, str, int, int]]) -> str:
+    """The warning a put/place/route response carries for
+    :func:`stale_generators`' rows — empty when nothing is stale."""
+    if not stale:
+        return ""
+    lines = [
+        "⚠️  generator output is stale — this board carries copper an older "
+        "build emitted, and place/route do not re-expand it:"
+    ]
+    lines += [
+        f"- {name} ({gen}): stored version {stored}, code version {current}"
+        for name, gen, stored, current in stale
+    ]
+    lines.append(
+        "Next: put the same generators entry again; the version mismatch "
+        "re-expands it. That retires and reinserts the whole expansion, so "
+        "its placement and routing are redone."
+    )
+    return "\n".join(lines)
+
+
 __all__ = [
+    "VERSIONS",
     "GeneratorExpansion",
     "expand",
     "resolve_ewod_sizing",
+    "stale_generator_note",
+    "stale_generators",
 ]
