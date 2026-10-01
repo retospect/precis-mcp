@@ -16,7 +16,8 @@ desorption) above everything that presents or packages its results.
 
 **Deadline above the ranking:** the catpath pathway-engine and trust-demo
 paper is November 2026's paper of the month (td459589, quest qu459585;
-Reto 2026-10-01). It has not been started. Mint the draft first. The trust
+Reto 2026-10-01). Skeleton draft `catpath-methods` exists, with a plan
+paragraph per section; next comes importing the missing methods papers. The trust
 demo needs the MPI image rebuilt on the node before
 `PRECIS_DFT_MPI_RANKS` is set. Rank the items below by what that paper
 needs.
