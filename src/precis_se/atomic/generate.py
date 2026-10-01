@@ -1082,8 +1082,8 @@ def prepare_realize_chain(
         f"{struct_slug!r} (chains {chains}; ports "
         f"{', '.join(sorted(ports_map))})"
     )
-    for note in region.notes:
-        echo += f"\n· {note}"
+    # The relax/spacing clause belongs to the headline, so it goes on before
+    # the per-strand notes — appended after, it read as part of the last note.
     if relax_report is not None:
         echo += (
             "; loop backbone chained by a geometric relax (duplex pinned): worst "
@@ -1101,6 +1101,8 @@ def prepare_realize_chain(
             f"{worst:.2f} Å — connectivity right, geometry not chained): pass "
             "relax_loops=true to chain them"
         )
+    for note in region.notes:
+        echo += f"\n· {note}"
     return echo, pending
 
 

@@ -394,6 +394,16 @@ def test_realize_chain_builds_a_deleted_and_an_inserted_base(handler, store) -> 
         n = sum(1 for r in rows if r[0] == cid)
         assert sorted(k[1] for k in steps if k[0] == cid) == list(range(1, n))
     assert echo.count("bonded across deleted offset(s) [10]") == 2, echo
+    # prod dogfood: the relax clause belongs to the headline, not glued
+    # onto the last strand's deletion note
+    lines = echo.splitlines()
+    headline = next(line for line in lines if line.startswith("realize_chain("))
+    assert "loop backbone chained by a geometric relax" in headline, echo
+    notes = [line for line in lines if line.startswith("· ")]
+    assert notes and not any("geometric relax" in line for line in notes), echo
+    # prod dogfood: view='chain' counted the deleted offset as free
+    chain_view = handler.get(id="indel", view="chain").body
+    assert "21 paired · 0 single · 0 free · 1 deleted" in chain_view, chain_view
     across = {
         (r[0], r[1])
         for r in rows

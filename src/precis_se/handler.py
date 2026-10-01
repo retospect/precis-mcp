@@ -3152,8 +3152,12 @@ def _render_chain(tree: SeTree) -> str:
             occ = pairing.at(name, offset)
             if occ is not None:
                 counts[occ.status] += 1
-        free = geom.n_units - sum(counts.values())
+        # A deleted offset holds no base: it is not free for a strand either.
+        n_deleted = len(pairing.indels[name].deletions) if name in pairing.indels else 0
+        free = geom.n_units - sum(counts.values()) - n_deleted
         occupancy = f"{counts[PAIRED]} paired · {counts[SINGLE]} single · {free} free"
+        if n_deleted:
+            occupancy += f" · {n_deleted} deleted"
         if counts[UNPAIRED]:
             occupancy += f" · {counts[UNPAIRED]} unpaired"
         if counts[PARALLEL] or counts[CROWDED]:

@@ -68,8 +68,14 @@ dogfooded on prod. Do-next is blocked.
   bond across it (stretched, the echo prints the step); an inserted
   offset's extras bulge off the duplex and the loop relax chains them;
   residue rows carry an insertion index (`stem@12+1` in pick and
-  findings); oxDNA export places inserted bases instead of refusing. Not
-  yet dogfooded on prod (needs the deploy).
+  findings); oxDNA export places inserted bases instead of refusing.
+  Dogfooded on prod 2026-10-01 (`dogfood-insdel-2`, 22-bp duplex, offset
+  10 deleted, one base inserted at 5): 42 nt realized, both strands
+  bonded across offset 10 at 7.15 Å, bulge relaxed 10.91 → 1.91 Å,
+  validate clean, pick names `inserted base h@5+1` with no pair row.
+  view='chain' counted the deleted offset as free and the echo glued the
+  relax clause onto the last deletion note — both fixed in the commit
+  that added this sentence.
 - **insertions/deletions, twist account** — shipped 2026-10-01 in the
   commit that added this line: `register.insertions`/`deletions` accepted;
   `chain_twist_global` (warn) per connected lattice-helix set when a
