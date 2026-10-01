@@ -41,6 +41,10 @@ gripes to Horizon, all adjacent infra the tick path depends on)
 
 ## Horizon
 
+0. **backlog/quest-tick-local-first-search.md** — inserted 2026-10-01 by
+   the pillar review on Reto's word ("ticks should look locally first"):
+   S2 acquisition fires on every query today and the local leg sees only
+   papers. Owner re-ranks; every tick that searches pays for it.
 1. **qu453863 ticking cadence** — waits on three watched ticks (Do next
    1-2); rungs that carry numbers, driving PRIO down through qu161906 to the
    pathway quests.
