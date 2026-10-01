@@ -16,10 +16,15 @@ Deployment requirements:
 - `PRECIS_FIX_REPO_DIR` env var pointing at the canonical
   precis-mcp repo (host path), bind-mounted into the precis
   container at the same path.
-- **That checkout must be able to PUSH to its own upstream**, as
-  whichever user the worker runs as. A fix branch is delivered to
-  `git remote get-url origin` of that checkout, and a job succeeds only
-  once `git ls-remote` finds the branch there. A pull-only checkout —
+- **That checkout must be able to PUSH to its own upstream's `main`**, as
+  whichever user the worker runs as. A fix is landed on `main` of
+  `git remote get-url origin` of that checkout as one squash commit on
+  current main, pushed without force (fast-forward only, so a concurrent
+  land makes it re-sync and retry, never overwrite), and a job succeeds
+  only once `git ls-remote` shows main containing the commit. Every
+  post-agent git command runs in this checkout, never in the per-gripe
+  clone, so the credential is never used where the agent could plant
+  hooks or config. A pull-only checkout —
   an anonymous HTTPS clone, which is what the ansible role provisions —
   makes every job **skip**: a `git push --dry-run` runs from that checkout
   before the per-gripe clone is made or the agent spawned, so an
@@ -79,11 +84,27 @@ operator ack — enforced by `call_claude_agent`'s
 feed attacker-shaped text into an unsandboxed run, even if a
 containerized run was available a moment ago and then failed mid-run.
 
-**Write-back is a commit, pushed on the trusted side.** In EITHER mode
+**Write-back is a commit, landed on the trusted side.** In EITHER mode
 (containerized or the fail-closed fallback) the agent never pushes —
 it only commits inside the clone. Once the agent's run finishes, the
-worker process itself (trusted, host-side, holding the real repo path
-and no sandbox) performs the `git push`, guarded host-side to reject
-anything not matching `gripe_<id>`. A pre-push hook in every clone
-additionally rejects pushes to any branch not matching `gripe_*` —
-belt and braces, not the only defense.
+worker process itself (trusted, host-side) fetches the `gripe_<id>`
+branch out of the clone into `PRECIS_FIX_REPO_DIR` and lands it on main
+from there (Reto 2026-10-01, td459082: the lane pushes straight to main;
+check.yml on main and `origin/gated` are the downstream gate). A pre-push
+hook in every clone refuses any push from inside it — a tripwire, since
+the agent can rewrite it; the boundary is the absent route and credential.
+
+### Provisioning the push credential
+
+The credential belongs to the deploy user on the agent-lane worker, in
+its home directory — never in the repo or the job env. The containerized
+agent cannot read it (only the clone is mounted). **An unsandboxed run
+(`PRECIS_FIX_GRIPE_UNSANDBOXED_ACK=1`) runs the agent as that same user
+and CAN read it** — so a write-to-main credential and the unsandboxed ack
+must not be combined on one host. Recommended: a fine-grained
+GitHub token scoped to this one repository with Contents read/write and
+no Workflows permission (so a fix cannot edit `.github/workflows/`),
+stored via `git config --global credential.helper store` in
+`~/.git-credentials` (mode 600). The checkout's `https://` origin stays as
+the ansible role provisions it. Verify as the deploy user from the
+checkout: `git push --dry-run origin HEAD:refs/heads/gripe_0` exits 0.

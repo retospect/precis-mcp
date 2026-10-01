@@ -91,8 +91,13 @@ gr346534, soft-deleted)
   fixes, and infra-class failures (API rate limits, container
   unavailability) consuming the same unpark-attempt budget as a real
   failed fix. Reto ruled 2026-09-30 (Do-next 1 above): **leave it not
-  doing anything.** Unparks only on a future decision to re-enable the
-  lane. Side effect to watch: the reset of the 39 parked gripes to
+  doing anything.** Superseded 2026-10-01 (td459082): **the lane pushes
+  straight to main; downstream is the publish system** (check.yml on main,
+  `origin/gated`). The code side is in: a successful run fetches the
+  agent's branch into the host checkout and squash-lands it on current main
+  with a non-force (fast-forward CAS) push, the `scripts/ship` protocol. Still
+  inert until melchior's fix checkout holds a push credential — operator
+  steps are on gr458326; until then every job skips at the dry run as before. Side effect to watch: the reset of the 39 parked gripes to
   `open` re-surfaced at least one already-fixed gripe as current
   (gr458087 — the STRtree fix it proposed is in `check_via_pad_keepout`
   and cites it; ewod-pcb re-measured 2026-09-30 and queued the close for

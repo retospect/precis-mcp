@@ -168,12 +168,13 @@ class TestComposePrompt:
     def test_constraints_present(self) -> None:
         prompt = _compose_prompt(ref_title="bug", blocks=[_FakeBlock("any body")])
         assert "CONSTRAINTS" in prompt
-        assert "gripe_*" in prompt
+        assert "lands it on main" in prompt
+        assert "LAST commit becomes" in prompt
         assert "Do NOT touch main" in prompt
         # §H cycle a write-back design: the agent commits only; a trusted
-        # process pushes on its behalf (it has no push creds/network route).
+        # process lands it on its behalf (it has no push creds/network route).
         assert "Do NOT push" in prompt
-        assert "trusted process pushes" in prompt
+        assert "a trusted process squashes" in prompt.replace("\n", " ")
 
     def test_diagnosis_comment_narrows_the_brief(self) -> None:
         """A resolvable ``diagnosis_job_id`` swaps the full comment timeline
@@ -1215,33 +1216,36 @@ class TestTerminalGripeSkip:
 # gripe_<id> branch names.
 
 
-class TestPushBranchTrusted:
-    def test_refuses_non_gripe_branch_name(self, tmp_path: Path) -> None:
-        from precis.workers.job_types.fix_gripe import _push_branch_trusted
+class TestImportBranchGuard:
+    """The import writes into the host checkout's branch namespace, so only
+    the exact ``gripe_<digits>`` shape ``run()`` constructs may be named."""
 
+    def test_refuses_main(self, tmp_path: Path) -> None:
         with pytest.raises(RuntimeError, match="gripe_"):
-            _push_branch_trusted(tmp_path, "main", "origin")
+            fix_gripe._import_branch(tmp_path, tmp_path / "clone", "main")
 
     def test_refuses_gripe_branch_with_unexpected_shape(self, tmp_path: Path) -> None:
-        from precis.workers.job_types.fix_gripe import _push_branch_trusted
-
-        # Only the exact gripe_<digits> shape run() constructs is accepted —
-        # not a lookalike that could smuggle extra refspec/shell content.
         with pytest.raises(RuntimeError, match="gripe_"):
-            _push_branch_trusted(tmp_path, "gripe_42_evil", "origin")
+            fix_gripe._import_branch(tmp_path, tmp_path / "clone", "gripe_42_evil")
 
     def test_no_subprocess_when_branch_name_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import subprocess
 
-        from precis.workers.job_types.fix_gripe import _push_branch_trusted
-
         called: list[object] = []
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append((a, k)))
         with pytest.raises(RuntimeError):
-            _push_branch_trusted(tmp_path, "not-a-gripe-branch", "origin")
+            fix_gripe._import_branch(tmp_path, tmp_path / "c", "not-a-gripe-branch")
         assert called == []
+
+    def test_prepush_hook_refuses_every_push(self, tmp_path: Path) -> None:
+        """Nothing legitimately pushes from the clone any more — the trusted
+        side lands from the host checkout — so the tripwire refuses all."""
+        fix_gripe._install_prepush_hook(tmp_path)
+        text = (tmp_path / ".git" / "hooks" / "pre-push").read_text(encoding="utf-8")
+        assert "exit 1" in text
+        assert "gripe_*" not in text
 
 
 class TestRunPerformsTrustedSidePush:
@@ -1407,107 +1411,137 @@ class TestDeliveryIsDecidedByTheRemote:
         repo = self._make_repo(tmp_path)
         assert fix_gripe._publish_target(repo) == str(repo)
 
+    def _with_upstream(self, tmp_path: Path, repo: Path) -> Path:
+        """A bare upstream holding the checkout's main, wired as its origin."""
+        upstream = tmp_path / "upstream.git"
+        self._run_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(upstream))
+        self._run_git(repo, "remote", "add", "origin", str(upstream))
+        self._run_git(repo, "push", "-q", "origin", "main:refs/heads/main")
+        return upstream
+
+    def _sibling_lands(self, tmp_path: Path, upstream: Path, name: str) -> str:
+        """Someone else lands a commit on the upstream's main; returns its sha."""
+        import subprocess
+
+        other = tmp_path / f"sibling-{name}"
+        if not other.exists():
+            self._run_git(tmp_path, "clone", "-q", str(upstream), str(other))
+            self._run_git(other, "config", "user.email", "s@s")
+            self._run_git(other, "config", "user.name", "s")
+        self._run_git(other, "pull", "-q", "origin", "main")
+        (other / f"{name}.txt").write_text(name, encoding="utf-8")
+        self._run_git(other, "add", ".")
+        self._run_git(other, "commit", "-q", "-m", f"sibling {name}")
+        self._run_git(other, "push", "-q", "origin", "HEAD:refs/heads/main")
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(other),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def _arm(self, monkeypatch: pytest.MonkeyPatch, spawn: Any) -> None:
+        from precis.utils.llm.router import Backend
+
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+        monkeypatch.setattr(fix_gripe, "_spawn_claude", spawn)
+
+    @staticmethod
+    def _upstream_main(upstream: Path) -> str:
+        return fix_gripe._git_rev_parse(upstream, "refs/heads/main") or ""
+
+    @staticmethod
+    def _show(upstream: Path, spec: str) -> str:
+        import subprocess
+
+        return subprocess.run(
+            ["git", "show", "-s", f"--format={spec}", "main"],
+            cwd=str(upstream),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
     def test_a_push_that_never_reaches_the_upstream_is_a_failure(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The gr458326 shape exactly: the push exits 0 and the local tracking
-        ref updates, but the branch is not on the upstream. The old code read
-        that tracking ref and reported success; the job must now fail, so the
-        gripe is not parked at in_review behind a branch nobody can fetch."""
-        from precis.utils.llm.router import Backend
+        """The gr458326 shape exactly: the push exits 0 and delivers nothing.
+        The job must fail and report no sha, so the gripe is not parked at
+        in_review behind a fix nobody can fetch."""
+        import subprocess
 
         repo = self._make_repo(tmp_path)
-        upstream = tmp_path / "upstream.git"
-        self._run_git(tmp_path, "init", "-q", "--bare", str(upstream))
-        self._run_git(repo, "remote", "add", "origin", str(upstream))
-
+        upstream = self._with_upstream(tmp_path, repo)
+        before = self._upstream_main(upstream)
         clone_dir = tmp_path / "work" / "clones" / "gripe_42"
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
-        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
-        monkeypatch.setattr(
-            fix_gripe, "_spawn_claude", self._commit_in_clone(clone_dir)
-        )
+        self._arm(monkeypatch, self._commit_in_clone(clone_dir))
 
-        # Publish is a silent no-op — the push "succeeds" and delivers nothing,
-        # which is the whole defect. The stash push to the host checkout still
-        # runs, so the commit is not lost; only the delivery is missing.
-        real_push = fix_gripe._push_branch_trusted
+        real_git = fix_gripe._git
 
-        def _push(clone: Path, branch: str, target: str) -> None:
-            if target == "origin":
-                real_push(clone, branch, target)
+        def _git(cwd: Path, *args: str, **kw: Any) -> Any:
+            if args and args[0] == "push":
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return real_git(cwd, *args, **kw)
 
-        monkeypatch.setattr(fix_gripe, "_push_branch_trusted", _push)
+        monkeypatch.setattr(fix_gripe, "_git", _git)
 
         outcome = fix_gripe.run(
             store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
         )
 
-        assert outcome.status == "failed"
+        assert outcome.status == "failed", outcome.summary_text
         assert outcome.sha is None, (
-            "reporting a sha for a branch that is not on the remote is the "
+            "reporting a sha for a commit that is not on the remote is the "
             "false claim this exists to prevent"
         )
         assert str(upstream) in outcome.summary_text
+        assert self._upstream_main(upstream) == before
 
-    def test_the_commit_survives_a_publish_that_fails_after_preflight(
+    def test_the_commit_survives_a_land_that_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A delivery that passes the dry run and then fails for real must not
-        also lose the work. clone_dir is rmtree'd at the start of the next
-        attempt for this gripe, so the worker's own checkout is the only
-        durable copy — and the failure text has to say where it is, or the
-        agent's run was spent for nothing.
-        """
+        """A land that passes the dry run and is then refused for a reason
+        other than a lost race (auth, branch protection) must not retry
+        blindly and must not lose the work: the fix stays as branch gripe_42
+        in the host checkout, and the failure text says so."""
         import subprocess
 
-        from precis.utils.llm.router import Backend
-
         repo = self._make_repo(tmp_path)
-        upstream = tmp_path / "upstream.git"
-        self._run_git(tmp_path, "init", "-q", "--bare", str(upstream))
-        self._run_git(repo, "remote", "add", "origin", str(upstream))
-
+        upstream = self._with_upstream(tmp_path, repo)
         clone_dir = tmp_path / "work" / "clones" / "gripe_42"
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
-        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
-        monkeypatch.setattr(
-            fix_gripe, "_spawn_claude", self._commit_in_clone(clone_dir)
-        )
+        self._arm(monkeypatch, self._commit_in_clone(clone_dir))
 
-        real_push = fix_gripe._push_branch_trusted
+        pushes: list[tuple[str, ...]] = []
+        real_git = fix_gripe._git
 
-        def _push(clone: Path, branch: str, target: str) -> None:
-            if target != "origin":
-                raise subprocess.CalledProcessError(1, "git push", stderr="denied")
-            real_push(clone, branch, target)
+        def _git(cwd: Path, *args: str, **kw: Any) -> Any:
+            if args and args[0] == "push":
+                pushes.append(args)
+                return subprocess.CompletedProcess(args, 1, "", "denied by rule")
+            return real_git(cwd, *args, **kw)
 
-        monkeypatch.setattr(fix_gripe, "_push_branch_trusted", _push)
+        monkeypatch.setattr(fix_gripe, "_git", _git)
 
         outcome = fix_gripe.run(
             store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
         )
 
         assert outcome.status == "failed"
+        assert "denied by rule" in outcome.summary_text
+        assert len(pushes) == 1, "main did not move, so a retry cannot help"
         assert str(repo) in (outcome.gripe_comment_text or "")
         assert fix_gripe._git_rev_parse(repo, "gripe_42") is not None
 
-    def test_a_real_delivery_still_succeeds_and_names_where_it_landed(
+    def test_a_real_land_puts_one_squash_commit_on_main(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from precis.utils.llm.router import Backend
-
         repo = self._make_repo(tmp_path)
-        upstream = tmp_path / "upstream.git"
-        self._run_git(tmp_path, "init", "-q", "--bare", str(upstream))
-        self._run_git(repo, "remote", "add", "origin", str(upstream))
-
+        upstream = self._with_upstream(tmp_path, repo)
+        before = self._upstream_main(upstream)
         clone_dir = tmp_path / "work" / "clones" / "gripe_42"
-        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
-        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
-        monkeypatch.setattr(
-            fix_gripe, "_spawn_claude", self._commit_in_clone(clone_dir)
-        )
+        self._arm(monkeypatch, self._commit_in_clone(clone_dir))
 
         outcome = fix_gripe.run(
             store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
@@ -1515,11 +1549,156 @@ class TestDeliveryIsDecidedByTheRemote:
 
         assert outcome.status == "succeeded", outcome.summary_text
         assert outcome.sha is not None
-        assert (
-            fix_gripe._ls_remote_sha(str(upstream), "gripe_42", clone_dir)
-            == outcome.sha
-        )
+        assert fix_gripe._ls_remote_sha(str(upstream), "main", repo) == outcome.sha
+        assert self._show(upstream, "%P") == before, "one commit, parent = main"
+        assert self._show(upstream, "%s") == "fix (gr42)"
+        assert self._show(upstream, "%an") == "agent"
         assert str(upstream) in outcome.summary_text
+        assert "ungated" in outcome.gripe_comment_text.lower()
+        # The stash branch and the scratch clone are both reclaimed.
+        assert fix_gripe._git_rev_parse(repo, "refs/heads/gripe_42") is None
+        assert not clone_dir.exists()
+
+    def test_the_land_is_onto_current_main_not_the_cloned_main(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Main moves while the agent works (the normal case on a busy trunk):
+        the fix is re-applied on top of the sibling's commit, which survives."""
+        repo = self._make_repo(tmp_path)
+        upstream = self._with_upstream(tmp_path, repo)
+        clone_dir = tmp_path / "work" / "clones" / "gripe_42"
+        commit = self._commit_in_clone(clone_dir)
+        sibling: list[str] = []
+
+        def _spawn(*a: object, **k: object) -> object:
+            sibling.append(self._sibling_lands(tmp_path, upstream, "during"))
+            return commit(*a, **k)
+
+        self._arm(monkeypatch, _spawn)
+
+        outcome = fix_gripe.run(
+            store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
+        )
+
+        assert outcome.status == "succeeded", outcome.summary_text
+        assert self._upstream_main(upstream) == outcome.sha
+        assert self._show(upstream, "%P") == sibling[0]
+
+    def test_a_land_that_loses_the_race_resyncs_and_never_clobbers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A sibling lands between the fetch and the push. The non-force push
+        is refused (not a fast-forward); the land re-fetches and retries on
+        top of the sibling — the same CAS loop scripts/ship runs."""
+        repo = self._make_repo(tmp_path)
+        upstream = self._with_upstream(tmp_path, repo)
+        clone_dir = tmp_path / "work" / "clones" / "gripe_42"
+        self._arm(monkeypatch, self._commit_in_clone(clone_dir))
+
+        sibling: list[str] = []
+        real_git = fix_gripe._git
+
+        def _git(cwd: Path, *args: str, **kw: Any) -> Any:
+            if args and args[0] == "push" and not sibling:
+                sibling.append(self._sibling_lands(tmp_path, upstream, "race"))
+            return real_git(cwd, *args, **kw)
+
+        monkeypatch.setattr(fix_gripe, "_git", _git)
+
+        outcome = fix_gripe.run(
+            store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
+        )
+
+        assert outcome.status == "succeeded", outcome.summary_text
+        assert self._upstream_main(upstream) == outcome.sha
+        assert self._show(upstream, "%P") == sibling[0], "the sibling survives"
+
+    def test_a_conflict_with_current_main_lands_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import subprocess
+
+        repo = self._make_repo(tmp_path)
+        upstream = self._with_upstream(tmp_path, repo)
+        clone_dir = tmp_path / "work" / "clones" / "gripe_42"
+
+        def _spawn(*_a: object, **_k: object) -> object:
+            # A sibling rewrites f.txt on main; the agent rewrites it too.
+            other = tmp_path / "sibling-conflict"
+            self._run_git(tmp_path, "clone", "-q", str(upstream), str(other))
+            (other / "f.txt").write_text("theirs", encoding="utf-8")
+            self._run_git(
+                other,
+                "-c",
+                "user.email=s@s",
+                "-c",
+                "user.name=s",
+                "commit",
+                "-qam",
+                "theirs",
+            )
+            self._run_git(other, "push", "-q", "origin", "HEAD:refs/heads/main")
+            (clone_dir / "f.txt").write_text("ours", encoding="utf-8")
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.email=a@a",
+                    "-c",
+                    "user.name=a",
+                    "commit",
+                    "-qam",
+                    "ours",
+                ],
+                cwd=str(clone_dir),
+                check=True,
+                capture_output=True,
+            )
+            return object()
+
+        self._arm(monkeypatch, _spawn)
+        outcome = fix_gripe.run(
+            store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
+        )
+        main_after = self._upstream_main(upstream)
+
+        assert outcome.status == "failed"
+        assert "conflicts" in outcome.summary_text
+        assert self._show(upstream, "%s") == "theirs", main_after
+        assert fix_gripe._git_rev_parse(repo, "refs/heads/gripe_42") is not None
+
+    def test_nothing_the_agent_plants_in_the_clone_runs_on_the_host_side(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The agent owns the clone's .git: hooks and command-shaped config.
+        The land holds the push credential, so it must never run a git command
+        inside the clone — only fetch its objects from the host checkout."""
+        repo = self._make_repo(tmp_path)
+        self._with_upstream(tmp_path, repo)
+        clone_dir = tmp_path / "work" / "clones" / "gripe_42"
+        marker = tmp_path / "pwned"
+        commit = self._commit_in_clone(clone_dir)
+
+        def _spawn(*a: object, **k: object) -> object:
+            commit(*a, **k)
+            evil = f"#!/bin/sh\ntouch {marker}\n"
+            hooks = clone_dir / ".git" / "hooks"
+            for name in ("pre-push", "reference-transaction", "post-checkout"):
+                (hooks / name).write_text(evil, encoding="utf-8")
+                (hooks / name).chmod(0o755)
+            script = tmp_path / "fsmon.sh"
+            script.write_text(evil, encoding="utf-8")
+            script.chmod(0o755)
+            self._run_git(clone_dir, "config", "core.fsmonitor", str(script))
+            return object()
+
+        self._arm(monkeypatch, _spawn)
+        outcome = fix_gripe.run(
+            store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
+        )
+
+        assert outcome.status == "succeeded", outcome.summary_text
+        assert not marker.exists()
 
     def test_an_undeliverable_repo_skips_before_the_agent_is_spawned(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

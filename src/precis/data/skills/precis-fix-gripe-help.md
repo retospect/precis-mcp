@@ -1,7 +1,7 @@
 ---
 id: precis-fix-gripe-help
-title: precis — drive a gripe to a candidate fix branch
-summary: end-to-end bug fix recipe — gripe to job to candidate branch, iteration, review handoff
+title: precis — drive a gripe to a fix landed on main
+summary: end-to-end bug fix recipe — gripe to job to a squash commit on main, iteration, review
 answers:
   - how do I get an agent to prepare a fix branch for a bug I filed?
   - how do I check whether my gripe-fix job is done?
@@ -16,9 +16,8 @@ status: active
 
 # precis-fix-gripe-help — get a gripe fixed end-to-end
 
-Recipe for handing a gripe to an agent, getting a candidate fix
-branch back on `origin`, and iterating until the fix is good
-enough to merge. Joins `precis-gripe-help` (the bug tracker) and
+Recipe for handing a gripe to an agent, getting its fix landed
+on `main`, and iterating until the fix holds. Joins `precis-gripe-help` (the bug tracker) and
 `precis-job-help` (the offline-work substrate).
 
 ## I want this gripe fixed
@@ -61,9 +60,11 @@ put(kind='job',
 ```
 
 One call. The worker clones the repo, runs `claude -p` on a
-`gripe_42` branch, pushes the branch to `origin` (the source
-repo), and posts a comment on the gripe when it's ready for
-review.
+`gripe_42` branch, lands the agent's commits on the upstream's
+`main` as one squash commit, and posts the landed sha on the
+gripe. The fix lane pushes straight to main (Reto, 2026-10-01);
+the gate is downstream: check.yml runs on every push to main, and
+`origin/gated` only moves past the commit on a green full gate.
 
 ## What happens when a fix fails?
 
@@ -105,38 +106,35 @@ search(kind="job", link="gripe:42")
 ```
 
 Or look at the gripe — it transitions to `STATUS:in_review`
-once a fix attempt lands cleanly.
+once a fix has landed on main (landed, not yet verified).
 
-## Where does the candidate branch live?
-## How do I fetch the fix?
+## Where does the fix land?
+## How do I see the fix?
 
-On the upstream the worker's repo checkout points at — the same
-remote `main` lives on. The fetch instructions are in the gripe
-comment the worker posted; in your normal working repo:
+On `main` of the upstream the worker's repo checkout points at,
+as one squash commit whose subject is the agent's last commit
+subject plus `(gr<id>)`. The gripe comment names the sha:
 
 ```bash
 git fetch
-git checkout gripe_42
-git diff main..gripe_42
+git show <sha>
 ```
 
-The clone dir under `$PRECIS_FIX_WORK_DIR/clones/` is removed
-on success — the branch on the upstream is what survives.
+How the land works — the same protocol `scripts/ship` uses:
+fetch current main, re-apply the agent's change on top of it
+(`git merge-tree`), commit it with current main as sole parent,
+push **without force**. A non-force push is accepted only as a
+fast-forward, so if anything landed meanwhile the push is refused
+and the worker re-syncs and retries (3 attempts); it can never
+overwrite a concurrent land. A conflict with current main lands
+nothing and fails the job.
 
-**A job reports success only once `git ls-remote` confirms the
-branch is on that upstream** (gr458326). It used to report it
-as soon as the push exited 0, which is a weaker claim than it
-looks: the per-job clone is made from the worker's local
-checkout, so the clone's `origin` is *that directory*, and a
-push into it succeeds without anything leaving the machine. 43
-jobs reported "pushed to origin as \<sha\>" and parked their
-gripes at `in_review` — which reads as "a fix exists, don't
-duplicate it" — with no branch anyone could fetch.
-
-A fix attempt that cannot reach the upstream now **fails** and
-leaves the gripe `open`. The commit is not lost: it is pushed
-to the worker's own checkout first, and the failure text says
-where it is.
+**A job reports success only once `git ls-remote` confirms main
+on the upstream contains the commit** (gr458326 — an exit-0 push
+once reached a directory on the worker node and nothing else).
+A land that fails leaves the gripe `open`; the commit is kept as
+branch `gripe_<id>` in the worker's own checkout, and the failure
+text says where.
 
 If the worker cannot publish at all, jobs **skip** instead — a
 `git push --dry-run` runs before the agent does, so the run
@@ -145,19 +143,20 @@ gripe keeps its retry budget. A skip saying "cannot publish a
 branch to …" is a credential question for the deployment, not
 a bug in the run and not something re-running will fix.
 
-## Review the candidate fix
+## Review the fix
 ## Look at the diff
 
-Standard git workflow. The worker posts the SHA in its
-gripe_comment so you can verify which commit you're looking at.
+`git show <sha>` with the sha from the gripe comment. The fix is
+already on main: a bad one is reverted, not "not merged".
 
 ## Accept the fix
-## Merge the fix and close the gripe
+## Close the gripe
 
-Merge the branch in your normal flow. Once merged:
+Once check.yml on main is green for the landed commit and the
+fix holds:
 
 ```python
-put(kind="gripe", id=42, text="merged in <sha>")
+put(kind="gripe", id=42, text="verified: <sha> fixes it")
 delete(kind="gripe", id=42)
 ```
 
@@ -197,9 +196,12 @@ put(
 )
 ```
 
-The clone dir is retained on failure (under
-`$PRECIS_FIX_WORK_DIR/clones/gripe_<id>`) so you can `cd` into
-it and see exactly what the agent left behind.
+If the agent committed but the land failed, its work is branch
+`gripe_<id>` in the worker's repo checkout
+(`$PRECIS_FIX_REPO_DIR`); the scratch clone is removed once the
+branch is copied there. If the agent itself failed, the clone
+under `$PRECIS_FIX_WORK_DIR/clones/gripe_<id>` is retained until
+the next attempt for that gripe.
 
 ## My fix job is stuck or running too long — cancel it
 ## Kill a hung fix attempt

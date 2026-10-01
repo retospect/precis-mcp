@@ -1,4 +1,4 @@
-"""fix_gripe — clone the repo, run claude on a gripe_<id> branch, push.
+"""fix_gripe — clone the repo, run claude on a gripe_<id> branch, land it on main.
 
 The first job_type. Invoked by the `claude_inproc` executor's
 runner. Reads the linked gripe's body + comment timeline as the
@@ -12,31 +12,34 @@ DB creds, ``--bare`` API-key auth), an explicit fix_gripe envelope
 is local), and a bind mount for the clone ONLY. The agent commits
 inside the clone; it never has the source repo (origin) mounted and
 has no network route to it either, so it CANNOT push. Once
-``call_claude_agent`` returns, ``run()`` — trusted, host-side —
-performs the push itself: write-back is a commit inside the sandbox,
-pushed on the trusted side, never with creds inside the sandbox. On
-success the resulting ``gripe_<id>`` branch is on the host checkout's
-own upstream — confirmed there by ``git ls-remote`` before the job says
-so — for human review. "Push succeeded" is not the success condition
-and never was a safe one: the clone's ``origin`` is the host checkout,
-so a push can succeed into a directory on the worker node and leave the
-real remote untouched (gr458326). Delivery is a question for the remote.
+``call_claude_agent`` returns, ``run()`` — trusted, host-side — fetches
+the agent's ``gripe_<id>`` branch into the host checkout and lands it on
+the upstream's ``main`` as one squash commit on *current* main, with a
+non-force (fast-forward-only, so compare-and-swap) push — the protocol
+``scripts/ship`` lands with (Reto 2026-10-01, td459082: the fix lane
+pushes straight to main; check.yml on main and the ``origin/gated`` ref
+are the downstream gate). Every post-agent git command runs in the host
+checkout, never in the clone, whose ``.git`` the agent could rewrite.
+"Push succeeded" is not the success condition: the job succeeds only once
+``git ls-remote`` against the upstream shows main containing the commit
+(gr458326 — a push once "succeeded" into a directory on the worker node
+and left the real remote untouched). Delivery is a question for the remote.
 
 Trust model: a **containerized** run (the default whenever
 ``PRECIS_AGENT_CONTAINER`` is on and the host can run it) is isolated
 by network namespace (``egress:api-only`` — reaches only the Anthropic
 API + its own bind-mounted clone, no DB, no source repo) + the
 env-base scrub + the trusted-side-only push, so it needs no operator
-ack. A run that can't containerize (feature off, probe-failed, or an
-infra failure mid-run) is fail-closed: it refuses to fall back to
-running full-privilege and unsandboxed unless an operator has
-explicitly set ``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`` (gr179498;
+ack. The push credential exists only host-side, used only by git
+commands run in the host checkout. A run that can't containerize
+(feature off, probe-failed, or an infra failure mid-run) is
+fail-closed: it refuses to fall back to running full-privilege and
+unsandboxed unless an operator has explicitly set
+``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`` (gr179498;
 ``require_container=not _unsandboxed_ack()`` on the chokepoint call —
-see :class:`~precis.utils.claude_agent.ContainerRequiredError`). Both
-a pre-push hook in every clone AND a host-side branch-name guard on
-the trusted push reject anything not matching ``gripe_*`` (belt and
-braces — the guard doesn't rely on the hook alone). See the safety
-section in ``precis-fix-gripe-help`` for the full picture.
+see :class:`~precis.utils.claude_agent.ContainerRequiredError`). A
+pre-push hook in every clone refuses any push from inside it. See the
+safety section in ``precis-fix-gripe-help`` for the full picture.
 """
 
 from __future__ import annotations
@@ -108,8 +111,8 @@ REQUIRES: frozenset[str] = frozenset(
 
 DESCRIPTION: str = (
     "Clone the repo, run the fix agent through call_claude_agent "
-    "(containerized when available, isolated env otherwise), publish the "
-    "resulting branch gripe_<id> to the repo's upstream for human review."
+    "(containerized when available, isolated env otherwise), then land the "
+    "agent's commits on the upstream's main as one squash commit."
 )
 
 
@@ -699,16 +702,33 @@ def run(
         )
     wall = time.perf_counter() - t0
 
-    # Verify the agent actually committed, then push on its behalf. The agent
-    # never has origin mounted or reachable — write-back is a commit inside
-    # the sandbox, pushed on the TRUSTED (host) side, never with creds inside
-    # the sandbox (§H cycle a design decision). call_claude_agent raises on a
-    # genuine failure (above) and silently recovers a resumable exhaustion
+    # Verify the agent actually committed, then land it on its behalf. The
+    # agent never has origin mounted or reachable — write-back is a commit
+    # inside the sandbox, landed on the TRUSTED (host) side, never with creds
+    # inside the sandbox (§H cycle a design decision). call_claude_agent raises
+    # on a genuine failure (above) and silently recovers a resumable exhaustion
     # (--max-turns / --max-budget-usd) into a clean return — either way, the
-    # real judge of success is whether the agent produced any commit, so
-    # there's no exit-code branch to check here (unlike the old bare
-    # subprocess.run(check=False) contract).
-    branch_sha = _git_rev_parse(clone_dir, branch)
+    # real judge of success is whether the agent produced any commit.
+    #
+    # Everything from here runs in the TRUSTED host checkout (repo_dir), never
+    # inside clone_dir. The agent had write access to the clone's .git — its
+    # hooks and its config (core.fsmonitor, core.sshCommand, url.*.insteadOf,
+    # credential helpers) — so a host-side git command run there, holding the
+    # push credential, would execute whatever the agent left behind. The one
+    # operation that touches the clone is a fetch of its objects (upload-pack,
+    # which git keeps safe to run in an untrusted repository).
+    try:
+        branch_sha = _import_branch(repo_dir, clone_dir, branch)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        branch_sha = None
+        log.warning(
+            "fix_gripe job:%s gripe:%s: could not fetch branch %s from %s: %s",
+            job_id,
+            gripe_id,
+            branch,
+            clone_dir,
+            _git_err(exc),
+        )
     if branch_sha is None or branch_sha == base_sha:
         return RunOutcome(
             status="failed",
@@ -726,113 +746,76 @@ def run(
             wall_seconds=wall,
         )
 
-    # Stash the work on the host checkout first, unconditionally and
-    # non-fatally. It is one directory on one node rather than a delivery, but
-    # it is the only durable copy: clone_dir is rmtree'd at the top of the next
-    # attempt for this gripe, so without this a push that cannot reach the real
-    # upstream would take the agent's commit with it.
-    try:
-        _push_branch_trusted(clone_dir, branch, "origin")
-    except (RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        log.warning(
-            "fix_gripe job:%s gripe:%s: could not stash branch %s on the host "
-            "checkout; the commit exists only in the scratch clone",
-            job_id,
-            gripe_id,
-            branch,
-        )
+    # The branch is now a ref in repo_dir: the durable copy if landing fails,
+    # so the scratch clone (~300MB, gr458899) has served its purpose.
+    shutil.rmtree(clone_dir, ignore_errors=True)
 
     target = publish_target
-    where = f"{socket.gethostname()}:{clone_dir}"
-    # When repo_dir has no upstream, target IS repo_dir and this repeats the
-    # stash push as a no-op. Left unconditional rather than special-cased: the
-    # delivery push and the verification that follows it must read the same
-    # target, and a branch that skips one of them is how this went wrong before.
-    try:
-        _push_branch_trusted(clone_dir, branch, target)
-    except (
-        RuntimeError,
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-    ) as exc:
-        wall = time.perf_counter() - t0
+    if target == str(repo_dir):
+        # Single-machine setup: the host checkout has no upstream and IS the
+        # end of the line. Its main is checked out, so moving that ref here
+        # would leave the working tree stale; the import above already put the
+        # branch there, and that is the delivery.
+        diffstat = _git_diff_stat(repo_dir, base_sha, branch_sha)
         return RunOutcome(
-            status="failed",
+            status="succeeded",
             summary_text=(
-                f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
-                f"push of branch {branch} to {target} failed: {exc}. "
-                f"The commit is at {where} and on the host checkout "
-                f"({repo_dir}). Took {wall:.1f}s."
+                f"Fix attempt is branch {branch} @ {branch_sha} in {repo_dir} "
+                f"(no upstream to land on). {diffstat}. Took {wall:.1f}s."
             ),
             gripe_comment_text=(
-                f"[worker:job:{job_id}] claude committed a fix on branch "
-                f"{branch}, but publishing it to {target} failed ({exc}), so "
-                "there is nothing to review with `git fetch`. The commit is "
-                f"on the worker host at {repo_dir}. Leaving this gripe open: "
-                "an unreachable fix must not suppress a real one."
+                f"[worker:job:{job_id}] branch {branch} @ {branch_sha} is in "
+                f"{repo_dir}, which has no upstream. Review with: "
+                f"`git checkout {branch} && git diff main..{branch}`."
             ),
             branch=branch,
-            sha=None,
+            sha=branch_sha,
             wall_seconds=wall,
         )
 
-    # Ask the remote, not the clone's tracking ref (see _ls_remote_sha). This
-    # is the check that has to hold before this job may tell anyone a fix is
-    # waiting for them — and before the gripe is moved to in_review, which is
-    # read as "a fix exists, don't duplicate the work".
-    pushed_sha = _ls_remote_sha(target, branch, clone_dir)
-    main_sha_after = _git_rev_parse(clone_dir, "origin/main")
-    if pushed_sha is None or branch_sha != pushed_sha:
+    landed = _land_on_main(repo_dir, target, branch, branch_sha, gripe_id)
+    wall = time.perf_counter() - t0
+    if landed.sha is None:
         return RunOutcome(
             status="failed",
             summary_text=(
-                f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
-                f"branch {branch} is not on {target} at {branch_sha} after the "
-                f"push (ls-remote says {pushed_sha or 'nothing'}). The commit "
-                f"is on the host checkout ({repo_dir}). Took {wall:.1f}s."
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: could "
+                f"not land branch {branch} @ {branch_sha} on main at {target}: "
+                f"{landed.why}. Nothing reached main. The commit is on "
+                f"{socket.gethostname()} as branch {branch} in {repo_dir}. "
+                f"Took {wall:.1f}s."
             ),
             gripe_comment_text=(
-                f"[worker:job:{job_id}] branch {branch} did not reach "
-                f"{target}, so there is no fix to review with `git fetch`. "
-                f"The commit is on the worker host at {repo_dir}. Leaving "
-                "this gripe open."
+                f"[worker:job:{job_id}] claude committed a fix, but landing it "
+                f"on main at {target} failed ({landed.why}). Nothing reached "
+                f"main. The commit is on the worker host as branch {branch} in "
+                f"{repo_dir}. Leaving this gripe open: an unreachable fix must "
+                "not suppress a real one."
             ),
             branch=branch,
             sha=None,
             wall_seconds=wall,
         )
-    if main_sha_after != base_sha:
-        return RunOutcome(
-            status="failed",
-            summary_text=(
-                f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
-                "origin/main moved during the run (the prepush hook "
-                "should have prevented this — bug?)."
-            ),
-            gripe_comment_text=(
-                f"[worker:job:{job_id}] aborted: origin/main was "
-                "modified during the run."
-            ),
-            branch=branch,
-            sha=None,
-            wall_seconds=wall,
-        )
-
-    diffstat = _git_diff_stat(clone_dir, base_sha, branch_sha)
+    # Landed: the stash ref has done its job. 43 of them piling up unwatched on
+    # one node is how gr458326 was found.
+    _git(repo_dir, "branch", "-D", branch)
     return RunOutcome(
         status="succeeded",
         summary_text=(
-            f"Fix attempt published to {target} as branch {branch} @ "
-            f"{branch_sha}, confirmed by ls-remote. {diffstat}. "
-            f"Took {wall:.1f}s."
+            f"Fix landed on main at {target} as {landed.sha} (squash of branch "
+            f"{branch} onto {landed.parent}), confirmed by ls-remote. "
+            f"{landed.diffstat}. Took {wall:.1f}s. Ungated: check.yml runs on "
+            "every push to main, and origin/gated moves past this commit only "
+            "on a green full gate."
         ),
         gripe_comment_text=(
-            f"[worker:job:{job_id}] branch {branch} @ {branch_sha} is on "
-            f"{target} (confirmed present, not merely pushed). Review with: "
-            f"`git fetch && git checkout {branch} && git diff main..{branch}`."
+            f"[worker:job:{job_id}] fix landed on main as {landed.sha} "
+            f"(confirmed on {target}, not merely pushed). It is ungated until "
+            f"check.yml on main goes green. Review with: "
+            f"`git fetch && git show {landed.sha}`."
         ),
         branch=branch,
-        sha=branch_sha,
+        sha=landed.sha,
         wall_seconds=wall,
     )
 
@@ -936,8 +919,11 @@ def _compose_prompt(
     lines.append("- Run any relevant tests before committing.")
     lines.append(
         "- Commit your fix locally. Do NOT push — you have no network route "
-        "to origin and no push credentials; a trusted process pushes your "
-        "branch (only gripe_* branches are eligible) after you finish."
+        "to origin and no push credentials. After you finish, a trusted "
+        "process squashes your commits into ONE commit and lands it on main, "
+        "so the subject line of your LAST commit becomes that commit's "
+        "subject: make it a one-line conventional subject (e.g. "
+        "'fix(area): what changed'), no body."
     )
     lines.append("- Do NOT touch main. Do NOT switch branches.")
     return "\n".join(lines)
@@ -1126,25 +1112,24 @@ def _git_clone_and_branch(repo_dir: Path, dest: Path, branch: str) -> None:
 
 
 def _install_prepush_hook(clone_dir: Path) -> None:
-    """Drop a pre-push hook that rejects pushes outside ``gripe_*``."""
+    """Drop a pre-push hook that refuses every push from the clone.
+
+    Nothing legitimately pushes from here: the trusted side fetches the
+    agent's branch into the host checkout and lands it from there
+    (:func:`_import_branch`, :func:`_land_on_main`). The hook is a tripwire
+    for the agent, not a security boundary — the agent can rewrite it; the
+    boundary is that it has no route and no credential.
+    """
     hook_dir = clone_dir / ".git" / "hooks"
     hook_dir.mkdir(parents=True, exist_ok=True)
     hook_path = hook_dir / "pre-push"
     hook_path.write_text(
         "#!/usr/bin/env bash\n"
-        "# precis fix_gripe pre-push guard: only branches matching\n"
-        "# gripe_* may be pushed. Protects origin/main from an agent\n"
-        "# pushing the wrong thing.\n"
-        "while read local_ref local_sha remote_ref remote_sha; do\n"
-        '  case "$remote_ref" in\n'
-        "    refs/heads/gripe_*) ;;\n"
-        "    *)\n"
-        '      echo "[fix_gripe] refusing push to $remote_ref '
-        '(only gripe_* branches may be pushed)" >&2\n'
-        "      exit 1\n"
-        "      ;;\n"
-        "  esac\n"
-        "done\n",
+        "# precis fix_gripe pre-push guard: nothing pushes from this clone.\n"
+        "# Commit locally; the trusted host side lands the commit on main.\n"
+        'echo "[fix_gripe] refusing push: commit locally, the trusted side '
+        'lands it" >&2\n'
+        "exit 1\n",
         encoding="utf-8",
     )
     hook_path.chmod(0o755)
@@ -1289,37 +1274,220 @@ def _ls_remote_sha(target: str, branch: str, cwd: Path) -> str | None:
     return line.split("\t", 1)[0] if line else None
 
 
-def _push_branch_trusted(clone_dir: Path, branch: str, target: str) -> None:
-    """Push ``branch`` to ``target`` from the TRUSTED (host) side.
+def _git(
+    cwd: Path, *args: str, env: dict[str, str] | None = None, check: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """One git call in ``cwd`` with the scrubbed, non-interactive env."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=check,
+        env=env or _git_env(),
+        timeout=_REMOTE_TIMEOUT_S,
+    )
 
-    §H cycle a design decision: write-back is a commit, pushed on the
-    trusted side — never inside the sandbox, never with push creds handed
-    to the agent. The agent has no origin mount and no network route to it
-    (see :func:`_spawn_claude`), so it physically cannot push; this is the
-    only path a fix branch reaches origin.
 
-    Guards the branch name against ``gripe_<id>`` HOST-side, before
-    shelling out — belt and braces alongside the clone's pre-push hook
-    (:func:`_install_prepush_hook`): don't rely on the hook alone, since
-    this function is the one actually authorized to push, and a defense
-    that only lived inside the clone's ``.git`` would be one config bug
-    away from silently trusting whatever ``branch`` this function was
-    called with.
+def _git_err(exc: BaseException | subprocess.CompletedProcess[str]) -> str:
+    """The last line of what a failed git call said, for an outcome text."""
+    raw = getattr(exc, "stderr", None) or getattr(exc, "stdout", None) or str(exc)
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    lines = str(raw).strip().splitlines()
+    return lines[-1] if lines else type(exc).__name__
+
+
+def _import_branch(repo_dir: Path, clone_dir: Path, branch: str) -> str | None:
+    """Fetch ``branch`` out of the agent's clone into the host checkout and
+    return its sha there; ``None`` when the clone has no such branch.
+
+    The fetch runs in ``repo_dir`` (trusted config, trusted hooks); in the
+    clone, git only runs ``upload-pack``, which does not honour the hook- and
+    command-shaped config an agent could have planted in ``clone/.git``. Forced
+    (``+``) because a branch of the same name may be left from an earlier
+    attempt for this gripe. Guarded to the exact ``gripe_<digits>`` shape
+    ``run()`` constructs, so nothing else can be written into the checkout's
+    branch namespace.
     """
     if not _GRIPE_BRANCH_PATTERN.match(branch):
         raise RuntimeError(
-            f"fix_gripe: refusing to push branch {branch!r} — must match "
-            "gripe_<id> (never main or anything else)"
+            f"fix_gripe: refusing to import branch {branch!r} — must match gripe_<id>"
         )
-    subprocess.run(
-        ["git", "push", target, f"{branch}:refs/heads/{branch}"],
-        cwd=str(clone_dir),
-        check=True,
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-        timeout=_REMOTE_TIMEOUT_S,
+    res = _git(
+        repo_dir,
+        "fetch",
+        "-q",
+        "--no-tags",
+        str(clone_dir),
+        f"+refs/heads/{branch}:refs/heads/{branch}",
     )
+    if res.returncode != 0:
+        if "couldn't find remote ref" in (res.stderr or ""):
+            return None
+        raise subprocess.CalledProcessError(
+            res.returncode, res.args, res.stdout, res.stderr
+        )
+    return _git_rev_parse(repo_dir, f"refs/heads/{branch}")
+
+
+#: How many times a land re-fetches main and retries after the fast-forward
+#: push is refused because main moved underneath it. Same contract as
+#: ``scripts/ship``'s CAS loop: never force over a sibling's land, re-sync.
+_LAND_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class _Landed:
+    """What :func:`_land_on_main` did. ``sha`` is set only when the remote's
+    main was confirmed to contain the new commit; otherwise ``why`` says what
+    stopped it."""
+
+    sha: str | None
+    parent: str | None = None
+    diffstat: str = ""
+    why: str = ""
+
+
+def _land_on_main(
+    repo_dir: Path, target: str, branch: str, branch_sha: str, gripe_id: int
+) -> _Landed:
+    """Squash ``branch`` onto ``target``'s current main and push it there.
+
+    The same protocol ``scripts/ship`` lands with, in plumbing so it needs no
+    working tree, gate slot or dev tooling on the worker:
+
+    1. fetch ``target``'s main into a per-gripe private ref (concurrent fix
+       jobs share ``repo_dir`` and must not race on one ref);
+    2. ``git merge-tree --write-tree`` the branch onto it — the agent's change
+       re-applied on *current* main, not the main it was cloned from; a
+       conflict stops here, nothing pushed;
+    3. ``commit-tree`` that tree with current main as sole parent: one squash
+       commit, the agent's tip subject, the agent's authorship;
+    4. push it to ``refs/heads/main`` **without** force. A non-force push is
+       accepted only as a fast-forward, so it is the compare-and-swap: if any
+       land reached main since step 1, the remote refuses and this loops back
+       to step 1 — it can never clobber a concurrent merge;
+    5. confirm with ``ls-remote`` against ``target`` that main now holds the
+       commit (or a descendant of it, if a sibling landed on top within the
+       window) — the remote decides delivery, not the exit code (gr458326).
+
+    Downstream is the publish system: check.yml gates every push to main, and
+    ``origin/gated`` only moves past this commit on a green full gate.
+    """
+    private_ref = f"refs/fix-gripe/{gripe_id}/main"
+    why = "no attempt made"
+    for _attempt in range(_LAND_ATTEMPTS):
+        try:
+            _git(
+                repo_dir,
+                "fetch",
+                "-q",
+                "--no-tags",
+                target,
+                f"+refs/heads/main:{private_ref}",
+                check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            return _Landed(sha=None, why=f"fetch of main failed: {_git_err(exc)}")
+        old_main = _git_rev_parse(repo_dir, private_ref)
+        if old_main is None:
+            return _Landed(sha=None, why=f"{target} has no main branch")
+
+        merged = _git(repo_dir, "merge-tree", "--write-tree", old_main, branch_sha)
+        if merged.returncode == 1:
+            return _Landed(
+                sha=None,
+                why=f"the fix conflicts with current main ({old_main[:12]})",
+            )
+        if merged.returncode != 0:
+            return _Landed(sha=None, why=f"merge-tree failed: {_git_err(merged)}")
+        tree = (merged.stdout or "").splitlines()[0].strip()
+        if tree == _git_rev_parse(repo_dir, f"{old_main}^{{tree}}"):
+            return _Landed(
+                sha=None,
+                why="the fix changes nothing on current main (already landed?)",
+            )
+
+        new_sha = _commit_squash(repo_dir, tree, old_main, branch_sha, gripe_id)
+        push = _git(repo_dir, "push", "-q", target, f"{new_sha}:refs/heads/main")
+        if push.returncode != 0:
+            why = f"push to main refused: {_git_err(push)}"
+            if _ls_remote_sha(target, "main", repo_dir) == old_main:
+                # main did not move, so this refusal is not a lost race
+                # (auth, branch protection, hook) — retrying cannot help.
+                return _Landed(sha=None, why=why)
+            continue  # main moved: re-sync onto it and try again
+
+        remote_main = _ls_remote_sha(target, "main", repo_dir)
+        if remote_main != new_sha and not _remote_main_contains(
+            repo_dir, target, private_ref, new_sha
+        ):
+            return _Landed(
+                sha=None,
+                why=(
+                    f"the push exited 0 but {target} main is "
+                    f"{remote_main or 'unreadable'}, which does not contain "
+                    f"{new_sha}"
+                ),
+            )
+        return _Landed(
+            sha=new_sha,
+            parent=old_main,
+            diffstat=_git_diff_stat(repo_dir, old_main, new_sha),
+        )
+    return _Landed(
+        sha=None,
+        why=f"main kept moving; gave up after {_LAND_ATTEMPTS} attempts ({why})",
+    )
+
+
+def _remote_main_contains(
+    repo_dir: Path, target: str, private_ref: str, sha: str
+) -> bool:
+    """Whether ``target``'s main, re-fetched, has ``sha`` in its history."""
+    fetched = _git(
+        repo_dir, "fetch", "-q", "--no-tags", target, f"+refs/heads/main:{private_ref}"
+    )
+    if fetched.returncode != 0:
+        return False
+    return (
+        _git(repo_dir, "merge-base", "--is-ancestor", sha, private_ref).returncode == 0
+    )
+
+
+def _commit_squash(
+    repo_dir: Path, tree: str, parent: str, branch_sha: str, gripe_id: int
+) -> str:
+    """The squash commit: ``tree`` on ``parent``, with the agent's tip subject
+    and authorship.
+
+    Author and committer come from the agent's own tip commit, so the land
+    works on a worker with no git identity configured and the history says
+    who wrote the change. The subject names the gripe when the agent's did
+    not; one line, no body, per the repo's commit convention.
+    """
+    meta = _git(repo_dir, "log", "-1", "--format=%an%x00%ae%x00%s", branch_sha)
+    name, email, subject = ((meta.stdout or "").rstrip("\n").split("\x00") + ["", ""])[
+        :3
+    ]
+    subject = subject.strip() or "fix"
+    tag = f"gr{gripe_id}"
+    if tag not in subject:
+        subject = f"{subject} ({tag})"
+    env = _git_env()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": name or "precis fix_gripe",
+            "GIT_AUTHOR_EMAIL": email or "fix-gripe@precis.invalid",
+            "GIT_COMMITTER_NAME": name or "precis fix_gripe",
+            "GIT_COMMITTER_EMAIL": email or "fix-gripe@precis.invalid",
+        }
+    )
+    res = _git(
+        repo_dir, "commit-tree", tree, "-p", parent, "-m", subject, env=env, check=True
+    )
+    return (res.stdout or "").strip()
 
 
 def _git_rev_parse(clone_dir: Path, refname: str) -> str | None:
